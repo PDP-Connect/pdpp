@@ -5,10 +5,10 @@ Date: 2026-03-28
 ## Components
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                        User                                  │
-│  (owns data, grants access, may revoke)                      │
-└──────────┬──────────────────────────────┬───────────────────┘
+┌───────────────────────────────────────────────────────────────┐
+│                         User                                  │
+│  (owns data, grants access, may revoke)                       │
+└──────────┬───────────────────────────────┬────────────────────┘
            │ consents                     │ collects via CLI
            ▼                              ▼
 ┌─────────────────────┐       ┌─────────────────────────┐
@@ -26,7 +26,7 @@ Date: 2026-03-28
          │ presents grant                 │ RECORD messages
          │ + selection params             │
          ▼                                ▼
-┌─────────────────────────────────────────────────────────────┐
+┌───────────────────────────────────────────────────────────────┐
 │                    Personal Server                            │
 │                                                               │
 │  Stores:                                                      │
@@ -48,21 +48,21 @@ Date: 2026-03-28
 │  - Records from connector runtime (collection results)        │
 │  - Records from webhooks (future)                             │
 │  - Grant creation/revocation requests                         │
-└─────────────────────────────────────────────────────────────┘
+└───────────────────────────────────────────────────────────────┘
          │
          │ collects from
          ▼
-┌─────────────────────────────────────────────────────────────┐
+┌───────────────────────────────────────────────────────────────┐
 │                    Data Sources                               │
 │                                                               │
-│  Spotify, ChatGPT, Instagram, Uber, Oura, GitHub, ...        │
+│  Spotify, ChatGPT, Instagram, Uber, Oura, GitHub, ...         │
 │                                                               │
 │  Accessed via:                                                │
 │  - Browser automation (scraping, current connectors)          │
 │  - Official APIs (Spotify API, future DMA portability APIs)   │
 │  - Webhooks (Shopify, GitHub — future)                        │
 │  - File import (Timelinize, data exports — future)            │
-└─────────────────────────────────────────────────────────────┘
+└───────────────────────────────────────────────────────────────┘
 ```
 
 ## Flows
