@@ -81,10 +81,10 @@ In many deployments, a single **personal server** fills all three roles. The spe
 ```
                                     +----------------------------------+
                                     |        Personal Server           |
-+----------+   selection            |  (may be a single deployment)   |
++----------+   selection            |  (may be a single deployment)    |
 |          |-- request -----------> |                                  |
 |  Client  |                        |  +------------------------+      |
-|          |<-- records -----------  |  |  Authorization Server  |      |
+|          |<-- records ----------- |  |  Authorization Server  |      |
 +----------+   (filtered by grant)  |  |  Issues + manages      |      |
                                     |  |  grants                |      |
 +----------+                        |  +------------------------+      |
@@ -97,7 +97,7 @@ In many deployments, a single **personal server** fills all three roles. The spe
                                                     |
 +------------------+                               |
 | Connector Runtime|-- RECORD/STATE -------------->|
-| (Collection      |<-- state ----------------------|
+| (Collection      |<-- state -------------------->|
 |  Profile)        |                               |
 +--------+---------+
          |
