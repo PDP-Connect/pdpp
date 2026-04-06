@@ -292,8 +292,24 @@ Content-Type: application/x-ndjson
 Body is NDJSON (one record per line):
 
 ```json
-{"key": "conv_01JQW8M2R7", "data": {"id": "conv_01JQW8M2R7", "title": "Trip planning", "created_at": "2026-03-25T18:22:11Z"}, "emitted_at": "2026-03-28T15:01:00Z"}
-{"key": "conv_01JQW9K4P2", "data": {"id": "conv_01JQW9K4P2", "title": "Recipe ideas", "created_at": "2026-03-26T10:00:00Z"}, "emitted_at": "2026-03-28T15:01:01Z"}
+{
+  "key": "conv_01JQW8M2R7",
+  "data": {
+    "id": "conv_01JQW8M2R7",
+    "title": "Trip planning",
+    "created_at": "2026-03-25T18:22:11Z"
+  },
+  "emitted_at": "2026-03-28T15:01:00Z"
+}
+{
+  "key": "conv_01JQW9K4P2",
+  "data": {
+    "id": "conv_01JQW9K4P2",
+    "title": "Recipe ideas",
+    "created_at": "2026-03-26T10:00:00Z"
+  },
+  "emitted_at": "2026-03-28T15:01:01Z"
+}
 ```
 
 **Response:**

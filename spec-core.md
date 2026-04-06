@@ -212,8 +212,25 @@ Two timestamp concepts appear in records:
 Streams reference each other via foreign key fields in `data`:
 
 ```json
-{"stream": "conversations", "key": "conv_xyz", "data": {"id": "conv_xyz", "title": "Weather chat", "source_created_at": "2026-03-28T14:00:00Z"}}
-{"stream": "messages", "key": "msg_abc123", "data": {"id": "msg_abc123", "conversation_id": "conv_xyz", "content": "...", "source_created_at": "2026-03-28T15:00:00Z"}}
+{
+  "stream": "conversations",
+  "key": "conv_xyz",
+  "data": {
+    "id": "conv_xyz",
+    "title": "Weather chat",
+    "source_created_at": "2026-03-28T14:00:00Z"
+  }
+}
+{
+  "stream": "messages",
+  "key": "msg_abc123",
+  "data": {
+    "id": "msg_abc123",
+    "conversation_id": "conv_xyz",
+    "content": "...",
+    "source_created_at": "2026-03-28T15:00:00Z"
+  }
+}
 ```
 
 The manifest declares `primary_key` per stream. Foreign key relationships are declared in the manifest's `relationships` field (see Section 7).
@@ -438,7 +455,10 @@ Grants freeze stream names at consent time. Within a granted stream, future reco
 Retention is a policy commitment by the data recipient (the client). PDPP does not technically enforce retention. Enforcement is through legal agreements, contractual obligations, or trust registry mechanisms. This is consistent with how OAuth 2.0 treats scope compliance: the protocol makes the commitment legible and machine-readable; external mechanisms enforce it.
 
 ```json
-{ "max_duration": "P6M", "on_expiry": "delete" }
+{
+  "max_duration": "P6M",
+  "on_expiry": "delete"
+}
 ```
 
 | Field | Type | Description |
@@ -461,7 +481,12 @@ Retention is a policy commitment by the data recipient (the client). PDPP does n
   "purpose_code": "https://pdpp.org/purpose/personalization",
   "access_mode": "single_use",
   "streams": [
-    { "name": "top_artists", "time_range": { "since": "2025-09-28T00:00:00Z" } }
+{
+  "name": "top_artists",
+  "time_range": {
+    "since": "2025-09-28T00:00:00Z"
+  }
+}
   ]
 }
 ```
@@ -480,7 +505,9 @@ Retention is a policy commitment by the data recipient (the client). PDPP does n
   "access_mode": "continuous",
   "streams": [
     { "name": "conversations" },
-    { "name": "messages" }
+{
+  "name": "messages"
+}
   ],
   "expires_at": null
 }
@@ -529,7 +556,9 @@ Each connector publishes a manifest declaring its consent surface: what streams 
       "label": "Listening history",
       "streams": [
         { "name": "top_artists" },
-        { "name": "saved_tracks" }
+{
+  "name": "saved_tracks"
+}
       ]
     }
   ],
@@ -835,7 +864,11 @@ Content-Type: application/x-ndjson
 Body is NDJSON (one RECORD envelope per line). Used by the connector runtime. Response:
 
 ```json
-{ "stream": "conversations", "records_accepted": 2, "records_rejected": 0 }
+{
+  "stream": "conversations",
+  "records_accepted": 2,
+  "records_rejected": 0
+}
 ```
 
 #### Sync state (owner-authenticated)
