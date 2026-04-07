@@ -6,6 +6,49 @@ Issues identified during design and review that are intentionally out of scope f
 
 ---
 
+## Newly deferred (2026-04-07)
+
+### Predicate-Based Grant Scoping (Subset Templates)
+
+**Description:** A mechanism for expressing semantically bounded consent narrower than a whole stream without using specific resource IDs. Example: "only messages from sender amazon.com," "only transactions from merchant X," "only Spotify history tagged as rock." In v0.1, grants can narrow access only by stream name, named view/field projection, time range, and explicit resource IDs. Arbitrary semantic predicates over stream contents are not supported as grant parameters.
+
+**Why deferred:** Predicate-in-grant requires solving, simultaneously: a predicate grammar; type semantics across arbitrary connector schemas; normalization and canonical equivalence; AS validation rules; RS enforcement rules; interaction with field projection and time-range semantics; and a consent rendering model that does not lie to the user. This is effectively a second protocol embedded in the most sensitive part of the first. Prior art (OAuth RAR, SMART on FHIR, HIPAA research systems) shows that generic free-form predicates over heterogeneous schemas do not have a strong track record as reviewable consent artifacts. SMART on FHIR's constrained search-parameter scopes work only because FHIR has a standardized resource type and search-parameter ontology — PDPP spans arbitrary connectors and does not have that shared vocabulary.
+
+**v0.1 posture:**
+- `filter[{field}]` query parameters narrow a retrieval result, not the grant scope. A client authorized for a stream may query a filtered subset; the grant remains a grant to the stream as issued.
+- Semantically bounded subsets should be modeled as named streams in the connector manifest (e.g., a connector exposes both `messages` and `amazon_messages`). Whether a stream is source-native or derived is connector-internal; the grant authorizes by stream name either way. This uses the existing stream abstraction without introducing a new protocol primitive.
+- Stream names MUST NOT encode predicate logic (e.g., `messages?sender=amazon` or `messages_where_sender_eq_amazon` as a synthesized name). Derived subset streams must have stable, human-readable names documented in the manifest.
+
+**Recommended future direction:** Manifest-declared parameterized subset templates. The connector manifest declares subset templates with typed bound parameters and human-readable consent display strings. Example shape (non-normative):
+
+```json
+{
+  "name": "messages",
+  "subset_templates": [
+    {
+      "id": "by_sender_domain",
+      "label": "Messages from a sender domain",
+      "parameters": [
+        { "name": "domain", "type": "string", "format": "hostname" }
+      ],
+      "consent_display": "Messages from {{domain}}"
+    }
+  ]
+}
+```
+
+The grant carries the template ID and bound parameter values, not the predicate. The connector defines the semantics; the AS validates types and renders the consent display string; the RS enforces the resolved constraint. Parameters are strongly typed (string with format, enum, date, numeric range) — no boolean composition, nested expressions, or arbitrary field references in the first version.
+
+**Open questions to resolve before specifying:**
+1. **Temporal semantics:** Does a subset-template grant cover only currently matching records, or future matching records too? Must interact with `access_mode` and `time_range` — the interaction rules are non-obvious and must be specified precisely to avoid interop divergence.
+2. **RS enforcement model:** The RS currently enforces grants using pre-resolved embedded constraints (fields, time_range, resources). Subset templates either require the AS to pre-resolve the template into an embedded constraint the RS can enforce blindly (clean, limited), or require the RS to evaluate the template predicate at query time (flexible, new enforcement surface). This choice must be made before specifying the wire format.
+3. **Manifest versioning:** If a subset template's underlying predicate changes across manifest versions (e.g., the connector changes how it identifies "Amazon messages"), does prior consent still apply? Likely: template predicates are immutable within a manifest version; changing a predicate requires a new template ID.
+4. **Parameter type vocabulary:** What parameter types are allowed in v0.2? Strong preference for a minimal first set (string/hostname, enum, date) over a general-purpose expression language.
+
+**Design constraint:** The subset template approach must not become a backdoor for arbitrary predicate-in-grant. Per-request or per-user subset-stream synthesis (where the client or user supplies the predicate at runtime) is not the goal. The manifest is the trusted, versioned artifact; the grant binds typed parameters against a connector-defined template.
+
+---
+
 ## Newly deferred (2026-04-06)
 
 ### Source Lifecycle Actions
