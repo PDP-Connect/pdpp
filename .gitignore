@@ -2,3 +2,5 @@ node_modules/
 .vitepress/cache/
 .vitepress/dist/
 .vercel/
+.vercel
+local/
