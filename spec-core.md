@@ -5,7 +5,7 @@ Date: 2026-04-06
 
 ---
 
-## 1. Introduction
+## 1. Introduction {#introduction}
 
 PDPP is an authorization and disclosure protocol for personal data. It defines how a user authorizes an application to access specific data from their personal data store, and how a resource server enforces that authorization.
 
@@ -302,7 +302,7 @@ When a record references a record in a different stream on the same resource ser
 
 ---
 
-## 5. Selection Request
+## 5. Selection Request {#selection-request}
 
 A client requests specific personal data by including `authorization_details` in an OAuth 2.0 authorization request, following RFC 9396.
 
@@ -347,7 +347,9 @@ A client requests specific personal data by including `authorization_details` in
 | `streams` | StreamRequest[] | yes (unless `profile` is used) | Requested streams with per-stream parameters. |
 | `profile` | string | no | Reference to a manifest-defined profile (alternative to explicit streams). |
 
-**AI training consent:** The AS MUST obtain explicit affirmative user consent before issuing any grant with `purpose_code` value `https://pdpp.org/purpose/ai_training`. This is the sole purpose code with a mandatory consent requirement at the protocol level.
+#### AI training consent {#ai-training-consent}
+
+The AS MUST obtain explicit affirmative user consent before issuing any grant with `purpose_code` value `https://pdpp.org/purpose/ai_training`. This is the sole purpose code with a mandatory consent requirement at the protocol level.
 
 ### Stream selection parameters
 
@@ -389,7 +391,7 @@ Every field in the issued grant is derived from either the selection request, cl
 
 ---
 
-## 6. Grant
+## 6. Grant {#grant}
 
 The grant is an immutable consent artifact. It is the output of the authorization flow.
 
@@ -477,7 +479,7 @@ Three independent version axes exist in PDPP. They MUST NOT be conflated:
 | Manifest version | `grant.manifest_version` | `manifest_version` identifies the manifest version against which the AS validated and resolved the grant at issuance time. The RS enforces the resolved grant as issued; it is not required to fetch the manifest at request time. If the RS implementation does not support grants generated against the pinned manifest version (e.g., due to incompatible schema changes introduced in a major manifest version bump), it returns 403 `grant_invalid`. This is a code-level compatibility check, not a runtime manifest fetch. |
 | HTTP API contract version | `PDPP-Version` request header | Version of the RS HTTP API contract. RS returns 400 `unsupported_version` if the requested version is not supported. If the header is absent, the RS uses the current stable version and returns the selected version in the response header (see Section 8). |
 
-### Access modes
+### Access modes {#access-modes}
 
 | Mode | Behavior |
 |------|----------|
@@ -594,7 +596,7 @@ Retention is a policy commitment by the data recipient (the client). PDPP does n
 
 ---
 
-## 7. Manifest Format
+## 7. Manifest Format {#manifest-format}
 
 **Note:** This section defines manifest syntax only. Connector runtime behavior (collection, state management, interaction) is defined in the [PDPP Collection Profile](spec-collection-profile).
 
@@ -736,7 +738,7 @@ Streams that cannot define a stable `consent_time_field` simply omit it. The abs
 | `foreign_key` | The field on the related stream that references this stream's primary key. |
 | `cardinality` | `has_many` or `has_one`. |
 
-### Views
+### Views {#views}
 
 Views are named field projections that the authorization server may define for a stream, composed from fields declared in the stream schema. Views are the unit of consent when a client requests access by view name rather than by explicit field list.
 
@@ -761,7 +763,7 @@ The recommended evolution path: add new fields freely; never remove existing fie
 
 ---
 
-## 8. Resource Server Interface
+## 8. Resource Server Interface {#resource-server-interface}
 
 The resource server stores records and serves them to clients filtered by grants. This section is normative: a compliant resource server must implement this interface for cross-deployment interoperability.
 
@@ -839,7 +841,7 @@ Returns the streams available under the current grant with record counts.
 }
 ```
 
-#### Get stream metadata
+#### Get stream metadata {#stream-metadata}
 
 ```
 GET /v1/streams/{stream}
@@ -869,7 +871,7 @@ Returns full stream metadata. Response:
 }
 ```
 
-#### List records
+#### List records {#list-records}
 
 ```
 GET /v1/streams/{stream}/records
@@ -977,7 +979,7 @@ A stale or unknown `blob_id` returns 404 `blob_not_found`.
 
 `HEAD` is supported for size checks. `Range` headers are recommended for large files.
 
-#### Collection Profile endpoints
+#### Collection Profile endpoints {#collection-profile-endpoints}
 
 > The following endpoints are part of the PDPP Collection Profile. A Core RS implementation is NOT required to implement them. An implementation claiming PDPP Collection Profile support MUST implement both endpoints.
 
@@ -1036,7 +1038,7 @@ Returns and updates the StreamState map for incremental sync (see Collection Pro
 
 `PUT` returns the same shape as `GET`.
 
-### Errors
+### Errors {#errors}
 
 Every non-2xx response returns a structured error:
 
@@ -1096,7 +1098,7 @@ Multiple collection runs for the same connector may execute concurrently. The re
 
 ---
 
-## 9. Conformance
+## 9. Conformance {#conformance}
 
 This section defines what it means to implement each PDPP role. Conformance claims should reference this section.
 
@@ -1166,7 +1168,7 @@ A formal conformance test suite is planned but is not defined in v0.1. This is o
 
 ---
 
-## 10. Security and Privacy Considerations
+## 10. Security and Privacy Considerations {#security}
 
 ### Token security
 
@@ -1200,7 +1202,7 @@ In the Collection Profile, connectors receive credentials via the INTERACTION ch
 | **Resource Server** | Validates token via introspection; enforces stream membership, field projection, time_range, resources on every request; never re-validates beyond introspection; scopes owner access to single subject. |
 | **Client** | Submits well-formed selection requests; uses access tokens; terminates on revocation; honors retention commitments. |
 
-### Data minimization
+### Data minimization {#data-minimization}
 
 Stream-level and field-level selection implements the GDPR principle of data minimization. Clients SHOULD request only the data they need for their stated purpose. Authorization servers SHOULD display the specific fields and streams being requested during consent.
 
@@ -1212,7 +1214,7 @@ The `purpose_code` URI enables purpose-based access control and audit. Authoriza
 
 The `retention` field is a policy commitment by the data recipient. PDPP does not technically enforce retention. Enforcement is through legal agreements, contractual obligations, or trust registry mechanisms. This is an intentional design choice, consistent with how OAuth 2.0 treats scope compliance.
 
-### Revocation
+### Revocation {#revocation}
 
 There is no push revocation channel in v0.1. Revocation propagation is bounded by the introspection cache TTL (maximum 60 seconds). The AS MUST reflect revocation immediately in introspection responses (`active: false`). A client will receive a 403 `grant_revoked` response no later than 60 seconds after revocation.
 
