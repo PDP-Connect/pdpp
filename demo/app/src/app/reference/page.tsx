@@ -6,15 +6,17 @@ import {
   GrantInspector,
   StreamInventory,
   ConnectorCard,
-  SpecCitationGroup,
 } from '@/components/pdpp';
 import type {
   ConsentCardProps,
   GrantInspectorProps,
   StreamInventoryProps,
   ConnectorCardProps,
-  SpecCitationProps,
 } from '@/components/pdpp';
+
+// ─── Config ─────────────────────────────────────────────────────────────────
+
+const SPEC_BASE_URL = 'https://pdpp-smoky.vercel.app';
 
 // ─── Section definitions ────────────────────────────────────────────────────
 
@@ -116,13 +118,6 @@ const MULTI_CONNECTORS: ConnectorCardProps[] = [
   },
 ];
 
-const SPEC_CITATIONS: SpecCitationProps[] = [
-  { section: '5', label: 'Selection Request', href: '/spec-core#selection-request' },
-  { section: '6', label: 'Grant', href: '/spec-core#grant' },
-  { section: '7', label: 'Manifest', href: '/spec-core#manifest-format' },
-  { section: '8', label: 'Resource Server', href: '/spec-core#resource-server' },
-  { section: 'A', label: 'Purpose Codes', href: '/spec-core#purpose-codes' },
-];
 
 // ─── Section content ────────────────────────────────────────────────────────
 
@@ -224,6 +219,33 @@ function Stepper({ activeId, onNavigate }: { activeId: SectionId; onNavigate: (i
         );
       })}
     </nav>
+  );
+}
+
+// ─── Detail panel (Level 2 depth) ───────────────────────────────────────────
+
+function DetailPanel({ spec, children }: { spec: string; children: React.ReactNode }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="mt-6 w-full" style={{ maxWidth: '52ch' }}>
+      <button
+        className="text-xs flex items-center gap-1 mb-2"
+        style={{ color: 'var(--muted-foreground)' }}
+        onClick={() => setOpen(v => !v)}
+      >
+        <span
+          className="text-xs inline-block"
+          style={{ transform: open ? 'rotate(90deg)' : 'rotate(0deg)', transition: 'transform 150ms' }}
+        >&#x203A;</span>
+        Protocol details
+        <span className="font-mono ml-1" style={{ color: 'var(--edu-fg)' }}>{spec}</span>
+      </button>
+      {open && (
+        <div className="border-l-2 pl-3 text-xs leading-relaxed flex flex-col gap-2" style={{ borderColor: 'oklch(0.580 0.172 253.7 / 0.25)', color: 'var(--muted-foreground)' }}>
+          {children}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -489,9 +511,11 @@ function IncrementalSync() {
 function Section({
   config,
   children,
+  detail,
 }: {
   config: SectionConfig;
   children: React.ReactNode;
+  detail?: React.ReactNode;
 }) {
   const borderColor = config.surface === 'human'
     ? 'var(--human)'
@@ -518,9 +542,10 @@ function Section({
         >
           {config.narrative}
         </p>
-        <div className="flex justify-center">
+        <div>
           {children}
         </div>
+        {detail}
       </div>
     </section>
   );
@@ -676,21 +701,44 @@ export default function ReferencePage() {
       {/* ── Sections ── */}
 
       {/* 1. Ingest */}
-      <Section config={SECTION_CONTENT[0]}>
+      <Section
+        config={SECTION_CONTENT[0]}
+        detail={
+          <DetailPanel spec="§7 Manifest">
+            <p>Each connector publishes a manifest declaring its consent surface: streams, fields, views, and selection capabilities. The manifest is the source of truth for what can be consented to.</p>
+            <p>Connectors run as child processes. The runtime sends a START message (collection_mode, state, bindings) via stdin; the connector streams RECORD/STATE/DONE messages back via stdout JSONL.</p>
+          </DetailPanel>
+        }
+      >
         <ConnectorCard {...CONNECTOR_SPECIMEN} />
       </Section>
 
       {/* 2. Inventory */}
-      <Section config={SECTION_CONTENT[1]}>
+      <Section
+        config={SECTION_CONTENT[1]}
+        detail={
+          <DetailPanel spec="§4 Record Model">
+            <p>Personal data is modeled as flat records in named streams. Every stream has a declared primary key, a semantic type (append_only or mutable_state), and a JSON Schema.</p>
+            <p>append_only streams (~95% of data by volume) are immutable events. mutable_state streams are evolving entities that require version history for incremental sync.</p>
+          </DetailPanel>
+        }
+      >
         <StreamInventory {...INVENTORY_SPECIMEN} />
       </Section>
 
-      {/* 3. Request — placeholder for selection request visualization */}
-      <Section config={SECTION_CONTENT[2]}>
+      {/* 3. Request */}
+      <Section
+        config={SECTION_CONTENT[2]}
+        detail={
+          <DetailPanel spec="§5 Selection Request">
+            <p>Selection requests use the RFC 9396 authorization_details envelope. The AS must accept any syntactically valid purpose code URI and must not reject solely because a code is unrecognized.</p>
+            <p>client_display (name, URI, logo) is entity-scoped and self-asserted. client_claims.commitments are request-scoped and rendered with attribution.</p>
+          </DetailPanel>
+        }
+      >
         <div
           data-surface="protocol"
-          className="rounded-xl overflow-hidden px-5 py-6"
-          style={{ maxWidth: '440px', width: '100%' }}
+          className="rounded-xl overflow-hidden px-5 py-6 w-full"
         >
           <div className="font-mono text-xs mb-3" style={{ color: 'var(--muted-foreground)', opacity: 0.6 }}>
             POST /authorize — authorization_details
@@ -724,7 +772,16 @@ export default function ReferencePage() {
       </Section>
 
       {/* 4. Consent — drives protocol state */}
-      <Section config={SECTION_CONTENT[3]}>
+      <Section
+        config={SECTION_CONTENT[3]}
+        detail={
+          <DetailPanel spec="§5.1 Client Display, §5.2 Client Claims">
+            <p>Three content layers: protocol facts (server-rendered from grant fields), server-trusted descriptions (manifest display.label and display.detail), and client-authored claims (rendered with "[name] says:" attribution).</p>
+            <p>AI training purpose code requires explicit affirmative user consent. This is the sole protocol-level purpose code requirement.</p>
+            <p>The AS must treat logo_uri as untrusted content. It must not render client-supplied logos unless the client is verified or the asset has been proxied and approved.</p>
+          </DetailPanel>
+        }
+      >
         {protocol.phase === 'pending' ? (
           <ConsentCard {...CONSENT_SPECIMEN} onAllow={handleAllow} onDeny={handleDeny} />
         ) : (
@@ -762,31 +819,40 @@ export default function ReferencePage() {
         )}
       </Section>
 
-      {/* 5. Grant — reads from protocol state */}
-      <Section config={SECTION_CONTENT[4]}>
-        {protocol.phase === 'pending' ? (
-          <div className="text-xs text-center py-12" style={{ color: 'var(--muted-foreground)', opacity: 0.5 }}>
-            Grant the request in the previous section to see the grant inspector.
-          </div>
-        ) : (
-          <GrantInspector
-            {...grantProps}
-            onRevoke={protocol.phase === 'granted' ? handleRevoke : undefined}
-          />
-        )}
+      {/* 5. Grant — reads from protocol state, shows default when pending */}
+      <Section
+        config={SECTION_CONTENT[4]}
+        detail={
+          <DetailPanel spec="§6 Grant">
+            <p>The grant is an immutable consent artifact. Once issued, it cannot be modified. Changes require revoke-and-reissue.</p>
+            <p>Three orthogonal time concepts: grant validity period (issued_at/expires_at), data temporal scope (time_range), and access pattern (access_mode). These must not be conflated.</p>
+            <p className="font-mono" style={{ color: 'var(--muted-foreground)', opacity: 0.7 }}>
+              retention is a policy commitment by the client, not server-enforced. Enforcement is through legal agreements, consistent with how OAuth 2.0 treats scope compliance.
+            </p>
+          </DetailPanel>
+        }
+      >
+        <GrantInspector
+          {...grantProps}
+          onRevoke={protocol.phase === 'granted' ? handleRevoke : undefined}
+        />
       </Section>
 
-      {/* 6. Enforce — field projection with scroll-triggered animation */}
-      <Section config={SECTION_CONTENT[5]}>
-        {protocol.phase === 'pending' ? (
-          <div className="text-xs text-center py-12" style={{ color: 'var(--muted-foreground)', opacity: 0.5 }}>
-            Grant the request to see field projection enforcement.
-          </div>
-        ) : protocol.phase === 'revoked' ? (
+      {/* 6. Enforce — field projection, shows 403 when revoked */}
+      <Section
+        config={SECTION_CONTENT[5]}
+        detail={
+          <DetailPanel spec="§8 Resource Server">
+            <p>The RS computes effective_filter = grant_filter AND request_filter. Request-time filters can only narrow what the grant allows, never widen it.</p>
+            <p>Field projection is enforced on every response. Schema-required fields are always included regardless of the grant's field list.</p>
+            <p>If a client requests a filter on a field outside the grant's authorized projection, the RS returns 403 field_not_granted.</p>
+          </DetailPanel>
+        }
+      >
+        {protocol.phase === 'revoked' ? (
           <div
             data-surface="protocol"
-            className="rounded-xl overflow-hidden px-5 py-8 text-center"
-            style={{ maxWidth: '440px', width: '100%' }}
+            className="rounded-xl overflow-hidden px-5 py-8 text-center w-full"
           >
             <div className="font-mono text-xs mb-2" style={{ color: 'var(--destructive)' }}>
               403 grant_revoked
@@ -801,18 +867,32 @@ export default function ReferencePage() {
       </Section>
 
       {/* 7. Sync — incremental sync animation */}
-      <Section config={SECTION_CONTENT[6]}>
+      <Section
+        config={SECTION_CONTENT[6]}
+        detail={
+          <DetailPanel spec="§4.1 Incremental Sync">
+            <p>changes_since returns full current state of changed records, not field-level diffs. The RS maintains version history for mutable_state streams.</p>
+            <p>Projection-aware deltas: if unauthorized field C changes but the client is only authorized for fields A and B, the record does not appear in the delta. The client cannot infer that C changed.</p>
+            <p>cursor (pagination) and changes_since (sync) are opaque tokens from distinct token spaces. A client must not substitute one for the other.</p>
+          </DetailPanel>
+        }
+      >
         <IncrementalSync />
       </Section>
 
-      {/* 8. Revoke — connected to protocol state */}
-      <Section config={SECTION_CONTENT[7]}>
-        {protocol.phase === 'pending' ? (
-          <div className="text-xs text-center py-12" style={{ color: 'var(--muted-foreground)', opacity: 0.5 }}>
-            Grant the request to see revocation.
-          </div>
-        ) : protocol.phase === 'revoked' ? (
-          <div className="flex flex-col items-center gap-3" style={{ maxWidth: '440px', width: '100%' }}>
+      {/* 8. Revoke — shows grant with revoke action, or revoked state */}
+      <Section
+        config={SECTION_CONTENT[7]}
+        detail={
+          <DetailPanel spec="§6.5 Revocation">
+            <p>Revocation stops future access only. Records already delivered before revocation are governed by the grant's retention policy.</p>
+            <p>Revocation propagation is bounded by the introspection cache TTL (max 60 seconds). The AS reflects revocation immediately; the RS will serve a 403 no later than 60s after revocation.</p>
+            <p>Grant narrowing is not supported. Scope reduction is achieved via revoke-and-reissue.</p>
+          </DetailPanel>
+        }
+      >
+        {protocol.phase === 'revoked' ? (
+          <div className="flex flex-col items-center gap-3 w-full">
             <div
               className="w-full rounded-xl px-6 py-8 flex flex-col items-center gap-3 text-center"
               style={{ border: '1px solid var(--border)', backgroundColor: 'var(--card)' }}
@@ -822,7 +902,7 @@ export default function ReferencePage() {
               </div>
               <div className="text-sm font-medium">Grant revoked</div>
               <div className="text-xs" style={{ color: 'var(--muted-foreground)' }}>
-                Access has been revoked. Scroll up to section 6 to see the 403 response.
+                Access has been revoked. The enforcement section above now shows a 403 response.
               </div>
             </div>
             <button
@@ -830,20 +910,27 @@ export default function ReferencePage() {
               style={{ color: 'var(--muted-foreground)' }}
               onClick={handleReset}
             >
-              ↺ reset entire flow
+              ↺ reset flow
             </button>
           </div>
         ) : (
-          <GrantInspector {...grantProps} onRevoke={handleRevoke} />
+          <GrantInspector {...grantProps} onRevoke={protocol.phase === 'granted' ? handleRevoke : undefined} />
         )}
       </Section>
 
-      {/* 9. Export — placeholder for self-export visualization */}
-      <Section config={SECTION_CONTENT[8]}>
+      {/* 9. Export */}
+      <Section
+        config={SECTION_CONTENT[8]}
+        detail={
+          <DetailPanel spec="§8.3 Owner Tokens">
+            <p>Two token types: owner tokens (for ingest, management, self-export) and client tokens (for querying under a grant). The RS determines token kind from the introspection response, never from syntax.</p>
+            <p>Owner tokens are scoped to a single subject's data store. The RS derives subject_id from introspection and rejects any request outside that scope.</p>
+          </DetailPanel>
+        }
+      >
         <div
           data-surface="human"
-          className="rounded-xl overflow-hidden px-5 py-6"
-          style={{ maxWidth: '440px', width: '100%' }}
+          className="rounded-xl overflow-hidden px-5 py-6 w-full"
         >
           <div className="flex items-center gap-2 mb-4">
             <div className="w-2 h-2 rounded-full" style={{ backgroundColor: 'var(--success)' }} />
@@ -871,7 +958,7 @@ export default function ReferencePage() {
 
       {/* 10. Multi-connector */}
       <Section config={SECTION_CONTENT[9]}>
-        <div className="flex flex-col gap-4" style={{ maxWidth: '440px', width: '100%' }}>
+        <div className="flex flex-col gap-4 w-full">
           <div className="flex gap-1.5 mb-2">
             {MULTI_CONNECTORS.map((c, i) => (
               <button
@@ -891,18 +978,36 @@ export default function ReferencePage() {
         </div>
       </Section>
 
-      {/* 11. Spec */}
+      {/* 11. Spec — mapping of reference sections to spec sections */}
       <Section config={SECTION_CONTENT[10]}>
-        <div className="flex flex-col items-center gap-6" style={{ maxWidth: '440px', width: '100%' }}>
-          <SpecCitationGroup citations={SPEC_CITATIONS} />
+        <div className="w-full flex flex-col gap-6">
+          <div className="flex flex-col gap-2">
+            {[
+              { ref: 'Ingest', spec: '§7 Manifest', desc: 'Connector manifest declares the consent surface' },
+              { ref: 'Inventory', spec: '§4 Record Model', desc: 'Flat relational streams with primary keys' },
+              { ref: 'Request', spec: '§5 Selection Request', desc: 'RFC 9396 authorization_details envelope' },
+              { ref: 'Consent', spec: '§5.1, §5.2', desc: 'Client display, client claims, attribution' },
+              { ref: 'Grant', spec: '§6 Grant', desc: 'Immutable consent artifact with three time axes' },
+              { ref: 'Enforce', spec: '§8 Resource Server', desc: 'Field projection, effective filter composition' },
+              { ref: 'Sync', spec: '§4.1 Incremental', desc: 'Projection-aware deltas via changes_since' },
+              { ref: 'Revoke', spec: '§6.5 Revocation', desc: '60s propagation window, retention governs past data' },
+              { ref: 'Export', spec: '§8.3 Owner Tokens', desc: 'Self-export via owner token, no grant required' },
+            ].map(({ ref, spec, desc }) => (
+              <div key={ref} className="flex items-baseline gap-3 py-1.5" style={{ borderBottom: '1px solid var(--border)' }}>
+                <span className="text-xs font-medium shrink-0 w-16" style={{ color: 'var(--foreground)' }}>{ref}</span>
+                <span className="font-mono text-xs shrink-0" style={{ color: 'var(--edu-fg)' }}>{spec}</span>
+                <span className="text-xs" style={{ color: 'var(--muted-foreground)' }}>{desc}</span>
+              </div>
+            ))}
+          </div>
           <a
-            href="https://pdpp.vercel.app/spec-core"
+            href={`${SPEC_BASE_URL}/spec-core`}
             target="_blank"
             rel="noopener noreferrer"
             className="text-sm font-medium transition-opacity hover:opacity-70"
             style={{ color: 'var(--primary)' }}
           >
-            Read the specification →
+            Read the full specification →
           </a>
         </div>
       </Section>
