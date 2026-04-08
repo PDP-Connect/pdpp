@@ -227,6 +227,263 @@ function Stepper({ activeId, onNavigate }: { activeId: SectionId; onNavigate: (i
   );
 }
 
+// ─── Field projection animation ─────────────────────────────────────────────
+
+function FieldProjection({ grantedFields, allFields }: { grantedFields: string[]; allFields: string[] }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [animated, setAnimated] = useState(false);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const obs = new IntersectionObserver(
+      ([entry]) => { if (entry.isIntersecting) { setAnimated(true); obs.disconnect(); } },
+      { threshold: 0.5 }
+    );
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, []);
+
+  return (
+    <div
+      ref={ref}
+      data-surface="protocol"
+      className="rounded-xl overflow-hidden px-5 py-6"
+      style={{ maxWidth: '440px', width: '100%' }}
+    >
+      <div className="font-mono text-xs mb-4" style={{ color: 'var(--muted-foreground)', opacity: 0.6 }}>
+        GET /v1/streams/posts/records
+      </div>
+
+      <div className="flex flex-col gap-4">
+        {/* Record on server */}
+        <div>
+          <div className="text-xs font-medium mb-2" style={{ color: 'var(--muted-foreground)' }}>
+            Record on server ({allFields.length} fields)
+          </div>
+          <div className="flex flex-wrap gap-1">
+            {allFields.map((f, i) => {
+              const granted = grantedFields.includes(f);
+              return (
+                <span
+                  key={f}
+                  className="font-mono text-xs px-1.5 py-0.5 rounded"
+                  style={{
+                    backgroundColor: granted ? 'oklch(0.52 0.15 150 / 0.1)' : 'var(--muted)',
+                    color: granted ? 'var(--success)' : 'var(--muted-foreground)',
+                    opacity: animated ? (granted ? 1 : 0.3) : 0,
+                    transform: animated ? 'translateY(0)' : 'translateY(8px)',
+                    transition: `opacity 400ms ${i * 60}ms, transform 400ms ${i * 60}ms`,
+                  }}
+                >
+                  {f}
+                </span>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Grant filter line */}
+        <div className="flex items-center gap-2">
+          <div
+            className="flex-1 h-px"
+            style={{
+              backgroundColor: 'var(--border)',
+              opacity: animated ? 1 : 0,
+              transition: `opacity 300ms ${allFields.length * 60 + 200}ms`,
+            }}
+          />
+          <span
+            className="text-xs font-mono"
+            style={{
+              color: 'var(--muted-foreground)',
+              opacity: animated ? 1 : 0,
+              transition: `opacity 300ms ${allFields.length * 60 + 200}ms`,
+            }}
+          >
+            grant filter
+          </span>
+          <div
+            className="flex-1 h-px"
+            style={{
+              backgroundColor: 'var(--border)',
+              opacity: animated ? 1 : 0,
+              transition: `opacity 300ms ${allFields.length * 60 + 200}ms`,
+            }}
+          />
+        </div>
+
+        {/* Response to client */}
+        <div>
+          <div
+            className="text-xs font-medium mb-2"
+            style={{
+              color: 'var(--success)',
+              opacity: animated ? 1 : 0,
+              transition: `opacity 300ms ${allFields.length * 60 + 400}ms`,
+            }}
+          >
+            Response to client ({grantedFields.length} fields)
+          </div>
+          <div className="flex flex-wrap gap-1">
+            {grantedFields.map((f, i) => (
+              <span
+                key={f}
+                className="font-mono text-xs px-1.5 py-0.5 rounded"
+                style={{
+                  backgroundColor: 'oklch(0.52 0.15 150 / 0.1)',
+                  color: 'var(--success)',
+                  opacity: animated ? 1 : 0,
+                  transform: animated ? 'translateY(0)' : 'translateY(8px)',
+                  transition: `opacity 400ms ${allFields.length * 60 + 500 + i * 80}ms, transform 400ms ${allFields.length * 60 + 500 + i * 80}ms`,
+                }}
+              >
+                {f}
+              </span>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Incremental sync animation ─────────────────────────────────────────────
+
+function IncrementalSync() {
+  const ref = useRef<HTMLDivElement>(null);
+  const [phase, setPhase] = useState<'hidden' | 'first' | 'delta'>('hidden');
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const obs = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting) {
+          setPhase('first');
+          setTimeout(() => setPhase('delta'), 1200);
+          obs.disconnect();
+        }
+      },
+      { threshold: 0.5 }
+    );
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, []);
+
+  return (
+    <div
+      ref={ref}
+      data-surface="protocol"
+      className="rounded-xl overflow-hidden px-5 py-6"
+      style={{ maxWidth: '440px', width: '100%' }}
+    >
+      <div className="flex flex-col gap-4">
+        {/* First query */}
+        <div>
+          <div
+            className="text-xs font-medium mb-2"
+            style={{
+              color: 'var(--muted-foreground)',
+              opacity: phase !== 'hidden' ? 1 : 0,
+              transition: 'opacity 300ms',
+            }}
+          >
+            First query: 22 posts
+          </div>
+          <div className="flex items-center gap-0.5 flex-wrap">
+            {Array.from({ length: 22 }, (_, i) => (
+              <div
+                key={i}
+                className="w-1.5 h-3 rounded-sm"
+                style={{
+                  backgroundColor: 'var(--primary)',
+                  opacity: phase !== 'hidden' ? 0.6 : 0,
+                  transform: phase !== 'hidden' ? 'scaleY(1)' : 'scaleY(0)',
+                  transition: `opacity 200ms ${i * 30}ms, transform 200ms ${i * 30}ms`,
+                  transformOrigin: 'bottom',
+                }}
+              />
+            ))}
+          </div>
+          <div
+            className="font-mono text-xs mt-1.5"
+            style={{
+              color: 'var(--muted-foreground)',
+              opacity: phase !== 'hidden' ? 0.6 : 0,
+              transition: `opacity 300ms ${22 * 30 + 200}ms`,
+            }}
+          >
+            next_changes_since: "cursor_a8f2..."
+          </div>
+        </div>
+
+        {/* Separator */}
+        <div
+          className="h-px"
+          style={{
+            backgroundColor: 'var(--border)',
+            opacity: phase === 'delta' ? 1 : 0,
+            transition: 'opacity 300ms',
+          }}
+        />
+
+        {/* Delta sync */}
+        <div>
+          <div
+            className="text-xs font-medium mb-2"
+            style={{
+              color: 'var(--muted-foreground)',
+              opacity: phase === 'delta' ? 1 : 0,
+              transition: 'opacity 300ms 100ms',
+            }}
+          >
+            Sync one week later: <span style={{ color: 'var(--success)' }}>3 new posts</span>
+          </div>
+          <div className="flex items-center gap-0.5 flex-wrap">
+            {/* Existing records (dimmed) */}
+            {Array.from({ length: 22 }, (_, i) => (
+              <div
+                key={i}
+                className="w-1.5 h-3 rounded-sm"
+                style={{
+                  backgroundColor: 'var(--border)',
+                  opacity: phase === 'delta' ? 1 : 0,
+                  transition: `opacity 200ms ${200 + i * 15}ms`,
+                }}
+              />
+            ))}
+            {/* New records (green, staggered) */}
+            {Array.from({ length: 3 }, (_, i) => (
+              <div
+                key={`new-${i}`}
+                className="w-1.5 h-3 rounded-sm"
+                style={{
+                  backgroundColor: 'var(--success)',
+                  opacity: phase === 'delta' ? 1 : 0,
+                  transform: phase === 'delta' ? 'scaleY(1)' : 'scaleY(0)',
+                  transition: `opacity 300ms ${600 + i * 120}ms, transform 300ms ${600 + i * 120}ms`,
+                  transformOrigin: 'bottom',
+                }}
+              />
+            ))}
+          </div>
+          <div
+            className="font-mono text-xs mt-1.5"
+            style={{
+              color: 'var(--muted-foreground)',
+              opacity: phase === 'delta' ? 0.6 : 0,
+              transition: 'opacity 300ms 1000ms',
+            }}
+          >
+            changes_since: "cursor_a8f2..." → 3 records returned
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Section shell ──────────────────────────────────────────────────────────
 
 function Section({
@@ -519,7 +776,7 @@ export default function ReferencePage() {
         )}
       </Section>
 
-      {/* 6. Enforce — field projection, reads granted fields from state */}
+      {/* 6. Enforce — field projection with scroll-triggered animation */}
       <Section config={SECTION_CONTENT[5]}>
         {protocol.phase === 'pending' ? (
           <div className="text-xs text-center py-12" style={{ color: 'var(--muted-foreground)', opacity: 0.5 }}>
@@ -539,107 +796,13 @@ export default function ReferencePage() {
             </div>
           </div>
         ) : (
-          <div
-            data-surface="protocol"
-            className="rounded-xl overflow-hidden px-5 py-6"
-            style={{ maxWidth: '440px', width: '100%' }}
-          >
-            <div className="font-mono text-xs mb-4" style={{ color: 'var(--muted-foreground)', opacity: 0.6 }}>
-              GET /v1/streams/posts/records
-            </div>
-
-            <div className="flex flex-col gap-4">
-              <div>
-                <div className="text-xs font-medium mb-2" style={{ color: 'var(--muted-foreground)' }}>
-                  Record on server ({ALL_POST_FIELDS.length} fields)
-                </div>
-                <div className="flex flex-wrap gap-1">
-                  {ALL_POST_FIELDS.map(f => {
-                    const granted = protocol.grantedFields.includes(f);
-                    return (
-                      <span
-                        key={f}
-                        className="font-mono text-xs px-1.5 py-0.5 rounded"
-                        style={{
-                          backgroundColor: granted ? 'oklch(0.52 0.15 150 / 0.1)' : 'var(--muted)',
-                          color: granted ? 'var(--success)' : 'var(--muted-foreground)',
-                          opacity: granted ? 1 : 0.5,
-                        }}
-                      >
-                        {f}
-                      </span>
-                    );
-                  })}
-                </div>
-              </div>
-
-              <div className="flex items-center gap-2">
-                <div className="flex-1 h-px" style={{ backgroundColor: 'var(--border)' }} />
-                <span className="text-xs font-mono" style={{ color: 'var(--muted-foreground)' }}>grant filter</span>
-                <div className="flex-1 h-px" style={{ backgroundColor: 'var(--border)' }} />
-              </div>
-
-              <div>
-                <div className="text-xs font-medium mb-2" style={{ color: 'var(--success)' }}>
-                  Response to client ({protocol.grantedFields.length} fields)
-                </div>
-                <div className="flex flex-wrap gap-1">
-                  {protocol.grantedFields.map(f => (
-                    <span
-                      key={f}
-                      className="font-mono text-xs px-1.5 py-0.5 rounded"
-                      style={{ backgroundColor: 'oklch(0.52 0.15 150 / 0.1)', color: 'var(--success)' }}
-                    >
-                      {f}
-                    </span>
-                  ))}
-                </div>
-              </div>
-            </div>
-          </div>
+          <FieldProjection grantedFields={protocol.grantedFields} allFields={ALL_POST_FIELDS} />
         )}
       </Section>
 
-      {/* 7. Sync — placeholder for incremental sync animation */}
+      {/* 7. Sync — incremental sync animation */}
       <Section config={SECTION_CONTENT[6]}>
-        <div
-          data-surface="protocol"
-          className="rounded-xl overflow-hidden px-5 py-6"
-          style={{ maxWidth: '440px', width: '100%' }}
-        >
-          <div className="flex flex-col gap-4">
-            <div>
-              <div className="text-xs font-medium mb-2" style={{ color: 'var(--muted-foreground)' }}>First query: 22 posts</div>
-              <div className="flex items-center gap-1">
-                {Array.from({ length: 22 }, (_, i) => (
-                  <div key={i} className="w-1.5 h-3 rounded-sm" style={{ backgroundColor: 'var(--primary)', opacity: 0.6 }} />
-                ))}
-              </div>
-              <div className="font-mono text-xs mt-1" style={{ color: 'var(--muted-foreground)', opacity: 0.6 }}>
-                next_changes_since: "cursor_a8f2..."
-              </div>
-            </div>
-
-            <div className="h-px" style={{ backgroundColor: 'var(--border)' }} />
-
-            <div>
-              <div className="text-xs font-medium mb-2" style={{ color: 'var(--muted-foreground)' }}>
-                Sync one week later: <span style={{ color: 'var(--success)' }}>3 new posts</span>
-              </div>
-              <div className="flex items-center gap-1">
-                {Array.from({ length: 22 }, (_, i) => (
-                  <div key={i} className="w-1.5 h-3 rounded-sm" style={{ backgroundColor: 'var(--border)' }} />
-                ))}
-                {Array.from({ length: 3 }, (_, i) => (
-                  <div key={`new-${i}`} className="w-1.5 h-3 rounded-sm" style={{ backgroundColor: 'var(--success)' }} />
-                ))}
-              </div>
-              <div className="font-mono text-xs mt-1" style={{ color: 'var(--muted-foreground)', opacity: 0.6 }}>
-                changes_since: "cursor_a8f2..." → 3 records returned
-              </div>
-            </div>
-          </div>
-        </div>
+        <IncrementalSync />
       </Section>
 
       {/* 8. Revoke — connected to protocol state */}
