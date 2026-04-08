@@ -269,11 +269,47 @@ function Section({
   );
 }
 
+// ─── Protocol state (connects sections 4-8) ────────────────────────────────
+
+type ProtocolState = {
+  phase: 'pending' | 'granted' | 'revoked';
+  grantedStreams: string[];     // stream keys the user authorized
+  grantedFields: string[];     // fields the grant authorizes (for the posts stream)
+  optionalIncluded: boolean;   // whether the optional stream was included
+};
+
+const ALL_POST_FIELDS = ['id', 'caption', 'taken_at', 'media_type', 'like_count', 'comment_count', 'location', 'is_pinned'];
+const DEFAULT_GRANTED_FIELDS = ['id', 'caption', 'taken_at', 'media_type'];
+
 // ─── Page ───────────────────────────────────────────────────────────────────
 
 export default function ReferencePage() {
   const [activeSection, setActiveSection] = useState<SectionId>('ingest');
   const observerRef = useRef<IntersectionObserver | null>(null);
+
+  // Protocol state: flows from Consent (§4) through Grant (§5), Enforce (§6), Revoke (§8)
+  const [protocol, setProtocol] = useState<ProtocolState>({
+    phase: 'pending',
+    grantedStreams: ['following', 'posts'],
+    grantedFields: DEFAULT_GRANTED_FIELDS,
+    optionalIncluded: false,
+  });
+
+  const handleAllow = useCallback(() => {
+    setProtocol(prev => ({ ...prev, phase: 'granted' }));
+  }, []);
+
+  const handleDeny = useCallback(() => {
+    setProtocol({ phase: 'pending', grantedStreams: [], grantedFields: [], optionalIncluded: false });
+  }, []);
+
+  const handleRevoke = useCallback(() => {
+    setProtocol(prev => ({ ...prev, phase: 'revoked' }));
+  }, []);
+
+  const handleReset = useCallback(() => {
+    setProtocol({ phase: 'pending', grantedStreams: ['following', 'posts'], grantedFields: DEFAULT_GRANTED_FIELDS, optionalIncluded: false });
+  }, []);
 
   // Track active section via IntersectionObserver
   useEffect(() => {
@@ -318,6 +354,12 @@ export default function ReferencePage() {
   }, [activeSection, navigateTo]);
 
   const [multiIdx, setMultiIdx] = useState(0);
+
+  // Derive grant inspector props from protocol state
+  const grantProps: GrantInspectorProps = {
+    ...GRANT_SPECIMEN,
+    status: protocol.phase === 'revoked' ? 'revoked' : protocol.phase === 'granted' ? 'active' : 'active',
+  };
 
   return (
     <div className="min-h-screen" style={{ backgroundColor: 'var(--background)', color: 'var(--foreground)' }}>
@@ -424,75 +466,138 @@ export default function ReferencePage() {
         </div>
       </Section>
 
-      {/* 4. Consent */}
+      {/* 4. Consent — drives protocol state */}
       <Section config={SECTION_CONTENT[3]}>
-        <ConsentCard {...CONSENT_SPECIMEN} />
-      </Section>
-
-      {/* 5. Grant */}
-      <Section config={SECTION_CONTENT[4]}>
-        <GrantInspector {...GRANT_SPECIMEN} />
-      </Section>
-
-      {/* 6. Enforce — placeholder for field projection animation */}
-      <Section config={SECTION_CONTENT[5]}>
-        <div
-          data-surface="protocol"
-          className="rounded-xl overflow-hidden px-5 py-6"
-          style={{ maxWidth: '440px', width: '100%' }}
-        >
-          <div className="font-mono text-xs mb-4" style={{ color: 'var(--muted-foreground)', opacity: 0.6 }}>
-            GET /v1/streams/posts/records
+        {protocol.phase === 'pending' ? (
+          <ConsentCard {...CONSENT_SPECIMEN} onAllow={handleAllow} onDeny={handleDeny} />
+        ) : (
+          <div className="flex flex-col items-center gap-3" style={{ maxWidth: '440px', width: '100%' }}>
+            <div
+              className="w-full rounded-xl px-6 py-8 flex flex-col items-center gap-3 text-center"
+              style={{ border: '1px solid var(--border)', backgroundColor: 'var(--card)' }}
+            >
+              <div
+                className="w-8 h-8 rounded-full flex items-center justify-center text-sm"
+                style={{
+                  backgroundColor: protocol.phase === 'granted' ? 'var(--success)' : 'var(--muted)',
+                  color: protocol.phase === 'granted' ? 'white' : 'var(--muted-foreground)',
+                }}
+              >
+                {protocol.phase === 'granted' ? '✓' : protocol.phase === 'revoked' ? '×' : '×'}
+              </div>
+              <div className="text-sm font-medium">
+                {protocol.phase === 'granted' ? 'Access granted' : 'Access revoked'}
+              </div>
+              <div className="text-xs" style={{ color: 'var(--muted-foreground)' }}>
+                {protocol.phase === 'granted'
+                  ? 'Audience Lens may now query your personal server. Scroll down to see enforcement in action.'
+                  : 'The grant has been revoked. Audience Lens can no longer access your data.'}
+              </div>
+            </div>
+            <button
+              className="font-mono text-xs px-0.5"
+              style={{ color: 'var(--muted-foreground)' }}
+              onClick={handleReset}
+            >
+              ↺ reset
+            </button>
           </div>
+        )}
+      </Section>
 
-          <div className="flex flex-col gap-4">
-            {/* Before: full record */}
-            <div>
-              <div className="text-xs font-medium mb-2" style={{ color: 'var(--muted-foreground)' }}>Record on server (8 fields)</div>
-              <div className="flex flex-wrap gap-1">
-                {['id', 'caption', 'taken_at', 'media_type', 'like_count', 'comment_count', 'location', 'is_pinned'].map(f => {
-                  const granted = ['id', 'caption', 'taken_at', 'media_type'].includes(f);
-                  return (
+      {/* 5. Grant — reads from protocol state */}
+      <Section config={SECTION_CONTENT[4]}>
+        {protocol.phase === 'pending' ? (
+          <div className="text-xs text-center py-12" style={{ color: 'var(--muted-foreground)', opacity: 0.5 }}>
+            Grant the request in the previous section to see the grant inspector.
+          </div>
+        ) : (
+          <GrantInspector
+            {...grantProps}
+            onRevoke={protocol.phase === 'granted' ? handleRevoke : undefined}
+          />
+        )}
+      </Section>
+
+      {/* 6. Enforce — field projection, reads granted fields from state */}
+      <Section config={SECTION_CONTENT[5]}>
+        {protocol.phase === 'pending' ? (
+          <div className="text-xs text-center py-12" style={{ color: 'var(--muted-foreground)', opacity: 0.5 }}>
+            Grant the request to see field projection enforcement.
+          </div>
+        ) : protocol.phase === 'revoked' ? (
+          <div
+            data-surface="protocol"
+            className="rounded-xl overflow-hidden px-5 py-8 text-center"
+            style={{ maxWidth: '440px', width: '100%' }}
+          >
+            <div className="font-mono text-xs mb-2" style={{ color: 'var(--destructive)' }}>
+              403 grant_revoked
+            </div>
+            <div className="text-xs" style={{ color: 'var(--muted-foreground)' }}>
+              The grant has been revoked. No further queries will be served.
+            </div>
+          </div>
+        ) : (
+          <div
+            data-surface="protocol"
+            className="rounded-xl overflow-hidden px-5 py-6"
+            style={{ maxWidth: '440px', width: '100%' }}
+          >
+            <div className="font-mono text-xs mb-4" style={{ color: 'var(--muted-foreground)', opacity: 0.6 }}>
+              GET /v1/streams/posts/records
+            </div>
+
+            <div className="flex flex-col gap-4">
+              <div>
+                <div className="text-xs font-medium mb-2" style={{ color: 'var(--muted-foreground)' }}>
+                  Record on server ({ALL_POST_FIELDS.length} fields)
+                </div>
+                <div className="flex flex-wrap gap-1">
+                  {ALL_POST_FIELDS.map(f => {
+                    const granted = protocol.grantedFields.includes(f);
+                    return (
+                      <span
+                        key={f}
+                        className="font-mono text-xs px-1.5 py-0.5 rounded"
+                        style={{
+                          backgroundColor: granted ? 'oklch(0.52 0.15 150 / 0.1)' : 'var(--muted)',
+                          color: granted ? 'var(--success)' : 'var(--muted-foreground)',
+                          opacity: granted ? 1 : 0.5,
+                        }}
+                      >
+                        {f}
+                      </span>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <div className="flex-1 h-px" style={{ backgroundColor: 'var(--border)' }} />
+                <span className="text-xs font-mono" style={{ color: 'var(--muted-foreground)' }}>grant filter</span>
+                <div className="flex-1 h-px" style={{ backgroundColor: 'var(--border)' }} />
+              </div>
+
+              <div>
+                <div className="text-xs font-medium mb-2" style={{ color: 'var(--success)' }}>
+                  Response to client ({protocol.grantedFields.length} fields)
+                </div>
+                <div className="flex flex-wrap gap-1">
+                  {protocol.grantedFields.map(f => (
                     <span
                       key={f}
                       className="font-mono text-xs px-1.5 py-0.5 rounded"
-                      style={{
-                        backgroundColor: granted ? 'oklch(0.52 0.15 150 / 0.1)' : 'var(--muted)',
-                        color: granted ? 'var(--success)' : 'var(--muted-foreground)',
-                        opacity: granted ? 1 : 0.5,
-                      }}
+                      style={{ backgroundColor: 'oklch(0.52 0.15 150 / 0.1)', color: 'var(--success)' }}
                     >
                       {f}
                     </span>
-                  );
-                })}
-              </div>
-            </div>
-
-            {/* Arrow */}
-            <div className="flex items-center gap-2">
-              <div className="flex-1 h-px" style={{ backgroundColor: 'var(--border)' }} />
-              <span className="text-xs font-mono" style={{ color: 'var(--muted-foreground)' }}>grant filter</span>
-              <div className="flex-1 h-px" style={{ backgroundColor: 'var(--border)' }} />
-            </div>
-
-            {/* After: projected record */}
-            <div>
-              <div className="text-xs font-medium mb-2" style={{ color: 'var(--success)' }}>Response to client (4 fields)</div>
-              <div className="flex flex-wrap gap-1">
-                {['id', 'caption', 'taken_at', 'media_type'].map(f => (
-                  <span
-                    key={f}
-                    className="font-mono text-xs px-1.5 py-0.5 rounded"
-                    style={{ backgroundColor: 'oklch(0.52 0.15 150 / 0.1)', color: 'var(--success)' }}
-                  >
-                    {f}
-                  </span>
-                ))}
+                  ))}
+                </div>
               </div>
             </div>
           </div>
-        </div>
+        )}
       </Section>
 
       {/* 7. Sync — placeholder for incremental sync animation */}
@@ -537,9 +642,37 @@ export default function ReferencePage() {
         </div>
       </Section>
 
-      {/* 8. Revoke */}
+      {/* 8. Revoke — connected to protocol state */}
       <Section config={SECTION_CONTENT[7]}>
-        <GrantInspector {...GRANT_SPECIMEN} onRevoke={() => {}} />
+        {protocol.phase === 'pending' ? (
+          <div className="text-xs text-center py-12" style={{ color: 'var(--muted-foreground)', opacity: 0.5 }}>
+            Grant the request to see revocation.
+          </div>
+        ) : protocol.phase === 'revoked' ? (
+          <div className="flex flex-col items-center gap-3" style={{ maxWidth: '440px', width: '100%' }}>
+            <div
+              className="w-full rounded-xl px-6 py-8 flex flex-col items-center gap-3 text-center"
+              style={{ border: '1px solid var(--border)', backgroundColor: 'var(--card)' }}
+            >
+              <div className="w-8 h-8 rounded-full flex items-center justify-center text-sm" style={{ backgroundColor: 'var(--destructive)', color: 'white' }}>
+                ×
+              </div>
+              <div className="text-sm font-medium">Grant revoked</div>
+              <div className="text-xs" style={{ color: 'var(--muted-foreground)' }}>
+                Access has been revoked. Scroll up to section 6 to see the 403 response.
+              </div>
+            </div>
+            <button
+              className="font-mono text-xs px-0.5"
+              style={{ color: 'var(--muted-foreground)' }}
+              onClick={handleReset}
+            >
+              ↺ reset entire flow
+            </button>
+          </div>
+        ) : (
+          <GrantInspector {...grantProps} onRevoke={handleRevoke} />
+        )}
       </Section>
 
       {/* 9. Export — placeholder for self-export visualization */}
