@@ -45,7 +45,7 @@ export default function DesignSystemPage() {
   };
 
   return (
-    <div className="min-h-screen overflow-x-hidden" style={{ backgroundColor: 'var(--background)', color: 'var(--foreground)' }}>
+    <div className="min-h-screen" style={{ backgroundColor: 'var(--background)', color: 'var(--foreground)' }}>
 
       {/* ── Top nav ── */}
       <header
@@ -153,23 +153,11 @@ export default function DesignSystemPage() {
                 </button>
               ))}
             </nav>
-            <div className="mt-6 pt-5" style={{ borderTop: '1px solid var(--border)' }}>
-              <div className="text-xs font-semibold mb-1 px-2" style={{ color: 'var(--muted-foreground)', letterSpacing: '0.06em' }}>
-                Source
-              </div>
-              <div className="flex flex-col gap-0.5">
-                {['globals.css', 'CONSTITUTION.md', 'button.tsx', 'card.tsx'].map(f => (
-                  <div key={f} className="px-2 py-1 font-mono text-[11px] rounded" style={{ color: 'var(--muted-foreground)', opacity: 0.5 }}>{f}</div>
-                ))}
-              </div>
-            </div>
           </div>
         </aside>
 
-        {/* Content + right TOC */}
-        <div className="flex flex-1 min-w-0">
-            {/* Main content */}
-            <main className="flex-1 min-w-0">
+        {/* Main content */}
+        <main className="flex-1 min-w-0">
               <div className="flex flex-col">
                 <ColorSection />
                 <TypographySection />
@@ -187,39 +175,7 @@ export default function DesignSystemPage() {
                   PDPP Design System · source of truth: globals.css + CONSTITUTION.md
                 </span>
               </div>
-            </main>
-
-            {/* Right TOC */}
-            <div
-              className="hidden xl:flex flex-col w-[180px] shrink-0 sticky top-11 h-[calc(100vh-2.75rem)] overflow-y-auto py-6 px-3"
-              style={{ borderLeft: '1px solid var(--border)' }}
-            >
-          <div
-            className="text-xs font-semibold mb-1 px-2"
-            style={{ color: 'var(--muted-foreground)', letterSpacing: '0.06em' }}
-          >
-            On this page
-          </div>
-          <nav className="flex flex-col gap-0.5">
-            {NAV_SECTIONS.map(({ id, label }) => (
-              <button
-                key={id}
-                onClick={() => scrollTo(id)}
-                className="text-left px-2 py-1 rounded-md cursor-pointer transition-colors"
-                style={{
-                  fontSize: '0.8125rem',
-                  color: active === id ? 'var(--foreground)' : 'var(--muted-foreground)',
-                  fontWeight: active === id ? 500 : 400,
-                  backgroundColor: active === id ? 'var(--muted)' : 'transparent',
-                }}
-              >
-                {label}
-              </button>
-            ))}
-          </nav>
-            </div>
-
-          </div>
+        </main>
 
       </div>
     </div>
@@ -2384,17 +2340,17 @@ function SpecCitation({ section, label, href }: SpecCitationProps) {
 // Spec citation group — multiple citations in a row with separators
 function SpecCitationGroup({ citations }: { citations: SpecCitationProps[] }) {
   return (
-    <div
-      className="flex items-center gap-2 flex-wrap px-3 py-2 rounded-lg"
+    <span
+      className="inline-flex items-baseline gap-2 flex-wrap px-2.5 py-1.5 rounded-md"
       style={{ border: '1px solid var(--border)', backgroundColor: 'var(--card)' }}
     >
       {citations.map((c, i) => (
         <React.Fragment key={c.section}>
-          {i > 0 && <span style={{ color: 'var(--muted-foreground)' }} className="text-xs">&middot;</span>}
+          {i > 0 && <span className="font-mono text-xs" style={{ color: 'var(--muted-foreground)' }}>&middot;</span>}
           <SpecCitation {...c} />
         </React.Fragment>
       ))}
-    </div>
+    </span>
   );
 }
 
