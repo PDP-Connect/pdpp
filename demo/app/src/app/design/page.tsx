@@ -1166,10 +1166,760 @@ function ComponentsSection() {
             </div>
           </div>
         </div>
+
+        {/* Consent Card */}
+        <div>
+          <SubLabel>Consent card — anatomy</SubLabel>
+          <p className="text-xs mb-6 leading-relaxed" style={{ color: 'var(--muted-foreground)', maxWidth: '52ch' }}>
+            The highest-stakes surface in the protocol. A client app is asking the person
+            to share specific streams from their personal server. Both human and protocol
+            signals must be present and legible simultaneously.
+          </p>
+          <ConsentCard {...CONSENT_SPECIMEN} />
+        </div>
+
+        {/* Grant Inspector */}
+        <div>
+          <SubLabel>Grant inspector — anatomy</SubLabel>
+          <p className="text-xs mb-6 leading-relaxed" style={{ color: 'var(--muted-foreground)', maxWidth: '52ch' }}>
+            The receipt of a consent decision. Shows what was authorized, by whom,
+            and the grant's current lifecycle state. Protocol surface — all content
+            is server-authoritative.
+          </p>
+          <GrantInspector {...GRANT_SPECIMEN} onRevoke={() => {}} />
+        </div>
+
+        {/* Stream Inventory */}
+        <div>
+          <SubLabel>Stream inventory</SubLabel>
+          <p className="text-xs mb-6 leading-relaxed" style={{ color: 'var(--muted-foreground)', maxWidth: '52ch' }}>
+            What data your personal server holds. Manifest-derived, showing each
+            connector's streams with record counts and sync status. The foundation
+            users see before any consent decision.
+          </p>
+          <StreamInventory {...INVENTORY_SPECIMEN} />
+        </div>
       </div>
     </SectionWrap>
   );
 }
+
+// ─── Consent Card ─────────────────────────────────────────────────────────────
+
+// Props contract — provenance of each field (see spec §5 Client Display, Client Claims, §7 Stream Display):
+//
+// FROM client_display (entity-scoped, self-asserted):
+//   requester.name, requester.monogram (server may override)
+//
+// FROM client_claims (request-scoped, attributed with disclaimer):
+//   commitments[]
+//
+// FROM purpose_description (request-scoped, first-class field):
+//   purpose
+//
+// FROM manifest display metadata (server-trusted):
+//   streams[].label, streams[].detail
+//
+// FROM server policy / trust registry:
+//   requester.verified
+//
+// Server-derived from grant fields (protocol facts):
+//   accessMode, technical.*, retention display text, access mode display text
+//
+// Server-generated generic copy (v0.1):
+//   optional.consequenceOn/Off
+
+type ConsentCardStream = {
+  key: string;
+  label: string;            // manifest display.label — server-trusted
+  detail: string;           // manifest display.detail — server-trusted
+};
+
+type ConsentCardOptional = {
+  key: string;
+  label: string;            // manifest display.label — server-trusted
+  detail: string;           // manifest display.detail — server-trusted
+  consequenceOn: string;    // server-generated generic copy in v0.1
+  consequenceOff: string;   // server-generated generic copy in v0.1
+};
+
+type ConsentCardProps = {
+  requester: {
+    name: string;           // client_display.name
+    monogram: string;       // server-derived from name, or client-suggested
+    verified: boolean;      // server-determined, never client-asserted
+  };
+  purpose: string;                          // purpose_description — client-authored, first-class
+  commitments: string[];                    // client_claims.commitments — attributed, disclaimed
+  streams: ConsentCardStream[];             // required streams
+  optional?: ConsentCardOptional;           // at most one optional stream (simplification for now)
+  accessMode: 'continuous' | 'single_use';  // grant.access_mode — protocol fact
+  technical: {
+    clientId: string;                       // grant.client.client_id
+    purposeCode: string;                    // grant.purpose_code
+    grantExpires: string;                   // grant.expires_at — server-formatted
+  };
+  onAllow?: () => void;
+  onDeny?: () => void;
+};
+
+function ConsentCard({
+  requester,
+  purpose,
+  commitments,
+  streams,
+  optional,
+  accessMode,
+  technical,
+  onAllow,
+  onDeny,
+}: ConsentCardProps) {
+  const [optionalEnabled, setOptionalEnabled] = React.useState(false);
+  const [decided, setDecided] = React.useState<'approved' | 'denied' | null>(null);
+  const [expanded, setExpanded] = React.useState<Record<string, boolean>>({});
+  const [techExpanded, setTechExpanded] = React.useState(false);
+  const toggleExpand = (key: string) => setExpanded(v => ({ ...v, [key]: !v[key] }));
+
+  const accessLabel = accessMode === 'continuous'
+    ? 'Ongoing access, active until you revoke it. Your server enforces this.'
+    : 'One-time access. Your server will not allow further queries.';
+
+  if (decided) {
+    return (
+      <div style={{ maxWidth: '440px' }}>
+        <div
+          className="rounded-xl px-6 py-8 flex flex-col items-center gap-3 text-center"
+          style={{ border: '1px solid var(--border)', backgroundColor: 'var(--card)' }}
+        >
+          <div
+            className="w-8 h-8 rounded-full flex items-center justify-center text-sm"
+            style={{
+              backgroundColor: decided === 'approved' ? 'var(--success)' : 'var(--muted)',
+              color: decided === 'approved' ? 'white' : 'var(--muted-foreground)',
+            }}
+          >
+            {decided === 'approved' ? '✓' : '×'}
+          </div>
+          <div className="text-sm font-medium">{decided === 'approved' ? 'Access granted' : 'Access denied'}</div>
+          <div className="text-xs" style={{ color: 'var(--muted-foreground)' }}>
+            {decided === 'approved'
+              ? `${requester.name} may now query your personal server. You can revoke this any time from your server dashboard.`
+              : `No grant was issued. ${requester.name} cannot access your data.`}
+          </div>
+        </div>
+        <button
+          className="font-mono text-xs mt-2 px-0.5"
+          style={{ color: 'var(--muted-foreground)' }}
+          onClick={() => setDecided(null)}
+        >
+          ↺ reset
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ maxWidth: '440px' }}>
+      <div data-surface="human" className="rounded-xl overflow-hidden">
+
+        {/* ── Identity + purpose ── */}
+        <div className="px-5 pt-5 pb-4">
+          <div className="flex items-start gap-3">
+            <div
+              className="w-9 h-9 rounded-lg shrink-0 flex items-center justify-center"
+              style={{ backgroundColor: 'var(--human)', color: 'white' }}
+            >
+              <span className="text-xs font-bold font-mono">{requester.monogram}</span>
+            </div>
+            <div className="flex-1 min-w-0 pt-0.5">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-sm font-semibold" style={{ color: 'var(--foreground)' }}>{requester.name}</span>
+                {requester.verified && (
+                  <span
+                    className="font-mono text-xs px-1.5 py-0.5 rounded uppercase tracking-wide"
+                    style={{ backgroundColor: 'oklch(0.52 0.15 150 / 0.1)', color: 'var(--success)' }}
+                  >
+                    verified
+                  </span>
+                )}
+              </div>
+            </div>
+          </div>
+
+          <p className="text-sm leading-relaxed mt-4" style={{ color: 'var(--foreground)' }}>
+            {purpose}
+          </p>
+
+          {/* Client commitments — scannable list, visually attributed */}
+          {commitments.length > 0 && (
+            <div className="mt-3 text-xs leading-relaxed" style={{ color: 'var(--muted-foreground)' }}>
+              <div style={{ color: 'var(--foreground)' }} className="mb-1">{requester.name} says:</div>
+              <div className="flex flex-col gap-0.5 pl-3" style={{ borderLeft: '2px solid oklch(0.52 0.09 45 / 0.35)' }}>
+                {commitments.map(c => <span key={c}>{c}</span>)}
+              </div>
+              <div className="mt-1.5 italic" style={{ opacity: 0.7 }}>
+                These are their commitments, not enforced by your server.
+              </div>
+            </div>
+          )}
+
+          {/* Technical details — pull-to-reveal */}
+          <button
+            className="text-xs mt-3 flex items-center gap-1"
+            style={{ color: 'var(--muted-foreground)' }}
+            onClick={() => setTechExpanded(v => !v)}
+          >
+            <span
+              className="text-xs inline-block"
+              style={{
+                transform: techExpanded ? 'rotate(90deg)' : 'rotate(0deg)',
+                transition: 'transform 150ms',
+              }}
+            >&#x203A;</span>
+            Technical details
+          </button>
+          {techExpanded && (
+            <div className="mt-1.5 border-l-2 pl-3 flex flex-col gap-0.5" style={{ borderColor: 'oklch(0.580 0.172 253.7 / 0.25)' }}>
+              <div className="font-mono text-xs" style={{ color: 'var(--muted-foreground)' }}>
+                <span style={{ opacity: 0.6 }}>Client ID: </span>{technical.clientId}
+              </div>
+              <div className="font-mono text-xs" style={{ color: 'var(--muted-foreground)' }}>
+                <span style={{ opacity: 0.6 }}>Purpose: </span>
+                <span style={{ color: 'var(--edu-fg)' }}>{technical.purposeCode}</span>
+              </div>
+              <div className="font-mono text-xs" style={{ color: 'var(--muted-foreground)' }}>
+                <span style={{ opacity: 0.6 }}>Grant expires: </span>{technical.grantExpires}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* ── Data being shared ── */}
+        <div className="px-5 pb-1" style={{ borderTop: '1px solid var(--border)' }}>
+          {streams.map(({ key, label, detail }) => (
+            <div key={key} style={{ borderBottom: '1px solid var(--border)' }}>
+              <button
+                className="w-full flex items-center justify-between gap-2 py-2.5 text-left"
+                onClick={() => toggleExpand(key)}
+                aria-expanded={!!expanded[key]}
+              >
+                <span className="text-xs font-medium" style={{ color: 'var(--foreground)' }}>{label}</span>
+                <span
+                  className="text-xs shrink-0"
+                  style={{
+                    color: 'var(--muted-foreground)',
+                    display: 'inline-block',
+                    transform: expanded[key] ? 'rotate(90deg)' : 'rotate(0deg)',
+                    transition: 'transform 150ms',
+                  }}
+                >&#x203A;</span>
+              </button>
+              {expanded[key] && (
+                <div className="text-xs pb-2.5 pl-3" style={{ color: 'var(--muted-foreground)' }}>
+                  {detail}
+                </div>
+              )}
+            </div>
+          ))}
+
+          {/* Optional stream — toggle distinguishes it from required */}
+          {optional && (
+            <div style={{ borderBottom: '1px solid var(--border)' }}>
+              <div className="flex items-center gap-3 py-2.5">
+                <button
+                  onClick={() => setOptionalEnabled(v => !v)}
+                  className="w-7 h-4 rounded-full shrink-0 relative"
+                  style={{
+                    backgroundColor: optionalEnabled ? 'var(--primary)' : 'var(--border)',
+                    transition: 'background-color var(--motion-state)',
+                  }}
+                  aria-label={optionalEnabled ? `Disable ${optional.label}` : `Enable ${optional.label}`}
+                >
+                  <span
+                    className="absolute top-0.5 w-3 h-3 rounded-full"
+                    style={{
+                      backgroundColor: 'white',
+                      left: '2px',
+                      transform: optionalEnabled ? 'translateX(12px)' : 'translateX(0)',
+                      transition: 'transform var(--motion-state)',
+                    }}
+                  />
+                </button>
+                <button
+                  className="flex-1 flex items-center justify-between gap-2 text-left min-w-0"
+                  onClick={() => toggleExpand(optional.key)}
+                  aria-expanded={!!expanded[optional.key]}
+                >
+                  <span className="text-xs font-medium" style={{ color: 'var(--foreground)', opacity: optionalEnabled ? 1 : 0.5 }}>
+                    {optional.label}
+                    <span className="font-normal ml-1.5" style={{ color: 'var(--muted-foreground)' }}>optional</span>
+                  </span>
+                  <span
+                    className="text-xs shrink-0"
+                    style={{
+                      color: 'var(--muted-foreground)',
+                      display: 'inline-block',
+                      transform: expanded[optional.key] ? 'rotate(90deg)' : 'rotate(0deg)',
+                      transition: 'transform 150ms',
+                      opacity: optionalEnabled ? 1 : 0.5,
+                    }}
+                  >&#x203A;</span>
+                </button>
+              </div>
+              {expanded[optional.key] && (
+                <div className="text-xs pl-10 mb-2" style={{ color: 'var(--muted-foreground)', opacity: optionalEnabled ? 1 : 0.4 }}>
+                  {optional.detail}
+                </div>
+              )}
+              <div className="text-xs pb-2.5 pl-10" style={{ color: 'var(--muted-foreground)' }}>
+                {optionalEnabled ? optional.consequenceOn : optional.consequenceOff}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* ── Access duration ── */}
+        <div className="px-5 py-3 flex items-start gap-2">
+          <div className="w-1.5 h-1.5 rounded-full shrink-0 mt-1" style={{ backgroundColor: accessMode === 'continuous' ? 'var(--warning)' : 'var(--success)' }} />
+          <div className="text-xs" style={{ color: 'var(--muted-foreground)' }}>
+            {accessLabel}
+          </div>
+        </div>
+
+        {/* ── Actions ── */}
+        <div className="px-5 pt-1 pb-5">
+          <div className="flex items-center gap-3">
+            <Button
+              variant="outline"
+              className="flex-1"
+              style={{ borderColor: 'var(--primary)', color: 'var(--primary)' }}
+              onClick={() => { setDecided('approved'); onAllow?.(); }}
+            >
+              Allow access
+            </Button>
+            <Button
+              variant="outline"
+              className="flex-1"
+              onClick={() => { setDecided('denied'); onDeny?.(); }}
+            >
+              Deny
+            </Button>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  );
+}
+
+// Specimen data — demonstrates the component contract
+const CONSENT_SPECIMEN: ConsentCardProps = {
+  requester: { name: 'Audience Lens', monogram: 'AL', verified: true },
+  purpose: 'Audience Lens is requesting access to your Instagram data for an influencer network study.',
+  commitments: [
+    'Data used only for this study',
+    'Not sold or shared with third parties',
+    'Deleted within 90 days',
+  ],
+  streams: [
+    { key: 'following', label: 'Who you follow', detail: 'Usernames and account IDs of accounts you follow. No DMs, profile details, or follower lists.' },
+    { key: 'posts', label: 'Your posts', detail: 'Post captions, dates, and media types since Dec 31, 2024. No comments, likes, or private messages.' },
+  ],
+  optional: {
+    key: 'ad_targeting',
+    label: 'Ad interest categories',
+    detail: 'Ad categories, sources, and confidence scores. No browsing history or purchase data.',
+    consequenceOn: 'Improves study accuracy. Not required for the grant.',
+    consequenceOff: 'Turned off. The rest of the grant is unaffected.',
+  },
+  accessMode: 'continuous',
+  technical: { clientId: 'audience_lens_v1', purposeCode: 'research', grantExpires: 'Apr 5, 2027' },
+};
+
+// ─── Grant Inspector ─────────────────────────────────────────────────────────
+
+// Props contract — provenance of each field (see spec §6 Grant):
+//
+// ALL fields are protocol facts — the grant is an immutable consent artifact.
+// No client-claimed content appears here; that was resolved at consent time.
+//
+// FROM grant object (server-authoritative):
+//   grantId, issuedAt, status, client.clientId, client.name,
+//   purposeCode, purposeDescription, accessMode, expiresAt,
+//   retention, streams[]
+//
+// FROM manifest display metadata (server-trusted):
+//   streams[].label, streams[].detail
+//
+// FROM server policy:
+//   status (active/expired/revoked) — tracked by AS, not in grant
+
+type GrantStream = {
+  name: string;
+  label: string;              // manifest display.label
+  detail?: string;            // manifest display.detail
+  fields?: string[];          // granted field allowlist, absent = all
+  view?: string;              // informational — which view was selected
+  timeRange?: { since?: string; until?: string };
+};
+
+type GrantInspectorProps = {
+  grantId: string;
+  issuedAt: string;           // human-readable date
+  status: 'active' | 'expired' | 'revoked';
+  client: {
+    clientId: string;
+    name: string;             // from client_display at consent time, or client_id
+  };
+  purposeCode: string;
+  purposeDescription?: string;
+  accessMode: 'continuous' | 'single_use';
+  expiresAt?: string | null;  // human-readable date, null = no expiry
+  retention?: {
+    duration: string;         // human-readable, e.g. "90 days"
+    onExpiry: 'delete' | 'anonymize';
+  };
+  streams: GrantStream[];
+  onRevoke?: () => void;
+};
+
+function GrantInspector({
+  grantId,
+  issuedAt,
+  status,
+  client,
+  purposeCode,
+  purposeDescription,
+  accessMode,
+  expiresAt,
+  retention,
+  streams,
+  onRevoke,
+}: GrantInspectorProps) {
+  const [expanded, setExpanded] = React.useState<Record<string, boolean>>({});
+  const toggleExpand = (key: string) => setExpanded(v => ({ ...v, [key]: !v[key] }));
+  const [revoked, setRevoked] = React.useState(status === 'revoked');
+  const currentStatus = revoked ? 'revoked' : status;
+
+  const statusColor = {
+    active: 'var(--success)',
+    expired: 'var(--muted-foreground)',
+    revoked: 'var(--destructive)',
+  }[currentStatus];
+
+  const statusLabel = {
+    active: accessMode === 'continuous' ? 'Active, ongoing' : 'Active, single use',
+    expired: 'Expired',
+    revoked: 'Revoked',
+  }[currentStatus];
+
+  const accessModeLabel = accessMode === 'continuous'
+    ? 'Continuous access until revoked'
+    : 'Single use, consumed after first query';
+
+  return (
+    <div style={{ maxWidth: '440px' }}>
+      <div data-surface="protocol" className="rounded-xl overflow-hidden">
+
+        {/* ── Header: grant identity + status ── */}
+        <div className="px-5 pt-5 pb-4">
+          <div className="flex items-center justify-between gap-3 mb-3">
+            <div className="flex items-center gap-2">
+              <div className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: statusColor }} />
+              <span className="text-xs font-medium" style={{ color: statusColor }}>{statusLabel}</span>
+            </div>
+            <span className="font-mono text-xs" style={{ color: 'var(--muted-foreground)' }}>{grantId}</span>
+          </div>
+
+          {/* Client + purpose */}
+          <div className="text-sm font-medium mb-1" style={{ color: 'var(--foreground)' }}>
+            {client.name}
+          </div>
+          {purposeDescription && (
+            <div className="text-xs mb-3" style={{ color: 'var(--muted-foreground)' }}>
+              {purposeDescription}
+            </div>
+          )}
+
+          {/* Key terms grid */}
+          <div className="grid grid-cols-2 gap-x-4 gap-y-2 mt-3">
+            <div>
+              <div className="text-xs mb-0.5" style={{ color: 'var(--muted-foreground)', opacity: 0.6 }}>Issued</div>
+              <div className="font-mono text-xs" style={{ color: 'var(--muted-foreground)' }}>{issuedAt}</div>
+            </div>
+            <div>
+              <div className="text-xs mb-0.5" style={{ color: 'var(--muted-foreground)', opacity: 0.6 }}>Expires</div>
+              <div className="font-mono text-xs" style={{ color: 'var(--muted-foreground)' }}>{expiresAt ?? 'Never'}</div>
+            </div>
+            <div>
+              <div className="text-xs mb-0.5" style={{ color: 'var(--muted-foreground)', opacity: 0.6 }}>Access</div>
+              <div className="text-xs" style={{ color: 'var(--muted-foreground)' }}>{accessModeLabel}</div>
+            </div>
+            {retention && (
+              <div>
+                <div className="text-xs mb-0.5" style={{ color: 'var(--muted-foreground)', opacity: 0.6 }}>Retention</div>
+                <div className="text-xs" style={{ color: 'var(--muted-foreground)' }}>
+                  {retention.onExpiry === 'delete' ? 'Deleted' : 'Anonymized'} after {retention.duration}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Purpose code — technical */}
+          <div className="font-mono text-xs mt-3" style={{ color: 'var(--muted-foreground)', opacity: 0.6 }}>
+            purpose: <span style={{ color: 'var(--edu-fg)', opacity: 1 }}>{purposeCode}</span>
+          </div>
+        </div>
+
+        {/* ── Granted streams ── */}
+        <div className="px-5 pb-1" style={{ borderTop: '1px solid var(--border)' }}>
+          {streams.map(({ name, label, detail, fields, view, timeRange }) => (
+            <div key={name} style={{ borderBottom: '1px solid var(--border)' }}>
+              <button
+                className="w-full flex items-center justify-between gap-2 py-2.5 text-left"
+                onClick={() => toggleExpand(name)}
+                aria-expanded={!!expanded[name]}
+              >
+                <span className="text-xs font-medium" style={{ color: 'var(--foreground)' }}>{label}</span>
+                <span
+                  className="text-xs shrink-0"
+                  style={{
+                    color: 'var(--muted-foreground)',
+                    display: 'inline-block',
+                    transform: expanded[name] ? 'rotate(90deg)' : 'rotate(0deg)',
+                    transition: 'transform 150ms',
+                  }}
+                >&#x203A;</span>
+              </button>
+              {expanded[name] && (
+                <div className="pb-2.5 pl-3 border-l-2 flex flex-col gap-1" style={{ borderColor: 'oklch(0.580 0.172 253.7 / 0.25)' }}>
+                  {detail && (
+                    <div className="text-xs" style={{ color: 'var(--muted-foreground)' }}>{detail}</div>
+                  )}
+                  {view && (
+                    <div className="font-mono text-xs" style={{ color: 'var(--muted-foreground)' }}>
+                      <span style={{ opacity: 0.6 }}>View: </span>
+                      <span className="px-1 py-px rounded" style={{ backgroundColor: 'var(--muted)' }}>{view}</span>
+                    </div>
+                  )}
+                  {fields && (
+                    <div className="font-mono text-xs" style={{ color: 'var(--muted-foreground)' }}>
+                      <span style={{ opacity: 0.6 }}>Fields: </span>{fields.join(', ')}
+                    </div>
+                  )}
+                  {timeRange?.since && (
+                    <div className="font-mono text-xs" style={{ color: 'var(--muted-foreground)' }}>
+                      <span style={{ opacity: 0.6 }}>Since: </span>{timeRange.since}
+                    </div>
+                  )}
+                  {!fields && !view && (
+                    <div className="font-mono text-xs" style={{ color: 'var(--muted-foreground)', opacity: 0.6 }}>
+                      All fields authorized
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+
+        {/* ── Revoke action ── */}
+        {currentStatus === 'active' && onRevoke && (
+          <div className="px-5 py-4">
+            <Button
+              variant="outline"
+              className="w-full"
+              style={{ borderColor: 'var(--destructive)', color: 'var(--destructive)' }}
+              onClick={() => { setRevoked(true); onRevoke(); }}
+            >
+              Revoke access
+            </Button>
+          </div>
+        )}
+
+        {currentStatus !== 'active' && (
+          <div className="px-5 py-3 text-xs text-center" style={{ color: 'var(--muted-foreground)' }}>
+            {currentStatus === 'revoked'
+              ? 'Access has been revoked. No further queries will be served.'
+              : 'This grant has expired. No further queries will be served.'}
+          </div>
+        )}
+
+      </div>
+      {revoked && status !== 'revoked' && (
+        <button
+          className="font-mono text-xs mt-2 px-0.5"
+          style={{ color: 'var(--muted-foreground)' }}
+          onClick={() => setRevoked(false)}
+        >
+          ↺ reset
+        </button>
+      )}
+    </div>
+  );
+}
+
+// Specimen data — demonstrates the grant inspector contract
+const GRANT_SPECIMEN: GrantInspectorProps = {
+  grantId: 'grt_8f3a2b1c',
+  issuedAt: 'Apr 6, 2026',
+  status: 'active',
+  client: { clientId: 'audience_lens_v1', name: 'Audience Lens' },
+  purposeCode: 'research',
+  purposeDescription: 'Influencer network study',
+  accessMode: 'continuous',
+  expiresAt: 'Apr 5, 2027',
+  retention: { duration: '90 days', onExpiry: 'delete' },
+  streams: [
+    {
+      name: 'following_accounts',
+      label: 'Who you follow',
+      detail: 'Usernames and account IDs of accounts you follow. No DMs, profile details, or follower lists.',
+      view: 'social_graph',
+      fields: ['id', 'username'],
+    },
+    {
+      name: 'posts',
+      label: 'Your posts',
+      detail: 'Post captions, dates, and media types since Dec 31, 2024. No comments, likes, or private messages.',
+      view: 'summary',
+      fields: ['id', 'caption', 'taken_at', 'media_type'],
+      timeRange: { since: 'Dec 31, 2024' },
+    },
+  ],
+};
+
+// ─── Stream Inventory ────────────────────────────────────────────────────────
+
+// Props contract — all fields are server-authoritative:
+//
+// FROM connector manifest (server-trusted):
+//   connectorName, streams[].name, streams[].label, streams[].detail,
+//   streams[].semantics
+//
+// FROM resource server (runtime state):
+//   streams[].recordCount, streams[].lastSynced
+
+type InventoryStream = {
+  name: string;
+  label: string;              // manifest display.label
+  detail?: string;            // manifest display.detail
+  semantics: 'append_only' | 'mutable_state';
+  recordCount: number;
+  lastSynced?: string;        // human-readable date, absent if never synced
+};
+
+type StreamInventoryProps = {
+  connectorName: string;
+  connectorVersion: string;
+  streams: InventoryStream[];
+};
+
+function StreamInventory({ connectorName, connectorVersion, streams }: StreamInventoryProps) {
+  const [expanded, setExpanded] = React.useState<Record<string, boolean>>({});
+  const toggleExpand = (key: string) => setExpanded(v => ({ ...v, [key]: !v[key] }));
+
+  const totalRecords = streams.reduce((sum, s) => sum + s.recordCount, 0);
+
+  return (
+    <div style={{ maxWidth: '440px' }}>
+      <div data-surface="protocol" className="rounded-xl overflow-hidden">
+
+        {/* ── Header ── */}
+        <div className="px-5 pt-5 pb-4">
+          <div className="flex items-center justify-between gap-3 mb-1">
+            <span className="text-sm font-medium" style={{ color: 'var(--foreground)' }}>{connectorName}</span>
+            <span className="font-mono text-xs" style={{ color: 'var(--muted-foreground)' }}>v{connectorVersion}</span>
+          </div>
+          <div className="text-xs" style={{ color: 'var(--muted-foreground)' }}>
+            {streams.length} stream{streams.length !== 1 ? 's' : ''}, {totalRecords.toLocaleString()} record{totalRecords !== 1 ? 's' : ''}
+          </div>
+        </div>
+
+        {/* ── Stream rows ── */}
+        <div className="px-5 pb-2" style={{ borderTop: '1px solid var(--border)' }}>
+          {streams.map(({ name, label, detail, semantics, recordCount, lastSynced }) => (
+            <div key={name} style={{ borderBottom: '1px solid var(--border)' }}>
+              <button
+                className="w-full flex items-center justify-between gap-2 py-2.5 text-left"
+                onClick={() => toggleExpand(name)}
+                aria-expanded={!!expanded[name]}
+              >
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className="text-xs font-medium" style={{ color: 'var(--foreground)' }}>{label}</span>
+                  <span className="font-mono text-xs" style={{ color: 'var(--muted-foreground)' }}>
+                    {recordCount.toLocaleString()}
+                  </span>
+                </div>
+                <span
+                  className="text-xs shrink-0"
+                  style={{
+                    color: 'var(--muted-foreground)',
+                    display: 'inline-block',
+                    transform: expanded[name] ? 'rotate(90deg)' : 'rotate(0deg)',
+                    transition: 'transform 150ms',
+                  }}
+                >&#x203A;</span>
+              </button>
+              {expanded[name] && (
+                <div className="pb-2.5 pl-3 border-l-2 flex flex-col gap-1" style={{ borderColor: 'oklch(0.580 0.172 253.7 / 0.25)' }}>
+                  {detail && (
+                    <div className="text-xs" style={{ color: 'var(--muted-foreground)' }}>{detail}</div>
+                  )}
+                  <div className="flex items-center gap-3 font-mono text-xs" style={{ color: 'var(--muted-foreground)' }}>
+                    <span>
+                      <span style={{ opacity: 0.6 }}>stream: </span>{name}
+                    </span>
+                    <span className="px-1 py-px rounded" style={{ backgroundColor: 'var(--muted)' }}>
+                      {semantics === 'append_only' ? 'append only' : 'mutable state'}
+                    </span>
+                  </div>
+                  {lastSynced && (
+                    <div className="font-mono text-xs" style={{ color: 'var(--muted-foreground)' }}>
+                      <span style={{ opacity: 0.6 }}>last synced: </span>{lastSynced}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+
+      </div>
+    </div>
+  );
+}
+
+const INVENTORY_SPECIMEN: StreamInventoryProps = {
+  connectorName: 'Instagram',
+  connectorVersion: '1.2.0',
+  streams: [
+    {
+      name: 'following_accounts',
+      label: 'Who you follow',
+      detail: 'Usernames and account IDs of accounts you follow. No DMs, profile details, or follower lists.',
+      semantics: 'mutable_state',
+      recordCount: 106,
+      lastSynced: 'Apr 6, 2026',
+    },
+    {
+      name: 'posts',
+      label: 'Your posts',
+      detail: 'Post captions, dates, and media types. No comments, likes, or private messages.',
+      semantics: 'append_only',
+      recordCount: 22,
+      lastSynced: 'Apr 6, 2026',
+    },
+    {
+      name: 'ad_targeting',
+      label: 'Ad interest categories',
+      detail: 'Ad categories, sources, and confidence scores. No browsing history or purchase data.',
+      semantics: 'mutable_state',
+      recordCount: 47,
+      lastSynced: 'Apr 6, 2026',
+    },
+  ],
+};
 
 // ─── 08 Status ───────────────────────────────────────────────────────────────
 

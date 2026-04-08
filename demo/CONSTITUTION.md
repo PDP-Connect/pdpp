@@ -84,6 +84,18 @@ The consent card is the highest-stakes moment of duality: the person (warm) is b
 - `data-surface="human"` — identity, ownership, consent; warm copper left border + gradient wash
 - `data-surface="protocol"` — machine-generated values, grants, stream names; cool blue, mono-dominant
 
+### Protocol rows within human surfaces
+Protocol data (stream names, field chips, view badges, access_mode values) often appears inside a human surface. Do not nest `data-surface="protocol"` inside `data-surface="human"` — competing temperature signals fight each other. Instead, apply the protocol-row pattern directly via Tailwind utilities: `border-l-2 border-primary/20 pl-3 font-mono`. This gives protocol data a distinct but subordinate identity without overriding the parent human context.
+
+### Copy register
+**Human surfaces are written from the person's perspective.**
+
+- Use second person: "You're sharing", "You can revoke", "Active until you revoke it"
+- Protocol terms are labels on data, never grammatical subjects: ✓ "Active until you revoke it" · ✗ "Continuous access is granted"
+- Affirmative actions name what the person is doing: "Allow access", "Revoke", not "Submit", "Confirm", "OK"
+- Benefit framing over capability framing: "So your account can be included in research" only works if there's a genuine user benefit; if the user is donating data, say so honestly — "Contribute your data to X" — rather than dressing it as a user gain
+- The Allow button uses `--primary` (blue). The decision is human; the execution is a system action. Blue is the established affordance for primary affirmative CTAs. The copper left border already carries the human signal on the card.
+
 ### Semantic attributes
 Follow the shadcn pattern: `data-[attribute=value]` on elements, CSS derives visual from semantic state.
 

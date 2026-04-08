@@ -29,6 +29,7 @@ Collection of data from source platforms is a separate concern addressed in the 
 | RFC 9396 (RAR) | PDPP uses the `authorization_details` envelope for selection requests. The `type` URI is `https://pdpp.org/data-access`. |
 | Airbyte / Singer | PDPP borrows the RECORD/STATE checkpoint pattern for incremental sync (see Collection Profile). |
 | Data Transfer Project (DTI) | PDPP and DTI are complementary: PDPP handles consent and disclosure semantics; DTI handles transfer mechanics. The two protocols can chain. See Appendix B. |
+| GNAP (RFC 9635) | GNAP is the IETF's ground-up rethink of OAuth. Several design decisions are directly relevant to PDPP: (1) inline client display metadata in the grant request, eliminating the need for a separate registration spec; (2) interaction modes beyond browser redirects (relevant to PDPP's session relay flow); (3) request continuation for multi-step consent negotiation (relevant to optional streams); (4) key-bound grants instead of bearer tokens (stronger security for ongoing personal data access); (5) built-in grant management with revocation and rotation (relevant to `continuous` access mode). PDPP v0.1 uses OAuth 2.0 + RFC 9396, but a future version should evaluate whether GNAP is a better foundation. TODO for v0.2. |
 | GDPR / DMA | PDPP implements data minimization (field and stream selection) and purpose limitation (`purpose_code`). The `continuous` access mode enables ongoing portability aligned with the DMA's requirements. The internal version history required for incremental sync may support implementations that choose to expose historical access features to users. Whether such exposure is required is outside the scope of this specification. This alignment is informative only and is not a required v0.1 capability. |
 
 **Note:** The PDPP Collection Profile is one fulfillment mechanism. A conformance test suite for this specification is planned but is not defined in v0.1 (see Section 11).
@@ -312,6 +313,11 @@ A client requests specific personal data by including `authorization_details` in
   "client_id": "music_recommendations",
   "redirect_uri": "https://app.example.com/callback",
   "scope": "openid",
+  "client_display": {
+    "name": "Concert Finder",
+    "uri": "https://concertfinder.example.com",
+    "logo_uri": "https://concertfinder.example.com/logo.png"
+  },
   "authorization_details": [
     {
       "type": "https://pdpp.org/data-access",
@@ -329,11 +335,47 @@ A client requests specific personal data by including `authorization_details` in
           "name": "saved_tracks",
           "necessity": "optional"
         }
-      ]
+      ],
+      "client_claims": {
+        "commitments": ["Data used only for concert recommendations"]
+      }
     }
   ]
 }
 ```
+
+### Client display metadata {#client-display}
+
+The top-level `client_display` object carries self-asserted identity metadata for the requesting application. This follows the pattern established by GNAP (RFC 9635), which bundles client display metadata inline rather than requiring a separate registration step.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `client_display.name` | string | yes | Human-readable application name. |
+| `client_display.uri` | URI | no | The client's homepage. |
+| `client_display.logo_uri` | URI | no | URL to a square image representing the client. |
+
+`client_display` is entity-scoped: it describes the client, not a specific authorization request. It appears at the top level of the authorization request, outside `authorization_details`.
+
+**Server rendering obligations:**
+
+1. The AS MUST display `client_display.name` to the user during consent.
+2. If the server has a positive trust signal for the client (e.g., domain verification, trust registry membership), it MUST render that status distinctly (e.g., a "verified" badge). If it has no positive trust signal, it MUST treat the client as unverified and SHOULD display an "unverified app" indicator.
+3. The AS MUST treat `logo_uri` as untrusted content. It MUST NOT fetch and render a client-supplied remote logo in the consent UI unless the client is verified or the asset has been proxied, cached, and approved under local policy. For unverified clients, the AS SHOULD generate a monogram from `client_display.name`.
+4. If `client_display` is absent, the AS MUST display the `client_id` as the requester identity. The consent UI SHOULD clearly indicate that the client has not provided display metadata.
+
+### Client claims {#client-claims}
+
+The optional `client_claims` object within each `authorization_details` entry carries client-authored, non-enforceable statements about the specific authorization being requested. These are request-scoped, not entity-scoped: a client may make different commitments for different authorization requests.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `client_claims.commitments` | string[] | no | Free-text policy commitments relevant to this request (e.g., "Data used only for this study"). |
+
+**Trust boundary:** Client claims are self-asserted and unverifiable by the server. The AS MUST render `client_claims` content separately from protocol-enforced grant terms and MUST attribute it to the client (e.g., "[client name] says:"). The AS MUST NOT render client claims in the same visual register as server-derived facts (access mode, retention, stream descriptions).
+
+**Relationship to `purpose_description`:** `purpose_description` is a first-class request field describing what the authorization is for. It is part of the authorization semantics the user reviews. `client_claims.commitments` are supplementary promises that are not reducible to structured protocol fields. Both are client-authored, but `purpose_description` is the primary purpose statement while `commitments` are additional assurances.
+
+**Commitments that ARE machine-readable:** Structured grant fields (e.g., `retention.max_duration`, `access_mode`) SHOULD be rendered by the AS as server-generated display text (e.g., "Deleted within 90 days", "Ongoing access until you revoke it"). Clients SHOULD NOT duplicate machine-readable constraints as free-text commitments. If a commitment duplicates a structured field, the structured field is authoritative.
 
 ### Request-level parameters
 
@@ -346,6 +388,7 @@ A client requests specific personal data by including `authorization_details` in
 | `retention` | object | no | Requested retention constraints: `{ max_duration, on_expiry }`. |
 | `streams` | StreamRequest[] | yes (unless `profile` is used) | Requested streams with per-stream parameters. |
 | `profile` | string | no | Reference to a manifest-defined profile (alternative to explicit streams). |
+| `client_claims` | object | no | Client-authored, non-enforceable claims about this request. See [Client claims](#client-claims). |
 
 #### AI training consent {#ai-training-consent}
 
@@ -624,6 +667,10 @@ Each connector publishes a manifest declaring its consent surface: what streams 
     {
       "name": "top_artists",
       "description": "Most-listened artists over time",
+      "display": {
+        "label": "Your top artists",
+        "detail": "Artist names, genres, and popularity scores. No listening timestamps or play counts."
+      },
       "semantics": "mutable_state",
       "schema": {
         "type": "object",
@@ -691,6 +738,7 @@ Each connector publishes a manifest declaring its consent surface: what streams 
 | `display_name` | Human-readable name for display in consent UIs. |
 | `profiles` | Optional preset selections. The authorization server expands profiles into explicit stream lists before issuing grants. |
 | `streams[].name` | Stream name, connector-local. |
+| `streams[].display` | Optional consent-surface metadata. See [Stream display metadata](#stream-display). |
 | `streams[].semantics` | `append_only` or `mutable_state`. |
 | `streams[].schema` | JSON Schema for the record's `data` field. `primary_key` and `cursor_field` must reference fields declared here. |
 | `streams[].primary_key` | Fields that uniquely identify a record within the stream. |
@@ -699,6 +747,30 @@ Each connector publishes a manifest declaring its consent surface: what streams 
 | `streams[].selection` | Which selection parameters this stream supports (`fields`, `resources`). Time-range capability is derived from `consent_time_field` presence; absent means not time-range-capable. The AS MUST reject grants that request `time_range` on a stream without a `consent_time_field`, or that request an unsupported selection parameter. |
 | `streams[].views` | Named field projections the connector author suggests. Advisory; the AS is authoritative. Each view has `id`, `label`, and `fields` (top-level field names only). |
 | `streams[].relationships` | Declared foreign key relationships to other streams. Used for expansion in the query API. |
+
+### Stream display metadata {#stream-display}
+
+Streams MAY include a `display` object with human-readable metadata for the consent UI. This metadata is authored by the connector maintainer (not the requesting client) and is trusted by the authorization server.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `display.label` | string | Short human-readable name shown in the consent card (e.g., "Who you follow"). If absent, the AS SHOULD display `streams[].description` or fall back to the stream name. |
+| `display.detail` | string | Consent-oriented description of what data is included and, where relevant, what is excluded (e.g., "Usernames and account IDs of accounts you follow. No DMs, profile details, or follower lists."). If absent, the AS MAY generate a description from the stream schema, or display no detail. |
+
+**Authorship principle:** `display.label` and `display.detail` describe the data itself, not the requester's purpose. They are authored by the connector maintainer (who understands the source data) and curated through the connector registry. The requesting client MUST NOT be able to override or supplement these descriptions in the selection request. This separation ensures that the consent UI's data descriptions are trustworthy regardless of the client's intentions.
+
+```json
+{
+  "name": "following_accounts",
+  "description": "Accounts the user follows",
+  "display": {
+    "label": "Who you follow",
+    "detail": "Usernames and account IDs of accounts you follow. No DMs, profile details, or follower lists."
+  },
+  "semantics": "mutable_state",
+  "schema": { "..." : "..." }
+}
+```
 
 ### consent_time_field
 

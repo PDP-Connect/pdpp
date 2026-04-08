@@ -4,7 +4,7 @@ export default defineConfig({
   title: 'PDPP',
   description: 'Personal Data Portability Protocol',
   cleanUrls: true,
-  srcExclude: ['local/**'],
+  srcExclude: ['local/**', 'docs/**'],
 
   themeConfig: {
     nav: [
