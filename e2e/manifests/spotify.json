@@ -1,0 +1,128 @@
+{
+  "protocol_version": "0.1.0",
+  "connector_id": "https://registry.pdpp.org/connectors/spotify",
+  "version": "1.0.0",
+  "display_name": "Spotify",
+  "runtime_requirements": {
+    "bindings": {
+      "network": { "required": true }
+    }
+  },
+  "capabilities": {
+    "human_interaction": ["credentials"]
+  },
+  "streams": [
+    {
+      "name": "top_artists",
+      "description": "Your most-listened artists",
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "name": { "type": "string" },
+          "genres": { "type": "array", "items": { "type": "string" } },
+          "popularity": { "type": "integer" },
+          "followers": { "type": "integer" },
+          "image_url": { "type": "string" },
+          "source_updated_at": { "type": "string", "format": "date-time" }
+        },
+        "required": ["id", "name"]
+      },
+      "primary_key": ["id"],
+      "cursor_field": "source_updated_at",
+      "consent_time_field": "source_updated_at",
+      "selection": { "fields": true, "resources": true },
+      "views": [
+        {
+          "id": "basic",
+          "label": "Artist names and genres only",
+          "fields": ["id", "name", "genres"]
+        },
+        {
+          "id": "full",
+          "label": "Full artist data",
+          "fields": ["id", "name", "genres", "popularity", "followers", "image_url", "source_updated_at"]
+        }
+      ],
+      "incremental": true
+    },
+    {
+      "name": "saved_tracks",
+      "description": "Your saved/liked songs",
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "name": { "type": "string" },
+          "artist_ids": { "type": "array", "items": { "type": "string" } },
+          "artist_names": { "type": "array", "items": { "type": "string" } },
+          "album_name": { "type": "string" },
+          "duration_ms": { "type": "integer" },
+          "popularity": { "type": "integer" },
+          "saved_at": { "type": "string", "format": "date-time" },
+          "source_created_at": { "type": "string", "format": "date-time" }
+        },
+        "required": ["id", "name"]
+      },
+      "primary_key": ["id"],
+      "cursor_field": "saved_at",
+      "consent_time_field": "saved_at",
+      "selection": { "fields": true, "resources": true },
+      "views": [
+        {
+          "id": "basic",
+          "label": "Track names and artists",
+          "fields": ["id", "name", "artist_names", "album_name"]
+        },
+        {
+          "id": "full",
+          "label": "Full track data",
+          "fields": ["id", "name", "artist_ids", "artist_names", "album_name", "duration_ms", "popularity", "saved_at", "source_created_at"]
+        }
+      ],
+      "incremental": true
+    },
+    {
+      "name": "recently_played",
+      "description": "Your recent listening history (last 50 tracks)",
+      "semantics": "append_only",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "track_id": { "type": "string" },
+          "track_name": { "type": "string" },
+          "artist_names": { "type": "array", "items": { "type": "string" } },
+          "played_at": { "type": "string", "format": "date-time" },
+          "duration_ms": { "type": "integer" },
+          "context_type": { "type": "string" }
+        },
+        "required": ["id", "track_id", "played_at"]
+      },
+      "primary_key": ["id"],
+      "cursor_field": "played_at",
+      "consent_time_field": "played_at",
+      "selection": { "fields": true, "resources": false },
+      "views": [
+        {
+          "id": "basic",
+          "label": "Track names and play times",
+          "fields": ["id", "track_name", "artist_names", "played_at"]
+        }
+      ],
+      "incremental": false
+    }
+  ],
+  "profiles": [
+    {
+      "id": "listening_summary",
+      "label": "Listening history summary",
+      "streams": [
+        { "name": "top_artists", "view": "basic" },
+        { "name": "saved_tracks", "view": "basic" }
+      ]
+    }
+  ]
+}

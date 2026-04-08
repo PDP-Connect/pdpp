@@ -1,0 +1,14 @@
+{
+  "name": "pdpp-e2e",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "server": "node server/index.js",
+    "demo": "node client/demo.js",
+    "seed": "node client/demo.js --connector seed"
+  },
+  "dependencies": {
+    "@databases/sqlite": "^4.0.1",
+    "express": "^4.18.3"
+  }
+}

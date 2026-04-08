@@ -1,0 +1,130 @@
+{
+  "protocol_version": "0.1.0",
+  "connector_id": "https://registry.pdpp.org/connectors/github",
+  "version": "1.0.0",
+  "display_name": "GitHub",
+  "runtime_requirements": {
+    "bindings": {
+      "network": { "required": true }
+    }
+  },
+  "capabilities": {
+    "human_interaction": ["credentials"]
+  },
+  "streams": [
+    {
+      "name": "repositories",
+      "description": "Your GitHub repositories",
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "name": { "type": "string" },
+          "full_name": { "type": "string" },
+          "description": { "type": "string" },
+          "language": { "type": "string" },
+          "stargazers_count": { "type": "integer" },
+          "forks_count": { "type": "integer" },
+          "is_private": { "type": "boolean" },
+          "is_fork": { "type": "boolean" },
+          "topics": { "type": "array", "items": { "type": "string" } },
+          "source_created_at": { "type": "string", "format": "date-time" },
+          "source_updated_at": { "type": "string", "format": "date-time" }
+        },
+        "required": ["id", "name", "full_name"]
+      },
+      "primary_key": ["id"],
+      "cursor_field": "source_updated_at",
+      "consent_time_field": "source_created_at",
+      "selection": { "fields": true, "resources": true },
+      "views": [
+        {
+          "id": "basic",
+          "label": "Repository names and languages",
+          "fields": ["id", "name", "full_name", "description", "language", "is_private"]
+        },
+        {
+          "id": "stats",
+          "label": "Repository stats",
+          "fields": ["id", "name", "full_name", "language", "stargazers_count", "forks_count", "topics", "source_created_at"]
+        }
+      ],
+      "incremental": true
+    },
+    {
+      "name": "commits",
+      "description": "Your commit history across repositories",
+      "semantics": "append_only",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "repo_full_name": { "type": "string" },
+          "sha": { "type": "string" },
+          "message": { "type": "string" },
+          "additions": { "type": "integer" },
+          "deletions": { "type": "integer" },
+          "source_created_at": { "type": "string", "format": "date-time" }
+        },
+        "required": ["id", "sha", "repo_full_name"]
+      },
+      "primary_key": ["id"],
+      "cursor_field": "source_created_at",
+      "consent_time_field": "source_created_at",
+      "selection": { "fields": true, "resources": false },
+      "views": [
+        {
+          "id": "basic",
+          "label": "Commit messages and dates",
+          "fields": ["id", "repo_full_name", "message", "source_created_at"]
+        },
+        {
+          "id": "stats",
+          "label": "Commit stats",
+          "fields": ["id", "repo_full_name", "sha", "message", "additions", "deletions", "source_created_at"]
+        }
+      ],
+      "incremental": true
+    },
+    {
+      "name": "starred_repos",
+      "description": "Repositories you have starred",
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "full_name": { "type": "string" },
+          "description": { "type": "string" },
+          "language": { "type": "string" },
+          "stargazers_count": { "type": "integer" },
+          "starred_at": { "type": "string", "format": "date-time" }
+        },
+        "required": ["id", "full_name"]
+      },
+      "primary_key": ["id"],
+      "cursor_field": "starred_at",
+      "consent_time_field": "starred_at",
+      "selection": { "fields": true, "resources": false },
+      "views": [
+        {
+          "id": "basic",
+          "label": "Starred repo names",
+          "fields": ["id", "full_name", "description", "language"]
+        }
+      ],
+      "incremental": false
+    }
+  ],
+  "profiles": [
+    {
+      "id": "developer_profile",
+      "label": "Developer activity summary",
+      "streams": [
+        { "name": "repositories", "view": "basic" },
+        { "name": "commits", "view": "basic" }
+      ]
+    }
+  ]
+}

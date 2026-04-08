@@ -1,0 +1,128 @@
+{
+  "protocol_version": "0.1.0",
+  "connector_id": "https://registry.pdpp.org/connectors/reddit",
+  "version": "1.0.0",
+  "display_name": "Reddit",
+  "runtime_requirements": {
+    "bindings": {
+      "network": { "required": true }
+    }
+  },
+  "capabilities": {
+    "human_interaction": ["credentials"]
+  },
+  "streams": [
+    {
+      "name": "posts",
+      "description": "Your Reddit posts and submissions",
+      "semantics": "append_only",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "title": { "type": "string" },
+          "subreddit": { "type": "string" },
+          "selftext": { "type": "string" },
+          "url": { "type": "string" },
+          "score": { "type": "integer" },
+          "upvote_ratio": { "type": "number" },
+          "num_comments": { "type": "integer" },
+          "is_self": { "type": "boolean" },
+          "source_created_at": { "type": "string", "format": "date-time" }
+        },
+        "required": ["id", "title", "subreddit"]
+      },
+      "primary_key": ["id"],
+      "cursor_field": "source_created_at",
+      "consent_time_field": "source_created_at",
+      "selection": { "fields": true, "resources": false },
+      "views": [
+        {
+          "id": "basic",
+          "label": "Post titles and subreddits",
+          "fields": ["id", "title", "subreddit", "source_created_at"]
+        },
+        {
+          "id": "full",
+          "label": "Full post data",
+          "fields": ["id", "title", "subreddit", "selftext", "url", "score", "upvote_ratio", "num_comments", "is_self", "source_created_at"]
+        }
+      ],
+      "incremental": true
+    },
+    {
+      "name": "comments",
+      "description": "Your Reddit comments",
+      "semantics": "append_only",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "post_id": { "type": "string" },
+          "subreddit": { "type": "string" },
+          "body": { "type": "string" },
+          "score": { "type": "integer" },
+          "post_title": { "type": "string" },
+          "source_created_at": { "type": "string", "format": "date-time" }
+        },
+        "required": ["id", "subreddit", "body"]
+      },
+      "primary_key": ["id"],
+      "cursor_field": "source_created_at",
+      "consent_time_field": "source_created_at",
+      "selection": { "fields": true, "resources": false },
+      "views": [
+        {
+          "id": "basic",
+          "label": "Comment text and subreddit",
+          "fields": ["id", "subreddit", "body", "source_created_at"]
+        },
+        {
+          "id": "full",
+          "label": "Full comment data",
+          "fields": ["id", "post_id", "subreddit", "body", "score", "post_title", "source_created_at"]
+        }
+      ],
+      "incremental": true
+    },
+    {
+      "name": "saved",
+      "description": "Your saved posts and comments",
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "kind": { "type": "string" },
+          "title": { "type": "string" },
+          "subreddit": { "type": "string" },
+          "url": { "type": "string" },
+          "source_created_at": { "type": "string", "format": "date-time" }
+        },
+        "required": ["id", "kind", "subreddit"]
+      },
+      "primary_key": ["id"],
+      "cursor_field": "source_created_at",
+      "consent_time_field": "source_created_at",
+      "selection": { "fields": true, "resources": false },
+      "views": [
+        {
+          "id": "basic",
+          "label": "Saved item titles",
+          "fields": ["id", "kind", "title", "subreddit"]
+        }
+      ],
+      "incremental": false
+    }
+  ],
+  "profiles": [
+    {
+      "id": "activity_summary",
+      "label": "Reddit activity summary",
+      "streams": [
+        { "name": "posts", "view": "basic" },
+        { "name": "comments", "view": "basic" }
+      ]
+    }
+  ]
+}

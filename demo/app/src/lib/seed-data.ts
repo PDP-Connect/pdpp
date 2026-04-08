@@ -1,0 +1,215 @@
+/**
+ * Realistic seed data for the PDPP demo personal server.
+ * Represents a user (instagram_demo_user / dondochaka) whose personal server
+ * already has data before the demo starts — showing that the personal server
+ * is a persistent store, not an on-demand scraper.
+ */
+
+export interface SeedAccount {
+  id: string;
+  username: string;
+  full_name: string;
+  is_verified: boolean;
+}
+
+export interface SeedPost {
+  id: string;
+  shortcode: string;
+  caption: string;
+  like_count: number;
+  comment_count: number;
+  taken_at: string;
+  media_type: 'IMAGE' | 'VIDEO' | 'CAROUSEL_ALBUM';
+}
+
+export interface SeedAdTargeting {
+  record_id: string;
+  topics: string[];
+  advertisers: string[];
+  categories: string[];
+}
+
+// ~106 realistic following accounts — mix of creators, brands, personal contacts
+export const SEED_FOLLOWING: SeedAccount[] = [
+  { id: '25025320',    username: 'natgeo',             full_name: 'National Geographic',        is_verified: true  },
+  { id: '9527',        username: 'instagram',          full_name: 'Instagram',                  is_verified: true  },
+  { id: '3',           username: 'kevin',              full_name: 'Kevin Systrom',              is_verified: true  },
+  { id: '302577',      username: 'taylorswift',        full_name: 'Taylor Swift',               is_verified: true  },
+  { id: '12281',       username: 'snoopdogg',          full_name: 'Snoop Dogg',                 is_verified: true  },
+  { id: '200428992',   username: 'nasa',               full_name: 'NASA',                       is_verified: true  },
+  { id: '167009509',   username: 'nytimes',            full_name: 'The New York Times',         is_verified: true  },
+  { id: '5765028',     username: 'stripe',             full_name: 'Stripe',                     is_verified: true  },
+  { id: '29187493',    username: 'linear',             full_name: 'Linear',                     is_verified: false },
+  { id: '183012668',   username: 'figma',              full_name: 'Figma',                      is_verified: true  },
+  { id: '258061269',   username: 'vercel',             full_name: 'Vercel',                     is_verified: false },
+  { id: '422931568',   username: 'anthropic',          full_name: 'Anthropic',                  is_verified: false },
+  { id: '544030737',   username: 'openai',             full_name: 'OpenAI',                     is_verified: false },
+  { id: '7320543',     username: 'paulg',              full_name: 'Paul Graham',                is_verified: false },
+  { id: '58611',       username: 'sama',               full_name: 'Sam Altman',                 is_verified: true  },
+  { id: '9129',        username: 'jack',               full_name: 'Jack Dorsey',                is_verified: true  },
+  { id: '1284161',     username: 'elonmusk',           full_name: 'Elon Musk',                  is_verified: true  },
+  { id: '1166413',     username: 'sundarpichai',       full_name: 'Sundar Pichai',              is_verified: true  },
+  { id: '174119690',   username: 'jessicaalba',        full_name: 'Jessica Alba',               is_verified: true  },
+  { id: '25025368',    username: 'kyliejenner',        full_name: 'Kylie Jenner',               is_verified: true  },
+  { id: '460563723',   username: 'mrbeast',            full_name: 'MrBeast',                    is_verified: true  },
+  { id: '7824459',     username: 'mkbhd',              full_name: 'Marques Brownlee',           is_verified: true  },
+  { id: '21938291',    username: 'lexfridman',         full_name: 'Lex Fridman',                is_verified: true  },
+  { id: '44278982',    username: 'hubermanlab',        full_name: 'Andrew Huberman',            is_verified: true  },
+  { id: '320695120',   username: 'timferriss',         full_name: 'the owner Ferriss',                is_verified: true  },
+  { id: '79299064',    username: 'paulocoelho',        full_name: 'Paulo Coelho',               is_verified: true  },
+  { id: '55793',       username: 'neiltyson',          full_name: 'Neil deGrasse Tyson',        is_verified: true  },
+  { id: '7536',        username: 'obama',              full_name: 'Barack Obama',               is_verified: true  },
+  { id: '47269647',    username: 'espn',               full_name: 'ESPN',                       is_verified: true  },
+  { id: '29639178',    username: 'nba',                full_name: 'NBA',                        is_verified: true  },
+  { id: '19610161',    username: 'fcbarcelona',        full_name: 'FC Barcelona',               is_verified: true  },
+  { id: '18479',       username: 'realmadrid',         full_name: 'Real Madrid C.F.',           is_verified: true  },
+  { id: '48029851',    username: 'cristiano',          full_name: 'Cristiano Ronaldo',          is_verified: true  },
+  { id: '197807526',   username: 'leomessi',           full_name: 'Leo Messi',                  is_verified: true  },
+  { id: '8539862',     username: 'kingjames',          full_name: 'LeBron James',               is_verified: true  },
+  { id: '29524236',    username: 'wired',              full_name: 'WIRED',                      is_verified: true  },
+  { id: '1642911',     username: 'theverge',           full_name: 'The Verge',                  is_verified: true  },
+  { id: '4177889',     username: 'techcrunch',         full_name: 'TechCrunch',                 is_verified: false },
+  { id: '9617533',     username: 'arstechnica',        full_name: 'Ars Technica',               is_verified: false },
+  { id: '188201606',   username: 'hbomax',             full_name: 'Max',                        is_verified: true  },
+  { id: '25024955',    username: 'netflix',            full_name: 'Netflix',                    is_verified: true  },
+  { id: '5765822',     username: 'spotify',            full_name: 'Spotify',                    is_verified: true  },
+  { id: '17841400008460746', username: 'apple',        full_name: 'Apple',                      is_verified: true  },
+  { id: '429047592',   username: 'google',             full_name: 'Google',                     is_verified: true  },
+  { id: '3214607',     username: 'microsoft',          full_name: 'Microsoft',                  is_verified: true  },
+  { id: '244994040',   username: 'notion',             full_name: 'Notion',                     is_verified: false },
+  { id: '1234567891',  username: 'alex.chen.sf',       full_name: 'Alex Chen',                  is_verified: false },
+  { id: '1234567892',  username: 'priya.dev',          full_name: 'Priya Nair',                 is_verified: false },
+  { id: '1234567893',  username: 'marco.builds',       full_name: 'Marco Rossi',                is_verified: false },
+  { id: '1234567894',  username: 'sarah.ux',           full_name: 'Sarah Kim',                  is_verified: false },
+  { id: '1234567895',  username: 'david.writes',       full_name: 'David Osei',                 is_verified: false },
+  { id: '1234567896',  username: 'julia.codes',        full_name: 'Julia Santos',               is_verified: false },
+  { id: '1234567897',  username: 'raj.ventures',       full_name: 'Raj Patel',                  is_verified: false },
+  { id: '1234567898',  username: 'emma.photo',         full_name: 'Emma Wilson',                is_verified: false },
+  { id: '1234567899',  username: 'carlos.design',      full_name: 'Carlos Rivera',              is_verified: false },
+  { id: '1234567900',  username: 'nina.creates',       full_name: 'Nina Johansson',             is_verified: false },
+  { id: '1234567901',  username: 'tom.ships',          full_name: 'Tom Bradley',                is_verified: false },
+  { id: '1234567902',  username: 'yuki.art',           full_name: 'Yuki Tanaka',                is_verified: false },
+  { id: '1234567903',  username: 'kate.pm',            full_name: 'Kate Morrison',              is_verified: false },
+  { id: '1234567904',  username: 'felix.ai',           full_name: 'Felix Weber',                is_verified: false },
+  { id: '1234567905',  username: 'a person.vc',            full_name: 'a person Lindström',             is_verified: false },
+  { id: '1234567906',  username: 'ben.infra',          full_name: 'Ben Okafor',                 is_verified: false },
+  { id: '1234567907',  username: 'chloe.writes',       full_name: 'Chloe Martin',               is_verified: false },
+  { id: '1234567908',  username: 'james.growth',       full_name: 'James Park',                 is_verified: false },
+  { id: '1234567909',  username: 'sofia.founder',      full_name: 'Sofia García',               is_verified: false },
+  { id: '1234567910',  username: 'luke.ml',            full_name: 'Luke Thompson',              is_verified: false },
+  { id: '1234567911',  username: 'mia.product',        full_name: 'Mia Schneider',              is_verified: false },
+  { id: '1234567912',  username: 'oliver.sec',         full_name: 'Oliver Hughes',              is_verified: false },
+  { id: '1234567913',  username: 'zoe.research',       full_name: 'Zoe Dubois',                 is_verified: false },
+  { id: '1234567914',  username: 'amir.eng',           full_name: 'Amir Hassan',                is_verified: false },
+  { id: '1234567915',  username: 'lily.content',       full_name: 'Lily Chen',                  is_verified: false },
+  { id: '1234567916',  username: 'noah.startup',       full_name: 'Noah Björk',                 is_verified: false },
+  { id: '1234567917',  username: 'eva.data',           full_name: 'Eva Müller',                 is_verified: false },
+  { id: '1234567918',  username: 'ivan.builds',        full_name: 'Ivan Petrov',                is_verified: false },
+  { id: '1234567919',  username: 'grace.ux',           full_name: 'Grace Yamamoto',             is_verified: false },
+  { id: '1234567920',  username: 'henry.protocol',     full_name: 'Henry Adeyemi',              is_verified: false },
+  { id: '1234567921',  username: 'iris.photo',         full_name: 'Iris Larsson',               is_verified: false },
+  { id: '1234567922',  username: 'daniel.crypto',      full_name: 'Daniel Nkosi',               is_verified: false },
+  { id: '1234567923',  username: 'maya.bio',           full_name: 'Maya Krishnan',              is_verified: false },
+  { id: '1234567924',  username: 'ethan.web3',         full_name: 'Ethan Clarke',               is_verified: false },
+  { id: '1234567925',  username: 'leila.ops',          full_name: 'Leila Ahmadi',               is_verified: false },
+  { id: '1234567926',  username: 'oscar.3d',           full_name: 'Oscar Fernández',            is_verified: false },
+  { id: '1234567927',  username: 'nora.climate',       full_name: 'Nora Andersen',              is_verified: false },
+  { id: '1234567928',  username: 'ryan.devrel',        full_name: 'Ryan O\'Brien',              is_verified: false },
+  { id: '1234567929',  username: 'sophie.brand',       full_name: 'Sophie Leclerc',             is_verified: false },
+  { id: '1234567930',  username: 'max.infosec',        full_name: 'Max Bergmann',               is_verified: false },
+  { id: '1234567931',  username: 'ava.writes',         full_name: 'Ava Johansson',              is_verified: false },
+  { id: '1234567932',  username: 'leo.api',            full_name: 'Leo Tremblay',               is_verified: false },
+  { id: '1234567933',  username: 'isla.design',        full_name: 'Isla MacLeod',               is_verified: false },
+  { id: '1234567934',  username: 'kai.devops',         full_name: 'Kai Nakamura',               is_verified: false },
+  { id: '1234567935',  username: 'violet.pm',          full_name: 'Violet Kowalski',            is_verified: false },
+  { id: '1234567936',  username: 'sam.infra',          full_name: 'Sam Okonkwo',                is_verified: false },
+  { id: '1234567937',  username: 'mira.ml',            full_name: 'Mira Svensson',              is_verified: false },
+  { id: '1234567938',  username: 'caleb.open',         full_name: 'Caleb Figueiredo',           is_verified: false },
+  { id: '1234567939',  username: 'luna.artist',        full_name: 'Luna external person',                  is_verified: false },
+  { id: '1234567940',  username: 'eli.embedded',       full_name: 'Eli Shapiro',                is_verified: false },
+  { id: '1234567941',  username: 'freya.health',       full_name: 'Freya Nilsson',              is_verified: false },
+  { id: '1234567942',  username: 'hugo.lang',          full_name: 'Hugo Renaud',                is_verified: false },
+  { id: '1234567943',  username: 'sera.vc',            full_name: 'Sera Inoue',                 is_verified: false },
+  { id: '1234567944',  username: 'finn.builds',        full_name: 'Finn Larsen',                is_verified: false },
+  { id: '1234567945',  username: 'stella.edu',         full_name: 'Stella Moreau',              is_verified: false },
+  { id: '1234567946',  username: 'jasper.sound',       full_name: 'Jasper van der Berg',        is_verified: false },
+  { id: '1234567947',  username: 'penny.ops',          full_name: 'Penny Nguyen',               is_verified: false },
+  { id: '1234567948',  username: 'remy.systems',       full_name: 'Rémy Dupont',                is_verified: false },
+  { id: '1234567949',  username: 'wren.photo',         full_name: 'Wren Callahan',              is_verified: false },
+  { id: '1234567950',  username: 'cole.protocol',      full_name: 'Cole Adebayo',               is_verified: false },
+];
+
+// Generate posts over the past 6 months (before consent date — all should be time-gated away)
+function daysAgo(n: number): string {
+  const d = new Date();
+  d.setDate(d.getDate() - n);
+  return d.toISOString();
+}
+
+export const SEED_POSTS: SeedPost[] = [
+  { id: 'p001', shortcode: 'CxA1b2c3d4', caption: 'Building something that makes data work for people, not the other way around.', like_count: 847,  comment_count: 42,  taken_at: daysAgo(180), media_type: 'IMAGE' },
+  { id: 'p002', shortcode: 'CxB2c3d4e5', caption: 'Late night debugging sessions hit different when the bug turns out to be a semicolon 🙃', like_count: 1203, comment_count: 67,  taken_at: daysAgo(172), media_type: 'IMAGE' },
+  { id: 'p003', shortcode: 'CxC3d4e5f6', caption: 'If you own your data, you own your narrative. That\'s the whole point.', like_count: 2891, comment_count: 134, taken_at: daysAgo(161), media_type: 'IMAGE' },
+  { id: 'p004', shortcode: 'CxD4e5f6g7', caption: null as unknown as string, like_count: 445,  comment_count: 12,  taken_at: daysAgo(154), media_type: 'VIDEO' },
+  { id: 'p005', shortcode: 'CxE5f6g7h8', caption: 'The internet was supposed to empower individuals. We\'re not done building that.', like_count: 3102, comment_count: 208, taken_at: daysAgo(143), media_type: 'CAROUSEL_ALBUM' },
+  { id: 'p006', shortcode: 'CxF6g7h8i9', caption: 'Shipped something I\'m genuinely proud of today. More soon.', like_count: 1876, comment_count: 91,  taken_at: daysAgo(132), media_type: 'IMAGE' },
+  { id: 'p007', shortcode: 'CxG7h8i9j0', caption: 'The best privacy isn\'t hiding — it\'s having control.', like_count: 4210, comment_count: 317, taken_at: daysAgo(121), media_type: 'IMAGE' },
+  { id: 'p008', shortcode: 'CxH8i9j0k1', caption: null as unknown as string, like_count: 672,  comment_count: 28,  taken_at: daysAgo(113), media_type: 'VIDEO' },
+  { id: 'p009', shortcode: 'CxI9j0k1l2', caption: 'Consent that means something. Working on it.', like_count: 2341, comment_count: 156, taken_at: daysAgo(102), media_type: 'IMAGE' },
+  { id: 'p010', shortcode: 'CxJ0k1l2m3', caption: 'Three principles: transparency, control, portability. Simple to say. Hard to build.', like_count: 5678, comment_count: 421, taken_at: daysAgo(94),  media_type: 'CAROUSEL_ALBUM' },
+  { id: 'p011', shortcode: 'CxK1l2m3n4', caption: null as unknown as string, like_count: 523,  comment_count: 19,  taken_at: daysAgo(87),  media_type: 'IMAGE' },
+  { id: 'p012', shortcode: 'CxL2m3n4o5', caption: 'Your data tells a story. You should be the author.', like_count: 3891, comment_count: 267, taken_at: daysAgo(79),  media_type: 'IMAGE' },
+  { id: 'p013', shortcode: 'CxM3n4o5p6', caption: 'Protocol design is hard. Not because of the technical parts.', like_count: 1123, comment_count: 78,  taken_at: daysAgo(71),  media_type: 'VIDEO' },
+  { id: 'p014', shortcode: 'CxN4o5p6q7', caption: 'Standards matter because they outlast any single product.', like_count: 2456, comment_count: 189, taken_at: daysAgo(62),  media_type: 'IMAGE' },
+  { id: 'p015', shortcode: 'CxO5p6q7r8', caption: null as unknown as string, like_count: 891,  comment_count: 34,  taken_at: daysAgo(55),  media_type: 'CAROUSEL_ALBUM' },
+  { id: 'p016', shortcode: 'CxP6q7r8s9', caption: 'Data sovereignty is a technical problem. Glad people are finally treating it that way.', like_count: 6234, comment_count: 512, taken_at: daysAgo(46),  media_type: 'IMAGE' },
+  { id: 'p017', shortcode: 'CxQ7r8s9t0', caption: 'Ship. Learn. Repeat. The protocol is getting sharper.', like_count: 1567, comment_count: 93,  taken_at: daysAgo(38),  media_type: 'IMAGE' },
+  { id: 'p018', shortcode: 'CxR8s9t0u1', caption: null as unknown as string, like_count: 734,  comment_count: 22,  taken_at: daysAgo(31),  media_type: 'VIDEO' },
+  { id: 'p019', shortcode: 'CxS9t0u1v2', caption: 'The consent screen is the most important UX on the internet. Nobody treats it that way.', like_count: 8901, comment_count: 678, taken_at: daysAgo(23),  media_type: 'IMAGE' },
+  { id: 'p020', shortcode: 'CxT0u1v2w3', caption: 'v0.1. Rough around the edges. But the core is solid.', like_count: 3214, comment_count: 241, taken_at: daysAgo(15),  media_type: 'IMAGE' },
+  { id: 'p021', shortcode: 'CxU1v2w3x4', caption: null as unknown as string, like_count: 912,  comment_count: 41,  taken_at: daysAgo(8),   media_type: 'CAROUSEL_ALBUM' },
+  { id: 'p022', shortcode: 'CxV2w3x4y5', caption: 'Every data request should come with: who, what, why, how long. Non-negotiable.', like_count: 4523, comment_count: 334, taken_at: daysAgo(3),   media_type: 'IMAGE' },
+];
+
+export const SEED_AD_TARGETING: SeedAdTargeting = {
+  record_id: 'ad_record_1',
+  topics: [
+    'Technology & Computing',
+    'Software Development',
+    'Artificial Intelligence',
+    'Open Source',
+    'Entrepreneurship',
+    'Privacy & Security',
+    'Venture Capital',
+    'Product Design',
+    'Cryptocurrency',
+    'Science & Innovation',
+  ],
+  advertisers: [
+    'GitHub', 'JetBrains', 'Digital Ocean', 'AWS', 'Notion',
+    'Figma', 'Linear', 'Vercel', 'Datadog', 'Cloudflare',
+    'Stripe', 'Shopify', 'MongoDB', 'HashiCorp', 'Twilio',
+    'Retool', 'Supabase', 'PlanetScale', 'Loom', 'Pitch',
+    'Arc Browser', 'Raycast', 'Posthog', 'Sentry', 'Segment',
+  ],
+  categories: [
+    'Software & Technology',
+    'Business & Industry',
+    'Science & Education',
+    'Arts & Crafts',
+    'Travel & Tourism',
+    'Health & Fitness',
+    'News & Current Events',
+  ],
+};
+
+// Profile data
+export const SEED_PROFILE = {
+  username: 'dondochaka',
+  full_name: 'the owner',
+  bio: 'Building the personal data stack. Protocol nerd.',
+  follower_count: 3847,
+  following_count: SEED_FOLLOWING.length,
+  is_verified: false,
+  profile_pic_url: '',
+};
