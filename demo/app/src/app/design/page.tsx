@@ -1208,6 +1208,34 @@ function ComponentsSection() {
             render={(data) => <StreamInventory key={data.connectorName} {...data} />}
           />
         </div>
+
+        {/* Connector Card */}
+        <div>
+          <SubLabel>Connector card</SubLabel>
+          <p className="text-xs mb-6 leading-relaxed" style={{ color: 'var(--muted-foreground)', maxWidth: '52ch' }}>
+            A connector's identity and capabilities from its manifest. Shows what
+            streams are available, what selection parameters each supports, and
+            any defined profiles.
+          </p>
+          <SpecimenSwitcher
+            specimens={CONNECTOR_SPECIMENS}
+            render={(data) => <ConnectorCard key={data.connectorId} {...data} />}
+          />
+        </div>
+
+        {/* Spec Citation */}
+        <div>
+          <SubLabel>Spec citation</SubLabel>
+          <p className="text-xs mb-6 leading-relaxed" style={{ color: 'var(--muted-foreground)', maxWidth: '52ch' }}>
+            Inline protocol references using the education layer color. Links back
+            to spec sections. Used in grant inspectors, log panels, and
+            annotation surfaces.
+          </p>
+          <SpecimenSwitcher
+            specimens={CITATION_SPECIMENS}
+            render={(data) => <SpecCitationGroup key={data.citations.map(c => c.section).join(',')} {...data} />}
+          />
+        </div>
       </div>
     </SectionWrap>
   );
@@ -2131,6 +2159,290 @@ const INVENTORY_SPECIMENS: { label: string; axes: string; data: StreamInventoryP
       connectorVersion: '1.0.0',
       streams: [
         { name: 'sleep_sessions', label: 'Sleep sessions', detail: 'Sleep duration, scores, and stage breakdowns. No heart rate or HRV data.', semantics: 'append_only', recordCount: 0 },
+      ],
+    },
+  },
+];
+
+// ─── Connector Card ──────────────────────────────────────────────────────────
+
+// Props contract — all fields from connector manifest (§7):
+//
+// FROM manifest (server-trusted):
+//   connectorId, displayName, version, streams[], profiles[]
+
+type ConnectorStream = {
+  name: string;
+  label?: string;                       // display.label, may be absent
+  semantics: 'append_only' | 'mutable_state';
+  supportsFields: boolean;              // selection.fields
+  supportsResources: boolean;           // selection.resources
+  supportsTimeRange: boolean;           // consent_time_field present
+  viewCount: number;                    // number of views defined
+};
+
+type ConnectorProfile = {
+  id: string;
+  label: string;
+  streamCount: number;
+};
+
+type ConnectorCardProps = {
+  connectorId: string;
+  displayName: string;
+  version: string;
+  streams: ConnectorStream[];
+  profiles?: ConnectorProfile[];
+};
+
+function ConnectorCard({ connectorId, displayName, version, streams, profiles }: ConnectorCardProps) {
+  const [expanded, setExpanded] = React.useState<Record<string, boolean>>({});
+  const toggleExpand = (key: string) => setExpanded(v => ({ ...v, [key]: !v[key] }));
+
+  const appendOnly = streams.filter(s => s.semantics === 'append_only').length;
+  const mutableState = streams.filter(s => s.semantics === 'mutable_state').length;
+
+  return (
+    <div style={{ maxWidth: '440px' }}>
+      <div data-surface="protocol" className="rounded-xl overflow-hidden">
+
+        {/* ── Header ── */}
+        <div className="px-5 pt-5 pb-4">
+          <div className="flex items-center justify-between gap-3 mb-1">
+            <span className="text-sm font-medium" style={{ color: 'var(--foreground)' }}>{displayName}</span>
+            <span className="font-mono text-xs" style={{ color: 'var(--muted-foreground)' }}>v{version}</span>
+          </div>
+          <div className="font-mono text-xs mb-3" style={{ color: 'var(--muted-foreground)', opacity: 0.6 }}>
+            {connectorId}
+          </div>
+          <div className="flex items-center gap-3 text-xs" style={{ color: 'var(--muted-foreground)' }}>
+            <span>{streams.length} stream{streams.length !== 1 ? 's' : ''}</span>
+            {appendOnly > 0 && <span className="px-1 py-px rounded font-mono" style={{ backgroundColor: 'var(--muted)' }}>{appendOnly} append only</span>}
+            {mutableState > 0 && <span className="px-1 py-px rounded font-mono" style={{ backgroundColor: 'var(--muted)' }}>{mutableState} mutable state</span>}
+          </div>
+        </div>
+
+        {/* ── Streams ── */}
+        <div className="px-5 pb-1" style={{ borderTop: '1px solid var(--border)' }}>
+          {streams.map((s) => (
+            <div key={s.name} style={{ borderBottom: '1px solid var(--border)' }}>
+              <button
+                className="w-full flex items-center justify-between gap-2 py-2.5 text-left"
+                onClick={() => toggleExpand(s.name)}
+                aria-expanded={!!expanded[s.name]}
+              >
+                <span className="text-xs font-medium" style={{ color: 'var(--foreground)' }}>{s.label || s.name}</span>
+                <span
+                  className="text-xs shrink-0"
+                  style={{
+                    color: 'var(--muted-foreground)',
+                    display: 'inline-block',
+                    transform: expanded[s.name] ? 'rotate(90deg)' : 'rotate(0deg)',
+                    transition: 'transform 150ms',
+                  }}
+                >&#x203A;</span>
+              </button>
+              {expanded[s.name] && (
+                <div className="pb-2.5 pl-3 border-l-2 flex flex-col gap-1" style={{ borderColor: 'oklch(0.580 0.172 253.7 / 0.25)' }}>
+                  <div className="font-mono text-xs" style={{ color: 'var(--muted-foreground)' }}>
+                    <span style={{ opacity: 0.6 }}>stream: </span>{s.name}
+                  </div>
+                  <div className="font-mono text-xs" style={{ color: 'var(--muted-foreground)' }}>
+                    <span style={{ opacity: 0.6 }}>semantics: </span>
+                    <span className="px-1 py-px rounded" style={{ backgroundColor: 'var(--muted)' }}>
+                      {s.semantics === 'append_only' ? 'append only' : 'mutable state'}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2 flex-wrap font-mono text-xs" style={{ color: 'var(--muted-foreground)' }}>
+                    <span style={{ opacity: 0.6 }}>supports:</span>
+                    {s.supportsFields && <span className="px-1 py-px rounded" style={{ backgroundColor: 'var(--muted)' }}>fields</span>}
+                    {s.supportsResources && <span className="px-1 py-px rounded" style={{ backgroundColor: 'var(--muted)' }}>resources</span>}
+                    {s.supportsTimeRange && <span className="px-1 py-px rounded" style={{ backgroundColor: 'var(--muted)' }}>time_range</span>}
+                    {!s.supportsFields && !s.supportsResources && !s.supportsTimeRange && <span style={{ opacity: 0.6 }}>none</span>}
+                  </div>
+                  {s.viewCount > 0 && (
+                    <div className="font-mono text-xs" style={{ color: 'var(--muted-foreground)' }}>
+                      <span style={{ opacity: 0.6 }}>views: </span>{s.viewCount} defined
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+
+        {/* ── Profiles ── */}
+        {profiles && profiles.length > 0 && (
+          <div className="px-5 py-3" style={{ borderTop: '1px solid var(--border)' }}>
+            <div className="text-xs mb-2" style={{ color: 'var(--muted-foreground)', opacity: 0.6 }}>Profiles</div>
+            <div className="flex flex-col gap-1">
+              {profiles.map(p => (
+                <div key={p.id} className="flex items-center justify-between font-mono text-xs" style={{ color: 'var(--muted-foreground)' }}>
+                  <span>{p.label}</span>
+                  <span style={{ opacity: 0.6 }}>{p.streamCount} stream{p.streamCount !== 1 ? 's' : ''}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+      </div>
+    </div>
+  );
+}
+
+// ─── Connector Card specimens ───────────────────────────────────────────────
+// Axes: connector_id, display_name, version, stream count, semantics mix,
+//       selection capabilities (fields/resources/time_range), views, profiles
+
+const CONNECTOR_SPECIMENS: { label: string; axes: string; data: ConnectorCardProps }[] = [
+  {
+    label: 'Instagram (full)',
+    axes: 'multiple streams, mixed semantics, fields+time_range, views, no profiles',
+    data: {
+      connectorId: 'https://registry.pdpp.org/connectors/instagram',
+      displayName: 'Instagram',
+      version: '1.2.0',
+      streams: [
+        { name: 'following_accounts', label: 'Who you follow', semantics: 'mutable_state', supportsFields: true, supportsResources: false, supportsTimeRange: false, viewCount: 2 },
+        { name: 'posts', label: 'Your posts', semantics: 'append_only', supportsFields: true, supportsResources: false, supportsTimeRange: true, viewCount: 2 },
+        { name: 'ad_targeting', label: 'Ad interest categories', semantics: 'mutable_state', supportsFields: true, supportsResources: false, supportsTimeRange: false, viewCount: 1 },
+      ],
+    },
+  },
+  {
+    label: 'Spotify (with profiles)',
+    axes: 'profiles present, resources supported, many views',
+    data: {
+      connectorId: 'https://registry.pdpp.org/connectors/spotify',
+      displayName: 'Spotify',
+      version: '2.0.0',
+      streams: [
+        { name: 'top_artists', label: 'Your top artists', semantics: 'mutable_state', supportsFields: true, supportsResources: false, supportsTimeRange: true, viewCount: 2 },
+        { name: 'play_events', label: 'Play history', semantics: 'append_only', supportsFields: true, supportsResources: false, supportsTimeRange: true, viewCount: 0 },
+        { name: 'saved_tracks', label: 'Saved tracks', semantics: 'mutable_state', supportsFields: true, supportsResources: true, supportsTimeRange: false, viewCount: 1 },
+        { name: 'playlists', label: 'Playlists', semantics: 'mutable_state', supportsFields: true, supportsResources: true, supportsTimeRange: true, viewCount: 2 },
+      ],
+      profiles: [
+        { id: 'listening_history', label: 'Listening history', streamCount: 2 },
+        { id: 'library', label: 'Full library', streamCount: 3 },
+      ],
+    },
+  },
+  {
+    label: 'Oura (minimal)',
+    axes: 'single stream, no views, no profiles, no resources, append_only only',
+    data: {
+      connectorId: 'https://registry.pdpp.org/connectors/oura',
+      displayName: 'Oura Ring',
+      version: '1.0.0',
+      streams: [
+        { name: 'sleep_sessions', label: 'Sleep sessions', semantics: 'append_only', supportsFields: true, supportsResources: false, supportsTimeRange: true, viewCount: 0 },
+      ],
+    },
+  },
+  {
+    label: 'Gmail (no labels)',
+    axes: 'no display.label (falls back to stream name), mixed capabilities',
+    data: {
+      connectorId: 'https://registry.pdpp.org/connectors/gmail',
+      displayName: 'Gmail',
+      version: '1.0.0',
+      streams: [
+        { name: 'messages', semantics: 'append_only', supportsFields: true, supportsResources: true, supportsTimeRange: true, viewCount: 3 },
+        { name: 'contacts', semantics: 'mutable_state', supportsFields: true, supportsResources: true, supportsTimeRange: false, viewCount: 1 },
+        { name: 'labels', semantics: 'mutable_state', supportsFields: false, supportsResources: false, supportsTimeRange: false, viewCount: 0 },
+      ],
+    },
+  },
+];
+
+// ─── Spec Citation ───────────────────────────────────────────────────────────
+
+// A reusable inline spec reference. Uses --edu-fg for the protocol education layer.
+// Renders as a mono link with the § prefix.
+
+type SpecCitationProps = {
+  section: string;           // e.g. "4.2" or "6.1"
+  label: string;             // e.g. "Selection Request"
+  href?: string;             // optional link to spec page
+};
+
+function SpecCitation({ section, label, href }: SpecCitationProps) {
+  const content = (
+    <span className="font-mono text-xs" style={{ color: 'var(--edu-fg)' }}>
+      {"§"}{section} {label}
+    </span>
+  );
+
+  if (href) {
+    return <a href={href} className="transition-opacity hover:opacity-70">{content}</a>;
+  }
+  return content;
+}
+
+// Spec citation group — multiple citations in a row with separators
+function SpecCitationGroup({ citations }: { citations: SpecCitationProps[] }) {
+  return (
+    <div
+      className="flex items-center gap-2 flex-wrap px-3 py-2 rounded-lg"
+      style={{ border: '1px solid var(--border)', backgroundColor: 'var(--card)' }}
+    >
+      {citations.map((c, i) => (
+        <React.Fragment key={c.section}>
+          {i > 0 && <span style={{ color: 'var(--muted-foreground)' }} className="text-xs">&middot;</span>}
+          <SpecCitation {...c} />
+        </React.Fragment>
+      ))}
+    </div>
+  );
+}
+
+// ─── Spec Citation specimens ────────────────────────────────────────────────
+// Axes: single vs group, with/without href, different section depths
+
+const CITATION_SPECIMENS: { label: string; axes: string; data: { citations: SpecCitationProps[] } }[] = [
+  {
+    label: 'Single citation',
+    axes: 'single, no href',
+    data: { citations: [{ section: '5', label: 'Selection Request' }] },
+  },
+  {
+    label: 'Citation with link',
+    axes: 'single, with href',
+    data: { citations: [{ section: '6', label: 'Grant', href: '/spec-core#grant' }] },
+  },
+  {
+    label: 'Citation group',
+    axes: 'multiple citations, mixed href',
+    data: {
+      citations: [
+        { section: '5', label: 'Selection Request', href: '/spec-core#selection-request' },
+        { section: '6', label: 'Grant' },
+        { section: '7', label: 'Manifest Format', href: '/spec-core#manifest-format' },
+      ],
+    },
+  },
+  {
+    label: 'Deep section refs',
+    axes: 'subsection numbers, Appendix',
+    data: {
+      citations: [
+        { section: '5.1', label: 'Client Display' },
+        { section: '5.2', label: 'Client Claims' },
+        { section: '7.1', label: 'Stream Display' },
+        { section: 'A', label: 'Purpose Codes' },
+      ],
+    },
+  },
+  {
+    label: 'Consent flow citations',
+    axes: 'realistic grouping for consent card context',
+    data: {
+      citations: [
+        { section: '5', label: 'Selection Request' },
+        { section: '6', label: 'Grant' },
+        { section: 'A', label: 'Purpose Codes' },
       ],
     },
   },
