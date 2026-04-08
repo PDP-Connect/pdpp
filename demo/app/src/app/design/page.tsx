@@ -1175,7 +1175,10 @@ function ComponentsSection() {
             to share specific streams from their personal server. Both human and protocol
             signals must be present and legible simultaneously.
           </p>
-          <ConsentCard {...CONSENT_SPECIMEN} />
+          <SpecimenSwitcher
+            specimens={CONSENT_SPECIMENS}
+            render={(data) => <ConsentCard key={JSON.stringify(data.requester)} {...data} />}
+          />
         </div>
 
         {/* Grant Inspector */}
@@ -1183,10 +1186,13 @@ function ComponentsSection() {
           <SubLabel>Grant inspector — anatomy</SubLabel>
           <p className="text-xs mb-6 leading-relaxed" style={{ color: 'var(--muted-foreground)', maxWidth: '52ch' }}>
             The receipt of a consent decision. Shows what was authorized, by whom,
-            and the grant's current lifecycle state. Protocol surface — all content
+            and the grant's current lifecycle state. Protocol surface, all content
             is server-authoritative.
           </p>
-          <GrantInspector {...GRANT_SPECIMEN} onRevoke={() => {}} />
+          <SpecimenSwitcher
+            specimens={GRANT_SPECIMENS}
+            render={(data) => <GrantInspector key={data.grantId} {...data} onRevoke={() => {}} />}
+          />
         </div>
 
         {/* Stream Inventory */}
@@ -1197,7 +1203,10 @@ function ComponentsSection() {
             connector's streams with record counts and sync status. The foundation
             users see before any consent decision.
           </p>
-          <StreamInventory {...INVENTORY_SPECIMEN} />
+          <SpecimenSwitcher
+            specimens={INVENTORY_SPECIMENS}
+            render={(data) => <StreamInventory key={data.connectorName} {...data} />}
+          />
         </div>
       </div>
     </SectionWrap>
@@ -1334,12 +1343,19 @@ function ConsentCard({
             <div className="flex-1 min-w-0 pt-0.5">
               <div className="flex items-center gap-2 flex-wrap">
                 <span className="text-sm font-semibold" style={{ color: 'var(--foreground)' }}>{requester.name}</span>
-                {requester.verified && (
+                {requester.verified ? (
                   <span
                     className="font-mono text-xs px-1.5 py-0.5 rounded uppercase tracking-wide"
                     style={{ backgroundColor: 'oklch(0.52 0.15 150 / 0.1)', color: 'var(--success)' }}
                   >
                     verified
+                  </span>
+                ) : (
+                  <span
+                    className="font-mono text-xs px-1.5 py-0.5 rounded uppercase tracking-wide"
+                    style={{ backgroundColor: 'oklch(0.62 0.15 70 / 0.1)', color: 'var(--warning)' }}
+                  >
+                    unverified
                   </span>
                 )}
               </div>
@@ -1349,6 +1365,16 @@ function ConsentCard({
           <p className="text-sm leading-relaxed mt-4" style={{ color: 'var(--foreground)' }}>
             {purpose}
           </p>
+
+          {/* AI training warning — spec §5 requires explicit affirmative consent */}
+          {technical.purposeCode === 'ai_training' && (
+            <div
+              className="mt-3 rounded-lg px-3 py-2.5 text-xs"
+              style={{ backgroundColor: 'oklch(0.55 0.20 27 / 0.08)', border: '1px solid oklch(0.55 0.20 27 / 0.2)', color: 'var(--destructive)' }}
+            >
+              This app wants to use your data for AI model training. This requires your explicit consent.
+            </div>
+          )}
 
           {/* Client commitments — scannable list, visually attributed */}
           {commitments.length > 0 && (
@@ -1512,29 +1538,157 @@ function ConsentCard({
   );
 }
 
-// Specimen data — demonstrates the component contract
-const CONSENT_SPECIMEN: ConsentCardProps = {
-  requester: { name: 'Audience Lens', monogram: 'AL', verified: true },
-  purpose: 'Audience Lens is requesting access to your Instagram data for an influencer network study.',
-  commitments: [
-    'Data used only for this study',
-    'Not sold or shared with third parties',
-    'Deleted within 90 days',
-  ],
-  streams: [
-    { key: 'following', label: 'Who you follow', detail: 'Usernames and account IDs of accounts you follow. No DMs, profile details, or follower lists.' },
-    { key: 'posts', label: 'Your posts', detail: 'Post captions, dates, and media types since Dec 31, 2024. No comments, likes, or private messages.' },
-  ],
-  optional: {
-    key: 'ad_targeting',
-    label: 'Ad interest categories',
-    detail: 'Ad categories, sources, and confidence scores. No browsing history or purchase data.',
-    consequenceOn: 'Improves study accuracy. Not required for the grant.',
-    consequenceOff: 'Turned off. The rest of the grant is unaffected.',
+// ─── Specimen switcher ───────────────────────────────────────────────────────
+
+function SpecimenSwitcher<T>({
+  specimens,
+  render,
+}: {
+  specimens: { label: string; axes: string; data: T }[];
+  render: (data: T) => React.ReactNode;
+}) {
+  const [active, setActive] = React.useState(0);
+  return (
+    <div>
+      <div className="flex flex-wrap gap-1.5 mb-4">
+        {specimens.map((s, i) => (
+          <button
+            key={s.label}
+            className="text-xs px-2 py-1 rounded transition-colors"
+            style={{
+              backgroundColor: i === active ? 'var(--foreground)' : 'var(--muted)',
+              color: i === active ? 'var(--background)' : 'var(--muted-foreground)',
+            }}
+            onClick={() => setActive(i)}
+          >
+            {s.label}
+          </button>
+        ))}
+      </div>
+      <div className="text-xs mb-4 font-mono" style={{ color: 'var(--muted-foreground)', opacity: 0.6 }}>
+        Axes: {specimens[active].axes}
+      </div>
+      {render(specimens[active].data)}
+    </div>
+  );
+}
+
+// ─── Consent Card specimens ─────────────────────────────────────────────────
+// Coverage: all 18 ConsentCard axes across 6 specimens
+
+const CONSENT_SPECIMENS: { label: string; axes: string; data: ConsentCardProps }[] = [
+  {
+    // Axes: 1=continuous, 2=research, 4=delete, 5=present, 6=date, 7=mixed, 13=verified, 15=present, 16=present, 17=multiple
+    label: 'Research (baseline)',
+    axes: 'continuous, research, verified, retention:delete, expiry, optional stream, commitments',
+    data: {
+      requester: { name: 'Audience Lens', monogram: 'AL', verified: true },
+      purpose: 'Audience Lens is requesting access to your Instagram data for an influencer network study.',
+      commitments: [
+        'Data used only for this study',
+        'Not sold or shared with third parties',
+      ],
+      streams: [
+        { key: 'following', label: 'Who you follow', detail: 'Usernames and account IDs of accounts you follow. No DMs, profile details, or follower lists.' },
+        { key: 'posts', label: 'Your posts', detail: 'Post captions, dates, and media types since Dec 31, 2024. No comments, likes, or private messages.' },
+      ],
+      optional: {
+        key: 'ad_targeting',
+        label: 'Ad interest categories',
+        detail: 'Ad categories, sources, and confidence scores. No browsing history or purchase data.',
+        consequenceOn: 'Improves study accuracy. Not required for the grant.',
+        consequenceOff: 'Turned off. The rest of the grant is unaffected.',
+      },
+      accessMode: 'continuous',
+      technical: { clientId: 'audience_lens_v1', purposeCode: 'research', grantExpires: 'Apr 5, 2027' },
+    },
   },
-  accessMode: 'continuous',
-  technical: { clientId: 'audience_lens_v1', purposeCode: 'research', grantExpires: 'Apr 5, 2027' },
-};
+  {
+    // Axes: 1=single_use, 2=personalization, 6=null(no expiry), 7=all required, 8=time_range, 15=absent, 17=single stream
+    label: 'Single use, no expiry',
+    axes: 'single_use, personalization, no expiry, no optional, time_range, no commitments, single stream',
+    data: {
+      requester: { name: 'Concert Finder', monogram: 'CF', verified: true },
+      purpose: 'Concert Finder wants your top artists to recommend upcoming shows near you.',
+      commitments: [],
+      streams: [
+        { key: 'top_artists', label: 'Your top artists', detail: 'Artist names, genres, and popularity scores from the last 6 months. No listening timestamps or play counts.' },
+      ],
+      accessMode: 'single_use',
+      technical: { clientId: 'concert_finder', purposeCode: 'personalization', grantExpires: 'No expiry' },
+    },
+  },
+  {
+    // Axes: 2=ai_training(#3), 4=anonymize, 12=present, 13=unverified, 14=logo suppressed
+    label: 'AI training, unverified',
+    axes: 'ai_training (explicit consent), unverified client, retention:anonymize, continuous',
+    data: {
+      requester: { name: 'DataCo ML Pipeline', monogram: 'DC', verified: false },
+      purpose: 'DataCo ML Pipeline wants to use your social media data to train recommendation models.',
+      commitments: [
+        'Model weights only, raw data not retained',
+      ],
+      streams: [
+        { key: 'posts', label: 'Your posts', detail: 'Post captions, dates, and engagement metrics. No private messages or stories.' },
+        { key: 'following', label: 'Who you follow', detail: 'Account IDs and usernames. No DMs or profile details.' },
+      ],
+      accessMode: 'continuous',
+      technical: { clientId: 'dataco_ml_v2', purposeCode: 'ai_training', grantExpires: 'Jan 1, 2028' },
+    },
+  },
+  {
+    // Axes: 2=export, 4=absent(no retention), 5=absent, 15=absent, 16=absent(no purpose_description)
+    label: 'Self-export, minimal',
+    axes: 'export, single_use, no retention, no commitments, no purpose_description fallback',
+    data: {
+      requester: { name: 'PDPP Export Tool', monogram: 'PE', verified: true },
+      purpose: 'Export your data for personal use.',
+      commitments: [],
+      streams: [
+        { key: 'following', label: 'Who you follow', detail: 'Complete following list with account IDs and usernames.' },
+        { key: 'posts', label: 'Your posts', detail: 'All post data including captions, dates, media types, and locations.' },
+        { key: 'ad_targeting', label: 'Ad interest categories', detail: 'Full ad targeting profile with categories, sources, and confidence scores.' },
+      ],
+      accessMode: 'single_use',
+      technical: { clientId: 'pdpp_export', purposeCode: 'export', grantExpires: '24 hours' },
+    },
+  },
+  {
+    // Axes: 2=agent_context, 1=continuous, 6=null, 17=single, 12=absent(client_display missing, fall back to client_id)
+    label: 'AI agent, no display',
+    axes: 'agent_context, continuous, no expiry, no client_display (client_id fallback)',
+    data: {
+      requester: { name: 'agt_personal_v3', monogram: 'AG', verified: false },
+      purpose: 'Requesting ongoing access to provide personalized context to your AI agent.',
+      commitments: [
+        'Data processed locally, never sent to external servers',
+      ],
+      streams: [
+        { key: 'messages', label: 'Your messages', detail: 'Message content, timestamps, and participants. Includes DMs.' },
+      ],
+      accessMode: 'continuous',
+      technical: { clientId: 'agt_personal_v3', purposeCode: 'agent_context', grantExpires: 'No expiry' },
+    },
+  },
+  {
+    // Axes: 2=analytics, 8=since+until, 18=profile used
+    label: 'Analytics, time-bounded',
+    axes: 'analytics, single_use, time_range with since+until, profile-based',
+    data: {
+      requester: { name: 'Sleep Insights', monogram: 'SI', verified: true },
+      purpose: 'Sleep Insights wants to analyze your sleep data from Q1 2026 to identify patterns.',
+      commitments: [
+        'Analysis results shared back with you',
+        'Raw data deleted after analysis completes',
+      ],
+      streams: [
+        { key: 'sleep_sessions', label: 'Sleep sessions', detail: 'Sleep duration, scores, and stage breakdowns for Jan-Mar 2026. No heart rate or HRV data.' },
+      ],
+      accessMode: 'single_use',
+      technical: { clientId: 'sleep_insights_v1', purposeCode: 'analytics', grantExpires: '7 days' },
+    },
+  },
+];
 
 // ─── Grant Inspector ─────────────────────────────────────────────────────────
 
@@ -1759,35 +1913,84 @@ function GrantInspector({
   );
 }
 
-// Specimen data — demonstrates the grant inspector contract
-const GRANT_SPECIMEN: GrantInspectorProps = {
-  grantId: 'grt_8f3a2b1c',
-  issuedAt: 'Apr 6, 2026',
-  status: 'active',
-  client: { clientId: 'audience_lens_v1', name: 'Audience Lens' },
-  purposeCode: 'research',
-  purposeDescription: 'Influencer network study',
-  accessMode: 'continuous',
-  expiresAt: 'Apr 5, 2027',
-  retention: { duration: '90 days', onExpiry: 'delete' },
-  streams: [
-    {
-      name: 'following_accounts',
-      label: 'Who you follow',
-      detail: 'Usernames and account IDs of accounts you follow. No DMs, profile details, or follower lists.',
-      view: 'social_graph',
-      fields: ['id', 'username'],
+// ─── Grant Inspector specimens ──────────────────────────────────────────────
+// Coverage: axes 19 (status), 20 (consumed), plus grant-specific field combos
+
+const GRANT_SPECIMENS: { label: string; axes: string; data: GrantInspectorProps }[] = [
+  {
+    label: 'Active, continuous',
+    axes: 'active, continuous, retention:delete, view + fields, time_range',
+    data: {
+      grantId: 'grt_8f3a2b1c',
+      issuedAt: 'Apr 6, 2026',
+      status: 'active',
+      client: { clientId: 'audience_lens_v1', name: 'Audience Lens' },
+      purposeCode: 'research',
+      purposeDescription: 'Influencer network study',
+      accessMode: 'continuous',
+      expiresAt: 'Apr 5, 2027',
+      retention: { duration: '90 days', onExpiry: 'delete' },
+      streams: [
+        { name: 'following_accounts', label: 'Who you follow', detail: 'Usernames and account IDs of accounts you follow. No DMs, profile details, or follower lists.', view: 'social_graph', fields: ['id', 'username'] },
+        { name: 'posts', label: 'Your posts', detail: 'Post captions, dates, and media types since Dec 31, 2024. No comments, likes, or private messages.', view: 'summary', fields: ['id', 'caption', 'taken_at', 'media_type'], timeRange: { since: 'Dec 31, 2024' } },
+      ],
     },
-    {
-      name: 'posts',
-      label: 'Your posts',
-      detail: 'Post captions, dates, and media types since Dec 31, 2024. No comments, likes, or private messages.',
-      view: 'summary',
-      fields: ['id', 'caption', 'taken_at', 'media_type'],
-      timeRange: { since: 'Dec 31, 2024' },
+  },
+  {
+    label: 'Expired',
+    axes: 'expired, single_use, no retention, no view (all fields)',
+    data: {
+      grantId: 'grt_a1b2c3d4',
+      issuedAt: 'Mar 1, 2026',
+      status: 'expired',
+      client: { clientId: 'concert_finder', name: 'Concert Finder' },
+      purposeCode: 'personalization',
+      purposeDescription: 'Concert recommendations',
+      accessMode: 'single_use',
+      expiresAt: 'Mar 2, 2026',
+      streams: [
+        { name: 'top_artists', label: 'Your top artists', detail: 'Artist names, genres, and popularity scores.' },
+      ],
     },
-  ],
-};
+  },
+  {
+    label: 'Revoked',
+    axes: 'revoked, continuous, retention:anonymize, no expiry',
+    data: {
+      grantId: 'grt_rev0ked1',
+      issuedAt: 'Jan 15, 2026',
+      status: 'revoked',
+      client: { clientId: 'dataco_ml_v2', name: 'DataCo ML Pipeline' },
+      purposeCode: 'ai_training',
+      purposeDescription: 'Recommendation model training',
+      accessMode: 'continuous',
+      expiresAt: null,
+      retention: { duration: '6 months', onExpiry: 'anonymize' },
+      streams: [
+        { name: 'posts', label: 'Your posts', fields: ['id', 'caption', 'taken_at', 'media_type'] },
+        { name: 'following_accounts', label: 'Who you follow', fields: ['id', 'username'] },
+      ],
+    },
+  },
+  {
+    label: 'Single use, all fields',
+    axes: 'active, single_use, no fields (all authorized), time_range since+until',
+    data: {
+      grantId: 'grt_sleep001',
+      issuedAt: 'Apr 1, 2026',
+      status: 'active',
+      client: { clientId: 'sleep_insights_v1', name: 'Sleep Insights' },
+      purposeCode: 'analytics',
+      purposeDescription: 'Q1 2026 sleep pattern analysis',
+      accessMode: 'single_use',
+      expiresAt: 'Apr 8, 2026',
+      retention: { duration: '30 days', onExpiry: 'delete' },
+      streams: [
+        { name: 'sleep_sessions', label: 'Sleep sessions', detail: 'Sleep duration, scores, and stage breakdowns.', timeRange: { since: 'Jan 1, 2026', until: 'Apr 1, 2026' } },
+      ],
+    },
+  },
+];
 
 // ─── Stream Inventory ────────────────────────────────────────────────────────
 
@@ -1890,36 +2093,48 @@ function StreamInventory({ connectorName, connectorVersion, streams }: StreamInv
   );
 }
 
-const INVENTORY_SPECIMEN: StreamInventoryProps = {
-  connectorName: 'Instagram',
-  connectorVersion: '1.2.0',
-  streams: [
-    {
-      name: 'following_accounts',
-      label: 'Who you follow',
-      detail: 'Usernames and account IDs of accounts you follow. No DMs, profile details, or follower lists.',
-      semantics: 'mutable_state',
-      recordCount: 106,
-      lastSynced: 'Apr 6, 2026',
+// ─── Stream Inventory specimens ──────────────────────────────────────────────
+// Coverage: axes 21-27 (semantics, consent_time_field, selection caps, views, sync state, counts)
+
+const INVENTORY_SPECIMENS: { label: string; axes: string; data: StreamInventoryProps }[] = [
+  {
+    label: 'Instagram (populated)',
+    axes: 'mutable_state + append_only, all synced, nonzero counts',
+    data: {
+      connectorName: 'Instagram',
+      connectorVersion: '1.2.0',
+      streams: [
+        { name: 'following_accounts', label: 'Who you follow', detail: 'Usernames and account IDs of accounts you follow. No DMs, profile details, or follower lists.', semantics: 'mutable_state', recordCount: 106, lastSynced: 'Apr 6, 2026' },
+        { name: 'posts', label: 'Your posts', detail: 'Post captions, dates, and media types. No comments, likes, or private messages.', semantics: 'append_only', recordCount: 22, lastSynced: 'Apr 6, 2026' },
+        { name: 'ad_targeting', label: 'Ad interest categories', detail: 'Ad categories, sources, and confidence scores. No browsing history or purchase data.', semantics: 'mutable_state', recordCount: 47, lastSynced: 'Apr 6, 2026' },
+      ],
     },
-    {
-      name: 'posts',
-      label: 'Your posts',
-      detail: 'Post captions, dates, and media types. No comments, likes, or private messages.',
-      semantics: 'append_only',
-      recordCount: 22,
-      lastSynced: 'Apr 6, 2026',
+  },
+  {
+    label: 'Spotify (fresh)',
+    axes: 'append_only dominant, one never synced, zero count stream',
+    data: {
+      connectorName: 'Spotify',
+      connectorVersion: '2.0.0',
+      streams: [
+        { name: 'top_artists', label: 'Your top artists', detail: 'Artist names, genres, and popularity scores. No listening timestamps or play counts.', semantics: 'mutable_state', recordCount: 48, lastSynced: 'Apr 5, 2026' },
+        { name: 'play_events', label: 'Play history', detail: 'Track plays with timestamps and durations. No skip or repeat data.', semantics: 'append_only', recordCount: 1243, lastSynced: 'Apr 5, 2026' },
+        { name: 'saved_tracks', label: 'Saved tracks', detail: 'Tracks in your library with save dates.', semantics: 'mutable_state', recordCount: 0 },
+      ],
     },
-    {
-      name: 'ad_targeting',
-      label: 'Ad interest categories',
-      detail: 'Ad categories, sources, and confidence scores. No browsing history or purchase data.',
-      semantics: 'mutable_state',
-      recordCount: 47,
-      lastSynced: 'Apr 6, 2026',
+  },
+  {
+    label: 'Oura (single stream)',
+    axes: 'single stream, append_only only, never synced',
+    data: {
+      connectorName: 'Oura Ring',
+      connectorVersion: '1.0.0',
+      streams: [
+        { name: 'sleep_sessions', label: 'Sleep sessions', detail: 'Sleep duration, scores, and stage breakdowns. No heart rate or HRV data.', semantics: 'append_only', recordCount: 0 },
+      ],
     },
-  ],
-};
+  },
+];
 
 // ─── 08 Status ───────────────────────────────────────────────────────────────
 
