@@ -885,9 +885,10 @@ export default function ReferencePage() {
         <StreamInventory {...INVENTORY_SPECIMEN} />
       </Section>
 
-      {/* 3. Request — standard layout */}
+      {/* 3. Request — wide layout */}
       <Section
         config={SECTION_CONTENT[2]}
+        wide
         detail={
           <DetailPanel spec="§5 Selection Request">
             <p>Selection requests use the RFC 9396 authorization_details envelope. The AS must accept any syntactically valid purpose code URI and must not reject solely because a code is unrecognized.</p>
@@ -897,34 +898,60 @@ export default function ReferencePage() {
       >
         <div
           data-surface="protocol"
-          className="rounded-xl overflow-hidden px-5 py-6 w-full"
+          className="rounded-xl overflow-hidden w-full"
         >
-          <div className="font-mono text-xs mb-3" style={{ color: 'var(--muted-foreground)', opacity: 0.6 }}>
-            POST /authorize
+          <div className="px-5 pt-5 pb-4">
+            <div className="flex items-center justify-between mb-4">
+              <div className="font-mono text-xs" style={{ color: 'var(--muted-foreground)', opacity: 0.6 }}>
+                POST /authorize
+              </div>
+              <span
+                className="font-mono text-xs px-1.5 py-0.5 rounded"
+                style={{ backgroundColor: 'oklch(0.62 0.15 70 / 0.1)', color: 'var(--warning)' }}
+              >
+                pending
+              </span>
+            </div>
+
+            {/* Identity block */}
+            <div className="flex items-center gap-2 mb-3">
+              <div
+                className="w-7 h-7 rounded-md shrink-0 flex items-center justify-center"
+                style={{ backgroundColor: 'var(--muted)' }}
+              >
+                <span className="text-xs font-bold font-mono" style={{ color: 'var(--muted-foreground)' }}>AL</span>
+              </div>
+              <div>
+                <span className="text-xs font-medium" style={{ color: 'var(--foreground)' }}>Audience Lens</span>
+                <span className="font-mono text-xs ml-1.5" style={{ color: 'var(--success)' }}>verified</span>
+              </div>
+            </div>
+
+            <div className="text-xs mb-3" style={{ color: 'var(--foreground)' }}>
+              Influencer network study
+            </div>
           </div>
-          <div className="flex flex-col gap-2">
-            <div className="text-xs" style={{ color: 'var(--foreground)' }}>
-              <span className="font-mono" style={{ color: 'var(--muted-foreground)', opacity: 0.6 }}>client: </span>
-              Audience Lens (verified)
-            </div>
-            <div className="text-xs" style={{ color: 'var(--foreground)' }}>
-              <span className="font-mono" style={{ color: 'var(--muted-foreground)', opacity: 0.6 }}>purpose: </span>
-              <span style={{ color: 'var(--edu-fg)' }}>research</span>
-            </div>
-            <div className="text-xs" style={{ color: 'var(--foreground)' }}>
-              <span className="font-mono" style={{ color: 'var(--muted-foreground)', opacity: 0.6 }}>streams: </span>
-              following_accounts, posts
-            </div>
-            <div className="text-xs" style={{ color: 'var(--foreground)' }}>
-              <span className="font-mono" style={{ color: 'var(--muted-foreground)', opacity: 0.6 }}>optional: </span>
-              ad_targeting
-            </div>
-            <div className="text-xs" style={{ color: 'var(--foreground)' }}>
-              <span className="font-mono" style={{ color: 'var(--muted-foreground)', opacity: 0.6 }}>access_mode: </span>
-              continuous
-            </div>
-            <div className="text-xs mt-2 italic" style={{ color: 'var(--muted-foreground)', opacity: 0.7 }}>
-              Audience Lens commits: data used only for this study, not sold or shared.
+
+          {/* Requested streams */}
+          <div className="px-5 pb-1" style={{ borderTop: '1px solid var(--border)' }}>
+            {[
+              { name: 'following_accounts', necessity: 'required' },
+              { name: 'posts', necessity: 'required' },
+              { name: 'ad_targeting', necessity: 'optional' },
+            ].map(s => (
+              <div key={s.name} className="flex items-center justify-between py-2" style={{ borderBottom: '1px solid var(--border)' }}>
+                <span className="font-mono text-xs" style={{ color: 'var(--foreground)' }}>{s.name}</span>
+                <span className="text-xs" style={{ color: s.necessity === 'optional' ? 'var(--muted-foreground)' : 'var(--foreground)', opacity: s.necessity === 'optional' ? 0.6 : 1 }}>
+                  {s.necessity}
+                </span>
+              </div>
+            ))}
+          </div>
+
+          {/* Commitments */}
+          <div className="px-5 py-3">
+            <div className="text-xs italic" style={{ color: 'var(--muted-foreground)', opacity: 0.7 }}>
+              Commits: data used only for this study, not sold or shared.
             </div>
           </div>
         </div>
