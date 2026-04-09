@@ -30,6 +30,7 @@ const NAV_SECTIONS = [
   { id: 'motion',     label: 'Motion' },
   { id: 'surfaces',   label: 'Surfaces' },
   { id: 'components', label: 'Components' },
+  { id: 'docs',       label: 'Docs' },
   { id: 'status',     label: 'Status' },
   { id: 'rules',      label: 'Rules' },
 ];
@@ -171,6 +172,7 @@ export default function DesignSystemPage() {
                 <MotionSection />
                 <SurfacesSection />
                 <ComponentsSection />
+                <DocsSection />
                 <StatusSection />
                 <RulesSection />
               </div>
@@ -1202,6 +1204,225 @@ function ComponentsSection() {
   );
 }
 
+// ─── 08 Docs ─────────────────────────────────────────────────────────────────
+
+function DocsSection() {
+  return (
+    <SectionWrap id="docs">
+      <SectionHeader
+        title="Docs"
+        description="The spec site is a PDPP product surface, not a separate microsite. Docs chrome, prose density, and technical artifacts inherit the same shell rules, temperatures, and muted surfaces as the rest of the app."
+      />
+
+      <div className="flex flex-col gap-12">
+        <div>
+          <SubLabel>Docs shell — masthead, sidebar, TOC</SubLabel>
+          <div
+            className="overflow-hidden rounded-xl"
+            style={{ border: '1px solid var(--border)', backgroundColor: 'var(--background)' }}
+          >
+            <div
+              className="flex items-center gap-3 px-5 md:px-6"
+              style={{
+                height: '2.75rem',
+                borderBottom: '1px solid var(--border)',
+                backgroundColor: 'var(--background)',
+              }}
+            >
+              <div className="flex items-center gap-2">
+                <div
+                  className="flex h-5 w-5 items-center justify-center rounded"
+                  style={{ background: 'var(--primary)', color: 'var(--primary-foreground)' }}
+                >
+                  <span className="text-[9px] font-bold leading-none">P</span>
+                </div>
+                <span className="text-sm font-semibold tracking-tight">PDPP</span>
+                <span style={{ color: 'var(--muted-foreground)', opacity: 0.4 }}>/</span>
+                <span className="text-sm" style={{ color: 'var(--muted-foreground)' }}>Docs</span>
+              </div>
+              <div className="flex-1" />
+              <span className="font-mono text-xs" style={{ color: 'var(--muted-foreground)', opacity: 0.5 }}>v0.1.0</span>
+            </div>
+
+            <div className="flex">
+              <aside
+                className="hidden md:block w-[200px] shrink-0"
+                style={{
+                  borderRight: '1px solid var(--border)',
+                  background:
+                    'linear-gradient(to bottom, color-mix(in oklab, var(--human-wash) 58%, white), transparent 18%), color-mix(in oklab, var(--background) 97%, white)',
+                }}
+              >
+                <div className="px-3 py-5">
+                  <div className="mb-1 px-2 font-mono text-[9px] font-semibold uppercase tracking-[0.08em]" style={{ color: 'var(--muted-foreground)' }}>
+                    Spec
+                  </div>
+                  <nav className="flex flex-col gap-0.5">
+                    {[
+                      { label: 'Overview', active: false },
+                      { label: 'Core Protocol', active: true },
+                      { label: 'Collection Profile', active: false },
+                      { label: 'Architecture', active: false },
+                    ].map((item) => (
+                      <div
+                        key={item.label}
+                        className="relative rounded-lg px-2 py-2 text-[13px]"
+                        style={{
+                          backgroundColor: item.active ? 'var(--muted)' : 'transparent',
+                          color: item.active ? 'var(--foreground)' : 'var(--muted-foreground)',
+                          fontWeight: item.active ? 500 : 400,
+                        }}
+                      >
+                        {item.active && (
+                          <span
+                            aria-hidden="true"
+                            className="absolute left-2 top-2.5 bottom-2.5 w-px"
+                            style={{ backgroundColor: 'var(--human)' }}
+                          />
+                        )}
+                        <span style={{ paddingLeft: item.active ? '0.625rem' : 0 }}>{item.label}</span>
+                      </div>
+                    ))}
+                  </nav>
+                </div>
+              </aside>
+
+              <div className="flex-1 min-w-0">
+                <div
+                  style={{
+                    borderLeft: '1px solid var(--human)',
+                    borderBottom: '1px solid var(--border)',
+                    background: 'linear-gradient(to right, var(--human-wash), transparent 70%)',
+                  }}
+                >
+                  <div className="px-5 md:px-8 py-7">
+                    <div className="pdpp-eyebrow">Protocol Spec</div>
+                    <h3
+                      className="mt-2 font-semibold tracking-tight"
+                      style={{ fontSize: 'clamp(1.9rem, 4vw, 2.75rem)', lineHeight: 1.02, letterSpacing: '-0.05em' }}
+                    >
+                      Personal Data Portability Protocol
+                    </h3>
+                    <p className="mt-3 max-w-[56ch] text-sm leading-relaxed" style={{ color: 'var(--muted-foreground)' }}>
+                      Authorization semantics, stream disclosure, and collection profile boundaries expressed with the same shell language as the live reference.
+                    </p>
+                    <div className="mt-4 flex flex-wrap items-center gap-2">
+                      <button
+                        className="rounded-full px-3 py-1.5 text-xs font-medium"
+                        style={{ backgroundColor: 'var(--foreground)', color: 'var(--background)' }}
+                      >
+                        Copy Markdown
+                      </button>
+                      <button
+                        className="rounded-full border px-3 py-1.5 text-xs font-medium"
+                        style={{ borderColor: 'var(--border)', backgroundColor: 'var(--card)', color: 'var(--foreground)' }}
+                      >
+                        Open
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="px-5 md:px-8 py-8">
+                  <div className="text-sm font-semibold tracking-tight">1. Introduction</div>
+                  <p className="mt-3 max-w-[54ch] text-sm leading-relaxed" style={{ color: 'var(--muted-foreground)' }}>
+                    Dense protocol prose stays quiet: neutral surfaces, mono for protocol facts, and structure through borders instead of decorative noise.
+                  </p>
+                </div>
+              </div>
+
+              <aside className="hidden xl:block w-[16rem] shrink-0 px-5 py-8" style={{ color: 'var(--muted-foreground)' }}>
+                <div className="font-mono text-[11px] font-semibold uppercase tracking-[0.08em]">On This Page</div>
+                <div className="mt-4 flex flex-col gap-2 text-xs">
+                  <div style={{ color: 'var(--foreground)' }}>1. Introduction</div>
+                  <div>2. Terminology</div>
+                  <div>3. System Architecture</div>
+                  <div>4. Record Model</div>
+                </div>
+              </aside>
+            </div>
+          </div>
+        </div>
+
+        <div>
+          <SubLabel>Protocol prose — inline code and code block</SubLabel>
+          <div className="flex flex-col gap-5" style={{ maxWidth: '760px' }}>
+            <p className="text-sm leading-relaxed" style={{ color: 'var(--foreground)' }}>
+              A client requests <code className="font-mono text-xs px-1.5 py-0.5 rounded-full" style={{ border: '1px solid var(--border)', backgroundColor: 'color-mix(in oklab, var(--muted) 84%, white)' }}>authorization_details</code> and receives a <code className="font-mono text-xs px-1.5 py-0.5 rounded-full" style={{ border: '1px solid var(--border)', backgroundColor: 'color-mix(in oklab, var(--muted) 84%, white)' }}>grant</code>. Inline protocol facts stay small, mono, and pill-framed. They do not get heavy contrast blocks.
+            </p>
+
+            <pre
+              className="overflow-auto rounded-2xl border p-5 text-xs leading-relaxed"
+              style={{
+                borderColor: 'var(--border)',
+                backgroundColor: 'var(--muted)',
+                color: 'var(--muted-foreground)',
+                boxShadow: '0 1px 2px rgb(0 0 0 / 0.04), 0 1px 3px rgb(0 0 0 / 0.02)',
+              }}
+            >{`{
+  "stream": "following_accounts",
+  "view": "social_graph",
+  "access_mode": "single_use",
+  "time_range": { "since": "2026-01-01" }
+}`}</pre>
+          </div>
+        </div>
+
+        <div>
+          <SubLabel>Reference density — table and callout</SubLabel>
+          <div className="flex flex-col gap-6" style={{ maxWidth: '760px' }}>
+            <div className="overflow-x-auto" style={{ border: '1px solid var(--border)', borderRadius: '1rem' }}>
+              <table className="w-full text-sm" style={{ borderCollapse: 'collapse', minWidth: '480px' }}>
+                <thead style={{ backgroundColor: 'color-mix(in oklab, var(--muted) 92%, white)' }}>
+                  <tr style={{ borderBottom: '1px solid var(--border)' }}>
+                    {['Field', 'Meaning', 'Usage'].map((label) => (
+                      <th
+                        key={label}
+                        className="px-4 py-3 text-left font-mono text-[11px] font-semibold uppercase tracking-[0.08em]"
+                        style={{ color: 'var(--muted-foreground)' }}
+                      >
+                        {label}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {[
+                    ['stream', 'Named collection of records', 'Consent scope and query target'],
+                    ['view', 'Field projection over a stream', 'Human-readable disclosure unit'],
+                    ['grant', 'Immutable consent artifact', 'Server-authoritative authorization'],
+                  ].map(([field, meaning, usage]) => (
+                    <tr key={field} style={{ borderBottom: '1px solid var(--border)', backgroundColor: 'var(--background)' }}>
+                      <td className="px-4 py-3 align-top"><code className="font-mono text-xs">{field}</code></td>
+                      <td className="px-4 py-3 align-top text-xs" style={{ color: 'var(--muted-foreground)' }}>{meaning}</td>
+                      <td className="px-4 py-3 align-top text-xs" style={{ color: 'var(--muted-foreground)' }}>{usage}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            <blockquote
+              className="m-0 border-l-2 px-4 py-4 text-sm leading-relaxed"
+              style={{
+                borderColor: 'var(--human)',
+                backgroundColor: 'color-mix(in oklab, var(--human-wash) 82%, white)',
+                color: 'var(--foreground)',
+              }}
+            >
+              PDPP separates authorization from collection. The grant is the portable consent primitive; collection is one mechanism for making data available.
+            </blockquote>
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-10">
+        <RuleBlock>Docs do not get a separate aesthetic. Use the shared shell, muted technical surfaces, mono protocol facts, and the same light-only palette until dark mode is designed here explicitly.</RuleBlock>
+      </div>
+    </SectionWrap>
+  );
+}
+
 // ─── Specimen switcher ───────────────────────────────────────────────────────
 
 function SpecimenSwitcher<T>({
@@ -1722,6 +1943,14 @@ const RULE_GROUPS = [
       { bad: 'Warm tone on protocol data',   good: '--human on identity/consent only',   why: 'Warm = person. If it\'s a token ID, stream name, or spec ref, it stays cool.' },
       { bad: 'Cool tone on the person row',  good: '--human on name, handle, owner',     why: 'Protocol blue on a person\'s name breaks the duality contract.' },
       { bad: 'Temperature on neutral UI',    good: 'No temperature on structural chrome', why: 'Headers, nav, and empty states have no owner — they are neutral. Adding temperature here dilutes the signal.' },
+    ],
+  },
+  {
+    label: 'Docs',
+    rules: [
+      { bad: 'Separate docs theme', good: 'Reuse the PDPP shell', why: 'Docs are part of the product. Their chrome, hero, and rail geometry come from the same system.' },
+      { bad: 'Dark mode before design', good: 'Light only until specified here', why: 'System dark mode is not a design spec. Unsupported themes create accidental UI.' },
+      { bad: 'Independent code-block palette', good: 'Muted technical surfaces', why: 'Reference-heavy content belongs inside the same muted light system as tables, prose, and support UI.' },
     ],
   },
 ];
