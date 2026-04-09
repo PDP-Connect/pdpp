@@ -98,10 +98,10 @@ Each phase should be committed independently. Later phases should not require re
 | Phase | Status | Commits |
 |-------|--------|---------|
 | 1. Layout and visual hierarchy | DONE | 2d58e92 — cardless enforce/sync, temperature stepper, featured section gradients |
-| 2. Aesthetic intensity | TODO | |
-| 3. Detail panel polish | TODO | |
+| 2. Aesthetic intensity | PARTIAL | 99d7841 — cinematic field projection (3-phase: show/filter/result with strikethrough) |
+| 3. Detail panel polish | PARTIAL | 4d6d09e — section-specific toggle labels |
 | 4. Protocol completeness | TODO | |
-| 5. Responsive | TODO | |
+| 5. Responsive | PARTIAL | cfe2c10 — hero flow hidden on mobile |
 | 6. Metadata | TODO | |
 
 ## Post-fix target
