@@ -342,18 +342,19 @@ function FieldProjection({ grantedFields, allFields }: { grantedFields: string[]
           </div>
         </div>
 
-        {/* Grant filter line */}
-        <div className="flex items-center gap-3 py-1">
+        {/* Grant filter line — the central metaphor */}
+        <div className="flex items-center gap-3 py-2">
           <div
-            className="flex-1 h-px"
+            className="flex-1 h-0.5"
             style={{
               backgroundColor: phase === 'filter' || phase === 'result' ? 'var(--primary)' : 'var(--border)',
               opacity: phase !== 'hidden' ? 1 : 0,
-              transition: `opacity 300ms ${easeOut} 400ms, background-color 400ms ${easeOut}`,
+              boxShadow: phase === 'filter' || phase === 'result' ? '0 0 8px oklch(0.580 0.172 253.7 / 0.3)' : 'none',
+              transition: `opacity 300ms ${easeOut} 400ms, background-color 400ms ${easeOut}, box-shadow 400ms ${easeOut}`,
             }}
           />
           <span
-            className="text-xs font-mono shrink-0"
+            className="text-xs font-mono shrink-0 font-medium"
             style={{
               color: phase === 'filter' || phase === 'result' ? 'var(--primary)' : 'var(--muted-foreground)',
               opacity: phase !== 'hidden' ? 1 : 0,
@@ -363,11 +364,12 @@ function FieldProjection({ grantedFields, allFields }: { grantedFields: string[]
             grant filter
           </span>
           <div
-            className="flex-1 h-px"
+            className="flex-1 h-0.5"
             style={{
               backgroundColor: phase === 'filter' || phase === 'result' ? 'var(--primary)' : 'var(--border)',
               opacity: phase !== 'hidden' ? 1 : 0,
-              transition: `opacity 300ms ${easeOut} 400ms, background-color 400ms ${easeOut}`,
+              boxShadow: phase === 'filter' || phase === 'result' ? '0 0 8px oklch(0.580 0.172 253.7 / 0.3)' : 'none',
+              transition: `opacity 300ms ${easeOut} 400ms, background-color 400ms ${easeOut}, box-shadow 400ms ${easeOut}`,
             }}
           />
         </div>
