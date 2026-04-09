@@ -200,11 +200,20 @@ const SECTION_CONTENT: SectionConfig[] = [
 
 // ─── Stepper navigation ─────────────────────────────────────────────────────
 
+const SECTION_TEMPERATURE: Record<SectionId, 'human' | 'protocol' | 'neutral'> = {
+  ingest: 'protocol', inventory: 'protocol', request: 'protocol',
+  consent: 'human', grant: 'protocol', enforce: 'protocol',
+  sync: 'protocol', revoke: 'human', export: 'human',
+  multi: 'neutral', spec: 'neutral',
+};
+
 function Stepper({ activeId, onNavigate }: { activeId: SectionId; onNavigate: (id: SectionId) => void }) {
   return (
-    <nav className="fixed right-6 top-1/2 -translate-y-1/2 z-30 hidden lg:flex flex-col gap-1">
+    <nav className="fixed right-6 top-1/2 -translate-y-1/2 z-30 hidden lg:flex flex-col gap-0.5">
       {SECTIONS.map(({ id, label }) => {
         const isActive = id === activeId;
+        const temp = SECTION_TEMPERATURE[id];
+        const inactiveColor = temp === 'human' ? 'oklch(0.52 0.09 45 / 0.7)' : temp === 'protocol' ? 'oklch(0.580 0.172 253.7 / 0.5)' : 'var(--muted-foreground)';
         return (
           <button
             key={id}
@@ -212,7 +221,7 @@ function Stepper({ activeId, onNavigate }: { activeId: SectionId; onNavigate: (i
             className="flex items-center gap-2 py-1 px-2 rounded-md text-right transition-colors"
             style={{
               backgroundColor: isActive ? 'var(--foreground)' : 'transparent',
-              color: isActive ? 'var(--background)' : 'var(--muted-foreground)',
+              color: isActive ? 'var(--background)' : inactiveColor,
             }}
           >
             <span className="text-xs font-medium">{label}</span>
@@ -270,11 +279,10 @@ function FieldProjection({ grantedFields, allFields }: { grantedFields: string[]
   return (
     <div
       ref={ref}
-      data-surface="protocol"
-      className="rounded-xl overflow-hidden px-5 py-6"
-      style={{ maxWidth: '440px', width: '100%' }}
+      className="w-full py-4"
+      style={{ maxWidth: '520px' }}
     >
-      <div className="font-mono text-xs mb-4" style={{ color: 'var(--muted-foreground)', opacity: 0.6 }}>
+      <div className="font-mono text-xs mb-6" style={{ color: 'var(--muted-foreground)', opacity: 0.5 }}>
         GET /v1/streams/posts/records
       </div>
 
@@ -397,11 +405,10 @@ function IncrementalSync() {
   return (
     <div
       ref={ref}
-      data-surface="protocol"
-      className="rounded-xl overflow-hidden px-5 py-6"
-      style={{ maxWidth: '440px', width: '100%' }}
+      className="w-full py-4"
+      style={{ maxWidth: '520px' }}
     >
-      <div className="flex flex-col gap-4">
+      <div className="flex flex-col gap-6">
         {/* First query */}
         <div>
           <div
@@ -622,12 +629,12 @@ function FeaturedSection({
   return (
     <section
       id={config.id}
-      className="py-24 md:py-36"
+      className="py-28 md:py-40"
       style={{
         borderLeft: `2px solid ${borderColor}`,
         background: config.surface === 'human'
-          ? 'linear-gradient(to bottom, var(--human-wash), transparent 40%)'
-          : 'linear-gradient(to bottom, oklch(0.580 0.172 253.7 / 0.02), transparent 40%)',
+          ? 'linear-gradient(to bottom, oklch(0.52 0.09 45 / 0.06), oklch(0.52 0.09 45 / 0.02) 30%, transparent 60%)'
+          : 'linear-gradient(to bottom, oklch(0.580 0.172 253.7 / 0.03), oklch(0.580 0.172 253.7 / 0.01) 30%, transparent 60%)',
       }}
     >
       <div className="max-w-3xl mx-auto w-full px-6 md:px-12">
