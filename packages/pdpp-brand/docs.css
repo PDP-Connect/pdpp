@@ -238,8 +238,21 @@
 .pdpp-docs-body .shiki {
   border: 1px solid var(--border);
   border-radius: 1rem;
-  background: color-mix(in oklab, var(--foreground) 7%, white);
+  background: var(--muted) !important;
+  color: var(--muted-foreground) !important;
   box-shadow: 0 1px 2px rgb(0 0 0 / 0.04), 0 1px 3px rgb(0 0 0 / 0.02);
+}
+
+.pdpp-docs-body .shiki,
+.pdpp-docs-body .shiki span,
+.pdpp-docs-body .shiki code,
+.pdpp-docs-body .shiki pre {
+  background: transparent !important;
+  color: inherit !important;
+}
+
+.pdpp-docs-body pre code {
+  color: inherit;
 }
 
 .pdpp-docs-body table {
@@ -253,6 +266,13 @@
 
 .pdpp-docs-body thead {
   background: color-mix(in oklab, var(--muted) 92%, white);
+}
+
+.pdpp-docs-body tbody,
+.pdpp-docs-body tr,
+.pdpp-docs-body td {
+  background: var(--background);
+  color: color-mix(in oklab, var(--foreground) 82%, white);
 }
 
 .pdpp-docs-body th {
