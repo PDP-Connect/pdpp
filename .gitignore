@@ -9,7 +9,10 @@ local/
 *.png
 *.yml
 .agents/
-.claude/
+# .claude/ is tracked for project hooks and working state
+# but some contents are ignored:
+.claude/projects/
+.claude/CLAUDE.local.md
 .playwright-mcp/
 .impeccable.md
 skills-lock.json
