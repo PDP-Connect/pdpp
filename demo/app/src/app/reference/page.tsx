@@ -506,6 +506,37 @@ function IncrementalSync() {
   );
 }
 
+// ─── Scroll reveal ──────────────────────────────────────────────────────────
+
+function Reveal({ children, delay = 0 }: { children: React.ReactNode; delay?: number }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [visible, setVisible] = useState(false);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const obs = new IntersectionObserver(
+      ([entry]) => { if (entry.isIntersecting) { setVisible(true); obs.disconnect(); } },
+      { threshold: 0.15 }
+    );
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, []);
+
+  return (
+    <div
+      ref={ref}
+      style={{
+        opacity: visible ? 1 : 0,
+        transform: visible ? 'translateY(0)' : 'translateY(24px)',
+        transition: `opacity 700ms cubic-bezier(0.16, 1, 0.3, 1) ${delay}ms, transform 700ms cubic-bezier(0.16, 1, 0.3, 1) ${delay}ms`,
+      }}
+    >
+      {children}
+    </div>
+  );
+}
+
 // ─── Section shells ─────────────────────────────────────────────────────────
 
 // Standard section: text left, component right on large screens
@@ -534,7 +565,7 @@ function Section({
     >
       <div className={`${wide ? 'max-w-5xl' : 'max-w-3xl'} mx-auto w-full px-6 md:px-12`}>
         <div className={wide ? 'grid grid-cols-1 lg:grid-cols-2 gap-12 items-start' : ''}>
-          <div>
+          <Reveal>
             <div
               className="font-mono text-xs uppercase tracking-widest mb-3"
               style={{ color: borderColor, opacity: 0.7 }}
@@ -554,10 +585,12 @@ function Section({
               {config.narrative}
             </p>
             {detail && <div className="mt-4">{detail}</div>}
-          </div>
-          <div className={wide ? '' : 'mt-8'}>
-            {children}
-          </div>
+          </Reveal>
+          <Reveal delay={150}>
+            <div className={wide ? '' : 'mt-8'}>
+              {children}
+            </div>
+          </Reveal>
         </div>
       </div>
     </section>
@@ -588,28 +621,32 @@ function FeaturedSection({
       }}
     >
       <div className="max-w-3xl mx-auto w-full px-6 md:px-12">
-        <div
-          className="font-mono text-xs uppercase tracking-widest mb-3"
-          style={{ color: borderColor, opacity: 0.7 }}
-        >
-          {config.id}
-        </div>
-        <h2
-          className="text-3xl md:text-4xl font-semibold tracking-tight mb-4"
-          style={{ color: 'var(--foreground)', lineHeight: 1.1 }}
-        >
-          {config.headline}
-        </h2>
-        <p
-          className="text-sm md:text-base leading-relaxed mb-12"
-          style={{ color: 'var(--muted-foreground)', maxWidth: '48ch' }}
-        >
-          {config.narrative}
-        </p>
-        <div className="flex justify-center">
-          {children}
-        </div>
-        {detail && <div className="mt-8 max-w-xl">{detail}</div>}
+        <Reveal>
+          <div
+            className="font-mono text-xs uppercase tracking-widest mb-3"
+            style={{ color: borderColor, opacity: 0.7 }}
+          >
+            {config.id}
+          </div>
+          <h2
+            className="text-3xl md:text-4xl font-semibold tracking-tight mb-4"
+            style={{ color: 'var(--foreground)', lineHeight: 1.1 }}
+          >
+            {config.headline}
+          </h2>
+          <p
+            className="text-sm md:text-base leading-relaxed mb-12"
+            style={{ color: 'var(--muted-foreground)', maxWidth: '48ch' }}
+          >
+            {config.narrative}
+          </p>
+        </Reveal>
+        <Reveal delay={200}>
+          <div className="flex justify-center">
+            {children}
+          </div>
+        </Reveal>
+        {detail && <Reveal delay={300}><div className="mt-8 max-w-xl">{detail}</div></Reveal>}
       </div>
     </section>
   );
@@ -769,23 +806,52 @@ export default function ReferencePage() {
       {/* Right-side stepper (large screens) */}
       <Stepper activeId={activeSection} onNavigate={navigateTo} />
 
+      {/* Protocol state indicator — visible during sections 4-8 */}
+      {['consent', 'grant', 'enforce', 'sync', 'revoke'].includes(activeSection) && (
+        <div
+          className="fixed bottom-6 left-6 z-30 flex items-center gap-2 px-3 py-1.5 rounded-full text-xs"
+          style={{
+            backgroundColor: 'var(--card)',
+            border: '1px solid var(--border)',
+            boxShadow: '0 4px 6px rgba(0,0,0,0.04), 0 10px 15px rgba(0,0,0,0.08)',
+            opacity: 0.9,
+          }}
+        >
+          <div
+            className="w-1.5 h-1.5 rounded-full"
+            style={{
+              backgroundColor: protocol.phase === 'granted' ? 'var(--success)' : protocol.phase === 'revoked' ? 'var(--destructive)' : 'var(--border)',
+            }}
+          />
+          <span style={{ color: 'var(--muted-foreground)' }}>
+            Grant: {protocol.phase === 'granted' ? 'active' : protocol.phase === 'revoked' ? 'revoked' : 'pending'}
+          </span>
+        </div>
+      )}
+
       {/* ── Hero ── */}
       <section className="pt-24 pb-16 md:pt-32 md:pb-24 px-6 md:px-12">
         <div className="max-w-3xl mx-auto">
-          <h1
-            className="text-4xl md:text-5xl font-semibold tracking-tight mb-6"
-            style={{ color: 'var(--foreground)', lineHeight: 1.08 }}
-          >
-            Personal Data
-            <br />
-            Portability Protocol
-          </h1>
-          <p className="text-base md:text-lg leading-relaxed mb-2" style={{ color: 'var(--muted-foreground)', maxWidth: '52ch' }}>
-            An authorization and disclosure protocol for personal data. You decide what to share, with whom, for how long, for what purpose.
-          </p>
-          <p className="text-sm leading-relaxed" style={{ color: 'var(--muted-foreground)', maxWidth: '52ch', opacity: 0.6 }}>
-            This is the protocol, running. Every component below implements a section of the spec.
-          </p>
+          <Reveal>
+            <h1
+              className="text-4xl md:text-5xl lg:text-6xl font-semibold tracking-tight mb-6"
+              style={{ color: 'var(--foreground)', lineHeight: 1.05 }}
+            >
+              Personal Data
+              <br />
+              Portability Protocol
+            </h1>
+          </Reveal>
+          <Reveal delay={100}>
+            <p className="text-base md:text-lg leading-relaxed mb-2" style={{ color: 'var(--muted-foreground)', maxWidth: '52ch' }}>
+              An authorization and disclosure protocol for personal data. You decide what to share, with whom, for how long, for what purpose.
+            </p>
+          </Reveal>
+          <Reveal delay={200}>
+            <p className="text-sm leading-relaxed" style={{ color: 'var(--muted-foreground)', maxWidth: '52ch', opacity: 0.6 }}>
+              This is the protocol, running. Every component below implements a section of the spec.
+            </p>
+          </Reveal>
         </div>
       </section>
 
