@@ -234,7 +234,7 @@ function Stepper({ activeId, onNavigate }: { activeId: SectionId; onNavigate: (i
 
 // ─── Detail panel (Level 2 depth) ───────────────────────────────────────────
 
-function DetailPanel({ spec, children }: { spec: string; children: React.ReactNode }) {
+function DetailPanel({ spec, label, children }: { spec: string; label?: string; children: React.ReactNode }) {
   const [open, setOpen] = useState(false);
   return (
     <div className="mt-6 w-full" style={{ maxWidth: '52ch' }}>
@@ -247,7 +247,7 @@ function DetailPanel({ spec, children }: { spec: string; children: React.ReactNo
           className="text-xs inline-block"
           style={{ transform: open ? 'rotate(90deg)' : 'rotate(0deg)', transition: 'transform 150ms' }}
         >&#x203A;</span>
-        Protocol details
+        {label || 'Protocol details'}
         <span className="font-mono ml-1" style={{ color: 'var(--edu-fg)' }}>{spec}</span>
       </button>
       {open && (
@@ -930,7 +930,7 @@ export default function ReferencePage() {
         config={SECTION_CONTENT[0]}
         wide
         detail={
-          <DetailPanel spec="§7 Manifest, Collection Profile">
+          <DetailPanel spec="§7 Manifest, Collection Profile" label="See the connector manifest">
             <pre className="font-mono text-xs p-3 rounded-md overflow-x-auto" style={{ backgroundColor: 'var(--muted)', color: 'var(--muted-foreground)' }}>
 {`// Connector manifest (consent surface declaration)
 {
@@ -966,7 +966,7 @@ export default function ReferencePage() {
         config={SECTION_CONTENT[1]}
         wide
         detail={
-          <DetailPanel spec="§4 Record Model">
+          <DetailPanel spec="§4 Record Model" label="See a record">
             <pre className="font-mono text-xs p-3 rounded-md overflow-x-auto" style={{ backgroundColor: 'var(--muted)', color: 'var(--muted-foreground)' }}>
 {`// A PDPP record
 {
@@ -1012,7 +1012,7 @@ export default function ReferencePage() {
         config={SECTION_CONTENT[2]}
         wide
         detail={
-          <DetailPanel spec="§5 Selection Request">
+          <DetailPanel spec="§5 Selection Request" label="See the HTTP request">
             <pre className="font-mono text-xs p-3 rounded-md overflow-x-auto" style={{ backgroundColor: 'var(--muted)', color: 'var(--muted-foreground)' }}>
 {`POST /authorize HTTP/1.1
 Content-Type: application/json
@@ -1107,7 +1107,7 @@ Content-Type: application/json
       <FeaturedSection
         config={SECTION_CONTENT[3]}
         detail={
-          <DetailPanel spec="§5.1 Client Display, §5.2 Client Claims">
+          <DetailPanel spec="§5.1 Client Display, §5.2 Client Claims" label="See the trust model">
             <p>Three content layers rendered with distinct visual treatment:</p>
             <div className="font-mono text-xs flex flex-col gap-1">
               <span><span style={{ color: 'var(--foreground)' }}>Layer 1:</span> Protocol facts (from grant fields) — rendered as authoritative</span>
@@ -1187,7 +1187,7 @@ Content-Type: application/json
         config={SECTION_CONTENT[4]}
         wide
         detail={
-          <DetailPanel spec="§6 Grant">
+          <DetailPanel spec="§6 Grant" label="See the grant JSON">
             <p>The grant is an immutable consent artifact. Once issued, it cannot be modified. Changes require revoke-and-reissue.</p>
             {protocol.grant && (
               <pre className="font-mono text-xs p-3 rounded-md overflow-x-auto" style={{ backgroundColor: 'var(--muted)', color: 'var(--muted-foreground)' }}>
@@ -1230,7 +1230,7 @@ Content-Type: application/json
       <FeaturedSection
         config={SECTION_CONTENT[5]}
         detail={
-          <DetailPanel spec="§8 Resource Server">
+          <DetailPanel spec="§8 Resource Server" label="See the HTTP exchange">
             <p>The RS computes effective_filter = grant_filter AND request_filter. Request-time filters can only narrow, never widen.</p>
             <pre className="font-mono text-xs p-3 rounded-md overflow-x-auto" style={{ backgroundColor: 'var(--muted)', color: 'var(--muted-foreground)' }}>
 {`GET /v1/streams/posts/records HTTP/1.1
@@ -1296,7 +1296,7 @@ PDPP-Version: 0.1.0
         config={SECTION_CONTENT[6]}
         wide
         detail={
-          <DetailPanel spec="§4.1 Incremental Sync">
+          <DetailPanel spec="§4.1 Incremental Sync" label="See the sync protocol">
             <pre className="font-mono text-xs p-3 rounded-md overflow-x-auto" style={{ backgroundColor: 'var(--muted)', color: 'var(--muted-foreground)' }}>
 {`GET /v1/streams/posts/records?changes_since=${protocol.syncCursor || '"cursor_a8f2..."'}
 Authorization: Bearer <client_token>
@@ -1360,7 +1360,7 @@ Authorization: Bearer <client_token>
         config={SECTION_CONTENT[7]}
         wide
         detail={
-          <DetailPanel spec="§6.5 Revocation">
+          <DetailPanel spec="§6.5 Revocation" label="See the revocation flow">
             <pre className="font-mono text-xs p-3 rounded-md overflow-x-auto" style={{ backgroundColor: 'var(--muted)', color: 'var(--muted-foreground)' }}>
 {`// After revocation:
 POST /revoke  →  AS marks grant.status = "revoked"
@@ -1412,7 +1412,7 @@ RS sees revocation within max(token_exp, 60s)`}
         config={SECTION_CONTENT[8]}
         wide
         detail={
-          <DetailPanel spec="§8.3 Owner Tokens">
+          <DetailPanel spec="§8.3 Owner Tokens" label="See the token exchange">
             <pre className="font-mono text-xs p-3 rounded-md overflow-x-auto" style={{ backgroundColor: 'var(--muted)', color: 'var(--muted-foreground)' }}>
 {`// Self-export: owner token, no grant required
 GET /v1/streams/posts/records
