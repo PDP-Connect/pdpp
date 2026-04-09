@@ -13,6 +13,7 @@ import type {
   StreamInventoryProps,
   ConnectorCardProps,
 } from '@/components/pdpp';
+import { useProtocol } from '@/lib/use-protocol';
 
 // ─── Config ─────────────────────────────────────────────────────────────────
 
@@ -661,17 +662,10 @@ function FeaturedSection({
   );
 }
 
-// ─── Protocol state (connects sections 4-8) ────────────────────────────────
-
-type ProtocolState = {
-  phase: 'pending' | 'granted' | 'revoked';
-  grantedStreams: string[];     // stream keys the user authorized
-  grantedFields: string[];     // fields the grant authorizes (for the posts stream)
-  optionalIncluded: boolean;   // whether the optional stream was included
-};
+// ─── Protocol state (driven by mock server) ─────────────────────────────────
 
 const ALL_POST_FIELDS = ['id', 'caption', 'taken_at', 'media_type', 'like_count', 'comment_count', 'location', 'is_pinned'];
-const DEFAULT_GRANTED_FIELDS = ['id', 'caption', 'taken_at', 'media_type'];
+const GRANTED_POST_FIELDS = ['id', 'caption', 'taken_at', 'media_type'];
 
 // ─── Page ───────────────────────────────────────────────────────────────────
 
@@ -679,29 +673,14 @@ export default function ReferencePage() {
   const [activeSection, setActiveSection] = useState<SectionId>('ingest');
   const observerRef = useRef<IntersectionObserver | null>(null);
 
-  // Protocol state: flows from Consent (§4) through Grant (§5), Enforce (§6), Revoke (§8)
-  const [protocol, setProtocol] = useState<ProtocolState>({
-    phase: 'pending',
-    grantedStreams: ['following', 'posts'],
-    grantedFields: DEFAULT_GRANTED_FIELDS,
-    optionalIncluded: false,
-  });
+  // Protocol state from mock server
+  const protocol = useProtocol();
 
-  const handleAllow = useCallback(() => {
-    setProtocol(prev => ({ ...prev, phase: 'granted' }));
-  }, []);
-
-  const handleDeny = useCallback(() => {
-    setProtocol({ phase: 'pending', grantedStreams: [], grantedFields: [], optionalIncluded: false });
-  }, []);
-
-  const handleRevoke = useCallback(() => {
-    setProtocol(prev => ({ ...prev, phase: 'revoked' }));
-  }, []);
-
-  const handleReset = useCallback(() => {
-    setProtocol({ phase: 'pending', grantedStreams: ['following', 'posts'], grantedFields: DEFAULT_GRANTED_FIELDS, optionalIncluded: false });
-  }, []);
+  // Map protocol phase to the old interface for sections that still use it
+  const handleAllow = protocol.approve;
+  const handleDeny = protocol.deny;
+  const handleRevoke = protocol.revoke;
+  const handleReset = protocol.reset;
 
   // Track active section via IntersectionObserver
   useEffect(() => {
@@ -748,10 +727,27 @@ export default function ReferencePage() {
   const [multiIdx, setMultiIdx] = useState(0);
 
   // Derive grant inspector props from protocol state
-  const grantProps: GrantInspectorProps = {
-    ...GRANT_SPECIMEN,
-    status: protocol.phase === 'revoked' ? 'revoked' : protocol.phase === 'granted' ? 'active' : 'active',
-  };
+  const grantProps: GrantInspectorProps = protocol.grant ? {
+    grantId: protocol.grant.grant_id,
+    issuedAt: new Date(protocol.grant.issued_at).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' }),
+    status: protocol.grant.status,
+    client: { clientId: protocol.grant.client_id, name: 'Audience Lens' },
+    purposeCode: protocol.grant.purpose_code,
+    purposeDescription: protocol.grant.purpose_description,
+    accessMode: protocol.grant.access_mode,
+    expiresAt: protocol.grant.expires_at ? new Date(protocol.grant.expires_at).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' }) : null,
+    retention: protocol.grant.retention ? { duration: '90 days', onExpiry: protocol.grant.retention.on_expiry } : undefined,
+    streams: protocol.grant.streams.map(s => ({
+      name: s.name,
+      label: s.name === 'following_accounts' ? 'Who you follow' : s.name === 'posts' ? 'Your posts' : s.name,
+      fields: s.fields || undefined,
+      view: s.view || undefined,
+      timeRange: s.time_range || undefined,
+    })),
+  } : GRANT_SPECIMEN;
+
+  // Get the granted fields for the posts stream (used by FieldProjection)
+  const grantedPostFields = protocol.grant?.streams.find(s => s.name === 'posts')?.fields || GRANTED_POST_FIELDS;
 
   return (
     <div className="min-h-screen" style={{ backgroundColor: 'var(--background)', color: 'var(--foreground)' }}>
@@ -833,7 +829,7 @@ export default function ReferencePage() {
             }}
           />
           <span style={{ color: 'var(--muted-foreground)' }}>
-            Grant: {protocol.phase === 'granted' ? 'active' : protocol.phase === 'revoked' ? 'revoked' : 'pending'}
+            Grant: {protocol.phase === 'granted' ? 'active' : protocol.phase === 'revoked' ? 'revoked' : 'idle'}
           </span>
         </div>
       )}
@@ -977,7 +973,7 @@ export default function ReferencePage() {
           </DetailPanel>
         }
       >
-        {protocol.phase === 'pending' ? (
+        {protocol.phase === 'idle' ? (
           <ConsentCard {...CONSENT_SPECIMEN} onAllow={handleAllow} onDeny={handleDeny} />
         ) : (
           <div className="flex flex-col items-center gap-3" style={{ maxWidth: '440px', width: '100%' }}>
@@ -1058,7 +1054,7 @@ export default function ReferencePage() {
             </div>
           </div>
         ) : (
-          <FieldProjection grantedFields={protocol.grantedFields} allFields={ALL_POST_FIELDS} />
+          <FieldProjection grantedFields={grantedPostFields} allFields={ALL_POST_FIELDS} />
         )}
       </FeaturedSection>
 
