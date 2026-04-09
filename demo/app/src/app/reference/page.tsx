@@ -984,30 +984,48 @@ export default function ReferencePage() {
         config={SECTION_CONTENT[0]}
         wide
         detail={
-          <DetailPanel spec="§7 Manifest, Collection Profile" label="See the connector manifest">
+          <DetailPanel spec="§7 Manifest, Collection Profile" label="See the connector runtime">
+            <p className="font-medium" style={{ color: 'var(--foreground)' }}>Connector manifest</p>
             <pre className="font-mono text-xs p-3 rounded-md overflow-x-auto" style={{ backgroundColor: 'var(--muted)', color: 'var(--muted-foreground)' }}>
-{`// Connector manifest (consent surface declaration)
-{
+{`{
   "connector_id": "https://registry.pdpp.org/connectors/instagram",
   "version": "1.2.0",
   "display_name": "Instagram",
   "streams": [{
     "name": "posts",
-    "display": {
-      "label": "Your posts",
-      "detail": "Post captions, dates, and media types."
-    },
+    "display": { "label": "Your posts", "detail": "..." },
     "semantics": "append_only",
     "selection": { "fields": true, "resources": false },
     "consent_time_field": "taken_at"
   }]
 }`}
             </pre>
-            <p>Connectors run as child processes with stdin/stdout JSONL:</p>
-            <div className="font-mono text-xs flex flex-col gap-1">
-              <span><span style={{ opacity: 0.65 }}>runtime → connector:</span> START (collection_mode, state, bindings)</span>
-              <span><span style={{ opacity: 0.65 }}>connector → runtime:</span> RECORD, STATE, INTERACTION, DONE</span>
-              <span>The connector never sees the raw grant or token.</span>
+
+            <p className="font-medium mt-4" style={{ color: 'var(--foreground)' }}>Collection runtime message flow</p>
+            <p>The runtime spawns the connector as a child process. Communication is stdin/stdout JSONL. The connector never sees the raw grant or token.</p>
+
+            {/* Message sequence visualization */}
+            <div className="flex flex-col gap-0 mt-2">
+              {[
+                { dir: '→', from: 'Runtime', to: 'Connector', msg: 'START', detail: '{ collection_mode, state, bindings }', color: 'var(--primary)' },
+                { dir: '←', from: 'Connector', to: 'Runtime', msg: 'RECORD', detail: '{ stream: "posts", key: "post_0", data: {...} }', color: 'var(--success)' },
+                { dir: '←', from: 'Connector', to: 'Runtime', msg: 'RECORD', detail: '{ stream: "posts", key: "post_1", data: {...} }', color: 'var(--success)' },
+                { dir: '←', from: 'Connector', to: 'Runtime', msg: 'STATE', detail: '{ cursor: "..." }', color: 'var(--warning)' },
+                { dir: '←', from: 'Connector', to: 'Runtime', msg: 'RECORD', detail: '...22 records total', color: 'var(--success)' },
+                { dir: '←', from: 'Connector', to: 'Runtime', msg: 'DONE', detail: '{ status: "succeeded", records_emitted: 22 }', color: 'var(--primary)' },
+              ].map((m, i) => (
+                <div key={i} className="flex items-start gap-2 py-1.5 font-mono text-xs" style={{ borderBottom: i < 5 ? '1px solid var(--border)' : 'none' }}>
+                  <span className="shrink-0 w-4 text-center" style={{ color: 'var(--muted-foreground)' }}>{m.dir}</span>
+                  <span className="shrink-0 font-medium" style={{ color: m.color }}>{m.msg}</span>
+                  <span style={{ color: 'var(--muted-foreground)', opacity: 0.7 }}>{m.detail}</span>
+                </div>
+              ))}
+            </div>
+
+            <div className="mt-3 flex flex-col gap-1 font-mono text-xs">
+              <span><span style={{ opacity: 0.65 }}>INTERACTION</span> — connector requests user input (OTP, captcha). Runtime presents to user, returns response.</span>
+              <span><span style={{ opacity: 0.65 }}>SKIP_RESULT</span> — connector signals intentional stream skip (rate limit, unavailable).</span>
+              <span><span style={{ opacity: 0.65 }}>Binding matching</span> — runtime checks manifest bindings before spawn. Fails fast if requirements unmet.</span>
             </div>
           </DetailPanel>
         }
@@ -1342,10 +1360,24 @@ Authorization: Bearer <client_token>
               <span><span style={{ opacity: 0.65 }}>changes_since</span> — sync state across sessions (distinct token space)</span>
               <span>A client MUST NOT use a next_cursor value as a changes_since parameter.</span>
             </div>
-            <p className="italic" style={{ opacity: 0.7 }}>
-              RS may expire version data. If a cursor is stale, RS returns 410 Gone. Client must full re-sync.
-            </p>
-            <p><strong>single_use grants</strong> do not support incremental sync. The runtime does not persist STATE from single_use collection runs. single_use is a one-shot export; continuous is for ongoing access.</p>
+            <p className="font-medium mt-3" style={{ color: 'var(--foreground)' }}>Tombstones</p>
+            <p>When a record is deleted from a mutable_state stream, the RS includes a tombstone in incremental sync responses:</p>
+            <pre className="font-mono text-xs p-3 rounded-md overflow-x-auto" style={{ backgroundColor: 'var(--muted)', color: 'var(--muted-foreground)' }}>
+{`{ "stream": "following_accounts",
+  "key": "follow_42",
+  "deleted": true,
+  "deleted_at": "2026-04-08T10:00:00Z",
+  "emitted_at": "2026-04-08T10:00:01Z" }`}
+            </pre>
+
+            <p className="font-medium mt-3" style={{ color: 'var(--foreground)' }}>Cursor expiry</p>
+            <pre className="font-mono text-xs p-3 rounded-md overflow-x-auto" style={{ backgroundColor: 'var(--muted)', color: 'var(--muted-foreground)' }}>
+{`GET /v1/streams/posts/records?changes_since=expired_cursor
+→ 410 Gone
+→ Client MUST perform full re-sync`}
+            </pre>
+
+            <p><strong>single_use grants</strong> do not support incremental sync. The runtime does not persist STATE from single_use collection runs.</p>
           </DetailPanel>
         }
       >
