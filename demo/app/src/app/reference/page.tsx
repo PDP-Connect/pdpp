@@ -915,25 +915,35 @@ export default function ReferencePage() {
       )}
 
       {/* ── Hero ── */}
-      <section className="pt-24 pb-16 md:pt-32 md:pb-24 px-6 md:px-12">
+      <section className="pt-20 pb-16 md:pt-28 md:pb-24 px-6 md:px-12">
         <div className="max-w-3xl mx-auto">
           <Reveal>
+            <div className="flex items-center gap-2 mb-8">
+              <span className="font-mono text-xs px-2 py-0.5 rounded" style={{ backgroundColor: 'var(--primary-wash)', color: 'var(--primary)', border: '1px solid oklch(0.580 0.172 253.7 / 0.15)' }}>
+                v0.1.0
+              </span>
+              <span className="font-mono text-xs" style={{ color: 'var(--muted-foreground)' }}>
+                Draft specification
+              </span>
+            </div>
+          </Reveal>
+          <Reveal delay={50}>
             <h1
-              className="text-4xl md:text-5xl lg:text-6xl font-semibold tracking-tight mb-6"
-              style={{ color: 'var(--foreground)', lineHeight: 1.05 }}
+              className="text-4xl md:text-5xl lg:text-6xl font-semibold mb-6"
+              style={{ color: 'var(--foreground)', lineHeight: 1.05, letterSpacing: '-0.03em' }}
             >
               Personal Data
               <br />
               Portability Protocol
             </h1>
           </Reveal>
-          <Reveal delay={100}>
-            <p className="text-base md:text-lg leading-relaxed mb-2" style={{ color: 'var(--muted-foreground)', maxWidth: '52ch' }}>
+          <Reveal delay={150}>
+            <p className="text-base md:text-lg leading-relaxed mb-3" style={{ color: 'var(--muted-foreground)', maxWidth: '48ch' }}>
               An authorization and disclosure protocol for personal data. You decide what to share, with whom, for how long, for what purpose.
             </p>
           </Reveal>
-          <Reveal delay={200}>
-            <p className="text-sm leading-relaxed mb-10" style={{ color: 'var(--muted-foreground)', maxWidth: '52ch', opacity: 0.7 }}>
+          <Reveal delay={250}>
+            <p className="text-sm leading-relaxed mb-10" style={{ color: 'var(--muted-foreground)', maxWidth: '48ch', opacity: 0.7 }}>
               This is the protocol, running. Every component below implements a section of the spec.
             </p>
           </Reveal>
