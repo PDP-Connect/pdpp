@@ -887,7 +887,18 @@ export default function ReferencePage() {
           </DetailPanel>
         }
       >
-        <StreamInventory {...INVENTORY_SPECIMEN} />
+        <StreamInventory
+          connectorName="Instagram"
+          connectorVersion="1.2.0"
+          streams={protocol.serverStats.map(s => ({
+            name: s.name,
+            label: s.name === 'following_accounts' ? 'Who you follow' : s.name === 'posts' ? 'Your posts' : s.name === 'ad_targeting' ? 'Ad interest categories' : s.name,
+            detail: INVENTORY_SPECIMEN.streams.find(is => is.name === s.name)?.detail || '',
+            semantics: s.name === 'posts' ? 'append_only' as const : 'mutable_state' as const,
+            recordCount: s.recordCount,
+            lastSynced: 'Apr 6, 2026',
+          }))}
+        />
       </Section>
 
       {/* 3. Request — wide layout */}
