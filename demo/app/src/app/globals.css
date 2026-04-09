@@ -83,6 +83,13 @@
   --warning: oklch(0.62 0.15 70);
   --edu-fg:  oklch(0.55 0.08 270); /* spec citation layer */
 
+  /* Opacity variants for common inline patterns */
+  --success-wash: oklch(0.52 0.15 150 / 0.1);   /* success at 10% — field chip bg */
+  --success-wash-strong: oklch(0.52 0.15 150 / 0.15); /* success at 15% — result field chip bg */
+  --primary-wash: oklch(0.580 0.172 253.7 / 0.06); /* primary at 6% — protocol section bg */
+  --verified-wash: oklch(0.52 0.15 150 / 0.1);  /* verified badge bg */
+  --warning-wash: oklch(0.62 0.15 70 / 0.1);    /* unverified badge bg */
+
   /* Surface temperature — human vs protocol duality */
   --human:      oklch(0.52 0.09 45);            /* copper-deep — identity, ownership, consent */
   --human-wash: oklch(0.52 0.09 45 / 0.07);    /* warm background tint for human surfaces */

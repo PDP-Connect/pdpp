@@ -323,7 +323,7 @@ function FieldProjection({ grantedFields, allFields }: { grantedFields: string[]
                   key={f}
                   className="font-mono text-xs px-2 py-1 rounded-md"
                   style={{
-                    backgroundColor: granted ? 'oklch(0.52 0.15 150 / 0.1)' : 'var(--muted)',
+                    backgroundColor: granted ? 'var(--success-wash)' : 'var(--muted)',
                     color: granted ? 'var(--success)' : 'var(--muted-foreground)',
                     opacity: phase === 'hidden' ? 0 : (isFiltered && !granted) ? 0.15 : 1,
                     transform: phase === 'hidden'
@@ -390,7 +390,7 @@ function FieldProjection({ grantedFields, allFields }: { grantedFields: string[]
                 key={f}
                 className="font-mono text-xs px-2 py-1 rounded-md"
                 style={{
-                  backgroundColor: 'oklch(0.52 0.15 150 / 0.15)',
+                  backgroundColor: 'var(--success-wash-strong)',
                   color: 'var(--success)',
                   fontWeight: 500,
                   opacity: phase === 'result' ? 1 : 0,
@@ -901,11 +901,11 @@ export default function ReferencePage() {
             <div className="hidden md:flex items-center gap-0 pb-2" style={{ maxWidth: '100%' }}>
               {[
                 { label: 'Platform', color: 'var(--muted-foreground)', bg: 'var(--muted)' },
-                { label: 'Connector', color: 'var(--primary)', bg: 'oklch(0.580 0.172 253.7 / 0.06)' },
-                { label: 'Your Server', color: 'var(--primary)', bg: 'oklch(0.580 0.172 253.7 / 0.06)' },
+                { label: 'Connector', color: 'var(--primary)', bg: 'var(--primary-wash)' },
+                { label: 'Your Server', color: 'var(--primary)', bg: 'var(--primary-wash)' },
                 { label: 'Consent', color: 'var(--human)', bg: 'var(--human-wash)' },
-                { label: 'Grant', color: 'var(--primary)', bg: 'oklch(0.580 0.172 253.7 / 0.06)' },
-                { label: 'Enforce', color: 'var(--primary)', bg: 'oklch(0.580 0.172 253.7 / 0.06)' },
+                { label: 'Grant', color: 'var(--primary)', bg: 'var(--primary-wash)' },
+                { label: 'Enforce', color: 'var(--primary)', bg: 'var(--primary-wash)' },
                 { label: 'Client', color: 'var(--muted-foreground)', bg: 'var(--muted)' },
               ].map((step, i, arr) => (
                 <React.Fragment key={step.label}>
