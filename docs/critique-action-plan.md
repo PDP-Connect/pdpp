@@ -97,7 +97,7 @@ Each phase should be committed independently. Later phases should not require re
 
 | Phase | Status | Commits |
 |-------|--------|---------|
-| 1. Layout and visual hierarchy | TODO | |
+| 1. Layout and visual hierarchy | DONE | 2d58e92 — cardless enforce/sync, temperature stepper, featured section gradients |
 | 2. Aesthetic intensity | TODO | |
 | 3. Detail panel polish | TODO | |
 | 4. Protocol completeness | TODO | |

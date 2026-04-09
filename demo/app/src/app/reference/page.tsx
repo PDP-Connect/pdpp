@@ -263,48 +263,76 @@ function DetailPanel({ spec, children }: { spec: string; children: React.ReactNo
 
 function FieldProjection({ grantedFields, allFields }: { grantedFields: string[]; allFields: string[] }) {
   const ref = useRef<HTMLDivElement>(null);
-  const [animated, setAnimated] = useState(false);
+  const [phase, setPhase] = useState<'hidden' | 'show' | 'filter' | 'result'>('hidden');
 
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
     const obs = new IntersectionObserver(
-      ([entry]) => { if (entry.isIntersecting) { setAnimated(true); obs.disconnect(); } },
-      { threshold: 0.5 }
+      ([entry]) => {
+        if (entry.isIntersecting) {
+          setPhase('show');
+          setTimeout(() => setPhase('filter'), 800);
+          setTimeout(() => setPhase('result'), 1400);
+          obs.disconnect();
+        }
+      },
+      { threshold: 0.3 }
     );
     obs.observe(el);
     return () => obs.disconnect();
   }, []);
 
+  const easeOut = 'cubic-bezier(0.16, 1, 0.3, 1)';
+
   return (
     <div
       ref={ref}
       className="w-full py-4"
-      style={{ maxWidth: '520px' }}
+      style={{ maxWidth: '580px' }}
     >
-      <div className="font-mono text-xs mb-6" style={{ color: 'var(--muted-foreground)', opacity: 0.5 }}>
+      <div
+        className="font-mono text-xs mb-8"
+        style={{
+          color: 'var(--muted-foreground)', opacity: phase !== 'hidden' ? 0.5 : 0,
+          transition: `opacity 300ms ${easeOut}`,
+        }}
+      >
         GET /v1/streams/posts/records
       </div>
 
-      <div className="flex flex-col gap-4">
-        {/* Record on server */}
+      <div className="flex flex-col gap-6">
+        {/* Record on server — all fields */}
         <div>
-          <div className="text-xs font-medium mb-2" style={{ color: 'var(--muted-foreground)' }}>
+          <div
+            className="text-xs font-medium mb-3"
+            style={{
+              color: 'var(--muted-foreground)',
+              opacity: phase !== 'hidden' ? 1 : 0,
+              transition: `opacity 300ms ${easeOut}`,
+            }}
+          >
             Record on server ({allFields.length} fields)
           </div>
-          <div className="flex flex-wrap gap-1">
+          <div className="flex flex-wrap gap-1.5">
             {allFields.map((f, i) => {
               const granted = grantedFields.includes(f);
+              const isFiltered = phase === 'filter' || phase === 'result';
               return (
                 <span
                   key={f}
-                  className="font-mono text-xs px-1.5 py-0.5 rounded"
+                  className="font-mono text-xs px-2 py-1 rounded-md"
                   style={{
                     backgroundColor: granted ? 'oklch(0.52 0.15 150 / 0.1)' : 'var(--muted)',
                     color: granted ? 'var(--success)' : 'var(--muted-foreground)',
-                    opacity: animated ? (granted ? 1 : 0.3) : 0,
-                    transform: animated ? 'translateY(0)' : 'translateY(8px)',
-                    transition: `opacity 500ms cubic-bezier(0.16, 1, 0.3, 1) ${i * 50}ms, transform 500ms cubic-bezier(0.16, 1, 0.3, 1) ${i * 50}ms`,
+                    opacity: phase === 'hidden' ? 0 : (isFiltered && !granted) ? 0.15 : 1,
+                    transform: phase === 'hidden'
+                      ? 'translateY(12px)'
+                      : (isFiltered && !granted)
+                        ? 'translateX(8px) scale(0.95)'
+                        : 'translateY(0)',
+                    transition: `opacity 600ms ${easeOut} ${phase === 'hidden' ? i * 50 : 200}ms, transform 600ms ${easeOut} ${phase === 'hidden' ? i * 50 : 200}ms`,
+                    textDecoration: (isFiltered && !granted) ? 'line-through' : 'none',
                   }}
                 >
                   {f}
@@ -315,21 +343,21 @@ function FieldProjection({ grantedFields, allFields }: { grantedFields: string[]
         </div>
 
         {/* Grant filter line */}
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-3 py-1">
           <div
             className="flex-1 h-px"
             style={{
-              backgroundColor: 'var(--border)',
-              opacity: animated ? 1 : 0,
-              transition: `opacity 300ms ${allFields.length * 50 + 200}ms`,
+              backgroundColor: phase === 'filter' || phase === 'result' ? 'var(--primary)' : 'var(--border)',
+              opacity: phase !== 'hidden' ? 1 : 0,
+              transition: `opacity 300ms ${easeOut} 400ms, background-color 400ms ${easeOut}`,
             }}
           />
           <span
-            className="text-xs font-mono"
+            className="text-xs font-mono shrink-0"
             style={{
-              color: 'var(--muted-foreground)',
-              opacity: animated ? 1 : 0,
-              transition: `opacity 300ms ${allFields.length * 50 + 200}ms`,
+              color: phase === 'filter' || phase === 'result' ? 'var(--primary)' : 'var(--muted-foreground)',
+              opacity: phase !== 'hidden' ? 1 : 0,
+              transition: `opacity 300ms ${easeOut} 400ms, color 400ms ${easeOut}`,
             }}
           >
             grant filter
@@ -337,36 +365,37 @@ function FieldProjection({ grantedFields, allFields }: { grantedFields: string[]
           <div
             className="flex-1 h-px"
             style={{
-              backgroundColor: 'var(--border)',
-              opacity: animated ? 1 : 0,
-              transition: `opacity 300ms ${allFields.length * 50 + 200}ms`,
+              backgroundColor: phase === 'filter' || phase === 'result' ? 'var(--primary)' : 'var(--border)',
+              opacity: phase !== 'hidden' ? 1 : 0,
+              transition: `opacity 300ms ${easeOut} 400ms, background-color 400ms ${easeOut}`,
             }}
           />
         </div>
 
-        {/* Response to client */}
+        {/* Response to client — only granted fields */}
         <div>
           <div
-            className="text-xs font-medium mb-2"
+            className="text-xs font-medium mb-3"
             style={{
               color: 'var(--success)',
-              opacity: animated ? 1 : 0,
-              transition: `opacity 300ms ${allFields.length * 50 + 300}ms`,
+              opacity: phase === 'result' ? 1 : 0,
+              transition: `opacity 400ms ${easeOut}`,
             }}
           >
             Response to client ({grantedFields.length} fields)
           </div>
-          <div className="flex flex-wrap gap-1">
+          <div className="flex flex-wrap gap-1.5">
             {grantedFields.map((f, i) => (
               <span
                 key={f}
-                className="font-mono text-xs px-1.5 py-0.5 rounded"
+                className="font-mono text-xs px-2 py-1 rounded-md"
                 style={{
-                  backgroundColor: 'oklch(0.52 0.15 150 / 0.1)',
+                  backgroundColor: 'oklch(0.52 0.15 150 / 0.15)',
                   color: 'var(--success)',
-                  opacity: animated ? 1 : 0,
-                  transform: animated ? 'translateY(0)' : 'translateY(8px)',
-                  transition: `opacity 500ms cubic-bezier(0.16, 1, 0.3, 1) ${allFields.length * 50 + 400 + i * 60}ms, transform 500ms cubic-bezier(0.16, 1, 0.3, 1) ${allFields.length * 50 + 400 + i * 60}ms`,
+                  fontWeight: 500,
+                  opacity: phase === 'result' ? 1 : 0,
+                  transform: phase === 'result' ? 'translateY(0)' : 'translateY(12px)',
+                  transition: `opacity 500ms ${easeOut} ${i * 80}ms, transform 500ms ${easeOut} ${i * 80}ms`,
                 }}
               >
                 {f}
