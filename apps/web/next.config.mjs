@@ -74,6 +74,18 @@ const nextConfig = {
       },
     ];
   },
+  async rewrites() {
+    return [
+      {
+        source: '/docs.mdx',
+        destination: '/llms.mdx/docs',
+      },
+      {
+        source: '/docs/:path*.mdx',
+        destination: '/llms.mdx/docs/:path*',
+      },
+    ];
+  },
   webpack(config) {
     config.resolve.alias = {
       ...config.resolve.alias,

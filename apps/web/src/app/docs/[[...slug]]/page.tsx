@@ -6,9 +6,8 @@ import {
   DocsDescription,
   DocsPage,
   DocsTitle,
-  MarkdownCopyButton,
-  ViewOptionsPopover,
 } from 'fumadocs-ui/layouts/docs/page';
+import { LLMCopyButton, ViewOptions } from '@/components/ai/page-actions';
 import { getMDXComponents } from '@/components/mdx';
 import { getPageImage, getPageMarkdownUrl, source } from '@/lib/docs-source';
 
@@ -36,8 +35,8 @@ export default async function Page({ params }: DocsPageProps) {
         <DocsTitle className="pdpp-docs-title">{page.data.title}</DocsTitle>
         <DocsDescription className="pdpp-docs-description">{page.data.description}</DocsDescription>
         <div className="pdpp-docs-actions">
-          <MarkdownCopyButton markdownUrl={markdownUrl} />
-          <ViewOptionsPopover
+          <LLMCopyButton markdownUrl={markdownUrl} />
+          <ViewOptions
             markdownUrl={markdownUrl}
             githubUrl={`https://github.com/vana-com/pdpp/blob/main/apps/web/content/docs/${githubPath}`}
           />

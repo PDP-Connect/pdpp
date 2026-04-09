@@ -3,7 +3,6 @@ import { loader, type InferPageType } from 'fumadocs-core/source';
 import { lucideIconsPlugin } from 'fumadocs-core/source/lucide-icons';
 
 export const docsRoute = '/docs';
-export const docsContentRoute = '/llms.mdx/docs';
 export const docsImageRoute = '/og/docs';
 
 export const source = loader({
@@ -22,10 +21,8 @@ export function getPageImage(page: InferPageType<typeof source>) {
 }
 
 export function getPageMarkdownUrl(page: InferPageType<typeof source>) {
-  const segments = [...page.slugs, 'content.md'];
-
   return {
-    segments,
-    url: `${docsContentRoute}/${segments.join('/')}`,
+    segments: page.slugs,
+    url: `${page.url}.mdx`,
   };
 }
