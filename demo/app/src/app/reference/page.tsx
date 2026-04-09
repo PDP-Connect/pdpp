@@ -1065,7 +1065,27 @@ export default function ReferencePage() {
             </div>
           </div>
         ) : (
-          <FieldProjection grantedFields={grantedPostFields} allFields={ALL_POST_FIELDS} />
+          <div className="flex flex-col gap-6 items-center w-full">
+            <FieldProjection grantedFields={grantedPostFields} allFields={ALL_POST_FIELDS} />
+            {protocol.queryResult?.records?.[0] && (
+              <div
+                data-surface="protocol"
+                className="rounded-xl overflow-hidden px-5 py-4 w-full"
+                style={{ maxWidth: '440px' }}
+              >
+                <div className="text-xs font-medium mb-2" style={{ color: 'var(--success)' }}>
+                  Actual response (first record)
+                </div>
+                <pre className="font-mono text-xs overflow-x-auto" style={{ color: 'var(--muted-foreground)' }}>
+                  {JSON.stringify(protocol.queryResult.records[0].data, null, 2)}
+                </pre>
+                <div className="text-xs mt-2 italic" style={{ color: 'var(--muted-foreground)', opacity: 0.6 }}>
+                  {Object.keys(protocol.queryResult.records[0].data).length} of {ALL_POST_FIELDS.length} fields returned.
+                  {' '}{ALL_POST_FIELDS.length - Object.keys(protocol.queryResult.records[0].data).length} stripped by the grant filter.
+                </div>
+              </div>
+            )}
+          </div>
         )}
       </FeaturedSection>
 
