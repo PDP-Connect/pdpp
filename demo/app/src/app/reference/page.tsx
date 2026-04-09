@@ -853,9 +853,36 @@ export default function ReferencePage() {
             </p>
           </Reveal>
           <Reveal delay={200}>
-            <p className="text-sm leading-relaxed" style={{ color: 'var(--muted-foreground)', maxWidth: '52ch', opacity: 0.6 }}>
+            <p className="text-sm leading-relaxed mb-10" style={{ color: 'var(--muted-foreground)', maxWidth: '52ch', opacity: 0.6 }}>
               This is the protocol, running. Every component below implements a section of the spec.
             </p>
+          </Reveal>
+
+          {/* Protocol flow signature — minimal horizontal diagram */}
+          <Reveal delay={400}>
+            <div className="flex items-center gap-0 overflow-x-auto pb-2" style={{ maxWidth: '100%' }}>
+              {[
+                { label: 'Platform', color: 'var(--muted-foreground)', bg: 'var(--muted)' },
+                { label: 'Connector', color: 'var(--primary)', bg: 'oklch(0.580 0.172 253.7 / 0.06)' },
+                { label: 'Your Server', color: 'var(--primary)', bg: 'oklch(0.580 0.172 253.7 / 0.06)' },
+                { label: 'Consent', color: 'var(--human)', bg: 'var(--human-wash)' },
+                { label: 'Grant', color: 'var(--primary)', bg: 'oklch(0.580 0.172 253.7 / 0.06)' },
+                { label: 'Enforce', color: 'var(--primary)', bg: 'oklch(0.580 0.172 253.7 / 0.06)' },
+                { label: 'Client', color: 'var(--muted-foreground)', bg: 'var(--muted)' },
+              ].map((step, i, arr) => (
+                <React.Fragment key={step.label}>
+                  <div
+                    className="shrink-0 px-3 py-1.5 rounded-md text-xs font-medium"
+                    style={{ backgroundColor: step.bg, color: step.color, border: `1px solid ${step.color}20` }}
+                  >
+                    {step.label}
+                  </div>
+                  {i < arr.length - 1 && (
+                    <div className="shrink-0 w-6 h-px" style={{ backgroundColor: 'var(--border)' }} />
+                  )}
+                </React.Fragment>
+              ))}
+            </div>
           </Reveal>
         </div>
       </section>
