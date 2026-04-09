@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { SiteHeader } from '@/components/SiteHeader';
 import {
   ConsentCard,
   GrantInspector,
@@ -841,15 +842,7 @@ export default function ReferencePage() {
           borderBottom: '1px solid var(--border)',
         }}
       >
-        <div className="flex items-center gap-2 shrink-0">
-          <div
-            className="w-5 h-5 rounded flex items-center justify-center shrink-0"
-            style={{ background: 'var(--primary)' }}
-          >
-            <span className="text-[9px] font-bold leading-none" style={{ color: 'var(--primary-foreground)' }}>P</span>
-          </div>
-          <span className="text-sm font-semibold tracking-tight" style={{ color: 'var(--foreground)' }}>PDPP</span>
-        </div>
+        <SiteHeader currentLabel="Reference" />
 
         {/* Mobile: current section indicator */}
         <span
@@ -877,14 +870,6 @@ export default function ReferencePage() {
             </button>
           ))}
         </nav>
-
-        <a
-          href="/design"
-          className="hidden md:inline text-xs transition-opacity hover:opacity-70"
-          style={{ color: 'var(--muted-foreground)' }}
-        >
-          Design System
-        </a>
         <span className="hidden md:inline font-mono text-xs" style={{ color: 'var(--muted-foreground)', opacity: 0.65 }}>v0.1.0</span>
       </header>
 

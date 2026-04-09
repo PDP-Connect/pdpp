@@ -1,16 +1,15 @@
 import { defineConfig } from 'vitepress'
+import { docsNav } from '@pdpp/brand/chrome'
 
 export default defineConfig({
   title: 'PDPP',
   description: 'Personal Data Portability Protocol',
   cleanUrls: true,
-  srcExclude: ['local/**', 'docs/**'],
+  srcExclude: ['local/**', 'docs/**', 'apps/**', '.agents/**', '.claude/**', '**/.agents/**', '**/.claude/**', '**/SKILL.md'],
+  ignoreDeadLinks: [/^\.\/reference\//],
 
   themeConfig: {
-    nav: [
-      { text: 'Spec', link: '/spec-core' },
-      { text: 'Collection Profile', link: '/spec-collection-profile' },
-    ],
+    nav: docsNav,
 
     sidebar: [
       {

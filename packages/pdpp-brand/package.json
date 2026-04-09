@@ -1,0 +1,16 @@
+{
+  "name": "@pdpp/brand",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./app.css": "./app.css",
+    "./base.css": "./base.css",
+    "./docs.css": "./docs.css",
+    "./chrome": "./chrome.js"
+  },
+  "dependencies": {
+    "@fontsource-variable/geist": "^5.2.8",
+    "@fontsource-variable/jetbrains-mono": "^5.2.8"
+  }
+}

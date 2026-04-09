@@ -1,0 +1,259 @@
+@import "./base.css";
+
+:root {
+  --vp-font-family-base: var(--font-sans);
+  --vp-font-family-mono: var(--font-mono);
+  --vp-c-bg: transparent;
+  --vp-c-bg-alt: color-mix(in oklab, var(--background) 92%, white);
+  --vp-c-bg-elv: var(--card);
+  --vp-c-bg-soft: var(--muted);
+  --vp-c-default-1: var(--muted-foreground);
+  --vp-c-default-2: color-mix(in oklab, var(--muted-foreground) 82%, white);
+  --vp-c-default-3: color-mix(in oklab, var(--muted-foreground) 62%, white);
+  --vp-c-default-soft: color-mix(in oklab, var(--muted) 85%, white);
+  --vp-c-brand-1: var(--primary);
+  --vp-c-brand-2: color-mix(in oklab, var(--primary) 88%, black);
+  --vp-c-brand-3: color-mix(in oklab, var(--primary) 72%, white);
+  --vp-c-brand-soft: var(--primary-wash);
+  --vp-c-border: var(--border);
+  --vp-c-divider: var(--border);
+  --vp-c-text-1: var(--foreground);
+  --vp-c-text-2: color-mix(in oklab, var(--foreground) 70%, white);
+  --vp-c-text-3: var(--muted-foreground);
+  --vp-c-text-inverse-1: var(--background);
+  --vp-button-brand-bg: var(--foreground);
+  --vp-button-brand-border: var(--foreground);
+  --vp-button-brand-text: var(--background);
+  --vp-button-brand-hover-bg: color-mix(in oklab, var(--foreground) 88%, white);
+  --vp-button-brand-hover-border: color-mix(in oklab, var(--foreground) 88%, white);
+  --vp-button-brand-hover-text: var(--background);
+  --vp-button-alt-bg: var(--card);
+  --vp-button-alt-border: var(--border);
+  --vp-button-alt-text: var(--foreground);
+  --vp-button-alt-hover-bg: var(--muted);
+  --vp-home-hero-name-color: var(--foreground);
+  --vp-home-hero-image-background-image: linear-gradient(135deg, var(--human-wash), var(--primary-wash));
+  --vp-home-hero-image-filter: blur(72px);
+}
+
+.Layout {
+  background: transparent;
+}
+
+.VPNav {
+  background: color-mix(in oklab, var(--background) 88%, white / 72%);
+  backdrop-filter: blur(14px);
+  border-bottom: 1px solid var(--border);
+}
+
+.VPNavBar {
+  height: var(--chrome-height);
+}
+
+.VPNavBar.has-sidebar .content-body,
+.VPNavBar .content-body {
+  background: transparent;
+}
+
+.VPNavBarTitle .title {
+  font-weight: 600;
+  letter-spacing: -0.03em;
+}
+
+.VPNavBarTitle .title span:last-child::after {
+  content: " Docs";
+  color: var(--muted-foreground);
+  font-weight: 400;
+}
+
+.VPNavBarMenuLink,
+.VPSidebarItem .text,
+.VPDocAsideOutline .content {
+  font-size: 0.92rem;
+}
+
+.VPSidebar {
+  border-right: 1px solid var(--border);
+  background: color-mix(in oklab, var(--background) 96%, white);
+}
+
+.VPSidebarItem.level-0.is-link > .item > .link > .text,
+.VPSidebarItem.level-0 > .item > .text {
+  font-size: 0.74rem;
+  font-family: var(--font-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+}
+
+.VPDoc {
+  padding-top: 24px;
+}
+
+.VPDoc .container {
+  max-width: var(--content-wide-width);
+}
+
+.VPDoc.has-aside .content-container {
+  max-width: var(--content-width);
+}
+
+.VPContent.is-home {
+  background: transparent;
+}
+
+.VPHero {
+  padding-top: 64px !important;
+  padding-bottom: 24px !important;
+}
+
+.VPHero .name,
+.VPDoc h1,
+.VPDoc h2,
+.VPDoc h3 {
+  letter-spacing: -0.04em;
+}
+
+.VPHero .name {
+  font-size: clamp(3.2rem, 8vw, 5.4rem) !important;
+  line-height: 0.96 !important;
+}
+
+.VPHero .text {
+  font-size: clamp(1.25rem, 3vw, 1.9rem) !important;
+  color: var(--foreground) !important;
+}
+
+.VPHero .tagline {
+  max-width: 36rem;
+  color: var(--muted-foreground) !important;
+}
+
+.VPFeature {
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  background:
+    linear-gradient(to bottom, color-mix(in oklab, var(--human-wash) 70%, white), transparent 70%),
+    var(--card);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.04), 0 1px 3px rgb(0 0 0 / 0.02);
+}
+
+.VPFeature:nth-child(2n) {
+  background:
+    linear-gradient(to right, color-mix(in oklab, var(--primary-wash) 88%, white), transparent 70%),
+    var(--card);
+}
+
+.VPFeature .title {
+  font-weight: 600;
+  letter-spacing: -0.03em;
+}
+
+.VPDoc .content {
+  font-size: 1rem;
+  line-height: 1.75;
+}
+
+.VPDoc h1 {
+  margin-top: 0.4rem;
+  margin-bottom: 1rem;
+  font-size: clamp(2.3rem, 4vw, 3.2rem);
+  line-height: 1.02;
+}
+
+.VPDoc h2 {
+  margin: 3rem 0 1rem;
+  padding-top: 1.25rem;
+  border-top: 1px solid var(--border);
+  font-size: clamp(1.45rem, 2vw, 1.8rem);
+  line-height: 1.1;
+}
+
+.VPDoc h3 {
+  margin: 2rem 0 0.8rem;
+  font-size: 1.12rem;
+  line-height: 1.2;
+}
+
+.VPDoc p,
+.VPDoc li {
+  color: color-mix(in oklab, var(--foreground) 82%, white);
+}
+
+.VPDoc a {
+  color: var(--primary);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.16em;
+}
+
+.VPDoc blockquote {
+  margin: 1.5rem 0;
+  border-left: 2px solid var(--human);
+  background: color-mix(in oklab, var(--human-wash) 85%, white);
+  color: var(--foreground);
+}
+
+.VPDoc table {
+  display: table;
+  width: 100%;
+  border-collapse: collapse;
+  margin: 1.75rem 0;
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  overflow: hidden;
+}
+
+.VPDoc tr {
+  border-top: 1px solid var(--border);
+}
+
+.VPDoc th {
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+  background: color-mix(in oklab, var(--muted) 92%, white);
+}
+
+.VPDoc th,
+.VPDoc td {
+  border: none;
+  padding: 0.8rem 0.9rem;
+}
+
+.VPDoc div[class*='language-'],
+.VPDoc pre {
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: color-mix(in oklab, var(--foreground) 7%, white);
+}
+
+.VPDoc code {
+  font-size: 0.9em;
+}
+
+.vp-doc :not(pre) > code {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--muted) 84%, white);
+  padding: 0.18rem 0.42rem;
+}
+
+.VPDocFooter,
+.VPDocAsideOutline .outline-marker {
+  border-color: var(--border);
+}
+
+.VPDocAsideOutline .root {
+  border-left: 1px solid var(--border);
+}
+
+.VPDocAsideOutline .outline-link.active {
+  color: var(--foreground);
+}
+
+.VPFooter {
+  border-top: 1px solid var(--border);
+  background: transparent;
+}

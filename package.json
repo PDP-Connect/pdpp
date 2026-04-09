@@ -4,15 +4,25 @@
   "description": "",
   "type": "module",
   "scripts": {
-    "dev": "vitepress dev",
-    "build": "vitepress build",
-    "preview": "vitepress preview"
+    "dev": "pnpm web:dev",
+    "build": "pnpm web:build",
+    "preview": "pnpm web:start",
+    "start": "pnpm web:start",
+    "docs:dev": "vitepress dev",
+    "docs:build": "vitepress build",
+    "docs:preview": "vitepress preview",
+    "reference:dev": "pnpm --dir demo/app dev",
+    "reference:build": "pnpm --dir demo/app build",
+    "web:dev": "pnpm --dir apps/web dev",
+    "web:build": "pnpm --dir apps/web build",
+    "web:start": "pnpm --dir apps/web start"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "packageManager": "pnpm@10.33.0",
   "devDependencies": {
+    "@pdpp/brand": "workspace:*",
     "vitepress": "^1.6.4"
   }
 }
