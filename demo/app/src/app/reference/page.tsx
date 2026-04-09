@@ -894,9 +894,9 @@ export default function ReferencePage() {
             </p>
           </Reveal>
 
-          {/* Protocol flow signature — minimal horizontal diagram */}
+          {/* Protocol flow signature — hidden on mobile, horizontal on desktop */}
           <Reveal delay={400}>
-            <div className="flex items-center gap-0 overflow-x-auto pb-2" style={{ maxWidth: '100%' }}>
+            <div className="hidden md:flex items-center gap-0 pb-2" style={{ maxWidth: '100%' }}>
               {[
                 { label: 'Platform', color: 'var(--muted-foreground)', bg: 'var(--muted)' },
                 { label: 'Connector', color: 'var(--primary)', bg: 'oklch(0.580 0.172 253.7 / 0.06)' },
