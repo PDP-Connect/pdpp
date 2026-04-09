@@ -626,7 +626,7 @@ function FeaturedSection({
         borderLeft: `2px solid ${borderColor}`,
         background: config.surface === 'human'
           ? 'linear-gradient(to bottom, var(--human-wash), transparent 40%)'
-          : undefined,
+          : 'linear-gradient(to bottom, oklch(0.580 0.172 253.7 / 0.02), transparent 40%)',
       }}
     >
       <div className="max-w-3xl mx-auto w-full px-6 md:px-12">
