@@ -867,9 +867,31 @@ export default function ReferencePage() {
         config={SECTION_CONTENT[0]}
         wide
         detail={
-          <DetailPanel spec="§7 Manifest">
-            <p>Each connector publishes a manifest declaring its consent surface: streams, fields, views, and selection capabilities. The manifest is the source of truth for what can be consented to.</p>
-            <p>Connectors run as child processes. The runtime sends a START message (collection_mode, state, bindings) via stdin; the connector streams RECORD/STATE/DONE messages back via stdout JSONL.</p>
+          <DetailPanel spec="§7 Manifest, Collection Profile">
+            <pre className="font-mono text-xs p-3 rounded-md overflow-x-auto" style={{ backgroundColor: 'var(--muted)', color: 'var(--muted-foreground)' }}>
+{`// Connector manifest (consent surface declaration)
+{
+  "connector_id": "https://registry.pdpp.org/connectors/instagram",
+  "version": "1.2.0",
+  "display_name": "Instagram",
+  "streams": [{
+    "name": "posts",
+    "display": {
+      "label": "Your posts",
+      "detail": "Post captions, dates, and media types."
+    },
+    "semantics": "append_only",
+    "selection": { "fields": true, "resources": false },
+    "consent_time_field": "taken_at"
+  }]
+}`}
+            </pre>
+            <p>Connectors run as child processes with stdin/stdout JSONL:</p>
+            <div className="font-mono text-xs flex flex-col gap-1">
+              <span><span style={{ opacity: 0.5 }}>runtime → connector:</span> START (collection_mode, state, bindings)</span>
+              <span><span style={{ opacity: 0.5 }}>connector → runtime:</span> RECORD, STATE, INTERACTION, DONE</span>
+              <span>The connector never sees the raw grant or token.</span>
+            </div>
           </DetailPanel>
         }
       >
@@ -882,8 +904,29 @@ export default function ReferencePage() {
         wide
         detail={
           <DetailPanel spec="§4 Record Model">
-            <p>Personal data is modeled as flat records in named streams. Every stream has a declared primary key, a semantic type (append_only or mutable_state), and a JSON Schema.</p>
-            <p>append_only streams (~95% of data by volume) are immutable events. mutable_state streams are evolving entities that require version history for incremental sync.</p>
+            <pre className="font-mono text-xs p-3 rounded-md overflow-x-auto" style={{ backgroundColor: 'var(--muted)', color: 'var(--muted-foreground)' }}>
+{`// A PDPP record
+{
+  "stream": "posts",
+  "key": "post_0",
+  "data": {
+    "id": "post_0",
+    "caption": "Post caption 1",
+    "taken_at": "2025-01-01T06:00:00.000Z",
+    "media_type": "VIDEO",
+    "like_count": 315,
+    "comment_count": 46,
+    "location": "New York",
+    "is_pinned": true
+  },
+  "emitted_at": "2026-04-06T12:00:00Z"
+}`}
+            </pre>
+            <div className="font-mono text-xs flex flex-col gap-1">
+              <span><span style={{ opacity: 0.5 }}>append_only</span> — immutable events (~95% of data). No version history needed.</span>
+              <span><span style={{ opacity: 0.5 }}>mutable_state</span> — evolving entities. RS maintains version history for incremental sync.</span>
+            </div>
+            <p>Every stream has a primary key, a JSON Schema, and an optional consent_time_field for temporal filtering.</p>
           </DetailPanel>
         }
       >
@@ -907,8 +950,32 @@ export default function ReferencePage() {
         wide
         detail={
           <DetailPanel spec="§5 Selection Request">
-            <p>Selection requests use the RFC 9396 authorization_details envelope. The AS must accept any syntactically valid purpose code URI and must not reject solely because a code is unrecognized.</p>
-            <p>client_display (name, URI, logo) is entity-scoped and self-asserted. client_claims.commitments are request-scoped and rendered with attribution.</p>
+            <pre className="font-mono text-xs p-3 rounded-md overflow-x-auto" style={{ backgroundColor: 'var(--muted)', color: 'var(--muted-foreground)' }}>
+{`POST /authorize HTTP/1.1
+Content-Type: application/json
+
+{
+  "response_type": "code",
+  "client_id": "audience_lens_v1",
+  "client_display": { "name": "Audience Lens", ... },
+  "authorization_details": [{
+    "type": "https://pdpp.org/data-access",
+    "connector_id": "https://registry.pdpp.org/connectors/instagram",
+    "purpose_code": "research",
+    "streams": [
+      { "name": "following_accounts", "necessity": "required" },
+      { "name": "posts", "necessity": "required" },
+      { "name": "ad_targeting", "necessity": "optional" }
+    ]
+  }]
+}`}
+            </pre>
+            <div className="font-mono text-xs flex flex-col gap-1">
+              <span><span style={{ opacity: 0.5 }}>client_display</span> — entity-scoped, self-asserted (GNAP-style inline)</span>
+              <span><span style={{ opacity: 0.5 }}>client_claims</span> — request-scoped, rendered with "[name] says:" attribution</span>
+              <span><span style={{ opacity: 0.5 }}>necessity</span> — required (included in grant) or optional (user choice)</span>
+            </div>
+            <p>The AS must accept any syntactically valid purpose code URI. It must not reject solely because a code is unrecognized.</p>
           </DetailPanel>
         }
       >
@@ -978,9 +1045,40 @@ export default function ReferencePage() {
         config={SECTION_CONTENT[3]}
         detail={
           <DetailPanel spec="§5.1 Client Display, §5.2 Client Claims">
-            <p>Three content layers: protocol facts (server-rendered from grant fields), server-trusted descriptions (manifest display.label and display.detail), and client-authored claims (rendered with "[name] says:" attribution).</p>
-            <p>AI training purpose code requires explicit affirmative user consent. This is the sole protocol-level purpose code requirement.</p>
-            <p>The AS must treat logo_uri as untrusted content. It must not render client-supplied logos unless the client is verified or the asset has been proxied and approved.</p>
+            <p>Three content layers rendered with distinct visual treatment:</p>
+            <div className="font-mono text-xs flex flex-col gap-1">
+              <span><span style={{ color: 'var(--foreground)' }}>Layer 1:</span> Protocol facts (from grant fields) — rendered as authoritative</span>
+              <span><span style={{ color: 'var(--foreground)' }}>Layer 2:</span> Server descriptions (manifest display.label/detail) — trusted</span>
+              <span><span style={{ color: 'var(--foreground)' }}>Layer 3:</span> Client claims (client_display, commitments) — attributed with "[name] says:"</span>
+            </div>
+            <pre className="font-mono text-xs p-3 rounded-md overflow-x-auto" style={{ backgroundColor: 'var(--muted)', color: 'var(--muted-foreground)' }}>
+{`// Selection request (RFC 9396 authorization_details)
+{
+  "client_display": {
+    "name": "Audience Lens",
+    "uri": "https://audiencelens.example",
+    "logo_uri": "https://audiencelens.example/logo.png"
+  },
+  "authorization_details": [{
+    "type": "https://pdpp.org/data-access",
+    "purpose_code": "research",
+    "purpose_description": "Influencer network study",
+    "access_mode": "continuous",
+    "streams": [
+      { "name": "following_accounts", "necessity": "required" },
+      { "name": "posts", "necessity": "required" },
+      { "name": "ad_targeting", "necessity": "optional" }
+    ],
+    "client_claims": {
+      "commitments": ["Data used only for this study"]
+    }
+  }]
+}`}
+            </pre>
+            <p className="italic" style={{ opacity: 0.7 }}>
+              The AS must treat logo_uri as untrusted content. For unverified clients, it generates a monogram instead of rendering the remote image.
+            </p>
+            <p>ai_training purpose code requires explicit affirmative consent — the sole protocol-level requirement.</p>
           </DetailPanel>
         }
       >
@@ -1028,8 +1126,32 @@ export default function ReferencePage() {
         detail={
           <DetailPanel spec="§6 Grant">
             <p>The grant is an immutable consent artifact. Once issued, it cannot be modified. Changes require revoke-and-reissue.</p>
-            <p>Three orthogonal time concepts: grant validity period (issued_at/expires_at), data temporal scope (time_range), and access pattern (access_mode). These must not be conflated.</p>
-            <p className="font-mono" style={{ color: 'var(--muted-foreground)', opacity: 0.7 }}>
+            {protocol.grant && (
+              <pre className="font-mono text-xs p-3 rounded-md overflow-x-auto" style={{ backgroundColor: 'var(--muted)', color: 'var(--muted-foreground)' }}>
+{JSON.stringify({
+  grant_id: protocol.grant.grant_id,
+  issued_at: protocol.grant.issued_at,
+  status: protocol.grant.status,
+  client: { client_id: protocol.grant.client_id },
+  purpose_code: protocol.grant.purpose_code,
+  access_mode: protocol.grant.access_mode,
+  streams: protocol.grant.streams.map(s => ({
+    name: s.name,
+    fields: s.fields,
+    view: s.view,
+  })),
+  retention: protocol.grant.retention,
+  expires_at: protocol.grant.expires_at,
+}, null, 2)}
+              </pre>
+            )}
+            <p>Three orthogonal time concepts that must not be conflated:</p>
+            <div className="font-mono text-xs flex flex-col gap-1">
+              <span><span style={{ opacity: 0.5 }}>grant validity:</span> issued_at / expires_at</span>
+              <span><span style={{ opacity: 0.5 }}>data scope:</span> streams[].time_range</span>
+              <span><span style={{ opacity: 0.5 }}>access pattern:</span> access_mode (single_use | continuous)</span>
+            </div>
+            <p className="italic" style={{ opacity: 0.7 }}>
               retention is a policy commitment by the client, not server-enforced. Enforcement is through legal agreements, consistent with how OAuth 2.0 treats scope compliance.
             </p>
           </DetailPanel>
@@ -1046,9 +1168,26 @@ export default function ReferencePage() {
         config={SECTION_CONTENT[5]}
         detail={
           <DetailPanel spec="§8 Resource Server">
-            <p>The RS computes effective_filter = grant_filter AND request_filter. Request-time filters can only narrow what the grant allows, never widen it.</p>
-            <p>Field projection is enforced on every response. Schema-required fields are always included regardless of the grant's field list.</p>
-            <p>If a client requests a filter on a field outside the grant's authorized projection, the RS returns 403 field_not_granted.</p>
+            <p>The RS computes effective_filter = grant_filter AND request_filter. Request-time filters can only narrow, never widen.</p>
+            <pre className="font-mono text-xs p-3 rounded-md overflow-x-auto" style={{ backgroundColor: 'var(--muted)', color: 'var(--muted-foreground)' }}>
+{`GET /v1/streams/posts/records HTTP/1.1
+Authorization: Bearer <client_token>
+PDPP-Version: 0.1.0
+
+→ RS introspects token
+→ Resolves grant: ${protocol.grant?.grant_id || 'grt_8f3a2b1c'}
+→ Grant authorizes fields: [${grantedPostFields.join(', ')}]
+→ Record has fields: [${ALL_POST_FIELDS.join(', ')}]
+→ Response contains only: [${grantedPostFields.join(', ')}]
+→ Stripped: [${ALL_POST_FIELDS.filter(f => !grantedPostFields.includes(f)).join(', ')}]`}
+            </pre>
+            <p>Edge cases:</p>
+            <div className="font-mono text-xs flex flex-col gap-1">
+              <span><span style={{ color: 'var(--destructive)' }}>403 grant_revoked</span> — grant has been revoked</span>
+              <span><span style={{ color: 'var(--destructive)' }}>403 field_not_granted</span> — filter targets unauthorized field</span>
+              <span><span style={{ color: 'var(--destructive)' }}>403 insufficient_scope</span> — stream not in grant</span>
+              <span><span style={{ color: 'var(--warning)' }}>410 Gone</span> — changes_since cursor has expired</span>
+            </div>
           </DetailPanel>
         }
       >
@@ -1095,9 +1234,24 @@ export default function ReferencePage() {
         wide
         detail={
           <DetailPanel spec="§4.1 Incremental Sync">
-            <p>changes_since returns full current state of changed records, not field-level diffs. The RS maintains version history for mutable_state streams.</p>
-            <p>Projection-aware deltas: if unauthorized field C changes but the client is only authorized for fields A and B, the record does not appear in the delta. The client cannot infer that C changed.</p>
-            <p>cursor (pagination) and changes_since (sync) are opaque tokens from distinct token spaces. A client must not substitute one for the other.</p>
+            <pre className="font-mono text-xs p-3 rounded-md overflow-x-auto" style={{ backgroundColor: 'var(--muted)', color: 'var(--muted-foreground)' }}>
+{`GET /v1/streams/posts/records?changes_since=${protocol.syncCursor || '"cursor_a8f2..."'}
+Authorization: Bearer <client_token>
+
+→ RS finds records added/changed since cursor
+→ Applies field projection to EACH record in the delta
+→ Returns only records whose AUTHORIZED projection changed
+→ Includes next_changes_since for subsequent sync`}
+            </pre>
+            <p><strong>Projection-aware deltas</strong> (the novel property): if unauthorized field <code className="font-mono">like_count</code> changes but the client is only authorized for <code className="font-mono">[id, caption, taken_at, media_type]</code>, the record does not appear in the delta. The client cannot infer that like_count changed.</p>
+            <div className="font-mono text-xs flex flex-col gap-1">
+              <span><span style={{ opacity: 0.5 }}>cursor</span> — pagination within a single query (distinct token space)</span>
+              <span><span style={{ opacity: 0.5 }}>changes_since</span> — sync state across sessions (distinct token space)</span>
+              <span>A client MUST NOT use a next_cursor value as a changes_since parameter.</span>
+            </div>
+            <p className="italic" style={{ opacity: 0.7 }}>
+              RS may expire version data. If a cursor is stale, RS returns 410 Gone. Client must full re-sync.
+            </p>
           </DetailPanel>
         }
       >
@@ -1144,9 +1298,22 @@ export default function ReferencePage() {
         wide
         detail={
           <DetailPanel spec="§6.5 Revocation">
-            <p>Revocation stops future access only. Records already delivered before revocation are governed by the grant's retention policy.</p>
-            <p>Revocation propagation is bounded by the introspection cache TTL (max 60 seconds). The AS reflects revocation immediately; the RS will serve a 403 no later than 60s after revocation.</p>
-            <p>Grant narrowing is not supported. Scope reduction is achieved via revoke-and-reissue.</p>
+            <pre className="font-mono text-xs p-3 rounded-md overflow-x-auto" style={{ backgroundColor: 'var(--muted)', color: 'var(--muted-foreground)' }}>
+{`// After revocation:
+POST /revoke  →  AS marks grant.status = "revoked"
+
+// Next client query:
+GET /v1/streams/posts/records
+Authorization: Bearer <client_token>
+→ RS introspects token  →  active: false
+→ 403 grant_revoked
+
+// Propagation window:
+Introspection cache TTL ≤ 60 seconds
+RS sees revocation within max(token_exp, 60s)`}
+            </pre>
+            <p>Revocation stops <em>future</em> access only. Records already delivered are governed by the grant's retention policy and legal obligations. PDPP does not retroactively reach into client-side data stores.</p>
+            <p>Grant narrowing is not supported in v0.1. Scope reduction: revoke the existing grant, issue a new narrower one.</p>
           </DetailPanel>
         }
       >
@@ -1183,8 +1350,22 @@ export default function ReferencePage() {
         wide
         detail={
           <DetailPanel spec="§8.3 Owner Tokens">
-            <p>Two token types: owner tokens (for ingest, management, self-export) and client tokens (for querying under a grant). The RS determines token kind from the introspection response, never from syntax.</p>
-            <p>Owner tokens are scoped to a single subject's data store. The RS derives subject_id from introspection and rejects any request outside that scope.</p>
+            <pre className="font-mono text-xs p-3 rounded-md overflow-x-auto" style={{ backgroundColor: 'var(--muted)', color: 'var(--muted-foreground)' }}>
+{`// Self-export: owner token, no grant required
+GET /v1/streams/posts/records
+Authorization: Bearer <owner_token>
+
+→ RS introspects token
+→ pdpp_token_kind: "owner"
+→ subject_id: "user_abc123"
+→ No grant needed — full access to own data
+→ All ${ALL_POST_FIELDS.length} fields returned (no projection)`}
+            </pre>
+            <div className="font-mono text-xs flex flex-col gap-1">
+              <span><span style={{ opacity: 0.5 }}>owner token</span> — ingest, state management, self-export</span>
+              <span><span style={{ opacity: 0.5 }}>client token</span> — querying under a grant (field projection enforced)</span>
+              <span>RS determines token kind from introspection, never from syntax.</span>
+            </div>
           </DetailPanel>
         }
       >
