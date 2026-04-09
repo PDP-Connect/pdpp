@@ -55,12 +55,19 @@ Design and build the PDPP reference implementation experience — one URL that s
 
 ## Remaining Work
 
-### Design quality
-- [ ] Mobile responsive pass (stepper hidden, but sections need mobile treatment)
-- [ ] Copy polish: Level 1 (zero-jargon audit of all headlines and narratives)
-- [ ] Visual connections between sections (state indicator showing grant status)
-- [ ] Scroll-triggered entrance animations for section headings
-- [ ] Section 3 (Request) could benefit from animation treatment
+### Design quality (done this session)
+- [x] Mobile responsive: header section indicator, hidden nav elements, connector URL truncation
+- [x] Copy polish: Level 1 zero-jargon pass on all 11 headlines and narratives
+- [x] Protocol state indicator: floating badge showing grant status during sections 4-8
+- [x] Scroll-triggered Reveal animations on all sections (staggered text/component entrance)
+- [x] Section 3 (Request) redesigned: structured message card with identity, streams, commitments
+- [x] Hero section: large type (lg:text-6xl), staggered 3-part reveal
+- [x] Three section variants: standard, wide (2-col), featured (gradient, larger type)
+
+### Design quality (remaining)
+- [ ] Run impeccable /audit and /critique for final quality assessment
+- [ ] Consider full-width bleed for FeaturedSections (impeccable reference guidance)
+- [ ] Entrance animation could use prefers-reduced-motion fallback
 
 ### Protocol honesty
 - [ ] Mock/live toggle architecture (show that enforcement is real, not just illustration)
