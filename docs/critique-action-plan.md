@@ -98,11 +98,14 @@ Each phase should be committed independently. Later phases should not require re
 | Phase | Status | Commits |
 |-------|--------|---------|
 | 1. Layout and visual hierarchy | DONE | 2d58e92 — cardless enforce/sync, temperature stepper, featured section gradients |
-| 2. Aesthetic intensity | PARTIAL | 99d7841 — cinematic field projection (3-phase: show/filter/result with strikethrough) |
-| 3. Detail panel polish | PARTIAL | 4d6d09e — section-specific toggle labels |
-| 4. Protocol completeness | TODO | |
+| 2. Aesthetic intensity | PARTIAL | 99d7841, cac0dcc — cinematic field projection, glowing filter line |
+| 3. Detail panel polish | PARTIAL | 4d6d09e, 280e184 — section-specific labels, real JSON/HTTP in all panels |
+| 4. Protocol completeness | PARTIAL | 82d08b7 — single_use noted in sync panel |
 | 5. Responsive | PARTIAL | cfe2c10 — hero flow hidden on mobile |
-| 6. Metadata | TODO | |
+| 6. Metadata | PARTIAL | 82d08b7 — OpenGraph meta tags. Still needs favicon, og:image |
+| A11y audit | DONE | 904255a — all P1 fixed (keyboard trap, contrast, toggle role, touch targets) |
+| Token cleanup | DONE | 031e150 — inline oklch replaced with CSS custom properties |
+| DRY | DONE | 89dadff — shared OutcomeCard component |
 
 ## Post-fix target
 
