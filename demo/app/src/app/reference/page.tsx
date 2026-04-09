@@ -1112,8 +1112,24 @@ export default function ReferencePage() {
               + Add 3 new posts (simulates new data arriving)
             </button>
             {protocol.syncResult && protocol.syncResult.records && protocol.syncResult.records.length > 0 && (
-              <div className="text-xs font-mono" style={{ color: 'var(--success)' }}>
-                Last sync returned {protocol.syncResult.records.length} record{protocol.syncResult.records.length !== 1 ? 's' : ''}
+              <div
+                data-surface="protocol"
+                className="rounded-xl overflow-hidden px-5 py-4 w-full"
+              >
+                <div className="text-xs font-medium mb-2" style={{ color: 'var(--success)' }}>
+                  Delta: {protocol.syncResult.records.length} record{protocol.syncResult.records.length !== 1 ? 's' : ''} returned
+                </div>
+                <div className="font-mono text-xs" style={{ color: 'var(--muted-foreground)', maxHeight: '100px', overflowY: 'auto' }}>
+                  {JSON.stringify(protocol.syncResult.records.slice(-3).map(r => r.data), null, 2)}
+                </div>
+                {protocol.syncCursor && (
+                  <div className="font-mono text-xs mt-2" style={{ color: 'var(--muted-foreground)', opacity: 0.6 }}>
+                    next_changes_since: "{protocol.syncCursor}"
+                  </div>
+                )}
+                <div className="text-xs mt-2 italic" style={{ color: 'var(--muted-foreground)', opacity: 0.6 }}>
+                  Only {grantedPostFields.length} of {ALL_POST_FIELDS.length} fields per record (projection applied to delta too).
+                </div>
               </div>
             )}
           </div>
