@@ -1070,7 +1070,25 @@ export default function ReferencePage() {
           </DetailPanel>
         }
       >
-        <IncrementalSync />
+        {protocol.phase === 'granted' ? (
+          <div className="flex flex-col gap-4 w-full">
+            <IncrementalSync />
+            <button
+              className="text-xs self-start px-3 py-1.5 rounded-md transition-colors"
+              style={{ backgroundColor: 'var(--muted)', color: 'var(--muted-foreground)' }}
+              onClick={() => protocol.addNewPosts(3)}
+            >
+              + Add 3 new posts (simulates new data arriving)
+            </button>
+            {protocol.syncResult && protocol.syncResult.records && protocol.syncResult.records.length > 0 && (
+              <div className="text-xs font-mono" style={{ color: 'var(--success)' }}>
+                Last sync returned {protocol.syncResult.records.length} record{protocol.syncResult.records.length !== 1 ? 's' : ''}
+              </div>
+            )}
+          </div>
+        ) : (
+          <IncrementalSync />
+        )}
       </Section>
 
       {/* 8. Revoke — wide */}
@@ -1123,26 +1141,53 @@ export default function ReferencePage() {
           </DetailPanel>
         }
       >
-        <div
-          data-surface="human"
-          className="rounded-xl overflow-hidden px-5 py-6 w-full"
-        >
-          <div className="flex items-center gap-2 mb-4">
-            <div className="w-2 h-2 rounded-full" style={{ backgroundColor: 'var(--success)' }} />
-            <span className="text-xs font-medium" style={{ color: 'var(--success)' }}>Owner access</span>
-            <span className="font-mono text-xs" style={{ color: 'var(--muted-foreground)' }}>No grant required</span>
+        <div className="flex flex-col gap-4 w-full">
+          <div
+            data-surface="human"
+            className="rounded-xl overflow-hidden px-5 py-6 w-full"
+          >
+            <div className="flex items-center gap-2 mb-4">
+              <div className="w-2 h-2 rounded-full" style={{ backgroundColor: 'var(--success)' }} />
+              <span className="text-xs font-medium" style={{ color: 'var(--success)' }}>Owner access</span>
+              <span className="font-mono text-xs" style={{ color: 'var(--muted-foreground)' }}>No grant required</span>
+            </div>
+            <div className="flex flex-col">
+              {protocol.serverStats.map(s => (
+                <button
+                  key={s.name}
+                  className="flex items-center justify-between py-2 text-left"
+                  style={{ borderBottom: '1px solid var(--border)' }}
+                  onClick={() => protocol.selfExport(s.name)}
+                >
+                  <span className="text-xs font-medium" style={{ color: 'var(--foreground)' }}>{s.name}</span>
+                  <span className="font-mono text-xs" style={{ color: 'var(--muted-foreground)' }}>
+                    {s.fields.length} fields, {s.recordCount} records
+                  </span>
+                </button>
+              ))}
+            </div>
+            <div className="text-xs mt-3" style={{ color: 'var(--muted-foreground)' }}>
+              Click a stream to export. All fields returned, no projection.
+            </div>
           </div>
-          <div className="flex flex-col gap-2">
-            {['following_accounts', 'posts', 'ad_targeting'].map(s => (
-              <div key={s} className="flex items-center justify-between py-1.5" style={{ borderBottom: '1px solid var(--border)' }}>
-                <span className="text-xs font-medium" style={{ color: 'var(--foreground)' }}>{s}</span>
-                <span className="font-mono text-xs" style={{ color: 'var(--muted-foreground)' }}>all fields</span>
+
+          {/* Show export result */}
+          {protocol.exportResult && protocol.exportResult.records && protocol.exportResult.records.length > 0 && (
+            <div
+              data-surface="protocol"
+              className="rounded-xl overflow-hidden px-5 py-4 w-full"
+            >
+              <div className="text-xs font-medium mb-2" style={{ color: 'var(--success)' }}>
+                Exported {protocol.exportResult.records.length} records (all fields)
               </div>
-            ))}
-          </div>
-          <div className="text-xs mt-4" style={{ color: 'var(--muted-foreground)' }}>
-            Your data, your export, your terms. No third-party authorization needed.
-          </div>
+              <div className="font-mono text-xs overflow-x-auto" style={{ color: 'var(--muted-foreground)', maxHeight: '120px', overflowY: 'auto' }}>
+                {JSON.stringify(protocol.exportResult.records[0].data, null, 2)}
+              </div>
+              <div className="text-xs mt-2" style={{ color: 'var(--muted-foreground)', opacity: 0.6 }}>
+                Showing first record. Compare to the grant-projected response in the Enforce section.
+              </div>
+            </div>
+          )}
         </div>
       </Section>
 
