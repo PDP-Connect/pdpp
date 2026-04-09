@@ -1180,11 +1180,28 @@ Content-Type: application/json
         config={SECTION_CONTENT[3]}
         detail={
           <DetailPanel spec="§5.1 Client Display, §5.2 Client Claims" label="See the trust model">
-            <p>Three content layers rendered with distinct visual treatment:</p>
-            <div className="font-mono text-xs flex flex-col gap-1">
-              <span><span style={{ color: 'var(--foreground)' }}>Layer 1:</span> Protocol facts (from grant fields) — rendered as authoritative</span>
-              <span><span style={{ color: 'var(--foreground)' }}>Layer 2:</span> Server descriptions (manifest display.label/detail) — trusted</span>
-              <span><span style={{ color: 'var(--foreground)' }}>Layer 3:</span> Client claims (client_display, commitments) — attributed with "[name] says:"</span>
+            <p className="font-medium" style={{ color: 'var(--foreground)' }}>Three content layers in the consent card above:</p>
+
+            {/* Trust model mapping — what in the UI comes from where */}
+            <div className="flex flex-col gap-0 mt-1">
+              {[
+                { element: '"Who you follow", "Your posts"', source: 'Manifest display.label', trust: 'Server-trusted', color: 'var(--primary)' },
+                { element: '"Usernames and account IDs..."', source: 'Manifest display.detail', trust: 'Server-trusted', color: 'var(--primary)' },
+                { element: '"Audience Lens" + VERIFIED badge', source: 'client_display.name + AS verification', trust: 'Client-asserted, server-verified', color: 'var(--primary)' },
+                { element: '"Audience Lens says: Data used only..."', source: 'client_claims.commitments', trust: 'Client-claimed, attributed', color: 'var(--human)' },
+                { element: '"Ongoing access, active until you revoke"', source: 'grant.access_mode (server-derived)', trust: 'Protocol fact', color: 'var(--success)' },
+                { element: '"These are their commitments..."', source: 'Fixed disclaimer (server-rendered)', trust: 'Server warning', color: 'var(--primary)' },
+              ].map((row, i) => (
+                <div key={i} className="flex items-start gap-2 py-1.5 text-xs" style={{ borderBottom: i < 5 ? '1px solid var(--border)' : 'none' }}>
+                  <div className="w-1 h-1 rounded-full shrink-0 mt-1.5" style={{ backgroundColor: row.color }} />
+                  <div className="flex-1 min-w-0">
+                    <span style={{ color: 'var(--foreground)' }}>{row.element}</span>
+                    <br />
+                    <span className="font-mono" style={{ color: 'var(--muted-foreground)', opacity: 0.7 }}>{row.source}</span>
+                    <span className="ml-2" style={{ color: row.color }}>{row.trust}</span>
+                  </div>
+                </div>
+              ))}
             </div>
             <pre className="font-mono text-xs p-3 rounded-md overflow-x-auto" style={{ backgroundColor: 'var(--muted)', color: 'var(--muted-foreground)' }}>
 {`// Selection request (RFC 9396 authorization_details)
