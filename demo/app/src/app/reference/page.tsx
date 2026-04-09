@@ -1315,6 +1315,7 @@ Authorization: Bearer <client_token>
             <p className="italic" style={{ opacity: 0.7 }}>
               RS may expire version data. If a cursor is stale, RS returns 410 Gone. Client must full re-sync.
             </p>
+            <p><strong>single_use grants</strong> do not support incremental sync. The runtime does not persist STATE from single_use collection runs. single_use is a one-shot export; continuous is for ongoing access.</p>
           </DetailPanel>
         }
       >
