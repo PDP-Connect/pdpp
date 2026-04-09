@@ -111,20 +111,20 @@ export function GrantInspector({
           {/* Key terms grid */}
           <div className="grid grid-cols-2 gap-x-4 gap-y-2 mt-3">
             <div>
-              <div className="text-xs mb-0.5" style={{ color: 'var(--muted-foreground)', opacity: 0.6 }}>Issued</div>
+              <div className="text-xs mb-0.5" style={{ color: 'var(--muted-foreground)', opacity: 0.7 }}>Issued</div>
               <div className="font-mono text-xs" style={{ color: 'var(--muted-foreground)' }}>{issuedAt}</div>
             </div>
             <div>
-              <div className="text-xs mb-0.5" style={{ color: 'var(--muted-foreground)', opacity: 0.6 }}>Expires</div>
+              <div className="text-xs mb-0.5" style={{ color: 'var(--muted-foreground)', opacity: 0.7 }}>Expires</div>
               <div className="font-mono text-xs" style={{ color: 'var(--muted-foreground)' }}>{expiresAt ?? 'Never'}</div>
             </div>
             <div>
-              <div className="text-xs mb-0.5" style={{ color: 'var(--muted-foreground)', opacity: 0.6 }}>Access</div>
+              <div className="text-xs mb-0.5" style={{ color: 'var(--muted-foreground)', opacity: 0.7 }}>Access</div>
               <div className="text-xs" style={{ color: 'var(--muted-foreground)' }}>{accessModeLabel}</div>
             </div>
             {retention && (
               <div>
-                <div className="text-xs mb-0.5" style={{ color: 'var(--muted-foreground)', opacity: 0.6 }}>Retention</div>
+                <div className="text-xs mb-0.5" style={{ color: 'var(--muted-foreground)', opacity: 0.7 }}>Retention</div>
                 <div className="text-xs" style={{ color: 'var(--muted-foreground)' }}>
                   {retention.onExpiry === 'delete' ? 'Deleted' : 'Anonymized'} after {retention.duration}
                 </div>
@@ -133,7 +133,7 @@ export function GrantInspector({
           </div>
 
           {/* Purpose code — technical */}
-          <div className="font-mono text-xs mt-3" style={{ color: 'var(--muted-foreground)', opacity: 0.6 }}>
+          <div className="font-mono text-xs mt-3" style={{ color: 'var(--muted-foreground)', opacity: 0.7 }}>
             purpose: <span style={{ color: 'var(--edu-fg)', opacity: 1 }}>{purposeCode}</span>
           </div>
         </div>
@@ -165,22 +165,22 @@ export function GrantInspector({
                   )}
                   {view && (
                     <div className="font-mono text-xs" style={{ color: 'var(--muted-foreground)' }}>
-                      <span style={{ opacity: 0.6 }}>View: </span>
+                      <span style={{ opacity: 0.7 }}>View: </span>
                       <span className="px-1 py-px rounded" style={{ backgroundColor: 'var(--muted)' }}>{view}</span>
                     </div>
                   )}
                   {fields && (
                     <div className="font-mono text-xs" style={{ color: 'var(--muted-foreground)' }}>
-                      <span style={{ opacity: 0.6 }}>Fields: </span>{fields.join(', ')}
+                      <span style={{ opacity: 0.7 }}>Fields: </span>{fields.join(', ')}
                     </div>
                   )}
                   {timeRange?.since && (
                     <div className="font-mono text-xs" style={{ color: 'var(--muted-foreground)' }}>
-                      <span style={{ opacity: 0.6 }}>Since: </span>{timeRange.since}
+                      <span style={{ opacity: 0.7 }}>Since: </span>{timeRange.since}
                     </div>
                   )}
                   {!fields && !view && (
-                    <div className="font-mono text-xs" style={{ color: 'var(--muted-foreground)', opacity: 0.6 }}>
+                    <div className="font-mono text-xs" style={{ color: 'var(--muted-foreground)', opacity: 0.7 }}>
                       All fields authorized
                     </div>
                   )}

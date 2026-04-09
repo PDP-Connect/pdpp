@@ -249,7 +249,9 @@ export function ConsentCard({
                     backgroundColor: optionalEnabled ? 'var(--primary)' : 'var(--border)',
                     transition: 'background-color var(--motion-state)',
                   }}
-                  aria-label={optionalEnabled ? `Disable ${optional.label}` : `Enable ${optional.label}`}
+                  role="switch"
+                  aria-checked={optionalEnabled}
+                  aria-label={optional.label}
                 >
                   <span
                     className="absolute top-0.5 w-3 h-3 rounded-full"

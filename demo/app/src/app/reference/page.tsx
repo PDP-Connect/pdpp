@@ -209,7 +209,7 @@ const SECTION_TEMPERATURE: Record<SectionId, 'human' | 'protocol' | 'neutral'> =
 
 function Stepper({ activeId, onNavigate }: { activeId: SectionId; onNavigate: (id: SectionId) => void }) {
   return (
-    <nav className="fixed right-6 top-1/2 -translate-y-1/2 z-30 hidden lg:flex flex-col gap-0.5">
+    <nav aria-label="Protocol sections" className="fixed right-6 top-1/2 -translate-y-1/2 z-30 hidden lg:flex flex-col gap-0.5">
       {SECTIONS.map(({ id, label }) => {
         const isActive = id === activeId;
         const temp = SECTION_TEMPERATURE[id];
@@ -743,9 +743,11 @@ export default function ReferencePage() {
     document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }, []);
 
-  // Keyboard navigation
+  // Keyboard navigation — only when no interactive element is focused
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || tag === 'BUTTON') return;
       if (e.key === 'ArrowDown' || e.key === 'ArrowRight' || e.key === ' ') {
         e.preventDefault();
         const idx = SECTIONS.findIndex(s => s.id === activeSection);
@@ -818,12 +820,12 @@ export default function ReferencePage() {
         <div className="flex-1" />
 
         {/* Inline stepper for medium screens */}
-        <nav className="hidden md:flex lg:hidden items-center gap-0.5">
+        <nav aria-label="Protocol sections" className="hidden md:flex lg:hidden items-center gap-0.5 overflow-x-auto">
           {SECTIONS.map(({ id, label }) => (
             <button
               key={id}
               onClick={() => navigateTo(id)}
-              className="text-xs px-1.5 py-0.5 rounded transition-colors"
+              className="text-xs px-2 py-1.5 rounded transition-colors shrink-0"
               style={{
                 backgroundColor: activeSection === id ? 'var(--foreground)' : 'transparent',
                 color: activeSection === id ? 'var(--background)' : 'var(--muted-foreground)',
@@ -841,7 +843,7 @@ export default function ReferencePage() {
         >
           Design System
         </a>
-        <span className="hidden md:inline font-mono text-xs" style={{ color: 'var(--muted-foreground)', opacity: 0.5 }}>v0.1.0</span>
+        <span className="hidden md:inline font-mono text-xs" style={{ color: 'var(--muted-foreground)', opacity: 0.65 }}>v0.1.0</span>
       </header>
 
       {/* Right-side stepper (large screens) */}
@@ -889,7 +891,7 @@ export default function ReferencePage() {
             </p>
           </Reveal>
           <Reveal delay={200}>
-            <p className="text-sm leading-relaxed mb-10" style={{ color: 'var(--muted-foreground)', maxWidth: '52ch', opacity: 0.6 }}>
+            <p className="text-sm leading-relaxed mb-10" style={{ color: 'var(--muted-foreground)', maxWidth: '52ch', opacity: 0.7 }}>
               This is the protocol, running. Every component below implements a section of the spec.
             </p>
           </Reveal>
@@ -951,8 +953,8 @@ export default function ReferencePage() {
             </pre>
             <p>Connectors run as child processes with stdin/stdout JSONL:</p>
             <div className="font-mono text-xs flex flex-col gap-1">
-              <span><span style={{ opacity: 0.5 }}>runtime → connector:</span> START (collection_mode, state, bindings)</span>
-              <span><span style={{ opacity: 0.5 }}>connector → runtime:</span> RECORD, STATE, INTERACTION, DONE</span>
+              <span><span style={{ opacity: 0.65 }}>runtime → connector:</span> START (collection_mode, state, bindings)</span>
+              <span><span style={{ opacity: 0.65 }}>connector → runtime:</span> RECORD, STATE, INTERACTION, DONE</span>
               <span>The connector never sees the raw grant or token.</span>
             </div>
           </DetailPanel>
@@ -986,8 +988,8 @@ export default function ReferencePage() {
 }`}
             </pre>
             <div className="font-mono text-xs flex flex-col gap-1">
-              <span><span style={{ opacity: 0.5 }}>append_only</span> — immutable events (~95% of data). No version history needed.</span>
-              <span><span style={{ opacity: 0.5 }}>mutable_state</span> — evolving entities. RS maintains version history for incremental sync.</span>
+              <span><span style={{ opacity: 0.65 }}>append_only</span> — immutable events (~95% of data). No version history needed.</span>
+              <span><span style={{ opacity: 0.65 }}>mutable_state</span> — evolving entities. RS maintains version history for incremental sync.</span>
             </div>
             <p>Every stream has a primary key, a JSON Schema, and an optional consent_time_field for temporal filtering.</p>
           </DetailPanel>
@@ -1034,9 +1036,9 @@ Content-Type: application/json
 }`}
             </pre>
             <div className="font-mono text-xs flex flex-col gap-1">
-              <span><span style={{ opacity: 0.5 }}>client_display</span> — entity-scoped, self-asserted (GNAP-style inline)</span>
-              <span><span style={{ opacity: 0.5 }}>client_claims</span> — request-scoped, rendered with "[name] says:" attribution</span>
-              <span><span style={{ opacity: 0.5 }}>necessity</span> — required (included in grant) or optional (user choice)</span>
+              <span><span style={{ opacity: 0.65 }}>client_display</span> — entity-scoped, self-asserted (GNAP-style inline)</span>
+              <span><span style={{ opacity: 0.65 }}>client_claims</span> — request-scoped, rendered with "[name] says:" attribution</span>
+              <span><span style={{ opacity: 0.65 }}>necessity</span> — required (included in grant) or optional (user choice)</span>
             </div>
             <p>The AS must accept any syntactically valid purpose code URI. It must not reject solely because a code is unrecognized.</p>
           </DetailPanel>
@@ -1048,7 +1050,7 @@ Content-Type: application/json
         >
           <div className="px-5 pt-5 pb-4">
             <div className="flex items-center justify-between mb-4">
-              <div className="font-mono text-xs" style={{ color: 'var(--muted-foreground)', opacity: 0.6 }}>
+              <div className="font-mono text-xs" style={{ color: 'var(--muted-foreground)', opacity: 0.7 }}>
                 POST /authorize
               </div>
               <span
@@ -1210,9 +1212,9 @@ Content-Type: application/json
             )}
             <p>Three orthogonal time concepts that must not be conflated:</p>
             <div className="font-mono text-xs flex flex-col gap-1">
-              <span><span style={{ opacity: 0.5 }}>grant validity:</span> issued_at / expires_at</span>
-              <span><span style={{ opacity: 0.5 }}>data scope:</span> streams[].time_range</span>
-              <span><span style={{ opacity: 0.5 }}>access pattern:</span> access_mode (single_use | continuous)</span>
+              <span><span style={{ opacity: 0.65 }}>grant validity:</span> issued_at / expires_at</span>
+              <span><span style={{ opacity: 0.65 }}>data scope:</span> streams[].time_range</span>
+              <span><span style={{ opacity: 0.65 }}>access pattern:</span> access_mode (single_use | continuous)</span>
             </div>
             <p className="italic" style={{ opacity: 0.7 }}>
               retention is a policy commitment by the client, not server-enforced. Enforcement is through legal agreements, consistent with how OAuth 2.0 treats scope compliance.
@@ -1281,7 +1283,7 @@ PDPP-Version: 0.1.0
                 <pre className="font-mono text-xs overflow-x-auto" style={{ color: 'var(--muted-foreground)' }}>
                   {JSON.stringify(protocol.queryResult.records[0].data, null, 2)}
                 </pre>
-                <div className="text-xs mt-2 italic" style={{ color: 'var(--muted-foreground)', opacity: 0.6 }}>
+                <div className="text-xs mt-2 italic" style={{ color: 'var(--muted-foreground)', opacity: 0.7 }}>
                   {Object.keys(protocol.queryResult.records[0].data).length} of {ALL_POST_FIELDS.length} fields returned.
                   {' '}{ALL_POST_FIELDS.length - Object.keys(protocol.queryResult.records[0].data).length} stripped by the grant filter.
                 </div>
@@ -1308,8 +1310,8 @@ Authorization: Bearer <client_token>
             </pre>
             <p><strong>Projection-aware deltas</strong> (the novel property): if unauthorized field <code className="font-mono">like_count</code> changes but the client is only authorized for <code className="font-mono">[id, caption, taken_at, media_type]</code>, the record does not appear in the delta. The client cannot infer that like_count changed.</p>
             <div className="font-mono text-xs flex flex-col gap-1">
-              <span><span style={{ opacity: 0.5 }}>cursor</span> — pagination within a single query (distinct token space)</span>
-              <span><span style={{ opacity: 0.5 }}>changes_since</span> — sync state across sessions (distinct token space)</span>
+              <span><span style={{ opacity: 0.65 }}>cursor</span> — pagination within a single query (distinct token space)</span>
+              <span><span style={{ opacity: 0.65 }}>changes_since</span> — sync state across sessions (distinct token space)</span>
               <span>A client MUST NOT use a next_cursor value as a changes_since parameter.</span>
             </div>
             <p className="italic" style={{ opacity: 0.7 }}>
@@ -1341,11 +1343,11 @@ Authorization: Bearer <client_token>
                   {JSON.stringify(protocol.syncResult.records.slice(-3).map(r => r.data), null, 2)}
                 </div>
                 {protocol.syncCursor && (
-                  <div className="font-mono text-xs mt-2" style={{ color: 'var(--muted-foreground)', opacity: 0.6 }}>
+                  <div className="font-mono text-xs mt-2" style={{ color: 'var(--muted-foreground)', opacity: 0.7 }}>
                     next_changes_since: "{protocol.syncCursor}"
                   </div>
                 )}
-                <div className="text-xs mt-2 italic" style={{ color: 'var(--muted-foreground)', opacity: 0.6 }}>
+                <div className="text-xs mt-2 italic" style={{ color: 'var(--muted-foreground)', opacity: 0.7 }}>
                   Only {grantedPostFields.length} of {ALL_POST_FIELDS.length} fields per record (projection applied to delta too).
                 </div>
               </div>
@@ -1426,8 +1428,8 @@ Authorization: Bearer <owner_token>
 → All ${ALL_POST_FIELDS.length} fields returned (no projection)`}
             </pre>
             <div className="font-mono text-xs flex flex-col gap-1">
-              <span><span style={{ opacity: 0.5 }}>owner token</span> — ingest, state management, self-export</span>
-              <span><span style={{ opacity: 0.5 }}>client token</span> — querying under a grant (field projection enforced)</span>
+              <span><span style={{ opacity: 0.65 }}>owner token</span> — ingest, state management, self-export</span>
+              <span><span style={{ opacity: 0.65 }}>client token</span> — querying under a grant (field projection enforced)</span>
               <span>RS determines token kind from introspection, never from syntax.</span>
             </div>
           </DetailPanel>
@@ -1475,7 +1477,7 @@ Authorization: Bearer <owner_token>
               <div className="font-mono text-xs overflow-x-auto" style={{ color: 'var(--muted-foreground)', maxHeight: '120px', overflowY: 'auto' }}>
                 {JSON.stringify(protocol.exportResult.records[0].data, null, 2)}
               </div>
-              <div className="text-xs mt-2" style={{ color: 'var(--muted-foreground)', opacity: 0.6 }}>
+              <div className="text-xs mt-2" style={{ color: 'var(--muted-foreground)', opacity: 0.7 }}>
                 Showing first record. Compare to the grant-projected response in the Enforce section.
               </div>
             </div>
