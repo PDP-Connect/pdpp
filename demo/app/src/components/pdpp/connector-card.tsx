@@ -50,7 +50,7 @@ export function ConnectorCard({ connectorId, displayName, version, streams, prof
             <span className="text-sm font-medium" style={{ color: 'var(--foreground)' }}>{displayName}</span>
             <span className="font-mono text-xs" style={{ color: 'var(--muted-foreground)' }}>v{version}</span>
           </div>
-          <div className="font-mono text-xs mb-3" style={{ color: 'var(--muted-foreground)', opacity: 0.6 }}>
+          <div className="font-mono text-xs mb-3 truncate" style={{ color: 'var(--muted-foreground)', opacity: 0.6 }}>
             {connectorId}
           </div>
           <div className="flex items-center gap-3 text-xs" style={{ color: 'var(--muted-foreground)' }}>

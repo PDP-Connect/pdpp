@@ -712,14 +712,14 @@ export default function ReferencePage() {
 
       {/* Sticky header */}
       <header
-        className="sticky top-0 z-40 flex h-12 items-center px-6 gap-3"
+        className="sticky top-0 z-40 flex h-12 items-center px-4 md:px-6 gap-2 md:gap-3"
         style={{
           backgroundColor: 'var(--background)',
           backdropFilter: 'blur(8px)',
           borderBottom: '1px solid var(--border)',
         }}
       >
-        <div className="flex items-center gap-2.5 shrink-0">
+        <div className="flex items-center gap-2 shrink-0">
           <div
             className="w-5 h-5 rounded flex items-center justify-center shrink-0"
             style={{ background: 'var(--primary)' }}
@@ -727,9 +727,16 @@ export default function ReferencePage() {
             <span className="text-[9px] font-bold leading-none" style={{ color: 'var(--primary-foreground)' }}>P</span>
           </div>
           <span className="text-sm font-semibold tracking-tight" style={{ color: 'var(--foreground)' }}>PDPP</span>
-          <span style={{ color: 'var(--muted-foreground)', opacity: 0.4, margin: '0 2px' }}>/</span>
-          <span className="text-sm" style={{ color: 'var(--muted-foreground)' }}>Reference</span>
         </div>
+
+        {/* Mobile: current section indicator */}
+        <span
+          className="md:hidden font-mono text-xs uppercase tracking-wide"
+          style={{ color: 'var(--muted-foreground)' }}
+        >
+          {SECTIONS.find(s => s.id === activeSection)?.label}
+        </span>
+
         <div className="flex-1" />
 
         {/* Inline stepper for medium screens */}
@@ -751,12 +758,12 @@ export default function ReferencePage() {
 
         <a
           href="/design"
-          className="text-xs transition-opacity hover:opacity-70"
+          className="hidden md:inline text-xs transition-opacity hover:opacity-70"
           style={{ color: 'var(--muted-foreground)' }}
         >
           Design System
         </a>
-        <span className="font-mono text-xs" style={{ color: 'var(--muted-foreground)', opacity: 0.5 }}>v0.1.0</span>
+        <span className="hidden md:inline font-mono text-xs" style={{ color: 'var(--muted-foreground)', opacity: 0.5 }}>v0.1.0</span>
       </header>
 
       {/* Right-side stepper (large screens) */}
