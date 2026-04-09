@@ -295,7 +295,7 @@ function FieldProjection({ grantedFields, allFields }: { grantedFields: string[]
                     color: granted ? 'var(--success)' : 'var(--muted-foreground)',
                     opacity: animated ? (granted ? 1 : 0.3) : 0,
                     transform: animated ? 'translateY(0)' : 'translateY(8px)',
-                    transition: `opacity 400ms ${i * 60}ms, transform 400ms ${i * 60}ms`,
+                    transition: `opacity 500ms cubic-bezier(0.16, 1, 0.3, 1) ${i * 50}ms, transform 500ms cubic-bezier(0.16, 1, 0.3, 1) ${i * 50}ms`,
                   }}
                 >
                   {f}
@@ -312,7 +312,7 @@ function FieldProjection({ grantedFields, allFields }: { grantedFields: string[]
             style={{
               backgroundColor: 'var(--border)',
               opacity: animated ? 1 : 0,
-              transition: `opacity 300ms ${allFields.length * 60 + 200}ms`,
+              transition: `opacity 300ms ${allFields.length * 50 + 200}ms`,
             }}
           />
           <span
@@ -320,7 +320,7 @@ function FieldProjection({ grantedFields, allFields }: { grantedFields: string[]
             style={{
               color: 'var(--muted-foreground)',
               opacity: animated ? 1 : 0,
-              transition: `opacity 300ms ${allFields.length * 60 + 200}ms`,
+              transition: `opacity 300ms ${allFields.length * 50 + 200}ms`,
             }}
           >
             grant filter
@@ -330,7 +330,7 @@ function FieldProjection({ grantedFields, allFields }: { grantedFields: string[]
             style={{
               backgroundColor: 'var(--border)',
               opacity: animated ? 1 : 0,
-              transition: `opacity 300ms ${allFields.length * 60 + 200}ms`,
+              transition: `opacity 300ms ${allFields.length * 50 + 200}ms`,
             }}
           />
         </div>
@@ -342,7 +342,7 @@ function FieldProjection({ grantedFields, allFields }: { grantedFields: string[]
             style={{
               color: 'var(--success)',
               opacity: animated ? 1 : 0,
-              transition: `opacity 300ms ${allFields.length * 60 + 400}ms`,
+              transition: `opacity 300ms ${allFields.length * 50 + 300}ms`,
             }}
           >
             Response to client ({grantedFields.length} fields)
@@ -357,7 +357,7 @@ function FieldProjection({ grantedFields, allFields }: { grantedFields: string[]
                   color: 'var(--success)',
                   opacity: animated ? 1 : 0,
                   transform: animated ? 'translateY(0)' : 'translateY(8px)',
-                  transition: `opacity 400ms ${allFields.length * 60 + 500 + i * 80}ms, transform 400ms ${allFields.length * 60 + 500 + i * 80}ms`,
+                  transition: `opacity 500ms cubic-bezier(0.16, 1, 0.3, 1) ${allFields.length * 50 + 400 + i * 60}ms, transform 500ms cubic-bezier(0.16, 1, 0.3, 1) ${allFields.length * 50 + 400 + i * 60}ms`,
                 }}
               >
                 {f}
@@ -953,9 +953,10 @@ export default function ReferencePage() {
         )}
       </FeaturedSection>
 
-      {/* 7. Sync */}
+      {/* 7. Sync — wide */}
       <Section
         config={SECTION_CONTENT[6]}
+        wide
         detail={
           <DetailPanel spec="§4.1 Incremental Sync">
             <p>changes_since returns full current state of changed records, not field-level diffs. The RS maintains version history for mutable_state streams.</p>
@@ -967,9 +968,10 @@ export default function ReferencePage() {
         <IncrementalSync />
       </Section>
 
-      {/* 8. Revoke — shows grant with revoke action, or revoked state */}
+      {/* 8. Revoke — wide */}
       <Section
         config={SECTION_CONTENT[7]}
+        wide
         detail={
           <DetailPanel spec="§6.5 Revocation">
             <p>Revocation stops future access only. Records already delivered before revocation are governed by the grant's retention policy.</p>
@@ -1005,9 +1007,10 @@ export default function ReferencePage() {
         )}
       </Section>
 
-      {/* 9. Export */}
+      {/* 9. Export — wide */}
       <Section
         config={SECTION_CONTENT[8]}
+        wide
         detail={
           <DetailPanel spec="§8.3 Owner Tokens">
             <p>Two token types: owner tokens (for ingest, management, self-export) and client tokens (for querying under a grant). The RS determines token kind from the introspection response, never from syntax.</p>
