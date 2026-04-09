@@ -1382,33 +1382,44 @@ Authorization: Bearer <client_token>
         }
       >
         {protocol.phase === 'granted' ? (
-          <div className="flex flex-col gap-4 w-full">
-            <IncrementalSync />
+          <div className="flex flex-col gap-6 w-full">
+            {/* Live sync state from mock server */}
+            <div className="w-full" style={{ maxWidth: '520px' }}>
+              <div className="text-xs font-medium mb-2" style={{ color: 'var(--muted-foreground)' }}>
+                Initial sync: {protocol.syncResult?.records?.length || 22} records
+              </div>
+              <div className="flex items-center gap-0.5 flex-wrap mb-1">
+                {Array.from({ length: protocol.syncResult?.records?.length || 22 }, (_, i) => (
+                  <div key={i} className="w-1.5 h-3 rounded-sm" style={{ backgroundColor: 'var(--primary)', opacity: 0.5 }} />
+                ))}
+              </div>
+              {protocol.syncCursor && (
+                <div className="font-mono text-xs" style={{ color: 'var(--muted-foreground)', opacity: 0.65 }}>
+                  next_changes_since: &quot;{protocol.syncCursor}&quot;
+                </div>
+              )}
+            </div>
+
+            {/* Add posts button */}
             <button
               className="text-xs self-start px-3 py-1.5 rounded-md transition-colors"
               style={{ backgroundColor: 'var(--muted)', color: 'var(--muted-foreground)' }}
               onClick={() => protocol.addNewPosts(3)}
             >
-              + Add 3 new posts (simulates new data arriving)
+              + Simulate 3 new posts arriving
             </button>
-            {protocol.syncResult && protocol.syncResult.records && protocol.syncResult.records.length > 0 && (
-              <div
-                data-surface="protocol"
-                className="rounded-xl overflow-hidden px-5 py-4 w-full"
-              >
+
+            {/* Live delta result */}
+            {protocol.syncResult && protocol.syncResult.records && protocol.syncResult.records.length > 22 && (
+              <div className="w-full" style={{ maxWidth: '520px' }}>
                 <div className="text-xs font-medium mb-2" style={{ color: 'var(--success)' }}>
-                  Delta: {protocol.syncResult.records.length} record{protocol.syncResult.records.length !== 1 ? 's' : ''} returned
+                  Delta: {protocol.syncResult.records.length - 22} new record{protocol.syncResult.records.length - 22 !== 1 ? 's' : ''}
                 </div>
-                <div className="font-mono text-xs" style={{ color: 'var(--muted-foreground)', maxHeight: '100px', overflowY: 'auto' }}>
+                <pre className="font-mono text-xs p-3 rounded-md overflow-x-auto" style={{ backgroundColor: 'var(--muted)', color: 'var(--muted-foreground)' }}>
                   {JSON.stringify(protocol.syncResult.records.slice(-3).map(r => r.data), null, 2)}
-                </div>
-                {protocol.syncCursor && (
-                  <div className="font-mono text-xs mt-2" style={{ color: 'var(--muted-foreground)', opacity: 0.7 }}>
-                    next_changes_since: "{protocol.syncCursor}"
-                  </div>
-                )}
-                <div className="text-xs mt-2 italic" style={{ color: 'var(--muted-foreground)', opacity: 0.7 }}>
-                  Only {grantedPostFields.length} of {ALL_POST_FIELDS.length} fields per record (projection applied to delta too).
+                </pre>
+                <div className="text-xs mt-2" style={{ color: 'var(--muted-foreground)', opacity: 0.7 }}>
+                  {grantedPostFields.length} of {ALL_POST_FIELDS.length} fields per record. Projection applied to the delta.
                 </div>
               </div>
             )}
