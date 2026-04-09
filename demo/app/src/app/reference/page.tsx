@@ -506,16 +506,19 @@ function IncrementalSync() {
   );
 }
 
-// ─── Section shell ──────────────────────────────────────────────────────────
+// ─── Section shells ─────────────────────────────────────────────────────────
 
+// Standard section: text left, component right on large screens
 function Section({
   config,
   children,
   detail,
+  wide,
 }: {
   config: SectionConfig;
   children: React.ReactNode;
   detail?: React.ReactNode;
+  wide?: boolean;
 }) {
   const borderColor = config.surface === 'human'
     ? 'var(--human)'
@@ -526,26 +529,87 @@ function Section({
   return (
     <section
       id={config.id}
-      className="min-h-[80vh] flex flex-col justify-center py-16 md:py-24"
+      className="py-20 md:py-28"
       style={{ borderLeft: `2px solid ${borderColor}` }}
     >
-      <div className="max-w-2xl mx-auto w-full px-6 md:px-12">
+      <div className={`${wide ? 'max-w-5xl' : 'max-w-3xl'} mx-auto w-full px-6 md:px-12`}>
+        <div className={wide ? 'grid grid-cols-1 lg:grid-cols-2 gap-12 items-start' : ''}>
+          <div>
+            <div
+              className="font-mono text-xs uppercase tracking-widest mb-3"
+              style={{ color: borderColor, opacity: 0.7 }}
+            >
+              {config.id}
+            </div>
+            <h2
+              className="text-2xl md:text-3xl font-semibold tracking-tight mb-4"
+              style={{ color: 'var(--foreground)', lineHeight: 1.15 }}
+            >
+              {config.headline}
+            </h2>
+            <p
+              className="text-sm md:text-base leading-relaxed"
+              style={{ color: 'var(--muted-foreground)', maxWidth: '48ch' }}
+            >
+              {config.narrative}
+            </p>
+            {detail && <div className="mt-4">{detail}</div>}
+          </div>
+          <div className={wide ? '' : 'mt-8'}>
+            {children}
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+// Featured section: full-width component, centered, with extra presence
+function FeaturedSection({
+  config,
+  children,
+  detail,
+}: {
+  config: SectionConfig;
+  children: React.ReactNode;
+  detail?: React.ReactNode;
+}) {
+  const borderColor = config.surface === 'human' ? 'var(--human)' : 'var(--primary)';
+
+  return (
+    <section
+      id={config.id}
+      className="py-24 md:py-36"
+      style={{
+        borderLeft: `2px solid ${borderColor}`,
+        background: config.surface === 'human'
+          ? 'linear-gradient(to bottom, var(--human-wash), transparent 40%)'
+          : undefined,
+      }}
+    >
+      <div className="max-w-3xl mx-auto w-full px-6 md:px-12">
+        <div
+          className="font-mono text-xs uppercase tracking-widest mb-3"
+          style={{ color: borderColor, opacity: 0.7 }}
+        >
+          {config.id}
+        </div>
         <h2
-          className="text-2xl md:text-3xl font-semibold tracking-tight mb-4"
-          style={{ color: 'var(--foreground)' }}
+          className="text-3xl md:text-4xl font-semibold tracking-tight mb-4"
+          style={{ color: 'var(--foreground)', lineHeight: 1.1 }}
         >
           {config.headline}
         </h2>
         <p
-          className="text-sm md:text-base leading-relaxed mb-8"
-          style={{ color: 'var(--muted-foreground)', maxWidth: '52ch' }}
+          className="text-sm md:text-base leading-relaxed mb-12"
+          style={{ color: 'var(--muted-foreground)', maxWidth: '48ch' }}
         >
           {config.narrative}
         </p>
-        <div>
+        <div className="flex justify-center">
           {children}
         </div>
-        {detail}
+        {detail && <div className="mt-8 max-w-xl">{detail}</div>}
       </div>
     </section>
   );
@@ -698,11 +762,32 @@ export default function ReferencePage() {
       {/* Right-side stepper (large screens) */}
       <Stepper activeId={activeSection} onNavigate={navigateTo} />
 
+      {/* ── Hero ── */}
+      <section className="pt-24 pb-16 md:pt-32 md:pb-24 px-6 md:px-12">
+        <div className="max-w-3xl mx-auto">
+          <h1
+            className="text-4xl md:text-5xl font-semibold tracking-tight mb-6"
+            style={{ color: 'var(--foreground)', lineHeight: 1.08 }}
+          >
+            Personal Data
+            <br />
+            Portability Protocol
+          </h1>
+          <p className="text-base md:text-lg leading-relaxed mb-2" style={{ color: 'var(--muted-foreground)', maxWidth: '52ch' }}>
+            An authorization and disclosure protocol for personal data. You decide what to share, with whom, for how long, for what purpose.
+          </p>
+          <p className="text-sm leading-relaxed" style={{ color: 'var(--muted-foreground)', maxWidth: '52ch', opacity: 0.6 }}>
+            This is the protocol, running. Every component below implements a section of the spec.
+          </p>
+        </div>
+      </section>
+
       {/* ── Sections ── */}
 
-      {/* 1. Ingest */}
+      {/* 1. Ingest — wide layout: text left, card right */}
       <Section
         config={SECTION_CONTENT[0]}
+        wide
         detail={
           <DetailPanel spec="§7 Manifest">
             <p>Each connector publishes a manifest declaring its consent surface: streams, fields, views, and selection capabilities. The manifest is the source of truth for what can be consented to.</p>
@@ -713,9 +798,10 @@ export default function ReferencePage() {
         <ConnectorCard {...CONNECTOR_SPECIMEN} />
       </Section>
 
-      {/* 2. Inventory */}
+      {/* 2. Inventory — wide layout */}
       <Section
         config={SECTION_CONTENT[1]}
+        wide
         detail={
           <DetailPanel spec="§4 Record Model">
             <p>Personal data is modeled as flat records in named streams. Every stream has a declared primary key, a semantic type (append_only or mutable_state), and a JSON Schema.</p>
@@ -726,7 +812,7 @@ export default function ReferencePage() {
         <StreamInventory {...INVENTORY_SPECIMEN} />
       </Section>
 
-      {/* 3. Request */}
+      {/* 3. Request — standard layout */}
       <Section
         config={SECTION_CONTENT[2]}
         detail={
@@ -741,7 +827,7 @@ export default function ReferencePage() {
           className="rounded-xl overflow-hidden px-5 py-6 w-full"
         >
           <div className="font-mono text-xs mb-3" style={{ color: 'var(--muted-foreground)', opacity: 0.6 }}>
-            POST /authorize — authorization_details
+            POST /authorize
           </div>
           <div className="flex flex-col gap-2">
             <div className="text-xs" style={{ color: 'var(--foreground)' }}>
@@ -771,8 +857,8 @@ export default function ReferencePage() {
         </div>
       </Section>
 
-      {/* 4. Consent — drives protocol state */}
-      <Section
+      {/* 4. Consent — THE featured moment */}
+      <FeaturedSection
         config={SECTION_CONTENT[3]}
         detail={
           <DetailPanel spec="§5.1 Client Display, §5.2 Client Claims">
@@ -817,11 +903,12 @@ export default function ReferencePage() {
             </button>
           </div>
         )}
-      </Section>
+      </FeaturedSection>
 
-      {/* 5. Grant — reads from protocol state, shows default when pending */}
+      {/* 5. Grant — wide layout */}
       <Section
         config={SECTION_CONTENT[4]}
+        wide
         detail={
           <DetailPanel spec="§6 Grant">
             <p>The grant is an immutable consent artifact. Once issued, it cannot be modified. Changes require revoke-and-reissue.</p>
@@ -838,8 +925,8 @@ export default function ReferencePage() {
         />
       </Section>
 
-      {/* 6. Enforce — field projection, shows 403 when revoked */}
-      <Section
+      {/* 6. Enforce — featured: the "one screenshot" moment */}
+      <FeaturedSection
         config={SECTION_CONTENT[5]}
         detail={
           <DetailPanel spec="§8 Resource Server">
@@ -864,9 +951,9 @@ export default function ReferencePage() {
         ) : (
           <FieldProjection grantedFields={protocol.grantedFields} allFields={ALL_POST_FIELDS} />
         )}
-      </Section>
+      </FeaturedSection>
 
-      {/* 7. Sync — incremental sync animation */}
+      {/* 7. Sync */}
       <Section
         config={SECTION_CONTENT[6]}
         detail={
