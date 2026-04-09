@@ -34,5 +34,8 @@ export function baseOptions(): BaseLayoutProps {
     },
     links: navLinks,
     githubUrl: 'https://github.com/vana-com/pdpp',
+    themeSwitch: {
+      enabled: false,
+    },
   };
 }
