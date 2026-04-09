@@ -892,7 +892,7 @@ export default function ReferencePage() {
       {/* Protocol state indicator — visible during sections 4-8 */}
       {['consent', 'grant', 'enforce', 'sync', 'revoke'].includes(activeSection) && (
         <div
-          className="fixed bottom-6 left-6 z-30 flex items-center gap-2 px-3 py-1.5 rounded-full text-xs"
+          className="fixed bottom-6 left-1/2 -translate-x-1/2 z-30 flex items-center gap-2 px-3 py-1.5 rounded-full text-xs"
           style={{
             backgroundColor: 'var(--card)',
             border: '1px solid var(--border)',
