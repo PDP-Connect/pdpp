@@ -543,6 +543,46 @@ function IncrementalSync() {
   );
 }
 
+// ─── Outcome card (shared by consent and revoke sections) ───────────────────
+
+function OutcomeCard({ variant, message, onReset }: {
+  variant: 'granted' | 'revoked';
+  message: string;
+  onReset: () => void;
+}) {
+  return (
+    <div className="flex flex-col items-center gap-3 w-full">
+      <div
+        className="w-full rounded-xl px-6 py-8 flex flex-col items-center gap-3 text-center"
+        style={{ border: '1px solid var(--border)', backgroundColor: 'var(--card)' }}
+      >
+        <div
+          className="w-8 h-8 rounded-full flex items-center justify-center text-sm"
+          style={{
+            backgroundColor: variant === 'granted' ? 'var(--success)' : 'var(--destructive)',
+            color: 'white',
+          }}
+        >
+          {variant === 'granted' ? '\u2713' : '\u00d7'}
+        </div>
+        <div className="text-sm font-medium">
+          {variant === 'granted' ? 'Access granted' : 'Grant revoked'}
+        </div>
+        <div className="text-xs" style={{ color: 'var(--muted-foreground)' }}>
+          {message}
+        </div>
+      </div>
+      <button
+        className="font-mono text-xs px-0.5"
+        style={{ color: 'var(--muted-foreground)' }}
+        onClick={onReset}
+      >
+        {'\u21ba'} reset flow
+      </button>
+    </div>
+  );
+}
+
 // ─── Scroll reveal ──────────────────────────────────────────────────────────
 
 function Reveal({ children, delay = 0 }: { children: React.ReactNode; delay?: number }) {
@@ -1150,37 +1190,13 @@ Content-Type: application/json
         {protocol.phase === 'idle' ? (
           <ConsentCard {...CONSENT_SPECIMEN} onAllow={handleAllow} onDeny={handleDeny} />
         ) : (
-          <div className="flex flex-col items-center gap-3" style={{ maxWidth: '440px', width: '100%' }}>
-            <div
-              className="w-full rounded-xl px-6 py-8 flex flex-col items-center gap-3 text-center"
-              style={{ border: '1px solid var(--border)', backgroundColor: 'var(--card)' }}
-            >
-              <div
-                className="w-8 h-8 rounded-full flex items-center justify-center text-sm"
-                style={{
-                  backgroundColor: protocol.phase === 'granted' ? 'var(--success)' : 'var(--muted)',
-                  color: protocol.phase === 'granted' ? 'white' : 'var(--muted-foreground)',
-                }}
-              >
-                {protocol.phase === 'granted' ? '✓' : protocol.phase === 'revoked' ? '×' : '×'}
-              </div>
-              <div className="text-sm font-medium">
-                {protocol.phase === 'granted' ? 'Access granted' : 'Access revoked'}
-              </div>
-              <div className="text-xs" style={{ color: 'var(--muted-foreground)' }}>
-                {protocol.phase === 'granted'
-                  ? 'Audience Lens may now query your personal server. Scroll down to see enforcement in action.'
-                  : 'The grant has been revoked. Audience Lens can no longer access your data.'}
-              </div>
-            </div>
-            <button
-              className="font-mono text-xs px-0.5"
-              style={{ color: 'var(--muted-foreground)' }}
-              onClick={handleReset}
-            >
-              ↺ reset
-            </button>
-          </div>
+          <OutcomeCard
+            variant={protocol.phase === 'granted' ? 'granted' : 'revoked'}
+            message={protocol.phase === 'granted'
+              ? 'Audience Lens may now query your personal server. Scroll down to see enforcement in action.'
+              : 'The grant has been revoked. Audience Lens can no longer access your data.'}
+            onReset={handleReset}
+          />
         )}
       </FeaturedSection>
 
@@ -1384,27 +1400,11 @@ RS sees revocation within max(token_exp, 60s)`}
         }
       >
         {protocol.phase === 'revoked' ? (
-          <div className="flex flex-col items-center gap-3 w-full">
-            <div
-              className="w-full rounded-xl px-6 py-8 flex flex-col items-center gap-3 text-center"
-              style={{ border: '1px solid var(--border)', backgroundColor: 'var(--card)' }}
-            >
-              <div className="w-8 h-8 rounded-full flex items-center justify-center text-sm" style={{ backgroundColor: 'var(--destructive)', color: 'white' }}>
-                ×
-              </div>
-              <div className="text-sm font-medium">Grant revoked</div>
-              <div className="text-xs" style={{ color: 'var(--muted-foreground)' }}>
-                Access has been revoked. The enforcement section above now shows a 403 response.
-              </div>
-            </div>
-            <button
-              className="font-mono text-xs px-0.5"
-              style={{ color: 'var(--muted-foreground)' }}
-              onClick={handleReset}
-            >
-              ↺ reset flow
-            </button>
-          </div>
+          <OutcomeCard
+            variant="revoked"
+            message="Access has been revoked. The enforcement section above now shows a 403 response."
+            onReset={handleReset}
+          />
         ) : (
           <GrantInspector {...grantProps} onRevoke={protocol.phase === 'granted' ? handleRevoke : undefined} />
         )}
