@@ -27,19 +27,23 @@ export default async function Page({ params }: DocsPageProps) {
   const MDX = page.data.body;
   const markdownUrl = getPageMarkdownUrl(page).url;
   const githubPath = page.path;
+  const sectionLabel = page.slugs[0]?.startsWith('e2e') ? 'Examples' : 'Protocol Spec';
 
   return (
-    <DocsPage toc={page.data.toc} full={page.data.full}>
-      <DocsTitle>{page.data.title}</DocsTitle>
-      <DocsDescription className="mb-0">{page.data.description}</DocsDescription>
-      <div className="flex flex-row items-center gap-2 border-b pb-6">
-        <MarkdownCopyButton markdownUrl={markdownUrl} />
-        <ViewOptionsPopover
-          markdownUrl={markdownUrl}
-          githubUrl={`https://github.com/vana-com/pdpp/blob/main/apps/web/content/docs/${githubPath}`}
-        />
+    <DocsPage toc={page.data.toc} full={page.data.full} className="pdpp-docs-page">
+      <div className="pdpp-docs-hero">
+        <div className="pdpp-eyebrow">{sectionLabel}</div>
+        <DocsTitle className="pdpp-docs-title">{page.data.title}</DocsTitle>
+        <DocsDescription className="pdpp-docs-description">{page.data.description}</DocsDescription>
+        <div className="pdpp-docs-actions">
+          <MarkdownCopyButton markdownUrl={markdownUrl} />
+          <ViewOptionsPopover
+            markdownUrl={markdownUrl}
+            githubUrl={`https://github.com/vana-com/pdpp/blob/main/apps/web/content/docs/${githubPath}`}
+          />
+        </div>
       </div>
-      <DocsBody>
+      <DocsBody className="pdpp-docs-body">
         <MDX
           components={getMDXComponents({
             a: createRelativeLink(source, page),

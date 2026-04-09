@@ -1,259 +1,298 @@
 @import "./base.css";
 
 :root {
-  --vp-font-family-base: var(--font-sans);
-  --vp-font-family-mono: var(--font-mono);
-  --vp-c-bg: transparent;
-  --vp-c-bg-alt: color-mix(in oklab, var(--background) 92%, white);
-  --vp-c-bg-elv: var(--card);
-  --vp-c-bg-soft: var(--muted);
-  --vp-c-default-1: var(--muted-foreground);
-  --vp-c-default-2: color-mix(in oklab, var(--muted-foreground) 82%, white);
-  --vp-c-default-3: color-mix(in oklab, var(--muted-foreground) 62%, white);
-  --vp-c-default-soft: color-mix(in oklab, var(--muted) 85%, white);
-  --vp-c-brand-1: var(--primary);
-  --vp-c-brand-2: color-mix(in oklab, var(--primary) 88%, black);
-  --vp-c-brand-3: color-mix(in oklab, var(--primary) 72%, white);
-  --vp-c-brand-soft: var(--primary-wash);
-  --vp-c-border: var(--border);
-  --vp-c-divider: var(--border);
-  --vp-c-text-1: var(--foreground);
-  --vp-c-text-2: color-mix(in oklab, var(--foreground) 70%, white);
-  --vp-c-text-3: var(--muted-foreground);
-  --vp-c-text-inverse-1: var(--background);
-  --vp-button-brand-bg: var(--foreground);
-  --vp-button-brand-border: var(--foreground);
-  --vp-button-brand-text: var(--background);
-  --vp-button-brand-hover-bg: color-mix(in oklab, var(--foreground) 88%, white);
-  --vp-button-brand-hover-border: color-mix(in oklab, var(--foreground) 88%, white);
-  --vp-button-brand-hover-text: var(--background);
-  --vp-button-alt-bg: var(--card);
-  --vp-button-alt-border: var(--border);
-  --vp-button-alt-text: var(--foreground);
-  --vp-button-alt-hover-bg: var(--muted);
-  --vp-home-hero-name-color: var(--foreground);
-  --vp-home-hero-image-background-image: linear-gradient(135deg, var(--human-wash), var(--primary-wash));
-  --vp-home-hero-image-filter: blur(72px);
+  --fd-layout-width: 96rem;
 }
 
-.Layout {
+#nd-docs-layout {
   background: transparent;
 }
 
-.VPNav {
-  background: color-mix(in oklab, var(--background) 88%, white / 72%);
-  backdrop-filter: blur(14px);
-  border-bottom: 1px solid var(--border);
+@media (min-width: 768px) {
+  #nd-docs-layout {
+    --fd-sidebar-width: 200px;
+    --fd-toc-width: 16rem;
+  }
 }
 
-.VPNavBar {
-  height: var(--chrome-height);
+#nd-subnav {
+  height: 3rem;
+  background: color-mix(in oklab, var(--background) 92%, white / 78%);
+  border-bottom-color: var(--border);
+  backdrop-filter: blur(10px);
 }
 
-.VPNavBar.has-sidebar .content-body,
-.VPNavBar .content-body {
-  background: transparent;
+.pdpp-docs-navtitle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+  color: var(--foreground);
+  text-decoration: none;
 }
 
-.VPNavBarTitle .title {
+.pdpp-docs-navtitle__mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.25rem;
+  height: 1.25rem;
+  border-radius: 0.25rem;
+  background: var(--primary);
+  color: var(--primary-foreground);
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.pdpp-docs-navtitle__brand {
+  font-size: 0.95rem;
   font-weight: 600;
   letter-spacing: -0.03em;
 }
 
-.VPNavBarTitle .title span:last-child::after {
-  content: " Docs";
+.pdpp-docs-navtitle__slash {
+  color: color-mix(in oklab, var(--muted-foreground) 58%, transparent);
+}
+
+.pdpp-docs-navtitle__label,
+.pdpp-docs-version {
   color: var(--muted-foreground);
-  font-weight: 400;
 }
 
-.VPNavBarMenuLink,
-.VPSidebarItem .text,
-.VPDocAsideOutline .content {
-  font-size: 0.92rem;
-}
-
-.VPSidebar {
-  border-right: 1px solid var(--border);
-  background: color-mix(in oklab, var(--background) 96%, white);
-}
-
-.VPSidebarItem.level-0.is-link > .item > .link > .text,
-.VPSidebarItem.level-0 > .item > .text {
-  font-size: 0.74rem;
+.pdpp-docs-version {
   font-family: var(--font-mono);
+  font-size: 0.7rem;
+  letter-spacing: 0.04em;
+  opacity: 0.7;
+}
+
+#nd-sidebar {
+  background:
+    linear-gradient(to bottom, color-mix(in oklab, var(--human-wash) 58%, white), transparent 18%),
+    color-mix(in oklab, var(--background) 97%, white);
+  border-right-color: var(--border);
+  box-shadow: none;
+}
+
+#nd-sidebar [data-sidebar-placeholder] {
+  top: 0;
+}
+
+#nd-sidebar .fd-scroll-container {
+  scrollbar-width: thin;
+}
+
+#nd-sidebar a,
+#nd-sidebar button,
+#nd-sidebar summary,
+#nd-sidebar [role='button'] {
+  border-radius: 0.5rem;
+}
+
+#nd-sidebar a[data-active='true'],
+#nd-sidebar button[data-active='true'] {
+  background: var(--muted);
+  color: var(--foreground);
+}
+
+#nd-sidebar [data-active='true']::before {
+  background: var(--human);
+}
+
+#nd-sidebar .text-fd-muted-foreground {
+  color: var(--muted-foreground);
+}
+
+#nd-sidebar [data-radix-collection-item],
+#nd-sidebar .group {
+  font-size: 0.8125rem;
+}
+
+#nd-sidebar [class*='mb-1 px-2 mt-6'] {
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  font-weight: 600;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--muted-foreground);
 }
 
-.VPDoc {
-  padding-top: 24px;
+#nd-page.pdpp-docs-page {
+  gap: 0;
+  max-width: 980px;
+  padding-top: 1.25rem;
 }
 
-.VPDoc .container {
-  max-width: var(--content-wide-width);
+@media (min-width: 1280px) {
+  #nd-page.pdpp-docs-page {
+    padding-top: 0;
+  }
 }
 
-.VPDoc.has-aside .content-container {
-  max-width: var(--content-width);
+.pdpp-docs-hero {
+  margin-bottom: 2.75rem;
+  padding: 1.5rem 1.25rem 1.4rem;
+  border-left: 1px solid var(--human);
+  border-bottom: 1px solid var(--border);
+  background: linear-gradient(to right, var(--human-wash), transparent 70%);
 }
 
-.VPContent.is-home {
-  background: transparent;
+@media (min-width: 768px) {
+  .pdpp-docs-hero {
+    margin-bottom: 3.5rem;
+    padding: 2.25rem 2.25rem 2rem;
+  }
 }
 
-.VPHero {
-  padding-top: 64px !important;
-  padding-bottom: 24px !important;
+.pdpp-docs-title {
+  margin-top: 0.35rem;
+  margin-bottom: 0.65rem;
+  font-size: clamp(2.2rem, 5vw, 3.2rem);
+  line-height: 1.02;
+  letter-spacing: -0.05em;
 }
 
-.VPHero .name,
-.VPDoc h1,
-.VPDoc h2,
-.VPDoc h3 {
+.pdpp-docs-description {
+  max-width: 56ch;
+  margin-bottom: 0;
+  font-size: clamp(0.96rem, 1.8vw, 1.05rem);
+  line-height: 1.7;
+  color: var(--muted-foreground);
+}
+
+.pdpp-docs-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.625rem;
+  margin-top: 1.25rem;
+  padding-top: 1rem;
+  border-top: 1px solid color-mix(in oklab, var(--border) 92%, transparent);
+}
+
+.pdpp-docs-actions a,
+.pdpp-docs-actions button {
+  border-radius: 999px;
+}
+
+.pdpp-docs-body {
+  max-width: 54rem;
+}
+
+.pdpp-docs-body.prose {
+  color: color-mix(in oklab, var(--foreground) 84%, white);
+  font-size: 1rem;
+  line-height: 1.8;
+}
+
+.pdpp-docs-body :where(h2, h3, h4) {
+  color: var(--foreground);
   letter-spacing: -0.04em;
 }
 
-.VPHero .name {
-  font-size: clamp(3.2rem, 8vw, 5.4rem) !important;
-  line-height: 0.96 !important;
-}
-
-.VPHero .text {
-  font-size: clamp(1.25rem, 3vw, 1.9rem) !important;
-  color: var(--foreground) !important;
-}
-
-.VPHero .tagline {
-  max-width: 36rem;
-  color: var(--muted-foreground) !important;
-}
-
-.VPFeature {
-  border: 1px solid var(--border);
-  border-radius: 18px;
-  background:
-    linear-gradient(to bottom, color-mix(in oklab, var(--human-wash) 70%, white), transparent 70%),
-    var(--card);
-  box-shadow: 0 1px 2px rgb(0 0 0 / 0.04), 0 1px 3px rgb(0 0 0 / 0.02);
-}
-
-.VPFeature:nth-child(2n) {
-  background:
-    linear-gradient(to right, color-mix(in oklab, var(--primary-wash) 88%, white), transparent 70%),
-    var(--card);
-}
-
-.VPFeature .title {
-  font-weight: 600;
-  letter-spacing: -0.03em;
-}
-
-.VPDoc .content {
-  font-size: 1rem;
-  line-height: 1.75;
-}
-
-.VPDoc h1 {
-  margin-top: 0.4rem;
+.pdpp-docs-body h2 {
+  margin-top: 3.25rem;
   margin-bottom: 1rem;
-  font-size: clamp(2.3rem, 4vw, 3.2rem);
-  line-height: 1.02;
-}
-
-.VPDoc h2 {
-  margin: 3rem 0 1rem;
-  padding-top: 1.25rem;
+  padding-top: 1.2rem;
   border-top: 1px solid var(--border);
-  font-size: clamp(1.45rem, 2vw, 1.8rem);
-  line-height: 1.1;
+  font-size: clamp(1.45rem, 2vw, 1.82rem);
+  line-height: 1.08;
 }
 
-.VPDoc h3 {
-  margin: 2rem 0 0.8rem;
+.pdpp-docs-body h3 {
+  margin-top: 2rem;
+  margin-bottom: 0.75rem;
   font-size: 1.12rem;
   line-height: 1.2;
 }
 
-.VPDoc p,
-.VPDoc li {
+.pdpp-docs-body p,
+.pdpp-docs-body li {
   color: color-mix(in oklab, var(--foreground) 82%, white);
 }
 
-.VPDoc a {
+.pdpp-docs-body a {
   color: var(--primary);
   text-decoration-thickness: 1px;
-  text-underline-offset: 0.16em;
+  text-underline-offset: 0.18em;
 }
 
-.VPDoc blockquote {
-  margin: 1.5rem 0;
+.pdpp-docs-body blockquote {
+  margin: 1.75rem 0;
+  padding: 1rem 1.1rem;
   border-left: 2px solid var(--human);
-  background: color-mix(in oklab, var(--human-wash) 85%, white);
+  background: color-mix(in oklab, var(--human-wash) 82%, white);
   color: var(--foreground);
 }
 
-.VPDoc table {
-  display: table;
-  width: 100%;
-  border-collapse: collapse;
-  margin: 1.75rem 0;
-  border: 1px solid var(--border);
-  border-radius: 18px;
-  overflow: hidden;
-}
-
-.VPDoc tr {
-  border-top: 1px solid var(--border);
-}
-
-.VPDoc th {
-  font-family: var(--font-mono);
-  font-size: 0.74rem;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--muted-foreground);
-  background: color-mix(in oklab, var(--muted) 92%, white);
-}
-
-.VPDoc th,
-.VPDoc td {
-  border: none;
-  padding: 0.8rem 0.9rem;
-}
-
-.VPDoc div[class*='language-'],
-.VPDoc pre {
-  border: 1px solid var(--border);
-  border-radius: 16px;
-  background: color-mix(in oklab, var(--foreground) 7%, white);
-}
-
-.VPDoc code {
-  font-size: 0.9em;
-}
-
-.vp-doc :not(pre) > code {
+.pdpp-docs-body :not(pre) > code {
+  padding: 0.18rem 0.42rem;
   border: 1px solid var(--border);
   border-radius: 999px;
   background: color-mix(in oklab, var(--muted) 84%, white);
-  padding: 0.18rem 0.42rem;
+  font-size: 0.9em;
 }
 
-.VPDocFooter,
-.VPDocAsideOutline .outline-marker {
-  border-color: var(--border);
+.pdpp-docs-body pre,
+.pdpp-docs-body .shiki {
+  border: 1px solid var(--border);
+  border-radius: 1rem;
+  background: color-mix(in oklab, var(--foreground) 7%, white);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.04), 0 1px 3px rgb(0 0 0 / 0.02);
 }
 
-.VPDocAsideOutline .root {
-  border-left: 1px solid var(--border);
+.pdpp-docs-body table {
+  width: 100%;
+  margin: 1.75rem 0;
+  border-collapse: collapse;
+  border: 1px solid var(--border);
+  border-radius: 1rem;
+  overflow: hidden;
 }
 
-.VPDocAsideOutline .outline-link.active {
+.pdpp-docs-body thead {
+  background: color-mix(in oklab, var(--muted) 92%, white);
+}
+
+.pdpp-docs-body th {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+}
+
+.pdpp-docs-body th,
+.pdpp-docs-body td {
+  padding: 0.8rem 0.9rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.pdpp-docs-body tbody tr:last-child td {
+  border-bottom: none;
+}
+
+#nd-toc {
+  padding-top: 6.5rem;
+  color: var(--muted-foreground);
+}
+
+#nd-toc h3 {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+}
+
+#nd-toc a[data-active='true'] {
   color: var(--foreground);
 }
 
-.VPFooter {
-  border-top: 1px solid var(--border);
-  background: transparent;
+[data-toc-popover] header {
+  border-bottom-color: var(--border);
+  background: color-mix(in oklab, var(--background) 90%, white / 78%);
 }
