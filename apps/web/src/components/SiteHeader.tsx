@@ -24,20 +24,23 @@ export function SiteHeader({ currentLabel }: { currentLabel: string }) {
         </span>
       </Link>
       {isHome ? (
-        // Reserved spacer keeps the nav anchored at the same x as on subpages.
-        <span aria-hidden="true" style={{ minWidth: '9.5rem' }} />
+        // Reserved spacer keeps the nav anchored at the same x as on subpages
+        // (desktop only — on mobile we don't pad to avoid overflow).
+        <span aria-hidden="true" className="hidden md:inline-block md:min-w-[9.5rem]" />
       ) : (
-        <>
-          <span style={{ color: 'var(--muted-foreground)', opacity: 0.4, margin: '0 2px' }}>/</span>
+        // Breadcrumb label is desktop-only; on mobile the active nav pill
+        // already indicates the current page (avoids "Docs / Docs" collision).
+        <span className="hidden md:flex items-center gap-2">
+          <span style={{ color: 'var(--muted-foreground)', opacity: 0.4 }}>/</span>
           <span
-            className="text-sm whitespace-nowrap"
-            style={{ color: 'var(--muted-foreground)', minWidth: '8.5rem' }}
+            className="text-sm whitespace-nowrap md:min-w-[8.5rem]"
+            style={{ color: 'var(--muted-foreground)' }}
           >
             {currentLabel}
           </span>
-        </>
+        </span>
       )}
-      <nav className="hidden items-center gap-1 md:flex">
+      <nav className="ml-auto flex items-center gap-1 md:ml-0">
         {siteNav.map((item) => {
           const active = pathname === item.link || pathname.startsWith(`${item.link}/`);
 
