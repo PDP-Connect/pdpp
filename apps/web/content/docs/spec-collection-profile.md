@@ -1,13 +1,6 @@
 ---
-title: "PDPP Collection Profile v0.1.0"
----
-
-
-Status: Draft
-Date: 2026-04-06
-
-Companion to the Personal Data Portability Protocol (PDPP) core spec.
-
+title: "Profile"
+description: "Companion to the Personal Data Portability Protocol (PDPP) core spec."
 ---
 
 ## Overview
@@ -16,7 +9,6 @@ The Collection Profile defines how connectors collect data from source platforms
 
 The Collection Profile is architecturally separate from the core protocol. A resource server serving pre-collected data needs no awareness of this profile. A connector runtime implementing this profile needs no awareness of grant semantics beyond what is explicitly passed to it in the START message.
 
----
 
 ## 1. Connector Manifest Extensions
 
@@ -65,7 +57,6 @@ The core manifest (Section 7 of the core spec) defines the consent surface. The 
 | `interactive` | `{}` | Presence indicates INTERACTION messages will be handled. |
 | `loopback_listen` | `{}` | Presence indicates the connector may bind to local ports. |
 
----
 
 ## 2. Connector Run Protocol
 
@@ -112,7 +103,6 @@ The connector process transitions through the following states:
 
 SKIP_RESULT is a message emitted while in the `collecting` state. It does not cause a state transition.
 
----
 
 ## 3. Messages
 
@@ -304,7 +294,6 @@ On failure:
 | `failed` | Collection failed. Runtime does NOT persist STATE. |
 | `cancelled` | Collection was cancelled (e.g., user revoked mid-run). Runtime does NOT persist STATE. |
 
----
 
 ## 4. Connector Conformance
 
@@ -330,7 +319,6 @@ A conformant connector:
 7. Terminates the connector process on protocol violations.
 8. Does not log or persist credential data from INTERACTION_RESPONSE.
 
----
 
 ## 5. TypeScript Types
 

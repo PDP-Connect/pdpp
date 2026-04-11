@@ -1,9 +1,7 @@
 ---
-title: "DTI Alignment Research"
+title: "DTI Alignment"
+description: "How PDPP relates to the Data Transfer Initiative and fits into the broader data portability landscape."
 ---
-
-
-Date: 2026-03-28
 
 ## DTI's receptiveness to external proposals
 

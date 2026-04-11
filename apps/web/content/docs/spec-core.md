@@ -1,11 +1,6 @@
 ---
-title: "Personal Data Portability Protocol (PDPP) v0.1.0"
----
-
-
-Status: Draft
-Date: 2026-04-06
-
+title: "Protocol"
+description: "Authorization and disclosure semantics for personal data — record model, selection request, grant, manifest, and resource server interface."
 ---
 
 ## 1. Introduction {#introduction}
@@ -37,7 +32,6 @@ Collection of data from source platforms is a separate concern addressed in the 
 
 **Note:** The PDPP Collection Profile is one fulfillment mechanism. A conformance test suite for this specification is planned but is not defined in v0.1 (see Section 11).
 
----
 
 ## 2. Terminology and Actors
 
@@ -82,7 +76,6 @@ In many deployments, a single **personal server** fills all three roles. The spe
 | **Selection Request** | A client's request for specific data, expressed as RFC 9396 `authorization_details`. |
 | **View** | A named field projection, composed from fields declared in the connector manifest schema. Views are the unit of consent for field-level access. Connector manifests MAY suggest views (advisory); the authorization server is authoritative for views used in consent UI and issued grants. |
 
----
 
 ## 3. System Architecture
 
@@ -129,7 +122,6 @@ The grant and query API are the normative core. Collection is a companion mechan
 
 **Ingest and sync-state are Collection Profile concerns.** The core protocol defines the query API (disclosure) and grant semantics. Record ingest and sync-state management endpoints are defined here for reference but are only required for implementations claiming PDPP Collection Profile support (see Section 9).
 
----
 
 ## 4. Record Model
 
@@ -304,7 +296,6 @@ When a record references a record in a different stream on the same resource ser
 }
 ```
 
----
 
 ## 5. Selection Request {#selection-request}
 
@@ -435,7 +426,6 @@ The authorization server expands the profile into explicit streams before issuin
 
 Every field in the issued grant is derived from either the selection request, client registration, or authorization server policy. The grant never contains values whose source is ambiguous.
 
----
 
 ## 6. Grant {#grant}
 
@@ -640,7 +630,6 @@ Retention is a policy commitment by the data recipient (the client). PDPP does n
 }
 ```
 
----
 
 ## 7. Manifest Format {#manifest-format}
 
@@ -836,7 +825,6 @@ The recommended evolution path: add new fields freely; never remove existing fie
 
 **RS enforcement:** The RS enforces the resolved grant as issued. All enforcement constraints (stream names, field lists, time ranges) are embedded in the grant itself; the RS is not required to fetch the manifest at request time. If the RS implementation does not support grants generated against the pinned manifest version (e.g., due to incompatible schema changes in a major manifest version bump), it returns 403 `grant_invalid`. This is a code-level compatibility check, not a runtime manifest fetch.
 
----
 
 ## 8. Resource Server Interface {#resource-server-interface}
 
@@ -1171,7 +1159,6 @@ Multiple collection runs for the same connector may execute concurrently. The re
 - Records are upserted by primary key. A record written twice with the same key and data is idempotent.
 - Cursor state is accepted only if it advances the cursor (max of current and incoming). A slower run cannot regress the cursor.
 
----
 
 ## 9. Conformance {#conformance}
 
@@ -1241,7 +1228,6 @@ A conformant client:
 
 A formal conformance test suite is planned but is not defined in v0.1. This is out of scope for the current version.
 
----
 
 ## 10. Security and Privacy Considerations {#security}
 
@@ -1297,7 +1283,6 @@ If a grant is revoked while a collection run is in progress, the runtime MUST te
 
 Revocation stops future access only. Data already delivered to the client before revocation is governed by the grant's `retention` policy and applicable legal obligations.
 
----
 
 ## 11. Scope and Boundaries
 
@@ -1343,7 +1328,6 @@ v0.1 grants narrow access only by stream selection, named view or field projecti
 
 The recommended future direction for this capability is manifest-declared parameterized subset templates with typed bound parameters and connector-defined consent display strings. See spec-deferred for the design constraints and open questions that must be resolved before specifying this.
 
----
 
 ## 12. TypeScript Types
 
@@ -1481,7 +1465,6 @@ interface TombstoneRecord {
 }
 ```
 
----
 
 ## Appendix A: Purpose Code Registry
 
@@ -1498,7 +1481,6 @@ Purpose codes are URIs. The following codes are defined by PDPP. Implementers ma
 | `https://pdpp.org/purpose/ai_training` | Using data to train AI models. The AS MUST obtain explicit affirmative user consent before issuing any grant with this purpose code. This is a protocol-level requirement, not merely advisory. |
 | `https://pdpp.org/purpose/research` | Academic or market research. |
 
----
 
 ## Appendix B: Relationship to the Data Transfer Project (DTI)
 

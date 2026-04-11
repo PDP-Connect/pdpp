@@ -1,10 +1,6 @@
 ---
-title: "Change Tracking Design"
----
-
-
-Date: 2026-04-06 (revised from 2026-03-29)
-
+title: "Change Tracking"
+description: "Grant-relative incremental sync via `changes_since` cursors — not canonical changelog streams."
 ---
 
 ## Decision
@@ -15,7 +11,6 @@ There are no `{stream}_changes` streams in the protocol. Change tracking is a pr
 
 This design was chosen over a canonical CDC-style changelog after analysis of prior art (Microsoft Graph delta queries, OData change tracking, Google Calendar incremental sync). The key finding: a canonical stored changelog cannot be made privacy-safe without becoming grant-relative anyway. Two clients with overlapping grants (one authorized for fields A+B, another only for A) cannot share a single changelog without leaking metadata about field B to the A-only client. Grant-relative delta queries solve this cleanly.
 
----
 
 ## How it works
 
@@ -61,7 +56,6 @@ When a record is deleted, incremental sync responses include a tombstone:
 
 Resource servers MAY expire historical version data after a retention period. If a client's `changes_since` cursor is too old, the server returns HTTP 410 Gone. The client must perform a full re-sync.
 
----
 
 ## Why not canonical `{stream}_changes` streams
 
@@ -73,7 +67,6 @@ The previous design (March 2026) defined `{stream}_changes` as a companion strea
 
 3. **Prior art alignment:** Microsoft Graph, OData, and Google Calendar all model change tracking as query-relative delta views, not as canonical streams. The pattern is established and well-understood.
 
----
 
 ## What this does NOT cover
 

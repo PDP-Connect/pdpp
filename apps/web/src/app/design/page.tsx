@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { SiteHeader } from '@/components/SiteHeader';
+import { Hero } from '@/components/Hero';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardFooter } from '@/components/ui/card';
@@ -65,7 +66,7 @@ export default function DesignSystemPage() {
 
       {/* ── Top nav ── */}
       <header
-        className="sticky top-0 z-40 flex h-12 md:h-11 items-center px-5 md:px-6 gap-3"
+        className="sticky top-0 z-40 flex h-12 items-center px-5 md:px-6 gap-3"
         style={{
           backgroundColor: 'var(--background)',
           backdropFilter: 'blur(8px)',
@@ -80,63 +81,32 @@ export default function DesignSystemPage() {
       {/* ── Mobile nav ── */}
       <MobileNav active={active} scrollTo={scrollTo} />
 
-      {/* ── Top row: fixed integer height so all four borders land on whole pixels ── */}
-      <div className="hidden md:flex" style={{ height: '208px' }}>
-        {/* Top-left quadrant — blank. No borderRight here; hero's borderLeft is the single vertical line */}
-        <div className="w-[200px] shrink-0" style={{ borderBottom: '1px solid var(--border)' }} />
-        {/* Top-right quadrant — hero. borderLeft (copper) is the sole vertical line at x=200 for this row */}
-        <div className="flex-1" style={{
-          borderLeft: '1px solid var(--human)',
-          borderBottom: '1px solid var(--border)',
-          background: 'linear-gradient(to right, var(--human-wash), transparent 60%)',
-        }}>
-          <div style={{ height: '100%' }}>
-            <div className="px-5 md:px-12 py-10 max-w-3xl">
-              <h1 className="font-semibold tracking-tight" style={{ fontSize: '2rem', lineHeight: 1.1, color: 'var(--foreground)', marginBottom: '0.5rem' }}>
-                Design System
-              </h1>
-              <p className="text-sm leading-relaxed" style={{ color: 'var(--muted-foreground)', maxWidth: '52ch' }}>
-                Single source of truth for tokens, typography, motion, and components.
-                Nothing gets styled without a token.
-              </p>
-              <div className="flex flex-wrap gap-1.5 mt-4">
-                {['Tailwind v4', 'shadcn base-nova', 'Base UI', 'Geist', 'JetBrains Mono'].map(t => (
-                  <span key={t} className="font-mono text-[10px] px-2 py-0.5 rounded" style={{ color: 'var(--muted-foreground)', border: '1px solid var(--border)', backgroundColor: 'var(--muted)' }}>{t}</span>
-                ))}
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* Mobile hero — shown only on mobile (no cross layout) */}
-      <div className="md:hidden" style={{
-        borderLeft: '1px solid var(--human)',
-        borderBottom: '1px solid var(--border)',
-        background: 'linear-gradient(to right, var(--human-wash), transparent 60%)',
-      }}>
-        <div className="px-5 py-10">
-          <h1 className="font-semibold tracking-tight" style={{ fontSize: '2rem', lineHeight: 1.1, color: 'var(--foreground)', marginBottom: '0.5rem' }}>
-            Design System
-          </h1>
-          <p className="text-sm leading-relaxed" style={{ color: 'var(--muted-foreground)', maxWidth: '52ch' }}>
-            Single source of truth for tokens, typography, motion, and components.
-            Nothing gets styled without a token.
-          </p>
-          <div className="flex flex-wrap gap-1.5 mt-4">
-            {['Tailwind v4', 'shadcn base-nova', 'Base UI', 'Geist', 'JetBrains Mono'].map(t => (
-              <span key={t} className="font-mono text-[10px] px-2 py-0.5 rounded" style={{ color: 'var(--muted-foreground)', border: '1px solid var(--border)', backgroundColor: 'var(--muted)' }}>{t}</span>
+      <Hero
+        layout="cross"
+        gradient="warm"
+        title="Design System"
+        description="Single source of truth for tokens, typography, motion, and components."
+        actions={
+          <div className="flex flex-wrap gap-1.5">
+            {['Tailwind v4', 'shadcn base-nova', 'Base UI', 'Geist', 'JetBrains Mono'].map((t) => (
+              <span
+                key={t}
+                className="font-mono text-[10px] px-2 py-0.5 rounded"
+                style={{ color: 'var(--muted-foreground)', border: '1px solid var(--border)', backgroundColor: 'var(--muted)' }}
+              >
+                {t}
+              </span>
             ))}
           </div>
-        </div>
-      </div>
+        }
+      />
 
       {/* ── Bottom row: nav bottom-left + content bottom-right ── */}
       <div className="flex min-w-0 w-full">
         {/* Bottom-left quadrant — sticky nav */}
         <aside
-          className="hidden md:flex flex-col w-[200px] shrink-0 sticky top-11 h-[calc(100vh-2.75rem)] overflow-y-auto"
-          style={{ borderRight: '1px solid var(--border)' }}
+          className="hidden md:flex flex-col shrink-0 sticky top-12 h-[calc(100vh-3rem)] overflow-y-auto"
+          style={{ width: 'var(--pdpp-sidebar-width)', borderRight: '1px solid var(--border)' }}
         >
           <div className="px-3 py-6">
             <div className="text-xs font-semibold mb-1 px-2" style={{ color: 'var(--muted-foreground)', letterSpacing: '0.06em' }}>
@@ -474,18 +444,20 @@ function TypographySection() {
             </thead>
             <tbody>
               {[
-                { size: '2rem',    weight: 600, tracking: '-0.02em', label: 'display',  spec: '32/600',  sample: 'Personal Data',              usage: 'Page titles only' },
-                { size: '1.25rem', weight: 600, tracking: '-0.01em', label: 'heading',  spec: '20/600',  sample: 'Grant request',              usage: 'Section headers' },
-                { size: '0.875rem',weight: 600, tracking: '0',       label: 'title',    spec: '14/600',  sample: 'Audience Lens',              usage: 'Card titles, entity names' },
-                { size: '0.875rem',weight: 400, tracking: '0',       label: 'body',     spec: '14/400',  sample: 'Requesting access to your Instagram social graph.', usage: 'Descriptions, prose' },
-                { size: '0.75rem', weight: 500, tracking: '0',       label: 'label',    spec: '12/500',  sample: 'What they can access',       usage: 'Field labels, section labels' },
-                { size: '0.75rem', weight: 400, tracking: '0',       label: 'caption',  spec: '12/400',  sample: 'No live scraping required.', usage: 'Helper text, footnotes' },
-              ].map(({ size, weight, tracking, label, spec, sample, usage }) => (
+                { className: 'pdpp-display-lg', label: 'display-lg', spec: '60/600/-0.03em',  sample: 'Personal Data',              usage: 'Splash heroes — the landing page only' },
+                { className: 'pdpp-display',    label: 'display',    spec: '40/600/-0.025em', sample: 'Design System',              usage: 'Page heroes — docs, design system' },
+                { className: 'pdpp-heading',    label: 'heading',    spec: '20/600/-0.01em',  sample: 'Grant request',              usage: 'Section headers' },
+                { className: 'pdpp-title',      label: 'title',      spec: '14/600',          sample: 'Audience Lens',              usage: 'Card titles, entity names' },
+                { className: 'pdpp-body-lg',    label: 'body-lg',    spec: '18/400',          sample: 'An authorization and disclosure protocol.', usage: 'Hero lead copy' },
+                { className: 'pdpp-body',       label: 'body',       spec: '14/400',          sample: 'Requesting access to your Instagram social graph.', usage: 'Descriptions, prose' },
+                { className: 'pdpp-label',      label: 'label',      spec: '12/500',          sample: 'What they can access',       usage: 'Field labels, section labels' },
+                { className: 'pdpp-caption',    label: 'caption',    spec: '12/400',          sample: 'No live scraping required.', usage: 'Helper text, footnotes' },
+              ].map(({ className, label, spec, sample, usage }) => (
                 <tr key={label}>
-                  <td className="py-3 pr-4" style={{ verticalAlign: 'baseline' }}><span className="text-xs" style={{ color: 'var(--muted-foreground)' }}>{label}</span></td>
-                  <td className="py-3 pr-4" style={{ verticalAlign: 'baseline', overflow: 'hidden', maxWidth: 0 }}><span style={{ fontSize: size, fontWeight: weight, letterSpacing: tracking, lineHeight: 1, display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{sample}</span></td>
+                  <td className="py-3 pr-4" style={{ verticalAlign: 'baseline' }}><span className="pdpp-caption font-mono" style={{ color: 'var(--muted-foreground)' }}>.{className}</span></td>
+                  <td className="py-3 pr-4" style={{ verticalAlign: 'baseline', overflow: 'hidden', maxWidth: 0 }}><span className={className} style={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', lineHeight: 1 }}>{sample}</span></td>
                   <td className="py-3 pr-4" style={{ verticalAlign: 'baseline' }}><span className="font-mono text-[11px] tabular-nums" style={{ color: 'var(--muted-foreground)' }}>{spec}</span></td>
-                  <td className="py-3 hidden md:table-cell" style={{ verticalAlign: 'baseline' }}><span className="text-xs" style={{ color: 'var(--muted-foreground)', opacity: 0.7 }}>{usage}</span></td>
+                  <td className="py-3 hidden md:table-cell" style={{ verticalAlign: 'baseline' }}><span className="pdpp-caption" style={{ color: 'var(--muted-foreground)', opacity: 0.7 }}>{usage}</span></td>
                 </tr>
               ))}
             </tbody>
@@ -1246,8 +1218,9 @@ function DocsSection() {
 
             <div className="flex">
               <aside
-                className="hidden md:block w-[200px] shrink-0"
+                className="hidden md:block shrink-0"
                 style={{
+                  width: 'var(--pdpp-sidebar-width)',
                   borderRight: '1px solid var(--border)',
                   background:
                     'linear-gradient(to bottom, color-mix(in oklab, var(--human-wash) 58%, white), transparent 18%), color-mix(in oklab, var(--background) 97%, white)',
@@ -1290,12 +1263,14 @@ function DocsSection() {
               <div className="flex-1 min-w-0">
                 <div
                   style={{
+                    marginLeft: '-1.5rem',
+                    marginRight: '-1.5rem',
                     borderLeft: '1px solid var(--human)',
                     borderBottom: '1px solid var(--border)',
                     background: 'linear-gradient(to right, var(--human-wash), transparent 70%)',
                   }}
                 >
-                  <div className="px-5 md:px-8 py-7">
+                  <div className="px-6 py-7 md:px-8">
                     <div className="pdpp-eyebrow">Protocol Spec</div>
                     <h3
                       className="mt-2 font-semibold tracking-tight"

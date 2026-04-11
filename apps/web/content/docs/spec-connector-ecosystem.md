@@ -1,9 +1,7 @@
 ---
-title: "Connector Ecosystem: Runtime Landscape and Third-Party Sources"
+title: "Connector Ecosystem"
+description: "Runtime landscape for connectors — browser abstraction decisions and third-party source integration."
 ---
-
-
-Date: 2026-03-30
 
 ## Browser abstraction decision
 

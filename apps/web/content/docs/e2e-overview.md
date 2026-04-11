@@ -1,6 +1,4 @@
 ---
-title: "E2E Examples"
+title: "Artifacts"
+description: "End-to-end artifacts (HTTP captures, manifests, grant JSON) referenced from the examples. Content in progress."
 ---
-
-
-End-to-end artifacts are stored here. Content coming soon.

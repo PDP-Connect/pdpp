@@ -1,9 +1,7 @@
 ---
-title: "System Architecture: How the Spec Components Relate"
+title: "Overview"
+description: "How the PDPP components relate — user, app, connector runtime, personal server, and the flows between them."
 ---
-
-
-Date: 2026-03-28
 
 ## Components
 

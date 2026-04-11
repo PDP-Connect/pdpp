@@ -1,12 +1,6 @@
 ---
-title: "Spec v2: Deferred Concerns"
----
-
-
-Date: 2026-04-06 (revised)
-
-Issues identified during design and review that are intentionally out of scope for v0.1. Each item is named precisely so it can be referenced from the core spec and tracked for future versions.
-
+title: "Deferred Concerns"
+description: "Issues identified during design and review that are intentionally out of scope for v0.1. Each item is named precisely so it can be referenced from the core spec and tracked for future versions."
 ---
 
 ## Newly deferred (2026-04-07)
@@ -50,7 +44,6 @@ The grant carries the template ID and bound parameter values, not the predicate.
 
 **Design constraint:** The subset template approach must not become a backdoor for arbitrary predicate-in-grant. Per-request or per-user subset-stream synthesis (where the client or user supplies the predicate at runtime) is not the goal. The manifest is the trusted, versioned artifact; the grant binds typed parameters against a connector-defined template.
 
----
 
 ## Newly deferred (2026-04-06)
 
@@ -90,7 +83,6 @@ The grant carries the template ID and bound parameter values, not the predicate.
 
 **Why deferred:** Requires the resource server to materialize historical state from version history. Expensive to implement and not required for the core incremental sync use case.
 
----
 
 ## Previously deferred (carried forward)
 

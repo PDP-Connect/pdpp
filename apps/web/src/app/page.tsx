@@ -1,64 +1,82 @@
-import Link from 'next/link';
+'use client';
+
+import { ReferenceApp } from '@/components/ReferenceApp';
+import { Hero } from '@/components/Hero';
 
 export default function Home() {
   return (
-    <main className="min-h-screen px-6 py-20 md:px-12">
-      <div className="mx-auto flex max-w-5xl flex-col gap-12">
-        <section className="flex flex-col gap-6">
-          <span className="pdpp-eyebrow">PDPP</span>
-          <div className="flex flex-col gap-4">
-            <h1 className="max-w-4xl text-5xl font-semibold tracking-tight md:text-7xl">
-              Personal Data Portability Protocol
-            </h1>
-            <p className="max-w-3xl text-lg leading-relaxed" style={{ color: 'var(--muted-foreground)' }}>
-              One site for the protocol docs, the interactive reference implementation, and the shared design system.
-            </p>
-          </div>
-          <div className="flex flex-wrap gap-3">
-            <Link href="/docs" className="rounded-full px-5 py-2.5 text-sm font-medium" style={{ background: 'var(--foreground)', color: 'var(--background)' }}>
-              Read the Docs
-            </Link>
-            <Link href="/reference" className="rounded-full border px-5 py-2.5 text-sm font-medium" style={{ borderColor: 'var(--border)' }}>
-              Open the Reference
-            </Link>
-            <Link href="/design" className="rounded-full border px-5 py-2.5 text-sm font-medium" style={{ borderColor: 'var(--border)' }}>
-              Browse the Design System
-            </Link>
-          </div>
-        </section>
-
-        <section className="grid gap-4 md:grid-cols-3">
-          {[
-            {
-              href: '/docs/spec-core',
-              title: 'Protocol Docs',
-              body: 'Initial Fumadocs migration for the spec corpus, starting with the core protocol and collection profile.',
-            },
-            {
-              href: '/reference',
-              title: 'Reference App',
-              body: 'The existing interactive reference is now part of the canonical web app rather than a separate deployment target.',
-            },
-            {
-              href: '/design',
-              title: 'Shared Design',
-              body: 'Brand primitives are shared across docs and product surfaces through one CSS/token package.',
-            },
-          ].map((item) => (
-            <Link
-              key={item.title}
-              href={item.href}
-              className="rounded-3xl border p-6 transition-transform hover:-translate-y-0.5"
-              style={{ borderColor: 'var(--border)', backgroundColor: 'var(--card)' }}
-            >
-              <div className="mb-3 text-xl font-semibold tracking-tight">{item.title}</div>
-              <p className="text-sm leading-relaxed" style={{ color: 'var(--muted-foreground)' }}>
-                {item.body}
-              </p>
-            </Link>
-          ))}
-        </section>
-      </div>
-    </main>
+    <ReferenceApp
+      currentLabel="Overview"
+      hero={
+        <Hero
+          layout="cross"
+          gradient="dual"
+          size="splash"
+          eyebrow={
+            <span className="flex items-center gap-2">
+              <span
+                className="font-mono text-xs px-2 py-0.5 rounded"
+                style={{
+                  backgroundColor: 'var(--primary-wash)',
+                  color: 'var(--primary)',
+                  border: '1px solid oklch(0.580 0.172 253.7 / 0.15)',
+                }}
+              >
+                v0.1.0
+              </span>
+              <span className="font-mono text-xs" style={{ color: 'var(--muted-foreground)' }}>
+                Draft specification
+              </span>
+            </span>
+          }
+          title={
+            <>
+              Personal Data
+              <br />
+              Portability Protocol
+            </>
+          }
+          description={
+            <>
+              An authorization and disclosure protocol for personal data. You decide what to share,
+              with whom, for how long, for what purpose.
+              <br />
+              <span className="pdpp-caption" style={{ display: 'block', marginTop: '0.5rem', opacity: 0.7 }}>
+                This is the protocol, running. Every component below implements a section of the spec.
+              </span>
+            </>
+          }
+          actions={
+            <div className="hidden md:flex items-center gap-0 pb-2">
+              {[
+                { label: 'Platform', color: 'var(--muted-foreground)', bg: 'var(--muted)' },
+                { label: 'Connector', color: 'var(--primary)', bg: 'var(--primary-wash)' },
+                { label: 'Your Server', color: 'var(--primary)', bg: 'var(--primary-wash)' },
+                { label: 'Consent', color: 'var(--human)', bg: 'var(--human-wash)' },
+                { label: 'Grant', color: 'var(--primary)', bg: 'var(--primary-wash)' },
+                { label: 'Enforce', color: 'var(--primary)', bg: 'var(--primary-wash)' },
+                { label: 'Client', color: 'var(--muted-foreground)', bg: 'var(--muted)' },
+              ].map((step, i, arr) => (
+                <span key={step.label} className="flex items-center">
+                  <span
+                    className="shrink-0 px-3 py-1.5 rounded-md text-xs font-medium"
+                    style={{
+                      backgroundColor: step.bg,
+                      color: step.color,
+                      border: `1px solid ${step.color}20`,
+                    }}
+                  >
+                    {step.label}
+                  </span>
+                  {i < arr.length - 1 && (
+                    <span className="shrink-0 w-6 h-px" style={{ backgroundColor: 'var(--border)' }} />
+                  )}
+                </span>
+              ))}
+            </div>
+          }
+        />
+      }
+    />
   );
 }

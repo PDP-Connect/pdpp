@@ -1,13 +1,6 @@
 ---
-title: "PDPP Data Query API v0.1.0"
----
-
-
-Companion to the Personal Data Portability Protocol (PDPP) core spec.
-
-Status: Draft
-Date: 2026-03-28
-
+title: "Data Query API"
+description: "Companion to the Personal Data Portability Protocol (PDPP) core spec."
 ---
 
 ## Overview
@@ -16,7 +9,6 @@ This spec defines the HTTP API for reading personal data from a PDPP resource se
 
 The design follows Stripe's API conventions: cursor-based pagination, expandable relationships, structured errors, and date-based versioning. REST is the primary interface; GraphQL is not used (grant enforcement, field-level authorization, cursor pagination, and request signing are all materially simpler with predictable REST endpoints).
 
----
 
 ## Authentication and Versioning
 
@@ -40,7 +32,6 @@ PDPP-Version: 2026-03-28
 
 The response echoes the version. Every response includes a `Request-Id` header for debugging.
 
----
 
 ## Endpoints
 
@@ -219,7 +210,6 @@ The server may return a `302` redirect to a short-lived signed URL for the actua
 
 `HEAD` is supported for size checks. `Range` headers are recommended for large files.
 
----
 
 ## Expansion
 
@@ -238,7 +228,6 @@ Expansion hydrates foreign key relationships inline. It is bounded: expanded chi
 
 This follows Stripe's pattern: foreign keys are string IDs by default, expanded into full objects on request.
 
----
 
 ## Errors
 
@@ -280,7 +269,6 @@ Every non-2xx response returns a structured error:
 | `grant_revoked` | permission | Grant has been revoked |
 | `invalid_api_version` | invalid_request | Unrecognized PDPP-Version header |
 
----
 
 ## Ingest (Connector Runtime)
 
@@ -333,7 +321,6 @@ PUT  /v1/state/{connector_id}   → updates StreamState map
 
 Both require owner authentication. The connector runtime reads state before a run and writes it after.
 
----
 
 ## Why REST, not GraphQL
 
@@ -347,7 +334,6 @@ For a personal data API where grants constrain access:
 
 If richer cross-stream search is needed later, add `POST /v1/search` with a query DSL on top of the same grant enforcement engine.
 
----
 
 ## Design Attribution
 

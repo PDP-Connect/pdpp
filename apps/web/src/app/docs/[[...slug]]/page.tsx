@@ -31,15 +31,19 @@ export default async function Page({ params }: DocsPageProps) {
   return (
     <DocsPage toc={page.data.toc} full={page.data.full} className="pdpp-docs-page">
       <div className="pdpp-docs-hero">
-        <div className="pdpp-eyebrow">{sectionLabel}</div>
-        <DocsTitle className="pdpp-docs-title">{page.data.title}</DocsTitle>
-        <DocsDescription className="pdpp-docs-description">{page.data.description}</DocsDescription>
-        <div className="pdpp-docs-actions">
-          <LLMCopyButton markdownUrl={markdownUrl} />
-          <ViewOptions
-            markdownUrl={markdownUrl}
-            githubUrl={`https://github.com/vana-com/pdpp/blob/main/apps/web/content/docs/${githubPath}`}
-          />
+        <div className="pdpp-docs-hero__content">
+          <div className="pdpp-eyebrow">{sectionLabel}</div>
+          <DocsTitle className="pdpp-display pdpp-docs-title">{page.data.title}</DocsTitle>
+          {page.data.description && (
+            <DocsDescription className="pdpp-docs-description">{page.data.description}</DocsDescription>
+          )}
+          <div className="pdpp-docs-actions">
+            <LLMCopyButton markdownUrl={markdownUrl} />
+            <ViewOptions
+              markdownUrl={markdownUrl}
+              githubUrl={`https://github.com/vana-com/pdpp/blob/main/apps/web/content/docs/${githubPath}`}
+            />
+          </div>
         </div>
       </div>
       <DocsBody className="pdpp-docs-body">

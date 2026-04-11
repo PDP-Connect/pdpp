@@ -1,10 +1,6 @@
 ---
-title: "PDPP End-to-End Examples"
----
-
-
-These examples show the full sequence of interactions for each primary use case. Every HTTP request, protocol message, and response is shown in order.
-
+title: "E2E Examples"
+description: "These examples show the full sequence of interactions for each primary use case. Every HTTP request, protocol message, and response is shown in order."
 ---
 
 ## Example 1: App requests specific data (concert recommendation app)
@@ -273,7 +269,6 @@ The runtime sends the full grant object. (Abbreviated here for readability; the 
 
 The runtime writes records to the resource server. The app's next request returns the data (same as step 4a).
 
----
 
 ## Example 2: User grants everything to their AI agent
 
@@ -579,7 +574,6 @@ Authorization: Bearer agent_tok_xyz
 PDPP-Version: 2026-03-28
 ```
 
----
 
 ## Example 3: Health app with retention constraints
 
@@ -666,7 +660,6 @@ Fields like `average_heart_rate`, `average_hrv`, and `lowest_heart_rate` exist i
 
 The sleep app is obligated to delete all data from this grant. The resource server still has the records (the user's data isn't affected). But if the app tries to use the access token after the retention period, the grant's obligations require the app to have already purged its copy.
 
----
 
 ## Example 4: Low-friction Instagram connect (profile-based)
 
@@ -888,7 +881,6 @@ Content-Type: image/jpeg
 Content-Length: 2048000
 ```
 
----
 
 ## Example 5: User proactively collects (CLI, no app involved)
 

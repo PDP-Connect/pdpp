@@ -746,9 +746,85 @@ function FeaturedSection({
 const ALL_POST_FIELDS = ['id', 'caption', 'taken_at', 'media_type', 'like_count', 'comment_count', 'location', 'is_pinned'];
 const GRANTED_POST_FIELDS = ['id', 'caption', 'taken_at', 'media_type'];
 
+// ─── Default hero ───────────────────────────────────────────────────────────
+
+function DefaultReferenceHero() {
+  return (
+    <section className="pt-20 pb-16 md:pt-28 md:pb-24 px-6 md:px-12">
+      <div className="max-w-3xl mx-auto">
+        <Reveal>
+          <div className="flex items-center gap-2 mb-8">
+            <span className="font-mono text-xs px-2 py-0.5 rounded" style={{ backgroundColor: 'var(--primary-wash)', color: 'var(--primary)', border: '1px solid oklch(0.580 0.172 253.7 / 0.15)' }}>
+              v0.1.0
+            </span>
+            <span className="font-mono text-xs" style={{ color: 'var(--muted-foreground)' }}>
+              Draft specification
+            </span>
+          </div>
+        </Reveal>
+        <Reveal delay={50}>
+          <h1
+            className="text-4xl md:text-5xl lg:text-6xl font-semibold mb-6"
+            style={{ color: 'var(--foreground)', lineHeight: 1.05, letterSpacing: '-0.03em' }}
+          >
+            Personal Data
+            <br />
+            Portability Protocol
+          </h1>
+        </Reveal>
+        <Reveal delay={150}>
+          <p className="text-base md:text-lg leading-relaxed mb-3" style={{ color: 'var(--muted-foreground)', maxWidth: '48ch' }}>
+            An authorization and disclosure protocol for personal data. You decide what to share, with whom, for how long, for what purpose.
+          </p>
+        </Reveal>
+        <Reveal delay={250}>
+          <p className="text-sm leading-relaxed mb-10" style={{ color: 'var(--muted-foreground)', maxWidth: '48ch', opacity: 0.7 }}>
+            This is the protocol, running. Every component below implements a section of the spec.
+          </p>
+        </Reveal>
+
+        {/* Protocol flow signature — hidden on mobile, horizontal on desktop */}
+        <Reveal delay={400}>
+          <div className="hidden md:flex items-center gap-0 pb-2" style={{ maxWidth: '100%' }}>
+            {[
+              { label: 'Platform', color: 'var(--muted-foreground)', bg: 'var(--muted)' },
+              { label: 'Connector', color: 'var(--primary)', bg: 'var(--primary-wash)' },
+              { label: 'Your Server', color: 'var(--primary)', bg: 'var(--primary-wash)' },
+              { label: 'Consent', color: 'var(--human)', bg: 'var(--human-wash)' },
+              { label: 'Grant', color: 'var(--primary)', bg: 'var(--primary-wash)' },
+              { label: 'Enforce', color: 'var(--primary)', bg: 'var(--primary-wash)' },
+              { label: 'Client', color: 'var(--muted-foreground)', bg: 'var(--muted)' },
+            ].map((step, i, arr) => (
+              <React.Fragment key={step.label}>
+                <div
+                  className="shrink-0 px-3 py-1.5 rounded-md text-xs font-medium"
+                  style={{ backgroundColor: step.bg, color: step.color, border: `1px solid ${step.color}20` }}
+                >
+                  {step.label}
+                </div>
+                {i < arr.length - 1 && (
+                  <div className="shrink-0 w-6 h-px" style={{ backgroundColor: 'var(--border)' }} />
+                )}
+              </React.Fragment>
+            ))}
+          </div>
+        </Reveal>
+      </div>
+    </section>
+  );
+}
+
 // ─── Page ───────────────────────────────────────────────────────────────────
 
-export default function ReferencePage() {
+type ReferenceAppProps = {
+  /** Rendered above the first protocol section. If omitted, the default
+      hero (v0.1.0 badge + title + flow stepper) is used. */
+  hero?: React.ReactNode;
+  /** Label shown in the SiteHeader breadcrumb. Defaults to "Reference". */
+  currentLabel?: string;
+};
+
+export function ReferenceApp({ hero, currentLabel = 'Reference' }: ReferenceAppProps = {}) {
   const [activeSection, setActiveSection] = useState<SectionId>('ingest');
   const observerRef = useRef<IntersectionObserver | null>(null);
   const [multiIdx, setMultiIdx] = useState(0);
@@ -842,7 +918,7 @@ export default function ReferencePage() {
           borderBottom: '1px solid var(--border)',
         }}
       >
-        <SiteHeader currentLabel="Reference" />
+        <SiteHeader currentLabel={currentLabel} />
 
         {/* Mobile: current section indicator */}
         <span
@@ -899,68 +975,7 @@ export default function ReferencePage() {
         </div>
       )}
 
-      {/* ── Hero ── */}
-      <section className="pt-20 pb-16 md:pt-28 md:pb-24 px-6 md:px-12">
-        <div className="max-w-3xl mx-auto">
-          <Reveal>
-            <div className="flex items-center gap-2 mb-8">
-              <span className="font-mono text-xs px-2 py-0.5 rounded" style={{ backgroundColor: 'var(--primary-wash)', color: 'var(--primary)', border: '1px solid oklch(0.580 0.172 253.7 / 0.15)' }}>
-                v0.1.0
-              </span>
-              <span className="font-mono text-xs" style={{ color: 'var(--muted-foreground)' }}>
-                Draft specification
-              </span>
-            </div>
-          </Reveal>
-          <Reveal delay={50}>
-            <h1
-              className="text-4xl md:text-5xl lg:text-6xl font-semibold mb-6"
-              style={{ color: 'var(--foreground)', lineHeight: 1.05, letterSpacing: '-0.03em' }}
-            >
-              Personal Data
-              <br />
-              Portability Protocol
-            </h1>
-          </Reveal>
-          <Reveal delay={150}>
-            <p className="text-base md:text-lg leading-relaxed mb-3" style={{ color: 'var(--muted-foreground)', maxWidth: '48ch' }}>
-              An authorization and disclosure protocol for personal data. You decide what to share, with whom, for how long, for what purpose.
-            </p>
-          </Reveal>
-          <Reveal delay={250}>
-            <p className="text-sm leading-relaxed mb-10" style={{ color: 'var(--muted-foreground)', maxWidth: '48ch', opacity: 0.7 }}>
-              This is the protocol, running. Every component below implements a section of the spec.
-            </p>
-          </Reveal>
-
-          {/* Protocol flow signature — hidden on mobile, horizontal on desktop */}
-          <Reveal delay={400}>
-            <div className="hidden md:flex items-center gap-0 pb-2" style={{ maxWidth: '100%' }}>
-              {[
-                { label: 'Platform', color: 'var(--muted-foreground)', bg: 'var(--muted)' },
-                { label: 'Connector', color: 'var(--primary)', bg: 'var(--primary-wash)' },
-                { label: 'Your Server', color: 'var(--primary)', bg: 'var(--primary-wash)' },
-                { label: 'Consent', color: 'var(--human)', bg: 'var(--human-wash)' },
-                { label: 'Grant', color: 'var(--primary)', bg: 'var(--primary-wash)' },
-                { label: 'Enforce', color: 'var(--primary)', bg: 'var(--primary-wash)' },
-                { label: 'Client', color: 'var(--muted-foreground)', bg: 'var(--muted)' },
-              ].map((step, i, arr) => (
-                <React.Fragment key={step.label}>
-                  <div
-                    className="shrink-0 px-3 py-1.5 rounded-md text-xs font-medium"
-                    style={{ backgroundColor: step.bg, color: step.color, border: `1px solid ${step.color}20` }}
-                  >
-                    {step.label}
-                  </div>
-                  {i < arr.length - 1 && (
-                    <div className="shrink-0 w-6 h-px" style={{ backgroundColor: 'var(--border)' }} />
-                  )}
-                </React.Fragment>
-              ))}
-            </div>
-          </Reveal>
-        </div>
-      </section>
+      {hero ?? <DefaultReferenceHero />}
 
       {/* ── Sections ── */}
 

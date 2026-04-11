@@ -1,16 +1,21 @@
 {
   "title": "PDPP Docs",
+  "root": true,
   "pages": [
     "index",
-    "spec-core",
-    "spec-collection-profile",
+    "---Core Protocol---",
     "spec-architecture",
-    "spec-auth-design",
-    "spec-change-tracking",
-    "spec-connector-ecosystem",
+    "spec-core",
     "spec-data-query-api",
-    "spec-deferred",
+    "spec-auth-design",
+    "---Collection Profile---",
+    "spec-collection-profile",
+    "spec-connector-ecosystem",
+    "---Design Notes---",
+    "spec-change-tracking",
     "spec-dti-alignment",
+    "spec-deferred",
+    "---E2E Artifacts---",
     "spec-e2e-examples",
     "e2e-overview"
   ]

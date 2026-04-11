@@ -1,12 +1,31 @@
 import type { ReactNode } from 'react';
 import { DocsLayout } from 'fumadocs-ui/layouts/docs';
+import { SiteHeader } from '@/components/SiteHeader';
 import { source } from '@/lib/docs-source';
 import { baseOptions } from '@/lib/docs-shared';
 
 export default function Layout({ children }: { children: ReactNode }) {
   return (
-    <DocsLayout tree={source.getPageTree()} {...baseOptions()}>
-      {children}
-    </DocsLayout>
+    <div className="pdpp-docs-shell">
+      <header
+        className="sticky top-0 z-40 flex h-12 items-center px-5 md:px-6 gap-3"
+        style={{
+          backgroundColor: 'var(--background)',
+          backdropFilter: 'blur(8px)',
+          borderBottom: '1px solid var(--border)',
+        }}
+      >
+        <SiteHeader currentLabel="Docs" />
+        <div className="flex-1" />
+        <span className="font-mono text-xs" style={{ color: 'var(--muted-foreground)', opacity: 0.5 }}>v0.1.0</span>
+      </header>
+      <DocsLayout
+        tree={source.getPageTree()}
+        sidebar={{ collapsible: false }}
+        {...baseOptions()}
+      >
+        {children}
+      </DocsLayout>
+    </div>
   );
 }

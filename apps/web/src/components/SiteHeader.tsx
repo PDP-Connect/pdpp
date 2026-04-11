@@ -6,10 +6,11 @@ import { siteNav } from '@pdpp/brand/chrome';
 
 export function SiteHeader({ currentLabel }: { currentLabel: string }) {
   const pathname = usePathname();
+  const isHome = pathname === '/';
 
   return (
     <div className="flex items-center gap-2">
-      <div className="flex items-center gap-2 shrink-0">
+      <Link href="/" className="flex items-center gap-2 shrink-0" aria-label="PDPP home">
         <div
           className="flex h-5 w-5 shrink-0 items-center justify-center rounded"
           style={{ background: 'var(--primary)' }}
@@ -21,14 +22,24 @@ export function SiteHeader({ currentLabel }: { currentLabel: string }) {
         <span className="text-sm font-semibold tracking-tight" style={{ color: 'var(--foreground)' }}>
           PDPP
         </span>
-      </div>
-      <span style={{ color: 'var(--muted-foreground)', opacity: 0.4, margin: '0 2px' }}>/</span>
-      <span className="text-sm" style={{ color: 'var(--muted-foreground)' }}>
-        {currentLabel}
-      </span>
-      <nav className="ml-4 hidden items-center gap-1 md:flex">
+      </Link>
+      {isHome ? (
+        // Reserved spacer keeps the nav anchored at the same x as on subpages.
+        <span aria-hidden="true" style={{ minWidth: '9.5rem' }} />
+      ) : (
+        <>
+          <span style={{ color: 'var(--muted-foreground)', opacity: 0.4, margin: '0 2px' }}>/</span>
+          <span
+            className="text-sm whitespace-nowrap"
+            style={{ color: 'var(--muted-foreground)', minWidth: '8.5rem' }}
+          >
+            {currentLabel}
+          </span>
+        </>
+      )}
+      <nav className="hidden items-center gap-1 md:flex">
         {siteNav.map((item) => {
-          const active = item.link === '/' ? pathname === '/' : pathname === item.link || pathname.startsWith(`${item.link}/`);
+          const active = pathname === item.link || pathname.startsWith(`${item.link}/`);
 
           return (
             <Link
