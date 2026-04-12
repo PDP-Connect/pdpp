@@ -31,7 +31,7 @@ Authorization: Bearer <access_token>
 
 ### User consent (approving grant creation)
 
-Out of scope for the wire protocol. The authorization server handles user authentication and consent display.
+Out of scope for the wire protocol. The authorization server handles user authentication and consent display. The core spec does, however, normatively constrain the semantic distinction between requester identity metadata, protocol-enforced grant terms, structured policy declarations, manifest-authored data descriptions, and client-authored claims.
 
 ## What the spec mandates
 

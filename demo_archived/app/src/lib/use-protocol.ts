@@ -53,8 +53,12 @@ export function useProtocol() {
 
   // ── Actions ──
 
-  const approve = useCallback(() => {
-    const issued = server.issueGrant(GRANT_TEMPLATE);
+  const approve = useCallback((accessMode: 'continuous' | 'single_use' = 'continuous') => {
+    const issued = server.issueGrant({
+      ...GRANT_TEMPLATE,
+      access_mode: accessMode,
+      expires_at: accessMode === 'single_use' ? '2026-04-07T15:00:00Z' : GRANT_TEMPLATE.expires_at,
+    });
     setGrant(issued);
     setPhase('granted');
 

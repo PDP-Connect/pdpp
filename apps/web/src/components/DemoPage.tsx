@@ -30,12 +30,14 @@ const INITIAL_STATE: DemoState = {
   postsCursor: null,
   syncStateUpdated: false,
   incrementalPostCount: null,
-  tokenSpent: false,
+  singleUseConsumed: false,
   grantRevoked: false,
   gmailConnected: false,
   gmailSummary: null,
   error: null,
 } satisfies DemoState;
+
+const INITIAL_CHANGES_SINCE = 'eyJraW5kIjoiY2hhbmdlc19zaW5jZSIsInZlcnNpb24iOjB9';
 
 let logCounter = 0;
 
@@ -264,15 +266,13 @@ export default function DemoPage() {
       const q = (stream: string, token: string, extra = '') =>
         fetch(`/api/query?stream=${encodeURIComponent(stream)}&token=${encodeURIComponent(token)}&connectorId=${encodeURIComponent(connectorId)}${extra}`).then(r => r.json());
 
-      // Initial changes_since cursor (version: 0) to get current max_version for incremental sync
-      const INITIAL_CURSOR = 'eyJ2ZXJzaW9uIjowfQ==';
       const [clientFollowing, clientPosts, ownerFollowing, ownerPosts, ownerAds, postsChanges] = await Promise.all([
         q('following_accounts', researchToken),
         q('posts', researchToken),
         q('following_accounts', ownerToken),
         q('posts', ownerToken),
         q('ad_targeting', ownerToken),
-        q('posts', ownerToken, `&changes_since=${encodeURIComponent(INITIAL_CURSOR)}&limit=1`),
+        q('posts', ownerToken, `&changes_since=${encodeURIComponent(INITIAL_CHANGES_SINCE)}&limit=1`),
       ]);
 
       const clientFollowingData: unknown[] = clientFollowing.data?.data || [];
@@ -519,7 +519,31 @@ export default function DemoPage() {
         addLog('Incremental sync complete — querying changes_since…', 'success');
         fetch(`/api/query?stream=posts&token=${encodeURIComponent(ownerToken)}&connectorId=${encodeURIComponent(connectorId)}&changes_since=${encodeURIComponent(postsCursor)}`)
           .then(r => r.json())
-          .then(data => {
+          .then(async data => {
+            if (data.status === 410) {
+              addLog(
+                'changes_since cursor expired — performing a full re-sync…',
+                'warn',
+                '§8 RS — HTTP 410 cursor_expired · client resets to a full re-sync',
+              );
+              const resetResp = await fetch(
+                `/api/query?stream=posts&token=${encodeURIComponent(ownerToken)}&connectorId=${encodeURIComponent(connectorId)}&changes_since=${encodeURIComponent(INITIAL_CHANGES_SINCE)}`
+              );
+              const resetData = await resetResp.json();
+              const allRecords: unknown[] = resetData.data?.data || [];
+              addLog(
+                `Full re-sync returned ${allRecords.length} current posts`,
+                'spec',
+                '§8 RS — client must full re-sync after cursor expiry and store the new next_changes_since',
+              );
+              setState(s => ({
+                ...s,
+                incrementalPostCount: allRecords.length,
+                postsCursor: resetData.data?.next_changes_since ?? s.postsCursor,
+              }));
+              return;
+            }
+
             const newRecords: unknown[] = data.data?.data || [];
             addLog(
               `changes_since: ${newRecords.length} new/changed posts since last sync`,
@@ -629,22 +653,24 @@ export default function DemoPage() {
     }
   }, [state, addLog]);
 
-  const handleQueryAgain = useCallback(async () => {
-    const { researchToken, connectorId } = state;
-    if (!researchToken || !connectorId) return;
-    addLog('Attempting second query with single_use token…', 'info');
-    const resp = await fetch(`/api/query?stream=following_accounts&token=${encodeURIComponent(researchToken)}&connectorId=${encodeURIComponent(connectorId)}`);
+  const handleRequestSecondToken = useCallback(async () => {
+    const grantId = state.researchGrant?.grant_id as string | undefined;
+    if (!grantId) return;
+    addLog('Attempting to mint a second client token for a single_use grant…', 'info');
+    const resp = await fetch(`/api/grant/${grantId}/token`, { method: 'POST' });
     const data = await resp.json();
     if (data.status === 401 || data.status === 403) {
-      const code = data.data?.error?.code || 'grant_expired';
+      const code = data.data?.error?.code || 'grant_consumed';
       addLog(
-        `RS returned: ${data.status} ${code}`,
-        'error',
-        '§6.2 — single_use grant consumed after first successful query — token permanently invalid',
+        `AS returned: ${data.status} ${code}`,
+        'success',
+        '§6.2 — single_use grant consumed at first token issuance — AS rejects subsequent client token issuance',
       );
-      setState(s => ({ ...s, tokenSpent: true }));
+      setState(s => ({ ...s, singleUseConsumed: true }));
+    } else if (data.status >= 400) {
+      addLog(`Unexpected AS error: ${data.status}`, 'error');
     } else {
-      addLog(`Unexpected: query succeeded (status ${data.status})`, 'warn');
+      addLog(`Unexpected: AS issued a second client token (status ${data.status})`, 'warn');
     }
   }, [state, addLog]);
 
@@ -692,14 +718,14 @@ export default function DemoPage() {
             seeded={state.seeded}
             clientResults={state.clientResults}
             rawResults={state.rawResults}
-            tokenSpent={state.tokenSpent}
+            singleUseConsumed={state.singleUseConsumed}
             grantRevoked={state.grantRevoked}
             aiGrantApproved={state.aiGrantApproved}
             gmailConnected={state.gmailConnected}
             gmailSummary={state.gmailSummary}
             onStart={handleStart}
             onRevoke={handleRevoke}
-            onQueryAgain={handleQueryAgain}
+            onRequestSecondToken={handleRequestSecondToken}
             onStartScrape={handleStartScrape}
             onIncrementalSync={state.postsCursor ? handleIncrementalSync : undefined}
             incrementalPostCount={state.incrementalPostCount}

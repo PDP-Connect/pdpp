@@ -17,14 +17,14 @@ interface Props {
   seeded: { following_accounts: number; posts: number; ad_targeting: number } | null;
   clientResults: Record<string, unknown[]>;
   rawResults: Record<string, unknown[]>;
-  tokenSpent: boolean;
+  singleUseConsumed: boolean;
   grantRevoked: boolean;
   aiGrantApproved: boolean;
   gmailConnected: boolean;
   gmailSummary: { total_threads: number; label_counts: Record<string, number> } | null;
   onStart: () => void;
   onRevoke: () => void;
-  onQueryAgain: () => void;
+  onRequestSecondToken: () => void;
   onStartScrape: () => void;
   onIncrementalSync?: () => void;
   incrementalPostCount: number | null;
@@ -35,9 +35,9 @@ interface Props {
 export function ClientPanel({
   phase, researchGrant, researchGrantIssuedAt, seeded,
   clientResults, rawResults,
-  tokenSpent, grantRevoked, aiGrantApproved,
+  singleUseConsumed, grantRevoked, aiGrantApproved,
   gmailConnected, gmailSummary,
-  onStart, onRevoke, onQueryAgain, onIncrementalSync, incrementalPostCount, syncStateUpdated,
+  onStart, onRevoke, onRequestSecondToken, onIncrementalSync, incrementalPostCount, syncStateUpdated,
   onConnectGmail,
 }: Props) {
   const [grantOpen, setGrantOpen] = useState(false);
@@ -159,7 +159,7 @@ export function ClientPanel({
             )}
 
             <SpecFeatureList
-              tokenSpent={tokenSpent}
+              singleUseConsumed={singleUseConsumed}
               grantRevoked={grantRevoked}
               aiGrantApproved={aiGrantApproved}
               clientPosts={clientPosts}
@@ -191,11 +191,11 @@ export function ClientPanel({
               <Separator />
               <SectionLabel>Test enforcement</SectionLabel>
 
-              {!grantRevoked && !tokenSpent && (
+              {!grantRevoked && !singleUseConsumed && (
                 <div className="flex gap-1.5">
-                  <Button variant="outline" size="sm" onClick={onQueryAgain} className="flex-1 text-xs"
-                    title="single_use grant was consumed on first query — should return 403">
-                    Query again
+                  <Button variant="outline" size="sm" onClick={onRequestSecondToken} className="flex-1 text-xs"
+                    title="single_use grants allow one client token issuance — a second token request should return 403 grant_consumed">
+                    Request another token
                   </Button>
                   <Button variant="destructive" size="sm" onClick={onRevoke} className="flex-1 text-xs"
                     title="Revoke the grant — all future queries return 403 grant_revoked">
@@ -204,7 +204,7 @@ export function ClientPanel({
                 </div>
               )}
 
-              {tokenSpent && <EnforcementResult variant="primary" title="single_use enforced" body="The grant was consumed on first query. RS returned 403 on the second attempt." spec={SPEC.accessModes} />}
+              {singleUseConsumed && <EnforcementResult variant="primary" title="single_use enforced" body="The grant was consumed at first token issuance. The AS rejected a second client token with 403 grant_consumed." spec={SPEC.accessModes} />}
               {grantRevoked && <EnforcementResult variant="destructive" title="Grant revoked" body="RS returned 403 grant_revoked. Propagates via token introspection within 60s." spec={SPEC.revocation} />}
 
               {phase === 'done' && incrementalPostCount !== null && (
@@ -335,8 +335,8 @@ function AdsComparison({ adTopics, adAdvertisers, adCategories }: {
   );
 }
 
-function SpecFeatureList({ tokenSpent, grantRevoked, aiGrantApproved, clientPosts, ownerPosts, syncStateUpdated, incrementalPostCount }: {
-  tokenSpent: boolean; grantRevoked: boolean; aiGrantApproved: boolean;
+function SpecFeatureList({ singleUseConsumed, grantRevoked, aiGrantApproved, clientPosts, ownerPosts, syncStateUpdated, incrementalPostCount }: {
+  singleUseConsumed: boolean; grantRevoked: boolean; aiGrantApproved: boolean;
   clientPosts: Record<string, unknown>[]; ownerPosts: Record<string, unknown>[];
   syncStateUpdated: boolean; incrementalPostCount: number | null;
 }) {
@@ -350,7 +350,7 @@ function SpecFeatureList({ tokenSpent, grantRevoked, aiGrantApproved, clientPost
     { label: 'Incremental STATE',   done: syncStateUpdated,                                  spec: SPEC.collectionProfile },
     { label: 'changes_since query', done: incrementalPostCount !== null,                     spec: SPEC.listRecords },
     { label: 'AI training consent', done: aiGrantApproved,                                   spec: SPEC.aiTrainingConsent },
-    { label: 'single_use expiry',   done: tokenSpent,                                        spec: SPEC.accessModes },
+    { label: 'single_use issuance', done: singleUseConsumed,                                 spec: SPEC.accessModes },
     { label: 'Grant revocation',    done: grantRevoked,                                      spec: SPEC.revocation },
   ];
 

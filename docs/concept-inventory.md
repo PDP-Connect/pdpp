@@ -128,7 +128,7 @@ Legend:
 | # | Concept | Description | Flow | Audience |
 |---|---------|-------------|------|----------|
 | 61 | Connector as child process | Runtime spawns connector as child process; stdin/stdout JSONL communication | Spine | Eng |
-| 62 | START message | Runtime derives collection request from grant; connector never sees raw grant/token | Spine | Eng |
+| 62 | START message | Runtime sends a normalized, non-broadening collection scope plus state/bindings; connector never sees raw grant/token | Spine | Eng |
 | 63 | DONE message | Final output; runtime gates STATE persistence on successful DONE | Branch | Eng |
 | 64 | Binding matching | Runtime checks bindings before spawn; fail fast if requirements unmet | Branch | Eng |
 | 65 | SKIP_RESULT | Connector signals intentional omissions (rate limit, unavailable) | Branch | Eng |

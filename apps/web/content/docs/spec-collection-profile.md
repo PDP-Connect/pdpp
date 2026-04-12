@@ -117,6 +117,23 @@ Initializes a collection run.
   "type": "START",
   "run_id": "run_abc123",
   "collection_mode": "incremental",
+  "scope": {
+    "streams": [
+      {
+        "name": "top_artists",
+        "time_range": {
+          "since": "2025-10-11T00:00:00Z"
+        },
+        "fields": [
+          "id",
+          "name",
+          "genres",
+          "popularity",
+          "source_updated_at"
+        ]
+      }
+    ]
+  },
   "state": {
     "top_artists": { "last_updated": "2026-03-01T00:00:00Z" }
   },
@@ -134,15 +151,43 @@ Initializes a collection run.
 |-------|------|-------------|
 | `run_id` | string | Unique identifier for this run. |
 | `collection_mode` | enum | `full_refresh` or `incremental`. Derived from stream capabilities and runtime policy; not from the grant. |
-| `state` | object or null | Map of stream names to cursor objects from previous STATE messages. null on first run. |
+| `scope` | object | Portable collection target for this run. Derived from a grant and local policy for grant-driven runs, or from user preferences and local policy for proactive runs. See `scope` fields below. |
+| `state` | object or null | Map of stream names to cursor objects from previous STATE messages. For proactive runs this comes from the connector's global state namespace; for `continuous` grant runs it comes from the `grant_id`-scoped namespace; null on first run or `single_use` runs. |
 | `bindings` | object | Map of binding names to descriptors for bindings provided to this run. |
 
-Note: The START message does not include the raw grant. The runtime derives the collection request from the grant (scopes, time_range, fields) and passes only what the connector needs to know. This maintains the separation between authorization semantics (grant) and collection mechanics (START).
+The START message does not include the raw grant or access token. It carries a normalized `scope` object instead. `scope` is not itself a grant and has no authorization force; it is the collection target for this run. For grant-driven runs, the runtime MUST derive `scope` from the grant, MUST NOT construct a scope broader than the grant permits, and MAY narrow it further according to local fulfillment policy (for example, collecting only the stale streams needed to satisfy the current request). For proactive runs, the runtime derives `scope` from user preferences or local policy.
+
+### `scope` fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `streams` | CollectionStream[] | Explicit stream targets for this run. MUST be non-empty. Wildcards are not allowed in `START`; the runtime resolves them before spawning the connector. |
+
+### CollectionStream fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | Stream name to collect. |
+| `resources` | string[] | Optional canonical key strings limiting the run to specific records within the stream. Same encoding as `resources` in the core grant model. |
+| `time_range` | object | Optional temporal collection window with `since` / `until`, using the same semantics as the core grant model. |
+| `fields` | string[] | Optional top-level emitted-field set for this run. When present, the runtime MUST include any schema-required fields and any additional top-level fields required for valid RECORD emission or RS ingest validation for that stream. |
+
+`START.scope` carries normalized collection targets only. It does not include issuance-time concepts such as `necessity` or unresolved `view` names; the runtime resolves those before spawning the connector.
+
+Connector obligations for `scope`:
+
+- A connector MUST NOT emit RECORD messages for streams absent from `scope.streams`.
+- If `resources` or `time_range` is present for a stream, the connector MUST apply those constraints before emitting RECORD messages for that stream.
+- If `fields` is present for a stream, the connector MUST NOT emit additional top-level fields in RECORD `data` for that stream, except that it MAY include schema-required or ingest-required top-level fields if the runtime omitted them accidentally.
+- A connector that cannot honor a declared `resources`, `time_range`, or `fields` constraint for a stream MUST either emit `SKIP_RESULT` with `reason: "scope_not_supported"` and omit records for the skipped target, or fail the run. It MUST NOT silently broaden or ignore the constraint.
+- A connector MAY retrieve broader source-side data transiently when the source platform cannot filter precisely, but it MUST still emit RECORD messages consistent with `scope`.
+
+Connector compliance is not the only enforcement backstop. The runtime and downstream write path MUST reject or discard emissions that fall outside the declared `scope`.
 
 **State management:** State is maintained at two levels:
 
 - **Global state:** Used and advanced only by proactive runs (no grant). Represents archival completeness for the user's data store.
-- **Grant-scoped state:** Used and advanced by `continuous` grant runs, keyed by `grant_id`. Ensures recurring app syncs are incremental without interfering with global archival cursors.
+- **Grant-scoped state:** Used and advanced by `continuous` grant runs, keyed by `grant_id`. The runtime reads and writes this namespace through `GET/PUT /v1/state/{connector_id}?grant_id={grant_id}`. It ensures recurring app syncs are incremental without interfering with global archival cursors.
 - **Single-use runs:** Receive `state: null`. STATE messages emitted during single-use runs are not persisted.
 
 `bindings` contains a descriptor for every binding declared `required: true` in the manifest. For every required binding, the runtime MUST include a valid descriptor. Connectors MUST treat a missing required binding as a fatal protocol error. Connectors MUST ignore unknown binding keys.
@@ -251,6 +296,8 @@ Signals that a stream or resource was intentionally skipped. Does not cause a st
 }
 ```
 
+`SKIP_RESULT` MAY also be used when a connector cannot honor a declared scope element for a stream or resource. In that case the `reason` MUST be `scope_not_supported`.
+
 #### PROGRESS
 
 Optional progress update for display in runtime UIs.
@@ -307,6 +354,8 @@ A conformant connector:
 6. Does not emit INTERACTION while in `waiting_for_interaction`.
 7. Treats missing required bindings as fatal errors.
 8. Exits with status 0 on `succeeded`, non-zero on `failed` or `cancelled`.
+9. Emits RECORD messages only within the `scope` provided in START: no undeclared streams, no records outside declared `resources` or `time_range`, and no extra top-level fields when `fields` is present.
+10. If it cannot honor a declared `resources`, `time_range`, or `fields` constraint, emits an explicit `SKIP_RESULT` or fails the run; it never silently broadens scope.
 
 ### A conformant connector runtime:
 
@@ -316,8 +365,12 @@ A conformant connector:
 4. Sends INTERACTION_RESPONSE with `status: "timeout"` if no response arrives within `timeout_seconds`.
 5. Persists STATE only after preceding records are durably written.
 6. Does NOT persist STATE on `failed` or `cancelled` runs.
-7. Terminates the connector process on protocol violations.
-8. Does not log or persist credential data from INTERACTION_RESPONSE.
+7. Uses the connector's global state namespace for proactive runs, the `grant_id`-scoped namespace for `continuous` grant runs, and `state: null` for `single_use` runs.
+8. Terminates the connector process on protocol violations.
+9. Does not log or persist credential data from INTERACTION_RESPONSE.
+10. Sends an explicit non-empty `scope` in START. For grant-driven runs, this scope is a normalized, possibly narrowed projection of the grant and MUST NOT include wildcard stream names.
+11. For grant-driven runs, never constructs a `scope` broader than the grant permits.
+12. Rejects or discards connector emissions that fall outside the declared `scope` before durable write.
 
 
 ## 5. TypeScript Types
@@ -325,12 +378,23 @@ A conformant connector:
 ```typescript
 type InteractionKind = 'credentials' | 'otp' | 'manual_action';
 type StreamState = Record<string, Record<string, unknown>>;
+type TimeRange = { since?: string; until?: string };
+type CollectionStream = {
+  name: string;
+  resources?: string[];
+  time_range?: TimeRange;
+  fields?: string[];
+};
+type CollectionScope = {
+  streams: CollectionStream[];
+};
 
 type RuntimeMessage =
   | {
       type: 'START';
       run_id: string;
       collection_mode: 'full_refresh' | 'incremental';
+      scope: CollectionScope;
       state: StreamState | null;
       bindings: Record<string, Record<string, unknown>>;
     }

@@ -1,6 +1,6 @@
 # System Architecture: How the Spec Components Relate
 
-Date: 2026-03-28
+Date: 2026-04-11
 
 ## Components
 
@@ -87,7 +87,7 @@ When data isn't in the personal server yet, or is stale.
 2. User consents → grant is created
 3. Personal server checks: do I have fresh enough data for this grant?
 4. No → personal server (or user's runtime) triggers a connector run
-5. Connector runtime sends START (with grant + state) to connector
+5. Connector runtime sends START (portable collection `scope` + state + bindings) to connector
 6. Connector collects data, emits RECORD/STATE messages
 7. Runtime writes records to personal server
 8. Personal server serves records to app, filtered by grant
@@ -97,7 +97,7 @@ When data isn't in the personal server yet, or is stale.
 User decides to collect data before any app requests it.
 
 1. User runs `vana collect spotify` (or background scheduler triggers it)
-2. Runtime sends START to connector (no grant — collecting everything, or per user's preferences)
+2. Runtime sends START to connector with an explicit collection `scope` derived from user preferences or local policy (no raw grant)
 3. Connector collects, emits RECORD/STATE
 4. Runtime writes records to personal server
 5. Data is now available for future grants
@@ -121,8 +121,10 @@ User decides to collect data before any app requests it.
 | Personal server API | **No** (reference only) | How apps query records by grant |
 | Personal server storage | **No** | Implementation choice |
 | Webhook ingestion | **No** | Future extension |
-| Consent screen UX | **No** | Surface-specific |
+| Consent screen visual design | **No** | Surface-specific; semantic rendering obligations remain in scope |
 | Trust verification | **No** | DTI Trust Registry |
+
+For the Collection Profile, the standardized `START` message carries a portable collection `scope`: explicit stream targets plus optional `resources`, `time_range`, and `fields`. It does not carry the raw grant or access token. For grant-driven runs, the runtime derives this scope from the grant as a normalized, non-broadening projection and may narrow it further according to local fulfillment policy; for proactive runs, it derives the scope from user preferences or local policy.
 
 ## How connector versioning works
 
@@ -154,12 +156,18 @@ A grant with `streams: [{ "name": "*" }]` is expanded at consent time into the e
 
 When an app requests data via a grant, how does the personal server decide whether to serve from cache or trigger a fresh collection?
 
-Options (implementation choice, not spec-mandated):
+The core spec should define freshness first as response metadata, not as a grant constraint. A client needs to know whether the server's data is current, stale, or unknown even when the authorization itself is perfectly valid.
+
+Current v0.1 direction:
+1. **Expose response freshness metadata.** The resource server reports `captured_at`, `status`, and optionally `last_attempted_at` on stream and record-list responses.
+2. **Let the personal server decide how to fulfill reads.** Freshness status reflects local observation and policy, not a guarantee that the source has not changed since `captured_at`.
+
+Fulfillment strategies remain an implementation choice:
 1. **Always serve from cache.** App gets whatever's stored. Fast, simple.
-2. **Check age.** If the newest record in a stream is older than X, trigger collection first. The app specifies acceptable staleness in the selection request.
+2. **Check age.** If the newest record in a stream is older than X, trigger collection first according to local policy.
 3. **Always collect fresh.** Every grant fulfillment triggers a connector run. Slow but guaranteed fresh.
 
-The spec should include an optional `freshness` hint on the selection request:
+Request-side freshness requirements remain future work. One possible future shape is an optional selection-request hint:
 
 ```json
 {
@@ -167,4 +175,4 @@ The spec should include an optional `freshness` hint on the selection request:
 }
 ```
 
-This says "data older than 1 hour is not acceptable." The personal server decides how to fulfill it. This is a hint, not a guarantee — the personal server may not be able to collect fresh data (connector unavailable, user offline, etc.).
+This would say "data older than 1 hour is not acceptable." Even then, the personal server may be unable to collect fresh data (connector unavailable, user offline, source throttling), which is why the response metadata comes first: it closes the honesty gap without pretending collection can always satisfy the request.

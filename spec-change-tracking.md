@@ -38,7 +38,9 @@ GET /v1/streams/profile/records?changes_since=<cursor>
 Authorization: Bearer <access_token>
 ```
 
-The `changes_since` cursor is an opaque token from a previous response's `next_cursor`. It carries the client's last sync position and the grant's field projection context. Clients MUST treat cursors as opaque.
+The `changes_since` cursor is an opaque token from a previous `changes_since` session's terminal-page `next_changes_since`. It carries the client's last sync position and the grant's field projection context. Clients MUST treat cursors as opaque. `cursor`/`next_cursor` and `changes_since`/`next_changes_since` are distinct token spaces.
+
+Projection safety is computed on the client's authorized projection, not on the full record. An implementation that first selects rows based on full-record changes and only applies projection afterward is non-conformant, because it leaks that hidden fields changed.
 
 ### Tombstones
 
@@ -50,13 +52,14 @@ When a record is deleted, incremental sync responses include a tombstone:
   "id": "playlist_123",
   "stream": "playlists",
   "deleted": true,
-  "deleted_at": "2026-04-01T10:00:00Z"
+  "deleted_at": "2026-04-01T10:00:00Z",
+  "emitted_at": "2026-04-01T10:00:01Z"
 }
 ```
 
 ### Cursor expiry
 
-Resource servers MAY expire historical version data after a retention period. If a client's `changes_since` cursor is too old, the server returns HTTP 410 Gone. The client must perform a full re-sync.
+Resource servers MAY expire historical version data after a retention period. If a client's `changes_since` cursor is too old, the server returns HTTP 410 Gone. The client must perform a full re-sync. The terminal page of a successful `changes_since` session returns `next_changes_since`, which becomes the seed for the next session.
 
 ---
 

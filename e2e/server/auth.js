@@ -53,9 +53,10 @@ export async function getManifest(connectorId) {
  * Initiate a grant request (device-code-style).
  * Returns { device_code, user_code, verification_uri, expires_in }
  */
-export async function initiateGrant(params) {
+export async function initiateGrant(params, opts = {}) {
   const deviceCode = generateId('dc');
   const userCode = randomBytes(3).toString('hex').toUpperCase();
+  const verificationBaseUrl = opts.baseUrl || process.env.AS_PUBLIC_URL || `http://localhost:${process.env.AS_PORT || '7662'}`;
 
   pendingConsent.set(deviceCode, {
     params,
@@ -68,7 +69,7 @@ export async function initiateGrant(params) {
   return {
     device_code: deviceCode,
     user_code: userCode,
-    verification_uri: `http://localhost:7662/consent/${deviceCode}`,
+    verification_uri: `${verificationBaseUrl}/consent/${deviceCode}`,
     expires_in: 300,
   };
 }
@@ -189,26 +190,88 @@ export function pollGrant(deviceCode) {
 }
 
 /**
+ * Deny and clear a pending grant request
+ */
+export function denyGrant(deviceCode) {
+  return pendingConsent.delete(deviceCode);
+}
+
+/**
  * Issue an access token bound to a grant
  */
 export async function issueToken(grantId, subjectId, clientId, expiresAt) {
   const db = getDb();
-  const tokenId = generateToken();
+  return db.tx(async (tx) => {
+    const grantRows = await tx.query(sql`
+      SELECT access_mode, consumed, status
+      FROM grants
+      WHERE grant_id = ${grantId}
+    `);
 
-  // Note: single_use grants are marked consumed after the first successful RS query,
-  // not at token issuance — so the token is valid for exactly one query.
+    if (!grantRows.length) {
+      const err = new Error(`Unknown grant: ${grantId}`);
+      err.code = 'grant_invalid';
+      throw err;
+    }
 
-  await db.query(sql`
-    INSERT INTO tokens(token_id, grant_id, subject_id, client_id, token_kind, expires_at)
-    VALUES(${tokenId}, ${grantId}, ${subjectId}, ${clientId}, 'client', ${expiresAt})
+    const grantRow = grantRows[0];
+    if (grantRow.status !== 'active') {
+      const err = new Error(
+        grantRow.status === 'revoked'
+          ? 'Grant has been revoked'
+          : `Grant is not active: ${grantRow.status}`
+      );
+      err.code = grantRow.status === 'revoked' ? 'grant_revoked' : 'grant_invalid';
+      throw err;
+    }
+
+    if (grantRow.access_mode === 'single_use') {
+      if (grantRow.consumed) {
+        const err = new Error('Grant has already been consumed');
+        err.code = 'grant_consumed';
+        throw err;
+      }
+      await tx.query(sql`
+        UPDATE grants
+        SET consumed = 1
+        WHERE grant_id = ${grantId}
+      `);
+    }
+
+    const tokenId = generateToken();
+    await tx.query(sql`
+      INSERT INTO tokens(token_id, grant_id, subject_id, client_id, token_kind, expires_at)
+      VALUES(${tokenId}, ${grantId}, ${subjectId}, ${clientId}, 'client', ${expiresAt})
+    `);
+
+    return tokenId;
+  });
+}
+
+/**
+ * Demo/admin helper: issue another client token for an existing grant.
+ * Used to prove single_use issuance behavior end-to-end.
+ */
+export async function issueGrantToken(grantId) {
+  const db = getDb();
+  const rows = await db.query(sql`
+    SELECT subject_id, client_id, expires_at
+    FROM grants
+    WHERE grant_id = ${grantId}
   `);
 
-  return tokenId;
+  if (!rows.length) {
+    const err = new Error(`Unknown grant: ${grantId}`);
+    err.code = 'not_found';
+    throw err;
+  }
+
+  const row = rows[0];
+  return issueToken(grantId, row.subject_id, row.client_id, row.expires_at);
 }
 
 /**
  * Issue an owner token for a subject
- * Note: single_use grants are marked consumed after the first successful RS query (not at token issuance)
  */
 export async function issueOwnerToken(subjectId) {
   const db = getDb();
@@ -238,26 +301,24 @@ export async function introspect(token) {
 
   const row = rows[0];
 
-  if (row.revoked) return { active: false };
+  if (row.revoked) {
+    return {
+      active: false,
+      inactive_reason: row.token_kind === 'client' ? 'grant_revoked' : 'token_revoked',
+    };
+  }
 
   // Check expiry
   if (row.expires_at && new Date(row.expires_at) < new Date()) {
-    return { active: false };
+    return {
+      active: false,
+      inactive_reason: row.token_kind === 'client' ? 'grant_expired' : 'token_expired',
+    };
   }
 
   // Check grant still active (for client tokens)
   if (row.token_kind === 'client' && row.grant_status !== 'active') {
-    return { active: false };
-  }
-
-  // For single_use grants, reject if already consumed
-  if (row.token_kind === 'client') {
-    const grantRows = await db.query(sql`
-      SELECT access_mode, consumed FROM grants WHERE grant_id = ${row.grant_id}
-    `);
-    if (grantRows.length && grantRows[0].access_mode === 'single_use' && grantRows[0].consumed) {
-      return { active: false };
-    }
+    return { active: false, inactive_reason: 'grant_revoked' };
   }
 
   const result = {

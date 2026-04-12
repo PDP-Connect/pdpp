@@ -58,13 +58,23 @@ Returns the streams available under the current grant.
       "object": "stream",
       "name": "conversations",
       "record_count": 2196,
-      "last_updated": "2026-03-28T15:01:00Z"
+      "last_updated": "2026-03-28T15:01:00Z",
+      "freshness": {
+        "captured_at": "2026-03-28T15:01:00Z",
+        "status": "current",
+        "last_attempted_at": "2026-03-28T15:01:00Z"
+      }
     },
     {
       "object": "stream",
       "name": "messages",
       "record_count": 48302,
-      "last_updated": "2026-03-28T15:01:00Z"
+      "last_updated": "2026-03-28T15:01:00Z",
+      "freshness": {
+        "captured_at": "2026-03-28T15:01:00Z",
+        "status": "current",
+        "last_attempted_at": "2026-03-28T15:01:00Z"
+      }
     }
   ]
 }
@@ -81,10 +91,15 @@ Returns schema, primary key, cursor field, and expandable relations.
 **Response:**
 ```json
 {
-  "object": "stream",
+  "object": "stream_metadata",
   "name": "conversations",
   "record_count": 2196,
   "last_updated": "2026-03-28T15:01:00Z",
+  "freshness": {
+    "captured_at": "2026-03-28T15:01:00Z",
+    "status": "current",
+    "last_attempted_at": "2026-03-28T15:01:00Z"
+  },
   "schema": {
     "type": "object",
     "properties": {
@@ -100,6 +115,18 @@ Returns schema, primary key, cursor field, and expandable relations.
   "expandable": ["messages"]
 }
 ```
+
+### Freshness metadata
+
+The resource server MAY include a `freshness` object on stream listings, stream metadata, and record-list responses.
+
+Freshness is server-observed response metadata, not a grant term. It reports what the server knows about the recency of the underlying data relevant to the response. It does not widen or narrow access rights, and it does not guarantee that the source has not changed since `captured_at`.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `captured_at` | ISO 8601 or null | Time of the most recent successful collection or source confirmation that could have affected the response. null if unknown. |
+| `status` | enum | `current`, `stale`, or `unknown`. |
+| `last_attempted_at` | ISO 8601 or null | Time of the most recent attempted refresh relevant to the response, if tracked. |
 
 ### List records
 
@@ -145,6 +172,11 @@ PDPP-Version: 2026-03-28
   "url": "/v1/streams/conversations/records",
   "has_more": true,
   "next_cursor": "eyJjcmVhdGVkX2F0IjoiMjAyNi0wMy0yNVQxODoyMjoxMVoiLCJpZCI6ImNvbnZfMDFKUVc4TTJSNyJ9",
+  "freshness": {
+    "captured_at": "2026-03-28T15:01:00Z",
+    "status": "current",
+    "last_attempted_at": "2026-03-28T15:01:00Z"
+  },
   "data": [
     {
       "object": "record",
@@ -324,11 +356,11 @@ Body is NDJSON (one record per line):
 ## Sync State
 
 ```
-GET  /v1/state/{connector_id}   → returns StreamState map
-PUT  /v1/state/{connector_id}   → updates StreamState map
+GET  /v1/state/{connector_id}[?grant_id={grant_id}]   → returns StreamState map
+PUT  /v1/state/{connector_id}[?grant_id={grant_id}]   → updates StreamState map
 ```
 
-Both require owner authentication. The connector runtime reads state before a run and writes it after.
+Both require owner authentication. Without `grant_id`, the endpoint addresses the connector's global archival state. With `grant_id`, it addresses the grant-scoped state namespace for a `continuous` grant. `single_use` runs do not use persistent state.
 
 ---
 

@@ -30,11 +30,21 @@ const E2E_DIR = join(__dirname, '..');
 
 const args = process.argv.slice(2);
 const QUICK = args.includes('--quick');
-const AS_PORT = parseInt(args[args.indexOf('--port-as') + 1] || '7662');
-const RS_PORT = parseInt(args[args.indexOf('--port-rs') + 1] || '7663');
+
+function readArg(name, fallback) {
+  const idx = args.indexOf(name);
+  if (idx === -1 || idx === args.length - 1) return fallback;
+  return args[idx + 1];
+}
+
+const AS_PORT = parseInt(readArg('--port-as', '7662'), 10);
+const RS_PORT = parseInt(readArg('--port-rs', '7663'), 10);
 
 const AS_URL = `http://localhost:${AS_PORT}`;
 const RS_URL = `http://localhost:${RS_PORT}`;
+
+process.env.AS_URL = AS_URL;
+process.env.RS_URL = RS_URL;
 
 // ─── Utilities ────────────────────────────────────────────────────────────────
 
@@ -77,6 +87,10 @@ async function apiCall(url, opts = {}) {
 }
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+function encodeCursorPayload(payload) {
+  return Buffer.from(JSON.stringify(payload)).toString('base64');
+}
 
 // ─── Main demo ───────────────────────────────────────────────────────────────
 
@@ -130,7 +144,7 @@ async function main() {
   const seedPath = join(E2E_DIR, 'connectors/seed/index.js');
 
   for (const [name, manifest] of Object.entries(manifests)) {
-    const state = await loadSyncState(manifest.connector_id, ownerToken).catch(() => null);
+    const state = await loadSyncState(manifest.connector_id, ownerToken, { rsUrl: RS_URL }).catch(() => null);
     info(`Running ${manifest.display_name} seed...`);
 
     const result = await runConnector({
@@ -140,6 +154,7 @@ async function main() {
       manifest,
       state,
       collectionMode: 'full_refresh',
+      rsUrl: RS_URL,
       onInteraction: async () => ({ status: 'cancelled' }),
       onProgress: (msg) => {
         if (msg.type === 'PROGRESS') info(`  [${name}] ${msg.message}`);
@@ -169,159 +184,251 @@ async function main() {
   // 6. PDPP grant flow
   header('PDPP Grant Flow');
 
-  section('Step 1: Client Initiates Grant Request');
-  const grantRequest = {
+  section('Step 1: Single-Use Grant');
+  const singleUseGrantRequest = {
     client_id: 'concert_recommendation_app',
     connector_id: manifests.spotify.connector_id,
     purpose_code: 'https://pdpp.org/purpose/personalization',
     purpose_description: 'Recommend concerts based on your listening history (last 6 months)',
     access_mode: 'single_use',
+    retention: { max_duration: 'P90D', on_expiry: 'delete' },
     streams: [
       {
         name: 'top_artists',
         necessity: 'required',
-        view: 'basic',                        // only name, genres — not popularity or followers
-        time_range: { since: new Date(Date.now() - 180 * 86400000).toISOString() },
-      },
-      {
-        name: 'recently_played',
-        necessity: 'optional',
         view: 'basic',
+        time_range: { since: new Date(Date.now() - 180 * 86400000).toISOString() },
       },
     ],
   };
 
-  const initiateResp = await apiCall(`${AS_URL}/grants/initiate`, {
+  const singleUseInitiate = await apiCall(`${AS_URL}/grants/initiate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(grantRequest),
+    body: JSON.stringify(singleUseGrantRequest),
   });
-
   ok(`Grant request initiated`);
-  info(`  User code: ${initiateResp.user_code}`);
-  info(`  Consent UI: ${initiateResp.verification_uri}`);
-  show(`Grant request`, grantRequest);
+  info(`  User code: ${singleUseInitiate.user_code}`);
+  info(`  Consent UI: ${singleUseInitiate.verification_uri}`);
+  show(`Single-use request`, singleUseGrantRequest);
 
-  section('Step 2: User Reviews and Approves Grant');
-  // Auto-approve for demo
-  const approvalResp = await apiCall(`${AS_URL}/consent/${initiateResp.device_code}/approve-api`, {
+  const singleUseApproval = await apiCall(`${AS_URL}/consent/${singleUseInitiate.device_code}/approve-api`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ subject_id: 'user_demo' }),
   });
+  const singleUseToken = singleUseApproval.token;
+  ok(`Single-use grant approved`);
+  show(`Issued grant`, singleUseApproval.grant);
 
-  ok(`Grant approved by user`);
-  ok(`Access token issued`);
-  show(`Issued grant`, approvalResp.grant);
-  const clientToken = approvalResp.token;
-  info(`  Client token: ${clientToken.slice(0, 16)}...`);
+  try {
+    await apiCall(`${AS_URL}/grants/${singleUseApproval.grant.grant_id}/tokens`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    });
+    err('BUG: single_use grant should not issue a second client token');
+  } catch (e) {
+    ok(`single_use enforced at issuance: second token request rejected (${e.body?.error?.code || 'grant_consumed'})`);
+  }
 
-  section('Step 3: Client Queries Under Grant Enforcement');
+  const singleUseResp = await apiCall(
+    `${RS_URL}/v1/streams/top_artists/records?limit=1`,
+    { headers: { 'Authorization': `Bearer ${singleUseToken}` } }
+  );
+  ok(`First single_use query succeeded and returned ${singleUseResp.data.length} record`);
 
-  // List streams
-  const streamsResp = await apiCall(`${RS_URL}/v1/streams`, {
-    headers: { 'Authorization': `Bearer ${clientToken}` },
+  const singleUseNextPage = await apiCall(
+    `${RS_URL}/v1/streams/top_artists/records?limit=1&cursor=${encodeURIComponent(singleUseResp.next_cursor)}`,
+    { headers: { 'Authorization': `Bearer ${singleUseToken}` } }
+  );
+  ok(`Issued single_use token remained valid for pagination and returned ${singleUseNextPage.data.length} second-page record`);
+  info(`  single_use constrains token issuance, not follow-on reads with the issued token`);
+
+  section('Step 2: Continuous Grant for Enforcement + Sync');
+  const continuousGrantRequest = {
+    client_id: 'concert_recommendation_app',
+    connector_id: manifests.spotify.connector_id,
+    purpose_code: 'https://pdpp.org/purpose/personalization',
+    purpose_description: 'Maintain a concert-recommendation profile over time',
+    access_mode: 'continuous',
+    retention: { max_duration: 'P90D', on_expiry: 'delete' },
+    streams: [
+      { name: 'top_artists', necessity: 'required', view: 'basic' },
+      { name: 'recently_played', necessity: 'optional', view: 'basic' },
+    ],
+  };
+
+  const continuousInitiate = await apiCall(`${AS_URL}/grants/initiate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(continuousGrantRequest),
   });
-  ok(`Streams available under grant:`);
+  const continuousApproval = await apiCall(`${AS_URL}/consent/${continuousInitiate.device_code}/approve-api`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ subject_id: 'user_demo' }),
+  });
+  const continuousToken = continuousApproval.token;
+  ok(`Continuous grant approved`);
+  info(`  Consent UI: ${continuousInitiate.verification_uri}`);
+  show(`Continuous grant`, continuousApproval.grant);
+
+  const streamsResp = await apiCall(`${RS_URL}/v1/streams`, {
+    headers: { 'Authorization': `Bearer ${continuousToken}` },
+  });
+  ok(`Streams available under continuous grant:`);
   for (const s of streamsResp.data) {
     info(`  • ${s.name}: ${s.record_count} records`);
   }
 
-  // Query top_artists — only 'basic' view fields visible
   const artistsResp = await apiCall(
     `${RS_URL}/v1/streams/top_artists/records?limit=5`,
-    { headers: { 'Authorization': `Bearer ${clientToken}` } }
+    { headers: { 'Authorization': `Bearer ${continuousToken}` } }
   );
-
-  ok(`Top artists (under grant — basic view, time-scoped):`);
+  ok(`Top artists under grant (basic view):`);
   for (const rec of artistsResp.data) {
     const d = rec.data;
-    const fields = Object.keys(d).join(', ');
-    info(`  • ${d.name} [${(d.genres || []).slice(0, 2).join(', ')}] — fields exposed: ${fields}`);
+    info(`  • ${d.name} [${(d.genres || []).slice(0, 2).join(', ')}] — fields exposed: ${Object.keys(d).join(', ')}`);
   }
 
-  if (artistsResp.data.length < rawResp.data.length) {
-    ok(`Time-range filter active: ${artistsResp.data.length} records (vs ${rawResp.data.length} without filter)`);
-  }
-
-  // Verify that unauthorized fields are blocked
-  section('Step 4: Verifying Grant Enforcement');
-
-  // Try to access a stream not in the grant
+  section('Step 3: Verifying Grant Enforcement');
   try {
     await apiCall(`${RS_URL}/v1/streams/saved_tracks/records`, {
-      headers: { 'Authorization': `Bearer ${clientToken}` },
+      headers: { 'Authorization': `Bearer ${continuousToken}` },
     });
     err('BUG: saved_tracks should not be accessible!');
   } catch (e) {
     if (e.status === 403) {
       ok(`Stream not in grant correctly blocked: saved_tracks → 403 ${e.body?.error?.code}`);
+    } else {
+      throw e;
     }
   }
 
-  // Try filter on field not in grant projection
   try {
     await apiCall(`${RS_URL}/v1/streams/top_artists/records?filter[popularity]=82`, {
-      headers: { 'Authorization': `Bearer ${clientToken}` },
+      headers: { 'Authorization': `Bearer ${continuousToken}` },
     });
-    warn(`Filter on 'popularity' not blocked (field may be included in projection)`);
+    err(`BUG: filter on popularity should have been rejected`);
   } catch (e) {
     if (e.status === 403) {
       ok(`Filter on unauthorized field blocked: popularity → 403 ${e.body?.error?.code}`);
+    } else {
+      throw e;
     }
   }
 
-  // 7. Incremental sync demo
-  section('Step 5: Incremental Sync (changes_since)');
-
-  // Get initial changes_since baseline
+  section('Step 4: Projection-Safe Incremental Sync');
   const baselineResp = await apiCall(
-    `${RS_URL}/v1/streams/top_artists/records?changes_since=${encodeURIComponent(btoa(JSON.stringify({ version: 0 })))}`,
-    { headers: { 'Authorization': `Bearer ${clientToken}` } }
+    `${RS_URL}/v1/streams/top_artists/records?changes_since=${encodeURIComponent(encodeCursorPayload({ kind: 'changes_since', version: 0 }))}`,
+    { headers: { 'Authorization': `Bearer ${continuousToken}` } }
   );
-  ok(`Initial sync: ${baselineResp.data.length} records`);
-  const syncCursor = baselineResp.next_changes_since;
-  info(`  Sync cursor: ${syncCursor}`);
+  ok(`Initial sync baseline: ${baselineResp.data.length} records`);
+  let syncCursor = baselineResp.next_changes_since;
+  info(`  next_changes_since: ${syncCursor}`);
 
-  // Now query changes since the baseline — should be empty
-  const deltaResp = await apiCall(
+  const firstArtist = artistsResp.data[0];
+  const ownerFirstArtist = await apiCall(
+    `${RS_URL}/v1/streams/top_artists/records/${encodeURIComponent(firstArtist.id)}?connector_id=${encodeURIComponent(manifests.spotify.connector_id)}`,
+    { headers: { 'Authorization': `Bearer ${ownerToken}` } }
+  );
+  const unauthorizedOnlyUpdate = {
+    key: firstArtist.id,
+    data: {
+      ...ownerFirstArtist.data,
+      popularity: 101,
+      source_updated_at: new Date().toISOString(),
+    },
+    emitted_at: new Date().toISOString(),
+  };
+  await apiCall(
+    `${RS_URL}/v1/ingest/top_artists?connector_id=${encodeURIComponent(manifests.spotify.connector_id)}`,
+    {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${ownerToken}`,
+        'Content-Type': 'application/x-ndjson',
+      },
+      body: JSON.stringify(unauthorizedOnlyUpdate),
+    }
+  );
+
+  const hiddenFieldDelta = await apiCall(
     `${RS_URL}/v1/streams/top_artists/records?changes_since=${encodeURIComponent(syncCursor)}`,
-    { headers: { 'Authorization': `Bearer ${clientToken}` } }
+    { headers: { 'Authorization': `Bearer ${continuousToken}` } }
   );
-  ok(`Delta query since baseline: ${deltaResp.data.length} new/changed records (expected 0)`);
-  info(`  next_changes_since: ${deltaResp.next_changes_since}`);
+  if (hiddenFieldDelta.data.length === 0) {
+    ok(`Hidden-field-only change produced no delta under the basic view`);
+  } else {
+    err(`BUG: hidden-field-only change leaked into changes_since`);
+  }
+  syncCursor = hiddenFieldDelta.next_changes_since;
 
-  // 8. Second grant — demonstrate multi-app consent separation
-  section('Step 6: Second Client with Different Grant (Sleep App)');
+  const authorizedUpdate = {
+    key: firstArtist.id,
+    data: {
+      ...unauthorizedOnlyUpdate.data,
+      genres: [...firstArtist.data.genres, 'touring'],
+      source_updated_at: new Date().toISOString(),
+    },
+    emitted_at: new Date().toISOString(),
+  };
+  await apiCall(
+    `${RS_URL}/v1/ingest/top_artists?connector_id=${encodeURIComponent(manifests.spotify.connector_id)}`,
+    {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${ownerToken}`,
+        'Content-Type': 'application/x-ndjson',
+      },
+      body: JSON.stringify(authorizedUpdate),
+    }
+  );
 
-  const sleepGrantReq = {
+  const authorizedDelta = await apiCall(
+    `${RS_URL}/v1/streams/top_artists/records?changes_since=${encodeURIComponent(syncCursor)}`,
+    { headers: { 'Authorization': `Bearer ${continuousToken}` } }
+  );
+  ok(`Authorized-field change produced ${authorizedDelta.data.length} delta record(s)`);
+  if (authorizedDelta.data[0]) {
+    show(`Delta record`, authorizedDelta.data[0]);
+  }
+  syncCursor = authorizedDelta.next_changes_since;
+
+  section('Step 5: Second Client with Different Connector Grant');
+  const githubGrantReq = {
     client_id: 'github_portfolio_analyzer',
     connector_id: manifests.github.connector_id,
     purpose_code: 'https://pdpp.org/purpose/analytics',
     purpose_description: 'Analyze your open-source contributions for a portfolio summary',
     access_mode: 'continuous',
+    retention: { max_duration: 'P1Y', on_expiry: 'delete' },
     streams: [
       { name: 'repositories', view: 'stats', necessity: 'required' },
-      { name: 'commits', view: 'basic', necessity: 'required',
-        time_range: { since: new Date(Date.now() - 365 * 86400000).toISOString() } },
+      {
+        name: 'commits',
+        view: 'basic',
+        necessity: 'required',
+        time_range: { since: new Date(Date.now() - 365 * 86400000).toISOString() },
+      },
     ],
   };
 
-  const sleepInitiate = await apiCall(`${AS_URL}/grants/initiate`, {
+  const githubInitiate = await apiCall(`${AS_URL}/grants/initiate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(sleepGrantReq),
+    body: JSON.stringify(githubGrantReq),
   });
 
-  const sleepApproval = await apiCall(`${AS_URL}/consent/${sleepInitiate.device_code}/approve-api`, {
+  const githubApproval = await apiCall(`${AS_URL}/consent/${githubInitiate.device_code}/approve-api`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ subject_id: 'user_demo' }),
   });
 
-  const githubToken = sleepApproval.token;
+  const githubToken = githubApproval.token;
   ok(`GitHub portfolio grant approved`);
-  show(`Grant`, sleepApproval.grant);
+  show(`Grant`, githubApproval.grant);
 
   const reposResp = await apiCall(
     `${RS_URL}/v1/streams/repositories/records?limit=5`,
@@ -333,32 +440,21 @@ async function main() {
     info(`  • ${d.full_name} [${d.language || 'N/A'}] ★${d.stargazers_count}`);
   }
 
-  const commitsResp = await apiCall(
-    `${RS_URL}/v1/streams/commits/records?limit=5`,
-    { headers: { 'Authorization': `Bearer ${githubToken}` } }
-  );
-  ok(`Recent commits (last 12 months, basic view):`);
-  for (const rec of commitsResp.data) {
-    const d = rec.data;
-    info(`  • [${d.repo_full_name}] ${d.message?.slice(0, 60)}`);
-  }
-
-  // Verify Spotify data is inaccessible with GitHub token
   try {
-    await apiCall(
-      `${RS_URL}/v1/streams/top_artists/records`,
-      { headers: { 'Authorization': `Bearer ${githubToken}` } }
-    );
+    await apiCall(`${RS_URL}/v1/streams/top_artists/records`, {
+      headers: { 'Authorization': `Bearer ${githubToken}` },
+    });
     err('BUG: Spotify data should not be accessible with GitHub grant!');
   } catch (e) {
     if (e.status === 403) {
       ok(`Cross-connector isolation confirmed: Spotify data blocked with GitHub token`);
+    } else {
+      throw e;
     }
   }
 
-  // 9. Owner erasure
-  section('Step 7: Owner Erasure (GDPR Right to Delete)');
-  const targetRecord = rawResp.data[0];
+  section('Step 6: Owner Erasure Produces Tombstones');
+  const targetRecord = artistsResp.data[1];
   if (targetRecord) {
     const deleteUrl = `${RS_URL}/v1/streams/top_artists/records/${encodeURIComponent(targetRecord.id)}?connector_id=${encodeURIComponent(manifests.spotify.connector_id)}`;
     const delResp = await fetch(deleteUrl, {
@@ -367,8 +463,30 @@ async function main() {
     });
     if (delResp.status === 204) {
       ok(`Record deleted: ${targetRecord.id}`);
-      ok(`Tombstone will appear in next changes_since query for affected clients`);
+      const tombstoneDelta = await apiCall(
+        `${RS_URL}/v1/streams/top_artists/records?changes_since=${encodeURIComponent(syncCursor)}`,
+        { headers: { 'Authorization': `Bearer ${continuousToken}` } }
+      );
+      ok(`Deletion produced ${tombstoneDelta.data.length} tombstone delta record(s)`);
+      if (tombstoneDelta.data[0]) {
+        show(`Tombstone`, tombstoneDelta.data[0]);
+      }
+      syncCursor = tombstoneDelta.next_changes_since;
     }
+  }
+
+  section('Step 7: Revocation Stops Future Access');
+  await apiCall(`${AS_URL}/grants/${continuousApproval.grant.grant_id}/revoke`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+  });
+  try {
+    await apiCall(`${RS_URL}/v1/streams/top_artists/records?limit=1`, {
+      headers: { 'Authorization': `Bearer ${continuousToken}` },
+    });
+    err('BUG: revoked grant should not be usable');
+  } catch (e) {
+    ok(`Revoked grant rejected with HTTP ${e.status}`);
   }
 
   // 10. Summary
@@ -377,22 +495,20 @@ async function main() {
   console.log(`${BOLD}Raw Dump (no PDPP):${RESET}`);
   console.log(`  ${RED}✗${RESET} No purpose declaration — app could use data for anything`);
   console.log(`  ${RED}✗${RESET} No field scoping — full record including sensitive fields exposed`);
-  console.log(`  ${RED}✗${RESET} No time constraint — all historical data accessible`);
-  console.log(`  ${RED}✗${RESET} No audit trail — no record of who accessed what`);
-  console.log(`  ${RED}✗${RESET} No revocation — access can't be stopped`);
+  console.log(`  ${RED}✗${RESET} No retention terms — recipient obligations are invisible`);
   console.log(`  ${RED}✗${RESET} No cross-connector isolation — one token = all data`);
+  console.log(`  ${RED}✗${RESET} No revocation boundary — access can't be stopped`);
 
   console.log(`\n${BOLD}PDPP:${RESET}`);
-  console.log(`  ${GREEN}✓${RESET} Purpose declared and displayed to user before consent`);
-  console.log(`  ${GREEN}✓${RESET} Field scoping — only authorized fields returned`);
-  console.log(`  ${GREEN}✓${RESET} Time constraint — only recent data accessible`);
-  console.log(`  ${GREEN}✓${RESET} Grant is an auditable consent artifact`);
-  console.log(`  ${GREEN}✓${RESET} Revocable — AS marks grant revoked, RS enforces within 60s`);
-  console.log(`  ${GREEN}✓${RESET} Connector isolation — grant scoped to one connector`);
-  console.log(`  ${GREEN}✓${RESET} Incremental sync — changes_since for efficient delta updates`);
-  console.log(`  ${GREEN}✓${RESET} Owner erasure — DELETE endpoint with tombstone propagation`);
+  console.log(`  ${GREEN}✓${RESET} Single-use grants issue one client token, and that token remains usable until expiry`);
+  console.log(`  ${GREEN}✓${RESET} Continuous grants support incremental sync with stable next_changes_since cursors`);
+  console.log(`  ${GREEN}✓${RESET} Unauthorized field changes do not leak through changes_since`);
+  console.log(`  ${GREEN}✓${RESET} Authorized field changes produce current-state deltas, not raw dumps`);
+  console.log(`  ${GREEN}✓${RESET} Deletions propagate as tombstones`);
+  console.log(`  ${GREEN}✓${RESET} Grants are connector-scoped and revocable`);
 
-  console.log(`\n${DIM}Grant issued: ${approvalResp.grant.grant_id}`);
+  console.log(`\n${DIM}Single-use grant: ${singleUseApproval.grant.grant_id}`);
+  console.log(`Continuous grant: ${continuousApproval.grant.grant_id}`);
   console.log(`Connector: ${manifests.spotify.connector_id}`);
   console.log(`Subject: user_demo${RESET}\n`);
 

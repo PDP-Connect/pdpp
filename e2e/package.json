@@ -5,7 +5,8 @@
   "scripts": {
     "server": "node server/index.js",
     "demo": "node client/demo.js",
-    "seed": "node client/demo.js --connector seed"
+    "seed": "node client/demo.js --connector seed",
+    "test": "node --test"
   },
   "dependencies": {
     "@databases/sqlite": "^4.0.1",

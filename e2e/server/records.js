@@ -7,6 +7,10 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+function getChangeHistoryLimit() {
+  return Math.max(parseInt(process.env.PDPP_CHANGE_HISTORY_LIMIT || '0', 10) || 0, 0);
+}
+
 /**
  * Encode a compound key to its canonical string form (minified JSON array or plain string)
  */
@@ -35,6 +39,7 @@ export async function ingestRecord(connectorId, record) {
   const db = getDb();
   const { stream, key, data, emitted_at, op = 'upsert' } = record;
   const recordKey = encodeKey(key);
+  const recordJson = data ? JSON.stringify(data) : null;
 
   // Validate record identity: if primary_key is ["id"] (i.e., key is a single string "id"),
   // data.id must match key
@@ -49,6 +54,21 @@ export async function ingestRecord(connectorId, record) {
     throw err;
   }
 
+  const currentRows = await db.query(sql`
+    SELECT record_json, deleted
+    FROM records
+    WHERE connector_id = ${connectorId} AND stream = ${stream} AND record_key = ${recordKey}
+  `);
+  const current = currentRows[0] || null;
+
+  if (op === 'delete' && (!current || current.deleted)) {
+    return { accepted: true, changed: false };
+  }
+
+  if (op !== 'delete' && current && !current.deleted && current.record_json === recordJson) {
+    return { accepted: true, changed: false };
+  }
+
   // Get next version
   const vcRows = await db.query(sql`
     SELECT max_version FROM version_counter WHERE connector_id = ${connectorId} AND stream = ${stream}
@@ -61,16 +81,42 @@ export async function ingestRecord(connectorId, record) {
       SET deleted = 1, deleted_at = ${emitted_at || nowIso()}, version = ${nextVersion}
       WHERE connector_id = ${connectorId} AND stream = ${stream} AND record_key = ${recordKey}
     `);
+    await db.query(sql`
+      INSERT INTO record_changes(connector_id, stream, record_key, version, record_json, emitted_at, deleted, deleted_at)
+      VALUES(
+        ${connectorId},
+        ${stream},
+        ${recordKey},
+        ${nextVersion},
+        ${current.record_json},
+        ${emitted_at || nowIso()},
+        1,
+        ${emitted_at || nowIso()}
+      )
+    `);
   } else {
     await db.query(sql`
       INSERT INTO records(connector_id, stream, record_key, record_json, emitted_at, version)
-      VALUES(${connectorId}, ${stream}, ${recordKey}, ${JSON.stringify(data)}, ${emitted_at || nowIso()}, ${nextVersion})
+      VALUES(${connectorId}, ${stream}, ${recordKey}, ${recordJson}, ${emitted_at || nowIso()}, ${nextVersion})
       ON CONFLICT(connector_id, stream, record_key) DO UPDATE SET
         record_json = excluded.record_json,
         emitted_at = excluded.emitted_at,
         version = excluded.version,
         deleted = 0,
         deleted_at = NULL
+    `);
+    await db.query(sql`
+      INSERT INTO record_changes(connector_id, stream, record_key, version, record_json, emitted_at, deleted, deleted_at)
+      VALUES(
+        ${connectorId},
+        ${stream},
+        ${recordKey},
+        ${nextVersion},
+        ${recordJson},
+        ${emitted_at || nowIso()},
+        0,
+        NULL
+      )
     `);
   }
 
@@ -81,14 +127,24 @@ export async function ingestRecord(connectorId, record) {
     ON CONFLICT(connector_id, stream) DO UPDATE SET max_version = excluded.max_version
   `);
 
-  return { accepted: true };
+  const changeHistoryLimit = getChangeHistoryLimit();
+  if (changeHistoryLimit > 0) {
+    await db.query(sql`
+      DELETE FROM record_changes
+      WHERE connector_id = ${connectorId}
+        AND stream = ${stream}
+        AND version <= ${nextVersion - changeHistoryLimit}
+    `);
+  }
+
+  return { accepted: true, changed: true };
 }
 
 /**
  * Build an effective filter from grant + request params.
  * Returns { fieldFilter, timeRangeFilter, resourceFilter } for use in queries.
  */
-function buildEffectiveFilter(streamGrant, requestParams) {
+function buildEffectiveFilter(streamGrant, requestParams, requiredFields = []) {
   const effective = {
     fields: streamGrant.fields || null,          // null = all fields
     timeRange: streamGrant.time_range || null,
@@ -104,6 +160,10 @@ function buildEffectiveFilter(streamGrant, requestParams) {
     effective.fields = requestParams.fields;
   }
 
+  if (effective.fields) {
+    effective.fields = [...new Set([...requiredFields, ...effective.fields])];
+  }
+
   return effective;
 }
 
@@ -117,6 +177,86 @@ function projectFields(data, fields) {
     if (f in data) result[f] = data[f];
   }
   return result;
+}
+
+function passesRequestFilters(data, filter) {
+  if (!filter || typeof filter !== 'object') return true;
+  for (const [field, val] of Object.entries(filter)) {
+    if (String(data[field]) !== String(val)) return false;
+  }
+  return true;
+}
+
+function isVisibleSnapshot(snapshot, effective, consentTimeField) {
+  if (!snapshot || snapshot.deleted || !snapshot.data) return false;
+  if (effective.resources && !effective.resources.includes(snapshot.record_key)) return false;
+  if (effective.timeRange && consentTimeField && !passesTimeRange(snapshot.data, effective.timeRange, consentTimeField)) return false;
+  return true;
+}
+
+function parseChangesSinceCursor(str) {
+  const decoded = decodeCursor(str);
+  if (!decoded) return null;
+  if (!decoded.kind) {
+    return Number.isInteger(decoded.version) ? { version: decoded.version } : null;
+  }
+  if (decoded.kind !== 'changes_since' || !Number.isInteger(decoded.version)) return null;
+  return decoded;
+}
+
+function parsePageCursor(str) {
+  const decoded = decodeCursor(str);
+  if (!decoded) return null;
+  if (!decoded.kind) {
+    if (Number.isInteger(decoded.id)) return { kind: 'page', session: 'records', id: decoded.id };
+    return null;
+  }
+  if (decoded.kind !== 'page' || typeof decoded.session !== 'string') return null;
+  return decoded;
+}
+
+function encodeRecordsPageCursor(id) {
+  return encodeCursor({ kind: 'page', session: 'records', id });
+}
+
+function encodeChangesPageCursor({ sinceVersion, afterVersion, sessionMaxVersion }) {
+  return encodeCursor({
+    kind: 'page',
+    session: 'changes',
+    since_version: sinceVersion,
+    after_version: afterVersion,
+    session_max_version: sessionMaxVersion,
+  });
+}
+
+function encodeChangesSinceCursor(version) {
+  return encodeCursor({ kind: 'changes_since', version });
+}
+
+async function getSnapshotAtVersion(db, connectorId, stream, recordKey, version) {
+  if (!Number.isInteger(version) || version < 0) return null;
+  const rows = await db.query(sql`
+    SELECT record_json, emitted_at, deleted, deleted_at, version
+    FROM record_changes
+    WHERE connector_id = ${connectorId}
+      AND stream = ${stream}
+      AND record_key = ${recordKey}
+      AND version <= ${version}
+    ORDER BY version DESC
+    LIMIT 1
+  `);
+
+  if (!rows.length) return null;
+
+  const row = rows[0];
+  return {
+    record_key: recordKey,
+    version: row.version,
+    data: row.record_json ? JSON.parse(row.record_json) : null,
+    emitted_at: row.emitted_at,
+    deleted: !!row.deleted,
+    deleted_at: row.deleted_at,
+  };
 }
 
 /**
@@ -150,6 +290,7 @@ export async function queryRecords(connectorId, stream, grant, requestParams = {
   // Find manifest stream for consent_time_field
   const mStream = manifest?.streams?.find(s => s.name === stream);
   const consentTimeField = mStream?.consent_time_field;
+  const requiredFields = mStream?.schema?.required || [];
 
   // Validate request fields against grant
   if (requestParams.fields && streamGrant.fields) {
@@ -173,77 +314,169 @@ export async function queryRecords(connectorId, stream, grant, requestParams = {
     }
   }
 
-  const effective = buildEffectiveFilter(streamGrant, requestParams);
+  const effective = buildEffectiveFilter(streamGrant, requestParams, requiredFields);
 
   const limit = Math.min(parseInt(requestParams.limit) || 25, 100);
   const order = requestParams.order === 'asc' ? 'ASC' : 'DESC';
 
   // Parse changes_since cursor
-  const changesSince = requestParams.changes_since ? decodeCursor(requestParams.changes_since) : null;
-  const paginationCursor = requestParams.cursor ? decodeCursor(requestParams.cursor) : null;
+  const changesSince = requestParams.changes_since ? parseChangesSinceCursor(requestParams.changes_since) : null;
+  const paginationCursor = requestParams.cursor ? parsePageCursor(requestParams.cursor) : null;
 
-  let rows;
+  if (requestParams.changes_since && !changesSince) {
+    const err = new Error('Malformed changes_since cursor');
+    err.code = 'invalid_cursor';
+    throw err;
+  }
 
-  if (changesSince !== null) {
-    // Incremental sync: return records changed since version
-    rows = await db.query(sql`
-      SELECT record_key, record_json, emitted_at, version, deleted, deleted_at
-      FROM records
-      WHERE connector_id = ${connectorId}
-        AND stream = ${stream}
-        AND version > ${changesSince.version}
-      ORDER BY version ASC
-      LIMIT ${limit + 1}
-    `);
-  } else {
-    // Normal pagination
-    let cursorClause = sql``;
-    if (paginationCursor) {
-      if (order === 'DESC') {
-        cursorClause = sql`AND id < ${paginationCursor.id}`;
-      } else {
-        cursorClause = sql`AND id > ${paginationCursor.id}`;
-      }
+  if (requestParams.cursor && !paginationCursor) {
+    const err = new Error('Malformed cursor');
+    err.code = 'invalid_cursor';
+    throw err;
+  }
+
+  if (changesSince !== null || paginationCursor?.session === 'changes') {
+    const sinceVersion = changesSince ? changesSince.version : paginationCursor.since_version;
+    const afterVersion = changesSince ? changesSince.version : paginationCursor.after_version;
+    const sessionMaxVersion = changesSince ? null : paginationCursor.session_max_version;
+
+    if (![sinceVersion, afterVersion].every(Number.isInteger)) {
+      const err = new Error('Malformed changes_since cursor');
+      err.code = 'invalid_cursor';
+      throw err;
     }
 
-    rows = await db.query(sql`
-      SELECT id, record_key, record_json, emitted_at, version, deleted, deleted_at
-      FROM records
+    const vcRows = await db.query(sql`
+      SELECT max_version FROM version_counter
+      WHERE connector_id = ${connectorId} AND stream = ${stream}
+    `);
+    const currentMaxVersion = vcRows.length ? vcRows[0].max_version : 0;
+    const effectiveSessionMaxVersion = changesSince ? currentMaxVersion : sessionMaxVersion;
+
+    const minChangeRows = await db.query(sql`
+      SELECT MIN(version) as min_version
+      FROM record_changes
+      WHERE connector_id = ${connectorId} AND stream = ${stream}
+    `);
+    const minVersion = minChangeRows[0]?.min_version ?? null;
+    if (minVersion !== null && sinceVersion < (minVersion - 1)) {
+      const err = new Error('changes_since cursor is too old; full re-sync required');
+      err.code = 'cursor_expired';
+      throw err;
+    }
+
+    const changeGroups = await db.query(sql`
+      SELECT record_key, MAX(version) as latest_version
+      FROM record_changes
       WHERE connector_id = ${connectorId}
         AND stream = ${stream}
-        AND deleted = 0
-        ${cursorClause}
-      ORDER BY id ${order === 'ASC' ? sql`ASC` : sql`DESC`}
+        AND version > ${afterVersion}
+        AND version <= ${effectiveSessionMaxVersion}
+      GROUP BY record_key
+      ORDER BY latest_version ASC
       LIMIT ${limit + 1}
     `);
+
+    const hasMore = changeGroups.length > limit;
+    const pageGroups = hasMore ? changeGroups.slice(0, limit) : changeGroups;
+    const data = [];
+
+    for (const group of pageGroups) {
+      const previous = await getSnapshotAtVersion(db, connectorId, stream, group.record_key, sinceVersion);
+      const current = await getSnapshotAtVersion(db, connectorId, stream, group.record_key, group.latest_version);
+
+      const previousVisible = isVisibleSnapshot(previous, effective, consentTimeField);
+      const currentVisible = isVisibleSnapshot(current, effective, consentTimeField);
+
+      if (current?.deleted) {
+        if (!previousVisible || !passesRequestFilters(previous.data, requestParams.filter)) continue;
+        data.push({
+          object: 'record',
+          id: group.record_key,
+          stream,
+          deleted: true,
+          deleted_at: current.deleted_at,
+          emitted_at: current.emitted_at,
+        });
+        continue;
+      }
+
+      if (!currentVisible || !passesRequestFilters(current.data, requestParams.filter)) continue;
+
+      const previousProjection = previousVisible ? projectFields(previous.data, effective.fields) : null;
+      const currentProjection = projectFields(current.data, effective.fields);
+
+      if (previousProjection && JSON.stringify(previousProjection) === JSON.stringify(currentProjection)) {
+        continue;
+      }
+
+      data.push({
+        object: 'record',
+        id: group.record_key,
+        stream,
+        data: currentProjection,
+        emitted_at: current.emitted_at,
+      });
+    }
+
+    const response = {
+      object: 'list',
+      has_more: hasMore,
+      data,
+    };
+
+    if (hasMore && pageGroups.length) {
+      const lastGroup = pageGroups[pageGroups.length - 1];
+      response.next_cursor = encodeChangesPageCursor({
+        sinceVersion,
+        afterVersion: lastGroup.latest_version,
+        sessionMaxVersion: effectiveSessionMaxVersion,
+      });
+    }
+
+    response.next_changes_since = encodeChangesSinceCursor(effectiveSessionMaxVersion);
+    return response;
   }
+
+  let rows;
+  if (changesSince !== null) {
+    const err = new Error('Malformed changes_since cursor');
+    err.code = 'invalid_cursor';
+    throw err;
+  }
+
+  // Normal pagination
+  let cursorClause = sql``;
+  if (paginationCursor) {
+    if (paginationCursor.session !== 'records' || !Number.isInteger(paginationCursor.id)) {
+      const err = new Error('Malformed cursor');
+      err.code = 'invalid_cursor';
+      throw err;
+    }
+    if (order === 'DESC') {
+      cursorClause = sql`AND id < ${paginationCursor.id}`;
+    } else {
+      cursorClause = sql`AND id > ${paginationCursor.id}`;
+    }
+  }
+
+  rows = await db.query(sql`
+    SELECT id, record_key, record_json, emitted_at, version, deleted, deleted_at
+    FROM records
+    WHERE connector_id = ${connectorId}
+      AND stream = ${stream}
+      AND deleted = 0
+      ${cursorClause}
+    ORDER BY id ${order === 'ASC' ? sql`ASC` : sql`DESC`}
+    LIMIT ${limit + 1}
+  `);
 
   const hasMore = rows.length > limit;
   const pageRows = hasMore ? rows.slice(0, limit) : rows;
 
-  // Get current max version for next_changes_since
-  const vcRows = await db.query(sql`
-    SELECT max_version FROM version_counter
-    WHERE connector_id = ${connectorId} AND stream = ${stream}
-  `);
-  const maxVersion = vcRows.length ? vcRows[0].max_version : 0;
-
   const data = [];
 
   for (const row of pageRows) {
-    if (changesSince !== null && row.deleted) {
-      // Tombstone
-      data.push({
-        object: 'record',
-        id: row.record_key,
-        stream,
-        deleted: true,
-        deleted_at: row.deleted_at,
-        emitted_at: row.emitted_at,
-      });
-      continue;
-    }
-
     if (row.deleted) continue; // skip deleted in normal pagination
 
     const rawData = JSON.parse(row.record_json);
@@ -261,12 +494,7 @@ export async function queryRecords(connectorId, stream, grant, requestParams = {
 
     // Apply request-level field filters (exact match)
     // Express qs parses filter[field]=val as requestParams.filter = { field: val }
-    let passes = true;
-    if (requestParams.filter && typeof requestParams.filter === 'object') {
-      for (const [field, val] of Object.entries(requestParams.filter)) {
-        if (String(rawData[field]) !== String(val)) { passes = false; break; }
-      }
-    }
+    const passes = passesRequestFilters(rawData, requestParams.filter);
     if (!passes) continue;
 
     data.push({
@@ -286,16 +514,7 @@ export async function queryRecords(connectorId, stream, grant, requestParams = {
 
   if (hasMore && pageRows.length) {
     const lastRow = pageRows[pageRows.length - 1];
-    if (changesSince !== null) {
-      response.next_cursor = encodeCursor({ version: lastRow.version });
-    } else {
-      response.next_cursor = encodeCursor({ id: lastRow.id });
-    }
-  }
-
-  // Always include next_changes_since when doing a changes_since query
-  if (changesSince !== null) {
-    response.next_changes_since = encodeCursor({ version: maxVersion });
+    response.next_cursor = encodeRecordsPageCursor(lastRow.id);
   }
 
   return response;
@@ -333,8 +552,9 @@ export async function getRecord(connectorId, stream, recordId, grant, manifest =
   const rawData = JSON.parse(row.record_json);
   const mStream = manifest?.streams?.find(s => s.name === stream);
   const consentTimeField = mStream?.consent_time_field;
+  const requiredFields = mStream?.schema?.required || [];
 
-  const effective = buildEffectiveFilter(streamGrant, {});
+  const effective = buildEffectiveFilter(streamGrant, {}, requiredFields);
   if (effective.timeRange && consentTimeField) {
     if (!passesTimeRange(rawData, effective.timeRange, consentTimeField)) {
       const err = new Error('Record not found');
@@ -358,6 +578,13 @@ export async function getRecord(connectorId, stream, recordId, grant, manifest =
 export async function deleteRecord(connectorId, stream, recordId) {
   const db = getDb();
   const now = nowIso();
+  const currentRows = await db.query(sql`
+    SELECT record_json, deleted
+    FROM records
+    WHERE connector_id = ${connectorId} AND stream = ${stream} AND record_key = ${recordId}
+  `);
+  const current = currentRows[0] || null;
+  if (!current || current.deleted) return;
 
   const vcRows = await db.query(sql`
     SELECT max_version FROM version_counter WHERE connector_id = ${connectorId} AND stream = ${stream}
@@ -371,10 +598,52 @@ export async function deleteRecord(connectorId, stream, recordId) {
   `);
 
   await db.query(sql`
+    INSERT INTO record_changes(connector_id, stream, record_key, version, record_json, emitted_at, deleted, deleted_at)
+    VALUES(
+      ${connectorId},
+      ${stream},
+      ${recordId},
+      ${nextVersion},
+      ${current.record_json},
+      ${now},
+      1,
+      ${now}
+    )
+  `);
+
+  await db.query(sql`
     INSERT INTO version_counter(connector_id, stream, max_version)
     VALUES(${connectorId}, ${stream}, ${nextVersion})
     ON CONFLICT(connector_id, stream) DO UPDATE SET max_version = excluded.max_version
   `);
+
+  const changeHistoryLimit = getChangeHistoryLimit();
+  if (changeHistoryLimit > 0) {
+    await db.query(sql`
+      DELETE FROM record_changes
+      WHERE connector_id = ${connectorId}
+        AND stream = ${stream}
+        AND version <= ${nextVersion - changeHistoryLimit}
+    `);
+  }
+}
+
+export async function listAllStreams(connectorId) {
+  const db = getDb();
+  const rows = await db.query(sql`
+    SELECT stream, COUNT(*) as count, MAX(emitted_at) as last_updated
+    FROM records
+    WHERE connector_id = ${connectorId} AND deleted = 0
+    GROUP BY stream
+    ORDER BY stream ASC
+  `);
+
+  return rows.map((row) => ({
+    object: 'stream',
+    name: row.stream,
+    record_count: row.count || 0,
+    last_updated: row.last_updated || null,
+  }));
 }
 
 /**
@@ -384,6 +653,10 @@ export async function deleteAllRecords(connectorId, stream) {
   const db = getDb();
   await db.query(sql`
     DELETE FROM records
+    WHERE connector_id = ${connectorId} AND stream = ${stream}
+  `);
+  await db.query(sql`
+    DELETE FROM record_changes
     WHERE connector_id = ${connectorId} AND stream = ${stream}
   `);
   await db.query(sql`

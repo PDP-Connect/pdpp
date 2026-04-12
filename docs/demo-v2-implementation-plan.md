@@ -149,7 +149,7 @@ scraping
 done_comparison
   → split view: client got 2 fields, owner sees 4 fields + ad_targeting
   → posts filtered to post-consent (likely 0 if account is older)
-  → presenter can click "Revoke" or "Query Again (expired)"
+  → presenter can click "Revoke" or "Request another token"
 revoked / expired
   → 403 shown in terminal and ClientPanel
 ```
@@ -159,7 +159,7 @@ revoked / expired
 ## File structure to build
 
 ```
-pdpp/demo/
+pdpp/demo_archived/
 ├── docker-compose.yml          (rewrite: drop mock-platform)
 ├── Dockerfile.pdpp-server      (unchanged)
 │
@@ -299,7 +299,7 @@ interface DemoState {
   clientResults: Record<string, unknown[]>;   // under research grant
   rawResults: Record<string, unknown[]>;      // owner self-export
   // Post-demo state
-  tokenSpent: boolean;
+  singleUseConsumed: boolean;
   grantRevoked: boolean;
   error: string | null;
 }
@@ -760,7 +760,7 @@ The browser WebSocket URL must be runtime-derived (from `window.location.hostnam
 ```yaml
 services:
   pdpp-server:
-    build: { context: ../e2e, dockerfile: ../demo/Dockerfile.pdpp-server }
+    build: { context: ../e2e, dockerfile: ../demo_archived/Dockerfile.pdpp-server }
     ports: ["7662:7662", "7663:7663"]
     environment: [AS_PORT=7662, RS_PORT=7663]
     networks: [demo]
@@ -839,7 +839,7 @@ networks:
 - [ ] Terminal streams real log events
 - [ ] Stream progress bars fill: following_accounts (N accounts), posts (M posts), ad_targeting (1 record)
 - [ ] Comparison panel shows: client got 2 fields, owner got 4; client got 0 posts, owner got M; client has no ad_targeting, owner sees categories
-- [ ] "Query Again" button returns 403 (single_use token spent)
+- [ ] "Request another token" returns 403 `grant_consumed` (single_use enforced at issuance)
 - [ ] "Revoke" button causes next query to return 403 `grant_revoked`
 - [ ] Canvas is sharp (not blurry/stretched)
 - [ ] No 405 errors on reset

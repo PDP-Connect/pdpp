@@ -5,14 +5,14 @@
  * Starts on port 7662 (AS/introspection) and 7663 (RS query API).
  */
 import express from 'express';
-import { initDb, getDb, sql } from './db.js';
+import { initDb } from './db.js';
 import {
   registerConnector, getManifest, initiateGrant, getPendingConsent,
-  approveGrant, pollGrant, introspect, issueOwnerToken, revokeGrant,
+  approveGrant, pollGrant, introspect, issueOwnerToken, revokeGrant, denyGrant, issueGrantToken,
 } from './auth.js';
 import {
   ingestRecord, queryRecords, getRecord, deleteRecord, deleteAllRecords,
-  listStreams, getSyncState, putSyncState,
+  listStreams, listAllStreams, getSyncState, putSyncState,
 } from './records.js';
 
 const AS_PORT = parseInt(process.env.AS_PORT || '7662');
@@ -43,6 +43,7 @@ const codeToStatus = {
   grant_time_range_exceeded: 403,
   grant_expired: 403,
   grant_revoked: 403,
+  grant_consumed: 403,
   grant_invalid: 403,
   field_not_granted: 403,
   insufficient_scope: 403,
@@ -75,6 +76,12 @@ async function requireToken(req, res, next) {
   const token = auth.slice(7);
   const info = await introspect(token);
   if (!info.active) {
+    if (info.inactive_reason === 'grant_revoked') {
+      return pdppError(res, 403, 'grant_revoked', 'Grant has been revoked');
+    }
+    if (info.inactive_reason === 'grant_expired') {
+      return pdppError(res, 403, 'grant_expired', 'Grant has expired');
+    }
     return pdppError(res, 401, 'authentication_error', 'Invalid or expired token');
   }
   req.tokenInfo = info;
@@ -136,7 +143,9 @@ function buildAsApp() {
   // Initiate grant request (device code style)
   app.post('/grants/initiate', async (req, res) => {
     try {
-      const result = await initiateGrant(req.body);
+      const result = await initiateGrant(req.body, {
+        baseUrl: `${req.protocol}://${req.get('host')}`,
+      });
       res.json(result);
     } catch (err) {
       handleError(res, err);
@@ -168,6 +177,7 @@ function buildAsApp() {
           <p><strong>Connector:</strong> ${params.connector_id}</p>
           <p><strong>Purpose:</strong> ${params.purpose_description || params.purpose_code}</p>
           <p><strong>Access Mode:</strong> ${params.access_mode}</p>
+          ${params.retention ? `<p><strong>Retention:</strong> ${params.retention.on_expiry} after ${params.retention.max_duration}</p>` : ''}
           <p><strong>Streams requested:</strong></p>
           ${(params.streams || []).map(s => `
             <div class="stream">
@@ -207,6 +217,17 @@ function buildAsApp() {
     }
   });
 
+  app.post('/consent/:deviceCode/deny', (req, res) => {
+    const deleted = denyGrant(req.params.deviceCode);
+    if (!deleted) return pdppError(res, 404, 'not_found', 'Pending consent request not found');
+    res.send(`
+      <html><body>
+      <h2>Access Denied</h2>
+      <p>The pending data access request was rejected and cleared.</p>
+      </body></html>
+    `);
+  });
+
   // API auto-approve (for programmatic demo use)
   app.post('/consent/:deviceCode/approve-api', async (req, res) => {
     try {
@@ -238,6 +259,16 @@ function buildAsApp() {
     res.json({ revoked: true });
   });
 
+  // Demo/admin helper: issue another client token for an existing grant.
+  app.post('/grants/:grantId/tokens', async (req, res) => {
+    try {
+      const token = await issueGrantToken(req.params.grantId);
+      res.status(201).json({ grant_id: req.params.grantId, token });
+    } catch (err) {
+      handleError(res, err);
+    }
+  });
+
   return app;
 }
 
@@ -265,10 +296,10 @@ function buildRsApp() {
     try {
       const { tokenInfo } = req;
       if (tokenInfo.pdpp_token_kind === 'owner') {
-        // Owner: list all streams for their data
-        const { listAllStreams } = await import('./records.js');
-        // simplified: return manifest-based listing
-        return res.json({ object: 'list', data: [], note: 'Use connector-scoped query for owner stream list' });
+        const connectorId = req.query.connector_id;
+        if (!connectorId) return pdppError(res, 400, 'invalid_request', 'connector_id required');
+        const streams = await listAllStreams(connectorId);
+        return res.json({ object: 'list', data: streams });
       }
       const grant = tokenInfo.grant;
       const streams = await listStreams(grant.connector_id, grant);
@@ -358,11 +389,6 @@ function buildRsApp() {
 
       const result = await queryRecords(connectorId, req.params.stream, grant, requestParams, manifest);
 
-      // Mark single_use grant consumed after first successful query
-      if (req.tokenInfo.pdpp_token_kind === 'client' && req.tokenInfo.grant?.access_mode === 'single_use') {
-        await getDb().query(sql`UPDATE grants SET consumed = 1 WHERE grant_id = ${req.tokenInfo.grant_id}`);
-      }
-
       res.json({ ...result, url: req.path });
     } catch (err) {
       handleError(res, err);
@@ -373,8 +399,15 @@ function buildRsApp() {
   app.get('/v1/streams/:stream/records/:id', requireToken, async (req, res) => {
     try {
       const { tokenInfo } = req;
-      const grant = tokenInfo.grant;
-      const connectorId = grant?.connector_id || req.query.connector_id;
+      let grant = tokenInfo.grant;
+      let connectorId = grant?.connector_id || req.query.connector_id;
+      if (tokenInfo.pdpp_token_kind === 'owner') {
+        if (!connectorId) return pdppError(res, 400, 'invalid_request', 'connector_id required');
+        grant = {
+          connector_id: connectorId,
+          streams: [{ name: req.params.stream }],
+        };
+      }
       const manifest = await getManifest(connectorId);
       const record = await getRecord(connectorId, req.params.stream,
         decodeURIComponent(req.params.id), grant, manifest);
@@ -482,7 +515,7 @@ export async function startServer(opts = {}) {
 }
 
 // Run directly
-if (process.argv[1].endsWith('server/index.js')) {
+if (process.argv[1] && process.argv[1].endsWith('server/index.js')) {
   startServer().catch(err => {
     console.error(err);
     process.exit(1);

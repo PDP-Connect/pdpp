@@ -1,0 +1,2928 @@
+[Internal] Open Questions
+
+Question
+
+Answer
+
+Should the authorization mechanisms in protocol be wallet- or OAuth- first?
+
+Used OAuth for now. Treating wallets as first-class authentication may push the protocol too far into a Web3-specific corner.
+
+Should the spec contain any info on the governance i.e who steers the protocol direction and roadmap etc? How much should this be connected to Vana?
+
+Preamble
+
+The General Data Portability Protocol (GDPP) is an open standard that defines how platforms and applications make personal data portable. GDPP specifies the supply side of data portability — the APIs, data formats, scope taxonomies, and authorization mechanisms that data-holding services implement so that users can collect, transfer, and control their own personal data.
+
+Users have legal rights to their data under GDPR, the Digital Markets Act, CCPA, and emerging laws like the Utah Digital Choice Act. But no standard exists for how platforms should fulfill these rights in a structured, machine-readable way. Today, data portability depends on proprietary ZIP downloads, inconsistent formats, and — increasingly — scraping. GDPP replaces this fragmented landscape with a concrete, verifiable protocol that platforms can implement, regulators can reference, and the ecosystem can build on.
+
+This document is a specification, not a proposal. It is designed to be implemented today. At the same time, GDPP is an evolving standard — we invite platforms, developers, policymakers, and civil society organizations to contribute to its development through the open governance process described in Part VI.
+
+Status: Published specification. Open for collaboration and adoption.
+
+License: Apache 2.0 / CC BY 4.0 (dual-licensed for maximum adoption).
+
+Repository: github.com/gdpp-protocol/spec
+
+Table of Contents
+
+Part I: Why GDPP?
+
+The Problem: Personal Data Trapped in Silos
+
+The Opportunity: From Scraping to Structured Portability
+
+Design Philosophy
+
+How GDPP Relates to Existing Regulations
+
+Part II: Protocol Overview
+
+Architecture at a Glance 
+
+Key Concepts
+
+How Data Flows
+
+Concrete Examples
+
+Part III: Normative Requirements
+
+Portability Guarantees
+
+Freshness Guarantees
+
+Authorization and Consent
+
+Data Ownership Classes
+
+Consumer Access Tiers
+
+Non-Discrimination 
+
+Scope and Schema Governance
+
+Conformance Levels
+
+Part IV: Technical Specification
+
+Discovery Mechanism
+
+Capability Manifest
+
+Authentication and Authorization
+
+Scope Data API
+
+Consumer Registration
+
+Transport Bindings 
+
+Schema Registry
+
+Error Handling
+
+Security Considerations
+
+Compliance and Audit
+
+Part V: Interoperability
+
+Relationship to Public Data Protocols
+
+Integration with Personal Data Infrastructure
+
+Part I: Why GDPP?
+
+1. The Problem: Personal Data Trapped in Silos
+
+Billions of people generate personal data every day across dozens of platforms — purchase histories on Amazon, health metrics on Fitbit, conversation logs on ChatGPT, watch patterns on YouTube, location data on Google Maps. This data is deeply personal, often sensitive, and almost always locked inside the platform that collected it.
+
+The consequences are concrete:
+
+A user preparing their taxes spends 2–4 hours manually downloading statements from multiple banks, categorizing hundreds of transactions, and cross-referencing Amazon purchase history — work that could take minutes if the data were portable.
+
+A health-conscious user who wants to correlate sleep data from their Oura ring with activity data from their Apple Watch and dietary patterns from their purchase history simply cannot — the data lives in three separate silos with no common format or access mechanism.
+
+A content creator analyzing their audience engagement across YouTube, Instagram, and TikTok must manually review thousands of data points across three separate dashboards, because there is no standard way to export and combine this data.
+
+Today, the only mechanism for moving personal data between services is scraping — automated browser sessions that extract data from platform UIs using the user's credentials. Scraping is brittle (it breaks when UIs change), legally ambiguous (it operates in grey zones between TOS and user rights), and adversarial (platforms actively fight it). Yet scraping persists because no standard alternative exists.
+
+GDPP replaces scraping with a protocol. It gives platforms a bounded, structured API for making user data portable. It gives users actual control over their data — not the theoretical control promised by regulations that lack technical implementation. And it gives the ecosystem a common standard to build on.
+
+2. The Opportunity: From Scraping to Structured Portability
+
+Data portability laws exist in every major jurisdiction. GDPR Article 20 guarantees the right to data portability. The Digital Markets Act requires continuous, real-time portability from gatekeepers. The California Consumer Privacy Act grants the right to access and transfer personal data. The Utah Digital Choice Act moves toward enforceable, machine-readable portability standards.
+
+Yet in practice, data portability remains a fiction. Platforms offer ZIP file downloads in proprietary formats. Export processes are opaque, inconsistent, and designed for occasional human use — not for the continuous, programmatic access that applications and personal data infrastructure require.
+
+GDPP transforms data portability from a legal right into a technical reality by defining:
+
+What platforms must expose: A standard capability manifest describing available scopes and schemas.
+
+How data is accessed: Standard scope-based APIs for structured data export, with user authorization via OAuth 2.0 consent.
+
+What constitutes compliance: Measurable guarantees for response times, rate limits, and data freshness — preventing platforms from offering technically compliant but practically unusable portability.
+
+How consent works: Verifiable authorization using OAuth 2.0 consent flows, with audit logging for compliance, ensuring users provably control who accesses their data and for what purpose.
+
+The economic logic supports adoption. Platforms currently spend significant resources fighting unauthorized scraping. GDPP provides a controlled, auditable alternative that is better for platforms (predictable API load, no bot detection arms race), better for users (reliable data, clear consent), and better for the ecosystem (standard formats, interoperable tooling). The analogy to Open Banking is direct: banks resisted PSD2 for the same reasons (customer data was their competitive moat), but those that embraced it early gained trust and market share.
+
+3. Design Philosophy
+
+GDPP is built on six core principles:
+
+1. Supply-Side Standardization. GDPP defines what platforms must implement. It standardizes data portability for data holders. The goal is a world where any platform that holds user data can expose it through a common, machine-readable interface.
+
+2. User Sovereignty. The user controls when, what, and to whom their data is exported. Platforms cannot deny export requests for data the user owns. The protocol enforces this through verifiable consent and anti-discrimination requirements.
+
+3. Capability-Based Discovery. Platforms publish machine-readable capability manifests at a well-known URL. Applications dynamically discover available data types without hard-coded integrations.
+
+4. Scope-Driven Data Model. All data is organized into a hierarchical scope taxonomy ({source}.{category} — e.g., instagram.profile, youtube.watch_history). Data within each scope conforms to published JSON Schemas. This enables interoperability across platforms and downstream applications.
+
+5. Verifiable Consent. Every data access request is backed by verifiable user consent through standard OAuth 2.0 authorization. Platforms verify consent before releasing data. This satisfies GDPR's "explicit consent" requirement and creates an auditable chain of authorization.
+
+6. Ecosystem-Ready. GDPP does not prescribe what happens after data leaves the platform. Exported data flows into user-controlled infrastructure — personal servers, local applications, encrypted storage — where users grant downstream access to applications. GDPP focuses on the supply side; the demand side is governed by the user's own data infrastructure.
+
+4. How GDPP Relates to Existing Regulations
+
+GDPP is designed to be the technical standard that makes existing data portability laws enforceable:
+
+Regulation
+
+Requirement
+
+How GDPP Implements It
+
+GDPR Article 20
+
+Right to portability in machine-readable format
+
+JSON with published schemas, standard API
+
+GDPR Article 15
+
+Right of access
+
+Category listing, audit logs, schema discovery
+
+DMA Article 6(9)
+
+Continuous, real-time portability for gatekeepers
+
+Incremental exports with cursors, scope-based data API
+
+CCPA 1798.100
+
+Right to know what data is collected
+
+Capability manifest, scope-driven discovery
+
+CCPA 1798.125
+
+Non-discrimination for exercising rights
+
+Equal rate limits for all users and consumers
+
+Utah Digital Choice Act
+
+Machine-readable portability standards
+
+GDPP directly satisfies this requirement
+
+GDPP does not create new rights — it implements existing ones. Regulators can reference GDPP compliance as a concrete, testable benchmark for whether platforms meet their legal obligations.
+
+Part II: Protocol Overview
+
+5. Architecture at a Glance
+
+GDPP defines what Data Sources (platforms that hold user data) must implement so that user data can flow into Personal Data Infrastructure (user-controlled storage and access management).
+
+┌──────────────────────────────────────────────────────────────┐ │ GDPP (This Specification) │ │ │ │ ┌─────────────┐ ┌─────────────┐ ┌─────────────┐ │ │ │ Instagram │ │ YouTube │ │ Gmail │ ... │ │ │ /.well-known│ │ /.well-known│ │ /.well-known│ │ │ │ /gdpp │ │ /gdpp │ │ /gdpp │ │ │ └──────┬──────┘ └──────┬──────┘ └──────┬──────┘ │ │ │ │ │ │ │ │ Scope-based export (user-authorized) │ │ │ JSON data conforming to GDPP schemas │ └─────────┼────────────────┼────────────────┼──────────────────┘ │ │ │ ▼ ▼ ▼ ┌──────────────────────────────────────────────────────────────┐ │ User's Personal Data Infrastructure │ │ │ │ Personal Servers, local applications, encrypted storage │ │ User grants access to downstream applications │ │ (Not specified by GDPP — governed by user's infrastructure) │ └──────────────────────────────────────────────────────────────┘ 
+
+Each Data Source implements a GDPP endpoint — a set of standard APIs that authorized consumers use to discover available data, authenticate, and request exports. The protocol specifies:
+
+Discovery: A well-known URL (/.well-known/gdpp) serving a machine-readable capability manifest.
+
+Authentication: OAuth 2.0 authorization with GDPP-specific scopes.
+
+Scope-based data access: Structured export of specific data scopes (e.g., instagram.profile, youtube.watch_history).
+
+Transport: REST API (required), with optional MCP bindings.
+
+6. Key Concepts
+
+Data Source. A platform that holds user data and implements GDPP (e.g., Instagram, YouTube, Gmail, LinkedIn, Spotify). Also called "platform" or "provider." A Data Source is the supply side — it exposes data for portability.
+
+User. The human whose data is being accessed. Identified by their account on the Data Source (e.g., email address, user ID). The user authorizes all data access.
+
+Scope. A hierarchical identifier for a type of user data, using the naming convention {source}.{category} — for example, instagram.profile, youtube.watch_history, gmail.messages, amazon.orders. Scopes are the fundamental unit of data access in GDPP. Platforms declare which scopes they support in their capability manifest.
+
+Schema. A JSON Schema definition for a scope. Schemas are versioned, immutable once published, and hosted at stable URLs. Core schemas cover common data scopes across platforms; extended schemas add platform-specific fields.
+
+Capability Manifest. A JSON document at /.well-known/gdpp describing the Data Source's GDPP implementation — what scopes are available, how to authenticate, what schemas are used, and what rate limits apply.
+
+Authorization Grant. An OAuth 2.0 authorization from a user permitting a consumer to access specific scopes. Grants are issued through the platform's OAuth authorization flow, include expiration and revocation semantics, and are recorded in the platform's audit log for verifiability.
+
+Personal Data Infrastructure. The user-controlled systems that receive, store, and manage exported data — personal servers, desktop applications, encrypted cloud storage. GDPP does not specify these systems; it defines how data gets out of platforms so it can flow into whatever infrastructure the user chooses.
+
+7. How Data Flows
+
+GDPP enables two primary data flows:
+
+Data Collection (Platform → User)
+
+The user authorizes a data export from a platform. The platform verifies the authorization, assembles the requested scope data, and returns it in GDPP-standard JSON format.
+
+Step
+
+What Happens
+
+1. Discovery
+
+Consumer reads /.well-known/gdpp to learn what scopes are available
+
+2. Authorization
+
+User authorizes a grant specifying which scopes to export
+
+3. Request
+
+Consumer requests data for authorized scopes: GET /gdpp/v1/data/{scope}
+
+4. Response
+
+Platform returns structured JSON conforming to the scope's schema
+
+5. Storage
+
+Data flows into the user's personal data infrastructure
+
+This replaces scraping. Instead of a browser automation script navigating Instagram's UI and extracting HTML, the consumer calls GET /gdpp/v1/data/instagram.profile and receives a structured JSON response.
+
+Incremental Sync
+
+For data that changes frequently, GDPP supports cursor-based incremental exports. A consumer can request only data that has changed since the last sync, using a cursor returned in the previous response. This enables continuous portability without repeated full exports.
+
+8. Concrete Examples
+
+Tax Preparation
+
+A tax preparation application needs transaction data from multiple financial platforms. Without GDPP, the user spends 2–4 hours downloading statements from 3–5 banks, categorizing hundreds of transactions, and cross-referencing purchase history. With GDPP:
+
+Tax app discovers scopes via /.well-known/gdpp on each financial platform.
+
+User authorizes export of bank.transactions, creditcard.transactions, amazon.orders.
+
+Tax app receives structured JSON for each scope — transactions already categorized, amounts normalized, dates standardized.
+
+Tax app correlates transactions across sources, identifies deductions, and presents results.
+
+Time: 2–3 minutes instead of 2–4 hours.
+
+Health Pattern Analysis
+
+A health insights application wants to correlate sleep, activity, and dietary patterns across wearable devices and purchase history:
+
+App discovers scopes: oura.sleep, apple_health.activity, amazon.orders.
+
+User authorizes export.
+
+App receives structured data: sleep stages with timestamps, activity metrics, food purchase history.
+
+App correlates: "You sleep 30% better on days with morning workouts."
+
+Without GDPP: The user manually exports CSV files from three apps, reformats them into a spreadsheet, and attempts correlation by hand. Most users give up.
+
+Content Creator Analytics
+
+A content strategy tool analyzes a creator's consumption patterns across platforms:
+
+App discovers scopes: youtube.watch_history, instagram.likes, tiktok.engagement.
+
+User authorizes export.
+
+App receives structured engagement data across platforms.
+
+App identifies: "Your audience engages most with cooking tutorials posted Tuesday–Thursday mornings."
+
+Without GDPP: The creator manually reviews thousands of videos across three platforms — a 2–3 hour process that most creators never do.
+
+Part III: Normative Requirements
+
+This section defines what "GDPP Compliant" means. These are enforceable requirements, not suggestions. The key words "MUST", "MUST NOT", "SHOULD", "SHOULD NOT", and "MAY" are to be interpreted as described in RFC 2119.
+
+9. Portability Guarantees
+
+9.1 The Problem
+
+GDPR Article 20 requires portability "without hindrance." Without explicit, measurable guarantees, platforms can technically comply while making portability unusable — throttling exports to unusable speeds, marking requests as "async" indefinitely, or requiring "manual review" that never completes.
+
+GDPP makes these behaviors protocol violations.
+
+9.2 Time Guarantees
+
+Data Sources MUST complete exports within the following timeframes:
+
+Export Type
+
+Maximum Time
+
+Notes
+
+Synchronous exports (profile, settings)
+
+30 seconds
+
+Response must be immediate
+
+Small async exports (< 10K items)
+
+1 hour
+
+Job must complete, not just start
+
+Large async exports (10K–1M items)
+
+24 hours
+
+Progress must be queryable
+
+Full historical export (all data)
+
+7 days
+
+For complete account export
+
+Any export that exceeds these limits without documented technical justification is non-compliant.
+
+9.3 Rate Limit Floors
+
+Data Sources MUST support at minimum:
+
+Scope Type
+
+Minimum Rate
+
+Period
+
+Profile scopes
+
+60 requests
+
+per hour
+
+Content scopes (posts, messages)
+
+10 full exports
+
+per day
+
+Incremental sync
+
+100 requests
+
+per hour
+
+Scope queries
+
+100 requests
+
+per hour
+
+Full account export
+
+1 request
+
+per week
+
+Platforms MAY offer higher limits. They MUST NOT offer lower limits.
+
+9.4 Prohibited Practices
+
+The following behaviors are explicitly prohibited:
+
+Practice
+
+Example
+
+Why
+
+Indefinite async
+
+Export stuck in "processing" for weeks
+
+Defeats purpose of portability
+
+Manual review gates
+
+"Your export requires human review"
+
+Creates indefinite delays
+
+Degraded free tier
+
+Free users get 1 export/year
+
+Discriminates against users exercising rights
+
+Registration denial
+
+Denying consumer registration without cause
+
+Blocks authorized access
+
+Scope hiding
+
+Not listing scopes that exist
+
+Prevents discovery
+
+Schema obfuscation
+
+Proprietary formats that cannot be parsed
+
+Makes data unusable
+
+Expiry traps
+
+Export links that expire in under 24 hours
+
+Makes retrieval impractical
+
+10. Freshness Guarantees
+
+10.1 Why Freshness Matters
+
+When data is exported, the consumer needs to know how current it is. A tax preparation app working with 6-month-old transaction data will miss recent purchases. A health app correlating sleep data needs data from the last few days, not last quarter. Freshness is the difference between useful data and misleading data.
+
+10.2 Freshness SLAs by Scope Type
+
+Data Sources MUST support freshness parameters and provide explicit staleness markers:
+
+Scope Type
+
+Maximum Stale Age
+
+Refresh Capability
+
+Profile scopes
+
+24 hours
+
+Sync on request
+
+Activity scopes (posts, commits)
+
+1 hour
+
+Near real-time
+
+Transaction scopes
+
+1 hour
+
+Near real-time
+
+Message scopes
+
+15 minutes
+
+Real-time available
+
+Settings scopes
+
+24 hours
+
+Sync on request
+
+Historical archives
+
+7 days
+
+Batch refresh
+
+10.3 Freshness Request Parameters
+
+Consumers MAY specify freshness requirements in requests:
+
+{ "freshness": { "max_age_seconds": 86400, "refresh_if_stale": true, "accept_stale_with_marker": true } } 
+
+10.4 Staleness Markers
+
+When data cannot meet freshness requirements, Data Sources MUST include staleness markers:
+
+{ "freshness": { "captured_at": "2026-02-01T10:30:00Z", "is_fresh": true, "stale_since": null, "refresh_available": true } } 
+
+Data Sources MUST include captured_at in all responses. Data Sources MUST return stale_since when data exceeds requested freshness. Data Sources SHOULD support on-demand refresh for profile-type data.
+
+11. Authorization and Consent
+
+11.1 Authorization Method
+
+Method
+
+GDPP Mechanism
+
+Legal Basis
+
+OAuth 2.0
+
+Standard OAuth 2.0 authorization code flow with GDPP-specific scopes, expiration, and grantee (client_id)
+
+GDPR Art. 20 explicit consent
+
+OAuth 2.0 is the standard authorization mechanism for GDPP. It leverages existing platform authentication infrastructure, is well-understood by developers, and provides verifiable consent through standard token validation.
+
+11.2 Grant Structure
+
+An authorization grant specifies:
+
+User identity: The authenticated user on the Data Source platform
+
+Grantee identity: The consumer's client_id (registered application or personal server)
+
+Scopes: List of data scopes being authorized (e.g., gdpp:instagram.profile:read, gdpp:instagram.posts:read)
+
+Expiration: Token lifetime after which the grant is invalid
+
+Redirect URI: The consumer's registered callback URL
+
+Grants are issued through the platform's OAuth 2.0 authorization flow and MUST be recorded in the platform's audit log for verifiability.
+
+11.3 Grant Lifetime
+
+Grant Type
+
+Default Lifetime
+
+Maximum Lifetime
+
+One-time export
+
+24 hours
+
+7 days
+
+Incremental sync
+
+30 days
+
+1 year
+
+Standing authorization
+
+90 days
+
+Indefinite (with refresh)
+
+Data Sources MUST NOT require re-authorization more frequently than these defaults.
+
+11.4 Revocation
+
+When a user revokes a grant:
+
+Before export starts: Data Source MUST cancel the export.
+
+During export: Data Source SHOULD stop; MAY complete current batch.
+
+After export complete: No effect on already-exported data.
+
+Revocation affects future access. It does not recall data already exported — that data is now under the user's control. Revocations MUST be recorded in the platform's audit log. Platforms MUST support standard OAuth token revocation per RFC 7009.
+
+11.5 Authorization UI Requirements
+
+Data Sources MUST present clear authorization UI with:
+
+List of data scopes being accessed, with human-readable labels
+
+Identity of the requesting consumer
+
+Clear "Approve" and "Deny" buttons
+
+Link to revoke later
+
+Data Sources MUST NOT include pre-checked sharing boxes, countdown timers that pressure approval, or bundled consent (export + marketing + AI training).
+
+12. Data Ownership Classes
+
+User data often involves other people. GDPP defines three ownership classes to balance portability with third-party privacy:
+
+12.1 First-Party Data
+
+Data created solely by or about the requesting user: profile information, user-authored posts, purchase history, watch history, settings and preferences.
+
+Export rule: Always exportable at full fidelity.
+
+12.2 Joint Data
+
+Data involving the user and identifiable third parties: direct messages, shared documents, tagged photos, collaborative playlists.
+
+Export rule: Exportable with transformations. The user's content is exported at full fidelity. Other parties' identifiable information is pseudonymized (e.g., user_abc123 instead of @john_smith). Other parties' PII is redacted or hashed.
+
+12.3 Third-Party Data
+
+Data primarily about others, observed by the user: other users' profiles, public posts the user has seen, detailed follower/following lists.
+
+Export rule: Metadata only by default. Counts and aggregates are included. Identifiers are pseudonymized. Full content requires elevated consent and justification.
+
+12.4 Manifest Declaration
+
+Data Sources MUST declare data classes in their capability manifest:
+
+{ "scope": "instagram.messages", "data_class": "joint", "transformations": ["pseudonymize_other_party", "redact_other_pii"] } 
+
+13. Consumer Access Tiers
+
+13.1 Two-Tier Model
+
+GDPP mandates a two-tier access model to balance openness with security:
+
+Tier 1: Baseline Access — available to any consumer with a valid user authorization grant, no registration required.
+
+Export first-party data scopes
+
+Minimum rate limit floors apply
+
+Full historical and incremental sync
+
+Tier 2: Registered Access — available to consumers that complete platform registration.
+
+Access to joint and third-party data scopes
+
+Higher rate limits
+
+Webhook callbacks for async exports
+
+Priority queue for large exports
+
+13.2 Registration Rules
+
+Data Sources MUST process registration within 48 hours. Data Sources MUST approve automatically if compliance requirements are met. Data Sources MUST provide specific denial reasons if rejecting. Data Sources MUST NOT require "business justification" for baseline scopes, deny based on competitive relationship, or charge fees for registration.
+
+13.3 Baseline Access Scopes
+
+The following scopes MUST be available without registration: *.profile, *.settings, *.posts (user-authored), *.purchases, *.watch_history, *.listen_history.
+
+14. Non-Discrimination
+
+Data portability access MUST be equal across all user tiers.
+
+All users MUST have access to the same data scopes.
+
+All users MUST receive full historical data.
+
+Rate limit floors MUST apply equally to all users.
+
+Export completion time limits MUST apply equally to all users.
+
+Paid tiers MAY offer faster exports (above the floor), more frequent incremental syncs, and priority support. Paid tiers MUST NOT unlock additional data scopes, provide exclusive API features, or charge for exercising statutory rights.
+
+15. Scope and Schema Governance
+
+15.1 Scope Taxonomy
+
+GDPP uses a hierarchical scope taxonomy: {source}.{category}. Examples:
+
+Scope
+
+Description
+
+instagram.profile
+
+Instagram profile information
+
+instagram.posts
+
+User-authored Instagram posts
+
+youtube.watch_history
+
+YouTube viewing history
+
+amazon.orders
+
+Amazon purchase history
+
+oura.sleep
+
+Oura ring sleep data
+
+gmail.messages
+
+Gmail messages
+
+Source identifiers are registered in the scope registry. Category identifiers follow a common vocabulary where possible (profile, posts, messages, orders, watch_history, listen_history, transactions, settings).
+
+15.2 Schema Registry Model
+
+GDPP uses a federated schema registry with three tiers:
+
+Core Schemas — canonical schemas for common scope categories (profiles, posts, messages, transactions). Versioned and immutable once published.
+
+Extended Schemas — platform-specific fields beyond core schemas. MUST extend (not replace) core schemas. Consumers can safely ignore extended fields they don't understand.
+
+Proprietary Schemas — truly platform-specific data with no common analog. No interoperability expectations. Clearly marked as proprietary.
+
+15.3 Extension Rules
+
+Extended schemas MUST include all core fields. Extended schemas MAY add platform-specific fields. Extended schemas MUST NOT redefine core field semantics.
+
+15.4 Schema Licensing
+
+All core and extended schemas are released under Apache 2.0 / CC0 dual license for maximum adoption. Schemas are pinned to content-addressable storage (e.g., IPFS) for permanence. Platforms MAY host schemas on their own domain.
+
+16. Conformance Levels
+
+16.1 Three Levels
+
+Level 1: Bronze — Basic Portability
+
+Publish /.well-known/gdpp manifest
+
+Support export of first-party data scopes
+
+Meet minimum rate limit floors
+
+Complete full export within 7 days
+
+Support OAuth 2.0 authentication
+
+Level 2: Silver — Full Portability All Bronze requirements, plus:
+
+Support incremental sync with cursors
+
+Export joint data with proper transformations
+
+Implement two-tier consumer access model
+
+Complete large exports within 24 hours
+
+Provide user-accessible audit logging
+
+Use core schemas for common scopes
+
+Level 3: Gold — Ecosystem-Native Portability All Silver requirements, plus:
+
+Real-time incremental sync (< 1 hour latency)
+
+Third-party data with proper pseudonymization
+
+Support MCP transport bindings
+
+Webhook callbacks for all async operations
+
+Schema extensions published to registry
+
+Conformance test suite passing
+
+16.2 Declaring Conformance
+
+Data Sources declare their conformance level in the capability manifest:
+
+{ "conformance": { "level": "silver", "certified_date": "2026-02-01", "test_report_url": "https://example.com/gdpp-test-report.json" } } 
+
+Conformance is initially self-declared and verified through automated test suites. As the ecosystem matures, third-party auditors may offer formal certification.
+
+Part IV: Technical Specification
+
+17. Discovery Mechanism
+
+Data Sources MUST publish a capability manifest at:
+
+GET https://{domain}/.well-known/gdpp 
+
+This endpoint:
+
+MUST be publicly accessible (no authentication required)
+
+MUST return Content-Type: application/json
+
+MUST be served over HTTPS
+
+SHOULD include Cache-Control headers (recommended: max-age=3600)
+
+18. Capability Manifest
+
+18.1 Manifest Schema
+
+{ "$schema": "https://schemas.gdpp.org/manifest/v1.json", "gdpp_version": "1.0", "provider": { "name": "Instagram", "domain": "instagram.com", "logo_url": "https://instagram.com/static/images/logo.png", "privacy_policy_url": "https://instagram.com/legal/privacy", "support_url": "https://help.instagram.com/contact/data-portability" }, "endpoints": { "base_url": "https://api.instagram.com/gdpp/v1", "auth": "/auth", "data": "/data", "schemas": "/schemas", "consumers": "/consumers", "audit": "/audit" }, "scopes": [ { "scope": "instagram.profile", "description": "User profile information", "data_class": "first_party", "schema_url": "https://schemas.gdpp.org/instagram/profile/v1.json", "schema_id": "urn:gdpp:instagram:profile:v1", "export_mode": "sync", "freshness_sla_seconds": 86400, "rate_limit": { "requests_per_hour": 60 } }, { "scope": "instagram.posts", "description": "User posts, photos, and videos", "data_class": "first_party", "schema_url": "https://schemas.gdpp.org/instagram/posts/v1.json", "schema_id": "urn:gdpp:instagram:posts:v1", "export_mode": "async", "supports_incremental": true, "rate_limit": { "requests_per_hour": 10 } }, { "scope": "instagram.messages", "description": "Direct messages", "data_class": "joint", "schema_url": "https://schemas.gdpp.org/instagram/messages/v1.json", "schema_id": "urn:gdpp:instagram:messages:v1", "export_mode": "async", "supports_incremental": true, "transformations": ["pseudonymize_other_party", "redact_other_pii"], "rate_limit": { "requests_per_hour": 5 }, "restrictions": { "requires_registered_consumer": true } } ], "auth": { "types": ["oauth2"], "oauth2": { "authorization_url": "https://api.instagram.com/oauth/authorize", "token_url": "https://api.instagram.com/oauth/access_token", "revocation_url": "https://api.instagram.com/oauth/revoke", "scopes_supported": ["gdpp:instagram.profile:read", "gdpp:instagram.posts:read", "gdpp:instagram.messages:read"] } }, "consumer_registration": { "required_for_tier2": true, "registration_url": "https://developers.instagram.com/gdpp/register", "approval_type": "automatic" }, "transport": { "rest": { "supported": true, "openapi_url": "https://api.instagram.com/gdpp/v1/openapi.json" }, "mcp": { "supported": true, "server_url": "https://api.instagram.com/gdpp/v1/mcp" } }, "conformance": { "level": "silver", "certified_date": "2026-02-01" }, "compliance": { "gdpr": true, "dma": true, "ccpa": true, "non_discrimination": true, "audit_retention_days": 365 } } 
+
+18.2 Manifest Fields Reference
+
+Field
+
+Type
+
+Required
+
+Description
+
+gdpp_version
+
+string
+
+Yes
+
+Protocol version (semver)
+
+provider.name
+
+string
+
+Yes
+
+Human-readable platform name
+
+provider.domain
+
+string
+
+Yes
+
+Primary domain
+
+endpoints.base_url
+
+string
+
+Yes
+
+Base URL for GDPP API
+
+scopes
+
+array
+
+Yes
+
+Available data scopes
+
+scopes[].scope
+
+string
+
+Yes
+
+Scope identifier ({source}.{category})
+
+scopes[].data_class
+
+enum
+
+Yes
+
+first_party, joint, or third_party
+
+scopes[].schema_url
+
+string
+
+Yes
+
+URL to JSON Schema
+
+scopes[].schema_id
+
+string
+
+Yes
+
+Stable schema identifier (URN)
+
+scopes[].export_mode
+
+enum
+
+Yes
+
+sync or async
+
+scopes[].supports_incremental
+
+boolean
+
+No
+
+Whether incremental exports supported
+
+scopes[].freshness_sla_seconds
+
+integer
+
+No
+
+Maximum data age in seconds
+
+auth.types
+
+array
+
+Yes
+
+Supported auth methods
+
+consumer_registration.required_for_tier2
+
+boolean
+
+Yes
+
+Whether Tier 2 requires registration
+
+transport
+
+object
+
+Yes
+
+Supported communication protocols
+
+conformance.level
+
+enum
+
+Yes
+
+bronze, silver, or gold
+
+19. Authentication and Authorization
+
+19.1 Authentication Mode
+
+Mode
+
+Use Case
+
+Trust Model
+
+OAuth 2.0
+
+User authorizes consumer via browser-based consent flow
+
+Platform authenticates user, issues scoped access token
+
+19.2 OAuth 2.0 Authorization Flow
+
+GDPP uses the standard OAuth 2.0 authorization code flow (RFC 6749) with GDPP-specific scopes. Consumers MUST use PKCE (RFC 7636) for all authorization requests.
+
+Step 1: Authorization Request
+
+The consumer redirects the user to the Data Source's authorization endpoint:
+
+GET https://api.instagram.com/oauth/authorize? response_type=code& client_id=con_abc123& redirect_uri=https://server.example.com/callback& scope=gdpp:instagram.profile:read gdpp:instagram.posts:read& state=random_state_value& code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM& code_challenge_method=S256 
+
+Step 2: User Consent
+
+The Data Source presents the authorization UI (per Section 11.5), showing the requested scopes and consumer identity. The user approves or denies.
+
+Step 3: Authorization Code Exchange
+
+After user approval, the Data Source redirects to the consumer's callback with an authorization code:
+
+POST https://api.instagram.com/oauth/access_token Content-Type: application/x-www-form-urlencoded grant_type=authorization_code& code=auth_code_xyz& client_id=con_abc123& client_secret=secret_xyz& redirect_uri=https://server.example.com/callback& code_verifier=dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk 
+
+Step 4: Access Token Response
+
+{ "access_token": "gdpp_at_abc123xyz", "token_type": "Bearer", "expires_in": 3600, "refresh_token": "gdpp_rt_def456uvw", "scope": "gdpp:instagram.profile:read gdpp:instagram.posts:read" } 
+
+OAuth scopes map directly to GDPP scopes using the format: gdpp:{source}.{category}:read (e.g., gdpp:instagram.profile:read, gdpp:instagram.posts:read).
+
+19.3 Consumer Authentication
+
+Consumers authenticate to the Data Source API using the Authorization header with a Bearer token:
+
+Authorization: Bearer <access_token> 
+
+The Data Source validates the access token (via introspection per RFC 7662 or JWT verification), checks the token's scopes match the requested data, and returns the requested data.
+
+20. Scope Data API
+
+20.1 Read Scope Data
+
+GET /gdpp/v1/data/{scope} Authorization: Bearer <access_token> GDPP-Request-ID: <uuid> 
+
+Example: GET /gdpp/v1/data/instagram.profile
+
+20.2 Response
+
+{ "$schema": "https://schemas.gdpp.org/instagram/profile/v1.json", "scope": "instagram.profile", "exported_at": "2026-02-02T10:00:00Z", "freshness": { "captured_at": "2026-02-02T09:15:00Z", "is_fresh": true }, "data": { "username": "alice", "display_name": "Alice Smith", "bio": "Engineer. Builder. Coffee enthusiast.", "profile_picture_url": "https://...", "followers_count": 1234, "following_count": 567, "created_at": "2020-03-15T10:00:00Z" } } 
+
+20.3 Incremental Sync
+
+For scopes that support incremental exports, include a since parameter:
+
+GET /gdpp/v1/data/instagram.posts?since=2025-12-01T00:00:00Z 
+
+Response includes a cursor for the next sync:
+
+{ "$schema": "https://schemas.gdpp.org/instagram/posts/v1.json", "scope": "instagram.posts", "exported_at": "2026-02-02T10:00:00Z", "data": { "items": [ "..." ], "pagination": { "total_items": 150, "has_more": true, "next_cursor": "cursor_abc123" } }, "sync": { "cursor": "cursor_abc123", "last_timestamp": "2026-02-02T09:30:00Z" } } 
+
+Fetch next page: GET /gdpp/v1/data/instagram.posts?cursor=cursor_abc123
+
+20.4 Async Export
+
+For large scopes, the Data Source MAY return an async job:
+
+{ "export_id": "exp_xyz789", "status": "processing", "estimated_completion": "2026-02-02T10:05:00Z", "poll_url": "/gdpp/v1/data/instagram.posts/export/exp_xyz789" } 
+
+20.5 Bulk Export
+
+To export multiple scopes at once:
+
+POST /gdpp/v1/data/export Content-Type: application/json Authorization: Bearer <access_token> { "scopes": ["instagram.profile", "instagram.posts", "instagram.likes"], "options": { "incremental_since": "2025-01-01T00:00:00Z" }, "callback": { "webhook_url": "https://server.example.com/gdpp/callback", "webhook_secret": "whsec_..." } } 
+
+20.6 Webhook Callback
+
+When callback.webhook_url is provided for async exports:
+
+POST https://server.example.com/gdpp/callback Content-Type: application/json X-GDPP-Signature: sha256=abc123... { "event": "export.completed", "export_id": "exp_xyz789", "status": "completed", "scopes": ["instagram.profile", "instagram.posts", "instagram.likes"], "data_urls": { "instagram.profile": "/gdpp/v1/data/instagram.profile/export/exp_xyz789", "instagram.posts": "/gdpp/v1/data/instagram.posts/export/exp_xyz789" }, "timestamp": "2026-02-02T10:04:32Z" } 
+
+21. Consumer Registration
+
+21.1 Registration Request
+
+For Tier 2 access:
+
+POST /gdpp/v1/consumers Content-Type: application/json { "name": "Personal Data Server", "type": "personal_server", "description": "User's personal data server for data portability", "website_url": "https://example.com", "webhook_url": "https://server.example.com/webhook", "redirect_uris": ["https://server.example.com/callback"], "scopes_requested": ["instagram.profile", "instagram.posts", "instagram.messages"], "compliance": { "accepts_dpa": true, "data_retention_policy": "user_controlled", "audit_logging": true } } 
+
+21.2 Registration Response
+
+{ "consumer_id": "con_abc123", "client_id": "con_abc123", "client_secret": "gdpp_secret_xyz789", "status": "approved", "approved_scopes": ["instagram.profile", "instagram.posts"], "pending_scopes": ["instagram.messages"], "rate_limits": { "requests_per_minute": 60, "exports_per_day": 1000 } } 
+
+22. Transport Bindings
+
+22.1 REST API (Required)
+
+The REST API described in this specification is the primary transport. All Data Sources MUST support REST.
+
+22.2 Model Context Protocol (MCP) Binding
+
+Data Sources MAY expose MCP tools, enabling AI applications to discover and use GDPP data sources:
+
+{ "name": "instagram_gdpp", "description": "Access user's Instagram data via GDPP", "inputSchema": { "type": "object", "properties": { "scope": { "type": "string", "description": "GDPP scope (e.g., instagram.profile)" }, "since": { "type": "string", "format": "date-time", "description": "For incremental sync" }, "access_token": { "type": "string", "description": "OAuth 2.0 access token" } }, "required": ["scope", "access_token"] } } 
+
+22.3 Request Headers
+
+All requests MUST include:
+
+Header
+
+Required
+
+Description
+
+GDPP-Request-ID
+
+Yes
+
+UUID for request tracing
+
+GDPP-Idempotency-Key
+
+Recommended
+
+For safe retries
+
+User-Agent
+
+Recommended
+
+Consumer software and version
+
+23. Schema Registry
+
+23.1 Schema Requirements
+
+All exported data MUST conform to a published JSON Schema:
+
+Schemas MUST be hosted at stable URLs (HTTPS or IPFS)
+
+Schemas MUST include $id with the canonical schema identifier
+
+Schemas MUST be versioned (v1, v2, etc.)
+
+Data Sources MUST support at least N-1 schema versions
+
+23.2 Schema Discovery
+
+GET /gdpp/v1/schemas 
+
+Response:
+
+{ "schemas": [ { "scope": "instagram.profile", "schema_id": "urn:gdpp:instagram:profile:v1", "schema_url": "https://schemas.gdpp.org/instagram/profile/v1.json", "version": "1.0.0", "extends": "urn:gdpp:core:profile:v1" } ] } 
+
+23.3 Core Schema Example
+
+{ "$schema": "https://json-schema.org/draft/2020-12/schema", "$id": "https://schemas.gdpp.org/core/profile/v1.json", "title": "GDPP Core Profile", "type": "object", "properties": { "$schema": { "type": "string" }, "scope": { "type": "string" }, "exported_at": { "type": "string", "format": "date-time" }, "freshness": { "type": "object", "properties": { "captured_at": { "type": "string", "format": "date-time" }, "is_fresh": { "type": "boolean" } }, "required": ["captured_at", "is_fresh"] }, "data": { "type": "object", "properties": { "username": { "type": "string" }, "display_name": { "type": "string" }, "bio": { "type": "string" }, "profile_picture_url": { "type": "string", "format": "uri" }, "followers_count": { "type": "integer" }, "following_count": { "type": "integer" }, "created_at": { "type": "string", "format": "date-time" } }, "required": ["username"] } }, "required": ["$schema", "scope", "exported_at", "data"] } 
+
+24. Error Handling
+
+24.1 Error Response Format
+
+{ "error": { "code": "scope_not_granted", "message": "The requested scope is not included in the authorization grant", "details": { "requested_scope": "instagram.messages", "granted_scopes": ["instagram.profile", "instagram.posts"] } }, "request_id": "req_abc123" } 
+
+24.2 Standard Error Codes
+
+HTTP Status
+
+Error Code
+
+Description
+
+400
+
+invalid_request
+
+Malformed request
+
+401
+
+unauthorized
+
+Missing or invalid authentication
+
+403
+
+forbidden
+
+Valid authentication but action not permitted
+
+403
+
+scope_not_granted
+
+Requested scope not in grant
+
+403
+
+grant_expired
+
+Authorization grant has expired
+
+403
+
+grant_revoked
+
+Authorization grant has been revoked
+
+404
+
+not_found
+
+Resource not found
+
+409
+
+export_in_progress
+
+Concurrent export limit reached
+
+422
+
+invalid_scope
+
+Requested scope not available
+
+429
+
+rate_limited
+
+Rate limit exceeded
+
+500
+
+internal_error
+
+Server error
+
+503
+
+temporarily_unavailable
+
+Service maintenance
+
+24.3 Retry Behavior
+
+Consumers SHOULD implement exponential backoff with jitter:
+
+retry_delay = min(base_delay * (2 ^ attempt) + random_jitter, max_delay) 
+
+Recommended: base_delay = 1 second, max_delay = 60 seconds, max_attempts = 5.
+
+25. Security Considerations
+
+25.1 Transport Security
+
+All endpoints MUST be served over HTTPS (TLS 1.2 minimum, TLS 1.3 recommended)
+
+Data Sources MUST use valid, non-self-signed certificates
+
+25.2 Authentication Security
+
+Authorization requests MUST use PKCE (RFC 7636) to prevent authorization code interception
+
+Authorization requests MUST include a state parameter to prevent CSRF attacks
+
+Access tokens MUST be short-lived (recommended: 1 hour)
+
+Refresh tokens MUST be rotated on use
+
+Token revocation MUST be supported per RFC 7009
+
+Redirect URIs MUST be pre-registered and matched exactly
+
+25.3 Rate Limiting
+
+Data Sources MUST implement rate limiting:
+
+Limit Type
+
+Recommended Value
+
+Purpose
+
+Requests per minute
+
+60
+
+Prevent abuse
+
+Exports per day per user
+
+10
+
+Prevent data harvesting
+
+Concurrent exports
+
+1
+
+Resource management
+
+Rate limit responses MUST include Retry-After, X-RateLimit-Limit, X-RateLimit-Remaining, and X-RateLimit-Reset headers.
+
+25.4 Data Minimization
+
+Consumers SHOULD request only needed scopes
+
+Data Sources MAY redact sensitive fields not explicitly requested
+
+Third-party PII SHOULD be anonymized per Section 12
+
+25.5 Abuse Prevention
+
+Data Sources MAY implement anomaly detection, consumer reputation scoring, and temporary blocks for policy violations.
+
+26. Compliance and Audit
+
+26.1 Audit Logging
+
+Data Sources MUST maintain audit logs for all GDPP operations:
+
+GET /gdpp/v1/audit?since=2025-01-01 Authorization: Bearer <access_token> 
+
+Response:
+
+{ "audit_records": [ { "record_id": "aud_abc123", "timestamp": "2026-02-02T10:00:00Z", "operation": "export", "consumer_id": "con_abc123", "scopes": ["instagram.profile", "instagram.posts"], "items_exported": { "instagram.profile": 1, "instagram.posts": 2500 }, "status": "completed" } ] } 
+
+26.2 Data Retention
+
+Export job data MUST be retained for at least 24 hours after completion
+
+Export job data SHOULD be deleted within 30 days
+
+Audit logs MUST be retained for the period specified in compliance.audit_retention_days
+
+26.3 User Notification
+
+Data Sources SHOULD notify users of:
+
+First export by a new consumer (email notification)
+
+Exports of sensitive scopes (in-app notification)
+
+Weekly digest of export activity (opt-in)
+
+Part V: Interoperability
+
+27. Relationship to Public Data Protocols
+
+GDPP focuses on personal, private data — information that belongs to individual users and requires their explicit consent to access. This distinguishes GDPP from protocols that handle public or semi-public data:
+
+27.1 DSNP (Decentralized Social Networking Protocol)
+
+DSNP defines a shared social layer for public social interactions — posts, follows, reactions — that are designed to be public by nature. GDPP and DSNP are complementary:
+
+Aspect
+
+DSNP
+
+GDPP
+
+Data type
+
+Public social graph, public posts
+
+Private personal data
+
+Access model
+
+Public by default
+
+Consent-required
+
+Primary consumer
+
+Social applications
+
+Personal data infrastructure, applications
+
+Portability model
+
+User carries public identity across apps
+
+User exports private data from platforms
+
+Interoperability: A user's complete digital identity spans both protocols. Their public posts and social graph live on DSNP. Their private messages, purchase history, and personal preferences are accessible via GDPP. Applications that serve users well need access to both layers.
+
+27.2 AT Protocol (Bluesky)
+
+The AT Protocol enables federated social networking with user-controlled identity and portable public data. Like DSNP, it handles public social interactions. GDPP handles the private complement:
+
+Aspect
+
+AT Protocol
+
+GDPP
+
+Data type
+
+Public social posts, follows
+
+Private personal data
+
+Architecture
+
+Federated servers, user-hosted repos
+
+Platform-implemented APIs
+
+Identity
+
+Decentralized identifiers (DIDs)
+
+Platform accounts (OAuth 2.0)
+
+Portability
+
+User moves their repo between servers
+
+User exports data from platforms
+
+Interoperability: AT Protocol handles where a user's public social presence lives. GDPP handles how their private data (from any platform) is made portable. GDPP uses standard OAuth 2.0, which can integrate with AT Protocol's authentication system where platforms support both protocols.
+
+27.3 The Complete Picture
+
+A user's digital life spans public and private data across many platforms. No single protocol covers everything:
+
+Layer
+
+Protocol
+
+Data Type
+
+Example
+
+Public social
+
+DSNP, AT Protocol
+
+Posts, follows, public interactions
+
+"Alice posted about hiking"
+
+Private personal
+
+GDPP
+
+Messages, purchases, health, preferences
+
+"Alice bought hiking boots last week"
+
+GDPP schemas are designed to coexist with these protocols. The scope namespace ({source}.{category}) avoids collision with DSNP or AT Protocol identifiers. Applications that access multiple protocols can combine public context (DSNP/AT) with private data (GDPP) to serve users comprehensively.
+
+28. Integration with Personal Data Infrastructure
+
+GDPP defines how data gets out of platforms. What happens after export is governed by the user's chosen personal data infrastructure — whether that is a personal server, a local application, or a cloud-hosted data vault.
+
+28.1 The Full Stack
+
+Layer 1: SUPPLY (GDPP — This Specification) "How platforms expose data" Platform implements /.well-known/gdpp Consumer discovers scopes, authenticates, requests data │ │ Exported data (JSON, conforming to GDPP schemas) ▼ Layer 2: OWNERSHIP (User's personal data infrastructure) "How users store, encrypt, and control their data" Personal server receives and stores exported data User grants/revokes access to specific scopes │ │ Granted access (scope-based) ▼ Layer 3: APPLICATIONS "What applications do with the data" Tax preparation, health insights, content analysis Cross-platform aggregation and recommendations AI assistants with full user context 
+
+28.2 Schema Alignment
+
+GDPP schemas are designed to be directly usable by personal data infrastructure:
+
+GDPP Export Field
+
+Common Personal Server Field
+
+$schema
+
+$schema
+
+scope
+
+scope
+
+exported_at
+
+collectedAt
+
+data
+
+data
+
+This 1:1 mapping ensures exported data can be stored in personal data infrastructure without transformation.
+
+Call for Collaboration
+
+GDPP is an open standard that benefits from broad participation. We invite:
+
+Platforms to implement GDPP and shape the schemas for their data scopes. Early adopters define what their data looks like in the standard.
+
+Developers to build applications and personal data infrastructure that consume GDPP APIs, providing feedback on what works and what needs improvement.
+
+Policymakers to reference GDPP as a technical benchmark for data portability compliance.
+
+Civil society organizations to participate in schema governance and advocate for user-centered design.
+
+Researchers to study GDPP's impact on data portability, competition, and user agency.
+
+Contributions are welcome through the open specification repository. All contributions are governed by the project's code of conduct and contribution guidelines.
+
+[Internal] Open Questions
+
+Question
+
+Answer
+
+Should the authorization mechanisms in protocol be wallet- or OAuth- first?
+
+Used OAuth for now. Treating wallets as first-class authentication may push the protocol too far into a Web3-specific corner.
+
+Should the spec contain any info on the governance i.e who steers the protocol direction and roadmap etc? How much should this be connected to Vana?
+
+Preamble
+
+The General Data Portability Protocol (GDPP) is an open standard that defines how platforms and applications make personal data portable. GDPP specifies the supply side of data portability — the APIs, data formats, scope taxonomies, and authorization mechanisms that data-holding services implement so that users can collect, transfer, and control their own personal data.
+
+Users have legal rights to their data under GDPR, the Digital Markets Act, CCPA, and emerging laws like the Utah Digital Choice Act. But no standard exists for how platforms should fulfill these rights in a structured, machine-readable way. Today, data portability depends on proprietary ZIP downloads, inconsistent formats, and — increasingly — scraping. GDPP replaces this fragmented landscape with a concrete, verifiable protocol that platforms can implement, regulators can reference, and the ecosystem can build on.
+
+This document is a specification, not a proposal. It is designed to be implemented today. At the same time, GDPP is an evolving standard — we invite platforms, developers, policymakers, and civil society organizations to contribute to its development through the open governance process described in Part VI.
+
+Status: Published specification. Open for collaboration and adoption.
+
+License: Apache 2.0 / CC BY 4.0 (dual-licensed for maximum adoption).
+
+Repository: github.com/gdpp-protocol/spec
+
+Table of Contents
+
+Part I: Why GDPP?
+
+The Problem: Personal Data Trapped in Silos
+
+The Opportunity: From Scraping to Structured Portability
+
+Design Philosophy
+
+How GDPP Relates to Existing Regulations
+
+Part II: Protocol Overview
+
+Architecture at a Glance 
+
+Key Concepts
+
+How Data Flows
+
+Concrete Examples
+
+Part III: Normative Requirements
+
+Portability Guarantees
+
+Freshness Guarantees
+
+Authorization and Consent
+
+Data Ownership Classes
+
+Consumer Access Tiers
+
+Non-Discrimination 
+
+Scope and Schema Governance
+
+Conformance Levels
+
+Part IV: Technical Specification
+
+Discovery Mechanism
+
+Capability Manifest
+
+Authentication and Authorization
+
+Scope Data API
+
+Consumer Registration
+
+Transport Bindings 
+
+Schema Registry
+
+Error Handling
+
+Security Considerations
+
+Compliance and Audit
+
+Part V: Interoperability
+
+Relationship to Public Data Protocols
+
+Integration with Personal Data Infrastructure
+
+Part I: Why GDPP?
+
+1. The Problem: Personal Data Trapped in Silos
+
+Billions of people generate personal data every day across dozens of platforms — purchase histories on Amazon, health metrics on Fitbit, conversation logs on ChatGPT, watch patterns on YouTube, location data on Google Maps. This data is deeply personal, often sensitive, and almost always locked inside the platform that collected it.
+
+The consequences are concrete:
+
+A user preparing their taxes spends 2–4 hours manually downloading statements from multiple banks, categorizing hundreds of transactions, and cross-referencing Amazon purchase history — work that could take minutes if the data were portable.
+
+A health-conscious user who wants to correlate sleep data from their Oura ring with activity data from their Apple Watch and dietary patterns from their purchase history simply cannot — the data lives in three separate silos with no common format or access mechanism.
+
+A content creator analyzing their audience engagement across YouTube, Instagram, and TikTok must manually review thousands of data points across three separate dashboards, because there is no standard way to export and combine this data.
+
+Today, the only mechanism for moving personal data between services is scraping — automated browser sessions that extract data from platform UIs using the user's credentials. Scraping is brittle (it breaks when UIs change), legally ambiguous (it operates in grey zones between TOS and user rights), and adversarial (platforms actively fight it). Yet scraping persists because no standard alternative exists.
+
+GDPP replaces scraping with a protocol. It gives platforms a bounded, structured API for making user data portable. It gives users actual control over their data — not the theoretical control promised by regulations that lack technical implementation. And it gives the ecosystem a common standard to build on.
+
+2. The Opportunity: From Scraping to Structured Portability
+
+Data portability laws exist in every major jurisdiction. GDPR Article 20 guarantees the right to data portability. The Digital Markets Act requires continuous, real-time portability from gatekeepers. The California Consumer Privacy Act grants the right to access and transfer personal data. The Utah Digital Choice Act moves toward enforceable, machine-readable portability standards.
+
+Yet in practice, data portability remains a fiction. Platforms offer ZIP file downloads in proprietary formats. Export processes are opaque, inconsistent, and designed for occasional human use — not for the continuous, programmatic access that applications and personal data infrastructure require.
+
+GDPP transforms data portability from a legal right into a technical reality by defining:
+
+What platforms must expose: A standard capability manifest describing available scopes and schemas.
+
+How data is accessed: Standard scope-based APIs for structured data export, with user authorization via OAuth 2.0 consent.
+
+What constitutes compliance: Measurable guarantees for response times, rate limits, and data freshness — preventing platforms from offering technically compliant but practically unusable portability.
+
+How consent works: Verifiable authorization using OAuth 2.0 consent flows, with audit logging for compliance, ensuring users provably control who accesses their data and for what purpose.
+
+The economic logic supports adoption. Platforms currently spend significant resources fighting unauthorized scraping. GDPP provides a controlled, auditable alternative that is better for platforms (predictable API load, no bot detection arms race), better for users (reliable data, clear consent), and better for the ecosystem (standard formats, interoperable tooling). The analogy to Open Banking is direct: banks resisted PSD2 for the same reasons (customer data was their competitive moat), but those that embraced it early gained trust and market share.
+
+3. Design Philosophy
+
+GDPP is built on six core principles:
+
+1. Supply-Side Standardization. GDPP defines what platforms must implement. It standardizes data portability for data holders. The goal is a world where any platform that holds user data can expose it through a common, machine-readable interface.
+
+2. User Sovereignty. The user controls when, what, and to whom their data is exported. Platforms cannot deny export requests for data the user owns. The protocol enforces this through verifiable consent and anti-discrimination requirements.
+
+3. Capability-Based Discovery. Platforms publish machine-readable capability manifests at a well-known URL. Applications dynamically discover available data types without hard-coded integrations.
+
+4. Scope-Driven Data Model. All data is organized into a hierarchical scope taxonomy ({source}.{category} — e.g., instagram.profile, youtube.watch_history). Data within each scope conforms to published JSON Schemas. This enables interoperability across platforms and downstream applications.
+
+5. Verifiable Consent. Every data access request is backed by verifiable user consent through standard OAuth 2.0 authorization. Platforms verify consent before releasing data. This satisfies GDPR's "explicit consent" requirement and creates an auditable chain of authorization.
+
+6. Ecosystem-Ready. GDPP does not prescribe what happens after data leaves the platform. Exported data flows into user-controlled infrastructure — personal servers, local applications, encrypted storage — where users grant downstream access to applications. GDPP focuses on the supply side; the demand side is governed by the user's own data infrastructure.
+
+4. How GDPP Relates to Existing Regulations
+
+GDPP is designed to be the technical standard that makes existing data portability laws enforceable:
+
+Regulation
+
+Requirement
+
+How GDPP Implements It
+
+GDPR Article 20
+
+Right to portability in machine-readable format
+
+JSON with published schemas, standard API
+
+GDPR Article 15
+
+Right of access
+
+Category listing, audit logs, schema discovery
+
+DMA Article 6(9)
+
+Continuous, real-time portability for gatekeepers
+
+Incremental exports with cursors, scope-based data API
+
+CCPA 1798.100
+
+Right to know what data is collected
+
+Capability manifest, scope-driven discovery
+
+CCPA 1798.125
+
+Non-discrimination for exercising rights
+
+Equal rate limits for all users and consumers
+
+Utah Digital Choice Act
+
+Machine-readable portability standards
+
+GDPP directly satisfies this requirement
+
+GDPP does not create new rights — it implements existing ones. Regulators can reference GDPP compliance as a concrete, testable benchmark for whether platforms meet their legal obligations.
+
+Part II: Protocol Overview
+
+5. Architecture at a Glance
+
+GDPP defines what Data Sources (platforms that hold user data) must implement so that user data can flow into Personal Data Infrastructure (user-controlled storage and access management).
+
+┌──────────────────────────────────────────────────────────────┐ │ GDPP (This Specification) │ │ │ │ ┌─────────────┐ ┌─────────────┐ ┌─────────────┐ │ │ │ Instagram │ │ YouTube │ │ Gmail │ ... │ │ │ /.well-known│ │ /.well-known│ │ /.well-known│ │ │ │ /gdpp │ │ /gdpp │ │ /gdpp │ │ │ └──────┬──────┘ └──────┬──────┘ └──────┬──────┘ │ │ │ │ │ │ │ │ Scope-based export (user-authorized) │ │ │ JSON data conforming to GDPP schemas │ └─────────┼────────────────┼────────────────┼──────────────────┘ │ │ │ ▼ ▼ ▼ ┌──────────────────────────────────────────────────────────────┐ │ User's Personal Data Infrastructure │ │ │ │ Personal Servers, local applications, encrypted storage │ │ User grants access to downstream applications │ │ (Not specified by GDPP — governed by user's infrastructure) │ └──────────────────────────────────────────────────────────────┘ 
+
+Each Data Source implements a GDPP endpoint — a set of standard APIs that authorized consumers use to discover available data, authenticate, and request exports. The protocol specifies:
+
+Discovery: A well-known URL (/.well-known/gdpp) serving a machine-readable capability manifest.
+
+Authentication: OAuth 2.0 authorization with GDPP-specific scopes.
+
+Scope-based data access: Structured export of specific data scopes (e.g., instagram.profile, youtube.watch_history).
+
+Transport: REST API (required), with optional MCP bindings.
+
+6. Key Concepts
+
+Data Source. A platform that holds user data and implements GDPP (e.g., Instagram, YouTube, Gmail, LinkedIn, Spotify). Also called "platform" or "provider." A Data Source is the supply side — it exposes data for portability.
+
+User. The human whose data is being accessed. Identified by their account on the Data Source (e.g., email address, user ID). The user authorizes all data access.
+
+Scope. A hierarchical identifier for a type of user data, using the naming convention {source}.{category} — for example, instagram.profile, youtube.watch_history, gmail.messages, amazon.orders. Scopes are the fundamental unit of data access in GDPP. Platforms declare which scopes they support in their capability manifest.
+
+Schema. A JSON Schema definition for a scope. Schemas are versioned, immutable once published, and hosted at stable URLs. Core schemas cover common data scopes across platforms; extended schemas add platform-specific fields.
+
+Capability Manifest. A JSON document at /.well-known/gdpp describing the Data Source's GDPP implementation — what scopes are available, how to authenticate, what schemas are used, and what rate limits apply.
+
+Authorization Grant. An OAuth 2.0 authorization from a user permitting a consumer to access specific scopes. Grants are issued through the platform's OAuth authorization flow, include expiration and revocation semantics, and are recorded in the platform's audit log for verifiability.
+
+Personal Data Infrastructure. The user-controlled systems that receive, store, and manage exported data — personal servers, desktop applications, encrypted cloud storage. GDPP does not specify these systems; it defines how data gets out of platforms so it can flow into whatever infrastructure the user chooses.
+
+7. How Data Flows
+
+GDPP enables two primary data flows:
+
+Data Collection (Platform → User)
+
+The user authorizes a data export from a platform. The platform verifies the authorization, assembles the requested scope data, and returns it in GDPP-standard JSON format.
+
+Step
+
+What Happens
+
+1. Discovery
+
+Consumer reads /.well-known/gdpp to learn what scopes are available
+
+2. Authorization
+
+User authorizes a grant specifying which scopes to export
+
+3. Request
+
+Consumer requests data for authorized scopes: GET /gdpp/v1/data/{scope}
+
+4. Response
+
+Platform returns structured JSON conforming to the scope's schema
+
+5. Storage
+
+Data flows into the user's personal data infrastructure
+
+This replaces scraping. Instead of a browser automation script navigating Instagram's UI and extracting HTML, the consumer calls GET /gdpp/v1/data/instagram.profile and receives a structured JSON response.
+
+Incremental Sync
+
+For data that changes frequently, GDPP supports cursor-based incremental exports. A consumer can request only data that has changed since the last sync, using a cursor returned in the previous response. This enables continuous portability without repeated full exports.
+
+8. Concrete Examples
+
+Tax Preparation
+
+A tax preparation application needs transaction data from multiple financial platforms. Without GDPP, the user spends 2–4 hours downloading statements from 3–5 banks, categorizing hundreds of transactions, and cross-referencing purchase history. With GDPP:
+
+Tax app discovers scopes via /.well-known/gdpp on each financial platform.
+
+User authorizes export of bank.transactions, creditcard.transactions, amazon.orders.
+
+Tax app receives structured JSON for each scope — transactions already categorized, amounts normalized, dates standardized.
+
+Tax app correlates transactions across sources, identifies deductions, and presents results.
+
+Time: 2–3 minutes instead of 2–4 hours.
+
+Health Pattern Analysis
+
+A health insights application wants to correlate sleep, activity, and dietary patterns across wearable devices and purchase history:
+
+App discovers scopes: oura.sleep, apple_health.activity, amazon.orders.
+
+User authorizes export.
+
+App receives structured data: sleep stages with timestamps, activity metrics, food purchase history.
+
+App correlates: "You sleep 30% better on days with morning workouts."
+
+Without GDPP: The user manually exports CSV files from three apps, reformats them into a spreadsheet, and attempts correlation by hand. Most users give up.
+
+Content Creator Analytics
+
+A content strategy tool analyzes a creator's consumption patterns across platforms:
+
+App discovers scopes: youtube.watch_history, instagram.likes, tiktok.engagement.
+
+User authorizes export.
+
+App receives structured engagement data across platforms.
+
+App identifies: "Your audience engages most with cooking tutorials posted Tuesday–Thursday mornings."
+
+Without GDPP: The creator manually reviews thousands of videos across three platforms — a 2–3 hour process that most creators never do.
+
+Part III: Normative Requirements
+
+This section defines what "GDPP Compliant" means. These are enforceable requirements, not suggestions. The key words "MUST", "MUST NOT", "SHOULD", "SHOULD NOT", and "MAY" are to be interpreted as described in RFC 2119.
+
+9. Portability Guarantees
+
+9.1 The Problem
+
+GDPR Article 20 requires portability "without hindrance." Without explicit, measurable guarantees, platforms can technically comply while making portability unusable — throttling exports to unusable speeds, marking requests as "async" indefinitely, or requiring "manual review" that never completes.
+
+GDPP makes these behaviors protocol violations.
+
+9.2 Time Guarantees
+
+Data Sources MUST complete exports within the following timeframes:
+
+Export Type
+
+Maximum Time
+
+Notes
+
+Synchronous exports (profile, settings)
+
+30 seconds
+
+Response must be immediate
+
+Small async exports (< 10K items)
+
+1 hour
+
+Job must complete, not just start
+
+Large async exports (10K–1M items)
+
+24 hours
+
+Progress must be queryable
+
+Full historical export (all data)
+
+7 days
+
+For complete account export
+
+Any export that exceeds these limits without documented technical justification is non-compliant.
+
+9.3 Rate Limit Floors
+
+Data Sources MUST support at minimum:
+
+Scope Type
+
+Minimum Rate
+
+Period
+
+Profile scopes
+
+60 requests
+
+per hour
+
+Content scopes (posts, messages)
+
+10 full exports
+
+per day
+
+Incremental sync
+
+100 requests
+
+per hour
+
+Scope queries
+
+100 requests
+
+per hour
+
+Full account export
+
+1 request
+
+per week
+
+Platforms MAY offer higher limits. They MUST NOT offer lower limits.
+
+9.4 Prohibited Practices
+
+The following behaviors are explicitly prohibited:
+
+Practice
+
+Example
+
+Why
+
+Indefinite async
+
+Export stuck in "processing" for weeks
+
+Defeats purpose of portability
+
+Manual review gates
+
+"Your export requires human review"
+
+Creates indefinite delays
+
+Degraded free tier
+
+Free users get 1 export/year
+
+Discriminates against users exercising rights
+
+Registration denial
+
+Denying consumer registration without cause
+
+Blocks authorized access
+
+Scope hiding
+
+Not listing scopes that exist
+
+Prevents discovery
+
+Schema obfuscation
+
+Proprietary formats that cannot be parsed
+
+Makes data unusable
+
+Expiry traps
+
+Export links that expire in under 24 hours
+
+Makes retrieval impractical
+
+10. Freshness Guarantees
+
+10.1 Why Freshness Matters
+
+When data is exported, the consumer needs to know how current it is. A tax preparation app working with 6-month-old transaction data will miss recent purchases. A health app correlating sleep data needs data from the last few days, not last quarter. Freshness is the difference between useful data and misleading data.
+
+10.2 Freshness SLAs by Scope Type
+
+Data Sources MUST support freshness parameters and provide explicit staleness markers:
+
+Scope Type
+
+Maximum Stale Age
+
+Refresh Capability
+
+Profile scopes
+
+24 hours
+
+Sync on request
+
+Activity scopes (posts, commits)
+
+1 hour
+
+Near real-time
+
+Transaction scopes
+
+1 hour
+
+Near real-time
+
+Message scopes
+
+15 minutes
+
+Real-time available
+
+Settings scopes
+
+24 hours
+
+Sync on request
+
+Historical archives
+
+7 days
+
+Batch refresh
+
+10.3 Freshness Request Parameters
+
+Consumers MAY specify freshness requirements in requests:
+
+{ "freshness": { "max_age_seconds": 86400, "refresh_if_stale": true, "accept_stale_with_marker": true } } 
+
+10.4 Staleness Markers
+
+When data cannot meet freshness requirements, Data Sources MUST include staleness markers:
+
+{ "freshness": { "captured_at": "2026-02-01T10:30:00Z", "is_fresh": true, "stale_since": null, "refresh_available": true } } 
+
+Data Sources MUST include captured_at in all responses. Data Sources MUST return stale_since when data exceeds requested freshness. Data Sources SHOULD support on-demand refresh for profile-type data.
+
+11. Authorization and Consent
+
+11.1 Authorization Method
+
+Method
+
+GDPP Mechanism
+
+Legal Basis
+
+OAuth 2.0
+
+Standard OAuth 2.0 authorization code flow with GDPP-specific scopes, expiration, and grantee (client_id)
+
+GDPR Art. 20 explicit consent
+
+OAuth 2.0 is the standard authorization mechanism for GDPP. It leverages existing platform authentication infrastructure, is well-understood by developers, and provides verifiable consent through standard token validation.
+
+11.2 Grant Structure
+
+An authorization grant specifies:
+
+User identity: The authenticated user on the Data Source platform
+
+Grantee identity: The consumer's client_id (registered application or personal server)
+
+Scopes: List of data scopes being authorized (e.g., gdpp:instagram.profile:read, gdpp:instagram.posts:read)
+
+Expiration: Token lifetime after which the grant is invalid
+
+Redirect URI: The consumer's registered callback URL
+
+Grants are issued through the platform's OAuth 2.0 authorization flow and MUST be recorded in the platform's audit log for verifiability.
+
+11.3 Grant Lifetime
+
+Grant Type
+
+Default Lifetime
+
+Maximum Lifetime
+
+One-time export
+
+24 hours
+
+7 days
+
+Incremental sync
+
+30 days
+
+1 year
+
+Standing authorization
+
+90 days
+
+Indefinite (with refresh)
+
+Data Sources MUST NOT require re-authorization more frequently than these defaults.
+
+11.4 Revocation
+
+When a user revokes a grant:
+
+Before export starts: Data Source MUST cancel the export.
+
+During export: Data Source SHOULD stop; MAY complete current batch.
+
+After export complete: No effect on already-exported data.
+
+Revocation affects future access. It does not recall data already exported — that data is now under the user's control. Revocations MUST be recorded in the platform's audit log. Platforms MUST support standard OAuth token revocation per RFC 7009.
+
+11.5 Authorization UI Requirements
+
+Data Sources MUST present clear authorization UI with:
+
+List of data scopes being accessed, with human-readable labels
+
+Identity of the requesting consumer
+
+Clear "Approve" and "Deny" buttons
+
+Link to revoke later
+
+Data Sources MUST NOT include pre-checked sharing boxes, countdown timers that pressure approval, or bundled consent (export + marketing + AI training).
+
+12. Data Ownership Classes
+
+User data often involves other people. GDPP defines three ownership classes to balance portability with third-party privacy:
+
+12.1 First-Party Data
+
+Data created solely by or about the requesting user: profile information, user-authored posts, purchase history, watch history, settings and preferences.
+
+Export rule: Always exportable at full fidelity.
+
+12.2 Joint Data
+
+Data involving the user and identifiable third parties: direct messages, shared documents, tagged photos, collaborative playlists.
+
+Export rule: Exportable with transformations. The user's content is exported at full fidelity. Other parties' identifiable information is pseudonymized (e.g., user_abc123 instead of @john_smith). Other parties' PII is redacted or hashed.
+
+12.3 Third-Party Data
+
+Data primarily about others, observed by the user: other users' profiles, public posts the user has seen, detailed follower/following lists.
+
+Export rule: Metadata only by default. Counts and aggregates are included. Identifiers are pseudonymized. Full content requires elevated consent and justification.
+
+12.4 Manifest Declaration
+
+Data Sources MUST declare data classes in their capability manifest:
+
+{ "scope": "instagram.messages", "data_class": "joint", "transformations": ["pseudonymize_other_party", "redact_other_pii"] } 
+
+13. Consumer Access Tiers
+
+13.1 Two-Tier Model
+
+GDPP mandates a two-tier access model to balance openness with security:
+
+Tier 1: Baseline Access — available to any consumer with a valid user authorization grant, no registration required.
+
+Export first-party data scopes
+
+Minimum rate limit floors apply
+
+Full historical and incremental sync
+
+Tier 2: Registered Access — available to consumers that complete platform registration.
+
+Access to joint and third-party data scopes
+
+Higher rate limits
+
+Webhook callbacks for async exports
+
+Priority queue for large exports
+
+13.2 Registration Rules
+
+Data Sources MUST process registration within 48 hours. Data Sources MUST approve automatically if compliance requirements are met. Data Sources MUST provide specific denial reasons if rejecting. Data Sources MUST NOT require "business justification" for baseline scopes, deny based on competitive relationship, or charge fees for registration.
+
+13.3 Baseline Access Scopes
+
+The following scopes MUST be available without registration: *.profile, *.settings, *.posts (user-authored), *.purchases, *.watch_history, *.listen_history.
+
+14. Non-Discrimination
+
+Data portability access MUST be equal across all user tiers.
+
+All users MUST have access to the same data scopes.
+
+All users MUST receive full historical data.
+
+Rate limit floors MUST apply equally to all users.
+
+Export completion time limits MUST apply equally to all users.
+
+Paid tiers MAY offer faster exports (above the floor), more frequent incremental syncs, and priority support. Paid tiers MUST NOT unlock additional data scopes, provide exclusive API features, or charge for exercising statutory rights.
+
+15. Scope and Schema Governance
+
+15.1 Scope Taxonomy
+
+GDPP uses a hierarchical scope taxonomy: {source}.{category}. Examples:
+
+Scope
+
+Description
+
+instagram.profile
+
+Instagram profile information
+
+instagram.posts
+
+User-authored Instagram posts
+
+youtube.watch_history
+
+YouTube viewing history
+
+amazon.orders
+
+Amazon purchase history
+
+oura.sleep
+
+Oura ring sleep data
+
+gmail.messages
+
+Gmail messages
+
+Source identifiers are registered in the scope registry. Category identifiers follow a common vocabulary where possible (profile, posts, messages, orders, watch_history, listen_history, transactions, settings).
+
+15.2 Schema Registry Model
+
+GDPP uses a federated schema registry with three tiers:
+
+Core Schemas — canonical schemas for common scope categories (profiles, posts, messages, transactions). Versioned and immutable once published.
+
+Extended Schemas — platform-specific fields beyond core schemas. MUST extend (not replace) core schemas. Consumers can safely ignore extended fields they don't understand.
+
+Proprietary Schemas — truly platform-specific data with no common analog. No interoperability expectations. Clearly marked as proprietary.
+
+15.3 Extension Rules
+
+Extended schemas MUST include all core fields. Extended schemas MAY add platform-specific fields. Extended schemas MUST NOT redefine core field semantics.
+
+15.4 Schema Licensing
+
+All core and extended schemas are released under Apache 2.0 / CC0 dual license for maximum adoption. Schemas are pinned to content-addressable storage (e.g., IPFS) for permanence. Platforms MAY host schemas on their own domain.
+
+16. Conformance Levels
+
+16.1 Three Levels
+
+Level 1: Bronze — Basic Portability
+
+Publish /.well-known/gdpp manifest
+
+Support export of first-party data scopes
+
+Meet minimum rate limit floors
+
+Complete full export within 7 days
+
+Support OAuth 2.0 authentication
+
+Level 2: Silver — Full Portability All Bronze requirements, plus:
+
+Support incremental sync with cursors
+
+Export joint data with proper transformations
+
+Implement two-tier consumer access model
+
+Complete large exports within 24 hours
+
+Provide user-accessible audit logging
+
+Use core schemas for common scopes
+
+Level 3: Gold — Ecosystem-Native Portability All Silver requirements, plus:
+
+Real-time incremental sync (< 1 hour latency)
+
+Third-party data with proper pseudonymization
+
+Support MCP transport bindings
+
+Webhook callbacks for all async operations
+
+Schema extensions published to registry
+
+Conformance test suite passing
+
+16.2 Declaring Conformance
+
+Data Sources declare their conformance level in the capability manifest:
+
+{ "conformance": { "level": "silver", "certified_date": "2026-02-01", "test_report_url": "https://example.com/gdpp-test-report.json" } } 
+
+Conformance is initially self-declared and verified through automated test suites. As the ecosystem matures, third-party auditors may offer formal certification.
+
+Part IV: Technical Specification
+
+17. Discovery Mechanism
+
+Data Sources MUST publish a capability manifest at:
+
+GET https://{domain}/.well-known/gdpp 
+
+This endpoint:
+
+MUST be publicly accessible (no authentication required)
+
+MUST return Content-Type: application/json
+
+MUST be served over HTTPS
+
+SHOULD include Cache-Control headers (recommended: max-age=3600)
+
+18. Capability Manifest
+
+18.1 Manifest Schema
+
+{ "$schema": "https://schemas.gdpp.org/manifest/v1.json", "gdpp_version": "1.0", "provider": { "name": "Instagram", "domain": "instagram.com", "logo_url": "https://instagram.com/static/images/logo.png", "privacy_policy_url": "https://instagram.com/legal/privacy", "support_url": "https://help.instagram.com/contact/data-portability" }, "endpoints": { "base_url": "https://api.instagram.com/gdpp/v1", "auth": "/auth", "data": "/data", "schemas": "/schemas", "consumers": "/consumers", "audit": "/audit" }, "scopes": [ { "scope": "instagram.profile", "description": "User profile information", "data_class": "first_party", "schema_url": "https://schemas.gdpp.org/instagram/profile/v1.json", "schema_id": "urn:gdpp:instagram:profile:v1", "export_mode": "sync", "freshness_sla_seconds": 86400, "rate_limit": { "requests_per_hour": 60 } }, { "scope": "instagram.posts", "description": "User posts, photos, and videos", "data_class": "first_party", "schema_url": "https://schemas.gdpp.org/instagram/posts/v1.json", "schema_id": "urn:gdpp:instagram:posts:v1", "export_mode": "async", "supports_incremental": true, "rate_limit": { "requests_per_hour": 10 } }, { "scope": "instagram.messages", "description": "Direct messages", "data_class": "joint", "schema_url": "https://schemas.gdpp.org/instagram/messages/v1.json", "schema_id": "urn:gdpp:instagram:messages:v1", "export_mode": "async", "supports_incremental": true, "transformations": ["pseudonymize_other_party", "redact_other_pii"], "rate_limit": { "requests_per_hour": 5 }, "restrictions": { "requires_registered_consumer": true } } ], "auth": { "types": ["oauth2"], "oauth2": { "authorization_url": "https://api.instagram.com/oauth/authorize", "token_url": "https://api.instagram.com/oauth/access_token", "revocation_url": "https://api.instagram.com/oauth/revoke", "scopes_supported": ["gdpp:instagram.profile:read", "gdpp:instagram.posts:read", "gdpp:instagram.messages:read"] } }, "consumer_registration": { "required_for_tier2": true, "registration_url": "https://developers.instagram.com/gdpp/register", "approval_type": "automatic" }, "transport": { "rest": { "supported": true, "openapi_url": "https://api.instagram.com/gdpp/v1/openapi.json" }, "mcp": { "supported": true, "server_url": "https://api.instagram.com/gdpp/v1/mcp" } }, "conformance": { "level": "silver", "certified_date": "2026-02-01" }, "compliance": { "gdpr": true, "dma": true, "ccpa": true, "non_discrimination": true, "audit_retention_days": 365 } } 
+
+18.2 Manifest Fields Reference
+
+Field
+
+Type
+
+Required
+
+Description
+
+gdpp_version
+
+string
+
+Yes
+
+Protocol version (semver)
+
+provider.name
+
+string
+
+Yes
+
+Human-readable platform name
+
+provider.domain
+
+string
+
+Yes
+
+Primary domain
+
+endpoints.base_url
+
+string
+
+Yes
+
+Base URL for GDPP API
+
+scopes
+
+array
+
+Yes
+
+Available data scopes
+
+scopes[].scope
+
+string
+
+Yes
+
+Scope identifier ({source}.{category})
+
+scopes[].data_class
+
+enum
+
+Yes
+
+first_party, joint, or third_party
+
+scopes[].schema_url
+
+string
+
+Yes
+
+URL to JSON Schema
+
+scopes[].schema_id
+
+string
+
+Yes
+
+Stable schema identifier (URN)
+
+scopes[].export_mode
+
+enum
+
+Yes
+
+sync or async
+
+scopes[].supports_incremental
+
+boolean
+
+No
+
+Whether incremental exports supported
+
+scopes[].freshness_sla_seconds
+
+integer
+
+No
+
+Maximum data age in seconds
+
+auth.types
+
+array
+
+Yes
+
+Supported auth methods
+
+consumer_registration.required_for_tier2
+
+boolean
+
+Yes
+
+Whether Tier 2 requires registration
+
+transport
+
+object
+
+Yes
+
+Supported communication protocols
+
+conformance.level
+
+enum
+
+Yes
+
+bronze, silver, or gold
+
+19. Authentication and Authorization
+
+19.1 Authentication Mode
+
+Mode
+
+Use Case
+
+Trust Model
+
+OAuth 2.0
+
+User authorizes consumer via browser-based consent flow
+
+Platform authenticates user, issues scoped access token
+
+19.2 OAuth 2.0 Authorization Flow
+
+GDPP uses the standard OAuth 2.0 authorization code flow (RFC 6749) with GDPP-specific scopes. Consumers MUST use PKCE (RFC 7636) for all authorization requests.
+
+Step 1: Authorization Request
+
+The consumer redirects the user to the Data Source's authorization endpoint:
+
+GET https://api.instagram.com/oauth/authorize? response_type=code& client_id=con_abc123& redirect_uri=https://server.example.com/callback& scope=gdpp:instagram.profile:read gdpp:instagram.posts:read& state=random_state_value& code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM& code_challenge_method=S256 
+
+Step 2: User Consent
+
+The Data Source presents the authorization UI (per Section 11.5), showing the requested scopes and consumer identity. The user approves or denies.
+
+Step 3: Authorization Code Exchange
+
+After user approval, the Data Source redirects to the consumer's callback with an authorization code:
+
+POST https://api.instagram.com/oauth/access_token Content-Type: application/x-www-form-urlencoded grant_type=authorization_code& code=auth_code_xyz& client_id=con_abc123& client_secret=secret_xyz& redirect_uri=https://server.example.com/callback& code_verifier=dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk 
+
+Step 4: Access Token Response
+
+{ "access_token": "gdpp_at_abc123xyz", "token_type": "Bearer", "expires_in": 3600, "refresh_token": "gdpp_rt_def456uvw", "scope": "gdpp:instagram.profile:read gdpp:instagram.posts:read" } 
+
+OAuth scopes map directly to GDPP scopes using the format: gdpp:{source}.{category}:read (e.g., gdpp:instagram.profile:read, gdpp:instagram.posts:read).
+
+19.3 Consumer Authentication
+
+Consumers authenticate to the Data Source API using the Authorization header with a Bearer token:
+
+Authorization: Bearer <access_token> 
+
+The Data Source validates the access token (via introspection per RFC 7662 or JWT verification), checks the token's scopes match the requested data, and returns the requested data.
+
+20. Scope Data API
+
+20.1 Read Scope Data
+
+GET /gdpp/v1/data/{scope} Authorization: Bearer <access_token> GDPP-Request-ID: <uuid> 
+
+Example: GET /gdpp/v1/data/instagram.profile
+
+20.2 Response
+
+{ "$schema": "https://schemas.gdpp.org/instagram/profile/v1.json", "scope": "instagram.profile", "exported_at": "2026-02-02T10:00:00Z", "freshness": { "captured_at": "2026-02-02T09:15:00Z", "is_fresh": true }, "data": { "username": "alice", "display_name": "Alice Smith", "bio": "Engineer. Builder. Coffee enthusiast.", "profile_picture_url": "https://...", "followers_count": 1234, "following_count": 567, "created_at": "2020-03-15T10:00:00Z" } } 
+
+20.3 Incremental Sync
+
+For scopes that support incremental exports, include a since parameter:
+
+GET /gdpp/v1/data/instagram.posts?since=2025-12-01T00:00:00Z 
+
+Response includes a cursor for the next sync:
+
+{ "$schema": "https://schemas.gdpp.org/instagram/posts/v1.json", "scope": "instagram.posts", "exported_at": "2026-02-02T10:00:00Z", "data": { "items": [ "..." ], "pagination": { "total_items": 150, "has_more": true, "next_cursor": "cursor_abc123" } }, "sync": { "cursor": "cursor_abc123", "last_timestamp": "2026-02-02T09:30:00Z" } } 
+
+Fetch next page: GET /gdpp/v1/data/instagram.posts?cursor=cursor_abc123
+
+20.4 Async Export
+
+For large scopes, the Data Source MAY return an async job:
+
+{ "export_id": "exp_xyz789", "status": "processing", "estimated_completion": "2026-02-02T10:05:00Z", "poll_url": "/gdpp/v1/data/instagram.posts/export/exp_xyz789" } 
+
+20.5 Bulk Export
+
+To export multiple scopes at once:
+
+POST /gdpp/v1/data/export Content-Type: application/json Authorization: Bearer <access_token> { "scopes": ["instagram.profile", "instagram.posts", "instagram.likes"], "options": { "incremental_since": "2025-01-01T00:00:00Z" }, "callback": { "webhook_url": "https://server.example.com/gdpp/callback", "webhook_secret": "whsec_..." } } 
+
+20.6 Webhook Callback
+
+When callback.webhook_url is provided for async exports:
+
+POST https://server.example.com/gdpp/callback Content-Type: application/json X-GDPP-Signature: sha256=abc123... { "event": "export.completed", "export_id": "exp_xyz789", "status": "completed", "scopes": ["instagram.profile", "instagram.posts", "instagram.likes"], "data_urls": { "instagram.profile": "/gdpp/v1/data/instagram.profile/export/exp_xyz789", "instagram.posts": "/gdpp/v1/data/instagram.posts/export/exp_xyz789" }, "timestamp": "2026-02-02T10:04:32Z" } 
+
+21. Consumer Registration
+
+21.1 Registration Request
+
+For Tier 2 access:
+
+POST /gdpp/v1/consumers Content-Type: application/json { "name": "Personal Data Server", "type": "personal_server", "description": "User's personal data server for data portability", "website_url": "https://example.com", "webhook_url": "https://server.example.com/webhook", "redirect_uris": ["https://server.example.com/callback"], "scopes_requested": ["instagram.profile", "instagram.posts", "instagram.messages"], "compliance": { "accepts_dpa": true, "data_retention_policy": "user_controlled", "audit_logging": true } } 
+
+21.2 Registration Response
+
+{ "consumer_id": "con_abc123", "client_id": "con_abc123", "client_secret": "gdpp_secret_xyz789", "status": "approved", "approved_scopes": ["instagram.profile", "instagram.posts"], "pending_scopes": ["instagram.messages"], "rate_limits": { "requests_per_minute": 60, "exports_per_day": 1000 } } 
+
+22. Transport Bindings
+
+22.1 REST API (Required)
+
+The REST API described in this specification is the primary transport. All Data Sources MUST support REST.
+
+22.2 Model Context Protocol (MCP) Binding
+
+Data Sources MAY expose MCP tools, enabling AI applications to discover and use GDPP data sources:
+
+{ "name": "instagram_gdpp", "description": "Access user's Instagram data via GDPP", "inputSchema": { "type": "object", "properties": { "scope": { "type": "string", "description": "GDPP scope (e.g., instagram.profile)" }, "since": { "type": "string", "format": "date-time", "description": "For incremental sync" }, "access_token": { "type": "string", "description": "OAuth 2.0 access token" } }, "required": ["scope", "access_token"] } } 
+
+22.3 Request Headers
+
+All requests MUST include:
+
+Header
+
+Required
+
+Description
+
+GDPP-Request-ID
+
+Yes
+
+UUID for request tracing
+
+GDPP-Idempotency-Key
+
+Recommended
+
+For safe retries
+
+User-Agent
+
+Recommended
+
+Consumer software and version
+
+23. Schema Registry
+
+23.1 Schema Requirements
+
+All exported data MUST conform to a published JSON Schema:
+
+Schemas MUST be hosted at stable URLs (HTTPS or IPFS)
+
+Schemas MUST include $id with the canonical schema identifier
+
+Schemas MUST be versioned (v1, v2, etc.)
+
+Data Sources MUST support at least N-1 schema versions
+
+23.2 Schema Discovery
+
+GET /gdpp/v1/schemas 
+
+Response:
+
+{ "schemas": [ { "scope": "instagram.profile", "schema_id": "urn:gdpp:instagram:profile:v1", "schema_url": "https://schemas.gdpp.org/instagram/profile/v1.json", "version": "1.0.0", "extends": "urn:gdpp:core:profile:v1" } ] } 
+
+23.3 Core Schema Example
+
+{ "$schema": "https://json-schema.org/draft/2020-12/schema", "$id": "https://schemas.gdpp.org/core/profile/v1.json", "title": "GDPP Core Profile", "type": "object", "properties": { "$schema": { "type": "string" }, "scope": { "type": "string" }, "exported_at": { "type": "string", "format": "date-time" }, "freshness": { "type": "object", "properties": { "captured_at": { "type": "string", "format": "date-time" }, "is_fresh": { "type": "boolean" } }, "required": ["captured_at", "is_fresh"] }, "data": { "type": "object", "properties": { "username": { "type": "string" }, "display_name": { "type": "string" }, "bio": { "type": "string" }, "profile_picture_url": { "type": "string", "format": "uri" }, "followers_count": { "type": "integer" }, "following_count": { "type": "integer" }, "created_at": { "type": "string", "format": "date-time" } }, "required": ["username"] } }, "required": ["$schema", "scope", "exported_at", "data"] } 
+
+24. Error Handling
+
+24.1 Error Response Format
+
+{ "error": { "code": "scope_not_granted", "message": "The requested scope is not included in the authorization grant", "details": { "requested_scope": "instagram.messages", "granted_scopes": ["instagram.profile", "instagram.posts"] } }, "request_id": "req_abc123" } 
+
+24.2 Standard Error Codes
+
+HTTP Status
+
+Error Code
+
+Description
+
+400
+
+invalid_request
+
+Malformed request
+
+401
+
+unauthorized
+
+Missing or invalid authentication
+
+403
+
+forbidden
+
+Valid authentication but action not permitted
+
+403
+
+scope_not_granted
+
+Requested scope not in grant
+
+403
+
+grant_expired
+
+Authorization grant has expired
+
+403
+
+grant_revoked
+
+Authorization grant has been revoked
+
+404
+
+not_found
+
+Resource not found
+
+409
+
+export_in_progress
+
+Concurrent export limit reached
+
+422
+
+invalid_scope
+
+Requested scope not available
+
+429
+
+rate_limited
+
+Rate limit exceeded
+
+500
+
+internal_error
+
+Server error
+
+503
+
+temporarily_unavailable
+
+Service maintenance
+
+24.3 Retry Behavior
+
+Consumers SHOULD implement exponential backoff with jitter:
+
+retry_delay = min(base_delay * (2 ^ attempt) + random_jitter, max_delay) 
+
+Recommended: base_delay = 1 second, max_delay = 60 seconds, max_attempts = 5.
+
+25. Security Considerations
+
+25.1 Transport Security
+
+All endpoints MUST be served over HTTPS (TLS 1.2 minimum, TLS 1.3 recommended)
+
+Data Sources MUST use valid, non-self-signed certificates
+
+25.2 Authentication Security
+
+Authorization requests MUST use PKCE (RFC 7636) to prevent authorization code interception
+
+Authorization requests MUST include a state parameter to prevent CSRF attacks
+
+Access tokens MUST be short-lived (recommended: 1 hour)
+
+Refresh tokens MUST be rotated on use
+
+Token revocation MUST be supported per RFC 7009
+
+Redirect URIs MUST be pre-registered and matched exactly
+
+25.3 Rate Limiting
+
+Data Sources MUST implement rate limiting:
+
+Limit Type
+
+Recommended Value
+
+Purpose
+
+Requests per minute
+
+60
+
+Prevent abuse
+
+Exports per day per user
+
+10
+
+Prevent data harvesting
+
+Concurrent exports
+
+1
+
+Resource management
+
+Rate limit responses MUST include Retry-After, X-RateLimit-Limit, X-RateLimit-Remaining, and X-RateLimit-Reset headers.
+
+25.4 Data Minimization
+
+Consumers SHOULD request only needed scopes
+
+Data Sources MAY redact sensitive fields not explicitly requested
+
+Third-party PII SHOULD be anonymized per Section 12
+
+25.5 Abuse Prevention
+
+Data Sources MAY implement anomaly detection, consumer reputation scoring, and temporary blocks for policy violations.
+
+26. Compliance and Audit
+
+26.1 Audit Logging
+
+Data Sources MUST maintain audit logs for all GDPP operations:
+
+GET /gdpp/v1/audit?since=2025-01-01 Authorization: Bearer <access_token> 
+
+Response:
+
+{ "audit_records": [ { "record_id": "aud_abc123", "timestamp": "2026-02-02T10:00:00Z", "operation": "export", "consumer_id": "con_abc123", "scopes": ["instagram.profile", "instagram.posts"], "items_exported": { "instagram.profile": 1, "instagram.posts": 2500 }, "status": "completed" } ] } 
+
+26.2 Data Retention
+
+Export job data MUST be retained for at least 24 hours after completion
+
+Export job data SHOULD be deleted within 30 days
+
+Audit logs MUST be retained for the period specified in compliance.audit_retention_days
+
+26.3 User Notification
+
+Data Sources SHOULD notify users of:
+
+First export by a new consumer (email notification)
+
+Exports of sensitive scopes (in-app notification)
+
+Weekly digest of export activity (opt-in)
+
+Part V: Interoperability
+
+27. Relationship to Public Data Protocols
+
+GDPP focuses on personal, private data — information that belongs to individual users and requires their explicit consent to access. This distinguishes GDPP from protocols that handle public or semi-public data:
+
+27.1 DSNP (Decentralized Social Networking Protocol)
+
+DSNP defines a shared social layer for public social interactions — posts, follows, reactions — that are designed to be public by nature. GDPP and DSNP are complementary:
+
+Aspect
+
+DSNP
+
+GDPP
+
+Data type
+
+Public social graph, public posts
+
+Private personal data
+
+Access model
+
+Public by default
+
+Consent-required
+
+Primary consumer
+
+Social applications
+
+Personal data infrastructure, applications
+
+Portability model
+
+User carries public identity across apps
+
+User exports private data from platforms
+
+Interoperability: A user's complete digital identity spans both protocols. Their public posts and social graph live on DSNP. Their private messages, purchase history, and personal preferences are accessible via GDPP. Applications that serve users well need access to both layers.
+
+27.2 AT Protocol (Bluesky)
+
+The AT Protocol enables federated social networking with user-controlled identity and portable public data. Like DSNP, it handles public social interactions. GDPP handles the private complement:
+
+Aspect
+
+AT Protocol
+
+GDPP
+
+Data type
+
+Public social posts, follows
+
+Private personal data
+
+Architecture
+
+Federated servers, user-hosted repos
+
+Platform-implemented APIs
+
+Identity
+
+Decentralized identifiers (DIDs)
+
+Platform accounts (OAuth 2.0)
+
+Portability
+
+User moves their repo between servers
+
+User exports data from platforms
+
+Interoperability: AT Protocol handles where a user's public social presence lives. GDPP handles how their private data (from any platform) is made portable. GDPP uses standard OAuth 2.0, which can integrate with AT Protocol's authentication system where platforms support both protocols.
+
+27.3 The Complete Picture
+
+A user's digital life spans public and private data across many platforms. No single protocol covers everything:
+
+Layer
+
+Protocol
+
+Data Type
+
+Example
+
+Public social
+
+DSNP, AT Protocol
+
+Posts, follows, public interactions
+
+"Alice posted about hiking"
+
+Private personal
+
+GDPP
+
+Messages, purchases, health, preferences
+
+"Alice bought hiking boots last week"
+
+GDPP schemas are designed to coexist with these protocols. The scope namespace ({source}.{category}) avoids collision with DSNP or AT Protocol identifiers. Applications that access multiple protocols can combine public context (DSNP/AT) with private data (GDPP) to serve users comprehensively.
+
+28. Integration with Personal Data Infrastructure
+
+GDPP defines how data gets out of platforms. What happens after export is governed by the user's chosen personal data infrastructure — whether that is a personal server, a local application, or a cloud-hosted data vault.
+
+28.1 The Full Stack
+
+Layer 1: SUPPLY (GDPP — This Specification) "How platforms expose data" Platform implements /.well-known/gdpp Consumer discovers scopes, authenticates, requests data │ │ Exported data (JSON, conforming to GDPP schemas) ▼ Layer 2: OWNERSHIP (User's personal data infrastructure) "How users store, encrypt, and control their data" Personal server receives and stores exported data User grants/revokes access to specific scopes │ │ Granted access (scope-based) ▼ Layer 3: APPLICATIONS "What applications do with the data" Tax preparation, health insights, content analysis Cross-platform aggregation and recommendations AI assistants with full user context 
+
+28.2 Schema Alignment
+
+GDPP schemas are designed to be directly usable by personal data infrastructure:
+
+GDPP Export Field
+
+Common Personal Server Field
+
+$schema
+
+$schema
+
+scope
+
+scope
+
+exported_at
+
+collectedAt
+
+data
+
+data
+
+This 1:1 mapping ensures exported data can be stored in personal data infrastructure without transformation.
+
+Call for Collaboration
+
+GDPP is an open standard that benefits from broad participation. We invite:
+
+Platforms to implement GDPP and shape the schemas for their data scopes. Early adopters define what their data looks like in the standard.
+
+Developers to build applications and personal data infrastructure that consume GDPP APIs, providing feedback on what works and what needs improvement.
+
+Policymakers to reference GDPP as a technical benchmark for data portability compliance.
+
+Civil society organizations to participate in schema governance and advocate for user-centered design.
+
+Researchers to study GDPP's impact on data portability, competition, and user agency.
+
+Contributions are welcome through the open specification repository. All contributions are governed by the project's code of conduct and contribution guidelines.
+

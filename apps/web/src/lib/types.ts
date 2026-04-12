@@ -31,7 +31,7 @@ export interface DemoState {
   syncStateUpdated: boolean;           // connector emitted STATE messages this run
   incrementalPostCount: number | null; // records from last changes_since query
   // Post-demo enforcement demos
-  tokenSpent: boolean;
+  singleUseConsumed: boolean;
   grantRevoked: boolean;
   // Gmail connector
   gmailConnected: boolean;

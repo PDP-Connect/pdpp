@@ -74,6 +74,25 @@ export async function initDb(path = ':memory:') {
     ON records(connector_id, stream, version)
   `);
 
+  await db.query(sql`
+    CREATE TABLE IF NOT EXISTS record_changes (
+      connector_id  TEXT NOT NULL,
+      stream        TEXT NOT NULL,
+      record_key    TEXT NOT NULL,
+      version       INTEGER NOT NULL,
+      record_json   TEXT,
+      emitted_at    TEXT NOT NULL,
+      deleted       INTEGER NOT NULL DEFAULT 0,
+      deleted_at    TEXT,
+      PRIMARY KEY(connector_id, stream, version)
+    )
+  `);
+
+  await db.query(sql`
+    CREATE INDEX IF NOT EXISTS idx_record_changes_record
+    ON record_changes(connector_id, stream, record_key, version)
+  `);
+
   // Blobs table
   await db.query(sql`
     CREATE TABLE IF NOT EXISTS blobs (

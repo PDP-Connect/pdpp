@@ -43,8 +43,9 @@ DTI is an independent 501(c)(4) nonprofit (not Linux Foundation). Path is direct
 The OAuth approach (define the grant, not the resource API) is the right framing for DTI. The spec should:
 - Use RFC 9396 as the envelope (standard web protocol, not custom)
 - Define the grant as a portable consent artifact that any server can enforce
+- Be explicit that disclosure constraints are protocol-enforced while fields like purpose and retention are machine-readable policy declarations, not generic downstream-use enforcement
 - Define the connector protocol as a reference implementation for data collection
 - Explicitly not define the resource API (like OAuth doesn't define what you do with the token)
-- Frame continuous/recurring grants as the answer to DMA's real-time portability requirement
+- Frame `continuous` grants as the answer to DMA's real-time portability requirement
 
 Source: Gemini 3.1 Pro Preview research with Google Search (2026-03-28), checking dtinit.org, conference talks, blog posts, governance docs.

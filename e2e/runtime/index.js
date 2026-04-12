@@ -6,10 +6,6 @@
  */
 import { spawn } from 'child_process';
 import { createInterface } from 'readline';
-import { createReadStream } from 'fs';
-
-const AS_URL = process.env.AS_URL || 'http://localhost:7662';
-const RS_URL = process.env.RS_URL || 'http://localhost:7663';
 
 /**
  * Run a connector to completion.
@@ -21,6 +17,8 @@ const RS_URL = process.env.RS_URL || 'http://localhost:7663';
  * @param {object} opts.manifest - Full connector manifest
  * @param {object} opts.state - Current StreamState (null on first run)
  * @param {string} opts.collectionMode - 'full_refresh' | 'incremental'
+ * @param {boolean} opts.persistState - Whether STATE checkpoints should be committed on success
+ * @param {string} opts.rsUrl - Resource server base URL
  * @param {function} opts.onInteraction - async (interaction) => response
  * @param {function} opts.onProgress - (msg) => void
  * @returns {Promise<{status, records_emitted, state}>}
@@ -33,6 +31,8 @@ export async function runConnector(opts) {
     manifest,
     state = null,
     collectionMode = 'incremental',
+    persistState = true,
+    rsUrl = process.env.RS_URL || 'http://localhost:7663',
     onInteraction = defaultInteractionHandler,
     onProgress = (msg) => process.stderr.write(`[runtime] ${JSON.stringify(msg)}\n`),
   } = opts;
@@ -82,7 +82,7 @@ export async function runConnector(opts) {
     const batch = recordBatch[stream];
     if (!batch || !batch.length) return;
     const ndjson = batch.map(r => JSON.stringify(r)).join('\n');
-    const url = `${RS_URL}/v1/ingest/${encodeURIComponent(stream)}?connector_id=${encodeURIComponent(connectorId)}`;
+    const url = `${rsUrl}/v1/ingest/${encodeURIComponent(stream)}?connector_id=${encodeURIComponent(connectorId)}`;
     const resp = await fetch(url, {
       method: 'POST',
       headers: {
@@ -107,10 +107,10 @@ export async function runConnector(opts) {
   }
 
   // Process a STATE message: persist to RS
-  async function persistState(stream, cursor) {
+  async function commitState(stream, cursor) {
     newState[stream] = cursor;
-    const url = `${RS_URL}/v1/state/${encodeURIComponent(connectorId)}`;
-    await fetch(url, {
+    const url = `${rsUrl}/v1/state/${encodeURIComponent(connectorId)}`;
+    const resp = await fetch(url, {
       method: 'PUT',
       headers: {
         'Authorization': `Bearer ${ownerToken}`,
@@ -118,6 +118,10 @@ export async function runConnector(opts) {
       },
       body: JSON.stringify({ state: { [stream]: cursor } }),
     });
+    if (!resp.ok) {
+      const body = await resp.text();
+      throw new Error(`State persistence failed for ${stream}: ${resp.status} ${body}`);
+    }
   }
 
   return new Promise((resolve, reject) => {
@@ -159,7 +163,7 @@ export async function runConnector(opts) {
         case 'STATE': {
           // Flush records for this stream before persisting state
           await flushBatch(msg.stream);
-          await persistState(msg.stream, msg.cursor);
+          newState[msg.stream] = msg.cursor;
           break;
         }
 
@@ -197,6 +201,11 @@ export async function runConnector(opts) {
           if (msg.status === 'succeeded') {
             // Flush any remaining records
             await flushAll();
+            if (persistState) {
+              for (const [stream, cursor] of Object.entries(newState)) {
+                await commitState(stream, cursor);
+              }
+            }
           }
 
           onProgress({ type: 'done', status: msg.status, records_emitted: msg.records_emitted });
@@ -283,8 +292,9 @@ async function defaultInteractionHandler(interaction) {
 /**
  * Load sync state from the RS for a connector
  */
-export async function loadSyncState(connectorId, ownerToken) {
-  const url = `${RS_URL}/v1/state/${encodeURIComponent(connectorId)}`;
+export async function loadSyncState(connectorId, ownerToken, opts = {}) {
+  const rsUrl = opts.rsUrl || process.env.RS_URL || 'http://localhost:7663';
+  const url = `${rsUrl}/v1/state/${encodeURIComponent(connectorId)}`;
   const resp = await fetch(url, {
     headers: { 'Authorization': `Bearer ${ownerToken}` },
   });
