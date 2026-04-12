@@ -15,9 +15,9 @@ The Collection Profile is architecturally separate from the core protocol. A res
 
 ### Collection method abstraction
 
-Connectors abstract over the source platform's data access interface. The runtime does not know or constrain how a connector obtains data — only that it produces conformant RECORD messages via stdout. A connector that collects data via browser automation and one that calls a platform's export API both use the same START/RECORD/STATE/DONE protocol, the same binding matching, and the same state management.
+Connectors abstract over the source platform's data access interface. The runtime does not standardize the connector's source-specific collection logic; it standardizes only the runtime contract around bindings, scope, state, and emitted messages. A connector that collects data via browser automation and one that calls a platform's export API both use the same START/RECORD/STATE/DONE protocol, the same binding matching, and the same state management.
 
-This abstraction is intentional. Many platforms do not currently offer structured data portability APIs. The `browser_automation` binding enables connectors that drive a browser to collect data from a platform's web UI. As platforms adopt data portability standards or offer their own APIs, connector implementations can change without affecting the consent surface, grant enforcement, or query API. Only the child process behind the connector boundary changes; the protocol layers above it remain identical.
+This abstraction is intentional. Many platforms do not currently offer structured data portability APIs. The `browser_automation` binding enables connectors that drive a browser to collect data from a platform's web UI. As platforms adopt data portability standards or offer their own APIs, connector implementations can change without changing the consent surface, grant enforcement, or query API.
 
 ---
 
