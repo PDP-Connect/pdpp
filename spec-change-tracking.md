@@ -40,6 +40,8 @@ Authorization: Bearer <access_token>
 
 The `changes_since` cursor is an opaque token from a previous `changes_since` session's terminal-page `next_changes_since`. It carries the client's last sync position and the grant's field projection context. Clients MUST treat cursors as opaque. `cursor`/`next_cursor` and `changes_since`/`next_changes_since` are distinct token spaces.
 
+Within a paginated `changes_since` session, the RS anchors all pages to a fixed session horizon chosen on the first page. New writes that arrive after page 1 MUST NOT drift into later pages of that same session; they appear in the next session seeded from the terminal-page `next_changes_since`.
+
 Projection safety is computed on the client's authorized projection, not on the full record. An implementation that first selects rows based on full-record changes and only applies projection afterward is non-conformant, because it leaks that hidden fields changed.
 
 ### Tombstones

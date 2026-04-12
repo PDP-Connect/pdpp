@@ -67,7 +67,7 @@ Each section occupies roughly one viewport height at rest, expanding when the us
 **Concept**: Connectors collect data from platforms into the server
 **Component**: ConnectorCard (Instagram specimen)
 **Narrative**: "A connector is a program that knows how to talk to Instagram's API. It collects your data and stores it in your server's streams."
-**Depth**: Connector runtime, START/DONE messages, binding matching, INTERACTION flow
+**Depth**: Connector runtime, START/DONE messages, binding matching (browser_automation as polyfill for platform non-cooperation; consent/enforcement agnostic to collection method), INTERACTION flow
 
 #### 3. An app wants access
 **Concept**: A client application sends a selection request

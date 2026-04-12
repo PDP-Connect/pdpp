@@ -386,6 +386,8 @@ PDPP-Version: 2026-04-06
 
 If only hidden fields had changed on a granted record, that record would not appear. `changes_since` eligibility is computed on the authorized projection, not on the full stored record.
 
+If this session had multiple pages, the follow-on `next_cursor` pages would stay anchored to the same session window as the first page. New writes arriving after page 1 would wait for the next sync session seeded from the terminal-page `next_changes_since`.
+
 ---
 
 ## Example 3: Retention and revocation are not deletion

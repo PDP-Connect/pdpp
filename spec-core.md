@@ -19,7 +19,7 @@ The protocol specifies:
 
 **Design axiom:** Connector manifests define the consent surface. Grants define actual consent. These are separate concerns and must not be conflated.
 
-Collection of data from source platforms is a separate concern addressed in the companion [PDPP Collection Profile](spec-collection-profile). The core protocol is useful without it: a resource server holding pre-collected data can serve that data under grant enforcement with no collection machinery involved.
+Collection of data from source platforms is a separate concern addressed in the companion [PDPP Collection Profile](spec-collection-profile). The core protocol is useful without it: a resource server holding pre-collected data can serve that data under grant enforcement with no collection machinery involved. Data may reach the personal server via connector-driven collection, regulatory data exports, manual import, or platform-native APIs. The consent and enforcement layers defined in this specification (Sections 5–8) are agnostic to the collection method.
 
 ### Relationship to existing standards
 
@@ -1014,6 +1014,8 @@ Returns records from a stream, filtered by the grant and any additional request 
 **Incremental sync for mutable streams:** Pass `changes_since` to retrieve only records changed since a previous sync. The resource server returns changed records within the grant's authorized field projection. If a record was deleted, a tombstone entry is included. If the cursor has expired (HTTP 410), the client must perform a full re-sync.
 
 Eligibility for `changes_since` MUST be computed on the grant-authorized projection, not on the unprojected record. Returning a record whose authorized projection is unchanged is a protocol violation because it leaks that hidden fields changed.
+
+If a `changes_since` response is paginated, all pages in that session MUST be anchored to the same session horizon selected on the first page. New writes arriving after page 1 MUST NOT appear in later pages of that same session; they surface in the next session via the terminal-page `next_changes_since`.
 
 **Filter on unauthorized field:** RS MUST reject a `filter[{field}]` parameter targeting a field outside the grant's authorized projection with 403 `field_not_granted`.
 

@@ -198,6 +198,91 @@ test('PDPP e2e integration', async (t) => {
     });
   });
 
+  await t.test('changes_since still returns a record when an authorized change is followed by an unauthorized change before sync', async () => {
+    await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
+      const ownerToken = await issueOwnerToken(asUrl, 'u1');
+      await seedSpotify(rsUrl, spotifyManifest, ownerToken);
+
+      const approved = await approveGrant(asUrl, 'u1', {
+        client_id: 'concert_recommendation_app',
+        connector_id: spotifyManifest.connector_id,
+        purpose_code: 'https://pdpp.org/purpose/personalization',
+        purpose_description: 'Maintain a concert-recommendation profile over time',
+        access_mode: 'continuous',
+        streams: [{ name: 'top_artists', view: 'basic' }],
+      });
+
+      const baseline = await fetchJson(
+        `${rsUrl}/v1/streams/top_artists/records?changes_since=${encodeURIComponent(Buffer.from(JSON.stringify({ kind: 'changes_since', version: 0 })).toString('base64'))}`,
+        { headers: { Authorization: `Bearer ${approved.token}` } }
+      );
+
+      assert.equal(baseline.status, 200);
+      assert.ok(baseline.body.data.length >= 3);
+
+      const targetId = baseline.body.data[2].id;
+      const ownerRecord = await fetchJson(
+        `${rsUrl}/v1/streams/top_artists/records/${encodeURIComponent(targetId)}?connector_id=${encodeURIComponent(spotifyManifest.connector_id)}`,
+        { headers: { Authorization: `Bearer ${ownerToken}` } }
+      );
+
+      const authorizedUpdate = {
+        key: targetId,
+        data: {
+          ...ownerRecord.body.data,
+          genres: [...ownerRecord.body.data.genres, 'journal-proof'],
+          source_updated_at: new Date().toISOString(),
+        },
+        emitted_at: new Date().toISOString(),
+      };
+
+      await fetchJson(
+        `${rsUrl}/v1/ingest/top_artists?connector_id=${encodeURIComponent(spotifyManifest.connector_id)}`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${ownerToken}`,
+            'Content-Type': 'application/x-ndjson',
+          },
+          body: JSON.stringify(authorizedUpdate),
+        }
+      );
+
+      const unauthorizedUpdate = {
+        key: targetId,
+        data: {
+          ...authorizedUpdate.data,
+          popularity: 777,
+          source_updated_at: new Date().toISOString(),
+        },
+        emitted_at: new Date().toISOString(),
+      };
+
+      await fetchJson(
+        `${rsUrl}/v1/ingest/top_artists?connector_id=${encodeURIComponent(spotifyManifest.connector_id)}`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${ownerToken}`,
+            'Content-Type': 'application/x-ndjson',
+          },
+          body: JSON.stringify(unauthorizedUpdate),
+        }
+      );
+
+      const delta = await fetchJson(
+        `${rsUrl}/v1/streams/top_artists/records?changes_since=${encodeURIComponent(baseline.body.next_changes_since)}`,
+        { headers: { Authorization: `Bearer ${approved.token}` } }
+      );
+
+      assert.equal(delta.status, 200);
+      assert.equal(delta.body.data.length, 1);
+      assert.equal(delta.body.data[0].id, targetId);
+      assert.equal(delta.body.data[0].data.genres.at(-1), 'journal-proof');
+      assert.equal('popularity' in delta.body.data[0].data, false);
+    });
+  });
+
   await t.test('single_use grants issue one token but allow reuse of that token until expiry', async () => {
     await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
       const ownerToken = await issueOwnerToken(asUrl, 'u1');

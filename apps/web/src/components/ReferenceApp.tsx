@@ -134,7 +134,7 @@ const SECTION_CONTENT: SectionConfig[] = [
   {
     id: 'ingest',
     headline: 'Your data arrives automatically',
-    narrative: 'Connectors collect your data from Instagram, Spotify, and other platforms and store it on your personal server. You never copy-paste or download anything.',
+    narrative: 'Connectors collect your data from Instagram, Spotify, and other platforms — whether those platforms offer data APIs or not — and store it on your personal server in structured streams.',
     surface: 'protocol',
   },
   {
@@ -188,7 +188,7 @@ const SECTION_CONTENT: SectionConfig[] = [
   {
     id: 'multi',
     headline: 'One protocol, every platform',
-    narrative: 'Instagram, Spotify, health data, email. Different sources, same consent flow, same enforcement, same controls. The protocol works identically regardless of where the data comes from.',
+    narrative: 'Instagram, Spotify, health data, email. Different sources, different access methods, but the same consent flow, same enforcement, same controls. The protocol works identically regardless of how data was collected.',
     surface: 'neutral',
   },
   {
@@ -1027,6 +1027,9 @@ export function ReferenceApp({ hero, currentLabel = 'Reference' }: ReferenceAppP
               <span><span style={{ opacity: 0.65 }}>SKIP_RESULT</span> — connector signals intentional stream skip (rate limit, unavailable).</span>
               <span><span style={{ opacity: 0.65 }}>Binding matching</span> — runtime checks manifest bindings before spawn. Fails fast if requirements unmet.</span>
             </div>
+
+            <p className="font-medium mt-3" style={{ color: 'var(--foreground)' }}>Platform access methods</p>
+            <p>The <code className="font-mono">bindings</code> field in the manifest declares what the connector needs from the runtime. Most connectors today use <code className="font-mono">browser_automation</code> because most platforms don't offer structured portability APIs. When a platform begins offering native access, only the connector implementation changes. The consent surface, grants, and enforcement stay the same.</p>
           </DetailPanel>
         }
       >

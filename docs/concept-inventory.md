@@ -127,10 +127,10 @@ Legend:
 
 | # | Concept | Description | Flow | Audience |
 |---|---------|-------------|------|----------|
-| 61 | Connector as child process | Runtime spawns connector as child process; stdin/stdout JSONL communication | Spine | Eng |
+| 61 | Connector as child process | Runtime spawns connector as child process; stdin/stdout JSONL. The abstraction means the runtime doesn't know whether the connector calls an API or drives a browser — consent and enforcement never see the difference. | Spine | Eng |
 | 62 | START message | Runtime sends a normalized, non-broadening collection scope plus state/bindings; connector never sees raw grant/token | Spine | Eng |
 | 63 | DONE message | Final output; runtime gates STATE persistence on successful DONE | Branch | Eng |
-| 64 | Binding matching | Runtime checks bindings before spawn; fail fast if requirements unmet | Branch | Eng |
+| 64 | Binding matching | Runtime checks manifest bindings before spawn; fail fast if unmet. `browser_automation` is the most common binding today (polyfill for platform non-cooperation). | Branch | Eng |
 | 65 | SKIP_RESULT | Connector signals intentional omissions (rate limit, unavailable) | Branch | Eng |
 
 ## Versioning (5 concepts)
