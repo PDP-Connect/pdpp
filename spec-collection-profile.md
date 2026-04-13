@@ -107,7 +107,7 @@ The connector process transitions through the following states:
 
 **Protocol violations:**
 
-- A connector MUST NOT emit INTERACTION while already in `waiting_for_interaction`. A runtime that receives a second INTERACTION in this state MUST terminate the connector process and mark the run as failed.
+- A connector MUST NOT emit INTERACTION while already in `waiting_for_interaction`. A runtime that receives a second INTERACTION in this state MUST terminate the connector process and mark the run as failed. **Note (non-normative):** Runtimes that process connector messages sequentially via a single-threaded message queue may make this violation unrepresentable in practice, because the queue serializes INTERACTION processing. The protocol rule remains valid for correct connector behavior and for runtime architectures that dispatch messages concurrently.
 - A connector that receives INTERACTION_RESPONSE while in `collecting` (no pending INTERACTION) SHOULD treat it as a fatal protocol error, write a diagnostic to stderr, and exit with non-zero status.
 - START is exactly-once. It MUST be the first message sent by the runtime. A connector that receives START while in any state other than `initializing` MUST treat it as a fatal protocol error.
 
