@@ -30,7 +30,7 @@ import { startServer } from '../server/index.js';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const E2E_DIR = join(__dirname, '..');
 
-let nextPort = 9700;
+let nextPort = 9800;
 
 function allocatePorts() {
   const base = nextPort;
@@ -39,8 +39,13 @@ function allocatePorts() {
 }
 
 async function closeServer(server) {
-  await new Promise(r => server.asServer.close(r));
-  await new Promise(r => server.rsServer.close(r));
+  // Force-close keep-alive connections to prevent hanging
+  server.asServer.closeAllConnections();
+  server.rsServer.closeAllConnections();
+  await Promise.allSettled([
+    new Promise(r => { server.asServer.close(r); setTimeout(r, 2000); }),
+    new Promise(r => { server.rsServer.close(r); setTimeout(r, 2000); }),
+  ]);
 }
 
 /**
@@ -59,11 +64,13 @@ const rl = createInterface({ input: process.stdin });
 rl.on('line', (line) => {
   const msg = JSON.parse(line);
   if (msg.type === 'START') {
-    // Emit configured messages
     const messages = ${JSON.stringify(messages)};
     for (const m of messages) {
       process.stdout.write(JSON.stringify(m) + '\\n');
     }
+    // Exit after emitting all messages
+    rl.close();
+    process.exit(0);
   }
 });
 `;
@@ -112,8 +119,8 @@ test('Collection Profile conformance', async (t) => {
       assert.equal(result.status, 'succeeded');
       assert.equal(result.records_emitted, 2);
 
-      // Verify records are in the RS
-      const resp = await fetch(`http://localhost:${rsPort}/v1/streams/items/records`, {
+      // Verify records are in the RS (owner queries need connector_id)
+      const resp = await fetch(`http://localhost:${rsPort}/v1/streams/items/records?connector_id=${encodeURIComponent(connectorId)}`, {
         headers: { 'Authorization': `Bearer ${ownerToken}` },
       });
       const body = await resp.json();
@@ -267,6 +274,191 @@ test('Collection Profile conformance', async (t) => {
       assert.equal(result.records_emitted, 0);
     } finally {
       cleanup();
+      await closeServer(server);
+    }
+  });
+
+  // ── 6. INTERACTION pending-state: double INTERACTION is a protocol violation ──
+
+  await t.test('double INTERACTION without response kills the connector', async () => {
+    const { asPort, rsPort } = allocatePorts();
+    const server = await startServer({ asPort, rsPort, dbPath: ':memory:' });
+    const { ownerToken, connectorId } = await setupConnector(server, asPort);
+
+    // Connector that emits two INTERACTIONs without waiting for response
+    const tmpDir = mkdtempSync(join(tmpdir(), 'pdpp-test-dbl-int-'));
+    const connectorPath = join(tmpDir, 'connector.js');
+    writeFileSync(connectorPath, `
+import { createInterface } from 'readline';
+const rl = createInterface({ input: process.stdin });
+rl.on('line', (line) => {
+  const msg = JSON.parse(line);
+  if (msg.type === 'START') {
+    // Emit two INTERACTIONs back-to-back without waiting
+    process.stdout.write(JSON.stringify({ type: 'INTERACTION', request_id: 'int_1', interaction_type: 'credentials', prompt: 'Login' }) + '\\n');
+    process.stdout.write(JSON.stringify({ type: 'INTERACTION', request_id: 'int_2', interaction_type: 'credentials', prompt: 'OTP' }) + '\\n');
+  }
+});
+`, 'utf-8');
+
+    try {
+      await assert.rejects(
+        () => runConnector({
+          connectorPath,
+          connectorId,
+          ownerToken,
+          manifest: MINIMAL_MANIFEST,
+          state: null,
+          collectionMode: 'full_refresh',
+          persistState: true,
+          rsUrl: `http://localhost:${rsPort}`,
+          onInteraction: async (msg) => {
+            // Simulate slow handler — the second INTERACTION should arrive before this returns
+            await new Promise(r => setTimeout(r, 100));
+            return { type: 'INTERACTION_RESPONSE', request_id: msg.request_id, status: 'completed', data: {} };
+          },
+        }),
+        /INTERACTION.*already waiting/i,
+        'Should reject when connector emits overlapping INTERACTION messages'
+      );
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+      await closeServer(server);
+    }
+  });
+
+  // ── 7. INTERACTION completes and connector continues ──
+
+  await t.test('INTERACTION round-trip allows connector to continue collecting', async () => {
+    const { asPort, rsPort } = allocatePorts();
+    const server = await startServer({ asPort, rsPort, dbPath: ':memory:' });
+    const { ownerToken, connectorId } = await setupConnector(server, asPort);
+
+    // Connector that emits INTERACTION, waits for response, then emits RECORD + DONE
+    const tmpDir = mkdtempSync(join(tmpdir(), 'pdpp-test-int-roundtrip-'));
+    const connectorPath = join(tmpDir, 'connector.js');
+    writeFileSync(connectorPath, `
+import { createInterface } from 'readline';
+const rl = createInterface({ input: process.stdin });
+let started = false;
+rl.on('line', (line) => {
+  const msg = JSON.parse(line);
+  if (msg.type === 'START' && !started) {
+    started = true;
+    process.stdout.write(JSON.stringify({ type: 'INTERACTION', request_id: 'int_1', interaction_type: 'credentials', prompt: 'Enter password' }) + '\\n');
+  } else if (msg.type === 'INTERACTION_RESPONSE') {
+    // Got the response, now collect data
+    process.stdout.write(JSON.stringify({ type: 'RECORD', stream: 'items', key: 'post_int', data: { id: 'post_int', value: 'after_interaction' }, emitted_at: new Date().toISOString() }) + '\\n');
+    process.stdout.write(JSON.stringify({ type: 'DONE', status: 'succeeded', records_emitted: 1 }) + '\\n');
+  }
+});
+`, 'utf-8');
+
+    try {
+      const result = await runConnector({
+        connectorPath,
+        connectorId,
+        ownerToken,
+        manifest: MINIMAL_MANIFEST,
+        state: null,
+        collectionMode: 'full_refresh',
+        persistState: true,
+        rsUrl: `http://localhost:${rsPort}`,
+        onInteraction: async (msg) => {
+          return { type: 'INTERACTION_RESPONSE', request_id: msg.request_id, status: 'completed', data: { password: 'test123' } };
+        },
+      });
+
+      assert.equal(result.status, 'succeeded');
+      assert.equal(result.records_emitted, 1);
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+      await closeServer(server);
+    }
+  });
+
+  // ── 8. Failed DONE does not ingest remaining buffered records ──
+
+  await t.test('DONE(failed) does not flush remaining buffered records', async () => {
+    const { asPort, rsPort } = allocatePorts();
+    const server = await startServer({ asPort, rsPort, dbPath: ':memory:' });
+    const { ownerToken, connectorId } = await setupConnector(server, asPort);
+
+    // Connector emits a record then fails — the record should NOT be ingested
+    // (records are flushed only on DONE(succeeded))
+    const { connectorPath, cleanup } = createTestConnector([
+      { type: 'RECORD', stream: 'items', key: 'should_not_persist', data: { id: 'should_not_persist', value: 'fail' }, emitted_at: new Date().toISOString() },
+      { type: 'DONE', status: 'failed', records_emitted: 1 },
+    ]);
+
+    try {
+      const result = await runConnector({
+        connectorPath,
+        connectorId,
+        ownerToken,
+        manifest: MINIMAL_MANIFEST,
+        state: null,
+        collectionMode: 'full_refresh',
+        persistState: true,
+        rsUrl: `http://localhost:${rsPort}`,
+        onInteraction: async () => ({}),
+      });
+
+      assert.equal(result.status, 'failed');
+
+      // Check RS — record should NOT be present
+      const resp = await fetch(`http://localhost:${rsPort}/v1/streams/items/records?connector_id=${encodeURIComponent(connectorId)}`, {
+        headers: { 'Authorization': `Bearer ${ownerToken}` },
+      });
+      const body = await resp.json();
+      const found = (body.records || []).find(r => r.data?.id === 'should_not_persist');
+      assert.ok(!found, 'Records from a failed run should not be ingested');
+    } finally {
+      cleanup();
+      await closeServer(server);
+    }
+  });
+
+  // ── 9. STATE is grant-scoped, not global ──
+
+  await t.test('STATE from one connector does not affect another connectors state', async () => {
+    const { asPort, rsPort } = allocatePorts();
+    const server = await startServer({ asPort, rsPort, dbPath: ':memory:' });
+
+    // Register two different connectors
+    const asUrl = `http://localhost:${asPort}`;
+    const manifest1 = { ...MINIMAL_MANIFEST, connector_id: 'https://test/connector-a' };
+    const manifest2 = { ...MINIMAL_MANIFEST, connector_id: 'https://test/connector-b' };
+
+    await fetchJson(`${asUrl}/connectors`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(manifest1) });
+    await fetchJson(`${asUrl}/connectors`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(manifest2) });
+    const { body: tokenBody } = await fetchJson(`${asUrl}/owner-token`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ subject_id: 'test_user' }) });
+    const ownerToken = tokenBody.token;
+
+    // Run connector A — emits STATE
+    const { connectorPath: pathA, cleanup: cleanupA } = createTestConnector([
+      { type: 'RECORD', stream: 'items', key: 'a_1', data: { id: 'a_1', value: 'from_a' }, emitted_at: new Date().toISOString() },
+      { type: 'STATE', stream: 'items', cursor: 'cursor_from_a' },
+      { type: 'DONE', status: 'succeeded', records_emitted: 1 },
+    ]);
+
+    try {
+      await runConnector({
+        connectorPath: pathA, connectorId: manifest1.connector_id, ownerToken, manifest: manifest1,
+        state: null, collectionMode: 'full_refresh', persistState: true,
+        rsUrl: `http://localhost:${rsPort}`, onInteraction: async () => ({}),
+      });
+
+      // Check connector A's state
+      const stateA = await loadSyncState(manifest1.connector_id, `http://localhost:${rsPort}`, ownerToken);
+
+      // Check connector B's state — should be independent
+      const stateB = await loadSyncState(manifest2.connector_id, `http://localhost:${rsPort}`, ownerToken);
+
+      assert.ok(stateA && stateA.items === 'cursor_from_a', 'Connector A should have its state');
+      assert.ok(!stateB || !stateB.items, 'Connector B should not have state from Connector A');
+    } finally {
+      cleanupA();
       await closeServer(server);
     }
   });
