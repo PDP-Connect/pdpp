@@ -1,5 +1,6 @@
 # Authentication Design
 
+Status: Informational (non-normative design rationale)
 Date: 2026-03-30
 
 ## Decision: Bearer tokens at both boundaries, mechanism out of scope

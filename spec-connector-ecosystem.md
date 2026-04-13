@@ -1,5 +1,6 @@
 # Connector Ecosystem: Runtime Landscape and Third-Party Sources
 
+Status: Informational (non-normative)
 Date: 2026-03-30
 
 ## Browser abstraction decision

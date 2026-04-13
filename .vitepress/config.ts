@@ -13,34 +13,29 @@ export default defineConfig({
 
     sidebar: [
       {
-        text: 'Core Protocol',
+        text: 'Normative Specifications',
         items: [
-          { text: 'Introduction & Architecture', link: '/spec-core' },
-          { text: 'Data Query API', link: '/spec-data-query-api' },
+          { text: 'Core Protocol (v0.1.0)', link: '/spec-core' },
+          { text: 'Collection Profile (v0.1.0)', link: '/spec-collection-profile' },
+        ],
+      },
+      {
+        text: 'Informational',
+        items: [
+          { text: 'Architecture Overview', link: '/spec-architecture' },
           { text: 'Auth Design', link: '/spec-auth-design' },
-        ],
-      },
-      {
-        text: 'Collection Profile',
-        items: [
-          { text: 'Collection Profile', link: '/spec-collection-profile' },
           { text: 'Connector Ecosystem', link: '/spec-connector-ecosystem' },
-          { text: 'Architecture', link: '/spec-architecture' },
-        ],
-      },
-      {
-        text: 'Design Notes',
-        items: [
           { text: 'Change Tracking', link: '/spec-change-tracking' },
           { text: 'DTI Alignment', link: '/spec-dti-alignment' },
-          { text: 'E2E Examples', link: '/spec-e2e-examples' },
           { text: 'Deferred Concerns', link: '/spec-deferred' },
         ],
       },
       {
-        text: 'E2E Artifacts',
+        text: 'Examples & Reference',
         items: [
-          { text: 'Overview', link: '/e2e/' },
+          { text: 'E2E Examples', link: '/spec-e2e-examples' },
+          { text: 'Data Query API (superseded)', link: '/spec-data-query-api' },
+          { text: 'E2E Artifacts', link: '/e2e/' },
         ],
       },
     ],

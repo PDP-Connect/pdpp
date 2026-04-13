@@ -1,9 +1,11 @@
 # PDPP Data Query API v0.1.0
 
-Companion to the Personal Data Portability Protocol (PDPP) core spec.
+Status: Superseded — Core spec Section 8 is now authoritative for the RS query interface
+Date: 2026-03-28 (original); superseded 2026-04-12
 
-Status: Draft
-Date: 2026-03-28
+> **Note:** This document was written before Core Section 8 was expanded to normatively define the RS query interface. The Core spec is authoritative. This file is retained for historical reference but should not be used for implementation. Where this document disagrees with Core Section 8, Core Section 8 prevails.
+
+Companion to the Personal Data Portability Protocol (PDPP) core spec.
 
 ---
 

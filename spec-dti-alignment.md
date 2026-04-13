@@ -1,5 +1,6 @@
 # DTI Alignment Research
 
+Status: Informational (non-normative research)
 Date: 2026-03-28
 
 ## DTI's receptiveness to external proposals

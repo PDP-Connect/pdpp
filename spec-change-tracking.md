@@ -1,5 +1,6 @@
 # Change Tracking Design
 
+Status: Informational (non-normative design rationale)
 Date: 2026-04-06 (revised from 2026-03-29)
 
 ---

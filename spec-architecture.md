@@ -1,5 +1,6 @@
 # System Architecture: How the Spec Components Relate
 
+Status: Informational (non-normative)
 Date: 2026-04-11
 
 ## Components
@@ -118,7 +119,7 @@ User decides to collect data before any app requests it.
 | Connector manifest | **Yes** | What a connector produces and requires |
 | Connector run protocol | **Yes** | START/RECORD/STATE/INTERACTION/DONE |
 | Selection request format | **Yes** | RFC 9396 authorization_details |
-| Personal server API | **No** (reference only) | How apps query records by grant |
+| Personal server API (RS query interface) | **Yes** (Core §8) | How apps query records by grant; normatively defined |
 | Personal server storage | **No** | Implementation choice |
 | Webhook ingestion | **No** | Future extension |
 | Consent screen visual design | **No** | Surface-specific; semantic rendering obligations remain in scope |
