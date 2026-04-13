@@ -134,7 +134,7 @@ const SECTION_CONTENT: SectionConfig[] = [
   {
     id: 'ingest',
     headline: 'Your data arrives automatically',
-    narrative: 'Connectors collect your data from Instagram, Spotify, and other platforms — whether those platforms offer data APIs or not — and store it on your personal server in structured streams.',
+    narrative: 'Connectors bring your data from platforms to your personal server — through native APIs, browser automation, or direct import.',
     surface: 'protocol',
   },
   {
@@ -626,6 +626,137 @@ function Reveal({ children, delay = 0 }: { children: React.ReactNode; delay?: nu
   );
 }
 
+// ─── Collection convergence visual ──────────────────────────────────────────
+
+const COLLECTION_PATHS = [
+  { label: 'Platform API' },
+  { label: 'Browser' },
+  { label: 'Import' },
+] as const;
+
+function CollectionConvergence() {
+  const ref = useRef<HTMLDivElement>(null);
+  const [visible, setVisible] = useState(false);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const obs = new IntersectionObserver(
+      ([entry]) => { if (entry.isIntersecting) { setVisible(true); obs.disconnect(); } },
+      { threshold: 0.3 }
+    );
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, []);
+
+  const ease = 'cubic-bezier(0.16, 1, 0.3, 1)';
+
+  return (
+    <div ref={ref} className="w-full" style={{ padding: '1.5rem 0' }}>
+      {/* Three paths converging to one server */}
+      <div className="flex items-center">
+        {/* Input paths column */}
+        <div className="flex flex-col gap-2.5 shrink-0">
+          {COLLECTION_PATHS.map((path, i) => (
+            <div
+              key={path.label}
+              className="flex items-center"
+              style={{
+                opacity: visible ? 1 : 0,
+                transform: visible ? 'none' : 'translateX(-8px)',
+                transition: `opacity var(--duration-slow) ${ease} ${i * 80}ms, transform var(--duration-slow) ${ease} ${i * 80}ms`,
+              }}
+            >
+              <span
+                className="pdpp-label shrink-0"
+                style={{
+                  fontFamily: 'var(--font-mono)',
+                  color: visible ? 'var(--primary)' : 'var(--muted-foreground)',
+                  transition: `color var(--duration-moderate) ${ease} ${240 + i * 60}ms`,
+                  padding: '0.375rem 0.75rem',
+                  border: '1px solid',
+                  borderColor: visible ? 'var(--primary)' : 'var(--border)',
+                  borderRadius: 'var(--radius)',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {path.label}
+              </span>
+              {/* Connecting line */}
+              <div
+                style={{
+                  height: '1px',
+                  flex: '1 1 0',
+                  minWidth: '1.5rem',
+                  backgroundColor: visible ? 'var(--primary)' : 'var(--border)',
+                  opacity: visible ? 0.35 : 0,
+                  transition: `opacity var(--duration-moderate) ${ease} ${200 + i * 60}ms, background-color var(--duration-moderate) ${ease} ${200 + i * 60}ms`,
+                }}
+              />
+            </div>
+          ))}
+        </div>
+
+        {/* Convergence node */}
+        <div
+          className="shrink-0"
+          style={{
+            width: '6px',
+            height: '6px',
+            borderRadius: '50%',
+            backgroundColor: visible ? 'var(--primary)' : 'var(--border)',
+            opacity: visible ? 1 : 0,
+            transition: `opacity var(--duration-moderate) ${ease} 350ms, background-color var(--duration-moderate) ${ease} 350ms`,
+          }}
+        />
+
+        {/* Output line + destination */}
+        <div
+          className="flex items-center flex-1 min-w-0"
+          style={{
+            opacity: visible ? 1 : 0,
+            transition: `opacity var(--duration-slow) ${ease} 420ms`,
+          }}
+        >
+          <div
+            style={{
+              height: '1px',
+              flex: '1 1 0',
+              minWidth: '1.5rem',
+              backgroundColor: 'var(--primary)',
+              opacity: 0.35,
+            }}
+          />
+          <span
+            className="pdpp-label shrink-0"
+            style={{
+              color: 'var(--foreground)',
+              fontWeight: 600,
+              whiteSpace: 'nowrap',
+              paddingLeft: '0.75rem',
+            }}
+          >
+            Your server
+          </span>
+        </div>
+      </div>
+
+      {/* Annotation — the key sentence */}
+      <p
+        className="pdpp-caption"
+        style={{
+          marginTop: '1rem',
+          color: 'var(--muted-foreground)',
+          opacity: visible ? 1 : 0,
+          transition: `opacity var(--duration-slow) ${ease} 550ms`,
+        }}
+      >
+        The collection method varies. The consent and enforcement model does not.
+      </p>
+    </div>
+  );
+}
+
 // ─── Section shells ─────────────────────────────────────────────────────────
 
 // Standard section: text left, component right on large screens
@@ -1033,7 +1164,10 @@ export function ReferenceApp({ hero, currentLabel = 'Reference' }: ReferenceAppP
           </DetailPanel>
         }
       >
-        <ConnectorCard {...CONNECTOR_SPECIMEN} />
+        <div className="flex flex-col gap-6 w-full">
+          <CollectionConvergence />
+          <ConnectorCard {...CONNECTOR_SPECIMEN} />
+        </div>
       </Section>
 
       {/* 2. Inventory — wide layout */}
