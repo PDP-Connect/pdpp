@@ -7,7 +7,7 @@
 
 ## Bottom Line
 
-All three experiments confirm: **the collection-layer boundary is in the right place.** Push delivery, batch import, and multi-connector orchestration all fit cleanly as runtime/reference architecture. None create interoperability contracts between independent PDPP implementations. No companion specs are warranted today.
+All three experiments ran without producing a new interoperable contract between independent PDPP implementations. Push delivery, batch import, and multi-connector orchestration all fit as runtime/reference architecture in these experiments. No companion specs are warranted by the current evidence.
 
 ## Results
 
@@ -50,5 +50,8 @@ Neither set of conditions is true today.
 
 1. Keep the current Collection Profile as-is — it is sound and primary
 2. Keep all three experiments as reference runtime modules (non-normative)
-3. The conformance test suite for the existing Collection Profile remains the highest-priority spec work
-4. Revisit the boundary only when a concrete implementation target forces the question
+3. Keep `spec-data-query-api.md` superseded and reduce its prominence (sidebar already demoted)
+4. Do not standardize archive mapping — platform export formats are connector-specific
+5. Improve scheduler handling of exhausted single_use grants (currently schedules but should skip)
+6. The conformance test suite for the existing Collection Profile is the highest-priority spec work
+7. Revisit the boundary only when a concrete implementation target forces the question

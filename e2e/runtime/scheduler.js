@@ -69,8 +69,26 @@ export function createScheduler(opts) {
   const timers = [];
   let running = false;
 
+  const exhaustedGrants = new Set(); // connectorIds whose single_use grants have been consumed
+
   async function executeRun(schedule) {
     const { connectorId, connectorPath, manifest, ownerToken, maxRetries = 2, grantAccessMode = 'continuous' } = schedule;
+
+    // Skip if this single_use grant has already been consumed
+    if (grantAccessMode === 'single_use' && exhaustedGrants.has(connectorId)) {
+      const skipRecord = {
+        connectorId,
+        status: 'skipped',
+        recordsEmitted: 0,
+        startedAt: new Date().toISOString(),
+        completedAt: new Date().toISOString(),
+        error: 'single_use grant already consumed',
+        attempt: 0,
+      };
+      history.push(skipRecord);
+      onRunComplete(skipRecord);
+      return skipRecord;
+    }
 
     // Don't persist state for single_use grants
     const persistState = grantAccessMode !== 'single_use';
@@ -110,6 +128,11 @@ export function createScheduler(opts) {
 
         history.push(record);
         lastRunTime.set(connectorId, Date.now());
+
+        // Mark single_use grant as consumed after successful run
+        if (result.status === 'succeeded' && grantAccessMode === 'single_use') {
+          exhaustedGrants.add(connectorId);
+        }
 
         if (result.status === 'succeeded' && persistState && result.state) {
           await setState(connectorId, result.state);
