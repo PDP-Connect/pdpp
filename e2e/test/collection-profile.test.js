@@ -30,7 +30,7 @@ import { startServer } from '../server/index.js';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const E2E_DIR = join(__dirname, '..');
 
-let nextPort = 9400;
+let nextPort = 9700;
 
 function allocatePorts() {
   const base = nextPort;
@@ -87,7 +87,7 @@ test('Collection Profile conformance', async (t) => {
 
   await t.test('runtime ingests RECORD messages to the RS', async () => {
     const { asPort, rsPort } = allocatePorts();
-    const server = await startServer({ asPort, rsPort, dataDir: join(E2E_DIR, 'test-data-' + Date.now()) });
+    const server = await startServer({ asPort, rsPort, dbPath: ':memory:' });
     const { ownerToken, connectorId } = await setupConnector(server, asPort);
 
     const { connectorPath, cleanup } = createTestConnector([
@@ -128,7 +128,7 @@ test('Collection Profile conformance', async (t) => {
 
   await t.test('STATE is only committed when DONE status is succeeded', async () => {
     const { asPort, rsPort } = allocatePorts();
-    const server = await startServer({ asPort, rsPort, dataDir: join(E2E_DIR, 'test-data-' + Date.now()) });
+    const server = await startServer({ asPort, rsPort, dbPath: ':memory:' });
     const { ownerToken, connectorId } = await setupConnector(server, asPort);
 
     // Connector emits STATE but then DONE with failed status
@@ -167,7 +167,7 @@ test('Collection Profile conformance', async (t) => {
 
   await t.test('single_use runs do not persist STATE even on success', async () => {
     const { asPort, rsPort } = allocatePorts();
-    const server = await startServer({ asPort, rsPort, dataDir: join(E2E_DIR, 'test-data-' + Date.now()) });
+    const server = await startServer({ asPort, rsPort, dbPath: ':memory:' });
     const { ownerToken, connectorId } = await setupConnector(server, asPort);
 
     const { connectorPath, cleanup } = createTestConnector([
@@ -242,7 +242,7 @@ test('Collection Profile conformance', async (t) => {
 
   await t.test('runtime accepts SKIP_RESULT messages without error', async () => {
     const { asPort, rsPort } = allocatePorts();
-    const server = await startServer({ asPort, rsPort, dataDir: join(E2E_DIR, 'test-data-' + Date.now()) });
+    const server = await startServer({ asPort, rsPort, dbPath: ':memory:' });
     const { ownerToken, connectorId } = await setupConnector(server, asPort);
 
     const { connectorPath, cleanup } = createTestConnector([
@@ -274,16 +274,28 @@ test('Collection Profile conformance', async (t) => {
 
 // ── Helpers ──
 
+async function fetchJson(url, opts = {}) {
+  const resp = await fetch(url, opts);
+  const body = await resp.json();
+  return { status: resp.status, body };
+}
+
 async function setupConnector(server, asPort) {
-  // Register connector and get owner token
-  const setupResp = await fetch(`http://localhost:${asPort}/setup`, {
+  const asUrl = `http://localhost:${asPort}`;
+
+  // Register connector manifest
+  await fetchJson(`${asUrl}/connectors`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      connectorId: MINIMAL_MANIFEST.connector_id,
-      manifest: MINIMAL_MANIFEST,
-    }),
+    body: JSON.stringify(MINIMAL_MANIFEST),
   });
-  const setup = await setupResp.json();
-  return { ownerToken: setup.ownerToken, connectorId: MINIMAL_MANIFEST.connector_id };
+
+  // Get owner token
+  const { body } = await fetchJson(`${asUrl}/owner-token`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ subject_id: 'test_user' }),
+  });
+
+  return { ownerToken: body.token, connectorId: MINIMAL_MANIFEST.connector_id };
 }
