@@ -57,70 +57,70 @@ For concepts that don't have a user-facing component (field projection, incremen
 
 Each section occupies roughly one viewport height at rest, expanding when the user engages.
 
-#### 1. Your data, your server
-**Concept**: Personal data lives on a personal server, organized in streams
-**Component**: StreamInventory (compensation specimen, populated)
-**Narrative**: "You have a personal data server. It holds your compensation records -- pay statements, equity grants, and benefits enrollments -- organized in streams. This is yours."
-**Depth**: Stream semantics (append_only vs mutable_state), connector manifest, record model
+#### 1. Only the granted fields come back
+**Concept**: Field projection proves the system works
+**Component**: FieldProjectionVisualization (before/after: full pay statement vs. grant-filtered response)
+**Narrative**: "Longview queries the server. The server returns the four granted comparison fields and leaves the identity-heavy payroll fields behind."
+**Depth**: Effective filter composition, top-level fields only, request-time filters vs scope, filter on unauthorized field rejection
 
-#### 2. A connector brings your data in
-**Concept**: Connectors collect data from platforms into the server
-**Component**: ConnectorCard (compensation profile specimen)
-**Narrative**: "A connector is a program that knows how to talk to a payroll portal, equity administrator, or benefits system. It collects your data and stores it in your server's streams."
-**Depth**: Connector runtime, START/DONE messages, binding matching (native endpoints, browser automation, or imports as polyfills for platform non-cooperation; consent/enforcement agnostic to collection method), INTERACTION flow
-
-#### 3. An app wants access
+#### 2. A client app requests access
 **Concept**: A client application sends a selection request
 **Component**: New -- SelectionRequestVisualization (shows the RFC 9396 request with client_display and client_claims)
 **Narrative**: "Longview, a compensation-planning app, wants your pay statements and equity grants for a career-move review. It tells your server what it wants, who it is, and what it promises."
 **Depth**: RFC 9396 envelope, client_display, client_claims, purpose codes
 
-#### 4. You decide
+#### 3. Consent fixes the boundary
 **Concept**: The consent surface presents the request for the user's decision
 **Component**: ConsentCard (Research baseline specimen, interactive)
-**Narrative**: "Your server shows you exactly what's being requested. Who's asking. What data. What they promise. What your server enforces. You decide."
+**Narrative**: "The server shows exactly what Longview is asking for, what it claims, and what the server will enforce before approval."
 **Depth**: Attribution split, trust layers, optional streams, AI training consent, display metadata authorship
 
-#### 5. The grant freezes your consent
+#### 4. The grant makes it durable
 **Concept**: An immutable grant object captures exactly what was authorized
 **Component**: GrantInspector (Active continuous specimen)
-**Narrative**: "You said yes. Your server issued a grant -- an immutable record of exactly what you authorized. Fields, streams, time range, access mode, retention terms. Frozen."
+**Narrative**: "Approval becomes a durable grant with exact streams, fields, access mode, and time window."
 **Depth**: Grant immutability, three time concepts, manifest version pinning, view resolution
 
-#### 6. The server enforces your decision
-**Concept**: Field projection -- the RS strips unauthorized fields from every response
-**Component**: New -- FieldProjectionVisualization (before/after: full record vs. grant-filtered record)
-**Narrative**: "Longview queries your server. Your server checks the grant and returns only what you authorized. A pay statement has 8 fields. The grant authorized 4. The response has 4."
-**Depth**: Effective filter composition, top-level fields only, request-time filters vs scope, filter on unauthorized field rejection
-
-#### 7. Only what changed
+#### 5. Only what changed
 **Concept**: Incremental sync -- continuous access without re-downloading everything
 **Component**: New -- IncrementalSyncVisualization (first query vs. delta query, showing changes_since)
 **Narrative**: "Next payroll cycle, one new pay statement lands. Longview syncs again and gets only the new record -- not the full compensation history. This is what makes continuous access practical."
 **Depth**: changes_since mechanism, projection-aware deltas (concept 46!), cursor vs changes_since tokens, tombstones, cursor expiry
 
-#### 8. You can take it back
+#### 6. You can take it back
 **Concept**: Revocation stops future access immediately
 **Component**: GrantInspector (switching from Active to Revoked via interaction)
 **Narrative**: "You change your mind. One click. The grant is revoked. The next query returns 403. Your server enforces this within 60 seconds."
 **Depth**: Revocation propagation window, records from revoked grants, no grant narrowing (revoke-and-reissue)
 
-#### 9. Your data is yours to export
+#### 7. Your data is yours to export
 **Concept**: Self-export via owner token, without any grant
 **Component**: New -- SelfExportVisualization (owner token query showing full access)
-**Narrative**: "You can query your own server with full access. No grant needed. Every field, every stream. This is your data export."
+**Narrative**: "Owner access retrieves full records with no third-party grant at all. Every field, every stream."
 **Depth**: Owner vs client tokens, token kind from introspection, subject scoping
 
-#### 10. Every connector, one protocol
-**Concept**: PDPP generalizes across data sources
+#### 8. Records make access exact
+**Concept**: Streams give the server something precise to grant and project
+**Component**: StreamInventory (compensation specimen, populated)
+**Narrative**: "Pay statements, equity grants, and benefits enrollments become records the server can match, project, and revoke."
+**Depth**: Stream semantics (append_only vs mutable_state), connector manifest, record model
+
+#### 9. Native where possible, connector-backed where needed
+**Concept**: Collection path varies, consent and enforcement do not
+**Component**: ConnectorCard (compensation profile specimen)
+**Narrative**: "Platforms can implement PDPP directly. Native endpoints, browser automation, and imports can all feed the same compensation records into one grant and enforcement model."
+**Depth**: Connector runtime, START/DONE messages, binding matching (native endpoints, browser automation, or imports as polyfills for platform non-cooperation; consent/enforcement agnostic to collection method), INTERACTION flow
+
+#### 10. One protocol across platforms
+**Concept**: PDPP generalizes across data sources and reference worlds
 **Component**: ConnectorCard switcher (Instagram, Spotify, Oura, Gmail)
-**Narrative**: "Instagram, Spotify, health data, email -- different sources, same protocol. The consent flow, the grant enforcement, the incremental sync -- all identical regardless of where the data comes from."
+**Narrative**: "Compensation planning is one reference world. Subscription review, travel reimbursement, and benefits disputes can use the same grant-and-enforcement model across different sources."
 **Depth**: Multi-connector architecture, DTI complementary, connector ecosystem
 
-#### 11. The spec is the source of truth
+#### 11. Built on an open specification
 **Concept**: Everything you just saw maps to the spec
 **Component**: SpecCitationGroup (showing all referenced sections)
-**Narrative**: "Every component on this page implements a section of the PDPP specification. The spec is published, open, and versioned. Read it, build on it, improve it."
+**Narrative**: "Every component on this page implements a section of the PDPP specification. The spec is published, open, and versioned."
 **Depth**: Link to VitePress spec site, version axes, conformance requirements
 
 ### Visual language for protocol visualizations
@@ -139,16 +139,16 @@ Sections 3, 6, 7, and 9 need new visualizations that don't correspond to existin
 
 If you could only show one image of PDPP, what would it be?
 
-**Section 6: Field Projection.** A before/after showing a record with 8 fields entering the RS and only 4 coming out the other side, with the grant's field allowlist visible as the filter. This is the visual that makes a CEO go "oh, I get it." It shows consent → enforcement in a single frame.
+**Section 1: Field Projection.** A before/after showing a record with 8 fields entering the RS and only 4 coming out the other side, with the grant's field allowlist visible as the filter. This is the visual that makes a CEO go "oh, I get it." It shows consent → enforcement in a single frame.
 
 ### The "10 second version"
 
-Someone opens the URL. Before scrolling, they see Section 1: the StreamInventory component showing their personal server with real data (106 following, 22 posts, 47 ad interests). The headline says "Your data, your server." They understand the premise in 10 seconds.
+Someone opens the URL. Before scrolling, they see the hero proof: Longview asks for named compensation records, the grant allows four pay-statement fields, and the response returns only four fields. They understand the protocol's core promise in 10 seconds.
 
 ### Navigation
 
 - **No sidebar nav** -- the scroll IS the navigation. This is a designed experience, not a reference manual.
-- **Minimal sticky header**: PDPP logo, current section indicator (subtle), link to spec site, link to `/design`
+- **Minimal sticky header**: PDPP logo, current section indicator (subtle), and docs link
 - **Section dots** (like a presentation): vertical dots on the right edge showing position in the 11 sections, clickable to jump
 - **Keyboard**: arrow keys or space advance between sections (for video narration)
 
@@ -169,7 +169,7 @@ The reference page (`/`) is the presentation artifact. The design page (`/design
 
 **Accepted changes:**
 
-1. **Swap sections 1 and 2.** Data flows in before it is inventoried. Start with the connector (how data gets here), then show the inventory (what's here). This is chronologically correct.
+1. **Lead with proof, not topology.** The current page works better when it starts with enforcement rather than with deployment or collection machinery.
 
 2. **Labeled navigation, not dots.** Section dots lack information scent. Implement a sticky stepper/subway map with actual labels: Ingest, Inventory, Request, Consent, Grant, Enforce, Sync, Revoke, Export. One-click jump for CEO meetings. Reinforces the protocol lifecycle mental model.
 
@@ -177,11 +177,11 @@ The reference page (`/`) is the presentation artifact. The design page (`/design
 
 4. **Strict Level 1 / Level 2 separation.** Level 1 (always visible) must read like an Apple privacy page: zero protocol jargon. Level 2 (expandable) must be unapologetically hardcore: JSON payloads, HTTP headers, spec citations. Never water down Level 2. Never overcomplicate Level 1.
 
-5. **Separate sections 10-11 from the main flow.** They're meta-commentary, not protocol lifecycle. Visual separator or distinct section treatment.
+5. **Move realization-path detail later.** The deployment and collection story matters, but the reader should want the model before being asked to understand the topology.
 
 **Considered and partially accepted:**
 
-6. **Global state across sections.** Gemini identified the "uncanny valley" problem: if the user changes the consent card in section 4, does section 6 update? Full global state is engineering-heavy but would be extraordinary. Decision: **yes, do it.** The grant specimen data flows from section 4's consent decision through to section 6's enforcement and section 8's revocation. This is the Plaid insight in action: the artifact IS the system. If the user denies a field in consent, enforcement shows it stripped. This is hard to build but it's the thing that makes this genuinely novel.
+6. **Global state across the proof chain.** The grant specimen data must flow from consent through grant, enforcement, sync, and revocation. That is what makes the page feel like the protocol is actually running.
 
 7. **Security/trust section.** Gemini says add one between Grant and Enforce. Partially accepted: the trust model is woven throughout (three content layers in section 4, grant immutability in section 5, token introspection in section 6 detail panel) rather than a standalone section. A standalone "how is this secure" section would break the narrative flow. But the detail panels in sections 4-6 should explicitly address the trust question.
 
@@ -191,28 +191,29 @@ The reference page (`/`) is the presentation artifact. The design page (`/design
 
 ### Revised section order
 
-1. A connector brings your data in (ConnectorCard)
-2. Your data, your server (StreamInventory)
-3. An app wants access (Selection request visualization)
-4. You decide (ConsentCard)
-5. The grant freezes your consent (GrantInspector)
-6. The server enforces your decision (Field projection animation)
-7. Only what changed (Incremental sync animation)
-8. You can take it back (GrantInspector revocation, connected to section 5 state)
-9. Your data is yours to export (Self-export visualization)
+1. Only the granted fields come back (Field projection)
+2. A client app requests access (Selection request visualization)
+3. Consent fixes the boundary (ConsentCard)
+4. The grant makes it durable (GrantInspector)
+5. Only what changed (Incremental sync animation)
+6. You can take it back (GrantInspector revocation)
+7. Your data is yours to export (Self-export visualization)
+8. Records make access exact (StreamInventory)
+9. Native where possible, connector-backed where needed (ConnectorCard)
 --- visual separator ---
-10. Every connector, one protocol (ConnectorCard switcher)
-11. The spec is the source of truth (SpecCitation links)
+10. One protocol across platforms (ConnectorCard switcher)
+11. Built on an open specification (SpecCitation links)
 
 ### Global state architecture
 
-Sections 4-8 share state:
-- Section 4 (Consent) produces a grant configuration (which streams, which fields, access mode)
-- Section 5 (Grant) displays that configuration as an immutable artifact
-- Section 6 (Enforce) uses the granted fields to animate the projection
-- Section 8 (Revoke) revokes the grant from section 5, and if you scroll back to section 6, enforcement shows 403
+Sections 1-7 share state:
+- Section 2 (Request) names the client and streams
+- Section 3 (Consent) produces the grant configuration
+- Section 4 (Grant) displays that configuration as an immutable artifact
+- Section 1 (Enforce) and Section 5 (Sync) consume the granted fields and current grant status
+- Section 6 (Revoke) revokes the same grant, and if you scroll back to Section 1, enforcement shows 403
 
-This means the page has a `useProtocolState()` hook that threads through sections 4-8. Sections 1-3 and 9-11 are independent.
+This means the page has a `useProtocolState()` hook threading the proof chain. Sections 8-11 are explanatory and comparative rather than stateful.
 
 ### Implementation priority (revised)
 
@@ -223,20 +224,20 @@ This means the page has a `useProtocolState()` hook that threads through section
 4. Section transition animations (scroll-triggered)
 
 **Phase B: Existing component integration (sections using built components)**
-5. Section 2: StreamInventory (populated Instagram specimen)
-6. Section 4: ConsentCard (interactive, drives global state)
-7. Section 5: GrantInspector (reads from global state)
-8. Section 1, 10: ConnectorCard
+5. Section 8: StreamInventory (populated compensation specimen)
+6. Section 3: ConsentCard (interactive, drives global state)
+7. Section 4: GrantInspector (reads from global state)
+8. Section 9, 10: ConnectorCard
 
 **Phase C: Global state**
-9. `useProtocolState()` hook threading sections 4-8
-10. Section 8: Revocation (connected to section 5 grant)
+9. `useProtocolState()` hook threading sections 1-7
+10. Section 6: Revocation (connected to section 4 grant)
 
 **Phase D: Protocol visualizations (new, animated)**
-11. Section 6: Field projection animation (the hero moment)
-12. Section 7: Incremental sync animation
-13. Section 3: Selection request visualization
-14. Section 9: Self-export visualization
+11. Section 1: Field projection animation (the hero moment)
+12. Section 5: Incremental sync animation
+13. Section 2: Selection request visualization
+14. Section 7: Self-export visualization
 
 **Phase E: Polish**
 15. Level 1 copy pass (zero jargon, Apple-privacy-page tone)
