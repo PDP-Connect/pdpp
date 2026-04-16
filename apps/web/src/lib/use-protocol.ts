@@ -10,6 +10,12 @@
 
 import { useState, useCallback, useMemo, useRef } from 'react';
 import { MockPDPPServer, createSeededServer, type Grant, type QueryResult } from './mock-server';
+import {
+  LONGVIEW_CLIENT_ID,
+  LONGVIEW_PAY_STATEMENT_GRANTED_FIELDS,
+  LONGVIEW_PURPOSE_CODE,
+  LONGVIEW_PURPOSE_DESCRIPTION,
+} from './longview-world';
 
 export type ProtocolPhase = 'idle' | 'granted' | 'revoked';
 
@@ -24,17 +30,27 @@ export type ProtocolState = {
 };
 
 const GRANT_TEMPLATE = {
-  grant_id: 'grt_8f3a2b1c',
-  issued_at: '2026-04-06T15:00:00Z',
-  client_id: 'audience_lens_v1',
-  purpose_code: 'research',
-  purpose_description: 'Influencer network study',
+  grant_id: 'grt_longview01',
+  issued_at: '2026-04-15T15:00:00Z',
+  client_id: LONGVIEW_CLIENT_ID,
+  purpose_code: LONGVIEW_PURPOSE_CODE,
+  purpose_description: LONGVIEW_PURPOSE_DESCRIPTION,
   access_mode: 'continuous' as const,
-  expires_at: '2027-04-05T00:00:00Z',
+  expires_at: '2027-04-15T00:00:00Z',
   retention: { max_duration: 'P90D', on_expiry: 'delete' as const },
   streams: [
-    { name: 'following_accounts', fields: ['id', 'username'], view: 'social_graph', time_range: null },
-    { name: 'posts', fields: ['id', 'caption', 'taken_at', 'media_type'], view: 'summary', time_range: null },
+    {
+      name: 'pay_statements',
+      fields: [...LONGVIEW_PAY_STATEMENT_GRANTED_FIELDS],
+      view: 'summary',
+      time_range: { since: '2025-01-01' },
+    },
+    {
+      name: 'equity_grants',
+      fields: ['grant_type', 'quantity', 'vesting_start', 'vesting_schedule'],
+      view: 'vesting_summary',
+      time_range: null,
+    },
   ],
 };
 
@@ -57,17 +73,17 @@ export function useProtocol() {
     const issued = server.issueGrant({
       ...GRANT_TEMPLATE,
       access_mode: accessMode,
-      expires_at: accessMode === 'single_use' ? '2026-04-07T15:00:00Z' : GRANT_TEMPLATE.expires_at,
+      expires_at: accessMode === 'single_use' ? '2026-04-15T15:05:00Z' : GRANT_TEMPLATE.expires_at,
     });
     setGrant(issued);
     setPhase('granted');
 
     // Immediately query to populate the enforce section
-    const result = server.query(issued.grant_id, 'posts');
+    const result = server.query(issued.grant_id, 'pay_statements');
     setQueryResult(result);
 
     // Also do initial sync
-    const sync = server.queryChangesSince(issued.grant_id, 'posts');
+    const sync = server.queryChangesSince(issued.grant_id, 'pay_statements');
     setSyncResult(sync);
     setSyncCursor(sync.next_changes_since || null);
   }, [server]);
@@ -87,33 +103,37 @@ export function useProtocol() {
       setPhase('revoked');
 
       // Query again to show 403
-      const result = server.query(grant.grant_id, 'posts');
+      const result = server.query(grant.grant_id, 'pay_statements');
       setQueryResult(result);
     }
   }, [grant, server]);
 
-  const addNewPosts = useCallback((count: number) => {
+  const addNewPayStatements = useCallback((count: number) => {
     for (let i = 0; i < count; i++) {
-      const idx = 22 + i + Math.floor(Math.random() * 1000);
-      server.addRecord('posts', {
-        key: `post_new_${idx}`,
+      const idx = 24 + i;
+      const payDate = new Date(Date.UTC(2026, 3, 15 + idx * 14));
+      const grossPay = 6420 + i * 110;
+      const netPay = grossPay - 1540;
+
+      server.addRecord('pay_statements', {
+        key: `pay_new_${idx}`,
         data: {
-          id: `post_new_${idx}`,
-          caption: `New post ${i + 1}`,
-          taken_at: new Date().toISOString(),
-          media_type: 'IMAGE',
-          like_count: 0,
-          comment_count: 0,
-          location: null,
-          is_pinned: false,
+          employer: 'Northstar Labs',
+          pay_period: payDate.toISOString().slice(0, 10),
+          gross_pay: grossPay,
+          net_pay: netPay,
+          employee_id: `emp_${String(5124 + i).padStart(4, '0')}`,
+          home_address: '1207 W Maple Ave, Chicago, IL',
+          bank_account_last4: '4821',
+          tax_id_fragment: '2487',
         },
-        emitted_at: new Date().toISOString(),
+        emitted_at: payDate.toISOString(),
       });
     }
 
     // Re-sync to show the delta
     if (grant && phase === 'granted' && syncCursor) {
-      const sync = server.queryChangesSince(grant.grant_id, 'posts', syncCursor);
+      const sync = server.queryChangesSince(grant.grant_id, 'pay_statements', syncCursor);
       setSyncResult(sync);
       setSyncCursor(sync.next_changes_since || null);
     }
@@ -145,7 +165,7 @@ export function useProtocol() {
     approve,
     deny,
     revoke,
-    addNewPosts,
+    addNewPayStatements,
     selfExport,
     reset,
   };

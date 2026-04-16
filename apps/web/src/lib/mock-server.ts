@@ -15,6 +15,10 @@
  * Can be swapped for a real server connection via the same interface.
  */
 
+import {
+  LONGVIEW_PAY_STATEMENT_ALL_FIELDS,
+} from './longview-world';
+
 // ─── Types ──────────────────────────────────────────────────────────────────
 
 export type Record = {
@@ -202,54 +206,83 @@ export class MockPDPPServer {
 export function createSeededServer(): MockPDPPServer {
   const server = new MockPDPPServer();
 
-  // Instagram connector streams
-  const postFields = ['id', 'caption', 'taken_at', 'media_type', 'like_count', 'comment_count', 'location', 'is_pinned'];
-  const followingFields = ['id', 'username'];
-  const adFields = ['category', 'source', 'confidence'];
+  const payStatementFields = [...LONGVIEW_PAY_STATEMENT_ALL_FIELDS];
+  const equityGrantFields = [
+    'grant_type',
+    'quantity',
+    'vesting_start',
+    'vesting_schedule',
+    'brokerage_account_last4',
+    'beneficiary_name',
+  ];
+  const benefitsFields = [
+    'plan_name',
+    'coverage_tier',
+    'employer_contribution',
+    'effective_date',
+    'dependent_count',
+    'claims_vendor',
+  ];
 
   server.addStream({
-    name: 'following_accounts',
-    semantics: 'mutable_state',
-    schema_fields: followingFields,
-    records: Array.from({ length: 106 }, (_, i) => ({
-      key: `follow_${i}`,
-      data: { id: `user_${i}`, username: `user${i}` },
-      emitted_at: '2026-04-06T12:00:00Z',
-    })),
-  });
-
-  server.addStream({
-    name: 'posts',
+    name: 'pay_statements',
     semantics: 'append_only',
-    schema_fields: postFields,
-    records: Array.from({ length: 22 }, (_, i) => ({
-      key: `post_${i}`,
+    schema_fields: payStatementFields,
+    records: Array.from({ length: 24 }, (_, i) => {
+      const payDate = new Date(Date.UTC(2025, 0, 15 + i * 14));
+      const grossPay = 6150 + (i % 4) * 120;
+      const netPay = grossPay - 1510 - (i % 3) * 35;
+
+      return {
+        key: `pay_${i}`,
+        data: {
+          employer: 'Northstar Labs',
+          pay_period: payDate.toISOString().slice(0, 10),
+          gross_pay: grossPay,
+          net_pay: netPay,
+          employee_id: `emp_${String(4100 + i).padStart(4, '0')}`,
+          home_address: '1207 W Maple Ave, Chicago, IL',
+          bank_account_last4: '4821',
+          tax_id_fragment: '2487',
+        },
+        emitted_at: payDate.toISOString(),
+      };
+    }),
+  });
+
+  server.addStream({
+    name: 'equity_grants',
+    semantics: 'mutable_state',
+    schema_fields: equityGrantFields,
+    records: Array.from({ length: 3 }, (_, i) => ({
+      key: `grant_${i}`,
       data: {
-        id: `post_${i}`,
-        caption: `Post caption ${i + 1}`,
-        taken_at: new Date(2025, 0, 1 + i * 15).toISOString(),
-        media_type: i % 3 === 0 ? 'VIDEO' : 'IMAGE',
-        like_count: Math.floor(Math.random() * 500),
-        comment_count: Math.floor(Math.random() * 50),
-        location: i % 4 === 0 ? 'New York' : null,
-        is_pinned: i === 0,
+        grant_type: i === 0 ? 'ISO' : i === 1 ? 'RSU' : 'NSO',
+        quantity: i === 0 ? 8000 : i === 1 ? 2400 : 1200,
+        vesting_start: `202${i + 4}-05-01`,
+        vesting_schedule: i === 1 ? '4y monthly after 1y cliff' : '4y quarterly after 1y cliff',
+        brokerage_account_last4: `71${i}4`,
+        beneficiary_name: 'Primary beneficiary',
       },
-      emitted_at: '2026-04-06T12:00:00Z',
+      emitted_at: '2026-04-15T12:00:00Z',
     })),
   });
 
   server.addStream({
-    name: 'ad_targeting',
+    name: 'benefits_enrollments',
     semantics: 'mutable_state',
-    schema_fields: adFields,
-    records: Array.from({ length: 47 }, (_, i) => ({
-      key: `ad_${i}`,
+    schema_fields: benefitsFields,
+    records: Array.from({ length: 1 }, () => ({
+      key: 'benefits_0',
       data: {
-        category: ['Fashion', 'Tech', 'Travel', 'Food', 'Fitness'][i % 5],
-        source: ['browsing', 'engagement', 'demographic'][i % 3],
-        confidence: (0.5 + Math.random() * 0.5).toFixed(2),
+        plan_name: 'Blue Horizon PPO',
+        coverage_tier: 'Employee + spouse',
+        employer_contribution: 840,
+        effective_date: '2026-01-01',
+        dependent_count: 1,
+        claims_vendor: 'Northstar Health Services',
       },
-      emitted_at: '2026-04-06T12:00:00Z',
+      emitted_at: '2026-01-01T12:00:00Z',
     })),
   });
 

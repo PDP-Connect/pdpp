@@ -1,7 +1,10 @@
 'use client';
 
+import Link from 'next/link';
 import { ReferenceApp } from '@/components/ReferenceApp';
+import { ReferenceHeroProof } from '@/components/ReferenceHeroProof';
 import { Hero } from '@/components/Hero';
+import { buttonVariants } from '@/components/ui/button';
 
 export default function Home() {
   return (
@@ -22,57 +25,37 @@ export default function Home() {
                   border: '1px solid oklch(0.580 0.172 253.7 / 0.15)',
                 }}
               >
-                v0.1.0
+                PDPP
               </span>
               <span className="font-mono text-xs" style={{ color: 'var(--muted-foreground)' }}>
-                Draft specification
+                v0.1.0 · Open reference
               </span>
             </span>
           }
           title={
             <>
-              Personal Data
+              Granular access
               <br />
-              Portability Protocol
+              to personal data
             </>
           }
           description={
             <>
-              An authorization and disclosure protocol for personal data. You decide what to share,
-              with whom, for how long, for what purpose.
-              <br />
-              <span className="pdpp-caption" style={{ display: 'block', marginTop: '0.5rem', opacity: 0.7 }}>
-                This is the protocol, running. Every component below implements a section of the spec.
-              </span>
+              Clients request named records and fields.
+              <br />Every response stays inside the grant.
             </>
           }
           actions={
-            <div className="hidden md:flex items-center gap-0 pb-2">
-              {[
-                { label: 'Platform', color: 'var(--muted-foreground)', bg: 'var(--muted)' },
-                { label: 'Connector', color: 'var(--primary)', bg: 'var(--primary-wash)' },
-                { label: 'Your Server', color: 'var(--primary)', bg: 'var(--primary-wash)' },
-                { label: 'Consent', color: 'var(--human)', bg: 'var(--human-wash)' },
-                { label: 'Grant', color: 'var(--primary)', bg: 'var(--primary-wash)' },
-                { label: 'Enforce', color: 'var(--primary)', bg: 'var(--primary-wash)' },
-                { label: 'Client', color: 'var(--muted-foreground)', bg: 'var(--muted)' },
-              ].map((step, i, arr) => (
-                <span key={step.label} className="flex items-center">
-                  <span
-                    className="shrink-0 px-3 py-1.5 rounded-md text-xs font-medium"
-                    style={{
-                      backgroundColor: step.bg,
-                      color: step.color,
-                      border: `1px solid ${step.color}20`,
-                    }}
-                  >
-                    {step.label}
-                  </span>
-                  {i < arr.length - 1 && (
-                    <span className="shrink-0 w-6 h-px" style={{ backgroundColor: 'var(--border)' }} />
-                  )}
-                </span>
-              ))}
+            <div className="flex w-full flex-col gap-6">
+              <div className="flex flex-wrap gap-2.5">
+                <Link href="/docs" className={buttonVariants({ variant: 'default', size: 'lg' })}>
+                  Read the docs
+                </Link>
+                <a href="#request" className={buttonVariants({ variant: 'outline', size: 'lg' })}>
+                  See the flow
+                </a>
+              </div>
+              <ReferenceHeroProof />
             </div>
           }
         />

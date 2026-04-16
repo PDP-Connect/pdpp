@@ -59,20 +59,20 @@ Each section occupies roughly one viewport height at rest, expanding when the us
 
 #### 1. Your data, your server
 **Concept**: Personal data lives on a personal server, organized in streams
-**Component**: StreamInventory (Instagram specimen, populated)
-**Narrative**: "You have a personal data server. It holds your Instagram data -- who you follow, your posts, your ad interests -- organized in streams. This is yours."
+**Component**: StreamInventory (compensation specimen, populated)
+**Narrative**: "You have a personal data server. It holds your compensation records -- pay statements, equity grants, and benefits enrollments -- organized in streams. This is yours."
 **Depth**: Stream semantics (append_only vs mutable_state), connector manifest, record model
 
 #### 2. A connector brings your data in
 **Concept**: Connectors collect data from platforms into the server
-**Component**: ConnectorCard (Instagram specimen)
-**Narrative**: "A connector is a program that knows how to talk to Instagram's API. It collects your data and stores it in your server's streams."
-**Depth**: Connector runtime, START/DONE messages, binding matching (browser_automation as polyfill for platform non-cooperation; consent/enforcement agnostic to collection method), INTERACTION flow
+**Component**: ConnectorCard (compensation profile specimen)
+**Narrative**: "A connector is a program that knows how to talk to a payroll portal, equity administrator, or benefits system. It collects your data and stores it in your server's streams."
+**Depth**: Connector runtime, START/DONE messages, binding matching (native endpoints, browser automation, or imports as polyfills for platform non-cooperation; consent/enforcement agnostic to collection method), INTERACTION flow
 
 #### 3. An app wants access
 **Concept**: A client application sends a selection request
 **Component**: New -- SelectionRequestVisualization (shows the RFC 9396 request with client_display and client_claims)
-**Narrative**: "Audience Lens, a research app, wants your following list and posts for an influencer study. It tells your server what it wants, who it is, and what it promises."
+**Narrative**: "Longview, a compensation-planning app, wants your pay statements and equity grants for a career-move review. It tells your server what it wants, who it is, and what it promises."
 **Depth**: RFC 9396 envelope, client_display, client_claims, purpose codes
 
 #### 4. You decide
@@ -90,13 +90,13 @@ Each section occupies roughly one viewport height at rest, expanding when the us
 #### 6. The server enforces your decision
 **Concept**: Field projection -- the RS strips unauthorized fields from every response
 **Component**: New -- FieldProjectionVisualization (before/after: full record vs. grant-filtered record)
-**Narrative**: "Audience Lens queries your server. Your server checks the grant and returns only what you authorized. Your posts have 8 fields. The grant authorized 4. The response has 4."
+**Narrative**: "Longview queries your server. Your server checks the grant and returns only what you authorized. A pay statement has 8 fields. The grant authorized 4. The response has 4."
 **Depth**: Effective filter composition, top-level fields only, request-time filters vs scope, filter on unauthorized field rejection
 
 #### 7. Only what changed
 **Concept**: Incremental sync -- continuous access without re-downloading everything
 **Component**: New -- IncrementalSyncVisualization (first query vs. delta query, showing changes_since)
-**Narrative**: "Next week, you post 3 new photos. Audience Lens syncs again and gets only the 3 new posts -- not the 22 it already has. This is what makes continuous access practical."
+**Narrative**: "Next payroll cycle, one new pay statement lands. Longview syncs again and gets only the new record -- not the full compensation history. This is what makes continuous access practical."
 **Depth**: changes_since mechanism, projection-aware deltas (concept 46!), cursor vs changes_since tokens, tombstones, cursor expiry
 
 #### 8. You can take it back

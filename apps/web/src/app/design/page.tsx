@@ -20,6 +20,11 @@ import type {
   ConnectorCardProps,
   SpecCitationProps,
 } from '@/components/pdpp';
+import {
+  LONGVIEW_CLIENT_URI,
+  LONGVIEW_POLICY_URI,
+  LONGVIEW_TOS_URI,
+} from '@/lib/longview-world';
 
 // ─── Nav ──────────────────────────────────────────────────────────────────────
 
@@ -31,6 +36,7 @@ const NAV_SECTIONS = [
   { id: 'motion',     label: 'Motion' },
   { id: 'surfaces',   label: 'Surfaces' },
   { id: 'components', label: 'Components' },
+  { id: 'examples',   label: 'Examples' },
   { id: 'docs',       label: 'Docs' },
   { id: 'status',     label: 'Status' },
   { id: 'rules',      label: 'Rules' },
@@ -85,7 +91,7 @@ export default function DesignSystemPage() {
         layout="cross"
         gradient="warm"
         title="Design System"
-        description="Single source of truth for tokens, typography, motion, and components."
+        description="Tokens, type, motion, and specimen patterns for the PDPP reference surfaces."
         actions={
           <div className="flex flex-wrap gap-1.5">
             {['Tailwind v4', 'shadcn base-nova', 'Base UI', 'Geist', 'JetBrains Mono'].map((t) => (
@@ -142,6 +148,7 @@ export default function DesignSystemPage() {
                 <MotionSection />
                 <SurfacesSection />
                 <ComponentsSection />
+                <ExampleWorldsSection />
                 <DocsSection />
                 <StatusSection />
                 <RulesSection />
@@ -149,7 +156,7 @@ export default function DesignSystemPage() {
 
               <div className="px-6 md:px-12 py-8" style={{ borderTop: '1px solid var(--border)' }}>
                 <span className="font-mono text-xs" style={{ color: 'var(--muted-foreground)', opacity: 0.5 }}>
-                  PDPP Design System · source of truth: globals.css + CONSTITUTION.md
+                  PDPP Design System · globals.css + CONSTITUTION.md
                 </span>
               </div>
         </main>
@@ -447,9 +454,9 @@ function TypographySection() {
                 { className: 'pdpp-display-lg', label: 'display-lg', spec: '60/600/-0.03em',  sample: 'Personal Data',              usage: 'Splash heroes — the landing page only' },
                 { className: 'pdpp-display',    label: 'display',    spec: '40/600/-0.025em', sample: 'Design System',              usage: 'Page heroes — docs, design system' },
                 { className: 'pdpp-heading',    label: 'heading',    spec: '20/600/-0.01em',  sample: 'Grant request',              usage: 'Section headers' },
-                { className: 'pdpp-title',      label: 'title',      spec: '14/600',          sample: 'Audience Lens',              usage: 'Card titles, entity names' },
+                { className: 'pdpp-title',      label: 'title',      spec: '14/600',          sample: 'Longview',                  usage: 'Card titles, entity names' },
                 { className: 'pdpp-body-lg',    label: 'body-lg',    spec: '18/400',          sample: 'An authorization and disclosure protocol.', usage: 'Hero lead copy' },
-                { className: 'pdpp-body',       label: 'body',       spec: '14/400',          sample: 'Requesting access to your Instagram social graph.', usage: 'Descriptions, prose' },
+                { className: 'pdpp-body',       label: 'body',       spec: '14/400',          sample: 'Comparing salary, equity, benefits, and tax tradeoffs.', usage: 'Descriptions, prose' },
                 { className: 'pdpp-label',      label: 'label',      spec: '12/500',          sample: 'What they can access',       usage: 'Field labels, section labels' },
                 { className: 'pdpp-caption',    label: 'caption',    spec: '12/400',          sample: 'No live scraping required.', usage: 'Helper text, footnotes' },
               ].map(({ className, label, spec, sample, usage }) => (
@@ -485,7 +492,7 @@ function TypographySection() {
           </div>
           {[
             { label: 'id',       sample: 'grt_8f3a2b1c4d5e6f7a8b9c0d1e2f3a4b5c',         usage: 'Grant IDs, resource identifiers',       color: 'var(--foreground)' },
-            { label: 'code',     sample: 'following_accounts · social_graph · single_use', usage: 'Stream names, field names, enum values', color: 'var(--foreground)' },
+            { label: 'code',     sample: 'pay_statements · summary · continuous', usage: 'Stream names, field names, enum values', color: 'var(--foreground)' },
             { label: 'spec-ref', sample: '§4.2 Selection Request · §6.1 Stream Metadata',  usage: 'Protocol spec citations only',           color: 'var(--edu-fg)' },
           ].map(({ label, sample, color }) => (
             <div
@@ -972,8 +979,8 @@ function SurfacesSection() {
                   </div>
                 </CardHeader>
                 <CardContent className="px-5 pt-3 pb-5">
-                  <div className="text-xs font-medium mb-1">Audience Lens</div>
-                  <div className="text-xs leading-relaxed" style={{ color: 'var(--muted-foreground)' }}>Access to your Instagram social graph. No live scraping required.</div>
+                  <div className="text-xs font-medium mb-1">Longview</div>
+                  <div className="text-xs leading-relaxed" style={{ color: 'var(--muted-foreground)' }}>Access to compensation records for career-move planning.</div>
                 </CardContent>
                 <CardFooter className="px-5 py-4 gap-3" style={{ borderTop: '1px solid var(--border)' }}>
                   <Button size="sm">Allow</Button>
@@ -1059,10 +1066,10 @@ function ComponentsSection() {
             <Card>
               <CardHeader className="p-5 pb-3">
                 <div className="text-sm font-semibold">Grant request</div>
-                <div className="text-xs" style={{ color: 'var(--muted-foreground)' }}>Audience Lens · single_use</div>
+                <div className="text-xs" style={{ color: 'var(--muted-foreground)' }}>Longview · continuous</div>
               </CardHeader>
               <CardContent className="px-5 pb-5 pt-0">
-                <div className="text-xs leading-relaxed" style={{ color: 'var(--muted-foreground)' }}>Requesting access to your Instagram social graph. No live scraping required.</div>
+                <div className="text-xs leading-relaxed" style={{ color: 'var(--muted-foreground)' }}>Requesting pay statements and equity grants for compensation planning.</div>
               </CardContent>
               <CardFooter className="px-5 py-4 gap-3" style={{ borderTop: '1px solid var(--border)' }}>
                 <Button size="sm">Allow</Button>
@@ -1176,7 +1183,792 @@ function ComponentsSection() {
   );
 }
 
-// ─── 08 Docs ─────────────────────────────────────────────────────────────────
+type CanonicalExampleWorld = {
+  name: string;
+  monogram: string;
+  descriptor: string;
+  summary: string;
+  anchorStream: {
+    name: string;
+    cadence: string;
+    syncStory: string;
+  };
+  whyCare: string;
+  whyPdpp: string;
+  aiPosture: string;
+  risk: string;
+  sources: string[];
+  fit: string[];
+  rolloutCopy: {
+    heroLine: string;
+    consentPurpose: string;
+    proofLine: string;
+    docsBlurb: string;
+    syncLine: string;
+  };
+  consent: ConsentCardProps;
+  grant: GrantInspectorProps;
+  projection: {
+    streamLabel: string;
+    summary: string;
+    granted: string[];
+    withheld: string[];
+  };
+};
+
+const COMPENSATION_STREAM_DETAILS = {
+  payStatements: 'Employer, pay period, gross pay, net pay, and withholding summary. No bank account details or tax ID fragments.',
+  equityGrants: 'Grant type, quantity, vesting schedule, and strike price. No brokerage account numbers or beneficiary details.',
+  benefits: 'Plan name, coverage tier, employer contribution, and effective date. No dependent data, claims, or provider notes.',
+} as const;
+
+function createCompensationWorld({
+  name,
+  monogram,
+  logoSrc,
+  uri,
+  policyUri,
+  tosUri,
+  descriptor,
+  summary,
+  anchorStream,
+  whyCare,
+  whyPdpp,
+  aiPosture,
+  risk,
+  sources,
+  fit,
+  rolloutCopy,
+  clientId,
+  purpose,
+  purposeCode,
+  purposeDescription,
+  commitments,
+}: {
+  name: string;
+  monogram: string;
+  logoSrc?: string;
+  uri?: string;
+  policyUri?: string;
+  tosUri?: string;
+  descriptor: string;
+  summary: string;
+  anchorStream: CanonicalExampleWorld['anchorStream'];
+  whyCare: string;
+  whyPdpp: string;
+  aiPosture: string;
+  risk: string;
+  sources: string[];
+  fit: string[];
+  rolloutCopy: CanonicalExampleWorld['rolloutCopy'];
+  clientId: string;
+  purpose: string;
+  purposeCode: string;
+  purposeDescription: string;
+  commitments: string[];
+}): CanonicalExampleWorld {
+  return {
+    name,
+    monogram,
+    descriptor,
+    summary,
+    anchorStream,
+    whyCare,
+    whyPdpp,
+    aiPosture,
+    risk,
+    sources,
+    fit,
+    rolloutCopy,
+    consent: {
+      requester: { name, monogram, verified: true, logoSrc, uri, policyUri, tosUri },
+      purpose,
+      commitments,
+      streams: [
+        { key: 'pay_statements', label: 'Pay statements', detail: COMPENSATION_STREAM_DETAILS.payStatements },
+        { key: 'equity_grants', label: 'Equity grants', detail: COMPENSATION_STREAM_DETAILS.equityGrants },
+      ],
+      optional: {
+        key: 'benefits_enrollments',
+        label: 'Benefits enrollments',
+        detail: COMPENSATION_STREAM_DETAILS.benefits,
+        consequenceOn: 'Improves the plan comparison and exposes coverage tradeoffs.',
+        consequenceOff: 'Leaves the rest of the compensation analysis intact.',
+      },
+      accessMode: 'continuous',
+      technical: { clientId, purposeCode, grantExpires: 'Apr 15, 2027' },
+    },
+    grant: {
+      grantId: `grt_${clientId.replace(/[^a-z0-9]/gi, '').slice(0, 10)}`,
+      issuedAt: 'Apr 15, 2026',
+      status: 'active',
+      client: { clientId, name },
+      purposeCode,
+      purposeDescription,
+      accessMode: 'continuous',
+      expiresAt: 'Apr 15, 2027',
+      retention: { duration: '90 days', onExpiry: 'delete' },
+      streams: [
+        {
+          name: 'pay_statements',
+          label: 'Pay statements',
+          detail: COMPENSATION_STREAM_DETAILS.payStatements,
+          view: 'summary',
+          fields: ['employer', 'pay_period', 'gross_pay', 'net_pay'],
+          timeRange: { since: 'Jan 1, 2025' },
+        },
+        {
+          name: 'equity_grants',
+          label: 'Equity grants',
+          detail: COMPENSATION_STREAM_DETAILS.equityGrants,
+          view: 'vesting_summary',
+          fields: ['grant_type', 'quantity', 'vesting_start', 'vesting_schedule'],
+        },
+      ],
+    },
+    projection: {
+      streamLabel: 'Pay statements',
+      summary: 'The proof moment stays legible: the app gets the comparability fields and leaves the identity-heavy payroll fields behind.',
+      granted: ['employer', 'pay_period', 'gross_pay', 'net_pay'],
+      withheld: ['employee_id', 'home_address', 'bank_account_last4', 'tax_id_fragment'],
+    },
+  };
+}
+
+const CANONICAL_EXAMPLE_WORLD: CanonicalExampleWorld = createCompensationWorld({
+  name: 'Longview',
+  monogram: 'LV',
+  descriptor: 'Compensation planning',
+  summary: 'Compares salary, equity, benefits, and tax tradeoffs before a career move.',
+  uri: LONGVIEW_CLIENT_URI,
+  policyUri: LONGVIEW_POLICY_URI,
+  tosUri: LONGVIEW_TOS_URI,
+  anchorStream: {
+    name: 'pay_statements',
+    cadence: 'Append-only, every payroll cycle',
+    syncStory: 'Each pay cycle adds one new pay statement. Longview syncs the new record instead of re-downloading the entire compensation history.',
+  },
+  whyCare: 'A person has an offer in hand and wants a serious, document-backed read on what actually changes.',
+  whyPdpp: 'The decision spans payroll, equity, and benefits systems. The useful fields are narrower than the raw records, and no single bank-style aggregator covers the set.',
+  aiPosture: 'Normalizes offer letters, pay statements, vesting schedules, and benefit summaries into comparable scenarios.',
+  risk: 'The identity is strongest when it stays wordmark-led. The standalone symbol is still in review until it earns its keep at small sizes.',
+  sources: ['Payroll portal', 'Equity administrator', 'Benefits portal'],
+  fit: ['Legible to non-experts', 'Premium enough to feel paid', 'Clearly beyond Plaid', 'Strong sync story'],
+  rolloutCopy: {
+    heroLine: 'Longview compares salary, equity, benefits, and tax tradeoffs before a career move.',
+    consentPurpose: 'Longview is requesting compensation records to compare salary, equity, benefits, and tax tradeoffs before a career move.',
+    proofLine: 'The app gets the comparability fields and leaves the identity-heavy payroll fields behind.',
+    docsBlurb: 'A compensation-planning client that needs payroll, equity, and benefits records under one enforceable consent boundary.',
+    syncLine: 'Each payroll cycle adds one new pay statement, so sync returns only the new record.',
+  },
+  clientId: 'longview_planning_v1',
+  purposeCode: 'planning',
+  purposeDescription: 'Career-move compensation planning',
+  purpose: 'Longview is requesting compensation records to compare salary, equity, benefits, and tax tradeoffs before a career move.',
+  commitments: [
+    'Analysis remains private to this planning workspace',
+    'No employer outreach or document sharing without separate approval',
+  ],
+});
+
+type LongviewLogoVariant = 'aperture_span' | 'horizon_tile' | 'frame_lane';
+
+type LongviewLogoCandidate = {
+  id: LongviewLogoVariant;
+  name: string;
+  verdict: 'recommended' | 'alternative' | 'discard';
+  summary: string;
+  strength: string;
+  risk: string;
+};
+
+const LONGVIEW_LOGO_CANDIDATES: LongviewLogoCandidate[] = [
+  {
+    id: 'aperture_span',
+    name: 'Aperture wordmark',
+    verdict: 'recommended',
+    summary: 'Wordmark-led system with a restrained open-span mark beside it.',
+    strength: 'Feels closest to a premium software or advisory product instead of a generated fintech icon.',
+    risk: 'The standalone symbol still needs one more reduction pass before it earns favicon-scale use by itself.',
+  },
+  {
+    id: 'horizon_tile',
+    name: 'Horizon tile',
+    verdict: 'alternative',
+    summary: 'Contained tile mark with a panoramic cut running through the center.',
+    strength: 'Most credible as an app icon or sidebar avatar once the interior cut gets more ownable.',
+    risk: 'Still risks feeling generic if the slit reads as UI chrome instead of brand geometry.',
+  },
+  {
+    id: 'frame_lane',
+    name: 'Frame lane',
+    verdict: 'discard',
+    summary: 'Open frame with an internal lane carrying the view line.',
+    strength: 'Keeps the horizon idea without becoming a literal monogram.',
+    risk: 'Still reads more like product UI chrome than something a world-class brand would own.',
+  },
+];
+
+function LongviewIdentityLockup({
+  variant,
+  inverse = false,
+  compact = false,
+}: {
+  variant: LongviewLogoVariant;
+  inverse?: boolean;
+  compact?: boolean;
+}) {
+  const wordColor = inverse ? '#FBFCFE' : 'var(--foreground)';
+  const descriptorColor = inverse ? 'rgba(251, 252, 254, 0.68)' : 'var(--primary)';
+  const chipBackground = inverse ? 'rgba(251, 252, 254, 0.08)' : 'color-mix(in oklab, var(--primary) 7%, white)';
+  const chipBorder = inverse
+    ? '1px solid rgba(251, 252, 254, 0.16)'
+    : '1px solid color-mix(in oklab, var(--primary) 16%, var(--border))';
+  const chipSizeClass = compact ? 'h-9 w-9 rounded-[1rem]' : 'h-11 w-11 rounded-2xl';
+  const markSizeClass = compact ? 'h-4 w-6' : 'h-5 w-7';
+  const wordClass = compact ? 'text-[1.05rem]' : 'text-[1.45rem]';
+  const descriptorClass = compact ? 'text-[9px]' : 'text-[10px]';
+  const descriptorMarginTop = compact ? '0.28rem' : '0.38rem';
+
+  return (
+    <div className="flex min-w-0 items-center gap-3">
+      <div
+        className={`flex shrink-0 items-center justify-center ${chipSizeClass}`}
+        style={{
+          backgroundColor: chipBackground,
+          border: chipBorder,
+        }}
+      >
+        <LongviewLogoMark variant={variant} inverse={inverse} className={markSizeClass} />
+      </div>
+      <div className="min-w-0">
+        <div
+          className={`${wordClass} truncate font-semibold leading-none`}
+          style={{
+            color: wordColor,
+            letterSpacing: '-0.05em',
+          }}
+        >
+          Longview
+        </div>
+        <div
+          className={`${descriptorClass} truncate font-mono uppercase tracking-[0.11em]`}
+          style={{
+            color: descriptorColor,
+            marginTop: descriptorMarginTop,
+          }}
+        >
+          Compensation planning
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function LongviewLogoMark({
+  variant,
+  inverse = false,
+  className = 'h-12 w-20',
+}: {
+  variant: LongviewLogoVariant;
+  inverse?: boolean;
+  className?: string;
+}) {
+  const fill = inverse ? '#FBFCFE' : '#233F86';
+
+  if (variant === 'horizon_tile') {
+    return (
+      <svg viewBox="0 0 128 80" aria-hidden="true" className={className}>
+        <path
+          d="M18 10c0-4 3-7 7-7h64c4 0 7 3 7 7v60c0 4-3 7-7 7H25c-4 0-7-3-7-7V10Zm16 14v32h46V24H34Zm22 11h40v10H56V35Z"
+          fill={fill}
+          fillRule="evenodd"
+        />
+      </svg>
+    );
+  }
+
+  if (variant === 'frame_lane') {
+    return (
+      <svg viewBox="0 0 128 80" aria-hidden="true" className={className}>
+        <path d="M18 16H58V28H32V52H58V64H18V16Z" fill={fill} />
+        <path d="M50 34H112V46H50V34Z" fill={fill} />
+      </svg>
+    );
+  }
+
+  return (
+    <svg viewBox="0 0 128 80" aria-hidden="true" className={className}>
+      <path d="M18 16H62V28H32V52H104V64H18V16Z" fill={fill} />
+    </svg>
+  );
+}
+
+function LongviewCandidatePreview({
+  candidate,
+}: {
+  candidate: LongviewLogoCandidate;
+}) {
+  const verdictTone =
+    candidate.verdict === 'recommended'
+      ? {
+          color: 'var(--primary)',
+          backgroundColor: 'color-mix(in oklab, var(--primary) 8%, white)',
+          border: '1px solid color-mix(in oklab, var(--primary) 18%, var(--border))',
+          label: 'Recommended',
+        }
+      : candidate.verdict === 'alternative'
+        ? {
+            color: 'var(--foreground)',
+            backgroundColor: 'color-mix(in oklab, var(--human-wash) 82%, white)',
+            border: '1px solid color-mix(in oklab, var(--human) 18%, var(--border))',
+            label: 'Alternative',
+          }
+        : {
+            color: 'var(--muted-foreground)',
+            backgroundColor: 'var(--muted)',
+            border: '1px solid var(--border)',
+            label: 'Discard',
+          };
+
+  return (
+    <div className="border-t pt-4" style={{ borderColor: 'var(--border)' }}>
+      <div className="flex flex-wrap items-start gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="text-sm font-semibold tracking-tight">{candidate.name}</div>
+          <p className="text-xs leading-relaxed mt-1" style={{ color: 'var(--muted-foreground)', maxWidth: '34ch' }}>
+            {candidate.summary}
+          </p>
+        </div>
+        <span
+          className="w-fit rounded-full px-2 py-1 font-mono text-[10px] uppercase tracking-[0.08em]"
+          style={verdictTone}
+        >
+          {verdictTone.label}
+        </span>
+      </div>
+
+      <div className="grid gap-3 mt-4 sm:grid-cols-2">
+        <div
+          className="flex h-20 items-center justify-center rounded-[1rem] px-4"
+          style={{
+            backgroundColor: 'color-mix(in oklab, var(--muted) 58%, white)',
+            border: '1px solid color-mix(in oklab, var(--border) 86%, white)',
+          }}
+        >
+          <LongviewLogoMark variant={candidate.id} className="h-8 w-14" />
+        </div>
+        <div
+          className="flex h-20 items-center justify-center rounded-[1rem] px-4"
+          style={{
+            backgroundColor: '#203976',
+            border: '1px solid color-mix(in oklab, #203976 82%, white)',
+          }}
+        >
+          <LongviewLogoMark variant={candidate.id} inverse className="h-8 w-14" />
+        </div>
+      </div>
+
+      <div className="grid gap-3 mt-4 md:grid-cols-2">
+        <div>
+          <div className="font-mono text-[10px] uppercase tracking-[0.09em]" style={{ color: 'var(--muted-foreground)', marginBottom: '0.45rem' }}>
+            Strength
+          </div>
+          <p className="text-xs leading-relaxed" style={{ color: 'var(--foreground)' }}>
+            {candidate.strength}
+          </p>
+        </div>
+        <div>
+          <div className="font-mono text-[10px] uppercase tracking-[0.09em]" style={{ color: 'var(--muted-foreground)', marginBottom: '0.45rem' }}>
+            Risk
+          </div>
+          <p className="text-xs leading-relaxed" style={{ color: 'var(--foreground)' }}>
+            {candidate.risk}
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ExampleWorldsSection() {
+  const world = CANONICAL_EXAMPLE_WORLD;
+
+  return (
+    <SectionWrap id="examples">
+      <SectionHeader
+        title="Reference World"
+        description="The one example world reused across the reference, docs, consent cards, and screenshots."
+      />
+
+      <div className="flex flex-col gap-12">
+        <div className="grid gap-10 xl:grid-cols-[minmax(0,1.18fr)_minmax(18rem,0.82fr)]">
+          <div className="flex flex-col gap-6">
+            <div className="font-mono text-[10px] uppercase tracking-[0.09em]" style={{ color: 'var(--muted-foreground)' }}>
+              Identity direction
+            </div>
+
+            <div>
+              <div className="text-[1.7rem] font-semibold tracking-tight leading-none">Longview</div>
+              <div className="mt-2 font-mono text-[10px] uppercase tracking-[0.11em]" style={{ color: 'var(--primary)' }}>
+                Compensation planning
+              </div>
+            </div>
+            <p className="text-sm leading-relaxed" style={{ color: 'var(--foreground)', maxWidth: '54ch' }}>
+              Longview is the product. Use Aperture wordmark as the system direction. Keep Horizon tile only as reserve. Drop Frame lane.
+            </p>
+
+            <div className="grid gap-3 lg:grid-cols-2">
+              <div
+                className="flex min-h-[7.5rem] items-center rounded-[1rem] px-5 py-4"
+                style={{
+                  backgroundColor: 'color-mix(in oklab, var(--muted) 58%, white)',
+                  border: '1px solid var(--border)',
+                }}
+              >
+                <LongviewIdentityLockup variant="aperture_span" />
+              </div>
+              <div
+                className="flex min-h-[7.5rem] items-center rounded-[1rem] px-5 py-4"
+                style={{
+                  backgroundColor: '#203976',
+                  border: '1px solid color-mix(in oklab, #203976 82%, white)',
+                }}
+              >
+                <LongviewIdentityLockup variant="aperture_span" inverse />
+              </div>
+            </div>
+
+            <div className="border-t pt-5" style={{ borderColor: 'color-mix(in oklab, var(--primary) 18%, var(--border))' }}>
+              <div className="font-mono text-[10px] uppercase tracking-[0.09em]" style={{ color: 'var(--muted-foreground)', marginBottom: '0.75rem' }}>
+                Recommended symbol sizes
+              </div>
+              <div className="grid grid-cols-4 gap-2">
+                {[16, 24, 32, 64].map((size) => (
+                  <div
+                    key={size}
+                    className="rounded-[0.85rem] px-2 py-3 text-center"
+                    style={{
+                      backgroundColor: 'color-mix(in oklab, var(--muted) 42%, white)',
+                      border: '1px solid color-mix(in oklab, var(--border) 86%, white)',
+                    }}
+                  >
+                    <div className="flex h-10 items-center justify-center">
+                      <LongviewLogoMark
+                        variant="aperture_span"
+                        className={
+                          size === 16 ? 'h-3 w-6' :
+                          size === 24 ? 'h-4 w-8' :
+                          size === 32 ? 'h-5 w-10' :
+                          'h-7 w-14'
+                        }
+                      />
+                    </div>
+                    <div className="font-mono text-[10px] mt-2" style={{ color: 'var(--muted-foreground)' }}>
+                      {size}px
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="border-t pt-5" style={{ borderColor: 'var(--border)' }}>
+              <div className="font-mono text-[10px] uppercase tracking-[0.09em]" style={{ color: 'var(--muted-foreground)', marginBottom: '0.5rem' }}>
+                Other Longview directions considered
+              </div>
+              <div className="flex flex-col">
+                {LONGVIEW_LOGO_CANDIDATES.filter((candidate) => candidate.verdict !== 'recommended').map((candidate) => (
+                  <LongviewCandidatePreview key={candidate.id} candidate={candidate} />
+                ))}
+              </div>
+            </div>
+          </div>
+
+          <aside
+            className="flex flex-col gap-6 xl:pl-8 xl:border-l"
+            style={{ borderColor: 'var(--border)' }}
+          >
+            <div>
+              <div className="font-mono text-[10px] uppercase tracking-[0.09em] mb-4" style={{ color: 'var(--muted-foreground)' }}>
+                Reference bar
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {['Apple', 'Nike', 'IBM', 'FedEx', 'Shell', 'Stripe', 'Plaid', 'Linear'].map((name) => (
+                  <span
+                    key={name}
+                    className="rounded-full px-2.5 py-1.5 text-xs"
+                    style={{
+                      color: 'var(--foreground)',
+                      backgroundColor: 'color-mix(in oklab, var(--muted) 44%, white)',
+                      border: '1px solid var(--border)',
+                    }}
+                  >
+                    {name}
+                  </span>
+                ))}
+              </div>
+            </div>
+
+            <div className="border-t pt-5" style={{ borderColor: 'var(--border)' }}>
+              <div className="font-mono text-[10px] uppercase tracking-[0.09em]" style={{ color: 'var(--muted-foreground)', marginBottom: '0.75rem' }}>
+                Keep only if it can do all of this
+              </div>
+              <div className="flex flex-col gap-3">
+                {[
+                  'A distinct silhouette after one glance',
+                  'Legible at 16px and 32px without texture or glow',
+                  'One-color performance on light and dark backgrounds',
+                  'No accidental lettermark unless the letterform is exceptional',
+                  'Looks believable in a consent card, favicon, and app tile',
+                  'Feels ownable rather than like anonymous fintech clip-art',
+                ].map((rule) => (
+                  <p key={rule} className="text-xs leading-relaxed" style={{ color: 'var(--foreground)' }}>
+                    {rule}
+                  </p>
+                ))}
+              </div>
+            </div>
+
+            <div className="border-t pt-5" style={{ borderColor: 'var(--border)' }}>
+              <div className="font-mono text-[10px] uppercase tracking-[0.09em]" style={{ color: 'var(--muted-foreground)', marginBottom: '0.75rem' }}>
+                Decision
+              </div>
+              <p className="text-xs leading-relaxed" style={{ color: 'var(--foreground)' }}>
+                Standardize Aperture wordmark for the reference, docs, and screenshots. Keep Horizon tile only if a stronger app-icon need emerges. Discard Frame lane.
+              </p>
+              <p className="text-xs leading-relaxed mt-3" style={{ color: 'var(--muted-foreground)' }}>
+                The standalone symbol is still secondary. The thing to standardize first is the wordmark-led Longview system used in the docs and reference surfaces.
+              </p>
+            </div>
+          </aside>
+        </div>
+
+        <div className="grid gap-10 xl:grid-cols-[minmax(0,0.98fr)_minmax(0,1.02fr)] xl:items-start">
+          <div className="flex flex-col gap-6">
+            <div className="font-mono text-[10px] uppercase tracking-[0.09em]" style={{ color: 'var(--muted-foreground)' }}>
+              Product brief
+            </div>
+
+            <div>
+              <LongviewIdentityLockup variant="aperture_span" />
+              <p className="text-sm leading-relaxed mt-3" style={{ color: 'var(--muted-foreground)', maxWidth: '58ch' }}>
+                {world.summary}
+              </p>
+            </div>
+
+            <div className="grid gap-5 md:grid-cols-2">
+              {[
+                ['Why people care', world.whyCare],
+                ['Why PDPP, not Plaid', world.whyPdpp],
+                ['AI posture', world.aiPosture],
+                ['Risk to watch', world.risk],
+              ].map(([label, value]) => (
+                <div key={label}>
+                  <div className="font-mono text-[10px] uppercase tracking-[0.09em]" style={{ color: 'var(--muted-foreground)', marginBottom: '0.5rem' }}>
+                    {label}
+                  </div>
+                  <p className="text-xs leading-relaxed" style={{ color: 'var(--foreground)' }}>{value}</p>
+                </div>
+              ))}
+            </div>
+
+            <div className="border-t pt-5" style={{ borderColor: 'var(--border)' }}>
+              <div className="font-mono text-[10px] uppercase tracking-[0.09em]" style={{ color: 'var(--primary)', marginBottom: '0.75rem' }}>
+                Anchor stream
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <code className="rounded-full px-2.5 py-1 text-xs" style={{ color: 'var(--foreground)', backgroundColor: 'color-mix(in oklab, var(--muted) 42%, white)', border: '1px solid var(--border)' }}>
+                  {world.anchorStream.name}
+                </code>
+                <span className="rounded-full px-2.5 py-1 text-xs" style={{ color: 'var(--foreground)', backgroundColor: 'color-mix(in oklab, var(--muted) 42%, white)', border: '1px solid var(--border)' }}>
+                  {world.anchorStream.cadence}
+                </span>
+              </div>
+              <p className="text-xs leading-relaxed mt-3" style={{ color: 'var(--muted-foreground)', maxWidth: '52ch' }}>
+                {world.anchorStream.syncStory}
+              </p>
+            </div>
+
+            <div className="grid gap-5 md:grid-cols-[minmax(0,1.2fr)_minmax(0,0.8fr)]">
+              <div>
+                <div className="font-mono text-[10px] uppercase tracking-[0.09em]" style={{ color: 'var(--muted-foreground)', marginBottom: '0.75rem' }}>
+                  Source systems
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {world.sources.map((source) => (
+                    <span
+                      key={source}
+                      className="rounded-full px-2.5 py-1.5 text-xs"
+                      style={{
+                        color: 'var(--foreground)',
+                        backgroundColor: 'color-mix(in oklab, var(--muted) 42%, white)',
+                        border: '1px solid var(--border)',
+                      }}
+                    >
+                      {source}
+                    </span>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <div className="font-mono text-[10px] uppercase tracking-[0.09em]" style={{ color: 'var(--muted-foreground)', marginBottom: '0.75rem' }}>
+                  Fit
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {world.fit.map((item) => (
+                    <span
+                      key={item}
+                      className="rounded-full px-2.5 py-1.5 text-xs"
+                      style={{
+                        color: 'var(--foreground)',
+                        backgroundColor: 'color-mix(in oklab, var(--background) 75%, var(--human-wash))',
+                        border: '1px solid color-mix(in oklab, var(--human) 18%, var(--border))',
+                      }}
+                    >
+                      {item}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            <div className="border-t pt-5" style={{ borderColor: 'var(--border)' }}>
+              <div className="font-mono text-[10px] uppercase tracking-[0.09em]" style={{ color: 'var(--muted-foreground)', marginBottom: '0.75rem' }}>
+                Next reference worlds to build
+              </div>
+              <div className="grid gap-3 md:grid-cols-3">
+                {[
+                  ['Subscription review', 'Renewal notices, receipts, refunds, and SaaS billing records under one boundary.'],
+                  ['Travel reimbursement', 'Bookings, receipts, and policy documents for policy-aware expense review.'],
+                  ['Benefits appeal', 'EOBs, provider bills, prescriptions, and coverage letters for dispute preparation.'],
+                ].map(([label, detail]) => (
+                  <div key={label}>
+                    <div className="text-xs font-medium" style={{ color: 'var(--foreground)' }}>{label}</div>
+                    <p className="text-xs leading-relaxed mt-1" style={{ color: 'var(--muted-foreground)' }}>{detail}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          <div className="flex flex-col gap-6 xl:pl-8 xl:border-l" style={{ borderColor: 'var(--border)' }}>
+            <div className="font-mono text-[10px] uppercase tracking-[0.09em]" style={{ color: 'var(--muted-foreground)' }}>
+              Shared copy
+            </div>
+
+            <div className="border-t pt-5" style={{ borderColor: 'var(--border)' }}>
+              <div className="font-mono text-[10px] uppercase tracking-[0.09em]" style={{ color: 'var(--muted-foreground)', marginBottom: '0.75rem' }}>
+                Copy to carry through the site
+              </div>
+              {[
+                ['Hero line', world.rolloutCopy.heroLine],
+                ['Consent purpose', world.rolloutCopy.consentPurpose],
+                ['Proof line', world.rolloutCopy.proofLine],
+                ['Sync line', world.rolloutCopy.syncLine],
+                ['Docs blurb', world.rolloutCopy.docsBlurb],
+              ].map(([label, value]) => (
+                <div
+                  key={label}
+                  className="grid gap-1 py-3 md:grid-cols-[7.25rem_minmax(0,1fr)]"
+                  style={{ borderTop: label === 'Hero line' ? 'none' : '1px solid var(--border)' }}
+                >
+                  <div className="font-mono text-[10px] uppercase tracking-[0.09em]" style={{ color: 'var(--muted-foreground)' }}>
+                    {label}
+                  </div>
+                  <div className="text-xs leading-relaxed" style={{ color: 'var(--foreground)' }}>
+                    {value}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        <div className="grid gap-8 xl:grid-cols-[minmax(0,1.04fr)_minmax(0,0.96fr)]">
+          <div className="flex flex-col gap-4">
+            <SubLabel>Consent surface</SubLabel>
+            <ConsentCard key={`${world.name}-consent`} {...world.consent} />
+          </div>
+
+          <div className="flex flex-col gap-6">
+            <div
+              data-surface="protocol"
+              className="rounded-[1.25rem] px-5 py-5 md:px-6 md:py-6"
+              style={{ border: '1px solid var(--border)' }}
+            >
+              <div className="font-mono text-[10px] uppercase tracking-[0.09em]" style={{ color: 'var(--primary)', marginBottom: '0.75rem' }}>
+                Projection
+              </div>
+              <div className="text-sm font-semibold" style={{ color: 'var(--foreground)' }}>
+                {world.projection.streamLabel}
+              </div>
+              <p className="text-xs leading-relaxed mt-2" style={{ color: 'var(--muted-foreground)', maxWidth: '46ch' }}>
+                {world.projection.summary}
+              </p>
+              <p className="text-xs leading-relaxed mt-2" style={{ color: 'var(--muted-foreground)', maxWidth: '46ch' }}>
+                {world.rolloutCopy.syncLine}
+              </p>
+
+              <div className="grid gap-4 sm:grid-cols-2 mt-5">
+                <div>
+                  <div className="font-mono text-[10px] uppercase tracking-[0.09em]" style={{ color: 'var(--muted-foreground)', marginBottom: '0.75rem' }}>
+                    4 fields returned
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {world.projection.granted.map((field) => (
+                      <code
+                        key={field}
+                        className="rounded-full px-2.5 py-1 text-xs"
+                        style={{
+                          color: 'var(--foreground)',
+                          backgroundColor: 'color-mix(in oklab, var(--primary) 10%, white)',
+                          border: '1px solid color-mix(in oklab, var(--primary) 16%, var(--border))',
+                        }}
+                      >
+                        {field}
+                      </code>
+                    ))}
+                  </div>
+                </div>
+
+                <div>
+                  <div className="font-mono text-[10px] uppercase tracking-[0.09em]" style={{ color: 'var(--muted-foreground)', marginBottom: '0.75rem' }}>
+                    4 fields withheld
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {world.projection.withheld.map((field) => (
+                      <code
+                        key={field}
+                        className="rounded-full px-2.5 py-1 text-xs"
+                        style={{
+                          color: 'var(--muted-foreground)',
+                          backgroundColor: 'var(--muted)',
+                          border: '1px solid var(--border)',
+                        }}
+                      >
+                        {field}
+                      </code>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div>
+              <SubLabel>Grant surface</SubLabel>
+              <GrantInspector key={`${world.name}-grant`} {...world.grant} onRevoke={() => {}} />
+            </div>
+          </div>
+        </div>
+
+        <RuleBlock>Choose one reference world and carry it through `/`, `/design`, docs, API examples, and screenshots. The example should not rename itself every time the surface changes.</RuleBlock>
+      </div>
+    </SectionWrap>
+  );
+}
+
+// ─── 09 Docs ─────────────────────────────────────────────────────────────────
 
 function DocsSection() {
   return (
@@ -1439,28 +2231,28 @@ function SpecimenSwitcher<T>({
 const CONSENT_SPECIMENS: { label: string; axes: string; data: ConsentCardProps }[] = [
   {
     // Axes: 1=continuous, 2=research, 4=delete, 5=present, 6=date, 7=mixed, 13=verified, 15=present, 16=present, 17=multiple
-    label: 'Research (baseline)',
-    axes: 'continuous, research, verified, retention:delete, expiry, optional stream, commitments',
+    label: 'Planning (baseline)',
+    axes: 'continuous, planning, verified, retention:delete, expiry, optional stream, commitments',
     data: {
-      requester: { name: 'Audience Lens', monogram: 'AL', verified: true },
-      purpose: 'Audience Lens is requesting access to your Instagram data for an influencer network study.',
+      requester: { name: 'Longview', monogram: 'LV', verified: true },
+      purpose: 'Longview is requesting compensation records to compare salary, equity, benefits, and tax tradeoffs before a career move.',
       commitments: [
-        'Data used only for this study',
-        'Not sold or shared with third parties',
+        'Analysis stays inside this planning workspace',
+        'No employer outreach or document sharing without separate approval',
       ],
       streams: [
-        { key: 'following', label: 'Who you follow', detail: 'Usernames and account IDs of accounts you follow. No DMs, profile details, or follower lists.' },
-        { key: 'posts', label: 'Your posts', detail: 'Post captions, dates, and media types since Dec 31, 2024. No comments, likes, or private messages.' },
+        { key: 'pay_statements', label: 'Pay statements', detail: 'Employer, pay period, gross pay, and net pay. No bank account details, home address, or tax ID fragments.' },
+        { key: 'equity_grants', label: 'Equity grants', detail: 'Grant type, quantity, vesting start, and vesting schedule. No brokerage account numbers or beneficiary details.' },
       ],
       optional: {
-        key: 'ad_targeting',
-        label: 'Ad interest categories',
-        detail: 'Ad categories, sources, and confidence scores. No browsing history or purchase data.',
-        consequenceOn: 'Improves study accuracy. Not required for the grant.',
+        key: 'benefits_enrollments',
+        label: 'Benefits enrollments',
+        detail: 'Plan name, coverage tier, and employer contribution. No dependent details, claims, or provider notes.',
+        consequenceOn: 'Improves plan comparison and exposes coverage tradeoffs.',
         consequenceOff: 'Turned off. The rest of the grant is unaffected.',
       },
       accessMode: 'continuous',
-      technical: { clientId: 'audience_lens_v1', purposeCode: 'research', grantExpires: 'Apr 5, 2027' },
+      technical: { clientId: 'longview_planning_v1', purposeCode: 'planning', grantExpires: 'Apr 15, 2027' },
     },
   },
   {
@@ -1561,15 +2353,15 @@ const GRANT_SPECIMENS: { label: string; axes: string; data: GrantInspectorProps 
       grantId: 'grt_8f3a2b1c',
       issuedAt: 'Apr 6, 2026',
       status: 'active',
-      client: { clientId: 'audience_lens_v1', name: 'Audience Lens' },
-      purposeCode: 'research',
-      purposeDescription: 'Influencer network study',
+      client: { clientId: 'longview_planning_v1', name: 'Longview' },
+      purposeCode: 'planning',
+      purposeDescription: 'Career-move compensation planning',
       accessMode: 'continuous',
-      expiresAt: 'Apr 5, 2027',
+      expiresAt: 'Apr 15, 2027',
       retention: { duration: '90 days', onExpiry: 'delete' },
       streams: [
-        { name: 'following_accounts', label: 'Who you follow', detail: 'Usernames and account IDs of accounts you follow. No DMs, profile details, or follower lists.', view: 'social_graph', fields: ['id', 'username'] },
-        { name: 'posts', label: 'Your posts', detail: 'Post captions, dates, and media types since Dec 31, 2024. No comments, likes, or private messages.', view: 'summary', fields: ['id', 'caption', 'taken_at', 'media_type'], timeRange: { since: 'Dec 31, 2024' } },
+        { name: 'pay_statements', label: 'Pay statements', detail: 'Employer, pay period, gross pay, and net pay. No bank account details, home address, or tax ID fragments.', view: 'summary', fields: ['employer', 'pay_period', 'gross_pay', 'net_pay'], timeRange: { since: 'Jan 1, 2025' } },
+        { name: 'equity_grants', label: 'Equity grants', detail: 'Grant type, quantity, vesting start, and vesting schedule. No brokerage account numbers or beneficiary details.', view: 'vesting_summary', fields: ['grant_type', 'quantity', 'vesting_start', 'vesting_schedule'] },
       ],
     },
   },
@@ -1788,7 +2580,7 @@ const CITATION_SPECIMENS: { label: string; axes: string; data: { citations: Spec
   },
 ];
 
-// ─── 08 Status ───────────────────────────────────────────────────────────────
+// ─── 10 Status ───────────────────────────────────────────────────────────────
 
 function StatusSection() {
   return (
@@ -1874,7 +2666,7 @@ function StatusSection() {
   );
 }
 
-// ─── 09 Rules ────────────────────────────────────────────────────────────────
+// ─── 11 Rules ────────────────────────────────────────────────────────────────
 
 const RULE_GROUPS = [
   {
@@ -1906,7 +2698,7 @@ const RULE_GROUPS = [
   {
     label: 'Tokens',
     rules: [
-      { bad: 'New token not on this page', good: 'Add to :root + /design first', why: 'This page is the source of truth. If it\'s not here, it doesn\'t exist yet.' },
+      { bad: 'New token not on this page', good: 'Add to :root + /design first', why: 'If it isn\'t defined here, don\'t invent it in product code.' },
       { bad: 'data-[attr] with no CSS rule', good: 'Define semantic, then derive visual', why: 'The attribute encodes what something is. CSS derives what it looks like. Never reverse this.' },
       { bad: 'Inline opacity on muted-foreground', good: 'Use the token as-is', why: 'oklch(0.50 0 0) is already calibrated. Stacking opacity creates uncalibrated contrast.' },
     ],

@@ -7,8 +7,11 @@ import { Button } from '@/components/ui/button';
 
 // Props contract — provenance of each field (see spec §5 Client Display, Client Claims, §7 Stream Display):
 //
-// FROM client_display (entity-scoped, self-asserted):
-//   requester.name, requester.monogram (server may override)
+// FROM resolved client display metadata (entity-scoped):
+//   requester.name, requester.monogram, requester.uri, requester.policyUri,
+//   requester.tosUri, requester.logoSrc
+//   Source may be local registration, trust registry, validated software
+//   statement metadata, or inline client_display.
 //
 // FROM client_claims (request-scoped, attributed with disclaimer):
 //   commitments[]
@@ -44,9 +47,13 @@ export type ConsentCardOptional = {
 
 export type ConsentCardProps = {
   requester: {
-    name: string;           // client_display.name
-    monogram: string;       // server-derived from name, or client-suggested
-    verified: boolean;      // server-determined, never client-asserted
+    name: string;           // resolved display name
+    monogram: string;       // server-derived fallback from resolved name
+    uri?: string;           // resolved client homepage
+    policyUri?: string;     // resolved privacy policy URI
+    tosUri?: string;        // resolved terms-of-service URI
+    verified: boolean;      // server-determined trust signal, never client-asserted
+    logoSrc?: string;       // server-selected or approved brand mark, never raw untrusted remote content
   };
   purpose: string;                          // purpose_description — client-authored, first-class
   commitments: string[];                    // client_claims.commitments — attributed, disclaimed
@@ -126,13 +133,36 @@ export function ConsentCard({
           <div className="flex items-start gap-3">
             <div
               className="w-9 h-9 rounded-lg shrink-0 flex items-center justify-center"
-              style={{ backgroundColor: 'var(--human)', color: 'white' }}
+              style={requester.logoSrc
+                ? {
+                    backgroundColor: 'var(--background)',
+                    border: '1px solid var(--border)',
+                  }
+                : {
+                    backgroundColor: 'var(--human)',
+                    color: 'white',
+                  }}
             >
-              <span className="text-xs font-bold font-mono">{requester.monogram}</span>
+              {requester.logoSrc ? (
+                <img
+                  src={requester.logoSrc}
+                  alt=""
+                  aria-hidden="true"
+                  className="h-5 w-5 object-contain"
+                />
+              ) : (
+                <span className="text-xs font-bold font-mono">{requester.monogram}</span>
+              )}
             </div>
             <div className="flex-1 min-w-0 pt-0.5">
               <div className="flex items-center gap-2 flex-wrap">
                 <span className="text-sm font-semibold" style={{ color: 'var(--foreground)' }}>{requester.name}</span>
+                <span
+                  className="font-mono text-[10px] px-1.5 py-0.5 rounded uppercase tracking-wide"
+                  style={{ backgroundColor: 'var(--muted)', color: 'var(--muted-foreground)' }}
+                >
+                  client app
+                </span>
                 {requester.verified ? (
                   <span
                     className="font-mono text-xs px-1.5 py-0.5 rounded uppercase tracking-wide"

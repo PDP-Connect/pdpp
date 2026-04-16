@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { SiteHeader } from '@/components/SiteHeader';
+import { ReferenceHeroProof } from '@/components/ReferenceHeroProof';
 import {
   ConsentCard,
   GrantInspector,
@@ -15,6 +16,25 @@ import type {
   ConnectorCardProps,
 } from '@/components/pdpp';
 import { useProtocol } from '@/lib/use-protocol';
+import { LongviewWordmark } from '@/components/LongviewWordmark';
+import {
+  LONGVIEW_CLIENT_ID,
+  LONGVIEW_CLIENT_MONOGRAM,
+  LONGVIEW_CLIENT_NAME,
+  LONGVIEW_CLIENT_URI,
+  LONGVIEW_CONNECTOR_SPECIMEN,
+  LONGVIEW_CONSENT_SPECIMEN,
+  LONGVIEW_GRANT_SPECIMEN,
+  LONGVIEW_INVENTORY_SPECIMEN,
+  LONGVIEW_PAY_STATEMENT_ALL_FIELDS,
+  LONGVIEW_PAY_STATEMENT_GRANTED_FIELDS,
+  LONGVIEW_POLICY_URI,
+  LONGVIEW_PURPOSE,
+  LONGVIEW_PURPOSE_CODE,
+  LONGVIEW_PURPOSE_DESCRIPTION,
+  LONGVIEW_STREAM_DETAILS,
+  LONGVIEW_TOS_URI,
+} from '@/lib/longview-world';
 
 // ─── Config ─────────────────────────────────────────────────────────────────
 
@@ -23,81 +43,31 @@ const SPEC_BASE_URL = 'https://pdpp-smoky.vercel.app';
 // ─── Section definitions ────────────────────────────────────────────────────
 
 const SECTIONS = [
-  { id: 'ingest',    label: 'Ingest',    num: 1 },
-  { id: 'inventory', label: 'Inventory', num: 2 },
-  { id: 'request',   label: 'Request',   num: 3 },
-  { id: 'consent',   label: 'Consent',   num: 4 },
-  { id: 'grant',     label: 'Grant',     num: 5 },
-  { id: 'enforce',   label: 'Enforce',   num: 6 },
-  { id: 'sync',      label: 'Sync',      num: 7 },
-  { id: 'revoke',    label: 'Revoke',    num: 8 },
-  { id: 'export',    label: 'Export',    num: 9 },
+  { id: 'enforce',   label: 'Enforce',   num: 1 },
+  { id: 'request',   label: 'Request',   num: 2 },
+  { id: 'consent',   label: 'Consent',   num: 3 },
+  { id: 'grant',     label: 'Grant',     num: 4 },
+  { id: 'sync',      label: 'Sync',      num: 5 },
+  { id: 'revoke',    label: 'Revoke',    num: 6 },
+  { id: 'export',    label: 'Export',    num: 7 },
+  { id: 'inventory', label: 'Inventory', num: 8 },
+  { id: 'ingest',    label: 'Ingest',    num: 9 },
   { id: 'multi',     label: 'Multi',     num: 10 },
   { id: 'spec',      label: 'Spec',      num: 11 },
 ] as const;
 
 type SectionId = typeof SECTIONS[number]['id'];
 
+const SECTION_DISPLAY_ORDER = Object.fromEntries(
+  SECTIONS.map((section, index) => [section.id, (index + 1) * 10])
+) as Record<SectionId, number>;
+
 // ─── Specimen data ──────────────────────────────────────────────────────────
 
-const CONNECTOR_SPECIMEN: ConnectorCardProps = {
-  connectorId: 'https://registry.pdpp.org/connectors/instagram',
-  displayName: 'Instagram',
-  version: '1.2.0',
-  streams: [
-    { name: 'following_accounts', label: 'Who you follow', semantics: 'mutable_state', supportsFields: true, supportsResources: false, supportsTimeRange: false, viewCount: 2 },
-    { name: 'posts', label: 'Your posts', semantics: 'append_only', supportsFields: true, supportsResources: false, supportsTimeRange: true, viewCount: 2 },
-    { name: 'ad_targeting', label: 'Ad interest categories', semantics: 'mutable_state', supportsFields: true, supportsResources: false, supportsTimeRange: false, viewCount: 1 },
-  ],
-};
-
-const INVENTORY_SPECIMEN: StreamInventoryProps = {
-  connectorName: 'Instagram',
-  connectorVersion: '1.2.0',
-  streams: [
-    { name: 'following_accounts', label: 'Who you follow', detail: 'Usernames and account IDs of accounts you follow. No DMs, profile details, or follower lists.', semantics: 'mutable_state', recordCount: 106, lastSynced: 'Apr 6, 2026' },
-    { name: 'posts', label: 'Your posts', detail: 'Post captions, dates, and media types. No comments, likes, or private messages.', semantics: 'append_only', recordCount: 22, lastSynced: 'Apr 6, 2026' },
-    { name: 'ad_targeting', label: 'Ad interest categories', detail: 'Ad categories, sources, and confidence scores. No browsing history or purchase data.', semantics: 'mutable_state', recordCount: 47, lastSynced: 'Apr 6, 2026' },
-  ],
-};
-
-const CONSENT_SPECIMEN: ConsentCardProps = {
-  requester: { name: 'Audience Lens', monogram: 'AL', verified: true },
-  purpose: 'Audience Lens is requesting access to your Instagram data for an influencer network study.',
-  commitments: [
-    'Data used only for this study',
-    'Not sold or shared with third parties',
-  ],
-  streams: [
-    { key: 'following', label: 'Who you follow', detail: 'Usernames and account IDs of accounts you follow. No DMs, profile details, or follower lists.' },
-    { key: 'posts', label: 'Your posts', detail: 'Post captions, dates, and media types since Dec 31, 2024. No comments, likes, or private messages.' },
-  ],
-  optional: {
-    key: 'ad_targeting',
-    label: 'Ad interest categories',
-    detail: 'Ad categories, sources, and confidence scores. No browsing history or purchase data.',
-    consequenceOn: 'Improves study accuracy. Not required for the grant.',
-    consequenceOff: 'Turned off. The rest of the grant is unaffected.',
-  },
-  accessMode: 'continuous',
-  technical: { clientId: 'audience_lens_v1', purposeCode: 'research', grantExpires: 'Apr 5, 2027' },
-};
-
-const GRANT_SPECIMEN: GrantInspectorProps = {
-  grantId: 'grt_8f3a2b1c',
-  issuedAt: 'Apr 6, 2026',
-  status: 'active',
-  client: { clientId: 'audience_lens_v1', name: 'Audience Lens' },
-  purposeCode: 'research',
-  purposeDescription: 'Influencer network study',
-  accessMode: 'continuous',
-  expiresAt: 'Apr 5, 2027',
-  retention: { duration: '90 days', onExpiry: 'delete' },
-  streams: [
-    { name: 'following_accounts', label: 'Who you follow', detail: 'Usernames and account IDs of accounts you follow. No DMs, profile details, or follower lists.', view: 'social_graph', fields: ['id', 'username'] },
-    { name: 'posts', label: 'Your posts', detail: 'Post captions, dates, and media types since Dec 31, 2024. No comments, likes, or private messages.', view: 'summary', fields: ['id', 'caption', 'taken_at', 'media_type'], timeRange: { since: 'Dec 31, 2024' } },
-  ],
-};
+const CONNECTOR_SPECIMEN = LONGVIEW_CONNECTOR_SPECIMEN;
+const INVENTORY_SPECIMEN = LONGVIEW_INVENTORY_SPECIMEN;
+const CONSENT_SPECIMEN = LONGVIEW_CONSENT_SPECIMEN;
+const GRANT_SPECIMEN = LONGVIEW_GRANT_SPECIMEN;
 
 const MULTI_CONNECTORS: ConnectorCardProps[] = [
   CONNECTOR_SPECIMEN,
@@ -106,7 +76,7 @@ const MULTI_CONNECTORS: ConnectorCardProps[] = [
     displayName: 'Spotify',
     version: '2.0.0',
     streams: [
-      { name: 'top_artists', label: 'Your top artists', semantics: 'mutable_state', supportsFields: true, supportsResources: false, supportsTimeRange: true, viewCount: 2 },
+      { name: 'top_artists', label: 'Top artists', semantics: 'mutable_state', supportsFields: true, supportsResources: false, supportsTimeRange: true, viewCount: 2 },
       { name: 'play_events', label: 'Play history', semantics: 'append_only', supportsFields: true, supportsResources: false, supportsTimeRange: true, viewCount: 0 },
     ],
   },
@@ -133,62 +103,62 @@ type SectionConfig = {
 const SECTION_CONTENT: SectionConfig[] = [
   {
     id: 'ingest',
-    headline: 'Your data arrives automatically',
-    narrative: 'Connectors bring your data from platforms to your personal server — through native APIs, browser automation, or direct import.',
+    headline: 'Native where possible, connector-backed where needed',
+    narrative: 'Platforms can implement PDPP directly. Native endpoints, browser automation, and imports can all feed the same compensation records into one grant and enforcement model.',
     surface: 'protocol',
   },
   {
     id: 'inventory',
-    headline: 'Your data, your server',
-    narrative: 'Everything lives on a server you control. Who you follow, your posts, your ad interests. Organized, counted, and ready to inspect.',
+    headline: 'Records make access exact',
+    narrative: 'Pay statements, equity grants, and benefits enrollments become records the server can match, project, and revoke. Once the data has shape, access can become exact.',
     surface: 'protocol',
   },
   {
     id: 'request',
-    headline: 'An app asks for access',
-    narrative: 'A research app called Audience Lens wants your following list and posts for a study. It identifies itself, states its purpose, and lists what it promises.',
+    headline: 'A client app requests access',
+    narrative: `${LONGVIEW_CLIENT_NAME} is the client app. It requests pay statements and equity grants for career-move compensation planning. The request names the client, the purpose, and the exact streams.`,
     surface: 'protocol',
   },
   {
     id: 'consent',
-    headline: 'You decide',
-    narrative: 'Your server shows you exactly what is being requested. Who is asking. What data. What they promise. What your server will enforce. You decide.',
+    headline: 'Consent fixes the boundary',
+    narrative: 'The consent surface shows the client, streams, and enforced boundary before approval.',
     surface: 'human',
   },
   {
     id: 'grant',
-    headline: 'Your decision is recorded',
-    narrative: 'You said yes. Your server created a permanent record of exactly what you authorized. Which data, which fields, for how long, under what terms. Locked at the moment of consent.',
+    headline: 'The grant makes it durable',
+    narrative: 'Approval becomes a grant with exact streams, fields, access mode, and time window.',
     surface: 'protocol',
   },
   {
     id: 'enforce',
-    headline: 'Your server enforces it',
-    narrative: 'When Audience Lens queries your data, your server checks the authorization and strips everything that was not approved. Your posts have 8 fields. Only 4 were authorized. Only 4 are returned.',
+    headline: 'Only the granted fields come back',
+    narrative: `${LONGVIEW_CLIENT_NAME} queries pay statements. The server returns the four granted comparison fields and leaves the identity-heavy payroll fields behind.`,
     surface: 'protocol',
   },
   {
     id: 'sync',
     headline: 'Only what changed',
-    narrative: 'A week later, you post 3 new photos. Audience Lens asks for updates and gets only the 3 new posts. Not the 22 it already has. Efficient, ongoing access without re-downloading everything.',
+    narrative: 'On the next payroll cycle, one new pay statement lands. Longview syncs again and gets only the new record.',
     surface: 'protocol',
   },
   {
     id: 'revoke',
-    headline: 'You can take it back',
-    narrative: 'You change your mind. One click. Access is revoked. The next time Audience Lens tries to query, your server refuses. Within 60 seconds.',
+    headline: 'Access is revocable',
+    narrative: `One click revokes the grant. The next query from ${LONGVIEW_CLIENT_NAME} receives a refusal within 60 seconds.`,
     surface: 'human',
   },
   {
     id: 'export',
-    headline: 'Your data is yours to export',
-    narrative: 'You can pull all of your own data at any time. Full access, every field, every stream. No third-party permission required.',
+    headline: 'Self-export remains full-fidelity',
+    narrative: 'Owner access can retrieve full records at any time. Every field, every stream, no third-party grant required.',
     surface: 'human',
   },
   {
     id: 'multi',
-    headline: 'One protocol, every platform',
-    narrative: 'Instagram, Spotify, health data, email. Different sources, different access methods, but the same consent flow, same enforcement, same controls. The protocol works identically regardless of how data was collected.',
+    headline: 'One protocol across platforms',
+    narrative: 'Compensation planning is one reference world. Subscription review, travel reimbursement, and benefits disputes can use the same grant-and-enforcement model across different platforms and deployment paths.',
     surface: 'neutral',
   },
   {
@@ -273,8 +243,8 @@ function FieldProjection({ grantedFields, allFields }: { grantedFields: string[]
       ([entry]) => {
         if (entry.isIntersecting) {
           setPhase('show');
-          setTimeout(() => setPhase('filter'), 800);
-          setTimeout(() => setPhase('result'), 1400);
+          setTimeout(() => setPhase('filter'), 500);
+          setTimeout(() => setPhase('result'), 950);
           obs.disconnect();
         }
       },
@@ -299,7 +269,7 @@ function FieldProjection({ grantedFields, allFields }: { grantedFields: string[]
           transition: `opacity 300ms ${easeOut}`,
         }}
       >
-        GET /v1/streams/posts/records
+        GET /v1/streams/pay_statements/records
       </div>
 
       <div className="flex flex-col gap-6">
@@ -332,7 +302,7 @@ function FieldProjection({ grantedFields, allFields }: { grantedFields: string[]
                       : (isFiltered && !granted)
                         ? 'translateX(8px) scale(0.95)'
                         : 'translateY(0)',
-                    transition: `opacity 600ms ${easeOut} ${phase === 'hidden' ? i * 50 : 200}ms, transform 600ms ${easeOut} ${phase === 'hidden' ? i * 50 : 200}ms`,
+                    transition: `opacity 360ms ${easeOut} ${phase === 'hidden' ? i * 32 : 120}ms, transform 360ms ${easeOut} ${phase === 'hidden' ? i * 32 : 120}ms`,
                     textDecoration: (isFiltered && !granted) ? 'line-through' : 'none',
                   }}
                 >
@@ -351,7 +321,7 @@ function FieldProjection({ grantedFields, allFields }: { grantedFields: string[]
               backgroundColor: phase === 'filter' || phase === 'result' ? 'var(--primary)' : 'var(--border)',
               opacity: phase !== 'hidden' ? 1 : 0,
               boxShadow: phase === 'filter' || phase === 'result' ? '0 0 8px oklch(0.580 0.172 253.7 / 0.3)' : 'none',
-              transition: `opacity 300ms ${easeOut} 400ms, background-color 400ms ${easeOut}, box-shadow 400ms ${easeOut}`,
+              transition: `opacity 220ms ${easeOut} 220ms, background-color 280ms ${easeOut}, box-shadow 280ms ${easeOut}`,
             }}
           />
           <span
@@ -359,7 +329,7 @@ function FieldProjection({ grantedFields, allFields }: { grantedFields: string[]
             style={{
               color: phase === 'filter' || phase === 'result' ? 'var(--primary)' : 'var(--muted-foreground)',
               opacity: phase !== 'hidden' ? 1 : 0,
-              transition: `opacity 300ms ${easeOut} 400ms, color 400ms ${easeOut}`,
+              transition: `opacity 220ms ${easeOut} 220ms, color 280ms ${easeOut}`,
             }}
           >
             grant filter
@@ -370,7 +340,7 @@ function FieldProjection({ grantedFields, allFields }: { grantedFields: string[]
               backgroundColor: phase === 'filter' || phase === 'result' ? 'var(--primary)' : 'var(--border)',
               opacity: phase !== 'hidden' ? 1 : 0,
               boxShadow: phase === 'filter' || phase === 'result' ? '0 0 8px oklch(0.580 0.172 253.7 / 0.3)' : 'none',
-              transition: `opacity 300ms ${easeOut} 400ms, background-color 400ms ${easeOut}, box-shadow 400ms ${easeOut}`,
+              transition: `opacity 220ms ${easeOut} 220ms, background-color 280ms ${easeOut}, box-shadow 280ms ${easeOut}`,
             }}
           />
         </div>
@@ -398,7 +368,7 @@ function FieldProjection({ grantedFields, allFields }: { grantedFields: string[]
                   fontWeight: 500,
                   opacity: phase === 'result' ? 1 : 0,
                   transform: phase === 'result' ? 'translateY(0)' : 'translateY(12px)',
-                  transition: `opacity 500ms ${easeOut} ${i * 80}ms, transform 500ms ${easeOut} ${i * 80}ms`,
+                  transition: `opacity 360ms ${easeOut} ${i * 48}ms, transform 360ms ${easeOut} ${i * 48}ms`,
                 }}
               >
                 {f}
@@ -424,7 +394,7 @@ function IncrementalSync() {
       ([entry]) => {
         if (entry.isIntersecting) {
           setPhase('first');
-          setTimeout(() => setPhase('delta'), 1200);
+          setTimeout(() => setPhase('delta'), 650);
           obs.disconnect();
         }
       },
@@ -451,7 +421,7 @@ function IncrementalSync() {
               transition: 'opacity 300ms',
             }}
           >
-            First query: 22 posts
+            First query: 24 pay statements
           </div>
           <div className="flex items-center gap-0.5 flex-wrap">
             {Array.from({ length: 22 }, (_, i) => (
@@ -473,7 +443,7 @@ function IncrementalSync() {
             style={{
               color: 'var(--muted-foreground)',
               opacity: phase !== 'hidden' ? 0.6 : 0,
-              transition: `opacity 300ms ${22 * 30 + 200}ms`,
+              transition: `opacity 220ms ${24 * 18 + 120}ms`,
             }}
           >
             next_changes_since: "cursor_a8f2..."
@@ -500,23 +470,23 @@ function IncrementalSync() {
               transition: 'opacity 300ms 100ms',
             }}
           >
-            Sync one week later: <span style={{ color: 'var(--success)' }}>3 new posts</span>
+            Sync one payroll cycle later: <span style={{ color: 'var(--success)' }}>1 new pay statement</span>
           </div>
           <div className="flex items-center gap-0.5 flex-wrap">
             {/* Existing records (dimmed) */}
-            {Array.from({ length: 22 }, (_, i) => (
+            {Array.from({ length: 24 }, (_, i) => (
               <div
                 key={i}
                 className="w-1.5 h-3 rounded-sm"
                 style={{
                   backgroundColor: 'var(--border)',
                   opacity: phase === 'delta' ? 1 : 0,
-                  transition: `opacity 200ms ${200 + i * 15}ms`,
+                  transition: `opacity 160ms ${120 + i * 10}ms`,
                 }}
               />
             ))}
             {/* New records (green, staggered) */}
-            {Array.from({ length: 3 }, (_, i) => (
+            {Array.from({ length: 1 }, (_, i) => (
               <div
                 key={`new-${i}`}
                 className="w-1.5 h-3 rounded-sm"
@@ -524,7 +494,7 @@ function IncrementalSync() {
                   backgroundColor: 'var(--success)',
                   opacity: phase === 'delta' ? 1 : 0,
                   transform: phase === 'delta' ? 'scaleY(1)' : 'scaleY(0)',
-                  transition: `opacity 300ms ${600 + i * 120}ms, transform 300ms ${600 + i * 120}ms`,
+                  transition: `opacity 220ms ${420 + i * 80}ms, transform 220ms ${420 + i * 80}ms`,
                   transformOrigin: 'bottom',
                 }}
               />
@@ -538,7 +508,7 @@ function IncrementalSync() {
               transition: 'opacity 300ms 1000ms',
             }}
           >
-            changes_since: "cursor_a8f2..." → 3 records returned
+            changes_since: "cursor_a8f2..." → 1 record returned
           </div>
         </div>
       </div>
@@ -615,10 +585,10 @@ function Reveal({ children, delay = 0 }: { children: React.ReactNode; delay?: nu
       ref={ref}
       style={{
         opacity: visible ? 1 : 0,
-        transform: visible || reduced ? 'translateY(0)' : 'translateY(24px)',
+        transform: visible || reduced ? 'translateY(0)' : 'translateY(12px)',
         transition: reduced
           ? `opacity 200ms ${delay}ms`
-          : `opacity 700ms cubic-bezier(0.16, 1, 0.3, 1) ${delay}ms, transform 700ms cubic-bezier(0.16, 1, 0.3, 1) ${delay}ms`,
+          : `opacity 420ms cubic-bezier(0.16, 1, 0.3, 1) ${delay}ms, transform 420ms cubic-bezier(0.16, 1, 0.3, 1) ${delay}ms`,
       }}
     >
       {children}
@@ -629,7 +599,7 @@ function Reveal({ children, delay = 0 }: { children: React.ReactNode; delay?: nu
 // ─── Collection convergence visual ──────────────────────────────────────────
 
 const COLLECTION_PATHS = [
-  { label: 'Platform API' },
+  { label: 'Native API' },
   { label: 'Browser' },
   { label: 'Import' },
 ] as const;
@@ -653,7 +623,7 @@ function CollectionConvergence() {
 
   return (
     <div ref={ref} className="w-full" style={{ padding: '1.5rem 0' }}>
-      {/* Three paths converging to one server */}
+      {/* Different realization paths converging to one record model */}
       <div className="flex items-center">
         {/* Input paths column */}
         <div className="flex flex-col gap-2.5 shrink-0">
@@ -736,7 +706,7 @@ function CollectionConvergence() {
               paddingLeft: '0.75rem',
             }}
           >
-            Your server
+            Structured records
           </span>
         </div>
       </div>
@@ -751,7 +721,7 @@ function CollectionConvergence() {
           transition: `opacity var(--duration-slow) ${ease} 550ms`,
         }}
       >
-        The collection method varies. The consent and enforcement model does not.
+        Different realization paths. Same grant and enforcement model.
       </p>
     </div>
   );
@@ -781,7 +751,7 @@ function Section({
     <section
       id={config.id}
       className="py-20 md:py-28"
-      style={{ borderLeft: `2px solid ${borderColor}` }}
+      style={{ borderLeft: `2px solid ${borderColor}`, order: SECTION_DISPLAY_ORDER[config.id] }}
     >
       <div className={`${wide ? 'max-w-5xl' : 'max-w-3xl'} mx-auto w-full px-6 md:px-12`}>
         <div className={wide ? 'grid grid-cols-1 lg:grid-cols-2 gap-12 items-start' : ''}>
@@ -835,6 +805,7 @@ function FeaturedSection({
       className="py-28 md:py-40"
       style={{
         borderLeft: `2px solid ${borderColor}`,
+        order: SECTION_DISPLAY_ORDER[config.id],
         background: config.surface === 'human'
           ? 'linear-gradient(to bottom, oklch(0.52 0.09 45 / 0.06), oklch(0.52 0.09 45 / 0.02) 30%, transparent 60%)'
           : 'linear-gradient(to bottom, oklch(0.580 0.172 253.7 / 0.03), oklch(0.580 0.172 253.7 / 0.01) 30%, transparent 60%)',
@@ -874,8 +845,8 @@ function FeaturedSection({
 
 // ─── Protocol state (driven by mock server) ─────────────────────────────────
 
-const ALL_POST_FIELDS = ['id', 'caption', 'taken_at', 'media_type', 'like_count', 'comment_count', 'location', 'is_pinned'];
-const GRANTED_POST_FIELDS = ['id', 'caption', 'taken_at', 'media_type'];
+const ALL_PAY_STATEMENT_FIELDS = [...LONGVIEW_PAY_STATEMENT_ALL_FIELDS];
+const GRANTED_PAY_STATEMENT_FIELDS = [...LONGVIEW_PAY_STATEMENT_GRANTED_FIELDS];
 
 // ─── Default hero ───────────────────────────────────────────────────────────
 
@@ -886,10 +857,10 @@ function DefaultReferenceHero() {
         <Reveal>
           <div className="flex items-center gap-2 mb-8">
             <span className="font-mono text-xs px-2 py-0.5 rounded" style={{ backgroundColor: 'var(--primary-wash)', color: 'var(--primary)', border: '1px solid oklch(0.580 0.172 253.7 / 0.15)' }}>
-              v0.1.0
+              PDPP
             </span>
             <span className="font-mono text-xs" style={{ color: 'var(--muted-foreground)' }}>
-              Draft specification
+              v0.1.0 · Open reference
             </span>
           </div>
         </Reveal>
@@ -898,47 +869,23 @@ function DefaultReferenceHero() {
             className="text-4xl md:text-5xl lg:text-6xl font-semibold mb-6"
             style={{ color: 'var(--foreground)', lineHeight: 1.05, letterSpacing: '-0.03em' }}
           >
-            Personal Data
+            Granular access
             <br />
-            Portability Protocol
+            to personal data
           </h1>
         </Reveal>
         <Reveal delay={150}>
           <p className="text-base md:text-lg leading-relaxed mb-3" style={{ color: 'var(--muted-foreground)', maxWidth: '48ch' }}>
-            An authorization and disclosure protocol for personal data. You decide what to share, with whom, for how long, for what purpose.
+            Clients request named records and fields. Every response stays inside the grant.
           </p>
         </Reveal>
         <Reveal delay={250}>
           <p className="text-sm leading-relaxed mb-10" style={{ color: 'var(--muted-foreground)', maxWidth: '48ch', opacity: 0.7 }}>
-            This is the protocol, running. Every component below implements a section of the spec.
+            Open specification. Live reference. Real grant enforcement across platforms.
           </p>
         </Reveal>
-
-        {/* Protocol flow signature — hidden on mobile, horizontal on desktop */}
         <Reveal delay={400}>
-          <div className="hidden md:flex items-center gap-0 pb-2" style={{ maxWidth: '100%' }}>
-            {[
-              { label: 'Platform', color: 'var(--muted-foreground)', bg: 'var(--muted)' },
-              { label: 'Connector', color: 'var(--primary)', bg: 'var(--primary-wash)' },
-              { label: 'Your Server', color: 'var(--primary)', bg: 'var(--primary-wash)' },
-              { label: 'Consent', color: 'var(--human)', bg: 'var(--human-wash)' },
-              { label: 'Grant', color: 'var(--primary)', bg: 'var(--primary-wash)' },
-              { label: 'Enforce', color: 'var(--primary)', bg: 'var(--primary-wash)' },
-              { label: 'Client', color: 'var(--muted-foreground)', bg: 'var(--muted)' },
-            ].map((step, i, arr) => (
-              <React.Fragment key={step.label}>
-                <div
-                  className="shrink-0 px-3 py-1.5 rounded-md text-xs font-medium"
-                  style={{ backgroundColor: step.bg, color: step.color, border: `1px solid ${step.color}20` }}
-                >
-                  {step.label}
-                </div>
-                {i < arr.length - 1 && (
-                  <div className="shrink-0 w-6 h-px" style={{ backgroundColor: 'var(--border)' }} />
-                )}
-              </React.Fragment>
-            ))}
-          </div>
+          <ReferenceHeroProof />
         </Reveal>
       </div>
     </section>
@@ -956,7 +903,7 @@ type ReferenceAppProps = {
 };
 
 export function ReferenceApp({ hero, currentLabel = 'Reference' }: ReferenceAppProps = {}) {
-  const [activeSection, setActiveSection] = useState<SectionId>('ingest');
+  const [activeSection, setActiveSection] = useState<SectionId>(SECTIONS[0].id);
   const observerRef = useRef<IntersectionObserver | null>(null);
   const [multiIdx, setMultiIdx] = useState(0);
   const [accessMode, setAccessMode] = useState<'continuous' | 'single_use'>('continuous');
@@ -1019,7 +966,7 @@ export function ReferenceApp({ hero, currentLabel = 'Reference' }: ReferenceAppP
     grantId: protocol.grant.grant_id,
     issuedAt: new Date(protocol.grant.issued_at).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' }),
     status: protocol.grant.status,
-    client: { clientId: protocol.grant.client_id, name: 'Audience Lens' },
+    client: { clientId: protocol.grant.client_id, name: LONGVIEW_CLIENT_NAME },
     purposeCode: protocol.grant.purpose_code,
     purposeDescription: protocol.grant.purpose_description,
     accessMode: protocol.grant.access_mode,
@@ -1027,15 +974,16 @@ export function ReferenceApp({ hero, currentLabel = 'Reference' }: ReferenceAppP
     retention: protocol.grant.retention ? { duration: '90 days', onExpiry: protocol.grant.retention.on_expiry } : undefined,
     streams: protocol.grant.streams.map(s => ({
       name: s.name,
-      label: s.name === 'following_accounts' ? 'Who you follow' : s.name === 'posts' ? 'Your posts' : s.name,
+      label: INVENTORY_SPECIMEN.streams.find((stream) => stream.name === s.name)?.label || s.name,
+      detail: INVENTORY_SPECIMEN.streams.find((stream) => stream.name === s.name)?.detail,
       fields: s.fields || undefined,
       view: s.view || undefined,
       timeRange: s.time_range || undefined,
     })),
   } : GRANT_SPECIMEN;
 
-  // Get the granted fields for the posts stream (used by FieldProjection)
-  const grantedPostFields = protocol.grant?.streams.find(s => s.name === 'posts')?.fields || GRANTED_POST_FIELDS;
+  const grantedPayStatementFields =
+    protocol.grant?.streams.find((stream) => stream.name === 'pay_statements')?.fields || GRANTED_PAY_STATEMENT_FIELDS;
 
   return (
     <div className="min-h-screen" style={{ backgroundColor: 'var(--background)', color: 'var(--foreground)' }}>
@@ -1109,25 +1057,31 @@ export function ReferenceApp({ hero, currentLabel = 'Reference' }: ReferenceAppP
       {hero ?? <DefaultReferenceHero />}
 
       {/* ── Sections ── */}
+      {/* Visual order comes from SECTION_DISPLAY_ORDER so the narrative can be iterated
+          without rewriting each section block every pass. */}
+      <div className="flex flex-col">
 
-      {/* 1. Ingest — wide layout: text left, card right */}
+      {/* Ingest — wide layout: text left, card right */}
       <Section
         config={SECTION_CONTENT[0]}
         wide
         detail={
-          <DetailPanel spec="§7 Manifest, Collection Profile" label="See the connector runtime">
+          <DetailPanel spec="§7 Manifest, Collection Profile" label="See one realization path">
+            <p className="pdpp-caption mb-3" style={{ color: 'var(--muted-foreground)' }}>
+              The reference uses a user-side connector runtime. It is one realization path for PDPP; the protocol itself is defined by consent, grants, and enforcement.
+            </p>
             <p className="font-medium" style={{ color: 'var(--foreground)' }}>Connector manifest</p>
             <pre className="font-mono text-xs p-3 rounded-md overflow-x-auto" style={{ backgroundColor: 'var(--muted)', color: 'var(--muted-foreground)' }}>
 {`{
-  "connector_id": "https://registry.pdpp.org/connectors/instagram",
-  "version": "1.2.0",
-  "display_name": "Instagram",
+  "connector_id": "https://registry.pdpp.org/profiles/compensation-v1",
+  "version": "1.0.0",
+  "display_name": "Compensation profile",
   "streams": [{
-    "name": "posts",
-    "display": { "label": "Your posts", "detail": "..." },
+    "name": "pay_statements",
+    "display": { "label": "Pay statements", "detail": "..." },
     "semantics": "append_only",
     "selection": { "fields": true, "resources": false },
-    "consent_time_field": "taken_at"
+    "consent_time_field": "pay_period"
   }]
 }`}
             </pre>
@@ -1139,11 +1093,11 @@ export function ReferenceApp({ hero, currentLabel = 'Reference' }: ReferenceAppP
             <div className="flex flex-col gap-0 mt-2">
               {[
                 { dir: '→', from: 'Runtime', to: 'Connector', msg: 'START', detail: '{ collection_mode, state, bindings }', color: 'var(--primary)' },
-                { dir: '←', from: 'Connector', to: 'Runtime', msg: 'RECORD', detail: '{ stream: "posts", key: "post_0", data: {...} }', color: 'var(--success)' },
-                { dir: '←', from: 'Connector', to: 'Runtime', msg: 'RECORD', detail: '{ stream: "posts", key: "post_1", data: {...} }', color: 'var(--success)' },
+                { dir: '←', from: 'Connector', to: 'Runtime', msg: 'RECORD', detail: '{ stream: "pay_statements", key: "pay_0", data: {...} }', color: 'var(--success)' },
+                { dir: '←', from: 'Connector', to: 'Runtime', msg: 'RECORD', detail: '{ stream: "pay_statements", key: "pay_1", data: {...} }', color: 'var(--success)' },
                 { dir: '←', from: 'Connector', to: 'Runtime', msg: 'STATE', detail: '{ cursor: "..." }', color: 'var(--warning)' },
-                { dir: '←', from: 'Connector', to: 'Runtime', msg: 'RECORD', detail: '...22 records total', color: 'var(--success)' },
-                { dir: '←', from: 'Connector', to: 'Runtime', msg: 'DONE', detail: '{ status: "succeeded", records_emitted: 22 }', color: 'var(--primary)' },
+                { dir: '←', from: 'Connector', to: 'Runtime', msg: 'RECORD', detail: '...24 records total', color: 'var(--success)' },
+                { dir: '←', from: 'Connector', to: 'Runtime', msg: 'DONE', detail: '{ status: "succeeded", records_emitted: 24 }', color: 'var(--primary)' },
               ].map((m, i) => (
                 <div key={i} className="flex items-start gap-2 py-1.5 font-mono text-xs" style={{ borderBottom: i < 5 ? '1px solid var(--border)' : 'none' }}>
                   <span className="shrink-0 w-4 text-center" style={{ color: 'var(--muted-foreground)' }}>{m.dir}</span>
@@ -1156,11 +1110,11 @@ export function ReferenceApp({ hero, currentLabel = 'Reference' }: ReferenceAppP
             <div className="mt-3 flex flex-col gap-1 font-mono text-xs">
               <span><span style={{ opacity: 0.65 }}>INTERACTION</span> — connector requests user input (OTP, captcha). Runtime presents to user, returns response.</span>
               <span><span style={{ opacity: 0.65 }}>SKIP_RESULT</span> — connector signals intentional stream skip (rate limit, unavailable).</span>
-              <span><span style={{ opacity: 0.65 }}>Binding matching</span> — runtime checks manifest bindings before spawn. Fails fast if requirements unmet.</span>
+              <span><span style={{ opacity: 0.65 }}>Binding matching</span> — runtime checks manifest bindings before spawn. Fails fast if payroll, equity, or benefits bindings are unmet.</span>
             </div>
 
             <p className="font-medium mt-3" style={{ color: 'var(--foreground)' }}>Platform access methods</p>
-            <p>The <code className="font-mono">bindings</code> field in the manifest declares what the connector needs from the runtime. Most connectors today use <code className="font-mono">browser_automation</code> because most platforms don't offer structured portability APIs. When a platform begins offering native access, only the connector implementation changes. The consent surface, grants, and enforcement stay the same.</p>
+            <p>The <code className="font-mono">bindings</code> field in the manifest declares what the connector needs from the runtime. Some compensation sources can expose native exports. Others still need browser automation or import flows. When a source adds native support, only the collection path changes. The consent surface, grants, and enforcement stay the same.</p>
           </DetailPanel>
         }
       >
@@ -1170,7 +1124,7 @@ export function ReferenceApp({ hero, currentLabel = 'Reference' }: ReferenceAppP
         </div>
       </Section>
 
-      {/* 2. Inventory — wide layout */}
+      {/* Inventory — wide layout */}
       <Section
         config={SECTION_CONTENT[1]}
         wide
@@ -1179,19 +1133,19 @@ export function ReferenceApp({ hero, currentLabel = 'Reference' }: ReferenceAppP
             <pre className="font-mono text-xs p-3 rounded-md overflow-x-auto" style={{ backgroundColor: 'var(--muted)', color: 'var(--muted-foreground)' }}>
 {`// A PDPP record
 {
-  "stream": "posts",
-  "key": "post_0",
+  "stream": "pay_statements",
+  "key": "pay_0",
   "data": {
-    "id": "post_0",
-    "caption": "Post caption 1",
-    "taken_at": "2025-01-01T06:00:00.000Z",
-    "media_type": "VIDEO",
-    "like_count": 315,
-    "comment_count": 46,
-    "location": "New York",
-    "is_pinned": true
+    "employer": "Northstar Labs",
+    "pay_period": "2025-01-15",
+    "gross_pay": 6150,
+    "net_pay": 4605,
+    "employee_id": "emp_4100",
+    "home_address": "1207 W Maple Ave, Chicago, IL",
+    "bank_account_last4": "4821",
+    "tax_id_fragment": "2487"
   },
-  "emitted_at": "2026-04-06T12:00:00Z"
+  "emitted_at": "2025-01-15T00:00:00.000Z"
 }`}
             </pre>
             <div className="font-mono text-xs flex flex-col gap-1">
@@ -1203,20 +1157,20 @@ export function ReferenceApp({ hero, currentLabel = 'Reference' }: ReferenceAppP
         }
       >
         <StreamInventory
-          connectorName="Instagram"
-          connectorVersion="1.2.0"
+          connectorName={INVENTORY_SPECIMEN.connectorName}
+          connectorVersion={INVENTORY_SPECIMEN.connectorVersion}
           streams={protocol.serverStats.map(s => ({
             name: s.name,
-            label: s.name === 'following_accounts' ? 'Who you follow' : s.name === 'posts' ? 'Your posts' : s.name === 'ad_targeting' ? 'Ad interest categories' : s.name,
+            label: INVENTORY_SPECIMEN.streams.find((stream) => stream.name === s.name)?.label || s.name,
             detail: INVENTORY_SPECIMEN.streams.find(is => is.name === s.name)?.detail || '',
-            semantics: s.name === 'posts' ? 'append_only' as const : 'mutable_state' as const,
+            semantics: INVENTORY_SPECIMEN.streams.find((stream) => stream.name === s.name)?.semantics || 'append_only',
             recordCount: s.recordCount,
-            lastSynced: 'Apr 6, 2026',
+            lastSynced: 'Apr 15, 2026',
           }))}
         />
       </Section>
 
-      {/* 3. Request — wide layout */}
+      {/* Request — wide layout */}
       <Section
         config={SECTION_CONTENT[2]}
         wide
@@ -1228,22 +1182,23 @@ Content-Type: application/json
 
 {
   "response_type": "code",
-  "client_id": "audience_lens_v1",
-  "client_display": { "name": "Audience Lens", ... },
+  "client_id": "${LONGVIEW_CLIENT_ID}",
+  "client_display": { "name": "${LONGVIEW_CLIENT_NAME}", ... },
   "authorization_details": [{
     "type": "https://pdpp.org/data-access",
-    "connector_id": "https://registry.pdpp.org/connectors/instagram",
-    "purpose_code": "research",
+    "connector_id": "https://registry.pdpp.org/profiles/compensation-v1",
+    "purpose_code": "${LONGVIEW_PURPOSE_CODE}",
     "streams": [
-      { "name": "following_accounts", "necessity": "required" },
-      { "name": "posts", "necessity": "required" },
-      { "name": "ad_targeting", "necessity": "optional" }
+      { "name": "pay_statements", "necessity": "required" },
+      { "name": "equity_grants", "necessity": "required" },
+      { "name": "benefits_enrollments", "necessity": "optional" }
     ]
   }]
 }`}
             </pre>
             <div className="font-mono text-xs flex flex-col gap-1">
-              <span><span style={{ opacity: 0.65 }}>client_display</span> — entity-scoped, self-asserted (GNAP-style inline)</span>
+              <span><span style={{ opacity: 0.65 }}>client_display</span> — entity-scoped display metadata (RFC 7591 vocabulary, inline transport)</span>
+              <span><span style={{ opacity: 0.65 }}>resolution</span> — AS may prefer registered or trust-registry metadata over inline values</span>
               <span><span style={{ opacity: 0.65 }}>client_claims</span> — request-scoped, rendered with "[name] says:" attribution</span>
               <span><span style={{ opacity: 0.65 }}>necessity</span> — required (included in grant) or optional (user choice)</span>
             </div>
@@ -1264,35 +1219,35 @@ Content-Type: application/json
                 className="font-mono text-xs px-1.5 py-0.5 rounded"
                 style={{ backgroundColor: 'oklch(0.62 0.15 70 / 0.1)', color: 'var(--warning)' }}
               >
-                pending
+                client request
               </span>
             </div>
 
             {/* Identity block */}
-            <div className="flex items-center gap-2 mb-3">
-              <div
-                className="w-7 h-7 rounded-md shrink-0 flex items-center justify-center"
-                style={{ backgroundColor: 'var(--muted)' }}
-              >
-                <span className="text-xs font-bold font-mono" style={{ color: 'var(--muted-foreground)' }}>AL</span>
-              </div>
-              <div>
-                <span className="text-xs font-medium" style={{ color: 'var(--foreground)' }}>Audience Lens</span>
-                <span className="font-mono text-xs ml-1.5" style={{ color: 'var(--success)' }}>verified</span>
+            <div className="flex items-start justify-between gap-3 mb-3">
+              <LongviewWordmark compact />
+              <div className="flex items-center gap-1.5 flex-wrap justify-end">
+                <span
+                  className="font-mono text-[10px] px-1.5 py-0.5 rounded uppercase tracking-wide"
+                  style={{ backgroundColor: 'var(--muted)', color: 'var(--muted-foreground)' }}
+                >
+                  client app
+                </span>
+                <span className="font-mono text-xs" style={{ color: 'var(--success)' }}>verified</span>
               </div>
             </div>
 
             <div className="text-xs mb-3" style={{ color: 'var(--foreground)' }}>
-              Influencer network study
+              {LONGVIEW_PURPOSE_DESCRIPTION}
             </div>
           </div>
 
           {/* Requested streams */}
           <div className="px-5 pb-1" style={{ borderTop: '1px solid var(--border)' }}>
             {[
-              { name: 'following_accounts', necessity: 'required' },
-              { name: 'posts', necessity: 'required' },
-              { name: 'ad_targeting', necessity: 'optional' },
+              { name: 'pay_statements', necessity: 'required' },
+              { name: 'equity_grants', necessity: 'required' },
+              { name: 'benefits_enrollments', necessity: 'optional' },
             ].map(s => (
               <div key={s.name} className="flex items-center justify-between py-2" style={{ borderBottom: '1px solid var(--border)' }}>
                 <span className="font-mono text-xs" style={{ color: 'var(--foreground)' }}>{s.name}</span>
@@ -1306,13 +1261,13 @@ Content-Type: application/json
           {/* Commitments */}
           <div className="px-5 py-3">
             <div className="text-xs italic" style={{ color: 'var(--muted-foreground)', opacity: 0.7 }}>
-              Commits: data used only for this study, not sold or shared.
+              Client claim: planning workspace only.
             </div>
           </div>
         </div>
       </Section>
 
-      {/* 4. Consent — THE featured moment */}
+      {/* Consent — THE featured moment */}
       <FeaturedSection
         config={SECTION_CONTENT[3]}
         detail={
@@ -1322,11 +1277,11 @@ Content-Type: application/json
             {/* Trust model mapping — what in the UI comes from where */}
             <div className="flex flex-col gap-0 mt-1">
               {[
-                { element: '"Who you follow", "Your posts"', source: 'Manifest display.label', trust: 'Server-trusted', color: 'var(--primary)' },
-                { element: '"Usernames and account IDs..."', source: 'Manifest display.detail', trust: 'Server-trusted', color: 'var(--primary)' },
-                { element: '"Audience Lens" + VERIFIED badge', source: 'client_display.name + AS verification', trust: 'Client-asserted, server-verified', color: 'var(--primary)' },
-                { element: '"Audience Lens says: Data used only..."', source: 'client_claims.commitments', trust: 'Client-claimed, attributed', color: 'var(--human)' },
-                { element: '"Ongoing access, active until you revoke"', source: 'grant.access_mode (server-derived)', trust: 'Protocol fact', color: 'var(--success)' },
+                { element: '"Pay statements", "Equity grants"', source: 'Manifest display.label', trust: 'Server-trusted', color: 'var(--primary)' },
+                { element: '"Employer, pay period, gross pay..."', source: 'Manifest display.detail', trust: 'Server-trusted', color: 'var(--primary)' },
+                { element: `"${LONGVIEW_CLIENT_NAME}" + CLIENT APP + VERIFIED badge`, source: 'Resolved client metadata + AS trust signal', trust: 'Rendered under AS policy', color: 'var(--primary)' },
+                { element: `"${LONGVIEW_CLIENT_NAME} says: Workspace only..."`, source: 'client_claims.commitments', trust: 'Client-claimed, attributed', color: 'var(--human)' },
+                { element: '"Ongoing access, active until revocation"', source: 'grant.access_mode (server-derived)', trust: 'Protocol fact', color: 'var(--success)' },
                 { element: '"These are their commitments..."', source: 'Fixed disclaimer (server-rendered)', trust: 'Server warning', color: 'var(--primary)' },
               ].map((row, i) => (
                 <div key={i} className="flex items-start gap-2 py-1.5 text-xs" style={{ borderBottom: i < 5 ? '1px solid var(--border)' : 'none' }}>
@@ -1341,31 +1296,33 @@ Content-Type: application/json
               ))}
             </div>
             <pre className="font-mono text-xs p-3 rounded-md overflow-x-auto" style={{ backgroundColor: 'var(--muted)', color: 'var(--muted-foreground)' }}>
-{`// Selection request (RFC 9396 authorization_details)
+{`// Selection request (RFC 9396 authorization_details
+// + RFC 7591-style client metadata carried inline)
 {
   "client_display": {
-    "name": "Audience Lens",
-    "uri": "https://audiencelens.example",
-    "logo_uri": "https://audiencelens.example/logo.png"
+    "name": "${LONGVIEW_CLIENT_NAME}",
+    "uri": "${LONGVIEW_CLIENT_URI}",
+    "policy_uri": "${LONGVIEW_POLICY_URI}",
+    "tos_uri": "${LONGVIEW_TOS_URI}"
   },
   "authorization_details": [{
     "type": "https://pdpp.org/data-access",
-    "purpose_code": "research",
-    "purpose_description": "Influencer network study",
+    "purpose_code": "${LONGVIEW_PURPOSE_CODE}",
+    "purpose_description": "${LONGVIEW_PURPOSE_DESCRIPTION}",
     "access_mode": "continuous",
     "streams": [
-      { "name": "following_accounts", "necessity": "required" },
-      { "name": "posts", "necessity": "required" },
-      { "name": "ad_targeting", "necessity": "optional" }
+      { "name": "pay_statements", "necessity": "required" },
+      { "name": "equity_grants", "necessity": "required" },
+      { "name": "benefits_enrollments", "necessity": "optional" }
     ],
     "client_claims": {
-      "commitments": ["Data used only for this study"]
+      "commitments": ["Analysis stays inside this planning workspace"]
     }
   }]
 }`}
             </pre>
             <p className="italic" style={{ opacity: 0.7 }}>
-              The AS must treat logo_uri as untrusted content. For unverified clients, it generates a monogram instead of rendering the remote image.
+              The AS resolves client identity metadata under local policy. For unverified clients, it falls back to a monogram instead of fetching arbitrary remote logos.
             </p>
             <p>ai_training purpose code requires explicit affirmative consent — the sole protocol-level requirement.</p>
           </DetailPanel>
@@ -1400,14 +1357,14 @@ Content-Type: application/json
           <OutcomeCard
             variant={protocol.phase === 'granted' ? 'granted' : 'revoked'}
             message={protocol.phase === 'granted'
-              ? 'Audience Lens may now query your personal server. Scroll down to see enforcement in action.'
-              : 'The grant has been revoked. Audience Lens can no longer access your data.'}
+              ? `${LONGVIEW_CLIENT_NAME} may now query the resource server. Scroll down to see enforcement in action.`
+              : `The grant has been revoked. ${LONGVIEW_CLIENT_NAME} can no longer query under it.`}
             onReset={handleReset}
           />
         )}
       </FeaturedSection>
 
-      {/* 5. Grant — wide layout */}
+      {/* Grant — wide layout */}
       <Section
         config={SECTION_CONTENT[4]}
         wide
@@ -1451,23 +1408,23 @@ Content-Type: application/json
         />
       </Section>
 
-      {/* 6. Enforce — featured: the "one screenshot" moment */}
+      {/* Enforce — featured: the "one screenshot" moment */}
       <FeaturedSection
         config={SECTION_CONTENT[5]}
         detail={
           <DetailPanel spec="§8 Resource Server" label="See the HTTP exchange">
             <p>The RS computes effective_filter = grant_filter AND request_filter. Request-time filters can only narrow, never widen.</p>
             <pre className="font-mono text-xs p-3 rounded-md overflow-x-auto" style={{ backgroundColor: 'var(--muted)', color: 'var(--muted-foreground)' }}>
-{`GET /v1/streams/posts/records HTTP/1.1
+{`GET /v1/streams/pay_statements/records HTTP/1.1
 Authorization: Bearer <client_token>
 PDPP-Version: 0.1.0
 
 → RS introspects token
-→ Resolves grant: ${protocol.grant?.grant_id || 'grt_8f3a2b1c'}
-→ Grant authorizes fields: [${grantedPostFields.join(', ')}]
-→ Record has fields: [${ALL_POST_FIELDS.join(', ')}]
-→ Response contains only: [${grantedPostFields.join(', ')}]
-→ Stripped: [${ALL_POST_FIELDS.filter(f => !grantedPostFields.includes(f)).join(', ')}]`}
+→ Resolves grant: ${protocol.grant?.grant_id || 'grt_longview01'}
+→ Grant authorizes fields: [${grantedPayStatementFields.join(', ')}]
+→ Record has fields: [${ALL_PAY_STATEMENT_FIELDS.join(', ')}]
+→ Response contains only: [${grantedPayStatementFields.join(', ')}]
+→ Stripped: [${ALL_PAY_STATEMENT_FIELDS.filter(f => !grantedPayStatementFields.includes(f)).join(', ')}]`}
             </pre>
             <p>Edge cases:</p>
             <div className="font-mono text-xs flex flex-col gap-1">
@@ -1493,7 +1450,7 @@ PDPP-Version: 0.1.0
           </div>
         ) : (
           <div className="flex flex-col gap-6 items-center w-full">
-            <FieldProjection grantedFields={grantedPostFields} allFields={ALL_POST_FIELDS} />
+            <FieldProjection grantedFields={grantedPayStatementFields} allFields={ALL_PAY_STATEMENT_FIELDS} />
             {protocol.queryResult?.records?.[0] && (
               <div
                 data-surface="protocol"
@@ -1507,8 +1464,8 @@ PDPP-Version: 0.1.0
                   {JSON.stringify(protocol.queryResult.records[0].data, null, 2)}
                 </pre>
                 <div className="text-xs mt-2 italic" style={{ color: 'var(--muted-foreground)', opacity: 0.7 }}>
-                  {Object.keys(protocol.queryResult.records[0].data).length} of {ALL_POST_FIELDS.length} fields returned.
-                  {' '}{ALL_POST_FIELDS.length - Object.keys(protocol.queryResult.records[0].data).length} stripped by the grant filter.
+                  {Object.keys(protocol.queryResult.records[0].data).length} of {ALL_PAY_STATEMENT_FIELDS.length} fields returned.
+                  {' '}{ALL_PAY_STATEMENT_FIELDS.length - Object.keys(protocol.queryResult.records[0].data).length} stripped by the grant filter.
                 </div>
               </div>
             )}
@@ -1516,14 +1473,14 @@ PDPP-Version: 0.1.0
         )}
       </FeaturedSection>
 
-      {/* 7. Sync — wide */}
+      {/* Sync — wide */}
       <Section
         config={SECTION_CONTENT[6]}
         wide
         detail={
           <DetailPanel spec="§4.1 Incremental Sync" label="See the sync protocol">
             <pre className="font-mono text-xs p-3 rounded-md overflow-x-auto" style={{ backgroundColor: 'var(--muted)', color: 'var(--muted-foreground)' }}>
-{`GET /v1/streams/posts/records?changes_since=${protocol.syncCursor || '"cursor_a8f2..."'}
+{`GET /v1/streams/pay_statements/records?changes_since=${protocol.syncCursor || '"cursor_a8f2..."'}
 Authorization: Bearer <client_token>
 
 → RS finds records added/changed since cursor
@@ -1531,7 +1488,7 @@ Authorization: Bearer <client_token>
 → Returns only records whose AUTHORIZED projection changed
 → Includes next_changes_since for subsequent sync`}
             </pre>
-            <p><strong>Projection-aware deltas</strong> (the novel property): if unauthorized field <code className="font-mono">like_count</code> changes but the client is only authorized for <code className="font-mono">[id, caption, taken_at, media_type]</code>, the record does not appear in the delta. The client cannot infer that like_count changed.</p>
+            <p><strong>Projection-aware deltas</strong> (the novel property): if unauthorized field <code className="font-mono">home_address</code> changes but the client is only authorized for <code className="font-mono">[employer, pay_period, gross_pay, net_pay]</code>, the record does not appear in the delta. The client cannot infer that home_address changed.</p>
             <div className="font-mono text-xs flex flex-col gap-1">
               <span><span style={{ opacity: 0.65 }}>cursor</span> — pagination within a single query (distinct token space)</span>
               <span><span style={{ opacity: 0.65 }}>changes_since</span> — sync state across sessions (distinct token space)</span>
@@ -1540,8 +1497,8 @@ Authorization: Bearer <client_token>
             <p className="font-medium mt-3" style={{ color: 'var(--foreground)' }}>Tombstones</p>
             <p>When a record is deleted from a mutable_state stream, the RS includes a tombstone in incremental sync responses:</p>
             <pre className="font-mono text-xs p-3 rounded-md overflow-x-auto" style={{ backgroundColor: 'var(--muted)', color: 'var(--muted-foreground)' }}>
-{`{ "stream": "following_accounts",
-  "key": "follow_42",
+{`{ "stream": "benefits_enrollments",
+  "key": "benefits_0",
   "deleted": true,
   "deleted_at": "2026-04-08T10:00:00Z",
   "emitted_at": "2026-04-08T10:00:01Z" }`}
@@ -1549,7 +1506,7 @@ Authorization: Bearer <client_token>
 
             <p className="font-medium mt-3" style={{ color: 'var(--foreground)' }}>Cursor expiry</p>
             <pre className="font-mono text-xs p-3 rounded-md overflow-x-auto" style={{ backgroundColor: 'var(--muted)', color: 'var(--muted-foreground)' }}>
-{`GET /v1/streams/posts/records?changes_since=expired_cursor
+{`GET /v1/streams/pay_statements/records?changes_since=expired_cursor
 → 410 Gone
 → Client MUST perform full re-sync`}
             </pre>
@@ -1563,10 +1520,10 @@ Authorization: Bearer <client_token>
             {/* Live sync state from mock server */}
             <div className="w-full" style={{ maxWidth: '520px' }}>
               <div className="text-xs font-medium mb-2" style={{ color: 'var(--muted-foreground)' }}>
-                Initial sync: {protocol.syncResult?.records?.length || 22} records
+                Initial sync: {protocol.syncResult?.records?.length || 24} records
               </div>
               <div className="flex items-center gap-0.5 flex-wrap mb-1">
-                {Array.from({ length: protocol.syncResult?.records?.length || 22 }, (_, i) => (
+                {Array.from({ length: protocol.syncResult?.records?.length || 24 }, (_, i) => (
                   <div key={i} className="w-1.5 h-3 rounded-sm" style={{ backgroundColor: 'var(--primary)', opacity: 0.5 }} />
                 ))}
               </div>
@@ -1577,26 +1534,26 @@ Authorization: Bearer <client_token>
               )}
             </div>
 
-            {/* Add posts button */}
+            {/* Add pay statement button */}
             <button
               className="text-xs self-start px-3 py-1.5 rounded-md transition-colors"
               style={{ backgroundColor: 'var(--muted)', color: 'var(--muted-foreground)' }}
-              onClick={() => protocol.addNewPosts(3)}
+              onClick={() => protocol.addNewPayStatements(1)}
             >
-              + Simulate 3 new posts arriving
+              + Simulate 1 new pay statement arriving
             </button>
 
             {/* Live delta result */}
-            {protocol.syncResult && protocol.syncResult.records && protocol.syncResult.records.length > 22 && (
+            {protocol.syncResult && protocol.syncResult.records && protocol.syncResult.records.length > 24 && (
               <div className="w-full" style={{ maxWidth: '520px' }}>
                 <div className="text-xs font-medium mb-2" style={{ color: 'var(--success)' }}>
-                  Delta: {protocol.syncResult.records.length - 22} new record{protocol.syncResult.records.length - 22 !== 1 ? 's' : ''}
+                  Delta: {protocol.syncResult.records.length - 24} new record{protocol.syncResult.records.length - 24 !== 1 ? 's' : ''}
                 </div>
                 <pre className="font-mono text-xs p-3 rounded-md overflow-x-auto" style={{ backgroundColor: 'var(--muted)', color: 'var(--muted-foreground)' }}>
-                  {JSON.stringify(protocol.syncResult.records.slice(-3).map(r => r.data), null, 2)}
+                  {JSON.stringify(protocol.syncResult.records.slice(-1).map(r => r.data), null, 2)}
                 </pre>
                 <div className="text-xs mt-2" style={{ color: 'var(--muted-foreground)', opacity: 0.7 }}>
-                  {grantedPostFields.length} of {ALL_POST_FIELDS.length} fields per record. Projection applied to the delta.
+                  {grantedPayStatementFields.length} of {ALL_PAY_STATEMENT_FIELDS.length} fields per record. Projection applied to the delta.
                 </div>
               </div>
             )}
@@ -1606,7 +1563,7 @@ Authorization: Bearer <client_token>
         )}
       </Section>
 
-      {/* 8. Revoke — wide */}
+      {/* Revoke — wide */}
       <Section
         config={SECTION_CONTENT[7]}
         wide
@@ -1617,7 +1574,7 @@ Authorization: Bearer <client_token>
 POST /revoke  →  AS marks grant.status = "revoked"
 
 // Next client query:
-GET /v1/streams/posts/records
+GET /v1/streams/pay_statements/records
 Authorization: Bearer <client_token>
 → RS introspects token  →  active: false
 → 403 grant_revoked
@@ -1642,7 +1599,7 @@ RS sees revocation within max(token_exp, 60s)`}
         )}
       </Section>
 
-      {/* 9. Export — wide */}
+      {/* Export — wide */}
       <Section
         config={SECTION_CONTENT[8]}
         wide
@@ -1650,14 +1607,14 @@ RS sees revocation within max(token_exp, 60s)`}
           <DetailPanel spec="§8.3 Owner Tokens" label="See the token exchange">
             <pre className="font-mono text-xs p-3 rounded-md overflow-x-auto" style={{ backgroundColor: 'var(--muted)', color: 'var(--muted-foreground)' }}>
 {`// Self-export: owner token, no grant required
-GET /v1/streams/posts/records
+GET /v1/streams/pay_statements/records
 Authorization: Bearer <owner_token>
 
 → RS introspects token
 → pdpp_token_kind: "owner"
 → subject_id: "user_abc123"
 → No grant needed — full access to own data
-→ All ${ALL_POST_FIELDS.length} fields returned (no projection)`}
+→ All ${ALL_PAY_STATEMENT_FIELDS.length} fields returned (no projection)`}
             </pre>
             <div className="font-mono text-xs flex flex-col gap-1">
               <span><span style={{ opacity: 0.65 }}>owner token</span> — ingest, state management, self-export</span>
@@ -1718,11 +1675,11 @@ Authorization: Bearer <owner_token>
       </Section>
 
       {/* ── Separator ── */}
-      <div className="max-w-2xl mx-auto px-6 md:px-12">
+      <div className="max-w-2xl mx-auto px-6 md:px-12" style={{ order: 75 }}>
         <div className="h-px" style={{ backgroundColor: 'var(--border)' }} />
       </div>
 
-      {/* 10. Multi-connector */}
+      {/* Multi-connector */}
       <Section config={SECTION_CONTENT[9]}>
         <div className="flex flex-col gap-4 w-full">
           <div className="flex gap-1.5 mb-2">
@@ -1744,20 +1701,20 @@ Authorization: Bearer <owner_token>
         </div>
       </Section>
 
-      {/* 11. Spec — mapping of reference sections to spec sections */}
+      {/* Spec — mapping of reference sections to spec sections */}
       <Section config={SECTION_CONTENT[10]}>
         <div className="w-full flex flex-col gap-6">
           <div className="flex flex-col gap-2">
             {[
-              { ref: 'Ingest', spec: '§7 Manifest', desc: 'Connector manifest declares the consent surface' },
-              { ref: 'Inventory', spec: '§4 Record Model', desc: 'Flat relational streams with primary keys' },
+              { ref: 'Enforce', spec: '§8 Resource Server', desc: 'Field projection, effective filter composition' },
               { ref: 'Request', spec: '§5 Selection Request', desc: 'RFC 9396 authorization_details envelope' },
               { ref: 'Consent', spec: '§5.1, §5.2', desc: 'Client display, client claims, attribution' },
               { ref: 'Grant', spec: '§6 Grant', desc: 'Immutable consent artifact with three time axes' },
-              { ref: 'Enforce', spec: '§8 Resource Server', desc: 'Field projection, effective filter composition' },
               { ref: 'Sync', spec: '§4.1 Incremental', desc: 'Projection-aware deltas via changes_since' },
               { ref: 'Revoke', spec: '§6.5 Revocation', desc: '60s propagation window, retention governs past data' },
               { ref: 'Export', spec: '§8.3 Owner Tokens', desc: 'Self-export via owner token, no grant required' },
+              { ref: 'Inventory', spec: '§4 Record Model', desc: 'Flat relational streams with primary keys' },
+              { ref: 'Ingest', spec: '§7 Manifest', desc: 'Connector manifest declares the consent surface' },
             ].map(({ ref, spec, desc }) => (
               <div key={ref} className="flex items-baseline gap-3 py-1.5" style={{ borderBottom: '1px solid var(--border)' }}>
                 <span className="text-xs font-medium shrink-0 w-16" style={{ color: 'var(--foreground)' }}>{ref}</span>
@@ -1777,6 +1734,7 @@ Authorization: Bearer <owner_token>
           </a>
         </div>
       </Section>
+      </div>
 
       {/* Footer */}
       <footer className="py-8 text-center">
