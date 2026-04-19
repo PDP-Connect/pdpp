@@ -571,7 +571,7 @@ export async function POST(req, { params }) {
 
 Currently `single_use` marks the grant `consumed` but the token remains valid. The spec implies the token should be invalid after the first query (or more precisely, the grant allows only one data retrieval session).
 
-**Required change in `e2e/server/auth.js`:**
+**Required change in `reference-implementation/server/auth.js`:**
 
 In `introspect()`, after checking `active` status:
 ```js
@@ -586,7 +586,7 @@ if (row.token_kind === 'client') {
 }
 ```
 
-And in the RS query handler (`e2e/server/index.js`), after a successful query response is built (not on error), mark the grant consumed:
+And in the RS query handler (`reference-implementation/server/index.js`), after a successful query response is built (not on error), mark the grant consumed:
 ```js
 // After successful query for single_use grants
 if (tokenInfo.pdpp_token_kind === 'client' && tokenInfo.grant?.access_mode === 'single_use') {
@@ -596,7 +596,7 @@ if (tokenInfo.pdpp_token_kind === 'client' && tokenInfo.grant?.access_mode === '
 
 ### 2. AI training purpose validation in AS
 
-In `approveGrant()` in `e2e/server/auth.js`, add:
+In `approveGrant()` in `reference-implementation/server/auth.js`, add:
 ```js
 // The AS MUST obtain explicit affirmative consent before issuing ai_training grants.
 // In demo mode, the frontend passes `ai_training_consented: true` when the user checks the box.
@@ -760,7 +760,7 @@ The browser WebSocket URL must be runtime-derived (from `window.location.hostnam
 ```yaml
 services:
   pdpp-server:
-    build: { context: ../e2e, dockerfile: ../demo_archived/Dockerfile.pdpp-server }
+    build: { context: ../reference-implementation, dockerfile: ../demo_archived/Dockerfile.pdpp-server }
     ports: ["7662:7662", "7663:7663"]
     environment: [AS_PORT=7662, RS_PORT=7663]
     networks: [demo]
@@ -817,8 +817,8 @@ networks:
 
 ## Files NOT to change
 
-- `e2e/server/db.js` — schema is complete
-- `e2e/server/records.js` — all enforcement logic is correct
+- `reference-implementation/server/db.js` — schema is complete
+- `reference-implementation/server/records.js` — all enforcement logic is correct
 - `app/src/app/globals.css` — design tokens are fine
 - `app/src/components/TerminalPanel.tsx` — no changes
 - `app/src/components/DemoHeader.tsx` — minor step label updates only

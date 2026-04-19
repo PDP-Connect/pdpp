@@ -1,0 +1,39 @@
+{
+  "protocol_version": "0.1.0",
+  "connector_id": "https://registry.pdpp.org/connectors/imessage",
+  "version": "0.1.0",
+  "display_name": "iMessage (macOS)",
+  "runtime_requirements": { "bindings": { "filesystem": { "required": true } } },
+  "capabilities": { "human_interaction": [] },
+  "streams": [
+    {
+      "name": "messages",
+      "description": "iMessage + SMS messages from ~/Library/Messages/chat.db (macOS).",
+      "display": {
+        "label": "Your iMessages",
+        "detail": "Sender/recipient, text content, timestamp, service (iMessage or SMS), is_from_me flag, attachment presence."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "chat_id": { "type": ["string", "null"] },
+          "handle": { "type": ["string", "null"] },
+          "service": { "type": ["string", "null"] },
+          "is_from_me": { "type": "boolean" },
+          "text": { "type": ["string", "null"] },
+          "date": { "type": "string" },
+          "date_read": { "type": ["string", "null"] },
+          "has_attachments": { "type": "boolean" }
+        },
+        "required": ["id", "date"]
+      },
+      "primary_key": ["id"],
+      "cursor_field": "date",
+      "consent_time_field": "date",
+      "selection": { "fields": true, "resources": true },
+      "incremental": true
+    }
+  ]
+}

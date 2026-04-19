@@ -1,0 +1,70 @@
+# Collection Layer Boundary: Decision Memo
+
+> Historical note: this memo has been superseded as an active steering document by:
+> - `openspec/specs/reference-implementation-architecture/spec.md`
+> - `openspec/changes/reference-implementation-program/design.md`
+> - `openspec/changes/reference-implementation-program/tasks.md`
+>
+> Keep this file only for historical context.
+
+**Date:** 2026-04-08
+**Status:** Recommendation for review
+**Full analysis:** `docs/research/collection-layer-boundary-note.md`
+
+---
+
+## Bottom Line
+
+The collection layer boundary is already in the right place. Core owns shared semantics (RECORD envelope, streams, scope, tombstones). The Collection Profile owns the bounded-run mechanism (START/DONE lifecycle, bindings, INTERACTION). Everything else -- scheduling, retry, credential management, push-to-pull adaptation -- is orchestrator/runtime code that needs no spec treatment. Do not draft new profiles until concrete demand materializes.
+
+---
+
+## Key Bullets
+
+- **Shared semantics are stable and correctly housed in Core.** The RECORD envelope, stream semantics, tombstone format, scope enforcement, and state/checkpoint model are cross-cutting. Any future profile reuses them; none redefines them.
+
+- **The bounded-run Collection Profile is sound and primary.** Its lifecycle (START -> collecting -> DONE), state-gating-on-success, binding matching, and INTERACTION protocol are genuine innovations over Airbyte/Singer. They exist because PDPP collects from platforms the user does not control. Do not relax these invariants.
+
+- **Eight collection modes classified; five fit the current profile, three do not.** Platform API pull, browser automation pull, and scheduled recurring pull all fit. Webhook push, data archive import, and platform event streams do not fit and would each need a future profile -- but none is needed now.
+
+- **The interoperability test draws the line.** If it affects wire-level interoperability between independently-built implementations, it needs a spec. If not, it is orchestrator/runtime code. Scheduling, retry, credential storage, multi-connector coordination, and push-to-pull buffering are all on the runtime side of this line.
+
+- **Three criteria gate a future Push Profile.** All must be true: (1) a real platform offers webhooks for personal data, (2) multiple implementers need interoperability for push delivery, (3) push-to-pull adaptation introduces unacceptable latency. None are true today.
+
+- **The reference mock server covers Core RS query semantics but not the Collection Profile wire protocol.** The reference implementation covers the Collection Profile. Between them, the protocol is demonstrated but orchestrator capabilities are not. The next experiments should fill that gap.
+
+- **Build experiments, not specs.** Webhook-to-pull adapter, file import CLI, and proactive archival scheduler -- all in the reference, all to learn whether the current boundary holds. Hypothesis: it does.
+
+- **The conformance test suite for the existing Collection Profile is higher priority than any new profile.** Prove the current profile works before expanding.
+
+---
+
+## Most Coherent Next Path
+
+Write the Collection Profile conformance test suite first -- it validates the invariants that matter most and has no dependency on new design work. In parallel, build the three implementation experiments (webhook-to-pull, file import, proactive scheduler) in the reference implementation to stress-test the boundary. If the webhook-to-pull adapter works cleanly, that confirms the Push Profile can wait. If the file import experiment reveals that the shared ingest endpoint and RECORD format are sufficient without a Batch Import Profile, that confirms the "not yet" list is correct. Only revisit the boundary when a concrete implementation target forces the question.
+
+## Reference decisions we can take now
+
+- The bounded-run Collection Profile remains the primary collection contract for the polyfill path.
+- The reference runtime should keep sending normalized `START.scope` and should keep treating that scope as the collection target for the run.
+- The reference runtime should keep enforcing declared scope before durable write, even if some exact enforcement obligations remain open at the spec level.
+- `continuous` runs should keep using grant-scoped state; `single_use` runs should keep receiving `state: null`.
+- Scheduling, retry, credential storage, webhook adaptation, and batch import remain runtime/orchestrator concerns, not new profile work.
+
+## Open spec questions to resolve carefully later
+
+- Must the runtime itself reject every out-of-scope `RECORD`, or is downstream write-path rejection sufficient?  
+  Interop impact: **yes**
+- Which interrupted-run behaviors need normative treatment, if any, beyond the current START/STATE/DONE model?  
+  Interop impact: **possibly**, depending on whether wire-visible behavior is standardized
+- How much of `START.scope` needs explicit black-box conformance language versus reference-only test coverage?  
+  Interop impact: **limited**
+- When, if ever, should push delivery or batch import graduate from runtime experiments into sibling profiles?  
+  Interop impact: **not immediate**
+
+## Boundary rule for the reference
+
+It is acceptable for the reference to make optimistic, disciplined choices before every spec question is frozen. The important constraint is to label them correctly:
+
+- if another implementation must behave the same way for interoperability, the Collection Profile should eventually say so
+- if the behavior is only a strong reference choice, the reference may implement and test it now without pretending it is already normative

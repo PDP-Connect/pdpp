@@ -1,6 +1,9 @@
 /**
  * GET /api/query?stream=top_artists&token=...&connectorId=...
- * Queries the RS on behalf of the client token.
+ * Queries the RS on behalf of the provided token.
+ *
+ * connectorId is optional and only forwarded for connector-bound owner queries.
+ * Native and grant-bound client queries are token-scoped.
  */
 import { NextResponse } from 'next/server';
 
@@ -11,6 +14,12 @@ export async function GET(req: Request) {
   const stream = url.searchParams.get('stream')!;
   const token = url.searchParams.get('token')!;
   const connectorId = url.searchParams.get('connectorId');
+  if (url.searchParams.has('providerId')) {
+    return NextResponse.json(
+      { error: 'Query bridge does not accept providerId; native and grant-bound queries are token-scoped' },
+      { status: 400 },
+    );
+  }
 
   const rsUrl = new URL(`${RS_URL}/v1/streams/${encodeURIComponent(stream)}/records`);
   if (connectorId) rsUrl.searchParams.set('connector_id', connectorId);

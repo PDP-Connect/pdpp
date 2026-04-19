@@ -1,0 +1,55 @@
+{
+  "protocol_version": "0.1.0",
+  "connector_id": "https://registry.pdpp.org/connectors/uber",
+  "version": "0.1.0",
+  "display_name": "Uber",
+  "runtime_requirements": { "bindings": { "network": { "required": true } } },
+  "capabilities": { "human_interaction": ["manual_action"] },
+  "streams": [
+    {
+      "name": "trips",
+      "description": "Uber trips (ride-share + Uber Eats deliveries if mingled).",
+      "display": {
+        "label": "Your Uber trips",
+        "detail": "Trip date, pickup/dropoff locations, distance, duration, fare breakdown, driver, car type, status. Supports reconciliation to bank-statement 'UBER *TRIP' entries."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "status": { "type": ["string", "null"] },
+          "product_type": { "type": ["string", "null"] },
+          "requested_at": { "type": ["string", "null"] },
+          "started_at": { "type": ["string", "null"] },
+          "completed_at": { "type": ["string", "null"] },
+          "pickup_address": { "type": ["string", "null"] },
+          "pickup_lat": { "type": ["number", "null"] },
+          "pickup_lng": { "type": ["number", "null"] },
+          "dropoff_address": { "type": ["string", "null"] },
+          "dropoff_lat": { "type": ["number", "null"] },
+          "dropoff_lng": { "type": ["number", "null"] },
+          "distance_meters": { "type": ["number", "null"] },
+          "duration_seconds": { "type": ["integer", "null"] },
+          "fare_total": { "type": ["string", "null"] },
+          "fare_total_cents": { "type": ["integer", "null"] },
+          "currency": { "type": ["string", "null"] },
+          "tip_cents": { "type": ["integer", "null"] },
+          "surge_multiplier": { "type": ["number", "null"] },
+          "driver_name": { "type": ["string", "null"] },
+          "vehicle_description": { "type": ["string", "null"] },
+          "receipt_url": { "type": ["string", "null"] }
+        },
+        "required": ["id"]
+      },
+      "primary_key": ["id"],
+      "cursor_field": "completed_at",
+      "consent_time_field": "requested_at",
+      "selection": { "fields": true, "resources": true },
+      "incremental": true,
+      "views": [
+        { "id": "reconciliation", "label": "Fields for YNAB matching", "fields": ["id", "completed_at", "fare_total", "fare_total_cents", "pickup_address", "dropoff_address", "product_type"] }
+      ]
+    }
+  ]
+}

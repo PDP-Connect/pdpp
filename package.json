@@ -1,7 +1,7 @@
 {
   "name": "pdpp",
   "version": "1.0.0",
-  "description": "",
+  "description": "PDPP protocol specs, reference implementation, docs site, and design workbench.",
   "type": "module",
   "scripts": {
     "dev": "pnpm web:dev",
@@ -11,8 +11,9 @@
     "docs:dev": "vitepress dev",
     "docs:build": "vitepress build",
     "docs:preview": "vitepress preview",
-    "reference:dev": "pnpm --dir demo_archived/app dev",
-    "reference:build": "pnpm --dir demo_archived/app build",
+    "reference-implementation:test": "pnpm --dir reference-implementation test",
+    "reference-implementation:server": "pnpm --dir reference-implementation server",
+    "reference-implementation:cli": "pnpm --dir reference-implementation cli",
     "web:dev": "pnpm --dir apps/web dev",
     "web:build": "pnpm --dir apps/web build",
     "web:start": "pnpm --dir apps/web start"

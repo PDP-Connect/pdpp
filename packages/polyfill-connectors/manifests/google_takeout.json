@@ -1,0 +1,82 @@
+{
+  "protocol_version": "0.1.0",
+  "connector_id": "https://registry.pdpp.org/connectors/google-takeout",
+  "version": "0.1.0",
+  "display_name": "Google Takeout",
+  "runtime_requirements": { "bindings": { "network": { "required": false }, "filesystem": { "required": true } } },
+  "capabilities": { "human_interaction": [] },
+  "streams": [
+    {
+      "name": "location_history",
+      "description": "Location history from Google Maps Timeline.",
+      "display": {
+        "label": "Your Google location history",
+        "detail": "Places you've been with timestamps, lat/lon, accuracy, activity type when available. Parsed from Google Takeout Records.json."
+      },
+      "semantics": "append_only",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "timestamp": { "type": "string" },
+          "latitude": { "type": ["number", "null"] },
+          "longitude": { "type": ["number", "null"] },
+          "accuracy_meters": { "type": ["integer", "null"] },
+          "activity_type": { "type": ["string", "null"] },
+          "velocity_mps": { "type": ["number", "null"] },
+          "altitude_m": { "type": ["number", "null"] }
+        },
+        "required": ["id", "timestamp"]
+      },
+      "primary_key": ["id"],
+      "cursor_field": "timestamp",
+      "consent_time_field": "timestamp",
+      "selection": { "fields": true, "resources": true },
+      "incremental": true
+    },
+    {
+      "name": "youtube_watch_history",
+      "description": "YouTube watch history.",
+      "display": { "label": "Your YouTube watch history", "detail": "Videos watched with watch time, video URL, title, channel name." },
+      "semantics": "append_only",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "watched_at": { "type": "string" },
+          "video_url": { "type": ["string", "null"] },
+          "video_title": { "type": ["string", "null"] },
+          "channel_name": { "type": ["string", "null"] },
+          "channel_url": { "type": ["string", "null"] }
+        },
+        "required": ["id", "watched_at"]
+      },
+      "primary_key": ["id"],
+      "cursor_field": "watched_at",
+      "consent_time_field": "watched_at",
+      "selection": { "fields": true, "resources": true },
+      "incremental": true
+    },
+    {
+      "name": "search_history",
+      "description": "Google search queries from My Activity.",
+      "display": { "label": "Your Google search history", "detail": "Search queries with timestamps and products (Search, Maps, Images, etc.)." },
+      "semantics": "append_only",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "timestamp": { "type": "string" },
+          "query": { "type": ["string", "null"] },
+          "product": { "type": ["string", "null"] }
+        },
+        "required": ["id", "timestamp"]
+      },
+      "primary_key": ["id"],
+      "cursor_field": "timestamp",
+      "consent_time_field": "timestamp",
+      "selection": { "fields": true, "resources": true },
+      "incremental": true
+    }
+  ]
+}

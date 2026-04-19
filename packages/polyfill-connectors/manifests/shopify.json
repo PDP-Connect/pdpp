@@ -1,0 +1,39 @@
+{
+  "protocol_version": "0.1.0",
+  "connector_id": "https://registry.pdpp.org/connectors/shopify",
+  "version": "0.1.0",
+  "display_name": "Shopify Shop",
+  "runtime_requirements": { "bindings": { "network": { "required": true } } },
+  "capabilities": { "human_interaction": ["manual_action"] },
+  "streams": [
+    {
+      "name": "orders",
+      "description": "Orders placed across merchants via the Shop app.",
+      "display": {
+        "label": "Your Shop app orders",
+        "detail": "Order date, merchant, items, prices, shipping status, tracking numbers, payment summary."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "order_date": { "type": ["string", "null"] },
+          "merchant_name": { "type": ["string", "null"] },
+          "status": { "type": ["string", "null"] },
+          "total_cents": { "type": ["integer", "null"] },
+          "currency": { "type": ["string", "null"] },
+          "tracking_number": { "type": ["string", "null"] },
+          "tracking_url": { "type": ["string", "null"] },
+          "item_count": { "type": ["integer", "null"] }
+        },
+        "required": ["id"]
+      },
+      "primary_key": ["id"],
+      "cursor_field": "order_date",
+      "consent_time_field": "order_date",
+      "selection": { "fields": true, "resources": true },
+      "incremental": true
+    }
+  ]
+}

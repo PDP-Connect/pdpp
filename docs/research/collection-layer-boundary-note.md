@@ -154,7 +154,7 @@ It does NOT implement:
 - Expansion (`expand[]`)
 - Token introspection
 
-The e2e implementation (`e2e/`) covers the Collection Profile runtime (START/RECORD/STATE/DONE), ingest, and sync state. Between the two reference implementations, the Collection Profile wire protocol is demonstrated but not the orchestrator capabilities listed above.
+The reference implementation (`reference-implementation/`) covers the Collection Profile runtime (START/RECORD/STATE/DONE), ingest, and sync state. Between the two reference implementations, the Collection Profile wire protocol is demonstrated but not the orchestrator capabilities listed above.
 
 ---
 
@@ -162,9 +162,9 @@ The e2e implementation (`e2e/`) covers the Collection Profile runtime (START/REC
 
 Build these in the reference implementation to learn, without committing to spec. Each experiment has a specific learning goal.
 
-1. **Proactive archival scheduler.** Build a simple cron-style scheduler in the e2e runtime that runs connectors periodically using global state. Learning goal: understand the scheduling/state interaction patterns that will inform whether any scheduling semantics need spec treatment. Hypothesis: they do not.
+1. **Proactive archival scheduler.** Build a simple cron-style scheduler in the reference runtime that runs connectors periodically using global state. Learning goal: understand the scheduling/state interaction patterns that will inform whether any scheduling semantics need spec treatment. Hypothesis: they do not.
 
-2. **Webhook-to-pull adapter.** Build a simple HTTP endpoint in the e2e server that receives a webhook payload, validates it, writes RECORDs to the ingest endpoint, and optionally triggers a reconciliation collection run. Learning goal: determine whether the push-to-pull adaptation is sufficient or whether a separate Push Profile is needed. Hypothesis: it is sufficient for v0.1 targets.
+2. **Webhook-to-pull adapter.** Build a simple HTTP endpoint in the reference server that receives a webhook payload, validates it, writes RECORDs to the ingest endpoint, and optionally triggers a reconciliation collection run. Learning goal: determine whether the push-to-pull adaptation is sufficient or whether a separate Push Profile is needed. Hypothesis: it is sufficient for v0.1 targets.
 
 3. **File import CLI tool.** Build a CLI that reads a platform export ZIP (start with Instagram data download format), maps it to PDPP streams, validates against a manifest, and ingests via `POST /v1/ingest/{stream}`. Learning goal: understand the validation and schema-mapping requirements that would inform a Batch Import Profile. Hypothesis: the shared RECORD format and ingest endpoint are sufficient; the import tool is runtime code.
 

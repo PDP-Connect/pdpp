@@ -1,0 +1,67 @@
+{
+  "protocol_version": "0.1.0",
+  "connector_id": "https://registry.pdpp.org/connectors/notion",
+  "version": "0.1.0",
+  "display_name": "Notion",
+  "runtime_requirements": { "bindings": { "network": { "required": true } } },
+  "capabilities": { "human_interaction": [] },
+  "streams": [
+    {
+      "name": "pages",
+      "description": "Notion pages and database items accessible to the integration.",
+      "display": {
+        "label": "Your Notion pages",
+        "detail": "Page title, parent, archived flag, created/edited timestamps, URL. Block content (rich text) is fetched per-page separately."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "object": { "type": ["string", "null"] },
+          "parent_type": { "type": ["string", "null"] },
+          "parent_id": { "type": ["string", "null"] },
+          "title": { "type": ["string", "null"] },
+          "url": { "type": ["string", "null"] },
+          "archived": { "type": ["boolean", "null"] },
+          "created_time": { "type": ["string", "null"] },
+          "last_edited_time": { "type": ["string", "null"] },
+          "created_by_id": { "type": ["string", "null"] },
+          "last_edited_by_id": { "type": ["string", "null"] }
+        },
+        "required": ["id"]
+      },
+      "primary_key": ["id"],
+      "cursor_field": "last_edited_time",
+      "consent_time_field": "created_time",
+      "selection": { "fields": true, "resources": true },
+      "incremental": true
+    },
+    {
+      "name": "databases",
+      "description": "Notion databases.",
+      "display": { "label": "Your Notion databases", "detail": "Database titles, parent, property schema." },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "title": { "type": ["string", "null"] },
+          "parent_type": { "type": ["string", "null"] },
+          "parent_id": { "type": ["string", "null"] },
+          "url": { "type": ["string", "null"] },
+          "archived": { "type": ["boolean", "null"] },
+          "created_time": { "type": ["string", "null"] },
+          "last_edited_time": { "type": ["string", "null"] },
+          "property_names": { "type": "array" }
+        },
+        "required": ["id"]
+      },
+      "primary_key": ["id"],
+      "cursor_field": "last_edited_time",
+      "consent_time_field": "created_time",
+      "selection": { "fields": true, "resources": true },
+      "incremental": true
+    }
+  ]
+}

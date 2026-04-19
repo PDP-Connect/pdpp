@@ -1,0 +1,133 @@
+{
+  "protocol_version": "0.1.0",
+  "connector_id": "https://registry.pdpp.org/connectors/github",
+  "version": "0.1.0",
+  "display_name": "GitHub",
+  "runtime_requirements": {
+    "bindings": {
+      "network": { "required": true }
+    }
+  },
+  "capabilities": {
+    "human_interaction": []
+  },
+  "streams": [
+    {
+      "name": "user",
+      "description": "The authenticated user's profile.",
+      "display": {
+        "label": "Your GitHub profile",
+        "detail": "Username, display name, bio, email if public, counts of followers/following/public repos, created_at and updated_at."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "login": { "type": "string" },
+          "name": { "type": ["string", "null"] },
+          "email": { "type": ["string", "null"] },
+          "bio": { "type": ["string", "null"] },
+          "company": { "type": ["string", "null"] },
+          "location": { "type": ["string", "null"] },
+          "blog": { "type": ["string", "null"] },
+          "twitter_username": { "type": ["string", "null"] },
+          "public_repos": { "type": ["integer", "null"] },
+          "public_gists": { "type": ["integer", "null"] },
+          "followers": { "type": ["integer", "null"] },
+          "following": { "type": ["integer", "null"] },
+          "created_at": { "type": ["string", "null"] },
+          "updated_at": { "type": ["string", "null"] },
+          "avatar_url": { "type": ["string", "null"] }
+        },
+        "required": ["id", "login"]
+      },
+      "primary_key": ["id"],
+      "cursor_field": "updated_at",
+      "consent_time_field": "created_at",
+      "selection": { "fields": true, "resources": true },
+      "incremental": false
+    },
+    {
+      "name": "repositories",
+      "description": "Repositories owned or contributed to by the user.",
+      "display": {
+        "label": "Your repositories",
+        "detail": "Full repo metadata: name, description, languages, topics, stars, forks, open issues, default branch, visibility, fork/archive status, created/updated/pushed timestamps."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "name": { "type": "string" },
+          "full_name": { "type": "string" },
+          "owner_login": { "type": ["string", "null"] },
+          "description": { "type": ["string", "null"] },
+          "private": { "type": "boolean" },
+          "fork": { "type": "boolean" },
+          "archived": { "type": "boolean" },
+          "disabled": { "type": "boolean" },
+          "default_branch": { "type": ["string", "null"] },
+          "language": { "type": ["string", "null"] },
+          "topics": { "type": "array" },
+          "stargazers_count": { "type": ["integer", "null"] },
+          "forks_count": { "type": ["integer", "null"] },
+          "open_issues_count": { "type": ["integer", "null"] },
+          "watchers_count": { "type": ["integer", "null"] },
+          "size_kb": { "type": ["integer", "null"] },
+          "license_key": { "type": ["string", "null"] },
+          "html_url": { "type": ["string", "null"] },
+          "homepage": { "type": ["string", "null"] },
+          "created_at": { "type": ["string", "null"] },
+          "updated_at": { "type": ["string", "null"] },
+          "pushed_at": { "type": ["string", "null"] }
+        },
+        "required": ["id", "full_name"]
+      },
+      "primary_key": ["id"],
+      "cursor_field": "pushed_at",
+      "consent_time_field": "created_at",
+      "selection": { "fields": true, "resources": true },
+      "incremental": true
+    },
+    {
+      "name": "starred",
+      "description": "Repositories the user has starred, with starred_at timestamp.",
+      "display": {
+        "label": "Your starred repositories",
+        "detail": "Full repo metadata for every star you've given, plus the time you starred it."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "full_name": { "type": "string" },
+          "description": { "type": ["string", "null"] },
+          "language": { "type": ["string", "null"] },
+          "stargazers_count": { "type": ["integer", "null"] },
+          "html_url": { "type": ["string", "null"] },
+          "starred_at": { "type": ["string", "null"] }
+        },
+        "required": ["id", "full_name"]
+      },
+      "primary_key": ["id"],
+      "cursor_field": "starred_at",
+      "consent_time_field": "starred_at",
+      "selection": { "fields": true, "resources": true },
+      "incremental": true
+    }
+  ],
+  "profiles": [
+    {
+      "id": "basic",
+      "label": "Profile + repos + stars",
+      "streams": [
+        { "name": "user" },
+        { "name": "repositories" },
+        { "name": "starred" }
+      ]
+    }
+  ]
+}

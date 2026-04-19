@@ -75,7 +75,7 @@ PDPP's **promise surface is wider than its enforcement surface**. The spec uses 
 - **Protocol-enforced:** streams, fields, views, resources, time_range, access mode, revocation of future access. The resource server actually enforces these. A violation is catchable by the protocol.
 - **Policy-declared / attributed:** purpose codes, retention, client_claims, AI training flag. These are honor-system commitments that the protocol cannot make true.
 
-Both belong in PDPP. Neither is wrong. The problem is that the spec does not visibly distinguish them, so a reader cannot tell from the document which fields carry which weight. The ChatGPT memo (`docs/inbox/pdpp_memo_chatgpt.txt`) recommends adding an "enforcement status" column to every field table and making the distinction normative in the consent surface rendering. This is the highest-leverage editorial fix currently on the table, but it should be treated as the current center of gravity, not as the only live question in the project.
+Both belong in PDPP. Neither is wrong. The problem is that the spec does not visibly distinguish them, so a reader cannot tell from the document which fields carry which weight. The historical ChatGPT review memo (`docs/inbox/pdpp_memo_chatgpt.txt`) recommends adding an "enforcement status" column to every field table and making the distinction normative in the consent surface rendering. This is the highest-leverage editorial fix currently on the table, but it should be treated as the current center of gravity, not as the only live question in the project.
 
 ### The load-bearing primitive question — still open
 
@@ -90,9 +90,9 @@ The live question is therefore not "which one must survive," but "which one shou
 
 ### What both inbox memos converge on
 
-Two independent memos — one from Gemini 3.1 Pro (`docs/inbox/pdpp_memo.txt`) and one from ChatGPT 5.4 (`docs/inbox/pdpp_memo_chatgpt.txt`) — were reviewed in this conversation. They are complementary, not redundant. Gemini pushes outward (scope, absorption from a competing spec called GDPP, day-2 operational realities, regulator positioning). ChatGPT pushes inward (honesty about what is actually enforced, conformance discipline, promise-surface containment). Both converge on:
+Two independent historical memos — one from Gemini 3.1 Pro (`docs/inbox/pdpp_memo.txt`) and one from ChatGPT 5.4 (`docs/inbox/pdpp_memo_chatgpt.txt`) — were reviewed in this conversation. They are complementary, not redundant. Gemini pushes outward (scope, absorption from a competing spec called GDPP, day-2 operational realities, regulator positioning). ChatGPT pushes inward (honesty about what is actually enforced, conformance discipline, promise-surface containment). Both converge on:
 
-- A real projection-leak bug was identified in `e2e/server/records.js` where `changes_since` leaked hidden-field changes through the projection filter.
+- A real projection-leak bug was identified in `reference-implementation/server/records.js` where `changes_since` leaked hidden-field changes through the projection filter.
 - Revocation and erasure are currently conflated and need to be separated.
 - At the time of those memos, the reference implementation's most distinctive privacy property (projection-safe incremental sync) was not actually delivered by the reference implementation.
 - Conformance language is missing and the spec has no way to talk about its own promises.
@@ -107,7 +107,7 @@ PDPP already has one split (Core vs. Collection Profile). Whether additional pro
 
 ### The projection-leak bug — historical finding, now addressed in the repo
 
-The memos correctly identified a real bug in the older `changes_since` path: it selected rows by version > cursor and projected afterward, which leaked hidden-field-only changes. That specific implementation is no longer current. The live repo now uses a journaled `record_changes` history plus projection-aware snapshot comparison in `e2e/server/records.js`, and the e2e tests cover unauthorized-only change suppression, authorized changes, tombstones, and cursor expiry.
+The memos correctly identified a real bug in the older `changes_since` path: it selected rows by version > cursor and projected afterward, which leaked hidden-field-only changes. That specific implementation is no longer current. The live repo now uses a journaled `record_changes` history plus projection-aware snapshot comparison in `reference-implementation/server/records.js`, and the reference-implementation tests cover unauthorized-only change suppression, authorized changes, tombstones, and cursor expiry.
 
 The important continuity point is not "the bug is still open," but "this is the privacy property reviewers should verify in the live code." The `changed_fields` proposal in Gemini's memo should therefore be read as historical implementation guidance for an open bug, not as the canonical design forever.
 
@@ -129,11 +129,12 @@ These are not cleanup tasks and they are not dismissed. They are simply not the 
 
 **Canonical locations (active):**
 
-- `spec-*.md` at repo root — the current spec documents. `spec-core.md` is primary. Others: `spec-architecture.md`, `spec-auth-design.md`, `spec-change-tracking.md`, `spec-collection-profile.md`, `spec-connector-ecosystem.md`, `spec-data-query-api.md`, `spec-deferred.md`, `spec-dti-alignment.md`, `spec-e2e-examples.md`.
-- `apps/web/` — Next.js + Fumadocs canonical site. Routes: `/docs` (spec rendering), `/design` (design system), `/` (illustrated landing), `/demo-legacy`. Uses shared brand package.
+- `spec-*.md` at repo root — the current spec documents. `spec-core.md` is primary. Others: `spec-architecture.md`, `spec-auth-design.md`, `spec-change-tracking.md`, `spec-collection-profile.md`, `spec-connector-ecosystem.md`, `spec-data-query-api.md`, `spec-deferred.md`, `spec-dti-alignment.md`, `spec-reference-implementation-examples.md`.
+- `apps/web/` — Next.js + Fumadocs canonical site. Routes: `/docs` (spec rendering), `/design` (design system), `/` (illustrated landing). Uses shared brand package.
 - `packages/pdpp-brand/` — shared design tokens and chrome. Files: `base.css`, `app.css`, `docs.css`, `chrome.js`.
-- `e2e/` — the real implementation. `e2e/client/demo.js`, `e2e/server/{auth,db,records,index}.js`, `e2e/runtime/index.js`, `e2e/manifests/{github,spotify,reddit}.json`, `e2e/connectors/`. This is the reference the owner wants implementers to read.
-- `docs/` — working documents. `docs/inbox/` is the staging area for new direction-setting material. `docs/personas/` holds persona documents. `docs/research/` holds durable research outputs.
+- `reference-implementation/` — the real implementation. `reference-implementation/server/{auth,db,records,index}.js`, `reference-implementation/runtime/index.js`, `reference-implementation/manifests/{github,spotify,reddit}.json`, `reference-implementation/connectors/`. This is the reference the owner wants implementers to read.
+- `docs/` — working documents. `docs/personas/` holds persona documents, `docs/research/` holds durable research outputs, `docs/archive/` holds superseded planning notes, and `docs/inbox/` is mostly historical scratch and external-review material rather than the active execution layer.
+- `openspec/` — durable project architecture and change-planning layer for the reference implementation. Use this for current implementation-boundary and execution decisions.
 - `demo_archived/` — archived older Next.js app. `demo_archived/CONSTITUTION.md` still contains authoritative design philosophy for the reference but is no longer an active build target.
 
 **Steering files — load these before acting:**
@@ -142,8 +143,10 @@ These are not cleanup tasks and they are not dismissed. They are simply not the 
 - `demo_archived/CONSTITUTION.md` — five design principles, surface temperature rules, trust model rendering rules.
 - `docs/personas/standards-editor-reviewer.md` — the authority on your persona.
 - `docs/research/attribution-split-prior-art.md` — the authority on whether the trust model is novel and what the failure modes of prior attempts are.
-- `docs/inbox/pdpp_memo.txt` — Gemini 3.1 Pro review memo.
-- `docs/inbox/pdpp_memo_chatgpt.txt` — ChatGPT 5.4 review memo (more important of the two).
+- `docs/inbox/pdpp_memo.txt` — Gemini 3.1 Pro historical review memo.
+- `docs/inbox/pdpp_memo_chatgpt.txt` — ChatGPT 5.4 historical review memo (more important of the two).
+- `openspec/specs/reference-implementation-governance/spec.md` — governance boundary for how OpenSpec, root specs, and code/tests relate.
+- `openspec/specs/reference-implementation-architecture/spec.md` — durable architecture and boundary rules for the reference implementation.
 
 ---
 
@@ -167,8 +170,8 @@ These are load-bearing and the owner does not want them reopened. Ground your wo
 3. Load `docs/research/attribution-split-prior-art.md` so you know what is and is not novel.
 4. Read `.claude/working-state.md` for the current steering constraints.
 5. Read `spec-core.md` end to end. This is the artifact under review. Do not skim. Mark places where the enforcement-status distinction is ambiguous.
-6. Skim the two memos in `docs/inbox/` to see the critiques already on the table.
-7. Look at `e2e/server/records.js` specifically — the `queryRecords` function and its `changes_since` path — to see the confirmed projection-leak bug in context.
+6. Skim the two historical memos in `docs/inbox/` to see the critiques already on the table, then use `openspec/` for the current project-level architecture and change context.
+7. Look at `reference-implementation/server/records.js` specifically — the `queryRecords` function and its `changes_since` path — to see the confirmed projection-leak bug in context.
 8. Only then, engage the owner. When you do, lead with framing, not mechanics.
 9. Once framing is stable enough, help translate it into concrete spec deltas. Good next moves include field-table labeling, consent-surface requirements, revocation-vs-erasure text, and conformance tightening around `changes_since`.
 

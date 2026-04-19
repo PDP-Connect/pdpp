@@ -1,0 +1,51 @@
+{
+  "protocol_version": "0.1.0",
+  "connector_id": "https://registry.pdpp.org/connectors/strava",
+  "version": "0.1.0",
+  "display_name": "Strava",
+  "runtime_requirements": { "bindings": { "network": { "required": true } } },
+  "capabilities": { "human_interaction": [] },
+  "streams": [
+    {
+      "name": "activities",
+      "description": "Strava activities (runs, rides, swims, etc.).",
+      "display": {
+        "label": "Your Strava activities",
+        "detail": "Activity name, type, start time, distance, moving time, elapsed time, elevation, average speed, kudos/comment counts, achievement counts."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "name": { "type": ["string", "null"] },
+          "type": { "type": ["string", "null"] },
+          "sport_type": { "type": ["string", "null"] },
+          "start_date": { "type": "string" },
+          "start_date_local": { "type": ["string", "null"] },
+          "timezone": { "type": ["string", "null"] },
+          "distance_m": { "type": ["number", "null"] },
+          "moving_time_s": { "type": ["integer", "null"] },
+          "elapsed_time_s": { "type": ["integer", "null"] },
+          "total_elevation_gain_m": { "type": ["number", "null"] },
+          "average_speed_mps": { "type": ["number", "null"] },
+          "max_speed_mps": { "type": ["number", "null"] },
+          "average_heartrate": { "type": ["number", "null"] },
+          "max_heartrate": { "type": ["number", "null"] },
+          "kudos_count": { "type": ["integer", "null"] },
+          "comment_count": { "type": ["integer", "null"] },
+          "achievement_count": { "type": ["integer", "null"] },
+          "start_latlng": { "type": "array" },
+          "end_latlng": { "type": "array" },
+          "map_polyline": { "type": ["string", "null"] }
+        },
+        "required": ["id", "start_date"]
+      },
+      "primary_key": ["id"],
+      "cursor_field": "start_date",
+      "consent_time_field": "start_date",
+      "selection": { "fields": true, "resources": true },
+      "incremental": true
+    }
+  ]
+}

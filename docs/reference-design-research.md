@@ -13,6 +13,13 @@ PDPP needs a reference implementation that serves as:
 
 The core question: can one artifact serve all five, and how do the best organizations approach this?
 
+The current repo answer is deliberately split:
+
+- `reference-implementation/` is the forkable runnable substrate
+- `apps/web/` is the docs and illustrated-consumer surface
+
+This memo should be read as research for how those two layers relate, not as an argument that they should collapse back into one runtime shell.
+
 ---
 
 ## Finding 1: No one has done this successfully with one URL
@@ -282,7 +289,7 @@ Sources:
 
 ### Applied 2026-04-10 — PDPP sidebar chrome unification
 
-Implemented as `docs/inbox/design-sidebar-slvp-plan.md`. Key decisions and outcomes:
+The applied outcome now lives in the active code and shared brand tokens rather than a live inbox plan. Key decisions and outcomes:
 
 - **Single token:** `--pdpp-sidebar-width` in `packages/pdpp-brand/base.css`, stepped at 1440 (240 → 280). All three `/design` chrome sites (hero blank quadrant, sticky section nav, Docs shell mockup) and the Fumadocs `/docs` layout (`--fd-sidebar-width`) read from the same token.
 - **TOC threshold moved from 1280 → 1440.** Fumadocs's default reserves a 268px TOC grid column at `xl` (1280), which starves the content column on narrow desktops. Our override sets `--fd-toc-width: 0px` between 1280 and 1439 and hides the TOC aside.

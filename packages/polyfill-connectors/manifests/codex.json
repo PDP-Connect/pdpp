@@ -1,0 +1,124 @@
+{
+  "protocol_version": "0.1.0",
+  "connector_id": "https://registry.pdpp.org/connectors/codex",
+  "version": "0.1.0",
+  "display_name": "OpenAI Codex CLI",
+  "runtime_requirements": {
+    "bindings": {
+      "filesystem": { "required": true }
+    }
+  },
+  "capabilities": { "human_interaction": [] },
+  "streams": [
+    {
+      "name": "sessions",
+      "description": "Codex CLI sessions. One session = one `codex` CLI invocation, recorded as a rollout-*.jsonl file.",
+      "display": {
+        "label": "Your Codex CLI sessions",
+        "detail": "Session start time, working directory, git commit and branch, model provider, CLI version, total message count."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "cwd": { "type": ["string", "null"] },
+          "originator": { "type": ["string", "null"] },
+          "cli_version": { "type": ["string", "null"] },
+          "model_provider": { "type": ["string", "null"] },
+          "git_commit": { "type": ["string", "null"] },
+          "git_branch": { "type": ["string", "null"] },
+          "repository_url": { "type": ["string", "null"] },
+          "started_at": { "type": ["string", "null"] },
+          "last_event_at": { "type": ["string", "null"] },
+          "message_count": { "type": ["integer", "null"] },
+          "function_call_count": { "type": ["integer", "null"] }
+        },
+        "required": ["id"]
+      },
+      "primary_key": ["id"],
+      "cursor_field": "last_event_at",
+      "consent_time_field": "started_at",
+      "selection": { "fields": true, "resources": true },
+      "incremental": true
+    },
+    {
+      "name": "messages",
+      "description": "Messages within Codex sessions: user prompts, assistant responses, and reasoning placeholders.",
+      "display": {
+        "label": "Your Codex messages",
+        "detail": "Role (user/assistant), text content, timestamp, session reference. Reasoning traces are referenced but content is encrypted and not stored."
+      },
+      "semantics": "append_only",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "session_id": { "type": "string" },
+          "role": { "type": ["string", "null"] },
+          "type": { "type": ["string", "null"] },
+          "content": { "type": ["string", "null"] },
+          "timestamp": { "type": ["string", "null"] }
+        },
+        "required": ["id", "session_id"]
+      },
+      "primary_key": ["id"],
+      "cursor_field": "timestamp",
+      "consent_time_field": "timestamp",
+      "selection": { "fields": true, "resources": true },
+      "incremental": true,
+      "relationships": [
+        { "name": "session", "stream": "sessions", "foreign_key": "session_id", "cardinality": "has_one" }
+      ]
+    },
+    {
+      "name": "function_calls",
+      "description": "Tool invocations and their outputs (shell commands, file ops) recorded in Codex sessions.",
+      "display": {
+        "label": "Codex tool calls",
+        "detail": "Tool name, arguments, call_id, and output preview. Includes shell commands Codex ran and their results."
+      },
+      "semantics": "append_only",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "session_id": { "type": "string" },
+          "call_id": { "type": ["string", "null"] },
+          "name": { "type": ["string", "null"] },
+          "arguments": { "type": ["string", "null"] },
+          "output_preview": { "type": ["string", "null"] },
+          "timestamp": { "type": ["string", "null"] }
+        },
+        "required": ["id", "session_id"]
+      },
+      "primary_key": ["id"],
+      "cursor_field": "timestamp",
+      "consent_time_field": "timestamp",
+      "selection": { "fields": true, "resources": true },
+      "incremental": true,
+      "relationships": [
+        { "name": "session", "stream": "sessions", "foreign_key": "session_id", "cardinality": "has_one" }
+      ]
+    }
+  ],
+  "profiles": [
+    {
+      "id": "full",
+      "label": "Your full Codex history",
+      "streams": [
+        { "name": "sessions" },
+        { "name": "messages" },
+        { "name": "function_calls" }
+      ]
+    },
+    {
+      "id": "messages_only",
+      "label": "Just prompts and responses",
+      "streams": [
+        { "name": "sessions" },
+        { "name": "messages" }
+      ]
+    }
+  ]
+}

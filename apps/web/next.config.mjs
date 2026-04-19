@@ -59,17 +59,27 @@ const nextConfig = {
       },
       {
         source: '/spec-e2e-examples',
-        destination: '/docs/spec-e2e-examples',
+        destination: '/docs/reference-implementation-examples',
+        permanent: true,
+      },
+      {
+        source: '/spec-reference-implementation-examples',
+        destination: '/docs/reference-implementation-examples',
         permanent: true,
       },
       {
         source: '/e2e',
-        destination: '/docs/e2e-overview',
+        destination: '/docs/reference-implementation',
         permanent: true,
       },
       {
         source: '/e2e/:path*',
-        destination: '/docs/e2e-overview',
+        destination: '/docs/reference-implementation',
+        permanent: true,
+      },
+      {
+        source: '/reference-implementation',
+        destination: '/docs/reference-implementation',
         permanent: true,
       },
     ];

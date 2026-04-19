@@ -15,8 +15,8 @@
     "spec-change-tracking",
     "spec-dti-alignment",
     "spec-deferred",
-    "---E2E Artifacts---",
-    "spec-e2e-examples",
-    "e2e-overview"
+    "---Reference Implementation---",
+    "reference-implementation",
+    "reference-implementation-examples"
   ]
 }

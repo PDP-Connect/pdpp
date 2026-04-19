@@ -1,0 +1,88 @@
+{
+  "protocol_version": "0.1.0",
+  "connector_id": "https://registry.pdpp.org/connectors/reddit",
+  "version": "0.1.0",
+  "display_name": "Reddit",
+  "runtime_requirements": { "bindings": { "network": { "required": true } } },
+  "capabilities": { "human_interaction": [] },
+  "streams": [
+    {
+      "name": "submitted",
+      "description": "Posts submitted by the user.",
+      "display": { "label": "Your Reddit posts", "detail": "Subreddit, title, permalink, selftext, score, comment count, created time." },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "subreddit": { "type": ["string", "null"] },
+          "title": { "type": ["string", "null"] },
+          "permalink": { "type": ["string", "null"] },
+          "url": { "type": ["string", "null"] },
+          "selftext": { "type": ["string", "null"] },
+          "is_self": { "type": ["boolean", "null"] },
+          "score": { "type": ["integer", "null"] },
+          "num_comments": { "type": ["integer", "null"] },
+          "upvote_ratio": { "type": ["number", "null"] },
+          "created_utc": { "type": "string" }
+        },
+        "required": ["id", "created_utc"]
+      },
+      "primary_key": ["id"],
+      "cursor_field": "created_utc",
+      "consent_time_field": "created_utc",
+      "selection": { "fields": true, "resources": true },
+      "incremental": true
+    },
+    {
+      "name": "comments",
+      "description": "Comments by the user.",
+      "display": { "label": "Your Reddit comments", "detail": "Subreddit, comment body, parent post ID, score, created time." },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "subreddit": { "type": ["string", "null"] },
+          "body": { "type": ["string", "null"] },
+          "link_id": { "type": ["string", "null"] },
+          "parent_id": { "type": ["string", "null"] },
+          "permalink": { "type": ["string", "null"] },
+          "score": { "type": ["integer", "null"] },
+          "created_utc": { "type": "string" }
+        },
+        "required": ["id", "created_utc"]
+      },
+      "primary_key": ["id"],
+      "cursor_field": "created_utc",
+      "consent_time_field": "created_utc",
+      "selection": { "fields": true, "resources": true },
+      "incremental": true
+    },
+    {
+      "name": "saved",
+      "description": "Items the user has saved.",
+      "display": { "label": "Your saved Reddit items", "detail": "Posts and comments you've saved; mix of link posts and comments." },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "kind": { "type": ["string", "null"] },
+          "subreddit": { "type": ["string", "null"] },
+          "title": { "type": ["string", "null"] },
+          "body": { "type": ["string", "null"] },
+          "permalink": { "type": ["string", "null"] },
+          "url": { "type": ["string", "null"] },
+          "created_utc": { "type": "string" }
+        },
+        "required": ["id", "created_utc"]
+      },
+      "primary_key": ["id"],
+      "cursor_field": "created_utc",
+      "consent_time_field": "created_utc",
+      "selection": { "fields": true, "resources": true },
+      "incremental": true
+    }
+  ]
+}

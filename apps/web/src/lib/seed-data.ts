@@ -1,7 +1,7 @@
 /**
- * Realistic seed data for the PDPP demo personal server.
- * Represents a user (instagram_demo_user / dondochaka) whose personal server
- * already has data before the demo starts — showing that the personal server
+ * Realistic seed data for the PDPP reference personal server.
+ * Represents a seeded local account whose personal server
+ * already has data before the reference flow starts — showing that the personal server
  * is a persistent store, not an on-demand scraper.
  */
 

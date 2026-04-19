@@ -88,7 +88,7 @@ Returns the streams available under the current grant.
 GET /v1/streams/{stream}
 ```
 
-Returns schema, primary key, cursor field, and expandable relations.
+Returns full source stream metadata, including schema, primary key, cursor field, and expandable relations. This endpoint is not grant-projected: grants constrain which reads or queries are allowed, but they do not rewrite the stream metadata document.
 
 **Response:**
 ```json

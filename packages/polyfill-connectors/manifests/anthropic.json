@@ -1,0 +1,82 @@
+{
+  "protocol_version": "0.1.0",
+  "connector_id": "https://registry.pdpp.org/connectors/anthropic",
+  "version": "0.1.0",
+  "display_name": "Claude (Anthropic)",
+  "runtime_requirements": { "bindings": { "network": { "required": true } } },
+  "capabilities": { "human_interaction": ["manual_action"] },
+  "streams": [
+    {
+      "name": "conversations",
+      "description": "Claude.ai conversations.",
+      "display": { "label": "Your Claude conversations", "detail": "Conversation titles, create/update times, project membership, message counts." },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "title": { "type": ["string", "null"] },
+          "create_time": { "type": ["string", "null"] },
+          "update_time": { "type": ["string", "null"] },
+          "project_id": { "type": ["string", "null"] },
+          "model": { "type": ["string", "null"] },
+          "message_count": { "type": ["integer", "null"] }
+        },
+        "required": ["id"]
+      },
+      "primary_key": ["id"],
+      "cursor_field": "update_time",
+      "consent_time_field": "create_time",
+      "selection": { "fields": true, "resources": true },
+      "incremental": true
+    },
+    {
+      "name": "messages",
+      "description": "Messages within Claude conversations.",
+      "display": { "label": "Your Claude messages", "detail": "Role, content, model, creation time, per-conversation ordering." },
+      "semantics": "append_only",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "conversation_id": { "type": "string" },
+          "role": { "type": ["string", "null"] },
+          "content": { "type": ["string", "null"] },
+          "model": { "type": ["string", "null"] },
+          "create_time": { "type": ["string", "null"] }
+        },
+        "required": ["id", "conversation_id"]
+      },
+      "primary_key": ["id"],
+      "cursor_field": "create_time",
+      "consent_time_field": "create_time",
+      "selection": { "fields": true, "resources": true },
+      "incremental": true,
+      "relationships": [
+        { "name": "conversation", "stream": "conversations", "foreign_key": "conversation_id", "cardinality": "has_one" }
+      ]
+    },
+    {
+      "name": "projects",
+      "description": "Claude Projects the user has created.",
+      "display": { "label": "Your Claude projects", "detail": "Project names, descriptions, create times, associated conversation counts." },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "name": { "type": "string" },
+          "description": { "type": ["string", "null"] },
+          "create_time": { "type": ["string", "null"] },
+          "update_time": { "type": ["string", "null"] }
+        },
+        "required": ["id", "name"]
+      },
+      "primary_key": ["id"],
+      "cursor_field": "update_time",
+      "consent_time_field": "create_time",
+      "selection": { "fields": true, "resources": true },
+      "incremental": true
+    }
+  ]
+}

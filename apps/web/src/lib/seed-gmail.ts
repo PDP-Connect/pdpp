@@ -1,5 +1,5 @@
 /**
- * Seed data for the Gmail connector demo.
+ * Seed data for the Gmail connector reference fixture.
  * Simulates realistic email metadata without scraping or real credentials.
  * Email bodies are never stored — just headers and metadata (subject, from, date, labels).
  */
@@ -46,7 +46,7 @@ export const SEED_GMAIL_THREADS = [
   { id: 'g022', subject: 'Re: apartment lease renewal',                  from: 'landlord@realty.com',      from_name: 'Pacific Realty',    labels: ['inbox'],           received_at: daysAgo(20), thread_count: 4 },
 ];
 
-/** Summary of what the connector collected — displayed in demo */
+/** Summary of what the connector collected — displayed in the reference fixture */
 export const GMAIL_SUMMARY = {
   total_threads: SEED_GMAIL_THREADS.length,
   label_counts: {

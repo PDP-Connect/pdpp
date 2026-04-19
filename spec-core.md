@@ -31,7 +31,7 @@ Collection of data from source platforms is a separate concern addressed in the 
 | Airbyte / Singer | PDPP borrows the RECORD/STATE checkpoint pattern for incremental sync (see Collection Profile). |
 | Data Transfer Project (DTI) | PDPP and DTI are complementary: PDPP handles consent and disclosure semantics; DTI handles transfer mechanics. The two protocols can chain. See Appendix B. |
 | GNAP (RFC 9635) | GNAP is the IETF's ground-up rethink of OAuth. Several design decisions are directly relevant to PDPP: (1) interaction modes beyond browser redirects (relevant to PDPP's session relay flow); (2) request continuation for multi-step consent negotiation (relevant to optional streams); (3) key-bound grants instead of bearer tokens (stronger security for ongoing personal data access); (4) built-in grant management with revocation and rotation (relevant to `continuous` access mode). PDPP v0.1 uses OAuth 2.0 + RFC 9396, but a future version should evaluate whether GNAP is a better foundation. TODO for v0.2. |
-| GDPR / DMA | PDPP implements data minimization through stream and field selection. It also carries machine-readable purpose declarations (`purpose_code`) that support consent display, audit, and local policy, with an explicit protocol-level consent rule for `ai_training`. The `continuous` access mode enables ongoing portability aligned with the DMA's requirements. The internal version history required for incremental sync may support implementations that choose to expose historical access features to users. Whether such exposure is required is outside the scope of this specification. This alignment is informative only and is not a required v0.1 capability. |
+| GDPR / DMA | PDPP implements data minimization through stream and field selection. It also carries machine-readable purpose declarations (`purpose_code`) that support consent display, local policy, and implementation-defined audit or transparency mechanisms, with an explicit protocol-level consent rule for `ai_training`. The `continuous` access mode enables ongoing portability aligned with the DMA's requirements. The internal version history required for incremental sync may support implementations that choose to expose historical access features to users. Whether such exposure is required is outside the scope of this specification. This alignment is informative only and is not a required v0.1 capability. |
 
 **Note:** The PDPP Collection Profile is one fulfillment mechanism. A conformance test suite for this specification is planned but is not defined in v0.1 (see Section 11).
 
@@ -393,7 +393,7 @@ The optional `client_claims` object within each `authorization_details` entry ca
 PDPP uses three primary semantic classes across selection requests and grants:
 
 - **Protocol-enforced constraints:** Values the AS and/or RS actually validate or enforce, such as stream selection, field projection, `time_range`, `resources`, and `access_mode`.
-- **Structured policy declarations:** Machine-readable statements that matter for consent, audit, and local policy, but are not generally self-enforcing at the protocol layer. In v0.1 this includes `purpose_code`, `purpose_description`, and `retention`, with one explicit exception: `https://pdpp.org/purpose/ai_training` adds a protocol-level consent requirement.
+- **Structured policy declarations:** Machine-readable statements that matter for consent, local policy, and implementation-defined audit or transparency mechanisms, but are not generally self-enforcing at the protocol layer. In v0.1 this includes `purpose_code`, `purpose_description`, and `retention`, with one explicit exception: `https://pdpp.org/purpose/ai_training` adds a protocol-level consent requirement.
 - **Attributed client claims:** Client-authored statements that may matter to the user but are not protocol facts. In v0.1 this is `client_claims`.
 
 `client_display` is a separate category: requester identity metadata used to identify who is asking, not a grant constraint. Inline values may be client-asserted, but the AS renders them under its own resolution and trust policy.
@@ -666,7 +666,7 @@ Retention is a structured policy declaration and policy commitment by the data r
 
 **Note:** This section defines manifest syntax only. Connector runtime behavior (collection, state management, interaction) is defined in the [PDPP Collection Profile](spec-collection-profile).
 
-Each connector publishes a manifest declaring its consent surface: what streams it produces, what fields those streams contain, and what selection parameters are applicable. The manifest is the source of truth for what can be consented to. What is actually consented to is determined by the grant.
+Each connector publishes a manifest declaring its consent surface: what streams it produces, what fields those streams contain, and what selection parameters are applicable. The manifest is the source of truth for what can be consented to. What is actually consented to is determined by the grant. Grants constrain authorization and accessible results, but they do not redefine the source-level stream metadata returned by `GET /v1/streams/{stream}`.
 
 ### Manifest structure
 
@@ -953,7 +953,7 @@ GET /v1/streams/{stream}
 Authorization: Bearer <access_token>
 ```
 
-Returns full stream metadata. Response:
+Returns full source stream metadata. This endpoint is not grant-projected: grants determine whether the caller may access the stream and what reads or queries are permitted, but they do not redact or rewrite the metadata document returned here. Response:
 
 ```json
 {
@@ -1351,7 +1351,15 @@ Stream-level and field-level selection implements the GDPR principle of data min
 
 ### Purpose limitation
 
-The `purpose_code` URI enables purpose declaration, consent display, registration policy, and audit. Authorization servers MAY restrict client registrations to specific purpose codes. Personal servers SHOULD log purpose codes for auditability.
+The `purpose_code` URI enables purpose declaration, consent display, registration policy, and implementation-defined audit or transparency mechanisms. Authorization servers MAY restrict client registrations to specific purpose codes.
+
+### Auditability and transparency boundary
+
+PDPP core defines the authorization, grant, and disclosure semantics that make auditing and transparency possible. This includes stable identifiers and state transitions such as `grant_id`, `client_id`, `subject_id`, `purpose_code`, stream and resource identifiers, timestamps, and grant lifecycle states.
+
+PDPP core does not define a local audit-log schema, storage model, retention period for operational logs, or a user-facing disclosure-history interface. Implementations MAY maintain local records of grant issuance, disclosure, sync, token use, and revocation under local policy.
+
+If interoperable audit or transparency events are standardized in the future, they SHOULD be defined in a separate companion profile rather than by extending the core grant or query semantics.
 
 ### Retention
 
@@ -1398,6 +1406,8 @@ Revocation is not deletion. v0.1 does not define an active erasure signal or dow
 | Grant signing and token format | Deferred; current design is compatible |
 | Trust registry and connector certification | Deferred |
 | Consent screen visual design | Surface-specific; semantic rendering obligations remain in scope |
+| Local audit-log schema and user-facing access history | Deployment-specific; core defines auditable protocol primitives only |
+| Interoperable audit/transparency event format | Separate companion profile if standardized |
 | Point-in-time reconstruction | Deferred (reconstructing full state at a past timestamp) |
 | Canonical view naming vocabulary | Deferred; will be informed by implementation experience |
 | Predicate-based grant scoping | Deferred; see spec-deferred for subset template design direction |

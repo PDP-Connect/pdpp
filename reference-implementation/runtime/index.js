@@ -1,0 +1,1296 @@
+/**
+ * PDPP Connector Runtime
+ *
+ * Spawns connector processes, manages the JSONL protocol,
+ * handles INTERACTION, and ingests RECORDs to the RS via owner token.
+ */
+import { spawn } from 'child_process';
+import { createInterface } from 'readline';
+import { createTraceContext, emitSpineEvent } from '../lib/spine.js';
+
+function encodeScopeResourceKey(key) {
+  return Array.isArray(key) ? JSON.stringify(key) : String(key);
+}
+
+function buildRunSourceDescriptor(connectorId) {
+  return { binding_kind: 'connector', connector_id: connectorId };
+}
+
+function appendUniqueFields(fields, extraFields) {
+  const normalized = [...fields];
+  const seen = new Set(fields);
+  for (const field of extraFields) {
+    if (!field || seen.has(field)) continue;
+    normalized.push(field);
+    seen.add(field);
+  }
+  return normalized;
+}
+
+function buildScopeFields(streamScope, manifestStream) {
+  if (!Array.isArray(streamScope.fields)) {
+    return streamScope.fields;
+  }
+
+  const requiredFields = manifestStream?.schema?.required || [];
+  const primaryKeyFields = Array.isArray(manifestStream?.primary_key)
+    ? manifestStream.primary_key
+    : (manifestStream?.primary_key ? [manifestStream.primary_key] : []);
+  const timeRangeFields = streamScope.time_range && manifestStream?.consent_time_field
+    ? [manifestStream.consent_time_field]
+    : [];
+
+  return appendUniqueFields(streamScope.fields, [
+    ...requiredFields,
+    ...primaryKeyFields,
+    ...timeRangeFields,
+  ]);
+}
+
+function buildAvailableBindings(onInteraction) {
+  // In this reference runtime, connectors run as local Node child processes
+  // with full filesystem access by virtue of being child processes. We
+  // advertise `filesystem` so file-based connectors can declare it as a
+  // required binding per the Collection Profile spec.
+  const bindings = { network: {}, filesystem: {} };
+  if (typeof onInteraction === 'function') {
+    bindings.interactive = {};
+  }
+  return bindings;
+}
+
+function runtimeFailureReasonFromResponse(status, code) {
+  if (status === 401) return 'authentication_error';
+  if (status === 403) return code || 'permission_error';
+  if (status === 429) return code || 'rate_limit_error';
+  if (status >= 400 && status < 500 && code) return code;
+  return null;
+}
+
+function buildHttpFailure(message, status, bodyText) {
+  let code = null;
+  try {
+    const parsed = JSON.parse(bodyText);
+    code = parsed?.error?.code || null;
+  } catch {}
+
+  const err = new Error(`${message}: ${status} ${bodyText}`);
+  const failureReason = runtimeFailureReasonFromResponse(status, code);
+  if (failureReason) {
+    err.failure_reason = failureReason;
+  }
+  if (code) {
+    err.pdpp_error_code = code;
+  }
+  err.response_status = status;
+  return err;
+}
+
+function classifyRuntimeFailure(err) {
+  if (typeof err?.failure_reason === 'string' && err.failure_reason.trim()) {
+    return err.failure_reason;
+  }
+  const message = err?.message || '';
+  if (
+    message === 'Interaction handler returned an invalid INTERACTION_RESPONSE envelope'
+    || message.startsWith('Invalid INTERACTION_RESPONSE status:')
+  ) {
+    return 'interaction_handler_invalid_response';
+  }
+  if (
+    message === 'Connector emitted INTERACTION while already waiting'
+    || message === 'Connector emitted INTERACTION but START.bindings omitted interactive'
+    || message.includes(' while waiting for INTERACTION_RESPONSE')
+    || message.startsWith('Connector emitted invalid INTERACTION.')
+    || message.startsWith('Connector emitted invalid STATE.')
+    || message.startsWith('Connector emitted INTERACTION for undeclared stream:')
+    || message.startsWith('Connector emitted invalid PROGRESS.')
+    || message.startsWith('Connector emitted invalid SKIP_RESULT.')
+    || message.startsWith('Connector emitted PROGRESS for undeclared stream:')
+    || message.startsWith('Connector emitted SKIP_RESULT for undeclared stream:')
+    || message.startsWith('Connector emitted invalid DONE status:')
+    || message.startsWith('Connector emitted invalid DONE.error')
+    || message.startsWith('Connector emitted invalid DONE.records_emitted:')
+    || message.startsWith('Connector reported records_emitted ')
+    || message.startsWith('Connector emitted RECORD')
+    || message.startsWith('Connector emitted STATE')
+    || message.startsWith('Connector emitted unknown message type:')
+    || message.startsWith('Connector emitted invalid JSONL:')
+    || message.startsWith('Connector exit code ')
+    || (message.startsWith('Connector emitted ') && message.includes(' after DONE'))
+  ) {
+    return 'connector_protocol_violation';
+  }
+  return 'runtime_error';
+}
+
+function buildStartScope(manifest, providedScope) {
+  const manifestByStream = new Map((manifest?.streams || []).map((stream) => [stream.name, stream]));
+
+  if (providedScope != null) {
+    if (!Array.isArray(providedScope.streams) || !providedScope.streams.length) {
+      throw new Error('START.scope must include a non-empty streams array');
+    }
+    return {
+      streams: providedScope.streams.map((streamScope) => {
+        const manifestStream = manifestByStream.get(streamScope?.name);
+        if (typeof streamScope?.name !== 'string' || !streamScope.name.trim()) {
+          throw new Error('START.scope streams must include non-empty stream names');
+        }
+        if (streamScope.name === '*') {
+          throw new Error('START.scope must not include wildcard stream names');
+        }
+        if (!manifestStream) {
+          throw new Error(`START.scope stream '${streamScope.name}' does not exist in the manifest`);
+        }
+        if ('view' in streamScope) {
+          throw new Error(`START.scope stream '${streamScope.name}' must not include unresolved view names`);
+        }
+        if ('necessity' in streamScope) {
+          throw new Error(`START.scope stream '${streamScope.name}' must not include issuance-time necessity values`);
+        }
+        if (streamScope.resources != null) {
+          if (!Array.isArray(streamScope.resources) || streamScope.resources.some((resource) => typeof resource !== 'string')) {
+            throw new Error(`START.scope stream '${streamScope.name}' resources must be an array of strings`);
+          }
+        }
+        if (streamScope.fields != null) {
+          if (!Array.isArray(streamScope.fields) || streamScope.fields.some((field) => typeof field !== 'string' || !field.trim())) {
+            throw new Error(`START.scope stream '${streamScope.name}' fields must be an array of non-empty field names`);
+          }
+        }
+        if (streamScope.time_range != null) {
+          if (typeof streamScope.time_range !== 'object' || Array.isArray(streamScope.time_range)) {
+            throw new Error(`START.scope stream '${streamScope.name}' time_range must be an object`);
+          }
+          if (
+            (streamScope.time_range.since != null && (typeof streamScope.time_range.since !== 'string' || !streamScope.time_range.since.trim()))
+            || (streamScope.time_range.until != null && (typeof streamScope.time_range.until !== 'string' || !streamScope.time_range.until.trim()))
+          ) {
+            throw new Error(`START.scope stream '${streamScope.name}' time_range bounds must be non-empty strings`);
+          }
+        }
+        return {
+          ...streamScope,
+          ...(Array.isArray(streamScope.fields)
+            ? { fields: buildScopeFields(streamScope, manifestStream) }
+            : {}),
+        };
+      }),
+    };
+  }
+
+  const streams = (manifest?.streams || []).map((stream) => ({ name: stream.name }));
+  if (!streams.length) {
+    throw new Error('START.scope requires at least one stream');
+  }
+
+  return { streams };
+}
+
+function validateCollectionMode(collectionMode) {
+  if (collectionMode === 'full_refresh' || collectionMode === 'incremental') {
+    return collectionMode;
+  }
+  throw new Error(`START.collection_mode must be 'full_refresh' or 'incremental'; received: ${collectionMode}`);
+}
+
+function validateStartState(state) {
+  if (state == null) return null;
+  if (typeof state === 'object' && !Array.isArray(state)) {
+    for (const [stream, cursor] of Object.entries(state)) {
+      if (cursor != null && (typeof cursor !== 'object' || Array.isArray(cursor))) {
+        throw new Error(`START.state stream '${stream}' must be an object or null`);
+      }
+    }
+    return state;
+  }
+  throw new Error('START.state must be an object or null');
+}
+
+function validateStateMessage(msg, scopeByStream) {
+  if (typeof msg.stream !== 'string' || !msg.stream.trim()) {
+    throw new Error('Connector emitted invalid STATE.stream: expected non-empty string');
+  }
+  if (!scopeByStream.has(msg.stream)) {
+    throw new Error(`Connector emitted STATE for undeclared stream: ${msg.stream}`);
+  }
+  if (msg.cursor != null && (typeof msg.cursor !== 'object' || Array.isArray(msg.cursor))) {
+    throw new Error('Connector emitted invalid STATE.cursor: expected object or null');
+  }
+}
+
+function passesTimeRange(data, timeRange, consentTimeField) {
+  if (!timeRange || !consentTimeField) return true;
+  const value = data?.[consentTimeField];
+  if (!value) return false;
+  const timestamp = new Date(value).getTime();
+  if (Number.isNaN(timestamp)) return false;
+  if (timeRange.since && timestamp < new Date(timeRange.since).getTime()) return false;
+  if (timeRange.until && timestamp >= new Date(timeRange.until).getTime()) return false;
+  return true;
+}
+
+function validateDoneExitCode(doneMessage, exitCode) {
+  if (!doneMessage) return null;
+  if (doneMessage.status === 'succeeded' && exitCode !== 0) {
+    return new Error(`Connector exit code ${exitCode} does not match DONE status: succeeded`);
+  }
+  if ((doneMessage.status === 'failed' || doneMessage.status === 'cancelled') && exitCode === 0) {
+    return new Error(`Connector exit code ${exitCode} does not match DONE status: ${doneMessage.status}`);
+  }
+  return null;
+}
+
+function validateDoneRecordsEmitted(doneMessage, observedRecordsEmitted) {
+  if (!doneMessage) return null;
+  if (!Number.isInteger(doneMessage.records_emitted) || doneMessage.records_emitted < 0) {
+    return new Error(`Connector emitted invalid DONE.records_emitted: ${doneMessage.records_emitted}`);
+  }
+  if (doneMessage.records_emitted !== observedRecordsEmitted) {
+    return new Error(
+      `Connector reported records_emitted ${doneMessage.records_emitted} but runtime observed ${observedRecordsEmitted}`
+    );
+  }
+  return null;
+}
+
+function validateDoneStatus(status) {
+  if (status === 'succeeded' || status === 'failed' || status === 'cancelled') {
+    return null;
+  }
+  return new Error(`Connector emitted invalid DONE status: ${status}`);
+}
+
+function validateDoneError(status, error) {
+  if (error == null) return null;
+  if (status === 'succeeded') {
+    return new Error('Connector emitted invalid DONE.error: succeeded runs must not include terminal error details');
+  }
+  if (typeof error !== 'object' || Array.isArray(error)) {
+    return new Error('Connector emitted invalid DONE.error: expected object');
+  }
+  const unsupportedFields = Object.keys(error).filter((field) => field !== 'message' && field !== 'retryable');
+  if (unsupportedFields.length) {
+    return new Error(`Connector emitted invalid DONE.error: unsupported fields ${unsupportedFields.join(', ')}`);
+  }
+  if (typeof error.message !== 'string' || !error.message.trim()) {
+    return new Error('Connector emitted invalid DONE.error.message: expected non-empty string');
+  }
+  if (error.retryable != null && typeof error.retryable !== 'boolean') {
+    return new Error('Connector emitted invalid DONE.error.retryable: expected boolean');
+  }
+  return {
+    message: error.message.trim(),
+    retryable: error.retryable ?? null,
+  };
+}
+
+function requireOptionalNonEmptyString(value, fieldName) {
+  if (value == null) return;
+  if (typeof value !== 'string' || !value.trim()) {
+    throw new Error(`Connector emitted invalid ${fieldName}: expected non-empty string`);
+  }
+}
+
+function validateOptionalScopedStream(stream, envelopeType, scopeByStream) {
+  if (stream == null) return;
+  if (!scopeByStream.has(stream)) {
+    throw new Error(`Connector emitted ${envelopeType} for undeclared stream: ${stream}`);
+  }
+}
+
+function validateProgressMessage(msg, scopeByStream) {
+  requireOptionalNonEmptyString(msg.stream, 'PROGRESS.stream');
+  validateOptionalScopedStream(msg.stream, 'PROGRESS', scopeByStream);
+  if (typeof msg.message !== 'string' || !msg.message.trim()) {
+    throw new Error('Connector emitted invalid PROGRESS.message: expected non-empty string');
+  }
+  for (const fieldName of ['count', 'total']) {
+    const value = msg[fieldName];
+    if (value == null) continue;
+    if (!Number.isFinite(value) || value < 0) {
+      throw new Error(`Connector emitted invalid PROGRESS.${fieldName}: expected non-negative number`);
+    }
+  }
+}
+
+function validateSkipResultMessage(msg, scopeByStream) {
+  requireOptionalNonEmptyString(msg.stream, 'SKIP_RESULT.stream');
+  validateOptionalScopedStream(msg.stream, 'SKIP_RESULT', scopeByStream);
+  requireOptionalNonEmptyString(msg.reason, 'SKIP_RESULT.reason');
+  requireOptionalNonEmptyString(msg.message, 'SKIP_RESULT.message');
+}
+
+function validateInteractionMessage(msg, scopeByStream) {
+  if (typeof msg.request_id !== 'string' || !msg.request_id.trim()) {
+    throw new Error('Connector emitted invalid INTERACTION.request_id: expected non-empty string');
+  }
+  if (!['credentials', 'otp', 'manual_action'].includes(msg.kind)) {
+    throw new Error(`Connector emitted invalid INTERACTION.kind: ${msg.kind}`);
+  }
+  requireOptionalNonEmptyString(msg.stream, 'INTERACTION.stream');
+  validateOptionalScopedStream(msg.stream, 'INTERACTION', scopeByStream);
+  if (typeof msg.message !== 'string' || !msg.message.trim()) {
+    throw new Error('Connector emitted invalid INTERACTION.message: expected non-empty string');
+  }
+  if (msg.schema != null && (typeof msg.schema !== 'object' || Array.isArray(msg.schema))) {
+    throw new Error('Connector emitted invalid INTERACTION.schema: expected object');
+  }
+  if (msg.timeout_seconds != null && (!Number.isFinite(msg.timeout_seconds) || msg.timeout_seconds <= 0)) {
+    throw new Error(`Connector emitted invalid INTERACTION.timeout_seconds: ${msg.timeout_seconds}`);
+  }
+}
+
+/**
+ * Run a connector to completion.
+ *
+ * @param {object} opts
+ * @param {string} opts.connectorPath - Path to connector executable
+ * @param {string} opts.connectorId - Connector ID (for ingest URL)
+ * @param {string} opts.ownerToken - Owner bearer token
+ * @param {object} opts.manifest - Full connector manifest
+ * @param {object} [opts.scope] - Optional normalized Collection Profile START.scope
+ * @param {object} opts.state - Current StreamState (null on first run)
+ * @param {string} opts.collectionMode - 'full_refresh' | 'incremental'
+ * @param {boolean} opts.persistState - Whether STATE checkpoints should be committed on success
+ * @param {string} [opts.grantId] - Optional grant-scoped state namespace for continuous runs
+ * @param {string} opts.rsUrl - Resource server base URL
+ * @param {function} opts.onInteraction - async (interaction) => response
+ * @param {function} opts.onProgress - (msg) => void
+ * @returns {Promise<{status, records_emitted, state, checkpoint_summary}>}
+ */
+export async function runConnector(opts) {
+  const defaultOnProgress = process.env.PDPP_RUNTIME_QUIET === '1'
+    ? () => {}
+    : (msg) => process.stderr.write(`[runtime] ${JSON.stringify(msg)}\n`);
+  const {
+    connectorPath,
+    connectorId,
+    ownerToken,
+    manifest,
+    scope: providedScope = null,
+    state = null,
+    collectionMode = 'incremental',
+    persistState = true,
+    grantId = null,
+    rsUrl = process.env.RS_URL || 'http://localhost:7663',
+    onInteraction = defaultInteractionHandler,
+    onProgress = defaultOnProgress,
+  } = opts;
+
+  // Check binding requirements
+  const requiredBindings = manifest.runtime_requirements?.bindings || {};
+  const availableBindings = buildAvailableBindings(onInteraction);
+
+  for (const [binding, req] of Object.entries(requiredBindings)) {
+    if (req.required && !(binding in availableBindings)) {
+      throw new Error(`Runtime cannot satisfy required binding: ${binding}`);
+    }
+  }
+
+  const startScope = buildStartScope(manifest, providedScope);
+  const startCollectionMode = validateCollectionMode(collectionMode);
+  const startState = persistState ? validateStartState(state) : null;
+  const scopeByStream = new Map((startScope.streams || []).map((streamScope) => [streamScope.name, streamScope]));
+  const manifestByStream = new Map((manifest?.streams || []).map((stream) => [stream.name, stream]));
+
+  // Spawn connector process
+  const proc = spawn(process.execPath, [connectorPath], {
+    stdio: ['pipe', 'pipe', 'pipe'],
+    env: { ...process.env },
+  });
+
+  const traceContext = createTraceContext({ scenarioId: opts.scenarioId });
+  const runId = `run_${Date.now()}`;
+  const runSource = buildRunSourceDescriptor(connectorId);
+
+  const rl = createInterface({ input: proc.stdout, terminal: false });
+  const stderrChunks = [];
+  proc.stderr.on('data', d => stderrChunks.push(d));
+
+  // Send START
+  const startMsg = {
+    type: 'START',
+    run_id: runId,
+    collection_mode: startCollectionMode,
+    scope: startScope,
+    state: startState,
+    bindings: availableBindings,
+  };
+  proc.stdin.write(JSON.stringify(startMsg) + '\n');
+
+  await emitSpineEvent({
+    event_type: 'run.started',
+    trace_id: traceContext.trace_id,
+    scenario_id: traceContext.scenario_id,
+    actor_type: 'runtime',
+    actor_id: connectorId,
+    object_type: 'run',
+    object_id: runId,
+    status: 'started',
+    run_id: runId,
+    data: {
+      source: runSource,
+      collection_mode: startCollectionMode,
+      grant_id: grantId,
+      persist_state: persistState,
+      state_commit_intent: persistState ? 'commit_on_success' : 'do_not_persist',
+      bindings: availableBindings,
+      scope: startScope,
+      scope_streams: startScope.streams.map((stream) => stream.name),
+    },
+  });
+
+  // Collect new STATE checkpoints
+  const newState = {};
+  const committedStateStreams = new Set();
+  let totalEmitted = 0;
+  let totalFlushed = 0;
+  let finalStatus = 'failed';
+  let pendingInteraction = null;
+  let terminalEventRecorded = false;
+  let doneMessage = null;
+
+  // Batch records for ingest
+  const recordBatch = {};
+  const BATCH_SIZE = Number(process.env.PDPP_RUNTIME_BATCH_SIZE) || 500;
+
+  function countBufferedRecords() {
+    return Object.values(recordBatch).reduce((sum, batch) => sum + (batch?.length || 0), 0);
+  }
+
+  function countStagedStateStreams() {
+    return Object.keys(newState).length;
+  }
+
+  function checkpointCommitStatus() {
+    if (!persistState) return 'disabled';
+    const stateStreamsStaged = countStagedStateStreams();
+    const stateStreamsCommitted = committedStateStreams.size;
+    if (stateStreamsStaged === 0) {
+      return finalStatus === 'succeeded' ? 'committed' : 'not_committed';
+    }
+    if (stateStreamsCommitted === 0) return 'not_committed';
+    if (stateStreamsCommitted < stateStreamsStaged) return 'partially_committed';
+    return 'committed';
+  }
+
+  function buildRunTerminalData({
+    recordsEmitted = totalEmitted,
+    reason = null,
+    exitCode = null,
+    reportedRecordsEmitted = null,
+    connectorError = null,
+  } = {}) {
+    const stateStreamsStaged = countStagedStateStreams();
+    const stateStreamsCommitted = committedStateStreams.size;
+    return {
+      source: runSource,
+      grant_id: grantId,
+      records_emitted: recordsEmitted,
+      records_flushed: totalFlushed,
+      buffered_records_dropped: countBufferedRecords(),
+      persist_state: persistState,
+      checkpoint_mode: 'checkpointed_streaming',
+      checkpoint_commit_status: checkpointCommitStatus(),
+      state_streams_staged: stateStreamsStaged,
+      state_streams_committed: stateStreamsCommitted,
+      ...(reason ? { reason } : {}),
+      ...(exitCode === null || exitCode === undefined ? {} : { exit_code: exitCode }),
+      ...(reportedRecordsEmitted === null || reportedRecordsEmitted === undefined
+        ? {}
+        : { reported_records_emitted: reportedRecordsEmitted }),
+      ...(connectorError?.message ? { connector_error_message: connectorError.message } : {}),
+      ...(connectorError?.retryable === null || connectorError?.retryable === undefined
+        ? {}
+        : { connector_error_retryable: connectorError.retryable }),
+    };
+  }
+
+  function buildCheckpointSummary() {
+    const stateStreamsStaged = countStagedStateStreams();
+    const stateStreamsCommitted = committedStateStreams.size;
+    return {
+      mode: 'checkpointed_streaming',
+      commit_status: checkpointCommitStatus(),
+      records_flushed: totalFlushed,
+      buffered_records_dropped: countBufferedRecords(),
+      state_streams_staged: stateStreamsStaged,
+      state_streams_committed: stateStreamsCommitted,
+    };
+  }
+
+  async function flushBatch(stream) {
+    const batch = recordBatch[stream];
+    if (!batch || !batch.length) return;
+    const ndjson = batch.map(r => JSON.stringify(r)).join('\n');
+    const url = `${rsUrl}/v1/ingest/${encodeURIComponent(stream)}?connector_id=${encodeURIComponent(connectorId)}`;
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${ownerToken}`,
+        'Content-Type': 'application/x-ndjson',
+      },
+      body: ndjson,
+    });
+    if (!resp.ok) {
+      const body = await resp.text();
+      throw buildHttpFailure(`Ingest failed for ${stream}`, resp.status, body);
+    }
+    const result = await resp.json();
+    totalFlushed += batch.length;
+    await emitSpineEvent({
+      event_type: 'run.batch_ingested',
+      trace_id: traceContext.trace_id,
+      scenario_id: traceContext.scenario_id,
+      actor_type: 'runtime',
+      actor_id: connectorId,
+      object_type: 'run',
+      object_id: runId,
+      status: 'succeeded',
+      run_id: runId,
+      stream_id: stream,
+      data: {
+        source: runSource,
+        grant_id: grantId,
+        batch_size: batch.length,
+        records_accepted: result.records_accepted,
+        records_rejected: result.records_rejected,
+        total_records_flushed: totalFlushed,
+      },
+    });
+    onProgress({ type: 'ingest', stream, accepted: result.records_accepted, rejected: result.records_rejected });
+    recordBatch[stream] = [];
+  }
+
+  async function flushAll() {
+    for (const stream of Object.keys(recordBatch)) {
+      await flushBatch(stream);
+    }
+  }
+
+  // Process a STATE message: persist to RS
+  async function commitState(stream, cursor) {
+    newState[stream] = cursor;
+    const stateUrl = new URL(`/v1/state/${encodeURIComponent(connectorId)}`, rsUrl);
+    if (grantId) stateUrl.searchParams.set('grant_id', grantId);
+    const url = stateUrl.toString();
+    try {
+      const resp = await fetch(url, {
+        method: 'PUT',
+        headers: {
+          'Authorization': `Bearer ${ownerToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ state: { [stream]: cursor } }),
+      });
+      if (!resp.ok) {
+        const body = await resp.text();
+        throw buildHttpFailure(`State persistence failed for ${stream}`, resp.status, body);
+      }
+      committedStateStreams.add(stream);
+
+      await emitSpineEvent({
+        event_type: 'run.state_advanced',
+        trace_id: traceContext.trace_id,
+        scenario_id: traceContext.scenario_id,
+        actor_type: 'runtime',
+        actor_id: connectorId,
+        object_type: 'run',
+        object_id: runId,
+        status: 'succeeded',
+        run_id: runId,
+        stream_id: stream,
+        data: {
+          source: runSource,
+          grant_id: grantId,
+          cursor,
+          checkpoint_mode: 'checkpointed_streaming',
+          state_streams_committed: committedStateStreams.size,
+        },
+      });
+    } catch (err) {
+      await emitSpineEvent({
+        event_type: 'run.state_commit_failed',
+        trace_id: traceContext.trace_id,
+        scenario_id: traceContext.scenario_id,
+        actor_type: 'runtime',
+        actor_id: connectorId,
+        object_type: 'run',
+        object_id: runId,
+        status: 'failed',
+        run_id: runId,
+        stream_id: stream,
+        data: {
+          source: runSource,
+          grant_id: grantId,
+          cursor,
+          checkpoint_mode: 'checkpointed_streaming',
+          state_streams_staged: countStagedStateStreams(),
+          state_streams_committed: committedStateStreams.size,
+          error_message: err.message,
+        },
+      });
+      throw err;
+    }
+  }
+
+  return new Promise((resolve, reject) => {
+    const msgQueue = [];
+    let processing = false;
+    let cleanedUp = false;
+    let queueDrainedResolve = null;
+    let pendingInteractionViolationReject = null;
+    let terminateTimer = null;
+
+    function clearTerminateTimer() {
+      if (!terminateTimer) return;
+      clearTimeout(terminateTimer);
+      terminateTimer = null;
+    }
+
+    function terminateChild() {
+      if (proc.exitCode != null || proc.signalCode != null) return;
+      try {
+        proc.kill();
+      } catch {}
+
+      if (terminateTimer || proc.exitCode != null || proc.signalCode != null) return;
+      terminateTimer = setTimeout(() => {
+        terminateTimer = null;
+        if (proc.exitCode != null || proc.signalCode != null) return;
+        try {
+          proc.kill('SIGKILL');
+        } catch {}
+      }, 250);
+      terminateTimer.unref?.();
+    }
+
+    function cleanupChildHandles() {
+      if (cleanedUp) return;
+      cleanedUp = true;
+      clearTerminateTimer();
+      rl.close();
+      proc.stdin.destroy();
+      proc.stdout.destroy();
+      proc.stderr.destroy();
+    }
+
+    function notifyQueueDrained() {
+      if (!msgQueue.length && !processing && queueDrainedResolve) {
+        const resolveDrain = queueDrainedResolve;
+        queueDrainedResolve = null;
+        resolveDrain();
+      }
+    }
+
+    function waitForQueueDrain() {
+      if (!msgQueue.length && !processing) return Promise.resolve();
+      return new Promise((resolveDrain) => {
+        queueDrainedResolve = resolveDrain;
+      });
+    }
+
+    function failPendingInteraction(err) {
+      if (!pendingInteraction || !pendingInteractionViolationReject) return false;
+      const rejectPendingInteraction = pendingInteractionViolationReject;
+      pendingInteractionViolationReject = null;
+      rejectPendingInteraction(err);
+      terminateChild();
+      return true;
+    }
+
+    async function processNext() {
+      if (processing || !msgQueue.length) return;
+      processing = true;
+
+      const msg = msgQueue.shift();
+
+      try {
+        await handleMsg(msg);
+      } catch (err) {
+        finalStatus = 'failed';
+        const failureReason = classifyRuntimeFailure(err);
+        const checkpointSummary = buildCheckpointSummary();
+        err.run_id = runId;
+        err.trace_id = traceContext.trace_id;
+        err.failure_reason = failureReason;
+        err.checkpoint_summary = checkpointSummary;
+        err.terminal_reason = failureReason;
+        err.connector_error = null;
+
+        if (!terminalEventRecorded) {
+          try {
+            await emitSpineEvent({
+              event_type: 'run.failed',
+              trace_id: traceContext.trace_id,
+              scenario_id: traceContext.scenario_id,
+              actor_type: 'runtime',
+              actor_id: connectorId,
+              object_type: 'run',
+              object_id: runId,
+              status: 'failed',
+              run_id: runId,
+              data: buildRunTerminalData({
+                recordsEmitted: totalEmitted,
+                reason: failureReason,
+                connectorError: null,
+              }),
+            });
+            terminalEventRecorded = true;
+          } catch (emitErr) {
+            onProgress({ type: 'spine_error', error: emitErr.message });
+          }
+        }
+
+        onProgress({ type: 'done', status: 'failed', records_emitted: totalEmitted, reason: failureReason });
+        if (queueDrainedResolve) {
+          const resolveDrain = queueDrainedResolve;
+          queueDrainedResolve = null;
+          resolveDrain();
+        }
+        cleanupChildHandles();
+        reject(err);
+        terminateChild();
+        return;
+      } finally {
+        processing = false;
+        notifyQueueDrained();
+      }
+
+      processNext();
+    }
+
+    async function handleMsg(msg) {
+      if (doneMessage) {
+        if (msg.type === '__PARSE_ERROR__') {
+          throw new Error(`Connector emitted invalid JSONL after DONE: ${msg.error}`);
+        }
+        throw new Error(`Connector emitted ${msg.type} after DONE`);
+      }
+
+      switch (msg.type) {
+        case 'RECORD': {
+          const { stream, key, data, emitted_at, op } = msg;
+          const streamScope = scopeByStream.get(stream);
+          if (!streamScope) {
+            throw new Error(`Connector emitted RECORD for undeclared stream: ${stream}`);
+          }
+
+          const manifestStream = manifestByStream.get(stream) || null;
+          const resourceKey = encodeScopeResourceKey(key);
+          if (Array.isArray(streamScope.resources) && streamScope.resources.length && !streamScope.resources.includes(resourceKey)) {
+            throw new Error(`Connector emitted RECORD outside declared resources for stream: ${stream}`);
+          }
+
+          if (Array.isArray(streamScope.fields) && data && typeof data === 'object') {
+            const requiredFields = new Set(manifestStream?.schema?.required || []);
+            const allowedFields = new Set([...streamScope.fields, ...requiredFields]);
+            const extraFields = Object.keys(data).filter((field) => !allowedFields.has(field));
+            if (extraFields.length) {
+              throw new Error(`Connector emitted RECORD with fields outside START.scope for stream '${stream}': ${extraFields.join(', ')}`);
+            }
+          }
+
+          if (streamScope.time_range && data && typeof data === 'object') {
+            const consentTimeField = manifestStream?.consent_time_field || null;
+            if (consentTimeField && !passesTimeRange(data, streamScope.time_range, consentTimeField)) {
+              throw new Error(`Connector emitted RECORD outside declared time_range for stream: ${stream}`);
+            }
+          }
+
+          if (!recordBatch[stream]) recordBatch[stream] = [];
+          recordBatch[stream].push({ key, data, emitted_at, op });
+          totalEmitted++;
+
+          if (recordBatch[stream].length >= BATCH_SIZE) {
+            await flushBatch(stream);
+          }
+          break;
+        }
+
+        case 'STATE': {
+          validateStateMessage(msg, scopeByStream);
+
+          // Flush records for this stream before persisting state
+          await flushBatch(msg.stream);
+          newState[msg.stream] = msg.cursor;
+          await emitSpineEvent({
+            event_type: 'run.state_staged',
+            trace_id: traceContext.trace_id,
+            scenario_id: traceContext.scenario_id,
+            actor_type: 'runtime',
+            actor_id: connectorId,
+            object_type: 'run',
+            object_id: runId,
+            status: 'succeeded',
+            run_id: runId,
+            stream_id: msg.stream,
+            data: {
+              source: runSource,
+              grant_id: grantId,
+              cursor: msg.cursor,
+              checkpoint_mode: 'checkpointed_streaming',
+              state_streams_staged: countStagedStateStreams(),
+              state_commit_intent: persistState ? 'commit_on_success' : 'do_not_persist',
+            },
+          });
+          break;
+        }
+
+        case 'INTERACTION': {
+          validateInteractionMessage(msg, scopeByStream);
+          if (typeof onInteraction !== 'function') {
+            throw new Error('Connector emitted INTERACTION but START.bindings omitted interactive');
+          }
+          if (pendingInteraction) {
+            // Protocol violation
+            terminateChild();
+            throw new Error('Connector emitted INTERACTION while already waiting');
+          }
+          pendingInteraction = msg;
+          const pendingInteractionViolation = new Promise((_, rejectWaiting) => {
+            pendingInteractionViolationReject = rejectWaiting;
+          });
+          pendingInteractionViolation.catch(() => {});
+
+          await emitSpineEvent({
+            event_type: 'run.interaction_required',
+            trace_id: traceContext.trace_id,
+            scenario_id: traceContext.scenario_id,
+            actor_type: 'runtime',
+            actor_id: connectorId,
+            object_type: 'run',
+            object_id: runId,
+            status: 'started',
+            run_id: runId,
+            interaction_id: msg.request_id,
+            data: {
+              source: runSource,
+              kind: msg.kind,
+              stream: msg.stream || null,
+              message: msg.message,
+              ...(msg.schema == null ? {} : { schema: msg.schema }),
+              ...(msg.timeout_seconds == null ? {} : { timeout_seconds: msg.timeout_seconds }),
+            },
+          });
+
+          let timeoutHandle = null;
+          let response;
+          try {
+            const responsePromise = Promise.resolve(onInteraction(msg)).catch(() => ({
+              type: 'INTERACTION_RESPONSE',
+              request_id: msg.request_id,
+              status: 'cancelled',
+            }));
+            const waitForResponse = [responsePromise];
+
+            if (Number.isFinite(msg.timeout_seconds) && msg.timeout_seconds > 0) {
+              waitForResponse.push(new Promise((resolve) => {
+                timeoutHandle = setTimeout(() => resolve({
+                  type: 'INTERACTION_RESPONSE',
+                  request_id: msg.request_id,
+                  status: 'timeout',
+                }), msg.timeout_seconds * 1000);
+              }));
+            }
+
+            waitForResponse.push(pendingInteractionViolation);
+
+            response = await Promise.race(waitForResponse);
+          } finally {
+            if (timeoutHandle) clearTimeout(timeoutHandle);
+          }
+
+          const responseStatus = response?.status || 'success';
+          if (response?.type !== 'INTERACTION_RESPONSE' || response?.request_id !== msg.request_id) {
+            throw new Error('Interaction handler returned an invalid INTERACTION_RESPONSE envelope');
+          }
+          if (!['success', 'cancelled', 'timeout'].includes(responseStatus)) {
+            throw new Error(`Invalid INTERACTION_RESPONSE status: ${responseStatus}`);
+          }
+
+          await emitSpineEvent({
+            event_type: 'run.interaction_completed',
+            trace_id: traceContext.trace_id,
+            scenario_id: traceContext.scenario_id,
+            actor_type: 'runtime',
+            actor_id: connectorId,
+            object_type: 'run',
+            object_id: runId,
+            status: responseStatus,
+            run_id: runId,
+            interaction_id: msg.request_id,
+            data: {
+              source: runSource,
+              status: responseStatus,
+              kind: msg.kind,
+              stream: msg.stream || null,
+            },
+          });
+
+          pendingInteraction = null;
+          proc.stdin.write(JSON.stringify({ ...response, status: responseStatus }) + '\n');
+          pendingInteractionViolationReject = null;
+          break;
+        }
+
+        case 'SKIP_RESULT':
+          validateSkipResultMessage(msg, scopeByStream);
+          await emitSpineEvent({
+            event_type: 'run.stream_skipped',
+            trace_id: traceContext.trace_id,
+            scenario_id: traceContext.scenario_id,
+            actor_type: 'runtime',
+            actor_id: connectorId,
+            object_type: 'run',
+            object_id: runId,
+            status: 'skipped',
+            run_id: runId,
+            stream_id: msg.stream || null,
+            data: {
+              source: runSource,
+              stream: msg.stream || null,
+              reason: msg.reason || null,
+              message: msg.message || null,
+            },
+          });
+          onProgress(msg);
+          break;
+
+        case 'PROGRESS':
+          validateProgressMessage(msg, scopeByStream);
+          await emitSpineEvent({
+            event_type: 'run.progress_reported',
+            trace_id: traceContext.trace_id,
+            scenario_id: traceContext.scenario_id,
+            actor_type: 'runtime',
+            actor_id: connectorId,
+            object_type: 'run',
+            object_id: runId,
+            status: 'in_progress',
+            run_id: runId,
+            stream_id: msg.stream || null,
+            data: {
+              source: runSource,
+              stream: msg.stream || null,
+              message: msg.message || null,
+              ...(msg.count == null ? {} : { count: msg.count }),
+              ...(msg.total == null ? {} : { total: msg.total }),
+            },
+          });
+          onProgress(msg);
+          break;
+
+        case 'DONE': {
+          const invalidDoneStatus = validateDoneStatus(msg.status);
+          if (invalidDoneStatus) throw invalidDoneStatus;
+          const normalizedDoneError = validateDoneError(msg.status, msg.error);
+          if (normalizedDoneError instanceof Error) throw normalizedDoneError;
+          finalStatus = msg.status;
+          doneMessage = {
+            status: msg.status,
+            records_emitted: msg.records_emitted,
+            error: normalizedDoneError,
+          };
+
+          if (msg.status === 'succeeded') {
+            // Flush any remaining records
+            await flushAll();
+          }
+          break;
+        }
+
+        case '__PARSE_ERROR__':
+          throw new Error(`Connector emitted invalid JSONL: ${msg.error}`);
+
+        default:
+          throw new Error(`Connector emitted unknown message type: ${msg.type}`);
+      }
+    }
+
+    rl.on('line', (line) => {
+      if (!line.trim()) return;
+      try {
+        const msg = JSON.parse(line);
+        if (failPendingInteraction(new Error(`Connector emitted ${msg.type} while waiting for INTERACTION_RESPONSE`))) {
+          return;
+        }
+        msgQueue.push(msg);
+        processNext().catch(reject);
+      } catch (err) {
+        if (failPendingInteraction(new Error(`Connector emitted invalid JSONL while waiting for INTERACTION_RESPONSE: ${err.message}`))) {
+          return;
+        }
+        msgQueue.push({
+          type: '__PARSE_ERROR__',
+          error: err.message,
+        });
+        processNext().catch(reject);
+      }
+    });
+
+    proc.on('close', async (code) => {
+      clearTerminateTimer();
+      const stderr = Buffer.concat(stderrChunks).toString();
+      if (stderr) onProgress({ type: 'stderr', text: stderr });
+
+      try {
+        await waitForQueueDrain();
+        if (!terminalEventRecorded) {
+          if (doneMessage) {
+            const exitCodeMismatch = validateDoneExitCode(doneMessage, code);
+            if (exitCodeMismatch) {
+              finalStatus = 'failed';
+              const failureReason = classifyRuntimeFailure(exitCodeMismatch);
+              exitCodeMismatch.run_id = runId;
+              exitCodeMismatch.trace_id = traceContext.trace_id;
+              exitCodeMismatch.failure_reason = failureReason;
+              exitCodeMismatch.checkpoint_summary = buildCheckpointSummary();
+              exitCodeMismatch.terminal_reason = failureReason;
+              exitCodeMismatch.connector_error = doneMessage.error || null;
+              exitCodeMismatch.records_emitted = doneMessage.records_emitted;
+              exitCodeMismatch.reported_records_emitted = doneMessage.records_emitted;
+
+              await emitSpineEvent({
+                event_type: 'run.failed',
+                trace_id: traceContext.trace_id,
+                scenario_id: traceContext.scenario_id,
+                actor_type: 'runtime',
+                actor_id: connectorId,
+                object_type: 'run',
+                object_id: runId,
+                status: 'failed',
+                run_id: runId,
+                data: buildRunTerminalData({
+                  recordsEmitted: doneMessage.records_emitted,
+                  reason: failureReason,
+                  exitCode: code,
+                  connectorError: doneMessage.error,
+                }),
+              });
+              terminalEventRecorded = true;
+              onProgress({
+                type: 'done',
+                status: 'failed',
+                records_emitted: doneMessage.records_emitted,
+                exit_code: code,
+                reason: failureReason,
+              });
+              cleanupChildHandles();
+              reject(exitCodeMismatch);
+              return;
+            }
+
+            const recordsEmittedMismatch = validateDoneRecordsEmitted(doneMessage, totalEmitted);
+            if (recordsEmittedMismatch) {
+              finalStatus = 'failed';
+              const failureReason = classifyRuntimeFailure(recordsEmittedMismatch);
+              recordsEmittedMismatch.run_id = runId;
+              recordsEmittedMismatch.trace_id = traceContext.trace_id;
+              recordsEmittedMismatch.failure_reason = failureReason;
+              recordsEmittedMismatch.checkpoint_summary = buildCheckpointSummary();
+              recordsEmittedMismatch.terminal_reason = failureReason;
+              recordsEmittedMismatch.connector_error = doneMessage.error || null;
+              recordsEmittedMismatch.records_emitted = totalEmitted;
+              recordsEmittedMismatch.reported_records_emitted = doneMessage.records_emitted;
+
+              await emitSpineEvent({
+                event_type: 'run.failed',
+                trace_id: traceContext.trace_id,
+                scenario_id: traceContext.scenario_id,
+                actor_type: 'runtime',
+                actor_id: connectorId,
+                object_type: 'run',
+                object_id: runId,
+                status: 'failed',
+                run_id: runId,
+                data: buildRunTerminalData({
+                  recordsEmitted: totalEmitted,
+                  reason: failureReason,
+                  exitCode: code,
+                  reportedRecordsEmitted: doneMessage.records_emitted,
+                  connectorError: doneMessage.error,
+                }),
+              });
+              terminalEventRecorded = true;
+              onProgress({
+                type: 'done',
+                status: 'failed',
+                records_emitted: totalEmitted,
+                reported_records_emitted: doneMessage.records_emitted,
+                exit_code: code,
+                reason: failureReason,
+              });
+              cleanupChildHandles();
+              reject(recordsEmittedMismatch);
+              return;
+            }
+
+            if (doneMessage.status === 'succeeded' && persistState) {
+              for (const [stream, cursor] of Object.entries(newState)) {
+                await commitState(stream, cursor);
+              }
+            }
+            await emitSpineEvent({
+              event_type: doneMessage.status === 'succeeded' ? 'run.completed' : 'run.failed',
+              trace_id: traceContext.trace_id,
+              scenario_id: traceContext.scenario_id,
+              actor_type: 'runtime',
+              actor_id: connectorId,
+              object_type: 'run',
+              object_id: runId,
+              status: doneMessage.status,
+              run_id: runId,
+              data: buildRunTerminalData({
+                recordsEmitted: doneMessage.records_emitted,
+                reason: doneMessage.status === 'failed'
+                  ? 'connector_reported_failed'
+                  : (doneMessage.status === 'cancelled' ? 'connector_reported_cancelled' : null),
+                connectorError: doneMessage.error,
+              }),
+            });
+            onProgress({ type: 'done', status: doneMessage.status, records_emitted: doneMessage.records_emitted });
+          } else {
+            await emitSpineEvent({
+              event_type: 'run.failed',
+              trace_id: traceContext.trace_id,
+              scenario_id: traceContext.scenario_id,
+              actor_type: 'runtime',
+              actor_id: connectorId,
+              object_type: 'run',
+              object_id: runId,
+              status: 'failed',
+              run_id: runId,
+              data: buildRunTerminalData({
+                recordsEmitted: totalEmitted,
+                exitCode: code,
+                reason: 'connector_exit_without_done',
+                connectorError: null,
+              }),
+            });
+            onProgress({ type: 'done', status: 'failed', records_emitted: totalEmitted, exit_code: code });
+          }
+          terminalEventRecorded = true;
+        }
+        cleanupChildHandles();
+        resolve({
+          status: finalStatus,
+          records_emitted: totalEmitted,
+          state: newState,
+          checkpoint_summary: buildCheckpointSummary(),
+          exit_code: code,
+          run_id: runId,
+          trace_id: traceContext.trace_id,
+          terminal_reason: doneMessage
+            ? (doneMessage.status === 'failed'
+                ? 'connector_reported_failed'
+                : (doneMessage.status === 'cancelled' ? 'connector_reported_cancelled' : null))
+            : (finalStatus === 'failed' ? 'connector_exit_without_done' : null),
+          connector_error: doneMessage?.error || null,
+        });
+      } catch (err) {
+        finalStatus = 'failed';
+        const failureReason = classifyRuntimeFailure(err);
+        err.run_id = runId;
+        err.trace_id = traceContext.trace_id;
+        err.failure_reason = failureReason;
+        err.checkpoint_summary = buildCheckpointSummary();
+        err.terminal_reason = failureReason;
+        err.connector_error = doneMessage?.error || null;
+        err.records_emitted = totalEmitted;
+        if (doneMessage?.records_emitted !== null && doneMessage?.records_emitted !== undefined) {
+          err.reported_records_emitted = doneMessage.records_emitted;
+        }
+
+        if (!terminalEventRecorded) {
+          try {
+            await emitSpineEvent({
+              event_type: 'run.failed',
+              trace_id: traceContext.trace_id,
+              scenario_id: traceContext.scenario_id,
+              actor_type: 'runtime',
+              actor_id: connectorId,
+              object_type: 'run',
+              object_id: runId,
+              status: 'failed',
+              run_id: runId,
+              data: buildRunTerminalData({
+                recordsEmitted: doneMessage?.records_emitted ?? totalEmitted,
+                reason: failureReason,
+                exitCode: code,
+                connectorError: doneMessage?.error || null,
+              }),
+            });
+            terminalEventRecorded = true;
+          } catch (emitErr) {
+            onProgress({ type: 'spine_error', error: emitErr.message });
+          }
+        }
+
+        onProgress({
+          type: 'done',
+          status: 'failed',
+          records_emitted: doneMessage?.records_emitted ?? totalEmitted,
+          exit_code: code,
+          reason: failureReason,
+        });
+        cleanupChildHandles();
+        reject(err);
+      }
+    });
+
+    proc.on('error', (err) => {
+      cleanupChildHandles();
+      reject(err);
+    });
+  });
+}
+
+/**
+ * Default interaction handler — prompts via stdin/stdout of the runtime process itself
+ */
+async function defaultInteractionHandler(interaction) {
+  const { createInterface } = await import('readline');
+  const rl = createInterface({ input: process.stdin, output: process.stderr, terminal: true });
+
+  process.stderr.write(`\n[INTERACTION] ${interaction.message}\n`);
+  process.stderr.write(`Kind: ${interaction.kind}\n`);
+
+  const data = {};
+  const schema = interaction.schema?.properties || {};
+
+  for (const [field, def] of Object.entries(schema)) {
+    const answer = await new Promise(resolve => {
+      const prompt = def.format === 'password' ? `${field} (hidden): ` : `${field}: `;
+      rl.question(prompt, resolve);
+    });
+    data[field] = answer;
+  }
+
+  rl.close();
+
+  return {
+    type: 'INTERACTION_RESPONSE',
+    request_id: interaction.request_id,
+    status: 'success',
+    data,
+  };
+}
+
+/**
+ * Load sync state from the RS for a connector
+ */
+export async function loadSyncState(connectorId, ownerToken, opts = {}) {
+  const rsUrl = opts.rsUrl || process.env.RS_URL || 'http://localhost:7663';
+  const stateUrl = new URL(`/v1/state/${encodeURIComponent(connectorId)}`, rsUrl);
+  if (opts.grantId) stateUrl.searchParams.set('grant_id', opts.grantId);
+  const url = stateUrl.toString();
+  const resp = await fetch(url, {
+    headers: { 'Authorization': `Bearer ${ownerToken}` },
+  });
+  if (!resp.ok) return null;
+  const body = await resp.json();
+  return body.state || null;
+}

@@ -26,7 +26,10 @@ export default async function Page({ params }: DocsPageProps) {
   const MDX = page.data.body;
   const markdownUrl = getPageMarkdownUrl(page).url;
   const githubPath = page.path;
-  const sectionLabel = page.slugs[0]?.startsWith('e2e') ? 'Examples' : 'Protocol Spec';
+  const firstSlug = page.slugs[0] || '';
+  const sectionLabel = firstSlug.startsWith('reference-implementation')
+    ? 'Reference Implementation'
+    : 'Protocol Spec';
 
   return (
     <DocsPage toc={page.data.toc} full={page.data.full} className="pdpp-docs-page">

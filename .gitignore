@@ -5,9 +5,16 @@ node_modules/
 .vercel
 local/
 
+# Environment files with secrets
+.env
+.env.*
+!.env.example
+
 # Working artifacts
 *.png
 *.yml
+packages/polyfill-connectors/.pdpp-data/
+reference-implementation/report.*.json
 .agents/
 # .claude/ is tracked for project hooks and working state
 # but some contents are ignored:

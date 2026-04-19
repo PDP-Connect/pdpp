@@ -1,0 +1,374 @@
+{
+  "protocol_version": "0.1.0",
+  "connector_id": "https://registry.pdpp.org/connectors/ynab",
+  "version": "0.2.0",
+  "display_name": "YNAB",
+  "runtime_requirements": {
+    "bindings": {
+      "network": { "required": true }
+    }
+  },
+  "capabilities": {
+    "human_interaction": []
+  },
+  "streams": [
+    {
+      "name": "budgets",
+      "description": "YNAB budgets (plans) the user owns or collaborates on. Includes currency/date locale.",
+      "display": {
+        "label": "Your budgets",
+        "detail": "Budget names, currency locale (ISO code, symbol, separators), date format, and first/last month. No transaction data."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "name": { "type": "string" },
+          "last_modified_on": { "type": ["string", "null"], "format": "date-time" },
+          "first_month": { "type": ["string", "null"] },
+          "last_month": { "type": ["string", "null"] },
+          "currency_iso_code": { "type": ["string", "null"] },
+          "currency_symbol": { "type": ["string", "null"] },
+          "currency_symbol_first": { "type": ["boolean", "null"] },
+          "currency_decimal_digits": { "type": ["integer", "null"] },
+          "currency_decimal_separator": { "type": ["string", "null"] },
+          "currency_group_separator": { "type": ["string", "null"] },
+          "date_format_string": { "type": ["string", "null"] },
+          "deleted": { "type": "boolean" }
+        },
+        "required": ["id", "name"]
+      },
+      "primary_key": ["id"],
+      "cursor_field": "last_modified_on",
+      "selection": { "fields": true, "resources": true },
+      "incremental": false,
+      "views": [
+        { "id": "basic", "label": "Budget names and metadata", "fields": ["id", "name", "currency_iso_code"] },
+        { "id": "full", "label": "All budget fields", "fields": ["id", "name", "last_modified_on", "first_month", "last_month", "currency_iso_code", "currency_symbol", "currency_symbol_first", "currency_decimal_digits", "currency_decimal_separator", "currency_group_separator", "date_format_string", "deleted"] }
+      ]
+    },
+    {
+      "name": "accounts",
+      "description": "Accounts within each budget (checking, savings, credit cards, loans, etc.).",
+      "display": {
+        "label": "Your accounts",
+        "detail": "Account names, types, on-budget status, balances, last reconciliation, direct-import status, and loan-specific details (interest rates, minimum payments, escrow). No individual transactions."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "budget_id": { "type": "string" },
+          "name": { "type": "string" },
+          "type": { "type": "string" },
+          "on_budget": { "type": "boolean" },
+          "closed": { "type": "boolean" },
+          "balance": { "type": "integer" },
+          "cleared_balance": { "type": "integer" },
+          "uncleared_balance": { "type": "integer" },
+          "transfer_payee_id": { "type": ["string", "null"] },
+          "direct_import_linked": { "type": ["boolean", "null"] },
+          "direct_import_in_error": { "type": ["boolean", "null"] },
+          "last_reconciled_at": { "type": ["string", "null"] },
+          "note": { "type": ["string", "null"] },
+          "debt_interest_rates": { "type": ["object", "null"] },
+          "debt_minimum_payments": { "type": ["object", "null"] },
+          "debt_escrow_amounts": { "type": ["object", "null"] },
+          "deleted": { "type": "boolean" }
+        },
+        "required": ["id", "budget_id", "name", "type"]
+      },
+      "primary_key": ["id"],
+      "selection": { "fields": true, "resources": true },
+      "incremental": true,
+      "relationships": [
+        { "name": "budget", "stream": "budgets", "foreign_key": "budget_id", "cardinality": "has_one" },
+        { "name": "transfer_payee", "stream": "payees", "foreign_key": "transfer_payee_id", "cardinality": "has_one" }
+      ],
+      "views": [
+        { "id": "basic", "label": "Account names and types", "fields": ["id", "budget_id", "name", "type", "on_budget", "closed"] },
+        { "id": "balances", "label": "Balances included", "fields": ["id", "budget_id", "name", "type", "on_budget", "closed", "balance", "cleared_balance", "uncleared_balance"] },
+        { "id": "full", "label": "All account fields including loan details", "fields": ["id", "budget_id", "name", "type", "on_budget", "closed", "balance", "cleared_balance", "uncleared_balance", "transfer_payee_id", "direct_import_linked", "direct_import_in_error", "last_reconciled_at", "note", "debt_interest_rates", "debt_minimum_payments", "debt_escrow_amounts", "deleted"] }
+      ]
+    },
+    {
+      "name": "category_groups",
+      "description": "Category groups within each budget.",
+      "display": {
+        "label": "Your budget category groups",
+        "detail": "Group names (Fixed Expenses, Wants, etc.) and hidden/deleted flags. Group-level note if set."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "budget_id": { "type": "string" },
+          "name": { "type": "string" },
+          "hidden": { "type": "boolean" },
+          "note": { "type": ["string", "null"] },
+          "deleted": { "type": "boolean" }
+        },
+        "required": ["id", "budget_id", "name"]
+      },
+      "primary_key": ["id"],
+      "selection": { "fields": true, "resources": true },
+      "incremental": true
+    },
+    {
+      "name": "categories",
+      "description": "Categories within each budget, including budgeted/activity/balance snapshots and goal state.",
+      "display": {
+        "label": "Your budget categories",
+        "detail": "Category names, group memberships, budgeted/activity/balance amounts, and goal tracking (target, cadence, percentage complete, underfunding)."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "budget_id": { "type": "string" },
+          "category_group_id": { "type": "string" },
+          "category_group_name": { "type": ["string", "null"] },
+          "name": { "type": "string" },
+          "hidden": { "type": "boolean" },
+          "budgeted": { "type": "integer" },
+          "activity": { "type": "integer" },
+          "balance": { "type": "integer" },
+          "note": { "type": ["string", "null"] },
+          "goal_type": { "type": ["string", "null"] },
+          "goal_needs_whole_amount": { "type": ["boolean", "null"] },
+          "goal_day": { "type": ["integer", "null"] },
+          "goal_cadence": { "type": ["integer", "null"] },
+          "goal_cadence_frequency": { "type": ["integer", "null"] },
+          "goal_creation_month": { "type": ["string", "null"] },
+          "goal_target": { "type": ["integer", "null"] },
+          "goal_target_date": { "type": ["string", "null"] },
+          "goal_percentage_complete": { "type": ["integer", "null"] },
+          "goal_months_to_budget": { "type": ["integer", "null"] },
+          "goal_under_funded": { "type": ["integer", "null"] },
+          "goal_overall_funded": { "type": ["integer", "null"] },
+          "goal_overall_left": { "type": ["integer", "null"] },
+          "goal_snoozed_at": { "type": ["string", "null"] },
+          "deleted": { "type": "boolean" }
+        },
+        "required": ["id", "budget_id", "name"]
+      },
+      "primary_key": ["id"],
+      "selection": { "fields": true, "resources": true },
+      "incremental": true,
+      "relationships": [
+        { "name": "group", "stream": "category_groups", "foreign_key": "category_group_id", "cardinality": "has_one" }
+      ]
+    },
+    {
+      "name": "payees",
+      "description": "Payees within each budget.",
+      "display": {
+        "label": "Your payees",
+        "detail": "Names of merchants, people, and accounts you've transacted with. Transfer payees (linking to your own accounts) included."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "budget_id": { "type": "string" },
+          "name": { "type": "string" },
+          "transfer_account_id": { "type": ["string", "null"] },
+          "deleted": { "type": "boolean" }
+        },
+        "required": ["id", "budget_id", "name"]
+      },
+      "primary_key": ["id"],
+      "selection": { "fields": true, "resources": true },
+      "incremental": true
+    },
+    {
+      "name": "payee_locations",
+      "description": "GPS coordinates where YNAB mobile has logged a payee interaction.",
+      "display": {
+        "label": "Payee GPS locations",
+        "detail": "Latitude/longitude coordinates linked to payees, typically added via the YNAB mobile app. Useful for matching transactions to merchant locations."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "budget_id": { "type": "string" },
+          "payee_id": { "type": "string" },
+          "latitude": { "type": "string" },
+          "longitude": { "type": "string" },
+          "deleted": { "type": "boolean" }
+        },
+        "required": ["id", "budget_id", "payee_id"]
+      },
+      "primary_key": ["id"],
+      "selection": { "fields": true, "resources": true },
+      "incremental": false,
+      "relationships": [
+        { "name": "payee", "stream": "payees", "foreign_key": "payee_id", "cardinality": "has_one" }
+      ]
+    },
+    {
+      "name": "transactions",
+      "description": "Transactions across all selected budgets and accounts. Amounts in YNAB milliunits (1000 milliunits = 1 currency unit).",
+      "display": {
+        "label": "Your transactions",
+        "detail": "Date, amount (milliunits), payee, category, memo, cleared status (cleared/uncleared/reconciled), approved flag, flag color/name, transfer details, import dedup IDs, original statement payee name, and any subtransactions (splits) nested on the parent. Does not include bank statements or receipts."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "budget_id": { "type": "string" },
+          "account_id": { "type": "string" },
+          "account_name": { "type": ["string", "null"] },
+          "account_type": { "type": ["string", "null"] },
+          "date": { "type": "string", "format": "date" },
+          "amount": { "type": "integer" },
+          "payee_id": { "type": ["string", "null"] },
+          "payee_name": { "type": ["string", "null"] },
+          "category_id": { "type": ["string", "null"] },
+          "category_name": { "type": ["string", "null"] },
+          "memo": { "type": ["string", "null"] },
+          "cleared": { "type": "string" },
+          "approved": { "type": "boolean" },
+          "flag_color": { "type": ["string", "null"] },
+          "flag_name": { "type": ["string", "null"] },
+          "transfer_account_id": { "type": ["string", "null"] },
+          "transfer_transaction_id": { "type": ["string", "null"] },
+          "matched_transaction_id": { "type": ["string", "null"] },
+          "import_id": { "type": ["string", "null"] },
+          "import_payee_name": { "type": ["string", "null"] },
+          "import_payee_name_original": { "type": ["string", "null"] },
+          "debt_transaction_type": { "type": ["string", "null"] },
+          "is_split": { "type": "boolean" },
+          "subtransactions": { "type": "array" },
+          "deleted": { "type": "boolean" }
+        },
+        "required": ["id", "budget_id", "account_id", "date", "amount"]
+      },
+      "primary_key": ["id"],
+      "cursor_field": "date",
+      "consent_time_field": "date",
+      "selection": { "fields": true, "resources": true },
+      "incremental": true,
+      "relationships": [
+        { "name": "account", "stream": "accounts", "foreign_key": "account_id", "cardinality": "has_one" },
+        { "name": "payee", "stream": "payees", "foreign_key": "payee_id", "cardinality": "has_one" },
+        { "name": "category", "stream": "categories", "foreign_key": "category_id", "cardinality": "has_one" },
+        { "name": "transfer_account", "stream": "accounts", "foreign_key": "transfer_account_id", "cardinality": "has_one" }
+      ],
+      "views": [
+        { "id": "review_queue", "label": "Transactions needing review", "fields": ["id", "budget_id", "account_id", "account_name", "date", "amount", "payee_name", "category_name", "memo", "cleared", "approved", "flag_color", "import_payee_name_original"] },
+        { "id": "reconciliation", "label": "Fields needed for cross-platform reconciliation", "fields": ["id", "budget_id", "account_id", "account_name", "account_type", "date", "amount", "payee_id", "payee_name", "category_name", "memo", "cleared", "approved", "transfer_account_id", "transfer_transaction_id", "matched_transaction_id", "import_id", "import_payee_name", "import_payee_name_original", "is_split", "subtransactions"] },
+        { "id": "full", "label": "All transaction fields", "fields": ["id", "budget_id", "account_id", "account_name", "account_type", "date", "amount", "payee_id", "payee_name", "category_id", "category_name", "memo", "cleared", "approved", "flag_color", "flag_name", "transfer_account_id", "transfer_transaction_id", "matched_transaction_id", "import_id", "import_payee_name", "import_payee_name_original", "debt_transaction_type", "is_split", "subtransactions", "deleted"] }
+      ]
+    },
+    {
+      "name": "scheduled_transactions",
+      "description": "Recurring and one-time scheduled transactions (upcoming bills, salary, rent, etc.).",
+      "display": {
+        "label": "Your scheduled transactions",
+        "detail": "Upcoming recurring transactions with frequency (daily, weekly, monthly, etc.), next occurrence date, account, payee, category, amount, and any subtransactions."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "budget_id": { "type": "string" },
+          "date_first": { "type": "string", "format": "date" },
+          "date_next": { "type": "string", "format": "date" },
+          "frequency": { "type": "string" },
+          "amount": { "type": "integer" },
+          "account_id": { "type": "string" },
+          "account_name": { "type": ["string", "null"] },
+          "payee_id": { "type": ["string", "null"] },
+          "payee_name": { "type": ["string", "null"] },
+          "category_id": { "type": ["string", "null"] },
+          "category_name": { "type": ["string", "null"] },
+          "memo": { "type": ["string", "null"] },
+          "transfer_account_id": { "type": ["string", "null"] },
+          "flag_color": { "type": ["string", "null"] },
+          "flag_name": { "type": ["string", "null"] },
+          "subtransactions": { "type": "array" },
+          "deleted": { "type": "boolean" }
+        },
+        "required": ["id", "budget_id", "date_first", "date_next", "frequency", "amount", "account_id"]
+      },
+      "primary_key": ["id"],
+      "cursor_field": "date_next",
+      "consent_time_field": "date_first",
+      "selection": { "fields": true, "resources": true },
+      "incremental": true,
+      "relationships": [
+        { "name": "account", "stream": "accounts", "foreign_key": "account_id", "cardinality": "has_one" }
+      ]
+    },
+    {
+      "name": "months",
+      "description": "Monthly budget aggregates (income, budgeted, activity, age of money).",
+      "display": {
+        "label": "Monthly budget summaries",
+        "detail": "For each budget month: income received, total assigned, activity (spending), to-be-budgeted, and age of money. Useful for budget analytics and trend analysis."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "budget_id": { "type": "string" },
+          "month": { "type": "string", "format": "date" },
+          "income": { "type": "integer" },
+          "budgeted": { "type": "integer" },
+          "activity": { "type": "integer" },
+          "to_be_budgeted": { "type": "integer" },
+          "age_of_money": { "type": ["integer", "null"] },
+          "note": { "type": ["string", "null"] },
+          "deleted": { "type": "boolean" }
+        },
+        "required": ["id", "budget_id", "month"]
+      },
+      "primary_key": ["id"],
+      "cursor_field": "month",
+      "consent_time_field": "month",
+      "selection": { "fields": true, "resources": true },
+      "incremental": true
+    }
+  ],
+  "profiles": [
+    {
+      "id": "reconciliation",
+      "label": "Transaction reconciliation",
+      "streams": [
+        { "name": "budgets", "view": "basic" },
+        { "name": "accounts", "view": "basic" },
+        { "name": "categories" },
+        { "name": "payees" },
+        { "name": "payee_locations" },
+        { "name": "transactions", "view": "reconciliation" }
+      ]
+    },
+    {
+      "id": "full_archive",
+      "label": "Full YNAB archive",
+      "streams": [
+        { "name": "budgets", "view": "full" },
+        { "name": "accounts", "view": "full" },
+        { "name": "category_groups" },
+        { "name": "categories" },
+        { "name": "payees" },
+        { "name": "payee_locations" },
+        { "name": "transactions", "view": "full" },
+        { "name": "scheduled_transactions" },
+        { "name": "months" }
+      ]
+    }
+  ]
+}

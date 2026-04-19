@@ -1,0 +1,126 @@
+{
+  "protocol_version": "0.1.0",
+  "connector_id": "https://registry.pdpp.org/connectors/claude-code",
+  "version": "0.1.0",
+  "display_name": "Claude Code",
+  "runtime_requirements": {
+    "bindings": {
+      "filesystem": { "required": true }
+    }
+  },
+  "capabilities": { "human_interaction": [] },
+  "streams": [
+    {
+      "name": "sessions",
+      "description": "Claude Code sessions. One session = one CLI invocation in a specific project directory.",
+      "display": {
+        "label": "Your Claude Code sessions",
+        "detail": "Session start time, duration, project directory, git branch, Claude Code version, total message count."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "project_path": { "type": ["string", "null"] },
+          "cwd": { "type": ["string", "null"] },
+          "git_branch": { "type": ["string", "null"] },
+          "version": { "type": ["string", "null"] },
+          "started_at": { "type": ["string", "null"] },
+          "last_event_at": { "type": ["string", "null"] },
+          "message_count": { "type": ["integer", "null"] },
+          "user_type": { "type": ["string", "null"] },
+          "entrypoint": { "type": ["string", "null"] }
+        },
+        "required": ["id"]
+      },
+      "primary_key": ["id"],
+      "cursor_field": "last_event_at",
+      "consent_time_field": "started_at",
+      "selection": { "fields": true, "resources": true },
+      "incremental": true
+    },
+    {
+      "name": "messages",
+      "description": "Messages within Claude Code sessions: user prompts and assistant responses.",
+      "display": {
+        "label": "Your Claude Code messages",
+        "detail": "Role (user/assistant/attachment), text content, timestamp, parent message (for threading), session reference, model used."
+      },
+      "semantics": "append_only",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "session_id": { "type": "string" },
+          "parent_uuid": { "type": ["string", "null"] },
+          "role": { "type": ["string", "null"] },
+          "type": { "type": ["string", "null"] },
+          "content": { "type": ["string", "null"] },
+          "timestamp": { "type": ["string", "null"] },
+          "is_sidechain": { "type": ["boolean", "null"] },
+          "user_type": { "type": ["string", "null"] }
+        },
+        "required": ["id", "session_id"]
+      },
+      "primary_key": ["id"],
+      "cursor_field": "timestamp",
+      "consent_time_field": "timestamp",
+      "selection": { "fields": true, "resources": true },
+      "incremental": true,
+      "relationships": [
+        { "name": "session", "stream": "sessions", "foreign_key": "session_id", "cardinality": "has_one" }
+      ]
+    },
+    {
+      "name": "attachments",
+      "description": "Non-message events: hook outputs, tool uses, file snapshots.",
+      "display": {
+        "label": "Claude Code events",
+        "detail": "System events attached to sessions: tool calls, hook outputs, file-history snapshots, permission-mode changes."
+      },
+      "semantics": "append_only",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "session_id": { "type": "string" },
+          "parent_uuid": { "type": ["string", "null"] },
+          "event_type": { "type": ["string", "null"] },
+          "hook_name": { "type": ["string", "null"] },
+          "tool_use_id": { "type": ["string", "null"] },
+          "content_preview": { "type": ["string", "null"] },
+          "timestamp": { "type": ["string", "null"] }
+        },
+        "required": ["id", "session_id"]
+      },
+      "primary_key": ["id"],
+      "cursor_field": "timestamp",
+      "consent_time_field": "timestamp",
+      "selection": { "fields": true, "resources": true },
+      "incremental": true,
+      "relationships": [
+        { "name": "session", "stream": "sessions", "foreign_key": "session_id", "cardinality": "has_one" }
+      ]
+    }
+  ],
+  "profiles": [
+    {
+      "id": "full",
+      "label": "Your full Claude Code history",
+      "streams": [
+        { "name": "sessions" },
+        { "name": "messages" },
+        { "name": "attachments" }
+      ]
+    },
+    {
+      "id": "messages_only",
+      "label": "Just prompts and responses",
+      "streams": [
+        { "name": "sessions" },
+        { "name": "messages" }
+      ]
+    }
+  ]
+}

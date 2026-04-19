@@ -1,0 +1,254 @@
+## Done
+- [x] Create a canonical OpenSpec program artifact for the reference-implementation program
+- [x] Re-express the original E2E/reference plan in current repo terms (`reference-implementation/`, `apps/web`, OpenSpec)
+- [x] Mark the older inbox plan/status memos as historical working notes rather than the active steering layer
+- [x] Preserve the original program north star:
+  - [x] forkable engine substrate
+  - [x] honest native/polyfill split
+  - [x] thin OAuth-composed provider-connect profile
+  - [x] real CLI
+  - [x] event/trace spine before dashboard
+- [x] Record the foundations already completed:
+  - [x] AS/RS enforcement core
+  - [x] owner device flow
+  - [x] RFC 9728 + RFC 8414 metadata
+  - [x] PAR-backed request staging
+  - [x] request-uri consent start
+  - [x] native `provider_id` identity
+  - [x] grant-scoped runtime state
+  - [x] event spine read surfaces
+  - [x] publishable `reference-implementation/` identity
+
+## In progress
+- [x] Keep retiring or quarantining remaining compat/demo seams
+  - [x] Delete the legacy web demo shell, demo bridge routes, and narrative demo consumer so the latest reference contract is the only supported path
+  - [x] Delete in-process schema migration shims for older grant and owner-device tables so the published reference expects the current schema only
+  - [x] Delete non-launch runtime ingest experiments (`file-import`, `webhook-adapter`) so the shipped reference exposes one collection path instead of parallel adaptation artifacts
+  - [x] Delete the inbox scaffold so the shipped reference does not carry a second interaction path beside the runtime's active handler contract
+- [x] Keep tightening native-provider honesty beyond the current public-contract improvements
+  - [x] Delete pre-normalized pending/grant compatibility shims so the live reference requires structured `source_binding`, `storage_binding`, and `grant.source`
+  - [x] Delete the remaining issuance-time `storage_binding` synthesis fallback so grant persistence depends only on structured pending-request bindings
+  - [x] Collapse native startup/configuration onto `nativeManifest` as the only supported path instead of allowing separate native override flags
+  - [x] Reject malformed persisted pending-consent and grant binding rows instead of reconstructing native identity from ambient configuration
+  - [x] Replace the scalar native `storage_connector_id` manifest field with structured `storage_binding` so native configuration follows the same storage model used by grants and requests
+  - [x] Reject native manifests that include connector-only `connector_id` fields or drifted `storage_binding` fields so startup enforces one provider-native manifest dialect
+  - [x] Reject revocation and introspection of malformed persisted `grant.source` rows instead of emitting degraded lifecycle artifacts or reconstructing identity
+  - [x] Reject persisted grant `source` and `storage_binding` descriptors with unsupported fields instead of normalizing drifted rows on readback
+  - [x] Preserve provider-first and connector-first `grant.revoke_rejected` source descriptors when persisted grant storage or manifest state drifts but the persisted source identity remains structurally valid
+  - [x] Collapse server-side public source descriptor shaping onto one authoritative binding input at a time instead of mixing raw `source` and whole-`grant` fallback derivation in RS read paths
+  - [x] Split connector-registry manifest lookup from native storage-binding resolution so native mode no longer depends on connector-shaped registry helpers internally
+  - [x] Push structured `storage_binding` through the RS read/query paths so native and polyfill reads no longer flatten storage identity at the server boundary
+  - [x] Reject connector manifests that include native-only `storage_binding` so the live registry no longer accepts mixed connector/native manifest dialects
+- [x] Keep the provider-connect profile thin, truthful, and not overstated while defining the complete launch target
+  - [x] Remove implicit `demo_client` fallback so PAR requires explicit registered `client_id` values and the seeded client set reflects only the real launch consumers
+  - [x] Validate protected DCR URI metadata syntactically so the launch profile rejects malformed redirect and client information URIs instead of storing unusable registrations
+  - [x] Reject protected DCR `application_type` metadata so the launch profile does not silently widen beyond the current public-client registration contract
+  - [x] Reject empty requested stream selections at `/oauth/par` instead of staging meaningless pending-consent requests
+  - [x] Reject unsupported top-level OAuth/browser request fields and unsupported `authorization_details` extension fields at `/oauth/par` instead of silently accepting a broader client-connect contract
+  - [x] Reject malformed persisted pending-consent request shapes with unsupported normalized request or stream-selection fields during consent display and approval instead of accepting drift after staging
+  - [x] Persist pending-consent request correlation independently of `params_json` and reject staged request bindings with unsupported fields on readback so stored drift cannot break consent-time inspectability or silently widen the live contract
+  - [x] Reject persisted pending-consent rows missing top-level `request_id` / `trace_id` correlation instead of falling back to embedded `request.trace_context` during consent display, approval, or denial
+  - [x] Reject malformed persisted pending-consent `source_binding` descriptors without reconstructing connector source artifacts on `request.rejected` traces
+  - [x] Reject manifest-invalid request selections at `/oauth/par`, including unknown connectors, unknown streams, unknown views, and unsupported `time_range`
+  - [x] Reject contradictory stream selections that include both `view` and `fields` instead of silently preferring one shape over the other
+  - [x] Reject unknown or malformed field-level stream selections instead of persisting grants that refer to impossible manifest fields
+  - [x] Reject invalid requested stream selections consistently across consent display and approval, including unknown streams, unknown views, and unsupported `time_range`
+  - [x] Pin staged pending-consent requests to the manifest version resolved at `/oauth/par` and reject consent display/approval if the manifest has drifted before approval
+  - [x] Re-resolve registered client metadata during consent display and approval so deleted or drifted clients cannot keep using a staged pending-consent snapshot silently
+  - [x] Require current registered clients throughout the owner device flow so unknown or deleted clients cannot stage, approve, or exchange orphaned device codes
+  - [x] Reject malformed persisted registered-client rows consistently across consent display/approval and owner-device display/approval/exchange instead of only treating deleted clients as invalid
+  - [x] Reject malformed persisted registered-client rows at `/oauth/par` and `/oauth/device_authorization` so drifted client records cannot stage new pending-consent or owner-device flows
+- [x] Keep using the CLI and black-box tests as truth-serum for the real public/reference contract
+  - [x] Reject persisted grants whose stream contracts or `manifest_version` no longer resolve against the current manifest across introspection, disclosure, revocation, and grant-scoped state instead of serving partial or misleading access
+  - [x] Remove request-inspection fallback for old envelope-shaped provider-connect request artifacts so the published CLI only teaches the normalized request shape
+  - [x] Remove flat grant-inspection fallbacks so the published CLI only teaches the current structured grant shape
+  - [x] Make `pdpp inspect` reject malformed current source descriptors instead of masking them as connector/provider ids
+  - [x] Make `pdpp inspect manifest` reject malformed native `storage_binding` shapes and connector manifests that include native-only `storage_binding` instead of masking mixed or drifted manifest dialects
+  - [x] Make `pdpp inspect request` reject malformed current `storage_binding` shapes and connector/storage mismatches instead of masking them as inspectable normalized requests
+  - [x] Make `pdpp inspect grant` reject malformed optional `grant_storage_binding` shapes and connector/storage mismatches instead of masking them as inspectable current grants
+  - [x] Make `/v1` read responses surface stable `Request-Id` and reference-only `PDPP-Reference-Trace-Id` correlation so owner and client reads can be inspected through the existing `_ref` trace reader
+  - [x] Preserve `PDPP-Reference-Trace-Id` on auth-gate `grant_invalid` read failures so malformed persisted grants remain correlated even when rejection happens before route-level query handling
+  - [x] Preserve auth-gate `requested_record_id` context for `record_detail` client failures so malformed, revoked, or expired grants stay inspectable through HTTP plus CLI `grant timeline` / `trace show`
+  - [x] Emit auth-gate `query.received` artifacts alongside `query.rejected` so early token-gate failures stay inspectable with the same basic timeline shape as route-level read failures
+  - [x] Preserve auth-gate `record_list` query context (`limit` and `has_changes_since`) so early token-gate failures stay inspectable with the same query-shape metadata as route-level record-list rejections
+  - [x] Preserve `/v1` read correlation metadata in CLI JSON output instead of dropping it on `streams` responses
+  - [x] Prove malformed persisted registered-client rows fail honestly through CLI `auth login`, not only through raw HTTP owner-device flow tests
+  - [x] Prove malformed persisted registered-client rows fail honestly through CLI `grant start`, not only through raw HTTP `/oauth/par` tests
+  - [x] Prove CLI `provider register` fails honestly when the launch profile rejects unsupported `token_endpoint_auth_method` values or unsupported client metadata extension fields
+  - [x] Prove CLI `provider register` also fails honestly when the launch profile rejects unsupported `grant_types` and `response_types` registration metadata
+  - [x] Prove CLI `provider register` fails honestly when the launch profile rejects malformed URI metadata fields like invalid `redirect_uris` and `client_uri`
+  - [x] Prove malformed URI failures from CLI `provider register` preserve `Request-Id`, `PDPP-Reference-Trace-Id`, and durable `client.register_rejected` artifacts through `trace show`
+  - [x] Surface `Request-Id` and `PDPP-Reference-Trace-Id` on successful CLI `provider register` output and prove dynamic client registration artifacts stay inspectable through `trace show`
+  - [x] Preserve `Request-Id`, `PDPP-Reference-Trace-Id`, and durable `client.register_rejected` artifacts for failed `/oauth/register` requests so protected DCR failures remain inspectable through HTTP, CLI, and `_ref` traces
+  - [x] Let reference-only CLI readers and grant commands resolve the AS through explicit `--rs-url` discovery and `PDPP_RS_URL`/`RS_URL` environment fallback instead of forcing `--as-url`, and prove `trace show`, `run timeline`, `grant start`, `grant revoke`, and `grant timeline` stay inspectable on that path
+  - [x] Prove CLI `grant start` fails honestly when the launch profile rejects unsupported broader OAuth request fields or contradictory stream-selection shapes
+  - [x] Prove CLI `grant start` also fails honestly for native-provider binding-shape rejections, including unknown `provider_id` values and contradictory `connector_id` + `provider_id` request shapes
+  - [x] Surface `Request-Id` and `PDPP-Reference-Trace-Id` on successful CLI `grant start` output and prove staged request artifacts stay inspectable through `trace show`
+  - [x] Surface `Request-Id` and `PDPP-Reference-Trace-Id` on successful and rejected CLI `grant revoke` paths, and prove revocation artifacts stay inspectable through `grant timeline` and `trace show`
+  - [x] Preserve `Request-Id`, `PDPP-Reference-Trace-Id`, and durable `request.rejected` artifacts for failed `/oauth/par` starts so rejected provider-connect requests remain inspectable through HTTP, CLI, and `_ref` traces
+  - [x] Prove rejected provider-connect start artifacts stay inspectable through CLI `trace show`, not just raw HTTP trace readers
+  - [x] Preserve `Request-Id`, `PDPP-Reference-Trace-Id`, and durable `request.rejected` artifacts for consent-time client or manifest drift rejections so staged provider-connect failures remain inspectable after `/oauth/par`
+  - [x] Prove consent-time client or manifest drift artifacts stay inspectable through CLI `trace show`, not just raw HTTP trace readers
+  - [x] Prove CLI `trace show` keeps malformed pending `source_binding` rejection artifacts truthful instead of reconstructing connector source descriptors
+  - [x] Preserve `Request-Id` and `PDPP-Reference-Trace-Id` on successful `/consent/approve` responses so operator-driven approvals can jump directly to the original staged trace
+  - [x] Prove CLI `trace show` keeps consent approval artifacts on the original staged trace even when persisted pending request `trace_context` drifts
+  - [x] Prove CLI `trace show` keeps native consent approval artifacts inspectable and provider-first on the original staged trace, without connector or storage-binding leakage
+  - [x] Prove CLI `trace show` preserves issuance artifacts (`grant.issued`, `token.issued`) for ordinary issued grants, not just staged consent-approval traces
+  - [x] Preserve `Request-Id`, `PDPP-Reference-Trace-Id`, and durable `consent.denied` artifacts on successful `/consent/deny` responses so rejected provider-connect approvals remain inspectable after `/oauth/par`
+  - [x] Prove consent-denied provider-connect traces stay inspectable through HTTP, `_ref` traces, and CLI `trace show`
+  - [x] Prove consent-denied native provider-connect traces stay inspectable and provider-first through HTTP and CLI `trace show`, without connector or storage-binding leakage
+  - [x] Preserve `Request-Id`, `PDPP-Reference-Trace-Id`, and durable owner-device trace artifacts across `/oauth/device_authorization`, `/oauth/token` polling, and owner-token issuance so the self-export flow remains inspectable through HTTP, CLI, and `_ref` traces
+  - [x] Surface owner self-export `Request-Id` and `PDPP-Reference-Trace-Id` in successful CLI `auth login` output so operators can jump directly from login to `trace show`
+  - [x] Prove owner-device success and rejection artifacts stay inspectable through CLI `trace show`, not just raw HTTP trace readers
+  - [x] Prove owner-device denial stays inspectable through HTTP, `_ref` traces, CLI `auth login`, and CLI `trace show`
+  - [x] Prove CLI `trace show` keeps rejected native owner-query artifacts inspectable without connector or storage-binding leakage
+  - [x] Prove CLI `trace show` keeps malformed polyfill owner-read artifacts inspectable with `connector_invalid` failures instead of only native owner-query failures
+  - [x] Prove CLI `trace show` keeps malformed polyfill owner `record_list` artifacts inspectable instead of only broad `stream_list` owner-read failures
+  - [x] Prove CLI `trace show` keeps malformed polyfill owner `record_detail` artifacts inspectable instead of only broad `stream_list` owner-read failures
+  - [x] Prove CLI `owner export` follows the same provider-first/native-without-`--connector-id` contract as `owner query` and still fails honestly without `--connector-id` on polyfill reads
+  - [x] Preserve structured connector `PROGRESS` counters in durable `_ref` run artifacts instead of collapsing them to freeform messages
+  - [x] Preserve safe connector `INTERACTION` request metadata in durable `_ref` run artifacts without persisting `INTERACTION_RESPONSE` secrets
+  - [x] Preserve the normalized run-start contract (`scope`, `bindings`, and checkpoint intent) in durable `_ref` `run.started` artifacts instead of dropping it to stream-name summaries
+  - [x] Emit durable `query.rejected` artifacts for route-level `/v1` read failures so failed owner and client reads stay inspectable through `_ref`
+  - [x] Prove rejected `/v1` reads directly through the event-spine suite for connector and native traces instead of relying only on broader PDPP integration coverage
+  - [x] Prove CLI `trace show` keeps rejected native client-query artifacts inspectable without connector or storage-binding leakage
+  - [x] Surface `Request-Id` and `PDPP-Reference-Trace-Id` on CLI stderr for rejected `/v1` reads so failed operator paths stay inspectable without `PDPP_DEBUG`
+  - [x] Surface `Request-Id` and `PDPP-Reference-Trace-Id` on CLI stderr for auth-gate `grant_invalid` client reads so malformed persisted grants remain inspectable even when rejection happens before route-level query handling
+  - [x] Preserve auth-gate grant trace context for `grant_revoked` and `grant_expired` client reads so HTTP and CLI failures stay correlated even when rejection happens before route-level query handling
+  - [x] Preserve the current public client-grant introspection shape through `pdpp auth introspect`, including provider-first native grant identity and the absence of internal storage-binding leakage
+  - [x] Preserve `grant_invalid`, `grant_revoked`, and `grant_expired` client-grant correlation fields through `pdpp auth introspect` JSON output so operator inspection stays truthful even when a client token is no longer active
+  - [x] Emit durable `query.rejected` artifacts for auth-gate `grant_invalid`, `grant_revoked`, and `grant_expired` client reads so failed grant timelines stay inspectable even when rejection happens before route-level query handling
+  - [x] Prove auth-gate `query.rejected` artifacts preserve `query_shape` and `stream_id` across stream-list, stream-metadata, record-list, and record-detail client reads
+  - [x] Prove auth-gate read failures stay visible through both grant timelines and trace readers, including both `query.received` and `query.rejected` artifacts even when token introspection stops the route early
+  - [x] Prove auth-gate `grant_invalid`, `grant_revoked`, and `grant_expired` client failures remain inspectable through CLI `grant timeline` and `trace show`, not just raw HTTP readers
+  - [x] Reject unknown manifest fields on `/v1` record-list queries as `unknown_field` and preserve the failure through `query.rejected` artifacts
+  - [x] Make client `/v1/streams` counts and `last_updated` honor grant `resources` and `time_range` restrictions instead of reflecting the full underlying store
+  - [x] Reject client `/v1/streams/:stream` metadata reads for streams outside the grant and preserve the rejection through grant timelines
+  - [x] Reject client `/v1/streams/:stream/records` reads for streams outside the grant and preserve the rejection through grant timelines
+  - [x] Reject client `/v1/streams/:stream/records/:id` reads for streams outside the grant and preserve the rejection through grant timelines
+  - [x] Hide client `/v1/streams/:stream/records/:id` reads for records outside grant resources and preserve the rejection through grant timelines
+  - [x] Hide client `/v1/streams/:stream/records/:id` reads for records outside grant `time_range` and preserve the rejection through grant timelines
+  - [x] Make restricted `/v1/streams/:stream/records` pagination compute `has_more` from additional visible records rather than hidden rows outside the grant
+  - [x] Make restricted `changes_since` pagination compute `has_more` from additional visible changes rather than hidden change groups outside the grant
+  - [x] Clarify PDPP and keep client `/v1/streams/:stream` metadata source-level while continuing to enforce grants separately on stream access, queries, and record disclosure
+  - [x] Prove that field-limited client grants project record-list and record-detail disclosures to the granted field subset and reject ungranted filter fields with timeline artifacts
+  - [x] Prove that field-limited client grants also project `changes_since` deltas to the granted field subset and reject ungranted filter fields with timeline artifacts
+  - [x] Prove that field-limited client grants reject manifest views that expand beyond granted fields and preserve that rejection through grant timelines
+  - [x] Make polyfill client reads fail connector-first when persisted grant storage bindings point at unknown connectors instead of degrading into empty or generic responses
+  - [x] Prove malformed client grant bindings fail consistently across stream-list, stream-metadata, record-list, and record-detail reads with correlated `query.rejected` artifacts instead of only one query shape
+  - [x] Make polyfill owner reads fail connector-first when the requested connector is unknown and preserve the rejection through trace and CLI correlation artifacts
+  - [x] Reject polyfill owner ingest for unknown connectors and manifest-unknown streams instead of creating orphaned reference data
+  - [x] Reject polyfill state reads and writes for unknown connectors and manifest-unknown streams instead of creating orphaned reference state
+  - [x] Reject polyfill state reads and writes for malformed persisted connector manifests instead of drifting into generic failures
+  - [x] Reject grant-scoped polyfill state reads and writes for unknown grants or connector-mismatched grants instead of creating orphaned grant state
+  - [x] Reject grant-scoped polyfill state reads and writes for malformed persisted grant bindings as `grant_invalid` instead of drifting into connector-mismatch failures
+  - [x] Keep grant-scoped polyfill state reads limited to the grant stream set instead of surfacing persisted rows for ungranted streams
+  - [x] Reject grant-scoped polyfill state writes for streams outside the grant and for malformed grants missing valid stream lists instead of persisting orphaned grant state
+  - [x] Reject grant-scoped polyfill state reads and writes for `single_use` grants so the route contract matches the runtime’s `state: null` behavior
+  - [x] Make polyfill `/v1/state` reads and writes surface stable `Request-Id` and `PDPP-Reference-Trace-Id` correlation plus durable `state.requested`, `state.served`, `state.updated`, and `state.rejected` artifacts instead of leaving Collection Profile state access opaque
+  - [x] Prove owner and grant-scoped state artifacts directly through the event-spine suite instead of relying only on the broader PDPP integration coverage
+  - [x] Reject polyfill owner delete routes for unknown connectors and manifest-unknown streams instead of silently succeeding against nothing
+  - [x] Reject malformed persisted connector manifests on polyfill owner ingest and delete routes instead of drifting into generic downstream failures
+  - [x] Make polyfill owner ingest and delete routes surface stable `Request-Id` and `PDPP-Reference-Trace-Id` correlation plus durable `mutation.requested`, `mutation.completed`, and `mutation.rejected` artifacts instead of leaving owner mutation paths opaque
+  - [x] Prove owner mutation artifacts directly through the event-spine suite instead of relying only on the broader PDPP integration coverage
+  - [x] Prove owner mutation and owner-state artifacts stay inspectable through CLI `trace show`, not just raw HTTP trace readers
+  - [x] Prove CLI `trace show` keeps malformed polyfill owner-mutation artifacts inspectable with `connector_invalid` failures instead of only unknown-connector owner-mutation failures
+  - [x] Prove CLI `trace show` keeps malformed polyfill owner-state artifacts inspectable with `connector_invalid` failures instead of only unknown-connector owner-state failures
+  - [x] Prove CLI `trace show` keeps malformed polyfill client query artifacts inspectable instead of only native or auth-gate client failures
+  - [x] Prove grant-scoped state artifacts stay inspectable through CLI `grant timeline`, not just raw HTTP timeline readers
+  - [x] Prove CLI `grant timeline` preserves issuance artifacts (`grant.issued`, `token.issued`) for ordinary issued grants, not just native approvals
+  - [x] Prove CLI `grant timeline` preserves native issuance artifacts (`grant.issued`, `token.issued`) without connector/storage leakage
+  - [x] Prove CLI `grant timeline` preserves native `grant.revoked` artifacts without connector/storage leakage
+  - [x] Prove CLI `grant timeline` preserves rejected native client query artifacts without connector or storage-binding leakage
+  - [x] Prove CLI `grant timeline` preserves malformed polyfill client `stream_list` artifacts instead of only deeper query shapes
+  - [x] Prove CLI `grant timeline` preserves malformed polyfill client `stream_metadata` artifacts instead of only deeper query shapes
+  - [x] Prove CLI `grant timeline` preserves malformed polyfill client `record_list` artifacts instead of only deeper query shapes
+  - [x] Prove CLI `grant timeline` preserves malformed polyfill client `record_detail` artifacts instead of only native or auth-gate client failures
+  - [x] Prove CLI `grant timeline` preserves rejected field-limited `changes_since` query artifacts, including `has_changes_since` and `field_not_granted` failures
+  - [x] Prove CLI `grant timeline` preserves rejected record-detail artifacts for records outside granted resources instead of only successful disclosure paths
+  - [x] Prove CLI `grant timeline` preserves rejected stream-boundary client reads (`stream_metadata`, `record_list`, `record_detail`) plus time-range-hidden `record_detail` artifacts instead of only resource-boundary disclosure failures
+  - [x] Prove CLI `query records` / `query get` preserve field-limited disclosure projections and honest resource-limited pagination instead of flattening the RS contract to generic list output
+  - [x] Expose durable `_ref` run timelines through CLI `run timeline` and prove successful plus failed checkpoint artifacts stay inspectable there, not just through raw HTTP readers
+  - [x] Prove CLI `run timeline` also preserves skipped-stream artifacts (`run.stream_skipped`), not just checkpoint and progress events
+  - [x] Prove CLI `run timeline` also preserves interaction artifacts (`run.interaction_required`, `run.interaction_completed`) without leaking `INTERACTION_RESPONSE` secrets
+  - [x] Prove CLI `run timeline` preserves non-success interaction outcomes (`timeout` and `cancelled`), not just successful interaction completion
+  - [x] Prove CLI `run timeline` preserves `interaction_handler_invalid_response` failures without fabricating `run.interaction_completed` artifacts
+  - [x] Prove CLI `run timeline` preserves malformed connector `INTERACTION` protocol violations without fabricating interaction artifacts
+  - [x] Prove CLI `run timeline` preserves malformed and undeclared-stream `PROGRESS` / `SKIP_RESULT` protocol violations without fabricating progress or skip artifacts
+  - [x] Prove CLI `run timeline` preserves malformed `INTERACTION.schema` and malformed `PROGRESS.total` protocol violations without fabricating interaction or progress artifacts
+  - [x] Prove CLI `run timeline` preserves the full pending-interaction protocol-violation family (`RECORD`, `STATE`, `PROGRESS`, `SKIP_RESULT`, overlapping `INTERACTION`, `DONE`, invalid JSONL`) without fabricating blocked artifacts
+  - [x] Prove CLI `run timeline` also preserves partial checkpoint commit artifacts (`run.state_advanced`, `run.state_commit_failed`, `run.failed`) so operators can inspect the subtle checkpoint boundary without dropping to raw HTTP readers
+  - [x] Prove CLI `run timeline` also preserves connector-declared terminal error details (`connector_error_message`, `connector_error_retryable`) for failed and cancelled runs instead of only generic `run.failed` artifacts
+  - [x] Prove CLI `run timeline` also preserves terminal counter-mismatch protocol-violation details (`reported_records_emitted`, staged vs committed checkpoint counts) instead of only generic failure reasons
+  - [x] Prove `_ref` and CLI `run timeline` preserve deterministic runtime `authentication_error`, `permission_error`, and `connector_invalid` failures, including bare `401` / `403` responses that omit structured error codes, instead of flattening them to generic `runtime_error`
+  - [x] Prove `_ref` and CLI `run timeline` also preserve retryable runtime `rate_limit_error` failures distinctly, including bare `429` responses that omit a structured error code, instead of flattening them to generic `runtime_error`
+  - [x] Prove CLI `run timeline` preserves invalid `DONE.status` and DONE/exit mismatch protocol violations instead of only counter mismatches and post-`DONE` failures
+  - [x] Prove CLI `run timeline` preserves contradictory `DONE(status=\"succeeded\")` terminal-error violations without falsely surfacing `connector_error_*` details
+  - [x] Prove CLI `run timeline` preserves post-`DONE` protocol violations without leaving misleading `run.completed` artifacts behind
+  - [x] Make the reference test runner execute independent test files with bounded parallelism so full-suite verification remains practical as the CLI/operator truth-serum surface grows
+  - [x] Normalize temporary connector fixtures to `.mjs` and suppress test-harness server/runtime noise so the growing CLI/operator suite still finishes as a practical full-run verification step
+  - [x] Terminate connector child processes immediately on pending-interaction protocol violations so CLI/operator truth-serum runs reject cleanly instead of hanging behind leaked connector processes
+  - [x] Prove malformed persisted connector manifests reject owner stream-list, stream-metadata, and record-detail reads with correlated `query.rejected` artifacts instead of only the stream-list path
+  - [x] Reject malformed connector manifests at registry time instead of accepting impossible stream schema, key, or view shapes that fail later in grant/query/runtime paths
+  - [x] Reject malformed persisted connector manifests explicitly on registry and owner-read paths instead of drifting into generic downstream failures
+  - [x] Make the experimental scheduler retry only genuinely retryable run failures, and prove it skips retries for connector protocol violations plus explicit non-retryable connector-declared failures
+  - [x] Make the experimental scheduler also skip retries for deterministic runtime `authentication_error`, `permission_error`, and `connector_invalid` failures, including bare `401` / `403` responses that omit structured error codes, and preserve those failure reasons in scheduler history
+  - [x] Prove the experimental scheduler still retries runtime `rate_limit_error` / `429` failures so the non-retryable boundary is limited to deterministic contract/auth failures
+  - [x] Prove the experimental scheduler still retries transient runtime `500` failures so the non-retryable boundary stays limited to deterministic `4xx` contract/auth failures
+  - [x] Prove the experimental scheduler treats `single_use` grants as one successful run plus exhausted skips without persisting connector state
+  - [x] Prevent overlapping scheduled runs for the same connector and prove the scheduler keeps only one active run per connector even when the interval fires before the prior run completes
+  - [x] Prove failed `single_use` scheduler runs do not consume the grant and that a later successful run still becomes the consuming run that triggers exhausted skips
+  - [x] Make scheduler `stop()` suppress in-flight retry backoff so shutdown does not launch surprise follow-up attempts after the operator has stopped scheduling
+  - [x] Make scheduler `start()` idempotent so repeated starts do not create duplicate schedules or launch surprise immediate reruns
+  - [x] Make the experimental scheduler disable future intervals after deterministic grant lifecycle failures (`grant_revoked`, `grant_expired`, `grant_invalid`, `grant_consumed`) instead of emitting the same failed run forever
+  - [x] Make the experimental scheduler emit at most one terminal disabled skip after a deterministic grant lifecycle failure and then stay quiet instead of spamming skipped history forever
+  - [x] Reject malformed polyfill owner `connector_id` query params instead of normalizing duplicate or non-string values into connector-shaped owner read or mutation scopes, while preserving inspectable owner trace artifacts across `stream_list`, `stream_metadata`, and `record_list` plus mutation artifacts with explicit `source: null`
+- [x] Finish Collection Profile convergence to the current intended contract
+  - [x] Reject issuance-time `START.scope` fields like `view` and `necessity` so connectors only receive normalized run targets
+  - [x] Reject malformed explicit `START.scope` selector shapes (`resources`, `fields`, `time_range`) instead of passing arbitrary caller structures through to connectors
+  - [x] Reject explicit `START.scope` streams absent from the manifest instead of passing impossible run targets through to connectors
+  - [x] Reject explicitly empty or wildcard `START.scope` values instead of silently broadening them to all manifest streams
+  - [x] Reject invalid `START.collection_mode` values instead of passing arbitrary caller strings through to connectors
+  - [x] Reject invalid `START.state` shapes, including scalar per-stream cursors, instead of passing arbitrary caller values through to connectors
+  - [x] Reject scalar `STATE.cursor` envelopes instead of staging non-object checkpoints
+  - [x] Normalize `START.scope.fields` to include schema-required, primary-key, and time-range validation fields before the connector sees the run target
+  - [x] Prove connectors can branch on `START.scope` resource and `time_range` selectors, not just receive them passively
+  - [x] Prove connectors can branch on normalized `START.scope.fields`, including requested, primary-key, required, and time-range validation fields, not just on the raw caller-selected subset
+  - [x] Advertise the runtime's actual standard binding capabilities in `START.bindings`, including `interactive` when an interaction handler is present
+  - [x] Prove terminal `DONE` invariants across `succeeded`, `failed`, and `cancelled` status, including exit-code consistency and `records_emitted` validation
+  - [x] Reject malformed connector `INTERACTION` and `PROGRESS` envelopes as protocol violations before they enter durable run artifacts
+  - [x] Reject malformed connector `PROGRESS.count` / `PROGRESS.total` counters plus malformed `INTERACTION.timeout_seconds` and `INTERACTION.schema` values as protocol violations before they enter durable run artifacts
+  - [x] Reject malformed connector `SKIP_RESULT` envelopes as protocol violations before they enter durable run artifacts
+  - [x] Reject connector `INTERACTION` envelopes that name streams outside declared `START.scope`
+  - [x] Reject connector `PROGRESS` and `SKIP_RESULT` envelopes that name streams outside declared `START.scope`
+  - [x] Force `single_use` runs to receive `START.state = null` even when callers supply prior connector state
+  - [x] Make `START.bindings` omit `interactive` when interaction handling is explicitly disabled and reject unsolicited `INTERACTION` messages against that advertised contract
+  - [x] Prove that pending-interaction protocol violations block durable `RECORD`, `STATE`, `PROGRESS`, `SKIP_RESULT`, and overlapping `INTERACTION` artifacts until a valid `INTERACTION_RESPONSE` arrives
+  - [x] Distinguish partially committed checkpoint artifacts from fully uncommitted failures when a later state persistence write fails after one or more stream checkpoints have already committed
+  - [x] Emit durable per-stream `run.state_commit_failed` artifacts when checkpoint persistence fails after one or more earlier stream checkpoints have already committed
+  - [x] Preserve validated connector-declared terminal error details in durable run artifacts and scheduler history without treating malformed `DONE.error` envelopes as valid terminal metadata
+  - [x] Reject contradictory `DONE(status="succeeded")` terminal error details as protocol violations while keeping the `DONE.error` normativity question explicit in OpenSpec
+  - [x] Reject `DONE.error` envelopes that include unsupported fields beyond the current `{ message, retryable? }` reference shape while keeping the broader terminal-error normativity question explicit in OpenSpec
+- [x] Separate Collection Profile reference decisions from still-open spec questions
+
+## Next
+- [x] Quarantine or remove remaining active reference/demo helpers that still teach non-primary flows
+  - [x] Remove the remaining live `user_demo` owner-subject defaults from active auth routes, tests, and published examples so the reference no longer teaches demo identity in the primary login and approval flows
+  - [x] Rename the last live demo-named seed identities and comments in the reference seed connector and web seed-data module so the primary local-fixture path no longer teaches demo personas
+  - [x] Rename the remaining live Gmail seed-module demo language so the primary web fixture path is described as a reference fixture rather than a demo-only surface
+- [x] Continue removing native-provider leakage from connector-shaped internal terminology where that leakage still reaches public/reference artifacts
+- [x] Tighten current provider-connect docs/tests around what is actually proved today versus what remains out of scope
+- [x] Expand CLI and black-box test coverage only where it strengthens the current real contract
+- [x] Define the launch-complete provider-connect target explicitly: owner self-export, third-party client connect, pre-registered/manual fallback, and protected DCR
+- [x] Implement and test protected DCR without making it the only supported registration path
+- [x] Record the Collection Profile reference decisions we are taking now, the open spec questions, and whether each affects interop or only reference behavior
+- [x] Close the highest-signal Collection Profile gaps once the boundary/auth surfaces above are cleaner
+  - [x] prove normalized START shape and incremental-state passthrough
+  - [x] prove `START.collection_mode` delivery strongly enough that connectors can branch on it
+  - [x] prove runtime rejection of out-of-scope RECORDs for undeclared streams, resources, fields, and time ranges
+  - [x] prove unexpected-exit behavior before STATE, after STATE, on graceful exit without DONE, and across a batch-flush boundary
+
+## Deferred
+- [ ] Build a real control plane or dashboard
+- [ ] Add replay / illustrated-flow integration on top of the event spine
+- [ ] Add broad storage abstraction beyond the current explicit seams

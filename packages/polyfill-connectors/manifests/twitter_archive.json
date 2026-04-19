@@ -1,0 +1,60 @@
+{
+  "protocol_version": "0.1.0",
+  "connector_id": "https://registry.pdpp.org/connectors/twitter-archive",
+  "version": "0.1.0",
+  "display_name": "Twitter/X Archive",
+  "runtime_requirements": { "bindings": { "filesystem": { "required": true } } },
+  "capabilities": { "human_interaction": [] },
+  "streams": [
+    {
+      "name": "tweets",
+      "description": "Tweets (posts) authored by the user.",
+      "display": { "label": "Your tweets", "detail": "Tweet text, timestamps, reply/retweet/quote relationships, media counts." },
+      "semantics": "append_only",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "text": { "type": ["string", "null"] },
+          "created_at": { "type": "string" },
+          "favorite_count": { "type": ["integer", "null"] },
+          "retweet_count": { "type": ["integer", "null"] },
+          "in_reply_to_status_id": { "type": ["string", "null"] },
+          "in_reply_to_screen_name": { "type": ["string", "null"] },
+          "lang": { "type": ["string", "null"] },
+          "media_count": { "type": ["integer", "null"] },
+          "url_count": { "type": ["integer", "null"] }
+        },
+        "required": ["id", "created_at"]
+      },
+      "primary_key": ["id"],
+      "cursor_field": "created_at",
+      "consent_time_field": "created_at",
+      "selection": { "fields": true, "resources": true },
+      "incremental": true
+    },
+    {
+      "name": "direct_messages",
+      "description": "Direct messages to/from the user.",
+      "display": { "label": "Your DMs", "detail": "Sender, recipient, timestamp, text per DM." },
+      "semantics": "append_only",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "conversation_id": { "type": ["string", "null"] },
+          "sender_id": { "type": ["string", "null"] },
+          "recipient_id": { "type": ["string", "null"] },
+          "created_at": { "type": "string" },
+          "text": { "type": ["string", "null"] }
+        },
+        "required": ["id", "created_at"]
+      },
+      "primary_key": ["id"],
+      "cursor_field": "created_at",
+      "consent_time_field": "created_at",
+      "selection": { "fields": true, "resources": true },
+      "incremental": true
+    }
+  ]
+}

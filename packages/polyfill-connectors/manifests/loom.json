@@ -1,0 +1,56 @@
+{
+  "protocol_version": "0.1.0",
+  "connector_id": "https://registry.pdpp.org/connectors/loom",
+  "version": "0.1.0",
+  "display_name": "Loom",
+  "runtime_requirements": { "bindings": { "network": { "required": true } } },
+  "capabilities": { "human_interaction": ["manual_action"] },
+  "streams": [
+    {
+      "name": "videos",
+      "description": "Loom videos the user has recorded.",
+      "display": { "label": "Your Loom videos", "detail": "Video titles, descriptions, duration, view counts, timestamps, transcript availability." },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "title": { "type": ["string", "null"] },
+          "description": { "type": ["string", "null"] },
+          "duration_seconds": { "type": ["integer", "null"] },
+          "view_count": { "type": ["integer", "null"] },
+          "created_at": { "type": ["string", "null"] },
+          "share_url": { "type": ["string", "null"] },
+          "has_transcript": { "type": ["boolean", "null"] }
+        },
+        "required": ["id"]
+      },
+      "primary_key": ["id"],
+      "cursor_field": "created_at",
+      "consent_time_field": "created_at",
+      "selection": { "fields": true, "resources": true },
+      "incremental": true
+    },
+    {
+      "name": "transcripts",
+      "description": "Transcript text per video.",
+      "display": { "label": "Your Loom transcripts", "detail": "Per-video transcript text with word-level timings when available." },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "video_id": { "type": "string" },
+          "text": { "type": ["string", "null"] }
+        },
+        "required": ["id", "video_id"]
+      },
+      "primary_key": ["id"],
+      "selection": { "fields": true, "resources": true },
+      "incremental": false,
+      "relationships": [
+        { "name": "video", "stream": "videos", "foreign_key": "video_id", "cardinality": "has_one" }
+      ]
+    }
+  ]
+}

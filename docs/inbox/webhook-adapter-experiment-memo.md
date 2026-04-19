@@ -1,7 +1,7 @@
 # Webhook-to-Pull Adapter Experiment: Findings
 
 **Date:** 2026-04-12
-**Artifact:** `e2e/runtime/webhook-adapter.js`
+**Artifact:** `reference-implementation/runtime/webhook-adapter.js`
 **Status:** Experiment complete — push delivery fits as runtime architecture
 
 ---

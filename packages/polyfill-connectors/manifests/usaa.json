@@ -1,0 +1,184 @@
+{
+  "protocol_version": "0.1.0",
+  "connector_id": "https://registry.pdpp.org/connectors/usaa",
+  "version": "0.1.0",
+  "display_name": "USAA",
+  "runtime_requirements": {
+    "bindings": {
+      "network": { "required": true }
+    }
+  },
+  "capabilities": {
+    "human_interaction": ["manual_action"]
+  },
+  "streams": [
+    {
+      "name": "accounts",
+      "description": "USAA retail accounts (checking, savings, credit cards, loans).",
+      "display": {
+        "label": "Your USAA accounts",
+        "detail": "Account names, types, last-four, balances, and open/closed status."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "name": { "type": ["string", "null"] },
+          "type": { "type": ["string", "null"] },
+          "last_four": { "type": ["string", "null"] },
+          "balance_cents": { "type": ["integer", "null"] },
+          "available_balance_cents": { "type": ["integer", "null"] },
+          "status": { "type": ["string", "null"] },
+          "fetched_at": { "type": "string" }
+        },
+        "required": ["id"]
+      },
+      "primary_key": ["id"],
+      "selection": { "fields": true, "resources": true },
+      "incremental": false
+    },
+    {
+      "name": "transactions",
+      "description": "USAA transactions. Primary key is a stable synthetic hash of (account_id, date, amount, original_description, ordinal-within-tuple) because USAA's CSV export does not expose transaction IDs. Amounts are in cents (integer, signed).",
+      "display": {
+        "label": "Your USAA transactions",
+        "detail": "Date, signed amount in cents, cleaned payee name, original statement description, USAA-assigned category, check number (parsed from original description), and running balance when available. Pending transactions included if visible."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "account_id": { "type": "string" },
+          "account_name": { "type": ["string", "null"] },
+          "date": { "type": "string", "format": "date" },
+          "amount": { "type": "integer" },
+          "currency": { "type": "string" },
+          "description": { "type": ["string", "null"] },
+          "original_description": { "type": ["string", "null"] },
+          "category": { "type": ["string", "null"] },
+          "check_number": { "type": ["string", "null"] },
+          "balance_after_cents": { "type": ["integer", "null"] },
+          "source": { "type": "string" },
+          "fetched_at": { "type": "string" }
+        },
+        "required": ["id", "account_id", "date", "amount", "currency"]
+      },
+      "primary_key": ["id"],
+      "cursor_field": "date",
+      "consent_time_field": "date",
+      "selection": { "fields": true, "resources": true },
+      "incremental": true,
+      "relationships": [
+        { "name": "account", "stream": "accounts", "foreign_key": "account_id", "cardinality": "has_one" }
+      ],
+      "views": [
+        { "id": "reconciliation", "label": "Fields for matching to YNAB/Amazon", "fields": ["id", "account_id", "account_name", "date", "amount", "description", "original_description", "category", "check_number"] }
+      ]
+    },
+    {
+      "name": "statements",
+      "description": "Statement index per account. Always includes title, delivery date, and account reference. `document_url` and `pdf_sha256` are populated only when the connector has successfully hydrated a statement PDF; on the current CSV/DOM-scrape path they are expected to be null because USAA's document download requires a per-row 'Options -> Download' click against a short-lived signed URL (see connector source for the deferred blob-hydration plan).",
+      "display": {
+        "label": "Your USAA statements",
+        "detail": "Monthly statements across all accounts: document title, delivery date, and account reference. PDF download URL and content hash are populated when blob hydration has run; otherwise null."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "title": { "type": "string" },
+          "date_delivered": { "type": ["string", "null"], "format": "date" },
+          "account_reference": { "type": ["string", "null"] },
+          "document_url": {
+            "type": ["string", "null"],
+            "description": "Signed PDF URL. Populated only after blob hydration; null on index-only scrapes."
+          },
+          "pdf_sha256": {
+            "type": ["string", "null"],
+            "description": "SHA-256 of the downloaded PDF bytes. Populated only after blob hydration; null on index-only scrapes."
+          },
+          "fetched_at": { "type": "string" }
+        },
+        "required": ["id", "title"]
+      },
+      "primary_key": ["id"],
+      "cursor_field": "date_delivered",
+      "consent_time_field": "date_delivered",
+      "selection": { "fields": true, "resources": true },
+      "incremental": true
+    },
+    {
+      "name": "inbox_messages",
+      "description": "Bank-generated messages in the USAA secure inbox.",
+      "display": {
+        "label": "Your USAA inbox",
+        "detail": "Messages from USAA (statement alerts, new documents, service notices). Read/unread status and previews captured; full message bodies deferred."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "date_received": { "type": ["string", "null"], "format": "date" },
+          "status": { "type": ["string", "null"] },
+          "subject": { "type": ["string", "null"] },
+          "preview": { "type": ["string", "null"] },
+          "fetched_at": { "type": "string" }
+        },
+        "required": ["id"]
+      },
+      "primary_key": ["id"],
+      "cursor_field": "date_received",
+      "consent_time_field": "date_received",
+      "selection": { "fields": true, "resources": true },
+      "incremental": true
+    },
+    {
+      "name": "credit_card_billing",
+      "description": "Per-credit-card billing state: balance, credit limit, APR, rewards, minimum-payment status.",
+      "display": {
+        "label": "Your credit card billing details",
+        "detail": "For each USAA-issued credit card: current balance, available credit, credit limit, APRs, cash-rewards balance, minimum-payment-met flag, card holder names."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "account_id": { "type": ["string", "null"] },
+          "account_nickname": { "type": ["string", "null"] },
+          "current_balance_cents": { "type": ["integer", "null"] },
+          "available_credit_cents": { "type": ["integer", "null"] },
+          "credit_limit_cents": { "type": ["integer", "null"] },
+          "annual_percent_rate": { "type": ["string", "null"] },
+          "cash_advance_apr": { "type": ["string", "null"] },
+          "cash_rewards_cents": { "type": ["integer", "null"] },
+          "billing_status": { "type": ["string", "null"] },
+          "minimum_payment_met": { "type": ["boolean", "null"] },
+          "card_holders": { "type": ["string", "null"] },
+          "fetched_at": { "type": "string" }
+        },
+        "required": ["id"]
+      },
+      "primary_key": ["id"],
+      "selection": { "fields": true, "resources": true },
+      "incremental": false,
+      "relationships": [
+        { "name": "account", "stream": "accounts", "foreign_key": "account_id", "cardinality": "has_one" }
+      ]
+    }
+  ],
+  "profiles": [
+    {
+      "id": "reconciliation",
+      "label": "Accounts + transactions for YNAB reconciliation",
+      "streams": [
+        { "name": "accounts" },
+        { "name": "transactions", "view": "reconciliation" }
+      ]
+    }
+  ]
+}

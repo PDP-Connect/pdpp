@@ -6,7 +6,7 @@ Date: 2026-04-08
 
 ## Executive summary
 
-PDPP contains roughly 30 distinct artifacts spanning spec documents, design notes, research docs, a reference implementation (in-memory mock server + React components), a Node.js e2e implementation, shared brand infrastructure, and planning documents. Most artifacts have a clear home in the classification scheme below, but several straddle boundaries in ways that matter for future authors and agents. The biggest source of confusion is not misclassification but the absence of explicit labels: the VitePress sidebar groups spec-architecture.md with the Collection Profile and groups spec-change-tracking.md under "Design Notes," but the actual normative weight of those documents is determined by their content, not their sidebar placement. This map resolves that.
+PDPP contains roughly 30 distinct artifacts spanning spec documents, design notes, research docs, an illustrated/reference website layer, a runnable `reference-implementation/` package, shared brand infrastructure, OpenSpec project artifacts, and historical planning notes. Most artifacts have a clear home in the classification scheme below, but several straddle boundaries in ways that matter for future authors and agents. The biggest source of confusion is not misclassification but the absence of explicit labels: the docs sidebar groups spec-architecture.md with the Collection Profile and groups spec-change-tracking.md under "Design Notes," while older notes still refer to `docs/inbox/` as if it were the active planning layer. This map resolves that.
 
 ---
 
@@ -18,7 +18,7 @@ PDPP contains roughly 30 distinct artifacts spanning spec documents, design note
 
 3. **Shared semantics** -- Concepts, message formats, or field definitions intended to be reused across multiple profiles or specs. The RECORD envelope, stream semantics (append_only/mutable_state), the three semantic classes, the purpose code registry. These are defined in Core but are load-bearing for companion specs too.
 
-4. **Reference architecture** -- Implementation that demonstrates the spec but is not itself normative. The reference page, mock server, PDPP components, design system, e2e implementation. A conformant implementation may ignore all of this and still be conformant.
+4. **Reference architecture** -- Implementation that demonstrates the spec but is not itself normative. The reference page, mock server, PDPP components, design system, reference implementation package. A conformant implementation may ignore all of this and still be conformant.
 
 5. **Implementation detail** -- Code, config, or tooling that supports the project but has no spec significance. Build config, CSS tokens, VitePress config, package scaffolding, React component internals.
 
@@ -40,7 +40,7 @@ PDPP contains roughly 30 distinct artifacts spanning spec documents, design note
 | `spec-change-tracking.md` | **Shared semantics (design rationale + normative content)** | Documents the decision to use grant-relative incremental sync instead of canonical changelog streams. The "How it works" section restates normative requirements from Core (projection-aware deltas, tombstones, cursor expiry). The "Why not canonical streams" section is design rationale. The substance is normative but the authority lives in spec-core.md Section 4 and Section 8. | Stable -- the design decision is settled |
 | `spec-deferred.md` | **Experimental / not yet committed** | Explicitly catalogs concerns out of scope for v0.1. Contains future design directions (subset templates, active erasure, re-interaction, freshness requirements, source lifecycle actions, event-driven triggers, canonical view naming, AS interface, point-in-time reconstruction). Some items (predicate-based grant scoping) include recommended design directions that constrain future versions. | Stable as a parking lot; contents are unstable |
 | `spec-dti-alignment.md` | **Experimental / not yet committed** | Research on DTI's receptiveness and strategic framing for engagement. No spec-level content. Pure positioning and engagement strategy. | Stable -- historical research |
-| `spec-e2e-examples.md` | **Informational / reference architecture** | Three end-to-end examples marked "Illustrative" at the top. Explicitly states normative documents win when examples differ. Covers single_use with consent rendering, continuous with grant-scoped state, and retention/revocation. | Stable -- illustrative |
+| `spec-reference-implementation-examples.md` | **Informational / reference architecture** | Three end-to-end examples marked "Illustrative" at the top. Explicitly states normative documents win when examples differ. Covers single_use with consent rendering, continuous with grant-scoped state, and retention/revocation. | Stable -- illustrative |
 | `spec-connector-ecosystem.md` | **Experimental / not yet committed** | Browser abstraction decision (Model A vs B), catalog of third-party tools that could become connectors, runtime requirements landscape. No normative content. Research and ecosystem planning. | Stable -- historical research |
 
 ### Shared semantic concepts (defined in Core but cross-cutting)
@@ -72,9 +72,11 @@ PDPP contains roughly 30 distinct artifacts spanning spec documents, design note
 | `docs/inbox/pdpp_memo.txt` | **Experimental / not yet committed** | Gemini 3.1 Pro review memo. External critique. | Stable -- historical |
 | `docs/inbox/pdpp_memo_chatgpt.txt` | **Experimental / not yet committed** | ChatGPT 5.4 review memo. External critique. Identified the promise-surface/enforcement-surface distinction as the highest-leverage editorial fix. | Stable -- historical |
 | `docs/inbox/collection-profile-prior-art-memo.md` | **Experimental / not yet committed** | Collection profile prior art research. | Stable -- historical |
-| `docs/inbox/design-sidebar-slvp-plan.md` | **Experimental / not yet committed** | Design sidebar planning. | In-motion |
+| `docs/inbox/*` (most other files) | **Experimental / not yet committed** | Scratch notes, external review, or superseded planning material. Useful for historical context, not the active project execution layer. | Historical / mixed |
+| `openspec/specs/reference-implementation-governance/spec.md` | **Experimental / not yet committed** | Project-governance spec defining authority order between root PDPP specs, code/tests, and OpenSpec itself. | Stable -- active |
+| `openspec/specs/reference-implementation-architecture/spec.md` | **Experimental / not yet committed** | Durable architecture spec for the runnable reference implementation and its website/control-plane boundaries. | Stable -- active |
 
-### Reference implementation (apps/web/)
+### Illustrated/reference surfaces (`apps/web/`)
 
 | Artifact | Current Status | Why | Stability |
 |----------|---------------|-----|-----------|
@@ -95,19 +97,19 @@ PDPP contains roughly 30 distinct artifacts spanning spec documents, design note
 | `apps/web/src/app/design/` | **Reference architecture** | Design system workbench page. Same components as reference, with specimen switchers for all spec axes. | In-motion |
 | `apps/web/src/app/docs/` | **Implementation detail** | Fumadocs integration for spec rendering. | Stable |
 
-### E2E reference implementation (e2e/)
+### Reference implementation (`reference-implementation/`)
 
 | Artifact | Current Status | Why | Stability |
 |----------|---------------|-----|-----------|
-| `e2e/server/index.js` | **Reference architecture** | Express server implementing the RS interface (query endpoints, ingest, state management). The "real" reference implementation the owner wants implementers to read. | In-motion |
-| `e2e/server/records.js` | **Reference architecture** | Query logic including `changes_since` with projection-aware deltas. Contains the confirmed-then-fixed projection-leak bug path. The privacy property reviewers should verify. | In-motion |
-| `e2e/server/auth.js` | **Reference architecture** | Authentication logic for owner/client token distinction. | In-motion |
-| `e2e/server/db.js` | **Reference architecture** | SQLite database layer for record storage and version history. | In-motion |
-| `e2e/runtime/index.js` | **Reference architecture** | Connector runtime implementing START/RECORD/STATE/DONE protocol. | In-motion |
-| `e2e/client/demo.js` | **Reference architecture** | Client demonstrating the full protocol flow (request, consent, query, sync). | In-motion |
-| `e2e/manifests/github.json`, `spotify.json`, `reddit.json` | **Reference architecture** | Example connector manifests conforming to Section 7. | Stable |
-| `e2e/connectors/github/`, `spotify/`, `reddit/` | **Reference architecture** | Working connector implementations using the Collection Profile protocol. | In-motion |
-| `e2e/test/pdpp.test.js` | **Reference architecture** | E2E tests covering projection, incremental sync, revocation, tombstones. | In-motion |
+| `reference-implementation/server/index.js` | **Reference architecture** | Express server implementing the RS interface (query endpoints, ingest, state management). The "real" reference implementation the owner wants implementers to read. | In-motion |
+| `reference-implementation/server/records.js` | **Reference architecture** | Query logic including `changes_since` with projection-aware deltas. Contains the confirmed-then-fixed projection-leak bug path. The privacy property reviewers should verify. | In-motion |
+| `reference-implementation/server/auth.js` | **Reference architecture** | Authentication logic for owner/client token distinction. | In-motion |
+| `reference-implementation/server/db.js` | **Reference architecture** | SQLite database layer for record storage and version history. | In-motion |
+| `reference-implementation/runtime/index.js` | **Reference architecture** | Connector runtime implementing START/RECORD/STATE/DONE protocol. | In-motion |
+| `reference-implementation/cli/` | **Reference architecture** | First-class consumer surface for owner login, request staging, provider inspection, query, and trace/timeline inspection. | In-motion |
+| `reference-implementation/manifests/github.json`, `spotify.json`, `reddit.json` | **Reference architecture** | Example connector manifests conforming to Section 7. | Stable |
+| `reference-implementation/connectors/github/`, `spotify/`, `reddit/` | **Reference architecture** | Working connector implementations using the Collection Profile protocol. | In-motion |
+| `reference-implementation/test/pdpp.test.js` | **Reference architecture** | End-to-end tests covering projection, incremental sync, revocation, tombstones. | In-motion |
 
 ### Shared packages (packages/)
 
@@ -182,7 +184,7 @@ PDPP contains roughly 30 distinct artifacts spanning spec documents, design note
 
 **Tension:** The sidebar groups spec-architecture.md under "Collection Profile" (it covers the whole system), spec-change-tracking.md under "Design Notes" (it contains normative substance), and spec-auth-design.md under "Core Protocol" (it is a design rationale document, not normative). The sidebar is the primary navigation for readers of the spec site, so these groupings create wrong impressions about normative weight.
 
-**Recommendation:** Realign sidebar labels with actual document status. Possible structure: "Core Protocol" (spec-core.md only), "Companion Profiles" (spec-collection-profile.md), "Design Rationale" (spec-architecture.md, spec-auth-design.md, spec-change-tracking.md, spec-data-query-api.md), "Examples" (spec-e2e-examples.md), "Future" (spec-deferred.md). Or add a status badge to each entry.
+**Recommendation:** Realign sidebar labels with actual document status. Possible structure: "Core Protocol" (spec-core.md only), "Companion Profiles" (spec-collection-profile.md), "Design Rationale" (spec-architecture.md, spec-auth-design.md, spec-change-tracking.md, spec-data-query-api.md), "Examples" (spec-reference-implementation-examples.md), "Future" (spec-deferred.md). Or add a status badge to each entry.
 
 ---
 
@@ -202,7 +204,7 @@ PDPP contains roughly 30 distinct artifacts spanning spec documents, design note
 
 ## Bottom-line guidance for future agents and authors
 
-- **When implementing:** Core Section 8 (RS interface) and Section 9 (conformance) are the authorities. The mock server and e2e implementation demonstrate these requirements but do not define them.
+- **When implementing:** Core Section 8 (RS interface) and Section 9 (conformance) are the authorities. The mock server and reference implementation demonstrate these requirements but do not define them.
 
 - **When writing spec text:** Only spec-core.md and spec-collection-profile.md carry normative weight. Everything else is informational, research, or planning. Do not cite spec-architecture.md or spec-change-tracking.md as normative sources.
 

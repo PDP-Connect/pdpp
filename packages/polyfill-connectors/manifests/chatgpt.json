@@ -1,0 +1,126 @@
+{
+  "protocol_version": "0.1.0",
+  "connector_id": "https://registry.pdpp.org/connectors/chatgpt",
+  "version": "0.1.0",
+  "display_name": "ChatGPT",
+  "runtime_requirements": {
+    "bindings": {
+      "network": { "required": true }
+    }
+  },
+  "capabilities": {
+    "human_interaction": ["manual_action"]
+  },
+  "streams": [
+    {
+      "name": "conversations",
+      "description": "ChatGPT conversations.",
+      "display": {
+        "label": "Your conversations",
+        "detail": "Conversation list with titles, create/update times, archived/starred flags, workspace (if enterprise), current-branch tip. Messages are a separate stream."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "title": { "type": ["string", "null"] },
+          "create_time": { "type": ["string", "null"] },
+          "update_time": { "type": ["string", "null"] },
+          "is_archived": { "type": ["boolean", "null"] },
+          "is_starred": { "type": ["boolean", "null"] },
+          "workspace_id": { "type": ["string", "null"] },
+          "current_node": { "type": ["string", "null"] },
+          "message_count_on_current_branch": { "type": ["integer", "null"] },
+          "gizmo_id": { "type": ["string", "null"] }
+        },
+        "required": ["id"]
+      },
+      "primary_key": ["id"],
+      "cursor_field": "update_time",
+      "consent_time_field": "create_time",
+      "selection": { "fields": true, "resources": true },
+      "incremental": true
+    },
+    {
+      "name": "messages",
+      "description": "Messages within conversations, flattened from ChatGPT's tree structure to the current-branch path. Parent_id is preserved for tree reconstruction.",
+      "display": {
+        "label": "Your messages",
+        "detail": "Each message on the current branch of every conversation: role, content, model, create time, tool calls, citations, attachment IDs. Alt branches are not exported (parent_id preserved for rebuild)."
+      },
+      "semantics": "append_only",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "conversation_id": { "type": "string" },
+          "parent_id": { "type": ["string", "null"] },
+          "children_ids": { "type": "array" },
+          "role": { "type": ["string", "null"] },
+          "content": { "type": ["string", "null"] },
+          "content_type": { "type": ["string", "null"] },
+          "model_slug": { "type": ["string", "null"] },
+          "create_time": { "type": ["string", "null"] },
+          "finish_reason": { "type": ["string", "null"] },
+          "citations": { "type": "array" },
+          "tool_calls": { "type": "array" },
+          "attachment_ids": { "type": "array" },
+          "on_current_branch": { "type": "boolean" }
+        },
+        "required": ["id", "conversation_id"]
+      },
+      "primary_key": ["id"],
+      "cursor_field": "create_time",
+      "consent_time_field": "create_time",
+      "selection": { "fields": true, "resources": true },
+      "incremental": true,
+      "relationships": [
+        { "name": "conversation", "stream": "conversations", "foreign_key": "conversation_id", "cardinality": "has_one" }
+      ]
+    },
+    {
+      "name": "memories",
+      "description": "Saved memories ChatGPT has about the user.",
+      "display": {
+        "label": "ChatGPT memories",
+        "detail": "Saved facts ChatGPT remembers about you, with created/updated timestamps. Deletions detected via diff — API does not emit tombstones."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "content": { "type": "string" },
+          "created_at": { "type": ["string", "null"] },
+          "updated_at": { "type": ["string", "null"] }
+        },
+        "required": ["id", "content"]
+      },
+      "primary_key": ["id"],
+      "cursor_field": "updated_at",
+      "consent_time_field": "created_at",
+      "selection": { "fields": true, "resources": true },
+      "incremental": true
+    }
+  ],
+  "profiles": [
+    {
+      "id": "chats",
+      "label": "Your conversation history",
+      "streams": [
+        { "name": "conversations" },
+        { "name": "messages" }
+      ]
+    },
+    {
+      "id": "full",
+      "label": "Conversations, messages, memories",
+      "streams": [
+        { "name": "conversations" },
+        { "name": "messages" },
+        { "name": "memories" }
+      ]
+    }
+  ]
+}

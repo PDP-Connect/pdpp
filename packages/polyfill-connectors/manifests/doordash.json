@@ -1,0 +1,70 @@
+{
+  "protocol_version": "0.1.0",
+  "connector_id": "https://registry.pdpp.org/connectors/doordash",
+  "version": "0.1.0",
+  "display_name": "DoorDash",
+  "runtime_requirements": { "bindings": { "network": { "required": true } } },
+  "capabilities": { "human_interaction": ["manual_action"] },
+  "streams": [
+    {
+      "name": "orders",
+      "description": "DoorDash food-delivery orders.",
+      "display": {
+        "label": "Your DoorDash orders",
+        "detail": "Order date, restaurant, items, prices, tips, tax, delivery status, delivery address, fee breakdown."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "order_date": { "type": ["string", "null"] },
+          "restaurant_name": { "type": ["string", "null"] },
+          "status": { "type": ["string", "null"] },
+          "subtotal_cents": { "type": ["integer", "null"] },
+          "tax_cents": { "type": ["integer", "null"] },
+          "tip_cents": { "type": ["integer", "null"] },
+          "delivery_fee_cents": { "type": ["integer", "null"] },
+          "service_fee_cents": { "type": ["integer", "null"] },
+          "total_cents": { "type": ["integer", "null"] },
+          "delivery_address": { "type": ["string", "null"] },
+          "payment_method_summary": { "type": ["string", "null"] },
+          "item_count": { "type": ["integer", "null"] }
+        },
+        "required": ["id"]
+      },
+      "primary_key": ["id"],
+      "cursor_field": "order_date",
+      "consent_time_field": "order_date",
+      "selection": { "fields": true, "resources": true },
+      "incremental": true
+    },
+    {
+      "name": "order_items",
+      "description": "Individual items within DoorDash orders.",
+      "display": {
+        "label": "Your DoorDash order items",
+        "detail": "Item name, quantity, unit price, customizations."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "order_id": { "type": "string" },
+          "name": { "type": "string" },
+          "quantity": { "type": "integer" },
+          "unit_price_cents": { "type": ["integer", "null"] },
+          "customizations": { "type": "array" }
+        },
+        "required": ["id", "order_id", "name"]
+      },
+      "primary_key": ["id"],
+      "selection": { "fields": true, "resources": true },
+      "incremental": true,
+      "relationships": [
+        { "name": "order", "stream": "orders", "foreign_key": "order_id", "cardinality": "has_one" }
+      ]
+    }
+  ]
+}
