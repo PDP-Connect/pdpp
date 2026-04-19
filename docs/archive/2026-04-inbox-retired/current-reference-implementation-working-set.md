@@ -29,4 +29,4 @@ This file lists the current high-signal documents for the PDPP reference-impleme
 
 - Historical tactical memos from the April 16–17 convergence sprint now live under `docs/archive/2026-04-e2e-superseded/`.
 - Historical program/status docs from that sprint also live there; use the OpenSpec program tracker first.
-- Keep `docs/inbox/notes-4-15-2026.txt` as raw input/reference rather than as an active plan document.
+- Keep local scratch notes out of git; if a note needs to persist, promote it into `docs/archive/` or another durable home.

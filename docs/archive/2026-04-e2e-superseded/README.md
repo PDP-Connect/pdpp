@@ -7,4 +7,4 @@ They are archived rather than deleted because they record:
 - intermediate audits/checklists whose conclusions are now reflected in code
 - temporary sequencing memos superseded by the consolidated program docs
 
-Use the active OpenSpec program tracker in `openspec/changes/reference-implementation-program/` first. `docs/inbox/current-reference-implementation-working-set.md` can help with remaining high-signal notes, but this archive is for historical context only.
+Use the active OpenSpec program tracker in `openspec/changes/reference-implementation-program/` first. `docs/archive/2026-04-inbox-retired/current-reference-implementation-working-set.md` can help with remaining high-signal notes, but this archive is for historical context only.

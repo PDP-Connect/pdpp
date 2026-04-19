@@ -110,12 +110,12 @@ Do not:
 ## Primary references
 
 - [e2e-reference-implementation-plan.md](/home/user/code/pdpp/docs/archive/2026-04-e2e-superseded/e2e-reference-implementation-plan.md:1)
-- [reference-implementation-substrate-audit.md](/home/user/code/pdpp/docs/inbox/reference-implementation-substrate-audit.md:1)
-- [pdpp-provider-connect-profile-outline.md](/home/user/code/pdpp/docs/inbox/pdpp-provider-connect-profile-outline.md:1)
+- [reference-implementation-substrate-audit.md](/home/user/code/pdpp/docs/archive/2026-04-inbox-retired/reference-implementation-substrate-audit.md:1)
+- [pdpp-provider-connect-profile-outline.md](/home/user/code/pdpp/docs/archive/2026-04-inbox-retired/pdpp-provider-connect-profile-outline.md:1)
 - [reference-topology-memo.md](/home/user/code/pdpp/docs/archive/2026-04-e2e-superseded/reference-topology-memo.md:1)
-- [control-plane-surface-memo.md](/home/user/code/pdpp/docs/inbox/control-plane-surface-memo.md:1)
-- [live-reference-surface-recommendation.md](/home/user/code/pdpp/docs/inbox/live-reference-surface-recommendation.md:1)
-- [reference-implementation-owner-decisions-2026-04-16.md](/home/user/code/pdpp/docs/inbox/reference-implementation-owner-decisions-2026-04-16.md:1)
+- [control-plane-surface-memo.md](/home/user/code/pdpp/docs/archive/2026-04-inbox-retired/control-plane-surface-memo.md:1)
+- [live-reference-surface-recommendation.md](/home/user/code/pdpp/docs/archive/2026-04-inbox-retired/live-reference-surface-recommendation.md:1)
+- [reference-implementation-owner-decisions-2026-04-16.md](/home/user/code/pdpp/docs/archive/2026-04-inbox-retired/reference-implementation-owner-decisions-2026-04-16.md:1)
 - [control-plane-prior-art.md](/home/user/code/pdpp/docs/research/control-plane-prior-art.md:1)
 - [reference-implementation-ux-prior-art.md](/home/user/code/pdpp/docs/research/reference-implementation-ux-prior-art.md:1)
 - [trace-surface-patterns.md](/home/user/code/pdpp/docs/research/trace-surface-patterns.md:1)

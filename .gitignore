@@ -13,6 +13,9 @@ local/
 # Working artifacts
 *.png
 *.yml
+tmp/
+docs/inbox/
+docs/outbox/
 packages/polyfill-connectors/.pdpp-data/
 reference-implementation/report.*.json
 .agents/

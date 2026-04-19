@@ -54,5 +54,5 @@ The guard in the runtime code is a defensive implementation detail, not a testab
 ## Where this is recorded
 
 - **Conformance test suite:** test #6 currently skipped with inline comment explaining the ambiguity
-- **Coverage memo:** `docs/inbox/collection-profile-conformance-coverage-memo.md` documents the ambiguity and the question for spec
+- **Coverage memo:** `docs/archive/2026-04-inbox-retired/collection-profile-conformance-coverage-memo.md` documents the ambiguity and the question for spec
 - **This memo:** the full analysis and recommendation

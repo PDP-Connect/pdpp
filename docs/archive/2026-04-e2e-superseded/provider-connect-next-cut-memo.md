@@ -45,7 +45,7 @@ Keep the companion profile explicit about phases:
 - **In scope now:** `Self-Export Provider` and `Provider Connect Client`
 - **Deferred:** `Third-Party Provider`
 
-That means updating [`docs/inbox/pdpp-provider-connect-profile-draft.md`](/home/user/code/pdpp/docs/inbox/pdpp-provider-connect-profile-draft.md:1) so the draft stops implying that generic third-party provider connectivity is already part of the executable bar.
+That means updating [`docs/archive/2026-04-inbox-retired/pdpp-provider-connect-profile-draft.md`](/home/user/code/pdpp/docs/archive/2026-04-inbox-retired/pdpp-provider-connect-profile-draft.md:1) so the draft stops implying that generic third-party provider connectivity is already part of the executable bar.
 
 ### Code side
 

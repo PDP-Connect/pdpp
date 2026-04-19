@@ -6,7 +6,7 @@ Date: 2026-04-08
 
 ## Executive summary
 
-PDPP contains roughly 30 distinct artifacts spanning spec documents, design notes, research docs, an illustrated/reference website layer, a runnable `reference-implementation/` package, shared brand infrastructure, OpenSpec project artifacts, and historical planning notes. Most artifacts have a clear home in the classification scheme below, but several straddle boundaries in ways that matter for future authors and agents. The biggest source of confusion is not misclassification but the absence of explicit labels: the docs sidebar groups spec-architecture.md with the Collection Profile and groups spec-change-tracking.md under "Design Notes," while older notes still refer to `docs/inbox/` as if it were the active planning layer. This map resolves that.
+PDPP contains roughly 30 distinct artifacts spanning spec documents, design notes, research docs, an illustrated/reference website layer, a runnable `reference-implementation/` package, shared brand infrastructure, OpenSpec project artifacts, and historical planning notes. Most artifacts have a clear home in the classification scheme below, but several straddle boundaries in ways that matter for future authors and agents. The biggest source of confusion is not misclassification but the absence of explicit labels: the docs sidebar groups spec-architecture.md with the Collection Profile and groups spec-change-tracking.md under "Design Notes," while older notes still refer to the now-retired inbox material as if it were the active planning layer. This map resolves that.
 
 ---
 
@@ -69,10 +69,10 @@ PDPP contains roughly 30 distinct artifacts spanning spec documents, design note
 | `docs/reference-design-research.md` | **Experimental / not yet committed** | Research on Martini Glass, C4, Illustrated TLS presentation patterns. | Stable -- historical research |
 | `docs/research/attribution-split-prior-art.md` | **Experimental / not yet committed** | Prior art research on whether PDPP's trust-model rendering obligation is novel (P3P, TCF, Apple labels, HAIP). Found no existing protocol that mandates attribution rendering normatively. | Stable -- completed research |
 | `docs/research/collection-prior-art-deep-dive.md` | **Experimental / not yet committed** | Deep dive on collection prior art (Airbyte, Singer, etc.). | Stable -- completed research |
-| `docs/inbox/pdpp_memo.txt` | **Experimental / not yet committed** | Gemini 3.1 Pro review memo. External critique. | Stable -- historical |
-| `docs/inbox/pdpp_memo_chatgpt.txt` | **Experimental / not yet committed** | ChatGPT 5.4 review memo. External critique. Identified the promise-surface/enforcement-surface distinction as the highest-leverage editorial fix. | Stable -- historical |
-| `docs/inbox/collection-profile-prior-art-memo.md` | **Experimental / not yet committed** | Collection profile prior art research. | Stable -- historical |
-| `docs/inbox/*` (most other files) | **Experimental / not yet committed** | Scratch notes, external review, or superseded planning material. Useful for historical context, not the active project execution layer. | Historical / mixed |
+| `docs/archive/2026-04-inbox-retired/pdpp_memo.txt` | **Experimental / not yet committed** | Gemini 3.1 Pro review memo. External critique. | Stable -- historical |
+| `docs/archive/2026-04-inbox-retired/pdpp_memo_chatgpt.txt` | **Experimental / not yet committed** | ChatGPT 5.4 review memo. External critique. Identified the promise-surface/enforcement-surface distinction as the highest-leverage editorial fix. | Stable -- historical |
+| `docs/archive/2026-04-inbox-retired/collection-profile-prior-art-memo.md` | **Experimental / not yet committed** | Collection profile prior art research. | Stable -- historical |
+| `docs/archive/2026-04-inbox-retired/*` (most other files) | **Experimental / not yet committed** | Retired scratch notes, external review, or superseded planning material. Useful for historical context, not the active project execution layer. | Historical / mixed |
 | `openspec/specs/reference-implementation-governance/spec.md` | **Experimental / not yet committed** | Project-governance spec defining authority order between root PDPP specs, code/tests, and OpenSpec itself. | Stable -- active |
 | `openspec/specs/reference-implementation-architecture/spec.md` | **Experimental / not yet committed** | Durable architecture spec for the runnable reference implementation and its website/control-plane boundaries. | Stable -- active |
 

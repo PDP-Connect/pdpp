@@ -19,7 +19,7 @@ The next tranche should be re-ordered around the actual blocking seams, not the 
 
 ### Risk
 
-[next-code-tranche-review.md](/home/user/code/pdpp/docs/inbox/next-code-tranche-review.md:1) is framed as “after the pending-consent seam and the initial owner-path CLI tranche”, but current code already has:
+[next-code-tranche-review.md](/home/user/code/pdpp/docs/archive/2026-04-e2e-superseded/next-code-tranche-review.md:1) is framed as “after the pending-consent seam and the initial owner-path CLI tranche”, but current code already has:
 
 - DB-backed `pending_consents` in [e2e/server/db.js](/home/user/code/pdpp/e2e/server/db.js:1)
 - pending-consent persistence in [e2e/server/auth.js](/home/user/code/pdpp/e2e/server/auth.js:1)
@@ -53,7 +53,7 @@ But current AS/grant code still fundamentally depends on connector semantics:
 
 See [e2e/server/auth.js](/home/user/code/pdpp/e2e/server/auth.js:1).
 
-At the same time, [request-shape-cutover-plan.md](/home/user/code/pdpp/docs/inbox/request-shape-cutover-plan.md:1) still proposes a “canonical” internal request object whose core selection object includes `connector_id`.
+At the same time, [request-shape-cutover-plan.md](/home/user/code/pdpp/docs/archive/2026-04-e2e-superseded/request-shape-cutover-plan.md:1) still proposes a “canonical” internal request object whose core selection object includes `connector_id`.
 
 ### Why it matters
 
@@ -77,7 +77,7 @@ Without that order, “native path” will be cosmetic.
 
 ### Risk
 
-[request-shape-cutover-plan.md](/home/user/code/pdpp/docs/inbox/request-shape-cutover-plan.md:1) is good as a transport cutover plan, but its proposed canonical object still centers:
+[request-shape-cutover-plan.md](/home/user/code/pdpp/docs/archive/2026-04-e2e-superseded/request-shape-cutover-plan.md:1) is good as a transport cutover plan, but its proposed canonical object still centers:
 
 - `selection.connector_id`
 
@@ -177,7 +177,7 @@ Otherwise “compat-only” will remain true in prose and false in practice.
 
 ### Risk
 
-[next-code-tranche-review.md](/home/user/code/pdpp/docs/inbox/next-code-tranche-review.md:1) calls for native-path tests proving that no `connector_id` is required in the native query path.
+[next-code-tranche-review.md](/home/user/code/pdpp/docs/archive/2026-04-e2e-superseded/next-code-tranche-review.md:1) calls for native-path tests proving that no `connector_id` is required in the native query path.
 
 But the current owner-facing CLI and RS usage pattern is still explicitly connector-shaped:
 
@@ -208,7 +208,7 @@ Do not let native-path proof proceed without an explicit answer to that seam.
 
 ### Risk
 
-[grant-scoped-state-implementation-plan.md](/home/user/code/pdpp/docs/inbox/grant-scoped-state-implementation-plan.md:1) is disciplined and narrow. But the current stack has no real caller yet that runs:
+[grant-scoped-state-implementation-plan.md](/home/user/code/pdpp/docs/archive/2026-04-e2e-superseded/grant-scoped-state-implementation-plan.md:1) is disciplined and narrow. But the current stack has no real caller yet that runs:
 
 - a `continuous` grant
 - through the runtime
@@ -245,7 +245,7 @@ But current code has:
 - no trace emission layer
 - no CLI trace commands
 
-And [next-code-tranche-review.md](/home/user/code/pdpp/docs/inbox/next-code-tranche-review.md:1) still defers the full event/trace spine.
+And [next-code-tranche-review.md](/home/user/code/pdpp/docs/archive/2026-04-e2e-superseded/next-code-tranche-review.md:1) still defers the full event/trace spine.
 
 ### Why it matters
 

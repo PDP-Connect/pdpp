@@ -300,10 +300,10 @@ What not to do:
 
 Files worth aligning lightly if they still use softer wording:
 
-- `docs/inbox/pdpp-cli-surface-memo.md`
-- `docs/inbox/cli-implementation-plan.md`
-- `docs/inbox/device-flow-cutline-memo.md`
-- `docs/inbox/provider-metadata-route-plan.md`
+- `docs/archive/2026-04-inbox-retired/pdpp-cli-surface-memo.md`
+- `docs/archive/2026-04-e2e-superseded/cli-implementation-plan.md`
+- `docs/archive/2026-04-e2e-superseded/device-flow-cutline-memo.md`
+- `docs/archive/2026-04-e2e-superseded/provider-metadata-route-plan.md`
 
 Only add or tighten language if needed for consistency with:
 

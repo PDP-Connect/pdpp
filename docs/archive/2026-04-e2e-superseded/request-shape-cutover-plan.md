@@ -169,7 +169,7 @@ Add:
 - one envelope-shaped request test
 - possibly one helper that makes it easier to send either shape intentionally
 
-### 4. `docs/inbox/pending-consent-seam-plan.md`
+### 4. `docs/archive/2026-04-e2e-superseded/pending-consent-seam-plan.md`
 
 No direct code change required for this cutover, but the two plans should align:
 

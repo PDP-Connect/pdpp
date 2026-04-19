@@ -76,7 +76,7 @@ We went through several cycles of research and iteration:
 
 4. **Fourth attempt**: Research "scattered to structured" transformation patterns (Monarch Money, 1Password vault, Apple Health, Segment). Finding: Monarch's pattern of normalizing heterogeneous account types into uniform cards is the closest analog. But Monarch is a full dashboard; we need this in a single scroll section.
 
-5. **Where we stopped**: We were trying to define what the opening beat should actually convey. The design brief (`tmp/reference-design-brief.md`) identifies five load-bearing concepts. We debated whether "personal data has structure" is the right opening, concluded it was really setup for the consent card, then questioned whether the consent card should even be the peak. The last exchange was me asking "What should we open with?" and the answer remaining open.
+5. **Where we stopped**: We were trying to define what the opening beat should actually convey. The design brief (`docs/archive/2026-04-tmp-retired/reference-design-brief.md`) identifies five load-bearing concepts. We debated whether "personal data has structure" is the right opening, concluded it was really setup for the consent card, then questioned whether the consent card should even be the peak. The last exchange was me asking "What should we open with?" and the answer remaining open.
 
 ### The unresolved design question
 **What is the first beat of the PDPP story, and what should the reader see?**
@@ -97,7 +97,7 @@ The Solid Project is the cautionary tale: they open with "Your data, your choice
 
 ### Documents the next agent should read (in priority order)
 
-1. **`tmp/reference-design-brief.md`** — Design brief with audience, content, form, feeling, and anti-goals. The most current synthesis.
+1. **`docs/archive/2026-04-tmp-retired/reference-design-brief.md`** — Design brief with audience, content, form, feeling, and anti-goals. The most current tracked synthesis.
 
 2. **`docs/experience-architecture.md`** — The original experience architecture. Describes the "Illustrated Protocol" paradigm, 11 sections, three layers per section (headline/artifact/depth), global state, Gemini review with accepted/rejected changes.
 
@@ -109,19 +109,19 @@ The Solid Project is the cautionary tale: they open with "Your data, your choice
 
 6. **`docs/critique-action-plan.md`** — Sequenced improvement plan from the impeccable /critique. Phase 1 (layout) done, Phase 2 (aesthetics) partial, Phases 3-6 have remaining items.
 
-7. **`docs/inbox/collection-method-story-memo.md`** — The settled product framing: API when available, browser automation as polyfill, import as fallback.
+7. **`docs/archive/2026-04-inbox-retired/collection-method-story-memo.md`** — The settled product framing: API when available, browser automation as polyfill, import as fallback.
 
 8. **`docs/concept-inventory.md`** — 85 PDPP concepts tagged by flow position (spine/branch) and audience (CEO/eng/prod/std).
 
 ### Documents about the collection layer (context, not design)
 - `docs/research/collection-prior-art-deep-dive.md` — 12 systems analyzed
 - `docs/research/collection-layer-boundary-note.md` — Boundary between spec and runtime
-- `docs/inbox/boundary-experiments-summary.md` — Three experiments confirming the boundary holds
+- `docs/archive/2026-04-inbox-retired/boundary-experiments-summary.md` — Three experiments confirming the boundary holds
 - `docs/research/collection-method-matrix.md` — Classification of 8 collection methods
 
 ### Documents about the spec/repo structure
 - `docs/research/pdpp-status-map.md` — Classifies all repo artifacts into 6 buckets
-- `docs/inbox/pdpp-status-map-memo.md` — Short version of the status map
+- `docs/archive/2026-04-inbox-retired/pdpp-status-map-memo.md` — Short version of the status map
 
 ---
 
@@ -215,7 +215,7 @@ Design context is in `.impeccable.md` at project root.
 ### Immediate: resolve the opening beat
 The unresolved question is what the first section should show and convey. The current Ingest section centers the personal server. The design brief says to lead with what PDPP makes possible, not the infrastructure. But we haven't landed on what that looks like.
 
-Read `tmp/reference-design-brief.md` for the full context. The key finding from research: the best products show the "after" state and let the reader's memory of the "before" do the emotional work. For PDPP, the "after" is: your personal data is structured, visible, and controllable.
+Read `docs/archive/2026-04-tmp-retired/reference-design-brief.md` for the full tracked context. The key finding from research: the best products show the "after" state and let the reader's memory of the "before" do the emotional work. For PDPP, the "after" is: your personal data is structured, visible, and controllable.
 
 ### Then: tighten the collection story
 The convergence visual (`CollectionConvergence` component) makes three collection methods visible but is too infrastructure-focused. It may need to be rethought once the opening beat is resolved. The collection-method-story-memo has the settled framing.
@@ -234,11 +234,7 @@ The convergence visual (`CollectionConvergence` component) makes three collectio
 
 ## 8. Files that can be cleaned up
 
-- `tmp/reference-design-brief.md` — keep (active design artifact)
-- `tmp/polyfill-positioning-plan.md` — can archive (executed)
-- `tmp/polyfill-implementation-memo.md` — can archive (executed)
-- `tmp/advisor-boundary-review-package.md` — can archive (reviewed)
-- `tmp/double-interaction-ambiguity-memo.md` — can archive (resolved)
-- `tmp/ingest-convergence-design.md` — superseded by the actual implementation, can delete
-- `tmp/deployment-model-framing.md` — partially relevant to the unresolved opening beat question, keep for now
+- `docs/archive/2026-04-tmp-retired/reference-design-brief.md` — tracked design brief archive.
+- `docs/archive/2026-04-tmp-retired/polyfill-positioning-plan.md` — archived executed plan.
+- Local scratch should stay untracked unless promoted into `docs/archive/`.
 - Various `.png` screenshots in repo root — delete (artifacts from Playwright screenshots)

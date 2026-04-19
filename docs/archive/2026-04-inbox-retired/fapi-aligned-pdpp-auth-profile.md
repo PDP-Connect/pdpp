@@ -68,7 +68,7 @@ Assume that a future FAPI-aligned profile would be:
 Please produce:
 
 1. `docs/research/fapi-aligned-auth-profile-deep-dive.md`
-2. `docs/inbox/fapi-aligned-auth-profile-memo.md`
+2. `docs/archive/2026-04-inbox-retired/fapi-aligned-auth-profile-memo.md`
 
 ## Requirements for the deep dive
 
