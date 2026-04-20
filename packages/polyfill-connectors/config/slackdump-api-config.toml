@@ -1,0 +1,34 @@
+# Slackdump API limits config with increased retry budgets.
+#
+# WHY: Slack returns 500 Internal Server Error intermittently on
+# conversations.history and conversations.replies calls, especially for
+# bot-heavy channels with thousands of threads. Default retry budgets (3
+# for tier_3/tier_4) exhaust quickly in those channels, causing slackdump
+# to exit with code 6 (application error) mid-dump.
+#
+# Bumping tier_3 and tier_4 retries 3 -> 20 aligns them with tier_2's
+# rate-limit retries. Same exponential backoff applies, so worst-case
+# time-per-channel grows but most retries resolve within a few attempts.
+
+workers = 4
+download_retries = 5
+
+[tier_2]
+  boost = 20
+  burst = 3
+  retries = 20
+
+[tier_3]
+  boost = 60
+  burst = 5
+  retries = 20
+
+[tier_4]
+  boost = 10
+  burst = 7
+  retries = 20
+
+[per_request]
+  conversations = 100
+  channels = 100
+  replies = 200

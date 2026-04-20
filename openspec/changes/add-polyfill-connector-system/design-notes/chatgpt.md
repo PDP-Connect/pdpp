@@ -121,4 +121,23 @@ Memories don't have a delete event. Connector reads prior-run memory IDs from st
 - [?] Shared conversations: does the API expose share metadata or only the content?
 - [?] Token refresh — does cookie-driven refresh work silently or does expiry always force re-auth?
 
+## Known gaps awaiting the partial-run-semantics mechanism
+
+As of 2026-04-20, `spine_events` contains **4,188 `run.stream_skipped` events** for this connector, each naming a specific conversation that 429'd. Example:
+
+```
+{ "stream": "messages", "reason": "http_error",
+  "message": "conversation 69d71fbf-0ba8-8327-88c7-3ed3ec02058c http 429" }
+```
+
+These are Category 1 (transient upstream failure — see `gap-recovery-execution-open-question.md`). They are retriable **as-is**, with no connector change, given (a) a mechanism that remembers the gap across runs and (b) an invocation path that passes the 4,188 IDs back to the connector as a pre-filter.
+
+Neither exists yet. The data is durably logged; the retry is not yet implementable at protocol level. Resolving the three-part open question (`partial-run-semantics` + `cursor-finality-and-gap-awareness` + `gap-recovery-execution`) is what unblocks recovery here.
+
+**What is deliberately not being done as a workaround:**
+- No one-shot recovery script for the 4,188 IDs. Such a script would become a workaround masquerading as a solution and would have to be removed once the protocol mechanism lands.
+- No connector-internal retry loop. Retrying within a single run would re-hit the same rate limit and doesn't address the broader mechanism question.
+
+The ChatGPT connector does support the `scope.streams[].resources` filter today, but as a **post-filter** (fetches everything, drops non-matches). For the recovery mechanism to be economically viable on 4,188 IDs, the connector would need to fetch via `/backend-api/conversations/{id}` directly — a **pre-filter** path. This is a future connector change gated on the protocol decision.
+
 Testing tonight will answer these empirically; answers get folded back here.

@@ -209,7 +209,18 @@ async function main() {
     ...opts.CHANNEL_ALLOWLIST,
   ];
 
+  // Escape hatch: when the on-disk archive is valid but slackdump keeps
+  // failing (e.g. Slack 500 errors on a specific channel, exit 6 loops),
+  // set PDPP_SLACK_SKIP_SLACKDUMP=1 to ingest whatever's already on disk
+  // without touching the network. This salvages a partial archive into
+  // PDPP records instead of leaving the data stranded.
+  const skipSlackdump = process.env.PDPP_SLACK_SKIP_SLACKDUMP === '1';
+
   try {
+    if (skipSlackdump) {
+      emit({ type: 'PROGRESS', message: `Skipping slackdump refresh (PDPP_SLACK_SKIP_SLACKDUMP=1); reading existing archive at ${archivePath}` });
+      if (!existsSync(sqlitePath)) return fail(`PDPP_SLACK_SKIP_SLACKDUMP=1 but no archive found at ${sqlitePath}`, false);
+    } else {
     emit({ type: 'PROGRESS', message: `Ensuring slackdump workspace is cached (SLACKDUMP_BIN=${process.env.SLACKDUMP_BIN || '<unset>'})` });
     await ensureWorkspaceCached({ token, cookie, env: childEnv });
 
@@ -217,15 +228,29 @@ async function main() {
     // slackdump time format is 'YYYY-MM-DDTHH:MM:SS' (no Z, UTC implied).
     const toSlackTime = (iso) => iso ? iso.replace(/\..+$/, '').replace(/Z$/, '') : null;
 
+    // WHY we ship an API-limits config: slackdump's defaults set tier_3 /
+    // tier_4 retries to 3, which exhausts quickly on bot-heavy channels
+    // (thousands of threads × even a low rate of 500 Internal Server Errors
+    // from Slack = process aborts with exit 6). Bumping those retries to 20
+    // aligns them with tier_2 (rate-limit retries), letting the same
+    // exponential-backoff policy ride out server-side hiccups. Verified live
+    // 2026-04-20: `eng_github` (C017NG64T24), 2,645 threads, exhausted
+    // default retries. A handful of OTHER channels also hit 500s but
+    // recovered — eng_github got unlucky on retry-count, not access.
+    // See config/slackdump-api-config.toml.
+    const apiConfigPath = new URL('../../config/slackdump-api-config.toml', import.meta.url).pathname;
+
     if (useResume) {
       // `resume` does not accept `-y` (unlike `archive`): passing it aborts
       // with "flag provided but not defined".
       // `-lookback` uses ISO 8601 duration syntax (e.g. "p1w", "p30d"), not
       // Go's `72h` — slackdump parses it with its own `p`-prefixed parser.
-      const args = ['resume', '-no-encryption', `-lookback`, `p${opts.LOOKBACK_DAYS}d`, resumeTarget];
+      const args = ['resume', '-no-encryption', '-api-config', apiConfigPath,
+                    '-lookback', `p${opts.LOOKBACK_DAYS}d`, resumeTarget];
       await runSlackdump(args, { env: childEnv });
     } else {
-      const args = ['archive', '-y', '-no-encryption', '-o', archivePath];
+      const args = ['archive', '-y', '-no-encryption', '-api-config', apiConfigPath,
+                    '-o', archivePath];
       const tf = toSlackTime(timeFrom);
       const tt = toSlackTime(timeTo);
       if (tf) args.push('-time-from', tf);
@@ -237,6 +262,7 @@ async function main() {
       args.push(...positionalChannels);
       await runSlackdump(args, { env: childEnv });
     }
+    } // end: if (skipSlackdump) else
   } catch (e) {
     return fail(`slackdump failed: ${e.message}`, /timeout|ECONN/.test(e.message));
   }

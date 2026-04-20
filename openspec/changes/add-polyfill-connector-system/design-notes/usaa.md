@@ -115,3 +115,22 @@ Stability requirements:
 - [?] Do some account types still expose OFX export that we could prefer over CSV? Audit said no but some credit card subsidiaries may differ.
 - [?] Is the CSV date range selector bounded by "18 months" or less? If a run is missed for months, backfill may need multiple CSV fetches.
 - [?] How often does USAA email "verify your identity" challenges for automated logins? Will test empirically tonight.
+
+## Known gaps awaiting the partial-run-semantics mechanism
+
+As of 2026-04-20, `spine_events` holds the following USAA skip history (from runs before the 2026-04-20 CC export + PDF parser fixes):
+
+| Stream | Reason | Count | Category (per `gap-recovery-execution-open-question.md`) |
+|---|---|---|---|
+| `transactions` | `credit_card_export_unverified` | 8 | Cat 2 (capability gap — fixed 2026-04-20) |
+| `transactions` | `export_no_download` | 16 | Cat 1 (transient — needs retry) |
+| `transactions` | `export_error` | 7 | Cat 1 (transient) |
+| `transactions` | `pdf_template_unknown` | 6 | Cat 2 (parser upgrade — improved 2026-04-20) |
+| `transactions` | `usaa_csv_export_flow_pending` | 1 | Cat 2 (scaffold, now shipped) |
+| `statements` | `pdf_download_download_timeout` | 10 | Cat 1 (transient) |
+| `statements` | `selectors_pending` | 4 | Cat 3 (structural — selectors never wired) |
+| `statements` | `usaa_statements_pending` | 1 | Cat 2 (scaffold, now shipped) |
+
+Most Category 2 items are already resolved by code shipped 2026-04-20; a fresh full run would surface them as no-longer-skipped. Category 1 items need a retry mechanism (see the three-part open question).
+
+Unlike ChatGPT's 4,188 gaps (individual conversation IDs, pre-filter-friendly), USAA's transient skips are **date-range scoped** (export failed for Account X across Date Range Y). Recovery here can't pass individual record IDs — it has to pass an account + date-range scope. The recovery mechanism design must accommodate both precisions.
