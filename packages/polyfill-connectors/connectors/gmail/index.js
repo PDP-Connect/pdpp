@@ -24,10 +24,55 @@
 import { createInterface } from 'node:readline';
 import { ImapFlow } from 'imapflow';
 import { resourceSet, requireCredentialsOrAsk } from '../../src/scope-filters.js';
+import { stringifyForJsonl } from '../../src/safe-emit.js';
 
 const rl = createInterface({ input: process.stdin, terminal: false });
+
+// Track in-flight writes so back-pressured, partial stdout writes can't produce
+// interleaved or truncated JSONL lines on the runtime side. Bodies on the
+// `message_bodies` stream can exceed 200 KB each, which is well above the
+// default pipe buffer (~64 KB on Linux). A blocking write alone isn't enough:
+// Node returns `false` from write() without sending any bytes on a full pipe,
+// and the caller must wait for 'drain' before the next write.
+// Strip characters that break JSONL reassembly on the runtime side.
+// - Lone surrogates → U+FFFD (JSON.stringify can otherwise produce malformed
+//   \uDXXX escapes that JSON.parse rejects).
+// - Raw control chars (0x00-0x08, 0x0B-0x1F, 0x7F) → replaced/removed. JSON.stringify
+//   should escape \r\n to "\\r\\n", and indeed it does, so the string we get
+//   back from stringify is safe — but empirically we see some body_text values
+//   producing raw \n in the output stream. Defensively normalize all control
+//   chars to a single space before stringify to guarantee a clean JSONL line.
+function sanitizeForJsonl(v) {
+  if (v == null) return v;
+  if (typeof v === 'string') {
+    return v
+      .replace(
+        /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g,
+        '\uFFFD',
+      )
+      // Normalize control chars except tab(09). Keep visible \r \n in the
+      // string value — JSON.stringify will escape them — but eliminate any
+      // control char that might somehow sneak through.
+      .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, ' ');
+  }
+  if (Array.isArray(v)) return v.map(sanitizeForJsonl);
+  if (typeof v === 'object') {
+    const out = {};
+    for (const [k, val] of Object.entries(v)) out[k] = sanitizeForJsonl(val);
+    return out;
+  }
+  return v;
+}
+
+// Gmail adds its own `sanitizeForJsonl` pass before encoding (lone-surrogate +
+// control-char cleanup, since imapflow body_text occasionally contains raw
+// control bytes). The JSONL encoding itself — BigInt coercion + U+2028/U+2029
+// escaping — lives in `stringifyForJsonl`.
 function emit(msg) {
-  process.stdout.write(JSON.stringify(msg) + '\n');
+  const line = stringifyForJsonl(sanitizeForJsonl(msg));
+  const ok = process.stdout.write(line);
+  if (ok) return Promise.resolve();
+  return new Promise((resolve) => process.stdout.once('drain', resolve));
 }
 
 // Drain stdout before exit — otherwise Node may exit with buffered bytes still
@@ -336,13 +381,15 @@ async function main() {
   const state = startMsg.state || {};
   const emittedAt = nowIso();
   let totalEmitted = 0;
-  const emitRecord = (stream, data, keyField = 'id') => {
+  // Async so callers can await backpressure on large bodies (message_bodies
+  // records can be 100+ KB, above the 64 KB pipe buffer).
+  const emitRecord = async (stream, data, keyField = 'id') => {
     const key = data[keyField] ?? data.name;
     if (key == null) return;
     const canonical = String(key);
     const resSet = resFilters.get(stream);
     if (resSet && !resSet.has(canonical)) return;
-    emit({ type: 'RECORD', stream, key, data, emitted_at: emittedAt });
+    await emit({ type: 'RECORD', stream, key, data, emitted_at: emittedAt });
     totalEmitted++;
   };
 
@@ -357,7 +404,7 @@ async function main() {
   await client.connect();
 
   try {
-    emit({ type: 'PROGRESS', message: `Connected to ${address}` });
+    await emit({ type: "PROGRESS", message: `Connected to ${address}` });
 
     // LABELS stream — list mailboxes
     if (requested.has('labels')) {
@@ -367,7 +414,7 @@ async function main() {
         const is_system = name === 'INBOX' || /^\[Gmail\]\//.test(name);
         const parts = name.split('/');
         const parent_name = parts.length > 1 ? parts.slice(0, -1).join('/') : null;
-        emitRecord('labels', {
+        await emitRecord('labels', {
           name,
           canonical_name: canonicalLabelName(name),
           is_system,
@@ -375,7 +422,7 @@ async function main() {
           message_count: null, // we could SELECT each to get EXISTS but not worth it
         }, 'name');
       }
-      emit({ type: 'STATE', stream: 'labels', cursor: { fetched_at: nowIso() } });
+      await emit({ type: "STATE", stream: 'labels', cursor: { fetched_at: nowIso() } });
     }
 
     // Find All Mail (special-use \All or fallback to [Gmail]/All Mail)
@@ -402,26 +449,41 @@ async function main() {
 
       // Pass 1: new messages (or everything on full resync)
       const fetchRange = fullResync ? '1:*' : `${priorUidnext}:*`;
-      emit({ type: 'PROGRESS', message: `Fetching ${fullResync ? 'all' : 'new'} messages (${fetchRange}) from ${allMail.path}` });
+      await emit({ type: "PROGRESS", message: `Fetching ${fullResync ? 'all' : 'new'} messages (${fetchRange}) from ${allMail.path}` });
 
       let count = 0;
       const wantMessages = requested.has('messages');
       const wantBodies = requested.has('message_bodies');
-      for await (const msg of client.fetch(fetchRange, {
+
+      // Phase A: pull all metadata into an array up-front.
+      // Phase B: for each metadata row, do any additional IMAP commands
+      // (body fetches) we need — we cannot issue other IMAP commands WHILE the
+      // outer fetch iterator is still open, because imapflow multiplexes one
+      // command at a time over a single connection and a nested call hangs the
+      // outer iterator.
+      const metas = [];
+      for await (const m of client.fetch(fetchRange, {
         uid: true,
         envelope: true,
         internalDate: true,
         flags: true,
         size: true,
         bodyStructure: true,
-        // Include References so we can populate messages.references (not part
-        // of the IMAP ENVELOPE response).
         headers: ['list-unsubscribe', 'auto-submitted', 'references'],
         source: false,
         labels: true,
         threadId: true,
         emailId: true,
       }, { uid: true, changedSince: null })) {
+        metas.push(m);
+        if (metas.length % 1000 === 0) {
+          await emit({ type: "PROGRESS", stream: 'messages', message: `Collected ${metas.length} message headers` });
+        }
+      }
+      await emit({ type: "PROGRESS", stream: 'messages', message: `Collected ${metas.length} headers; beginning body pass` });
+
+      for (const msg of metas) {
+        try {
         // Gmail-specific IDs via imapflow: msg.emailId = X-GM-MSGID; msg.threadId = X-GM-THRID
         const gmMsgid = String(msg.emailId ?? '');
         const gmThrid = String(msg.threadId ?? '');
@@ -512,11 +574,29 @@ async function main() {
           } else {
             bodySource = 'empty';
           }
-          emitRecord('message_bodies', {
+          // Cap per-field length defensively. We store the FULL body's byte
+          // length separately for auditing; records themselves are truncated to
+          // keep single JSONL lines within a safe pipe-buffer envelope.
+          const MAX_BODY_FIELD_CHARS = 32 * 1024;
+          // DEFENSIVE: force-stringify to eliminate any non-string type (Buffer, etc.)
+          const toCleanString = (v) => {
+            if (v == null) return null;
+            if (typeof v !== 'string') v = String(v);
+            // Additional belt-and-suspenders: escape any stray LF/CR in place.
+            // sanitizeForJsonl also does this but gives us a defense-in-depth at the call site.
+            return v.replace(/[\r\n]/g, ' ');
+          };
+          const truncTxt = bodyText && bodyText.length > MAX_BODY_FIELD_CHARS
+            ? toCleanString(bodyText.slice(0, MAX_BODY_FIELD_CHARS) + '…[truncated]')
+            : toCleanString(bodyText);
+          const truncHtml = bodyHtmlFull && bodyHtmlFull.length > MAX_BODY_FIELD_CHARS
+            ? toCleanString(bodyHtmlFull.slice(0, MAX_BODY_FIELD_CHARS) + '…[truncated]')
+            : toCleanString(bodyHtmlFull);
+          await emitRecord('message_bodies', {
             id: gmMsgid,
             message_id: gmMsgid,
-            body_text: bodyText || null,
-            body_html: bodyHtmlFull || null,
+            body_text: truncTxt,
+            body_html: truncHtml,
             body_text_bytes: bodyText ? Buffer.byteLength(bodyText, 'utf8') : null,
             body_html_bytes: bodyHtmlFull ? Buffer.byteLength(bodyHtmlFull, 'utf8') : null,
             body_source: bodySource,
@@ -531,7 +611,7 @@ async function main() {
           const fromAddr = env.from?.[0];
           const references = parseReferencesHeader(msg.headers);
 
-          emitRecord('messages', {
+          await emitRecord('messages', {
             id: gmMsgid,
             thread_id: gmThrid,
             subject: env.subject || null,
@@ -558,18 +638,23 @@ async function main() {
         }
 
         if (requested.has('attachments') && attachments.length) {
-          for (const a of attachments) emitRecord('attachments', a);
+          for (const a of attachments) await emitRecord('attachments', a);
         }
 
         count++;
         if (count % 500 === 0) {
-          emit({ type: 'PROGRESS', stream: 'messages', message: `Fetched ${count} messages` });
+          await emit({ type: "PROGRESS", stream: 'messages', message: `Fetched ${count} messages` });
+        }
+        } catch (perMsgErr) {
+          const emsg = perMsgErr?.stack || perMsgErr?.message || String(perMsgErr);
+          process.stderr.write(`[gmail] per-message error at UID ${msg?.uid}: ${emsg}\n`);
+          // Continue with next message; don't let one bad record halt the whole run.
         }
       }
 
       // Pass 2: detect flag/label changes on already-seen messages (if incremental)
       if (!fullResync && priorModseq) {
-        emit({ type: 'PROGRESS', message: `Fetching flag/label deltas since modseq=${priorModseq}` });
+        await emit({ type: "PROGRESS", message: `Fetching flag/label deltas since modseq=${priorModseq}` });
         for await (const msg of client.fetch('1:*', {
           uid: true,
           flags: true,
@@ -586,7 +671,7 @@ async function main() {
           if (requested.has('messages')) {
             const flags = msg.flags || new Set();
             const flagsArr = flags instanceof Set ? [...flags] : Array.from(flags || []);
-            emitRecord('messages', {
+            await emitRecord('messages', {
               id: gmMsgid,
               thread_id: String(msg.threadId ?? ''),
               // Minimal: flag-state delta. We don't re-send envelope; RS retains existing fields.
@@ -624,7 +709,7 @@ async function main() {
       // in IMAP; we derive from the fetch just done. For v1, we emit threads based on a second fetch
       // focused on emailId + threadId only if threads is requested.
       if (requested.has('threads')) {
-        emit({ type: 'PROGRESS', stream: 'threads', message: 'Deriving threads from All Mail' });
+        await emit({ type: "PROGRESS", stream: 'threads', message: 'Deriving threads from All Mail' });
         const threadAgg = new Map();
         for await (const msg of client.fetch('1:*', {
           uid: true,
@@ -671,7 +756,7 @@ async function main() {
           threadAgg.set(tid, agg);
         }
         for (const agg of threadAgg.values()) {
-          emitRecord('threads', {
+          await emitRecord('threads', {
             id: agg.id,
             subject: agg.subject,
             participant_emails: [...agg.participant_set],
@@ -701,9 +786,23 @@ async function main() {
   flushAndExit(0);
 }
 
+process.on('unhandledRejection', (reason) => {
+  const msg = reason?.stack || (reason && reason.message) || String(reason);
+  process.stderr.write(`[gmail] unhandledRejection: ${msg}\n`);
+  emit({ type: 'DONE', status: 'failed', records_emitted: 0, error: { message: `unhandledRejection: ${String(reason?.message || reason).slice(0, 400)}`, retryable: false } });
+  flushAndExit(1);
+});
+process.on('uncaughtException', (err) => {
+  const msg = err?.stack || err?.message || String(err);
+  process.stderr.write(`[gmail] uncaughtException: ${msg}\n`);
+  emit({ type: 'DONE', status: 'failed', records_emitted: 0, error: { message: `uncaughtException: ${String(err?.message || err).slice(0, 400)}`, retryable: false } });
+  flushAndExit(1);
+});
+
 main().catch((e) => {
   const msg = e && e.message ? e.message : String(e);
   const retryable = /ECONN|ETIMEDOUT|fetch failed|EPIPE|timeout/i.test(msg);
+  process.stderr.write(`[gmail] main rejected: ${e?.stack || msg}\n`);
   emit({ type: 'DONE', status: 'failed', records_emitted: 0, error: { message: msg, retryable } });
   flushAndExit(1);
 });

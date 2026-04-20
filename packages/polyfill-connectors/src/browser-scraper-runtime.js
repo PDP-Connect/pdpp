@@ -18,12 +18,13 @@
  */
 
 import { createInterface } from 'node:readline';
-import { launchPersistentContext } from './browser-profile.js';
+import { acquireBrowser } from './browser-profile.js';
 import { resourceSet } from './scope-filters.js';
+import { stringifyForJsonl } from './safe-emit.js';
 
 export function runBrowserScraper({ name, probeSession, scrape, ensureSession }) {
   const rl = createInterface({ input: process.stdin, terminal: false });
-  const emit = (msg) => process.stdout.write(JSON.stringify(msg) + '\n');
+  const emit = (msg) => process.stdout.write(stringifyForJsonl(msg));
   const flushAndExit = (code) => {
     if (process.stdout.writableLength > 0) {
       process.stdout.once('drain', () => process.exit(code));
@@ -77,8 +78,9 @@ export function runBrowserScraper({ name, probeSession, scrape, ensureSession })
     };
 
     let context;
+    let release = async () => {};
     try {
-      context = await launchPersistentContext({ headless: true });
+      ({ context, release } = await acquireBrowser({ headless: true }));
     } catch (err) {
       return fail(`could not open browser profile: ${err.message}`, false);
     }
@@ -124,7 +126,7 @@ export function runBrowserScraper({ name, probeSession, scrape, ensureSession })
         emittedAt,
       });
     } finally {
-      await context.close().catch(() => {});
+      await release().catch(() => {});
     }
 
     emit({ type: 'DONE', status: 'succeeded', records_emitted: total });

@@ -23,12 +23,14 @@ import { readFile, unlink, readdir } from 'node:fs/promises';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { launchPersistentContext } from '../../src/browser-profile.js';
+import { acquireBrowser } from '../../src/browser-profile.js';
 import { ensureUsaaSession } from '../../src/auto-login/usaa.js';
 import { resourceSet } from '../../src/scope-filters.js';
+import { stringifyForJsonl } from '../../src/safe-emit.js';
+import { hydrateStatementPdfs, parsePdfStatement, fileUrlForPath } from './statement-pdfs.js';
 
 const rl = createInterface({ input: process.stdin, terminal: false });
-function emit(msg) { process.stdout.write(JSON.stringify(msg) + '\n'); }
+function emit(msg) { process.stdout.write(stringifyForJsonl(msg)); }
 function flushAndExit(code) {
   if (process.stdout.writableLength > 0) {
     process.stdout.once('drain', () => process.exit(code));
@@ -129,28 +131,166 @@ function mmddyyyy(iso) {
   return `${m}/${d}/${y}`;
 }
 
-async function driveExport(_context, page, accountUrl, { sinceDate, untilDate }) {
-  // Returns a path to a downloaded CSV, or null if USAA didn't cooperate.
-  await page.goto(accountUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
-  await sleep(6000);
+// Locate the Export affordance on the current account page. Checking/savings
+// summary pages surface it as `button.ent-as-utility-bar__item.export`.
+// Credit-card summary pages surface it as
+// `button.as_credit__utility-bar-item.as_credit__export` (verified live
+// 2026-04-20 via scripts/usaa-cc-walk.mjs). We try both exact classes first,
+// then fall back to any button whose text is literally "Export".
+async function findExportAffordance(page) {
+  const bankClass = page.locator('button.ent-as-utility-bar__item.export');
+  if (await bankClass.count().catch(() => 0)) return bankClass.first();
 
-  // Click the Export affordance (it's a <button class="ent-as-utility-bar__item export">)
-  const exportLoc = page.locator('button.ent-as-utility-bar__item.export, :text-is("Export")').first();
-  if (!(await exportLoc.count())) return null;
-  await exportLoc.click();
+  const creditClass = page.locator('button.as_credit__utility-bar-item.as_credit__export');
+  if (await creditClass.count().catch(() => 0)) return creditClass.first();
+
+  // Fallback: any button whose visible text is exactly "Export" (case-insensitive).
+  const buttonText = page.locator('button, [role="button"]').filter({ hasText: /^\s*Export\s*$/i });
+  if (await buttonText.count().catch(() => 0)) return buttonText.first();
+
+  return null;
+}
+
+// Quick DOM fingerprint for failure diagnostics — emitted with SKIP_RESULT so
+// the next connector operator has evidence of what the page actually contained
+// without having to re-drive 2FA themselves. Kept terse to stay within
+// emit-line size limits.
+async function capturePageDiagnostics(page) {
+  return page.evaluate(() => {
+    const take = (sel, max = 8) => [...document.querySelectorAll(sel)]
+      .slice(0, max)
+      .map((el) => ({
+        tag: el.tagName,
+        text: (el.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 50),
+        cls: (el.className || '').toString().slice(0, 80),
+        id: el.id || null,
+      }));
+    return {
+      url: location.href,
+      title: document.title,
+      has_utility_bar: !!document.querySelector('.ent-as-utility-bar, [class*="utility-bar" i]'),
+      export_candidates: take('button, [role="button"]')
+        .filter((c) => /export|download/i.test(c.text)),
+      nav_candidates: take('a[href*="/my/credit-card"], a[role="tab"], [role="tab"]'),
+      dialogs_open: document.querySelectorAll('[role="dialog"]').length,
+    };
+  }).catch(() => null);
+}
+
+// Navigate to the account view that surfaces Export. For checking/savings the
+// account summary URL works. For credit-card accounts the summary page may
+// not have the utility bar — we try the landing URL first, then a handful of
+// sibling paths (/activity, /transactions) that modern-bank SPAs commonly use.
+async function locateExportPage(page, accountUrl, _accountType) {
+  // Verified 2026-04-20 that the bare `a.account_url` lands on a page with
+  // the Export affordance for all three product variants:
+  //   checking/savings → button.ent-as-utility-bar__item.export
+  //   credit-card     → button.as_credit__utility-bar-item.as_credit__export
+  // No sibling `/activity`/`/transactions` sub-routes exist — those 404.
+  const candidates = [accountUrl];
+
+  const seen = new Set();
+  for (const url of candidates) {
+    if (seen.has(url)) continue;
+    seen.add(url);
+    try {
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    } catch {
+      continue;
+    }
+    await sleep(6000);
+    const btn = await findExportAffordance(page);
+    if (btn) return { url, export: btn };
+  }
+  return null;
+}
+
+async function driveExport(_context, page, accountUrl, { sinceDate, untilDate, accountType = 'unknown', onDiagnostics }) {
+  // Returns a path to a downloaded CSV, or null if USAA didn't cooperate.
+  //
+  // Selectors verified live on 2026-04-19 (checking/savings only):
+  //   - Export button:      button.ent-as-utility-bar__item.export
+  //   - Date-range select:  select[name="selectionType"] → option "date-range"
+  //   - From/End inputs:    input[name="fromDate"] / input[name="endDate"]
+  //                         (React self-formatting, requires pressSequentially
+  //                         not fill)
+  //   - Submit in dialog:   [role="dialog"] button[type="submit"]
+  //
+  // Credit-card export UI was NOT verified live on 2026-04-19: the USAA
+  // session died (OAuth bounce to /my/logon) before the credit-card UI
+  // could be inspected, and re-authing is gated on 2FA that we don't want
+  // to trigger a second time in the same session. This function therefore:
+  //   1. tries the checking/savings selector pattern first,
+  //   2. falls through to a handful of sibling activity routes for
+  //      credit-card accounts,
+  //   3. emits a diagnostic fingerprint via the onDiagnostics callback
+  //      when the Export button can't be located or the dialog opens in
+  //      an unexpected shape, so the next run has evidence to adapt.
+  // See design note "Fallback path: DOM scrape" in
+  // openspec/changes/add-polyfill-connector-system/design-notes/usaa.md.
+
+  const located = await locateExportPage(page, accountUrl, accountType);
+  if (!located) {
+    if (onDiagnostics) {
+      const diag = await capturePageDiagnostics(page);
+      onDiagnostics({ phase: 'no_export_affordance', diag });
+    }
+    return null;
+  }
+
+  try {
+    await located.export.click({ timeout: 5000 });
+  } catch (err) {
+    if (onDiagnostics) {
+      const diag = await capturePageDiagnostics(page);
+      onDiagnostics({ phase: 'export_click_failed', diag, error: err.message.slice(0, 160) });
+    }
+    return null;
+  }
   await sleep(2500);
+
+  // Verify the date-range dialog we expect actually opened. If not (credit-card
+  // flow may present a different modal entirely — e.g., "pick statement period"
+  // — instead of a free date range), bail with diagnostics rather than thrash
+  // against inputs that don't exist. This replaces the previous silent-failure
+  // path where the code would press keys into nothing and then time out on
+  // the download event.
+  const selectCount = await page.locator('[role="dialog"] select[name="selectionType"], select[name="selectionType"]').count().catch(() => 0);
+  if (!selectCount) {
+    if (onDiagnostics) {
+      const base = await capturePageDiagnostics(page);
+      const dialogHtml = await page.locator('[role="dialog"]').first().innerHTML().catch(() => null);
+      onDiagnostics({
+        phase: 'export_dialog_unexpected_shape',
+        diag: {
+          ...base,
+          dialog_html_preview: dialogHtml ? dialogHtml.replace(/\s+/g, ' ').slice(0, 600) : null,
+        },
+      });
+    }
+    await page.keyboard.press('Escape').catch(() => {});
+    return null;
+  }
 
   // Select "Select Date Range" in the native select
   await page.selectOption('select[name="selectionType"]', 'date-range').catch(() => {});
   await sleep(1500);
 
-  // Fill From and End date inputs. USAA uses a self-formatting React
-  // input that needs real keystrokes (page.fill skips React's validators).
-  const fromIn = page.locator('input[name="fromDate"]');
-  const endIn = page.locator('input[name="endDate"]');
+  // Fill From and End date inputs. USAA uses self-formatting React inputs
+  // that need real keystrokes (page.fill skips React's validators). Input
+  // names differ by product variant (verified live 2026-04-20):
+  //   checking/savings : fromDate / endDate
+  //   credit-card      : startDate / endDate (endDate pre-populates with today)
+  const fromIn = page.locator('input[name="fromDate"], input[name="startDate"]').first();
+  const endIn = page.locator('input[name="endDate"]').first();
   await fromIn.click().catch(() => {});
+  // Select all + delete first in case the field pre-populated (CC endDate does).
+  await page.keyboard.press('Control+A').catch(() => {});
+  await page.keyboard.press('Delete').catch(() => {});
   await fromIn.pressSequentially(mmddyyyy(sinceDate), { delay: 30 }).catch(() => {});
   await endIn.click().catch(() => {});
+  await page.keyboard.press('Control+A').catch(() => {});
+  await page.keyboard.press('Delete').catch(() => {});
   await endIn.pressSequentially(mmddyyyy(untilDate), { delay: 30 }).catch(() => {});
   await sleep(1500);
 
@@ -302,8 +442,9 @@ async function main() {
   };
 
   let context;
+  let release = async () => {};
   try {
-    context = await launchPersistentContext({ headless: true });
+    ({ context, release } = await acquireBrowser({ headless: true }));
   } catch (err) {
     return fail(`could not open browser profile: ${err.message}`, false);
   }
@@ -323,9 +464,11 @@ async function main() {
     const accounts = await extractAccounts(page);
     emit({ type: 'PROGRESS', message: `Found ${accounts.length} account(s)` });
 
+    // Keep a.account_url internally for transaction drilldown but don't emit it
+    // on the record (P2 finding from Layer 1 audit — internal scrape artifact,
+    // not in manifest, meaningless to consumers).
     const accountRecords = accounts.map((a) => ({
       id: a.account_id_raw || hashId(a.raw_text),
-      account_url: a.account_url,
       type: a.account_type,
       name: a.name,
       last_four: a.last_four,
@@ -374,19 +517,51 @@ async function main() {
 
         let csvPath = null;
         let usedSince = null;
+        // Capture the most informative diagnostic across all range attempts so
+        // a failure carries actionable evidence in the SKIP_RESULT emit.
+        let lastDiag = null;
+        const onDiagnostics = (info) => { lastDiag = info; };
         for (const sinceDate of candidateStarts) {
           emit({ type: 'PROGRESS', stream: 'transactions', message: `Export ${a.name} (${a.last_four || 'n/a'}) from ${sinceDate} to ${todayIso}` });
           try {
-            csvPath = await driveExport(context, page, `https://www.usaa.com${a.account_url}`, { sinceDate, untilDate: todayIso });
+            csvPath = await driveExport(
+              context,
+              page,
+              `https://www.usaa.com${a.account_url}`,
+              { sinceDate, untilDate: todayIso, accountType: a.account_type, onDiagnostics },
+            );
           } catch (err) {
             emit({ type: 'SKIP_RESULT', stream: 'transactions', reason: 'export_error', message: `${a.name}: ${err.message.slice(0, 160)}` });
             csvPath = null;
           }
           if (csvPath) { usedSince = sinceDate; break; }
+          // If the affordance or dialog couldn't be located, shortening the
+          // range won't help — bail out of the retry ladder for this account.
+          if (lastDiag && (lastDiag.phase === 'no_export_affordance' || lastDiag.phase === 'export_dialog_unexpected_shape')) {
+            emit({ type: 'PROGRESS', stream: 'transactions', message: `${a.name}: ${lastDiag.phase} — skipping retries` });
+            break;
+          }
           emit({ type: 'PROGRESS', stream: 'transactions', message: `retrying ${a.name} with shorter range` });
         }
         if (!csvPath) {
-          emit({ type: 'SKIP_RESULT', stream: 'transactions', reason: 'export_no_download', message: `${a.name}: export dialog didn't produce a download across all ranges — account may have no transactions or selectors shifted` });
+          // Produce a useful SKIP_RESULT. For credit-card accounts specifically,
+          // call out the 2026-04-19 investigation gap so whoever next looks at
+          // this doesn't repeat the exercise — the design note referenced in
+          // driveExport's header comment is the place to capture the live UI.
+          const isCreditCard = /credit-card/.test(a.account_type);
+          const baseMessage = lastDiag
+            ? `${a.name}: ${lastDiag.phase} at ${lastDiag.diag?.url || 'unknown url'}`
+            : `${a.name}: export dialog didn't produce a download across all ranges — account may have no transactions or selectors shifted`;
+          const ccSuffix = isCreditCard
+            ? ' (credit-card export flow not verified live 2026-04-19 — see design-notes/usaa.md "Fallback path: DOM scrape")'
+            : '';
+          emit({
+            type: 'SKIP_RESULT',
+            stream: 'transactions',
+            reason: isCreditCard ? 'credit_card_export_unverified' : 'export_no_download',
+            message: `${baseMessage}${ccSuffix}`,
+            diagnostics: lastDiag || null,
+          });
           continue;
         }
         const text = await readFile(csvPath, 'utf8');
@@ -409,8 +584,26 @@ async function main() {
       }
     }
 
-    // STATEMENTS — scrape /my/documents table.
-    if (requested.has('statements')) {
+    // STATEMENTS — scrape /my/documents table, then hydrate PDF blobs per row.
+    //
+    // Phase A (download): for each row, drive the "Options" kebab -> "Download"
+    // menu to capture the PDF via page.waitForEvent('download'). PDFs land at
+    // ~/.pdpp/usaa-statements/<account_slug>/<YYYY-MM>-<sha8>.pdf — this is
+    // the owner's archive, not a transient scratch dir (see design-notes/usaa-
+    // historical-coverage-gap.md § "Storage").
+    //
+    // Phase B (parse): feed each PDF through pdf-parse and emit transactions
+    // with `source: "pdf_statement_<YYYY-MM>"`. The id-hash scheme matches the
+    // CSV path so CSV + PDF rows dedupe cleanly. USAA's statement templates
+    // have drifted over the years; see connectors/usaa/statement-pdfs.js for
+    // the per-era parser strategy + unknown-era fallback.
+    //
+    // Both phases degrade gracefully: if the Options menu selectors don't
+    // match, we still emit the index-only statement record (document_url +
+    // pdf_sha256 null). If the parser doesn't recognise the template, we
+    // still emit the hydrated statement record but skip the transactions
+    // extraction for that PDF with a diagnostic SKIP_RESULT.
+    if (requested.has('statements') || requested.has('transactions')) {
       try {
         emit({ type: 'PROGRESS', stream: 'statements', message: 'Fetching statements index' });
         await page.goto('https://www.usaa.com/my/documents', { waitUntil: 'domcontentloaded', timeout: 25000 });
@@ -418,43 +611,206 @@ async function main() {
         const docs = await page.evaluate(() => {
           const t = document.querySelector('table');
           if (!t) return [];
-          return [...t.querySelectorAll('tbody tr')].map((tr) => {
+          return [...t.querySelectorAll('tbody tr')].map((tr, rowIndex) => {
             const cells = [...tr.querySelectorAll('td')];
             return {
+              rowIndex,
               title: (cells[0]?.innerText || '').replace(/\s+/g, ' ').trim(),
               date_delivered: (cells[1]?.innerText || '').trim(),
               account_reference: (cells[2]?.innerText || '').trim(),
             };
           });
         });
-        for (const d of docs) {
-          if (!d.date_delivered) continue;
-          const iso = isoDate(d.date_delivered);
-          const id = hashId(`${d.account_reference}|${d.date_delivered}|${d.title}`);
-          // document_url and pdf_sha256 intentionally left null on this path.
-          // The /my/documents table surfaces an "Options" kebab menu per row
-          // that contains a "Download" item; the download fires a POST to a
-          // short-lived signed URL rather than exposing a stable href on the
-          // row. Hydrating those requires (a) clicking the kebab per-row,
-          // (b) intercepting the download, (c) streaming bytes to compute a
-          // sha-256, and (d) storing the blob somewhere (we don't want the
-          // PDF contents inlined on the record). That's a multi-step blob-
-          // hydration pass we haven't built yet, and getting the selectors
-          // wrong without a live session to verify risks silent breakage of
-          // the whole statements stream. The manifest reflects these fields
-          // as populated-when-available so a consumer shouldn't treat null
-          // as a schema violation.
-          emitRecord('statements', {
-            id,
+        // Resolve the document row's account reference text back to a stable
+        // account_id by matching against the accounts array. We prefer a
+        // last-four match (`*3602`) because it's unambiguous across all USAA
+        // account types; we fall back to a case-insensitive name substring
+        // match for references that omit the digits. If neither hits we emit
+        // null rather than guessing — downstream flows can still group by
+        // account_reference, but the column signals the mapping was lossy.
+        const resolveAccountId = (ref) => {
+          if (!ref) return null;
+          const last4 = (ref.match(/\*(\d{4})/) || [])[1];
+          if (last4) {
+            const byLast4 = accounts.find((a) => a.last_four === last4);
+            if (byLast4 && byLast4.account_id_raw) return byLast4.account_id_raw;
+          }
+          const refLower = ref.toLowerCase();
+          const byName = accounts.find((a) => a.name && refLower.includes(a.name.toLowerCase()));
+          if (byName && byName.account_id_raw) return byName.account_id_raw;
+          return null;
+        };
+
+        // Pre-compute the statement records (pre-hydration) so we emit them
+        // even if Phase A bails partway through the list.
+        const indexRows = docs
+          .filter((d) => d.date_delivered)
+          .map((d) => ({
+            rowIndex: d.rowIndex,
+            id: hashId(`${d.account_reference}|${d.date_delivered}|${d.title}`),
+            account_id: resolveAccountId(d.account_reference),
             title: d.title,
-            date_delivered: iso,
+            date_delivered: isoDate(d.date_delivered),
             account_reference: d.account_reference,
-            document_url: null,
-            pdf_sha256: null,
-            fetched_at: nowIso(),
+          }));
+
+        // Resolve the credit-card account's last-four -> account_id.
+        // (Needed so credit-card statements pick the credit-card parser.)
+        const accountById = new Map(
+          accounts
+            .filter((a) => a.account_id_raw)
+            .map((a) => [a.account_id_raw, a]),
+        );
+
+        // Track which rows we tried to hydrate so we only emit the statement
+        // record once (after hydration). Phase A success/failure is surfaced
+        // by merging pdf_path + pdf_sha256 into the emitted record when we
+        // have them, or by emitting the plain index row when we don't.
+        const hydrationResults = new Map(); // rowIndex -> { pdfPath, pdfSha256, buffer, err }
+        let hydrationAttempts = 0;
+        let hydrationSuccesses = 0;
+
+        // Run Phase A whenever EITHER statements or transactions was requested —
+        // transactions wants the PDF bytes to parse historical rows, statements
+        // wants the hydrated metadata (pdf_path/sha256). We skip the whole pass
+        // only if neither stream is wanted.
+        try {
+          const hydrated = await hydrateStatementPdfs({
+            page,
+            statements: indexRows,
+            onProgress: ({ index, total, title }) => {
+              hydrationAttempts = index + 1;
+              emit({
+                type: 'PROGRESS',
+                stream: 'statements',
+                message: `Downloading PDF ${index + 1}/${total}: ${title.slice(0, 60)}`,
+              });
+            },
+            onSkip: ({ statement, reason, diag }) => {
+              hydrationResults.set(statement.rowIndex, { err: reason, diag });
+              emit({
+                type: 'SKIP_RESULT',
+                stream: 'statements',
+                reason: `pdf_download_${reason}`,
+                message: `${statement.title}: ${reason}`,
+                diagnostics: diag || null,
+              });
+            },
+          });
+          for (const h of hydrated) {
+            hydrationSuccesses++;
+            hydrationResults.set(h.statement.rowIndex, {
+              pdfPath: h.pdfPath,
+              pdfSha256: h.pdfSha256,
+              buffer: h.buffer,
+            });
+          }
+        } catch (err) {
+          emit({ type: 'SKIP_RESULT', stream: 'statements', reason: 'hydrate_crashed', message: err.message.slice(0, 160) });
+        }
+
+        // Emit statement records (hydrated where possible).
+        if (requested.has('statements')) {
+          for (const row of indexRows) {
+            const h = hydrationResults.get(row.rowIndex) || {};
+            // pdf_path is additive — not in the declared schema yet, but the
+            // manifest is a permissive superset (additionalProperties isn't
+            // declared false) so adding this doesn't regress consumers that
+            // don't care. See the statements stream's "pdf_path" follow-up
+            // in openspec/changes/add-polyfill-connector-system/design-notes/
+            // usaa-historical-coverage-gap.md.
+            emitRecord('statements', {
+              id: row.id,
+              account_id: row.account_id,
+              title: row.title,
+              date_delivered: row.date_delivered,
+              account_reference: row.account_reference,
+              document_url: h.pdfPath ? fileUrlForPath(h.pdfPath) : null,
+              pdf_sha256: h.pdfSha256 || null,
+              pdf_path: h.pdfPath || null,
+              fetched_at: nowIso(),
+            });
+          }
+          emit({
+            type: 'PROGRESS',
+            stream: 'statements',
+            message: `Hydrated ${hydrationSuccesses}/${hydrationAttempts || indexRows.length} PDFs`,
+          });
+          emit({ type: 'STATE', stream: 'statements', cursor: { fetched_at: nowIso() } });
+        }
+
+        // Phase B — parse every successfully-downloaded PDF into transactions.
+        // Gated on `transactions` being a requested stream so a statements-only
+        // run doesn't pay the parse cost. Dedupe with CSV transactions happens
+        // downstream via the shared id hash.
+        if (requested.has('transactions')) {
+          let pdfTxnCount = 0;
+          let parsedStatements = 0;
+          let unknownTemplates = 0;
+          for (const row of indexRows) {
+            const h = hydrationResults.get(row.rowIndex);
+            if (!h || !h.buffer) continue;
+            // Skip non-statement docs that the /my/documents index surfaces
+            // alongside real statements (e.g. "USAA Pay Bills Terms and
+            // Conditions"). Real statements always carry the word STATEMENT
+            // in their title; non-statements typically have "Terms", "Notice",
+            // "Agreement", "Disclosure", etc.
+            const title = row.title || '';
+            if (!/STATEMENT/i.test(title) ||
+                /(TERMS\b|AGREEMENT\b|NOTICE\b|DISCLOSURE\b|CONDITION)/i.test(title)) {
+              continue;
+            }
+            // Period is "YYYY-MM" of the statement's delivery date. USAA
+            // delivers a monthly statement a few days after period close,
+            // so this is close-enough for provenance labeling. We deliberately
+            // avoid trying to re-derive the real statement period from the
+            // PDF content because formats vary — the date_delivered is our
+            // stable anchor.
+            const period = (row.date_delivered || '').slice(0, 7) || 'unknown';
+            const acct = row.account_id ? accountById.get(row.account_id) : null;
+            const accountName = acct?.name || row.account_reference || null;
+            try {
+              const { txns, parseMeta } = await parsePdfStatement({
+                buffer: h.buffer,
+                accountId: row.account_id || row.account_reference || 'unknown',
+                accountName,
+                period,
+              });
+              if (!txns.length) {
+                unknownTemplates++;
+                emit({
+                  type: 'SKIP_RESULT',
+                  stream: 'transactions',
+                  reason: 'pdf_template_unknown',
+                  message: `${row.title} (${period}): no parser matched (era=${parseMeta.era})`,
+                  diagnostics: {
+                    statement_id: row.id,
+                    year: parseMeta.year,
+                    raw_text_sample: parseMeta.rawTextSample || null,
+                  },
+                });
+                continue;
+              }
+              for (const t of txns) {
+                emitRecord('transactions', t);
+                pdfTxnCount++;
+              }
+              parsedStatements++;
+            } catch (err) {
+              emit({
+                type: 'SKIP_RESULT',
+                stream: 'transactions',
+                reason: 'pdf_parse_failed',
+                message: `${row.title}: ${err.message?.slice(0, 160)}`,
+              });
+            }
+          }
+          emit({
+            type: 'PROGRESS',
+            stream: 'transactions',
+            message: `PDF parse: ${pdfTxnCount} txns across ${parsedStatements} statements (${unknownTemplates} unknown templates)`,
           });
         }
-        emit({ type: 'STATE', stream: 'statements', cursor: { fetched_at: nowIso() } });
       } catch (err) {
         emit({ type: 'SKIP_RESULT', stream: 'statements', reason: 'scrape_failed', message: err.message.slice(0, 160) });
       }
@@ -553,7 +909,7 @@ async function main() {
       }
     }
   } finally {
-    await context.close().catch(() => {});
+    await release().catch(() => {});
   }
 
   emit({ type: 'DONE', status: 'succeeded', records_emitted: total });

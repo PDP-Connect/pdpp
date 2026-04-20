@@ -17,12 +17,13 @@
  */
 
 import { createInterface } from 'node:readline';
-import { launchPersistentContext } from '../../src/browser-profile.js';
+import { acquireBrowser } from '../../src/browser-profile.js';
 import { resourceSet } from '../../src/scope-filters.js';
 import { ensureAmazonSession } from '../../src/auto-login/amazon.js';
+import { stringifyForJsonl } from '../../src/safe-emit.js';
 
 const rl = createInterface({ input: process.stdin, terminal: false });
-function emit(msg) { process.stdout.write(JSON.stringify(msg) + '\n'); }
+function emit(msg) { process.stdout.write(stringifyForJsonl(msg)); }
 function flushAndExit(code) {
   if (process.stdout.writableLength > 0) {
     process.stdout.once('drain', () => process.exit(code));
@@ -196,8 +197,9 @@ async function main() {
   };
 
   let context;
+  let release = async () => {};
   try {
-    context = await launchPersistentContext({ headless: true });
+    ({ context, release } = await acquireBrowser({ headless: true }));
   } catch (err) {
     return fail(`could not open browser profile: ${err.message}`, false);
   }
@@ -301,7 +303,7 @@ async function main() {
       emit({ type: 'STATE', stream: 'orders', cursor: { years: newYearsState } });
     }
   } finally {
-    await context.close().catch(() => {});
+    await release().catch(() => {});
   }
 
   emit({ type: 'DONE', status: 'succeeded', records_emitted: totalEmitted });

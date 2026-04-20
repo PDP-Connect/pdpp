@@ -12,7 +12,7 @@ import {
   resolvePublicUrl,
   stripTrailingSlash,
 } from './metadata.js';
-import { createTraceContext, emitSpineEvent, generateSpineId, listSpineEvents } from '../lib/spine.js';
+import { createTraceContext, emitSpineEvent, generateSpineId, listSpineCorrelations, listSpineEvents, searchSpine } from '../lib/spine.js';
 import {
   registerConnector, getConnectorManifest, getManifestForStorageBinding, initiateGrant, getPendingConsent,
   approveGrant, introspect, revokeGrant, denyGrant,
@@ -758,8 +758,13 @@ function buildAsApp(opts = {}) {
   const providerName = resolveProviderName(opts);
   const dynamicClientRegistrationEnabled = resolveDynamicClientRegistrationEnabled(opts);
   const dynamicClientRegistrationInitialAccessTokens = resolveDynamicClientRegistrationInitialAccessTokens(opts);
-  app.use(express.json());
-  app.use(express.urlencoded({ extended: false }));
+  // State-commit payloads on file-import connectors (claude-code, codex,
+  // google_takeout) can carry a per-file-mtime cursor that exceeds the
+  // default Express 100kb limit. A previous claude-code run hit 413
+  // PayloadTooLargeError mid-commit and partially committed 3 of 4 state
+  // streams, silently re-running work on next invocation.
+  app.use(express.json({ limit: '100mb' }));
+  app.use(express.urlencoded({ extended: false, limit: '100mb' }));
 
   function renderPendingGrantConsentHtml(pending, requestUri) {
     const request = pending.request;
@@ -1111,6 +1116,133 @@ function buildAsApp(opts = {}) {
   });
 
   // Reference-only event spine inspection surfaces for CLI/tests/future console.
+  function parseListFilters(query) {
+    return {
+      limit: query.limit,
+      cursor: query.cursor,
+      since: query.since,
+      until: query.until,
+      status: query.status,
+      clientId: query.client_id,
+      providerId: query.provider_id,
+      connectorId: query.connector_id,
+      grantId: query.grant_id,
+      q: query.q,
+    };
+  }
+
+  function summaryToTrace(s) {
+    return {
+      object: 'trace_summary',
+      trace_id: s.id,
+      first_at: s.first_at,
+      last_at: s.last_at,
+      event_count: s.event_count,
+      status: s.status,
+      kinds: s.kinds,
+      request_id: s.request_id,
+      grant_id: s.grant_id,
+      run_id: s.run_id,
+      client_id: s.client_id,
+      provider_id: s.provider_id,
+      actor_type: s.actor_type,
+      actor_id: s.actor_id,
+      failure: s.failure,
+    };
+  }
+
+  function summaryToGrant(s) {
+    return {
+      object: 'grant_summary',
+      grant_id: s.id,
+      first_at: s.first_at,
+      last_at: s.last_at,
+      event_count: s.event_count,
+      status: s.status,
+      kinds: s.kinds,
+      client_id: s.client_id,
+      provider_id: s.provider_id,
+      connector_id: s.connector_id || null,
+      failure: s.failure,
+    };
+  }
+
+  function summaryToRun(s) {
+    return {
+      object: 'run_summary',
+      run_id: s.id,
+      first_at: s.first_at,
+      last_at: s.last_at,
+      event_count: s.event_count,
+      status: s.status,
+      kinds: s.kinds,
+      connector_id: s.connector_id || null,
+      provider_id: s.provider_id,
+      grant_id: s.grant_id,
+      failure_reason: s.failure?.reason || null,
+    };
+  }
+
+  app.get('/_ref/traces', async (req, res) => {
+    try {
+      const { summaries, hasMore, nextCursor } = await listSpineCorrelations('trace', parseListFilters(req.query));
+      const body = {
+        object: 'list',
+        data: summaries.map(summaryToTrace),
+        has_more: hasMore,
+      };
+      if (nextCursor) body.next_cursor = nextCursor;
+      res.json(body);
+    } catch (err) {
+      handleError(res, err);
+    }
+  });
+
+  app.get('/_ref/grants', async (req, res) => {
+    try {
+      const { summaries, hasMore, nextCursor } = await listSpineCorrelations('grant', parseListFilters(req.query));
+      const body = {
+        object: 'list',
+        data: summaries.map(summaryToGrant),
+        has_more: hasMore,
+      };
+      if (nextCursor) body.next_cursor = nextCursor;
+      res.json(body);
+    } catch (err) {
+      handleError(res, err);
+    }
+  });
+
+  app.get('/_ref/runs', async (req, res) => {
+    try {
+      const { summaries, hasMore, nextCursor } = await listSpineCorrelations('run', parseListFilters(req.query));
+      const body = {
+        object: 'list',
+        data: summaries.map(summaryToRun),
+        has_more: hasMore,
+      };
+      if (nextCursor) body.next_cursor = nextCursor;
+      res.json(body);
+    } catch (err) {
+      handleError(res, err);
+    }
+  });
+
+  app.get('/_ref/search', async (req, res) => {
+    try {
+      const result = await searchSpine(req.query.q || '');
+      res.json({
+        object: 'search_result',
+        exact: result.exact,
+        traces: result.traces.map(summaryToTrace),
+        grants: result.grants.map(summaryToGrant),
+        runs: result.runs.map(summaryToRun),
+      });
+    } catch (err) {
+      handleError(res, err);
+    }
+  });
+
   app.get('/_ref/traces/:traceId', async (req, res) => {
     try {
       const traceId = decodeURIComponent(req.params.traceId);
@@ -1292,7 +1424,9 @@ function buildRsApp(opts = {}) {
   const app = express();
   const nativeMode = !!resolveNativeManifest(opts);
   const providerName = resolveProviderName(opts);
-  app.use(express.json());
+  // Match AS limit so ingest batches (especially IMAP with full email bodies
+  // and file-import connectors with large state cursors) don't 413.
+  app.use(express.json({ limit: '100mb' }));
 
   app.use((req, res, next) => {
     res.setHeader('Request-Id', req.get('Request-Id') || generateSpineId('req'));
@@ -1791,7 +1925,7 @@ function buildRsApp(opts = {}) {
     });
 
     // POST /v1/ingest/:stream (Collection Profile, owner-authenticated)
-    app.post('/v1/ingest/:stream', requireToken, requireOwner, express.text({ type: 'application/x-ndjson', limit: '10mb' }), async (req, res) => {
+    app.post('/v1/ingest/:stream', requireToken, requireOwner, express.text({ type: 'application/x-ndjson', limit: '200mb' }), async (req, res) => {
       const connectorId = resolveSingleConnectorIdQueryValue(req.query.connector_id);
       const lines = (req.body || '').split('\n').filter((line) => line.trim());
       const mutationContext = buildMutationContext(req, res, {
@@ -1960,8 +2094,16 @@ export async function startServer(opts = {}) {
     ignoreAmbientPublicUrls,
   });
 
+  // opts.bindHost — restrict listening interface (e.g. '127.0.0.1'). Default
+  // is undefined which lets Node bind to all interfaces. Passing '127.0.0.1'
+  // keeps the server off the LAN/public internet.
+  const bindHost = opts.bindHost;
+
   return new Promise((resolve) => {
-    const asServer = asApp.listen(requestedAsPort, () => {
+    const asListen = bindHost
+      ? (port, cb) => asApp.listen(port, bindHost, cb)
+      : (port, cb) => asApp.listen(port, cb);
+    const asServer = asListen(requestedAsPort, () => {
       const asPort = asServer.address().port;
       const asPublicUrl = opts.asPublicUrl || opts.asIssuer || `http://localhost:${asPort}`;
       log(`[PDPP AS] Authorization server on http://localhost:${asPort}`);
@@ -1974,7 +2116,10 @@ export async function startServer(opts = {}) {
         rsPublicUrl: opts.rsPublicUrl,
         ignoreAmbientPublicUrls,
       });
-      const rsServer = rsApp.listen(requestedRsPort, () => {
+      const rsListen = bindHost
+        ? (port, cb) => rsApp.listen(port, bindHost, cb)
+        : (port, cb) => rsApp.listen(port, cb);
+      const rsServer = rsListen(requestedRsPort, () => {
         const rsPort = rsServer.address().port;
         log(`[PDPP RS] Resource server on http://localhost:${rsPort}`);
         resolve({ asServer, rsServer, asPort, rsPort });

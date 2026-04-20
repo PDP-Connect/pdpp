@@ -23,6 +23,8 @@ These connectors fetch via the platform's public HTTP API using a long-lived tok
 
 These connectors drive a headless Playwright session against the shared profile at `~/.pdpp/browser-profile/`. One `bootstrap-browser` pass logs you in; connectors reuse the cookies. Session expiry is handled by `src/auto-login/<platform>.js` helpers that drive re-login + 2FA via `INTERACTION`.
 
+Browser-scraper connectors attach to a **long-lived browser daemon** (`pdpp-connectors browser start|stop|status`) so that session-scoped cookies (USAA `LtpaToken2`, Amazon `session-token`, etc.) persist in memory across runs — Chromium drops those when its process exits, so a fresh launch per run would force re-login every time. The daemon auto-starts on the first `acquireBrowser()` call. Set `PDPP_BROWSER_DAEMON=0` to fall back to per-run `launchPersistentContext`.
+
 | Connector | Bootstrap needs | Status |
 |---|---|---|
 | chatgpt | ChatGPT login (browser profile) | ✅ working (~10,616 records) |

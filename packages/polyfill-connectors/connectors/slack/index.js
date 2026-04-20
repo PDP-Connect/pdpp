@@ -1,6 +1,24 @@
 #!/usr/bin/env node
 /**
- * PDPP Slack Connector (v0.2.0) — subprocess-wraps slackdump + reads its SQLite output.
+ * PDPP Slack Connector (v0.3.0) — subprocess-wraps slackdump + reads its SQLite output.
+ *
+ * v0.3 adds a `canvases` stream (derived from FILE MODE='quip' rows joined
+ * with each channel's canvas metadata) and declares four additional streams
+ * (`stars`, `user_groups`, `reminders`, `dm_read_states`) that are P1 Layer-2
+ * gaps but are NOT realizable from a slackdump archive today:
+ *
+ *   - stars: slackdump defines CHUNK type 8 STARRED_ITEMS but archive mode
+ *     never emits chunks of that type (stars.list requires an API call
+ *     slackdump doesn't run for archive workflows).
+ *   - user_groups: requires usergroups.list; slackdump archive does not call it.
+ *   - reminders: requires reminders.list; slackdump archive does not call it.
+ *   - dm_read_states: conversations.info last_read/unread_count_display is
+ *     stripped from archived channel DATA blobs.
+ *
+ * These four streams emit SKIP_RESULT at runtime with reason "slackdump does
+ * not archive this". They are declared in the manifest so Layer-2 consumers
+ * can plan around them and so an API-layer fallback (future) can fill them
+ * without a manifest change.
  *
  * Slackdump is AGPL-3.0; we spawn it as a subprocess (arms-length) rather
  * than importing it as a Go library. PDPP's codebase is not covered by the
@@ -39,9 +57,10 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { resourceSet, requireCredentialsOrAsk, passesTimeRange } from '../../src/scope-filters.js';
 import { readOptions } from '../../src/connector-options.js';
+import { stringifyForJsonl } from '../../src/safe-emit.js';
 
 const rl = createInterface({ input: process.stdin, terminal: false });
-const emit = (m) => process.stdout.write(JSON.stringify(m) + '\n');
+const emit = (m) => process.stdout.write(stringifyForJsonl(m));
 const flushAndExit = (code) => {
   if (process.stdout.writableLength > 0) {
     process.stdout.once('drain', () => process.exit(code));
@@ -71,7 +90,12 @@ function safeAll(db, sql) {
   try { return db.prepare(sql).all(); } catch { return []; }
 }
 
-function runSlackdump(args, { env, timeoutMs = 4 * 60 * 60 * 1000 }) {
+// Default timeout accommodates long-lived workspaces (10+ years) where a
+// first-run archive of DMs + history can run 6-20h depending on file count
+// and Slack rate-limit bursts. The cost of a too-high default is only "late
+// failure signal" — slackdump will normally finish or error out well before
+// this. Override via `SLACKDUMP_TIMEOUT_MS` env var.
+function runSlackdump(args, { env, timeoutMs = Number(process.env.SLACKDUMP_TIMEOUT_MS) || 24 * 60 * 60 * 1000 }) {
   return new Promise((resolve, reject) => {
     const bin = process.env.SLACKDUMP_BIN || 'slackdump';
     const child = spawn(bin, args, { env, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -154,10 +178,17 @@ async function main() {
   const archivePath = join(dumpDir, 'archive');
   const sqlitePath = join(archivePath, 'slackdump.sqlite'); // default DB name under the archive dir
 
-  // Incremental via slackdump resume, full via archive
+  // Incremental via slackdump resume, full via archive.
+  // Resume path: (a) explicit state.archive_dir from a prior successful run,
+  // or (b) an archive directory already exists on disk from a timed-out or
+  // crashed prior run. Resuming salvages partial progress — slackdump picks
+  // up from the last recorded chunk for each channel, so a previously-timed-
+  // out 1.1 GB archive turns into "finish the rest" rather than "restart".
   const state = startMsg.state || {};
   const priorArchive = state.archive_dir;
-  const useResume = priorArchive && existsSync(priorArchive);
+  const discoveredArchive = existsSync(archivePath) ? archivePath : null;
+  const resumeTarget = (priorArchive && existsSync(priorArchive)) ? priorArchive : discoveredArchive;
+  const useResume = !!resumeTarget;
 
   // Map time_range from messages stream scope into -time-from / -time-to.
   let timeFrom = null, timeTo = null;
@@ -182,12 +213,16 @@ async function main() {
     emit({ type: 'PROGRESS', message: `Ensuring slackdump workspace is cached (SLACKDUMP_BIN=${process.env.SLACKDUMP_BIN || '<unset>'})` });
     await ensureWorkspaceCached({ token, cookie, env: childEnv });
 
-    emit({ type: 'PROGRESS', message: useResume ? `Resuming slackdump at ${priorArchive}` : `Running slackdump archive → ${archivePath}` });
+    emit({ type: 'PROGRESS', message: useResume ? `Resuming slackdump at ${resumeTarget}${priorArchive ? '' : ' (discovered on disk)'}` : `Running slackdump archive → ${archivePath}` });
     // slackdump time format is 'YYYY-MM-DDTHH:MM:SS' (no Z, UTC implied).
     const toSlackTime = (iso) => iso ? iso.replace(/\..+$/, '').replace(/Z$/, '') : null;
 
     if (useResume) {
-      const args = ['resume', '-y', '-no-encryption', `-lookback`, `${opts.LOOKBACK_DAYS * 24}h`, priorArchive];
+      // `resume` does not accept `-y` (unlike `archive`): passing it aborts
+      // with "flag provided but not defined".
+      // `-lookback` uses ISO 8601 duration syntax (e.g. "p1w", "p30d"), not
+      // Go's `72h` — slackdump parses it with its own `p`-prefixed parser.
+      const args = ['resume', '-no-encryption', `-lookback`, `p${opts.LOOKBACK_DAYS}d`, resumeTarget];
       await runSlackdump(args, { env: childEnv });
     } else {
       const args = ['archive', '-y', '-no-encryption', '-o', archivePath];
@@ -476,11 +511,15 @@ async function main() {
   }
 
   if (requested.has('files')) {
+    // Exclude quip/canvas files from the generic `files` stream — they are
+    // first-class records in the `canvases` stream (v0.3). Other file modes
+    // (hosted, snippet, external, tombstone) still flow here.
     const rows = safeAll(db, `
       SELECT f.ID AS id, f.FILENAME AS filename, f.URL AS url, f.MODE AS mode, f.DATA AS data
       FROM FILE f
       JOIN (SELECT ID, MAX(CHUNK_ID) AS mx FROM FILE GROUP BY ID) m
         ON m.ID = f.ID AND m.mx = f.CHUNK_ID
+      WHERE f.MODE != 'quip'
     `);
     for (const r of rows) {
       const d = parseBlob(r.data);
@@ -505,6 +544,90 @@ async function main() {
         original_w: d.original_w ?? null,
         original_h: d.original_h ?? null,
       });
+    }
+  }
+
+  if (requested.has('canvases')) {
+    // Canvases are stored as FILE rows with MODE='quip' (mimetype
+    // application/vnd.slack-docs). A single canvas can appear multiple times
+    // across CHUNK_IDs (channel share + thread shares); dedupe on file ID by
+    // picking the latest chunk. We also look up the owning channel's
+    // properties.canvas blob to surface is_empty / quip_thread_id, which sit
+    // on the channel record rather than the file record.
+    //
+    // The archive does NOT include canvas BODY content — only metadata and
+    // an authenticated files.slack.com URL. `content_markdown` is therefore
+    // always null here; if/when slackdump or an API-layer fallback fetches
+    // the body, this field is where it belongs.
+    const canvasRows = safeAll(db, `
+      SELECT f.ID AS id, f.FILENAME AS filename, f.URL AS url, f.CHANNEL_ID AS channel_id,
+             f.MESSAGE_ID AS message_id, f.DATA AS data
+      FROM FILE f
+      JOIN (SELECT ID, MAX(CHUNK_ID) AS mx FROM FILE GROUP BY ID) m
+        ON m.ID = f.ID AND m.mx = f.CHUNK_ID
+      WHERE f.MODE = 'quip'
+    `);
+    // Map channel_id -> { file_id, is_empty, quip_thread_id } from latest-chunk channel data.
+    const channelCanvasIndex = new Map();
+    const chanRows = safeAll(db, `
+      SELECT c.ID AS id, c.DATA AS data
+      FROM CHANNEL c
+      JOIN (SELECT ID, MAX(CHUNK_ID) AS mx FROM CHANNEL GROUP BY ID) m
+        ON m.ID = c.ID AND m.mx = c.CHUNK_ID
+    `);
+    for (const r of chanRows) {
+      const d = parseBlob(r.data);
+      const cv = d.properties?.canvas;
+      if (cv?.file_id) {
+        channelCanvasIndex.set(cv.file_id, {
+          channel_id: r.id,
+          is_empty: cv.is_empty ?? null,
+          quip_thread_id: cv.quip_thread_id || null,
+        });
+      }
+    }
+    for (const r of canvasRows) {
+      const d = parseBlob(r.data);
+      const chanMeta = channelCanvasIndex.get(r.id) || {};
+      const createdSec = d.created ?? null;
+      const updatedSec = d.updated ?? d.timestamp ?? null;
+      emitRecord('canvases', {
+        id: r.id,
+        file_id: r.id,
+        channel_id: r.channel_id || chanMeta.channel_id || null,
+        message_id: r.message_id != null ? String(r.message_id) : null,
+        title: d.title ?? null,
+        name: r.filename ?? d.name ?? null,
+        author_id: d.user || null,
+        is_empty: chanMeta.is_empty ?? null,
+        quip_thread_id: chanMeta.quip_thread_id || null,
+        content_bytes: d.size ?? null,
+        content_markdown: null,
+        mimetype: d.mimetype ?? null,
+        filetype: d.filetype ?? null,
+        pretty_type: d.pretty_type ?? null,
+        created: createdSec,
+        created_at: epochToIso(createdSec),
+        updated: updatedSec,
+        updated_at: epochToIso(updatedSec),
+        permalink: d.permalink ?? null,
+        url_private: d.url_private ?? r.url ?? null,
+      });
+    }
+  }
+
+  // Streams declared in the manifest for Layer-2 completeness but NOT
+  // realizable from a slackdump archive today. If a caller requests them we
+  // emit SKIP_RESULT so the run completes cleanly without spoofing empty data.
+  const unavailableStreams = [
+    { name: 'stars',          reason: 'slackdump does not archive starred/saved items (stars.list is not called in archive mode)' },
+    { name: 'user_groups',    reason: 'slackdump does not archive user groups (usergroups.list is not called in archive mode)' },
+    { name: 'reminders',      reason: 'slackdump does not archive reminders (reminders.list is not called in archive mode)' },
+    { name: 'dm_read_states', reason: 'slackdump archive strips last_read / unread_count_display from channel data' },
+  ];
+  for (const s of unavailableStreams) {
+    if (requested.has(s.name)) {
+      emit({ type: 'SKIP_RESULT', stream: s.name, reason: 'not_available', message: s.reason });
     }
   }
 

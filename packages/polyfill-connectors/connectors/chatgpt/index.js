@@ -13,13 +13,14 @@
  */
 
 import { createInterface } from 'node:readline';
-import { launchPersistentContext } from '../../src/browser-profile.js';
+import { acquireBrowser } from '../../src/browser-profile.js';
 import { resourceSet } from '../../src/scope-filters.js';
 import { ensureChatGptSession } from '../../src/auto-login/chatgpt.js';
+import { stringifyForJsonl } from '../../src/safe-emit.js';
 
 const rl = createInterface({ input: process.stdin, terminal: false });
 function emit(msg) {
-  process.stdout.write(JSON.stringify(msg) + '\n');
+  process.stdout.write(stringifyForJsonl(msg));
 }
 function flushAndExit(code) {
   if (process.stdout.writableLength > 0) {
@@ -34,6 +35,26 @@ function fail(m, retryable = false) {
   flushAndExit(1);
 }
 const nowIso = () => new Date().toISOString();
+
+// INTERACTION support for ensureChatGptSession + credential prompts.
+let _interactionCounter = 0;
+const nextInteractionId = () => `int_${Date.now()}_${++_interactionCounter}`;
+async function sendInteractionAndWait(msg) {
+  emit(msg);
+  const reqId = msg.request_id;
+  return new Promise((resolve, reject) => {
+    const onLine = (line) => {
+      try {
+        const parsed = JSON.parse(line);
+        if (parsed.type === 'INTERACTION_RESPONSE' && parsed.request_id === reqId) {
+          rl.off('line', onLine);
+          resolve(parsed);
+        }
+      } catch (err) { reject(err); }
+    };
+    rl.on('line', onLine);
+  });
+}
 
 // Module-level counter so catch block can report accurate records_emitted.
 let _totalEmitted = 0;
@@ -347,6 +368,11 @@ async function main() {
   const emittedAt = nowIso();
   const emitRecord = (stream, data) => {
     if (data.id == null) return;
+    // DEBUG: surface any unstringifiable field so "Invalid time value" points to the bad row.
+    try { JSON.stringify(data); } catch (err) {
+      process.stderr.write(`[chatgpt-debug] emit failed for ${stream} id=${data.id}: ${err.message}\n`);
+      return;
+    }
     const resSet = resFilters.get(stream);
     if (resSet && !resSet.has(String(data.id))) return;
     emit({ type: 'RECORD', stream, key: data.id, data, emitted_at: emittedAt });
@@ -354,8 +380,9 @@ async function main() {
   };
 
   let context;
+  let release = async () => {};
   try {
-    context = await launchPersistentContext({ headless: true });
+    ({ context, release } = await acquireBrowser({ headless: true }));
   } catch (err) {
     return fail(`could not open browser profile: ${err.message}`, false);
   }
@@ -393,6 +420,142 @@ async function main() {
           });
         }
         emit({ type: 'STATE', stream: 'memories', cursor: { fetched_at: nowIso() } });
+      }
+    }
+
+    // CUSTOM GPTS (gizmos authored by the user)
+    // Endpoint: GET /backend-api/gizmos/mine returns { items: [{ resource: { gizmo: {...} } }], cursor }
+    // Some tenants return a flat { items: [{ id, short_url, display, config, ... }] } shape;
+    // handle both by unwrapping a `resource.gizmo` / `resource` wrapper when present.
+    if (requested.has('custom_gpts')) {
+      emit({ type: 'PROGRESS', stream: 'custom_gpts', message: 'Fetching custom GPTs' });
+      let cursor = null;
+      let pages = 0;
+      let anyError = false;
+      do {
+        const qs = cursor ? `?cursor=${encodeURIComponent(cursor)}&limit=100` : '?limit=100';
+        const res = await apiFetch(page, `/gizmos/mine${qs}`);
+        if (res.status === 404 || res.status === 403) {
+          emit({ type: 'SKIP_RESULT', stream: 'custom_gpts', reason: 'not_available', message: `gizmos/mine http ${res.status} (feature may be disabled for this account)` });
+          anyError = true;
+          break;
+        }
+        if (res.status !== 200) {
+          emit({ type: 'SKIP_RESULT', stream: 'custom_gpts', reason: 'http_error', message: `gizmos/mine http ${res.status}` });
+          anyError = true;
+          break;
+        }
+        const items = res.json?.items || res.json?.gizmos || [];
+        for (const raw of items) {
+          // Unwrap {resource: {gizmo: {...}}} or {resource: {...}} shapes.
+          const g = raw?.resource?.gizmo || raw?.resource || raw?.gizmo || raw;
+          if (!g || !g.id) continue;
+          const display = g.display || {};
+          const config = g.config || {};
+          const author = g.author || g.owner || {};
+          const toolsRaw = Array.isArray(config.tools) ? config.tools : [];
+          const tools = toolsRaw
+            .map((t) => (typeof t === 'string' ? t : (t?.type || t?.name || null)))
+            .filter(Boolean);
+          const tagsRaw = g.tags || display.tags || [];
+          emitRecord('custom_gpts', {
+            id: g.id,
+            short_url: g.short_url || g.shortcode || null,
+            display_name: display.name || g.name || null,
+            display_description: display.description || null,
+            display_welcome_message: display.welcome_message || null,
+            instructions: config.instructions || g.instructions || null,
+            tools,
+            created_at: tsToIso(g.created_at ?? g.create_time),
+            updated_at: tsToIso(g.updated_at ?? g.update_time),
+            author_id: author.user_id || author.id || null,
+            author_name: author.display_name || author.name || null,
+            is_public: typeof g.is_public === 'boolean'
+              ? g.is_public
+              : (typeof g.sharing === 'string' ? g.sharing === 'public' : null),
+            category: g.category || display.category || null,
+            tags: Array.isArray(tagsRaw) ? tagsRaw : [],
+          });
+        }
+        cursor = res.json?.cursor || null;
+        pages++;
+        if (pages > 50) break; // safety
+        if (!items.length) break;
+      } while (cursor);
+      if (!anyError) {
+        emit({ type: 'STATE', stream: 'custom_gpts', cursor: { fetched_at: nowIso() } });
+      }
+    }
+
+    // CUSTOM INSTRUCTIONS (singleton per user)
+    // Endpoint: GET /backend-api/user_system_messages returns
+    //   { object: "user_system_message_detail", enabled, about_user_message, about_model_message, ... }
+    // If the user has never saved custom instructions the fields are empty strings;
+    // we still emit a singleton record so downstream consumers see a stable ID.
+    if (requested.has('custom_instructions')) {
+      emit({ type: 'PROGRESS', stream: 'custom_instructions', message: 'Fetching custom instructions' });
+      const res = await apiFetch(page, '/user_system_messages');
+      if (res.status === 404 || res.status === 403) {
+        emit({ type: 'SKIP_RESULT', stream: 'custom_instructions', reason: 'not_available', message: `user_system_messages http ${res.status}` });
+      } else if (res.status !== 200) {
+        emit({ type: 'SKIP_RESULT', stream: 'custom_instructions', reason: 'http_error', message: `user_system_messages http ${res.status}` });
+      } else {
+        const j = res.json || {};
+        emitRecord('custom_instructions', {
+          id: 'user_custom_instructions',
+          about_user: j.about_user_message ?? j.about_user ?? null,
+          response_style: j.about_model_message ?? j.response_style ?? null,
+          enabled: typeof j.enabled === 'boolean' ? j.enabled : null,
+          updated_at: tsToIso(j.updated_at ?? j.update_time),
+        });
+        emit({ type: 'STATE', stream: 'custom_instructions', cursor: { fetched_at: nowIso() } });
+      }
+    }
+
+    // SHARED CONVERSATIONS (public shares the user has created)
+    // Endpoint: GET /backend-api/shared_conversations?order=created&offset=&limit=
+    //   returns { items: [{ id, conversation_id, title, create_time, is_anonymous, is_public, highlighted_text? }], total }
+    // The URL slug is the share id; the public URL is https://chatgpt.com/share/<id>.
+    if (requested.has('shared_conversations')) {
+      emit({ type: 'PROGRESS', stream: 'shared_conversations', message: 'Fetching shared conversations' });
+      let offset = 0;
+      const limit = 100;
+      let stopPaging = false;
+      let sawError = false;
+      while (!stopPaging) {
+        const res = await apiFetch(page, `/shared_conversations?offset=${offset}&limit=${limit}&order=created`);
+        if (res.status === 404 || res.status === 403) {
+          emit({ type: 'SKIP_RESULT', stream: 'shared_conversations', reason: 'not_available', message: `shared_conversations http ${res.status}` });
+          sawError = true;
+          break;
+        }
+        if (res.status !== 200) {
+          emit({ type: 'SKIP_RESULT', stream: 'shared_conversations', reason: 'http_error', message: `shared_conversations http ${res.status}` });
+          sawError = true;
+          break;
+        }
+        const items = res.json?.items || [];
+        if (!items.length) break;
+        for (const s of items) {
+          const shareId = s.id || s.share_id;
+          if (!shareId) continue;
+          emitRecord('shared_conversations', {
+            id: shareId,
+            conversation_id: s.conversation_id || null,
+            share_url: s.share_url || `https://chatgpt.com/share/${shareId}`,
+            title: s.title || null,
+            created_at: tsToIso(s.create_time ?? s.created_at),
+            anonymous: typeof s.is_anonymous === 'boolean' ? s.is_anonymous : (typeof s.anonymous === 'boolean' ? s.anonymous : null),
+            is_public: typeof s.is_public === 'boolean' ? s.is_public : null,
+            highlighted_text: s.highlighted_text || null,
+          });
+        }
+        if (items.length < limit) break;
+        offset += items.length;
+        if (offset > 5000) break; // safety
+      }
+      if (!sawError) {
+        emit({ type: 'STATE', stream: 'shared_conversations', cursor: { fetched_at: nowIso() } });
       }
     }
 
@@ -505,7 +668,7 @@ async function main() {
       }
     }
   } finally {
-    await context.close().catch(() => {});
+    await release().catch(() => {});
   }
 
   emit({ type: 'DONE', status: 'succeeded', records_emitted: _totalEmitted });

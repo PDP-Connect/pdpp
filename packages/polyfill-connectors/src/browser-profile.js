@@ -38,3 +38,14 @@ export async function launchPersistentContext({ headless }) {
 
   return context;
 }
+
+/**
+ * Preferred entry point for headless connector runs. Returns `{ context,
+ * release }`; `release()` disconnects the caller's CDP client but leaves the
+ * shared daemon browser running so session-scoped cookies (e.g. USAA's
+ * LtpaToken2) persist in memory across runs.
+ *
+ * See src/browser-daemon.js for the rationale. Set `PDPP_BROWSER_DAEMON=0`
+ * to fall back to the legacy per-run launchPersistentContext path.
+ */
+export { acquireBrowser } from './browser-daemon.js';
