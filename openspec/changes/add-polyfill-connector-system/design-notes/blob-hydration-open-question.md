@@ -53,6 +53,28 @@ Any field-level blob is promoted to its own stream — exactly what the Gmail `m
 
 The spec does not mandate a blob primitive; the RS exposes records, and consumers figure it out. Pro: zero spec work. Con: every connector keeps inventing a shape; consent cards cannot say anything consistent about binary payloads.
 
+## Concrete scale data from the Slack connector (2026-04-20)
+
+One workspace, 10-year history, yielded a real measurement that sharpens the choice between candidate shapes:
+
+- **24 GB of file attachments** (`__uploads/` dir from slackdump), 15,410 files
+- **Largest single file: 810 MB** (IMG_8109.MOV — a user-uploaded video)
+- Top 10 files = ~5 GB, all videos or screen recordings
+- **305 files over 10 MB**, 1,940 between 1–10 MB, 13,130 under 1 MB
+- Distribution by channel is long-tailed: top 6 channels = 13 GB (56%); 50+ channels under 0.5 GB each
+
+**What this rules out:**
+
+Shape B's optional "...maybe inlined..." path is not viable for Slack attachments. An 810 MB video cannot be inlined in a record payload; a client querying `/v1/streams/files/records` would be forced to stream gigabytes it didn't ask for. Any chosen shape MUST have a deferred/separate fetch path for the actual bytes.
+
+**What this reinforces:**
+
+Content-addressing is already how Slack (and Gmail, iMessage, Google Takeout, etc.) organize their own binaries on disk. slackdump stores files under `__uploads/<file_id>/`, where `file_id` is Slack's hash. Candidate A (sibling endpoint with `sha256:...` handles) and Candidate B (field-level blob declaration with content hash) both align with existing disk layouts; Candidate C (separate stream) punts the problem but doesn't solve "where do the bytes actually live."
+
+**What this opens:**
+
+The `rs-storage-topology-open-question.md` decision compounds with this one. The reference impl's `blobs` SQLite table schema currently has a `data BLOB` column — SQLite can nominally hold 1 GB per BLOB, but 24 GB of video files in a SQLite column is operationally untenable (VACUUM is impossible, backups unmanageable, mmap thrashes). This suggests: whatever shape wins, **the reference impl likely cannot implement it by stuffing bytes into the existing `blobs.data` column** — it needs filesystem-or-object-store backing behind the same HTTP surface. That's a concrete nudge toward the hybrid "content-addressed filesystem, SQLite metadata" pattern slackdump itself uses.
+
 ## Cross-cutting
 
 - **Authored artifacts vs. activity streams** (`layer-2-coverage-chatgpt-claude-codex.md`, cross-cutting #1): user-authored blobs (uploaded images, docs, custom-GPT profile images) likely want different provenance than activity-log blobs.
