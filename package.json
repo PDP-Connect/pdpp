@@ -11,9 +11,9 @@
     "docs:dev": "vitepress dev",
     "docs:build": "vitepress build",
     "docs:preview": "vitepress preview",
-    "reference-implementation:test": "pnpm --dir reference-implementation test",
-    "reference-implementation:server": "pnpm --dir reference-implementation server",
-    "reference-implementation:cli": "pnpm --dir reference-implementation cli",
+    "reference-implementation:test": "pnpm --dir reference-implementation run test",
+    "reference-implementation:server": "pnpm --dir reference-implementation run server",
+    "reference-implementation:cli": "pnpm --dir reference-implementation run cli",
     "web:dev": "pnpm --dir apps/web dev",
     "web:build": "pnpm --dir apps/web build",
     "web:start": "pnpm --dir apps/web start"
@@ -25,5 +25,11 @@
   "devDependencies": {
     "@pdpp/brand": "workspace:*",
     "vitepress": "^1.6.4"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild",
+      "sqlite3"
+    ]
   }
 }
