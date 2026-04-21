@@ -33,7 +33,7 @@ Last revised: 2026-04-21.
 | claude_code | ✅ done | 235,757 | 2.8 GB DB. state_streams_committed: 4/4 (413 fix landed, no more partial commits). |
 | codex | ✅ done | 74,033 | 0 nulls, 0 drops across function_calls + messages + sessions. |
 | amazon | 🟡 v0.1 in progress | 0 | 2FA-on-wife's-phone blocker resolved 2026-04-21 (new account). Auto-login verified end-to-end (`#ap_email_login` + `#ap_password` selectors, OTP via INTERACTION). `fetchOrderDetail` intentionally stubbed pending live DOM probe. Manifest overclaims ~11 fields (see `amazon.md`). |
-| chase | 🟡 v0.1 scaffolded | 0 | NEW 2026-04-21. Manifest + `design-notes/chase.md` (QFX strategy). Auto-login probe succeeds through full 2FA via mds-* shadow DOM. Connector `index.js` + `src/auto-login/chase.js` not yet implemented. |
+| chase | ✅ v0.1 working | 16 (1 account, 14 txns, 1 balance) | NEW 2026-04-21. End-to-end: auto-login via `src/auto-login/chase.js` (mds-* shadow DOM, text/role locators per Playwright best practices), discover accounts via `#accounts-name-link-button-<id>-label` pattern, QFX download via `mds-select#downloadFileTypeOption` + `mds-button#download`, parse via `ofx-js`. Only credit card so far (account-param `CARD,BAC`); checking/savings param shapes are placeholders. v0.2: date-range support (currently "Current display" ~30 days), statement PDFs. |
 | github | ✅ done | 8,608 | PAT auto-created via `bin/bootstrap-github-pat.js` (headless login → INTERACTION for 2FA → PAT form → token written to `.env.the owner.local`). |
 | oura | 🟡 ready | 0 | Awaits `OURA_PERSONAL_ACCESS_TOKEN`. |
 | spotify | 🚫 blocked upstream | 0 | Spotify froze new developer app creation in Feb 2026; OAuth-only anyway. Keep manifest, revisit when Spotify re-opens. |

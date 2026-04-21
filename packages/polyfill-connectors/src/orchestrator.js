@@ -60,6 +60,7 @@ const KNOWN_CONNECTORS = {
   codex: c('codex'),
   apple_health: { connectorPath: join(CONNECTORS_DIR, 'apple_health', 'index.js'), manifestPath: join(MANIFEST_DIR, 'apple_health.json') },
   ical: c('ical'),
+  chase: c('chase'),
 };
 
 export function getConnectorPaths(name) {
