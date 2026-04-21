@@ -6,7 +6,9 @@
 
 > "We are unable to complete your request. Our system is currently unavailable. Please try again later."
 
-This is not a Playwright issue. It's not even a PDPP-specific issue. It's an inherent consequence of **"automate access to an account with failure tolerance"** — if the protocol lets a connector retry on failure (and it must, for transient errors), and the upstream has failure-count lockout protection (and banks always do), then an aggressive retry policy can lock the owner out of their own account.
+This is not a Playwright issue. It's not even a PDPP-specific issue. It's an inherent consequence of **"automate access to an account with failure tolerance"** — if the protocol lets a connector retry on failure (and it must, for transient errors), and the upstream has failure-count protection (and banks always do), then an aggressive retry policy can lock the owner out of critical surfaces.
+
+**Important follow-up datapoint (2026-04-21 08:45):** mobile login still works. The account itself is not frozen; only the web-browser context is blocked. This matches the pattern documented in `chase-anti-bot.md` — upstreams differentiate per-device/per-fingerprint, not per-account. That doesn't make this harmless (the owner loses the ability to manage their money via web banking for the duration, and cross-device fingerprint-sharing IS possible), but it changes the severity and the recovery playbook significantly. A fresh browser fingerprint may recover web access; waiting for an "account thaw" is unnecessary if mobile still works.
 
 **Framing:** This note is about the owner-protection dimension of `partial-run-semantics-open-question.md`'s retry discussion, but it's a distinct concern: not "how does the protocol know what was skipped" (production/retry side) but "how does the protocol avoid converting an ingest failure into a lockout of the owner's human account."
 
@@ -34,6 +36,8 @@ The consequences scale similarly:
 | High | Forced password reset | Reset flow, SMS/email verification |
 | Severe | Account flagged for fraud review | Manual review, potentially days-to-weeks |
 | Catastrophic | Account frozen, cards blocked | In-person branch visit, legal documentation |
+
+(Note: the 2026-04-21 USAA incident appears to be at the "Medium" level, constrained to the web-browser fingerprint — mobile login continued to work throughout. Banks differentiate per-device routing as a matter of course. Still owner-harm, but not account-level lockout.)
 
 **A protocol that makes data portable cannot make the account inaccessible.** That would be the opposite of owner agency.
 
