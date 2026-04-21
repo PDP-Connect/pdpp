@@ -1,26 +1,32 @@
 /**
- * Context-level download queue for multi-download runs.
+ * Page-level download queue for multi-download runs.
  *
- * WHY: Playwright's `page.waitForEvent('download')` is a one-shot promise —
- * it resolves on the next download event, then returns. In headed Chromium
- * (especially when attached over CDP, as our browser-daemon is), subsequent
- * `waitForEvent('download')` calls on the same page can silently never
- * dispatch, because Chrome's download-bubble UI state and the Playwright
- * CDP download-interception compete for ownership of each stream.
+ * WHY: Chromium's headed download-bubble and the CDP-based
+ * `Playwright.download` interception compete for ownership of each stream
+ * (microsoft/playwright#40158). We already mitigate the race with
+ * `--disable-features=DownloadBubble` on the daemon's launch args — but
+ * we also want a listener surface that tolerates multiple downloads
+ * fired back-to-back without needing one `waitForEvent` per click.
  *
- * Microsoft/playwright#40158 (open as of 2026-04-10) documents the race.
- * Current recommendation: use `context.on('download', ...)` as a long-lived
- * listener, not `page.waitForEvent(...)` as a per-click one-shot.
+ * Verified 2026-04-21 via scripts/test-download-queue-debug.mjs:
+ * - `context.on('download')` is NOT dispatched when attached over CDP to
+ *   a freshly-created BrowserContext (`browser.newContext(...)`). Events
+ *   reliably reach page-level listeners only.
+ * - `page.on('download', ...)` DOES fire for every download from that page,
+ *   in order, across multiple sequential clicks.
  *
- * This module wraps that advice into a small API:
- *   const q = attachDownloadQueue(context);
- *   // ...click things that trigger downloads...
+ * So the queue is page-scoped. Callers must pass the page they're clicking
+ * on. If they navigate to a new page, they need a new queue (because the
+ * listener is wired to the old one).
+ *
+ * Usage:
+ *   const q = attachDownloadQueue(page);
+ *   await q.ready();                   // wait for listener setup
+ *   await clickSomethingThatDownloads();
  *   const dl = await q.waitForNextDownload({ timeoutMs: 180_000 });
- *   // do things with dl...
- *   q.detach();  // when done
+ *   q.detach();
  *
- * The queue preserves event-delivery order: if two downloads fire back-to-
- * back before the caller awaits, both are queued and consumed in order.
+ * The queue preserves event-delivery order.
  */
 
 /**
@@ -31,10 +37,10 @@
  */
 
 /**
- * @param {import('playwright').BrowserContext} context
+ * @param {import('playwright').Page | import('playwright').BrowserContext} target
  * @returns {DownloadQueue}
  */
-export function attachDownloadQueue(context) {
+export function attachDownloadQueue(target) {
   /** @type {import('playwright').Download[]} */
   const pending = [];
   /** @type {((dl: import('playwright').Download) => void)[]} */
@@ -49,7 +55,7 @@ export function attachDownloadQueue(context) {
     }
   };
 
-  context.on('download', onDownload);
+  target.on('download', onDownload);
 
   return {
     waitForNextDownload({ timeoutMs = 180_000 } = {}) {
@@ -82,7 +88,7 @@ export function attachDownloadQueue(context) {
       });
     },
     detach() {
-      context.off('download', onDownload);
+      target.off('download', onDownload);
       // Anything still waiting gets rejected so callers don't hang forever.
       while (waiters.length > 0) {
         const w = waiters.shift();

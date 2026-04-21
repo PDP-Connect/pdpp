@@ -469,12 +469,14 @@ async function main() {
     return fail(`could not open browser profile: ${err.message}`, false);
   }
 
-  // Attach a context-level download listener before any clicks — see
-  // src/download-queue.js for rationale.
-  const downloadQueue = attachDownloadQueue(context);
+  let downloadQueue;
 
   try {
     const page = await context.newPage();
+    // Page-level download listener — verified 2026-04-21 that
+    // context.on('download') doesn't fire over CDP; page.on does.
+    // Attach BEFORE any clicks that might download.
+    downloadQueue = attachDownloadQueue(page);
     // Automated session management: probe + if dead, drive full login with
     // stored creds + 2FA via INTERACTION kind=otp. No human laptop needed.
     try {
@@ -982,7 +984,7 @@ async function main() {
       }
     }
   } finally {
-    try { downloadQueue.detach(); } catch {}
+    if (downloadQueue) { try { downloadQueue.detach(); } catch {} }
     await release().catch(() => {});
   }
 

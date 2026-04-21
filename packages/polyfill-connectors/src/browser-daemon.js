@@ -230,28 +230,84 @@ export async function acquireBrowser({ headless = true } = {}) {
 
   await acquireLock();
   let browser;
+  let defaultCtx;
   let context;
   try {
     browser = await chromium.connectOverCDP(status.info.wsEndpoint);
-    // Persistent-context is the first (default) BrowserContext exposed via
-    // CDP. Creating a new context via connectOverCDP would be non-persistent
-    // and wouldn't share cookies with the profile, so reuse the existing one.
+
+    // WHY an isolated context (not browser.contexts()[0]):
+    // Playwright's CDP download-interception attaches Browser.setDownloadBehavior
+    // to a single "default" target when we reuse the persistent context. In
+    // headed Chromium that races with Chrome's download-bubble — first
+    // download fires, subsequent downloads never dispatch the `download`
+    // event. See microsoft/playwright#40158.
+    //
+    // The recommended workaround is `browser.newContext({ acceptDownloads:
+    // true })`. That gives reliable per-download event dispatch. The cost:
+    // the new context starts with no cookies. We carry cookies over from the
+    // persistent default context so auth (USAA LtpaToken2 etc.) is available
+    // inside the isolated context for this caller, and we sync new cookies
+    // back to the default context on release so session progress persists.
     const contexts = browser.contexts();
     if (!contexts.length) {
       throw new Error('daemon browser has no contexts');
     }
-    context = contexts[0];
+    defaultCtx = contexts[0];
+
+    // Copy cookies from the persistent context to the isolated one.
+    const cookies = await defaultCtx.cookies();
+    context = await browser.newContext({ acceptDownloads: true });
+    if (cookies.length > 0) {
+      // Playwright's addCookies is strict about the shape it accepts.
+      // Filter fields that can come out of cookies() and fail roundtrip.
+      const sanitized = cookies
+        .filter((c) => c.domain && c.path)
+        .map((c) => ({
+          name: c.name,
+          value: c.value,
+          domain: c.domain,
+          path: c.path,
+          expires: c.expires,
+          httpOnly: c.httpOnly,
+          secure: c.secure,
+          sameSite: c.sameSite === 'None' || c.sameSite === 'Lax' || c.sameSite === 'Strict'
+            ? c.sameSite
+            : undefined,
+        }));
+      await context.addCookies(sanitized).catch(() => {});
+    }
+
     return {
       context,
       release: async () => {
-        // Close only our pages; leave the shared context alive so cookies
-        // persist in memory for the next caller.
+        // Persist cookies back to the default context so the daemon's
+        // persistent profile has the latest auth state for the next caller.
         try {
-          for (const page of context.pages()) {
-            // Keep the initial blank page the daemon leaves open; close the rest.
-            if (page.url() === 'about:blank') continue;
-            await page.close().catch(() => {});
+          const freshCookies = await context.cookies();
+          if (freshCookies.length > 0) {
+            const sanitized = freshCookies
+              .filter((c) => c.domain && c.path)
+              .map((c) => ({
+                name: c.name,
+                value: c.value,
+                domain: c.domain,
+                path: c.path,
+                expires: c.expires,
+                httpOnly: c.httpOnly,
+                secure: c.secure,
+                sameSite: c.sameSite === 'None' || c.sameSite === 'Lax' || c.sameSite === 'Strict'
+                  ? c.sameSite
+                  : undefined,
+              }));
+            await defaultCtx.addCookies(sanitized).catch(() => {});
           }
+        } catch {
+          // If cookie copy-back fails, the session still works for this run;
+          // worst case the next run starts with slightly older cookies.
+        }
+        try {
+          // Close our isolated context entirely.
+          await context.close().catch(() => {});
         } finally {
           await browser.close().catch(() => {}); // disconnect CDP, not kill browser
           releaseLock();
@@ -259,6 +315,7 @@ export async function acquireBrowser({ headless = true } = {}) {
       },
     };
   } catch (err) {
+    if (context) await context.close().catch(() => {});
     if (browser) await browser.close().catch(() => {});
     releaseLock();
     throw err;
