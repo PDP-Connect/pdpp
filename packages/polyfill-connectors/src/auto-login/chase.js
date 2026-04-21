@@ -58,13 +58,19 @@ export async function ensureChaseSession({ context: _context, page, sendInteract
 
   await page.goto(LOGON_URL, { waitUntil: 'domcontentloaded', timeout: 30000 });
 
-  // Logon form — auto-wait on the username field instead of a fixed delay.
-  // IDs observed stable across recent Chase redesigns.
-  const userField = page.locator('input#userId-text-input-field, input[name="userId"], input[id*="userId" i]').first();
+  // Logon form — ID pattern changed 2026-04-21:
+  //   old: #userId-text-input-field / #password-text-input-field
+  //   new: #userId-input-field-input / #password-input-field-input (+name=username)
+  // Accept both so we work across Chase's redesigns without a release.
+  const userField = page.locator(
+    'input#userId-input-field-input, input[name="username"], input#userId-text-input-field, input[name="userId"]'
+  ).first();
   await userField.waitFor({ state: 'visible', timeout: 15000 });
   await userField.fill(username);
 
-  const passField = page.locator('input#password-text-input-field, input[name="password"], input[type="password"]').first();
+  const passField = page.locator(
+    'input#password-input-field-input, input#password-text-input-field, input[name="password"], input[type="password"]'
+  ).first();
   await passField.fill(password);
 
   await page.locator('button#signin-button, button[type="submit"]').first().click({ timeout: 5000 });

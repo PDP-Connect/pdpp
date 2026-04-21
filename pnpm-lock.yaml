@@ -132,6 +132,9 @@ importers:
       playwright:
         specifier: ^1.47.0
         version: 1.59.1
+      rebrowser-playwright:
+        specifier: ^1.52.0
+        version: 1.52.0
 
 packages:
 
@@ -3913,6 +3916,16 @@ packages:
   real-require@0.2.0:
     resolution: {integrity: sha512-57frrGM/OCTLqLOAh0mhVA9VBMHd+9U7Zb2THMGdBUoZVOtGbJzjxsYGDJ3A9AYYCP4hn6y1TVbaOfzWtm5GFg==}
     engines: {node: '>= 12.13.0'}
+
+  rebrowser-playwright-core@1.52.0:
+    resolution: {integrity: sha512-gjrvLNh0RX6B/tg6pWaPNGf+9+z1Jl2EyAh5MXD5xMa2lputGRZ9V2MJ/uofcC5Np3vSOJ3SdVSRqwteC0FjfQ==}
+    engines: {node: '>=18'}
+    hasBin: true
+
+  rebrowser-playwright@1.52.0:
+    resolution: {integrity: sha512-UjpqfwmF9+XtOuCCxGQ2ZlLeuSaSv//4Z6ZQgYPsJovz3d7nWodCd2hSRQigAswAUnsPmVwnQUpSn+TLKaKV+A==}
+    engines: {node: '>=18'}
+    hasBin: true
 
   recast@0.23.11:
     resolution: {integrity: sha512-YTUo+Flmw4ZXiWfQKGcwwc11KnoRAYgzAE2E7mXKCjSviTKShtxBsN6YUUBB2gtaBzKzeKunxhUwNHQuRryhWA==}
@@ -8345,6 +8358,14 @@ snapshots:
   readdirp@5.0.0: {}
 
   real-require@0.2.0: {}
+
+  rebrowser-playwright-core@1.52.0: {}
+
+  rebrowser-playwright@1.52.0:
+    dependencies:
+      playwright-core: rebrowser-playwright-core@1.52.0
+    optionalDependencies:
+      fsevents: 2.3.2
 
   recast@0.23.11:
     dependencies:

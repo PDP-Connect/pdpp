@@ -16,6 +16,7 @@
  * v0.1 streams (per `design-notes/chase.md`):
  *   - accounts: dashboard-scraped identity + QFX ACCTINFO augmentation
  *   - transactions: per-account, per-90-day-window QFX downloads + parse
+ *   - statements: per-account monthly statement PDFs, hydrated to disk
  *   - balances: append_only point-in-time snapshots from QFX LEDGERBAL/AVAILBAL
  *
  * Selectors for the download UI are NOT verified live yet. This connector
@@ -28,10 +29,13 @@
  */
 
 import { createInterface } from 'node:readline';
-import { mkdtemp, rm, readFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { mkdtemp, rm, readFile, mkdir, writeFile, stat } from 'node:fs/promises';
+import { tmpdir, homedir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { createHash } from 'node:crypto';
 import { acquireBrowser } from '../../src/browser-profile.js';
+import { acquireIsolatedBrowser } from '../../src/browser-daemon.js';
 import { resourceSet } from '../../src/scope-filters.js';
 import { ensureChaseSession } from '../../src/auto-login/chase.js';
 import { emitToStdout } from '../../src/safe-emit.js';
@@ -281,6 +285,180 @@ async function fillDateRange(page, from, to) {
   }
 }
 
+// ─── Statements (PDF archive) ─────────────────────────────────────────────
+//
+// Navigate to Chase's Statements & Documents page and walk each row,
+// clicking the `-download` anchor to save each monthly statement PDF.
+// Pattern follows USAA's statements implementation (content-addressed
+// storage, hash-based idempotence, per-account subfolders).
+//
+// Row structure verified live 2026-04-21:
+//   table#accountsTable-0 (the account's statement table; index 0 = first
+//     expanded account — Chase shows one account per table on the
+//     Statements page, expanded via button#button-documentsAccordion-N).
+//   Each row has three cells + action anchors:
+//     Cell 0: date (e.g. "Apr 13, 2026")
+//     Cell 1: "Statement" | "Tax document" | etc.
+//     Cell 2: page count (e.g. "4 pages")
+//     Cell 3: a.id=accountsTable-0-rowN-cell3-requestThisDocumentAnchor-download
+//            (also -pdf which OPENS instead of saves)
+
+const STATEMENT_ROOT = join(homedir(), '.pdpp', 'chase-statements');
+
+function sha256Hex(buf) { return createHash('sha256').update(buf).digest('hex'); }
+function shortHash(s) { return createHash('sha256').update(s).digest('hex').slice(0, 32); }
+
+async function navigateToStatementsPage(page) {
+  // Warm overview first — direct-nav to the documents URL can bounce through
+  // login if the SPA isn't fully hydrated.
+  await page.goto('https://secure.chase.com/web/auth/dashboard#/dashboard/overview', { waitUntil: 'domcontentloaded', timeout: 30000 });
+  // Wait for any account label to render before routing onward.
+  await page.locator('[id^="accounts-name-link-button-"][id$="-label"]').first()
+    .waitFor({ state: 'attached', timeout: 20000 }).catch(() => {});
+
+  await page.goto('https://secure.chase.com/web/auth/dashboard#/dashboard/documents/myDocs/index;mode=documents', {
+    waitUntil: 'domcontentloaded', timeout: 30000,
+  });
+  // Wait for the accordion trigger to appear — confirms the page rendered.
+  await page.locator('[id^="button-documentsAccordion-"]').first()
+    .waitFor({ state: 'visible', timeout: 20000 });
+}
+
+/**
+ * Enumerate the statement rows currently visible on the Statements page.
+ * Each row maps to one monthly statement PDF. Returns an array of:
+ *   { rowAnchorId, date_delivered_raw, title, account_reference, doc_kind }
+ * in DOM order (newest first, per Chase's default ordering).
+ */
+async function enumerateStatementRows(page) {
+  return page.evaluate(() => {
+    function walk(root, out = []) { root.querySelectorAll('*').forEach((el) => { out.push(el); if (el.shadowRoot) walk(el.shadowRoot, out); }); return out; }
+    const els = walk(document);
+    const anchors = els.filter((el) =>
+      el.tagName === 'A' && /accountsTable-\d+-row\d+-cell\d+-requestThisDocumentAnchor-download/.test(el.id || '')
+    );
+    // Parallel: find account accordion buttons, to associate each table with an account label.
+    const accordions = [...document.querySelectorAll('[id^="button-documentsAccordion-"]')]
+      .map((b) => ({
+        id: b.id,
+        tableIdx: (b.id.match(/documentsAccordion-(\d+)/) || [])[1],
+        label: (b.innerText || '').replace(/\s+/g, ' ').trim(),
+      }));
+    const accountByTableIdx = new Map(accordions.map((a) => [a.tableIdx, a.label]));
+
+    return anchors.map((a) => {
+      // anchor id: accountsTable-<T>-row<R>-cell3-requestThisDocumentAnchor-download
+      const m = a.id.match(/accountsTable-(\d+)-row(\d+)-/);
+      const tableIdx = m?.[1];
+      const rowIdx = m?.[2];
+      // Walk up to the <tr> for date + type cells.
+      let tr = a;
+      while (tr && tr.tagName !== 'TR') tr = tr.parentElement;
+      const cells = tr ? [...tr.querySelectorAll('td, th')] : [];
+      const date_delivered_raw = (cells[0]?.innerText || '').trim();
+      const doc_kind = (cells[1]?.innerText || '').trim();
+      const account_reference = accountByTableIdx.get(tableIdx) || null;
+      const title = [date_delivered_raw, doc_kind, account_reference].filter(Boolean).join(' ');
+      return {
+        rowAnchorId: a.id,
+        tableIdx,
+        rowIdx,
+        date_delivered_raw,
+        doc_kind,
+        account_reference,
+        title,
+      };
+    }).filter((r) => r.doc_kind && /statement/i.test(r.doc_kind));
+  });
+}
+
+function parseDateDelivered(raw) {
+  // Chase renders "Apr 13, 2026"; `new Date` parses reliably on v8 for this.
+  if (!raw) return null;
+  const d = new Date(raw);
+  if (isNaN(d.getTime())) return null;
+  return d.toISOString().slice(0, 10);
+}
+
+function yearMonthFromIso(iso) {
+  return iso ? iso.slice(0, 7) : 'unknown';
+}
+
+function accountSlug(accountId) {
+  if (!accountId) return 'unknown';
+  if (/^[A-Za-z0-9_-]+$/.test(accountId)) return accountId;
+  return shortHash(accountId);
+}
+
+/**
+ * Click the row's download anchor and capture the PDF via Playwright's
+ * download event. Save to disk under ~/.pdpp/chase-statements/<account>/
+ * <YYYY-MM>-<sha16>.pdf.
+ */
+async function downloadStatementPdf(page, row, accountId) {
+  // Chase's anchor ids are safe ASCII (only letters, digits, hyphens) so
+  // we can inline them into a CSS selector without CSS.escape (which is
+  // browser-only — not available in Node).
+  const anchor = page.locator(`#${row.rowAnchorId}`);
+  const exists = await anchor.count().catch(() => 0);
+  if (!exists) return { ok: false, error: 'anchor_not_found' };
+
+  const downloadPromise = page.waitForEvent('download', { timeout: 60000 });
+  try {
+    await anchor.click({ timeout: 10000 });
+  } catch (err) {
+    return { ok: false, error: `anchor_click_failed: ${err.message.slice(0, 120)}` };
+  }
+
+  let dl;
+  try {
+    dl = await downloadPromise;
+  } catch (err) {
+    return { ok: false, error: `download_event_timeout: ${err.message.slice(0, 120)}` };
+  }
+
+  const internalPath = await dl.path();
+  if (!internalPath) return { ok: false, error: 'download_no_path' };
+  const buffer = await readFile(internalPath);
+  const pdfSha256 = sha256Hex(buffer);
+
+  const isoDate = parseDateDelivered(row.date_delivered_raw);
+  const slug = accountSlug(accountId);
+  const dir = join(STATEMENT_ROOT, slug);
+  await mkdir(dir, { recursive: true });
+  const pdfPath = join(dir, `${yearMonthFromIso(isoDate)}-${pdfSha256.slice(0, 16)}.pdf`);
+
+  // Idempotent: skip rewrite when the content is already at the expected path.
+  const existing = await stat(pdfPath).catch(() => null);
+  if (!existing || existing.size !== buffer.length) {
+    await writeFile(pdfPath, buffer);
+  }
+
+  return { ok: true, pdfPath, pdfSha256 };
+}
+
+function fileUrl(p) {
+  if (!p) return null;
+  return pathToFileURL(p).href;
+}
+
+/**
+ * Resolve a statement row's `account_reference` text (e.g.
+ * "SAPPHIRE PREFERRED (...9241)") to the stable Chase internal account id
+ * from our accounts array.
+ */
+function resolveAccountIdForRow(row, accounts) {
+  if (!row.account_reference) return null;
+  const last4Match = row.account_reference.match(/\.\.\.(\d{3,4})/);
+  if (last4Match) {
+    const byLast4 = accounts.find((a) => a.last_four === last4Match[1]);
+    if (byLast4) return byLast4.internal_id;
+  }
+  const refLower = row.account_reference.toLowerCase();
+  const byName = accounts.find((a) => a.name && refLower.includes(a.name.toLowerCase()));
+  return byName ? byName.internal_id : null;
+}
+
 // ─── QFX parsing ──────────────────────────────────────────────────────────
 
 async function parseQfxFile(path) {
@@ -380,6 +558,7 @@ async function main() {
   const wantsAccounts = requested.has('accounts');
   const wantsTransactions = requested.has('transactions');
   const wantsBalances = requested.has('balances');
+  const wantsStatements = requested.has('statements');
 
   // State is keyed by stream name at the runtime layer:
   //   { transactions: { per_account: {<id>: {max_seen_date, ...}} } }
@@ -429,9 +608,25 @@ async function main() {
 
   let context;
   let release = async () => {};
+  // Chase fingerprints the shared daemon profile and bounces it to
+  // /#/logon/logon/error regardless of cookie state. See
+  // `design-notes/chase-anti-bot.md`. Use an isolated per-connector profile
+  // instead. Set PDPP_CHASE_SHARED_PROFILE=1 to force the shared daemon
+  // (useful for testing the behavior documented in that note).
+  const useIsolated = process.env.PDPP_CHASE_SHARED_PROFILE !== '1';
   const headless = process.env.PDPP_CHASE_HEADLESS !== '0';
   try {
-    ({ context, release } = await acquireBrowser({ headless }));
+    if (useIsolated) {
+      // Run headful by default on the isolated profile so Chase's login
+      // accepts the submission. Caller can still set PDPP_CHASE_HEADLESS=1
+      // to attempt headless.
+      ({ context, release } = await acquireIsolatedBrowser({
+        profileName: 'chase',
+        headless: false,
+      }));
+    } else {
+      ({ context, release } = await acquireBrowser({ headless }));
+    }
   } catch (err) {
     return fail(`could not open browser: ${err.message}`, false);
   }
@@ -582,6 +777,95 @@ async function main() {
           type: 'PROGRESS',
           stream: 'transactions',
           message: `${a.name}: emitted ${transactions.length} transactions`,
+        });
+      }
+    }
+
+    // Statements: navigate to Statements & Documents, enumerate rows, download
+    // each PDF, emit one record per statement with content-addressed path.
+    if (wantsStatements) {
+      try {
+        await emit({ type: 'PROGRESS', stream: 'statements', message: 'Navigating to Statements & Documents' });
+        await navigateToStatementsPage(page);
+        const rows = await enumerateStatementRows(page);
+        await emit({ type: 'PROGRESS', stream: 'statements', message: `Found ${rows.length} statement row(s)` });
+
+        for (const row of rows) {
+          try {
+            const dateIso = parseDateDelivered(row.date_delivered_raw);
+            const accountId = resolveAccountIdForRow(row, filteredAccounts) || resolveAccountIdForRow(row, accounts);
+
+            // Apply resources filter: if the accounts res filter excludes this
+            // statement's account, skip it. (emitRecord will also skip, but
+            // doing it here saves the PDF download.)
+            if (accountsResFilter && accountsResFilter.size && accountId && !accountsResFilter.has(accountId)) continue;
+
+            // Apply time_range filter: if client asked for statements.since and
+            // this row predates it, skip the download.
+            const stmtScope = requested.get('statements');
+            if (stmtScope?.time_range?.since && dateIso && dateIso < stmtScope.time_range.since.slice(0, 10)) continue;
+            if (stmtScope?.time_range?.until && dateIso && dateIso >= stmtScope.time_range.until.slice(0, 10)) continue;
+
+            const id = shortHash(`${row.account_reference || ''}|${dateIso || row.date_delivered_raw}|${row.title}`);
+
+            await emit({
+              type: 'PROGRESS',
+              stream: 'statements',
+              message: `Downloading ${row.title}`,
+            });
+
+            const dlResult = await downloadStatementPdf(page, row, accountId);
+            if (!dlResult.ok) {
+              await emit({
+                type: 'SKIP_RESULT',
+                stream: 'statements',
+                reason: 'pdf_download_failed',
+                message: `${row.title}: ${dlResult.error}`,
+              });
+              // Still emit the index row so the owner has a record the
+              // statement exists, just without hydrated bytes.
+              await emitRecord('statements', {
+                id,
+                account_id: accountId,
+                title: row.title,
+                date_delivered: dateIso,
+                account_reference: row.account_reference,
+                document_url: null,
+                pdf_path: null,
+                pdf_sha256: null,
+                fetched_at: emittedAt,
+              });
+              continue;
+            }
+
+            await emitRecord('statements', {
+              id,
+              account_id: accountId,
+              title: row.title,
+              date_delivered: dateIso,
+              account_reference: row.account_reference,
+              document_url: fileUrl(dlResult.pdfPath),
+              pdf_path: dlResult.pdfPath,
+              pdf_sha256: dlResult.pdfSha256,
+              fetched_at: emittedAt,
+            });
+          } catch (rowErr) {
+            await emit({
+              type: 'SKIP_RESULT',
+              stream: 'statements',
+              reason: 'row_exception',
+              message: `${row.title}: ${rowErr.message.slice(0, 160)}`,
+            });
+          }
+        }
+
+        await emit({ type: 'STATE', stream: 'statements', cursor: { fetched_at: emittedAt } });
+      } catch (err) {
+        await emit({
+          type: 'SKIP_RESULT',
+          stream: 'statements',
+          reason: 'statements_scrape_failed',
+          message: err.message.slice(0, 200),
         });
       }
     }

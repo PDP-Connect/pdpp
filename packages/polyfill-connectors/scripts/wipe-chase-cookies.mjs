@@ -1,0 +1,12 @@
+import { chromium } from 'playwright';
+import { readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+const d = JSON.parse(readFileSync(join(homedir(), '.pdpp', 'browser-daemon.json'), 'utf8'));
+const browser = await chromium.connectOverCDP(d.wsEndpoint);
+const ctx = browser.contexts()[0];
+const before = (await ctx.cookies()).filter((c) => c.domain.includes('chase')).length;
+await ctx.clearCookies({ domain: /chase/i });
+const after = (await ctx.cookies()).filter((c) => c.domain.includes('chase')).length;
+console.log(`chase cookies: ${before} -> ${after}`);
+await browser.close();

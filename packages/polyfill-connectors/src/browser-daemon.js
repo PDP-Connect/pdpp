@@ -110,7 +110,20 @@ function clearStaleProfileLock() {
   try { unlinkSync(singleton); } catch {}
 }
 
-export async function startDaemon({ headless = true } = {}) {
+/**
+ * Start the browser daemon.
+ *
+ * @param {object} opts
+ * @param {boolean} [opts.headless=true] - Run Chromium headless. Default true
+ *   so most connectors (YNAB, Gmail, USAA) run unattended. Set false for
+ *   connectors that trip anti-bot on the headless build (Chase/Amazon).
+ * @param {boolean} [opts.xvfb=false] - Wrap the launch under `xvfb-run` so
+ *   Chromium can render into a virtual display. Use with headless=false to
+ *   get a real rendered browser that bypasses anti-bot detection without
+ *   requiring a human-visible desktop session. This is the standard
+ *   unattended-operation answer for Akamai-protected sites (Chase).
+ */
+export async function startDaemon({ headless = true, xvfb = false } = {}) {
   ensurePdppDir();
   const existing = await daemonStatus();
   if (existing.running) return existing.info;
@@ -122,12 +135,22 @@ export async function startDaemon({ headless = true } = {}) {
   clearStaleProfileLock();
 
   const logFd = openSync(LOG_PATH, 'a');
-  const child = spawn(process.execPath, [WORKER_PATH], {
+
+  // `xvfb-run` wraps the command in a virtual X display so a "headful"
+  // Chromium can paint without requiring an attached monitor. Must use
+  // `--auto-servernum` so concurrent daemons get different display numbers.
+  const cmd = xvfb ? 'xvfb-run' : process.execPath;
+  const args = xvfb
+    ? ['--auto-servernum', '--server-args=-screen 0 1920x1080x24', process.execPath, WORKER_PATH]
+    : [WORKER_PATH];
+
+  const child = spawn(cmd, args, {
     detached: true,
     stdio: ['ignore', logFd, logFd],
     env: {
       ...process.env,
       PDPP_BROWSER_DAEMON_HEADLESS: headless ? '1' : '0',
+      PDPP_BROWSER_DAEMON_XVFB: xvfb ? '1' : '0',
     },
   });
   child.unref();
@@ -243,3 +266,51 @@ export async function acquireBrowser({ headless = true } = {}) {
 }
 
 export const paths = { DISCOVERY_PATH, LOCK_PATH, LOG_PATH, PROFILE_DIR };
+
+/**
+ * Launch an isolated per-connector browser context with its own profile dir.
+ * Use this when a site (e.g. Chase) device-fingerprints a shared profile
+ * and can't be unburned via cookie/storage wipes.
+ *
+ * This does NOT go through the daemon — spawns its own rebrowser-playwright
+ * Chromium. Use when the shared daemon won't work.
+ *
+ * @param {object} opts
+ * @param {string} opts.profileName - subdir under ~/.pdpp/profiles/
+ * @param {boolean} [opts.headless=false] - default headful since this path
+ *   is usually for anti-bot cases
+ * @returns {Promise<{context, browser, release}>}
+ */
+export async function acquireIsolatedBrowser({ profileName, headless = false }) {
+  if (!profileName || !/^[A-Za-z0-9_-]+$/.test(profileName)) {
+    throw new Error('profileName required, must be [A-Za-z0-9_-]+');
+  }
+  const { mkdirSync: mkd, existsSync: exst } = await import('node:fs');
+  const isolatedDir = join(homedir(), '.pdpp', 'profiles', profileName);
+  if (!exst(isolatedDir)) mkd(isolatedDir, { recursive: true, mode: 0o700 });
+
+  // Use rebrowser-playwright to patch the Runtime.Enable CDP leak, matching
+  // the daemon's primary browser setup.
+  const rebrowserPlaywright = await import('rebrowser-playwright');
+  const localChromium = rebrowserPlaywright.chromium;
+
+  const context = await localChromium.launchPersistentContext(isolatedDir, {
+    headless,
+    channel: 'chrome',
+    viewport: { width: 1280, height: 800 },
+    args: [
+      '--disable-blink-features=AutomationControlled',
+      '--no-default-browser-check',
+      '--no-first-run',
+      '--disable-features=DownloadBubble,DownloadBubbleV2,DownloadBubbleV3',
+    ],
+  });
+
+  return {
+    context,
+    browser: context.browser(),
+    release: async () => {
+      try { await context.close(); } catch {}
+    },
+  };
+}

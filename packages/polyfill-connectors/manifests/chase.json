@@ -83,6 +83,38 @@
       ]
     },
     {
+      "name": "statements",
+      "description": "Monthly statement PDFs per account from Chase's Statements & Documents page. Each record carries the document's title, delivery date, account reference, and — when the PDF is hydrated on-device — a content-addressed path + sha256. PDFs themselves live on the owner's disk under ~/.pdpp/chase-statements/<account>/<YYYY-MM>-<sha8>.pdf rather than in the RS, keeping blob storage out of SQLite per `design-notes/blob-hydration-open-question.md`.",
+      "display": {
+        "label": "Your Chase statements",
+        "detail": "PDF monthly statements across all Chase accounts. Metadata is always captured (title, delivery date, account reference); PDF bytes are downloaded and stored locally with a content hash when blob hydration runs. The same hash reappears across runs so downloads are idempotent."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "description": "SHA-256(account_reference|date_delivered|title), 32 hex chars." },
+          "account_id": { "type": ["string", "null"], "description": "FK to accounts.id. Resolved by matching the statement row's account_reference back to the accounts stream. Null when neither last-four nor name substring match succeed." },
+          "title": { "type": "string", "description": "Row title from the Statements & Documents table, e.g. `Sapphire Preferred (...9241)`." },
+          "date_delivered": { "type": ["string", "null"], "format": "date" },
+          "account_reference": { "type": ["string", "null"] },
+          "document_url": { "type": ["string", "null"], "description": "file:// URI for the stored PDF on disk. Populated only after blob hydration; null on index-only scrapes." },
+          "pdf_path": { "type": ["string", "null"], "description": "Absolute filesystem path of the downloaded PDF under ~/.pdpp/chase-statements/. Null until hydrated." },
+          "pdf_sha256": { "type": ["string", "null"], "description": "SHA-256 of the downloaded PDF bytes." },
+          "fetched_at": { "type": "string" }
+        },
+        "required": ["id", "title"]
+      },
+      "primary_key": ["id"],
+      "cursor_field": "date_delivered",
+      "consent_time_field": "date_delivered",
+      "selection": { "fields": true, "resources": true },
+      "incremental": true,
+      "relationships": [
+        { "name": "account", "stream": "accounts", "foreign_key": "account_id", "cardinality": "has_one" }
+      ]
+    },
+    {
       "name": "balances",
       "description": "Point-in-time balance snapshots per account. One record per QFX response per account. Useful for reconstructing historical balances between statement dates.",
       "display": {

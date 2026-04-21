@@ -9,7 +9,12 @@
  * this as a detached process.
  */
 
-import { chromium } from 'playwright';
+// Use rebrowser-playwright which patches the Runtime.Enable CDP leak that
+// Akamai Bot Manager uses to classify headless/automated Chromium. Drop-in
+// compatible with Playwright's API. See:
+//   https://github.com/rebrowser/rebrowser-patches
+//   https://rebrowser.net/blog/how-to-fix-runtime-enable-cdp-detection-of-puppeteer-playwright-and-other-automation-libraries
+import { chromium } from 'rebrowser-playwright';
 import { existsSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -60,20 +65,33 @@ async function main() {
   }
 
   const headless = process.env.PDPP_BROWSER_DAEMON_HEADLESS !== '0';
-  log(`launching Chromium (headless=${headless}) profile=${PROFILE_DIR}`);
+  const xvfb = process.env.PDPP_BROWSER_DAEMON_XVFB === '1';
+  log(`launching Chromium (headless=${headless}, xvfb=${xvfb}, DISPLAY=${process.env.DISPLAY || '<unset>'}) profile=${PROFILE_DIR}`);
+
+  // Flags split by headed vs headless. Some flags (`--hide-scrollbars`,
+  // `--mute-audio`, SwiftShader-only GPU) are documented tells that Akamai's
+  // bot-score uses to classify headless Chromium. Keep them OFF in headful
+  // mode so the runtime fingerprint matches a real browser.
+  const baseArgs = [
+    '--disable-blink-features=AutomationControlled',
+    '--no-default-browser-check',
+    '--no-first-run',
+    '--remote-debugging-port=0',
+    '--remote-debugging-address=127.0.0.1',
+    // Disable the headed Chrome download-bubble UI. In headed mode, the
+    // bubble takes ownership of the download stream and races with
+    // Playwright's CDP-based `Playwright.download` interception — so the
+    // first download in a run fires, but subsequent ones never dispatch
+    // the download event. See microsoft/playwright#40158 (open 2026-04).
+    '--disable-features=DownloadBubble,DownloadBubbleV2,DownloadBubbleV3',
+  ];
 
   const context = await chromium.launchPersistentContext(PROFILE_DIR, {
     headless,
     channel: BROWSER_CHANNEL,
     viewport: VIEWPORT,
     userAgent: USER_AGENT,
-    args: [
-      '--disable-blink-features=AutomationControlled',
-      '--no-default-browser-check',
-      '--no-first-run',
-      '--remote-debugging-port=0',
-      '--remote-debugging-address=127.0.0.1',
-    ],
+    args: baseArgs,
   });
 
   await context.addInitScript(() => {
