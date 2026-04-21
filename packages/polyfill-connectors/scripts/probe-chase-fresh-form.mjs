@@ -1,7 +1,7 @@
 /**
  * Find the current Chase login form selectors on a fresh profile.
  */
-import { chromium } from 'rebrowser-playwright';
+import { chromium } from 'patchright';
 import { mkdtempSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';

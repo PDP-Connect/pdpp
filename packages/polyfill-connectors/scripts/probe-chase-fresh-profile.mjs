@@ -7,7 +7,7 @@
  * Uses rebrowser-playwright under Xvfb. DISPLAY must be set by the caller.
  */
 
-import { chromium } from 'rebrowser-playwright';
+import { chromium } from 'patchright';
 import { mkdtempSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';

@@ -284,8 +284,16 @@ export const paths = { DISCOVERY_PATH, LOCK_PATH, LOG_PATH, PROFILE_DIR };
  * Use this when a site (e.g. Chase) device-fingerprints a shared profile
  * and can't be unburned via cookie/storage wipes.
  *
- * This does NOT go through the daemon — spawns its own rebrowser-playwright
- * Chromium. Use when the shared daemon won't work.
+ * This does NOT go through the daemon — launches a fresh patchright-patched
+ * Chromium per connector. Because patchright's client-side stealth requires
+ * the client to also import patchright (not just the launch process), this
+ * path gets the FULL stealth stack (launch-side + client-side) whereas the
+ * CDP-attach daemon path only gets launch-side.
+ *
+ * Each connector with a unique `profileName` gets its own profile directory
+ * on disk, so cookies, localStorage, and "trusted device" state persist
+ * across runs of that connector, without sharing fingerprint or auth state
+ * with other connectors. Safe for concurrent runs across connectors.
  *
  * @param {object} opts
  * @param {string} opts.profileName - subdir under ~/.pdpp/profiles/
@@ -301,19 +309,25 @@ export async function acquireIsolatedBrowser({ profileName, headless = false }) 
   const isolatedDir = join(homedir(), '.pdpp', 'profiles', profileName);
   if (!exst(isolatedDir)) mkd(isolatedDir, { recursive: true, mode: 0o700 });
 
-  // Use rebrowser-playwright to patch the Runtime.Enable CDP leak, matching
-  // the daemon's primary browser setup.
-  const rebrowserPlaywright = await import('rebrowser-playwright');
-  const localChromium = rebrowserPlaywright.chromium;
+  // Use patchright (replaces rebrowser-playwright 2026-04-21). Per the
+  // patchright README, do NOT set custom userAgent, extra headers, or the
+  // args it intentionally omits (`--disable-component-update`,
+  // `--disable-default-apps`, `--disable-extensions`, `--disable-popup-blocking`,
+  // `--disable-blink-features=AutomationControlled`, `--no-default-browser-check`,
+  // `--no-first-run`) — patchright already handles these as part of its
+  // stealth fingerprint.
+  const patchright = await import('patchright');
+  const localChromium = patchright.chromium;
 
   const context = await localChromium.launchPersistentContext(isolatedDir, {
     headless,
     channel: 'chrome',
     viewport: { width: 1280, height: 800 },
     args: [
-      '--disable-blink-features=AutomationControlled',
-      '--no-default-browser-check',
-      '--no-first-run',
+      // Workaround for microsoft/playwright#40158: headed Chrome's download
+      // bubble races Playwright's CDP-based download interception. Keep this
+      // flag even though patchright's README advises against overriding args —
+      // absence here actively breaks multi-file downloads (USAA).
       '--disable-features=DownloadBubble,DownloadBubbleV2,DownloadBubbleV3',
     ],
   });

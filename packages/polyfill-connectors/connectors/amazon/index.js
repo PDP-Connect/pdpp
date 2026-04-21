@@ -17,10 +17,12 @@
  */
 
 import { createInterface } from 'node:readline';
-import { acquireBrowser } from '../../src/browser-profile.js';
+import pRetry, { AbortError } from 'p-retry';
+import { acquireIsolatedBrowser } from '../../src/browser-daemon.js';
 import { resourceSet } from '../../src/scope-filters.js';
 import { ensureAmazonSession } from '../../src/auto-login/amazon.js';
 import { emitToStdout, stringifyForJsonl } from '../../src/safe-emit.js';
+import { validateRecord } from './schemas.js';
 
 const rl = createInterface({ input: process.stdin, terminal: false });
 // WHY emitToStdout: large RECORDs can exceed the 64 KB Linux pipe buffer and
@@ -39,7 +41,11 @@ function fail(m, retryable = false) {
   flushAndExit(1);
 }
 const nowIso = () => new Date().toISOString();
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// Intentionally-named pacing delay for anti-bot-style throttling between
+// requests. Distinct from `waitForX` sync primitives which wait for a
+// page condition; this one's just polite inter-request slack. Use
+// sparingly — prefer real sync primitives where possible.
+const politeDelay = (ms) => new Promise((r) => setTimeout(r, ms));
 let interactionCounter = 0;
 const nextInteractionId = () => `int_${Date.now()}_${++interactionCounter}`;
 
@@ -64,7 +70,10 @@ async function sendInteractionAndWait(msg) {
 
 async function quickSessionCheck(page) {
   await page.goto('https://www.amazon.com/', { waitUntil: 'domcontentloaded', timeout: 30000 });
-  await sleep(2000);
+  // Wait for the nav area to render instead of a fixed sleep. Either the
+  // logged-in greeting or the "Sign in" link will resolve — both are
+  // acceptable states for this probe.
+  await page.locator('#nav-link-accountList').first().waitFor({ state: 'visible', timeout: 10000 }).catch(() => {});
   const url = page.url();
   if (/\/ap\/(signin|challenge|mfa)/.test(url)) return false;
   const greeting = await page.locator('#nav-link-accountList').first().innerText().catch(() => '');
@@ -73,7 +82,10 @@ async function quickSessionCheck(page) {
 
 async function deepSessionCheck(page) {
   await page.goto('https://www.amazon.com/your-orders/orders', { waitUntil: 'domcontentloaded', timeout: 30000 });
-  await sleep(2500);
+  // Wait for either the orders page to render or a sign-in form (both are
+  // valid post-nav states; we branch on them).
+  await page.locator('form[name="signIn"], #orderTypeMenuContainer, #yourOrdersHeader, [data-component="orderCardList"]')
+    .first().waitFor({ state: 'attached', timeout: 15000 }).catch(() => {});
   const url = page.url();
   if (/\/ap\/(signin|challenge|mfa)/.test(url)) return false;
   const loginForm = await page.locator('form[name="signIn"]').first().isVisible().catch(() => false);
@@ -105,18 +117,267 @@ async function discoverYears(page) {
 }
 
 // ─── Per-order detail fetch ──────────────────────────────────────────────
-// PLACEHOLDER. The list-page scrape cannot populate status_detail,
-// recipient_name, shipping_address_summary, payment_method_summary,
-// gift_order, digital_order, nor per-item unit_price/quantity/seller/
-// refund_status. Those live on the order-details page at
-// /gp/your-account/order-details?orderID=X. Implementation is intentionally
-// deferred until a live DOM probe of the order-details page so selectors
-// reflect observed reality, not training-data guesses. The manifest
-// declares these fields; for now they're null in the emitted records. See
-// `design-notes/amazon.md` Section "Order-details-page streams" for the
-// scope note.
-async function fetchOrderDetail(_page, _orderId) {
-  return null;
+// Scrapes /gp/your-account/order-details?orderID=<ID> using Amazon's own
+// `data-component` attributes (English-in-code on every locale) rather
+// than regexing concatenated innerText. See docs/connector-authoring-guide.md
+// §2 for why structure > text.
+//
+// DOM contract used (stable on Amazon across layouts since ≥2023):
+//   [data-component="shippingAddress"]          → recipient + address (clean <ul><li>)
+//   [data-component="viewPaymentPlanSummaryWidget"] → payment method
+//   [data-component="chargeSummary"]            → Order Summary incl. Grand Total
+//   [data-component="purchasedItemsRightGrid"]  → one per item; wraps itemTitle/orderedMerchant/unitPrice
+//   [data-component="itemTitle"]                → product name (no cruft)
+//   [data-component="orderedMerchant"]          → "Sold by: <seller>"
+//   [data-component="unitPrice"]                → "$15.54 $15.54" (accessibility double)
+//   [data-component="cancelled"]                → present+non-empty only on cancelled orders
+//   .od-item-view-qty span                      → quantity (present only when qty>1)
+//   [data-component="itemConnections"]          → cross-sell buttons (EXCLUDED from names)
+//
+// Fallback path: if no [data-component] attributes exist (hypothetical
+// older layouts or post-A/B rollback), return null — the list-page
+// record stands alone rather than risking corrupt structural-less parse.
+//
+// Cancelled orders have [data-component="cancelled"] with "This order has
+// been cancelled" text and NO other structural fields. We detect and
+// emit status_detail only.
+async function fetchOrderDetail(page, orderId) {
+  const url = `https://www.amazon.com/gp/your-account/order-details?orderID=${orderId}`;
+
+  // Retry transient navigation failures (network, timeout, 5xx) with
+  // exponential backoff. AbortError bypasses retries — we use it for the
+  // "Amazon redirected us to a non-detail URL" signal (e.g. Amazon Fresh
+  // orders that redirect to /uff/... with no #orderDetails), which retrying
+  // won't fix.
+  try {
+    await pRetry(async () => {
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      // Wait for #orderDetails to appear OR for the cancellation/redirect
+      // page signature. waitForSelector replaces `await sleep(800)` —
+      // real sync primitive instead of a pacing guess.
+      await page.waitForSelector('#orderDetails, [data-component="cancelled"]', {
+        timeout: 15000,
+        state: 'attached',
+      });
+    }, {
+      retries: 2,
+      minTimeout: 1500,
+      factor: 2,
+      shouldRetry: (err) => !(err instanceof AbortError) && /timeout|ECONN|ETIMEDOUT|net::|5\d\d/i.test(err.message),
+    });
+  } catch {
+    return null;
+  }
+
+  return page.evaluate(() => {
+    const od = document.querySelector('#orderDetails');
+    if (!od) return null;
+
+    // ── Cancellation detection ──────────────────────────────────────────
+    // data-component="cancelled" is always present, but only has content
+    // on cancelled orders. Also check breadcrumb text as a fallback.
+    const cancelledEl = od.querySelector('[data-component="cancelled"]');
+    const cancelledText = (cancelledEl?.innerText || '').replace(/\s+/g, ' ').trim();
+    const isCancelled = /has been cancelled/i.test(cancelledText);
+
+    // ── Shipping address (structural) ──────────────────────────────────
+    // Shape: <div data-component="shippingAddress">
+    //          <h5>Ship to</h5>
+    //          <ul>
+    //            <li><span>Recipient Name</span></li>
+    //            <li><span>Street (multi-line via <br>)</span></li>
+    //            <li><span>Country</span></li>
+    //          </ul>
+    //        </div>
+    const shipEl = od.querySelector('[data-component="shippingAddress"]');
+    let recipient_name = null;
+    let shipping_address_summary = null;
+    if (shipEl) {
+      const lines = [...shipEl.querySelectorAll('ul li span.a-list-item, ul li')]
+        .map((li) => (li.innerText || '').replace(/\s+/g, ' ').trim())
+        .filter(Boolean);
+      if (lines.length >= 1 && lines[0] && lines[0].length < 80) {
+        recipient_name = lines[0];
+      }
+      if (lines.length) {
+        shipping_address_summary = lines.join(', ').slice(0, 240);
+      }
+    }
+
+    // ── Payment method (structural, with cleanup) ───────────────────────
+    // Shape: <div data-component="viewPaymentPlanSummaryWidget">
+    //          <h5>Payment method</h5>
+    //          <div>... Visa ending in 8662 ...</div>
+    //        </div>
+    // innerText collapses the <script> blob inside, leaving user-facing
+    // text only. "Visaending in" without a space is how innerText concats
+    // <span>Visa</span>ending in — we patch that.
+    const payEl = od.querySelector('[data-component="viewPaymentPlanSummaryWidget"]');
+    let payment_method_summary = null;
+    if (payEl) {
+      let raw = (payEl.innerText || '').replace(/\s+/g, ' ').trim();
+      raw = raw
+        .replace(/^Payment method\s*/i, '')
+        .replace(/\s*View related transactions.*$/i, '')
+        .replace(/(Visa|Mastercard|Amex|Discover|Diners|Unknown Credit Card|Credit Card|Debit Card)ending in/gi, '$1 ending in')
+        .trim();
+      // Prefer the card summary if present (most common case). This drops
+      // secondary cruft like "Do not apply equal monthly payments" and
+      // "Amazon gift card balance" (unless card is absent, in which case
+      // the gift card IS the payment method and we keep it).
+      const cardOnly = raw.match(/((?:Visa|Mastercard|Amex|Discover|Diners|Unknown Credit Card|Credit Card|Debit Card) ending in \d{3,5})/i);
+      if (cardOnly) {
+        payment_method_summary = cardOnly[1];
+      } else if (raw && !/Unable to display payment details/i.test(raw)) {
+        payment_method_summary = raw.slice(0, 200);
+      }
+    }
+
+    // ── Grand total (structural) ───────────────────────────────────────
+    // chargeSummary contains the full Order Summary; we pick the Grand
+    // Total row specifically. The label + amount live in sibling <span>s.
+    let grand_total = null;
+    const chargeEl = od.querySelector('[data-component="chargeSummary"]');
+    if (chargeEl) {
+      // Find the row whose label contains "Grand Total". Amazon uses
+      // od-line-item-row containers.
+      const rows = [...chargeEl.querySelectorAll('li, .od-line-item-row')];
+      for (const r of rows) {
+        const t = (r.innerText || '').replace(/\s+/g, ' ');
+        const m = t.match(/Grand Total:?\s*\$([\d,]+\.\d{2})/i);
+        if (m) { grand_total = `$${m[1]}`; break; }
+      }
+      // Last-resort: regex on the summary innerText
+      if (!grand_total) {
+        const m = (chargeEl.innerText || '').replace(/\s+/g, ' ').match(/Grand Total:?\s*\$([\d,]+\.\d{2})/i);
+        if (m) grand_total = `$${m[1]}`;
+      }
+    }
+
+    // ── Status detail (status banner only; delivery phrasing needs text) ─
+    let status_detail = null;
+    if (isCancelled) {
+      status_detail = 'This order has been cancelled';
+    } else {
+      // For non-cancelled orders, delivery/arriving status lives on the
+      // list page (already captured in delivery_status). Detail page may
+      // carry richer phrasing in future; for now we leave null when there's
+      // no cancellation banner.
+      const alertsEl = od.querySelector('[data-component="alerts"]');
+      const alertText = (alertsEl?.innerText || '').replace(/\s+/g, ' ').trim();
+      if (alertText && alertText.length < 180) status_detail = alertText;
+    }
+
+    // ── Gift / digital flags ───────────────────────────────────────────
+    // data-component="giftMessage" is present+non-empty only on gift orders.
+    const giftEl = od.querySelector('[data-component="giftMessage"], [data-component="giftcardsSender"], [data-component="giftCardDetails"]');
+    const gift_order = !!(giftEl && (giftEl.innerText || '').trim());
+    // Digital orders have distinct surfaces (Kindle, Prime Video, etc.) —
+    // we don't have a single data-component for this yet. Leave false as
+    // default; future work: probe a known digital order for its markers.
+    const digital_order = false;
+
+    // ── Cancelled shortcut: emit status only ───────────────────────────
+    if (isCancelled) {
+      return {
+        status_detail,
+        recipient_name: null,
+        shipping_address_summary: null,
+        payment_method_summary: null,
+        grand_total: null,
+        gift_order: false,
+        digital_order: false,
+        items: [],
+      };
+    }
+
+    // ── Items (structural) ─────────────────────────────────────────────
+    // Each item is wrapped in [data-component="purchasedItemsRightGrid"]
+    // (title, seller, price, quantity live inside as named children).
+    // The image lives in the sibling [data-component="purchasedItemsLeftGrid"].
+    // Together they're contained in a .a-fixed-left-grid-inner or similar.
+    const itemContainers = [...od.querySelectorAll('[data-component="purchasedItemsRightGrid"]')];
+    const items = [];
+    for (const rightGrid of itemContainers) {
+      // Walk up to find the full row (containing both Left and Right grids)
+      // so we can reach the image too.
+      let rowRoot = rightGrid;
+      for (let i = 0; i < 5 && rowRoot; i++) {
+        if (rowRoot.querySelector('[data-component="purchasedItemsLeftGrid"]')) break;
+        rowRoot = rowRoot.parentElement;
+      }
+      const scanRoot = rowRoot || rightGrid;
+
+      const titleEl = rightGrid.querySelector('[data-component="itemTitle"]');
+      const titleLink = titleEl?.querySelector('a');
+      const name = (titleLink?.innerText || titleEl?.innerText || '').replace(/\s+/g, ' ').trim();
+      const href = titleLink?.getAttribute('href') || '';
+      const asinM = href.match(/\/(?:gp\/product|dp)\/([A-Z0-9]{10})/);
+      const absoluteHref = href.startsWith('/') ? 'https://www.amazon.com' + href : (href || null);
+
+      const merchantEl = rightGrid.querySelector('[data-component="orderedMerchant"]');
+      let seller = null;
+      if (merchantEl) {
+        // Shape: "Sold by: <seller>" — strip the prefix.
+        const t = (merchantEl.innerText || '').replace(/\s+/g, ' ').trim();
+        const sm = t.match(/^Sold by:?\s*(.+)$/i);
+        seller = sm ? sm[1].trim().slice(0, 120) : (t.slice(0, 120) || null);
+      }
+
+      const priceEl = rightGrid.querySelector('[data-component="unitPrice"]');
+      let unit_price = null;
+      if (priceEl) {
+        // innerText is "$15.54 $15.54" (visible + a-offscreen dup). Take first.
+        const pt = (priceEl.innerText || '').replace(/\s+/g, ' ').trim();
+        const pm = pt.match(/\$([\d,]+\.\d{2})/);
+        unit_price = pm ? `$${pm[1]}` : null;
+      }
+
+      // Quantity: the data-component="quantity" element is empty even for
+      // multi-qty; qty comes from .od-item-view-qty (image overlay) which
+      // lives in the Left grid.
+      const qtyOverlayEl = scanRoot.querySelector('.od-item-view-qty span, .od-item-view-qty');
+      const qtyOverlayText = (qtyOverlayEl?.innerText || '').trim();
+      const quantity = /^\d+$/.test(qtyOverlayText) ? Number(qtyOverlayText) : 1;
+
+      // Image from the Left grid
+      const img = scanRoot.querySelector('[data-component="itemImage"] img, [data-component="purchasedItemsLeftGrid"] img');
+      const item_image_url = img?.getAttribute('src') || null;
+
+      // Refund status: lives in [data-component="itemReturnEligibility"]
+      // when present; otherwise scan rightGrid text for a return/refund
+      // phrase. Narrow fallback — only accept a short phrase after "Return"
+      // or "Refund" to avoid pulling action-button text.
+      let refund_status = null;
+      const returnEl = rightGrid.querySelector('[data-component="itemReturnEligibility"]');
+      const returnText = (returnEl?.innerText || '').replace(/\s+/g, ' ').trim();
+      if (returnText && returnText.length < 180) refund_status = returnText;
+
+      if (!asinM || !name) continue; // shape-check: drop rows with no asin or no name
+
+      items.push({
+        asin: asinM[1],
+        name: name.slice(0, 240),
+        url: absoluteHref,
+        unit_price,
+        quantity,
+        seller,
+        item_image_url,
+        refund_status,
+      });
+    }
+
+    return {
+      status_detail,
+      recipient_name,
+      shipping_address_summary,
+      payment_method_summary,
+      grand_total,
+      gift_order,
+      digital_order,
+      items,
+    };
+  }).catch(() => null);
 }
 
 // ─── Per-page order extraction ────────────────────────────────────────────
@@ -208,12 +469,29 @@ async function main() {
   const yearsState = state.orders?.years || state.years || {};
   const emittedAt = nowIso();
   let totalEmitted = 0;
+  let totalSkipped = 0;
   const resFilters = new Map();
   for (const [n, r] of requested) resFilters.set(n, resourceSet(r));
+
+  // Shape-check per docs/connector-authoring-guide.md §3. Records that
+  // fail the Zod schema become SKIP_RESULT instead of poisoning the RS
+  // with garbage-that-looks-right. Schemas live in ./schemas.js.
   const emitRecord = async (stream, data) => {
     if (data.id == null) return;
     const rs = resFilters.get(stream);
     if (rs && !rs.has(String(data.id))) return;
+    const result = validateRecord(stream, data);
+    if (!result.ok) {
+      totalSkipped++;
+      await emit({
+        type: 'SKIP_RESULT',
+        stream,
+        reason: 'shape_check_failed',
+        message: `${data.id}: ${result.issues.map((i) => `${i.path}: ${i.message}`).join('; ')}`,
+        diagnostics: { id: data.id, issues: result.issues, record: data },
+      });
+      return;
+    }
     await emit({ type: 'RECORD', stream, key: data.id, data, emitted_at: emittedAt });
     totalEmitted++;
   };
@@ -226,10 +504,34 @@ async function main() {
   // can go headless since cookies + TLS fingerprint stay consistent through
   // the daemon. Default headless=true to match other connectors' behavior.
   const headless = process.env.PDPP_AMAZON_HEADLESS !== '0';
+  // Use the isolated-per-connector browser path (patchright-launched,
+  // persistent profile at ~/.pdpp/profiles/amazon/). This:
+  //   - gets FULL patchright stealth (launch-side + client-side) because
+  //     we import patchright directly in acquireIsolatedBrowser
+  //   - persists auth/cookies/trusted-device across runs via the on-disk
+  //     profile dir
+  //   - enables concurrent runs with other connectors (no shared lock)
+  // See docs/connector-authoring-guide.md §2.
   try {
-    ({ context, release } = await acquireBrowser({ headless }));
+    ({ context, release } = await acquireIsolatedBrowser({ profileName: 'amazon', headless }));
   } catch (err) {
     return fail(`could not open browser profile: ${err.message}`, false);
+  }
+
+  // Tracing (Playwright feature). Gated behind PDPP_TRACE=1. Produces a
+  // .zip replayable in the Playwright Inspector — invaluable for debugging
+  // silent scraper failures where a record goes missing deep in a multi-
+  // hour run. See docs/connector-authoring-guide.md §9.
+  const tracingEnabled = process.env.PDPP_TRACE === '1';
+  if (tracingEnabled) {
+    const traceName = `amazon-${new Date().toISOString().replace(/[:.]/g, '-')}`;
+    await context.tracing.start({
+      name: traceName,
+      screenshots: true,
+      snapshots: true,
+      sources: true,
+    }).catch(() => {});
+    emit({ type: 'PROGRESS', message: `tracing enabled (PDPP_TRACE=1); will write /tmp/${traceName}.zip on exit` });
   }
 
   try {
@@ -249,8 +551,14 @@ async function main() {
     if (!deepOk) return fail('amazon_session_required', false);
 
     emit({ type: 'PROGRESS', message: 'Amazon session verified; discovering years' });
-    const years = await discoverYears(page);
-    emit({ type: 'PROGRESS', message: `Years discovered: ${years.join(', ')}` });
+    let years = await discoverYears(page);
+    // Targeted-year override for spot checks and incremental backfills.
+    // Accepts a comma-separated list, e.g. PDPP_AMAZON_YEARS=2025,2024.
+    if (process.env.PDPP_AMAZON_YEARS) {
+      const filter = new Set(process.env.PDPP_AMAZON_YEARS.split(',').map((y) => Number(y.trim())));
+      years = years.filter((y) => filter.has(y));
+    }
+    emit({ type: 'PROGRESS', message: `Years to scrape: ${years.join(', ')}` });
 
     const newYearsState = { ...yearsState };
 
@@ -268,7 +576,11 @@ async function main() {
       while (pageCount < 50) {
         const url = `https://www.amazon.com/your-orders/orders?timeFilter=year-${year}&startIndex=${startIndex}`;
         await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
-        await sleep(2000);
+        // Wait for list-page signal. `.order-card` is the standard container
+        // in modern layouts; `#ordersContainer` catches legacy. Either appears
+        // when the orders list has rendered.
+        await page.locator('.order-card, .js-order-card, #ordersContainer, #no-orders')
+          .first().waitFor({ state: 'attached', timeout: 10000 }).catch(() => {});
         const orders = await extractOrdersOnPage(page);
         if (!orders.length) {
           // Distinguish "no more orders" from "selectors missed the DOM".
@@ -321,11 +633,14 @@ async function main() {
           const detail = skipDetail ? null : await fetchOrderDetail(page, o.orderId);
 
           if (wantsOrders) {
+            // Prefer detail-page Grand Total (includes tax); fall back to
+            // the list-page total, which sometimes shows pre-tax amount.
+            const orderTotalRaw = detail?.grand_total || o.orderTotal || null;
             await emitRecord('orders', {
               id: o.orderId,
               order_date: orderDate,
-              order_total: o.orderTotal || null,
-              order_total_cents: parseCurrencyCents(o.orderTotal),
+              order_total: orderTotalRaw,
+              order_total_cents: parseCurrencyCents(orderTotalRaw),
               delivery_status: o.deliveryStatus || null,
               status_detail: detail?.status_detail || null,
               recipient_name: detail?.recipient_name || null,
@@ -388,7 +703,7 @@ async function main() {
 
         pageCount++;
         startIndex += 10;
-        await sleep(1500);
+        await politeDelay(800);
       }
 
       // Year completion state with freeze-once-stable policy
@@ -401,9 +716,21 @@ async function main() {
       emit({ type: 'STATE', stream: 'orders', cursor: { years: newYearsState } });
     }
   } finally {
+    if (tracingEnabled && context) {
+      const tracePath = `/tmp/amazon-trace-${new Date().toISOString().replace(/[:.]/g, '-')}.zip`;
+      try {
+        await context.tracing.stop({ path: tracePath });
+        emit({ type: 'PROGRESS', message: `trace written to ${tracePath} — replay with: npx playwright show-trace ${tracePath}` });
+      } catch (err) {
+        emit({ type: 'PROGRESS', message: `failed to write trace: ${err.message}` });
+      }
+    }
     await release().catch(() => {});
   }
 
+  if (totalSkipped > 0) {
+    emit({ type: 'PROGRESS', message: `shape-check skipped ${totalSkipped} record(s); see SKIP_RESULT events above` });
+  }
   emit({ type: 'DONE', status: 'succeeded', records_emitted: totalEmitted });
   flushAndExit(0);
 }

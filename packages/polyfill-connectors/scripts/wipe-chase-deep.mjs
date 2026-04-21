@@ -7,7 +7,7 @@
  *
  * Preserves other connector profiles (USAA, Amazon, ChatGPT).
  */
-import { chromium } from 'rebrowser-playwright';
+import { chromium } from 'patchright';
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';

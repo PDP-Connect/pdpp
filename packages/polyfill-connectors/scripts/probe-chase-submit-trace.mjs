@@ -3,7 +3,7 @@
  * understand what's happening between submit and the "site isn't working"
  * error page.
  */
-import { chromium } from 'rebrowser-playwright';
+import { chromium } from 'patchright';
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
