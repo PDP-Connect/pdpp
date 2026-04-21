@@ -308,17 +308,25 @@ async function driveExport(_context, page, accountUrl, { sinceDate, untilDate, a
 
   // Race download against an in-dialog error message — USAA surfaces
   // "No transactions" style errors for empty ranges without cancelling.
+  //
+  // BUG-PREVENTION: the error locator's `.waitFor({ timeout: 15000 })` rejects
+  // if the error element never appears (the normal/happy case — USAA hasn't
+  // decided whether to give us data yet). We must NOT let that rejection
+  // resolve the Promise.race as `null`, or we'll bail after 15s while the
+  // download is still 1-2 minutes out. Catch returns a never-resolving
+  // Promise so the race is driven purely by (a) actual download, (b) actual
+  // error element, or (c) downloadPromise's 180s timeout rejecting.
   const errorPromise = page.locator('[role="dialog"] [class*="errorMessage"]:not(:empty), [role="dialog"] :text-matches("no transactions|nothing to export", "i")')
     .first()
-    .waitFor({ state: 'visible', timeout: 15000 })
-    .then(() => 'error')
-    .catch(() => null);
+    .waitFor({ state: 'visible', timeout: 180000 })
+    .then(() => ({ kind: 'error' }))
+    .catch(() => new Promise(() => {})); // never resolve if no error appears
 
   let download = null;
   try {
     const outcome = await Promise.race([
       downloadPromise.then((d) => ({ kind: 'download', d })),
-      errorPromise.then((r) => (r === 'error' ? { kind: 'error' } : null)),
+      errorPromise,
     ]);
     if (!outcome || outcome.kind === 'error') {
       rmSync(tempDir, { recursive: true, force: true });

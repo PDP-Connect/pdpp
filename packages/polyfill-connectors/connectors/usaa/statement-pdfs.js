@@ -100,7 +100,7 @@ async function downloadStatementFromRow({ page, rowIndex }) {
     // Fallback: if the row has a direct <a> pointing at a PDF, use that.
     const link = row.locator('a[href$=".pdf"], a[href*=".pdf?"]').first();
     if (await link.count().catch(() => 0)) {
-      const dlPromise = page.waitForEvent('download', { timeout: 60000 });
+      const dlPromise = page.waitForEvent('download', { timeout: 180000 });
       await link.click({ timeout: 5000 }).catch(() => {});
       try {
         const dl = await dlPromise;
@@ -136,7 +136,7 @@ async function downloadStatementFromRow({ page, rowIndex }) {
     };
   }
 
-  const dlPromise = page.waitForEvent('download', { timeout: 60000 });
+  const dlPromise = page.waitForEvent('download', { timeout: 180000 });
   try {
     await dlItem.click({ timeout: 5000 });
   } catch (err) {
