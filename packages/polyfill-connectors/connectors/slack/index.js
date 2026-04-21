@@ -57,10 +57,19 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { resourceSet, requireCredentialsOrAsk, passesTimeRange } from '../../src/scope-filters.js';
 import { readOptions } from '../../src/connector-options.js';
-import { stringifyForJsonl } from '../../src/safe-emit.js';
+import { emitToStdout, stringifyForJsonl } from '../../src/safe-emit.js';
 
 const rl = createInterface({ input: process.stdin, terminal: false });
-const emit = (m) => process.stdout.write(stringifyForJsonl(m));
+// WHY emitToStdout (not a bare process.stdout.write): large RECORDs can
+// exceed the 64KB Linux pipe buffer. A raw write on a backpressured pipe
+// returns false and drops the tail silently, producing truncated JSON on
+// the runtime side. emitToStdout awaits 'drain' before resolving so the
+// caller can backpressure naturally. Observed 2026-04-20: Slack ingest on
+// the v0.3 archive crashed with "Expected ',' or '}' after property value
+// in JSON at position 510" exactly at a pipe-buffer boundary.
+const emit = (m) => emitToStdout(m);
+// Keep stringifyForJsonl import for any spots that write sync string output.
+void stringifyForJsonl;
 const flushAndExit = (code) => {
   if (process.stdout.writableLength > 0) {
     process.stdout.once('drain', () => process.exit(code));
@@ -275,13 +284,13 @@ async function main() {
 
   const emittedAt = nowIso();
   let total = 0;
-  const emitRecord = (s, d) => {
+  const emitRecord = async (s, d) => {
     if (d.id == null) return;
     const rs = resFilters.get(s);
     if (rs && rs.size && !rs.has(String(d.id))) return;
     const scope = requested.get(s);
     if (scope?.time_range && !passesTimeRange(d, scope.time_range, 'sent_at')) return;
-    emit({ type: 'RECORD', stream: s, key: d.id, data: d, emitted_at: emittedAt });
+    await emit({ type: 'RECORD', stream: s, key: d.id, data: d, emitted_at: emittedAt });
     total++;
   };
 
@@ -305,7 +314,7 @@ async function main() {
     const rows = safeAll(db, `SELECT ID, TEAM, TEAM_ID, USERNAME, USER_ID, URL, ENTERPRISE_ID, DATA FROM WORKSPACE`);
     for (const r of rows) {
       const d = parseBlob(r.DATA);
-      emitRecord('workspace', {
+      await emitRecord('workspace', {
         id: r.TEAM_ID ?? d.team_id ?? String(r.ID),
         name: r.TEAM ?? d.team ?? null,
         domain: d.domain ?? null,
@@ -332,7 +341,7 @@ async function main() {
     `);
     for (const r of rows) {
       const d = parseBlob(r.data);
-      emitRecord('channels', {
+      await emitRecord('channels', {
         id: r.id,
         name: r.name ?? d.name ?? null,
         name_normalized: d.name_normalized ?? null,
@@ -375,7 +384,7 @@ async function main() {
       SELECT DISTINCT CHANNEL_ID, USER_ID FROM CHANNEL_USER
     `);
     for (const r of rows) {
-      emitRecord('channel_memberships', {
+      await emitRecord('channel_memberships', {
         id: `${r.CHANNEL_ID}:${r.USER_ID}`,
         channel_id: r.CHANNEL_ID,
         user_id: r.USER_ID,
@@ -394,7 +403,7 @@ async function main() {
     for (const r of rows) {
       const d = parseBlob(r.data);
       const profile = d.profile || {};
-      emitRecord('users', {
+      await emitRecord('users', {
         id: r.id,
         team_id: d.team_id ?? null,
         name: r.username ?? d.name ?? null,
@@ -461,7 +470,7 @@ async function main() {
       const pinnedTo = Array.isArray(d.pinned_to) ? d.pinned_to : null;
 
       if (wantMessages) {
-        emitRecord('messages', {
+        await emitRecord('messages', {
           id: messageId,
           channel_id: r.CHANNEL_ID,
           user_id: d.user || null,
@@ -499,7 +508,7 @@ async function main() {
           if (!name) continue;
           const users = Array.isArray(reaction.users) ? reaction.users : [];
           for (const u of users) {
-            emitRecord('reactions', {
+            await emitRecord('reactions', {
               id: `${messageId}:${name}:${u}`,
               message_id: messageId,
               channel_id: r.CHANNEL_ID,
@@ -513,7 +522,7 @@ async function main() {
       if (wantMsgAttachments) {
         for (let i = 0; i < attachments.length; i++) {
           const a = attachments[i] || {};
-          emitRecord('message_attachments', {
+          await emitRecord('message_attachments', {
             id: `${messageId}:att:${i}`,
             message_id: messageId,
             channel_id: r.CHANNEL_ID,
@@ -549,7 +558,7 @@ async function main() {
     `);
     for (const r of rows) {
       const d = parseBlob(r.data);
-      emitRecord('files', {
+      await emitRecord('files', {
         id: r.id,
         name: r.filename ?? d.name ?? null,
         title: d.title ?? null,
@@ -617,7 +626,7 @@ async function main() {
       const chanMeta = channelCanvasIndex.get(r.id) || {};
       const createdSec = d.created ?? null;
       const updatedSec = d.updated ?? d.timestamp ?? null;
-      emitRecord('canvases', {
+      await emitRecord('canvases', {
         id: r.id,
         file_id: r.id,
         channel_id: r.channel_id || chanMeta.channel_id || null,
