@@ -2,6 +2,7 @@
 
 **Status:** open
 **Raised:** 2026-04-19
+**Framing (added 2026-04-20):** Disclosure-artifact requirements (one-DB-per-connector for erasure/export) matter more in the multi-client frame than the owner-only frame. See `pdpp-trust-model-framing.md`.
 **Context:** while running Claude Code + Codex ingests in parallel today, we hit `SQLITE_BUSY` during orchestrator startup because two embedded servers tried to initialize the same sqlite file. The quick fix was to give Codex its own DB via `PDPP_DB_PATH`. That split is now real but was never intentional.
 
 The question: is one-DB-per-owner a PDPP spec requirement, a reference-implementation convention, or an incidental choice?

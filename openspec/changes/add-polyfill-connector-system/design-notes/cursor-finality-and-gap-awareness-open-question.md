@@ -2,6 +2,7 @@
 
 **Status:** open
 **Raised:** 2026-04-20
+**Framing:** Cursor semantics look different when the cursor is for the owner's own agent vs. a third-party client auditing completeness. See `pdpp-trust-model-framing.md`.
 **Trigger:** Designing a PDPP-side delta mechanism for Slack (so the connector can say "just pull me anything newer than what's in my RS") surfaced a deeper question: **what finality does a cursor actually claim?** The implicit model — `MAX(sent_at) per channel` means "I have everything ≤ that timestamp" — is true for some connectors and silently false for others. Building incremental-fetch on top of an uncalibrated cursor produces invisible data loss.
 
 ## Two failure modes of naive cursors
@@ -56,7 +57,7 @@ Manifest declares `cursor_semantic: "complete" | "high_water" | "session_local"`
 - `high_water`: records newer than cursor haven't been ingested; older-than-cursor coverage is unspecified.
 - `session_local`: cursor is meaningful only to the connector's own resume logic (e.g., slackdump's archive state); consumers shouldn't interpret it.
 
-**Pro:** forces honest declaration. **Con:** requires enumerating the taxonomy; `high_water` is the honest answer for many connectors but consumers hate that.
+**Pro:** forces explicit declaration. **Con:** requires enumerating the taxonomy; `high_water` fits many connectors' actual behavior but is harder for consumers to work with than `complete`.
 
 ### Option B — Three-field cursor: `max_seen + coverage_intervals + known_gaps`
 Replace the single cursor field with a triplet:

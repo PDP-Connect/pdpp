@@ -2,6 +2,7 @@
 
 **Status:** open
 **Raised:** 2026-04-20
+**Framing:** Who owns retry execution (owner's scheduler? third-party client? runtime?) depends on the client-party frame. See `pdpp-trust-model-framing.md`.
 **Trigger:** ChatGPT has 4,188 conversations that 429-skipped during a "successful" run; USAA has 2 unknown-template PDFs and a list of credit-card-export diagnostics from earlier runs; Slack has a handful of slackdump-unsupported-stream skips. All persist in `spine_events` as `run.stream_skipped` events with enough information to identify what was missed. **Nothing reads them back.** Designing how the read-back should work surfaces that "recovery" isn't one mechanism — it's at least four, each with a different owner, and the current protocol conflates all four into the same `SKIP_RESULT` signal.
 
 ## Why this is a peer concern to the other two notes

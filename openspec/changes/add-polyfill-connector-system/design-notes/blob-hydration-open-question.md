@@ -2,6 +2,7 @@
 
 **Status:** open
 **Raised:** 2026-04-19
+**Framing (added 2026-04-20):** How blobs are addressed and whether self-export includes bytes both depend on whether the primary consumer is the owner or a third-party client. See `pdpp-trust-model-framing.md`.
 **Trigger:** Layer 2 audits (`layer-2-coverage-gmail-ynab-usaa-github.md`, `layer-2-coverage-chatgpt-claude-codex.md`) found that every connector dealing with binary payloads invents its own handling; the spec is silent on how records reference bytes, and recent work on Gmail `message_bodies` made this explicit enough to be worth naming.
 
 ## What blob-hydration means

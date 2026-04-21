@@ -4,6 +4,8 @@
 **Raised:** 2026-04-20
 **Trigger:** Handed a newly-minted owner token to an outside coding agent on the LAN, pointed it at the RS, and asked it to explore. Within minutes the agent surfaced three real gaps that the "design from the inside out" development path had missed. None is catastrophic on its own; together they show the RS is currently undiscoverable without out-of-band knowledge, inconsistent in how it reports failure, and missing query primitives the spec's own consent model (time_range as a first-class concept) implies should exist.
 
+**Framing:** Discovery + error + query answers differ depending on whether the primary client is the owner's own agent or a third-party client. See `pdpp-trust-model-framing.md`.
+
 ## Quirk 1 — `connector_id` is mandatory on every endpoint, including listing
 
 `GET /v1/streams` without a `connector_id` query parameter returns:
@@ -178,7 +180,7 @@ These are cleanup items that don't prejudge the spec decision:
 
 ## Trade-offs to weigh
 
-- **Self-description vs. registry.** A registry is durable across owners (registry.pdpp.org knows all connectors). Self-description is scoped to one owner (this RS's accessible connectors). They serve different needs. The spec probably wants both, with different semantics.
+- **Self-description vs. registry.** A registry is durable across owners (registry.pdpp.org knows all connectors). Self-description is scoped to one owner (this RS's accessible connectors). They serve different needs; whether the spec wants one, the other, both, or neither (with different semantics if both) is part of the decision.
 
 - **Error shape as conformance.** If the error envelope becomes a MUST, conformance tests can fail any implementation that ships an HTML fallthrough. That's the cheapest way to catch this class of bug across implementations.
 
@@ -186,7 +188,7 @@ These are cleanup items that don't prejudge the spec decision:
 
 - **OpenAPI ≠ PDPP-native description.** A PDPP-native manifest endpoint can encode PDPP concepts (grants, consent, retention) that OpenAPI has no vocabulary for. OpenAPI is a fine transport for the subset that's about "what HTTP endpoints exist."
 
-- **Consent-query symmetry.** `time_range` appears in the consent vocabulary as a primitive scope dimension. A grant can say "Slack messages from the last 30 days." But the query API has no way to ask that question ad-hoc; it's enforced only as a grant-time filter. Either `time_range` is a fundamental scope dimension (then the query API should expose it), or it's not (then removing it from the manifest schema is the honest move). The current state — fundamental in consent, absent in query — is contradictory.
+- **Consent-query symmetry.** `time_range` appears in the consent vocabulary as a primitive scope dimension. A grant can say "Slack messages from the last 30 days." But the query API has no way to ask that question ad-hoc; it's enforced only as a grant-time filter. The contradiction (fundamental in consent, absent in query) has several possible resolutions: add to query, remove from consent, or declare the asymmetry intentional and explain why.
 
 ## Cross-cutting
 
@@ -199,8 +201,8 @@ These are cleanup items that don't prejudge the spec decision:
 
 ## Action items
 
-- [ ] Decide A/B/C/D/E for discoverability + error envelope. Minimal (A) is probably the right first step even if B or D lands eventually.
-- [ ] Decide Q1/Q2/Q3/Q4 for query vocabulary. Q1 (promote time_range) is the cheapest symmetry win with consent.
+- [ ] Decide A/B/C/D/E for discoverability + error envelope.
+- [ ] Decide Q1/Q2/Q3/Q4 for query vocabulary. The decision composes with the discoverability choice; some combinations are cheaper, others richer.
 - [ ] Regardless: spec-define the error envelope in `spec-data-query-api.md` and add a conformance test for it.
 - [ ] Regardless: add a catch-all 404 handler in the reference RS that emits the JSON envelope.
 - [ ] Audit other un-routed paths in the reference (there are likely more than `/schema`) and ensure the catch-all covers them.

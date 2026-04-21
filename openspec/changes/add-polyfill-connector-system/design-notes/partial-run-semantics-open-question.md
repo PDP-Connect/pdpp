@@ -3,6 +3,7 @@
 **Status:** open
 **Raised:** 2026-04-20
 **Trigger:** A single session surfaced five independent variants of the same shape: "the connector produced some records but not all, and there is no protocol-level way to express that." Each variant forced a workaround. Listing them together makes the pattern legible.
+**Framing:** Decisions in this note look different depending on whether the primary consumer of partial-run signals is the owner's own agent or a third-party client. See `pdpp-trust-model-framing.md`.
 
 ## Five concrete cases
 
@@ -117,7 +118,7 @@ Keep binary run status. Require connectors to document their own partial-data be
 
 ## Action items
 
-- [ ] Decide A–E (probably B + C as a pair — record durability plus skip observability — before D).
+- [ ] Decide A–E. Several of the options compose (B + C, B + D, C + D) and the decision is about which combination, not which single option.
 - [ ] If B: add `records_durable_in_rs` field to `run.failed` spine events; document that RS contents are authoritative, spine status is about the *attempt*.
 - [ ] If C: define skip-reason taxonomy (start with the five cases above); mandate histogram in DONE.
 - [ ] If D: define `retry_hint` schema + scheduler contract.

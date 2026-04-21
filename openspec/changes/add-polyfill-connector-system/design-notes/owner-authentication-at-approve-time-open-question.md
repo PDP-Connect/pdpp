@@ -2,6 +2,7 @@
 
 **Status:** open
 **Raised:** 2026-04-20
+**Framing:** Approve-time authentication requirements differ whether the typical client is the owner's own agent (OS-level trust might suffice) or a third-party app (browser-session auth required). See `pdpp-trust-model-framing.md`.
 **Trigger:** Minting an owner token for a LAN coding agent exposed that `POST /device/approve` on the reference AS accepts any request, from anywhere, with no authentication, and lets the caller bind the issued token to any `subject_id` they choose. A 6-hex user_code and an open approve endpoint are the only gate between "reachable on the network" and "full owner-scope bearer token."
 
 ## What the reference currently does
@@ -93,18 +94,16 @@ Keep today's behavior. Ship a big `DEV ONLY — DO NOT EXPOSE TO A NETWORK` warn
 
 - **Developer ergonomics.** Every option above adds friction to the bootstrap CLI case (minting owner tokens for local scripts). The friction is the point — unauthenticated approve is what makes the current experience frictionless and unsafe. A good answer finds ergonomics inside authentication, not around it.
 - **Multi-owner futures.** Today's reference is single-owner. A spec answer should accommodate multi-tenant implementations without re-opening the same hole.
-- **CLI vs browser asymmetry.** Browser OAuth has century-old patterns (sessions, CSRF tokens, SameSite cookies). CLI has `ssh-agent`-style patterns (OS-level trust) and device-code itself (user reads a code on one device, approves on another). The spec should probably recognize both as valid approve surfaces and specify authentication for each.
+- **CLI vs browser asymmetry.** Browser OAuth has decades of patterns (sessions, CSRF tokens, SameSite cookies). CLI has `ssh-agent`-style patterns (OS-level trust) and device-code itself (user reads a code on one device, approves on another). The spec decision includes whether to recognize one, both, or neither as valid approve surfaces and what authentication each requires.
 - **LF / regulator review.** A protocol claiming owner agency that ships an unauthenticated approve endpoint will not survive a security review. This is not a "nice to have."
 
-## What the reference should probably do in the meantime
+## Reference-impl stopgaps (decisions that don't prejudge the spec)
 
-The reference impl has three options that don't require deciding the spec today:
+The reference impl has three stopgap options; each is reversible once the spec decision lands. Which (if any) to apply is itself a call, not a recommendation embedded in this note:
 
-1. **Bind the AS to 127.0.0.1 by default**, require explicit opt-in for LAN exposure. The honest default.
-2. **Add a shared-secret header check on `/device/approve`**, shared-secret printed to the server console on startup. Workaround but visible.
-3. **Keep the gap, add a warning banner on server startup**, treat as a known open gap tracked by this note. The least honest option but matches current reality.
-
-Any of these is reversible once the spec decision lands.
+1. **Bind the AS to 127.0.0.1 by default**, require explicit opt-in for LAN exposure.
+2. **Add a shared-secret header check on `/device/approve`**, shared-secret printed to the server console on startup.
+3. **Keep the gap, add a warning banner on server startup**, treat as a known open gap tracked by this note.
 
 ## Cross-cutting
 
@@ -122,6 +121,6 @@ Any of these is reversible once the spec decision lands.
 
 ## Why this note and not "just fix it"
 
-The fix depends on the spec answer. Binding to 127.0.0.1 is a safe stopgap but doesn't answer "how does a remote owner approve?" Shipping a login UI is the right long-term answer but requires deciding whether password / passkey / magic link / OIDC-to-a-parent-idP is the expected path. Shipping a bootstrap secret is a middle ground that still needs design work for the persistent-credential handoff.
+The fix depends on the spec answer. Binding to 127.0.0.1 is a stopgap that doesn't answer "how does a remote owner approve?" Shipping a login UI forces a choice among password / passkey / magic link / OIDC-to-a-parent-idP. Shipping a bootstrap secret leaves the persistent-credential handoff undesigned.
 
-"Just fix it" is what gets you a login form that prejudges the spec. The right move is to name the hole as a spec gap, stopgap with the safe default (127.0.0.1 bind), and let the spec answer the bigger question on its own timeline.
+"Just fix it" produces a login form that prejudges the spec. This note names the hole as a spec gap so the spec can answer the bigger question on its own timeline, with the stopgap options above as a separate, reversible implementation call.

@@ -6,7 +6,9 @@
 
 Meanwhile, anyone who builds on PDPP will re-embed the same 800k records. That's a staggering amount of duplicated work across implementations and the forcing function the blob-hydration note already named for binaries ("don't make every consumer re-derive expensive things that are identical across consumers"). Embeddings and BM25 indexes fall in the same class.
 
-The draft intuition — **ship recall primitives (BM25 + vector) upstream, keep the ranker client-side** — is plausibly right, matches the Postgres "ship tsvector and pgvector, don't ship the ranker for your app" line, and matches how Pinecone / Weaviate / Turbopuffer draw the line today. But shipping semantic retrieval in a personal-data protocol has spec implications that need to be thought through before any code ships.
+An intuition worth considering — ship recall primitives (BM25 + vector) upstream, keep the ranker client-side — matches the Postgres "ship tsvector and pgvector, don't ship the ranker for your app" line, and matches how Pinecone / Weaviate / Turbopuffer draw the line today. Whether that intuition survives the actual decision depends on trade-offs this note tries to enumerate, not resolve.
+
+**Framing:** Search surface answers differ depending on which client party is primary — the owner's own agent (model choice is local) vs. a third-party client (model choice is an interop question). See `pdpp-trust-model-framing.md`. Any option below that looks appealing in one frame may look wrong in the other.
 
 ## Why this is a spec-level question
 
@@ -140,11 +142,11 @@ Each of these deserves its own note if the group decides to pursue it:
 
 ### Cross-connector entity resolution
 
-"The person I emailed as the owner@madskater.com is @the owner in Slack is user_id 734891 in GitHub" is a real owner need (agent wants to build a unified timeline, see everything about a single person). This is a huge research problem — entity resolution under uncertainty, conflicting identifiers, temporal identity drift. The spec could ship **primitives** (normalized email-hash, normalized phone-hash, canonical-form-per-identifier-type) without committing to a resolution algorithm. The resolution itself (these two refer to the same entity) is a client-side judgment that doesn't belong in a spec. Mentioned here because it's often bundled with "semantic search" in discussion, but they're different problems.
+"The person I emailed as the owner@madskater.com is @the owner in Slack is user_id 734891 in GitHub" is a real owner need (agent wants to build a unified timeline, see everything about a single person). This is a large research problem — entity resolution under uncertainty, conflicting identifiers, temporal identity drift. Whether the spec ships primitives (normalized email-hash, normalized phone-hash, canonical-form-per-identifier-type), full resolution, or nothing is its own decision. Mentioned here because it's often bundled with "semantic search" in discussion, but they're different problems.
 
 ### Ranking and reranking policy
 
-The draft intuition — "server returns candidates, client reranks" — assumes the client can and will rerank. Dashboards rendering "top 10 recent Slack mentions of X" probably shouldn't be expected to. The spec has to decide whether server-side default ranking is required, optional, or forbidden. This is a separate design question that composes with Option E's capability extension framing.
+"Server returns candidates, client reranks" assumes the client can and will rerank. Dashboards rendering "top 10 recent Slack mentions of X" may or may not be expected to rerank. Whether the spec requires, allows, or forbids server-side default ranking is a separate design question that composes with any of the options above, not just one.
 
 ### Query-time grant enforcement for search results
 
@@ -152,19 +154,19 @@ Today's grant enforcement operates on field-level projection + `time_range`. A s
 
 ## Trade-offs to weigh
 
-- **"Ship primitives, stay out of the ranker" is the right instinct but not a free lunch.** Vector primitives commit implementations to a model or a versioning story. BM25 primitives are cheap and don't. Shipping BM25-only (Option B) is the maximally honest move that still provides value.
+- **"Ship primitives, stay out of the ranker" has compounding implications.** Vector primitives commit implementations to a model or a versioning story; BM25 primitives don't. A spec that mandates both treats the commitment as acceptable; a spec that mandates only BM25 treats it as unacceptable. The choice is about what the protocol is willing to standardize around.
 
-- **Embedding model choice as a protocol decision is a new level of opinion.** The spec has carefully avoided committing to specific technologies (OAuth RFC references, HTTP, JSON Schema — all neutral). Naming an embedding model is the first spec decision that ties the protocol to a specific ML vendor's product. That's a big step — not wrong, but big.
+- **Embedding model choice as a protocol decision is a new level of opinion.** The spec has carefully avoided committing to specific technologies (OAuth RFC references, HTTP, JSON Schema — all neutral). Naming an embedding model would be the first spec decision tying the protocol to a specific ML vendor's product. Whether that's acceptable depends on whether the commitment pays back in interop.
 
-- **The "don't re-derive expensive things" principle cuts both ways.** It argues for shipping embeddings upstream. It also argues for not making clients re-index into their own format (which means the spec has to pick a format). That's not neutral.
+- **The "don't re-derive expensive things" principle cuts both ways.** It argues for shipping embeddings upstream. It also argues against making clients re-index into their own format (which means the spec has to pick a format). Neither direction is neutral.
 
 - **Forward compatibility is specifically hard here.** Every other spec decision can be extended additively. Embedding-model choices bake into stored data; changing them requires re-computation at scale. The versioning options (V1–V4) each have compounding operational implications over years.
 
-- **Owner self-export interaction.** A self-export archive that includes embeddings commits the owner's future consumers to the model those embeddings were generated with. A self-export without embeddings forces re-computation. Both are valid; the spec should say which is canonical.
+- **Owner self-export interaction.** A self-export archive that includes embeddings commits the owner's future consumers to the model those embeddings were generated with. A self-export without embeddings forces re-computation. Both are valid; the spec's choice determines which is canonical.
 
-- **Linux Foundation review.** LF reviewers will ask "does the protocol fragment into incompatible implementations?" If PDPP ships embeddings without a canonical model (Option C ambiguous) or mandates a specific model (Option C decisive), either path raises that question. BM25-only (Option B) or capability-negotiation (Option E) are probably safer ground.
+- **Interop review.** Any review (LF, standards body, community) will ask "does the protocol fragment into incompatible implementations?" Options that declare capabilities surface the answer explicitly; options that mandate everywhere avoid the question by fiat; options that ship nothing avoid the question by omission. Each answer has its own cost.
 
-- **GTM story.** "Your data is yours, and agents can semantically search it out of the box" is a very strong pitch. "Your data is yours, and agents can keyword-search it" is much weaker. Option B (BM25-only) is the honest minimum; Option C or E is what makes the pitch sing.
+- **GTM story.** "Your data is yours, and agents can semantically search it out of the box" lands differently from "your data is yours, and agents can keyword-search it," which lands differently from "your data is yours, and agents bring their own search." Whether marketing clarity should drive the decision — or follow it — is itself a question for the deciders.
 
 ## Cross-cutting
 
@@ -179,14 +181,11 @@ Today's grant enforcement operates on field-level projection + `time_range`. A s
 ## Action items
 
 - [ ] Multi-model review (Claude + Gemini + ChatGPT consensus per `consent-card`'s precedent) on Options A–E for the recall surface. This is a spec-shaping decision, not a tactical choice.
-- [ ] Decide B or E first — the minimum safe shipping unit. C and D can follow if the embedding-versioning question gets resolved.
-- [ ] If anything beyond B ships: commit to one of V1–V4 for versioning. No option here is cost-free.
+- [ ] Decide the trust-model framing question up front: is search optimized for owner-run agents, third-party clients, or symmetric across both? The answer constrains which options are live.
+- [ ] Decide A/B/C/D/E for recall surface, Q1/Q2/Q3 for query shape, V1/V4 for versioning (if applicable), and S1/S4 for the reference implementation. These compose; no single decision answers everything.
 - [ ] Separate note on cross-connector entity resolution if it's a priority. Don't bundle.
-- [ ] Reference impl: S1 (SQLite + FTS5 + sqlite-vec) is the natural choice for today's single-file reference; document as an example, not a mandate.
 - [ ] Conformance tests: regardless of option, spec must say what "correct search" means functionally (returns candidates matching query, ordered by relevance) without mandating scoring internals.
 
 ## Why this note rather than shipping the feature
 
-Every line of this note could be resolved with "just ship FTS5 + sqlite-vec behind `/v1/search`" and it'd work tomorrow. The code is a day of work. What's *not* a day of work is the spec surface it commits PDPP to — because once a reference implementation ships semantic retrieval, every future implementation has to, every existing spec example has to accommodate it, and every claim about "owner data portable across implementations" has to address embedding-model compatibility. These are spec commitments, not product features. The right move is to name the forcing function, enumerate the options, and let the multi-model review + community input decide — same process that produced the consent card's SLVP quality bar.
-
-The intuition is almost certainly right. The commitment needs to be deliberate.
+Every line of this note could be resolved with "just ship FTS5 + sqlite-vec behind `/v1/search`" and it'd work tomorrow. The code is a day of work. What's *not* a day of work is the spec surface it commits PDPP to — because once a reference implementation ships semantic retrieval, every future implementation has to, every existing spec example has to accommodate it, and every claim about "owner data portable across implementations" has to address embedding-model compatibility. These are spec commitments, not product features. Naming the forcing function and enumerating the options, and letting the multi-model review + community input decide, is the process that produced the consent card's SLVP quality bar.
