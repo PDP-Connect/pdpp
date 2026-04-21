@@ -4,12 +4,24 @@ This document walks through connecting one data source (ChatGPT) into a local PD
 
 It is mechanical — follow the steps in order. Each step either succeeds or returns a clear error.
 
+## If you're running this via a coding agent
+
+You can hand this entire doc to your agent and let it execute the steps. There are **three moments** where the agent will need you personally:
+
+1. **ChatGPT login** — a browser window opens so you can complete Cloudflare's "I'm not a robot" challenge if it appears, and sign in if auto-login doesn't succeed. The connector runs with a visible browser (`PDPP_CHATGPT_HEADLESS=0`) for this reason.
+2. **Optional 2FA code** — if your ChatGPT account has 2FA, the terminal prints an `INTERACTION` prompt asking for the code. Type it in the same terminal.
+3. **Approve the token mint** — the CLI prints a URL like `http://localhost:7662/device?user_code=XXXXXX`. Open it in a browser and click **Approve**. The agent cannot do this for you.
+
+Everything else is mechanical.
+
 ## Prerequisites
 
 - Node.js ≥ 20
 - `pnpm` installed (`npm i -g pnpm` if not)
-- Google Chrome installed system-wide (`google-chrome-stable` on Linux, Google Chrome on macOS)
+- Google Chrome installed (macOS: `/Applications/Google Chrome.app`; Linux: `google-chrome-stable`)
 - A ChatGPT account (email + password)
+
+Quick sanity check for Chrome on macOS: `ls "/Applications/Google Chrome.app"` — if that succeeds, you're good.
 
 ## Repo setup
 
