@@ -144,6 +144,20 @@ async function selectActivity(page, optionLabel) {
 }
 
 /**
+ * Select File Type via click-driven dropdown selection. Chase's mds-select
+ * ignores direct attribute mutation once any other form interaction has
+ * happened — the first run's attribute-set worked only because nothing else
+ * touched the form before Download, but re-renders (like selecting Date
+ * Range on Activity) revert file type back to CSV. Clicking is durable.
+ */
+async function selectFileType(page, label) {
+  await page.locator('#select-downloadFileTypeOption').click({ timeout: 10000 });
+  const opt = page.getByRole('option', { name: new RegExp(`^${label}`, 'i') });
+  await opt.waitFor({ state: 'visible', timeout: 5000 });
+  await opt.click({ timeout: 5000 });
+}
+
+/**
  * Drive a single QFX download.
  *
  * @param {object} opts
@@ -166,28 +180,9 @@ async function downloadQfx(page, account, tmpDir, opts = {}) {
   await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
   await page.locator('#downloadFileTypeOption').waitFor({ state: 'attached', timeout: 20000 });
 
-  // Set file type to QFX via attribute mutation + change event.
-  const setResult = await page.evaluate(() => {
-    function walk(root, out = []) {
-      root.querySelectorAll('*').forEach((el) => {
-        out.push(el);
-        if (el.shadowRoot) walk(el.shadowRoot, out);
-      });
-      return out;
-    }
-    const sel = walk(document).find((e) => e.id === 'downloadFileTypeOption');
-    if (!sel) return { error: 'downloadFileTypeOption_not_found' };
-    sel.setAttribute('value', 'QFX');
-    sel.setAttribute('selected-index', '1');
-    sel.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
-    return { value: sel.getAttribute('value') };
-  });
-  if (setResult.error) {
-    return { downloaded: false, error: setResult.error };
-  }
-  await page.locator('#downloadFileTypeOption[value="QFX"]').waitFor({ state: 'attached', timeout: 3000 }).catch(() => {});
-
-  // Select activity option. Map our internal keys to Chase's visible labels.
+  // Select activity option FIRST so the Date-Range pickers render before we
+  // set file type. Chase's form re-renders when Activity changes; doing file
+  // type after Activity keeps the selection stable through the re-render.
   const labelMap = {
     all: 'All transactions',
     since_last_statement: 'Since last statement',
@@ -199,14 +194,12 @@ async function downloadQfx(page, account, tmpDir, opts = {}) {
   const label = labelMap[activity] || labelMap.all;
 
   if (activity !== 'current') {
-    // "Current display" is the default; any other choice requires driving the dropdown.
     try {
       await selectActivity(page, label);
     } catch (err) {
       return { downloaded: false, error: `activity_select_failed (${label}): ${err.message.slice(0, 120)}` };
     }
 
-    // date_range requires filling the From / To pickers that appear below the dropdown.
     if (activity === 'date_range') {
       const from = opts.dateRange?.from;
       const to = opts.dateRange?.to;
@@ -214,6 +207,14 @@ async function downloadQfx(page, account, tmpDir, opts = {}) {
       const ok = await fillDateRange(page, from, to);
       if (!ok.ok) return { downloaded: false, error: `date_range_fill_failed: ${ok.error}` };
     }
+  }
+
+  // Now set File Type via click-select (attribute mutation gets clobbered
+  // by Activity re-renders).
+  try {
+    await selectFileType(page, 'Quicken Web Connect');
+  } catch (err) {
+    return { downloaded: false, error: `file_type_select_failed: ${err.message.slice(0, 120)}` };
   }
 
   // Wait for the Download button to be enabled before clicking.
@@ -238,14 +239,46 @@ async function downloadQfx(page, account, tmpDir, opts = {}) {
 
 /**
  * Fill the From + To date pickers that appear after selecting "Choose a date
- * range". Selector paths TBD — probe the UI on first-run-with-date-range.
- * For now emit a diagnostic SKIP.
+ * range".
+ *
+ * mds-datepicker#accountActivityFromDate and #accountActivityToDate host
+ * inner `<input>` elements in their shadow roots. The picker has min-date
+ * and max-date attributes that cap the range at ~24 months before today
+ * (empirically 04/20/2024 on 04/21/2026). Dates outside that range are
+ * silently clamped by the component.
+ *
+ * The inputs accept mm/dd/yyyy typed character-by-character. Playwright's
+ * pressSequentially on the shadow-piercing `input` locator works.
+ *
+ * @param {string} from ISO date 'YYYY-MM-DD'
+ * @param {string} to   ISO date 'YYYY-MM-DD'
  */
-async function fillDateRange(_page, _from, _to) {
-  // TODO probe the revealed date inputs. The earlier probe showed
-  // mds-select only renders options/date inputs after user interaction;
-  // fillDateRange requires a live-DOM pass once date_range is hit.
-  return { ok: false, error: 'date_range_ui_not_probed' };
+async function fillDateRange(page, from, to) {
+  const mmddyyyy = (iso) => {
+    const [y, m, d] = iso.split('-');
+    if (!y || !m || !d) return null;
+    return `${m}${d}${y}`;
+  };
+  const fromPacked = mmddyyyy(from);
+  const toPacked = mmddyyyy(to);
+  if (!fromPacked || !toPacked) return { ok: false, error: 'bad_iso_date' };
+
+  try {
+    const fromInput = page.locator('#accountActivityFromDate input').first();
+    await fromInput.waitFor({ state: 'visible', timeout: 10000 });
+    await fromInput.click({ timeout: 5000 });
+    await fromInput.pressSequentially(fromPacked, { delay: 40 });
+
+    const toInput = page.locator('#accountActivityToDate input').first();
+    await toInput.click({ timeout: 5000 });
+    await toInput.pressSequentially(toPacked, { delay: 40 });
+
+    // Give the component a moment to validate/reflect selection.
+    await page.locator('#accountActivityFromDate[value]').waitFor({ state: 'attached', timeout: 3000 }).catch(() => {});
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err.message.slice(0, 120) };
+  }
 }
 
 // ─── QFX parsing ──────────────────────────────────────────────────────────
