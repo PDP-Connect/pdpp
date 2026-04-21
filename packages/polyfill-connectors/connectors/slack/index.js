@@ -194,7 +194,10 @@ async function main() {
   // up from the last recorded chunk for each channel, so a previously-timed-
   // out 1.1 GB archive turns into "finish the rest" rather than "restart".
   const state = startMsg.state || {};
-  const priorArchive = state.archive_dir;
+  // STATE is stream-keyed per Collection Profile: state is returned as
+  // { <stream>: <cursor>, ... }. We write `archive_dir` into the messages
+  // stream's cursor, so reads must qualify by that stream.
+  const priorArchive = state.messages?.archive_dir || state.archive_dir; // fallback for pre-fix state
   const discoveredArchive = existsSync(archivePath) ? archivePath : null;
   const resumeTarget = (priorArchive && existsSync(priorArchive)) ? priorArchive : discoveredArchive;
   const useResume = !!resumeTarget;

@@ -437,10 +437,21 @@ async function main() {
       const uidnext = mailbox.uidNext;
       const highestModseq = mailbox.highestModseq;
 
-      const priorUidvalidity = state.all_mail?.uidvalidity;
+      // The RS returns state as { <stream>: <cursor>, ... } where each
+      // <cursor> is the object the connector put in the STATE message's
+      // .cursor field. This connector emits STATE with stream='messages'
+      // and cursor={all_mail:{uidvalidity,uidnext,highest_modseq}}, so
+      // the correct read path is state.messages.all_mail — NOT
+      // state.all_mail. Prior code read the top level, resolving to
+      // undefined on every run and silently forcing full-refresh.
+      // Observed 2026-04-21: state persisted correctly but every run
+      // did a full 1:* fetch. Also accept the legacy top-level shape
+      // in case any historical state was written before this fix.
+      const priorAllMail = state.messages?.all_mail || state.all_mail || {};
+      const priorUidvalidity = priorAllMail.uidvalidity;
       const fullResync = !priorUidvalidity || priorUidvalidity !== uidvalidity;
-      const priorUidnext = state.all_mail?.uidnext || 1;
-      const priorModseq = state.all_mail?.highest_modseq;
+      const priorUidnext = priorAllMail.uidnext || 1;
+      const priorModseq = priorAllMail.highest_modseq;
 
       // Determine fetch range.
       // - Full resync: 1..*

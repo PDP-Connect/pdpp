@@ -202,7 +202,10 @@ async function main() {
   const wantsItems = requested.has('order_items');
 
   const state = startMsg.state || {};
-  const yearsState = state.years || {};
+  // STATE is stream-keyed per Collection Profile: `state` is
+  // { <stream>: <cursor>, ... }. We write STATE stream='orders'
+  // cursor={years:{...}}, so reads must go through state.orders.
+  const yearsState = state.orders?.years || state.years || {};
   const emittedAt = nowIso();
   let totalEmitted = 0;
   const resFilters = new Map();
