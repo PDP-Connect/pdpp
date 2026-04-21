@@ -8,7 +8,7 @@
 
 import { acquireBrowser } from '/home/user/code/pdpp/packages/polyfill-connectors/src/browser-profile.js';
 import { config as loadEnv } from 'dotenv';
-loadEnv({ path: '/home/user/code/pdpp/.env.the owner.local' });
+loadEnv({ path: '/home/user/code/pdpp/.env.local' });
 
 const ACCOUNTS = [
   { label: 'Signature Visa (4503)', id: '0002-PnwSxCt5HLlzn7raPcAK' },

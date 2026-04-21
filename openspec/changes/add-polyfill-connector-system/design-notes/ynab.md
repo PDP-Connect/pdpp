@@ -6,7 +6,7 @@
 ## Auth
 - **Personal Access Token** (PAT). User generates at `app.ynab.com/settings/developer`. 30 seconds of setup.
 - Env var: `YNAB_PERSONAL_ACCESS_TOKEN`. Connector reads from `process.env` at runtime.
-- Bootstrap secret path: `.env.the owner.local` → OS keyring in v2 (deferred).
+- Bootstrap secret path: `.env.local` → OS keyring in v2 (deferred).
 
 ## Rate limit
 - **200 requests/hour per token**, rolling window.

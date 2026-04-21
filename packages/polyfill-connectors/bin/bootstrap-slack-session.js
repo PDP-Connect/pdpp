@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * One-shot: extract Slack xoxc token + d cookie from the shared Playwright
- * profile for a given workspace and write them to .env.the owner.local.
+ * profile for a given workspace and write them to .env.local.
  *
  * Usage:
  *   node bin/bootstrap-slack-session.js --workspace=myteam
@@ -30,7 +30,7 @@ import { handleInteraction } from '../src/interaction-handler.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, '..', '..', '..');
-const ENV_FILE = join(REPO_ROOT, '.env.the owner.local');
+const ENV_FILE = join(REPO_ROOT, '.env.local');
 
 dotenvConfig({ path: ENV_FILE });
 

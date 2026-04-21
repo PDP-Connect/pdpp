@@ -33,7 +33,7 @@ Credentials and tuning knobs share the same layer. Both leak into every child pr
    - Strawman: rename config to `connector_options`, ship it alongside `scope` in START, manifest declares a JSON-Schema for validation.
 
 3. **Where does credentials authority sit?**
-   - Today: env vars read from `.env.the owner.local` at orchestrator startup. Simple for single-user polyfill, wrong for multi-tenant.
+   - Today: env vars read from `.env.local` at orchestrator startup. Simple for single-user polyfill, wrong for multi-tenant.
    - Future: credentials should arrive via the owner's `grant_id` — the AS looks up stored secrets, the runtime injects them into the connector's env (or stdin) at START time. Manifest declares `credentials_schema`.
 
 4. **Does configurability belong in the Collection Profile spec, or is it a Polyfill Runtime concern?**

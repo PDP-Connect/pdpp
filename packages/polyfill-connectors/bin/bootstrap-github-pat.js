@@ -2,14 +2,14 @@
 /**
  * One-shot: log into github.com (reusing the shared Playwright profile),
  * drive the classic PAT creation form, read the generated token, and append
- * it to .env.the owner.local as GITHUB_PERSONAL_ACCESS_TOKEN.
+ * it to .env.local as GITHUB_PERSONAL_ACCESS_TOKEN.
  *
  * Usage:
  *   node bin/bootstrap-github-pat.js                     # default: name=PDPP, scopes=repo,read:user
  *   node bin/bootstrap-github-pat.js --headed            # visible browser (first run likely needs this)
  *   node bin/bootstrap-github-pat.js --name="X" --scopes=repo,gist
  *
- * Requires in .env.the owner.local:
+ * Requires in .env.local:
  *   GITHUB_EMAIL=...
  *   GITHUB_PASSWORD=...
  *   GITHUB_TOTP_SECRET=...   (optional, for unattended; otherwise you'll be
@@ -26,7 +26,7 @@ import { handleInteraction } from '../src/interaction-handler.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, '..', '..', '..');
-const ENV_FILE = join(REPO_ROOT, '.env.the owner.local');
+const ENV_FILE = join(REPO_ROOT, '.env.local');
 
 dotenvConfig({ path: ENV_FILE });
 
@@ -219,7 +219,7 @@ async function main() {
 
   const loginId = process.env.GITHUB_EMAIL || process.env.GITHUB_USERNAME;
   if (!loginId || !process.env.GITHUB_PASSWORD) {
-    console.error('[bootstrap-github-pat] GITHUB_EMAIL (or GITHUB_USERNAME) and GITHUB_PASSWORD must be set in .env.the owner.local');
+    console.error('[bootstrap-github-pat] GITHUB_EMAIL (or GITHUB_USERNAME) and GITHUB_PASSWORD must be set in .env.local');
     process.exit(2);
   }
 

@@ -381,8 +381,12 @@ async function main() {
 
   let context;
   let release = async () => {};
+  // Default headless=true for unattended runs. Override via
+  // PDPP_CHATGPT_HEADLESS=0 when a first-time login needs a visible
+  // browser (helpful for Cloudflare challenges, 2FA entry, etc.).
+  const headless = process.env.PDPP_CHATGPT_HEADLESS !== '0';
   try {
-    ({ context, release } = await acquireBrowser({ headless: true }));
+    ({ context, release } = await acquireBrowser({ headless }));
   } catch (err) {
     return fail(`could not open browser profile: ${err.message}`, false);
   }

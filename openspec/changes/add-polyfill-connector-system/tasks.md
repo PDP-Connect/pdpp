@@ -34,7 +34,7 @@ Last revised: 2026-04-21.
 | codex | ✅ done | 74,033 | 0 nulls, 0 drops across function_calls + messages + sessions. |
 | amazon | 🟡 v0.1 in progress | 0 | 2FA-on-wife's-phone blocker resolved 2026-04-21 (new account). Auto-login verified end-to-end (`#ap_email_login` + `#ap_password` selectors, OTP via INTERACTION). `fetchOrderDetail` intentionally stubbed pending live DOM probe. Manifest overclaims ~11 fields (see `amazon.md`). |
 | chase | ✅ v0.1 working | 16 (1 account, 14 txns, 1 balance) | NEW 2026-04-21. End-to-end: auto-login via `src/auto-login/chase.js` (mds-* shadow DOM, text/role locators per Playwright best practices), discover accounts via `#accounts-name-link-button-<id>-label` pattern, QFX download via `mds-select#downloadFileTypeOption` + `mds-button#download`, parse via `ofx-js`. Only credit card so far (account-param `CARD,BAC`); checking/savings param shapes are placeholders. v0.2: date-range support (currently "Current display" ~30 days), statement PDFs. |
-| github | ✅ done | 8,608 | PAT auto-created via `bin/bootstrap-github-pat.js` (headless login → INTERACTION for 2FA → PAT form → token written to `.env.the owner.local`). |
+| github | ✅ done | 8,608 | PAT auto-created via `bin/bootstrap-github-pat.js` (headless login → INTERACTION for 2FA → PAT form → token written to `.env.local`). |
 | oura | 🟡 ready | 0 | Awaits `OURA_PERSONAL_ACCESS_TOKEN`. |
 | spotify | 🚫 blocked upstream | 0 | Spotify froze new developer app creation in Feb 2026; OAuth-only anyway. Keep manifest, revisit when Spotify re-opens. |
 | strava | 🟡 ready | 0 | Awaits `STRAVA_ACCESS_TOKEN`. |
@@ -128,7 +128,7 @@ See `design-notes/spec-conformance-upgrade-2026-04-19.md` for the full retrofit 
 - **Browser connector selector-wiring.** Nine connectors scaffolded but need live co-pilot DOM walks.
 - **Connector configuration surface.** Open question — manifest-declared `credentials_schema` + `options_schema`. See `design-notes/connector-configuration-open-question.md`. Decision paused pending RFC.
 - **RS storage topology.** Open question — one DB per owner vs. per connector, or both under a unified query surface. See `design-notes/rs-storage-topology-open-question.md`. Today Codex is split out under `PDPP_DB_PATH` to dodge SQLITE_BUSY; the split was tactical, not chosen.
-- **Credential storage.** Open question — `.env.the owner.local` plaintext is the wrong answer for anything beyond single-user laptop dev. See `design-notes/credential-storage-open-question.md`. Vault interface proposed; decision paused.
+- **Credential storage.** Open question — `.env.local` plaintext is the wrong answer for anything beyond single-user laptop dev. See `design-notes/credential-storage-open-question.md`. Vault interface proposed; decision paused.
 - **External-tool dependencies.** Open question — `runtime_requirements.external_tools` for subprocess binaries like slackdump (AGPL), osxphotos, Playwright browsers. Today invisible to spec, consent card, and auditors. See `design-notes/external-tool-dependencies-open-question.md`.
 - **Layer 2 manifest completeness.** Open question — does a polyfill manifest commit to a coverage contract against the source's actual surface? See `design-notes/layer-2-completeness-open-question.md`.
 - **Owner self-export.** Open question — should the RS expose a canonical owner-facing `GET /v1/connectors` / bulk-export surface? See `design-notes/owner-self-export-open-question.md`.

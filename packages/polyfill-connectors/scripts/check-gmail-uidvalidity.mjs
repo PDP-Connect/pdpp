@@ -1,7 +1,7 @@
 import { ImapFlow } from 'imapflow';
 import { readFileSync } from 'node:fs';
 
-for (const line of readFileSync('/home/user/code/pdpp/.env.the owner.local', 'utf8').split('\n')) {
+for (const line of readFileSync('/home/user/code/pdpp/.env.local', 'utf8').split('\n')) {
   const m = line.match(/^([A-Z_]+)='?(.*?)'?$/);
   if (m) process.env[m[1]] = m[2];
 }

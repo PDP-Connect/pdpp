@@ -22,7 +22,7 @@ import { launchPersistentContext } from '../src/browser-profile.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, '..', '..', '..');
-dotenvConfig({ path: join(REPO_ROOT, '.env.the owner.local') });
+dotenvConfig({ path: join(REPO_ROOT, '.env.local') });
 
 const OTP_FILE = '/tmp/usaa-otp.txt';
 
@@ -45,7 +45,7 @@ async function waitForOtp() {
 
 async function run() {
   if (!process.env.USAA_USERNAME || !process.env.USAA_PASSWORD) {
-    throw new Error('USAA_USERNAME / USAA_PASSWORD not set in .env.the owner.local');
+    throw new Error('USAA_USERNAME / USAA_PASSWORD not set in .env.local');
   }
   const ctx = await launchPersistentContext({ headless: true });
   const page = await ctx.newPage();

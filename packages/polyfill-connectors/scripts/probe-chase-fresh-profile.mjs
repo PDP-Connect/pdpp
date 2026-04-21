@@ -14,7 +14,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { config as loadEnv } from 'dotenv';
 
-loadEnv({ path: '/home/user/code/pdpp/.env.the owner.local' });
+loadEnv({ path: '/home/user/code/pdpp/.env.local' });
 
 const profileDir = mkdtempSync(join(tmpdir(), 'chase-fresh-'));
 console.log('fresh profile:', profileDir);

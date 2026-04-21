@@ -1,6 +1,6 @@
 /**
  * ntfy adapter — fire-and-forget push notifications to the self-hosted
- * ntfy.vivid.fish topic configured in .env.the owner.local.
+ * ntfy.vivid.fish topic configured in .env.local.
  *
  * Non-blocking: failures are logged to stderr but don't throw. The operator
  * should still see inbox items locally if ntfy is down.

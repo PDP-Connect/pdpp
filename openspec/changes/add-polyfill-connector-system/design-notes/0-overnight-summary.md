@@ -99,7 +99,7 @@ An older version of `owner_device_auth` in the pre-existing polyfill.sqlite didn
 
 1. **Amazon 2FA** — wife's phone.
 2. **USAA CSV click-chain** — need live session co-pilot.
-3. **API tokens for 8 connectors** — add any of these to `.env.the owner.local` to unlock:
+3. **API tokens for 8 connectors** — add any of these to `.env.local` to unlock:
    - `GITHUB_PERSONAL_ACCESS_TOKEN`
    - `OURA_PERSONAL_ACCESS_TOKEN`
    - `SPOTIFY_ACCESS_TOKEN`

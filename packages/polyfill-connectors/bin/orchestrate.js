@@ -28,7 +28,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, '..', '..', '..', 'reference-implementation');
 const REPO_ROOT = join(__dirname, '..', '..', '..');
 
-dotenvConfig({ path: join(REPO_ROOT, '.env.the owner.local') });
+dotenvConfig({ path: join(REPO_ROOT, '.env.local') });
 
 const [, , cmd, ...rest] = process.argv;
 

@@ -133,7 +133,7 @@ export async function requireCredentialsOrAsk({ required, connectorName, sendInt
     type: 'INTERACTION',
     request_id: nextInteractionId(),
     kind: 'credentials',
-    message: `${connectorName} needs: ${missing.join(', ')}. Set in .env.the owner.local for persistence.`,
+    message: `${connectorName} needs: ${missing.join(', ')}. Set in .env.local for persistence.`,
     schema: { type: 'object', properties, required: missing },
     timeout_seconds: 1800,
   });

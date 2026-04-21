@@ -2,19 +2,19 @@
 
 **Status:** open
 **Raised:** 2026-04-19
-**Context:** today the GitHub PAT bootstrap (`bin/bootstrap-github-pat.js`) drives a real browser login, generates a PAT, and stores it by appending to `.env.the owner.local` with 0600 perms. Every API-based connector reads its credentials from the same file at startup. This works for single-user dev on a trusted laptop. Nothing about it is appropriate for the spec's threat model.
+**Context:** today the GitHub PAT bootstrap (`bin/bootstrap-github-pat.js`) drives a real browser login, generates a PAT, and stores it by appending to `.env.local` with 0600 perms. Every API-based connector reads its credentials from the same file at startup. This works for single-user dev on a trusted laptop. Nothing about it is appropriate for the spec's threat model.
 
 Per-connector inventory of current credential land:
 
 | Connector | Secret | Where it lives today |
 |---|---|---|
-| ynab | `YNAB_PAT` | `.env.the owner.local` |
-| gmail | `GMAIL_USER`, `GMAIL_APP_PASSWORD` | `.env.the owner.local` |
-| chatgpt | `CHATGPT_EMAIL`, `CHATGPT_PASSWORD` | `.env.the owner.local` |
-| usaa | `USAA_MEMBER_ID`, `USAA_PASSWORD` | `.env.the owner.local` |
-| amazon | `AMAZON_EMAIL`, `AMAZON_PASSWORD` | `.env.the owner.local` |
-| github | `GITHUB_USERNAME`, `GITHUB_PASSWORD`, `GITHUB_PERSONAL_ACCESS_TOKEN` | `.env.the owner.local` |
-| oura/spotify/strava/notion/reddit/pocket/slack | various `*_TOKEN`, `*_SECRET` | `.env.the owner.local` |
+| ynab | `YNAB_PAT` | `.env.local` |
+| gmail | `GMAIL_USER`, `GMAIL_APP_PASSWORD` | `.env.local` |
+| chatgpt | `CHATGPT_EMAIL`, `CHATGPT_PASSWORD` | `.env.local` |
+| usaa | `USAA_MEMBER_ID`, `USAA_PASSWORD` | `.env.local` |
+| amazon | `AMAZON_EMAIL`, `AMAZON_PASSWORD` | `.env.local` |
+| github | `GITHUB_USERNAME`, `GITHUB_PASSWORD`, `GITHUB_PERSONAL_ACCESS_TOKEN` | `.env.local` |
+| oura/spotify/strava/notion/reddit/pocket/slack | various `*_TOKEN`, `*_SECRET` | `.env.local` |
 | browser-session connectors (shopify, heb, loom, …) | **Playwright storage state** at `~/.pdpp/browser-profile/` (cookies on disk) | filesystem, 0700 |
 
 Two classes of secret here, in tension:
@@ -41,7 +41,7 @@ That silence is probably correct — "credential vault" is an implementer concer
    - `memory`: in-process only (single run), useful for ephemeral agents.
 2. **The connector never sees the full vault** — only the secrets it declared in its manifest's (future) `credentials_schema`.
 3. **Grant-scoped access** — a connector spawned under grant X can read only credentials last provided under grant X's bootstrap, not the full bag.
-4. **Separation of class-2 from class-1** — browser session state is a derived artifact; losing it should prompt re-login, not force a password re-entry. Today they're colocated; losing `.env.the owner.local` loses both.
+4. **Separation of class-2 from class-1** — browser session state is a derived artifact; losing it should prompt re-login, not force a password re-entry. Today they're colocated; losing `.env.local` loses both.
 5. **Provenance**: a credential carries *how* it was obtained (user-entered, auto-bootstrapped, grant-delegated) so the runtime can reason about trust level.
 6. **Rotation hooks**: when a PAT approaches expiry, the runtime can re-run the bootstrap tool automatically, again via INTERACTION for the 2FA challenge.
 
@@ -55,7 +55,7 @@ That silence is probably correct — "credential vault" is an implementer concer
 
 - Env dotfile is plaintext. Compromise of the file = compromise of every connected account's password, bank login, personal access tokens, 2FA fallback paths.
 - The bootstrap tool (`bin/bootstrap-github-pat.js`) writes to the same plaintext file it read from — any implementer following our example will do the same.
-- No owner-scoping: `.env.the owner.local` is globally addressable. A multi-tenant PDPP server would need per-owner keyspaces, which env vars can't give.
+- No owner-scoping: `.env.local` is globally addressable. A multi-tenant PDPP server would need per-owner keyspaces, which env vars can't give.
 - No rotation signal. The system has no way to know a token is about to expire.
 - No separation of class-1 from class-3. The USAA password (class 3) and the YNAB PAT (class 1) are written to the same file with the same perms.
 
@@ -78,7 +78,7 @@ Add a **Credential Vault** capability to the polyfill runtime spec:
 
 ## Action items (paused, awaiting direction)
 
-- [ ] Inventory every `.env.the owner.local` key across the 30 connectors, classify by class 1/2/3.
+- [ ] Inventory every `.env.local` key across the 30 connectors, classify by class 1/2/3.
 - [ ] Draft `credentials_schema` manifest field (joint with `connector-configuration-open-question.md`).
 - [ ] Pick a default vault backend: `file+age` is likely the simplest + best-documented path.
 - [ ] Refactor `bootstrap-github-pat.js` to use the vault once implemented; today it's a canonical example of the wrong thing and should be visibly marked as "temporary pattern pending vault."

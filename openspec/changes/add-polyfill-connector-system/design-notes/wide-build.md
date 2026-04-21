@@ -51,7 +51,7 @@ Legend: ✅ fully working · 🏃 running · 🟡 ready-pending-creds · 📝 sc
 
 ## What the owner should know
 
-- **Add PATs for GitHub, Oura, Spotify in `.env.the owner.local`** to unlock three more fully-working connectors immediately.
+- **Add PATs for GitHub, Oura, Spotify in `.env.local`** to unlock three more fully-working connectors immediately.
 - **For Slack:** install slackdump, set `SLACK_WORKSPACE=yourteam`, run the connector.
 - **For WhatsApp:** export chats from mobile, drop `.txt` files in `~/.pdpp/imports/whatsapp/`, run the connector.
 - **For browser-scrape scaffolds (anthropic, shopify, heb, linkedin, meta, loom, uber, doordash, wholefoods):** open a live session in bootstrap, then we wire the selectors together — each one takes 30 min once the session is live.

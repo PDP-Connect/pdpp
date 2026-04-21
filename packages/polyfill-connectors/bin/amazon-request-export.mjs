@@ -41,7 +41,7 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, '..', '..', '..');
-dotenvConfig({ path: join(REPO_ROOT, '.env.the owner.local') });
+dotenvConfig({ path: join(REPO_ROOT, '.env.local') });
 
 const PRIVACY_CENTRAL_URL = 'https://www.amazon.com/hz/privacy-central/data-requests/preview.html';
 

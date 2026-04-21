@@ -2,7 +2,7 @@
 
 **Status:** open
 **Raised:** 2026-04-19
-**Trigger:** the owner's observation — "if we could solve logging into Google, we could automate application-key creation the way we automated GitHub PAT creation." `bin/bootstrap-github-pat.js` already drives GitHub's PAT flow end-to-end (headed Playwright, stored creds, INTERACTION for 2FA, DOM extraction, append to `.env.the owner.local`). The same shape should generalize.
+**Trigger:** the owner's observation — "if we could solve logging into Google, we could automate application-key creation the way we automated GitHub PAT creation." `bin/bootstrap-github-pat.js` already drives GitHub's PAT flow end-to-end (headed Playwright, stored creds, INTERACTION for 2FA, DOM extraction, append to `.env.local`). The same shape should generalize.
 
 ## The pattern
 

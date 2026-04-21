@@ -8,6 +8,7 @@
     "pdpp-connectors": "./bin/pdpp-connectors.js"
   },
   "scripts": {
+    "postinstall": "patchright install chromium",
     "bootstrap:browser": "node ./bin/pdpp-connectors.js browser bootstrap",
     "probe:browser": "node ./bin/pdpp-connectors.js browser probe"
   },

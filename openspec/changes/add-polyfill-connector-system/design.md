@@ -5,8 +5,8 @@
 ### Three classes of authentication
 | Class | Connectors | Auth storage | Refresh |
 |---|---|---|---|
-| API token | YNAB | `.env.the owner.local` (plain, bootstrap) | Never; user-rotated |
-| IMAP app password | Gmail | `.env.the owner.local` (plain, bootstrap) | Never; user-rotated if Google deprecates |
+| API token | YNAB | `.env.local` (plain, bootstrap) | Never; user-rotated |
+| IMAP app password | Gmail | `.env.local` (plain, bootstrap) | Never; user-rotated if Google deprecates |
 | Browser session | ChatGPT, Amazon, USAA | Persistent Chromium profile at `~/.pdpp/browser-profile/` | Keep-alive probes + bootstrap on session death |
 
 ### Autonomous failure modes and responses

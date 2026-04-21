@@ -20,7 +20,7 @@ import {
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, '..', '..', '..');
-dotenvConfig({ path: join(REPO_ROOT, '.env.the owner.local') });
+dotenvConfig({ path: join(REPO_ROOT, '.env.local') });
 
 const CONNECTORS = [
   'ynab', 'gmail', 'chatgpt', 'usaa', 'amazon',

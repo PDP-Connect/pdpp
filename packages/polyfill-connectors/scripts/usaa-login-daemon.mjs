@@ -4,7 +4,7 @@ import { readFile, unlink } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { config as loadEnv } from 'dotenv';
 
-loadEnv({ path: '/home/user/code/pdpp/.env.the owner.local' });
+loadEnv({ path: '/home/user/code/pdpp/.env.local' });
 
 const OTP_FILE = '/tmp/usaa-otp.txt';
 

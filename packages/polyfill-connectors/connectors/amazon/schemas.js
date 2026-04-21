@@ -103,6 +103,27 @@ export const orderItemSchema = z.object({
   refund_status: z.string().max(200).nullable(),
 });
 
+// Internal: shape returned by extractOrdersOnPage (pre-enrichment). Used
+// to catch list-page selector drift — if our DOM selectors match the
+// wrong elements, we'd rather see a SKIP_RESULT with diagnostics than
+// silently emit garbage orders.
+export const listPageOrderShape = z.object({
+  orderId: z.string().regex(/^\d{3}-\d{7}-\d{7}$/, 'orderId must match NNN-NNNNNNN-NNNNNNN'),
+  orderDateRaw: z.string().min(4).max(60).nullable(),
+  orderTotal: z
+    .string()
+    .regex(/^\$[\d,]+\.\d{2}$/, 'orderTotal must be $N.NN when present')
+    .nullable(),
+  deliveryStatus: z.string().max(200).nullable(),
+  items: z.array(
+    z.object({
+      name: z.string().min(2).max(300),
+      url: z.string().url().nullable(),
+      asin: asinSchema,
+    })
+  ),
+});
+
 // Map stream name → schema. Single source of truth for what streams this
 // connector produces at shape-check time.
 export const SCHEMAS = {

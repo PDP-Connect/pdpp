@@ -22,7 +22,7 @@ import { acquireIsolatedBrowser } from '../../src/browser-daemon.js';
 import { resourceSet } from '../../src/scope-filters.js';
 import { ensureAmazonSession } from '../../src/auto-login/amazon.js';
 import { emitToStdout, stringifyForJsonl } from '../../src/safe-emit.js';
-import { validateRecord } from './schemas.js';
+import { validateRecord, listPageOrderShape } from './schemas.js';
 
 const rl = createInterface({ input: process.stdin, terminal: false });
 // WHY emitToStdout: large RECORDs can exceed the 64 KB Linux pipe buffer and
@@ -67,18 +67,6 @@ async function sendInteractionAndWait(msg) {
 }
 
 // ─── Session probes ──────────────────────────────────────────────────────
-
-async function quickSessionCheck(page) {
-  await page.goto('https://www.amazon.com/', { waitUntil: 'domcontentloaded', timeout: 30000 });
-  // Wait for the nav area to render instead of a fixed sleep. Either the
-  // logged-in greeting or the "Sign in" link will resolve — both are
-  // acceptable states for this probe.
-  await page.locator('#nav-link-accountList').first().waitFor({ state: 'visible', timeout: 10000 }).catch(() => {});
-  const url = page.url();
-  if (/\/ap\/(signin|challenge|mfa)/.test(url)) return false;
-  const greeting = await page.locator('#nav-link-accountList').first().innerText().catch(() => '');
-  return /Hello/i.test(greeting) && !/Sign in/i.test(greeting);
-}
 
 async function deepSessionCheck(page) {
   await page.goto('https://www.amazon.com/your-orders/orders', { waitUntil: 'domcontentloaded', timeout: 30000 });
@@ -381,50 +369,102 @@ async function fetchOrderDetail(page, orderId) {
 }
 
 // ─── Per-page order extraction ────────────────────────────────────────────
-
+// Structural extraction per docs/connector-authoring-guide.md §2. The
+// Amazon list page does NOT use `data-component` attributes (that's
+// detail-page-only), but it DOES use stable `yohtmlc-*` CSS classes
+// (Amazon's internal "Your Orders HTML Component" markers). Verified
+// consistent across 2008, 2015, and 2025 via bin/amazon-listcard-yohtmlc-probe.mjs.
+//
+// Stable selectors used:
+//   .yohtmlc-order-id                            — order ID block
+//   .yohtmlc-product-title                       — item titles
+//   .yohtmlc-shipment-status-primaryText         — delivery status
+//   .order-header__header-list-item              — header rows (labeled)
+//
+// Locale note: we match header-row LABELS by text (ORDER PLACED / TOTAL).
+// On non-EN Amazon locales those labels would be translated. For now US/EN
+// only, consistent with connector's scoped support. When multi-locale lands,
+// replace label regex with structural-position matching (1st header row is
+// always date, 2nd is always ID, etc.).
 async function extractOrdersOnPage(page) {
   return page.evaluate(() => {
-    const cards = [...document.querySelectorAll('div.order-card, div.js-order-card')];
+    const cards = [...document.querySelectorAll('.order-card, .js-order-card')];
     return cards.map((card) => {
-      const text = card.innerText || '';
-      const idMatch = text.match(/\d{3}-\d{7}-\d{7}/);
-      if (!idMatch) return null;
-      const orderId = idMatch[0];
+      // ── order_id ─────────────────────────────────────────────────────
+      // .yohtmlc-order-id contains "<span>ORDER #</span> <span>ID</span>"
+      // (and possibly more). Pick the span whose text matches the
+      // canonical N-NNNNNNN-NNNNNNN pattern.
+      const orderIdEl = card.querySelector('.yohtmlc-order-id');
+      const orderId = orderIdEl
+        ? [...orderIdEl.querySelectorAll('span')]
+            .map((s) => (s.innerText || '').trim())
+            .find((t) => /^\d{3}-\d{7}-\d{7}$/.test(t)) || null
+        : null;
+      if (!orderId) return null;
 
-      const dateMatch = text.match(/(January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},\s+\d{4}/);
-      const orderDateRaw = dateMatch ? dateMatch[0] : null;
-
-      let total = null;
-      const totalMatch = text.match(/(?:Total|ORDER TOTAL)[\s\S]{0,20}?(\$[\d,.]+)/i);
-      if (totalMatch) total = totalMatch[1];
-      if (!total) {
-        const anyMoney = text.match(/\$\d+\.\d{2}/);
-        if (anyMoney) total = anyMoney[0];
-      }
-
-      const statusMatch = text.match(/(?:Delivered|Arriving|Shipped|Out for delivery|Return|Refund|Cancelled)(\s[^\n]*)?/);
-      const deliveryStatus = statusMatch ? statusMatch[0].split('\n')[0].trim() : null;
-
-      const itemLinks = [...card.querySelectorAll('a[href*="/dp/"], a[href*="/gp/product/"]')];
-      const seen = new Set();
-      const items = [];
-      for (const a of itemLinks) {
-        const name = (a.textContent || '').replace(/\s+/g, ' ').trim();
-        if (!name || seen.has(name)) continue;
-        seen.add(name);
-        let href = a.getAttribute('href') || '';
-        if (href.startsWith('/')) href = 'https://www.amazon.com' + href;
-        const asinMatch = href.match(/\/(?:dp|gp\/product)\/([A-Z0-9]{10})/);
-        items.push({ name, url: href, asin: asinMatch ? asinMatch[1] : null });
-      }
-
-      return {
-        orderId,
-        orderDateRaw,
-        orderTotal: total,
-        deliveryStatus,
-        items,
+      // Helper: find a header row by its LABEL, return the VALUE span text.
+      // Header rows have shape:
+      //   <li class="order-header__header-list-item">
+      //     <span class="a-color-secondary a-text-caps">LABEL</span>
+      //     <span class="a-size-base ...">VALUE</span>
+      //   </li>
+      const findHeaderValue = (labelPattern) => {
+        for (const item of card.querySelectorAll('.order-header__header-list-item')) {
+          const labelEl = item.querySelector('.a-color-secondary.a-text-caps');
+          const label = (labelEl?.innerText || '').trim();
+          if (!labelPattern.test(label)) continue;
+          // Value = first descendant text that ISN'T the label itself.
+          // Amazon uses varied class combos; structural "non-label text" is more durable.
+          const valueEls = [...item.querySelectorAll('span')]
+            .filter((s) => s !== labelEl)
+            .map((s) => (s.innerText || '').trim())
+            .filter(Boolean);
+          return valueEls[0] || null;
+        }
+        return null;
       };
+
+      // ── order_date ───────────────────────────────────────────────────
+      const orderDateRaw = findHeaderValue(/^(ORDER PLACED|ORDER DATE|PLACED)$/i);
+
+      // ── order_total ──────────────────────────────────────────────────
+      // Only present on very old (pre-2015) list pages. Modern orders
+      // leave this null and the detail-page fetch populates it.
+      const totalRaw = findHeaderValue(/^TOTAL$/i);
+      const orderTotal = totalRaw && /^\$[\d,]+\.\d{2}$/.test(totalRaw) ? totalRaw : null;
+
+      // ── delivery_status ──────────────────────────────────────────────
+      const primaryStatusEl = card.querySelector(
+        '.yohtmlc-shipment-status-primaryText, .delivery-box__primary-text'
+      );
+      const deliveryStatus = primaryStatusEl
+        ? (primaryStatusEl.innerText || '').replace(/\s+/g, ' ').trim() || null
+        : null;
+
+      // ── items ────────────────────────────────────────────────────────
+      // One .yohtmlc-product-title per item. Each sits within an .item-box
+      // that also contains the product image link.
+      const items = [];
+      const seenAsins = new Set();
+      for (const titleEl of card.querySelectorAll('.yohtmlc-product-title')) {
+        const name = (titleEl.innerText || '').replace(/\s+/g, ' ').trim();
+        if (!name) continue;
+
+        // ASIN via the nearest product-link anchor in this item's scope.
+        const itemBox = titleEl.closest('.item-box, .a-fixed-left-grid') || titleEl.parentElement;
+        const link = itemBox?.querySelector('a[href*="/dp/"], a[href*="/gp/product/"]')
+          || titleEl.querySelector('a');
+        const href = link?.getAttribute('href') || '';
+        const url = href.startsWith('/') ? 'https://www.amazon.com' + href : (href || null);
+        const asinMatch = href.match(/\/(?:dp|gp\/product)\/([A-Z0-9]{10})/);
+        const asin = asinMatch ? asinMatch[1] : null;
+
+        if (asin && seenAsins.has(asin)) continue;
+        if (asin) seenAsins.add(asin);
+        items.push({ name, url, asin });
+      }
+
+      return { orderId, orderDateRaw, orderTotal, deliveryStatus, items };
     }).filter(Boolean);
   }).catch(() => []);
 }
@@ -581,7 +621,27 @@ async function main() {
         // when the orders list has rendered.
         await page.locator('.order-card, .js-order-card, #ordersContainer, #no-orders')
           .first().waitFor({ state: 'attached', timeout: 10000 }).catch(() => {});
-        const orders = await extractOrdersOnPage(page);
+        const rawOrders = await extractOrdersOnPage(page);
+
+        // Shape-check list-page extraction. A selector drift that produces
+        // malformed orderId / bad orderDateRaw / missing items would otherwise
+        // cascade silently. Drop any card that fails, but emit SKIP_RESULT
+        // so the drift is visible.
+        const orders = [];
+        for (const r of rawOrders) {
+          const parsed = listPageOrderShape.safeParse(r);
+          if (parsed.success) {
+            orders.push(parsed.data);
+          } else {
+            emit({
+              type: 'SKIP_RESULT',
+              stream: 'orders',
+              reason: 'list_page_shape_check_failed',
+              message: `list card ${r.orderId ?? '<no id>'}: ${parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ')}`,
+              diagnostics: { card: r, issues: parsed.error.issues },
+            });
+          }
+        }
         if (!orders.length) {
           // Distinguish "no more orders" from "selectors missed the DOM".
           // If Amazon's UI shipped a new order-card class and our regex
