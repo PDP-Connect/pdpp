@@ -1,7 +1,7 @@
 {
   "protocol_version": "0.1.0",
   "connector_id": "https://registry.pdpp.org/connectors/codex",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "display_name": "OpenAI Codex CLI",
   "runtime_requirements": {
     "bindings": {
@@ -12,10 +12,10 @@
   "streams": [
     {
       "name": "sessions",
-      "description": "Codex CLI sessions. One session = one `codex` CLI invocation, recorded as a rollout-*.jsonl file.",
+      "description": "Codex CLI sessions. Canonical metadata comes from ~/.codex/state_5.sqlite#threads (title, archived, tokens_used, first_user_message, sandbox_policy, approval_mode), enriched with message/tool-call counts from the on-disk rollout JSONL.",
       "display": {
         "label": "Your Codex CLI sessions",
-        "detail": "Session start time, working directory, git commit and branch, model provider, CLI version, total message count."
+        "detail": "Title, working directory, git commit/branch, model provider, CLI version, approval mode, sandbox policy, token usage, and counts."
       },
       "semantics": "mutable_state",
       "schema": {
@@ -32,7 +32,14 @@
           "started_at": { "type": ["string", "null"] },
           "last_event_at": { "type": ["string", "null"] },
           "message_count": { "type": ["integer", "null"] },
-          "function_call_count": { "type": ["integer", "null"] }
+          "function_call_count": { "type": ["integer", "null"] },
+          "title": { "type": ["string", "null"] },
+          "archived": { "type": ["boolean", "null"] },
+          "tokens_used": { "type": ["integer", "null"] },
+          "first_user_message": { "type": ["string", "null"] },
+          "sandbox_policy": { "type": ["string", "null"] },
+          "approval_mode": { "type": ["string", "null"] },
+          "rollout_path": { "type": ["string", "null"] }
         },
         "required": ["id"]
       },
@@ -100,6 +107,81 @@
       "relationships": [
         { "name": "session", "stream": "sessions", "foreign_key": "session_id", "cardinality": "has_one" }
       ]
+    },
+    {
+      "name": "rules",
+      "description": "Personal trust-registry rules recorded in ~/.codex/rules/*.rules — the de-facto log of approval decisions. One record per rule line.",
+      "display": {
+        "label": "Your Codex approval rules",
+        "detail": "Each rule line (e.g. prefix_rule / decision=allow) from your .rules files, with ruleset and position."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "ruleset": { "type": "string" },
+          "rule_text": { "type": "string" },
+          "rule_index": { "type": "integer" },
+          "path": { "type": ["string", "null"] },
+          "mtime_epoch": { "type": ["integer", "null"] }
+        },
+        "required": ["id", "ruleset", "rule_text", "rule_index"]
+      },
+      "primary_key": ["id"],
+      "cursor_field": "mtime_epoch",
+      "selection": { "fields": true, "resources": true },
+      "incremental": false
+    },
+    {
+      "name": "prompts",
+      "description": "User-authored prompt templates from ~/.codex/prompts/*.md. Frontmatter (name, description) is parsed; body is the prompt content.",
+      "display": {
+        "label": "Your Codex prompts",
+        "detail": "Name, description, body, and source path for each prompt template."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "name": { "type": "string" },
+          "description": { "type": ["string", "null"] },
+          "content": { "type": ["string", "null"] },
+          "path": { "type": ["string", "null"] },
+          "mtime_epoch": { "type": ["integer", "null"] }
+        },
+        "required": ["id", "name"]
+      },
+      "primary_key": ["id"],
+      "cursor_field": "mtime_epoch",
+      "selection": { "fields": true, "resources": true },
+      "incremental": false
+    },
+    {
+      "name": "skills",
+      "description": "User-authored skills from ~/.codex/skills/<name>/SKILL.md. Frontmatter (name, description) is parsed; body is the skill content.",
+      "display": {
+        "label": "Your Codex skills",
+        "detail": "Name, description, body, and source path for each skill."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "name": { "type": "string" },
+          "description": { "type": ["string", "null"] },
+          "content": { "type": ["string", "null"] },
+          "path": { "type": ["string", "null"] },
+          "mtime_epoch": { "type": ["integer", "null"] }
+        },
+        "required": ["id", "name"]
+      },
+      "primary_key": ["id"],
+      "cursor_field": "mtime_epoch",
+      "selection": { "fields": true, "resources": true },
+      "incremental": false
     }
   ],
   "profiles": [
@@ -109,7 +191,10 @@
       "streams": [
         { "name": "sessions" },
         { "name": "messages" },
-        { "name": "function_calls" }
+        { "name": "function_calls" },
+        { "name": "rules" },
+        { "name": "prompts" },
+        { "name": "skills" }
       ]
     },
     {
@@ -118,6 +203,15 @@
       "streams": [
         { "name": "sessions" },
         { "name": "messages" }
+      ]
+    },
+    {
+      "id": "authoring",
+      "label": "Your prompts, skills, and approval rules",
+      "streams": [
+        { "name": "rules" },
+        { "name": "prompts" },
+        { "name": "skills" }
       ]
     }
   ]

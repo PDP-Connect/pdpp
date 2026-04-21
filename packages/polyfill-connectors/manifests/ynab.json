@@ -340,6 +340,57 @@
       "consent_time_field": "month",
       "selection": { "fields": true, "resources": true },
       "incremental": true
+    },
+    {
+      "name": "month_categories",
+      "description": "Per-month snapshot of every category's budgeted/activity/balance and goal progress. This is the real budget history matrix — historical months are frozen in YNAB, the current month mutates. Amounts in YNAB milliunits (1000 milliunits = 1 currency unit).",
+      "display": {
+        "label": "Monthly category history",
+        "detail": "For each (budget, month, category): how much was assigned (budgeted), how much was spent (activity), leftover balance, and goal progress (type, target, percent complete, underfunding) as it stood in that month. Useful for budget trend analysis and answering 'what did I budget for groceries last March?'."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "budget_id": { "type": "string" },
+          "month": { "type": "string", "format": "date" },
+          "category_id": { "type": "string" },
+          "category_name": { "type": "string" },
+          "category_group_id": { "type": ["string", "null"] },
+          "category_group_name": { "type": ["string", "null"] },
+          "budgeted": { "type": "integer" },
+          "activity": { "type": "integer" },
+          "balance": { "type": "integer" },
+          "goal_type": { "type": ["string", "null"], "enum": ["TB", "TBD", "MF", "NEED", "DEBT", null] },
+          "goal_target": { "type": ["integer", "null"] },
+          "goal_percentage_complete": { "type": ["integer", "null"] },
+          "goal_months_to_budget": { "type": ["integer", "null"] },
+          "goal_creation_month": { "type": ["string", "null"] },
+          "goal_under_funded": { "type": ["integer", "null"] },
+          "goal_overall_funded": { "type": ["integer", "null"] },
+          "goal_overall_left": { "type": ["integer", "null"] },
+          "hidden": { "type": "boolean" },
+          "note": { "type": ["string", "null"] },
+          "deleted": { "type": "boolean" }
+        },
+        "required": ["id", "budget_id", "month", "category_id", "category_name"]
+      },
+      "primary_key": ["id"],
+      "cursor_field": "month",
+      "consent_time_field": "month",
+      "selection": { "fields": true, "resources": true },
+      "incremental": true,
+      "relationships": [
+        { "name": "budget", "stream": "budgets", "foreign_key": "budget_id", "cardinality": "has_one" },
+        { "name": "category", "stream": "categories", "foreign_key": "category_id", "cardinality": "has_one" },
+        { "name": "month_row", "stream": "months", "foreign_key": "month", "cardinality": "has_one" }
+      ],
+      "views": [
+        { "id": "basic", "label": "Budgeted vs spent per category per month", "fields": ["id", "budget_id", "month", "category_id", "category_name", "category_group_name", "budgeted", "activity", "balance"] },
+        { "id": "goals", "label": "Goal progress per category per month", "fields": ["id", "budget_id", "month", "category_id", "category_name", "budgeted", "activity", "balance", "goal_type", "goal_target", "goal_percentage_complete", "goal_under_funded", "goal_overall_funded", "goal_overall_left"] },
+        { "id": "full", "label": "All month category fields", "fields": ["id", "budget_id", "month", "category_id", "category_name", "category_group_id", "category_group_name", "budgeted", "activity", "balance", "goal_type", "goal_target", "goal_percentage_complete", "goal_months_to_budget", "goal_creation_month", "goal_under_funded", "goal_overall_funded", "goal_overall_left", "hidden", "note", "deleted"] }
+      ]
     }
   ],
   "profiles": [
@@ -367,7 +418,8 @@
         { "name": "payee_locations" },
         { "name": "transactions", "view": "full" },
         { "name": "scheduled_transactions" },
-        { "name": "months" }
+        { "name": "months" },
+        { "name": "month_categories", "view": "full" }
       ]
     }
   ]

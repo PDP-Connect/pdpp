@@ -12,9 +12,10 @@
 
 import { createInterface } from 'node:readline';
 import { resourceSet, requireCredentialsOrAsk } from '../../src/scope-filters.js';
+import { stringifyForJsonl } from '../../src/safe-emit.js';
 
 const rl = createInterface({ input: process.stdin, terminal: false });
-const emit = (m) => process.stdout.write(JSON.stringify(m) + '\n');
+const emit = (m) => process.stdout.write(stringifyForJsonl(m));
 const flushAndExit = (code) => {
   if (process.stdout.writableLength > 0) {
     process.stdout.once('drain', () => process.exit(code));

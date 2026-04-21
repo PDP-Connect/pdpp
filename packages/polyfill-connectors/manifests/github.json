@@ -1,7 +1,7 @@
 {
   "protocol_version": "0.1.0",
   "connector_id": "https://registry.pdpp.org/connectors/github",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "display_name": "GitHub",
   "runtime_requirements": {
     "bindings": {
@@ -117,6 +117,139 @@
       "consent_time_field": "starred_at",
       "selection": { "fields": true, "resources": true },
       "incremental": true
+    },
+    {
+      "name": "issues",
+      "description": "Issues and pull requests across all repos the user has access to, authored by or assigned to them. GitHub's /issues endpoint returns both issues and PRs; the is_pull_request flag lets downstream consumers split them.",
+      "display": {
+        "label": "Your issues and PRs",
+        "detail": "Issue/PR number, title, body (capped at 20000 chars), labels, assignees, milestone, reactions, comment count, repository, state, timestamps, and a flag indicating which are pull requests."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "number": { "type": ["integer", "null"] },
+          "title": { "type": ["string", "null"] },
+          "body": { "type": ["string", "null"] },
+          "state": { "type": ["string", "null"] },
+          "state_reason": { "type": ["string", "null"] },
+          "user_login": { "type": ["string", "null"] },
+          "user_id": { "type": ["string", "null"] },
+          "assignees": { "type": "array", "items": { "type": "string" } },
+          "labels": { "type": "array", "items": { "type": "string" } },
+          "milestone_title": { "type": ["string", "null"] },
+          "repository_full_name": { "type": ["string", "null"] },
+          "repository_id": { "type": ["string", "null"] },
+          "html_url": { "type": ["string", "null"] },
+          "comments": { "type": ["integer", "null"] },
+          "reactions_total_count": { "type": ["integer", "null"] },
+          "created_at": { "type": ["string", "null"] },
+          "updated_at": { "type": ["string", "null"] },
+          "closed_at": { "type": ["string", "null"] },
+          "is_pull_request": { "type": "boolean" },
+          "pull_request_url": { "type": ["string", "null"] },
+          "draft": { "type": ["boolean", "null"] }
+        },
+        "required": ["id"]
+      },
+      "primary_key": ["id"],
+      "cursor_field": "updated_at",
+      "consent_time_field": "created_at",
+      "selection": { "fields": true, "resources": true },
+      "incremental": true
+    },
+    {
+      "name": "pull_requests",
+      "description": "Pull requests authored by the user, with PR-specific detail (merge state, diff stats, base/head refs, reviewers). Sourced via the GitHub search API (type:pr author:<you>); PRs the user only reviewed are NOT included — that requires a follow-up reviewer: query.",
+      "display": {
+        "label": "Your pull requests",
+        "detail": "PRs you authored, including merge timestamp and committer, additions/deletions, changed files count, base and head refs, requested reviewers, and review-comment counts."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "number": { "type": ["integer", "null"] },
+          "title": { "type": ["string", "null"] },
+          "body": { "type": ["string", "null"] },
+          "state": { "type": ["string", "null"] },
+          "state_reason": { "type": ["string", "null"] },
+          "user_login": { "type": ["string", "null"] },
+          "user_id": { "type": ["string", "null"] },
+          "assignees": { "type": "array", "items": { "type": "string" } },
+          "labels": { "type": "array", "items": { "type": "string" } },
+          "milestone_title": { "type": ["string", "null"] },
+          "repository_full_name": { "type": ["string", "null"] },
+          "repository_id": { "type": ["string", "null"] },
+          "html_url": { "type": ["string", "null"] },
+          "comments": { "type": ["integer", "null"] },
+          "reactions_total_count": { "type": ["integer", "null"] },
+          "created_at": { "type": ["string", "null"] },
+          "updated_at": { "type": ["string", "null"] },
+          "closed_at": { "type": ["string", "null"] },
+          "draft": { "type": ["boolean", "null"] },
+          "merged_at": { "type": ["string", "null"] },
+          "merged_by_login": { "type": ["string", "null"] },
+          "commits_count": { "type": ["integer", "null"] },
+          "additions": { "type": ["integer", "null"] },
+          "deletions": { "type": ["integer", "null"] },
+          "changed_files": { "type": ["integer", "null"] },
+          "base_ref": { "type": ["string", "null"] },
+          "head_ref": { "type": ["string", "null"] },
+          "requested_reviewers": { "type": "array", "items": { "type": "string" } },
+          "review_comments_count": { "type": ["integer", "null"] }
+        },
+        "required": ["id"]
+      },
+      "primary_key": ["id"],
+      "cursor_field": "updated_at",
+      "consent_time_field": "created_at",
+      "selection": { "fields": true, "resources": true },
+      "incremental": true
+    },
+    {
+      "name": "gists",
+      "description": "Gists the user has created (public and secret).",
+      "display": {
+        "label": "Your gists",
+        "detail": "Gist description, visibility, URL, up to 10 files per gist with filename/language/size/raw URL, comment count, created/updated timestamps."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "description": { "type": ["string", "null"] },
+          "public": { "type": "boolean" },
+          "html_url": { "type": ["string", "null"] },
+          "files": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "filename": { "type": ["string", "null"] },
+                "language": { "type": ["string", "null"] },
+                "size": { "type": ["integer", "null"] },
+                "raw_url": { "type": ["string", "null"] }
+              }
+            }
+          },
+          "files_truncated": { "type": "boolean" },
+          "files_total_count": { "type": ["integer", "null"] },
+          "comments_count": { "type": ["integer", "null"] },
+          "created_at": { "type": ["string", "null"] },
+          "updated_at": { "type": ["string", "null"] }
+        },
+        "required": ["id"]
+      },
+      "primary_key": ["id"],
+      "cursor_field": "updated_at",
+      "consent_time_field": "created_at",
+      "selection": { "fields": true, "resources": true },
+      "incremental": true
     }
   ],
   "profiles": [
@@ -127,6 +260,18 @@
         { "name": "user" },
         { "name": "repositories" },
         { "name": "starred" }
+      ]
+    },
+    {
+      "id": "full",
+      "label": "Everything (profile, repos, stars, issues, PRs, gists)",
+      "streams": [
+        { "name": "user" },
+        { "name": "repositories" },
+        { "name": "starred" },
+        { "name": "issues" },
+        { "name": "pull_requests" },
+        { "name": "gists" }
       ]
     }
   ]

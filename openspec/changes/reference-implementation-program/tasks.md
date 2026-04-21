@@ -249,6 +249,45 @@
   - [x] prove unexpected-exit behavior before STATE, after STATE, on graceful exit without DONE, and across a batch-flush boundary
 
 ## Deferred
-- [ ] Build a real control plane or dashboard
-- [ ] Add replay / illustrated-flow integration on top of the event spine
+- [x] Build a real control plane or dashboard (v1: inspection-first operator console)
+  - [x] Phase 0: preserve guardrails while opening the deferred phase
+    - [x] Keep the first operator surface local-first by default instead of publishing it as a remote dashboard automatically
+    - [x] Keep the first operator surface inspection-first instead of widening immediately into broad mutation/control features
+    - [x] Build the first operator surface on top of existing public and `_ref` readers rather than hidden control-only endpoints
+  - [x] Phase 1: establish the operator shell and durable IA
+    - [x] Replace the current local proto-dashboard home with a broader operator IA: Overview, Traces, Grants, Runs, Records, and Search
+    - [x] Add a stable left rail and durable list/detail layout instead of a one-page data browser
+    - [x] Keep every main operator view URL-addressable so detail pages are shareable and linkable
+  - [x] Phase 2: make traces and grants the first-class investigative spine
+    - [x] Add trace list/detail views around the existing `_ref` trace reader
+    - [x] Add grant list/detail views around existing grant readers and `_ref` grant timelines
+    - [x] Add pivots across trace -> grant -> run where correlation already exists
+    - [x] Add read-only `_ref` listing helpers only if the UI cannot remain practical on the current substrate (`GET /_ref/traces`, `GET /_ref/grants`)
+  - [x] Phase 3: make runs a first-class operational surface
+    - [x] Add run list/detail views around the existing `_ref` run timeline reader
+    - [x] Surface checkpoint staging, checkpoint commit, progress, skips, interactions, and failures clearly without leaking durable secrets
+    - [x] Add read-only `_ref` run listing helpers only if the UI cannot remain practical on the current substrate (`GET /_ref/runs`)
+  - [x] Phase 4: fold the current local data browser into the broader operator console as a Records section
+    - [x] Move connector/stream/record browsing under `/dashboard/records`
+    - [x] Fold the standalone `/dashboard/timeline` activity view under `Records` as `/dashboard/records/timeline` so there is no parallel top-level timeline surface
+    - [x] Preserve current owner-data drilldown while subordinating it to the wider operator IA
+    - [x] Add pivots from Records views back to traces, grants, and runs where possible
+  - [x] Phase 5: add search and jump
+    - [x] Add command-palette and URL-addressable deep-linking so an operator can jump directly from request id, trace id, grant id, or run id to the explaining view
+    - [x] Preserve raw JSON drilldown and CLI-equivalent affordances so the control plane reinforces, rather than replaces, the CLI/operator workflow
+    - [x] Add cross-artifact search only through read-only reference-designated helpers (`GET /_ref/search`)
+- [x] Complete the control-plane v1 hardening follow-up from first implementation review
+  - [x] Align the dashboard timeline client/server envelope shape so trace, grant, and run detail pages render against the real `_ref` payloads
+  - [x] Normalize Grants worklist summary/filter status to lifecycle states instead of raw event transport status
+  - [x] Keep the shared dashboard shell, left rail, and command palette on nested Records routes (formerly `/dashboard/data/...`, now `/dashboard/records/...`)
+  - [x] Make Records routes handle `ReferenceServerUnreachableError` during manifest fetches as well as downstream detail reads
+- [x] Control-plane IA consistency follow-up: rename `Data` section to `Records` and fold `/dashboard/timeline` under it
+  - [x] Rename the left-rail `Data` section to `Records` so the IA reads `Overview | Traces | Grants | Runs | Records | Search`
+  - [x] Move connector/stream/record browsing from `/dashboard/data` to `/dashboard/records` with redirects from the old paths
+  - [x] Move the activity timeline from standalone `/dashboard/timeline` to `/dashboard/records/timeline` and remove the parallel top-level `timeline` route
+  - [x] Keep `Search` as the single cross-artifact jump surface for request/trace/grant/run ids and text search
+- [x] Control-plane IA interaction and Overview hardening
+  - [x] Add the planned right-side peek/detail pattern to Traces, Grants, and Runs list pages via `?peek=<id>` so detail inspection is a list-plus-persistent-detail workflow, not a total page swap
+  - [x] Preserve the existing URL-addressable `/dashboard/{section}/[id]` full-page detail routes and expose them from inside the peek as "open full →" so deep links and the peek interaction coexist
+  - [x] Strengthen `/dashboard` Overview into an operator home that leads with recent failures (traces + runs), recent grant decisions, and recent runs, including an action-needed banner when failures exist
 - [ ] Add broad storage abstraction beyond the current explicit seams

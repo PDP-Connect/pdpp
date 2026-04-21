@@ -1,7 +1,7 @@
 {
   "protocol_version": "0.1.0",
   "connector_id": "https://registry.pdpp.org/connectors/claude-code",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "display_name": "Claude Code",
   "runtime_requirements": {
     "bindings": {
@@ -42,10 +42,10 @@
     },
     {
       "name": "messages",
-      "description": "Messages within Claude Code sessions: user prompts and assistant responses.",
+      "description": "Messages within Claude Code sessions: user prompts and assistant responses. Includes both top-level session transcripts and nested subagent (sidechain) transcripts.",
       "display": {
         "label": "Your Claude Code messages",
-        "detail": "Role (user/assistant/attachment), text content, timestamp, parent message (for threading), session reference, model used."
+        "detail": "Role (user/assistant), text content, timestamp, parent message (for threading), session reference, subagent id when the message came from a sidechain run."
       },
       "semantics": "append_only",
       "schema": {
@@ -59,7 +59,8 @@
           "content": { "type": ["string", "null"] },
           "timestamp": { "type": ["string", "null"] },
           "is_sidechain": { "type": ["boolean", "null"] },
-          "user_type": { "type": ["string", "null"] }
+          "user_type": { "type": ["string", "null"] },
+          "agent_id": { "type": ["string", "null"] }
         },
         "required": ["id", "session_id"]
       },
@@ -74,10 +75,10 @@
     },
     {
       "name": "attachments",
-      "description": "Non-message events: hook outputs, tool uses, file snapshots.",
+      "description": "Non-message events: hook outputs, tool uses, file snapshots, plus tool-results blob files written to disk.",
       "display": {
         "label": "Claude Code events",
-        "detail": "System events attached to sessions: tool calls, hook outputs, file-history snapshots, permission-mode changes."
+        "detail": "System events attached to sessions: tool calls, hook outputs, file-history snapshots, permission-mode changes, and persisted tool-result files."
       },
       "semantics": "append_only",
       "schema": {
@@ -90,6 +91,7 @@
           "hook_name": { "type": ["string", "null"] },
           "tool_use_id": { "type": ["string", "null"] },
           "content_preview": { "type": ["string", "null"] },
+          "content_bytes": { "type": ["integer", "null"] },
           "timestamp": { "type": ["string", "null"] }
         },
         "required": ["id", "session_id"]
@@ -102,6 +104,59 @@
       "relationships": [
         { "name": "session", "stream": "sessions", "foreign_key": "session_id", "cardinality": "has_one" }
       ]
+    },
+    {
+      "name": "skills",
+      "description": "User-authored Claude Code skills installed under ~/.claude/skills/<skill>/SKILL.md. Each record captures frontmatter metadata and the full body (capped at 20k chars).",
+      "display": {
+        "label": "Your Claude Code skills",
+        "detail": "Skill name, description, full SKILL.md body, frontmatter, and on-disk path."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "name": { "type": ["string", "null"] },
+          "description": { "type": ["string", "null"] },
+          "source": { "type": ["string", "null"] },
+          "path": { "type": ["string", "null"] },
+          "content": { "type": ["string", "null"] },
+          "frontmatter": { "type": ["object", "null"] },
+          "mtime_epoch": { "type": ["integer", "null"] }
+        },
+        "required": ["id"]
+      },
+      "primary_key": ["id"],
+      "cursor_field": "mtime_epoch",
+      "selection": { "fields": true, "resources": true },
+      "incremental": false
+    },
+    {
+      "name": "slash_commands",
+      "description": "User-authored Claude Code slash commands under ~/.claude/commands/*.md. Each record captures frontmatter, the command body (capped at 20k chars), and the file's absolute path.",
+      "display": {
+        "label": "Your custom slash commands",
+        "detail": "Command name, description, full command body, frontmatter, and on-disk path."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "name": { "type": ["string", "null"] },
+          "description": { "type": ["string", "null"] },
+          "path": { "type": ["string", "null"] },
+          "content": { "type": ["string", "null"] },
+          "frontmatter": { "type": ["object", "null"] },
+          "mtime_epoch": { "type": ["integer", "null"] }
+        },
+        "required": ["id"]
+      },
+      "primary_key": ["id"],
+      "cursor_field": "mtime_epoch",
+      "selection": { "fields": true, "resources": true },
+      "incremental": false
     }
   ],
   "profiles": [
@@ -111,7 +166,9 @@
       "streams": [
         { "name": "sessions" },
         { "name": "messages" },
-        { "name": "attachments" }
+        { "name": "attachments" },
+        { "name": "skills" },
+        { "name": "slash_commands" }
       ]
     },
     {
@@ -120,6 +177,14 @@
       "streams": [
         { "name": "sessions" },
         { "name": "messages" }
+      ]
+    },
+    {
+      "id": "customizations",
+      "label": "Your skills and slash commands",
+      "streams": [
+        { "name": "skills" },
+        { "name": "slash_commands" }
       ]
     }
   ]

@@ -82,6 +82,36 @@ const nextConfig = {
         destination: '/docs/reference-implementation',
         permanent: true,
       },
+      // Dashboard IA migration: connector browsing lives under /dashboard/records/
+      // and the standalone /dashboard/timeline route is now /dashboard/records/timeline.
+      {
+        source: '/dashboard/data',
+        destination: '/dashboard/records',
+        permanent: false,
+      },
+      {
+        source: '/dashboard/data/:rest*',
+        destination: '/dashboard/records/:rest*',
+        permanent: false,
+      },
+      {
+        source: '/dashboard/timeline',
+        destination: '/dashboard/records/timeline',
+        permanent: false,
+      },
+      {
+        source: '/dashboard/timeline/:rest*',
+        destination: '/dashboard/records/timeline/:rest*',
+        permanent: false,
+      },
+      // Bare connector-style paths from the pre-v1 dashboard map to Records.
+      // Excludes reserved top-level sections so they don't get caught.
+      {
+        source:
+          '/dashboard/:connector((?!traces|grants|runs|records|data|search|timeline|components|lib)[^/]+)/:rest*',
+        destination: '/dashboard/records/:connector/:rest*',
+        permanent: false,
+      },
     ];
   },
   async rewrites() {

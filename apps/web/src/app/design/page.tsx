@@ -25,10 +25,12 @@ import {
   LONGVIEW_POLICY_URI,
   LONGVIEW_TOS_URI,
 } from '@/lib/longview-world';
+import { PdppLogo } from '@/components/PdppLogo';
 
 // ─── Nav ──────────────────────────────────────────────────────────────────────
 
 const NAV_SECTIONS = [
+  { id: 'brand',      label: 'Brand' },
   { id: 'color',      label: 'Color' },
   { id: 'typography', label: 'Typography' },
   { id: 'spacing',    label: 'Spacing' },
@@ -45,7 +47,7 @@ const NAV_SECTIONS = [
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function DesignSystemPage() {
-  const [active, setActive] = useState('color');
+  const [active, setActive] = useState('brand');
 
   useEffect(() => {
     const observer = new IntersectionObserver(
@@ -141,6 +143,7 @@ export default function DesignSystemPage() {
         {/* Main content */}
         <main className="flex-1 min-w-0">
               <div className="flex flex-col">
+                <BrandSection />
                 <ColorSection />
                 <TypographySection />
                 <SpacingSection />
@@ -252,6 +255,281 @@ function SwatchDot({ token }: { token: string }) {
         outlineOffset: '1px',
       }}
     />
+  );
+}
+
+// ─── 00 Brand ─────────────────────────────────────────────────────────────────
+// Reproduces the plates from the handoff bundle (identity/logo_study.html).
+// The split-P mark, wordmark lockups, abstract variants, and size ramp.
+
+function BrandSection() {
+  return (
+    <SectionWrap id="brand">
+      <SectionHeader
+        title="Brand"
+        description="The mark is a P split on the thermal axis — copper (holder) on the left, blue (issuer) on the right — with a circular counter that reads as the grant itself. At favicon sizes it reduces to two rectangles."
+      />
+
+      {/* ── Plate I: Primary mark ─────────────────────────────────────────── */}
+      <SubLabel>Primary mark · the seam</SubLabel>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3">
+        <MarkPlate surface="light" caption="I.1 — the seam, positive" meta="primary · light surface" />
+        <MarkPlate surface="dark"  caption="I.2 — the seam, night"    meta="primary · dark surface" />
+      </div>
+
+      {/* Construction + rules */}
+      <div
+        className="grid grid-cols-1 md:grid-cols-[220px_1fr_1fr] gap-6 p-5 mb-10"
+        style={{ border: '1px solid var(--border)', background: 'var(--muted)' }}
+      >
+        <ConstructionDiagram />
+        <div>
+          <SubLabel>Idea</SubLabel>
+          <p className="text-sm leading-relaxed" style={{ color: 'var(--muted-foreground)' }}>
+            The uppercase P holds two shapes: a bowl that opens toward a person, and a descending stem that roots it in a server. The thermal seam runs vertically through the counter, splitting the letter into its two halves without dividing its silhouette.
+          </p>
+          <p className="text-sm leading-relaxed mt-2.5" style={{ color: 'var(--foreground)' }}>
+            The mark is whole from a distance. The seam rewards a closer look.
+          </p>
+        </div>
+        <div>
+          <SubLabel>Rules</SubLabel>
+          <ol className="text-sm leading-relaxed pl-4 space-y-1.5" style={{ color: 'var(--muted-foreground)' }}>
+            <li>The counter is always <span className="font-mono text-xs" style={{ color: 'var(--foreground)' }}>r = 9% × mark width</span>.</li>
+            <li>The seam never moves off the optical vertical.</li>
+            <li>Warm side is <em style={{ color: 'var(--human)' }}>holder</em>, cool side is <em style={{ color: 'var(--primary)' }}>issuer</em>.</li>
+            <li>Never outline the mark. The wordmark hangs left of the P; never stack it below.</li>
+          </ol>
+        </div>
+      </div>
+
+      {/* ── Plate II: Wordmark lockups ──────────────────────────────────── */}
+      <SubLabel>Wordmark lockups</SubLabel>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-10">
+        <BrandPlate caption="II.1 — primary lockup" meta="mark + wordmark">
+          <div className="flex flex-col items-start gap-2">
+            <div className="flex items-center gap-3">
+              <PdppLogo variant="mark" size={44} title="" />
+              <span
+                className="font-semibold tracking-tight"
+                style={{ fontSize: '32px', letterSpacing: '-0.02em', color: 'var(--foreground)' }}
+              >
+                PDPP
+              </span>
+            </div>
+            <span
+              className="font-mono text-[10px] uppercase tracking-widest"
+              style={{ color: 'var(--muted-foreground)' }}
+            >
+              personal data portability protocol
+            </span>
+          </div>
+        </BrandPlate>
+        <BrandPlate caption="II.2 — technical lockup" meta="mono · ruled · versioned">
+          <div
+            className="inline-flex items-center gap-3 py-2"
+            style={{ borderTop: '1px solid var(--foreground)', borderBottom: '1px solid var(--foreground)' }}
+          >
+            <PdppLogo variant="mark" size={44} title="" />
+            <span
+              className="font-mono"
+              style={{ fontSize: '22px', letterSpacing: '-0.02em', fontWeight: 500, color: 'var(--foreground)' }}
+            >
+              PDPP <span style={{ color: 'var(--muted-foreground)', fontWeight: 400 }}>v0.1</span>
+            </span>
+          </div>
+        </BrandPlate>
+      </div>
+
+      {/* ── Plate IV: Responsive size ramp ──────────────────────────────── */}
+      <SubLabel>Size ramp · 140 → 16 px</SubLabel>
+      <BrandPlate caption="IV — the full ramp" meta="140 · 96 · 64 · 44 · 28 · 20 · 16 px">
+        <div className="flex items-end gap-8 flex-wrap py-2">
+          {[140, 96, 64, 44, 28, 22, 20, 16].map((s) => (
+            <PdppLogo key={s} variant="mark" size={s} title="" />
+          ))}
+        </div>
+      </BrandPlate>
+      <p className="text-sm leading-relaxed mt-3 mb-10" style={{ color: 'var(--muted-foreground)', maxWidth: '60ch' }}>
+        At 20px and below, the counter collapses — the P silhouette becomes illegible, so the mark reduces to its irreducible idea: two rectangles, one warm, one cool. The thermal duality survives everything else being stripped away.
+      </p>
+
+      {/* ── Plate V: In context ─────────────────────────────────────────── */}
+      <SubLabel>In context</SubLabel>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <BrandPlate caption="V.1 — browser tab + header" meta="14 + 28px">
+          <div className="w-full max-w-xs">
+            <div
+              className="flex items-center gap-2 px-2.5 py-1.5 rounded-md"
+              style={{ border: '1px solid var(--border)', background: 'var(--card)' }}
+            >
+              <PdppLogo variant="mark" size={14} title="" />
+              <span className="font-mono text-[11px]" style={{ color: 'var(--muted-foreground)' }}>
+                pdpp.vana.org — the grant is the artifact
+              </span>
+            </div>
+            <div className="flex items-center gap-2 mt-4">
+              <PdppLogo variant="mark" size={22} title="" />
+              <span
+                className="font-semibold tracking-tight"
+                style={{ fontSize: 18, letterSpacing: '-0.015em', color: 'var(--foreground)' }}
+              >
+                PDPP
+              </span>
+            </div>
+            <div className="text-xs mt-2" style={{ color: 'var(--muted-foreground)' }}>
+              Personal Data Portability Protocol · v0.1.0 draft 3
+            </div>
+          </div>
+        </BrandPlate>
+        <BrandPlate caption="V.2 — card, night" meta="ink substrate · 32px mark" darkStage>
+          <div
+            className="w-full max-w-[260px] flex flex-col justify-between p-5"
+            style={{ background: 'oklch(0.16 0.01 60)', color: 'oklch(0.985 0.005 85)', minHeight: 150 }}
+          >
+            <PdppLogo variant="mark" size={32} surface="dark" title="" />
+            <div>
+              <div
+                className="font-semibold tracking-tight"
+                style={{ fontSize: 16, letterSpacing: '-0.015em' }}
+              >
+                Ada Verhoeven
+              </div>
+              <div
+                className="font-mono text-[10px] mt-0.5"
+                style={{ color: 'oklch(0.7 0.01 60)' }}
+              >
+                ada@pdpp.vana.org · editor, working group
+              </div>
+            </div>
+          </div>
+        </BrandPlate>
+      </div>
+
+      <RuleBlock>
+        Plate I is the canonical mark. The wordmark pairs the mark with &ldquo;PDPP&rdquo; in Geist (the system sans); don&rsquo;t typeset it in serif, italic, or all lowercase. Below 20&thinsp;px the mark reduces to the two-rectangle favicon form automatically &mdash; don&rsquo;t force the full P at favicon sizes.
+      </RuleBlock>
+    </SectionWrap>
+  );
+}
+
+function MarkPlate({
+  surface,
+  caption,
+  meta,
+}: {
+  surface: 'light' | 'dark';
+  caption: string;
+  meta: string;
+}) {
+  const isDark = surface === 'dark';
+  return (
+    <div
+      className="grid grid-rows-[1fr_auto]"
+      style={{
+        border: `1px solid ${isDark ? 'oklch(0.16 0.01 60)' : 'var(--border)'}`,
+        background: isDark ? 'oklch(0.16 0.01 60)' : 'var(--card)',
+        color: isDark ? 'oklch(0.985 0.005 85)' : 'var(--foreground)',
+        minHeight: 300,
+      }}
+    >
+      <div className="flex items-center justify-center p-12">
+        <PdppLogo variant="mark" size={180} surface={surface} />
+      </div>
+      <div
+        className="flex items-baseline justify-between px-5 py-3 font-mono text-[11px]"
+        style={{ borderTop: `1px solid ${isDark ? 'oklch(0.28 0.012 255)' : 'var(--border)'}` }}
+      >
+        <span style={{ color: isDark ? 'oklch(0.985 0.005 85)' : 'var(--foreground)' }}>{caption}</span>
+        <span style={{ color: isDark ? 'oklch(0.7 0.01 60)' : 'var(--muted-foreground)' }}>{meta}</span>
+      </div>
+    </div>
+  );
+}
+
+function BrandPlate({
+  caption,
+  meta,
+  children,
+  darkStage = false,
+}: {
+  caption: string;
+  meta: string;
+  children: React.ReactNode;
+  darkStage?: boolean;
+}) {
+  return (
+    <div
+      className="grid grid-rows-[1fr_auto]"
+      style={{ border: '1px solid var(--border)', background: 'var(--card)', minHeight: 220 }}
+    >
+      <div
+        className="flex items-center justify-center p-10"
+        style={darkStage ? { background: 'var(--muted)' } : undefined}
+      >
+        {children}
+      </div>
+      <div
+        className="flex items-baseline justify-between px-5 py-3 font-mono text-[11px]"
+        style={{ borderTop: '1px solid var(--border)' }}
+      >
+        <span style={{ color: 'var(--foreground)' }}>{caption}</span>
+        <span style={{ color: 'var(--muted-foreground)' }}>{meta}</span>
+      </div>
+    </div>
+  );
+}
+
+function ConstructionDiagram() {
+  return (
+    <svg
+      viewBox="0 0 200 200"
+      width="200"
+      height="200"
+      style={{ background: 'var(--card)', border: '1px solid var(--border)', maxWidth: '100%' }}
+    >
+      {/* 5-unit grid */}
+      <g stroke="oklch(0.92 0.01 60)" strokeWidth="0.5">
+        <line x1="0" y1="30"  x2="200" y2="30" />
+        <line x1="0" y1="73"  x2="200" y2="73" />
+        <line x1="0" y1="116" x2="200" y2="116" />
+        <line x1="0" y1="170" x2="200" y2="170" />
+        <line x1="40"  y1="0" x2="40"  y2="200" />
+        <line x1="105" y1="0" x2="105" y2="200" />
+        <line x1="155" y1="0" x2="155" y2="200" />
+      </g>
+      {/* Faint mark outline */}
+      <g opacity="0.3" fill="none" stroke="var(--foreground)" strokeWidth="0.6">
+        <path d="M 40 30 L 40 170 L 60 170 L 60 116 L 105 116 L 105 30 Z" />
+        <path d="M 105 30 L 105 116 L 60 116 L 60 170 L 80 170 L 80 136 L 125 136 Q 155 136 155 103 Q 155 30 105 30 Z" />
+        <circle cx="105" cy="73" r="18" />
+      </g>
+      {/* Thermal seam */}
+      <defs>
+        <linearGradient id="pdpp-construction-thermal" x1="0" y1="0" x2="1" y2="0">
+          <stop offset="0" stopColor="oklch(0.52 0.11 45)" />
+          <stop offset="1" stopColor="oklch(0.58 0.18 253)" />
+        </linearGradient>
+      </defs>
+      <line x1="105" y1="30" x2="105" y2="116" stroke="url(#pdpp-construction-thermal)" strokeWidth="1.5" />
+      {/* Construction points */}
+      <g fill="var(--foreground)">
+        <circle cx="40"  cy="30"  r="1.5" />
+        <circle cx="105" cy="30"  r="1.5" />
+        <circle cx="155" cy="30"  r="1.5" />
+        <circle cx="40"  cy="170" r="1.5" />
+        <circle cx="105" cy="73"  r="1.5" />
+      </g>
+      <text
+        x="4"
+        y="196"
+        fontFamily="var(--font-mono)"
+        fontSize="7"
+        fill="var(--muted-foreground)"
+      >
+        construction · 5-unit grid · counter r=18
+      </text>
+    </svg>
   );
 }
 

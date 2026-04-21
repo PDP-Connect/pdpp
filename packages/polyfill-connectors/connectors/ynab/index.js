@@ -8,7 +8,7 @@
  *
  * Streams:
  *   budgets, accounts, category_groups, categories, payees, payee_locations,
- *   transactions, scheduled_transactions, months
+ *   transactions, scheduled_transactions, months, month_categories
  *
  * State shape:
  *   {
@@ -19,19 +19,24 @@
  *     transactions:           { [budget_id]: { server_knowledge, since_date? } },
  *     scheduled_transactions: { [budget_id]: { server_knowledge } },
  *     months:                 { [budget_id]: { server_knowledge } },
+ *     month_categories:       { [budget_id]: { last_fetched_month?: string } },
  *   }
  *
- * Rate limit: 200 req/hour per token. A typical run is ~7×budgets requests.
+ * Rate limit: 200 req/hour per token. A typical run is ~7×budgets requests,
+ * plus one request per month walked when `month_categories` is in scope
+ * (historical months are frozen; incremental runs only refetch the current
+ * and most-recent month).
  */
 
 import { createInterface } from 'node:readline';
 import { resourceSet, requireCredentialsOrAsk } from '../../src/scope-filters.js';
+import { stringifyForJsonl } from '../../src/safe-emit.js';
 
 const API_BASE = 'https://api.ynab.com/v1';
 const rl = createInterface({ input: process.stdin, terminal: false });
 
 function emit(msg) {
-  process.stdout.write(JSON.stringify(msg) + '\n');
+  process.stdout.write(stringifyForJsonl(msg));
 }
 
 function flushAndExit(code) {
@@ -90,6 +95,16 @@ function withinTimeRange(dateStr, timeRange) {
 
 function priorKnowledge(state, streamName, budgetId) {
   return state?.[streamName]?.[budgetId]?.server_knowledge ?? undefined;
+}
+
+// Rewind an ISO month (YYYY-MM-DD, day is always 01 from YNAB) by one month.
+// Used to keep the cutoff one step behind the highest month we've fetched, so
+// the most recent closed month gets one more pass on the next run.
+function rewindOneMonth(monthIso) {
+  const [y, m] = monthIso.split('-').map(Number);
+  const prevM = m === 1 ? 12 : m - 1;
+  const prevY = m === 1 ? y - 1 : y;
+  return `${prevY}-${String(prevM).padStart(2, '0')}-01`;
 }
 
 async function main() {
@@ -399,28 +414,97 @@ async function main() {
       emit({ type: 'STATE', stream: 'scheduled_transactions', cursor: newState.scheduled_transactions });
     }
 
-    // 8. Months
-    if (requested.has('months')) {
+    // 8. Months (+ month_categories, which piggy-backs on the months list)
+    const monthsStream = requested.get('months');
+    const monthCategoriesStream = requested.get('month_categories');
+    let monthList = null; // populated when either stream is in scope
+    if (monthsStream || monthCategoriesStream) {
       emit({ type: 'PROGRESS', stream: 'months', message: `Fetching months for budget ${budgetId}` });
       const knowledge = priorKnowledge(state, 'months', budgetId);
       const res = await ynab(`/budgets/${budgetId}/months`, token, { knowledge });
-      for (const m of res.data.months) {
-        emitRecord('months', {
-          id: `${budgetId}|${m.month}`,
-          budget_id: budgetId,
-          month: m.month,
-          income: m.income,
-          budgeted: m.budgeted,
-          activity: m.activity,
-          to_be_budgeted: m.to_be_budgeted,
-          age_of_money: m.age_of_money ?? null,
-          note: m.note ?? null,
-          deleted: m.deleted,
-        });
+      monthList = res.data.months;
+      if (monthsStream) {
+        for (const m of monthList) {
+          emitRecord('months', {
+            id: `${budgetId}|${m.month}`,
+            budget_id: budgetId,
+            month: m.month,
+            income: m.income,
+            budgeted: m.budgeted,
+            activity: m.activity,
+            to_be_budgeted: m.to_be_budgeted,
+            age_of_money: m.age_of_money ?? null,
+            note: m.note ?? null,
+            deleted: m.deleted,
+          });
+        }
+        newState.months = newState.months || {};
+        newState.months[budgetId] = { server_knowledge: res.data.server_knowledge };
+        emit({ type: 'STATE', stream: 'months', cursor: newState.months });
       }
-      newState.months = newState.months || {};
-      newState.months[budgetId] = { server_knowledge: res.data.server_knowledge };
-      emit({ type: 'STATE', stream: 'months', cursor: newState.months });
+    }
+
+    // 9. Month Categories — per-month snapshot of every category's budgeted/
+    //    activity/balance/goal state. One API call per month (endpoint does
+    //    NOT expose server_knowledge), so we use a month cutoff from prior
+    //    state: only refetch months >= last_fetched_month, since older
+    //    months are frozen in YNAB. The current (and just-closed) month
+    //    always refetches because its cutoff matches `last_fetched_month`.
+    if (monthCategoriesStream && monthList) {
+      const priorCutoff = state.month_categories?.[budgetId]?.last_fetched_month;
+      const scopeSince = monthCategoriesStream.time_range?.since?.slice(0, 10);
+      // Active months: exclude soft-deleted, apply time_range and prior cutoff.
+      const activeMonths = monthList.filter((m) => {
+        if (m.deleted) return false;
+        if (!withinTimeRange(m.month, monthCategoriesStream.time_range)) return false;
+        if (priorCutoff && m.month < priorCutoff) return false;
+        return true;
+      });
+      // Oldest → newest so the cursor advances monotonically on partial failure.
+      activeMonths.sort((a, b) => (a.month < b.month ? -1 : a.month > b.month ? 1 : 0));
+
+      let highestMonth = priorCutoff || scopeSince || null;
+      for (const m of activeMonths) {
+        emit({
+          type: 'PROGRESS',
+          stream: 'month_categories',
+          message: `Fetching categories for budget ${budgetId} month ${m.month}`,
+        });
+        const monthRes = await ynab(`/budgets/${budgetId}/months/${m.month}`, token);
+        const monthDetail = monthRes.data.month;
+        for (const c of monthDetail.categories ?? []) {
+          emitRecord('month_categories', {
+            id: `${budgetId}:${m.month}:${c.id}`,
+            budget_id: budgetId,
+            month: m.month,
+            category_id: c.id,
+            category_name: c.name,
+            category_group_id: c.category_group_id ?? null,
+            category_group_name: c.category_group_name ?? null,
+            budgeted: c.budgeted ?? 0,
+            activity: c.activity ?? 0,
+            balance: c.balance ?? 0,
+            goal_type: c.goal_type ?? null,
+            goal_target: c.goal_target ?? null,
+            goal_percentage_complete: c.goal_percentage_complete ?? null,
+            goal_months_to_budget: c.goal_months_to_budget ?? null,
+            goal_creation_month: c.goal_creation_month ?? null,
+            goal_under_funded: c.goal_under_funded ?? null,
+            goal_overall_funded: c.goal_overall_funded ?? null,
+            goal_overall_left: c.goal_overall_left ?? null,
+            hidden: c.hidden ?? false,
+            note: c.note ?? null,
+            deleted: c.deleted ?? false,
+          });
+        }
+        if (!highestMonth || m.month > highestMonth) highestMonth = m.month;
+      }
+      newState.month_categories = newState.month_categories || {};
+      // Rewind cutoff by one month so the most recently closed month gets
+      // one more pass next run (guards against late-arriving edits).
+      const cutoffToStore = highestMonth ? rewindOneMonth(highestMonth) : undefined;
+      newState.month_categories[budgetId] = { last_fetched_month: cutoffToStore };
+      emit({ type: 'STATE', stream: 'month_categories', cursor: newState.month_categories });
     }
   }
 

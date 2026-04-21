@@ -1,10 +1,8 @@
 import { Fragment } from 'react';
 import Link from 'next/link';
-import { streamHealth, type FieldHealth } from '../../../lib/rs-client';
-import {
-  ReferenceServerUnreachableError,
-  getRsUrl,
-} from '../../../lib/owner-token';
+import { DashboardShell, ServerUnreachable } from '../../../../components/shell';
+import { streamHealth, type FieldHealth, type StreamHealth } from '../../../../lib/rs-client';
+import { ReferenceServerUnreachableError } from '../../../../lib/owner-token';
 
 export const dynamic = 'force-dynamic';
 
@@ -25,24 +23,22 @@ export default async function StreamHealthPage({
   const { sample } = await searchParams;
   const connectorId = decodeURIComponent(connector);
   const streamName = decodeURIComponent(stream);
-  const streamPath = `/dashboard/${encodeURIComponent(connectorId)}/${encodeURIComponent(streamName)}`;
+  const streamPath = `/dashboard/records/${encodeURIComponent(connectorId)}/${encodeURIComponent(streamName)}`;
 
   const parsedSample = Number.parseInt(sample ?? '', 10);
   const sampleSize = Number.isFinite(parsedSample) && parsedSample > 0
     ? Math.min(parsedSample, MAX_SAMPLE)
     : DEFAULT_SAMPLE;
 
-  let health;
+  let health: StreamHealth;
   try {
     health = await streamHealth(connectorId, streamName, { sampleSize });
   } catch (err) {
     if (err instanceof ReferenceServerUnreachableError) {
       return (
-        <main className="mx-auto max-w-6xl px-4 py-10 font-mono text-sm sm:px-6">
-          <div className="border-destructive/40 bg-destructive/5 rounded border p-4 break-words">
-            Cannot reach resource server at <code className="break-all">{getRsUrl()}</code>.
-          </div>
-        </main>
+        <DashboardShell active="records">
+          <ServerUnreachable />
+        </DashboardShell>
       );
     }
     throw err;
@@ -51,11 +47,11 @@ export default async function StreamHealthPage({
   const { fields, summary, emittedAt, cursorField, cursorRange } = health;
 
   return (
-    <main className="mx-auto max-w-6xl px-4 py-10 font-mono text-xs sm:px-6">
-      <nav className="text-muted-foreground mb-6 flex flex-wrap items-center gap-x-2">
-        <Link href="/dashboard" className="hover:text-foreground">dashboard</Link>
+    <DashboardShell active="records">
+      <nav className="text-muted-foreground mb-3 flex flex-wrap items-center gap-x-2 text-xs">
+        <Link href="/dashboard/records" className="hover:text-foreground">records</Link>
         <span>/</span>
-        <Link href={`/dashboard/${encodeURIComponent(connectorId)}`} className="hover:text-foreground break-all">
+        <Link href={`/dashboard/records/${encodeURIComponent(connectorId)}`} className="hover:text-foreground break-all">
           {connectorId}
         </Link>
         <span>/</span>
@@ -212,7 +208,7 @@ export default async function StreamHealthPage({
           </>
         )}
       </section>
-    </main>
+    </DashboardShell>
   );
 }
 

@@ -168,13 +168,19 @@ The current reference also treats persisted pending-consent requests and grants 
 
 The published reference also expects the current database schema directly. It no longer carries in-process migration shims for older grant or owner-device table layouts.
 
-The current durable reference-only event-spine substrate is intentionally narrow:
+The current durable reference-only event-spine substrate includes:
 
 - `GET /_ref/traces/:traceId`
 - `GET /_ref/grants/:grantId/timeline`
 - `GET /_ref/runs/:runId/timeline`
+- `GET /_ref/traces` (list, filter, paginate)
+- `GET /_ref/grants` (list, filter, paginate)
+- `GET /_ref/runs` (list, filter, paginate)
+- `GET /_ref/search?q=…` (id-aware jump helper for the operator console)
 
-Those readers are stable enough to build future operator/replay work on top of, but the reference does not yet treat broader `_ref` listing or control endpoints as part of the stable substrate.
+The listing and search helpers were added to let the first operator console (phase 1–5 of the deferred control-plane work) remain practical without inventing a second, hidden control-only architecture. They are read-only, reference-designated, usable from the CLI as well as the console, and not part of the public PDPP contract.
+
+The reference still does not expose mutation or control-plane `_ref` endpoints.
 
 Within that stable run timeline, the runtime now distinguishes checkpoint staging from checkpoint commit explicitly:
 
@@ -219,6 +225,28 @@ The next program focus should stay aligned with the original plan:
 
 1. keep unresolved provider-connect and Collection Profile design questions explicit in OpenSpec while the reference continues to operate against the current intended contract
 2. begin the next deferred phase intentionally: console/replay/control-plane work on top of the event spine, without reopening closed launch-reference hardening buckets
+
+The current shaping brief for that deferred operator-console phase lives at:
+
+- `openspec/changes/reference-implementation-program/design-notes/control-plane-discovery-brief.md`
+- `openspec/changes/reference-implementation-program/design-notes/control-plane-implementation-plan.md`
+- `openspec/changes/reference-implementation-program/design-notes/control-plane-v1-follow-up.md`
+
+That brief is intentionally user-and-workflow-first. It treats the future control plane as:
+
+- local-first by default
+- inspection-first before broad mutation/control
+- built on top of the existing public and `_ref` substrate rather than a hidden second architecture
+
+The implementation plan then translates that shape into:
+
+- phased delivery
+- route and page composition
+- allowed read-only helper surfaces
+- migration of the current local proto-dashboard into a broader operator IA
+- verification and rollout order
+
+The follow-up note then captures the remaining implementation-hardening work that surfaced during the first post-delivery review, without reopening the control-plane product shape.
 
 ## Exit criteria for the current phase
 

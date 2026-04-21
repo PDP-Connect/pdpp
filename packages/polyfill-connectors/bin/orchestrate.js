@@ -70,6 +70,7 @@ async function cmdRun(name) {
       rsUrl,
       onProgress: (p) => {
         if (p.message) process.stderr.write(`  • ${p.stream ? `[${p.stream}] ` : ''}${p.message}\n`);
+        if (p.type === 'stderr' && p.text) process.stderr.write(`[child-stderr] ${p.text}`);
       },
       onInteraction: (msg) => handleInteraction(msg, { connectorName: name }),
     });

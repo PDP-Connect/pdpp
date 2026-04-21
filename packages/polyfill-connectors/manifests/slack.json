@@ -1,7 +1,7 @@
 {
   "protocol_version": "0.1.0",
   "connector_id": "https://registry.pdpp.org/connectors/slack",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "display_name": "Slack",
   "runtime_requirements": {
     "bindings": { "network": { "required": true }, "filesystem": { "required": true } }
@@ -323,6 +323,165 @@
       "cursor_field": "created",
       "selection": { "fields": true, "resources": true },
       "incremental": true
+    },
+    {
+      "name": "canvases",
+      "description": "Slack Canvas documents attached to channels (mimetype application/vnd.slack-docs, filetype 'quip'). Archive captures canvas metadata; content bodies live behind files.slack.com authenticated URLs and are not materialized here.",
+      "display": {
+        "label": "Slack canvases",
+        "detail": "For each channel canvas: canvas file ID, host channel, author, size, is_empty flag, quip thread ID (Slack's internal doc ID), title, created/updated time, permalink. Document bodies are not in this export."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id":                { "type": "string" },
+          "file_id":           { "type": "string" },
+          "channel_id":        { "type": ["string", "null"] },
+          "message_id":        { "type": ["string", "null"] },
+          "title":             { "type": ["string", "null"] },
+          "name":              { "type": ["string", "null"] },
+          "author_id":         { "type": ["string", "null"] },
+          "is_empty":          { "type": ["boolean", "null"] },
+          "quip_thread_id":    { "type": ["string", "null"] },
+          "content_bytes":     { "type": ["integer", "null"] },
+          "content_markdown":  { "type": ["string", "null"] },
+          "mimetype":          { "type": ["string", "null"] },
+          "filetype":          { "type": ["string", "null"] },
+          "pretty_type":       { "type": ["string", "null"] },
+          "created":           { "type": ["integer", "null"] },
+          "created_at":        { "type": ["string", "null"] },
+          "updated":           { "type": ["integer", "null"] },
+          "updated_at":        { "type": ["string", "null"] },
+          "permalink":         { "type": ["string", "null"] },
+          "url_private":       { "type": ["string", "null"] }
+        },
+        "required": ["id", "file_id"]
+      },
+      "primary_key": ["id"],
+      "cursor_field": "updated",
+      "selection": { "fields": true, "resources": true },
+      "incremental": true,
+      "relationships": [
+        { "name": "channel", "stream": "channels", "foreign_key": "channel_id", "cardinality": "has_one" },
+        { "name": "author",  "stream": "users",    "foreign_key": "author_id",  "cardinality": "has_one" }
+      ]
+    },
+    {
+      "name": "stars",
+      "description": "Messages, files, or channels the user has starred/saved. Slackdump archive mode does not persist starred_items today (chunk type 8 is defined but never populated); declared here so the manifest is Layer-2-complete. Emits SKIP_RESULT at runtime until slackdump or an API-layer fallback supplies the data.",
+      "display": {
+        "label": "Your starred and saved items",
+        "detail": "Messages, files, and channels you starred or saved in Slack. Not available from slackdump archives today; this stream is declared but will skip at runtime."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id":          { "type": "string" },
+          "item_type":   { "type": ["string", "null"] },
+          "target_id":   { "type": ["string", "null"] },
+          "channel_id":  { "type": ["string", "null"] },
+          "message_ts":  { "type": ["string", "null"] },
+          "file_id":     { "type": ["string", "null"] },
+          "user_id":     { "type": ["string", "null"] },
+          "starred_at":  { "type": ["string", "null"] }
+        },
+        "required": ["id"]
+      },
+      "primary_key": ["id"],
+      "cursor_field": "starred_at",
+      "selection": { "fields": true, "resources": true },
+      "incremental": true
+    },
+    {
+      "name": "user_groups",
+      "description": "Workspace user groups (@engineering, @design, etc.): handle, description, members. Slackdump archive mode does not call users.list.usergroups or usergroups.list; declared here for Layer-2 completeness. Emits SKIP_RESULT at runtime.",
+      "display": {
+        "label": "Slack user groups",
+        "detail": "Group handles like @engineering, their names, descriptions, and membership. Not available from slackdump archives today; this stream is declared but will skip at runtime."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id":           { "type": "string" },
+          "team_id":      { "type": ["string", "null"] },
+          "handle":       { "type": ["string", "null"] },
+          "name":         { "type": ["string", "null"] },
+          "description":  { "type": ["string", "null"] },
+          "is_external":  { "type": ["boolean", "null"] },
+          "is_subteam":   { "type": ["boolean", "null"] },
+          "member_ids":   { "type": ["array", "null"], "items": { "type": "string" } },
+          "channel_ids":  { "type": ["array", "null"], "items": { "type": "string" } },
+          "created":      { "type": ["integer", "null"] },
+          "created_at":   { "type": ["string", "null"] },
+          "updated":      { "type": ["integer", "null"] },
+          "deleted":      { "type": ["boolean", "null"] }
+        },
+        "required": ["id"]
+      },
+      "primary_key": ["id"],
+      "cursor_field": "updated",
+      "selection": { "fields": true, "resources": true },
+      "incremental": true
+    },
+    {
+      "name": "reminders",
+      "description": "User-owned Slack reminders (reminders.list). Slackdump archive mode does not capture reminders; declared here for Layer-2 completeness. Emits SKIP_RESULT at runtime until an API-layer fallback supplies the data.",
+      "display": {
+        "label": "Your Slack reminders",
+        "detail": "Reminders you set in Slack: text, trigger time, target user or channel, completion state. Not available from slackdump archives today; this stream is declared but will skip at runtime."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id":            { "type": "string" },
+          "creator_id":    { "type": ["string", "null"] },
+          "user_id":       { "type": ["string", "null"] },
+          "text":          { "type": ["string", "null"] },
+          "recurring":     { "type": ["boolean", "null"] },
+          "time":          { "type": ["integer", "null"] },
+          "scheduled_at":  { "type": ["string", "null"] },
+          "complete_ts":   { "type": ["integer", "null"] },
+          "completed_at":  { "type": ["string", "null"] }
+        },
+        "required": ["id"]
+      },
+      "primary_key": ["id"],
+      "cursor_field": "scheduled_at",
+      "selection": { "fields": true, "resources": true },
+      "incremental": true
+    },
+    {
+      "name": "dm_read_states",
+      "description": "Per-DM last_read timestamps (conversations.info last_read / unread_count_display). Slackdump archive mode strips last_read fields from channel data; declared here for Layer-2 completeness. Emits SKIP_RESULT at runtime.",
+      "display": {
+        "label": "DM read states",
+        "detail": "For each direct message or multi-party DM, the last message timestamp the user has read and the unread count. Not available from slackdump archives today; this stream is declared but will skip at runtime."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id":                      { "type": "string" },
+          "channel_id":              { "type": "string" },
+          "last_read":               { "type": ["string", "null"] },
+          "last_read_at":            { "type": ["string", "null"] },
+          "unread_count":            { "type": ["integer", "null"] },
+          "unread_count_display":    { "type": ["integer", "null"] },
+          "fetched_at":              { "type": "string" }
+        },
+        "required": ["id", "channel_id"]
+      },
+      "primary_key": ["id"],
+      "cursor_field": "last_read",
+      "selection": { "fields": true, "resources": true },
+      "incremental": true,
+      "relationships": [
+        { "name": "channel", "stream": "channels", "foreign_key": "channel_id", "cardinality": "has_one" }
+      ]
     }
   ],
   "profiles": [
@@ -337,7 +496,8 @@
         { "name": "messages" },
         { "name": "message_attachments" },
         { "name": "reactions" },
-        { "name": "files" }
+        { "name": "files" },
+        { "name": "canvases" }
       ]
     },
     {

@@ -102,6 +102,96 @@
       "consent_time_field": "created_at",
       "selection": { "fields": true, "resources": true },
       "incremental": true
+    },
+    {
+      "name": "custom_gpts",
+      "description": "Custom GPTs (gizmos) the user has authored via the GPT builder.",
+      "display": {
+        "label": "Your custom GPTs",
+        "detail": "Custom GPTs you built: name, description, system instructions, enabled tools (code_interpreter, browse, dalle), welcome message, author, visibility, and share URL slug."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "short_url": { "type": ["string", "null"] },
+          "display_name": { "type": ["string", "null"] },
+          "display_description": { "type": ["string", "null"] },
+          "display_welcome_message": { "type": ["string", "null"] },
+          "instructions": { "type": ["string", "null"] },
+          "tools": { "type": "array" },
+          "created_at": { "type": ["string", "null"] },
+          "updated_at": { "type": ["string", "null"] },
+          "author_id": { "type": ["string", "null"] },
+          "author_name": { "type": ["string", "null"] },
+          "is_public": { "type": ["boolean", "null"] },
+          "category": { "type": ["string", "null"] },
+          "tags": { "type": "array" }
+        },
+        "required": ["id"]
+      },
+      "primary_key": ["id"],
+      "cursor_field": "updated_at",
+      "consent_time_field": "created_at",
+      "selection": { "fields": true, "resources": true },
+      "incremental": true
+    },
+    {
+      "name": "custom_instructions",
+      "description": "The user's custom instructions (the 'What would you like ChatGPT to know about you' and 'How would you like ChatGPT to respond' fields).",
+      "display": {
+        "label": "Your custom instructions",
+        "detail": "The two free-text fields from Settings → Personalization → Custom Instructions: 'about you' context and preferred response style, plus whether they're currently enabled. Singleton — only one set per user."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "about_user": { "type": ["string", "null"] },
+          "response_style": { "type": ["string", "null"] },
+          "enabled": { "type": ["boolean", "null"] },
+          "updated_at": { "type": ["string", "null"] }
+        },
+        "required": ["id"]
+      },
+      "primary_key": ["id"],
+      "cursor_field": "updated_at",
+      "consent_time_field": "updated_at",
+      "selection": { "fields": true, "resources": true },
+      "incremental": true
+    },
+    {
+      "name": "shared_conversations",
+      "description": "Conversations the user has shared via public link.",
+      "display": {
+        "label": "Your shared conversations",
+        "detail": "Share records for conversations you've made public: the share ID, the underlying conversation, the public URL, anonymous flag, and any highlighted text."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "conversation_id": { "type": ["string", "null"] },
+          "share_url": { "type": ["string", "null"] },
+          "title": { "type": ["string", "null"] },
+          "created_at": { "type": ["string", "null"] },
+          "anonymous": { "type": ["boolean", "null"] },
+          "is_public": { "type": ["boolean", "null"] },
+          "highlighted_text": { "type": ["string", "null"] }
+        },
+        "required": ["id"]
+      },
+      "primary_key": ["id"],
+      "cursor_field": "created_at",
+      "consent_time_field": "created_at",
+      "selection": { "fields": true, "resources": true },
+      "incremental": true,
+      "relationships": [
+        { "name": "conversation", "stream": "conversations", "foreign_key": "conversation_id", "cardinality": "has_one" }
+      ]
     }
   ],
   "profiles": [
@@ -110,16 +200,36 @@
       "label": "Your conversation history",
       "streams": [
         { "name": "conversations" },
-        { "name": "messages" }
+        { "name": "messages" },
+        { "name": "shared_conversations" }
+      ]
+    },
+    {
+      "id": "authored",
+      "label": "Things you authored in ChatGPT",
+      "streams": [
+        { "name": "custom_gpts" },
+        { "name": "custom_instructions" }
+      ]
+    },
+    {
+      "id": "memories_only",
+      "label": "Memories and custom instructions",
+      "streams": [
+        { "name": "memories" },
+        { "name": "custom_instructions" }
       ]
     },
     {
       "id": "full",
-      "label": "Conversations, messages, memories",
+      "label": "Everything: chats, memories, custom GPTs, custom instructions, shares",
       "streams": [
         { "name": "conversations" },
         { "name": "messages" },
-        { "name": "memories" }
+        { "name": "memories" },
+        { "name": "custom_gpts" },
+        { "name": "custom_instructions" },
+        { "name": "shared_conversations" }
       ]
     }
   ]

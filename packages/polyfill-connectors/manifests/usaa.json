@@ -40,7 +40,7 @@
     },
     {
       "name": "transactions",
-      "description": "USAA transactions. Primary key is a stable synthetic hash of (account_id, date, amount, original_description, ordinal-within-tuple) because USAA's CSV export does not expose transaction IDs. Amounts are in cents (integer, signed).",
+      "description": "USAA transactions. Primary key is a stable synthetic hash of (account_id, date, amount, original_description, ordinal-within-tuple) because USAA's CSV export does not expose transaction IDs. Amounts are in cents (integer, signed). Transactions come from two provenances: the 18-month CSV export (`source: 'csv_export'`) and parsed statement PDFs for older history (`source: 'pdf_statement_<YYYY-MM>'`). Because the id-hash input is identical across both paths, a CSV and a PDF record of the same logical transaction collapse to the same id on ingest.",
       "display": {
         "label": "Your USAA transactions",
         "detail": "Date, signed amount in cents, cleaned payee name, original statement description, USAA-assigned category, check number (parsed from original description), and running balance when available. Pending transactions included if visible."
@@ -79,22 +79,30 @@
     },
     {
       "name": "statements",
-      "description": "Statement index per account. Always includes title, delivery date, and account reference. `document_url` and `pdf_sha256` are populated only when the connector has successfully hydrated a statement PDF; on the current CSV/DOM-scrape path they are expected to be null because USAA's document download requires a per-row 'Options -> Download' click against a short-lived signed URL (see connector source for the deferred blob-hydration plan).",
+      "description": "Statement index per account. Always includes title, delivery date, and account reference. When the connector successfully hydrates a statement PDF (by driving the 'Options → Download' menu on /my/documents), the row additionally carries `document_url` (file:// URI of the stored PDF), `pdf_path` (absolute on-disk path), and `pdf_sha256` (content hash). The PDFs themselves are stored under ~/.pdpp/usaa-statements/<account_slug>/<YYYY-MM>-<sha8>.pdf — per owner direction the archive is persistent, not scratch.",
       "display": {
         "label": "Your USAA statements",
-        "detail": "Monthly statements across all accounts: document title, delivery date, and account reference. PDF download URL and content hash are populated when blob hydration has run; otherwise null."
+        "detail": "Monthly statements across all accounts: document title, delivery date, and account reference. PDF download URL, local path, and content hash are populated when blob hydration has run; otherwise null."
       },
       "semantics": "mutable_state",
       "schema": {
         "type": "object",
         "properties": {
           "id": { "type": "string" },
+          "account_id": {
+            "type": ["string", "null"],
+            "description": "FK to accounts.id. Resolved by matching the document row's account column (last-four first, then account name) back to the accounts stream. Null when neither match succeeds."
+          },
           "title": { "type": "string" },
           "date_delivered": { "type": ["string", "null"], "format": "date" },
           "account_reference": { "type": ["string", "null"] },
           "document_url": {
             "type": ["string", "null"],
-            "description": "Signed PDF URL. Populated only after blob hydration; null on index-only scrapes."
+            "description": "file:// URI for the stored PDF on disk. Populated only after blob hydration; null on index-only scrapes."
+          },
+          "pdf_path": {
+            "type": ["string", "null"],
+            "description": "Absolute filesystem path of the downloaded PDF under ~/.pdpp/usaa-statements/. Null until hydrated."
           },
           "pdf_sha256": {
             "type": ["string", "null"],
@@ -108,7 +116,10 @@
       "cursor_field": "date_delivered",
       "consent_time_field": "date_delivered",
       "selection": { "fields": true, "resources": true },
-      "incremental": true
+      "incremental": true,
+      "relationships": [
+        { "name": "account", "stream": "accounts", "foreign_key": "account_id", "cardinality": "has_one" }
+      ]
     },
     {
       "name": "inbox_messages",

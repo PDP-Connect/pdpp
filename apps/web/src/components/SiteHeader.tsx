@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { siteNav } from '@pdpp/brand/chrome';
+import { PdppLogo } from '@/components/PdppLogo';
 
 export function SiteHeader({ currentLabel }: { currentLabel: string }) {
   const pathname = usePathname();
@@ -11,14 +12,7 @@ export function SiteHeader({ currentLabel }: { currentLabel: string }) {
   return (
     <div className="flex items-center gap-2">
       <Link href="/" className="flex items-center gap-2 shrink-0" aria-label="PDPP home">
-        <div
-          className="flex h-5 w-5 shrink-0 items-center justify-center rounded"
-          style={{ background: 'var(--primary)' }}
-        >
-          <span className="text-[9px] font-bold leading-none" style={{ color: 'var(--primary-foreground)' }}>
-            P
-          </span>
-        </div>
+        <PdppLogo variant="mark" size={22} title="" />
         <span className="text-sm font-semibold tracking-tight" style={{ color: 'var(--foreground)' }}>
           PDPP
         </span>
