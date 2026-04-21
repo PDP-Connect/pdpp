@@ -24,6 +24,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { acquireBrowser } from '../../src/browser-profile.js';
+import { attachDownloadQueue } from '../../src/download-queue.js';
 import { ensureUsaaSession } from '../../src/auto-login/usaa.js';
 import { resourceSet } from '../../src/scope-filters.js';
 import { stringifyForJsonl } from '../../src/safe-emit.js';
@@ -199,13 +200,25 @@ async function locateExportPage(page, accountUrl, _accountType) {
       continue;
     }
     await sleep(6000);
+    // Fast-fail if we got bounced to login. We learned 2026-04-21 that
+    // silent re-auth bounces show as an otherwise-successful navigation
+    // whose final URL is /my/logon; the connector was treating this as
+    // "no export affordance" and walking the retry ladder against a page
+    // that never had one, wasting minutes per account.
+    const finalUrl = page.url();
+    if (/\/my\/logon|\/access-management\/oauth2\/member\/authorize/.test(finalUrl)) {
+      // Caller sees null; the retry ladder shouldn't shorten-range on this.
+      // The caller's `lastDiag` check for `no_export_affordance` will bail
+      // out, so surface a specific phase so it's legible in spine.
+      throw new Error('session_dead_redirect_to_logon');
+    }
     const btn = await findExportAffordance(page);
     if (btn) return { url, export: btn };
   }
   return null;
 }
 
-async function driveExport(_context, page, accountUrl, { sinceDate, untilDate, accountType = 'unknown', onDiagnostics }) {
+async function driveExport(_context, page, accountUrl, { sinceDate, untilDate, accountType = 'unknown', onDiagnostics, downloadQueue }) {
   // Returns a path to a downloaded CSV, or null if USAA didn't cooperate.
   //
   // Selectors verified live on 2026-04-19 (checking/savings only):
@@ -297,9 +310,13 @@ async function driveExport(_context, page, accountUrl, { sinceDate, untilDate, a
   // Let the SPA reconcile form state after the dates are filled.
   await sleep(1500);
 
-  // Prepare to capture the download (USAA can take 2+ minutes for multi-year ranges)
+  // Prepare to capture the download (USAA can take 2+ minutes for multi-year ranges).
+  // Use the shared context-level download queue (microsoft/playwright#40158
+  // workaround): page.waitForEvent('download') silently fails to dispatch on
+  // subsequent downloads in headed Chromium over CDP, because Chrome's
+  // download-bubble competes with Playwright for stream ownership.
   const tempDir = mkdtempSync(join(tmpdir(), 'usaa-export-'));
-  const downloadPromise = page.waitForEvent('download', { timeout: 180000 });
+  const downloadPromise = downloadQueue.waitForNextDownload({ timeoutMs: 180000 });
 
   // Submit — the primary button in the dialog. Scope to role=dialog so we
   // don't accidentally click the page's background "Export" link.
@@ -308,19 +325,14 @@ async function driveExport(_context, page, accountUrl, { sinceDate, untilDate, a
 
   // Race download against an in-dialog error message — USAA surfaces
   // "No transactions" style errors for empty ranges without cancelling.
-  //
-  // BUG-PREVENTION: the error locator's `.waitFor({ timeout: 15000 })` rejects
-  // if the error element never appears (the normal/happy case — USAA hasn't
-  // decided whether to give us data yet). We must NOT let that rejection
-  // resolve the Promise.race as `null`, or we'll bail after 15s while the
-  // download is still 1-2 minutes out. Catch returns a never-resolving
-  // Promise so the race is driven purely by (a) actual download, (b) actual
-  // error element, or (c) downloadPromise's 180s timeout rejecting.
+  // Catch returns a never-resolving Promise so the race is driven purely
+  // by (a) actual download, (b) actual error element, or (c) downloadPromise
+  // timing out and rejecting.
   const errorPromise = page.locator('[role="dialog"] [class*="errorMessage"]:not(:empty), [role="dialog"] :text-matches("no transactions|nothing to export", "i")')
     .first()
     .waitFor({ state: 'visible', timeout: 180000 })
     .then(() => ({ kind: 'error' }))
-    .catch(() => new Promise(() => {})); // never resolve if no error appears
+    .catch(() => new Promise(() => {}));
 
   let download = null;
   try {
@@ -457,6 +469,10 @@ async function main() {
     return fail(`could not open browser profile: ${err.message}`, false);
   }
 
+  // Attach a context-level download listener before any clicks — see
+  // src/download-queue.js for rationale.
+  const downloadQueue = attachDownloadQueue(context);
+
   try {
     const page = await context.newPage();
     // Automated session management: probe + if dead, drive full login with
@@ -491,6 +507,12 @@ async function main() {
       emit({ type: 'STATE', stream: 'accounts', cursor: { fetched_at: nowIso() } });
     }
 
+    // Signal raised by the transactions loop when a page redirects to
+    // /my/logon mid-run — meaning USAA's session has lapsed. Propagated to
+    // statements / inbox / billing so they don't thrash against a dead
+    // session and produce "Target page closed" noise at teardown.
+    let sessionDeadMidRun = false;
+
     // TRANSACTIONS — drive Export per account where applicable
     if (requested.has('transactions')) {
       const stream = requested.get('transactions');
@@ -513,6 +535,7 @@ async function main() {
       const transactionsCursor = { ...(state.transactions || {}) };
 
       for (const a of accounts) {
+        if (sessionDeadMidRun) break;
         if (!/checking|savings|credit-card/.test(a.account_type)) continue;
         const perAccState = state.transactions?.[a.account_id_raw || ''] || {};
         const priorLastDate = perAccState.last_date;
@@ -546,9 +569,36 @@ async function main() {
               context,
               page,
               `https://www.usaa.com${a.account_url}`,
-              { sinceDate, untilDate: todayIso, accountType: a.account_type, onDiagnostics },
+              { sinceDate, untilDate: todayIso, accountType: a.account_type, onDiagnostics, downloadQueue },
             );
           } catch (err) {
+            if (err.message === 'session_dead_redirect_to_logon') {
+              // Mid-run session death (common after long breaks between
+              // auth and export, or when the browser daemon was restarted
+              // after ensureUsaaSession but before the account loop).
+              // Drive ensureUsaaSession to re-auth (it will INTERACTION
+              // for a fresh OTP), then retry THIS account's export.
+              emit({
+                type: 'PROGRESS',
+                stream: 'transactions',
+                message: `${a.name}: session lapsed — re-authenticating before retry`,
+              });
+              try {
+                await ensureUsaaSession({ context, page, sendInteractionAndWait, nextInteractionId });
+                // Retry this sinceDate. The loop's next iteration will
+                // call driveExport again for this same account.
+                continue;
+              } catch (reauthErr) {
+                sessionDeadMidRun = true;
+                emit({
+                  type: 'SKIP_RESULT',
+                  stream: 'transactions',
+                  reason: 'session_dead_reauth_failed',
+                  message: `USAA session expired mid-run and re-auth failed (${reauthErr.message.slice(0, 120)}). Remaining accounts and statements skipped.`,
+                });
+                break; // give up on this account AND subsequent accounts
+              }
+            }
             emit({ type: 'SKIP_RESULT', stream: 'transactions', reason: 'export_error', message: `${a.name}: ${err.message.slice(0, 160)}` });
             csvPath = null;
           }
@@ -625,7 +675,7 @@ async function main() {
     // pdf_sha256 null). If the parser doesn't recognise the template, we
     // still emit the hydrated statement record but skip the transactions
     // extraction for that PDF with a diagnostic SKIP_RESULT.
-    if (requested.has('statements') || requested.has('transactions')) {
+    if ((requested.has('statements') || requested.has('transactions')) && !sessionDeadMidRun) {
       try {
         emit({ type: 'PROGRESS', stream: 'statements', message: 'Fetching statements index' });
         await page.goto('https://www.usaa.com/my/documents', { waitUntil: 'domcontentloaded', timeout: 25000 });
@@ -700,6 +750,7 @@ async function main() {
           const hydrated = await hydrateStatementPdfs({
             page,
             statements: indexRows,
+            downloadQueue,
             onProgress: ({ index, total, title }) => {
               hydrationAttempts = index + 1;
               emit({
@@ -839,7 +890,7 @@ async function main() {
     }
 
     // INBOX_MESSAGES — scrape /my/inbox table.
-    if (requested.has('inbox_messages')) {
+    if (requested.has('inbox_messages') && !sessionDeadMidRun) {
       try {
         emit({ type: 'PROGRESS', stream: 'inbox_messages', message: 'Fetching inbox' });
         await page.goto('https://www.usaa.com/my/inbox', { waitUntil: 'domcontentloaded', timeout: 25000 });
@@ -879,7 +930,7 @@ async function main() {
     }
 
     // CREDIT_CARD_BILLING — one record per credit-card account.
-    if (requested.has('credit_card_billing')) {
+    if (requested.has('credit_card_billing') && !sessionDeadMidRun) {
       try {
         emit({ type: 'PROGRESS', stream: 'credit_card_billing', message: 'Fetching credit card billing details' });
         const cards = accounts.filter((a) => /credit-card/.test(a.account_type));
@@ -931,7 +982,21 @@ async function main() {
       }
     }
   } finally {
+    try { downloadQueue.detach(); } catch {}
     await release().catch(() => {});
+  }
+
+  if (sessionDeadMidRun) {
+    emit({
+      type: 'DONE',
+      status: 'failed',
+      records_emitted: total,
+      error: {
+        message: 'usaa session expired mid-run; re-run with fresh auth to complete',
+        retryable: true,
+      },
+    });
+    flushAndExit(1);
   }
 
   emit({ type: 'DONE', status: 'succeeded', records_emitted: total });

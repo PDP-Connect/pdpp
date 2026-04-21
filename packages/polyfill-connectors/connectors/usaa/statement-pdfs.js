@@ -89,7 +89,7 @@ async function locateDownloadMenuItem(page) {
  *   { ok: true, buffer, suggestedFilename } on success
  *   { ok: false, reason, diag }            on failure
  */
-async function downloadStatementFromRow({ page, rowIndex }) {
+async function downloadStatementFromRow({ page, rowIndex, downloadQueue }) {
   const row = page.locator('tbody tr').nth(rowIndex);
   if (!(await row.count().catch(() => 0))) {
     return { ok: false, reason: 'row_missing' };
@@ -100,7 +100,7 @@ async function downloadStatementFromRow({ page, rowIndex }) {
     // Fallback: if the row has a direct <a> pointing at a PDF, use that.
     const link = row.locator('a[href$=".pdf"], a[href*=".pdf?"]').first();
     if (await link.count().catch(() => 0)) {
-      const dlPromise = page.waitForEvent('download', { timeout: 180000 });
+      const dlPromise = downloadQueue.waitForNextDownload({ timeoutMs: 180000 });
       await link.click({ timeout: 5000 }).catch(() => {});
       try {
         const dl = await dlPromise;
@@ -136,7 +136,7 @@ async function downloadStatementFromRow({ page, rowIndex }) {
     };
   }
 
-  const dlPromise = page.waitForEvent('download', { timeout: 180000 });
+  const dlPromise = downloadQueue.waitForNextDownload({ timeoutMs: 180000 });
   try {
     await dlItem.click({ timeout: 5000 });
   } catch (err) {
@@ -193,11 +193,13 @@ export async function hydrateStatementPdfs({
   page,
   statements,
   // statements: Array<{ rowIndex, id, account_id, date_delivered, title, account_reference }>
+  downloadQueue, // see src/download-queue.js — MUST be attached before clicks
   onProgress,
   onSkip,
 }) {
   const hydrated = [];
   if (!statements.length) return hydrated;
+  if (!downloadQueue) throw new Error('hydrateStatementPdfs requires downloadQueue');
 
   // Make sure we're on the documents page — caller is expected to have
   // navigated here already, but a defensive reload protects against state
@@ -209,7 +211,7 @@ export async function hydrateStatementPdfs({
 
   for (const s of statements) {
     if (onProgress) onProgress({ index: s.rowIndex, total: statements.length, title: s.title });
-    const result = await downloadStatementFromRow({ page, rowIndex: s.rowIndex });
+    const result = await downloadStatementFromRow({ page, rowIndex: s.rowIndex, downloadQueue });
     if (!result.ok) {
       if (onSkip) onSkip({ statement: s, reason: result.reason, diag: result.diag || null });
       continue;
