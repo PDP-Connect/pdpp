@@ -28,11 +28,33 @@ export async function ensureUsaaSession({ context, page, sendInteractionAndWait,
   if (!username || !password) throw new Error('USAA_USERNAME/PASSWORD not set; cannot auto-login');
 
   await page.goto('https://www.usaa.com/my/logon', { waitUntil: 'domcontentloaded', timeout: 30000 });
+  // Give React a beat to initialize the form. USAA's SPA renders the
+  // memberId input immediately but hasn't bound React event handlers yet —
+  // filling in that <1s window produces a value that React discards.
   await page.waitForSelector('input[name="memberId"]', { timeout: 20000 });
+  await page.waitForTimeout(1500);
   await page.fill('input[name="memberId"]', username);
+  // Wait until Next is enabled; USAA gates it on client-side validation.
+  // If it stays disabled, tick a key event to try again, then check.
+  try {
+    await page.locator('#next-button:not([disabled])').waitFor({ state: 'visible', timeout: 5000 });
+  } catch {
+    // Fallback: press a throwaway key to nudge React
+    await page.locator('input[name="memberId"]').press('End').catch(() => {});
+    await page.waitForTimeout(500);
+  }
   await page.click('#next-button');
-  await page.waitForSelector('input[name="password"]', { timeout: 20000 });
+  try {
+    await page.waitForSelector('input[name="password"]', { timeout: 25000 });
+  } catch (err) {
+    const body = (await page.locator('body').innerText().catch(() => '')).slice(0, 800);
+    const inputs = await page.evaluate(() =>
+      [...document.querySelectorAll('input')].map((i) => ({ name: i.name, type: i.type, placeholder: i.placeholder })),
+    ).catch(() => []);
+    throw new Error(`password field never appeared after Next click. url=${page.url()} inputs=${JSON.stringify(inputs)} body-preview=${body.slice(0, 300)}`);
+  }
   await page.fill('input[name="password"]', password);
+  await page.waitForTimeout(500);
   await page.click('#next-button');
   await page.waitForTimeout(5000);
 
