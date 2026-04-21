@@ -443,12 +443,28 @@ async function main() {
   }
 
   // Messages, reactions, message_attachments share one pass for efficiency.
+  let maxMessageTs = null;
   if (requested.has('messages') || requested.has('reactions') || requested.has('message_attachments')) {
+    // Incremental sync: honor prior state.messages.last_ts by filtering in SQL.
+    // Slack message TS strings collate lexically the same way they order
+    // chronologically (fixed-width integer-dot-decimal), so string > works.
+    //
+    // KNOWN LIMITATION: filtering by ts > prior_ts misses thread replies that
+    // arrive on old parents (parent ts from 2022, new reply in 2026). The
+    // `cursor_field: "ts"` manifest declaration captures the naive cursor;
+    // the "append with mutable children" gap is tracked as an open question
+    // in cursor-finality-and-gap-awareness-open-question.md. For now:
+    // first-run grabs everything, subsequent runs may miss late thread
+    // replies unless the owner re-runs with a lookback or wipes state.
+    const priorTs = state.messages?.last_ts || null;
+    const tsParam = priorTs ? [priorTs] : [];
+    const tsClause = priorTs ? 'WHERE m.TS > ?' : '';
+
     // Slackdump can store the same (CHANNEL_ID, TS) message across multiple
     // CHUNK_IDs (e.g. from channel enumeration + subsequent thread fetch).
     // Pick the latest chunk's row per (CHANNEL_ID, TS) to avoid duplicate
     // RECORDs on the wire.
-    const rows = safeAll(db, `
+    const stmt = db.prepare(`
       SELECT m.CHANNEL_ID, m.TS, m.THREAD_TS, m.IS_PARENT, m.TXT, m.NUM_FILES, m.DATA
       FROM MESSAGE m
       JOIN (
@@ -456,7 +472,18 @@ async function main() {
         FROM MESSAGE
         GROUP BY CHANNEL_ID, TS
       ) latest ON latest.CHANNEL_ID = m.CHANNEL_ID AND latest.TS = m.TS AND latest.mx = m.CHUNK_ID
+      ${tsClause}
     `);
+    const rows = stmt.all(...tsParam);
+
+    if (priorTs) {
+      await emit({
+        type: 'PROGRESS',
+        stream: 'messages',
+        message: `incremental: filtering messages newer than ${priorTs} (${rows.length} to process)`,
+      });
+    }
+
     const wantMessages = requested.has('messages');
     const wantReactions = requested.has('reactions');
     const wantMsgAttachments = requested.has('message_attachments');
@@ -468,6 +495,11 @@ async function main() {
       const messageId = `${r.CHANNEL_ID}:${ts}`;
       const attachments = Array.isArray(d.attachments) ? d.attachments : [];
       const pinnedTo = Array.isArray(d.pinned_to) ? d.pinned_to : null;
+
+      // Track the max ts seen in this run for the post-loop STATE emit.
+      // Slack ts is a fixed-shape "seconds.micros" string; string compare
+      // matches numeric order because both halves are zero-padded by Slack.
+      if (ts && (maxMessageTs === null || ts > maxMessageTs)) maxMessageTs = ts;
 
       if (wantMessages) {
         await emitRecord('messages', {
@@ -666,8 +698,39 @@ async function main() {
     }
   }
 
-  // Checkpoint: persist the archive dir so the next run can -resume against it.
-  emit({ type: 'STATE', stream: 'messages', cursor: { archive_dir: archivePath, fetched_at: nowIso() } });
+  // Per-stream STATE checkpoints. Per Collection Profile spec, STATE is emitted
+  // per stream with a cursor object opaque to the runtime but interpreted by
+  // this connector on the next run.
+  //
+  // - messages: `last_ts` is the max Slack ts seen this run. Preserve the
+  //   existing max if we filtered incrementally and saw nothing new (otherwise
+  //   the cursor would go backward after a no-op run).
+  // - other mutable_state streams (channels, users, files, canvases): low
+  //   cardinality, we full-sync each run; the cursor is just a freshness
+  //   marker for visibility.
+  // `archive_dir` moves onto the messages cursor so `-resume` continues to
+  // work; it's workspace-global but messages is the canonical stream for
+  // slackdump state on the PDPP side.
+  const priorMaxTs = state.messages?.last_ts || null;
+  const committedMaxTs = (maxMessageTs && (priorMaxTs === null || maxMessageTs > priorMaxTs))
+    ? maxMessageTs : priorMaxTs;
+  emit({
+    type: 'STATE',
+    stream: 'messages',
+    cursor: {
+      last_ts: committedMaxTs,
+      archive_dir: archivePath,
+      fetched_at: nowIso(),
+    },
+  });
+  // Declare the other incremental streams' cursors as synced-now. Small
+  // volume + full-refresh semantics, so no per-record filter — but the
+  // spec wants a STATE per incremental stream.
+  for (const stream of ['channels', 'users', 'files', 'canvases', 'workspace']) {
+    if (requested.has(stream)) {
+      emit({ type: 'STATE', stream, cursor: { synced_at: nowIso() } });
+    }
+  }
 
   emit({ type: 'DONE', status: 'succeeded', records_emitted: total });
   flushAndExit(0);

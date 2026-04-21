@@ -6,6 +6,7 @@
  */
 import { spawn } from 'child_process';
 import { createInterface } from 'readline';
+import { appendFileSync, mkdirSync } from 'node:fs';
 import { createTraceContext, emitSpineEvent } from '../lib/spine.js';
 
 function encodeScopeResourceKey(key) {
@@ -405,9 +406,77 @@ export async function runConnector(opts) {
   const runId = `run_${Date.now()}`;
   const runSource = buildRunSourceDescriptor(connectorId);
 
-  const rl = createInterface({ input: proc.stdout, terminal: false });
+  // We do NOT use readline.createInterface here. Node 24+ readline treats
+  // U+2028 (LINE SEPARATOR) and U+2029 (PARAGRAPH SEPARATOR) as line
+  // terminators (per ECMA-262), but JSON.stringify emits those characters
+  // unescaped (per RFC 8259), so a compliant JSON line containing either
+  // character causes readline to split it mid-string and JSON.parse fails.
+  //
+  // Instead, we consume proc.stdout directly and split ONLY on ASCII \n
+  // (0x0A). We defensively also strip a trailing \r for CRLF safety. This
+  // guarantees correctness even if a connector doesn't itself escape the
+  // separator characters.
+  //
+  // See openspec/changes/add-polyfill-connector-system/design-notes/
+  //     gmail-jsonl-truncation-bug.md
   const stderrChunks = [];
   proc.stderr.on('data', d => stderrChunks.push(d));
+
+  // Byte-level buffer; split only on LF. Each chunk from proc.stdout is a
+  // Buffer (no encoding set) so multi-byte UTF-8 characters are preserved
+  // across chunk boundaries — we decode only at line boundaries.
+  proc.stdout.setEncoding('utf8');
+  let _lineBuffer = '';
+  // Fake readline-compatible shim so the rest of this file can still call
+  // `rl.on('line', ...)` — which we do below, without touching readline APIs.
+  const lineListeners = [];
+  const rl = {
+    on(event, handler) {
+      if (event === 'line') lineListeners.push(handler);
+    },
+    close() { /* noop — stdout closes when the child exits */ },
+  };
+  const emitLine = (line) => {
+    if (line.endsWith('\r')) line = line.slice(0, -1);
+    for (const h of lineListeners) h(line);
+  };
+  proc.stdout.on('data', (chunk) => {
+    _lineBuffer += chunk;
+    let nlIdx;
+    while ((nlIdx = _lineBuffer.indexOf('\n')) !== -1) {
+      const line = _lineBuffer.slice(0, nlIdx);
+      _lineBuffer = _lineBuffer.slice(nlIdx + 1);
+      emitLine(line);
+    }
+  });
+  proc.stdout.on('end', () => {
+    if (_lineBuffer.length > 0) {
+      emitLine(_lineBuffer);
+      _lineBuffer = '';
+    }
+  });
+
+  // Debug trace: if PDPP_TRACE_DIR is set, record every line received from the
+  // connector before parsing. On a crash, the file is inspectable with jq/less
+  // and shows exactly what the connector emitted. See
+  // openspec/changes/add-polyfill-connector-system/design-notes/debugging-leverage-open-question.md
+  let _traceAppendFile = null;
+  const traceDir = process.env.PDPP_TRACE_DIR;
+  if (traceDir) {
+    try {
+      mkdirSync(traceDir, { recursive: true });
+      const ts = new Date().toISOString().replace(/[:.]/g, '-');
+      const safeId = String(connectorId || 'unknown').replace(/[^A-Za-z0-9_.-]/g, '_');
+      _traceAppendFile = `${traceDir}/${ts}_${safeId}_${runId}.jsonl`;
+      appendFileSync(_traceAppendFile, `# pdpp-runtime-trace connector=${connectorId} run=${runId} started=${new Date().toISOString()}\n`);
+    } catch (err) {
+      process.stderr.write(`[runtime] trace open failed: ${err.message}\n`);
+    }
+  }
+  const writeTrace = (line) => {
+    if (!_traceAppendFile) return;
+    try { appendFileSync(_traceAppendFile, line + '\n'); } catch {}
+  };
 
   // Send START
   const startMsg = {
@@ -1011,6 +1080,7 @@ export async function runConnector(opts) {
     }
 
     rl.on('line', (line) => {
+      writeTrace(line);
       if (!line.trim()) return;
       try {
         const msg = JSON.parse(line);
@@ -1023,9 +1093,15 @@ export async function runConnector(opts) {
         if (failPendingInteraction(new Error(`Connector emitted invalid JSONL while waiting for INTERACTION_RESPONSE: ${err.message}`))) {
           return;
         }
+        // Context for debugging: include byte length and a preview of the
+        // offending line in the error message.
+        const preview = line.length > 400
+          ? `${line.slice(0, 200)} … [truncated ${line.length - 400} chars] … ${line.slice(-200)}`
+          : line;
+        const enriched = `${err.message} (line_length=${line.length} preview=${JSON.stringify(preview).slice(0, 600)})`;
         msgQueue.push({
           type: '__PARSE_ERROR__',
-          error: err.message,
+          error: enriched,
         });
         processNext().catch(reject);
       }
@@ -1282,13 +1358,40 @@ async function defaultInteractionHandler(interaction) {
 /**
  * Load sync state from the RS for a connector
  */
-export async function loadSyncState(connectorId, ownerToken, opts = {}) {
-  const rsUrl = opts.rsUrl || process.env.RS_URL || 'http://localhost:7663';
+/**
+ * Load prior sync state for a connector from the RS.
+ *
+ * Accepts either:
+ *   (connectorId, ownerToken, { rsUrl?, grantId? })   — legacy positional
+ *   ({ connectorId, ownerToken, rsUrl?, grantId? })    — object form (what
+ *                                                       all current callers
+ *                                                       actually use)
+ *
+ * Both are accepted because the positional signature was the original shape
+ * but the object form is what the orchestrate CLI and src/orchestrator.js
+ * have been passing for months. When the signatures drifted, state loading
+ * silently returned null for every connector — incremental sync looked like
+ * it worked (RS dedup hides the damage) but was actually full-refresh every
+ * run. Normalize on the object form going forward; keep positional for any
+ * external callers that may exist.
+ */
+export async function loadSyncState(connectorIdOrOpts, ownerToken, opts = {}) {
+  let connectorId, token, o;
+  if (typeof connectorIdOrOpts === 'object' && connectorIdOrOpts !== null) {
+    connectorId = connectorIdOrOpts.connectorId;
+    token = connectorIdOrOpts.ownerToken;
+    o = connectorIdOrOpts;
+  } else {
+    connectorId = connectorIdOrOpts;
+    token = ownerToken;
+    o = opts;
+  }
+  const rsUrl = o.rsUrl || process.env.RS_URL || 'http://localhost:7663';
   const stateUrl = new URL(`/v1/state/${encodeURIComponent(connectorId)}`, rsUrl);
-  if (opts.grantId) stateUrl.searchParams.set('grant_id', opts.grantId);
+  if (o.grantId) stateUrl.searchParams.set('grant_id', o.grantId);
   const url = stateUrl.toString();
   const resp = await fetch(url, {
-    headers: { 'Authorization': `Bearer ${ownerToken}` },
+    headers: { 'Authorization': `Bearer ${token}` },
   });
   if (!resp.ok) return null;
   const body = await resp.json();
