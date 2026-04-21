@@ -2,38 +2,46 @@
 
 Legend: `[x]` done, `[~]` in progress, `[ ]` pending, `[!]` blocked on user, `[?]` needs the owner's review on return.
 
-Last revised: 2026-04-19 (end of day).
+Last revised: 2026-04-21.
 
-## Status at a glance
+## Status at a glance (2026-04-21)
 
-- **30 manifests total**, all 30 validate against the reference AS (`register-all.js` confirmed 30/30 green).
-- **~233,000 real records** across 26 streams in a unified 583 MB DB (`polyfill.sqlite`).
-- **WAL + tuned pragmas + BATCH_SIZE=500** delivered ~60× speedup on the big ingests (2.5h → 2 min for Claude Code + Codex).
-- **Real records in RS:** YNAB 10k, Gmail 27k, ChatGPT 10k, USAA 887 across 5 streams, Claude Code + Codex **in flight right now**.
-- **7 spec-conformance gaps closed** (resources-filter, tombstones, flushAndExit, INTERACTION-on-missing-creds, Reddit cursor, unattended re-auth, USAA 5 streams).
-- **Filesystem binding added to runtime** so file-based connectors work.
-- **Unattended-operation design** documented (`design-notes/unattended-operation.md`).
-- **Connector-configuration open question documented** (`design-notes/connector-configuration-open-question.md`) — decision paused pending inventory + spec RFC.
+- **31 manifests total** (30 + Chase added 2026-04-21). All validate against the reference AS.
+- **951,313 real records** across 8 active connectors in a unified 2.8 GB DB (`polyfill.sqlite`):
+  - slack 349,139 · claude-code 235,757 · codex 74,033 · gmail 50,407 · ynab 21,513 · chatgpt 11,341 · github 8,608 · usaa 924
+- **All 8 connectors' most recent run committed state successfully.**
+- **Browser daemon** (`src/browser-daemon.js`, `bin/browser-daemon-worker.js`) — long-lived Chromium preserves session cookies across connector runs; fixed USAA's session-token-expiry-on-process-exit problem.
+- **Fleet-wide JSONL correctness fixes**: U+2028/U+2029 escape + BigInt coercion + stdout backpressure drain in `src/safe-emit.js`; Gmail 887-record crash and Slack 1,716-record truncation both traced to these.
+- **USAA**: credit-card CSV export working; PDF parser handles trailing-minus currency, non-statement filter, and year-assignment for December-on-January-statement cases.
+- **Slack**: 24 GB archive, 196k distinct messages, 0 missing thread parents; retry-budget bump (`config/slackdump-api-config.toml`) resolves eng_github-class 500-error cascade.
+- **Chase v0.1 scaffolded**: manifest + auto-login probe + `design-notes/chase.md` (QFX-over-browser strategy; Direct Connect rejected per research). Auto-login probe verified end-to-end through full 2FA including mds-* shadow DOM.
+- **Reference-impl fix**: express.json body limit 100kb → 100mb so claude-code's file_mtimes cursor stops 413'ing state commits.
+- **Three new open-question notes** documenting the partial-data honesty mechanism (decision deferred; must be decided together):
+  - `partial-run-semantics-open-question.md` (production side)
+  - `cursor-finality-and-gap-awareness-open-question.md` (memory side)
+  - `gap-recovery-execution-open-question.md` (execution side, with 4-category skip taxonomy)
+- **Blob-hydration + storage-topology notes** extended with Slack's 24 GB concrete scale data — rules out SQLite BLOB column, suggests hybrid content-addressed filesystem + metadata.
 
 ## Per-connector status
 
 | Connector | Status | Records in RS | Notes |
 |---|---|---|---|
-| ynab | ✅ done | ~10,311 | Tombstones via `op=delete`. Scheduled-ready. |
-| gmail | ✅ done | ~27,359 | IMAP + app password. Tombstones. |
-| chatgpt | ✅ done | ~10,616 | Browser fetch, tree-walk, bearer from `#client-bootstrap`. |
-| usaa | ✅ done (5 streams) | 887 | accounts, transactions, statements, inbox_messages, credit_card_billing. 18-month floor documented. |
-| claude_code | ✅ done | 97,871 (131 sessions, 93,609 messages, 4,131 attachments) | 2.2 GB of jsonl ingested in ~2 min with WAL enabled. SillyTavern excluded this run. |
-| codex | ✅ done | 70,978 (163 sessions, 25,941 messages, 44,874 function_calls) | 751 MB / 191 rollouts. Now in unified DB. |
-| amazon | ✅ ready, blocked | 0 | `ensureAmazonSession` wired; 2FA on wife's phone. |
-| github | ✅ done | 553 | PAT auto-created via `bin/bootstrap-github-pat.js` (headless login → INTERACTION for 2FA → PAT form → token written to `.env.the owner.local`). 1 user + 513 repos + 39 starred. |
+| ynab | ✅ done | 21,513 | Tombstones via `op=delete`. server_knowledge cursor is gap-free by construction. |
+| gmail | ✅ done | 50,407 | IMAP + app password. BigInt crash fixed 2026-04-20 (shared `stringifyForJsonl` coerces BigInt; was dropping 887 records + state per run). |
+| chatgpt | ✅ done | 11,341 | Browser fetch, tree-walk, bearer from `#client-bootstrap`. 4,188 durably-logged http_429 skips await the gap-recovery mechanism (see `chatgpt.md`). |
+| usaa | ✅ done (5 streams) | 924 | accounts, transactions, statements, inbox_messages, credit_card_billing. Credit-card CSV export fixed 2026-04-20 (`.as_credit__export` selector, `startDate` input name). PDF parser: trailing-minus, T&C filter, Dec-on-Jan-statement year fix. 0 future-dated txns. |
+| claude_code | ✅ done | 235,757 | 2.8 GB DB. state_streams_committed: 4/4 (413 fix landed, no more partial commits). |
+| codex | ✅ done | 74,033 | 0 nulls, 0 drops across function_calls + messages + sessions. |
+| amazon | 🟡 v0.1 in progress | 0 | 2FA-on-wife's-phone blocker resolved 2026-04-21 (new account). Auto-login verified end-to-end (`#ap_email_login` + `#ap_password` selectors, OTP via INTERACTION). `fetchOrderDetail` intentionally stubbed pending live DOM probe. Manifest overclaims ~11 fields (see `amazon.md`). |
+| chase | 🟡 v0.1 scaffolded | 0 | NEW 2026-04-21. Manifest + `design-notes/chase.md` (QFX strategy). Auto-login probe succeeds through full 2FA via mds-* shadow DOM. Connector `index.js` + `src/auto-login/chase.js` not yet implemented. |
+| github | ✅ done | 8,608 | PAT auto-created via `bin/bootstrap-github-pat.js` (headless login → INTERACTION for 2FA → PAT form → token written to `.env.the owner.local`). |
 | oura | 🟡 ready | 0 | Awaits `OURA_PERSONAL_ACCESS_TOKEN`. |
 | spotify | 🚫 blocked upstream | 0 | Spotify froze new developer app creation in Feb 2026; OAuth-only anyway. Keep manifest, revisit when Spotify re-opens. |
 | strava | 🟡 ready | 0 | Awaits `STRAVA_ACCESS_TOKEN`. |
 | notion | 🟡 ready | 0 | Awaits `NOTION_API_TOKEN`. |
 | reddit | 🟡 ready | 0 | Awaits Reddit credentials; cursor fix landed. |
 | pocket | 🚫 deprecated | 0 | Mozilla shut Pocket down 2025-07-08; all user data deleted 2025-10-08. Excluded from register-all. Connector retained as historical reference only. |
-| slack | 🟡 ingesting | ~0 (running) | slackdump 3.3.3 subprocess, xoxc+d cookie creds extracted via manual paste. Schema v0.2.0: 7 streams (workspace, channels, channel_memberships, users, messages, reactions, files). Full history scrape underway. |
+| slack | ✅ done | 349,139 | slackdump subprocess, 24 GB archive, 196k messages, 73k reactions, 57k attachments, 17k files, 973 channels, 292 users, 0 missing thread parents. Retry-budget config + backpressure drain landed 2026-04-20. |
 | anthropic | 🟡 scaffolded | 0 | Selectors TBD; needs live DOM walk. |
 | shopify | 🟡 scaffolded | 0 | Selectors TBD. |
 | heb | 🟡 scaffolded | 0 | Selectors TBD. |
@@ -64,13 +72,15 @@ Last revised: 2026-04-19 (end of day).
 
 ## Infrastructure (still pending)
 
-- [ ] Browser session keep-alive probes every ~90–120 min per browser-backed connector
+- [x] Browser daemon — long-lived Chromium, CDP-attached, session cookies persist across runs. `pdpp-connectors browser start|stop|status|restart|logs` CLI. Resolves the USAA session-token-on-process-exit problem documented in the 2026-04-20 Opus research.
+- [x] Session keep-alive probes (`scripts/session-keepalive.mjs`) — 8-min interval ping against Chase + Amazon authenticated URLs.
 - [ ] Scheduler persistence (SQLite-backed `run_history` + `last_run_time`)
 - [ ] Inbox module (`reference-implementation/server/inbox.js`) + routes + minimal HTML *(reference-impl concern)*
 - [x] `ntfy` bridge module — exists at `src/ntfy.js`, used by scheduler-runner and the new CLI interaction handler
 - [x] Orchestrator CLI now wires `onInteraction` — file-drop response + ntfy + TTY prompt. Runs that need creds/OTP no longer fail silently.
 - [ ] Pause/resume INTERACTION handling — runtime supports parking, scheduler doesn't read the state yet
 - [ ] **Nightly status summary via ntfy** — today still fires manually
+- [ ] **Partial-run honesty mechanism** (SKIP_RESULT taxonomy + known_gaps in STATE + recovery execution contract) — documented as three linked open questions. Decision required across all three together. See the three `*-open-question.md` notes.
 
 ## Spec-conformance work (delivered today)
 

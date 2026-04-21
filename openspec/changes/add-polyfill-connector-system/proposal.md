@@ -1,11 +1,12 @@
 # Add polyfill connector system
 
-**Status:** In progress — MVP-5 landed, fleet expanded to 30 connectors (2026-04-19 EOD)
-**Owner:** the owner (with Claude working autonomously overnight 2026-04-19 → 2026-04-20; continued same-day)
+**Status:** In progress — 8 connectors pristine (951k records), 3 open-question notes on partial-run honesty mechanism, Chase scaffolded (2026-04-21)
+**Owner:** the owner (with Claude working autonomously across multi-day sessions 2026-04-19 → 2026-04-21)
 **Scope (original):** MVP polyfill connectors for the owner's real data (YNAB, Gmail, ChatGPT, Amazon, USAA) + scheduler + inbox + ntfy notifications.
 **Scope (expanded 2026-04-19):** +21 additional connectors including local coding-agent history (Claude Code, Codex), file-based imports (WhatsApp, Google Takeout, Twitter archive, iMessage, Apple Health, iCal), pending-credential API connectors (GitHub, Oura, Spotify, Strava, Notion, Reddit, Pocket, Slack), and scaffolded browser scrapers (Anthropic, Shopify, HEB, Wholefoods, LinkedIn, Meta, Loom, Uber, DoorDash).
+**Scope (added 2026-04-21):** Chase (via QFX download through the chase.com browser UI — Direct Connect is effectively dead for new personal-account enrollments per the 2026-04-20 research; see `design-notes/chase.md`).
 
-**Delivery signal:** ~50k records from YNAB + Gmail + ChatGPT + USAA are already queryable via the RS. Claude Code + Codex ingests are in flight. See `tasks.md` for the full table.
+**Delivery signal (2026-04-21):** 951,313 records across 8 active connectors queryable via the RS: slack 349k, claude-code 236k, codex 74k, gmail 50k, ynab 22k, chatgpt 11k, github 9k, usaa 1k. All connectors' most recent run committed state successfully. See `tasks.md` for the full table.
 
 ## Why
 
@@ -27,7 +28,8 @@ This is separate from the reference-implementation samples by design. It is **no
 2. **Gmail** (IMAP + Google app-specific password) — no browser. Pluggable auth strategy so OAuth can slot in later for non-Gmail providers.
 3. **ChatGPT** (browser session, bootstrapped profile) — uses private `/backend-api/` endpoints. Tree-walk message extraction.
 4. **USAA** (browser session, bootstrapped profile) — scrape transactions, accounts, statements. Investigate USAA's built-in export feature — if drivable, prefer it over DOM scraping.
-5. **Amazon** (browser session) — **blocked on the owner's 2FA** until he returns. Scaffolded tonight against `~/code/data-connectors/amazon/` prior art so it's ready to run the moment 2FA clears.
+5. **Amazon** (browser session) — UNBLOCKED 2026-04-21 (new account). Auto-login verified end-to-end against `#ap_email_login` / `#ap_password`; OTP branch untested (Amazon's device-trust persistence skipped 2FA on the wiped-cookie test). Order-detail fetch intentionally stubbed pending live DOM probe (see `design-notes/amazon.md`). Manifest overclaims ~11 fields; schema-vs-implementation reconciliation pending.
+6. **Chase** (browser session + QFX parse) — v0.1 scaffolded 2026-04-21: manifest registered with AS, scope committed to `accounts + transactions + balances` (QFX-backed), auto-login probe succeeds through full 2FA including the mds-* shadow DOM method-chooser and OTP-input. Direct Connect considered and rejected per research. Connector `index.js` + `src/auto-login/chase.js` not yet implemented. See `design-notes/chase.md` for scope and strategy.
 
 ### Operational infrastructure
 - **Browser profile**: single persistent Playwright context at `~/.pdpp/browser-profile/`, `channel: 'chrome'`, fixed viewport/UA, shared by all browser-backed connectors. One bootstrap session logs in to everything; scrapers reuse cookies.
@@ -45,9 +47,10 @@ This is separate from the reference-implementation samples by design. It is **no
 - **Required fields kept minimal** so platform-side changes don't break grant enforcement.
 
 ### Out of scope (deferred to future changes)
-- Chase, Uber, Expensify connectors.
+- Uber, Expensify connectors. (Chase moved IN scope 2026-04-21.)
 - OAuth for Gmail (follow-up `add-gmail-oauth-connector`).
 - page-agent auto-CAPTCHA solving.
+- Chase v0.2 streams: `statements` (PDF download), `credit_card_billing`, `rewards`. Scaffolded in the manifest as future work per `design-notes/chase.md`.
 - Hosted operator model (everything is self-hosted for now).
 - UI for the inbox beyond a functional form page.
 - Conformance claims beyond "it runs."

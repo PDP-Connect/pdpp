@@ -20,10 +20,14 @@ import { createInterface } from 'node:readline';
 import { acquireBrowser } from '../../src/browser-profile.js';
 import { resourceSet } from '../../src/scope-filters.js';
 import { ensureAmazonSession } from '../../src/auto-login/amazon.js';
-import { stringifyForJsonl } from '../../src/safe-emit.js';
+import { emitToStdout, stringifyForJsonl } from '../../src/safe-emit.js';
 
 const rl = createInterface({ input: process.stdin, terminal: false });
-function emit(msg) { process.stdout.write(stringifyForJsonl(msg)); }
+// WHY emitToStdout: large RECORDs can exceed the 64 KB Linux pipe buffer and
+// a bare process.stdout.write silently truncates when backpressured. See the
+// Slack v0.3 crash at 2026-04-21T00:03 for the exact same failure mode.
+function emit(msg) { return emitToStdout(msg); }
+void stringifyForJsonl;
 function flushAndExit(code) {
   if (process.stdout.writableLength > 0) {
     process.stdout.once('drain', () => process.exit(code));
@@ -98,6 +102,21 @@ async function discoverYears(page) {
   const current = new Date().getFullYear();
   if (!years.size) years.add(current);
   return [...years].sort((a, b) => b - a); // newest first
+}
+
+// ─── Per-order detail fetch ──────────────────────────────────────────────
+// PLACEHOLDER. The list-page scrape cannot populate status_detail,
+// recipient_name, shipping_address_summary, payment_method_summary,
+// gift_order, digital_order, nor per-item unit_price/quantity/seller/
+// refund_status. Those live on the order-details page at
+// /gp/your-account/order-details?orderID=X. Implementation is intentionally
+// deferred until a live DOM probe of the order-details page so selectors
+// reflect observed reality, not training-data guesses. The manifest
+// declares these fields; for now they're null in the emitted records. See
+// `design-notes/amazon.md` Section "Order-details-page streams" for the
+// scope note.
+async function fetchOrderDetail(_page, _orderId) {
+  return null;
 }
 
 // ─── Per-page order extraction ────────────────────────────────────────────
@@ -188,18 +207,24 @@ async function main() {
   let totalEmitted = 0;
   const resFilters = new Map();
   for (const [n, r] of requested) resFilters.set(n, resourceSet(r));
-  const emitRecord = (stream, data) => {
+  const emitRecord = async (stream, data) => {
     if (data.id == null) return;
     const rs = resFilters.get(stream);
     if (rs && !rs.has(String(data.id))) return;
-    emit({ type: 'RECORD', stream, key: data.id, data, emitted_at: emittedAt });
+    await emit({ type: 'RECORD', stream, key: data.id, data, emitted_at: emittedAt });
     totalEmitted++;
   };
 
   let context;
   let release = async () => {};
+  // Amazon's bot detection fingerprints the headless Chromium build and will
+  // challenge/captcha on cold sessions. Opt into headed mode for first-run and
+  // re-auth flows via PDPP_AMAZON_HEADLESS=0; subsequent runs on a warm session
+  // can go headless since cookies + TLS fingerprint stay consistent through
+  // the daemon. Default headless=true to match other connectors' behavior.
+  const headless = process.env.PDPP_AMAZON_HEADLESS !== '0';
   try {
-    ({ context, release } = await acquireBrowser({ headless: true }));
+    ({ context, release } = await acquireBrowser({ headless }));
   } catch (err) {
     return fail(`could not open browser profile: ${err.message}`, false);
   }
@@ -242,48 +267,118 @@ async function main() {
         await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
         await sleep(2000);
         const orders = await extractOrdersOnPage(page);
-        if (!orders.length) break;
+        if (!orders.length) {
+          // Distinguish "no more orders" from "selectors missed the DOM".
+          // If Amazon's UI shipped a new order-card class and our regex
+          // doesn't match, we'd otherwise silently terminate the year and
+          // emit a green DONE with zero records. Probe for any plausible
+          // order container to diagnose.
+          const diag = await page.evaluate(() => {
+            const dom = {
+              url: location.href,
+              title: document.title,
+              order_cards: document.querySelectorAll('div.order-card, div.js-order-card').length,
+              any_card: document.querySelectorAll('[class*="order" i][class*="card" i]').length,
+              any_order_header: document.querySelectorAll('[class*="order" i][class*="header" i]').length,
+              sign_in_form: !!document.querySelector('form[name="signIn"]'),
+              captcha: /captcha|robot|unusual traffic/i.test(document.body?.innerText || '').toString(),
+              no_orders_text: /you have not placed any orders|no orders found/i.test(document.body?.innerText || '').toString(),
+              body_preview: (document.body?.innerText || '').replace(/\s+/g, ' ').slice(0, 240),
+            };
+            return dom;
+          }).catch(() => null);
+          if (diag && (diag.any_card > 0 || diag.any_order_header > 0) && diag.order_cards === 0) {
+            // Real orders exist but our selectors missed them. This is a
+            // drift signal, not end-of-year. Screenshot + emit SKIP_RESULT
+            // with diag so the next iteration has evidence.
+            const shotPath = `/tmp/amazon-drift-${year}-${startIndex}.png`;
+            await page.screenshot({ path: shotPath, fullPage: true }).catch(() => {});
+            emit({
+              type: 'SKIP_RESULT',
+              stream: 'orders',
+              reason: 'selector_drift',
+              message: `Year ${year} startIndex=${startIndex}: order containers visible on page but .order-card/.js-order-card selector matched 0. Screenshot=${shotPath}`,
+              diagnostics: diag,
+            });
+          }
+          break;
+        }
         yearOrderCount += orders.length;
 
         for (const o of orders) {
           const orderDate = parseOrderDate(o.orderDateRaw);
           if (!orderDate) continue;
 
+          // Navigate to the order-details page to enrich the fields that
+          // the list page doesn't expose (payment method, shipping address,
+          // per-item unit price + quantity + seller + refund status). Skip
+          // the detail fetch entirely when PDPP_AMAZON_SKIP_DETAIL=1 is set
+          // (useful for quick partial runs on a big history).
+          const skipDetail = process.env.PDPP_AMAZON_SKIP_DETAIL === '1';
+          const detail = skipDetail ? null : await fetchOrderDetail(page, o.orderId);
+
           if (wantsOrders) {
-            emitRecord('orders', {
+            await emitRecord('orders', {
               id: o.orderId,
               order_date: orderDate,
               order_total: o.orderTotal || null,
               order_total_cents: parseCurrencyCents(o.orderTotal),
               delivery_status: o.deliveryStatus || null,
-              status_detail: null,
-              recipient_name: null,
-              shipping_address_summary: null,
-              payment_method_summary: null,
-              gift_order: false,
-              digital_order: false,
-              item_count: o.items.length,
+              status_detail: detail?.status_detail || null,
+              recipient_name: detail?.recipient_name || null,
+              shipping_address_summary: detail?.shipping_address_summary || null,
+              payment_method_summary: detail?.payment_method_summary || null,
+              gift_order: detail?.gift_order ?? false,
+              digital_order: detail?.digital_order ?? false,
+              item_count: Math.max(o.items.length, detail?.items?.length || 0),
               fetched_at: emittedAt,
             });
           }
 
           if (wantsItems) {
-            for (const it of o.items) {
-              emitRecord('order_items', {
-                id: itemId(o.orderId, it),
+            // Prefer detail-page items when available (they carry price/qty/
+            // seller/refund). Fall back to list-page items for coverage.
+            const detailItems = detail?.items || [];
+            const detailByAsin = new Map();
+            const detailByName = new Map();
+            for (const di of detailItems) {
+              if (di.asin) detailByAsin.set(di.asin, di);
+              else if (di.name) detailByName.set(di.name.trim().toLowerCase(), di);
+            }
+            const emittedItemIds = new Set();
+            const writeItem = async (merged) => {
+              const id = itemId(o.orderId, merged);
+              if (emittedItemIds.has(id)) return;
+              emittedItemIds.add(id);
+              await emitRecord('order_items', {
+                id,
                 order_id: o.orderId,
                 order_date: orderDate,
-                asin: it.asin || null,
-                name: it.name,
-                url: it.url || null,
-                unit_price: null,
-                unit_price_cents: null,
-                quantity: 1,
-                seller: null,
-                item_image_url: null,
-                returned: false,
-                refund_status: null,
+                asin: merged.asin || null,
+                name: merged.name,
+                url: merged.url || null,
+                unit_price: merged.unit_price || null,
+                unit_price_cents: parseCurrencyCents(merged.unit_price),
+                quantity: merged.quantity ?? 1,
+                seller: merged.seller || null,
+                item_image_url: merged.item_image_url || null,
+                returned: /return/i.test(merged.refund_status || ''),
+                refund_status: merged.refund_status || null,
               });
+            };
+            for (const it of o.items) {
+              const d = (it.asin && detailByAsin.get(it.asin))
+                || (it.name && detailByName.get(it.name.trim().toLowerCase()))
+                || {};
+              await writeItem({ ...it, ...d });
+            }
+            // Detail-page items that weren't in the list (rare — Amazon
+            // sometimes hides long item lists behind "Show more" on the
+            // list page).
+            for (const di of detailItems) {
+              const dupByAsin = di.asin && o.items.some((x) => x.asin === di.asin);
+              const dupByName = di.name && o.items.some((x) => x.name?.trim().toLowerCase() === di.name.trim().toLowerCase());
+              if (!dupByAsin && !dupByName) await writeItem(di);
             }
           }
         }
