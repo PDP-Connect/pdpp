@@ -494,6 +494,16 @@ async function main() {
       // most-permissive floor (~17 months, safely inside the cap) and let
       // state advance forward over time.
       const seventeenMonthsAgo = new Date(Date.now() - 17 * 30 * 24 * 3600 * 1000).toISOString().slice(0, 10);
+
+      // Accumulate per-account cursors across the loop and emit ONE STATE
+      // at the end. Previous code emitted STATE inside the loop, each time
+      // spreading the INITIAL `state.transactions` — which meant each emit
+      // overwrote prior accounts' cursors, leaving only the last-processed
+      // account's cursor committed. Observed 2026-04-21: state.transactions
+      // had a cursor for Amex (last in loop) but not for Checking / Family
+      // Checking / Visa — so those three full-re-exported every run.
+      const transactionsCursor = { ...(state.transactions || {}) };
+
       for (const a of accounts) {
         if (!/checking|savings|credit-card/.test(a.account_type)) continue;
         const perAccState = state.transactions?.[a.account_id_raw || ''] || {};
@@ -577,10 +587,14 @@ async function main() {
         const dir = csvPath.replace(/\/[^/]+$/, '');
         await readdir(dir).then((f) => { if (!f.length) rmSync(dir, { recursive: true, force: true }); }).catch(() => {});
 
-        emit({ type: 'STATE', stream: 'transactions', cursor: {
-          ...(state.transactions || {}),
-          [a.account_id_raw || a.last_four]: { last_date: latest || usedSince || null },
-        }});
+        transactionsCursor[a.account_id_raw || a.last_four] = {
+          last_date: latest || usedSince || null,
+        };
+        // Emit per-account checkpoint. The runtime overwrites prior STATEs
+        // for this stream with this one, so we carry the full accumulator
+        // each time. If the run crashes later, we keep cursors for the
+        // accounts already processed rather than losing all of them.
+        emit({ type: 'STATE', stream: 'transactions', cursor: transactionsCursor });
       }
     }
 
