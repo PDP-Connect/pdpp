@@ -34,6 +34,14 @@ Every connector today uses some form of cursor in `STATE`, but the cursors' sema
 
 Without that distinction, consumers (dashboards, self-export, downstream analyses) can't answer the basic question: **"am I looking at complete data or a sample?"**
 
+### The meta-question: whose call is this?
+
+The Collection Profile gives connectors an opaque `STATE.cursor: {...}` field and hands it back on the next START. The shape, granularity, and semantics of what goes in that blob are entirely the connector author's decision today — five judgment calls per connector (granularity, shape, mutable-data policy, forward compatibility, failure semantics), with no spec vocabulary to coordinate across connectors.
+
+Result: every connector in the polyfill suite chooses differently, and the differences aren't principled — they're artifacts of what seemed reasonable to the author at the time. YNAB gets `server_knowledge` for free because its upstream API dictates it. Gmail inherits IMAP's `UIDVALIDITY + HIGHESTMODSEQ`. Claude-code uses `file_mtimes` because it's reading a filesystem. ChatGPT, USAA, and Amazon use wallclock timestamps because nothing forced them to do anything smarter. Slack uses nothing at all (full re-emit every run, RS dedup saves correctness at the cost of ingest efficiency).
+
+This is the question the note is trying to surface: **is cursor shape a connector-author concern forever, or does the spec eventually publish a taxonomy and vocabulary connectors must adopt?** The options below are answers to that meta-question as much as to the narrow "what shape should a cursor be" question.
+
 ## Which connectors have real finality and which don't
 
 | Connector | Cursor type | Gap-free within range? | Expansion-aware? |
