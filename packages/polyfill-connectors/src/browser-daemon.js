@@ -230,84 +230,40 @@ export async function acquireBrowser({ headless = true } = {}) {
 
   await acquireLock();
   let browser;
-  let defaultCtx;
   let context;
   try {
     browser = await chromium.connectOverCDP(status.info.wsEndpoint);
 
-    // WHY an isolated context (not browser.contexts()[0]):
-    // Playwright's CDP download-interception attaches Browser.setDownloadBehavior
-    // to a single "default" target when we reuse the persistent context. In
-    // headed Chromium that races with Chrome's download-bubble — first
-    // download fires, subsequent downloads never dispatch the `download`
-    // event. See microsoft/playwright#40158.
+    // Return the persistent default context (not an isolated new context).
     //
-    // The recommended workaround is `browser.newContext({ acceptDownloads:
-    // true })`. That gives reliable per-download event dispatch. The cost:
-    // the new context starts with no cookies. We carry cookies over from the
-    // persistent default context so auth (USAA LtpaToken2 etc.) is available
-    // inside the isolated context for this caller, and we sync new cookies
-    // back to the default context on release so session progress persists.
+    // Rationale after live testing 2026-04-21:
+    // - Creating an isolated context via browser.newContext(...) gives
+    //   reliable download-event dispatch on the context, but loses the
+    //   anti-bot state (Akamai fingerprints the TLS handshake + cookie
+    //   sequence together; a brand-new context shows as a new session
+    //   and USAA's ensureUsaaSession login is rejected).
+    // - The default persistent context doesn't dispatch context.on(
+    //   'download') reliably, BUT page.on('download') DOES fire on each
+    //   page from that context. So downloads work as long as listeners
+    //   are scoped to pages, not contexts.
+    // Combined with src/download-queue.js being page-scoped, the default
+    // context is the correct choice: downloads work AND auth survives.
     const contexts = browser.contexts();
     if (!contexts.length) {
       throw new Error('daemon browser has no contexts');
     }
-    defaultCtx = contexts[0];
-
-    // Copy cookies from the persistent context to the isolated one.
-    const cookies = await defaultCtx.cookies();
-    context = await browser.newContext({ acceptDownloads: true });
-    if (cookies.length > 0) {
-      // Playwright's addCookies is strict about the shape it accepts.
-      // Filter fields that can come out of cookies() and fail roundtrip.
-      const sanitized = cookies
-        .filter((c) => c.domain && c.path)
-        .map((c) => ({
-          name: c.name,
-          value: c.value,
-          domain: c.domain,
-          path: c.path,
-          expires: c.expires,
-          httpOnly: c.httpOnly,
-          secure: c.secure,
-          sameSite: c.sameSite === 'None' || c.sameSite === 'Lax' || c.sameSite === 'Strict'
-            ? c.sameSite
-            : undefined,
-        }));
-      await context.addCookies(sanitized).catch(() => {});
-    }
+    context = contexts[0];
 
     return {
       context,
       release: async () => {
-        // Persist cookies back to the default context so the daemon's
-        // persistent profile has the latest auth state for the next caller.
+        // Close our pages, leave the shared context alive so session
+        // cookies (USAA LtpaToken2, etc.) persist in memory for next call.
         try {
-          const freshCookies = await context.cookies();
-          if (freshCookies.length > 0) {
-            const sanitized = freshCookies
-              .filter((c) => c.domain && c.path)
-              .map((c) => ({
-                name: c.name,
-                value: c.value,
-                domain: c.domain,
-                path: c.path,
-                expires: c.expires,
-                httpOnly: c.httpOnly,
-                secure: c.secure,
-                sameSite: c.sameSite === 'None' || c.sameSite === 'Lax' || c.sameSite === 'Strict'
-                  ? c.sameSite
-                  : undefined,
-              }));
-            await defaultCtx.addCookies(sanitized).catch(() => {});
+          for (const page of context.pages()) {
+            if (page.url() === 'about:blank') continue;
+            await page.close().catch(() => {});
           }
-        } catch {
-          // If cookie copy-back fails, the session still works for this run;
-          // worst case the next run starts with slightly older cookies.
-        }
-        try {
-          // Close our isolated context entirely.
-          await context.close().catch(() => {});
         } finally {
           await browser.close().catch(() => {}); // disconnect CDP, not kill browser
           releaseLock();
@@ -315,7 +271,6 @@ export async function acquireBrowser({ headless = true } = {}) {
       },
     };
   } catch (err) {
-    if (context) await context.close().catch(() => {});
     if (browser) await browser.close().catch(() => {});
     releaseLock();
     throw err;
