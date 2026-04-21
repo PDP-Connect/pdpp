@@ -130,25 +130,32 @@ async function discoverAccounts(page) {
 
 // ─── QFX download click-path ──────────────────────────────────────────────
 
-async function downloadQfx(page, account, tmpDir) {
-  // Download flow (verified live 2026-04-21, same shape as USAA's CSV export):
-  //   1. Navigate directly to the download form:
-  //      /dashboard/accountDetails/downloadAccountTransactions/index;params=CARD,BAC,<id>
-  //      (CARD/BAC suffix is for credit cards; checking is DDA; savings is ABS.
-  //      The params appear in transactionDetails hrefs from the dashboard.)
-  //   2. Set mds-select#downloadFileTypeOption value=QFX via attribute mutation.
-  //   3. Leave mds-select#downloadActivityOptionId at its default
-  //      ("currentDisplayOption" = last ~30 days visible). Date-range support
-  //      is a v0.1.1 extension once we've got the baseline working.
-  //   4. Click mds-button#download and await the download event.
+// Activity options enumerated live from Chase's mds-select on 2026-04-21:
+//   Current display, including filters / Year to date / Last year /
+//   Since last statement / 2026 statements / 2025 statements /
+//   2024 statements / All transactions / Choose a date range
+// We use the visible labels as locators (Playwright's `getByRole('option')`
+// pierces shadow DOM).
+async function selectActivity(page, optionLabel) {
+  await page.locator('#select-downloadActivityOptionId').click({ timeout: 10000 });
+  const opt = page.getByRole('option', { name: new RegExp(`^${optionLabel}$`, 'i') });
+  await opt.waitFor({ state: 'visible', timeout: 5000 });
+  await opt.click({ timeout: 5000 });
+}
 
-  // For credit cards the URL is:
-  //   params=CARD,BAC,<internal_id>
-  // For checking:
-  //   params=DDA,<primary>,<internal_id>,<secondary>
-  // Since we only have credit cards in v0.1, the CARD,BAC form is hardcoded.
-  // A more complete version would derive the param tuple from the account's
-  // detail-page URL captured during discoverAccounts.
+/**
+ * Drive a single QFX download.
+ *
+ * @param {object} opts
+ * @param {string} opts.activity - one of 'all' | 'since_last_statement' | 'year_to_date' | 'last_year' | 'current' | 'date_range'
+ * @param {{from?: string, to?: string}} [opts.dateRange] - ISO dates, required when activity='date_range'
+ */
+async function downloadQfx(page, account, tmpDir, opts = {}) {
+  const activity = opts.activity || 'all';
+
+  // Chase URL params vary by product type. Verified 2026-04-21 for CARD,BAC
+  // (credit card). Checking/savings shapes are speculative — see
+  // `design-notes/chase.md`.
   const paramsFragment = account.type === 'credit_card'
     ? `CARD,BAC,${account.internal_id}`
     : account.type === 'checking'
@@ -157,11 +164,9 @@ async function downloadQfx(page, account, tmpDir) {
 
   const url = `https://secure.chase.com/web/auth/dashboard#/dashboard/accountDetails/downloadAccountTransactions/index;params=${paramsFragment}`;
   await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
-  // Wait for the file-type select to be present rather than a fixed delay.
   await page.locator('#downloadFileTypeOption').waitFor({ state: 'attached', timeout: 20000 });
 
-  // Set file type to QFX via attribute mutation + change event. The mds-select
-  // component reacts to the attribute change and its value updates.
+  // Set file type to QFX via attribute mutation + change event.
   const setResult = await page.evaluate(() => {
     function walk(root, out = []) {
       root.querySelectorAll('*').forEach((el) => {
@@ -180,12 +185,41 @@ async function downloadQfx(page, account, tmpDir) {
   if (setResult.error) {
     return { downloaded: false, error: setResult.error };
   }
-  // Wait until the mds-select's attribute reflects the new QFX value — this
-  // confirms the component's internal state updated before we click Download.
   await page.locator('#downloadFileTypeOption[value="QFX"]').waitFor({ state: 'attached', timeout: 3000 }).catch(() => {});
 
-  // Capture download and click the button.
-  const downloadPromise = page.waitForEvent('download', { timeout: 45000 });
+  // Select activity option. Map our internal keys to Chase's visible labels.
+  const labelMap = {
+    all: 'All transactions',
+    since_last_statement: 'Since last statement',
+    year_to_date: 'Year to date',
+    last_year: 'Last year',
+    current: 'Current display, including filters',
+    date_range: 'Choose a date range',
+  };
+  const label = labelMap[activity] || labelMap.all;
+
+  if (activity !== 'current') {
+    // "Current display" is the default; any other choice requires driving the dropdown.
+    try {
+      await selectActivity(page, label);
+    } catch (err) {
+      return { downloaded: false, error: `activity_select_failed (${label}): ${err.message.slice(0, 120)}` };
+    }
+
+    // date_range requires filling the From / To pickers that appear below the dropdown.
+    if (activity === 'date_range') {
+      const from = opts.dateRange?.from;
+      const to = opts.dateRange?.to;
+      if (!from || !to) return { downloaded: false, error: 'date_range_missing_from_or_to' };
+      const ok = await fillDateRange(page, from, to);
+      if (!ok.ok) return { downloaded: false, error: `date_range_fill_failed: ${ok.error}` };
+    }
+  }
+
+  // Wait for the Download button to be enabled before clicking.
+  await page.locator('mds-button#download').waitFor({ state: 'visible', timeout: 5000 });
+
+  const downloadPromise = page.waitForEvent('download', { timeout: 60000 });
   try {
     await page.locator('mds-button#download').click({ timeout: 10000 });
   } catch (err) {
@@ -194,12 +228,24 @@ async function downloadQfx(page, account, tmpDir) {
 
   try {
     const dl = await downloadPromise;
-    const qfxPath = join(tmpDir, `chase-${account.internal_id}-${Date.now()}.qfx`);
+    const qfxPath = join(tmpDir, `chase-${account.internal_id}-${activity}-${Date.now()}.qfx`);
     await dl.saveAs(qfxPath);
-    return { downloaded: true, qfxPath };
+    return { downloaded: true, qfxPath, activity };
   } catch (err) {
     return { downloaded: false, error: `download_event_timeout: ${err.message.slice(0, 120)}` };
   }
+}
+
+/**
+ * Fill the From + To date pickers that appear after selecting "Choose a date
+ * range". Selector paths TBD — probe the UI on first-run-with-date-range.
+ * For now emit a diagnostic SKIP.
+ */
+async function fillDateRange(_page, _from, _to) {
+  // TODO probe the revealed date inputs. The earlier probe showed
+  // mds-select only renders options/date inputs after user interaction;
+  // fillDateRange requires a live-DOM pass once date_range is hit.
+  return { ok: false, error: 'date_range_ui_not_probed' };
 }
 
 // ─── QFX parsing ──────────────────────────────────────────────────────────
@@ -302,20 +348,51 @@ async function main() {
   const wantsTransactions = requested.has('transactions');
   const wantsBalances = requested.has('balances');
 
-  // startMsg.state is unused in v0.1 — the Current-Display download covers
-  // the last ~30 days on each run, dedupe happens on RECORD key. v0.2 will
-  // read prior-run cursors to walk date ranges.
+  // State is keyed by stream name at the runtime layer:
+  //   { transactions: { per_account: {<id>: {max_seen_date, ...}} } }
+  // Normalize to an inner shape the rest of the connector reads directly.
+  const rawState = startMsg.state || {};
+  const state = rawState.transactions || rawState || {};
   const emittedAt = nowIso();
   let totalEmitted = 0;
   const resFilters = new Map();
   for (const [n, r] of requested) resFilters.set(n, resourceSet(r));
+
+  // Track max_seen_date per account across this run so the STATE cursor
+  // reflects "I've seen transactions up to this date" per account. Used
+  // next run to pick the "since_last_statement" activity for incremental
+  // fetches.
+  const maxSeenByAccount = { ...(state.per_account || {}) };
+
   const emitRecord = async (stream, data) => {
     if (data.id == null) return;
     const rs = resFilters.get(stream);
     if (rs && !rs.has(String(data.id))) return;
+    // Apply time_range filter if the client requested one.
+    const scope = requested.get(stream);
+    if (scope?.time_range && data.date) {
+      if (scope.time_range.since && data.date < scope.time_range.since.slice(0, 10)) return;
+      if (scope.time_range.until && data.date >= scope.time_range.until.slice(0, 10)) return;
+    }
     await emit({ type: 'RECORD', stream, key: data.id, data, emitted_at: emittedAt });
     totalEmitted++;
   };
+
+  // Choose Chase's Activity option based on scope + prior state.
+  //   - If client asked for a specific time_range → date_range
+  //   - If we have a prior cursor → since_last_statement
+  //   - Otherwise → all (cold-start backfill)
+  function chooseActivity(stream, accountId) {
+    const scope = requested.get(stream);
+    if (scope?.time_range?.since || scope?.time_range?.until) {
+      return { activity: 'date_range', dateRange: { from: scope.time_range.since?.slice(0, 10), to: scope.time_range.until?.slice(0, 10) } };
+    }
+    const cursor = state.per_account?.[accountId];
+    if (cursor?.max_seen_date) {
+      return { activity: 'since_last_statement' };
+    }
+    return { activity: 'all' };
+  }
 
   let context;
   let release = async () => {};
@@ -360,11 +437,19 @@ async function main() {
 
     await emit({ type: 'PROGRESS', message: `Found ${accounts.length} account(s)` });
 
+    // Apply the `accounts` stream's resources filter to the per-account
+    // loop so we don't hit Chase's download page for accounts the client
+    // didn't ask for.
+    const accountsResFilter = resFilters.get('accounts') || resFilters.get('transactions') || resFilters.get('balances');
+    const filteredAccounts = accountsResFilter && accountsResFilter.size
+      ? accounts.filter((a) => accountsResFilter.has(a.internal_id))
+      : accounts;
+
     // Emit accounts stream. Our record.id is Chase's internal account id
     // directly — stable, no hashing needed. Keeps transactions.account_id
     // aligned with the download URL param.
     if (wantsAccounts) {
-      for (const a of accounts) {
+      for (const a of filteredAccounts) {
         await emitRecord('accounts', {
           id: a.internal_id,
           name: a.name,
@@ -384,14 +469,15 @@ async function main() {
 
     // Transactions + balances: download QFX per account, parse, emit.
     if (wantsTransactions || wantsBalances) {
-      for (const a of accounts) {
+      for (const a of filteredAccounts) {
+        const activityChoice = chooseActivity(wantsTransactions ? 'transactions' : 'balances', a.internal_id);
         await emit({
           type: 'PROGRESS',
           stream: 'transactions',
-          message: `${a.name}: downloading QFX`,
+          message: `${a.name}: downloading QFX (activity=${activityChoice.activity})`,
         });
 
-        const result = await downloadQfx(page, a, tmpDir);
+        const result = await downloadQfx(page, a, tmpDir, activityChoice);
         if (!result.downloaded) {
           await emit({
             type: 'SKIP_RESULT',
@@ -418,6 +504,7 @@ async function main() {
         const { transactions, balance } = extractFromQfx(parsed);
 
         if (wantsTransactions) {
+          let maxDate = maxSeenByAccount[a.internal_id]?.max_seen_date || null;
           for (const t of transactions) {
             await emitRecord('transactions', {
               id: `${a.internal_id}|${t.fitid}`,
@@ -432,9 +519,18 @@ async function main() {
               memo: t.memo,
               check_number: t.check_number,
               reference_number: t.reference_number,
-              source: `qfx_download_${t.date}`,
+              source: `qfx_download_${activityChoice.activity}_${t.date}`,
               fetched_at: emittedAt,
             });
+            if (!maxDate || t.date > maxDate) maxDate = t.date;
+          }
+          if (maxDate) {
+            maxSeenByAccount[a.internal_id] = {
+              ...(maxSeenByAccount[a.internal_id] || {}),
+              max_seen_date: maxDate,
+              last_activity: activityChoice.activity,
+              last_fetched_at: emittedAt,
+            };
           }
         }
 
@@ -459,6 +555,17 @@ async function main() {
   } finally {
     await release().catch(() => {});
     await rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+  }
+
+  // Emit STATE for incremental resumption. The per_account cursor drives
+  // the next run's chooseActivity() — when max_seen_date is present we'll
+  // use "since_last_statement" instead of re-downloading all transactions.
+  if (wantsTransactions && Object.keys(maxSeenByAccount).length) {
+    await emit({
+      type: 'STATE',
+      stream: 'transactions',
+      cursor: { per_account: maxSeenByAccount },
+    });
   }
 
   await emit({ type: 'DONE', status: 'succeeded', records_emitted: totalEmitted });
