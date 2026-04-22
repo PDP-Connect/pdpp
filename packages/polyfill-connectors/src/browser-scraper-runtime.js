@@ -18,7 +18,7 @@
  */
 
 import { createInterface } from 'node:readline';
-import { acquireBrowser } from './browser-profile.js';
+import { acquireIsolatedBrowser } from './browser-daemon.js';
 import { resourceSet } from './scope-filters.js';
 import { stringifyForJsonl } from './safe-emit.js';
 
@@ -79,8 +79,16 @@ export function runBrowserScraper({ name, probeSession, scrape, ensureSession })
 
     let context;
     let release = async () => {};
+    // Use the isolated-per-connector browser path (patchright-launched,
+    // persistent profile at ~/.pdpp/profiles/<name>/). Matches the
+    // pattern used by amazon, chase, chatgpt, usaa.
+    // Name sanitization: connector names from manifests include
+    // lowercase letters, digits, and underscores only, so they're
+    // already safe as profile dir names.
+    const profileName = String(name || 'scraper').replace(/[^A-Za-z0-9_-]/g, '_');
+    const headless = process.env[`PDPP_${profileName.toUpperCase()}_HEADLESS`] !== '0';
     try {
-      ({ context, release } = await acquireBrowser({ headless: true }));
+      ({ context, release } = await acquireIsolatedBrowser({ profileName, headless }));
     } catch (err) {
       return fail(`could not open browser profile: ${err.message}`, false);
     }
