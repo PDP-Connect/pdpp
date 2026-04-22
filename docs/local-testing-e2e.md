@@ -10,7 +10,7 @@ You can hand this entire doc to your agent and let it execute the steps. There a
 
 1. **ChatGPT login** — a browser window opens so you can complete Cloudflare's "I'm not a robot" challenge if it appears, and sign in if auto-login doesn't succeed. The connector runs with a visible browser (`PDPP_CHATGPT_HEADLESS=0`) for this reason.
 2. **Optional 2FA code** — if your ChatGPT account has 2FA, the terminal prints an `INTERACTION` prompt asking for the code. Type it in the same terminal.
-3. **Approve the token mint** — the CLI prints a URL like `http://localhost:7662/device?user_code=XXXXXX`. Open it in a browser and click **Approve**. The agent cannot do this for you.
+3. **Approve the token mint** — the CLI prints a URL like `http://localhost:7662/device?user_code=XXXXXX`. Open it in a browser and click **Approve**. The agent cannot do this for you. **Important**: the CLI blocks until approval, so the agent won't see the URL unless it runs the command in the background. Tell the agent to background the command, read the output for the URL, then give it to you to approve.
 
 Everything else is mechanical.
 
@@ -120,6 +120,8 @@ The CLI prints:
 Verification URI: http://localhost:7662/device?user_code=XXXXXX
 User code: XXXXXX
 ```
+
+**If a coding agent is running this command**, it will block waiting for approval — the agent won't see the output until the command finishes. Run the command in the background or in a separate terminal so you can read the URL immediately, then approve it before the timeout expires.
 
 1. Open that URL in a browser.
 2. You'll see an "Approve owner access" page.
