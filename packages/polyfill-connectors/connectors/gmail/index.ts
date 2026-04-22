@@ -47,6 +47,7 @@ const CONTROL_CHAR_RE = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g;
 const GMAIL_PREFIX_RE = /^\[Gmail\]\/(.+)$/;
 const GMAIL_PREFIX_TEST_RE = /^\[Gmail\]\//;
 const WHITESPACE_RUN_RE = /\s+/g;
+const EMAIL_AT_RE = /@/;
 const QP_SOFT_BREAK_RE = /=\r?\n/g;
 const HEX_PAIR_RE = /[0-9A-Fa-f]{2}/;
 const SCRIPT_BLOCK_RE = /<script\b[^>]*>[\s\S]*?<\/script>/gi;
@@ -768,7 +769,7 @@ async function main(): Promise<void> {
   if (
     !address &&
     process.env.AMAZON_USERNAME &&
-    /@/.test(process.env.AMAZON_USERNAME)
+    EMAIL_AT_RE.test(process.env.AMAZON_USERNAME)
   ) {
     address = process.env.AMAZON_USERNAME;
   }

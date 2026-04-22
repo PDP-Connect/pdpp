@@ -62,6 +62,7 @@ const ICAL_ESC_NEWLINE_RE = /\\n/g;
 const ICAL_ESC_COMMA_RE = /\\,/g;
 const ICS_EXT_RE = /\.ics$/i;
 const RETRYABLE_FETCH_RE = /ECONN|fetch failed/i;
+const ICAL_LINE_SPLIT_RE = /\r?\n/;
 
 const hashId = (s: string): string =>
   createHash("sha256").update(s).digest("hex").slice(0, RECORD_ID_HASH_LENGTH);
@@ -96,7 +97,7 @@ function parseIcsDate(
 
 function parseIcs(source: string, calendarName: string): IcsEvent[] {
   const unfolded = unfoldIcal(source);
-  const lines = unfolded.split(/\r?\n/);
+  const lines = unfolded.split(ICAL_LINE_SPLIT_RE);
   const events: IcsEvent[] = [];
   let cur: IcsEvent | null = null;
   for (const raw of lines) {

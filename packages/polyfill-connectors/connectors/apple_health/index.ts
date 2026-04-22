@@ -30,7 +30,7 @@ interface AppleHealthState {
 }
 
 // Streaming buffer size — 64 KB balances memory and syscalls on large exports.
-const READ_BUFFER_SIZE = 1 << 16;
+const READ_BUFFER_SIZE = 65_536;
 // Emit a PROGRESS every N events so operators see progress on multi-GB exports.
 const PROGRESS_INTERVAL_EVENTS = 10_000;
 // Module-level regexes (Biome useTopLevelRegex).
@@ -127,11 +127,17 @@ runConnector({
     const dir =
       process.env.APPLE_HEALTH_EXPORT_DIR ||
       join(homedir(), ".pdpp/imports/apple_health");
-    const path = existsSync(join(dir, "export.xml"))
-      ? join(dir, "export.xml")
-      : existsSync(join(dir, "apple_health_export", "export.xml"))
-        ? join(dir, "apple_health_export", "export.xml")
-        : null;
+    const path = ((): string | null => {
+      const direct = join(dir, "export.xml");
+      if (existsSync(direct)) {
+        return direct;
+      }
+      const nested = join(dir, "apple_health_export", "export.xml");
+      if (existsSync(nested)) {
+        return nested;
+      }
+      return null;
+    })();
     if (!path) {
       await emit({
         type: "SKIP_RESULT",

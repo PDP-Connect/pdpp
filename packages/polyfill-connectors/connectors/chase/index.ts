@@ -232,7 +232,14 @@ function ofxNumber(v: OfxValue): number | null {
   if (v == null) {
     return null;
   }
-  const s = typeof v === "string" ? v : typeof v === "number" ? String(v) : "";
+  let s: string;
+  if (typeof v === "string") {
+    s = v;
+  } else if (typeof v === "number") {
+    s = String(v);
+  } else {
+    s = "";
+  }
   if (!s) {
     return null;
   }
@@ -281,6 +288,7 @@ async function discoverAccounts(page: Page): Promise<ChaseAccount[]> {
   // the transactionDetails param and is what the download form's
   // account-selector expects.
   return page.evaluate((): ChaseAccount[] => {
+    // biome-ignore-start lint/performance/useTopLevelRegex: runs in browser context (page.evaluate); module-scoped regexes in Node cannot cross the bridge.
     const ID_RE = /^accounts-name-link-button-(\d+)-label$/;
     const CARD_RE =
       /(Sapphire|Freedom|Ink|Amazon|Southwest|United|Hyatt|Disney|Marriott|IHG|Prime|Platinum|Slate)/i;
@@ -288,6 +296,7 @@ async function discoverAccounts(page: Page): Promise<ChaseAccount[]> {
     const SAV_RE = /(Savings|Premier Savings)/i;
     const WS_RE = /\s+/g;
     const LAST4_RE = /\.\.\.(\d{3,4})/;
+    // biome-ignore-end lint/performance/useTopLevelRegex: runs in browser context (page.evaluate); module-scoped regexes in Node cannot cross the bridge.
 
     interface El {
       id?: string;
@@ -602,12 +611,14 @@ async function navigateToStatementsPage(page: Page): Promise<void> {
  */
 function enumerateStatementRows(page: Page): Promise<StatementRow[]> {
   return page.evaluate((): StatementRow[] => {
+    // biome-ignore-start lint/performance/useTopLevelRegex: runs in browser context (page.evaluate); module-scoped regexes in Node cannot cross the bridge.
     const ANCHOR_ID_RE =
       /accountsTable-\d+-row\d+-cell\d+-requestThisDocumentAnchor-download/;
     const ACCORDION_ID_RE = /documentsAccordion-(\d+)/;
     const TABLE_ROW_RE = /accountsTable-(\d+)-row(\d+)-/;
     const STATEMENT_RE = /statement/i;
     const WS_RE = /\s+/g;
+    // biome-ignore-end lint/performance/useTopLevelRegex: runs in browser context (page.evaluate); module-scoped regexes in Node cannot cross the bridge.
 
     interface El {
       id?: string;
@@ -901,7 +912,12 @@ function extractFromQfx(parsed: unknown): QfxExtracted {
     ofxGet(ofxGet(root, "BANKMSGSRSV1"), "STMTTRNRS"),
     "STMTRS"
   );
-  const stmtRaw = isOfxRecord(cc) ? cc : isOfxRecord(bank) ? bank : null;
+  let stmtRaw: OfxValue = null;
+  if (isOfxRecord(cc)) {
+    stmtRaw = cc;
+  } else if (isOfxRecord(bank)) {
+    stmtRaw = bank;
+  }
   if (!stmtRaw) {
     return { transactions: [], balance: null };
   }
@@ -911,11 +927,14 @@ function extractFromQfx(parsed: unknown): QfxExtracted {
   // Transactions — BANKTRANLIST > STMTTRN (can be a single object or an array).
   const trList = ofxGet(stmtRaw, "BANKTRANLIST");
   const rawTxns = ofxGet(trList, "STMTTRN");
-  const txnArray: OfxValue[] = Array.isArray(rawTxns)
-    ? rawTxns
-    : rawTxns
-      ? [rawTxns]
-      : [];
+  let txnArray: OfxValue[];
+  if (Array.isArray(rawTxns)) {
+    txnArray = rawTxns;
+  } else if (rawTxns) {
+    txnArray = [rawTxns];
+  } else {
+    txnArray = [];
+  }
   const transactions: QfxTransaction[] = [];
   for (const t of txnArray) {
     const amtStr = (ofxString(ofxGet(t, "TRNAMT")) ?? "0").trim();

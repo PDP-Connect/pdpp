@@ -127,6 +127,9 @@ const CURRENCY_NUMBER_RE = /(\d+(?:\.\d+)?)/;
 const ITEM_ID_WHITESPACE_RE = /\s+/g;
 const RETURNED_RE = /return/i;
 const RETRYABLE_ERROR_RE = /timeout|ECONN|ETIMEDOUT|net::|5\d\d/i;
+const SIGNIN_URL_RE = /\/ap\/(signin|challenge|mfa)/;
+const ORDERS_URL_RE = /\/your-orders|\/order-history/;
+const YEAR_VALUE_RE = /year-(\d{4})/;
 
 // ─── Session probes ──────────────────────────────────────────────────────
 
@@ -145,7 +148,7 @@ async function deepSessionCheck(page: Page): Promise<boolean> {
     .waitFor({ state: "attached", timeout: DEEP_PROBE_WAIT_MS })
     .catch((): undefined => undefined);
   const url = page.url();
-  if (/\/ap\/(signin|challenge|mfa)/.test(url)) {
+  if (SIGNIN_URL_RE.test(url)) {
     return false;
   }
   const loginForm = await page
@@ -156,7 +159,7 @@ async function deepSessionCheck(page: Page): Promise<boolean> {
   if (loginForm) {
     return false;
   }
-  return /\/your-orders|\/order-history/.test(url);
+  return ORDERS_URL_RE.test(url);
 }
 
 // ─── Year discovery & pagination ─────────────────────────────────────────
@@ -193,7 +196,7 @@ async function discoverYears(page: Page): Promise<number[]> {
     .catch((): string[] => []);
   const years = new Set<number>();
   for (const v of [...fromSelect, ...fromLinks]) {
-    const m = /year-(\d{4})/.exec(v);
+    const m = YEAR_VALUE_RE.exec(v);
     if (m?.[1]) {
       years.add(Number(m[1]));
     }
@@ -274,6 +277,7 @@ async function fetchOrderDetail(
 
   return page
     .evaluate((): OrderDetail | null => {
+      // biome-ignore-start lint/performance/useTopLevelRegex: runs in browser context (page.evaluate); module-scoped regexes in Node cannot cross the bridge.
       const WHITESPACE_RE = /\s+/g;
       const CANCELLED_RE = /has been cancelled/i;
       const PAY_PREFIX_RE = /^Payment method\s*/i;
@@ -288,6 +292,7 @@ async function fetchOrderDetail(
       const SOLD_BY_RE = /^Sold by:?\s*(.+)$/i;
       const DOLLAR_RE = /\$([\d,]+\.\d{2})/;
       const INT_RE = /^\d+$/;
+      // biome-ignore-end lint/performance/useTopLevelRegex: runs in browser context (page.evaluate); module-scoped regexes in Node cannot cross the bridge.
 
       interface El {
         getAttribute: (name: string) => string | null;
@@ -515,12 +520,14 @@ async function fetchOrderDetail(
 function extractOrdersOnPage(page: Page): Promise<ListPageOrder[]> {
   return page
     .evaluate((): ListPageOrder[] => {
+      // biome-ignore-start lint/performance/useTopLevelRegex: runs in browser context (page.evaluate); module-scoped regexes in Node cannot cross the bridge.
       const ORDER_ID_RE = /^\d{3}-\d{7}-\d{7}$/;
       const HEADER_DATE_RE = /^(ORDER PLACED|ORDER DATE|PLACED)$/i;
       const HEADER_TOTAL_RE = /^TOTAL$/i;
       const TOTAL_VALUE_RE = /^\$[\d,]+\.\d{2}$/;
       const ASIN_HREF_RE = /\/(?:dp|gp\/product)\/([A-Z0-9]{10})/;
       const WHITESPACE_RE = /\s+/g;
+      // biome-ignore-end lint/performance/useTopLevelRegex: runs in browser context (page.evaluate); module-scoped regexes in Node cannot cross the bridge.
 
       interface El {
         closest: (sel: string) => El | null;
@@ -784,10 +791,12 @@ runConnector({
           // Distinguish "no more orders" from "selectors missed the DOM".
           const diag = await page
             .evaluate((): ListPageDiagnostics => {
+              // biome-ignore-start lint/performance/useTopLevelRegex: runs in browser context (page.evaluate); module-scoped regexes in Node cannot cross the bridge.
               const CAPTCHA_RE = /captcha|robot|unusual traffic/i;
               const NO_ORDERS_RE =
                 /you have not placed any orders|no orders found/i;
               const WS = /\s+/g;
+              // biome-ignore-end lint/performance/useTopLevelRegex: runs in browser context (page.evaluate); module-scoped regexes in Node cannot cross the bridge.
               return {
                 // @ts-expect-error — browser context globals (location)
                 url: location.href,

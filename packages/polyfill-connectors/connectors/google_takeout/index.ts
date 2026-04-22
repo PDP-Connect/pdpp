@@ -102,7 +102,14 @@ runConnector({
         "Records.json"
       );
       const alt = join(importDir, "Location History", "Records.json");
-      const file = existsSync(path) ? path : existsSync(alt) ? alt : null;
+      let file: string | null;
+      if (existsSync(path)) {
+        file = path;
+      } else if (existsSync(alt)) {
+        file = alt;
+      } else {
+        file = null;
+      }
       const json = (
         file ? await readJsonIf(file) : null
       ) as LocationFile | null;
@@ -115,12 +122,14 @@ runConnector({
           message: `Importing ${json.locations.length} location points`,
         });
         for (const loc of json.locations) {
-          const tsUnixMs =
-            typeof loc.timestampMs === "string"
-              ? Number.parseInt(loc.timestampMs, 10)
-              : loc.timestamp
-                ? Date.parse(loc.timestamp)
-                : null;
+          let tsUnixMs: number | null;
+          if (typeof loc.timestampMs === "string") {
+            tsUnixMs = Number.parseInt(loc.timestampMs, 10);
+          } else if (loc.timestamp) {
+            tsUnixMs = Date.parse(loc.timestamp);
+          } else {
+            tsUnixMs = null;
+          }
           if (!tsUnixMs) {
             continue;
           }

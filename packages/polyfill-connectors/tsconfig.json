@@ -31,11 +31,6 @@
     "allowUnusedLabels": false,
     "useUnknownInCatchVariables": true,
 
-    // Migration: allow .js files during the JS→TS migration. Flip
-    // checkJs to true and remove allowJs once all sources are .ts.
-    "allowJs": true,
-    "checkJs": false,
-
     // Dev ergonomics — no emit, type-check only. Bundling (if ever
     // published) happens via a separate build step.
     "noEmit": true,
@@ -49,13 +44,6 @@
     // TypeScript packages.
     "allowImportingTsExtensions": true
   },
-  "include": [
-    "src/**/*.ts",
-    "src/**/*.js",
-    "connectors/**/*.ts",
-    "connectors/**/*.js",
-    "bin/**/*.ts",
-    "bin/**/*.js"
-  ],
+  "include": ["src/**/*.ts", "connectors/**/*.ts", "bin/**/*.ts"],
   "exclude": ["node_modules", "fixtures", "**/*.test.*"]
 }

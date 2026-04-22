@@ -213,6 +213,7 @@ async function getAuthFromPage(page: Page): Promise<ChatGptAuth> {
         window.__NEXT_DATA__?.props?.pageProps?.session?.accessToken || null;
     }
     // @ts-expect-error — browser context globals
+    // biome-ignore lint/performance/useTopLevelRegex: runs in browser context (page.evaluate); module-scoped regexes in Node cannot cross the bridge.
     const m = (document.cookie || "").match(/oai-did=([^;]+)/);
     if (m) {
       deviceId = decodeURIComponent(m[1]);

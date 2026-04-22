@@ -21,7 +21,7 @@
  * Skills/commands live under ~/.claude (overridable via CLAUDE_CODE_HOME).
  */
 
-import { createReadStream, statSync } from "node:fs";
+import { createReadStream, type Dirent, type Stats, statSync } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
@@ -102,6 +102,7 @@ const CLAUDE_FM_LEADING_WS_RE = /^\s+/;
 const CLAUDE_FM_QUOTED_DOUBLE_RE = /^"([\s\S]*)"$/;
 const CLAUDE_FM_QUOTED_SINGLE_RE = /^'([\s\S]*)'$/;
 const CLAUDE_FM_COLLAPSE_WS_RE = /\s+/g;
+const CLAUDE_FM_LINE_SPLIT_RE = /\r?\n/;
 
 const nowIso = (): string => new Date().toISOString();
 
@@ -109,7 +110,7 @@ function textPreview(s: unknown, max = SHORT_PREVIEW_CHARS): string | null {
   if (typeof s !== "string") {
     return null;
   }
-  return s.length > max ? s.slice(0, max) + "…" : s;
+  return s.length > max ? `${s.slice(0, max)}…` : s;
 }
 
 function extractContent(obj: unknown): string | null {
@@ -190,7 +191,7 @@ function parseFrontmatter(text: string): {
   const rawFm = m[1] ?? "";
   const body = m[2] ?? "";
   const frontmatter: Record<string, string> = {};
-  const lines = rawFm.split(/\r?\n/);
+  const lines = rawFm.split(CLAUDE_FM_LINE_SPLIT_RE);
   let i = 0;
   while (i < lines.length) {
     const line = lines[i] ?? "";
@@ -261,7 +262,7 @@ async function walkToolResults({
     return;
   }
   const walk = async (dir: string): Promise<void> => {
-    let items;
+    let items: Dirent[];
     try {
       items = await readdir(dir, { withFileTypes: true });
     } catch {
@@ -276,7 +277,7 @@ async function walkToolResults({
       if (!(ent.isFile() || ent.isSymbolicLink())) {
         continue;
       }
-      let st;
+      let st: Stats;
       try {
         st = statSync(full);
       } catch {
@@ -492,7 +493,7 @@ async function emitSkills({
     return;
   }
   const skillsDir = join(claudeHome, "skills");
-  let entries;
+  let entries: Dirent[];
   try {
     entries = await readdir(skillsDir, { withFileTypes: true });
   } catch {
@@ -545,7 +546,7 @@ async function emitSlashCommands({
   }
   const commandsDir = join(claudeHome, "commands");
   const walk = async (dir: string, prefix: string): Promise<void> => {
-    let items;
+    let items: Dirent[];
     try {
       items = await readdir(dir, { withFileTypes: true });
     } catch {
@@ -656,7 +657,7 @@ async function scanProjectDirs(args: {
 
   for (const projectDir of projectDirs) {
     const projectPath = join(baseDir, projectDir);
-    let entries;
+    let entries: Dirent[];
     try {
       entries = await readdir(projectPath, { withFileTypes: true });
     } catch {

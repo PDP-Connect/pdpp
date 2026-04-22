@@ -21,48 +21,37 @@
   },
   "overrides": [
     {
-      // Connectors were migrated JS→TS preserving legacy pre-runConnector
-      // structure in file-based cases. These files have regex-in-function
-      // patterns and assign-in-while-loop stream parsers that are idiomatic
-      // for their domain. The no-shortcut rules (any, @ts-ignore, !,
-      // as unknown as X) REMAIN enforced — what's relaxed here is
-      // style-grade guidance that would require mechanical rewrites without
-      // improving clarity. Cognitive complexity is kept ON; individual
-      // connectors with genuine essential complexity (cursor lifetime,
-      // emit ordering) use a line-level `biome-ignore` with a specific
-      // Hickey-style reason.
+      // Connector-specific override. As of 2026-04-22 only
+      // noExcessiveCognitiveComplexity is relaxed here — all other migration
+      // escape valves (useTopLevelRegex, noNestedTernary, noAssignInExpressions,
+      // noBitwiseOperators, noImplicitAnyLet, noEvolvingTypes, useTemplate)
+      // have been eliminated and their violations fixed in-place.
+      //
+      // 30 connector functions exceed the default cognitive-complexity budget
+      // of 20 (range 21–255). They fall into three buckets that cannot be
+      // cleanly decomposed:
+      //   (a) page.evaluate(() => {...}) callbacks (chase enumerate,
+      //       chatgpt auth, usaa diagnostics, etc.). The callback body is
+      //       serialized and shipped to the browser — helpers defined in
+      //       Node cannot cross the bridge, so decomposition forces either
+      //       duplicated inline helpers or contorted parameter threading.
+      //   (b) collect() orchestrators that own cursor lifetime, emit
+      //       ordering, dedup keys, and multi-stream coordination
+      //       (chatgpt c=199, gmail c=220, slack c=255, usaa c=236).
+      //       Breaking these fragments invariants that must hold together
+      //       ("emit RECORD before advance cursor", "normalize → shape-check
+      //       → emit → state-advance per item").
+      //   (c) Tree/DOM walkers and loosely-typed parsers (chase QFX-tree
+      //       extraction, codex walkRollouts generator, ical VEVENT line
+      //       parser). Their branching mirrors the external format.
+      // Re-enable per file after the connector moves to the
+      // makeEmitRecord + named stream-helper pattern (see
+      // src/connector-runtime.ts).
       "includes": ["connectors/**/*.ts"],
       "linter": {
         "rules": {
-          // Complexity: several connectors have essential complexity in
-          // their collect() (cursor lifetime, emit ordering, multi-stream
-          // orchestration) where decomposition would fragment invariants.
-          // Individual files document this with a line-level biome-ignore.
-          // Default here is off for migration; re-enable per file when the
-          // connector is refactored to use makeEmitRecord + named stream
-          // helpers.
           "complexity": {
             "noExcessiveCognitiveComplexity": "off"
-          },
-          "performance": {
-            "useTopLevelRegex": "off"
-          },
-          "style": {
-            "noNestedTernary": "off",
-            // Some connectors intentionally build strings via concat for
-            // readability with long multi-line values.
-            "useTemplate": "off"
-          },
-          "suspicious": {
-            // Stream parsers idiomatic `while ((m = re.exec(buf))) {...}`
-            // — safe because the re.exec return narrowed with null-check.
-            "noAssignInExpressions": "off",
-            // Apple Health XML parser needs bitwise for 1<<16 buffer size.
-            "noBitwiseOperators": "off",
-            // Connectors migrated 1:1 may have `let x;` patterns the
-            // runConnector refactor will remove. Treat as migration debt.
-            "noImplicitAnyLet": "off",
-            "noEvolvingTypes": "off"
           }
         }
       }

@@ -71,6 +71,12 @@ const UNREAD_RE = /UNREAD/i;
 const MET_RE = /met/i;
 const LAST4_REF_RE = /\*(\d{4})/;
 const TEMP_DIR_PREFIX_RE = /\/[^/]+$/;
+const EXPORT_BUTTON_TEXT_RE = /^\s*Export\s*$/i;
+const DATE_HEADER_RE = /date/i;
+const ORIGINAL_HEADER_RE = /original/i;
+const CATEGORY_HEADER_RE = /category/i;
+const AMOUNT_HEADER_RE = /amount/i;
+const BALANCE_HEADER_RE = /balance/i;
 
 // ─── Timing + limits ────────────────────────────────────────────────────
 
@@ -308,6 +314,7 @@ async function extractAccounts(page: Page): Promise<DashboardAccount[]> {
     .catch((): undefined => undefined);
   await politeDelay(DASHBOARD_SETTLE_DELAY_MS);
   return page.evaluate((linkSelector: string): DashboardAccount[] => {
+    // biome-ignore-start lint/performance/useTopLevelRegex: runs in browser context (page.evaluate); module-scoped regexes in Node cannot cross the bridge.
     const WHITESPACE_RE = /\s+/g;
     const SKIP_TEXT_RE =
       /^(Get started|Add account|View|Manage|Open|Apply|Browse)/i;
@@ -317,6 +324,7 @@ async function extractAccounts(page: Page): Promise<DashboardAccount[]> {
     const ENDING_IN_RE = /\bEnding in\b|\bending in\b/i;
     const DOLLAR_RE = /\$([\d,]+\.\d{2})/g;
     const COMMA_RE_LOCAL = /,/g;
+    // biome-ignore-end lint/performance/useTopLevelRegex: runs in browser context (page.evaluate); module-scoped regexes in Node cannot cross the bridge.
 
     interface El {
       getAttribute: (name: string) => string | null;
@@ -381,7 +389,7 @@ async function findExportAffordance(page: Page): Promise<Locator | null> {
 
   const buttonText = page
     .locator('button, [role="button"]')
-    .filter({ hasText: /^\s*Export\s*$/i });
+    .filter({ hasText: EXPORT_BUTTON_TEXT_RE });
   if (await buttonText.count().catch((): number => 0)) {
     return buttonText.first();
   }
@@ -392,8 +400,10 @@ async function findExportAffordance(page: Page): Promise<Locator | null> {
 function capturePageDiagnostics(page: Page): Promise<PageDiagnostics | null> {
   return page
     .evaluate((): PageDiagnostics => {
+      // biome-ignore-start lint/performance/useTopLevelRegex: runs in browser context (page.evaluate); module-scoped regexes in Node cannot cross the bridge.
       const WS_RE = /\s+/g;
       const EXPORT_OR_DL_RE = /export|download/i;
+      // biome-ignore-end lint/performance/useTopLevelRegex: runs in browser context (page.evaluate); module-scoped regexes in Node cannot cross the bridge.
 
       interface El {
         className?: string | { toString(): string };
@@ -656,12 +666,12 @@ function rowsToTransactions(
     return [];
   }
   const header = (rows[0] ?? []).map((h) => h.trim().toLowerCase());
-  const idxDate = header.findIndex((h) => /date/i.test(h));
+  const idxDate = header.findIndex((h) => DATE_HEADER_RE.test(h));
   const idxDesc = header.findIndex((h) => DESCRIPTION_HEADER_RE.test(h));
-  const idxOrig = header.findIndex((h) => /original/i.test(h));
-  const idxCat = header.findIndex((h) => /category/i.test(h));
-  const idxAmt = header.findIndex((h) => /amount/i.test(h));
-  const idxBal = header.findIndex((h) => /balance/i.test(h));
+  const idxOrig = header.findIndex((h) => ORIGINAL_HEADER_RE.test(h));
+  const idxCat = header.findIndex((h) => CATEGORY_HEADER_RE.test(h));
+  const idxAmt = header.findIndex((h) => AMOUNT_HEADER_RE.test(h));
+  const idxBal = header.findIndex((h) => BALANCE_HEADER_RE.test(h));
   const out: TransactionRecord[] = [];
   const tupleOrdinal = new Map<string, number>();
   for (let i = 1; i < rows.length; i++) {

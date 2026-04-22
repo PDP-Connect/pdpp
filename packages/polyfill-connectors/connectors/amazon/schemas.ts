@@ -17,6 +17,20 @@
 
 import { z } from "zod";
 
+// Module-level regexes (Biome useTopLevelRegex) — compiled once, reused
+// across every record validated by this module.
+const PAYMENT_CRUFT_RE = /Unable to display|Buy it again|View your item/i;
+const PAYMENT_DOLLAR_RE = /\$\d/;
+const RECIPIENT_FORBIDDEN_RE = /[$\t\n]|Buy it again|View your item/i;
+const CURRENCY_STRING_RE = /^\$\d+(,\d{3})*\.\d{2}$/;
+const ASIN_RE = /^[A-Z0-9]{10}$/;
+const ITEM_NAME_CRUFT_RE =
+  /Buy it again|View your item|Get product support|Write a product review/i;
+const ITEM_NAME_SOLD_BY_RE = /^Sold by/i;
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const AMAZON_ORDER_ID_RE = /^\d{3}-\d{7}-\d{7}$/;
+const LIST_PAGE_TOTAL_RE = /^\$[\d,]+\.\d{2}$/;
+
 // Payment summary must either be null, a card/digital-wallet style string,
 // or an explicit mixed-payment line ("Amazon gift card balance Visa ending
 // in 5900"). Must NOT contain "Unable to display" (non-answer text) or
@@ -25,10 +39,10 @@ const paymentMethodSchema = z
   .string()
   .min(1)
   .max(200)
-  .refine((s) => !/Unable to display|Buy it again|View your item/i.test(s), {
+  .refine((s) => !PAYMENT_CRUFT_RE.test(s), {
     message: "contains cruft or non-answer text",
   })
-  .refine((s) => !/\$\d/.test(s), {
+  .refine((s) => !PAYMENT_DOLLAR_RE.test(s), {
     message: "contains a dollar amount (likely parse leak)",
   })
   .nullable();
@@ -37,14 +51,14 @@ const recipientNameSchema = z
   .string()
   .min(2)
   .max(80)
-  .refine((s) => !/[$\t\n]|Buy it again|View your item/i.test(s), {
+  .refine((s) => !RECIPIENT_FORBIDDEN_RE.test(s), {
     message: "contains forbidden chars or cruft",
   })
   .nullable();
 
 const currencyStringSchema = z
   .string()
-  .regex(/^\$\d+(,\d{3})*\.\d{2}$/, "not a $N.NN formatted currency string")
+  .regex(CURRENCY_STRING_RE, "not a $N.NN formatted currency string")
   .nullable();
 
 const centsSchema = z
@@ -56,7 +70,7 @@ const centsSchema = z
 
 const asinSchema = z
   .string()
-  .regex(/^[A-Z0-9]{10}$/, "ASIN must be 10 uppercase alphanumeric")
+  .regex(ASIN_RE, "ASIN must be 10 uppercase alphanumeric")
   .nullable();
 
 // Item name: non-empty, bounded, must not contain obvious cruft patterns.
@@ -66,24 +80,16 @@ const itemNameSchema = z
   .string()
   .min(2)
   .max(1024)
-  .refine(
-    (s) =>
-      !/Buy it again|View your item|Get product support|Write a product review/i.test(
-        s
-      ),
-    {
-      message: "contains UI cruft",
-    }
-  )
-  .refine((s) => !/^Sold by/i.test(s), {
+  .refine((s) => !ITEM_NAME_CRUFT_RE.test(s), {
+    message: "contains UI cruft",
+  })
+  .refine((s) => !ITEM_NAME_SOLD_BY_RE.test(s), {
     message: 'starts with "Sold by" — name parser captured the wrong span',
   });
 
 export const orderSchema = z.object({
   id: z.string().min(5).max(40),
-  order_date: z
-    .string()
-    .regex(/^\d{4}-\d{2}-\d{2}$/, "order_date must be YYYY-MM-DD"),
+  order_date: z.string().regex(ISO_DATE_RE, "order_date must be YYYY-MM-DD"),
   order_total: currencyStringSchema,
   order_total_cents: centsSchema,
   delivery_status: z.string().nullable(),
@@ -100,7 +106,7 @@ export const orderSchema = z.object({
 export const orderItemSchema = z.object({
   id: z.string().min(5).max(250),
   order_id: z.string().min(5).max(40),
-  order_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  order_date: z.string().regex(ISO_DATE_RE),
   asin: asinSchema,
   name: itemNameSchema,
   url: z.string().url().nullable(),
@@ -120,11 +126,11 @@ export const orderItemSchema = z.object({
 export const listPageOrderShape = z.object({
   orderId: z
     .string()
-    .regex(/^\d{3}-\d{7}-\d{7}$/, "orderId must match NNN-NNNNNNN-NNNNNNN"),
+    .regex(AMAZON_ORDER_ID_RE, "orderId must match NNN-NNNNNNN-NNNNNNN"),
   orderDateRaw: z.string().min(4).max(60).nullable(),
   orderTotal: z
     .string()
-    .regex(/^\$[\d,]+\.\d{2}$/, "orderTotal must be $N.NN when present")
+    .regex(LIST_PAGE_TOTAL_RE, "orderTotal must be $N.NN when present")
     .nullable(),
   deliveryStatus: z.string().max(200).nullable(),
   items: z.array(

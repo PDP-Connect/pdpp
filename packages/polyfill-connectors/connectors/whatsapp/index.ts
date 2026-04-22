@@ -44,6 +44,7 @@ const ATTACHMENT_RE =
   /<attached: |<Media omitted>|image omitted|video omitted|audio omitted|document omitted/i;
 const TXT_EXT_RE = /\.txt$/i;
 const WHATSAPP_TITLE_PREFIX_RE = /^WhatsApp Chat - /;
+const WHATSAPP_LINE_SPLIT_RE = /\r?\n/;
 
 // Chat ID derived from filename; 16 hex chars is collision-safe for a user's
 // local export dir.
@@ -66,7 +67,7 @@ function parseDateTime(dateStr: string, timeStr: string): string | null {
 function parseChatFile(filename: string, content: string): ParsedChat {
   const messages: ParsedMessage[] = [];
   const participants = new Set<string>();
-  const lines = content.split(/\r?\n/);
+  const lines = content.split(WHATSAPP_LINE_SPLIT_RE);
   let current: ParsedMessage | null = null;
   for (const line of lines) {
     const m = LINE_RE.exec(line);
@@ -80,7 +81,7 @@ function parseChatFile(filename: string, content: string): ParsedChat {
       const body = m[4] || "";
       current = { author, content: body, sent_at: sentAt };
     } else if (current && line.trim()) {
-      current.content += "\n" + line;
+      current.content += `\n${line}`;
     }
   }
   if (current) {

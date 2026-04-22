@@ -31,6 +31,39 @@ import type { DownloadQueue } from "../../src/download-queue.ts";
 
 const STATEMENT_ROOT = join(homedir(), ".pdpp", "usaa-statements");
 
+// Module-level regexes (Biome useTopLevelRegex) — compiled once, reused
+// across parser passes and per-row driver calls.
+const SLUG_SAFE_RE = /^[A-Za-z0-9_-]+$/;
+const OPTIONS_BUTTON_TEXT_RE = /^\s*(Options|More|\.{3})\s*$/i;
+const DOWNLOAD_MENU_ITEM_RE = /download/i;
+const DOWNLOAD_BUTTON_TEXT_RE = /^\s*Download( PDF)?\s*$/i;
+const DOCUMENTS_PATH_RE = /\/my\/documents/;
+const CREDIT_CARD_CLOSING_RE =
+  /Statement\s+Closing\s+Date\s+(\d{1,2})\/\d{1,2}\/(\d{2,4})/i;
+const CHECKING_STATEMENT_PERIOD_RE =
+  /Statement\s+Period\s+\d{1,2}\/\d{1,2}\/\d{4}\s*[-–]\s*(\d{1,2})\/\d{1,2}\/(\d{4})/i;
+const FOUR_DIGIT_YEAR_RE = /\b(19|20)\d{2}\b/;
+const LEADING_MINUS_RE = /^-/;
+const TRAILING_MINUS_RE = /-\s*$/;
+const LEADING_PAREN_RE = /\(/;
+const NON_CURRENCY_CHARS_RE = /[^0-9.]/g;
+const STMT_LINE_SPLIT_RE = /\r?\n/;
+const MODERN_SECTION_START_RE =
+  /^\s*(TRANSACTIONS|ACCOUNT\s+ACTIVITY|DEPOSITS?\s+AND\s+OTHER\s+CREDITS|WITHDRAWALS?\s+AND\s+OTHER\s+DEBITS)\s*$/i;
+const MODERN_SECTION_END_RE =
+  /^\s*(ENDING\s+BALANCE|TOTAL\s+FEES|FEE\s+SUMMARY|DAILY\s+BALANCE\s+SUMMARY)/i;
+const MODERN_TXN_LINE_RE =
+  /^(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?\s+(.+?)\s+(-?\$?[\d,]+\.\d{2})(?:\s+(-?\$?[\d,]+\.\d{2}))?\s*$/;
+const WS_RUN_2PLUS_RE = /\s{2,}/g;
+const CREDIT_SECTION_START_RE =
+  /^\s*(TRANSACTIONS|PURCHASES|PAYMENTS\s+AND\s+CREDITS)\s*$/i;
+const CREDIT_SECTION_TOTAL_RE = /^\s*TOTAL/i;
+const CREDIT_SECTION_END_RE =
+  /^\s*(TOTAL\b|FEES\s+CHARGED|INTEREST\s+CHARGED|YEAR-TO-DATE|IMPORTANT\s+ACCOUNT)/i;
+const CREDIT_TXN_LINE_RE =
+  /^(\d{1,2})\/(\d{1,2})\s+(\d{1,2})\/(\d{1,2})\s+(.+?)\s+(-?\$?[\d,]+\.\d{2}-?)\s*$/;
+const CHECK_NUMBER_RE = /CHECK\s*#?\s*0*(\d+)/i;
+
 // ─── Types ────────────────────────────────────────────────────────────────
 
 /** Per-row input to hydrateStatementPdfs. */
@@ -120,13 +153,13 @@ function safeAccountSlug(
   accountId: string | null | undefined,
   fallback: string | null | undefined
 ): string {
-  if (accountId && /^[A-Za-z0-9_-]+$/.test(accountId)) {
+  if (accountId && SLUG_SAFE_RE.test(accountId)) {
     return accountId;
   }
   if (accountId) {
     return createHash("sha256").update(accountId).digest("hex").slice(0, 16);
   }
-  if (fallback && /^[A-Za-z0-9_-]+$/.test(fallback)) {
+  if (fallback && SLUG_SAFE_RE.test(fallback)) {
     return fallback;
   }
   return "unknown";
@@ -156,7 +189,7 @@ async function locateRowOptionsButton(row: Locator): Promise<Locator | null> {
         '[role="button"][aria-label*="Options" i], [role="button"][aria-label*="More" i]'
       )
       .first(),
-    row.locator("button", { hasText: /^\s*(Options|More|\.{3})\s*$/i }).first(),
+    row.locator("button", { hasText: OPTIONS_BUTTON_TEXT_RE }).first(),
     // Icon-only kebab: last button in the last cell.
     row.locator("td").last().locator('button, [role="button"]').last(),
   ];
@@ -175,15 +208,17 @@ async function locateRowOptionsButton(row: Locator): Promise<Locator | null> {
  */
 async function locateDownloadMenuItem(page: Page): Promise<Locator | null> {
   const candidates: Locator[] = [
-    page.locator('[role="menuitem"]', { hasText: /download/i }).first(),
+    page
+      .locator('[role="menuitem"]', { hasText: DOWNLOAD_MENU_ITEM_RE })
+      .first(),
     page
       .locator('[role="menu"] a, [role="menu"] button', {
-        hasText: /download/i,
+        hasText: DOWNLOAD_MENU_ITEM_RE,
       })
       .first(),
     page
       .locator("a, button")
-      .filter({ hasText: /^\s*Download( PDF)?\s*$/i })
+      .filter({ hasText: DOWNLOAD_BUTTON_TEXT_RE })
       .first(),
   ];
   for (const c of candidates) {
@@ -392,7 +427,7 @@ export async function hydrateStatementPdfs({
   // Make sure we're on the documents page — caller is expected to have
   // navigated here already, but a defensive reload protects against state
   // drift if hydrateStatementPdfs is invoked after other flows ran.
-  if (!/\/my\/documents/.test(page.url())) {
+  if (!DOCUMENTS_PATH_RE.test(page.url())) {
     await page
       .goto("https://www.usaa.com/my/documents", {
         waitUntil: "domcontentloaded",
@@ -494,9 +529,7 @@ function detectStatementClosing(
   text: string
 ): { closingMonth: number; closingYear: number } | null {
   // Credit-card: "Statement Closing Date 02/17/26"
-  const cc = text.match(
-    /Statement\s+Closing\s+Date\s+(\d{1,2})\/\d{1,2}\/(\d{2,4})/i
-  );
+  const cc = text.match(CREDIT_CARD_CLOSING_RE);
   if (cc?.[1] && cc[2]) {
     const mm = Number(cc[1]);
     const yy = Number(cc[2]);
@@ -504,9 +537,7 @@ function detectStatementClosing(
     return { closingMonth: mm, closingYear: year };
   }
   // Modern checking: "Statement Period 01/01/2020 - 01/31/2020"
-  const ck = text.match(
-    /Statement\s+Period\s+\d{1,2}\/\d{1,2}\/\d{4}\s*[-–]\s*(\d{1,2})\/\d{1,2}\/(\d{4})/i
-  );
+  const ck = text.match(CHECKING_STATEMENT_PERIOD_RE);
   if (ck?.[1] && ck[2]) {
     return { closingMonth: Number(ck[1]), closingYear: Number(ck[2]) };
   }
@@ -519,7 +550,7 @@ function detectStatementYear(text: string): number | null {
   if (c) {
     return c.closingYear;
   }
-  const m3 = text.slice(0, 800).match(/\b(19|20)\d{2}\b/);
+  const m3 = text.slice(0, 800).match(FOUR_DIGIT_YEAR_RE);
   return m3 ? Number(m3[0]) : null;
 }
 
@@ -582,9 +613,12 @@ function currencyToCentsFromStatement(
   // card statements: "$10.00-" = payment/credit), or accountants' parens
   // "(10.00)" = legacy negative.
   const trimmed = s.trim();
-  const neg = /^-/.test(trimmed) || /-\s*$/.test(trimmed) || /\(/.test(trimmed);
+  const neg =
+    LEADING_MINUS_RE.test(trimmed) ||
+    TRAILING_MINUS_RE.test(trimmed) ||
+    LEADING_PAREN_RE.test(trimmed);
   // Drop everything except digits and the single decimal point, then parse.
-  const numeric = trimmed.replace(/[^0-9.]/g, "");
+  const numeric = trimmed.replace(NON_CURRENCY_CHARS_RE, "");
   if (!numeric) {
     return null;
   }
@@ -607,7 +641,7 @@ function parseModernCheckingEra(
   text: string,
   { closing }: { closing: { closingMonth: number; closingYear: number } }
 ): ParsedTxn[] {
-  const lines = text.split(/\r?\n/);
+  const lines = text.split(STMT_LINE_SPLIT_RE);
   const txns: ParsedTxn[] = [];
   // We only enter rows once we see a "TRANSACTIONS" / "Account Activity"
   // heading. Otherwise we'd accidentally slurp fee-schedule tables etc.
@@ -618,19 +652,11 @@ function parseModernCheckingEra(
     if (!line) {
       continue;
     }
-    if (
-      /^\s*(TRANSACTIONS|ACCOUNT\s+ACTIVITY|DEPOSITS?\s+AND\s+OTHER\s+CREDITS|WITHDRAWALS?\s+AND\s+OTHER\s+DEBITS)\s*$/i.test(
-        line
-      )
-    ) {
+    if (MODERN_SECTION_START_RE.test(line)) {
       inTable = true;
       continue;
     }
-    if (
-      /^\s*(ENDING\s+BALANCE|TOTAL\s+FEES|FEE\s+SUMMARY|DAILY\s+BALANCE\s+SUMMARY)/i.test(
-        line
-      )
-    ) {
+    if (MODERN_SECTION_END_RE.test(line)) {
       inTable = false;
       continue;
     }
@@ -638,9 +664,7 @@ function parseModernCheckingEra(
       continue;
     }
     // "MM/DD <desc> <amount> <balance>" or "MM/DD/YY <desc> <amount>"
-    const m = line.match(
-      /^(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?\s+(.+?)\s+(-?\$?[\d,]+\.\d{2})(?:\s+(-?\$?[\d,]+\.\d{2}))?\s*$/
-    );
+    const m = line.match(MODERN_TXN_LINE_RE);
     if (!m) {
       continue;
     }
@@ -651,16 +675,17 @@ function parseModernCheckingEra(
     // If the line carries its own year, honor it via a bare-year context.
     // Otherwise use the statement-wide closing context so MM/DD gets the
     // correct year for the cycle.
-    const ctx: ClosingContext = yRaw
-      ? yRaw.length === 2
-        ? 2000 + Number(yRaw)
-        : Number(yRaw)
-      : closing;
+    let ctx: ClosingContext;
+    if (yRaw) {
+      ctx = yRaw.length === 2 ? 2000 + Number(yRaw) : Number(yRaw);
+    } else {
+      ctx = closing;
+    }
     const iso = toIso(mmRaw, ddRaw, ctx);
     if (!iso) {
       continue;
     }
-    const description = descRaw.replace(/\s{2,}/g, " ").trim();
+    const description = descRaw.replace(WS_RUN_2PLUS_RE, " ").trim();
     const amount = currencyToCentsFromStatement(amountRaw);
     const balance = balanceRaw
       ? currencyToCentsFromStatement(balanceRaw)
@@ -685,7 +710,7 @@ function parseCreditCardEra(
   text: string,
   { closing }: { closing: { closingMonth: number; closingYear: number } }
 ): ParsedTxn[] {
-  const lines = text.split(/\r?\n/);
+  const lines = text.split(STMT_LINE_SPLIT_RE);
   const txns: ParsedTxn[] = [];
   let inTable = false;
   const tupleOrd = new Map<string, number>();
@@ -696,18 +721,14 @@ function parseCreditCardEra(
     }
     // Section starts: match full-line labels but not "Total Payments And Credits".
     if (
-      /^\s*(TRANSACTIONS|PURCHASES|PAYMENTS\s+AND\s+CREDITS)\s*$/i.test(line) &&
-      !/^\s*TOTAL/i.test(line)
+      CREDIT_SECTION_START_RE.test(line) &&
+      !CREDIT_SECTION_TOTAL_RE.test(line)
     ) {
       inTable = true;
       continue;
     }
     // Section ends: any summary/total line inside a statement.
-    if (
-      /^\s*(TOTAL\b|FEES\s+CHARGED|INTEREST\s+CHARGED|YEAR-TO-DATE|IMPORTANT\s+ACCOUNT)/i.test(
-        line
-      )
-    ) {
+    if (CREDIT_SECTION_END_RE.test(line)) {
       inTable = false;
       continue;
     }
@@ -716,9 +737,7 @@ function parseCreditCardEra(
     }
     // "MM/DD MM/DD [Ref#] <desc> <amount>". Amount supports trailing minus
     // (USAA prints payments as "$10.00-" not "-$10.00") and optional $.
-    const m = line.match(
-      /^(\d{1,2})\/(\d{1,2})\s+(\d{1,2})\/(\d{1,2})\s+(.+?)\s+(-?\$?[\d,]+\.\d{2}-?)\s*$/
-    );
+    const m = line.match(CREDIT_TXN_LINE_RE);
     if (!m) {
       continue;
     }
@@ -844,8 +863,7 @@ export async function parsePdfStatement({
     amount: t.amount,
     currency: "USD",
     balance_after_cents: t.balance,
-    check_number:
-      (t.description.match(/CHECK\s*#?\s*0*(\d+)/i) || [])[1] || null,
+    check_number: (t.description.match(CHECK_NUMBER_RE) || [])[1] || null,
     source: provenance,
     fetched_at: nowIso,
   }));

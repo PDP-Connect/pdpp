@@ -33,7 +33,13 @@
  *   CODEX_SKILLS_DIR       default $CODEX_HOME/skills
  */
 
-import { createReadStream, existsSync, statSync } from "node:fs";
+import {
+  createReadStream,
+  type Dirent,
+  existsSync,
+  type Stats,
+  statSync,
+} from "node:fs";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -160,7 +166,7 @@ function textPreview(s: unknown, max = 5000): string | null {
   if (typeof s !== "string") {
     return null;
   }
-  return s.length > max ? s.slice(0, max) + "…" : s;
+  return s.length > max ? `${s.slice(0, max)}…` : s;
 }
 
 function extractMessageText(payload: RolloutPayload): string | null {
@@ -203,7 +209,7 @@ async function* walkRollouts(baseDir: string): AsyncGenerator<{
     return;
   }
   for (const y of years) {
-    if (!/^\d{4}$/.test(y)) {
+    if (!YEAR_DIR_RE.test(y)) {
       continue;
     }
     const yPath = join(baseDir, y);
@@ -214,7 +220,7 @@ async function* walkRollouts(baseDir: string): AsyncGenerator<{
       continue;
     }
     for (const m of months) {
-      if (!/^\d{2}$/.test(m)) {
+      if (!TWO_DIGIT_DIR_RE.test(m)) {
         continue;
       }
       const mPath = join(yPath, m);
@@ -225,7 +231,7 @@ async function* walkRollouts(baseDir: string): AsyncGenerator<{
         continue;
       }
       for (const d of days) {
-        if (!/^\d{2}$/.test(d)) {
+        if (!TWO_DIGIT_DIR_RE.test(d)) {
           continue;
         }
         const dPath = join(mPath, d);
@@ -316,6 +322,12 @@ function loadThreadsMap(dbPath: string): {
 // ---- file-based stream helpers ------------------------------------------
 
 const FRONTMATTER_RE = /^---\s*\r?\n([\s\S]*?)\r?\n---\s*\r?\n?([\s\S]*)$/;
+const YEAR_DIR_RE = /^\d{4}$/;
+const TWO_DIGIT_DIR_RE = /^\d{2}$/;
+const LINE_SPLIT_RE = /\r?\n/;
+const FRONTMATTER_KV_RE = /^([A-Za-z0-9_-]+)\s*:\s*(.*)$/;
+const RULES_SUFFIX_RE = /\.rules$/;
+const MD_SUFFIX_RE = /\.md$/;
 
 function parseFrontmatter(text: string): {
   meta: Record<string, string>;
@@ -326,8 +338,8 @@ function parseFrontmatter(text: string): {
     return { meta: {}, body: text };
   }
   const meta: Record<string, string> = {};
-  for (const line of (m[1] ?? "").split(/\r?\n/)) {
-    const kv = line.match(/^([A-Za-z0-9_-]+)\s*:\s*(.*)$/);
+  for (const line of (m[1] ?? "").split(LINE_SPLIT_RE)) {
+    const kv = line.match(FRONTMATTER_KV_RE);
     if (!kv) {
       continue;
     }
@@ -371,8 +383,8 @@ async function emitRulesStream(
       continue;
     }
     const mtime = Math.floor(st.mtimeMs / 1000);
-    const ruleset = f.replace(/\.rules$/, "");
-    const lines = text.split(/\r?\n/);
+    const ruleset = f.replace(RULES_SUFFIX_RE, "");
+    const lines = text.split(LINE_SPLIT_RE);
     let idx = 0;
     for (const raw of lines) {
       const line = raw.trim();
@@ -417,7 +429,7 @@ async function emitPromptsStream(
       continue;
     }
     const { meta, body } = parseFrontmatter(text);
-    const name = meta.name || f.replace(/\.md$/, "");
+    const name = meta.name || f.replace(MD_SUFFIX_RE, "");
     emitRecord("prompts", {
       id: `prompts:${f}`,
       name,
@@ -435,7 +447,7 @@ async function emitSkillsStream(
 ): Promise<void> {
   // Each skill is a subdirectory with SKILL.md at its root. Follows symlinks
   // (skills are often symlinked from dotfiles). Skips hidden dirs (.system).
-  let entries;
+  let entries: Dirent[];
   try {
     entries = await readdir(skillsDir, { withFileTypes: true });
   } catch {
@@ -581,7 +593,7 @@ async function main(): Promise<void> {
         baseDir
       )) {
         fileCount++;
-        let st;
+        let st: Stats;
         try {
           st = statSync(p);
         } catch {
