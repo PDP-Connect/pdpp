@@ -25,26 +25,13 @@ import { createReadStream, statSync } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
+import { createInterface as createFileReader } from "node:readline";
 import {
-  createInterface as createFileReader,
-  createInterface,
-} from "node:readline";
-import type {
-  EmittedMessage,
-  RecordData,
-  StreamScope,
+  type CollectContext,
+  type RecordData,
+  runConnector,
+  type StreamScope,
 } from "../../src/connector-runtime.ts";
-import { stringifyForJsonl } from "../../src/safe-emit.ts";
-import { resourceSet } from "../../src/scope-filters.ts";
-
-interface StartMessage {
-  scope?: { streams?: readonly StreamScope[] };
-  state?: {
-    messages?: { file_mtimes?: Record<string, number> };
-    file_mtimes?: Record<string, number>;
-  };
-  type: string;
-}
 
 interface JsonlObject {
   agentId?: string | null;
@@ -87,28 +74,38 @@ interface SessionAccumulator {
   version: string | null;
 }
 
-const rl = createInterface({ input: process.stdin, terminal: false });
-const emit = (m: EmittedMessage): boolean =>
-  process.stdout.write(stringifyForJsonl(m));
-const flushAndExit = (code: number): void => {
-  if (process.stdout.writableLength > 0) {
-    process.stdout.once("drain", () => process.exit(code));
-    setTimeout(() => process.exit(code), 3000).unref();
-  } else {
-    process.exit(code);
-  }
-};
-const fail = (m: string, r = false): void => {
-  emit({
-    type: "DONE",
-    status: "failed",
-    records_emitted: 0,
-    error: { message: m, retryable: r },
-  });
-  flushAndExit(1);
-};
+interface ClaudeCodeState {
+  file_mtimes?: Record<string, number>;
+  messages?: { file_mtimes?: Record<string, number> };
+}
 
-function textPreview(s: unknown, max = 300): string | null {
+// Text-preview caps chosen to keep records well under JSON-line soft limits
+// while still preserving most useful content.
+const SHORT_PREVIEW_CHARS = 300;
+const ATTACHMENT_PREVIEW_CHARS = 500;
+const TOOL_RESULT_PREVIEW_CHARS = 500;
+const MESSAGE_CONTENT_PREVIEW_CHARS = 5000;
+const SKILL_BODY_MAX_CHARS = 20_000;
+// Emit a PROGRESS every N lines to surface per-file progress on large transcripts.
+const LINE_PROGRESS_INTERVAL = 2000;
+// Bytes per MB for size formatting.
+const BYTES_PER_MB = 1024 * 1024;
+// Session dir names encode UUIDs; a plain regex matches the first two groups
+// to avoid confusing projects dir contents with per-session subdirs.
+const SESSION_DIR_PREFIX_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-/;
+// Module-level regexes (Biome useTopLevelRegex).
+const CLAUDE_FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/;
+const CLAUDE_FM_LINE_RE = /^([A-Za-z0-9_-]+)\s*:\s*(.*)$/;
+const CLAUDE_FM_COMMENT_RE = /^\s*#/;
+const CLAUDE_FM_INDENT_RE = /^\s+\S/;
+const CLAUDE_FM_LEADING_WS_RE = /^\s+/;
+const CLAUDE_FM_QUOTED_DOUBLE_RE = /^"([\s\S]*)"$/;
+const CLAUDE_FM_QUOTED_SINGLE_RE = /^'([\s\S]*)'$/;
+const CLAUDE_FM_COLLAPSE_WS_RE = /\s+/g;
+
+const nowIso = (): string => new Date().toISOString();
+
+function textPreview(s: unknown, max = SHORT_PREVIEW_CHARS): string | null {
   if (typeof s !== "string") {
     return null;
   }
@@ -186,7 +183,7 @@ function parseFrontmatter(text: string): {
   if (typeof text !== "string") {
     return { frontmatter: {}, body: text || "" };
   }
-  const m = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/.exec(text);
+  const m = CLAUDE_FRONTMATTER_RE.exec(text);
   if (!m) {
     return { frontmatter: {}, body: text };
   }
@@ -197,11 +194,11 @@ function parseFrontmatter(text: string): {
   let i = 0;
   while (i < lines.length) {
     const line = lines[i] ?? "";
-    if (!line.trim() || /^\s*#/.test(line)) {
+    if (!line.trim() || CLAUDE_FM_COMMENT_RE.test(line)) {
       i++;
       continue;
     }
-    const kv = /^([A-Za-z0-9_-]+)\s*:\s*(.*)$/.exec(line);
+    const kv = CLAUDE_FM_LINE_RE.exec(line);
     if (!kv) {
       i++;
       continue;
@@ -215,20 +212,20 @@ function parseFrontmatter(text: string): {
       i++;
       while (i < lines.length) {
         const next = lines[i] ?? "";
-        if (/^\s+\S/.test(next) || next === "") {
-          collected.push(next.replace(/^\s+/, ""));
+        if (CLAUDE_FM_INDENT_RE.test(next) || next === "") {
+          collected.push(next.replace(CLAUDE_FM_LEADING_WS_RE, ""));
           i++;
         } else {
           break;
         }
       }
       value = folded
-        ? collected.join(" ").replace(/\s+/g, " ").trim()
+        ? collected.join(" ").replace(CLAUDE_FM_COLLAPSE_WS_RE, " ").trim()
         : collected.join("\n").trim();
     } else {
       value = value
-        .replace(/^"([\s\S]*)"$/, "$1")
-        .replace(/^'([\s\S]*)'$/, "$1")
+        .replace(CLAUDE_FM_QUOTED_DOUBLE_RE, "$1")
+        .replace(CLAUDE_FM_QUOTED_SINGLE_RE, "$1")
         .trim();
       i++;
     }
@@ -238,7 +235,8 @@ function parseFrontmatter(text: string): {
 }
 
 interface WalkToolResultsArgs {
-  emitRecord: (stream: string, data: RecordData) => void;
+  emit: CollectContext["emit"];
+  emitRecord: (stream: string, data: RecordData) => Promise<void>;
   fileMtimes: Record<string, number>;
   newMtimes: Record<string, number>;
   projectDir: string;
@@ -300,14 +298,14 @@ async function walkToolResults({
         continue;
       }
       const rel = full.slice(toolResultsDir.length + 1);
-      emitRecord("attachments", {
+      await emitRecord("attachments", {
         id: `tool_result_file:${projectDir}/${sessionId}/${rel}`,
         session_id: sessionId,
         parent_uuid: null,
         event_type: "tool_result_file",
         hook_name: null,
         tool_use_id: null,
-        content_preview: textPreview(buf, 500),
+        content_preview: textPreview(buf, TOOL_RESULT_PREVIEW_CHARS),
         content_bytes: st.size,
         timestamp: new Date(st.mtimeMs).toISOString(),
       });
@@ -317,7 +315,8 @@ async function walkToolResults({
 }
 
 interface ParseJsonlFileArgs {
-  emitRecord: (stream: string, data: RecordData) => void;
+  emit: CollectContext["emit"];
+  emitRecord: (stream: string, data: RecordData) => Promise<void>;
   forcedSessionId: string | null;
   path: string;
   projectDir: string;
@@ -329,6 +328,7 @@ async function parseJsonlFile({
   path,
   projectDir,
   requested,
+  emit,
   emitRecord,
   sessionAccumulators,
   forcedSessionId,
@@ -346,8 +346,8 @@ async function parseJsonlFile({
 
   for await (const obj of iterJsonlLines(path)) {
     lineCount++;
-    if (lineCount % 2000 === 0) {
-      emit({
+    if (lineCount % LINE_PROGRESS_INTERVAL === 0) {
+      await emit({
         type: "PROGRESS",
         message: `  ${path}: ${lineCount} lines parsed`,
       });
@@ -389,13 +389,16 @@ async function parseJsonlFile({
     if (type === "user" || type === "assistant") {
       messageCount++;
       if (requested.has("messages") && uuid) {
-        emitRecord("messages", {
+        await emitRecord("messages", {
           id: uuid,
           session_id: sessionId,
           parent_uuid: parentUuid,
           role: type,
           type,
-          content: textPreview(extractContent(obj.message || obj), 5000),
+          content: textPreview(
+            extractContent(obj.message || obj),
+            MESSAGE_CONTENT_PREVIEW_CHARS
+          ),
           timestamp: obj.timestamp || null,
           is_sidechain: obj.isSidechain ?? null,
           user_type: obj.userType ?? null,
@@ -411,7 +414,7 @@ async function parseJsonlFile({
       uuid
     ) {
       const att = obj.attachment || {};
-      emitRecord("attachments", {
+      await emitRecord("attachments", {
         id: uuid,
         session_id: sessionId,
         parent_uuid: parentUuid,
@@ -420,7 +423,7 @@ async function parseJsonlFile({
         tool_use_id: att.toolUseID || null,
         content_preview: textPreview(
           extractContent(att) || extractContent(obj),
-          500
+          ATTACHMENT_PREVIEW_CHARS
         ),
         content_bytes: null,
         timestamp: obj.timestamp || null,
@@ -476,7 +479,7 @@ async function parseJsonlFile({
 
 interface EmitSkillsArgs {
   claudeHome: string;
-  emitRecord: (stream: string, data: RecordData) => void;
+  emitRecord: (stream: string, data: RecordData) => Promise<void>;
   requested: Map<string, StreamScope>;
 }
 
@@ -503,7 +506,8 @@ async function emitSkills({
       continue;
     }
     const skillPath = join(skillsDir, ent.name, "SKILL.md");
-    let st, raw;
+    let st: ReturnType<typeof statSync>;
+    let raw: string;
     try {
       st = statSync(skillPath);
     } catch {
@@ -515,13 +519,16 @@ async function emitSkills({
       continue;
     }
     const { frontmatter, body } = parseFrontmatter(raw);
-    emitRecord("skills", {
+    await emitRecord("skills", {
       id: `skills:${ent.name}`,
       name: frontmatter.name || ent.name,
       description: frontmatter.description || null,
       source: "user",
       path: skillPath,
-      content: body.length > 20_000 ? body.slice(0, 20_000) : body,
+      content:
+        body.length > SKILL_BODY_MAX_CHARS
+          ? body.slice(0, SKILL_BODY_MAX_CHARS)
+          : body,
       frontmatter,
       mtime_epoch: Math.floor(st.mtimeMs / 1000),
     });
@@ -559,7 +566,8 @@ async function emitSlashCommands({
       if (!ent.name.endsWith(".md")) {
         continue;
       }
-      let st, raw;
+      let st: ReturnType<typeof statSync>;
+      let raw: string;
       try {
         st = statSync(full);
       } catch {
@@ -573,12 +581,15 @@ async function emitSlashCommands({
       const { frontmatter, body } = parseFrontmatter(raw);
       const base = basename(ent.name, ".md");
       const idPath = prefix ? `${prefix}/${base}` : base;
-      emitRecord("slash_commands", {
+      await emitRecord("slash_commands", {
         id: `commands:${idPath}`,
         name: frontmatter.name || base,
         description: frontmatter.description || null,
         path: full,
-        content: body.length > 20_000 ? body.slice(0, 20_000) : body,
+        content:
+          body.length > SKILL_BODY_MAX_CHARS
+            ? body.slice(0, SKILL_BODY_MAX_CHARS)
+            : body,
         frontmatter,
         mtime_epoch: Math.floor(st.mtimeMs / 1000),
       });
@@ -587,105 +598,24 @@ async function emitSlashCommands({
   await walk(commandsDir, "");
 }
 
-async function main(): Promise<void> {
-  const startMsg = await new Promise<StartMessage>((r, j) =>
-    rl.once("line", (l) => {
-      try {
-        r(JSON.parse(l) as StartMessage);
-      } catch (e) {
-        j(e);
-      }
-    })
-  );
-  if (startMsg.type !== "START") {
-    return fail("Expected START");
-  }
-
-  const requested = new Map<string, StreamScope>(
-    (startMsg.scope?.streams || []).map((s) => [s.name, s])
-  );
-  if (!requested.size) {
-    return fail("START.scope.streams is required");
-  }
-
-  const resFilters = new Map<string, ReadonlySet<string> | null>();
-  for (const [n, r] of requested) {
-    resFilters.set(n, resourceSet(r));
-  }
-
-  const claudeHome = process.env.CLAUDE_CODE_HOME || join(homedir(), ".claude");
-  const baseDir =
-    process.env.CLAUDE_CODE_PROJECTS_DIR || join(claudeHome, "projects");
-  const state = startMsg.state || {};
-  // STATE is stream-keyed per Collection Profile: `state` is
-  // { <stream>: <cursor>, ... }. This connector emits STATE with
-  // stream='messages', cursor={file_mtimes:{...}}, so reads must
-  // qualify by that stream. Fall back to top-level for pre-fix state.
-  const fileMtimes: Record<string, number> =
-    state.messages?.file_mtimes || state.file_mtimes || {};
-
-  let total = 0;
-  const nowIso = (): string => new Date().toISOString();
-  const emittedAt = nowIso();
-  const emitRecord = (s: string, d: RecordData): void => {
-    if (d.id == null) {
-      return;
-    }
-    const resSet = resFilters.get(s);
-    if (resSet && !resSet.has(String(d.id))) {
-      return;
-    }
-    emit({
-      type: "RECORD",
-      stream: s,
-      key: d.id,
-      data: d,
-      emitted_at: emittedAt,
-    });
-    total++;
-  };
-
-  // ---- skills + slash_commands (independent of projects dir) ----
-  try {
-    await emitSkills({ claudeHome, requested, emitRecord });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    emit({ type: "PROGRESS", message: `skills scan skipped: ${msg}` });
-  }
-  try {
-    await emitSlashCommands({ claudeHome, requested, emitRecord });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    emit({
-      type: "PROGRESS",
-      message: `slash_commands scan skipped: ${msg}`,
-    });
-  }
-  if (requested.has("skills")) {
-    emit({
-      type: "STATE",
-      stream: "skills",
-      cursor: { fetched_at: nowIso() },
-    });
-  }
-  if (requested.has("slash_commands")) {
-    emit({
-      type: "STATE",
-      stream: "slash_commands",
-      cursor: { fetched_at: nowIso() },
-    });
-  }
-
-  // ---- sessions / messages / attachments ----
-  const needsProjects =
-    requested.has("sessions") ||
-    requested.has("messages") ||
-    requested.has("attachments");
-  if (!needsProjects) {
-    emit({ type: "DONE", status: "succeeded", records_emitted: total });
-    return flushAndExit(0);
-  }
-
+async function scanProjectDirs(args: {
+  baseDir: string;
+  emit: CollectContext["emit"];
+  emitRecord: (stream: string, data: RecordData) => Promise<void>;
+  fileMtimes: Record<string, number>;
+  newMtimes: Record<string, number>;
+  requested: Map<string, StreamScope>;
+  sessionAccumulators: Map<string, SessionAccumulator>;
+}): Promise<void> {
+  const {
+    baseDir,
+    emit,
+    emitRecord,
+    fileMtimes,
+    newMtimes,
+    requested,
+    sessionAccumulators,
+  } = args;
   let projectDirs: string[];
   try {
     projectDirs = (await readdir(baseDir)).filter(
@@ -693,14 +623,13 @@ async function main(): Promise<void> {
     );
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
-    emit({
+    await emit({
       type: "SKIP_RESULT",
       stream: "sessions",
       reason: "claude_dir_not_found",
       message: `${baseDir} not readable: ${errMsg}`,
     });
-    emit({ type: "DONE", status: "succeeded", records_emitted: total });
-    return flushAndExit(0);
+    return;
   }
 
   // Optional scoping — comma-separated substrings; a dir is included if any match.
@@ -720,13 +649,10 @@ async function main(): Promise<void> {
       (d) => !exclude.some((s) => d.includes(s))
     );
   }
-  emit({
+  await emit({
     type: "PROGRESS",
     message: `${projectDirs.length} project dirs in scope`,
   });
-
-  const newMtimes: Record<string, number> = { ...fileMtimes };
-  const sessionAccumulators = new Map<string, SessionAccumulator>();
 
   for (const projectDir of projectDirs) {
     const projectPath = join(baseDir, projectDir);
@@ -743,7 +669,7 @@ async function main(): Promise<void> {
       .map((e) => e.name);
     for (const f of topJsonl) {
       const p = join(projectPath, f);
-      let st;
+      let st: ReturnType<typeof statSync>;
       try {
         st = statSync(p);
       } catch {
@@ -754,14 +680,15 @@ async function main(): Promise<void> {
         newMtimes[p] = mtime;
         continue;
       }
-      emit({
+      await emit({
         type: "PROGRESS",
-        message: `Parsing ${projectDir}/${f} (${(st.size / 1024 / 1024).toFixed(1)}MB)`,
+        message: `Parsing ${projectDir}/${f} (${(st.size / BYTES_PER_MB).toFixed(1)}MB)`,
       });
       await parseJsonlFile({
         path: p,
         projectDir,
         requested,
+        emit,
         emitRecord,
         sessionAccumulators,
         forcedSessionId: null,
@@ -771,7 +698,7 @@ async function main(): Promise<void> {
 
     // Per-session subdirs: <sessionId>/subagents/*.jsonl and <sessionId>/tool-results/*.txt.
     const sessionDirs = entries.filter(
-      (e) => e.isDirectory() && /^[0-9a-f]{8}-[0-9a-f]{4}-/.test(e.name)
+      (e) => e.isDirectory() && SESSION_DIR_PREFIX_RE.test(e.name)
     );
     for (const sessEnt of sessionDirs) {
       const sessionId = sessEnt.name;
@@ -790,7 +717,7 @@ async function main(): Promise<void> {
       }
       for (const f of subFiles) {
         const p = join(subagentsDir, f);
-        let st;
+        let st: ReturnType<typeof statSync>;
         try {
           st = statSync(p);
         } catch {
@@ -801,14 +728,15 @@ async function main(): Promise<void> {
           newMtimes[p] = mtime;
           continue;
         }
-        emit({
+        await emit({
           type: "PROGRESS",
-          message: `Parsing ${projectDir}/${sessionId}/subagents/${f} (${(st.size / 1024 / 1024).toFixed(1)}MB)`,
+          message: `Parsing ${projectDir}/${sessionId}/subagents/${f} (${(st.size / BYTES_PER_MB).toFixed(1)}MB)`,
         });
         await parseJsonlFile({
           path: p,
           projectDir,
           requested,
+          emit,
           emitRecord,
           sessionAccumulators,
           forcedSessionId: sessionId,
@@ -822,43 +750,103 @@ async function main(): Promise<void> {
         sessionId,
         projectDir,
         requested,
+        emit,
         emitRecord,
         fileMtimes,
         newMtimes,
       });
     }
   }
-
-  if (requested.has("sessions")) {
-    for (const session of sessionAccumulators.values()) {
-      emitRecord("sessions", { ...session });
-    }
-    emit({
-      type: "STATE",
-      stream: "sessions",
-      cursor: { fetched_at: nowIso() },
-    });
-  }
-
-  if (requested.has("messages") || requested.has("attachments")) {
-    emit({
-      type: "STATE",
-      stream: "messages",
-      cursor: { file_mtimes: newMtimes, fetched_at: nowIso() },
-    });
-  }
-
-  emit({ type: "DONE", status: "succeeded", records_emitted: total });
-  flushAndExit(0);
 }
 
-main().catch((e: unknown) => {
-  const msg = e instanceof Error ? e.message : String(e);
-  emit({
-    type: "DONE",
-    status: "failed",
-    records_emitted: 0,
-    error: { message: msg, retryable: false },
-  });
-  flushAndExit(1);
+runConnector({
+  name: "claude_code",
+  async collect({ state, requested, emit, emitRecord }) {
+    const claudeHome =
+      process.env.CLAUDE_CODE_HOME || join(homedir(), ".claude");
+    const baseDir =
+      process.env.CLAUDE_CODE_PROJECTS_DIR || join(claudeHome, "projects");
+    const typedState = state as ClaudeCodeState;
+    // STATE is stream-keyed per Collection Profile: `state` is
+    // { <stream>: <cursor>, ... }. This connector emits STATE with
+    // stream='messages', cursor={file_mtimes:{...}}, so reads must
+    // qualify by that stream. Fall back to top-level for pre-fix state.
+    const fileMtimes: Record<string, number> =
+      typedState.messages?.file_mtimes || typedState.file_mtimes || {};
+
+    // ---- skills + slash_commands (independent of projects dir) ----
+    try {
+      await emitSkills({ claudeHome, requested, emitRecord });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      await emit({
+        type: "PROGRESS",
+        message: `skills scan skipped: ${msg}`,
+      });
+    }
+    try {
+      await emitSlashCommands({ claudeHome, requested, emitRecord });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      await emit({
+        type: "PROGRESS",
+        message: `slash_commands scan skipped: ${msg}`,
+      });
+    }
+    if (requested.has("skills")) {
+      await emit({
+        type: "STATE",
+        stream: "skills",
+        cursor: { fetched_at: nowIso() },
+      });
+    }
+    if (requested.has("slash_commands")) {
+      await emit({
+        type: "STATE",
+        stream: "slash_commands",
+        cursor: { fetched_at: nowIso() },
+      });
+    }
+
+    // ---- sessions / messages / attachments ----
+    const needsProjects =
+      requested.has("sessions") ||
+      requested.has("messages") ||
+      requested.has("attachments");
+    if (!needsProjects) {
+      return;
+    }
+
+    const newMtimes: Record<string, number> = { ...fileMtimes };
+    const sessionAccumulators = new Map<string, SessionAccumulator>();
+
+    await scanProjectDirs({
+      baseDir,
+      emit,
+      emitRecord,
+      fileMtimes,
+      newMtimes,
+      requested,
+      sessionAccumulators,
+    });
+
+    if (requested.has("sessions")) {
+      for (const session of sessionAccumulators.values()) {
+        await emitRecord("sessions", { ...session });
+      }
+      await emit({
+        type: "STATE",
+        stream: "sessions",
+        cursor: { fetched_at: nowIso() },
+      });
+    }
+
+    if (requested.has("messages") || requested.has("attachments")) {
+      await emit({
+        type: "STATE",
+        stream: "messages",
+        cursor: { file_mtimes: newMtimes, fetched_at: nowIso() },
+      });
+    }
+  },
 });

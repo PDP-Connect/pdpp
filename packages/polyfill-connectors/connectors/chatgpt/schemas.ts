@@ -17,10 +17,14 @@
  * Keep ID schemas permissive.
  */
 
-import { z } from 'zod';
+import { z } from "zod";
 
 // Permissive ID: non-empty, bounded, no whitespace or control chars.
-const idSchema = z.string().min(1).max(128).regex(/^\S+$/, 'must not contain whitespace');
+const idSchema = z
+  .string()
+  .min(1)
+  .max(128)
+  .regex(/^\S+$/, "must not contain whitespace");
 
 // ISO-8601 timestamp — not all ChatGPT API responses use strict ISO, so
 // be lenient: accept anything parseable by Date as long as it looks
@@ -29,11 +33,9 @@ const looseTimestamp = z
   .string()
   .min(4)
   .max(40)
-  .refine((s) => !isNaN(new Date(s).getTime()), { message: 'unparseable timestamp' });
-
-const isoTimestampExact = z
-  .string()
-  .regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/, 'must be ISO-8601');
+  .refine((s) => !Number.isNaN(new Date(s).getTime()), {
+    message: "unparseable timestamp",
+  });
 
 // Large text fields (messages content, memories content, GPT instructions).
 // Bound to 1 MB — anything larger is suspicious.
@@ -50,7 +52,12 @@ export const conversationSchema = z.object({
   is_starred: z.boolean().nullable(),
   workspace_id: idSchema.nullable(),
   current_node: idSchema.nullable(),
-  message_count_on_current_branch: z.number().int().min(0).max(100_000).nullable(),
+  message_count_on_current_branch: z
+    .number()
+    .int()
+    .min(0)
+    .max(100_000)
+    .nullable(),
   gizmo_id: idSchema.nullable(),
 });
 
@@ -69,8 +76,8 @@ export const messageSchema = z.object({
   model_slug: z.string().max(80).nullable(),
   create_time: looseTimestamp.nullable(),
   finish_reason: z.string().max(60).nullable(),
-  citations: z.array(z.any()),
-  tool_calls: z.array(z.any()),
+  citations: z.array(z.unknown()),
+  tool_calls: z.array(z.unknown()),
   attachment_ids: z.array(idSchema),
   on_current_branch: z.boolean(),
 });
@@ -93,7 +100,7 @@ export const customGptSchema = z.object({
   display_description: z.string().max(2000).nullable(),
   display_welcome_message: z.string().max(2000).nullable(),
   instructions: largeText.nullable(),
-  tools: z.array(z.any()),
+  tools: z.array(z.unknown()),
   created_at: looseTimestamp.nullable(),
   updated_at: looseTimestamp.nullable(),
   author_id: idSchema.nullable(),
@@ -128,7 +135,7 @@ export const sharedConversationSchema = z.object({
 
 // ─── Registry ───────────────────────────────────────────────────────────
 
-export const SCHEMAS = {
+export const SCHEMAS: Record<string, z.ZodTypeAny> = {
   conversations: conversationSchema,
   messages: messageSchema,
   memories: memorySchema,
@@ -141,15 +148,23 @@ export const SCHEMAS = {
  * Validate a record against its stream's schema.
  * Returns { ok: true, data } on pass, { ok: false, issues } on fail.
  */
-export function validateRecord(stream, data) {
+export function validateRecord(
+  stream: string,
+  data: Record<string, unknown>
+):
+  | { ok: true; data: Record<string, unknown> }
+  | { ok: false; issues: Array<{ path: string; message: string }> } {
   const schema = SCHEMAS[stream];
-  if (!schema) return { ok: true, data };
+  if (!schema) {
+    return { ok: true, data };
+  }
   const result = schema.safeParse(data);
-  if (result.success) return { ok: true, data: result.data };
+  if (result.success) {
+    return { ok: true, data: result.data as Record<string, unknown> };
+  }
   const issues = result.error.issues.map((i) => ({
-    path: i.path.join('.'),
+    path: i.path.join("."),
     message: i.message,
-    code: i.code,
   }));
   return { ok: false, issues };
 }

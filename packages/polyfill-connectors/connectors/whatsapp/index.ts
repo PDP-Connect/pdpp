@@ -17,20 +17,7 @@ import { createHash } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { createInterface } from "node:readline";
-import type {
-  EmittedMessage,
-  RecordData,
-  StreamScope,
-} from "../../src/connector-runtime.ts";
-import { stringifyForJsonl } from "../../src/safe-emit.ts";
-import { resourceSet } from "../../src/scope-filters.ts";
-
-interface StartMessage {
-  scope?: { streams?: readonly StreamScope[] };
-  state?: Record<string, unknown>;
-  type: string;
-}
+import { runConnector } from "../../src/connector-runtime.ts";
 
 interface ParsedMessage {
   author: string;
@@ -46,28 +33,6 @@ interface ParsedChat {
   title: string;
 }
 
-const rl = createInterface({ input: process.stdin, terminal: false });
-const emit = (m: EmittedMessage): boolean =>
-  process.stdout.write(stringifyForJsonl(m));
-const flushAndExit = (code: number): void => {
-  if (process.stdout.writableLength > 0) {
-    process.stdout.once("drain", () => process.exit(code));
-    setTimeout(() => process.exit(code), 3000).unref();
-  } else {
-    process.exit(code);
-  }
-};
-const fail = (m: string, r = false): void => {
-  emit({
-    type: "DONE",
-    status: "failed",
-    records_emitted: 0,
-    error: { message: m, retryable: r },
-  });
-  flushAndExit(1);
-};
-const nowIso = (): string => new Date().toISOString();
-
 // WhatsApp export line formats:
 //   iOS: [M/D/YY, H:MM:SS AM] Author: Message
 //   iOS: [YYYY-MM-DD, HH:MM:SS] Author: Message
@@ -75,6 +40,16 @@ const nowIso = (): string => new Date().toISOString();
 //   Android: DD/MM/YYYY, HH:MM - Author: Message
 const LINE_RE =
   /^\s*(?:\[)?(\d{1,4}[/\-.]\d{1,2}[/\-.]\d{1,4}),?\s+(\d{1,2}:\d{2}(?::\d{2})?(?:\s?[APap][Mm])?)(?:\])?\s*[-–]?\s*([^:]+?):\s?(.*)$/;
+const ATTACHMENT_RE =
+  /<attached: |<Media omitted>|image omitted|video omitted|audio omitted|document omitted/i;
+const TXT_EXT_RE = /\.txt$/i;
+const WHATSAPP_TITLE_PREFIX_RE = /^WhatsApp Chat - /;
+
+// Chat ID derived from filename; 16 hex chars is collision-safe for a user's
+// local export dir.
+const CHAT_ID_HASH_LENGTH = 16;
+
+const nowIso = (): string => new Date().toISOString();
 
 function parseDateTime(dateStr: string, timeStr: string): string | null {
   try {
@@ -113,147 +88,92 @@ function parseChatFile(filename: string, content: string): ParsedChat {
   }
 
   for (const msg of messages) {
-    msg.has_attachment =
-      /<attached: |<Media omitted>|image omitted|video omitted|audio omitted|document omitted/i.test(
-        msg.content
-      );
+    msg.has_attachment = ATTACHMENT_RE.test(msg.content);
   }
 
   const chatId = createHash("sha256")
     .update(filename)
     .digest("hex")
-    .slice(0, 16);
+    .slice(0, CHAT_ID_HASH_LENGTH);
   return {
     chatId,
-    title: filename.replace(/\.txt$/i, "").replace(/^WhatsApp Chat - /, ""),
+    title: filename
+      .replace(TXT_EXT_RE, "")
+      .replace(WHATSAPP_TITLE_PREFIX_RE, ""),
     participants: [...participants],
     messages,
   };
 }
 
-async function main(): Promise<void> {
-  const startMsg = await new Promise<StartMessage>((r, j) =>
-    rl.once("line", (l) => {
-      try {
-        r(JSON.parse(l) as StartMessage);
-      } catch (e) {
-        j(e);
-      }
-    })
-  );
-  if (startMsg.type !== "START") {
-    return fail("Expected START");
-  }
+runConnector({
+  name: "whatsapp",
+  async collect({ requested, emit, emitRecord }) {
+    const importDir =
+      process.env.WHATSAPP_EXPORT_DIR ||
+      join(homedir(), ".pdpp/imports/whatsapp");
 
-  const importDir =
-    process.env.WHATSAPP_EXPORT_DIR ||
-    join(homedir(), ".pdpp/imports/whatsapp");
-
-  const requested = new Map<string, StreamScope>(
-    (startMsg.scope?.streams || []).map((s) => [s.name, s])
-  );
-  if (!requested.size) {
-    return fail("START.scope.streams is required");
-  }
-
-  let files: string[];
-  try {
-    files = (await readdir(importDir)).filter((f) =>
-      f.toLowerCase().endsWith(".txt")
-    );
-  } catch {
-    return fail(
-      `import_dir_not_found: ${importDir} (set WHATSAPP_EXPORT_DIR or create the directory)`
-    );
-  }
-  if (!files.length) {
-    emit({
-      type: "SKIP_RESULT",
-      stream: "chats",
-      reason: "no_exports_found",
-      message: `No .txt exports in ${importDir}. Export chats from WhatsApp and drop files here.`,
-    });
-    emit({ type: "DONE", status: "succeeded", records_emitted: 0 });
-    flushAndExit(0);
-  }
-
-  const emittedAt = nowIso();
-  let total = 0;
-  const resFilters = new Map<string, ReadonlySet<string> | null>();
-  for (const [n, r] of requested) {
-    resFilters.set(n, resourceSet(r));
-  }
-  const emitRecord = (s: string, d: RecordData): void => {
-    if (d.id == null) {
-      return;
+    let files: string[];
+    try {
+      files = (await readdir(importDir)).filter((f) =>
+        f.toLowerCase().endsWith(".txt")
+      );
+    } catch {
+      throw new Error(
+        `import_dir_not_found: ${importDir} (set WHATSAPP_EXPORT_DIR or create the directory)`
+      );
     }
-    const resSet = resFilters.get(s);
-    if (resSet && !resSet.has(String(d.id))) {
-      return;
-    }
-    emit({
-      type: "RECORD",
-      stream: s,
-      key: d.id,
-      data: d,
-      emitted_at: emittedAt,
-    });
-    total++;
-  };
-
-  for (const f of files) {
-    const content = await readFile(join(importDir, f), "utf8").catch(() => "");
-    if (!content) {
-      continue;
-    }
-    const parsed = parseChatFile(f, content);
-    const first = parsed.messages[0]?.sent_at || null;
-    const last = parsed.messages.at(-1)?.sent_at || null;
-
-    if (requested.has("chats")) {
-      emitRecord("chats", {
-        id: parsed.chatId,
-        title: parsed.title,
-        participants: parsed.participants,
-        message_count: parsed.messages.length,
-        first_message_date: first,
-        last_message_date: last,
+    if (!files.length) {
+      await emit({
+        type: "SKIP_RESULT",
+        stream: "chats",
+        reason: "no_exports_found",
+        message: `No .txt exports in ${importDir}. Export chats from WhatsApp and drop files here.`,
       });
+      return;
     }
 
-    if (requested.has("messages")) {
-      for (let i = 0; i < parsed.messages.length; i++) {
-        const m = parsed.messages[i];
-        if (!m) {
-          continue;
-        }
-        emitRecord("messages", {
-          id: `${parsed.chatId}:${i}`,
-          chat_id: parsed.chatId,
-          author: m.author,
-          content: m.content,
-          has_attachment: !!m.has_attachment,
-          sent_at: m.sent_at,
+    for (const f of files) {
+      const content = await readFile(join(importDir, f), "utf8").catch(
+        (): string => ""
+      );
+      if (!content) {
+        continue;
+      }
+      const parsed = parseChatFile(f, content);
+      const first = parsed.messages[0]?.sent_at || null;
+      const last = parsed.messages.at(-1)?.sent_at || null;
+
+      if (requested.has("chats")) {
+        await emitRecord("chats", {
+          id: parsed.chatId,
+          title: parsed.title,
+          participants: parsed.participants,
+          message_count: parsed.messages.length,
+          first_message_date: first,
+          last_message_date: last,
         });
       }
+
+      if (requested.has("messages")) {
+        for (let i = 0; i < parsed.messages.length; i++) {
+          const m = parsed.messages[i];
+          if (!m) {
+            continue;
+          }
+          await emitRecord("messages", {
+            id: `${parsed.chatId}:${i}`,
+            chat_id: parsed.chatId,
+            author: m.author,
+            content: m.content,
+            has_attachment: !!m.has_attachment,
+            sent_at: m.sent_at,
+          });
+        }
+      }
+      await emit({
+        type: "PROGRESS",
+        message: `Imported ${f}: ${parsed.messages.length} messages`,
+      });
     }
-    emit({
-      type: "PROGRESS",
-      message: `Imported ${f}: ${parsed.messages.length} messages`,
-    });
-  }
-
-  emit({ type: "DONE", status: "succeeded", records_emitted: total });
-  flushAndExit(0);
-}
-
-main().catch((e: unknown) => {
-  const msg = e instanceof Error ? e.message : String(e);
-  emit({
-    type: "DONE",
-    status: "failed",
-    records_emitted: 0,
-    error: { message: msg, retryable: false },
-  });
-  flushAndExit(1);
+  },
 });

@@ -24,7 +24,7 @@ import {
   type ValidateRecord,
 } from "../../src/connector-runtime.ts";
 import type { CaptureSession } from "../../src/fixture-capture.ts";
-import { validateRecord as validateRecordRaw } from "./schemas.js";
+import { validateRecord as validateRecordRaw } from "./schemas.ts";
 
 // schemas.js is a plain-JS Zod validator; cast at the boundary to the
 // runtime's ValidateRecord contract. The JS module's safeParse already

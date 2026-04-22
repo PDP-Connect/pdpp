@@ -17,20 +17,7 @@ import { existsSync } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { createInterface } from "node:readline";
-import type {
-  EmittedMessage,
-  RecordData,
-  StreamScope,
-} from "../../src/connector-runtime.ts";
-import { stringifyForJsonl } from "../../src/safe-emit.ts";
-import { resourceSet } from "../../src/scope-filters.ts";
-
-interface StartMessage {
-  scope?: { streams?: readonly StreamScope[] };
-  state?: { events?: { latest_start?: string } };
-  type: string;
-}
+import { runConnector } from "../../src/connector-runtime.ts";
 
 interface IcsAttendee {
   email: string;
@@ -58,33 +45,30 @@ interface IcsSource {
   text: string;
 }
 
-const rl = createInterface({ input: process.stdin, terminal: false });
-const emit = (m: EmittedMessage): boolean =>
-  process.stdout.write(stringifyForJsonl(m));
-const flushAndExit = (code: number): void => {
-  if (process.stdout.writableLength > 0) {
-    process.stdout.once("drain", () => process.exit(code));
-    setTimeout(() => process.exit(code), 3000).unref();
-  } else {
-    process.exit(code);
-  }
-};
-const fail = (m: string, r = false): void => {
-  emit({
-    type: "DONE",
-    status: "failed",
-    records_emitted: 0,
-    error: { message: m, retryable: r },
-  });
-  flushAndExit(1);
-};
-const nowIso = (): string => new Date().toISOString();
+interface IcalState {
+  events?: { latest_start?: string };
+}
+
+// Record ID length (hex). 24 chars = 96 bits of entropy — safe for a user's
+// personal calendar event set.
+const RECORD_ID_HASH_LENGTH = 24;
+
+// Module-level regexes (Biome useTopLevelRegex).
+const ICAL_LINE_FOLD_RE = /\r?\n[ \t]/g;
+const ICAL_DATETIME_UTC_RE = /^\d{8}T\d{6}Z$/;
+const ICAL_DATETIME_LOCAL_RE = /^\d{8}T\d{6}$/;
+const ICAL_MAILTO_RE = /mailto:([^>]+)/i;
+const ICAL_ESC_NEWLINE_RE = /\\n/g;
+const ICAL_ESC_COMMA_RE = /\\,/g;
+const ICS_EXT_RE = /\.ics$/i;
+const RETRYABLE_FETCH_RE = /ECONN|fetch failed/i;
+
 const hashId = (s: string): string =>
-  createHash("sha256").update(s).digest("hex").slice(0, 24);
+  createHash("sha256").update(s).digest("hex").slice(0, RECORD_ID_HASH_LENGTH);
 
 function unfoldIcal(text: string): string {
   // RFC 5545 line folding: continuation lines start with space/tab.
-  return text.replace(/\r?\n[ \t]/g, "");
+  return text.replace(ICAL_LINE_FOLD_RE, "");
 }
 
 function parseIcsDate(
@@ -97,10 +81,10 @@ function parseIcsDate(
   if (isDateOnly) {
     return `${raw.slice(0, 4)}-${raw.slice(4, 6)}-${raw.slice(6, 8)}T00:00:00Z`;
   }
-  if (/^\d{8}T\d{6}Z$/.test(raw)) {
+  if (ICAL_DATETIME_UTC_RE.test(raw)) {
     return `${raw.slice(0, 4)}-${raw.slice(4, 6)}-${raw.slice(6, 8)}T${raw.slice(9, 11)}:${raw.slice(11, 13)}:${raw.slice(13, 15)}Z`;
   }
-  if (/^\d{8}T\d{6}$/.test(raw)) {
+  if (ICAL_DATETIME_LOCAL_RE.test(raw)) {
     return `${raw.slice(0, 4)}-${raw.slice(4, 6)}-${raw.slice(6, 8)}T${raw.slice(9, 11)}:${raw.slice(11, 13)}:${raw.slice(13, 15)}`;
   }
   const d = new Date(raw);
@@ -151,10 +135,14 @@ function parseIcs(source: string, calendarName: string): IcsEvent[] {
         cur.uid = value;
         break;
       case "SUMMARY":
-        cur.summary = value.replace(/\\n/g, "\n").replace(/\\,/g, ",");
+        cur.summary = value
+          .replace(ICAL_ESC_NEWLINE_RE, "\n")
+          .replace(ICAL_ESC_COMMA_RE, ",");
         break;
       case "DESCRIPTION":
-        cur.description = value.replace(/\\n/g, "\n").replace(/\\,/g, ",");
+        cur.description = value
+          .replace(ICAL_ESC_NEWLINE_RE, "\n")
+          .replace(ICAL_ESC_COMMA_RE, ",");
         break;
       case "LOCATION":
         cur.location = value;
@@ -167,14 +155,14 @@ function parseIcs(source: string, calendarName: string): IcsEvent[] {
         cur.end = parseIcsDate(value, isDateOnly);
         break;
       case "ORGANIZER": {
-        const m = value.match(/mailto:([^>]+)/i);
+        const m = value.match(ICAL_MAILTO_RE);
         if (m?.[1]) {
           cur.organizer_email = m[1];
         }
         break;
       }
       case "ATTENDEE": {
-        const m = value.match(/mailto:([^>]+)/i);
+        const m = value.match(ICAL_MAILTO_RE);
         if (m?.[1]) {
           cur.attendees.push({
             email: m[1],
@@ -205,158 +193,98 @@ async function fetchIcs(url: string): Promise<string> {
   return res.text();
 }
 
-async function main(): Promise<void> {
-  const startMsg = await new Promise<StartMessage>((r, j) =>
-    rl.once("line", (l) => {
-      try {
-        r(JSON.parse(l) as StartMessage);
-      } catch (e) {
-        j(e);
+runConnector({
+  name: "ical",
+  retryablePattern: RETRYABLE_FETCH_RE,
+  async collect({ state, emit, emitRecord, progress }) {
+    const dir =
+      process.env.ICAL_IMPORT_DIR || join(homedir(), ".pdpp/imports/ical");
+    const subscriptionUrls = (process.env.ICAL_SUBSCRIPTION_URL || "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+
+    const sources: IcsSource[] = [];
+    try {
+      if (existsSync(dir)) {
+        const files = (await readdir(dir)).filter((f) =>
+          f.toLowerCase().endsWith(".ics")
+        );
+        for (const f of files) {
+          sources.push({
+            name: f.replace(ICS_EXT_RE, ""),
+            text: await readFile(join(dir, f), "utf8"),
+          });
+        }
       }
-    })
-  );
-  if (startMsg.type !== "START") {
-    return fail("Expected START");
-  }
-
-  const requested = new Map<string, StreamScope>(
-    (startMsg.scope?.streams || []).map((s) => [s.name, s])
-  );
-  if (!requested.size) {
-    return fail("START.scope.streams is required");
-  }
-
-  const dir =
-    process.env.ICAL_IMPORT_DIR || join(homedir(), ".pdpp/imports/ical");
-  const subscriptionUrls = (process.env.ICAL_SUBSCRIPTION_URL || "")
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
-
-  const sources: IcsSource[] = [];
-  try {
-    if (existsSync(dir)) {
-      const files = (await readdir(dir)).filter((f) =>
-        f.toLowerCase().endsWith(".ics")
-      );
-      for (const f of files) {
-        sources.push({
-          name: f.replace(/\.ics$/i, ""),
-          text: await readFile(join(dir, f), "utf8"),
+    } catch {
+      /* ignore */
+    }
+    for (const url of subscriptionUrls) {
+      try {
+        const text = await fetchIcs(url);
+        sources.push({ name: new URL(url).hostname, text });
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        await emit({
+          type: "SKIP_RESULT",
+          stream: "events",
+          reason: "ics_fetch_failed",
+          message: msg,
         });
       }
     }
-  } catch {
-    /* ignore */
-  }
-  for (const url of subscriptionUrls) {
-    try {
-      const text = await fetchIcs(url);
-      sources.push({ name: new URL(url).hostname, text });
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      emit({
+
+    if (!sources.length) {
+      await emit({
         type: "SKIP_RESULT",
         stream: "events",
-        reason: "ics_fetch_failed",
-        message: msg,
+        reason: "no_calendar_sources",
+        message: `no .ics files in ${dir} and no ICAL_SUBSCRIPTION_URL set`,
       });
-    }
-  }
-
-  if (!sources.length) {
-    emit({
-      type: "SKIP_RESULT",
-      stream: "events",
-      reason: "no_calendar_sources",
-      message: `no .ics files in ${dir} and no ICAL_SUBSCRIPTION_URL set`,
-    });
-    emit({ type: "DONE", status: "succeeded", records_emitted: 0 });
-    process.exit(0);
-  }
-
-  const state = startMsg.state || {};
-  const emittedAt = nowIso();
-  let total = 0;
-  const _resFilters = new Map<string, ReadonlySet<string> | null>(
-    (startMsg.scope?.streams || []).map((sr) => [sr.name, resourceSet(sr)])
-  );
-  const emitRecord = (s: string, d: RecordData): void => {
-    if (d.id == null) {
       return;
     }
-    const _rs = _resFilters.get(s);
-    if (_rs && !_rs.has(String(d.id))) {
-      return;
+
+    const typedState = state as IcalState;
+    const sinceStart = typedState.events?.latest_start;
+    let latest: string | undefined = sinceStart;
+
+    for (const src of sources) {
+      await progress(`Parsing ${src.name}`, { stream: "events" });
+      const events = parseIcs(src.text, src.name);
+      for (const e of events) {
+        if (!(e.uid && e.start)) {
+          continue;
+        }
+        if (sinceStart && e.start <= sinceStart) {
+          continue;
+        }
+        const id = hashId(`${src.name}|${e.uid}|${e.start}`);
+        await emitRecord("events", {
+          id,
+          calendar_name: src.name,
+          summary: e.summary ?? null,
+          description: e.description ?? null,
+          location: e.location ?? null,
+          start: e.start,
+          end: e.end ?? null,
+          all_day: !!e.all_day,
+          organizer_email: e.organizer_email ?? null,
+          attendees: e.attendees ?? [],
+          status: e.status ?? null,
+          rrule: e.rrule ?? null,
+          uid: e.uid,
+        });
+        if (!latest || e.start > latest) {
+          latest = e.start;
+        }
+      }
     }
-    emit({
-      type: "RECORD",
-      stream: s,
-      key: d.id,
-      data: d,
-      emitted_at: emittedAt,
-    });
-    total++;
-  };
 
-  const sinceStart = state.events?.latest_start;
-  let latest: string | undefined = sinceStart;
-
-  for (const src of sources) {
-    emit({
-      type: "PROGRESS",
+    await emit({
+      type: "STATE",
       stream: "events",
-      message: `Parsing ${src.name}`,
+      cursor: { latest_start: latest },
     });
-    const events = parseIcs(src.text, src.name);
-    for (const e of events) {
-      if (!(e.uid && e.start)) {
-        continue;
-      }
-      if (sinceStart && e.start <= sinceStart) {
-        continue;
-      }
-      const id = hashId(`${src.name}|${e.uid}|${e.start}`);
-      emitRecord("events", {
-        id,
-        calendar_name: src.name,
-        summary: e.summary ?? null,
-        description: e.description ?? null,
-        location: e.location ?? null,
-        start: e.start,
-        end: e.end ?? null,
-        all_day: !!e.all_day,
-        organizer_email: e.organizer_email ?? null,
-        attendees: e.attendees ?? [],
-        status: e.status ?? null,
-        rrule: e.rrule ?? null,
-        uid: e.uid,
-      });
-      if (!latest || e.start > latest) {
-        latest = e.start;
-      }
-    }
-  }
-
-  emit({
-    type: "STATE",
-    stream: "events",
-    cursor: { latest_start: latest },
-  });
-  emit({ type: "DONE", status: "succeeded", records_emitted: total });
-  flushAndExit(0);
-}
-
-main().catch((e: unknown) => {
-  const msg = e instanceof Error ? e.message : String(e);
-  emit({
-    type: "DONE",
-    status: "failed",
-    records_emitted: 0,
-    error: {
-      message: msg,
-      retryable: /ECONN|fetch failed/i.test(msg),
-    },
-  });
-  flushAndExit(1);
+  },
 });

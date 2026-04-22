@@ -15,7 +15,7 @@
  * absent. Required fields (id, order_date) must be present.
  */
 
-import { z } from 'zod';
+import { z } from "zod";
 
 // Payment summary must either be null, a card/digital-wallet style string,
 // or an explicit mixed-payment line ("Amazon gift card balance Visa ending
@@ -26,10 +26,10 @@ const paymentMethodSchema = z
   .min(1)
   .max(200)
   .refine((s) => !/Unable to display|Buy it again|View your item/i.test(s), {
-    message: 'contains cruft or non-answer text',
+    message: "contains cruft or non-answer text",
   })
   .refine((s) => !/\$\d/.test(s), {
-    message: 'contains a dollar amount (likely parse leak)',
+    message: "contains a dollar amount (likely parse leak)",
   })
   .nullable();
 
@@ -38,13 +38,13 @@ const recipientNameSchema = z
   .min(2)
   .max(80)
   .refine((s) => !/[$\t\n]|Buy it again|View your item/i.test(s), {
-    message: 'contains forbidden chars or cruft',
+    message: "contains forbidden chars or cruft",
   })
   .nullable();
 
 const currencyStringSchema = z
   .string()
-  .regex(/^\$\d+(,\d{3})*\.\d{2}$/, 'not a $N.NN formatted currency string')
+  .regex(/^\$\d+(,\d{3})*\.\d{2}$/, "not a $N.NN formatted currency string")
   .nullable();
 
 const centsSchema = z
@@ -56,7 +56,7 @@ const centsSchema = z
 
 const asinSchema = z
   .string()
-  .regex(/^[A-Z0-9]{10}$/, 'ASIN must be 10 uppercase alphanumeric')
+  .regex(/^[A-Z0-9]{10}$/, "ASIN must be 10 uppercase alphanumeric")
   .nullable();
 
 // Item name: non-empty, bounded, must not contain obvious cruft patterns.
@@ -66,16 +66,24 @@ const itemNameSchema = z
   .string()
   .min(2)
   .max(1024)
-  .refine((s) => !/Buy it again|View your item|Get product support|Write a product review/i.test(s), {
-    message: 'contains UI cruft',
-  })
+  .refine(
+    (s) =>
+      !/Buy it again|View your item|Get product support|Write a product review/i.test(
+        s
+      ),
+    {
+      message: "contains UI cruft",
+    }
+  )
   .refine((s) => !/^Sold by/i.test(s), {
     message: 'starts with "Sold by" — name parser captured the wrong span',
   });
 
 export const orderSchema = z.object({
   id: z.string().min(5).max(40),
-  order_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'order_date must be YYYY-MM-DD'),
+  order_date: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, "order_date must be YYYY-MM-DD"),
   order_total: currencyStringSchema,
   order_total_cents: centsSchema,
   delivery_status: z.string().nullable(),
@@ -110,11 +118,13 @@ export const orderItemSchema = z.object({
 // wrong elements, we'd rather see a SKIP_RESULT with diagnostics than
 // silently emit garbage orders.
 export const listPageOrderShape = z.object({
-  orderId: z.string().regex(/^\d{3}-\d{7}-\d{7}$/, 'orderId must match NNN-NNNNNNN-NNNNNNN'),
+  orderId: z
+    .string()
+    .regex(/^\d{3}-\d{7}-\d{7}$/, "orderId must match NNN-NNNNNNN-NNNNNNN"),
   orderDateRaw: z.string().min(4).max(60).nullable(),
   orderTotal: z
     .string()
-    .regex(/^\$[\d,]+\.\d{2}$/, 'orderTotal must be $N.NN when present')
+    .regex(/^\$[\d,]+\.\d{2}$/, "orderTotal must be $N.NN when present")
     .nullable(),
   deliveryStatus: z.string().max(200).nullable(),
   items: z.array(
@@ -128,7 +138,7 @@ export const listPageOrderShape = z.object({
 
 // Map stream name → schema. Single source of truth for what streams this
 // connector produces at shape-check time.
-export const SCHEMAS = {
+export const SCHEMAS: Record<string, z.ZodTypeAny> = {
   orders: orderSchema,
   order_items: orderItemSchema,
 };
@@ -138,15 +148,23 @@ export const SCHEMAS = {
  *   { ok: true, data }  — record is valid
  *   { ok: false, issues } — array of { path, message } describing failures
  */
-export function validateRecord(stream, data) {
+export function validateRecord(
+  stream: string,
+  data: Record<string, unknown>
+):
+  | { ok: true; data: Record<string, unknown> }
+  | { ok: false; issues: Array<{ path: string; message: string }> } {
   const schema = SCHEMAS[stream];
-  if (!schema) return { ok: true, data }; // unknown stream, no validation
+  if (!schema) {
+    return { ok: true, data }; // unknown stream, no validation
+  }
   const result = schema.safeParse(data);
-  if (result.success) return { ok: true, data: result.data };
+  if (result.success) {
+    return { ok: true, data: result.data as Record<string, unknown> };
+  }
   const issues = result.error.issues.map((i) => ({
-    path: i.path.join('.'),
+    path: i.path.join("."),
     message: i.message,
-    code: i.code,
   }));
   return { ok: false, issues };
 }
