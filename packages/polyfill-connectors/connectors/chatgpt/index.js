@@ -58,8 +58,10 @@ async function sendInteractionAndWait(msg) {
   });
 }
 
-// Module-level counter so catch block can report accurate records_emitted.
+// Module-level counters so catch block can report accurate records_emitted
+// and terminal PROGRESS message can see the skipped count even on errors.
 let _totalEmitted = 0;
+let _totalSkipped = 0;
 
 // ChatGPT times are unix seconds (number). Some responses use ISO strings.
 // Normalize both to ISO-8601, swallow errors.
@@ -404,7 +406,6 @@ async function main() {
 
   const state = startMsg.state || {};
   const emittedAt = nowIso();
-  let _totalSkipped = 0;
   // Shape-check per docs/connector-authoring-guide.md §3. Records that
   // fail the Zod schema become SKIP_RESULT instead of poisoning the RS
   // with garbage-that-looks-right. Schemas live in ./schemas.js.
@@ -770,6 +771,9 @@ async function main() {
 main().catch((e) => {
   const msg = e && e.message ? e.message : String(e);
   const retryable = /ECONN|ETIMEDOUT|fetch failed|429/i.test(msg);
+  if (_totalSkipped > 0) {
+    emit({ type: 'PROGRESS', message: `shape-check skipped ${_totalSkipped} record(s) before failure; see SKIP_RESULT events above` });
+  }
   emit({ type: 'DONE', status: 'failed', records_emitted: _totalEmitted, error: { message: msg, retryable } });
   flushAndExit(1);
 });
