@@ -19,7 +19,10 @@
     "noUncheckedIndexedAccess": true,
     "exactOptionalPropertyTypes": true,
     "noImplicitOverride": true,
-    "noPropertyAccessFromIndexSignature": true,
+    // noPropertyAccessFromIndexSignature forces process.env['X'] bracket
+    // access, which Biome's useLiteralKeys rejects. Leaving off —
+    // Biome's stance (prefer dot-access) matches mainstream style.
+    "noPropertyAccessFromIndexSignature": false,
     "noFallthroughCasesInSwitch": true,
     "noImplicitReturns": true,
     "noUnusedLocals": true,
@@ -37,7 +40,14 @@
     // published) happens via a separate build step.
     "noEmit": true,
     "skipLibCheck": true,
-    "types": ["node"]
+    "types": ["node"],
+
+    // We run .ts directly via tsx; no emitted .js to import. Biome's
+    // useImportExtensions enforces explicit .ts extensions on local
+    // imports, and tsx/Node strip them at load time. This matches
+    // Playwright/Stripe/Vercel/vitest's convention for source-only
+    // TypeScript packages.
+    "allowImportingTsExtensions": true
   },
   "include": [
     "src/**/*.ts",
