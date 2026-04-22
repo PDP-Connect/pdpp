@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+
 /**
  * Browser daemon worker. Launches a persistent Chromium context with
  * `--remote-debugging-port=0`, reads the assigned port from Chromium's
@@ -9,6 +10,16 @@
  * this as a detached process.
  */
 
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 // Use patchright which patches the Runtime.Enable CDP leak (the headline
 // fingerprint Akamai/Cloudflare/DataDome classify automated Chromium with)
 // plus Console.Enable, RuntimeInInitial, and other detection vectors. Drop-in
@@ -20,45 +31,48 @@
 // CDP-attach via stock playwright forfeits that layer. We get launch-side
 // stealth here regardless; client-side requires the migration in progress
 // (see docs/connector-authoring-guide.md §2).
-import { chromium } from 'patchright';
-import { existsSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { chromium } from "patchright";
 
-const PROFILE_DIR = join(homedir(), '.pdpp', 'browser-profile');
-const PDPP_DIR = join(homedir(), '.pdpp');
-const DISCOVERY_PATH = join(PDPP_DIR, 'browser-daemon.json');
-const DEVTOOLS_PORT_FILE = join(PROFILE_DIR, 'DevToolsActivePort');
+const PROFILE_DIR = join(homedir(), ".pdpp", "browser-profile");
+const PDPP_DIR = join(homedir(), ".pdpp");
+const DISCOVERY_PATH = join(PDPP_DIR, "browser-daemon.json");
+const DEVTOOLS_PORT_FILE = join(PROFILE_DIR, "DevToolsActivePort");
 
-const BROWSER_CHANNEL = 'chrome';
+const BROWSER_CHANNEL = "chrome";
 const VIEWPORT = { width: 1280, height: 800 };
 // No USER_AGENT override — patchright handles UA spoofing matching the
 // real Chrome channel; overriding undoes it.
 
-function ensureDir(path) {
-  if (!existsSync(path)) mkdirSync(path, { recursive: true, mode: 0o700 });
+function ensureDir(path: string): void {
+  if (!existsSync(path)) {
+    mkdirSync(path, { recursive: true, mode: 0o700 });
+  }
 }
 
-function log(msg) {
+function log(msg: string): void {
   process.stderr.write(`[browser-daemon ${new Date().toISOString()}] ${msg}\n`);
 }
 
-async function waitForDevToolsPort(timeoutMs = 15000) {
+async function waitForDevToolsPort(
+  timeoutMs = 15_000
+): Promise<{ browserPath: string; port: number }> {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     if (existsSync(DEVTOOLS_PORT_FILE)) {
       try {
-        const content = readFileSync(DEVTOOLS_PORT_FILE, 'utf8').trim();
-        const [portStr, browserPath] = content.split('\n');
+        const content = readFileSync(DEVTOOLS_PORT_FILE, "utf8").trim();
+        const [portStr, browserPath] = content.split("\n");
         const port = Number(portStr);
         if (port && browserPath) {
           return { port, browserPath };
         }
-      } catch {}
+      } catch {
+        /* ignore */
+      }
     }
     await new Promise((r) => setTimeout(r, 150));
   }
-  throw new Error('DevToolsActivePort did not appear within timeout');
+  throw new Error("DevToolsActivePort did not appear within timeout");
 }
 
 async function main() {
@@ -67,12 +81,18 @@ async function main() {
 
   const stalePort = existsSync(DEVTOOLS_PORT_FILE);
   if (stalePort) {
-    try { unlinkSync(DEVTOOLS_PORT_FILE); } catch {}
+    try {
+      unlinkSync(DEVTOOLS_PORT_FILE);
+    } catch {
+      /* ignore */
+    }
   }
 
-  const headless = process.env.PDPP_BROWSER_DAEMON_HEADLESS !== '0';
-  const xvfb = process.env.PDPP_BROWSER_DAEMON_XVFB === '1';
-  log(`launching Chromium (headless=${headless}, xvfb=${xvfb}, DISPLAY=${process.env.DISPLAY || '<unset>'}) profile=${PROFILE_DIR}`);
+  const headless = process.env.PDPP_BROWSER_DAEMON_HEADLESS !== "0";
+  const xvfb = process.env.PDPP_BROWSER_DAEMON_XVFB === "1";
+  log(
+    `launching Chromium (headless=${headless}, xvfb=${xvfb}, DISPLAY=${process.env.DISPLAY || "<unset>"}) profile=${PROFILE_DIR}`
+  );
 
   // Minimal args that patchright's README says are safe to set. Do NOT add:
   // `--disable-component-update`, `--disable-default-apps`, `--disable-extensions`,
@@ -87,9 +107,9 @@ async function main() {
   //     stream and races Playwright's CDP-based interception, breaking USAA
   //     downloads after the first one per run).
   const baseArgs = [
-    '--remote-debugging-port=0',
-    '--remote-debugging-address=127.0.0.1',
-    '--disable-features=DownloadBubble,DownloadBubbleV2,DownloadBubbleV3',
+    "--remote-debugging-port=0",
+    "--remote-debugging-address=127.0.0.1",
+    "--disable-features=DownloadBubble,DownloadBubbleV2,DownloadBubbleV3",
   ];
 
   const context = await chromium.launchPersistentContext(PROFILE_DIR, {
@@ -118,31 +138,54 @@ async function main() {
   log(`ready pid=${process.pid} ws=${wsEndpoint}`);
 
   let shuttingDown = false;
-  const shutdown = async (signal) => {
-    if (shuttingDown) return;
+  const shutdown = async (signal: string): Promise<void> => {
+    if (shuttingDown) {
+      return;
+    }
     shuttingDown = true;
     log(`received ${signal}, closing context`);
-    try { await context.close(); } catch (err) { log(`context.close error: ${err.message}`); }
-    try { rmSync(DISCOVERY_PATH, { force: true }); } catch {}
+    try {
+      await context.close();
+    } catch (err) {
+      const m = err instanceof Error ? err.message : String(err);
+      log(`context.close error: ${m}`);
+    }
+    try {
+      rmSync(DISCOVERY_PATH, { force: true });
+    } catch {
+      /* ignore */
+    }
     process.exit(0);
   };
-  process.on('SIGTERM', () => shutdown('SIGTERM'));
-  process.on('SIGINT', () => shutdown('SIGINT'));
-  process.on('SIGHUP', () => shutdown('SIGHUP'));
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
+  process.on("SIGINT", () => shutdown("SIGINT"));
+  process.on("SIGHUP", () => shutdown("SIGHUP"));
 
   // If the browser itself dies, tear down.
-  context.on('close', () => {
-    log('context closed externally');
-    try { rmSync(DISCOVERY_PATH, { force: true }); } catch {}
+  context.on("close", () => {
+    log("context closed externally");
+    try {
+      rmSync(DISCOVERY_PATH, { force: true });
+    } catch {
+      /* ignore */
+    }
     process.exit(0);
   });
 
   // Keep event loop alive.
-  setInterval(() => {}, 1 << 30);
+  setInterval(() => {
+    /* heartbeat no-op */
+    // biome-ignore lint/suspicious/noBitwiseOperators: large integer via shift is idiomatic for "max interval"
+  }, 1 << 30);
 }
 
-main().catch((err) => {
-  log(`fatal: ${err.stack || err.message}`);
-  try { rmSync(DISCOVERY_PATH, { force: true }); } catch {}
+main().catch((err: unknown) => {
+  const msg = err instanceof Error ? err.stack || err.message : String(err);
+  log(`fatal: ${msg}`);
+  try {
+    rmSync(DISCOVERY_PATH, { force: true });
+  } catch {
+    /* ignore */
+  }
   process.exit(1);
 });

@@ -17,17 +17,17 @@
  * manifest are strictly present.
  */
 
-import { z } from 'zod';
+import { z } from "zod";
 
 // ─── Shared atoms ──────────────────────────────────────────────────────
 
 const dateString = z
   .string()
-  .regex(/^\d{4}-\d{2}-\d{2}$/, 'must be YYYY-MM-DD');
+  .regex(/^\d{4}-\d{2}-\d{2}$/, "must be YYYY-MM-DD");
 
 const isoTimestamp = z
   .string()
-  .regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/, 'must be ISO-8601 timestamp');
+  .regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/, "must be ISO-8601 timestamp");
 
 // Cents can be any integer (transactions sign negatively; balances can be
 // negative for overdrawn accounts). Keep a sane upper bound — $100M is
@@ -40,12 +40,16 @@ const nonNegativeCents = z.number().int().min(0).max(10_000_000_000);
 const accountIdSchema = z.string().min(1).max(64);
 
 // Generic cruft guard: string must not look like a UI label or innerText leak.
-const CRUFT_PATTERNS = /Loading|Please wait|undefined|\[object Object\]|<[a-z]+>|\n\n/i;
-const cleanString = (maxLen) => z
-  .string()
-  .min(1)
-  .max(maxLen)
-  .refine((s) => !CRUFT_PATTERNS.test(s), { message: 'looks like DOM/UI cruft' });
+const CRUFT_PATTERNS =
+  /Loading|Please wait|undefined|\[object Object\]|<[a-z]+>|\n\n/i;
+const cleanString = (maxLen: number) =>
+  z
+    .string()
+    .min(1)
+    .max(maxLen)
+    .refine((s) => !CRUFT_PATTERNS.test(s), {
+      message: "looks like DOM/UI cruft",
+    });
 
 // ─── accounts ───────────────────────────────────────────────────────────
 
@@ -54,7 +58,10 @@ export const accountSchema = z.object({
   name: cleanString(120).nullable(),
   type: z.string().min(1).max(60).nullable(),
   // last_four is exactly 4 digits when present
-  last_four: z.string().regex(/^\d{4}$/, 'must be 4 digits').nullable(),
+  last_four: z
+    .string()
+    .regex(/^\d{4}$/, "must be 4 digits")
+    .nullable(),
   balance_cents: cents.nullable(),
   available_balance_cents: cents.nullable(),
   status: z.string().min(1).max(40).nullable(),
@@ -65,21 +72,29 @@ export const accountSchema = z.object({
 
 export const transactionSchema = z.object({
   // id is a 32-char hex hash (first 32 chars of SHA-256)
-  id: z.string().regex(/^[0-9a-f]{32}$/i, 'must be 32-char hex hash'),
+  id: z.string().regex(/^[0-9a-f]{32}$/i, "must be 32-char hex hash"),
   account_id: accountIdSchema,
   account_name: cleanString(120).nullable(),
   date: dateString,
   amount: cents,
   // USD only today; schema is open to future currencies
-  currency: z.string().regex(/^[A-Z]{3}$/, 'must be ISO-4217 3-letter code'),
+  currency: z.string().regex(/^[A-Z]{3}$/, "must be ISO-4217 3-letter code"),
   description: cleanString(300).nullable(),
   original_description: cleanString(300).nullable(),
   category: z.string().min(1).max(60).nullable(),
   // Check number: 1-6 digit string when present
-  check_number: z.string().regex(/^\d{1,8}$/, 'must be 1-8 digit number').nullable(),
+  check_number: z
+    .string()
+    .regex(/^\d{1,8}$/, "must be 1-8 digit number")
+    .nullable(),
   balance_after_cents: cents.nullable(),
   // source is either "csv_export" or "pdf_statement_YYYY-MM"
-  source: z.string().regex(/^(csv_export|pdf_statement_\d{4}-\d{2})$/, 'must be csv_export or pdf_statement_YYYY-MM'),
+  source: z
+    .string()
+    .regex(
+      /^(csv_export|pdf_statement_\d{4}-\d{2})$/,
+      "must be csv_export or pdf_statement_YYYY-MM"
+    ),
   fetched_at: isoTimestamp,
 });
 
@@ -95,7 +110,10 @@ export const statementSchema = z.object({
   // Local file path (file:// URL) or blob reference
   pdf_path: z.string().min(1).max(500).nullable(),
   // SHA-256 = 64 hex chars
-  pdf_sha256: z.string().regex(/^[0-9a-f]{64}$/i, 'must be SHA-256 hex').nullable(),
+  pdf_sha256: z
+    .string()
+    .regex(/^[0-9a-f]{64}$/i, "must be SHA-256 hex")
+    .nullable(),
   fetched_at: isoTimestamp,
 });
 
@@ -120,8 +138,14 @@ export const creditCardBillingSchema = z.object({
   available_credit_cents: nonNegativeCents.nullable(),
   credit_limit_cents: nonNegativeCents.nullable(),
   // APRs are strings like "24.99%" (kept as text to preserve display precision)
-  annual_percent_rate: z.string().regex(/^-?\d+\.?\d*%?$/, 'must be percentage').nullable(),
-  cash_advance_apr: z.string().regex(/^-?\d+\.?\d*%?$/, 'must be percentage').nullable(),
+  annual_percent_rate: z
+    .string()
+    .regex(/^-?\d+\.?\d*%?$/, "must be percentage")
+    .nullable(),
+  cash_advance_apr: z
+    .string()
+    .regex(/^-?\d+\.?\d*%?$/, "must be percentage")
+    .nullable(),
   cash_rewards_cents: cents.nullable(),
   billing_status: z.string().min(1).max(80).nullable(),
   minimum_payment_met: z.boolean().nullable(),
@@ -131,7 +155,7 @@ export const creditCardBillingSchema = z.object({
 
 // ─── Registry ───────────────────────────────────────────────────────────
 
-export const SCHEMAS = {
+export const SCHEMAS: Record<string, z.ZodTypeAny> = {
   accounts: accountSchema,
   transactions: transactionSchema,
   statements: statementSchema,
@@ -143,15 +167,23 @@ export const SCHEMAS = {
  * Validate a record against its stream's schema.
  * Returns { ok: true, data } on pass, { ok: false, issues } on fail.
  */
-export function validateRecord(stream, data) {
+export function validateRecord(
+  stream: string,
+  data: Record<string, unknown>
+):
+  | { ok: true; data: Record<string, unknown> }
+  | { ok: false; issues: Array<{ path: string; message: string }> } {
   const schema = SCHEMAS[stream];
-  if (!schema) return { ok: true, data };
+  if (!schema) {
+    return { ok: true, data };
+  }
   const result = schema.safeParse(data);
-  if (result.success) return { ok: true, data: result.data };
+  if (result.success) {
+    return { ok: true, data: result.data as Record<string, unknown> };
+  }
   const issues = result.error.issues.map((i) => ({
-    path: i.path.join('.'),
+    path: i.path.join("."),
     message: i.message,
-    code: i.code,
   }));
   return { ok: false, issues };
 }
