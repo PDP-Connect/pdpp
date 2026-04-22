@@ -19,11 +19,11 @@ The next tranche should be re-ordered around the actual blocking seams, not the 
 
 ### Risk
 
-[next-code-tranche-review.md](/home/user/code/pdpp/docs/archive/2026-04-e2e-superseded/next-code-tranche-review.md:1) is framed as “after the pending-consent seam and the initial owner-path CLI tranche”, but current code already has:
+[next-code-tranche-review.md](/docs/archive/2026-04-e2e-superseded/next-code-tranche-review.md:1) is framed as “after the pending-consent seam and the initial owner-path CLI tranche”, but current code already has:
 
-- DB-backed `pending_consents` in [e2e/server/db.js](/home/user/code/pdpp/e2e/server/db.js:1)
-- pending-consent persistence in [e2e/server/auth.js](/home/user/code/pdpp/e2e/server/auth.js:1)
-- a real CLI entrypoint and command surface in [e2e/cli/index.js](/home/user/code/pdpp/e2e/cli/index.js:1)
+- DB-backed `pending_consents` in [e2e/server/db.js](/e2e/server/db.js:1)
+- pending-consent persistence in [e2e/server/auth.js](/e2e/server/auth.js:1)
+- a real CLI entrypoint and command surface in [e2e/cli/index.js](/e2e/cli/index.js:1)
 
 ### Why it matters
 
@@ -51,9 +51,9 @@ But current AS/grant code still fundamentally depends on connector semantics:
 - it resolves a connector manifest by `connector_id`
 - it builds the grant from that connector-centric shape
 
-See [e2e/server/auth.js](/home/user/code/pdpp/e2e/server/auth.js:1).
+See [e2e/server/auth.js](/e2e/server/auth.js:1).
 
-At the same time, [request-shape-cutover-plan.md](/home/user/code/pdpp/docs/archive/2026-04-e2e-superseded/request-shape-cutover-plan.md:1) still proposes a “canonical” internal request object whose core selection object includes `connector_id`.
+At the same time, [request-shape-cutover-plan.md](/docs/archive/2026-04-e2e-superseded/request-shape-cutover-plan.md:1) still proposes a “canonical” internal request object whose core selection object includes `connector_id`.
 
 ### Why it matters
 
@@ -77,7 +77,7 @@ Without that order, “native path” will be cosmetic.
 
 ### Risk
 
-[request-shape-cutover-plan.md](/home/user/code/pdpp/docs/archive/2026-04-e2e-superseded/request-shape-cutover-plan.md:1) is good as a transport cutover plan, but its proposed canonical object still centers:
+[request-shape-cutover-plan.md](/docs/archive/2026-04-e2e-superseded/request-shape-cutover-plan.md:1) is good as a transport cutover plan, but its proposed canonical object still centers:
 
 - `selection.connector_id`
 
@@ -111,8 +111,8 @@ The plans and owner decisions want the CLI to be a canary for clean engine surfa
 
 But the live CLI still depends on old assumptions:
 
-- owner commands require `--connector-id` for all owner queries in [e2e/cli/commands/owner.js](/home/user/code/pdpp/e2e/cli/commands/owner.js:1)
-- `grant token` directly calls the compat/demo helper route `/grants/:grantId/tokens` in [e2e/cli/commands/grant.js](/home/user/code/pdpp/e2e/cli/commands/grant.js:1)
+- owner commands require `--connector-id` for all owner queries in [e2e/cli/commands/owner.js](/e2e/cli/commands/owner.js:1)
+- `grant token` directly calls the compat/demo helper route `/grants/:grantId/tokens` in [e2e/cli/commands/grant.js](/e2e/cli/commands/grant.js:1)
 - there is no provider discovery, no metadata inspection, and no owner login flow in the CLI
 
 ### Why it matters
@@ -153,7 +153,7 @@ But the live auth substrate still looks like:
 - no RFC 9728 metadata
 - no RFC 8628 device authorization endpoint
 
-See [e2e/server/index.js](/home/user/code/pdpp/e2e/server/index.js:1).
+See [e2e/server/index.js](/e2e/server/index.js:1).
 
 ### Why it matters
 
@@ -177,14 +177,14 @@ Otherwise “compat-only” will remain true in prose and false in practice.
 
 ### Risk
 
-[next-code-tranche-review.md](/home/user/code/pdpp/docs/archive/2026-04-e2e-superseded/next-code-tranche-review.md:1) calls for native-path tests proving that no `connector_id` is required in the native query path.
+[next-code-tranche-review.md](/docs/archive/2026-04-e2e-superseded/next-code-tranche-review.md:1) calls for native-path tests proving that no `connector_id` is required in the native query path.
 
 But the current owner-facing CLI and RS usage pattern is still explicitly connector-shaped:
 
 - owner stream listing and owner query require `connector_id`
 - the demo client and seed flows assume connector-scoped source selection
 
-See [e2e/cli/commands/owner.js](/home/user/code/pdpp/e2e/cli/commands/owner.js:1) and [e2e/client/demo.js](/home/user/code/pdpp/e2e/client/demo.js:1).
+See [e2e/cli/commands/owner.js](/e2e/cli/commands/owner.js:1) and [e2e/client/demo.js](/e2e/client/demo.js:1).
 
 ### Why it matters
 
@@ -208,13 +208,13 @@ Do not let native-path proof proceed without an explicit answer to that seam.
 
 ### Risk
 
-[grant-scoped-state-implementation-plan.md](/home/user/code/pdpp/docs/archive/2026-04-e2e-superseded/grant-scoped-state-implementation-plan.md:1) is disciplined and narrow. But the current stack has no real caller yet that runs:
+[grant-scoped-state-implementation-plan.md](/docs/archive/2026-04-e2e-superseded/grant-scoped-state-implementation-plan.md:1) is disciplined and narrow. But the current stack has no real caller yet that runs:
 
 - a `continuous` grant
 - through the runtime
 - with a `grantId`-aware orchestration path
 
-Today the runtime does not receive `grantId`, and the scheduler is still an experimental helper in [e2e/runtime/scheduler.js](/home/user/code/pdpp/e2e/runtime/scheduler.js:1).
+Today the runtime does not receive `grantId`, and the scheduler is still an experimental helper in [e2e/runtime/scheduler.js](/e2e/runtime/scheduler.js:1).
 
 ### Why it matters
 
@@ -245,7 +245,7 @@ But current code has:
 - no trace emission layer
 - no CLI trace commands
 
-And [next-code-tranche-review.md](/home/user/code/pdpp/docs/archive/2026-04-e2e-superseded/next-code-tranche-review.md:1) still defers the full event/trace spine.
+And [next-code-tranche-review.md](/docs/archive/2026-04-e2e-superseded/next-code-tranche-review.md:1) still defers the full event/trace spine.
 
 ### Why it matters
 
@@ -269,11 +269,11 @@ The latter is probably better, but it needs to be explicit.
 
 ### Risk
 
-[e2e-reference-implementation-plan.md](/home/user/code/pdpp/docs/archive/2026-04-e2e-superseded/e2e-reference-implementation-plan.md:1) says the working standard should point implementers to:
+[e2e-reference-implementation-plan.md](/docs/archive/2026-04-e2e-superseded/e2e-reference-implementation-plan.md:1) says the working standard should point implementers to:
 
 - `e2e/client/` and `e2e/cli/` for consumer behavior
 
-But the only substantial `e2e/client/` consumer is still the old demo in [e2e/client/demo.js](/home/user/code/pdpp/e2e/client/demo.js:1), which:
+But the only substantial `e2e/client/` consumer is still the old demo in [e2e/client/demo.js](/e2e/client/demo.js:1), which:
 
 - uses the old `/owner-token` helper
 - uses the flat `/grants/initiate` shape

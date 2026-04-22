@@ -757,7 +757,7 @@ Outcome:
 
 Tasks:
 
-1. Replace the placeholder [e2e/index.md](/home/user/code/pdpp/e2e/index.md:1) with a real overview.
+1. Replace the placeholder [e2e/index.md](/e2e/index.md:1) with a real overview.
 2. Document:
    - the topology
    - the two realization paths

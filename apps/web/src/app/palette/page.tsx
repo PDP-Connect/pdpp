@@ -58,8 +58,8 @@ export default function PalettePage() {
                 <div style={{ width: '14px', height: '14px', borderRadius: '3px', backgroundColor: swatch, flexShrink: 0, boxShadow: 'inset 0 0 0 1px oklch(0 0 0 / 0.1)', marginTop: '10px' }} />
                 <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '2px' }}>
                   <div style={{ borderLeft: `2px solid ${border}`, paddingLeft: '12px', paddingTop: '8px', paddingBottom: '8px', background: `linear-gradient(to right, ${wash}, transparent 60%)` }}>
-                    <div style={{ fontSize: '0.875rem', fontWeight: 500 }}>the owner Nunamaker</div>
-                    <div style={{ fontSize: '0.75rem', color: 'var(--muted-foreground)' }}>instagram.com/the owner · owner</div>
+                    <div style={{ fontSize: '0.875rem', fontWeight: 500 }}>Alex Rivera</div>
+                    <div style={{ fontSize: '0.75rem', color: 'var(--muted-foreground)' }}>instagram.com/alex · owner</div>
                   </div>
                   <div style={{ borderLeft: `2px solid ${PROTOCOL_BLUE}`, paddingLeft: '12px', paddingTop: '8px', paddingBottom: '8px', background: `linear-gradient(to right, oklch(0.580 0.172 253.7 / 0.04), transparent 60%)` }}>
                     <div style={{ fontSize: '0.75rem', fontFamily: 'var(--font-mono)', color: 'var(--muted-foreground)' }}>grt_8f3a2b1c · single_use · §4.2</div>

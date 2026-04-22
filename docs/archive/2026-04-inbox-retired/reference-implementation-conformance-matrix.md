@@ -42,8 +42,8 @@ Why first:
 
 Primary artifacts:
 
-- [pdpp-provider-connect-profile-outline.md](/home/user/code/pdpp/docs/archive/2026-04-inbox-retired/pdpp-provider-connect-profile-outline.md:1)
-- [spec-auth-design.md](/home/user/code/pdpp/spec-auth-design.md:1)
+- [pdpp-provider-connect-profile-outline.md](/docs/archive/2026-04-inbox-retired/pdpp-provider-connect-profile-outline.md:1)
+- [spec-auth-design.md](/spec-auth-design.md:1)
 
 ### 2. Native-provider path
 
@@ -54,7 +54,7 @@ Why second:
 
 Primary artifacts:
 
-- [native-provider-contract-audit.md](/home/user/code/pdpp/docs/archive/2026-04-inbox-retired/native-provider-contract-audit.md:1)
+- [native-provider-contract-audit.md](/docs/archive/2026-04-inbox-retired/native-provider-contract-audit.md:1)
 
 ### 3. Owner self-export
 

@@ -5,8 +5,8 @@
  * No state changes. Just observes.
  */
 
-import { acquireBrowser } from '/home/user/code/pdpp/packages/polyfill-connectors/src/browser-profile.js';
-import { attachDownloadQueue } from '/home/user/code/pdpp/packages/polyfill-connectors/src/download-queue.js';
+import { acquireBrowser } from '../src/browser-profile.js';
+import { attachDownloadQueue } from '../src/download-queue.js';
 
 const ACCOUNT_ID = '0002-qjnDfcbON1LHLxlg2AtzmEHo'; // Checking 3602
 

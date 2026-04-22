@@ -22,7 +22,7 @@ This is the smallest safe path because the current connector assumption is conce
 
 ## Current seam
 
-The current public leak is at the RS boundary in [e2e/server/index.js](/home/user/code/pdpp/e2e/server/index.js:299):
+The current public leak is at the RS boundary in [e2e/server/index.js](/e2e/server/index.js:299):
 
 - owner `GET /v1/streams` requires `connector_id`
 - owner `GET /v1/streams/:stream` requires `connector_id`
@@ -30,9 +30,9 @@ The current public leak is at the RS boundary in [e2e/server/index.js](/home/use
 - owner `GET /v1/streams/:stream/records/:id` requires `connector_id`
 - owner delete/reset paths require `connector_id`
 
-The internal query/storage layer in [e2e/server/records.js](/home/user/code/pdpp/e2e/server/records.js:279) is still keyed by `connectorId`, but that is acceptable for now. It is an implementation detail, not the public RS contract.
+The internal query/storage layer in [e2e/server/records.js](/e2e/server/records.js:279) is still keyed by `connectorId`, but that is acceptable for now. It is an implementation detail, not the public RS contract.
 
-The owner CLI in [e2e/cli/commands/owner.js](/home/user/code/pdpp/e2e/cli/commands/owner.js:1) mirrors the leak by hard-requiring `--connector-id` for all owner commands.
+The owner CLI in [e2e/cli/commands/owner.js](/e2e/cli/commands/owner.js:1) mirrors the leak by hard-requiring `--connector-id` for all owner commands.
 
 So the first correction should happen at:
 
@@ -77,7 +77,7 @@ This keeps the public RS contract clean for native deployments without forcing a
 
 ## 2. Limit the code change to RS route wiring
 
-Apply the resolver in [e2e/server/index.js](/home/user/code/pdpp/e2e/server/index.js:299) before calling:
+Apply the resolver in [e2e/server/index.js](/e2e/server/index.js:299) before calling:
 
 - `listAllStreams`
 - `listStreams`
@@ -114,7 +114,7 @@ For the first native-provider seam, `connectorId` can remain an internal lookup 
 
 ## 4. Split owner CLI UX by realization
 
-Update [e2e/cli/commands/owner.js](/home/user/code/pdpp/e2e/cli/commands/owner.js:1) so that:
+Update [e2e/cli/commands/owner.js](/e2e/cli/commands/owner.js:1) so that:
 
 - native provider mode does **not** require `--connector-id`
 - polyfill mode still does

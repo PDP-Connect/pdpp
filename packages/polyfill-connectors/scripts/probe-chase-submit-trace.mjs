@@ -9,7 +9,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { config as loadEnv } from 'dotenv';
 
-loadEnv({ path: '/home/user/code/pdpp/.env.local' });
+loadEnv({ path: new URL('../../../.env.local', import.meta.url) });
 
 const d = JSON.parse(readFileSync(join(homedir(), '.pdpp', 'browser-daemon.json'), 'utf8'));
 const browser = await chromium.connectOverCDP(d.wsEndpoint);

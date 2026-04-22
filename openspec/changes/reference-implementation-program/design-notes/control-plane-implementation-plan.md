@@ -74,7 +74,7 @@ Start control-plane work without weakening the current architectural guarantees.
 
 ### Implementation notes
 
-- keep [apps/web/src/app/dashboard/lib/dashboard-access.ts](/home/user/code/pdpp/apps/web/src/app/dashboard/lib/dashboard-access.ts:1) as the local-first gate
+- keep [apps/web/src/app/dashboard/lib/dashboard-access.ts](/apps/web/src/app/dashboard/lib/dashboard-access.ts:1) as the local-first gate
 - treat any new server helper as read-only and reference-designated, not browser-only glue
 - avoid mutation routes in `apps/web` unless they merely proxy already-existing, already-proved CLI/HTTP flows
 
@@ -292,9 +292,9 @@ Preserve the useful owner-record browsing workflows while making them subordinat
 
 ### Existing code to adapt
 
-- [apps/web/src/app/dashboard/page.tsx](/home/user/code/pdpp/apps/web/src/app/dashboard/page.tsx:1)
-- [apps/web/src/app/dashboard/search/page.tsx](/home/user/code/pdpp/apps/web/src/app/dashboard/search/page.tsx:1)
-- [apps/web/src/app/dashboard/lib/timeline.ts](/home/user/code/pdpp/apps/web/src/app/dashboard/lib/timeline.ts:1)
+- [apps/web/src/app/dashboard/page.tsx](/apps/web/src/app/dashboard/page.tsx:1)
+- [apps/web/src/app/dashboard/search/page.tsx](/apps/web/src/app/dashboard/search/page.tsx:1)
+- [apps/web/src/app/dashboard/lib/timeline.ts](/apps/web/src/app/dashboard/lib/timeline.ts:1)
 - `apps/web/src/app/dashboard/records/[connector]/[stream]/[recordKey]/page.tsx`
 
 ### Migration rule

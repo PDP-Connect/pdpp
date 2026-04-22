@@ -1189,8 +1189,8 @@ function SurfacesSection() {
                 paddingBottom: '10px',
               }}
             >
-              <div className="text-sm font-medium">the owner Nunamaker</div>
-              <div className="font-mono text-[11px]" style={{ color: 'var(--muted-foreground)', marginTop: '2px' }}>instagram.com/the owner · owner</div>
+              <div className="text-sm font-medium">Alex Rivera</div>
+              <div className="font-mono text-[11px]" style={{ color: 'var(--muted-foreground)', marginTop: '2px' }}>instagram.com/alex · owner</div>
             </div>
             {/* Protocol row */}
             <div
@@ -1239,8 +1239,8 @@ function SurfacesSection() {
                       marginBottom: '2px',
                     }}
                   >
-                    <div className="text-sm font-medium">the owner Nunamaker</div>
-                    <div className="font-mono text-[10px]" style={{ color: 'var(--muted-foreground)', marginTop: '1px' }}>instagram.com/the owner · owner</div>
+                    <div className="text-sm font-medium">Alex Rivera</div>
+                    <div className="font-mono text-[10px]" style={{ color: 'var(--muted-foreground)', marginTop: '1px' }}>instagram.com/alex · owner</div>
                   </div>
                   {/* Protocol row inside the card */}
                   <div

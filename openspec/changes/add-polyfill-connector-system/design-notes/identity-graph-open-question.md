@@ -43,7 +43,7 @@ Document the pattern, let consumers build the graph if they need it. No spec cha
 
 ## Technical complications
 
-- **Identity resolution is hard.** Same person can be `the owner@vana.com`, `the owner.nunamaker@gmail.com`, `owner` on GitHub, `U04BB6JH7EU` on Slack. No canonical cross-internet handle exists (ATProto DIDs, Keybase proofs are promising but not universal).
+- **Identity resolution is hard.** Same person can be `alex@example.com`, `alex.rivera@personal.example`, `arivera` on GitHub, `U01234567AB` on Slack. No canonical cross-internet handle exists (ATProto DIDs, Keybase proofs are promising but not universal).
 - **Consent surface grows.** "This grant includes identity-graph access" has to be expressible separately from per-connector consent — the graph can reveal things individual streams don't (meta-information attack surface).
 - **Privacy asymmetry.** The people in your graph didn't consent to being aggregated across your connectors. A `contacts` stream already has this property; a cross-connector graph amplifies it.
 - **Failure modes of dedup.** False merges ("two Jane Smiths become one") are worse than false splits in most use cases, but the spec would have to take a position on precision-vs-recall defaults.

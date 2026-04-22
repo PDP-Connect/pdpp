@@ -111,7 +111,7 @@ State shape:
 ## Tonight's status (2026-04-19)
 **Cannot run.** the owner's wife's phone holds the Amazon 2FA factor. Connector is fully scaffolded: manifest, connector script, selectors. On the owner's return, `pdpp-connectors browser bootstrap amazon` will trigger the 2FA (wife awake) and then the connector runs without further interaction.
 
-**Prior art source file:** `/home/user/code/data-connectors/amazon/amazon-playwright.js` (492 lines). We're porting its selector knowledge without carrying forward its global `page` coupling or its flat scoped-blob output shape.
+**Prior art source file:** `(prior art path, external)/amazon/amazon-playwright.js` (492 lines). We're porting its selector knowledge without carrying forward its global `page` coupling or its flat scoped-blob output shape.
 
 ## Explicit non-goals v1
 - Write operations (we never modify orders).

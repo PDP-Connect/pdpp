@@ -33,7 +33,7 @@ There are two distinct things getting conflated:
    - whether that means `connector_id`
    - whether the request resolves against a native provider or a polyfill path
 
-The current auth code in [e2e/server/auth.js](/home/user/code/pdpp/e2e/server/auth.js:1) needs both today, but it does not follow that both should live in the same semantic object forever.
+The current auth code in [e2e/server/auth.js](/e2e/server/auth.js:1) needs both today, but it does not follow that both should live in the same semantic object forever.
 
 The cutover object should therefore be judged by a simple test:
 

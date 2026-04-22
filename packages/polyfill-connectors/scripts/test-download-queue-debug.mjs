@@ -2,7 +2,7 @@
  * Minimal debug: does context.on('download') fire at all via CDP?
  */
 import { createServer } from 'node:http';
-import { acquireBrowser } from '/home/user/code/pdpp/packages/polyfill-connectors/src/browser-profile.js';
+import { acquireBrowser } from '../src/browser-profile.js';
 
 function makeServer() {
   return new Promise((resolve) => {

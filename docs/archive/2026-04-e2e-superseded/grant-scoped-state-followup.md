@@ -19,23 +19,23 @@ That gives the reference a truthful `continuous` grant state seam without preten
 
 ### Server
 
-- [e2e/server/db.js](/home/user/code/pdpp/e2e/server/db.js:1)
+- [e2e/server/db.js](/e2e/server/db.js:1)
   - stores sync state only in `connector_state`
   - key is `(connector_id, stream)`
-- [e2e/server/records.js](/home/user/code/pdpp/e2e/server/records.js:693)
+- [e2e/server/records.js](/e2e/server/records.js:693)
   - `getSyncState(connectorId)` and `putSyncState(connectorId, stateMap)` are connector-global only
-- [e2e/server/index.js](/home/user/code/pdpp/e2e/server/index.js:543)
+- [e2e/server/index.js](/e2e/server/index.js:543)
   - exposes `GET /v1/state/:connectorId`
   - exposes `PUT /v1/state/:connectorId`
   - neither route accepts `grant_id`
 
 ### Runtime
 
-- [e2e/runtime/index.js](/home/user/code/pdpp/e2e/runtime/index.js:26)
+- [e2e/runtime/index.js](/e2e/runtime/index.js:26)
   - `runConnector()` has no `grantId` input
   - `commitState()` writes to `/v1/state/:connectorId`
   - `loadSyncState()` reads from `/v1/state/:connectorId`
-- [e2e/runtime/scheduler.js](/home/user/code/pdpp/e2e/runtime/scheduler.js:75)
+- [e2e/runtime/scheduler.js](/e2e/runtime/scheduler.js:75)
   - only distinguishes `continuous` vs `single_use` through `grantAccessMode`
   - still keys all persisted state by `connectorId`
   - does not know any actual `grantId`
@@ -50,7 +50,7 @@ There is still no real grant-driven runtime caller in the repo. Current runtime 
 
 Touch:
 
-- [e2e/server/db.js](/home/user/code/pdpp/e2e/server/db.js:1)
+- [e2e/server/db.js](/e2e/server/db.js:1)
 
 Add:
 
@@ -71,7 +71,7 @@ Do not mutate `connector_state` in place. The additive table is the lowest-risk 
 
 Touch:
 
-- [e2e/server/records.js](/home/user/code/pdpp/e2e/server/records.js:693)
+- [e2e/server/records.js](/e2e/server/records.js:693)
 
 Change helpers to accept an optional `grantId`:
 
@@ -91,7 +91,7 @@ Do not build a generic namespace abstraction yet.
 
 Touch:
 
-- [e2e/server/index.js](/home/user/code/pdpp/e2e/server/index.js:543)
+- [e2e/server/index.js](/e2e/server/index.js:543)
 
 Change:
 
@@ -111,7 +111,7 @@ This is the right minimal external contract delta.
 
 Touch:
 
-- [e2e/runtime/index.js](/home/user/code/pdpp/e2e/runtime/index.js:26)
+- [e2e/runtime/index.js](/e2e/runtime/index.js:26)
 
 Add optional `grantId` to:
 
@@ -135,7 +135,7 @@ The runtime only needs to know whether this run has a grant-specific state names
 
 Probably do not touch yet:
 
-- [e2e/runtime/scheduler.js](/home/user/code/pdpp/e2e/runtime/scheduler.js:1)
+- [e2e/runtime/scheduler.js](/e2e/runtime/scheduler.js:1)
 
 Reason:
 
@@ -148,24 +148,24 @@ The first proof should be a direct `runConnector({ grantId, persistState: true }
 
 ### Must touch
 
-- [e2e/server/db.js](/home/user/code/pdpp/e2e/server/db.js:1)
-- [e2e/server/records.js](/home/user/code/pdpp/e2e/server/records.js:693)
-- [e2e/server/index.js](/home/user/code/pdpp/e2e/server/index.js:543)
-- [e2e/runtime/index.js](/home/user/code/pdpp/e2e/runtime/index.js:26)
-- [e2e/test/collection-profile.test.js](/home/user/code/pdpp/e2e/test/collection-profile.test.js:1)
+- [e2e/server/db.js](/e2e/server/db.js:1)
+- [e2e/server/records.js](/e2e/server/records.js:693)
+- [e2e/server/index.js](/e2e/server/index.js:543)
+- [e2e/runtime/index.js](/e2e/runtime/index.js:26)
+- [e2e/test/collection-profile.test.js](/e2e/test/collection-profile.test.js:1)
 
 ### Likely touch for direct grant-aware proof
 
-- [e2e/test/pdpp.test.js](/home/user/code/pdpp/e2e/test/pdpp.test.js:1)
+- [e2e/test/pdpp.test.js](/e2e/test/pdpp.test.js:1)
 
 Use this only if you want to prove the `grant_id` came from a real approved grant rather than a synthetic runtime call.
 
 ### Probably do not touch in this cut
 
-- [e2e/server/auth.js](/home/user/code/pdpp/e2e/server/auth.js:1)
-- [e2e/runtime/scheduler.js](/home/user/code/pdpp/e2e/runtime/scheduler.js:1)
-- [e2e/server/index.js](/home/user/code/pdpp/e2e/server/index.js:495) ingest/delete/reset routes
-- record storage/versioning logic in [e2e/server/records.js](/home/user/code/pdpp/e2e/server/records.js:1)
+- [e2e/server/auth.js](/e2e/server/auth.js:1)
+- [e2e/runtime/scheduler.js](/e2e/runtime/scheduler.js:1)
+- [e2e/server/index.js](/e2e/server/index.js:495) ingest/delete/reset routes
+- record storage/versioning logic in [e2e/server/records.js](/e2e/server/records.js:1)
 
 ## Migration advice
 

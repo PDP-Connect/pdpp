@@ -6,9 +6,9 @@
  * Run with the daemon already holding a logged-in session.
  */
 
-import { acquireBrowser } from '/home/user/code/pdpp/packages/polyfill-connectors/src/browser-profile.js';
+import { acquireBrowser } from '../src/browser-profile.js';
 import { config as loadEnv } from 'dotenv';
-loadEnv({ path: '/home/user/code/pdpp/.env.local' });
+loadEnv({ path: new URL('../../../.env.local', import.meta.url) });
 
 const ACCOUNTS = [
   { label: 'Signature Visa (4503)', id: '0002-PnwSxCt5HLlzn7raPcAK' },

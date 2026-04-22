@@ -1,7 +1,7 @@
 # PDPP Spec Work Memo
 
 Date: 2026-04-11
-Repo: `/home/user/code/pdpp`
+Repo: `<pdpp>`
 Author: Codex
 
 ## Purpose

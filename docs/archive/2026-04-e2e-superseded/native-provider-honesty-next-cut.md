@@ -7,43 +7,43 @@ Date: 2026-04-16
 The native-provider path is already materially more honest than the earlier polyfill-first shape.
 
 - Native mode hides connector-registry and Collection Profile operational routes from the public surface.
-  - `POST /connectors` and `GET /connectors/:connectorId` only exist when `!nativeMode` in [e2e/server/index.js](/home/user/code/pdpp/e2e/server/index.js:335).
-  - `POST /v1/ingest/:stream`, `GET /v1/state/:connectorId`, and `PUT /v1/state/:connectorId` are also hidden behind `!nativeMode` in [e2e/server/index.js](/home/user/code/pdpp/e2e/server/index.js:712).
+  - `POST /connectors` and `GET /connectors/:connectorId` only exist when `!nativeMode` in [e2e/server/index.js](/e2e/server/index.js:335).
+  - `POST /v1/ingest/:stream`, `GET /v1/state/:connectorId`, and `PUT /v1/state/:connectorId` are also hidden behind `!nativeMode` in [e2e/server/index.js](/e2e/server/index.js:712).
 - Owner reads against the native provider do not require public `connector_id`.
-  - `resolveOwnerConnectorScope()` auto-resolves the native backing store when `nativeConnectorId` is configured in [e2e/server/index.js](/home/user/code/pdpp/e2e/server/index.js:134).
-  - Owner `/v1/streams` and `/v1/streams/:stream/records` both rely on that implicit native scope in [e2e/server/index.js](/home/user/code/pdpp/e2e/server/index.js:536) and [e2e/server/index.js](/home/user/code/pdpp/e2e/server/index.js:582).
+  - `resolveOwnerConnectorScope()` auto-resolves the native backing store when `nativeConnectorId` is configured in [e2e/server/index.js](/e2e/server/index.js:134).
+  - Owner `/v1/streams` and `/v1/streams/:stream/records` both rely on that implicit native scope in [e2e/server/index.js](/e2e/server/index.js:536) and [e2e/server/index.js](/e2e/server/index.js:582).
 - Client grants against the native provider can be requested without a public `connector_id`.
-  - The request normalizer falls back to `opts.nativeConnectorId` and marks the binding as `provider_native` in [e2e/server/auth.js](/home/user/code/pdpp/e2e/server/auth.js:79).
-  - The consent surface suppresses the connector label when `binding_kind === 'provider_native'` in [e2e/server/index.js](/home/user/code/pdpp/e2e/server/index.js:380).
+  - The request normalizer falls back to `opts.nativeConnectorId` and marks the binding as `provider_native` in [e2e/server/auth.js](/e2e/server/auth.js:79).
+  - The consent surface suppresses the connector label when `binding_kind === 'provider_native'` in [e2e/server/index.js](/e2e/server/index.js:380).
 - The test suite already proves the two most important public-native behaviors:
-  - hidden connector/runtime routes in [e2e/test/pdpp.test.js](/home/user/code/pdpp/e2e/test/pdpp.test.js:319)
-  - client grants without public `connector_id` in [e2e/test/pdpp.test.js](/home/user/code/pdpp/e2e/test/pdpp.test.js:347)
-  - owner queries without public `connector_id` in [e2e/test/pdpp.test.js](/home/user/code/pdpp/e2e/test/pdpp.test.js:386)
+  - hidden connector/runtime routes in [e2e/test/pdpp.test.js](/e2e/test/pdpp.test.js:319)
+  - client grants without public `connector_id` in [e2e/test/pdpp.test.js](/e2e/test/pdpp.test.js:347)
+  - owner queries without public `connector_id` in [e2e/test/pdpp.test.js](/e2e/test/pdpp.test.js:386)
 - Northstar HR has a native-feeling domain model already.
-  - `pay_statements` is a plausible first-party payroll stream in [e2e/manifests/northstar-hr.json](/home/user/code/pdpp/e2e/manifests/northstar-hr.json:1).
+  - `pay_statements` is a plausible first-party payroll stream in [e2e/manifests/northstar-hr.json](/e2e/manifests/northstar-hr.json:1).
 
 ## 2. Remaining impurities
 
 These are the places where the native path still fundamentally thinks in connector-shaped terms.
 
 - The native request normalizer still resolves native identity through `connector_id` and stores it as a connector binding.
-  - `resolvedConnectorId = detail.connector_id || opts.nativeConnectorId` in [e2e/server/auth.js](/home/user/code/pdpp/e2e/server/auth.js:79)
-  - `realization_binding.connector_id = resolvedConnectorId` in [e2e/server/auth.js](/home/user/code/pdpp/e2e/server/auth.js:101)
+  - `resolvedConnectorId = detail.connector_id || opts.nativeConnectorId` in [e2e/server/auth.js](/e2e/server/auth.js:79)
+  - `realization_binding.connector_id = resolvedConnectorId` in [e2e/server/auth.js](/e2e/server/auth.js:101)
 - Native grants are still persisted as connector-bound grants and the public grant object still includes `connector_id`.
-  - Grant object includes `connector_id` in [e2e/server/auth.js](/home/user/code/pdpp/e2e/server/auth.js:410)
-  - Grants table insert still writes `connector_id` in [e2e/server/auth.js](/home/user/code/pdpp/e2e/server/auth.js:421)
-  - Client-token introspection returns the full stored `grant`, which therefore still carries `connector_id`, in [e2e/server/auth.js](/home/user/code/pdpp/e2e/server/auth.js:739)
+  - Grant object includes `connector_id` in [e2e/server/auth.js](/e2e/server/auth.js:410)
+  - Grants table insert still writes `connector_id` in [e2e/server/auth.js](/e2e/server/auth.js:421)
+  - Client-token introspection returns the full stored `grant`, which therefore still carries `connector_id`, in [e2e/server/auth.js](/e2e/server/auth.js:739)
 - The RS query path still treats native reads as connector-scoped internally, not provider-scoped.
-  - Owner full-access grants synthesize `grant = { connector_id, streams: [...] }` in [e2e/server/index.js](/home/user/code/pdpp/e2e/server/index.js:603)
-  - Client token paths still pull `connectorId = grant.connector_id` in [e2e/server/index.js](/home/user/code/pdpp/e2e/server/index.js:608) and [e2e/server/index.js](/home/user/code/pdpp/e2e/server/index.js:695)
-  - Stream listing for client tokens still calls `listStreams(grant.connector_id, grant)` in [e2e/server/index.js](/home/user/code/pdpp/e2e/server/index.js:546)
+  - Owner full-access grants synthesize `grant = { connector_id, streams: [...] }` in [e2e/server/index.js](/e2e/server/index.js:603)
+  - Client token paths still pull `connectorId = grant.connector_id` in [e2e/server/index.js](/e2e/server/index.js:608) and [e2e/server/index.js](/e2e/server/index.js:695)
+  - Stream listing for client tokens still calls `listStreams(grant.connector_id, grant)` in [e2e/server/index.js](/e2e/server/index.js:546)
 - The manifest/catalog lookup for native mode still goes through the connector registry table.
-  - `startServer()` auto-registers `opts.nativeManifest` using `registerConnector()` in [e2e/server/index.js](/home/user/code/pdpp/e2e/server/index.js:796)
-  - `getManifest(connectorId)` is still the only catalog lookup path in [e2e/server/auth.js](/home/user/code/pdpp/e2e/server/auth.js:249)
+  - `startServer()` auto-registers `opts.nativeManifest` using `registerConnector()` in [e2e/server/index.js](/e2e/server/index.js:796)
+  - `getManifest(connectorId)` is still the only catalog lookup path in [e2e/server/auth.js](/e2e/server/auth.js:249)
 - The owner CLI still presents the native provider as a special case of connector-scoped access rather than a clean provider-scoped mode.
-  - Help text: `--connector-id is required for polyfill/personal-server owner access and optional for native-provider owner access` in [e2e/cli/commands/owner.js](/home/user/code/pdpp/e2e/cli/commands/owner.js:74) and [e2e/cli/index.js](/home/user/code/pdpp/e2e/cli/index.js:32)
+  - Help text: `--connector-id is required for polyfill/personal-server owner access and optional for native-provider owner access` in [e2e/cli/commands/owner.js](/e2e/cli/commands/owner.js:74) and [e2e/cli/index.js](/e2e/cli/index.js:32)
 - The reference inspection surface still assumes every manifest is a connector manifest.
-  - `renderManifest()` outputs `connector_id` as the primary manifest identity in [e2e/cli/commands/inspect.js](/home/user/code/pdpp/e2e/cli/commands/inspect.js:53)
+  - `renderManifest()` outputs `connector_id` as the primary manifest identity in [e2e/cli/commands/inspect.js](/e2e/cli/commands/inspect.js:53)
 
 ## 3. Single best next implementation cut
 

@@ -2,7 +2,7 @@
  * Click the credit-card Export button and dump whatever dialog opens.
  */
 
-import { acquireBrowser } from '/home/user/code/pdpp/packages/polyfill-connectors/src/browser-profile.js';
+import { acquireBrowser } from '../src/browser-profile.js';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 

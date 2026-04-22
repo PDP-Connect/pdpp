@@ -19,18 +19,18 @@ That removes the purest remaining helper route without harming current testabili
 
 ### Live route status
 
-- **No live route remains** in [e2e/server/index.js](/home/user/code/pdpp/e2e/server/index.js:1)
+- **No live route remains** in [e2e/server/index.js](/e2e/server/index.js:1)
 
 ### Remaining code references
 
 These are **helper functions using the real device flow**, not route callers:
 
-- [e2e/client/demo.js](/home/user/code/pdpp/e2e/client/demo.js:123)
-- [e2e/test/pdpp.test.js](/home/user/code/pdpp/e2e/test/pdpp.test.js:74)
-- [e2e/test/cli.test.js](/home/user/code/pdpp/e2e/test/cli.test.js:69)
-- [e2e/test/event-spine.test.js](/home/user/code/pdpp/e2e/test/event-spine.test.js:25)
-- [e2e/test/collection-profile.test.js](/home/user/code/pdpp/e2e/test/collection-profile.test.js:676)
-- [apps/web/src/app/api/setup/route.ts](/home/user/code/pdpp/apps/web/src/app/api/setup/route.ts:20)
+- [e2e/client/demo.js](/e2e/client/demo.js:123)
+- [e2e/test/pdpp.test.js](/e2e/test/pdpp.test.js:74)
+- [e2e/test/cli.test.js](/e2e/test/cli.test.js:69)
+- [e2e/test/event-spine.test.js](/e2e/test/event-spine.test.js:25)
+- [e2e/test/collection-profile.test.js](/e2e/test/collection-profile.test.js:676)
+- [apps/web/src/app/api/setup/route.ts](/apps/web/src/app/api/setup/route.ts:20)
 
 ### Judgment
 
@@ -41,44 +41,44 @@ These are **helper functions using the real device flow**, not route callers:
 
 ### Live route
 
-- [e2e/server/index.js](/home/user/code/pdpp/e2e/server/index.js:458)
+- [e2e/server/index.js](/e2e/server/index.js:458)
 
 ### Remaining callers
 
-- [e2e/client/demo.js](/home/user/code/pdpp/e2e/client/demo.js:265)
-- [e2e/client/demo.js](/home/user/code/pdpp/e2e/client/demo.js:316)
-- [e2e/client/demo.js](/home/user/code/pdpp/e2e/client/demo.js:473)
-- [e2e/test/cli.test.js](/home/user/code/pdpp/e2e/test/cli.test.js:134)
-- [e2e/test/event-spine.test.js](/home/user/code/pdpp/e2e/test/event-spine.test.js:109)
-- [apps/web/src/app/api/grant/approve/route.ts](/home/user/code/pdpp/apps/web/src/app/api/grant/approve/route.ts:16)
+- [e2e/client/demo.js](/e2e/client/demo.js:265)
+- [e2e/client/demo.js](/e2e/client/demo.js:316)
+- [e2e/client/demo.js](/e2e/client/demo.js:473)
+- [e2e/test/cli.test.js](/e2e/test/cli.test.js:134)
+- [e2e/test/event-spine.test.js](/e2e/test/event-spine.test.js:109)
+- [apps/web/src/app/api/grant/approve/route.ts](/apps/web/src/app/api/grant/approve/route.ts:16)
 
 Also still referenced in helper wrappers:
 
-- [e2e/client/demo.js](/home/user/code/pdpp/e2e/client/demo.js:10)
+- [e2e/client/demo.js](/e2e/client/demo.js:10)
 
 ### Judgment
 
 - **Pure transitional debt**
 - no unique reference value now that `POST /consent/:deviceCode/approve` exists and is already exercised in:
-  - [e2e/test/pdpp.test.js](/home/user/code/pdpp/e2e/test/pdpp.test.js:189)
-  - [e2e/test/pdpp.test.js](/home/user/code/pdpp/e2e/test/pdpp.test.js:251)
+  - [e2e/test/pdpp.test.js](/e2e/test/pdpp.test.js:189)
+  - [e2e/test/pdpp.test.js](/e2e/test/pdpp.test.js:251)
 
 ## `POST /grants/:grantId/tokens`
 
 ### Live route
 
-- [e2e/server/index.js](/home/user/code/pdpp/e2e/server/index.js:484)
+- [e2e/server/index.js](/e2e/server/index.js:484)
 
 ### Remaining callers
 
-- [e2e/client/demo.js](/home/user/code/pdpp/e2e/client/demo.js:275)
-- [e2e/test/pdpp.test.js](/home/user/code/pdpp/e2e/test/pdpp.test.js:650)
-- [e2e/cli/commands/grant.js](/home/user/code/pdpp/e2e/cli/commands/grant.js:32)
-- [apps/web/src/app/api/grant/[grantId]/token/route.ts](/home/user/code/pdpp/apps/web/src/app/api/grant/[grantId]/token/route.ts:12)
+- [e2e/client/demo.js](/e2e/client/demo.js:275)
+- [e2e/test/pdpp.test.js](/e2e/test/pdpp.test.js:650)
+- [e2e/cli/commands/grant.js](/e2e/cli/commands/grant.js:32)
+- [apps/web/src/app/api/grant/[grantId]/token/route.ts](/apps/web/src/app/api/grant/[grantId]/token/route.ts:12)
 
 CLI help still exposes it explicitly:
 
-- [e2e/cli/index.js](/home/user/code/pdpp/e2e/cli/index.js:27)
+- [e2e/cli/index.js](/e2e/cli/index.js:27)
 
 ### Judgment
 
@@ -90,13 +90,13 @@ CLI help still exposes it explicitly:
 
 ### Live route
 
-- [e2e/server/index.js](/home/user/code/pdpp/e2e/server/index.js:471)
+- [e2e/server/index.js](/e2e/server/index.js:471)
 
 ### Remaining callers
 
-- [e2e/test/pdpp.test.js](/home/user/code/pdpp/e2e/test/pdpp.test.js:186)
-- [e2e/test/pdpp.test.js](/home/user/code/pdpp/e2e/test/pdpp.test.js:198)
-- [e2e/test/pdpp.test.js](/home/user/code/pdpp/e2e/test/pdpp.test.js:248)
+- [e2e/test/pdpp.test.js](/e2e/test/pdpp.test.js:186)
+- [e2e/test/pdpp.test.js](/e2e/test/pdpp.test.js:198)
+- [e2e/test/pdpp.test.js](/e2e/test/pdpp.test.js:248)
 
 ### Judgment
 
@@ -108,21 +108,21 @@ CLI help still exposes it explicitly:
 
 ### Live route
 
-- [e2e/server/index.js](/home/user/code/pdpp/e2e/server/index.js:337)
+- [e2e/server/index.js](/e2e/server/index.js:337)
 
 ### Remaining callers
 
-- [e2e/client/demo.js](/home/user/code/pdpp/e2e/client/demo.js:177)
-- [e2e/test/pdpp.test.js](/home/user/code/pdpp/e2e/test/pdpp.test.js:35)
-- [e2e/test/pdpp.test.js](/home/user/code/pdpp/e2e/test/pdpp.test.js:157)
-- [e2e/test/pdpp.test.js](/home/user/code/pdpp/e2e/test/pdpp.test.js:215)
-- [e2e/test/pdpp.test.js](/home/user/code/pdpp/e2e/test/pdpp.test.js:323)
-- [e2e/test/cli.test.js](/home/user/code/pdpp/e2e/test/cli.test.js:38)
-- [e2e/test/event-spine.test.js](/home/user/code/pdpp/e2e/test/event-spine.test.js:60)
-- [e2e/test/collection-profile.test.js](/home/user/code/pdpp/e2e/test/collection-profile.test.js:620)
-- [e2e/test/collection-profile.test.js](/home/user/code/pdpp/e2e/test/collection-profile.test.js:621)
-- [e2e/test/collection-profile.test.js](/home/user/code/pdpp/e2e/test/collection-profile.test.js:665)
-- [apps/web/src/app/api/setup/route.ts](/home/user/code/pdpp/apps/web/src/app/api/setup/route.ts:155)
+- [e2e/client/demo.js](/e2e/client/demo.js:177)
+- [e2e/test/pdpp.test.js](/e2e/test/pdpp.test.js:35)
+- [e2e/test/pdpp.test.js](/e2e/test/pdpp.test.js:157)
+- [e2e/test/pdpp.test.js](/e2e/test/pdpp.test.js:215)
+- [e2e/test/pdpp.test.js](/e2e/test/pdpp.test.js:323)
+- [e2e/test/cli.test.js](/e2e/test/cli.test.js:38)
+- [e2e/test/event-spine.test.js](/e2e/test/event-spine.test.js:60)
+- [e2e/test/collection-profile.test.js](/e2e/test/collection-profile.test.js:620)
+- [e2e/test/collection-profile.test.js](/e2e/test/collection-profile.test.js:621)
+- [e2e/test/collection-profile.test.js](/e2e/test/collection-profile.test.js:665)
+- [apps/web/src/app/api/setup/route.ts](/apps/web/src/app/api/setup/route.ts:155)
 
 ### Judgment
 
@@ -134,11 +134,11 @@ CLI help still exposes it explicitly:
 
 ### Live route
 
-- [e2e/server/index.js](/home/user/code/pdpp/e2e/server/index.js:358)
+- [e2e/server/index.js](/e2e/server/index.js:358)
 
 ### Remaining bridge usage
 
-- [apps/web/src/app/api/grant/route.ts](/home/user/code/pdpp/apps/web/src/app/api/grant/route.ts:15)
+- [apps/web/src/app/api/grant/route.ts](/apps/web/src/app/api/grant/route.ts:15)
 
 Also many test/demo consumers remain, but this is not the most helper-like remaining seam.
 
@@ -193,16 +193,16 @@ Cut **`POST /consent/:deviceCode/approve-api`** next.
 
 Update these callers to use `POST /consent/:deviceCode/approve` instead:
 
-- [e2e/client/demo.js](/home/user/code/pdpp/e2e/client/demo.js:265)
-- [e2e/client/demo.js](/home/user/code/pdpp/e2e/client/demo.js:316)
-- [e2e/client/demo.js](/home/user/code/pdpp/e2e/client/demo.js:473)
-- [e2e/test/cli.test.js](/home/user/code/pdpp/e2e/test/cli.test.js:134)
-- [e2e/test/event-spine.test.js](/home/user/code/pdpp/e2e/test/event-spine.test.js:109)
-- [apps/web/src/app/api/grant/approve/route.ts](/home/user/code/pdpp/apps/web/src/app/api/grant/approve/route.ts:16)
+- [e2e/client/demo.js](/e2e/client/demo.js:265)
+- [e2e/client/demo.js](/e2e/client/demo.js:316)
+- [e2e/client/demo.js](/e2e/client/demo.js:473)
+- [e2e/test/cli.test.js](/e2e/test/cli.test.js:134)
+- [e2e/test/event-spine.test.js](/e2e/test/event-spine.test.js:109)
+- [apps/web/src/app/api/grant/approve/route.ts](/apps/web/src/app/api/grant/approve/route.ts:16)
 
 After those are cut over, delete:
 
-- [e2e/server/index.js](/home/user/code/pdpp/e2e/server/index.js:458)
+- [e2e/server/index.js](/e2e/server/index.js:458)
 
 ### What not to cut in the same patch
 

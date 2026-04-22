@@ -1,4 +1,4 @@
-import { acquireBrowser } from '/home/user/code/pdpp/packages/polyfill-connectors/src/browser-profile.js';
+import { acquireBrowser } from '../src/browser-profile.js';
 
 const { context, release } = await acquireBrowser({ headless: true });
 try {

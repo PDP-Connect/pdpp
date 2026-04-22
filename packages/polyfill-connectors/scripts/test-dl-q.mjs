@@ -1,6 +1,6 @@
 import { createServer } from 'node:http';
-import { acquireBrowser } from '/home/user/code/pdpp/packages/polyfill-connectors/src/browser-profile.js';
-import { attachDownloadQueue } from '/home/user/code/pdpp/packages/polyfill-connectors/src/download-queue.js';
+import { acquireBrowser } from '../src/browser-profile.js';
+import { attachDownloadQueue } from '../src/download-queue.js';
 
 const N = 5;
 function makeServer() {

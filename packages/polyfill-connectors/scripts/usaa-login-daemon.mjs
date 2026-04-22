@@ -1,10 +1,10 @@
-import { acquireBrowser } from '/home/user/code/pdpp/packages/polyfill-connectors/src/browser-profile.js';
-import { ensureUsaaSession } from '/home/user/code/pdpp/packages/polyfill-connectors/src/auto-login/usaa.js';
+import { acquireBrowser } from '../src/browser-profile.js';
+import { ensureUsaaSession } from '../src/auto-login/usaa.js';
 import { readFile, unlink } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { config as loadEnv } from 'dotenv';
 
-loadEnv({ path: '/home/user/code/pdpp/.env.local' });
+loadEnv({ path: new URL('../../../.env.local', import.meta.url) });
 
 const OTP_FILE = '/tmp/usaa-otp.txt';
 

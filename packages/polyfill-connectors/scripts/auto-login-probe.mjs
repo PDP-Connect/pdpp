@@ -17,7 +17,7 @@ import { config as loadEnv } from 'dotenv';
 import { ensureAmazonSession } from '../src/auto-login/amazon.js';
 import { handleInteraction } from '../src/interaction-handler.js';
 
-loadEnv({ path: '/home/user/code/pdpp/.env.local' });
+loadEnv({ path: new URL('../../../.env.local', import.meta.url) });
 
 const target = process.argv[2] || 'both';
 

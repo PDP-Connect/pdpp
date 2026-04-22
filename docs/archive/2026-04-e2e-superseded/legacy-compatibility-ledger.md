@@ -186,7 +186,7 @@ Still, it is not a clean long-term public surface.
 
 The current CLI already warns that it is reference-only:
 
-- [e2e/cli/commands/grant.js](/home/user/code/pdpp/e2e/cli/commands/grant.js:19)
+- [e2e/cli/commands/grant.js](/e2e/cli/commands/grant.js:19)
 
 So the right classification is:
 

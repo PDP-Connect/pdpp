@@ -30,10 +30,10 @@ These are the places where dual-shape or legacy-preserving behavior no longer ad
 #### 1. Flat-body support in `POST /grants/initiate`
 
 Files:
-- [e2e/server/auth.js](/home/user/code/pdpp/e2e/server/auth.js:1)
-- [e2e/server/index.js](/home/user/code/pdpp/e2e/server/index.js:184)
-- [e2e/test/pdpp.test.js](/home/user/code/pdpp/e2e/test/pdpp.test.js:1)
-- [apps/web/src/app/api/grant/route.ts](/home/user/code/pdpp/apps/web/src/app/api/grant/route.ts:1)
+- [e2e/server/auth.js](/e2e/server/auth.js:1)
+- [e2e/server/index.js](/e2e/server/index.js:184)
+- [e2e/test/pdpp.test.js](/e2e/test/pdpp.test.js:1)
+- [apps/web/src/app/api/grant/route.ts](/apps/web/src/app/api/grant/route.ts:1)
 
 Recommendation:
 - keep the normalized internal object
@@ -49,7 +49,7 @@ Reason:
 #### 2. Website bridge code that still emits the old flat request
 
 Files:
-- [apps/web/src/app/api/grant/route.ts](/home/user/code/pdpp/apps/web/src/app/api/grant/route.ts:1)
+- [apps/web/src/app/api/grant/route.ts](/apps/web/src/app/api/grant/route.ts:1)
 
 Recommendation:
 - either update this route to the envelope shape immediately
@@ -61,9 +61,9 @@ Reason:
 #### 3. Legacy Instagram world as an implicit current reference
 
 Files:
-- [apps/web/src/app/api/setup/route.ts](/home/user/code/pdpp/apps/web/src/app/api/setup/route.ts:1)
-- [apps/web/src/app/api/grant/approve/route.ts](/home/user/code/pdpp/apps/web/src/app/api/grant/approve/route.ts:1)
-- [e2e/client/demo.js](/home/user/code/pdpp/e2e/client/demo.js:1)
+- [apps/web/src/app/api/setup/route.ts](/apps/web/src/app/api/setup/route.ts:1)
+- [apps/web/src/app/api/grant/approve/route.ts](/apps/web/src/app/api/grant/approve/route.ts:1)
+- [e2e/client/demo.js](/e2e/client/demo.js:1)
 
 Recommendation:
 - do not keep these in the path of the current reference story
@@ -80,7 +80,7 @@ These can still exist for implementation reasons, but they should not be treated
 #### 4. `compat.source_shape` on the normalized pending request
 
 Files:
-- [e2e/server/auth.js](/home/user/code/pdpp/e2e/server/auth.js:1)
+- [e2e/server/auth.js](/e2e/server/auth.js:1)
 
 Recommendation:
 - keep only as a short-lived internal migration tag
@@ -93,8 +93,8 @@ Reason:
 #### 5. `connector_id` as an internal storage key for native mode
 
 Files:
-- [e2e/server/index.js](/home/user/code/pdpp/e2e/server/index.js:111)
-- [e2e/server/records.js](/home/user/code/pdpp/e2e/server/records.js:279)
+- [e2e/server/index.js](/e2e/server/index.js:111)
+- [e2e/server/records.js](/e2e/server/records.js:279)
 
 Recommendation:
 - keep internal for now
@@ -107,8 +107,8 @@ Reason:
 #### 6. Public route labels/comments describing transitional seams
 
 Files:
-- [e2e/server/index.js](/home/user/code/pdpp/e2e/server/index.js:165)
-- [e2e/server/auth.js](/home/user/code/pdpp/e2e/server/auth.js:211)
+- [e2e/server/index.js](/e2e/server/index.js:165)
+- [e2e/server/auth.js](/e2e/server/auth.js:211)
 
 Recommendation:
 - keep the labeling while the seams remain
@@ -124,7 +124,7 @@ These still have real short-term value, but only as explicit reference scaffoldi
 #### 7. `POST /connectors` and `GET /connectors/:connectorId`
 
 Files:
-- [e2e/server/index.js](/home/user/code/pdpp/e2e/server/index.js:153)
+- [e2e/server/index.js](/e2e/server/index.js:153)
 
 Recommendation:
 - keep for the polyfill/reference-world path
@@ -137,7 +137,7 @@ Reason:
 #### 8. HTML consent shell and manual approve/deny
 
 Files:
-- [e2e/server/index.js](/home/user/code/pdpp/e2e/server/index.js:195)
+- [e2e/server/index.js](/e2e/server/index.js:195)
 
 Recommendation:
 - keep temporarily as manual visibility/debug surface
@@ -150,7 +150,7 @@ Reason:
 #### 9. `GET /grants/poll/:deviceCode`
 
 Files:
-- [e2e/server/index.js](/home/user/code/pdpp/e2e/server/index.js:297)
+- [e2e/server/index.js](/e2e/server/index.js:297)
 
 Recommendation:
 - keep until the first real owner/device-flow profile exists
@@ -167,11 +167,11 @@ These are the most dangerous helpers because they can quietly become normalized.
 #### 10. `POST /owner-token`
 
 Files:
-- [e2e/server/index.js](/home/user/code/pdpp/e2e/server/index.js:304)
-- [e2e/test/pdpp.test.js](/home/user/code/pdpp/e2e/test/pdpp.test.js:84)
-- [e2e/test/collection-profile.test.js](/home/user/code/pdpp/e2e/test/collection-profile.test.js:395)
-- [e2e/test/cli.test.js](/home/user/code/pdpp/e2e/test/cli.test.js:79)
-- [apps/web/src/app/api/setup/route.ts](/home/user/code/pdpp/apps/web/src/app/api/setup/route.ts:1)
+- [e2e/server/index.js](/e2e/server/index.js:304)
+- [e2e/test/pdpp.test.js](/e2e/test/pdpp.test.js:84)
+- [e2e/test/collection-profile.test.js](/e2e/test/collection-profile.test.js:395)
+- [e2e/test/cli.test.js](/e2e/test/cli.test.js:79)
+- [apps/web/src/app/api/setup/route.ts](/apps/web/src/app/api/setup/route.ts:1)
 
 Recommendation:
 - keep only until the first real owner token acquisition flow exists
@@ -185,10 +185,10 @@ Reason:
 #### 11. `POST /consent/:deviceCode/approve-api`
 
 Files:
-- [e2e/server/index.js](/home/user/code/pdpp/e2e/server/index.js:284)
-- [e2e/test/pdpp.test.js](/home/user/code/pdpp/e2e/test/pdpp.test.js:112)
-- [e2e/test/cli.test.js](/home/user/code/pdpp/e2e/test/cli.test.js:107)
-- [apps/web/src/app/api/grant/approve/route.ts](/home/user/code/pdpp/apps/web/src/app/api/grant/approve/route.ts:1)
+- [e2e/server/index.js](/e2e/server/index.js:284)
+- [e2e/test/pdpp.test.js](/e2e/test/pdpp.test.js:112)
+- [e2e/test/cli.test.js](/e2e/test/cli.test.js:107)
+- [apps/web/src/app/api/grant/approve/route.ts](/apps/web/src/app/api/grant/approve/route.ts:1)
 
 Recommendation:
 - keep only until tests and bridges have a cleaner consent/approval seam
@@ -201,9 +201,9 @@ Reason:
 #### 12. `POST /grants/:grantId/tokens`
 
 Files:
-- [e2e/server/index.js](/home/user/code/pdpp/e2e/server/index.js:316)
-- [e2e/cli/commands/grant.js](/home/user/code/pdpp/e2e/cli/commands/grant.js:1)
-- [apps/web/src/app/api/grant/[grantId]/token/route.ts](/home/user/code/pdpp/apps/web/src/app/api/grant/[grantId]/token/route.ts:1)
+- [e2e/server/index.js](/e2e/server/index.js:316)
+- [e2e/cli/commands/grant.js](/e2e/cli/commands/grant.js:1)
+- [apps/web/src/app/api/grant/[grantId]/token/route.ts](/apps/web/src/app/api/grant/[grantId]/token/route.ts:1)
 
 Recommendation:
 - keep only while the `single_use` proof still needs it
@@ -223,9 +223,9 @@ Current tests still normalize the wrong contract because they use:
 - `POST /consent/:deviceCode/approve-api`
 
 Files:
-- [e2e/test/pdpp.test.js](/home/user/code/pdpp/e2e/test/pdpp.test.js:1)
-- [e2e/test/collection-profile.test.js](/home/user/code/pdpp/e2e/test/collection-profile.test.js:1)
-- [e2e/test/cli.test.js](/home/user/code/pdpp/e2e/test/cli.test.js:1)
+- [e2e/test/pdpp.test.js](/e2e/test/pdpp.test.js:1)
+- [e2e/test/collection-profile.test.js](/e2e/test/collection-profile.test.js:1)
+- [e2e/test/cli.test.js](/e2e/test/cli.test.js:1)
 
 This is acceptable only temporarily. The next test cleanup should follow this order:
 

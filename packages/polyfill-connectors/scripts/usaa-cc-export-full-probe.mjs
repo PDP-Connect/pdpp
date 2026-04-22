@@ -3,7 +3,7 @@
  * → fill dates → check if submit enables → click → observe what happens.
  */
 
-import { acquireBrowser } from '/home/user/code/pdpp/packages/polyfill-connectors/src/browser-profile.js';
+import { acquireBrowser } from '../src/browser-profile.js';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 

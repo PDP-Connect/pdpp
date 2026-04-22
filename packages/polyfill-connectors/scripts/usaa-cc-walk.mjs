@@ -4,7 +4,7 @@
  * any export/download affordance.
  */
 
-import { acquireBrowser } from '/home/user/code/pdpp/packages/polyfill-connectors/src/browser-profile.js';
+import { acquireBrowser } from '../src/browser-profile.js';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 

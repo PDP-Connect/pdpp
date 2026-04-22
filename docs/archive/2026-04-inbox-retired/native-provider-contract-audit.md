@@ -55,10 +55,10 @@ Internally, the implementation may still use a source-scoping key for storage an
 
 These parts are already useful and can stay mostly intact:
 
-- RS query behavior in [reference-implementation/server/records.js](/home/user/code/pdpp/reference-implementation/server/records.js:279)
-- `changes_since` / tombstone / projection logic in [reference-implementation/server/records.js](/home/user/code/pdpp/reference-implementation/server/records.js:279)
-- token issuance and introspection in [reference-implementation/server/auth.js](/home/user/code/pdpp/reference-implementation/server/auth.js:172)
-- owner token path in [reference-implementation/server/auth.js](/home/user/code/pdpp/reference-implementation/server/auth.js:268)
+- RS query behavior in [reference-implementation/server/records.js](/reference-implementation/server/records.js:279)
+- `changes_since` / tombstone / projection logic in [reference-implementation/server/records.js](/reference-implementation/server/records.js:279)
+- token issuance and introspection in [reference-implementation/server/auth.js](/reference-implementation/server/auth.js:172)
+- owner token path in [reference-implementation/server/auth.js](/reference-implementation/server/auth.js:268)
 
 ### Neutralize
 
@@ -90,9 +90,9 @@ They are valid for the polyfill path, but they should not define the native-prov
 
 ### File
 
-- [reference-implementation/server/auth.js](/home/user/code/pdpp/reference-implementation/server/auth.js:22)
-- [reference-implementation/server/index.js](/home/user/code/pdpp/reference-implementation/server/index.js:110)
-- [reference-implementation/server/db.js](/home/user/code/pdpp/reference-implementation/server/db.js:16)
+- [reference-implementation/server/auth.js](/reference-implementation/server/auth.js:22)
+- [reference-implementation/server/index.js](/reference-implementation/server/index.js:110)
+- [reference-implementation/server/db.js](/reference-implementation/server/db.js:16)
 
 ### Current assumption
 
@@ -132,9 +132,9 @@ This table can remain physically in place in the first cut if it is hidden behin
 
 ### File
 
-- [reference-implementation/server/auth.js](/home/user/code/pdpp/reference-implementation/server/auth.js:48)
-- [reference-implementation/server/auth.js](/home/user/code/pdpp/reference-implementation/server/auth.js:87)
-- [reference-implementation/server/index.js](/home/user/code/pdpp/reference-implementation/server/index.js:128)
+- [reference-implementation/server/auth.js](/reference-implementation/server/auth.js:48)
+- [reference-implementation/server/auth.js](/reference-implementation/server/auth.js:87)
+- [reference-implementation/server/index.js](/reference-implementation/server/index.js:128)
 
 ### Current request field
 
@@ -167,8 +167,8 @@ If Longview asks `Northstar HR` for `pay_statements`, it should not need to say 
 
 ### File/table impacted
 
-- [reference-implementation/server/auth.js](/home/user/code/pdpp/reference-implementation/server/auth.js:87)
-- `grants.connector_id` in [reference-implementation/server/db.js](/home/user/code/pdpp/reference-implementation/server/db.js:25)
+- [reference-implementation/server/auth.js](/reference-implementation/server/auth.js:87)
+- `grants.connector_id` in [reference-implementation/server/db.js](/reference-implementation/server/db.js:25)
 
 ### Note on the minimal cut
 
@@ -180,7 +180,7 @@ The `grants` table can keep its physical `connector_id` column in the first cut 
 
 ### File
 
-- [reference-implementation/server/index.js](/home/user/code/pdpp/reference-implementation/server/index.js:145)
+- [reference-implementation/server/index.js](/reference-implementation/server/index.js:145)
 
 ### Current display field
 
@@ -203,13 +203,13 @@ This is a presentation leak, but it matters because it trains reviewers to see t
 
 ### File
 
-- [reference-implementation/server/index.js](/home/user/code/pdpp/reference-implementation/server/index.js:280)
-- [reference-implementation/server/index.js](/home/user/code/pdpp/reference-implementation/server/index.js:295)
-- [reference-implementation/server/index.js](/home/user/code/pdpp/reference-implementation/server/index.js:318)
-- [reference-implementation/server/index.js](/home/user/code/pdpp/reference-implementation/server/index.js:366)
-- [reference-implementation/server/index.js](/home/user/code/pdpp/reference-implementation/server/index.js:391)
-- [reference-implementation/server/index.js](/home/user/code/pdpp/reference-implementation/server/index.js:423)
-- [reference-implementation/server/index.js](/home/user/code/pdpp/reference-implementation/server/index.js:435)
+- [reference-implementation/server/index.js](/reference-implementation/server/index.js:280)
+- [reference-implementation/server/index.js](/reference-implementation/server/index.js:295)
+- [reference-implementation/server/index.js](/reference-implementation/server/index.js:318)
+- [reference-implementation/server/index.js](/reference-implementation/server/index.js:366)
+- [reference-implementation/server/index.js](/reference-implementation/server/index.js:391)
+- [reference-implementation/server/index.js](/reference-implementation/server/index.js:423)
+- [reference-implementation/server/index.js](/reference-implementation/server/index.js:435)
 
 ### Current query paths / parameters
 
@@ -257,8 +257,8 @@ This avoids a storage rewrite while making the public native path connector-free
 
 ### File
 
-- [reference-implementation/server/db.js](/home/user/code/pdpp/reference-implementation/server/db.js:51)
-- [reference-implementation/server/records.js](/home/user/code/pdpp/reference-implementation/server/records.js:24)
+- [reference-implementation/server/db.js](/reference-implementation/server/db.js:51)
+- [reference-implementation/server/records.js](/reference-implementation/server/records.js:24)
 
 ### Tables
 
@@ -295,11 +295,11 @@ Changing the public contract first lets the native-provider path become honest w
 
 ### File
 
-- [reference-implementation/server/index.js](/home/user/code/pdpp/reference-implementation/server/index.js:296)
-- [reference-implementation/server/index.js](/home/user/code/pdpp/reference-implementation/server/index.js:347)
-- [reference-implementation/server/records.js](/home/user/code/pdpp/reference-implementation/server/records.js:279)
-- [reference-implementation/server/records.js](/home/user/code/pdpp/reference-implementation/server/records.js:526)
-- [reference-implementation/server/records.js](/home/user/code/pdpp/reference-implementation/server/records.js:671)
+- [reference-implementation/server/index.js](/reference-implementation/server/index.js:296)
+- [reference-implementation/server/index.js](/reference-implementation/server/index.js:347)
+- [reference-implementation/server/records.js](/reference-implementation/server/records.js:279)
+- [reference-implementation/server/records.js](/reference-implementation/server/records.js:526)
+- [reference-implementation/server/records.js](/reference-implementation/server/records.js:671)
 
 ### Current behavior
 
@@ -333,11 +333,11 @@ This is a serialization/wrapper fix more than a query-engine rewrite.
 
 ### File
 
-- [reference-implementation/server/index.js](/home/user/code/pdpp/reference-implementation/server/index.js:444)
-- [reference-implementation/server/index.js](/home/user/code/pdpp/reference-implementation/server/index.js:471)
-- [reference-implementation/server/index.js](/home/user/code/pdpp/reference-implementation/server/index.js:482)
-- [reference-implementation/runtime/index.js](/home/user/code/pdpp/reference-implementation/runtime/index.js:69)
-- [reference-implementation/runtime/index.js](/home/user/code/pdpp/reference-implementation/runtime/index.js:101)
+- [reference-implementation/server/index.js](/reference-implementation/server/index.js:444)
+- [reference-implementation/server/index.js](/reference-implementation/server/index.js:471)
+- [reference-implementation/server/index.js](/reference-implementation/server/index.js:482)
+- [reference-implementation/runtime/index.js](/reference-implementation/runtime/index.js:69)
+- [reference-implementation/runtime/index.js](/reference-implementation/runtime/index.js:101)
 
 ### Current paths
 
@@ -367,8 +367,8 @@ This table is runtime-specific and does not need to be renamed for the first cut
 
 ### File
 
-- [reference-implementation/runtime/webhook-adapter.js](/home/user/code/pdpp/reference-implementation/runtime/webhook-adapter.js:1)
-- [reference-implementation/runtime/file-import.js](/home/user/code/pdpp/reference-implementation/runtime/file-import.js:1)
+- [reference-implementation/runtime/webhook-adapter.js](/reference-implementation/runtime/webhook-adapter.js:1)
+- [reference-implementation/runtime/file-import.js](/reference-implementation/runtime/file-import.js:1)
 
 ### Why this matters
 
@@ -386,8 +386,8 @@ These are not the main leak, but they reinforce the mental model that all data r
 
 ### File
 
-- [reference-implementation/client/demo.js](/home/user/code/pdpp/reference-implementation/client/demo.js:1)
-- [reference-implementation/test/collection-profile.test.js](/home/user/code/pdpp/reference-implementation/test/collection-profile.test.js:1)
+- [reference-implementation/client/demo.js](/reference-implementation/client/demo.js:1)
+- [reference-implementation/test/collection-profile.test.js](/reference-implementation/test/collection-profile.test.js:1)
 
 ### Current framing
 
