@@ -28,7 +28,6 @@
  * CHASE_2FA_METHOD=text|voice|email (default text).
  */
 
-import { createInterface } from 'node:readline';
 import { mkdtemp, rm, readFile, mkdir, writeFile, stat } from 'node:fs/promises';
 import { tmpdir, homedir } from 'node:os';
 import { join } from 'node:path';
@@ -36,44 +35,23 @@ import { pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
 import { acquireBrowser } from '../../src/browser-profile.js';
 import { acquireIsolatedBrowser } from '../../src/browser-daemon.js';
-import { resourceSet } from '../../src/scope-filters.js';
 import { ensureChaseSession } from '../../src/auto-login/chase.js';
-import { emitToStdout } from '../../src/safe-emit.js';
+import { createConnectorRuntime, nowIso } from '../../src/connector-runtime.js';
 import { validateRecord } from './schemas.js';
 
-const rl = createInterface({ input: process.stdin, terminal: false });
-const emit = (m) => emitToStdout(m);
-const flushAndExit = (code) => {
-  if (process.stdout.writableLength > 0) {
-    process.stdout.once('drain', () => process.exit(code));
-    setTimeout(() => process.exit(code), 3000).unref();
-  } else process.exit(code);
-};
-const fail = (m, r = false) => {
-  emit({ type: 'DONE', status: 'failed', records_emitted: 0, error: { message: m, retryable: r } });
-  flushAndExit(1);
-};
-const nowIso = () => new Date().toISOString();
-
-let interactionCounter = 0;
-const nextInteractionId = () => `int_${Date.now()}_${++interactionCounter}`;
-
-async function sendInteractionAndWait(msg) {
-  await emit(msg);
-  const reqId = msg.request_id;
-  return new Promise((resolve, reject) => {
-    const onLine = (line) => {
-      try {
-        const parsed = JSON.parse(line);
-        if (parsed.type === 'INTERACTION_RESPONSE' && parsed.request_id === reqId) {
-          rl.off('line', onLine);
-          resolve(parsed);
-        }
-      } catch (err) { reject(err); }
-    };
-    rl.on('line', onLine);
-  });
-}
+const runtime = createConnectorRuntime({ connectorName: 'chase' });
+const {
+  emit,
+  flushAndExit,
+  fail,
+  nextInteractionId,
+  sendInteractionAndWait,
+  readOneLine,
+  makeEmitRecord,
+  emitSucceeded,
+  makeTracer,
+  capture,
+} = runtime;
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
 
@@ -548,9 +526,7 @@ function extractFromQfx(parsed) {
 // ─── Main ─────────────────────────────────────────────────────────────────
 
 async function main() {
-  const startMsg = await new Promise((resolve, reject) => {
-    rl.once('line', (line) => { try { resolve(JSON.parse(line)); } catch (e) { reject(e); } });
-  });
+  const startMsg = await readOneLine();
   if (startMsg.type !== 'START') return fail('Expected START');
 
   const requested = new Map((startMsg.scope?.streams || []).map((s) => [s.name, s]));
@@ -567,10 +543,6 @@ async function main() {
   const rawState = startMsg.state || {};
   const state = rawState.transactions || rawState || {};
   const emittedAt = nowIso();
-  let totalEmitted = 0;
-  let totalSkipped = 0;
-  const resFilters = new Map();
-  for (const [n, r] of requested) resFilters.set(n, resourceSet(r));
 
   // Track max_seen_date per account across this run so the STATE cursor
   // reflects "I've seen transactions up to this date" per account. Used
@@ -578,34 +550,10 @@ async function main() {
   // fetches.
   const maxSeenByAccount = { ...(state.per_account || {}) };
 
-  // Shape-check per docs/connector-authoring-guide.md §3. Records that
-  // fail the Zod schema become SKIP_RESULT instead of poisoning the RS
-  // with garbage-that-looks-right. Schemas live in ./schemas.js.
-  const emitRecord = async (stream, data) => {
-    if (data.id == null) return;
-    const rs = resFilters.get(stream);
-    if (rs && !rs.has(String(data.id))) return;
-    // Apply time_range filter if the client requested one.
-    const scope = requested.get(stream);
-    if (scope?.time_range && data.date) {
-      if (scope.time_range.since && data.date < scope.time_range.since.slice(0, 10)) return;
-      if (scope.time_range.until && data.date >= scope.time_range.until.slice(0, 10)) return;
-    }
-    const result = validateRecord(stream, data);
-    if (!result.ok) {
-      totalSkipped++;
-      await emit({
-        type: 'SKIP_RESULT',
-        stream,
-        reason: 'shape_check_failed',
-        message: `${data.id}: ${result.issues.map((i) => `${i.path}: ${i.message}`).join('; ')}`,
-        diagnostics: { id: data.id, issues: result.issues, record: data },
-      });
-      return;
-    }
-    await emit({ type: 'RECORD', stream, key: data.id, data, emitted_at: emittedAt });
-    totalEmitted++;
-  };
+  // Shape-check + resources filter + time_range filter + counters via the
+  // runtime. Records with null id are skipped; scope.time_range trims by
+  // data.date; Zod drift → SKIP_RESULT.
+  const { emitRecord, counters } = makeEmitRecord({ validateRecord, requested, emittedAt });
 
   // Choose Chase's Activity option based on scope + prior state.
   //   - If client asked for a specific time_range → date_range
@@ -652,17 +600,8 @@ async function main() {
   // .zip replayable in the Playwright Inspector — invaluable for
   // debugging silent failures on Chase's Shadow-DOM-heavy UI.
   // See docs/connector-authoring-guide.md §9.
-  const tracingEnabled = process.env.PDPP_TRACE === '1';
-  if (tracingEnabled) {
-    const traceName = `chase-${new Date().toISOString().replace(/[:.]/g, '-')}`;
-    await context.tracing.start({
-      name: traceName,
-      screenshots: true,
-      snapshots: true,
-      sources: true,
-    }).catch(() => {});
-    emit({ type: 'PROGRESS', message: `tracing enabled (PDPP_TRACE=1); will write /tmp/${traceName}.zip on exit` });
-  }
+  const tracer = makeTracer(context, 'chase');
+  await tracer.start();
 
   const tmpDir = await mkdtemp(join(tmpdir(), 'pdpp-chase-'));
 
@@ -677,6 +616,9 @@ async function main() {
     await emit({ type: 'PROGRESS', message: 'Chase session verified; enumerating accounts' });
 
     const accounts = await discoverAccounts(page);
+    // Fixture capture: dashboard account-list DOM (after discoverAccounts
+    // has landed on it). Covers the `accounts-name-link-button-*` selector.
+    if (capture) await capture.captureDom(page, 'dashboard-accounts');
     if (!accounts.length) {
       // Dashboard selectors need calibration — emit diagnostic and fail gracefully.
       const diag = await page.evaluate(() => ({
@@ -820,6 +762,8 @@ async function main() {
       try {
         await emit({ type: 'PROGRESS', stream: 'statements', message: 'Navigating to Statements & Documents' });
         await navigateToStatementsPage(page);
+        // Fixture capture: statements list page DOM.
+        if (capture) await capture.captureDom(page, 'statements-list');
         const rows = await enumerateStatementRows(page);
         await emit({ type: 'PROGRESS', stream: 'statements', message: `Found ${rows.length} statement row(s)` });
 
@@ -903,15 +847,7 @@ async function main() {
       }
     }
   } finally {
-    if (tracingEnabled && context) {
-      const tracePath = `/tmp/chase-trace-${new Date().toISOString().replace(/[:.]/g, '-')}.zip`;
-      try {
-        await context.tracing.stop({ path: tracePath });
-        await emit({ type: 'PROGRESS', message: `trace written to ${tracePath} — replay with: npx playwright show-trace ${tracePath}` });
-      } catch (err) {
-        await emit({ type: 'PROGRESS', message: `failed to write trace: ${err.message}` });
-      }
-    }
+    await tracer.stop();
     await release().catch(() => {});
     await rm(tmpDir, { recursive: true, force: true }).catch(() => {});
   }
@@ -927,10 +863,7 @@ async function main() {
     });
   }
 
-  if (totalSkipped > 0) {
-    await emit({ type: 'PROGRESS', message: `shape-check skipped ${totalSkipped} record(s); see SKIP_RESULT events above` });
-  }
-  await emit({ type: 'DONE', status: 'succeeded', records_emitted: totalEmitted });
+  emitSucceeded(counters);
   flushAndExit(0);
 }
 
