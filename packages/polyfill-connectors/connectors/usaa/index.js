@@ -23,7 +23,7 @@ import { readFile, unlink, readdir } from 'node:fs/promises';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { acquireBrowser } from '../../src/browser-profile.js';
+import { acquireIsolatedBrowser } from '../../src/browser-daemon.js';
 import { attachDownloadQueue } from '../../src/download-queue.js';
 import { ensureUsaaSession } from '../../src/auto-login/usaa.js';
 import { resourceSet } from '../../src/scope-filters.js';
@@ -484,8 +484,17 @@ async function main() {
   // PDPP_USAA_HEADLESS=0 when a first-time login or re-auth needs a
   // visible browser window (helpful for observing challenges and 2FA).
   const headless = process.env.PDPP_USAA_HEADLESS !== '0';
+  // Use the isolated-per-connector browser path (patchright-launched,
+  // persistent profile at ~/.pdpp/profiles/usaa/). This:
+  //   - gets FULL patchright stealth (launch-side + client-side) because
+  //     we import patchright directly in acquireIsolatedBrowser
+  //   - persists auth, trusted-device state, and Akamai fingerprint
+  //     across runs via the on-disk profile dir (critical for banking
+  //     sites that burn trusted-device markers on profile changes)
+  //   - enables concurrent runs with other connectors (no shared lock)
+  // See docs/connector-authoring-guide.md §2.
   try {
-    ({ context, release } = await acquireBrowser({ headless }));
+    ({ context, release } = await acquireIsolatedBrowser({ profileName: 'usaa', headless }));
   } catch (err) {
     return fail(`could not open browser profile: ${err.message}`, false);
   }
