@@ -17,27 +17,37 @@
  * Session probe: check for riders.uber.com cookies (sid, utag_main).
  */
 
-import { runConnector, politeDelay } from '../../src/connector-runtime.js';
+import {
+  type BrowserCollectContext,
+  type ProbeSessionArgs,
+  politeDelay,
+  runConnector,
+} from "../../src/connector-runtime.ts";
 
 runConnector({
-  name: 'uber',
+  name: "uber",
   browser: {},
 
-  async probeSession({ context }) {
-    const cookies = await context.cookies('https://riders.uber.com/');
+  async probeSession({ context }: ProbeSessionArgs): Promise<boolean> {
+    const cookies = await context.cookies("https://riders.uber.com/");
     // sid is set for authenticated sessions.
-    return cookies.some((c) => c.name === 'sid' && c.value);
+    return cookies.some((c) => c.name === "sid" && Boolean(c.value));
   },
 
-  async collect({ page, emit }) {
+  async collect({ page, emit }: BrowserCollectContext): Promise<void> {
     // Navigate to trips page as a no-op to verify session end-to-end.
-    await page.goto('https://riders.uber.com/trips', { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+    await page
+      .goto("https://riders.uber.com/trips", {
+        waitUntil: "domcontentloaded",
+        timeout: 30_000,
+      })
+      .catch((): undefined => undefined);
     await politeDelay(3000);
-    const title = await page.title().catch(() => '');
-    emit({
-      type: 'SKIP_RESULT',
-      stream: 'trips',
-      reason: 'uber_graphql_wiring_pending',
+    const title = await page.title().catch((): string => "");
+    await emit({
+      type: "SKIP_RESULT",
+      stream: "trips",
+      reason: "uber_graphql_wiring_pending",
       message: `Uber session verified (page title: "${title}"). GraphQL operation-name + persistedQueryHash wiring deferred to next session so we can capture real request signatures.`,
     });
   },

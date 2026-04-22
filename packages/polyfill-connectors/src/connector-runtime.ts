@@ -181,20 +181,40 @@ export interface ProbeSessionArgs {
   page: Page;
 }
 
-export interface RunConnectorConfig {
+/** Fields shared by browser and non-browser configs. */
+interface BaseRunConnectorConfig {
   auth?: AuthConfig;
-  browser?: BrowserConfig;
-  collect: (ctx: CollectContext | BrowserCollectContext) => Promise<void>;
-  ensureSession?: (args: EnsureSessionArgs) => Promise<void>;
   /** Marks a record as a tombstone; runtime strips to { id } + op:'delete'. */
   isTombstone?: (stream: string, data: RecordData) => boolean;
   name: string;
-  probeSession?: (args: ProbeSessionArgs) => Promise<boolean>;
   retryablePattern?: RegExp;
   /** Record field that scope.time_range filters on. Default 'date'. */
   timeRangeField?: string | ((stream: string) => string);
   validateRecord?: ValidateRecord;
 }
+
+/** Config for a non-browser connector (API, file-based). */
+export interface NonBrowserConnectorConfig extends BaseRunConnectorConfig {
+  browser?: undefined;
+  collect: (ctx: CollectContext) => Promise<void>;
+}
+
+/** Config for a browser-driven connector. */
+export interface BrowserConnectorConfig extends BaseRunConnectorConfig {
+  browser: BrowserConfig;
+  collect: (ctx: BrowserCollectContext) => Promise<void>;
+  ensureSession?: (args: EnsureSessionArgs) => Promise<void>;
+  probeSession?: (args: ProbeSessionArgs) => Promise<boolean>;
+}
+
+/**
+ * Discriminated on `browser`: if it's set, `collect` gets page + context;
+ * otherwise it doesn't. TS narrows the right way at each call site so
+ * destructuring `{ page }` in a browser connector's collect() is type-safe.
+ */
+export type RunConnectorConfig =
+  | NonBrowserConnectorConfig
+  | BrowserConnectorConfig;
 
 // ─── Primitive helpers (exported for connector convenience) ─────────────
 
@@ -278,13 +298,15 @@ export function runConnector(config: RunConnectorConfig): void {
     validateRecord,
     collect,
     browser,
-    ensureSession,
-    probeSession,
     retryablePattern = DEFAULT_RETRYABLE_PATTERN,
     timeRangeField = "date",
     isTombstone,
     auth,
   } = config;
+  // ensureSession/probeSession are only on BrowserConnectorConfig; extract
+  // after the browser-narrowing check.
+  const ensureSession = browser ? config.ensureSession : undefined;
+  const probeSession = browser ? config.probeSession : undefined;
 
   const timeRangeFieldFor: (stream: string) => string =
     typeof timeRangeField === "function"
@@ -586,9 +608,9 @@ async function runInBrowser(args: {
   emit: (msg: EmittedMessage) => Promise<void>;
   sendInteraction: BaseCollectContext["sendInteraction"];
   progress: BaseCollectContext["progress"];
-  ensureSession: RunConnectorConfig["ensureSession"];
-  probeSession: RunConnectorConfig["probeSession"];
-  collect: RunConnectorConfig["collect"];
+  ensureSession: BrowserConnectorConfig["ensureSession"];
+  probeSession: BrowserConnectorConfig["probeSession"];
+  collect: BrowserConnectorConfig["collect"];
   baseCtx: BaseCollectContext;
 }): Promise<void> {
   const {

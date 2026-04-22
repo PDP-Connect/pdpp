@@ -48,18 +48,199 @@
  *   state.archive_dir                → slackdump resume target (incremental)
  */
 
-import { spawn } from 'node:child_process';
-import { mkdir } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { join } from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
-import { resourceSet, passesTimeRange } from '../../src/scope-filters.js';
-import { readOptions } from '../../src/connector-options.js';
-import { runConnector, nowIso } from '../../src/connector-runtime.js';
+import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
+import { mkdir } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join } from "node:path";
+// biome-ignore lint/correctness/noUnresolvedImports: node:sqlite is a built-in Node 22.5+ module; Biome's resolver doesn't see built-ins here
+import { DatabaseSync } from "node:sqlite";
+import { readOptions } from "../../src/connector-options.ts";
+import {
+  type CollectContext,
+  nowIso,
+  type RecordData,
+  runConnector,
+} from "../../src/connector-runtime.ts";
+import { passesTimeRange, resourceSet } from "../../src/scope-filters.ts";
 
-function safeAll(db, sql) {
-  try { return db.prepare(sql).all(); } catch { return []; }
+// ─── SQLite row shapes (from slackdump's sqlite archive) ────────────────
+
+interface WorkspaceRow {
+  DATA: Uint8Array | string | null;
+  ENTERPRISE_ID: string | null;
+  ID: number;
+  TEAM: string | null;
+  TEAM_ID: string | null;
+  URL: string | null;
+  USER_ID: string | null;
+  USERNAME: string | null;
+}
+
+interface ChannelRow {
+  data: Uint8Array | string | null;
+  id: string;
+  name: string | null;
+}
+
+interface ChannelUserRow {
+  CHANNEL_ID: string;
+  USER_ID: string;
+}
+
+interface UserRow {
+  data: Uint8Array | string | null;
+  id: string;
+  username: string | null;
+}
+
+interface MessageRow {
+  CHANNEL_ID: string;
+  DATA: Uint8Array | string | null;
+  IS_PARENT: number | null;
+  NUM_FILES: number | null;
+  THREAD_TS: string | null;
+  TS: string;
+  TXT: string | null;
+}
+
+interface FileRow {
+  data: Uint8Array | string | null;
+  filename: string | null;
+  id: string;
+  mode: string | null;
+  url: string | null;
+}
+
+interface CanvasRow extends FileRow {
+  channel_id: string | null;
+  message_id: number | null;
+}
+
+// ─── Parsed Slack JSON shapes ───────────────────────────────────────────
+
+interface SlackDataBlob {
+  attachments?: Record<string, unknown>[];
+  blocks?: unknown[];
+  bot_id?: string;
+  client_msg_id?: string;
+  color?: string;
+  context_team_id?: string;
+  created?: number;
+  creator?: string;
+  deleted?: boolean;
+  domain?: string;
+  edited?: { ts?: string; user?: string };
+  email_domain?: string;
+  enterprise_name?: string;
+  enterprise_user?: { enterprise_id?: string };
+  external_type?: string;
+  files?: unknown[];
+  filetype?: string;
+  has_2fa?: boolean;
+  icon?: { image_230?: string; image_102?: string };
+  is_admin?: boolean;
+  is_app_user?: boolean;
+  is_archived?: boolean;
+  is_bot?: boolean;
+  is_channel?: boolean;
+  is_ext_shared?: boolean;
+  is_external?: boolean;
+  is_general?: boolean;
+  is_group?: boolean;
+  is_im?: boolean;
+  is_invited_user?: boolean;
+  is_member?: boolean;
+  is_mpim?: boolean;
+  is_org_shared?: boolean;
+  is_owner?: boolean;
+  is_primary_owner?: boolean;
+  is_private?: boolean;
+  is_public?: boolean;
+  is_read_only?: boolean;
+  is_restricted?: boolean;
+  is_shared?: boolean;
+  is_starred?: boolean;
+  is_stranger?: boolean;
+  is_ultra_restricted?: boolean;
+  latest_reply?: string;
+  metadata?: { event_type?: string };
+  mimetype?: string;
+  mode?: string;
+  name?: string;
+  name_normalized?: string;
+  num_members?: number;
+  original_h?: number;
+  original_w?: number;
+  parent_user_id?: string;
+  permalink?: string;
+  pinned_to?: string[];
+  pretty_type?: string;
+  previous_names?: string[];
+  profile?: {
+    real_name_normalized?: string;
+    display_name?: string;
+    display_name_normalized?: string;
+    first_name?: string;
+    last_name?: string;
+    email?: string;
+    phone?: string;
+    title?: string;
+    status_text?: string;
+    status_emoji?: string;
+    status_expiration?: number;
+    image_192?: string;
+  };
+  properties?: {
+    canvas?: {
+      file_id?: string;
+      is_empty?: boolean;
+      quip_thread_id?: string;
+    };
+    posting_restricted_to?: { type?: string };
+    threads_restricted_to?: { type?: string };
+  };
+  purpose?: { value?: string; creator?: string; last_set?: number };
+  reactions?: { name?: string; count?: number; users?: string[] }[];
+  real_name?: string;
+  reply_count?: number;
+  reply_users?: string[];
+  shared_team_ids?: string[];
+  size?: number;
+  subtype?: string;
+  team?: string;
+  team_id?: string;
+  text?: string;
+  timestamp?: number;
+  title?: string;
+  topic?: { value?: string; creator?: string; last_set?: number };
+  two_factor_type?: string;
+  tz?: string;
+  tz_label?: string;
+  tz_offset?: number;
+  updated?: number;
+  url_private?: string;
+  user?: string;
+  user_id?: string;
+  [field: string]: unknown;
+}
+
+interface SlackdumpRunResult {
+  stderr: string;
+  stdout: string;
+}
+
+const WORKSPACE_LIST_ARROW = /=>/;
+const SLACK_TIME_FRAC = /\..+$/;
+const SLACK_TIME_Z = /Z$/;
+
+// safeAll: typed SQL wrapper. Rows returned as unknown[] → caller casts.
+function safeAll<T>(db: DatabaseSync, sql: string): T[] {
+  try {
+    return db.prepare(sql).all() as T[];
+  } catch {
+    return [];
+  }
 }
 
 // Default timeout accommodates long-lived workspaces (10+ years) where a
@@ -67,20 +248,44 @@ function safeAll(db, sql) {
 // and Slack rate-limit bursts. The cost of a too-high default is only "late
 // failure signal" — slackdump will normally finish or error out well before
 // this. Override via `SLACKDUMP_TIMEOUT_MS` env var.
-function runSlackdump(args, { env, timeoutMs = Number(process.env.SLACKDUMP_TIMEOUT_MS) || 24 * 60 * 60 * 1000 }) {
+function runSlackdump(
+  args: string[],
+  {
+    env,
+    timeoutMs = Number(process.env.SLACKDUMP_TIMEOUT_MS) || 24 * 60 * 60 * 1000,
+  }: { env: NodeJS.ProcessEnv; timeoutMs?: number }
+): Promise<SlackdumpRunResult> {
   return new Promise((resolve, reject) => {
-    const bin = process.env.SLACKDUMP_BIN || 'slackdump';
-    const child = spawn(bin, args, { env, stdio: ['ignore', 'pipe', 'pipe'] });
-    let stdout = '', stderr = '';
-    child.stdout.on('data', (d) => (stdout += d.toString()));
-    child.stderr.on('data', (d) => (stderr += d.toString()));
-    const t = setTimeout(() => { child.kill(); reject(new Error('slackdump_timeout')); }, timeoutMs);
-    child.on('exit', (code) => {
-      clearTimeout(t);
-      if (code === 0) resolve({ stdout, stderr });
-      else reject(new Error(`slackdump_exit_${code}: ${stderr.slice(0, 400) || stdout.slice(0, 400)}`));
+    const bin = process.env.SLACKDUMP_BIN || "slackdump";
+    const child = spawn(bin, args, { env, stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    child.stdout?.on("data", (d: Buffer) => {
+      stdout += d.toString();
     });
-    child.on('error', (e) => { clearTimeout(t); reject(e); });
+    child.stderr?.on("data", (d: Buffer) => {
+      stderr += d.toString();
+    });
+    const t = setTimeout(() => {
+      child.kill();
+      reject(new Error("slackdump_timeout"));
+    }, timeoutMs);
+    child.on("exit", (code) => {
+      clearTimeout(t);
+      if (code === 0) {
+        resolve({ stdout, stderr });
+      } else {
+        reject(
+          new Error(
+            `slackdump_exit_${code}: ${stderr.slice(0, 400) || stdout.slice(0, 400)}`
+          )
+        );
+      }
+    });
+    child.on("error", (e) => {
+      clearTimeout(t);
+      reject(e);
+    });
   });
 }
 
@@ -89,47 +294,87 @@ function runSlackdump(args, { env, timeoutMs = Number(process.env.SLACKDUMP_TIME
  * `workspace new` with the same token is a no-op if the workspace already
  * exists.
  */
-async function ensureWorkspaceCached({ token, cookie, env }) {
+async function ensureWorkspaceCached({
+  token,
+  cookie,
+  env,
+}: {
+  token: string;
+  cookie: string;
+  env: NodeJS.ProcessEnv;
+}): Promise<void> {
   try {
-    const { stdout } = await runSlackdump(['workspace', 'list'], { env, timeoutMs: 10000 });
-    if (/=>/.test(stdout)) return;
-  } catch { /* fall through to register */ }
+    const { stdout } = await runSlackdump(["workspace", "list"], {
+      env,
+      timeoutMs: 10_000,
+    });
+    if (WORKSPACE_LIST_ARROW.test(stdout)) {
+      return;
+    }
+  } catch {
+    /* fall through to register */
+  }
   await runSlackdump(
-    ['workspace', 'new', '-token', token, '-cookie', cookie, '-no-encryption'],
-    { env, timeoutMs: 30000 },
+    ["workspace", "new", "-token", token, "-cookie", cookie, "-no-encryption"],
+    { env, timeoutMs: 30_000 }
   );
 }
 
 runConnector({
-  name: 'slack',
+  name: "slack",
   retryablePattern: /ECONN|timeout/i,
-  auth: { kind: 'env', required: ['SLACK_WORKSPACE', 'SLACK_TOKEN', 'SLACK_COOKIE'] },
-  async collect({ state, requested, credentials, emit, progress, emittedAt, scope }) {
+  auth: {
+    kind: "env",
+    required: ["SLACK_WORKSPACE", "SLACK_TOKEN", "SLACK_COOKIE"],
+  },
+  async collect(ctx: CollectContext): Promise<void> {
+    const { state, requested, credentials, emit, progress, emittedAt } = ctx;
+
     // Credentials — workspace is not a secret but belongs in the workspace context.
     const workspace = credentials.SLACK_WORKSPACE;
     const token = credentials.SLACK_TOKEN;
     const cookie = credentials.SLACK_COOKIE;
+    if (!(workspace && token && cookie)) {
+      throw new Error("slack_credentials_missing");
+    }
 
-    const opts = readOptions({ scope, state }, {
-      envPrefix: 'SLACK_',
-      fields: {
-        LOOKBACK_DAYS:     { parse: 'int',  default: 7 },
-        CHANNEL_ALLOWLIST: { parse: 'csv',  default: [] },
-        CHANNEL_TYPES:     { parse: 'csv',  default: ['public', 'private', 'im', 'mpim'] },
-        MEMBER_ONLY:       { parse: 'bool', default: true },
-        SKIP_FILES:        { parse: 'bool', default: true },
-      },
-    });
+    const opts = readOptions(
+      // readOptions reads from START.connector_options today; scope+state here
+      // is preserved for the forward-compatible migration path documented on
+      // the function.
+      null,
+      {
+        envPrefix: "SLACK_",
+        fields: {
+          LOOKBACK_DAYS: { parse: "int", default: 7 },
+          CHANNEL_ALLOWLIST: { parse: "csv", default: [] },
+          CHANNEL_TYPES: {
+            parse: "csv",
+            default: ["public", "private", "im", "mpim"],
+          },
+          MEMBER_ONLY: { parse: "bool", default: true },
+          SKIP_FILES: { parse: "bool", default: true },
+        },
+      }
+    ) as {
+      LOOKBACK_DAYS: number;
+      CHANNEL_ALLOWLIST: string[];
+      CHANNEL_TYPES: string[];
+      MEMBER_ONLY: boolean;
+      SKIP_FILES: boolean;
+    };
 
     // Resource filters (pre-fetch: pass as positional args; post-fetch: enforce too)
-    const resFilters = new Map();
-    for (const [n, r] of requested) resFilters.set(n, resourceSet(r));
-    const messagesScope = requested.get('messages');
+    const resFilters = new Map<string, ReadonlySet<string> | null>();
+    for (const [n, r] of requested) {
+      resFilters.set(n, resourceSet(r));
+    }
+    const messagesScope = requested.get("messages");
 
-    const dumpDir = join(homedir(), '.pdpp/slackdump', workspace);
+    const dumpDir = join(homedir(), ".pdpp/slackdump", workspace);
     await mkdir(dumpDir, { recursive: true });
-    const archivePath = join(dumpDir, 'archive');
-    const sqlitePath = join(archivePath, 'slackdump.sqlite'); // default DB name under the archive dir
+    const archivePath = join(dumpDir, "archive");
+    const sqlitePath = join(archivePath, "slackdump.sqlite"); // default DB name under the archive dir
 
     // Incremental via slackdump resume, full via archive.
     // Resume path: (a) explicit state.archive_dir from a prior successful run,
@@ -140,16 +385,30 @@ runConnector({
     // STATE is stream-keyed per Collection Profile: state is returned as
     // { <stream>: <cursor>, ... }. We write `archive_dir` into the messages
     // stream's cursor, so reads must qualify by that stream.
-    const priorArchive = state.messages?.archive_dir || state.archive_dir; // fallback for pre-fix state
+    const messagesState = state.messages as
+      | { archive_dir?: string; last_ts?: string | null }
+      | undefined;
+    const legacyArchiveDir = (state as Record<string, unknown>).archive_dir as
+      | string
+      | undefined;
+    const priorArchive = messagesState?.archive_dir || legacyArchiveDir; // fallback for pre-fix state
     const discoveredArchive = existsSync(archivePath) ? archivePath : null;
-    const resumeTarget = (priorArchive && existsSync(priorArchive)) ? priorArchive : discoveredArchive;
-    const useResume = !!resumeTarget;
+    const resumeTarget =
+      priorArchive && existsSync(priorArchive)
+        ? priorArchive
+        : discoveredArchive;
+    const useResume = Boolean(resumeTarget);
 
     // Map time_range from messages stream scope into -time-from / -time-to.
-    let timeFrom = null, timeTo = null;
+    let timeFrom: string | null = null;
+    let timeTo: string | null = null;
     if (messagesScope?.time_range) {
-      timeFrom = messagesScope.time_range.from || null;
-      timeTo = messagesScope.time_range.to || null;
+      const tr = messagesScope.time_range as {
+        from?: string | null;
+        to?: string | null;
+      };
+      timeFrom = tr.from || null;
+      timeTo = tr.to || null;
     }
 
     // IMPORTANT: we do NOT pass SLACK_WORKSPACE to slackdump — slackdump names
@@ -157,10 +416,24 @@ runConnector({
     // SLACK_WORKSPACE to the subdomain makes slackdump look for a cached
     // workspace with that literal name and fail. We keep `workspace` for our
     // own path naming + logging only.
-    const childEnv = { ...process.env, SLACK_TOKEN: token, SLACK_COOKIE: cookie };
-    delete childEnv.SLACK_WORKSPACE;
-    const positionalChannels = [
-      ...(resFilters.get('messages') ? [...resFilters.get('messages')] : []),
+    // Strip SLACK_WORKSPACE from the child env (see comment above) by
+    // copying every key except that one.
+    const childEnv: NodeJS.ProcessEnv = {
+      SLACK_TOKEN: token,
+      SLACK_COOKIE: cookie,
+    };
+    for (const [k, v] of Object.entries(process.env)) {
+      if (
+        k !== "SLACK_WORKSPACE" &&
+        k !== "SLACK_TOKEN" &&
+        k !== "SLACK_COOKIE"
+      ) {
+        childEnv[k] = v;
+      }
+    }
+    const msgResFilter = resFilters.get("messages");
+    const positionalChannels: string[] = [
+      ...(msgResFilter ? [...msgResFilter] : []),
       ...opts.CHANNEL_ALLOWLIST,
     ];
 
@@ -169,57 +442,98 @@ runConnector({
     // set PDPP_SLACK_SKIP_SLACKDUMP=1 to ingest whatever's already on disk
     // without touching the network. This salvages a partial archive into
     // PDPP records instead of leaving the data stranded.
-    const skipSlackdump = process.env.PDPP_SLACK_SKIP_SLACKDUMP === '1';
+    const skipSlackdump = process.env.PDPP_SLACK_SKIP_SLACKDUMP === "1";
 
     try {
       if (skipSlackdump) {
-        progress(`Skipping slackdump refresh (PDPP_SLACK_SKIP_SLACKDUMP=1); reading existing archive at ${archivePath}`);
-        if (!existsSync(sqlitePath)) throw new Error(`PDPP_SLACK_SKIP_SLACKDUMP=1 but no archive found at ${sqlitePath}`);
+        progress(
+          `Skipping slackdump refresh (PDPP_SLACK_SKIP_SLACKDUMP=1); reading existing archive at ${archivePath}`
+        );
+        if (!existsSync(sqlitePath)) {
+          throw new Error(
+            `PDPP_SLACK_SKIP_SLACKDUMP=1 but no archive found at ${sqlitePath}`
+          );
+        }
       } else {
-      progress(`Ensuring slackdump workspace is cached (SLACKDUMP_BIN=${process.env.SLACKDUMP_BIN || '<unset>'})`);
-      await ensureWorkspaceCached({ token, cookie, env: childEnv });
+        progress(
+          `Ensuring slackdump workspace is cached (SLACKDUMP_BIN=${process.env.SLACKDUMP_BIN || "<unset>"})`
+        );
+        await ensureWorkspaceCached({ token, cookie, env: childEnv });
 
-      progress(useResume ? `Resuming slackdump at ${resumeTarget}${priorArchive ? '' : ' (discovered on disk)'}` : `Running slackdump archive → ${archivePath}`);
-      // slackdump time format is 'YYYY-MM-DDTHH:MM:SS' (no Z, UTC implied).
-      const toSlackTime = (iso) => iso ? iso.replace(/\..+$/, '').replace(/Z$/, '') : null;
+        progress(
+          useResume
+            ? `Resuming slackdump at ${resumeTarget}${priorArchive ? "" : " (discovered on disk)"}`
+            : `Running slackdump archive → ${archivePath}`
+        );
+        // slackdump time format is 'YYYY-MM-DDTHH:MM:SS' (no Z, UTC implied).
+        const toSlackTime = (iso: string | null): string | null =>
+          iso
+            ? iso.replace(SLACK_TIME_FRAC, "").replace(SLACK_TIME_Z, "")
+            : null;
 
-      // WHY we ship an API-limits config: slackdump's defaults set tier_3 /
-      // tier_4 retries to 3, which exhausts quickly on bot-heavy channels
-      // (thousands of threads × even a low rate of 500 Internal Server Errors
-      // from Slack = process aborts with exit 6). Bumping those retries to 20
-      // aligns them with tier_2 (rate-limit retries), letting the same
-      // exponential-backoff policy ride out server-side hiccups. Verified live
-      // 2026-04-20: `eng_github` (C017NG64T24), 2,645 threads, exhausted
-      // default retries. A handful of OTHER channels also hit 500s but
-      // recovered — eng_github got unlucky on retry-count, not access.
-      // See config/slackdump-api-config.toml.
-      const apiConfigPath = new URL('../../config/slackdump-api-config.toml', import.meta.url).pathname;
+        // WHY we ship an API-limits config: slackdump's defaults set tier_3 /
+        // tier_4 retries to 3, which exhausts quickly on bot-heavy channels
+        // (thousands of threads × even a low rate of 500 Internal Server Errors
+        // from Slack = process aborts with exit 6). Bumping those retries to 20
+        // aligns them with tier_2 (rate-limit retries), letting the same
+        // exponential-backoff policy ride out server-side hiccups. Verified live
+        // 2026-04-20: `eng_github` (C017NG64T24), 2,645 threads, exhausted
+        // default retries. A handful of OTHER channels also hit 500s but
+        // recovered — eng_github got unlucky on retry-count, not access.
+        // See config/slackdump-api-config.toml.
+        const apiConfigPath = new URL(
+          "../../config/slackdump-api-config.toml",
+          import.meta.url
+        ).pathname;
 
-      if (useResume) {
-        // `resume` does not accept `-y` (unlike `archive`): passing it aborts
-        // with "flag provided but not defined".
-        // `-lookback` uses ISO 8601 duration syntax (e.g. "p1w", "p30d"), not
-        // Go's `72h` — slackdump parses it with its own `p`-prefixed parser.
-        const args = ['resume', '-no-encryption', '-api-config', apiConfigPath,
-                      '-lookback', `p${opts.LOOKBACK_DAYS}d`, resumeTarget];
-        await runSlackdump(args, { env: childEnv });
-      } else {
-        const args = ['archive', '-y', '-no-encryption', '-api-config', apiConfigPath,
-                      '-o', archivePath];
-        const tf = toSlackTime(timeFrom);
-        const tt = toSlackTime(timeTo);
-        if (tf) args.push('-time-from', tf);
-        if (tt) args.push('-time-to', tt);
-        if (opts.MEMBER_ONLY) args.push('-member-only');
-        if (opts.SKIP_FILES) args.push('-files=false');
-        // NOTE: CHANNEL_TYPES maps to `list channels -chan-types`; archive has
-        // no equivalent flag. We filter post-fetch via channel.is_im/is_mpim/etc.
-        args.push(...positionalChannels);
-        await runSlackdump(args, { env: childEnv });
-      }
+        if (useResume && resumeTarget) {
+          // `resume` does not accept `-y` (unlike `archive`): passing it aborts
+          // with "flag provided but not defined".
+          // `-lookback` uses ISO 8601 duration syntax (e.g. "p1w", "p30d"), not
+          // Go's `72h` — slackdump parses it with its own `p`-prefixed parser.
+          const args = [
+            "resume",
+            "-no-encryption",
+            "-api-config",
+            apiConfigPath,
+            "-lookback",
+            `p${opts.LOOKBACK_DAYS}d`,
+            resumeTarget,
+          ];
+          await runSlackdump(args, { env: childEnv });
+        } else {
+          const args = [
+            "archive",
+            "-y",
+            "-no-encryption",
+            "-api-config",
+            apiConfigPath,
+            "-o",
+            archivePath,
+          ];
+          const tf = toSlackTime(timeFrom);
+          const tt = toSlackTime(timeTo);
+          if (tf) {
+            args.push("-time-from", tf);
+          }
+          if (tt) {
+            args.push("-time-to", tt);
+          }
+          if (opts.MEMBER_ONLY) {
+            args.push("-member-only");
+          }
+          if (opts.SKIP_FILES) {
+            args.push("-files=false");
+          }
+          // NOTE: CHANNEL_TYPES maps to `list channels -chan-types`; archive has
+          // no equivalent flag. We filter post-fetch via channel.is_im/is_mpim/etc.
+          args.push(...positionalChannels);
+          await runSlackdump(args, { env: childEnv });
+        }
       } // end: if (skipSlackdump) else
     } catch (e) {
-      throw new Error(`slackdump failed: ${e.message}`);
+      const m = e instanceof Error ? e.message : String(e);
+      throw new Error(`slackdump failed: ${m}`);
     }
 
     if (!existsSync(sqlitePath)) {
@@ -228,36 +542,76 @@ runConnector({
 
     const db = new DatabaseSync(sqlitePath, { readOnly: true });
 
-    const emitRecord = async (s, d) => {
-      if (d.id == null) return;
+    // Preserve Slack's custom emitRecord — it applies a sent_at time_range
+    // filter that the runtime's default emitRecord doesn't support today.
+    const emitRecord = async (s: string, d: RecordData): Promise<void> => {
+      if (d.id == null) {
+        return;
+      }
       const rs = resFilters.get(s);
-      if (rs && rs.size && !rs.has(String(d.id))) return;
-      const scope = requested.get(s);
-      if (scope?.time_range && !passesTimeRange(d, scope.time_range, 'sent_at')) return;
-      await emit({ type: 'RECORD', stream: s, key: d.id, data: d, emitted_at: emittedAt });
+      if (rs?.size && !rs.has(String(d.id))) {
+        return;
+      }
+      const streamScope = requested.get(s);
+      const tr = streamScope?.time_range as
+        | { since?: string; until?: string }
+        | undefined;
+      if (tr) {
+        const sentAt = d.sent_at;
+        const sentAtStr = typeof sentAt === "string" ? sentAt : null;
+        if (!passesTimeRange(sentAtStr, tr)) {
+          return;
+        }
+      }
+      await emit({
+        type: "RECORD",
+        stream: s,
+        key: d.id as string | number,
+        data: d,
+        emitted_at: emittedAt,
+      });
     };
 
     // Slackdump's sqlite schema stores most of the richness inside a DATA BLOB
     // (full Slack API JSON). Tables are UPPERCASE singular.
     // node:sqlite returns BLOB as Uint8Array, not Buffer — use TextDecoder.
-    const td = new TextDecoder('utf-8');
-    const parseBlob = (blob) => {
-      if (!blob) return {};
+    const td = new TextDecoder("utf-8");
+    const parseBlob = (
+      blob: Uint8Array | string | null | undefined
+    ): SlackDataBlob => {
+      if (!blob) {
+        return {};
+      }
       try {
-        const s = typeof blob === 'string' ? blob
-          : blob instanceof Uint8Array ? td.decode(blob)
-          : String(blob);
-        return JSON.parse(s);
-      } catch { return {}; }
+        const s: string = ((): string => {
+          if (typeof blob === "string") {
+            return blob;
+          }
+          if (blob instanceof Uint8Array) {
+            return td.decode(blob);
+          }
+          return String(blob);
+        })();
+        return JSON.parse(s) as SlackDataBlob;
+      } catch {
+        return {};
+      }
     };
-    const tsToIso = (ts) => ts ? new Date(parseFloat(ts) * 1000).toISOString() : null;
-    const epochToIso = (sec) => Number.isFinite(sec) ? new Date(sec * 1000).toISOString() : null;
+    const tsToIso = (ts: string | null | undefined): string | null =>
+      ts ? new Date(Number.parseFloat(ts) * 1000).toISOString() : null;
+    const epochToIso = (sec: number | null | undefined): string | null =>
+      Number.isFinite(sec)
+        ? new Date((sec as number) * 1000).toISOString()
+        : null;
 
-    if (requested.has('workspace')) {
-      const rows = safeAll(db, `SELECT ID, TEAM, TEAM_ID, USERNAME, USER_ID, URL, ENTERPRISE_ID, DATA FROM WORKSPACE`);
+    if (requested.has("workspace")) {
+      const rows = safeAll<WorkspaceRow>(
+        db,
+        "SELECT ID, TEAM, TEAM_ID, USERNAME, USER_ID, URL, ENTERPRISE_ID, DATA FROM WORKSPACE"
+      );
       for (const r of rows) {
         const d = parseBlob(r.DATA);
-        await emitRecord('workspace', {
+        await emitRecord("workspace", {
           id: r.TEAM_ID ?? d.team_id ?? String(r.ID),
           name: r.TEAM ?? d.team ?? null,
           domain: d.domain ?? null,
@@ -274,17 +628,20 @@ runConnector({
       }
     }
 
-    if (requested.has('channels')) {
+    if (requested.has("channels")) {
       // Dedupe across chunks; keep the latest (max CHUNK_ID) snapshot per ID.
-      const rows = safeAll(db, `
+      const rows = safeAll<ChannelRow>(
+        db,
+        `
         SELECT c.ID AS id, c.NAME AS name, c.DATA AS data
         FROM CHANNEL c
         JOIN (SELECT ID, MAX(CHUNK_ID) AS mx FROM CHANNEL GROUP BY ID) m
           ON m.ID = c.ID AND m.mx = c.CHUNK_ID
-      `);
+      `
+      );
       for (const r of rows) {
         const d = parseBlob(r.data);
-        await emitRecord('channels', {
+        await emitRecord("channels", {
           id: r.id,
           name: r.name ?? d.name ?? null,
           name_normalized: d.name_normalized ?? null,
@@ -311,10 +668,16 @@ runConnector({
           purpose_last_set: d.purpose?.last_set ?? null,
           num_members: d.num_members ?? null,
           user: d.user || null,
-          shared_team_ids: Array.isArray(d.shared_team_ids) ? d.shared_team_ids : null,
+          shared_team_ids: Array.isArray(d.shared_team_ids)
+            ? d.shared_team_ids
+            : null,
           context_team_id: d.context_team_id ?? null,
-          previous_names: Array.isArray(d.previous_names) ? d.previous_names : null,
-          has_canvas: d.properties?.canvas ? !d.properties.canvas.is_empty : null,
+          previous_names: Array.isArray(d.previous_names)
+            ? d.previous_names
+            : null,
+          has_canvas: d.properties?.canvas
+            ? !d.properties.canvas.is_empty
+            : null,
           canvas_file_id: d.properties?.canvas?.file_id || null,
           posting_restricted: d.properties?.posting_restricted_to?.type != null,
           threads_restricted: d.properties?.threads_restricted_to?.type != null,
@@ -322,12 +685,15 @@ runConnector({
       }
     }
 
-    if (requested.has('channel_memberships')) {
-      const rows = safeAll(db, `
+    if (requested.has("channel_memberships")) {
+      const rows = safeAll<ChannelUserRow>(
+        db,
+        `
         SELECT DISTINCT CHANNEL_ID, USER_ID FROM CHANNEL_USER
-      `);
+      `
+      );
       for (const r of rows) {
-        await emitRecord('channel_memberships', {
+        await emitRecord("channel_memberships", {
           id: `${r.CHANNEL_ID}:${r.USER_ID}`,
           channel_id: r.CHANNEL_ID,
           user_id: r.USER_ID,
@@ -336,17 +702,20 @@ runConnector({
       }
     }
 
-    if (requested.has('users')) {
-      const rows = safeAll(db, `
+    if (requested.has("users")) {
+      const rows = safeAll<UserRow>(
+        db,
+        `
         SELECT u.ID AS id, u.USERNAME AS username, u.DATA AS data
         FROM S_USER u
         JOIN (SELECT ID, MAX(CHUNK_ID) AS mx FROM S_USER GROUP BY ID) m
           ON m.ID = u.ID AND m.mx = u.CHUNK_ID
-      `);
+      `
+      );
       for (const r of rows) {
         const d = parseBlob(r.data);
         const profile = d.profile || {};
-        await emitRecord('users', {
+        await emitRecord("users", {
           id: r.id,
           team_id: d.team_id ?? null,
           name: r.username ?? d.name ?? null,
@@ -386,8 +755,12 @@ runConnector({
     }
 
     // Messages, reactions, message_attachments share one pass for efficiency.
-    let maxMessageTs = null;
-    if (requested.has('messages') || requested.has('reactions') || requested.has('message_attachments')) {
+    let maxMessageTs: string | null = null;
+    if (
+      requested.has("messages") ||
+      requested.has("reactions") ||
+      requested.has("message_attachments")
+    ) {
       // Incremental sync: honor prior state.messages.last_ts by filtering in SQL.
       // Slack message TS strings collate lexically the same way they order
       // chronologically (fixed-width integer-dot-decimal), so string > works.
@@ -399,9 +772,9 @@ runConnector({
       // in cursor-finality-and-gap-awareness-open-question.md. For now:
       // first-run grabs everything, subsequent runs may miss late thread
       // replies unless the owner re-runs with a lookback or wipes state.
-      const priorTs = state.messages?.last_ts || null;
+      const priorTs = messagesState?.last_ts || null;
       const tsParam = priorTs ? [priorTs] : [];
-      const tsClause = priorTs ? 'WHERE m.TS > ?' : '';
+      const tsClause = priorTs ? "WHERE m.TS > ?" : "";
 
       // Slackdump can store the same (CHANNEL_ID, TS) message across multiple
       // CHUNK_IDs (e.g. from channel enumeration + subsequent thread fetch).
@@ -417,15 +790,30 @@ runConnector({
         ) latest ON latest.CHANNEL_ID = m.CHANNEL_ID AND latest.TS = m.TS AND latest.mx = m.CHUNK_ID
         ${tsClause}
       `);
-      const rows = stmt.all(...tsParam);
+      // node:sqlite stmt.all(...) returns Record<string, SQLOutputValue>[].
+      // Our typed shape is a subset (we SELECT named columns); rebuild each
+      // row explicitly to narrow SQLOutputValue into our column shape. Cheap:
+      // 7 fields per row, and the runtime has already produced the row.
+      const rows: MessageRow[] = stmt.all(...tsParam).map((raw) => ({
+        CHANNEL_ID: raw.CHANNEL_ID as string,
+        TS: raw.TS as string,
+        THREAD_TS: (raw.THREAD_TS as string | null) ?? null,
+        IS_PARENT: (raw.IS_PARENT as number | null) ?? null,
+        TXT: (raw.TXT as string | null) ?? null,
+        NUM_FILES: (raw.NUM_FILES as number | null) ?? null,
+        DATA: raw.DATA as Uint8Array | string | null,
+      }));
 
       if (priorTs) {
-        progress(`incremental: filtering messages newer than ${priorTs} (${rows.length} to process)`, { stream: 'messages' });
+        progress(
+          `incremental: filtering messages newer than ${priorTs} (${rows.length} to process)`,
+          { stream: "messages" }
+        );
       }
 
-      const wantMessages = requested.has('messages');
-      const wantReactions = requested.has('reactions');
-      const wantMsgAttachments = requested.has('message_attachments');
+      const wantMessages = requested.has("messages");
+      const wantReactions = requested.has("reactions");
+      const wantMsgAttachments = requested.has("message_attachments");
 
       for (const r of rows) {
         const d = parseBlob(r.DATA);
@@ -438,10 +826,12 @@ runConnector({
         // Track the max ts seen in this run for the post-loop STATE emit.
         // Slack ts is a fixed-shape "seconds.micros" string; string compare
         // matches numeric order because both halves are zero-padded by Slack.
-        if (ts && (maxMessageTs === null || ts > maxMessageTs)) maxMessageTs = ts;
+        if (ts && (maxMessageTs === null || ts > maxMessageTs)) {
+          maxMessageTs = ts;
+        }
 
         if (wantMessages) {
-          await emitRecord('messages', {
+          await emitRecord("messages", {
             id: messageId,
             channel_id: r.CHANNEL_ID,
             user_id: d.user || null,
@@ -452,21 +842,27 @@ runConnector({
             sent_at: sentAt,
             thread_ts: r.THREAD_TS || null,
             parent_user_id: d.parent_user_id || null,
-            is_thread_parent: r.IS_PARENT === 1 || !!d.reply_count,
+            is_thread_parent: r.IS_PARENT === 1 || Boolean(d.reply_count),
             reply_count: d.reply_count ?? null,
             reply_user_ids: Array.isArray(d.reply_users) ? d.reply_users : null,
             latest_reply: d.latest_reply || null,
             subtype: d.subtype || null,
-            is_tombstone: d.subtype === 'tombstone',
+            is_tombstone: d.subtype === "tombstone",
             text: r.TXT ?? d.text ?? null,
             edited_ts: d.edited?.ts || null,
             edited_by: d.edited?.user || null,
             has_files: (r.NUM_FILES ?? 0) > 0 || Array.isArray(d.files),
-            file_count: (r.NUM_FILES ?? null) ?? (Array.isArray(d.files) ? d.files.length : null),
+            file_count:
+              r.NUM_FILES ?? (Array.isArray(d.files) ? d.files.length : null),
             has_attachments: attachments.length > 0,
             attachment_count: attachments.length || null,
             has_blocks: Array.isArray(d.blocks) && d.blocks.length > 0,
-            reaction_count: Array.isArray(d.reactions) ? d.reactions.reduce((a, x) => a + (x.count ?? (x.users?.length || 0)), 0) : 0,
+            reaction_count: Array.isArray(d.reactions)
+              ? d.reactions.reduce(
+                  (a, x) => a + (x.count ?? (x.users?.length || 0)),
+                  0
+                )
+              : 0,
             is_pinned: pinnedTo != null && pinnedTo.length > 0,
             pinned_to: pinnedTo,
             metadata_event_type: d.metadata?.event_type || null,
@@ -476,10 +872,12 @@ runConnector({
         if (wantReactions && Array.isArray(d.reactions)) {
           for (const reaction of d.reactions) {
             const name = reaction?.name;
-            if (!name) continue;
+            if (!name) {
+              continue;
+            }
             const users = Array.isArray(reaction.users) ? reaction.users : [];
             for (const u of users) {
-              await emitRecord('reactions', {
+              await emitRecord("reactions", {
                 id: `${messageId}:${name}:${u}`,
                 message_id: messageId,
                 channel_id: r.CHANNEL_ID,
@@ -492,8 +890,8 @@ runConnector({
 
         if (wantMsgAttachments) {
           for (let i = 0; i < attachments.length; i++) {
-            const a = attachments[i] || {};
-            await emitRecord('message_attachments', {
+            const a = (attachments[i] || {}) as Record<string, unknown>;
+            await emitRecord("message_attachments", {
               id: `${messageId}:att:${i}`,
               message_id: messageId,
               channel_id: r.CHANNEL_ID,
@@ -516,20 +914,23 @@ runConnector({
       }
     }
 
-    if (requested.has('files')) {
+    if (requested.has("files")) {
       // Exclude quip/canvas files from the generic `files` stream — they are
       // first-class records in the `canvases` stream (v0.3). Other file modes
       // (hosted, snippet, external, tombstone) still flow here.
-      const rows = safeAll(db, `
+      const rows = safeAll<FileRow>(
+        db,
+        `
         SELECT f.ID AS id, f.FILENAME AS filename, f.URL AS url, f.MODE AS mode, f.DATA AS data
         FROM FILE f
         JOIN (SELECT ID, MAX(CHUNK_ID) AS mx FROM FILE GROUP BY ID) m
           ON m.ID = f.ID AND m.mx = f.CHUNK_ID
         WHERE f.MODE != 'quip'
-      `);
+      `
+      );
       for (const r of rows) {
         const d = parseBlob(r.data);
-        await emitRecord('files', {
+        await emitRecord("files", {
           id: r.id,
           name: r.filename ?? d.name ?? null,
           title: d.title ?? null,
@@ -553,7 +954,7 @@ runConnector({
       }
     }
 
-    if (requested.has('canvases')) {
+    if (requested.has("canvases")) {
       // Canvases are stored as FILE rows with MODE='quip' (mimetype
       // application/vnd.slack-docs). A single canvas can appear multiple times
       // across CHUNK_IDs (channel share + thread shares); dedupe on file ID by
@@ -565,22 +966,35 @@ runConnector({
       // an authenticated files.slack.com URL. `content_markdown` is therefore
       // always null here; if/when slackdump or an API-layer fallback fetches
       // the body, this field is where it belongs.
-      const canvasRows = safeAll(db, `
+      const canvasRows = safeAll<CanvasRow>(
+        db,
+        `
         SELECT f.ID AS id, f.FILENAME AS filename, f.URL AS url, f.CHANNEL_ID AS channel_id,
                f.MESSAGE_ID AS message_id, f.DATA AS data
         FROM FILE f
         JOIN (SELECT ID, MAX(CHUNK_ID) AS mx FROM FILE GROUP BY ID) m
           ON m.ID = f.ID AND m.mx = f.CHUNK_ID
         WHERE f.MODE = 'quip'
-      `);
+      `
+      );
       // Map channel_id -> { file_id, is_empty, quip_thread_id } from latest-chunk channel data.
-      const channelCanvasIndex = new Map();
-      const chanRows = safeAll(db, `
+      const channelCanvasIndex = new Map<
+        string,
+        {
+          channel_id: string;
+          is_empty: boolean | null;
+          quip_thread_id: string | null;
+        }
+      >();
+      const chanRows = safeAll<ChannelRow>(
+        db,
+        `
         SELECT c.ID AS id, c.DATA AS data
         FROM CHANNEL c
         JOIN (SELECT ID, MAX(CHUNK_ID) AS mx FROM CHANNEL GROUP BY ID) m
           ON m.ID = c.ID AND m.mx = c.CHUNK_ID
-      `);
+      `
+      );
       for (const r of chanRows) {
         const d = parseBlob(r.data);
         const cv = d.properties?.canvas;
@@ -594,14 +1008,18 @@ runConnector({
       }
       for (const r of canvasRows) {
         const d = parseBlob(r.data);
-        const chanMeta = channelCanvasIndex.get(r.id) || {};
+        const chanMeta: {
+          channel_id?: string;
+          is_empty?: boolean | null;
+          quip_thread_id?: string | null;
+        } = channelCanvasIndex.get(r.id) || {};
         const createdSec = d.created ?? null;
         const updatedSec = d.updated ?? d.timestamp ?? null;
-        await emitRecord('canvases', {
+        await emitRecord("canvases", {
           id: r.id,
           file_id: r.id,
           channel_id: r.channel_id || chanMeta.channel_id || null,
-          message_id: r.message_id != null ? String(r.message_id) : null,
+          message_id: r.message_id == null ? null : String(r.message_id),
           title: d.title ?? null,
           name: r.filename ?? d.name ?? null,
           author_id: d.user || null,
@@ -626,14 +1044,35 @@ runConnector({
     // realizable from a slackdump archive today. If a caller requests them we
     // emit SKIP_RESULT so the run completes cleanly without spoofing empty data.
     const unavailableStreams = [
-      { name: 'stars',          reason: 'slackdump does not archive starred/saved items (stars.list is not called in archive mode)' },
-      { name: 'user_groups',    reason: 'slackdump does not archive user groups (usergroups.list is not called in archive mode)' },
-      { name: 'reminders',      reason: 'slackdump does not archive reminders (reminders.list is not called in archive mode)' },
-      { name: 'dm_read_states', reason: 'slackdump archive strips last_read / unread_count_display from channel data' },
+      {
+        name: "stars",
+        reason:
+          "slackdump does not archive starred/saved items (stars.list is not called in archive mode)",
+      },
+      {
+        name: "user_groups",
+        reason:
+          "slackdump does not archive user groups (usergroups.list is not called in archive mode)",
+      },
+      {
+        name: "reminders",
+        reason:
+          "slackdump does not archive reminders (reminders.list is not called in archive mode)",
+      },
+      {
+        name: "dm_read_states",
+        reason:
+          "slackdump archive strips last_read / unread_count_display from channel data",
+      },
     ];
     for (const s of unavailableStreams) {
       if (requested.has(s.name)) {
-        emit({ type: 'SKIP_RESULT', stream: s.name, reason: 'not_available', message: s.reason });
+        emit({
+          type: "SKIP_RESULT",
+          stream: s.name,
+          reason: "not_available",
+          message: s.reason,
+        });
       }
     }
 
@@ -650,12 +1089,14 @@ runConnector({
     // `archive_dir` moves onto the messages cursor so `-resume` continues to
     // work; it's workspace-global but messages is the canonical stream for
     // slackdump state on the PDPP side.
-    const priorMaxTs = state.messages?.last_ts || null;
-    const committedMaxTs = (maxMessageTs && (priorMaxTs === null || maxMessageTs > priorMaxTs))
-      ? maxMessageTs : priorMaxTs;
+    const priorMaxTs = messagesState?.last_ts || null;
+    const committedMaxTs =
+      maxMessageTs && (priorMaxTs === null || maxMessageTs > priorMaxTs)
+        ? maxMessageTs
+        : priorMaxTs;
     emit({
-      type: 'STATE',
-      stream: 'messages',
+      type: "STATE",
+      stream: "messages",
       cursor: {
         last_ts: committedMaxTs,
         archive_dir: archivePath,
@@ -665,9 +1106,19 @@ runConnector({
     // Declare the other incremental streams' cursors as synced-now. Small
     // volume + full-refresh semantics, so no per-record filter — but the
     // spec wants a STATE per incremental stream.
-    for (const stream of ['channels', 'users', 'files', 'canvases', 'workspace']) {
+    for (const stream of [
+      "channels",
+      "users",
+      "files",
+      "canvases",
+      "workspace",
+    ]) {
       if (requested.has(stream)) {
-        emit({ type: 'STATE', stream, cursor: { synced_at: nowIso() } });
+        emit({
+          type: "STATE",
+          stream,
+          cursor: { synced_at: nowIso() },
+        });
       }
     }
   },
