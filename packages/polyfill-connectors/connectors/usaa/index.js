@@ -29,6 +29,7 @@ import { ensureUsaaSession } from '../../src/auto-login/usaa.js';
 import { resourceSet } from '../../src/scope-filters.js';
 import { stringifyForJsonl } from '../../src/safe-emit.js';
 import { hydrateStatementPdfs, parsePdfStatement, fileUrlForPath } from './statement-pdfs.js';
+import { validateRecord } from './schemas.js';
 
 const rl = createInterface({ input: process.stdin, terminal: false });
 function emit(msg) { process.stdout.write(stringifyForJsonl(msg)); }
@@ -451,22 +452,58 @@ async function main() {
   const state = startMsg.state || {};
   const emittedAt = nowIso();
   let total = 0;
+  let totalSkipped = 0;
   const resFilters = new Map();
   for (const [n, r] of requested) resFilters.set(n, resourceSet(r));
+  // Shape-check per docs/connector-authoring-guide.md §3. Records that
+  // fail the Zod schema become SKIP_RESULT instead of poisoning the RS
+  // with garbage-that-looks-right. Schemas live in ./schemas.js.
   const emitRecord = (stream, data) => {
     if (data.id == null) return;
     const rs = resFilters.get(stream);
     if (rs && !rs.has(String(data.id))) return;
+    const result = validateRecord(stream, data);
+    if (!result.ok) {
+      totalSkipped++;
+      emit({
+        type: 'SKIP_RESULT',
+        stream,
+        reason: 'shape_check_failed',
+        message: `${data.id}: ${result.issues.map((i) => `${i.path}: ${i.message}`).join('; ')}`,
+        diagnostics: { id: data.id, issues: result.issues, record: data },
+      });
+      return;
+    }
     emit({ type: 'RECORD', stream, key: data.id, data, emitted_at: emittedAt });
     total++;
   };
 
   let context;
   let release = async () => {};
+  // Default headless=true for unattended runs. Override via
+  // PDPP_USAA_HEADLESS=0 when a first-time login or re-auth needs a
+  // visible browser window (helpful for observing challenges and 2FA).
+  const headless = process.env.PDPP_USAA_HEADLESS !== '0';
   try {
-    ({ context, release } = await acquireBrowser({ headless: true }));
+    ({ context, release } = await acquireBrowser({ headless }));
   } catch (err) {
     return fail(`could not open browser profile: ${err.message}`, false);
+  }
+
+  // Tracing (Playwright feature). Gated behind PDPP_TRACE=1. Produces a
+  // .zip replayable in the Playwright Inspector — invaluable for
+  // debugging silent scraper failures on banking-grade flows. See
+  // docs/connector-authoring-guide.md §9.
+  const tracingEnabled = process.env.PDPP_TRACE === '1';
+  if (tracingEnabled) {
+    const traceName = `usaa-${new Date().toISOString().replace(/[:.]/g, '-')}`;
+    await context.tracing.start({
+      name: traceName,
+      screenshots: true,
+      snapshots: true,
+      sources: true,
+    }).catch(() => {});
+    emit({ type: 'PROGRESS', message: `tracing enabled (PDPP_TRACE=1); will write /tmp/${traceName}.zip on exit` });
   }
 
   let downloadQueue;
@@ -985,6 +1022,15 @@ async function main() {
     }
   } finally {
     if (downloadQueue) { try { downloadQueue.detach(); } catch {} }
+    if (tracingEnabled && context) {
+      const tracePath = `/tmp/usaa-trace-${new Date().toISOString().replace(/[:.]/g, '-')}.zip`;
+      try {
+        await context.tracing.stop({ path: tracePath });
+        emit({ type: 'PROGRESS', message: `trace written to ${tracePath} — replay with: npx playwright show-trace ${tracePath}` });
+      } catch (err) {
+        emit({ type: 'PROGRESS', message: `failed to write trace: ${err.message}` });
+      }
+    }
     await release().catch(() => {});
   }
 
@@ -1001,6 +1047,9 @@ async function main() {
     flushAndExit(1);
   }
 
+  if (totalSkipped > 0) {
+    emit({ type: 'PROGRESS', message: `shape-check skipped ${totalSkipped} record(s); see SKIP_RESULT events above` });
+  }
   emit({ type: 'DONE', status: 'succeeded', records_emitted: total });
   flushAndExit(0);
 }
