@@ -29,55 +29,72 @@
  * The queue preserves event-delivery order.
  */
 
-/**
- * @typedef {Object} DownloadQueue
- * @property {(opts?: { timeoutMs?: number }) => Promise<import('playwright').Download>} waitForNextDownload
- * @property {() => void} detach
- * @property {() => number} pendingCount
- */
+import type { Download, Page } from "playwright";
+
+export interface DownloadQueue {
+  detach(): void;
+  pendingCount(): number;
+  waitForNextDownload(opts?: { timeoutMs?: number }): Promise<Download>;
+}
 
 /**
- * @param {import('playwright').Page | import('playwright').BrowserContext} target
- * @returns {DownloadQueue}
+ * Wrapper a waiter callback can accept. We reject pending waiters on detach
+ * by calling them with `null`; the wrap checks for this and the pending
+ * timer fires the real rejection.
  */
-export function attachDownloadQueue(target) {
-  /** @type {import('playwright').Download[]} */
-  const pending = [];
-  /** @type {((dl: import('playwright').Download) => void)[]} */
-  const waiters = [];
+type Waiter = (dl: Download | null) => void;
 
-  const onDownload = (dl) => {
+export function attachDownloadQueue(target: Page): DownloadQueue {
+  const pending: Download[] = [];
+  const waiters: Waiter[] = [];
+
+  const onDownload = (dl: Download): void => {
     if (waiters.length > 0) {
       const resolve = waiters.shift();
-      resolve(dl);
+      if (resolve) {
+        resolve(dl);
+      }
     } else {
       pending.push(dl);
     }
   };
 
-  target.on('download', onDownload);
+  target.on("download", onDownload);
 
   return {
-    waitForNextDownload({ timeoutMs = 180_000 } = {}) {
+    waitForNextDownload({ timeoutMs = 180_000 } = {}): Promise<Download> {
       if (pending.length > 0) {
-        return Promise.resolve(pending.shift());
+        const first = pending.shift();
+        if (first) {
+          return Promise.resolve(first);
+        }
       }
-      return new Promise((resolve, reject) => {
+      return new Promise<Download>((resolve, reject) => {
         let resolved = false;
         const timer = setTimeout(() => {
-          if (resolved) return;
+          if (resolved) {
+            return;
+          }
           resolved = true;
           // Remove this waiter from the queue so a late download doesn't
           // resolve a timed-out promise.
           const idx = waiters.indexOf(wrap);
-          if (idx >= 0) waiters.splice(idx, 1);
+          if (idx >= 0) {
+            waiters.splice(idx, 1);
+          }
           reject(new Error(`download_timeout after ${timeoutMs}ms`));
         }, timeoutMs);
-        const wrap = (dl) => {
+        const wrap: Waiter = (dl) => {
           if (resolved) {
             // Already timed out — push back so another waiter (if any) can
             // claim it, rather than dropping.
-            pending.unshift(dl);
+            if (dl) {
+              pending.unshift(dl);
+            }
+            return;
+          }
+          if (!dl) {
+            // Detached; let the timer fire the real rejection.
             return;
           }
           resolved = true;
@@ -87,18 +104,22 @@ export function attachDownloadQueue(target) {
         waiters.push(wrap);
       });
     },
-    detach() {
-      target.off('download', onDownload);
+    detach(): void {
+      target.off("download", onDownload);
       // Anything still waiting gets rejected so callers don't hang forever.
       while (waiters.length > 0) {
         const w = waiters.shift();
         // Passing a sentinel that won't look like a Download; the waiter
         // pairs a timer that will fire the rejection on its own, but we
         // flush here for immediate unblock.
-        try { w(null); } catch {}
+        try {
+          w?.(null);
+        } catch {
+          /* ignore */
+        }
       }
     },
-    pendingCount() {
+    pendingCount(): number {
       return pending.length;
     },
   };

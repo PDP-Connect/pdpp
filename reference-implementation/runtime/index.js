@@ -378,6 +378,7 @@ export async function runConnector(opts) {
     rsUrl = process.env.RS_URL || 'http://localhost:7663',
     onInteraction = defaultInteractionHandler,
     onProgress = defaultOnProgress,
+    onStarted = null,
   } = opts;
 
   // Check binding requirements
@@ -396,14 +397,23 @@ export async function runConnector(opts) {
   const scopeByStream = new Map((startScope.streams || []).map((streamScope) => [streamScope.name, streamScope]));
   const manifestByStream = new Map((manifest?.streams || []).map((stream) => [stream.name, stream]));
 
-  // Spawn connector process
-  const proc = spawn(process.execPath, [connectorPath], {
+  // Spawn connector process. Connectors may be .ts (source-only) or .js
+  // (migrated or third-party). For .ts, use `node --import tsx/esm`, which
+  // loads tsx as a module hook into the normal Node runtime — no extra
+  // subprocess hop, signal handling works normally, and it's within a few
+  // ms of plain `node` on cached runs. Once Node's --strip-types is
+  // stable for our syntax subset, drop tsx entirely.
+  const isTsConnector = connectorPath.endsWith('.ts');
+  const args = isTsConnector
+    ? ['--import', 'tsx/esm', connectorPath]
+    : [connectorPath];
+  const proc = spawn(process.execPath, args, {
     stdio: ['pipe', 'pipe', 'pipe'],
     env: { ...process.env },
   });
 
-  const traceContext = createTraceContext({ scenarioId: opts.scenarioId });
-  const runId = `run_${Date.now()}`;
+  const traceContext = opts.traceContext || createTraceContext({ scenarioId: opts.scenarioId });
+  const runId = opts.runId || `run_${Date.now()}`;
   const runSource = buildRunSourceDescriptor(connectorId);
 
   // We do NOT use readline.createInterface here. Node 24+ readline treats
@@ -510,6 +520,9 @@ export async function runConnector(opts) {
       scope_streams: startScope.streams.map((stream) => stream.name),
     },
   });
+  if (typeof onStarted === 'function') {
+    onStarted({ run_id: runId, trace_id: traceContext.trace_id });
+  }
 
   // Collect new STATE checkpoints
   const newState = {};

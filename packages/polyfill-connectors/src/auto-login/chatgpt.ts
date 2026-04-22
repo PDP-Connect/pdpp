@@ -1,0 +1,235 @@
+/**
+ * ChatGPT automated session management.
+ *
+ * ChatGPT auth expires after ~30 days. When expired, the user must either
+ * sign in via Google SSO (couldn't be fully automated without Google creds)
+ * or email+password.
+ *
+ * Env: CHATGPT_USERNAME / CHATGPT_PASSWORD. ChatGPT has Cloudflare protection
+ * and may demand 2FA (app approval or code entry).
+ *
+ * If auto-login fails (Cloudflare challenge, unexpected UI), fall back to
+ * INTERACTION manual_action so the user can be prompted.
+ */
+
+import type { BrowserContext, Page } from "playwright";
+import type {
+  InteractionRequest,
+  InteractionResponse,
+} from "../connector-runtime.ts";
+
+interface EnsureChatGptSessionArgs {
+  context: BrowserContext;
+  page: Page;
+  sendInteraction: (req: InteractionRequest) => Promise<InteractionResponse>;
+}
+
+interface SessionResponse {
+  user?: unknown;
+}
+
+async function checkSession(page: Page): Promise<boolean> {
+  try {
+    const r = await page.evaluate(async (): Promise<SessionResponse | null> => {
+      try {
+        const res = await fetch("/api/auth/session", {
+          credentials: "include",
+        });
+        if (!res.ok) {
+          return null;
+        }
+        const text = await res.text();
+        try {
+          return JSON.parse(text) as SessionResponse;
+        } catch {
+          return null;
+        }
+      } catch {
+        return null;
+      }
+    });
+    return Boolean(r?.user);
+  } catch {
+    return false;
+  }
+}
+
+async function checkLoggedInViaDOM(page: Page): Promise<boolean> {
+  try {
+    return await page.evaluate((): boolean => {
+      // @ts-expect-error — runs in browser context, `document` exists at runtime
+      const allButtons = document.querySelectorAll("button, a");
+      const hasLoginButton = Array.from(
+        allButtons as Iterable<{ textContent: string | null }>
+      ).some((el): boolean => {
+        const text = el.textContent?.toLowerCase() ?? "";
+        return text.includes("log in") || text.includes("sign up");
+      });
+      if (hasLoginButton) {
+        return false;
+      }
+      const hasSidebar =
+        // @ts-expect-error — runs in browser context, `document` exists at runtime
+        !!document.querySelector('nav[aria-label="Chat history"]') ||
+        // @ts-expect-error — runs in browser context, `document` exists at runtime
+        !!document.querySelector('nav a[href^="/c/"]') ||
+        // @ts-expect-error — runs in browser context, `document` exists at runtime
+        document.querySelectorAll("nav").length > 0;
+      const hasUserMenu =
+        // @ts-expect-error — runs in browser context, `document` exists at runtime
+        !!document.querySelector('[data-testid="profile-button"]') ||
+        // @ts-expect-error — runs in browser context, `document` exists at runtime
+        !!document.querySelector('button[aria-label*="User menu"]');
+      return hasSidebar || hasUserMenu;
+    });
+  } catch {
+    return false;
+  }
+}
+
+export async function ensureChatGptSession({
+  context: _context,
+  page,
+  sendInteraction,
+}: EnsureChatGptSessionArgs): Promise<boolean> {
+  // Probe: can we hit /api/auth/session and get user?
+  await page
+    .goto("https://chatgpt.com/", {
+      waitUntil: "domcontentloaded",
+      timeout: 30_000,
+    })
+    .catch((): undefined => undefined);
+  await page.waitForTimeout(3000);
+
+  if (await checkSession(page)) {
+    return true;
+  }
+
+  // Session dead. Try email/password flow.
+  const email = process.env.CHATGPT_USERNAME;
+  const password = process.env.CHATGPT_PASSWORD;
+  if (!(email && password)) {
+    throw new Error("CHATGPT_USERNAME/PASSWORD not set");
+  }
+
+  await page.goto("https://chatgpt.com/auth/login", {
+    waitUntil: "domcontentloaded",
+    timeout: 30_000,
+  });
+  await page.waitForTimeout(2500);
+
+  // Click "Log in" button to reach auth.openai.com
+  await page.evaluate((): boolean => {
+    // @ts-expect-error — runs in browser context, `document` exists at runtime
+    const buttons = document.querySelectorAll("button, a");
+    for (const btn of Array.from(
+      buttons as Iterable<{ textContent: string | null; click: () => void }>
+    )) {
+      const text = (btn.textContent ?? "").trim().toLowerCase();
+      if (text === "log in") {
+        btn.click();
+        return true;
+      }
+    }
+    return false;
+  });
+  await page.waitForTimeout(3000);
+
+  // Email input
+  const emailIn = page
+    .locator('input[type="email"], input[name="username"], input[name="email"]')
+    .first();
+  if (!(await emailIn.count())) {
+    await sendInteraction({
+      kind: "manual_action",
+      message:
+        "ChatGPT session expired and auto-login UI is unexpected (possibly Cloudflare challenge). Open chatgpt.com on the laptop and log in manually, then re-run.",
+      timeout_seconds: 1800,
+    });
+    throw new Error("chatgpt_login_unexpected_ui");
+  }
+  await emailIn.fill(email);
+  await page
+    .locator('button[type="submit"], :text-is("Continue")')
+    .first()
+    .click()
+    .catch((): undefined => undefined);
+  await page.waitForTimeout(3000);
+
+  // ChatGPT may default to email-code login; click "Continue with password" if present.
+  const continueWithPw = page
+    .locator(':text-matches("Continue with password", "i")')
+    .first();
+  if (await continueWithPw.count()) {
+    await continueWithPw.click();
+    await page.waitForTimeout(3000);
+  }
+
+  // Fill password if the field is present.
+  const passwordIn = page.locator('input[type="password"]').first();
+  if (await passwordIn.count()) {
+    await passwordIn.fill(password);
+    await page
+      .locator('button[type="submit"], :text-is("Continue")')
+      .first()
+      .click()
+      .catch((): undefined => undefined);
+    await page.waitForTimeout(5000);
+
+    // Handle 2FA code entry if prompted (input[name="code"], tel, or numeric).
+    const tfaIn = page
+      .locator(
+        'input[name="code"], input[type="tel"], input[inputmode="numeric"]'
+      )
+      .first();
+    if (await tfaIn.count()) {
+      const resp = await sendInteraction({
+        kind: "text_input",
+        message:
+          "ChatGPT requires a 2FA verification code. Enter the 6-digit code:",
+        timeout_seconds: 300,
+      });
+      if (resp?.value) {
+        await tfaIn.fill(resp.value);
+        await page
+          .locator('button[type="submit"]')
+          .first()
+          .click()
+          .catch((): undefined => undefined);
+        await page.waitForTimeout(5000);
+      }
+    }
+  } else {
+    // No password field — might be email-code-only or needs manual intervention.
+    throw new Error("chatgpt_login_no_password_field");
+  }
+
+  // Poll for up to 90s without navigating away — the user may need to approve
+  // a 2FA push notification or complete a Cloudflare challenge in the browser.
+  for (let attempt = 0; attempt < 18; attempt++) {
+    await page.waitForTimeout(5000);
+    // Check both DOM-based login detection and session API.
+    if (await checkLoggedInViaDOM(page)) {
+      return true;
+    }
+    if (await checkSession(page)) {
+      return true;
+    }
+  }
+
+  // Last resort — ask the user to complete login manually.
+  await sendInteraction({
+    kind: "manual_action",
+    message:
+      "ChatGPT login submitted but session still not active after 90s. Please complete login in the browser window (Cloudflare challenge, 2FA, etc.).",
+    timeout_seconds: 1800,
+  });
+
+  // One more check after manual intervention.
+  await page.waitForTimeout(3000);
+  if ((await checkSession(page)) || (await checkLoggedInViaDOM(page))) {
+    return true;
+  }
+
+  throw new Error("chatgpt_login_post_submit_failed");
+}

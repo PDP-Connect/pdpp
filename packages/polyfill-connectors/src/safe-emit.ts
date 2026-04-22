@@ -19,12 +19,11 @@
  * `JSON.stringify(msg)`. Prefer `emitToStdout(msg)` which bundles stringify
  * + write + backpressure handling.
  *
- * Root-cause details: see
- * openspec/changes/add-polyfill-connector-system/design-notes/gmail-jsonl-truncation-bug.md
+ * Root-cause details: see design-notes/gmail-jsonl-truncation-bug.md
  */
 
-// Regex captures U+2028 AND U+2029. Global flag so all occurrences get escaped.
-const JSONL_TERMINATOR_RE = /[\u2028\u2029]/g;
+// Captures U+2028 AND U+2029. Global flag so all occurrences get escaped.
+const JSONL_TERMINATOR = /[\u2028\u2029]/g;
 
 const MAX_SAFE = BigInt(Number.MAX_SAFE_INTEGER);
 const MIN_SAFE = BigInt(Number.MIN_SAFE_INTEGER);
@@ -40,25 +39,29 @@ const MIN_SAFE = BigInt(Number.MIN_SAFE_INTEGER);
  * safe range become String, which preserves precision for IDs like Gmail's
  * X-GM-MSGID, Twitter snowflakes, or SQLite rowids that exceed 2^53.
  */
-function bigIntSafeReplacer(_key, value) {
-  if (typeof value === 'bigint') {
-    return value <= MAX_SAFE && value >= MIN_SAFE ? Number(value) : value.toString();
+function bigIntSafeReplacer(_key: string, value: unknown): unknown {
+  if (typeof value === "bigint") {
+    return value <= MAX_SAFE && value >= MIN_SAFE
+      ? Number(value)
+      : value.toString();
   }
   return value;
+}
+
+function escapeJsonlTerminator(c: string): string {
+  return c === "\u2028" ? "\\u2028" : "\\u2029";
 }
 
 /**
  * Serialize a message object to a JSONL-safe line (with trailing `\n`).
  * Output is guaranteed not to contain U+2028 / U+2029 in any position, and
- * any BigInt values are coerced to Number or String (see replacer above).
- *
- * @param {unknown} msg
- * @returns {string}
+ * any BigInt values are coerced to Number or String.
  */
-export function stringifyForJsonl(msg) {
-  return JSON.stringify(msg, bigIntSafeReplacer).replace(JSONL_TERMINATOR_RE, (c) =>
-    c === '\u2028' ? '\\u2028' : '\\u2029'
-  ) + '\n';
+export function stringifyForJsonl(msg: unknown): string {
+  return `${JSON.stringify(msg, bigIntSafeReplacer).replace(
+    JSONL_TERMINATOR,
+    escapeJsonlTerminator
+  )}\n`;
 }
 
 /**
@@ -68,15 +71,18 @@ export function stringifyForJsonl(msg) {
  * Large records (>64 KB, above the default Linux pipe buffer) are written in
  * chunks by Node; wait for `drain` before the next write to avoid queueing
  * up unbounded memory. Small records return a resolved promise immediately.
- *
- * @param {unknown} msg
- * @returns {Promise<void>}
  */
-export function emitToStdout(msg) {
+export function emitToStdout(msg: unknown): Promise<void> {
   const line = stringifyForJsonl(msg);
   const ok = process.stdout.write(line);
-  if (ok) return Promise.resolve();
-  return new Promise((resolve) => process.stdout.once('drain', resolve));
+  if (ok) {
+    return Promise.resolve();
+  }
+  return new Promise<void>((resolve) => {
+    process.stdout.once("drain", () => {
+      resolve();
+    });
+  });
 }
 
 /**
@@ -85,10 +91,7 @@ export function emitToStdout(msg) {
  * the same parser the connectors expect.
  *
  * JSON.parse accepts `\u2028` / `\u2029` escape sequences natively.
- *
- * @param {string} line
- * @returns {unknown}
  */
-export function parseJsonlLine(line) {
+export function parseJsonlLine(line: string): unknown {
   return JSON.parse(line);
 }

@@ -44,8 +44,8 @@ import {
   type CaptureSession,
   createCaptureSession,
 } from "./fixture-capture.ts";
-import { emitToStdout } from "./safe-emit.js";
-import { resourceSet } from "./scope-filters.js";
+import { emitToStdout } from "./safe-emit.ts";
+import { resourceSet } from "./scope-filters.ts";
 
 // ─── Protocol message shapes ────────────────────────────────────────────
 
@@ -648,7 +648,7 @@ async function acquireBrowser(
   browser: BrowserConfig,
   name: string
 ): Promise<AcquiredBrowser> {
-  const { acquireIsolatedBrowser } = await import("./browser-daemon.js");
+  const { acquireIsolatedBrowser } = await import("./browser-daemon.ts");
   const profileName = browser.profileName ?? name;
   const envKey = `PDPP_${profileName.toUpperCase()}_HEADLESS`;
   const headless = browser.headless ?? process.env[envKey] !== "0";
