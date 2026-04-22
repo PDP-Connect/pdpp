@@ -25,7 +25,7 @@
  *   5. Submit — `text="Next"` (pierces shadow to the inner button label).
  *
  * Selectors verified live 2026-04-21. Detailed probe history is in
- * packages/polyfill-connectors/scripts/probe-chase-*.mjs.
+ * packages/polyfill-connectors/scripts/archive/probe-chase-*.mjs.
  */
 
 const DASHBOARD_URL = 'https://secure.chase.com/web/auth/dashboard';
