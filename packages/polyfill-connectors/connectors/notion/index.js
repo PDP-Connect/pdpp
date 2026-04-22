@@ -56,8 +56,8 @@ runConnector({
       const creds = await requireCredentialsOrAsk({
         required: ['NOTION_API_TOKEN'],
         connectorName: 'Notion',
-        sendInteractionAndWait: sendInteraction,
-        nextInteractionId: () => undefined,
+        sendInteraction,
+        
       });
       token = creds.NOTION_API_TOKEN;
     }

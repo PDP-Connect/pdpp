@@ -1,15 +1,16 @@
 #!/usr/bin/env node
-import { runBrowserScraper } from '../../src/browser-scraper-runtime.js';
+import { runConnector, politeDelay } from '../../src/connector-runtime.js';
 
-runBrowserScraper({
+runConnector({
   name: 'shopify',
-  async probeSession(ctx) {
-    const cookies = await ctx.cookies('https://shop.app/');
+  browser: {},
+  async probeSession({ context }) {
+    const cookies = await context.cookies('https://shop.app/');
     return cookies.some((c) => /session|_shop_session|consumer_access_token/.test(c.name) && c.value);
   },
-  async scrape({ page, emit, sleep }) {
+  async collect({ page, emit }) {
     await page.goto('https://shop.app/orders', { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
-    await sleep(3000);
+    await politeDelay(3000);
     emit({
       type: 'SKIP_RESULT',
       stream: 'orders',

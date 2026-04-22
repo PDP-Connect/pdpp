@@ -1,15 +1,16 @@
 #!/usr/bin/env node
-import { runBrowserScraper } from '../../src/browser-scraper-runtime.js';
+import { runConnector, politeDelay } from '../../src/connector-runtime.js';
 
-runBrowserScraper({
+runConnector({
   name: 'meta',
-  async probeSession(ctx) {
-    const cookies = await ctx.cookies('https://www.instagram.com/');
+  browser: {},
+  async probeSession({ context }) {
+    const cookies = await context.cookies('https://www.instagram.com/');
     return cookies.some((c) => /sessionid|ds_user_id/.test(c.name) && c.value);
   },
-  async scrape({ page, emit, sleep }) {
+  async collect({ page, emit }) {
     await page.goto('https://www.instagram.com/accounts/edit/', { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
-    await sleep(3000);
+    await politeDelay(3000);
     emit({
       type: 'SKIP_RESULT',
       stream: 'profile',

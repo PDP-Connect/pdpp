@@ -17,11 +17,6 @@ import { ensureChatGptSession } from '../../src/auto-login/chatgpt.js';
 import { runConnector, nowIso } from '../../src/connector-runtime.js';
 import { validateRecord } from './schemas.js';
 
-// `capture` is set to the module-level variable once runConnector invokes
-// collect(). apiFetch references it at every HTTP call site — module-level
-// so it doesn't thread through all the helper functions.
-let captureRef = null;
-
 // ChatGPT times are unix seconds (number). Some responses use ISO strings.
 // Normalize both to ISO-8601, swallow errors.
 function tsToIso(v) {
@@ -69,78 +64,75 @@ async function getAuthFromPage(page) {
   return auth;
 }
 
-// Single inner call — the actual browser-side fetch. Kept separate from
-// the retry wrapper so we can test either layer in isolation.
-async function _apiFetchOnce(page, path, { method, body }) {
-  const auth = await _auth(page);
-  return page.evaluate(async ({ path, method, body, auth }) => {
-    const headers = {
-      accept: '*/*',
-      authorization: `Bearer ${auth.accessToken}`,
-      'oai-language': 'en-US',
-      'content-type': 'application/json',
-    };
-    if (auth.deviceId) headers['oai-device-id'] = auth.deviceId;
-    const res = await fetch(`https://chatgpt.com/backend-api${path}`, {
-      method,
-      credentials: 'include',
-      headers,
-      body: body ? JSON.stringify(body) : undefined,
-    });
-    const status = res.status;
-    let json = null;
-    try { json = await res.json(); } catch { json = null; }
-    return { status, json };
-  }, { path, method, body, auth });
-}
+/**
+ * Build a ChatGPT API client bound to this run's page + capture session.
+ *
+ * The client closes over page + capture so call sites read like plain HTTP:
+ *     const res = await api.fetch('/conversations?offset=0');
+ *
+ * Auth is cached inside the closure — no module-level mutable state. Every
+ * successful response is auto-captured when PDPP_CAPTURE_FIXTURES=1.
+ *
+ * Retry policy (via p-retry):
+ *   - Retryable: 429, 502/503/504, browser-level network errors
+ *   - Terminal (AbortError): 401/403 (auth dead); 4xx except 429
+ *   - Caller decides what to do with a successful response body
+ */
+function createChatGptApi({ page, capture }) {
+  let authCache = null;
+  async function auth() {
+    if (authCache) return authCache;
+    const fresh = await getAuthFromPage(page);
+    if (!fresh.accessToken) throw new Error('chatgpt_auth_missing: could not extract bearer token from #client-bootstrap');
+    authCache = fresh;
+    return fresh;
+  }
 
-// Public API — wraps _apiFetchOnce with p-retry. Retryable conditions:
-//   - 429 Too Many Requests
-//   - 502 / 503 / 504 (transient upstream)
-//   - Network errors thrown by the browser (TypeError: Failed to fetch,
-//     ERR_NETWORK_CHANGED, etc.)
-// Terminal (AbortError — don't retry):
-//   - 401 / 403 auth failures
-//   - 400 / 404 request/path errors
-//   - Any response that arrived successfully with a JSON body
-//     (caller decides what to do; retry is for transport-level errors)
-async function apiFetch(page, path, { method = 'GET', body } = {}) {
-  return pRetry(async () => {
-    let result;
-    try {
-      result = await _apiFetchOnce(page, path, { method, body });
-    } catch (err) {
-      // Network-level failure. Retryable.
-      throw new Error(`apiFetch network error on ${method} ${path}: ${err.message}`);
-    }
-    const { status } = result;
-    if (status === 429 || status === 502 || status === 503 || status === 504) {
-      throw new Error(`apiFetch got ${status} on ${method} ${path}`);
-    }
-    if (status === 401 || status === 403) {
-      throw new AbortError(`apiFetch got ${status} on ${method} ${path} (auth — not retryable)`);
-    }
-    // Fixture capture: every successful HTTP response becomes a replayable
-    // file. Label = method + path (so foo/bar becomes GET-foo-bar). Shape
-    // captured includes status + json — downstream replayers can reconstruct
-    // the full {status, json} tuple that apiFetch returns.
-    if (captureRef) captureRef.captureHttp(`${method}-${path}`, result.json, { status, path, method });
-    return result;
-  }, {
-    retries: 3,
-    minTimeout: 1500,
-    factor: 2,
-  });
-}
+  async function fetchOnce(path, { method, body }) {
+    const a = await auth();
+    return page.evaluate(async ({ path, method, body, auth }) => {
+      const headers = {
+        accept: '*/*',
+        authorization: `Bearer ${auth.accessToken}`,
+        'oai-language': 'en-US',
+        'content-type': 'application/json',
+      };
+      if (auth.deviceId) headers['oai-device-id'] = auth.deviceId;
+      const res = await fetch(`https://chatgpt.com/backend-api${path}`, {
+        method,
+        credentials: 'include',
+        headers,
+        body: body ? JSON.stringify(body) : undefined,
+      });
+      const status = res.status;
+      let json = null;
+      try { json = await res.json(); } catch { json = null; }
+      return { status, json };
+    }, { path, method, body, auth: a });
+  }
 
-// Cache auth for the run
-let _authCache = null;
-async function _auth(page) {
-  if (_authCache) return _authCache;
-  const a = await getAuthFromPage(page);
-  if (!a.accessToken) throw new Error('chatgpt_auth_missing: could not extract bearer token from #client-bootstrap');
-  _authCache = a;
-  return a;
+  return {
+    auth,
+    async fetch(path, { method = 'GET', body } = {}) {
+      return pRetry(async () => {
+        let result;
+        try {
+          result = await fetchOnce(path, { method, body });
+        } catch (err) {
+          throw new Error(`apiFetch network error on ${method} ${path}: ${err.message}`);
+        }
+        const { status } = result;
+        if (status === 429 || status === 502 || status === 503 || status === 504) {
+          throw new Error(`apiFetch got ${status} on ${method} ${path}`);
+        }
+        if (status === 401 || status === 403) {
+          throw new AbortError(`apiFetch got ${status} on ${method} ${path} (auth — not retryable)`);
+        }
+        if (capture) capture.captureHttp(`${method}-${path}`, result.json, { status, path, method });
+        return result;
+      }, { retries: 3, minTimeout: 1500, factor: 2 });
+    },
+  };
 }
 
 function flattenTreeCurrentBranch(mapping, currentNodeId) {
@@ -364,12 +356,14 @@ runConnector({
     await ensureChatGptSession({
       context,
       page,
-      sendInteractionAndWait: sendInteraction,
-      nextInteractionId: () => undefined,
+      sendInteraction,
+      
     });
   },
   async collect({ state, requested, page, emit, emitRecord: baseEmitRecord, progress, capture }) {
-    captureRef = capture;
+    // API client closes over page + capture — no module-level mutable state,
+    // auth cached inside the closure for the run's lifetime.
+    const api = createChatGptApi({ page, capture });
 
     // ChatGPT-specific wrapper: unstringifiable values (bad Date, circular
     // refs) historically crashed the whole run when the runtime's shape-check
@@ -387,13 +381,13 @@ runConnector({
     };
 
     // Verify session (extract bearer token for /backend-api calls)
-    const auth = await _auth(page);
+    const auth = await api.auth();
     progress(`Authenticated to ChatGPT (device_id=${auth.deviceId ? auth.deviceId.slice(0, 8) + '…' : 'unknown'})`);
 
     // MEMORIES
     if (requested.has('memories')) {
       emit({ type: 'PROGRESS', stream: 'memories', message: 'Fetching memories' });
-      const res = await apiFetch(page, '/memories?include_memory_entries=true');
+      const res = await api.fetch('/memories?include_memory_entries=true');
       if (res.status !== 200) {
         emit({ type: 'SKIP_RESULT', stream: 'memories', reason: 'http_error', message: `memories fetch http ${res.status}` });
       } else {
@@ -421,7 +415,7 @@ runConnector({
       let anyError = false;
       do {
         const qs = cursor ? `?cursor=${encodeURIComponent(cursor)}&limit=100` : '?limit=100';
-        const res = await apiFetch(page, `/gizmos/mine${qs}`);
+        const res = await api.fetch(`/gizmos/mine${qs}`);
         if (res.status === 404 || res.status === 403) {
           emit({ type: 'SKIP_RESULT', stream: 'custom_gpts', reason: 'not_available', message: `gizmos/mine http ${res.status} (feature may be disabled for this account)` });
           anyError = true;
@@ -481,7 +475,7 @@ runConnector({
     // we still emit a singleton record so downstream consumers see a stable ID.
     if (requested.has('custom_instructions')) {
       emit({ type: 'PROGRESS', stream: 'custom_instructions', message: 'Fetching custom instructions' });
-      const res = await apiFetch(page, '/user_system_messages');
+      const res = await api.fetch('/user_system_messages');
       if (res.status === 404 || res.status === 403) {
         emit({ type: 'SKIP_RESULT', stream: 'custom_instructions', reason: 'not_available', message: `user_system_messages http ${res.status}` });
       } else if (res.status !== 200) {
@@ -510,7 +504,7 @@ runConnector({
       let stopPaging = false;
       let sawError = false;
       while (!stopPaging) {
-        const res = await apiFetch(page, `/shared_conversations?offset=${offset}&limit=${limit}&order=created`);
+        const res = await api.fetch(`/shared_conversations?offset=${offset}&limit=${limit}&order=created`);
         if (res.status === 404 || res.status === 403) {
           emit({ type: 'SKIP_RESULT', stream: 'shared_conversations', reason: 'not_available', message: `shared_conversations http ${res.status}` });
           sawError = true;
@@ -556,7 +550,7 @@ runConnector({
       let stopPaging = false;
       emit({ type: 'PROGRESS', stream: 'conversations', message: 'Listing conversations' });
       while (!stopPaging) {
-        const res = await apiFetch(page, `/conversations?offset=${offset}&limit=${limit}&order=updated`);
+        const res = await api.fetch(`/conversations?offset=${offset}&limit=${limit}&order=updated`);
         if (res.status !== 200) {
           emit({ type: 'SKIP_RESULT', stream: 'conversations', reason: 'http_error', message: `conversations list http ${res.status}` });
           break;
@@ -612,7 +606,7 @@ runConnector({
         const BATCH = 3; // conservative concurrency
         for (let i = 0; i < convosToSync.length; i += BATCH) {
           const batch = convosToSync.slice(i, i + BATCH);
-          const results = await Promise.all(batch.map((c) => apiFetch(page, `/conversation/${encodeURIComponent(c.id)}`)));
+          const results = await Promise.all(batch.map((c) => api.fetch(`/conversation/${encodeURIComponent(c.id)}`)));
           for (let j = 0; j < batch.length; j++) {
             const c = batch[j];
             const detail = results[j];

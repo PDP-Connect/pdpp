@@ -111,11 +111,10 @@ export function emitTombstones({ emit, stream, priorIds, currentIds, emittedAt }
  * @param {object} opts
  * @param {string[]} opts.required — env var names
  * @param {string} opts.connectorName — for the prompt
- * @param {function} opts.sendInteractionAndWait
- * @param {function} opts.nextInteractionId
+ * @param {function} opts.sendInteraction — runtime's sendInteraction helper
  * @returns {Promise<Record<string,string>>}
  */
-export async function requireCredentialsOrAsk({ required, connectorName, sendInteractionAndWait, nextInteractionId }) {
+export async function requireCredentialsOrAsk({ required, connectorName, sendInteraction }) {
   const missing = required.filter((n) => !process.env[n]);
   const have = {};
   for (const n of required) if (process.env[n]) have[n] = process.env[n];
@@ -129,9 +128,7 @@ export async function requireCredentialsOrAsk({ required, connectorName, sendInt
       format: /PASSWORD|SECRET|TOKEN/i.test(n) ? 'password' : undefined,
     };
   }
-  const resp = await sendInteractionAndWait({
-    type: 'INTERACTION',
-    request_id: nextInteractionId(),
+  const resp = await sendInteraction({
     kind: 'credentials',
     message: `${connectorName} needs: ${missing.join(', ')}. Set in .env.local for persistence.`,
     schema: { type: 'object', properties, required: missing },

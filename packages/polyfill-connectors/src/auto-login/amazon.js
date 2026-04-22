@@ -35,7 +35,7 @@ async function fillWhenVisible(page, locator, value, { timeout = 15000 } = {}) {
   throw new Error('no visible match for locator within timeout');
 }
 
-export async function ensureAmazonSession({ context: _context, page, sendInteractionAndWait, nextInteractionId }) {
+export async function ensureAmazonSession({ context: _context, page, sendInteraction }) {
   // Deep probe
   await page.goto('https://www.amazon.com/your-orders/orders', { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
   await page.waitForTimeout(2500);
@@ -80,9 +80,7 @@ export async function ensureAmazonSession({ context: _context, page, sendInterac
   // 2FA?
   const bodyText = (await page.locator('body').innerText().catch(() => '')).slice(0, 500);
   if (/verification|two.?step|authenticator|passcode|code we sent|sent a text/i.test(bodyText)) {
-    const resp = await sendInteractionAndWait({
-      type: 'INTERACTION',
-      request_id: nextInteractionId(),
+    const resp = await sendInteraction({
       kind: 'otp',
       message: 'Amazon 2FA required. Check your phone / authenticator and reply with the code.',
       schema: { type: 'object', properties: { code: { type: 'string', pattern: '^\\d{4,10}$' } }, required: ['code'] },

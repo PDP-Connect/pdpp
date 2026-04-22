@@ -31,7 +31,7 @@ async function fillLogin(page, email, password) {
   ]);
 }
 
-async function handleDeviceVerificationIfAsked(page, { sendInteractionAndWait, nextInteractionId }) {
+async function handleDeviceVerificationIfAsked(page, { sendInteraction }) {
   const url = page.url();
   if (!/verified-device|device-verification/.test(url)) {
     // Also check the page content — sometimes the URL doesn't match but the page asks for a device code.
@@ -42,12 +42,10 @@ async function handleDeviceVerificationIfAsked(page, { sendInteractionAndWait, n
   const otpField = page.locator('input[name="otp"], input#otp, input[autocomplete="one-time-code"]').first();
   if (!(await otpField.isVisible().catch(() => false))) return;
 
-  if (!sendInteractionAndWait || !nextInteractionId) {
+  if (!sendInteraction) {
     throw new Error('github_device_verification_required_but_no_handler');
   }
-  const resp = await sendInteractionAndWait({
-    type: 'INTERACTION',
-    request_id: nextInteractionId(),
+  const resp = await sendInteraction({
     kind: 'otp',
     message: 'GitHub sent a device-verification code to your email. Reply with the code.',
     schema: { type: 'object', properties: { code: { type: 'string' } }, required: ['code'] },
@@ -61,17 +59,15 @@ async function handleDeviceVerificationIfAsked(page, { sendInteractionAndWait, n
   ]);
 }
 
-async function handleTotpIfAsked(page, { sendInteractionAndWait, nextInteractionId }) {
+async function handleTotpIfAsked(page, { sendInteraction }) {
   const totpField = page.locator('#app_totp, #sms_totp, input[name="otp"], input#otp').first();
   const visible = await totpField.isVisible().catch(() => false);
   if (!visible) return;
 
-  if (!sendInteractionAndWait || !nextInteractionId) {
+  if (!sendInteraction) {
     throw new Error('github_totp_required_but_no_interaction_handler');
   }
-  const resp = await sendInteractionAndWait({
-    type: 'INTERACTION',
-    request_id: nextInteractionId(),
+  const resp = await sendInteraction({
     kind: 'otp',
     message: 'GitHub wants a 2FA code. Reply with the 6-digit TOTP from your authenticator app.',
     schema: { type: 'object', properties: { code: { type: 'string', pattern: '^\\d{6}$' } }, required: ['code'] },
@@ -87,7 +83,7 @@ async function handleTotpIfAsked(page, { sendInteractionAndWait, nextInteraction
   ]);
 }
 
-async function handleSudoIfAsked(page, { password, sendInteractionAndWait, nextInteractionId }) {
+async function handleSudoIfAsked(page, { password, sendInteraction }) {
   if (!/\/sessions\/sudo/.test(page.url())) return;
 
   // Prefer password path (TOTP in sudo needs recent re-auth too and adds a hop).
@@ -116,7 +112,7 @@ async function handleSudoIfAsked(page, { password, sendInteractionAndWait, nextI
   // Fallback: TOTP in sudo mode
   const otpField = page.locator('input[name="otp"], input#otp').first();
   if (await otpField.isVisible().catch(() => false)) {
-    await handleTotpIfAsked(page, { sendInteractionAndWait, nextInteractionId });
+    await handleTotpIfAsked(page, { sendInteraction });
     return;
   }
 
@@ -126,7 +122,7 @@ async function handleSudoIfAsked(page, { password, sendInteractionAndWait, nextI
 /**
  * Ensure the browser is logged into github.com. Returns when ready.
  */
-export async function ensureGithubSession({ page, sendInteractionAndWait, nextInteractionId }) {
+export async function ensureGithubSession({ page, sendInteraction }) {
   const alreadyLoggedIn = await isLoggedIn(page);
   process.stderr.write(`[github-login] initial isLoggedIn=${alreadyLoggedIn} url=${page.url()}\n`);
   if (alreadyLoggedIn) return true;
@@ -138,9 +134,9 @@ export async function ensureGithubSession({ page, sendInteractionAndWait, nextIn
   await fillLogin(page, email, password);
   // Diagnostic trace so we can see where GitHub routes us post-credentials.
   process.stderr.write(`[github-login] after password submit, url=${page.url()}\n`);
-  await handleTotpIfAsked(page, { sendInteractionAndWait, nextInteractionId });
+  await handleTotpIfAsked(page, { sendInteraction });
   process.stderr.write(`[github-login] after totp, url=${page.url()}\n`);
-  await handleDeviceVerificationIfAsked(page, { sendInteractionAndWait, nextInteractionId });
+  await handleDeviceVerificationIfAsked(page, { sendInteraction });
   process.stderr.write(`[github-login] after device-verify, url=${page.url()}\n`);
 
   if (!(await isLoggedIn(page))) {
@@ -155,12 +151,11 @@ export async function ensureGithubSession({ page, sendInteractionAndWait, nextIn
  * should navigate the page to a sudo-triggering URL first (e.g.
  * /settings/tokens/new) and then call this.
  */
-export async function ensureSudoMode(page, { sendInteractionAndWait, nextInteractionId } = {}) {
+export async function ensureSudoMode(page, { sendInteraction } = {}) {
   if (/\/sessions\/sudo/.test(page.url())) {
     await handleSudoIfAsked(page, {
       password: process.env.GITHUB_PASSWORD,
-      sendInteractionAndWait,
-      nextInteractionId,
+      sendInteraction,
     });
   }
   return true;

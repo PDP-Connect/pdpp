@@ -414,8 +414,8 @@ runConnector({
     await ensureUsaaSession({
       context,
       page,
-      sendInteractionAndWait: sendInteraction,
-      nextInteractionId: () => undefined,
+      sendInteraction,
+      
     });
   },
   async collect({ state, requested, context, page, emit, emitRecord, progress, capture, sendInteraction, emittedAt }) {
@@ -531,8 +531,8 @@ runConnector({
                 await ensureUsaaSession({
                   context,
                   page,
-                  sendInteractionAndWait: sendInteraction,
-                  nextInteractionId: () => undefined,
+                  sendInteraction,
+                  
                 });
                 // Retry this sinceDate. The loop's next iteration will
                 // call driveExport again for this same account.

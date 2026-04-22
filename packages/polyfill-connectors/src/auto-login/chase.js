@@ -49,7 +49,7 @@ async function probeSession(page) {
   return signOutVisible;
 }
 
-export async function ensureChaseSession({ context: _context, page, sendInteractionAndWait, nextInteractionId }) {
+export async function ensureChaseSession({ context: _context, page, sendInteraction }) {
   if (await probeSession(page)) return true;
 
   const username = process.env.CHASE_USERNAME;
@@ -122,9 +122,7 @@ export async function ensureChaseSession({ context: _context, page, sendInteract
     .isVisible()
     .catch(() => false);
   if (onOtp) {
-    const resp = await sendInteractionAndWait({
-      type: 'INTERACTION',
-      request_id: nextInteractionId(),
+    const resp = await sendInteraction({
       kind: 'otp',
       message: 'Chase sent a 2FA code. Reply with it.',
       schema: {

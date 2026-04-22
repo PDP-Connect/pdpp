@@ -45,7 +45,7 @@ async function checkLoggedInViaDOM(page) {
   } catch { return false; }
 }
 
-export async function ensureChatGptSession({ context: _context, page, sendInteractionAndWait, nextInteractionId }) {
+export async function ensureChatGptSession({ context: _context, page, sendInteraction }) {
   // Probe: can we hit /api/auth/session and get user?
   await page.goto('https://chatgpt.com/', { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
   await page.waitForTimeout(3000);
@@ -74,9 +74,7 @@ export async function ensureChatGptSession({ context: _context, page, sendIntera
   // Email input
   const emailIn = page.locator('input[type="email"], input[name="username"], input[name="email"]').first();
   if (!(await emailIn.count())) {
-    await sendInteractionAndWait({
-      type: 'INTERACTION',
-      request_id: nextInteractionId(),
+    await sendInteraction({
       kind: 'manual_action',
       message: 'ChatGPT session expired and auto-login UI is unexpected (possibly Cloudflare challenge). Open chatgpt.com on the laptop and log in manually, then re-run.',
       timeout_seconds: 1800,
@@ -104,9 +102,7 @@ export async function ensureChatGptSession({ context: _context, page, sendIntera
     // Handle 2FA code entry if prompted (input[name="code"], tel, or numeric).
     const tfaIn = page.locator('input[name="code"], input[type="tel"], input[inputmode="numeric"]').first();
     if (await tfaIn.count()) {
-      const resp = await sendInteractionAndWait({
-        type: 'INTERACTION',
-        request_id: nextInteractionId(),
+      const resp = await sendInteraction({
         kind: 'text_input',
         message: 'ChatGPT requires a 2FA verification code. Enter the 6-digit code:',
         timeout_seconds: 300,
@@ -132,9 +128,7 @@ export async function ensureChatGptSession({ context: _context, page, sendIntera
   }
 
   // Last resort — ask the user to complete login manually.
-  await sendInteractionAndWait({
-    type: 'INTERACTION',
-    request_id: nextInteractionId(),
+  await sendInteraction({
     kind: 'manual_action',
     message: 'ChatGPT login submitted but session still not active after 90s. Please complete login in the browser window (Cloudflare challenge, 2FA, etc.).',
     timeout_seconds: 1800,

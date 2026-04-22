@@ -521,8 +521,8 @@ runConnector({
     await ensureChaseSession({
       context,
       page,
-      sendInteractionAndWait: sendInteraction,
-      nextInteractionId: () => undefined,
+      sendInteraction,
+      
     });
   },
   async collect({ state: startState, requested, page, emit, emitRecord, progress, capture }) {

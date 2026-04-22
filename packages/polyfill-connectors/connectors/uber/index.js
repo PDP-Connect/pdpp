@@ -17,21 +17,22 @@
  * Session probe: check for riders.uber.com cookies (sid, utag_main).
  */
 
-import { runBrowserScraper } from '../../src/browser-scraper-runtime.js';
+import { runConnector, politeDelay } from '../../src/connector-runtime.js';
 
-runBrowserScraper({
+runConnector({
   name: 'uber',
+  browser: {},
 
-  async probeSession(ctx, _page) {
-    const cookies = await ctx.cookies('https://riders.uber.com/');
+  async probeSession({ context }) {
+    const cookies = await context.cookies('https://riders.uber.com/');
     // sid is set for authenticated sessions.
     return cookies.some((c) => c.name === 'sid' && c.value);
   },
 
-  async scrape({ page, emit, sleep }) {
+  async collect({ page, emit }) {
     // Navigate to trips page as a no-op to verify session end-to-end.
     await page.goto('https://riders.uber.com/trips', { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
-    await sleep(3000);
+    await politeDelay(3000);
     const title = await page.title().catch(() => '');
     emit({
       type: 'SKIP_RESULT',

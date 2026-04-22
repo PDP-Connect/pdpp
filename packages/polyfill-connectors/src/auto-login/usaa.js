@@ -3,14 +3,14 @@
  *
  * Given a Playwright context whose session has died, drives the full login
  * flow using stored credentials. Emits an INTERACTION kind=otp via the
- * provided `sendInteractionAndWait` callback; that in turn fires ntfy to
+ * provided `sendInteraction` callback; that in turn fires ntfy to
  * the owner's phone. the owner replies with the 6-digit code over the inbox (or by
  * writing to /tmp/usaa-otp.txt during manual testing).
  *
  * Returns true on success; throws on hard failure.
  */
 
-export async function ensureUsaaSession({ context, page, sendInteractionAndWait, nextInteractionId }) {
+export async function ensureUsaaSession({ context, page, sendInteraction }) {
   // Probe first — no need to re-login if session is alive.
   const cookies = await context.cookies('https://www.usaa.com/');
   const loggedIn = cookies.find((c) => c.name === 'UsaaMbWebMemberLoggedIn');
@@ -67,9 +67,7 @@ export async function ensureUsaaSession({ context, page, sendInteractionAndWait,
     });
     await page.waitForSelector('input[autocomplete="one-time-code"], input[name*="code" i], input[placeholder*="code" i]', { timeout: 20000 });
 
-    const resp = await sendInteractionAndWait({
-      type: 'INTERACTION',
-      request_id: nextInteractionId(),
+    const resp = await sendInteraction({
       kind: 'otp',
       message: 'USAA sent a 6-digit security code to your phone. Reply with the code to continue.',
       schema: { type: 'object', properties: { code: { type: 'string', pattern: '^\\d{6}$' } }, required: ['code'] },

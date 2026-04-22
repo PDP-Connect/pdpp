@@ -459,8 +459,8 @@ runConnector({
     await ensureAmazonSession({
       context,
       page,
-      sendInteractionAndWait: sendInteraction,
-      nextInteractionId: () => undefined,
+      sendInteraction,
+      
     });
     const deepOk = await deepSessionCheck(page);
     if (!deepOk) throw new Error('amazon_session_required');

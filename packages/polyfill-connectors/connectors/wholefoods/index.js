@@ -5,17 +5,18 @@
  * profile. Tonight: verify the session; wire per-item nutrition + store
  * metadata on the owner's return.
  */
-import { runBrowserScraper } from '../../src/browser-scraper-runtime.js';
+import { runConnector, politeDelay } from '../../src/connector-runtime.js';
 
-runBrowserScraper({
+runConnector({
   name: 'wholefoods',
-  async probeSession(ctx) {
-    const cookies = await ctx.cookies('https://www.amazon.com/');
+  browser: {},
+  async probeSession({ context }) {
+    const cookies = await context.cookies('https://www.amazon.com/');
     return cookies.some((c) => /session|at-main/.test(c.name) && c.value);
   },
-  async scrape({ page, emit, sleep }) {
+  async collect({ page, emit }) {
     await page.goto('https://www.amazon.com/gp/css/order-history', { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
-    await sleep(2500);
+    await politeDelay(2500);
     emit({
       type: 'SKIP_RESULT',
       stream: 'orders',

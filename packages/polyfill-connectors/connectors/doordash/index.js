@@ -1,35 +1,30 @@
 #!/usr/bin/env node
 /**
- * PDPP DoorDash Connector (v0.1.0) — SCAFFOLDED 2026-04-19 overnight.
+ * PDPP DoorDash Connector (v0.1.0) — SCAFFOLDED 2026-04-19.
  *
- * Session-based via shared Playwright profile.
- * Prior-art GraphQL intercept: data-connectors/doordash/ (657 LOC) — uses
- * network capture on /graphql to get OrderHistoryQuery responses.
- *
- * Complete wiring requires live session to capture the current operation
- * name + persisted query hash. This scaffold verifies session + reports
- * SKIP_RESULT; tomorrow we wire the GraphQL capture.
+ * Session-based via the shared Playwright profile. Prior-art GraphQL
+ * intercept (data-connectors/doordash/, 657 LOC) uses network capture on
+ * /graphql to read OrderHistoryQuery responses. Wiring requires a live
+ * session to capture the current operation name + persisted query hash.
  */
 
-import { runBrowserScraper } from '../../src/browser-scraper-runtime.js';
+import { runConnector, politeDelay } from '../../src/connector-runtime.js';
 
-runBrowserScraper({
+runConnector({
   name: 'doordash',
-
-  async probeSession(ctx, _page) {
-    const cookies = await ctx.cookies('https://www.doordash.com/');
+  browser: {},
+  async probeSession({ context }) {
+    const cookies = await context.cookies('https://www.doordash.com/');
     return cookies.some((c) => /^(session_id|dd_login|_cfuvid)$/.test(c.name) && c.value);
   },
-
-  async scrape({ page, emit, sleep }) {
+  async collect({ page, emit }) {
     await page.goto('https://www.doordash.com/orders', { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
-    await sleep(3000);
-    const url = page.url();
+    await politeDelay(3000);
     emit({
       type: 'SKIP_RESULT',
       stream: 'orders',
       reason: 'doordash_graphql_wiring_pending',
-      message: `DoorDash reachable at ${url}. GraphQL OrderHistoryQuery wiring deferred to live session (operation hash captured against real request).`,
+      message: `DoorDash reachable at ${page.url()}. GraphQL OrderHistoryQuery wiring deferred to live session.`,
     });
   },
 });
