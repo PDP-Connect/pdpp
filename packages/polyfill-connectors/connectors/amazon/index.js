@@ -16,55 +16,25 @@
  * On session expiry, emits INTERACTION kind=manual_action with sign-in URL.
  */
 
-import { createInterface } from 'node:readline';
 import pRetry, { AbortError } from 'p-retry';
 import { acquireIsolatedBrowser } from '../../src/browser-daemon.js';
-import { resourceSet } from '../../src/scope-filters.js';
 import { ensureAmazonSession } from '../../src/auto-login/amazon.js';
-import { emitToStdout, stringifyForJsonl } from '../../src/safe-emit.js';
+import { createConnectorRuntime, nowIso, politeDelay } from '../../src/connector-runtime.js';
 import { validateRecord, listPageOrderShape } from './schemas.js';
 
-const rl = createInterface({ input: process.stdin, terminal: false });
-// WHY emitToStdout: large RECORDs can exceed the 64 KB Linux pipe buffer and
-// a bare process.stdout.write silently truncates when backpressured. See the
-// Slack v0.3 crash at 2026-04-21T00:03 for the exact same failure mode.
-function emit(msg) { return emitToStdout(msg); }
-void stringifyForJsonl;
-function flushAndExit(code) {
-  if (process.stdout.writableLength > 0) {
-    process.stdout.once('drain', () => process.exit(code));
-    setTimeout(() => process.exit(code), 3000).unref();
-  } else process.exit(code);
-}
-function fail(m, retryable = false) {
-  emit({ type: 'DONE', status: 'failed', records_emitted: 0, error: { message: m, retryable } });
-  flushAndExit(1);
-}
-const nowIso = () => new Date().toISOString();
-// Intentionally-named pacing delay for anti-bot-style throttling between
-// requests. Distinct from `waitForX` sync primitives which wait for a
-// page condition; this one's just polite inter-request slack. Use
-// sparingly — prefer real sync primitives where possible.
-const politeDelay = (ms) => new Promise((r) => setTimeout(r, ms));
-let interactionCounter = 0;
-const nextInteractionId = () => `int_${Date.now()}_${++interactionCounter}`;
-
-async function sendInteractionAndWait(msg) {
-  emit(msg);
-  const reqId = msg.request_id;
-  return new Promise((resolve, reject) => {
-    const onLine = (line) => {
-      try {
-        const parsed = JSON.parse(line);
-        if (parsed.type === 'INTERACTION_RESPONSE' && parsed.request_id === reqId) {
-          rl.off('line', onLine);
-          resolve(parsed);
-        }
-      } catch (err) { reject(err); }
-    };
-    rl.on('line', onLine);
-  });
-}
+const runtime = createConnectorRuntime({ connectorName: 'amazon' });
+const {
+  emit,
+  flushAndExit,
+  fail,
+  nextInteractionId,
+  sendInteractionAndWait,
+  readOneLine,
+  makeEmitRecord,
+  emitSucceeded,
+  makeTracer,
+  capture,
+} = runtime;
 
 // ─── Session probes ──────────────────────────────────────────────────────
 
@@ -491,9 +461,7 @@ function itemId(orderId, it) {
 // ─── Main ────────────────────────────────────────────────────────────────
 
 async function main() {
-  const startMsg = await new Promise((resolve, reject) => {
-    rl.once('line', (line) => { try { resolve(JSON.parse(line)); } catch (e) { reject(e); } });
-  });
+  const startMsg = await readOneLine();
   if (startMsg.type !== 'START') return fail('Expected START');
 
   const requested = new Map((startMsg.scope?.streams || []).map((s) => [s.name, s]));
@@ -508,33 +476,11 @@ async function main() {
   // cursor={years:{...}}, so reads must go through state.orders.
   const yearsState = state.orders?.years || state.years || {};
   const emittedAt = nowIso();
-  let totalEmitted = 0;
-  let totalSkipped = 0;
-  const resFilters = new Map();
-  for (const [n, r] of requested) resFilters.set(n, resourceSet(r));
 
-  // Shape-check per docs/connector-authoring-guide.md §3. Records that
-  // fail the Zod schema become SKIP_RESULT instead of poisoning the RS
-  // with garbage-that-looks-right. Schemas live in ./schemas.js.
-  const emitRecord = async (stream, data) => {
-    if (data.id == null) return;
-    const rs = resFilters.get(stream);
-    if (rs && !rs.has(String(data.id))) return;
-    const result = validateRecord(stream, data);
-    if (!result.ok) {
-      totalSkipped++;
-      await emit({
-        type: 'SKIP_RESULT',
-        stream,
-        reason: 'shape_check_failed',
-        message: `${data.id}: ${result.issues.map((i) => `${i.path}: ${i.message}`).join('; ')}`,
-        diagnostics: { id: data.id, issues: result.issues, record: data },
-      });
-      return;
-    }
-    await emit({ type: 'RECORD', stream, key: data.id, data, emitted_at: emittedAt });
-    totalEmitted++;
-  };
+  // Shape-check + resources filter + counters are provided by the runtime.
+  // Runtime's emitRecord returns the emit promise for backpressure; awaiting
+  // matters during high-volume years.
+  const { emitRecord, counters } = makeEmitRecord({ validateRecord, requested, emittedAt });
 
   let context;
   let release = async () => {};
@@ -558,21 +504,11 @@ async function main() {
     return fail(`could not open browser profile: ${err.message}`, false);
   }
 
-  // Tracing (Playwright feature). Gated behind PDPP_TRACE=1. Produces a
-  // .zip replayable in the Playwright Inspector — invaluable for debugging
-  // silent scraper failures where a record goes missing deep in a multi-
-  // hour run. See docs/connector-authoring-guide.md §9.
-  const tracingEnabled = process.env.PDPP_TRACE === '1';
-  if (tracingEnabled) {
-    const traceName = `amazon-${new Date().toISOString().replace(/[:.]/g, '-')}`;
-    await context.tracing.start({
-      name: traceName,
-      screenshots: true,
-      snapshots: true,
-      sources: true,
-    }).catch(() => {});
-    emit({ type: 'PROGRESS', message: `tracing enabled (PDPP_TRACE=1); will write /tmp/${traceName}.zip on exit` });
-  }
+  // Tracing (Playwright feature) — gated behind PDPP_TRACE=1 by the runtime.
+  // Produces a .zip replayable in the Playwright Inspector, invaluable for
+  // debugging silent scraper failures deep in a multi-hour run.
+  const tracer = makeTracer(context, 'amazon');
+  await tracer.start();
 
   try {
     const page = await context.newPage();
@@ -600,6 +536,11 @@ async function main() {
     }
     emit({ type: 'PROGRESS', message: `Years to scrape: ${years.join(', ')}` });
 
+    // Capture fixtures (gated on PDPP_CAPTURE_FIXTURES=1). One orders-list
+    // page per year and one order-detail page overall is enough to drive
+    // offline parser tests — more just bloats the fixture tree.
+    let detailCaptured = false;
+
     const newYearsState = { ...yearsState };
 
     for (const year of years) {
@@ -621,6 +562,10 @@ async function main() {
         // when the orders list has rendered.
         await page.locator('.order-card, .js-order-card, #ordersContainer, #no-orders')
           .first().waitFor({ state: 'attached', timeout: 10000 }).catch(() => {});
+        // Fixture capture: one list-page snapshot per year (page 1 only).
+        if (capture && startIndex === 0) {
+          await capture.captureDom(page, `orders-list-${year}`);
+        }
         const rawOrders = await extractOrdersOnPage(page);
 
         // Shape-check list-page extraction. A selector drift that produces
@@ -691,6 +636,12 @@ async function main() {
           // (useful for quick partial runs on a big history).
           const skipDetail = process.env.PDPP_AMAZON_SKIP_DETAIL === '1';
           const detail = skipDetail ? null : await fetchOrderDetail(page, o.orderId);
+          // Fixture capture: one order-detail snapshot overall. After
+          // fetchOrderDetail navigates, `page` is on the detail URL.
+          if (capture && !detailCaptured && !skipDetail && detail) {
+            await capture.captureDom(page, `order-detail-${o.orderId}`);
+            detailCaptured = true;
+          }
 
           if (wantsOrders) {
             // Prefer detail-page Grand Total (includes tax); fall back to
@@ -776,22 +727,11 @@ async function main() {
       emit({ type: 'STATE', stream: 'orders', cursor: { years: newYearsState } });
     }
   } finally {
-    if (tracingEnabled && context) {
-      const tracePath = `/tmp/amazon-trace-${new Date().toISOString().replace(/[:.]/g, '-')}.zip`;
-      try {
-        await context.tracing.stop({ path: tracePath });
-        emit({ type: 'PROGRESS', message: `trace written to ${tracePath} — replay with: npx playwright show-trace ${tracePath}` });
-      } catch (err) {
-        emit({ type: 'PROGRESS', message: `failed to write trace: ${err.message}` });
-      }
-    }
+    await tracer.stop();
     await release().catch(() => {});
   }
 
-  if (totalSkipped > 0) {
-    emit({ type: 'PROGRESS', message: `shape-check skipped ${totalSkipped} record(s); see SKIP_RESULT events above` });
-  }
-  emit({ type: 'DONE', status: 'succeeded', records_emitted: totalEmitted });
+  emitSucceeded(counters);
   flushAndExit(0);
 }
 
