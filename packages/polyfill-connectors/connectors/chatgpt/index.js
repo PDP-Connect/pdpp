@@ -13,10 +13,12 @@
  */
 
 import { createInterface } from 'node:readline';
-import { acquireBrowser } from '../../src/browser-profile.js';
+import pRetry, { AbortError } from 'p-retry';
+import { acquireIsolatedBrowser } from '../../src/browser-daemon.js';
 import { resourceSet } from '../../src/scope-filters.js';
 import { ensureChatGptSession } from '../../src/auto-login/chatgpt.js';
 import { stringifyForJsonl } from '../../src/safe-emit.js';
+import { validateRecord } from './schemas.js';
 
 const rl = createInterface({ input: process.stdin, terminal: false });
 function emit(msg) {
@@ -106,7 +108,9 @@ async function getAuthFromPage(page) {
   return auth;
 }
 
-async function apiFetch(page, path, { method = 'GET', body } = {}) {
+// Single inner call — the actual browser-side fetch. Kept separate from
+// the retry wrapper so we can test either layer in isolation.
+async function _apiFetchOnce(page, path, { method, body }) {
   const auth = await _auth(page);
   return page.evaluate(async ({ path, method, body, auth }) => {
     const headers = {
@@ -127,6 +131,40 @@ async function apiFetch(page, path, { method = 'GET', body } = {}) {
     try { json = await res.json(); } catch { json = null; }
     return { status, json };
   }, { path, method, body, auth });
+}
+
+// Public API — wraps _apiFetchOnce with p-retry. Retryable conditions:
+//   - 429 Too Many Requests
+//   - 502 / 503 / 504 (transient upstream)
+//   - Network errors thrown by the browser (TypeError: Failed to fetch,
+//     ERR_NETWORK_CHANGED, etc.)
+// Terminal (AbortError — don't retry):
+//   - 401 / 403 auth failures
+//   - 400 / 404 request/path errors
+//   - Any response that arrived successfully with a JSON body
+//     (caller decides what to do; retry is for transport-level errors)
+async function apiFetch(page, path, { method = 'GET', body } = {}) {
+  return pRetry(async () => {
+    let result;
+    try {
+      result = await _apiFetchOnce(page, path, { method, body });
+    } catch (err) {
+      // Network-level failure. Retryable.
+      throw new Error(`apiFetch network error on ${method} ${path}: ${err.message}`);
+    }
+    const { status } = result;
+    if (status === 429 || status === 502 || status === 503 || status === 504) {
+      throw new Error(`apiFetch got ${status} on ${method} ${path}`);
+    }
+    if (status === 401 || status === 403) {
+      throw new AbortError(`apiFetch got ${status} on ${method} ${path} (auth — not retryable)`);
+    }
+    return result;
+  }, {
+    retries: 3,
+    minTimeout: 1500,
+    factor: 2,
+  });
 }
 
 // Cache auth for the run
@@ -366,6 +404,10 @@ async function main() {
 
   const state = startMsg.state || {};
   const emittedAt = nowIso();
+  let _totalSkipped = 0;
+  // Shape-check per docs/connector-authoring-guide.md §3. Records that
+  // fail the Zod schema become SKIP_RESULT instead of poisoning the RS
+  // with garbage-that-looks-right. Schemas live in ./schemas.js.
   const emitRecord = (stream, data) => {
     if (data.id == null) return;
     // DEBUG: surface any unstringifiable field so "Invalid time value" points to the bad row.
@@ -375,6 +417,18 @@ async function main() {
     }
     const resSet = resFilters.get(stream);
     if (resSet && !resSet.has(String(data.id))) return;
+    const result = validateRecord(stream, data);
+    if (!result.ok) {
+      _totalSkipped++;
+      emit({
+        type: 'SKIP_RESULT',
+        stream,
+        reason: 'shape_check_failed',
+        message: `${data.id}: ${result.issues.map((i) => `${i.path}: ${i.message}`).join('; ')}`,
+        diagnostics: { id: data.id, issues: result.issues, record: data },
+      });
+      return;
+    }
     emit({ type: 'RECORD', stream, key: data.id, data, emitted_at: emittedAt });
     _totalEmitted++;
   };
@@ -385,10 +439,32 @@ async function main() {
   // PDPP_CHATGPT_HEADLESS=0 when a first-time login needs a visible
   // browser (helpful for Cloudflare challenges, 2FA entry, etc.).
   const headless = process.env.PDPP_CHATGPT_HEADLESS !== '0';
+  // Use the isolated-per-connector browser path (patchright-launched,
+  // persistent profile at ~/.pdpp/profiles/chatgpt/). This:
+  //   - gets FULL patchright stealth (launch-side + client-side)
+  //   - persists auth/cookies across runs via the on-disk profile dir
+  //   - enables concurrent runs with other connectors (no shared lock)
+  // See docs/connector-authoring-guide.md §2.
   try {
-    ({ context, release } = await acquireBrowser({ headless }));
+    ({ context, release } = await acquireIsolatedBrowser({ profileName: 'chatgpt', headless }));
   } catch (err) {
     return fail(`could not open browser profile: ${err.message}`, false);
+  }
+
+  // Tracing (Playwright feature). Gated behind PDPP_TRACE=1. Produces a
+  // .zip replayable in the Playwright Inspector — invaluable for
+  // debugging silent failures on the multi-thousand-conversation sync.
+  // See docs/connector-authoring-guide.md §9.
+  const tracingEnabled = process.env.PDPP_TRACE === '1';
+  if (tracingEnabled) {
+    const traceName = `chatgpt-${new Date().toISOString().replace(/[:.]/g, '-')}`;
+    await context.tracing.start({
+      name: traceName,
+      screenshots: true,
+      snapshots: true,
+      sources: true,
+    }).catch(() => {});
+    emit({ type: 'PROGRESS', message: `tracing enabled (PDPP_TRACE=1); will write /tmp/${traceName}.zip on exit` });
   }
 
   try {
@@ -672,9 +748,21 @@ async function main() {
       }
     }
   } finally {
+    if (tracingEnabled && context) {
+      const tracePath = `/tmp/chatgpt-trace-${new Date().toISOString().replace(/[:.]/g, '-')}.zip`;
+      try {
+        await context.tracing.stop({ path: tracePath });
+        emit({ type: 'PROGRESS', message: `trace written to ${tracePath} — replay with: npx playwright show-trace ${tracePath}` });
+      } catch (err) {
+        emit({ type: 'PROGRESS', message: `failed to write trace: ${err.message}` });
+      }
+    }
     await release().catch(() => {});
   }
 
+  if (_totalSkipped > 0) {
+    emit({ type: 'PROGRESS', message: `shape-check skipped ${_totalSkipped} record(s); see SKIP_RESULT events above` });
+  }
   emit({ type: 'DONE', status: 'succeeded', records_emitted: _totalEmitted });
   flushAndExit(0);
 }
