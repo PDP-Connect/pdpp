@@ -17,7 +17,6 @@
  * On session death, emits INTERACTION manual_action → inbox.
  */
 
-import { createInterface } from 'node:readline';
 import { createHash } from 'node:crypto';
 import { readFile, unlink, readdir } from 'node:fs/promises';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -26,41 +25,26 @@ import { join } from 'node:path';
 import { acquireIsolatedBrowser } from '../../src/browser-daemon.js';
 import { attachDownloadQueue } from '../../src/download-queue.js';
 import { ensureUsaaSession } from '../../src/auto-login/usaa.js';
-import { resourceSet } from '../../src/scope-filters.js';
-import { stringifyForJsonl } from '../../src/safe-emit.js';
+import { createConnectorRuntime, nowIso, politeDelay } from '../../src/connector-runtime.js';
 import { hydrateStatementPdfs, parsePdfStatement, fileUrlForPath } from './statement-pdfs.js';
 import { validateRecord } from './schemas.js';
 
-const rl = createInterface({ input: process.stdin, terminal: false });
-function emit(msg) { process.stdout.write(stringifyForJsonl(msg)); }
-function flushAndExit(code) {
-  if (process.stdout.writableLength > 0) {
-    process.stdout.once('drain', () => process.exit(code));
-    setTimeout(() => process.exit(code), 3000).unref();
-  } else process.exit(code);
-}
-function fail(m, retryable = false) {
-  emit({ type: 'DONE', status: 'failed', records_emitted: 0, error: { message: m, retryable } });
-  flushAndExit(1);
-}
-const nowIso = () => new Date().toISOString();
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const runtime = createConnectorRuntime({ connectorName: 'usaa' });
+const {
+  emit,
+  flushAndExit,
+  fail,
+  nextInteractionId,
+  sendInteractionAndWait,
+  readOneLine,
+  makeEmitRecord,
+  emitSucceeded,
+  makeTracer,
+  capture,
+} = runtime;
 
-let interactionCounter = 0;
-const nextInteractionId = () => `int_${Date.now()}_${++interactionCounter}`;
-async function sendInteractionAndWait(msg) {
-  emit(msg);
-  const reqId = msg.request_id;
-  return new Promise((resolve, reject) => {
-    const onLine = (line) => {
-      try {
-        const parsed = JSON.parse(line);
-        if (parsed.type === 'INTERACTION_RESPONSE' && parsed.request_id === reqId) { rl.off('line', onLine); resolve(parsed); }
-      } catch (err) { reject(err); }
-    };
-    rl.on('line', onLine);
-  });
-}
+// Alias kept for local call sites; the runtime exports politeDelay.
+const sleep = politeDelay;
 
 function hashId(s) { return createHash('sha256').update(s).digest('hex').slice(0, 32); }
 function currencyToCents(s) {
@@ -441,9 +425,7 @@ function rowsToTransactions(rows, { accountId, accountName }) {
 // ─── Main ────────────────────────────────────────────────────────────────
 
 async function main() {
-  const startMsg = await new Promise((resolve, reject) => {
-    rl.once('line', (line) => { try { resolve(JSON.parse(line)); } catch (e) { reject(e); } });
-  });
+  const startMsg = await readOneLine();
   if (startMsg.type !== 'START') return fail('Expected START');
 
   const requested = new Map((startMsg.scope?.streams || []).map((s) => [s.name, s]));
@@ -451,32 +433,9 @@ async function main() {
 
   const state = startMsg.state || {};
   const emittedAt = nowIso();
-  let total = 0;
-  let totalSkipped = 0;
-  const resFilters = new Map();
-  for (const [n, r] of requested) resFilters.set(n, resourceSet(r));
-  // Shape-check per docs/connector-authoring-guide.md §3. Records that
-  // fail the Zod schema become SKIP_RESULT instead of poisoning the RS
-  // with garbage-that-looks-right. Schemas live in ./schemas.js.
-  const emitRecord = (stream, data) => {
-    if (data.id == null) return;
-    const rs = resFilters.get(stream);
-    if (rs && !rs.has(String(data.id))) return;
-    const result = validateRecord(stream, data);
-    if (!result.ok) {
-      totalSkipped++;
-      emit({
-        type: 'SKIP_RESULT',
-        stream,
-        reason: 'shape_check_failed',
-        message: `${data.id}: ${result.issues.map((i) => `${i.path}: ${i.message}`).join('; ')}`,
-        diagnostics: { id: data.id, issues: result.issues, record: data },
-      });
-      return;
-    }
-    emit({ type: 'RECORD', stream, key: data.id, data, emitted_at: emittedAt });
-    total++;
-  };
+
+  // Shape-check + resources filter + counters from the runtime.
+  const { emitRecord, counters } = makeEmitRecord({ validateRecord, requested, emittedAt });
 
   let context;
   let release = async () => {};
@@ -499,21 +458,9 @@ async function main() {
     return fail(`could not open browser profile: ${err.message}`, false);
   }
 
-  // Tracing (Playwright feature). Gated behind PDPP_TRACE=1. Produces a
-  // .zip replayable in the Playwright Inspector — invaluable for
-  // debugging silent scraper failures on banking-grade flows. See
-  // docs/connector-authoring-guide.md §9.
-  const tracingEnabled = process.env.PDPP_TRACE === '1';
-  if (tracingEnabled) {
-    const traceName = `usaa-${new Date().toISOString().replace(/[:.]/g, '-')}`;
-    await context.tracing.start({
-      name: traceName,
-      screenshots: true,
-      snapshots: true,
-      sources: true,
-    }).catch(() => {});
-    emit({ type: 'PROGRESS', message: `tracing enabled (PDPP_TRACE=1); will write /tmp/${traceName}.zip on exit` });
-  }
+  // Tracing via the runtime's makeTracer — PDPP_TRACE=1 to enable.
+  const tracer = makeTracer(context, 'usaa');
+  await tracer.start();
 
   let downloadQueue;
 
@@ -533,6 +480,9 @@ async function main() {
 
     // ACCOUNTS
     emit({ type: 'PROGRESS', message: 'Extracting accounts from dashboard' });
+    // Fixture capture: dashboard page with account list. Drives the core
+    // account-enumeration selectors for offline tests.
+    if (capture) await capture.captureDom(page, 'dashboard-accounts');
     const accounts = await extractAccounts(page);
     emit({ type: 'PROGRESS', message: `Found ${accounts.length} account(s)` });
 
@@ -1031,15 +981,7 @@ async function main() {
     }
   } finally {
     if (downloadQueue) { try { downloadQueue.detach(); } catch {} }
-    if (tracingEnabled && context) {
-      const tracePath = `/tmp/usaa-trace-${new Date().toISOString().replace(/[:.]/g, '-')}.zip`;
-      try {
-        await context.tracing.stop({ path: tracePath });
-        emit({ type: 'PROGRESS', message: `trace written to ${tracePath} — replay with: npx playwright show-trace ${tracePath}` });
-      } catch (err) {
-        emit({ type: 'PROGRESS', message: `failed to write trace: ${err.message}` });
-      }
-    }
+    await tracer.stop();
     await release().catch(() => {});
   }
 
@@ -1047,7 +989,7 @@ async function main() {
     emit({
       type: 'DONE',
       status: 'failed',
-      records_emitted: total,
+      records_emitted: counters.totalEmitted,
       error: {
         message: 'usaa session expired mid-run; re-run with fresh auth to complete',
         retryable: true,
@@ -1056,10 +998,7 @@ async function main() {
     flushAndExit(1);
   }
 
-  if (totalSkipped > 0) {
-    emit({ type: 'PROGRESS', message: `shape-check skipped ${totalSkipped} record(s); see SKIP_RESULT events above` });
-  }
-  emit({ type: 'DONE', status: 'succeeded', records_emitted: total });
+  emitSucceeded(counters);
   flushAndExit(0);
 }
 
