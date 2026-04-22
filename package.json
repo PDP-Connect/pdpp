@@ -8,9 +8,6 @@
     "build": "pnpm web:build",
     "preview": "pnpm web:start",
     "start": "pnpm web:start",
-    "docs:dev": "vitepress dev",
-    "docs:build": "vitepress build",
-    "docs:preview": "vitepress preview",
     "reference-implementation:test": "pnpm --dir reference-implementation run test",
     "reference-implementation:server": "pnpm --dir reference-implementation run server",
     "reference-implementation:cli": "pnpm --dir reference-implementation run cli",
@@ -23,8 +20,13 @@
   "license": "ISC",
   "packageManager": "pnpm@10.33.0",
   "devDependencies": {
+    "@biomejs/biome": "^2.4.12",
     "@pdpp/brand": "workspace:*",
-    "vitepress": "^1.6.4"
+    "@types/node": "^25.6.0",
+    "lefthook": "^2.1.6",
+    "tsx": "^4.21.0",
+    "typescript": "^6.0.3",
+    "ultracite": "^7.6.0"
   },
   "pnpm": {
     "onlyBuiltDependencies": [

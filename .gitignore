@@ -1,6 +1,4 @@
 node_modules/
-.vitepress/cache/
-.vitepress/dist/
 .vercel/
 .vercel
 local/
@@ -13,6 +11,8 @@ local/
 # Working artifacts
 *.png
 *.yml
+!lefthook.yml
+!.github/**/*.yml
 tmp/
 docs/inbox/
 docs/outbox/

@@ -1,0 +1,51 @@
+{
+  "compilerOptions": {
+    // Language + module (Node ESM)
+    "target": "ES2023",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "moduleDetection": "force",
+    "lib": ["ES2023"],
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+    "erasableSyntaxOnly": true,
+    "forceConsistentCasingInFileNames": true,
+
+    // Strictness: the 2026 "strict-plus" baseline. Every flag here catches
+    // a class of bug that 'strict: true' alone does not.
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "noImplicitOverride": true,
+    "noPropertyAccessFromIndexSignature": true,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitReturns": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "allowUnreachableCode": false,
+    "allowUnusedLabels": false,
+    "useUnknownInCatchVariables": true,
+
+    // Migration: allow .js files during the JS→TS migration. Flip
+    // checkJs to true and remove allowJs once all sources are .ts.
+    "allowJs": true,
+    "checkJs": false,
+
+    // Dev ergonomics — no emit, type-check only. Bundling (if ever
+    // published) happens via a separate build step.
+    "noEmit": true,
+    "skipLibCheck": true,
+    "types": ["node"]
+  },
+  "include": [
+    "src/**/*.ts",
+    "src/**/*.js",
+    "connectors/**/*.ts",
+    "connectors/**/*.js",
+    "bin/**/*.ts",
+    "bin/**/*.js"
+  ],
+  "exclude": ["node_modules", "fixtures", "**/*.test.*"]
+}

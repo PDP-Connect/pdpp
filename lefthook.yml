@@ -1,0 +1,32 @@
+# Pre-commit gates.
+#
+# The floor is enforced by tooling, not review. If anything fails, the commit
+# is rejected — no "just this once" escape. Speed matters (< 3s for the common
+# case), so jobs run in parallel and most are scoped to staged files.
+
+pre-commit:
+  parallel: true
+  jobs:
+    # Lint .ts + config files. Legacy .js is exempt during the JS→TS
+    # migration; once all sources are .ts, remove this scoping.
+    - name: polyfill-connectors:lint
+      glob: "packages/polyfill-connectors/**/*.{ts,jsonc,json}"
+      run: pnpm --dir packages/polyfill-connectors exec ultracite check {staged_files}
+
+    # Type-check runs on the whole package, not just staged files, because
+    # a change in one file can break types in another. Runs on .ts only
+    # (allowJs + checkJs:false in tsconfig) so .js files don't fail it.
+    - name: polyfill-connectors:typecheck
+      glob: "packages/polyfill-connectors/**/*.{ts,js}"
+      run: pnpm --dir packages/polyfill-connectors run typecheck
+
+    - name: polyfill-connectors:no-double-cast
+      # Biome/Ultracite has no equivalent to typescript-eslint's
+      # consistent-type-assertions yet. Grep for `as unknown as X` as a
+      # stop-gap until that rule lands upstream.
+      glob: "packages/polyfill-connectors/**/*.ts"
+      run: |
+        if grep -nE "as[[:space:]]+unknown[[:space:]]+as[[:space:]]" {staged_files}; then
+          echo "✗ Found 'as unknown as X' double-cast — narrow the type properly instead."
+          exit 1
+        fi

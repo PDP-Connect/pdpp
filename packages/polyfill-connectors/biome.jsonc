@@ -1,0 +1,22 @@
+{
+  "$schema": "./node_modules/@biomejs/biome/configuration_schema.json",
+  "extends": ["ultracite/biome/core", "ultracite/biome/type-aware"],
+  "files": {
+    "ignoreUnknown": true,
+    // During the JS→TS migration, Biome only lints/formats .ts files plus
+    // config. Legacy .js files are exempt until migrated — renaming to .ts
+    // automatically brings them under the strict bar. Flip this to include
+    // *.js once the migration is complete and delete the note.
+    "includes": [
+      "src/**/*.ts",
+      "connectors/**/*.ts",
+      "bin/**/*.ts",
+      "*.jsonc",
+      "*.json",
+      "!node_modules",
+      "!fixtures",
+      "!dist",
+      "!**/*.test.*"
+    ]
+  }
+}
