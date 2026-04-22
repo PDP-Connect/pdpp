@@ -82,7 +82,22 @@ export function runConnector(config) {
     ensureSession,     // ({ context, page, sendInteraction }) => void
     probeSession,      // ({ context, page }) => boolean
     retryablePattern = /ECONN|ETIMEDOUT|timeout/i,
+    // Which record field `scope.time_range` filters on. Default `.date`;
+    // connectors that use other timestamp fields (e.g. Slack's `sent_at`)
+    // override here so they don't have to bypass the runtime's emitRecord.
+    // Can be a string (applied to all streams) or a (streamName) => string
+    // function for per-stream overrides.
+    timeRangeField = 'date',
+    // Tombstone predicate: given (stream, data) returns true if the record
+    // represents a deletion. The runtime strips data down to { id } and
+    // emits with op: 'delete'. Covers Notion archived-pages, YNAB deleted-
+    // transactions, and similar shapes without connector-level wrappers.
+    isTombstone,
   } = config;
+
+  const timeRangeFieldFor = typeof timeRangeField === 'function'
+    ? timeRangeField
+    : () => timeRangeField;
 
   // Capture session: created only when PDPP_CAPTURE_FIXTURES=1. Null otherwise.
   const capture = createCaptureSession(name);
@@ -173,12 +188,28 @@ export function runConnector(config) {
       if (data?.id == null) return Promise.resolve();
       const rs = resFilters.get(stream);
       if (rs && !rs.has(String(data.id))) return Promise.resolve();
-      // scope.time_range filter for date-scoped streams.
-      const scope = requested.get(stream);
-      if (scope?.time_range && data.date) {
-        if (scope.time_range.since && data.date < scope.time_range.since.slice(0, 10)) return Promise.resolve();
-        if (scope.time_range.until && data.date >= scope.time_range.until.slice(0, 10)) return Promise.resolve();
+
+      // Tombstones: platforms that mark records as deleted in-place rather
+      // than omitting them (Notion archived, YNAB deleted). Strip to { id }
+      // and emit with op: 'delete' so downstream consumers apply a delete.
+      if (isTombstone && isTombstone(stream, data)) {
+        counters.totalEmitted++;
+        return emit({ type: 'RECORD', stream, key: data.id, data: { id: data.id }, emitted_at: emittedAt, op: 'delete' });
       }
+
+      // scope.time_range filter. Field name is configurable per connector/
+      // stream (default 'date'); connectors using other timestamp fields
+      // (e.g. Slack's 'sent_at') override via config.timeRangeField.
+      const scope = requested.get(stream);
+      if (scope?.time_range) {
+        const field = timeRangeFieldFor(stream);
+        const v = data[field];
+        if (v) {
+          if (scope.time_range.since && v < scope.time_range.since.slice(0, 10)) return Promise.resolve();
+          if (scope.time_range.until && v >= scope.time_range.until.slice(0, 10)) return Promise.resolve();
+        }
+      }
+
       if (validateRecord) {
         const result = validateRecord(stream, data);
         if (!result.ok) {

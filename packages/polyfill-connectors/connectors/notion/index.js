@@ -50,27 +50,18 @@ function extractTitle(obj) {
 runConnector({
   name: 'notion',
   retryablePattern: /ECONN|fetch failed|rate_limited/i,
-  async collect({ state, requested, emit, emitRecord, progress, sendInteraction, emittedAt }) {
+  // Notion marks deleted items with archived=true rather than omitting them.
+  isTombstone: (_stream, d) => d.archived === true,
+  async collect({ state, requested, emit, emitRecord, progress, sendInteraction }) {
     let token = process.env.NOTION_API_TOKEN;
     if (!token) {
       const creds = await requireCredentialsOrAsk({
         required: ['NOTION_API_TOKEN'],
         connectorName: 'Notion',
         sendInteraction,
-        
       });
       token = creds.NOTION_API_TOKEN;
     }
-
-    // Notion uses tombstones (archived=true) per PDPP spec. The runtime's
-    // emitRecord handles shape-check + resource filter, but tombstones want
-    // a stripped data body + op: 'delete'. Wrap to route archived items.
-    const emitMaybeTombstone = (s, d) => {
-      if (d.archived === true) {
-        return emit({ type: 'RECORD', stream: s, key: d.id, data: { id: d.id }, emitted_at: emittedAt, op: 'delete' });
-      }
-      return emitRecord(s, d);
-    };
 
     async function searchAll(filter) {
     const results = [];
@@ -95,7 +86,7 @@ runConnector({
     let latest = prior;
     for (const p of pages) {
       if (prior && p.last_edited_time && p.last_edited_time <= prior) continue;
-      emitMaybeTombstone('pages', {
+      emitRecord('pages', {
         id: p.id,
         object: p.object,
         parent_type: p.parent?.type ?? null,
@@ -120,7 +111,7 @@ runConnector({
     let latest = prior;
     for (const d of dbs) {
       if (prior && d.last_edited_time && d.last_edited_time <= prior) continue;
-      emitMaybeTombstone('databases', {
+      emitRecord('databases', {
         id: d.id,
         title: extractTitle(d),
         parent_type: d.parent?.type ?? null,

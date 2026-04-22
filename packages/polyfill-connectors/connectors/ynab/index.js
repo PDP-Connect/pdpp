@@ -28,7 +28,7 @@
  * and most-recent month).
  */
 
-import { resourceSet, requireCredentialsOrAsk } from '../../src/scope-filters.js';
+import { requireCredentialsOrAsk } from '../../src/scope-filters.js';
 import { runConnector, nowIso } from '../../src/connector-runtime.js';
 
 const API_BASE = 'https://api.ynab.com/v1';
@@ -71,48 +71,32 @@ function rewindOneMonth(monthIso) {
 runConnector({
   name: 'ynab',
   retryablePattern: /rate_limited|ECONN|ETIMEDOUT|fetch failed/i,
-  async collect({ state, requested, emit, emitRecord: runtimeEmitRecord, progress, sendInteraction, emittedAt }) {
+  // YNAB marks deleted records with `deleted: true` in-band. Runtime strips
+  // to { id } and emits with op: 'delete'.
+  isTombstone: (_stream, d) => d.deleted === true,
+  async collect({ state, requested, emit, emitRecord: runtimeEmitRecord, progress, sendInteraction }) {
     // Credentials — prompt if missing, don't fail hard.
     const creds = await requireCredentialsOrAsk({
       required: ['YNAB_PERSONAL_ACCESS_TOKEN'],
       connectorName: 'YNAB',
       sendInteraction,
-      
     });
     const token = creds.YNAB_PERSONAL_ACCESS_TOKEN;
 
     const newState = JSON.parse(JSON.stringify(state));
 
-    // Per-stream resource filters + emitted-id tracking for tombstone emission.
-    const resFilters = new Map();
+    // Track which IDs we emitted this run, per stream. Used later for
+    // end-of-stream tombstones: IDs present in prior state but not in this
+    // run are treated as deletions the server never told us about
+    // (YNAB occasionally hard-deletes without soft-delete marker).
     const emittedIds = new Map();
-    for (const [name, req] of requested) {
-      resFilters.set(name, resourceSet(req));
-      emittedIds.set(name, new Set());
-    }
+    for (const [streamName] of requested) emittedIds.set(streamName, new Set());
 
-    const emitRecord = (stream, data) => {
-      const id = data.id;
-      if (id == null) return;
-      const canonical = String(id);
-
-      // YNAB returns soft-deleted records with `deleted: true`. Convert to
-      // proper PDPP tombstones (op=delete) for mutable_state streams.
-      if (data.deleted === true) {
-        const resSet = resFilters.get(stream);
-        if (resSet && !resSet.has(canonical)) return; // out-of-scope — silently skip
-        emit({
-          type: 'RECORD',
-          stream,
-          key: id,
-          data: { id },
-          emitted_at: emittedAt,
-          op: 'delete',
-        });
-      } else {
-        runtimeEmitRecord(stream, data);
-      }
-      emittedIds.get(stream)?.add(canonical);
+    // Trap to record ids so end-of-stream reconciliation can compare.
+    // Delegates to the runtime's emitRecord; only observes ids flowing through.
+    const trackAndEmit = (stream, data) => {
+      if (data?.id != null) emittedIds.get(stream)?.add(String(data.id));
+      return runtimeEmitRecord(stream, data);
     };
 
     // 1. Budgets — always fetched; needed to enumerate downstream streams.
@@ -123,7 +107,7 @@ runConnector({
 
     if (requested.has('budgets')) {
       for (const b of budgets) {
-        emitRecord('budgets', {
+        trackAndEmit('budgets', {
           id: b.id,
           name: b.name,
           last_modified_on: b.last_modified_on ?? null,
@@ -150,7 +134,7 @@ runConnector({
         const knowledge = priorKnowledge(state, 'accounts', budgetId);
         const res = await ynab(`/budgets/${budgetId}/accounts`, token, { knowledge });
         for (const a of res.data.accounts) {
-          emitRecord('accounts', {
+          trackAndEmit('accounts', {
             id: a.id,
             budget_id: budgetId,
             name: a.name,
@@ -183,7 +167,7 @@ runConnector({
         const res = await ynab(`/budgets/${budgetId}/categories`, token, { knowledge });
         for (const group of res.data.category_groups) {
           if (requested.has('category_groups')) {
-            emitRecord('category_groups', {
+            trackAndEmit('category_groups', {
               id: group.id,
               budget_id: budgetId,
               name: group.name,
@@ -194,7 +178,7 @@ runConnector({
           }
           if (requested.has('categories')) {
             for (const c of group.categories ?? []) {
-              emitRecord('categories', {
+              trackAndEmit('categories', {
                 id: c.id,
                 budget_id: budgetId,
                 category_group_id: group.id,
@@ -235,7 +219,7 @@ runConnector({
         const knowledge = priorKnowledge(state, 'payees', budgetId);
         const res = await ynab(`/budgets/${budgetId}/payees`, token, { knowledge });
         for (const p of res.data.payees) {
-          emitRecord('payees', {
+          trackAndEmit('payees', {
             id: p.id,
             budget_id: budgetId,
             name: p.name,
@@ -253,7 +237,7 @@ runConnector({
         progress(`Fetching payee locations for budget ${budgetId}`, { stream: 'payee_locations' });
         const res = await ynab(`/budgets/${budgetId}/payee_locations`, token);
         for (const loc of res.data.payee_locations) {
-          emitRecord('payee_locations', {
+          trackAndEmit('payee_locations', {
             id: loc.id,
             budget_id: budgetId,
             payee_id: loc.payee_id,
@@ -289,7 +273,7 @@ runConnector({
         const res = await ynab(`/budgets/${budgetId}/transactions`, token, { knowledge, sinceDate });
         for (const t of res.data.transactions) {
           if (!withinTimeRange(t.date, stream.time_range)) continue;
-          emitRecord('transactions', {
+          trackAndEmit('transactions', {
             id: t.id,
             budget_id: budgetId,
             account_id: t.account_id,
@@ -332,7 +316,7 @@ runConnector({
         const knowledge = priorKnowledge(state, 'scheduled_transactions', budgetId);
         const res = await ynab(`/budgets/${budgetId}/scheduled_transactions`, token, { knowledge });
         for (const s of res.data.scheduled_transactions) {
-          emitRecord('scheduled_transactions', {
+          trackAndEmit('scheduled_transactions', {
             id: s.id,
             budget_id: budgetId,
             date_first: s.date_first,
@@ -369,7 +353,7 @@ runConnector({
         monthList = res.data.months;
         if (monthsStream) {
           for (const m of monthList) {
-            emitRecord('months', {
+            trackAndEmit('months', {
               id: `${budgetId}|${m.month}`,
               budget_id: budgetId,
               month: m.month,
@@ -413,7 +397,7 @@ runConnector({
           const monthRes = await ynab(`/budgets/${budgetId}/months/${m.month}`, token);
           const monthDetail = monthRes.data.month;
           for (const c of monthDetail.categories ?? []) {
-            emitRecord('month_categories', {
+            trackAndEmit('month_categories', {
               id: `${budgetId}:${m.month}:${c.id}`,
               budget_id: budgetId,
               month: m.month,
