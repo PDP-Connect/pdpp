@@ -8,8 +8,8 @@
  * we also want a listener surface that tolerates multiple downloads
  * fired back-to-back without needing one `waitForEvent` per click.
  *
- * Verified 2026-04-21 via scripts/archive/test-download-queue-debug.mjs:
- * - `context.on('download')` is NOT dispatched when attached over CDP to
+ * Verified 2026-04-21: `context.on('download')` is NOT dispatched when
+ * attached over CDP to
  *   a freshly-created BrowserContext (`browser.newContext(...)`). Events
  *   reliably reach page-level listeners only.
  * - `page.on('download', ...)` DOES fire for every download from that page,
