@@ -60,10 +60,12 @@ const asinSchema = z
   .nullable();
 
 // Item name: non-empty, bounded, must not contain obvious cruft patterns.
+// Amazon product names run long on multi-pack / gift-basket / variant
+// listings (500-chars observed in practice). 1024 is a safe upper bound.
 const itemNameSchema = z
   .string()
   .min(2)
-  .max(300)
+  .max(1024)
   .refine((s) => !/Buy it again|View your item|Get product support|Write a product review/i.test(s), {
     message: 'contains UI cruft',
   })
@@ -79,7 +81,7 @@ export const orderSchema = z.object({
   delivery_status: z.string().nullable(),
   status_detail: z.string().max(200).nullable(),
   recipient_name: recipientNameSchema,
-  shipping_address_summary: z.string().max(300).nullable(),
+  shipping_address_summary: z.string().max(500).nullable(),
   payment_method_summary: paymentMethodSchema,
   gift_order: z.boolean(),
   digital_order: z.boolean(),
@@ -117,7 +119,7 @@ export const listPageOrderShape = z.object({
   deliveryStatus: z.string().max(200).nullable(),
   items: z.array(
     z.object({
-      name: z.string().min(2).max(300),
+      name: z.string().min(2).max(1024),
       url: z.string().url().nullable(),
       asin: asinSchema,
     })
