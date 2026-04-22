@@ -10,7 +10,6 @@
  * Rate limit: 5000/day for personal tokens.
  */
 
-import { requireCredentialsOrAsk } from '../../src/scope-filters.js';
 import { runConnector } from '../../src/connector-runtime.js';
 
 const API = 'https://api.ouraring.com/v2/usercollection';
@@ -45,17 +44,9 @@ async function fetchAll(endpoint, token, { startDate, endDate } = {}) {
 runConnector({
   name: 'oura',
   retryablePattern: /rate_limited|ECONN|fetch failed/i,
-  async collect({ state, requested, emit, emitRecord, progress, sendInteraction }) {
-    let token = process.env.OURA_PERSONAL_ACCESS_TOKEN;
-    if (!token) {
-      const creds = await requireCredentialsOrAsk({
-        required: ['OURA_PERSONAL_ACCESS_TOKEN'],
-        connectorName: 'Oura',
-        sendInteraction,
-        
-      });
-      token = creds.OURA_PERSONAL_ACCESS_TOKEN;
-    }
+  auth: { kind: 'env', required: ['OURA_PERSONAL_ACCESS_TOKEN'] },
+  async collect({ state, requested, credentials, emit, emitRecord, progress }) {
+    const token = credentials.OURA_PERSONAL_ACCESS_TOKEN;
 
     // Helper: derive since from prior state or scope
     const sinceFor = (stream) => {

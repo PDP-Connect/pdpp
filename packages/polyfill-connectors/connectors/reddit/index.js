@@ -15,7 +15,6 @@
  * Rate limit: 100 OAuth req/min.
  */
 
-import { requireCredentialsOrAsk } from '../../src/scope-filters.js';
 import { runConnector, nowIso } from '../../src/connector-runtime.js';
 
 const isoFromUnix = (u) => u ? new Date(Number(u) * 1000).toISOString() : null;
@@ -92,15 +91,9 @@ async function paginate(endpointTemplate, token, sinceEpochUtc = null) {
 runConnector({
   name: 'reddit',
   retryablePattern: /ECONN|fetch failed|rate_limited/i,
-  async collect({ state, requested, emit, emitRecord, progress, sendInteraction }) {
-    // Credentials — prompt for any missing.
-    const creds = await requireCredentialsOrAsk({
-      required: ['REDDIT_USERNAME'],
-      connectorName: 'Reddit',
-      sendInteraction,
-      
-    });
-    const user = creds.REDDIT_USERNAME;
+  auth: { kind: 'env', required: ['REDDIT_USERNAME'] },
+  async collect({ state, requested, credentials, emit, emitRecord, progress }) {
+    const user = credentials.REDDIT_USERNAME;
 
     const token = await getAccessToken();
 

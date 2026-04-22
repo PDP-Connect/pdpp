@@ -10,7 +10,6 @@
  * Rate limit: 3 req/s average.
  */
 
-import { requireCredentialsOrAsk } from '../../src/scope-filters.js';
 import { runConnector, politeDelay } from '../../src/connector-runtime.js';
 
 const API = 'https://api.notion.com/v1';
@@ -50,18 +49,11 @@ function extractTitle(obj) {
 runConnector({
   name: 'notion',
   retryablePattern: /ECONN|fetch failed|rate_limited/i,
+  auth: { kind: 'env', required: ['NOTION_API_TOKEN'] },
   // Notion marks deleted items with archived=true rather than omitting them.
   isTombstone: (_stream, d) => d.archived === true,
-  async collect({ state, requested, emit, emitRecord, progress, sendInteraction }) {
-    let token = process.env.NOTION_API_TOKEN;
-    if (!token) {
-      const creds = await requireCredentialsOrAsk({
-        required: ['NOTION_API_TOKEN'],
-        connectorName: 'Notion',
-        sendInteraction,
-      });
-      token = creds.NOTION_API_TOKEN;
-    }
+  async collect({ state, requested, credentials, emit, emitRecord, progress }) {
+    const token = credentials.NOTION_API_TOKEN;
 
     async function searchAll(filter) {
     const results = [];

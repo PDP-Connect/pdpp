@@ -105,8 +105,11 @@ export function emitTombstones({ emit, stream, priorIds, currentIds, emittedAt }
 /**
  * Required-env or emit INTERACTION kind=credentials.
  *
- * If all required env vars are set, returns a map of values.
- * Otherwise, emits INTERACTION and blocks until the user provides them.
+ * Shim for connectors not yet migrated to the runtime's `auth` config.
+ * New connectors should declare `auth: { kind: 'env', required: [...] }`
+ * in runConnector() instead — the runtime resolves credentials before
+ * collect() is called. This helper exists only for gmail and pocket which
+ * have structural reasons not to use the runtime yet.
  *
  * @param {object} opts
  * @param {string[]} opts.required — env var names
@@ -115,27 +118,6 @@ export function emitTombstones({ emit, stream, priorIds, currentIds, emittedAt }
  * @returns {Promise<Record<string,string>>}
  */
 export async function requireCredentialsOrAsk({ required, connectorName, sendInteraction }) {
-  const missing = required.filter((n) => !process.env[n]);
-  const have = {};
-  for (const n of required) if (process.env[n]) have[n] = process.env[n];
-  if (!missing.length) return have;
-
-  const properties = {};
-  for (const n of missing) {
-    properties[n] = {
-      type: 'string',
-      description: `${n} for ${connectorName}`,
-      format: /PASSWORD|SECRET|TOKEN/i.test(n) ? 'password' : undefined,
-    };
-  }
-  const resp = await sendInteraction({
-    kind: 'credentials',
-    message: `${connectorName} needs: ${missing.join(', ')}. Set in .env.local for persistence.`,
-    schema: { type: 'object', properties, required: missing },
-    timeout_seconds: 1800,
-  });
-  if (resp.status !== 'success' || !resp.data) {
-    throw new Error(`${connectorName}_credentials_missing`);
-  }
-  return { ...have, ...resp.data };
+  const { resolveAuth } = await import('./auth.js');
+  return resolveAuth({ kind: 'env', required }, { sendInteraction, connectorName });
 }

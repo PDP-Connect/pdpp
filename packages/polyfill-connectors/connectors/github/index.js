@@ -20,7 +20,6 @@
  * which main() surfaces as a retryable DONE failure (see catch at bottom).
  */
 
-import { requireCredentialsOrAsk } from '../../src/scope-filters.js';
 import { runConnector, nowIso } from '../../src/connector-runtime.js';
 
 const BASE = 'https://api.github.com';
@@ -55,17 +54,10 @@ function parseNextLink(link) {
 runConnector({
   name: 'github',
   retryablePattern: /rate_limited|ECONN|fetch failed/,
-  async collect({ state, requested, emit, emitRecord, progress, sendInteraction }) {
-    let token = process.env.GITHUB_PERSONAL_ACCESS_TOKEN || process.env.GITHUB_TOKEN;
-    if (!token) {
-      const creds = await requireCredentialsOrAsk({
-        required: ['GITHUB_PERSONAL_ACCESS_TOKEN'],
-        connectorName: 'GitHub',
-        sendInteraction,
-        
-      });
-      token = creds.GITHUB_PERSONAL_ACCESS_TOKEN;
-    }
+  // GITHUB_TOKEN is the universal GitHub-CI env var; accept it as a fallback.
+  auth: { kind: 'env', required: [['GITHUB_PERSONAL_ACCESS_TOKEN', 'GITHUB_TOKEN']] },
+  async collect({ state, requested, credentials, emit, emitRecord, progress }) {
+    const token = credentials.GITHUB_PERSONAL_ACCESS_TOKEN;
 
     // USER
     if (requested.has('user')) {

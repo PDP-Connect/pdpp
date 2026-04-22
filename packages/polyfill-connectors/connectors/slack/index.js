@@ -54,7 +54,7 @@ import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { resourceSet, requireCredentialsOrAsk, passesTimeRange } from '../../src/scope-filters.js';
+import { resourceSet, passesTimeRange } from '../../src/scope-filters.js';
 import { readOptions } from '../../src/connector-options.js';
 import { runConnector, nowIso } from '../../src/connector-runtime.js';
 
@@ -103,25 +103,12 @@ async function ensureWorkspaceCached({ token, cookie, env }) {
 runConnector({
   name: 'slack',
   retryablePattern: /ECONN|timeout/i,
-  async collect({ state, requested, emit, progress, sendInteraction, emittedAt, scope }) {
+  auth: { kind: 'env', required: ['SLACK_WORKSPACE', 'SLACK_TOKEN', 'SLACK_COOKIE'] },
+  async collect({ state, requested, credentials, emit, progress, emittedAt, scope }) {
     // Credentials — workspace is not a secret but belongs in the workspace context.
-    let workspace = process.env.SLACK_WORKSPACE;
-    let token = process.env.SLACK_TOKEN;
-    let cookie = process.env.SLACK_COOKIE;
-    const missing = [];
-    if (!workspace) missing.push('SLACK_WORKSPACE');
-    if (!token) missing.push('SLACK_TOKEN');
-    if (!cookie) missing.push('SLACK_COOKIE');
-    if (missing.length) {
-      const creds = await requireCredentialsOrAsk({
-        required: missing,
-        connectorName: 'Slack',
-        sendInteraction,
-      });
-      workspace = workspace || creds.SLACK_WORKSPACE;
-      token = token || creds.SLACK_TOKEN;
-      cookie = cookie || creds.SLACK_COOKIE;
-    }
+    const workspace = credentials.SLACK_WORKSPACE;
+    const token = credentials.SLACK_TOKEN;
+    const cookie = credentials.SLACK_COOKIE;
 
     const opts = readOptions({ scope, state }, {
       envPrefix: 'SLACK_',

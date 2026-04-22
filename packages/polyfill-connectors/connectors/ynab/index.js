@@ -28,7 +28,6 @@
  * and most-recent month).
  */
 
-import { requireCredentialsOrAsk } from '../../src/scope-filters.js';
 import { runConnector, nowIso } from '../../src/connector-runtime.js';
 
 const API_BASE = 'https://api.ynab.com/v1';
@@ -74,14 +73,9 @@ runConnector({
   // YNAB marks deleted records with `deleted: true` in-band. Runtime strips
   // to { id } and emits with op: 'delete'.
   isTombstone: (_stream, d) => d.deleted === true,
-  async collect({ state, requested, emit, emitRecord: runtimeEmitRecord, progress, sendInteraction }) {
-    // Credentials — prompt if missing, don't fail hard.
-    const creds = await requireCredentialsOrAsk({
-      required: ['YNAB_PERSONAL_ACCESS_TOKEN'],
-      connectorName: 'YNAB',
-      sendInteraction,
-    });
-    const token = creds.YNAB_PERSONAL_ACCESS_TOKEN;
+  auth: { kind: 'env', required: ['YNAB_PERSONAL_ACCESS_TOKEN'] },
+  async collect({ state, requested, credentials, emit, emitRecord: runtimeEmitRecord, progress }) {
+    const token = credentials.YNAB_PERSONAL_ACCESS_TOKEN;
 
     const newState = JSON.parse(JSON.stringify(state));
 

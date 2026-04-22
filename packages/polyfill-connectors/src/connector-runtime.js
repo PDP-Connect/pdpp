@@ -53,6 +53,7 @@ import { createInterface } from 'node:readline';
 import { emitToStdout } from './safe-emit.js';
 import { resourceSet } from './scope-filters.js';
 import { createCaptureSession } from './fixture-capture.js';
+import { resolveAuth } from './auth.js';
 
 // Primitive helpers. Exported so connectors that need them inline can import
 // without pulling in the whole runtime surface.
@@ -93,6 +94,12 @@ export function runConnector(config) {
     // emits with op: 'delete'. Covers Notion archived-pages, YNAB deleted-
     // transactions, and similar shapes without connector-level wrappers.
     isTombstone,
+    // Auth strategy. Today: { kind: 'env', required: [...] }. Future shapes
+    // (OAuth, shared providers, device flow) register themselves in
+    // src/auth.js and slot in here without the runtime or connectors
+    // changing. Resolved credentials are passed to collect() as
+    // { credentials }.
+    auth,
   } = config;
 
   const timeRangeFieldFor = typeof timeRangeField === 'function'
@@ -227,6 +234,19 @@ export function runConnector(config) {
       return emit({ type: 'RECORD', stream, key: data.id, data, emitted_at: emittedAt });
     };
 
+    // Resolve auth before collect() is called. If no auth strategy is
+    // configured, credentials is an empty object. Failures here throw before
+    // we acquire a browser — avoids spinning up infrastructure when the run
+    // can't possibly proceed.
+    let credentials = {};
+    if (auth) {
+      try {
+        credentials = await resolveAuth(auth, { sendInteraction, connectorName: name });
+      } catch (err) {
+        return emitFailed(err.message, false);
+      }
+    }
+
     // Browser branch: acquire isolated context, optionally ensureSession,
     // then invoke collect with { context, page, ... } in addition to the
     // base context.
@@ -277,6 +297,7 @@ export function runConnector(config) {
           scope: startMsg.scope,
           state,
           requested,
+          credentials,
           emit,
           emitRecord,
           progress,
@@ -296,6 +317,7 @@ export function runConnector(config) {
         scope: startMsg.scope,
         state,
         requested,
+        credentials,
         emit,
         emitRecord,
         progress,

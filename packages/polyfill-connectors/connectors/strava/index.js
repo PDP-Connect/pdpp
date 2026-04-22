@@ -10,23 +10,14 @@
  * Rate limits: 100 req / 15 min, 1000 req / day.
  */
 
-import { requireCredentialsOrAsk } from '../../src/scope-filters.js';
 import { runConnector } from '../../src/connector-runtime.js';
 
 runConnector({
   name: 'strava',
   retryablePattern: /ECONN|fetch failed|rate_limited/i,
-  async collect({ state, requested, emit, emitRecord, progress, sendInteraction }) {
-    let token = process.env.STRAVA_ACCESS_TOKEN;
-    if (!token) {
-      const creds = await requireCredentialsOrAsk({
-        required: ['STRAVA_ACCESS_TOKEN'],
-        connectorName: 'Strava',
-        sendInteraction,
-        
-      });
-      token = creds.STRAVA_ACCESS_TOKEN;
-    }
+  auth: { kind: 'env', required: ['STRAVA_ACCESS_TOKEN'] },
+  async collect({ state, requested, credentials, emit, emitRecord, progress }) {
+    const token = credentials.STRAVA_ACCESS_TOKEN;
 
     if (requested.has('activities')) {
       progress('Fetching activities', { stream: 'activities' });

@@ -16,7 +16,6 @@
  * Rate limit: 180 req/min per token typical.
  */
 
-import { requireCredentialsOrAsk } from '../../src/scope-filters.js';
 import { runConnector } from '../../src/connector-runtime.js';
 
 const API = 'https://api.spotify.com/v1';
@@ -44,17 +43,9 @@ async function paginate(path, token) {
 runConnector({
   name: 'spotify',
   retryablePattern: /rate_limited|ECONN|fetch failed/i,
-  async collect({ state, requested, emit, emitRecord, progress, sendInteraction }) {
-    let token = process.env.SPOTIFY_ACCESS_TOKEN;
-    if (!token) {
-      const creds = await requireCredentialsOrAsk({
-        required: ['SPOTIFY_ACCESS_TOKEN'],
-        connectorName: 'Spotify',
-        sendInteraction,
-        
-      });
-      token = creds.SPOTIFY_ACCESS_TOKEN;
-    }
+  auth: { kind: 'env', required: ['SPOTIFY_ACCESS_TOKEN'] },
+  async collect({ state, requested, credentials, emit, emitRecord, progress }) {
+    const token = credentials.SPOTIFY_ACCESS_TOKEN;
 
     if (requested.has('playlists')) {
       progress('Fetching playlists', { stream: 'playlists' });
