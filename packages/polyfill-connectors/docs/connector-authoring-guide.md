@@ -4,6 +4,53 @@ This document captures the standards, heuristics, and earned lessons for writing
 
 The guide is written for connector *authors*. It does not describe the Collection Profile wire protocol (that's in `spec-collection-profile.md`) or the Polyfill Runtime (that's in `spec-polyfill-runtime.md`). It describes how to write the code between those two layers.
 
+## The entry point: `runConnector()`
+
+Every connector is one call to `runConnector()`. The runtime owns the Collection Profile protocol handshake (START / RECORD / STATE / SKIP_RESULT / PROGRESS / DONE), browser lifecycle, tracing, fixture capture, retryable-error detection, and terminal exit. Connectors own business logic — how records are collected, shaped, and cursored.
+
+```js
+import { runConnector } from '../../src/connector-runtime.js';
+import { validateRecord } from './schemas.js';
+
+runConnector({
+  name: 'notion',
+  validateRecord,            // optional; Zod-ish { ok, data | issues } shape
+  retryablePattern: /ECONN|fetch failed|rate_limited/i,
+  async collect({ scope, state, requested, emit, emitRecord, progress, sendInteraction, emittedAt }) {
+    // business logic only
+  },
+});
+```
+
+For browser-driven connectors, add `browser: { profileName, headless }`:
+
+```js
+runConnector({
+  name: 'amazon',
+  validateRecord,
+  browser: { profileName: 'amazon' },
+  async ensureSession({ context, page, sendInteraction }) { ... },
+  async collect({ page, scope, state, emitRecord, capture, ... }) { ... },
+});
+```
+
+What the runtime provides to `collect()`:
+
+| param | what it is |
+|---|---|
+| `scope` | the full `START.scope` object |
+| `state` | stream-keyed state map from `START.state` |
+| `requested` | `Map<streamName, streamScope>` built from `scope.streams` |
+| `emit` | `(msg) => Promise<void>` — raw emit, for STATE/PROGRESS/SKIP_RESULT |
+| `emitRecord` | `(stream, data) => Promise<void>` — handles id-skip, resources filter, `scope.time_range` filter, Zod shape-check, counters |
+| `progress` | `(message, extra?) => Promise<void>` — convenience for PROGRESS |
+| `sendInteraction` | `({ kind, message, schema?, timeout_seconds? }) => Promise<response>` — the runtime fills `type` + `request_id` |
+| `capture` | `null` unless `PDPP_CAPTURE_FIXTURES=1`; exposes `captureDom(page, label)` + `captureHttp(label, body, meta)` |
+| `emittedAt` | one ISO timestamp for the run; use it on all records |
+| `page`, `context` | only when `browser` is set |
+
+**Do not write protocol plumbing.** No `process.stdin` readline, no stringify/emit wrapping, no `flushAndExit`, no `main().catch`. The runtime owns all of it. If you find yourself needing to bypass the runtime for a protocol concern, that's a signal to extend the runtime — not work around it.
+
 ## Standard dependencies (as of 2026-04)
 
 Use these libraries by default. They are chosen because they are actively maintained and are the community defaults in 2026:
@@ -230,7 +277,7 @@ Live runs are the only opportunity to snapshot real DOM/API shapes. Every live r
 
 **How it works**
 
-Every connector using `createConnectorRuntime()` (API connectors) or `runBrowserScraper()` (browser connectors) gets capture automatically when `PDPP_CAPTURE_FIXTURES=1` is set. Captures go to `packages/polyfill-connectors/fixtures/<connector>/raw/<runId>/`:
+Every connector using `runConnector()` gets capture automatically when `PDPP_CAPTURE_FIXTURES=1` is set. Captures go to `packages/polyfill-connectors/fixtures/<connector>/raw/<runId>/`:
 
 - `records/<stream>.jsonl` — every emitted RECORD.data (free, auto-captured by the runtime's wrapped emit)
 - `dom/<label>.html` — Playwright DOM snapshots, when the connector calls `capture.captureDom(page, label)` at parse checkpoints
@@ -239,9 +286,10 @@ Every connector using `createConnectorRuntime()` (API connectors) or `runBrowser
 **Opting into DOM / HTTP capture from a browser connector**
 
 ```js
-runBrowserScraper({
+runConnector({
   name: 'amazon',
-  async scrape({ page, capture, emitRecord }) {
+  browser: { profileName: 'amazon' },
+  async collect({ page, capture, emitRecord }) {
     await page.goto('https://…/orders');
     if (capture) await capture.captureDom(page, 'orders-list-page-1');
     // parse and emitRecord as usual
