@@ -147,25 +147,23 @@ export async function ensureChaseSession({ context: _context, page, sendInteract
     // trust cookie when the user opts in via a checkbox on the OTP page.
     // Without this, every run requires a fresh OTP. If the checkbox
     // isn't present or is already checked, this is a no-op.
-    const rememberPatterns = [
-      'input[type="checkbox"]#rememberMe',
-      'input[type="checkbox"]#trustDevice',
-      'input[type="checkbox"][name="rememberMe"]',
-      'input[type="checkbox"][name*="remember" i]',
-      'input[type="checkbox"][name*="trust" i]',
-      'label:has-text("Remember") input[type="checkbox"]',
-      'label:has-text("Trust this device") input[type="checkbox"]',
-      "label:has-text(\"Don't ask\") input[type=\"checkbox\"]",
-    ];
-    for (const sel of rememberPatterns) {
-      try {
-        const loc = page.locator(sel).first();
-        if ((await loc.count().catch(() => 0)) > 0 && !(await loc.isChecked().catch(() => true))) {
-          await loc.check({ timeout: 2000 }).catch(() => {});
-          break;
-        }
-      } catch { /* next pattern */ }
-    }
+    //
+    // Uses accessibility-tree matching (Playwright's recommended
+    // best practice: https://playwright.dev/docs/locators#locate-by-role).
+    // Verified-on-real-DOM selector TBD — this is a first pass based on
+    // common bank-UI naming conventions. If it doesn't trigger on the
+    // real Chase page, probe the OTP page with the Playwright Inspector
+    // (`PDPP_TRACE=1` + `npx playwright show-trace <zip>`) and add a
+    // more specific selector here based on observation.
+    try {
+      const rememberBox = page.getByRole('checkbox', {
+        name: /remember|trust|don't ask/i,
+      }).first();
+      const count = await rememberBox.count().catch(() => 0);
+      if (count > 0 && !(await rememberBox.isChecked().catch(() => true))) {
+        await rememberBox.check({ timeout: 2000 });
+      }
+    } catch { /* no-op on absence or timeout */ }
 
     const submitByText = page.locator('text="Next"').first();
     if (await submitByText.count().catch(() => 0)) {
