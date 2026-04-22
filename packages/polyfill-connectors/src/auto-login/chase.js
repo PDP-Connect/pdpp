@@ -141,6 +141,32 @@ export async function ensureChaseSession({ context: _context, page, sendInteract
     await otpInput.fill('');
     await otpInput.pressSequentially(resp.data.code, { delay: 60 });
 
+    // Best-effort: tick any "remember this device" / "don't ask again"
+    // checkbox before submitting. Chase sets a session-only
+    // `_tmprememberme` cookie by default; it's upgraded to a persistent
+    // trust cookie when the user opts in via a checkbox on the OTP page.
+    // Without this, every run requires a fresh OTP. If the checkbox
+    // isn't present or is already checked, this is a no-op.
+    const rememberPatterns = [
+      'input[type="checkbox"]#rememberMe',
+      'input[type="checkbox"]#trustDevice',
+      'input[type="checkbox"][name="rememberMe"]',
+      'input[type="checkbox"][name*="remember" i]',
+      'input[type="checkbox"][name*="trust" i]',
+      'label:has-text("Remember") input[type="checkbox"]',
+      'label:has-text("Trust this device") input[type="checkbox"]',
+      "label:has-text(\"Don't ask\") input[type=\"checkbox\"]",
+    ];
+    for (const sel of rememberPatterns) {
+      try {
+        const loc = page.locator(sel).first();
+        if ((await loc.count().catch(() => 0)) > 0 && !(await loc.isChecked().catch(() => true))) {
+          await loc.check({ timeout: 2000 }).catch(() => {});
+          break;
+        }
+      } catch { /* next pattern */ }
+    }
+
     const submitByText = page.locator('text="Next"').first();
     if (await submitByText.count().catch(() => 0)) {
       await submitByText.click({ timeout: 5000 }).catch(() => {});
