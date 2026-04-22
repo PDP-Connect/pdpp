@@ -121,6 +121,35 @@ Run the test suite:
 pnpm --dir reference-implementation test
 ```
 
+Verify the generated contract artifacts are current:
+
+```bash
+pnpm reference-contract:check-generated
+```
+
+## Published generated artifacts
+
+The reference publishes generated machine-readable and human-readable contract
+artifacts derived from `@pdpp/reference-contract`. These are treated as
+versioned reference outputs, not throwaway build noise.
+
+- `openapi/reference-public.openapi.json`
+  - public PDPP JSON APIs only
+- `openapi/reference-full.openapi.json`
+  - public APIs plus reference-only `/_ref` operator surfaces
+- `docs/generated/reference-routes.md`
+  - generated route index for public APIs
+- `docs/generated/reference-ref-routes.md`
+  - generated route index for reference-only APIs
+- `docs/generated/query-cookbook.md`
+  - generated query and flow cookbook
+
+Regenerate them with:
+
+```bash
+pnpm reference-contract:generate
+```
+
 ## Relationship to the root PDPP specs
 
 The root `spec-*.md` files remain normative for PDPP protocol semantics.

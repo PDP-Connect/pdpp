@@ -1,0 +1,28 @@
+{
+  "name": "@pdpp/reference-contract",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "JSON-Schema-first route manifests, validators, OpenAPI artifacts, and typed helpers for the PDPP reference implementation.",
+  "main": "./src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./common": "./src/common/index.js",
+    "./public": "./src/public/index.js",
+    "./reference": "./src/reference/index.js",
+    "./builders": "./src/builders/index.js",
+    "./openapi": "./src/openapi/index.js",
+    "./validate": "./src/validate.js"
+  },
+  "scripts": {
+    "generate:openapi": "node ./src/openapi/generate.js",
+    "generate:docs": "node ./src/docs/generate.js",
+    "generate:all": "node ./src/openapi/generate.js && node ./src/docs/generate.js",
+    "check:generated": "pnpm run generate:all && node ./scripts/check-generated.js",
+    "test": "node --test --test-force-exit test/*.test.js"
+  },
+  "dependencies": {
+    "ajv": "^8.17.1",
+    "ajv-formats": "^3.0.1"
+  }
+}
