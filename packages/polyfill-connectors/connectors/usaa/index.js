@@ -103,8 +103,8 @@ function mmddyyyy(iso) {
 // summary pages surface it as `button.ent-as-utility-bar__item.export`.
 // Credit-card summary pages surface it as
 // `button.as_credit__utility-bar-item.as_credit__export` (verified live
-// 2026-04-20). We try both exact classes first, then fall back to any
-// button whose text is literally "Export".
+// 2026-04-20 via scripts/archive/usaa-cc-walk.mjs). We try both exact classes first,
+// then fall back to any button whose text is literally "Export".
 async function findExportAffordance(page) {
   const bankClass = page.locator('button.ent-as-utility-bar__item.export');
   if (await bankClass.count().catch(() => 0)) return bankClass.first();
