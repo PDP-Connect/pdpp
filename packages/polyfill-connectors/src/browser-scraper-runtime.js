@@ -21,10 +21,18 @@ import { createInterface } from 'node:readline';
 import { acquireIsolatedBrowser } from './browser-daemon.js';
 import { resourceSet } from './scope-filters.js';
 import { stringifyForJsonl } from './safe-emit.js';
+import { createCaptureSession } from './fixture-capture.js';
 
 export function runBrowserScraper({ name, probeSession, scrape, ensureSession }) {
   const rl = createInterface({ input: process.stdin, terminal: false });
-  const emit = (msg) => process.stdout.write(stringifyForJsonl(msg));
+  const capture = createCaptureSession(name);
+  if (capture) {
+    process.stderr.write(`[capture] PDPP_CAPTURE_FIXTURES=1; writing to ${capture.baseDir}\n`);
+  }
+  const emit = (msg) => {
+    if (capture && msg.type === 'RECORD') capture.recordRecord(msg);
+    return process.stdout.write(stringifyForJsonl(msg));
+  };
   const flushAndExit = (code) => {
     if (process.stdout.writableLength > 0) {
       process.stdout.once('drain', () => process.exit(code));
@@ -132,6 +140,7 @@ export function runBrowserScraper({ name, probeSession, scrape, ensureSession })
         sendInteractionAndWait,
         nextInteractionId,
         emittedAt,
+        capture, // null unless PDPP_CAPTURE_FIXTURES=1
       });
     } finally {
       await release().catch(() => {});

@@ -1,0 +1,7 @@
+# Fixture capture: raw/ contains unscrubbed PII from live runs.
+# Never commit. Run `node bin/scrub-fixtures.mjs <connector>` to produce
+# sanitized files under scrubbed/, which ARE committable.
+fixtures/*/raw/
+
+# Local data + cache
+.pdpp-data/

@@ -219,10 +219,70 @@ If using year-freezing or any "freeze on second stable observation" pattern, doc
 
 Connectors are hard to unit-test because they depend on live third-party surfaces. Accept that and aim for:
 
-- **Fixture a handful of representative DOM snapshots** per connector. Enough to cover layout variants the author encountered.
+- **Fixture a handful of representative DOM snapshots** per connector. Enough to cover layout variants the author encountered. Use the capture infrastructure — see §9.1.
 - **Run shape-check assertions on every emit** in production. These replace the unit tests you can't write.
 - **Spot-check output manually.** After a new connector's first full run, eyeball 5-10 random records against the platform's own UI.
 - **Record a "known failure modes" log** in the connector's design note. When Amazon renames a field, that's a datapoint for the next time.
+
+### 9.1 Capturing fixtures from a live run
+
+Live runs are the only opportunity to snapshot real DOM/API shapes. Every live run should capture fixtures as a byproduct — future parser tests depend on it.
+
+**How it works**
+
+Every connector using `createConnectorRuntime()` (API connectors) or `runBrowserScraper()` (browser connectors) gets capture automatically when `PDPP_CAPTURE_FIXTURES=1` is set. Captures go to `packages/polyfill-connectors/fixtures/<connector>/raw/<runId>/`:
+
+- `records/<stream>.jsonl` — every emitted RECORD.data (free, auto-captured by the runtime's wrapped emit)
+- `dom/<label>.html` — Playwright DOM snapshots, when the connector calls `capture.captureDom(page, label)` at parse checkpoints
+- `http/<nnnn>-<label>.json` — HTTP response bodies, when an API connector calls `capture.captureHttp(label, body, meta)`
+
+**Opting into DOM / HTTP capture from a browser connector**
+
+```js
+runBrowserScraper({
+  name: 'amazon',
+  async scrape({ page, capture, emitRecord }) {
+    await page.goto('https://…/orders');
+    if (capture) await capture.captureDom(page, 'orders-list-page-1');
+    // parse and emitRecord as usual
+  },
+});
+```
+
+The `capture` handle is `null` unless `PDPP_CAPTURE_FIXTURES=1`. Guard with `if (capture)` or use optional chaining (`capture?.captureDom(…)`).
+
+**Scrubbing before commit**
+
+Raw fixtures contain your real PII — emails, addresses, order IDs, account numbers. Never commit `raw/`. Run the scrubber:
+
+```bash
+node bin/scrub-fixtures.mjs <connector>
+```
+
+This applies the shared defaults in `src/scrub-defaults.js` (emails, SSNs, credit-card-shaped digit runs, US phone numbers) plus any connector-specific rules in `connectors/<connector>/scrub-rules.js`. Output lands in `fixtures/<connector>/scrubbed/<runId>/`, which **is** committable.
+
+**Connector-specific scrub rules**
+
+Create `connectors/<name>/scrub-rules.js` exporting an array:
+
+```js
+export const scrubRules = [
+  // Amazon-specific: order IDs are non-sensitive but authors may want stable values
+  { pattern: /\b\d{3}-\d{7}-\d{7}\b/g, replacement: '111-2222222-3333333', scope: 'all' },
+  // Reddit-specific: usernames
+  { pattern: /u\/[A-Za-z0-9_-]+/g, replacement: 'u/anon', scope: 'all' },
+];
+```
+
+Scope is `'all'` (every file type), `'html'`, or `'json'`. Rules run in order; defaults apply first.
+
+**Before committing scrubbed fixtures**
+
+Review the scrubbed tree by eye. The default rules are conservative but not exhaustive — for example, addresses, postal codes, and names are not caught by defaults. Add connector-specific rules for any pattern you find in review.
+
+**Smoke-test the capture pipeline**
+
+`node bin/test-fixture-capture.mjs` runs a self-contained end-to-end check (no network, no browser) that capture + scrub produce sanitized output from PII-bearing input. Run it after changing anything in `fixture-capture.js`, `scrub-defaults.js`, or `scrub-fixtures.mjs`.
 
 ### Pre-ship checklist
 

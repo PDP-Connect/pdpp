@@ -29,6 +29,7 @@
 import { createInterface } from 'node:readline';
 import { emitToStdout } from './safe-emit.js';
 import { resourceSet } from './scope-filters.js';
+import { createCaptureSession } from './fixture-capture.js';
 
 export function nowIso() {
   return new Date().toISOString();
@@ -64,9 +65,17 @@ export function politeDelay(ms) {
  * drives the protocol: await first line → parse START → call
  * makeEmitRecord → iterate → emit DONE.
  */
-export function createConnectorRuntime() {
+export function createConnectorRuntime(opts = {}) {
+  const { connectorName = 'unknown' } = opts;
   const rl = createInterface({ input: process.stdin, terminal: false });
-  const emit = (msg) => emitToStdout(msg);
+  const capture = createCaptureSession(connectorName);
+  if (capture) {
+    process.stderr.write(`[capture] PDPP_CAPTURE_FIXTURES=1; writing to ${capture.baseDir}\n`);
+  }
+  const emit = (msg) => {
+    if (capture && msg.type === 'RECORD') capture.recordRecord(msg);
+    return emitToStdout(msg);
+  };
 
   const flushAndExit = (code) => {
     if (process.stdout.writableLength > 0) {
@@ -126,24 +135,34 @@ export function createConnectorRuntime() {
     const resFilters = new Map();
     for (const [name, scope] of requested) resFilters.set(name, resourceSet(scope));
 
+    // Returns the emit promise so callers can `await emitRecord(...)` for
+     // backpressure. Callers that don't await (sync loops over small records)
+     // still work because emitToStdout resolves immediately on a non-full pipe.
     const emitRecord = (stream, data) => {
-      if (data.id == null) return;
+      if (data.id == null) return Promise.resolve();
       const rs = resFilters.get(stream);
-      if (rs && !rs.has(String(data.id))) return;
+      if (rs && !rs.has(String(data.id))) return Promise.resolve();
+      // Apply scope.time_range filter when the record carries a `date` field.
+      // Kept in the runtime rather than per-connector because any connector
+      // with date-scoped streams will want this.
+      const scope = requested.get(stream);
+      if (scope?.time_range && data.date) {
+        if (scope.time_range.since && data.date < scope.time_range.since.slice(0, 10)) return Promise.resolve();
+        if (scope.time_range.until && data.date >= scope.time_range.until.slice(0, 10)) return Promise.resolve();
+      }
       const result = validateRecord(stream, data);
       if (!result.ok) {
         counters.totalSkipped++;
-        emit({
+        return emit({
           type: 'SKIP_RESULT',
           stream,
           reason: 'shape_check_failed',
           message: `${data.id}: ${result.issues.map((i) => `${i.path}: ${i.message}`).join('; ')}`,
           diagnostics: { id: data.id, issues: result.issues, record: data },
         });
-        return;
       }
-      emit({ type: 'RECORD', stream, key: data.id, data, emitted_at: emittedAt });
       counters.totalEmitted++;
+      return emit({ type: 'RECORD', stream, key: data.id, data, emitted_at: emittedAt });
     };
 
     return { emitRecord, counters };
@@ -213,5 +232,6 @@ export function createConnectorRuntime() {
     makeEmitRecord,
     emitSucceeded,
     makeTracer,
+    capture, // null unless PDPP_CAPTURE_FIXTURES=1
   };
 }
