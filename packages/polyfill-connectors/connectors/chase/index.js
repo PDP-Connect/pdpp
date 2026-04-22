@@ -39,6 +39,7 @@ import { acquireIsolatedBrowser } from '../../src/browser-daemon.js';
 import { resourceSet } from '../../src/scope-filters.js';
 import { ensureChaseSession } from '../../src/auto-login/chase.js';
 import { emitToStdout } from '../../src/safe-emit.js';
+import { validateRecord } from './schemas.js';
 
 const rl = createInterface({ input: process.stdin, terminal: false });
 const emit = (m) => emitToStdout(m);
@@ -567,6 +568,7 @@ async function main() {
   const state = rawState.transactions || rawState || {};
   const emittedAt = nowIso();
   let totalEmitted = 0;
+  let totalSkipped = 0;
   const resFilters = new Map();
   for (const [n, r] of requested) resFilters.set(n, resourceSet(r));
 
@@ -576,6 +578,9 @@ async function main() {
   // fetches.
   const maxSeenByAccount = { ...(state.per_account || {}) };
 
+  // Shape-check per docs/connector-authoring-guide.md §3. Records that
+  // fail the Zod schema become SKIP_RESULT instead of poisoning the RS
+  // with garbage-that-looks-right. Schemas live in ./schemas.js.
   const emitRecord = async (stream, data) => {
     if (data.id == null) return;
     const rs = resFilters.get(stream);
@@ -585,6 +590,18 @@ async function main() {
     if (scope?.time_range && data.date) {
       if (scope.time_range.since && data.date < scope.time_range.since.slice(0, 10)) return;
       if (scope.time_range.until && data.date >= scope.time_range.until.slice(0, 10)) return;
+    }
+    const result = validateRecord(stream, data);
+    if (!result.ok) {
+      totalSkipped++;
+      await emit({
+        type: 'SKIP_RESULT',
+        stream,
+        reason: 'shape_check_failed',
+        message: `${data.id}: ${result.issues.map((i) => `${i.path}: ${i.message}`).join('; ')}`,
+        diagnostics: { id: data.id, issues: result.issues, record: data },
+      });
+      return;
     }
     await emit({ type: 'RECORD', stream, key: data.id, data, emitted_at: emittedAt });
     totalEmitted++;
@@ -629,6 +646,22 @@ async function main() {
     }
   } catch (err) {
     return fail(`could not open browser: ${err.message}`, false);
+  }
+
+  // Tracing (Playwright feature). Gated behind PDPP_TRACE=1. Produces a
+  // .zip replayable in the Playwright Inspector — invaluable for
+  // debugging silent failures on Chase's Shadow-DOM-heavy UI.
+  // See docs/connector-authoring-guide.md §9.
+  const tracingEnabled = process.env.PDPP_TRACE === '1';
+  if (tracingEnabled) {
+    const traceName = `chase-${new Date().toISOString().replace(/[:.]/g, '-')}`;
+    await context.tracing.start({
+      name: traceName,
+      screenshots: true,
+      snapshots: true,
+      sources: true,
+    }).catch(() => {});
+    emit({ type: 'PROGRESS', message: `tracing enabled (PDPP_TRACE=1); will write /tmp/${traceName}.zip on exit` });
   }
 
   const tmpDir = await mkdtemp(join(tmpdir(), 'pdpp-chase-'));
@@ -870,6 +903,15 @@ async function main() {
       }
     }
   } finally {
+    if (tracingEnabled && context) {
+      const tracePath = `/tmp/chase-trace-${new Date().toISOString().replace(/[:.]/g, '-')}.zip`;
+      try {
+        await context.tracing.stop({ path: tracePath });
+        await emit({ type: 'PROGRESS', message: `trace written to ${tracePath} — replay with: npx playwright show-trace ${tracePath}` });
+      } catch (err) {
+        await emit({ type: 'PROGRESS', message: `failed to write trace: ${err.message}` });
+      }
+    }
     await release().catch(() => {});
     await rm(tmpDir, { recursive: true, force: true }).catch(() => {});
   }
@@ -885,6 +927,9 @@ async function main() {
     });
   }
 
+  if (totalSkipped > 0) {
+    await emit({ type: 'PROGRESS', message: `shape-check skipped ${totalSkipped} record(s); see SKIP_RESULT events above` });
+  }
   await emit({ type: 'DONE', status: 'succeeded', records_emitted: totalEmitted });
   flushAndExit(0);
 }
