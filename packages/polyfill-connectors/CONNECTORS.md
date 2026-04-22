@@ -34,26 +34,27 @@ These connectors fetch via the platform's public HTTP API using a long-lived tok
 
 These connectors drive a Playwright session against a persistent browser profile. Session expiry is handled by `src/auto-login/<platform>.js` helpers that drive re-login + 2FA via `INTERACTION`. **None of these are first-run portable without some friction** — the upstream platforms have anti-bot surfaces that treat fresh IPs and cold profiles as higher-risk by design.
 
-New browser-scrape connectors should use `acquireIsolatedBrowser({ profileName: '<name>' })` (per-connector on-disk profile, full patchright stealth). Older connectors still use the shared daemon at `~/.pdpp/browser-profile/`; they will be migrated. See `docs/connector-authoring-guide.md`.
+All browser-scrape connectors now use `acquireIsolatedBrowser({ profileName: '<name>' })` (per-connector on-disk profile at `~/.pdpp/profiles/<name>/`, full patchright stealth). The legacy shared daemon at `~/.pdpp/browser-profile/` is retained only as Chase's `PDPP_CHASE_SHARED_PROFILE=1` escape hatch. See `docs/connector-authoring-guide.md`.
 
 First-run-portability notes are platform-specific and worth reading before handing the connector to a new user:
 
 | Connector | Bootstrap needs | Maintainer-verified | First-run portable | Records (mine) | Notes on first-run |
 |---|---|---|---|---|---|
-| chatgpt | ChatGPT login (email+password); optional 2FA | ✅ | ⚠ conditional | 2,302 conv / 9,252 msg | Cloudflare may challenge on new IPs. Run with `PDPP_CHATGPT_HEADLESS=0` so the user can see and clear the challenge in a visible browser. |
-| usaa | USAA member login + SMS 2FA | ✅ | ⚠ needs SMS access | 887 (5 streams) | SMS OTP delivered to the account's registered phone. User must have that phone. |
-| amazon | Amazon login + 2FA | ✅ | ⚠ needs 2FA device | 2,863 (orders+items) | 2FA on the account's registered device. First run may also burn trusted-device state; subsequent runs smoother. |
-| anthropic | Claude.ai login | 🟡 scaffolded | — | — | selectors TBD |
-| shopify | Shopify admin login | 🟡 scaffolded | — | — | |
-| heb | HEB.com login | 🟡 scaffolded | — | — | |
-| wholefoods | Piggybacks on Amazon session | 🟡 scaffolded | — | — | inherits Amazon's portability profile |
-| linkedin | LinkedIn login | 🟡 scaffolded | — | — | |
-| meta | Instagram login | 🟡 scaffolded | — | — | |
-| loom | Loom login | 🟡 scaffolded | — | — | |
-| uber | Uber login | 🟡 scaffolded | — | — | |
-| doordash | DoorDash login | 🟡 scaffolded | — | — | |
+| amazon | Amazon login + 2FA | ✅ | ⚠ needs 2FA device | 2,863 (orders+items) | 2FA on the account's registered device. First run may burn trusted-device state; subsequent runs smoother. Full best-practices refactor (Zod, shape-check, tracing, p-retry, structural extraction, isolated browser). |
+| chase | Chase login + SMS 2FA | ✅ | ⚠ needs SMS access, fresh OTP per run | 21 (4 streams verified) | Chase does not persist trusted-device cookie across runs; every run currently requires a fresh OTP. Root cause: `_tmprememberme` cookie is session-only; the opt-in "remember me" checkbox may not be getting ticked. See `src/auto-login/chase.js` — speculative fix landed but un-verified. |
+| chatgpt | ChatGPT login (email+password); optional 2FA | ✅ | ⚠ conditional | 2,302 conv / 9,252 msg | Cloudflare may challenge on new IPs. Run with `PDPP_CHATGPT_HEADLESS=0` so the user can see and clear the challenge. p-retry on 429/5xx from OpenAI API. |
+| usaa | USAA member login + SMS 2FA | ✅ | ⚠ needs SMS access | 887 (5 streams, pre-refactor) | SMS OTP delivered to the account's registered phone. Tier A refactor (Zod, shape-check, tracing, isolated-browser code) complete; end-to-end validation blocked on Akamai rejecting the maintainer's IP — need reverse proxy or fresh IP. |
+| anthropic | Claude.ai login | 🟡 scaffolded | — | — | Uses `browser-scraper-runtime.js` (now on isolated path); selectors TBD. |
+| shopify | Shopify admin login | 🟡 scaffolded | — | — | Uses `browser-scraper-runtime.js`. |
+| heb | HEB.com login | 🟡 scaffolded | — | — | Uses `browser-scraper-runtime.js`. |
+| wholefoods | Piggybacks on Amazon session | 🟡 scaffolded | — | — | Uses `browser-scraper-runtime.js`. Inherits Amazon's portability profile. |
+| linkedin | LinkedIn login | 🟡 scaffolded | — | — | Uses `browser-scraper-runtime.js`. |
+| meta | Instagram login | 🟡 scaffolded | — | — | Uses `browser-scraper-runtime.js`. |
+| loom | Loom login | 🟡 scaffolded | — | — | Uses `browser-scraper-runtime.js`. |
+| uber | Uber login | 🟡 scaffolded | — | — | Uses `browser-scraper-runtime.js`. |
+| doordash | DoorDash login | 🟡 scaffolded | — | — | Uses `browser-scraper-runtime.js`. |
 
-Scaffolded = manifest + connector shell exist with correct streams, but DOM selectors need a live co-pilot session to wire.
+Scaffolded = manifest + connector shell exist with correct streams, but DOM selectors need a live co-pilot session to wire. All scaffolded connectors inherit the isolated-browser + patchright stealth path via `browser-scraper-runtime.js`.
 
 "Conditional" first-run portability means: works without manual intervention *if* specific conditions are met (user has their 2FA device, clears any visible Cloudflare challenge, etc.). If those conditions can't be met, the connector emits an `INTERACTION manual_action` asking the user to complete the step manually, then re-run.
 
