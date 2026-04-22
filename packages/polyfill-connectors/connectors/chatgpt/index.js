@@ -12,56 +12,31 @@
  * conversation. Incremental via update_time cursor.
  */
 
-import { createInterface } from 'node:readline';
 import pRetry, { AbortError } from 'p-retry';
 import { acquireIsolatedBrowser } from '../../src/browser-daemon.js';
-import { resourceSet } from '../../src/scope-filters.js';
 import { ensureChatGptSession } from '../../src/auto-login/chatgpt.js';
-import { stringifyForJsonl } from '../../src/safe-emit.js';
+import { createConnectorRuntime, nowIso } from '../../src/connector-runtime.js';
 import { validateRecord } from './schemas.js';
 
-const rl = createInterface({ input: process.stdin, terminal: false });
-function emit(msg) {
-  process.stdout.write(stringifyForJsonl(msg));
-}
-function flushAndExit(code) {
-  if (process.stdout.writableLength > 0) {
-    process.stdout.once('drain', () => process.exit(code));
-    setTimeout(() => process.exit(code), 3000).unref();
-  } else {
-    process.exit(code);
-  }
-}
-function fail(m, retryable = false) {
-  emit({ type: 'DONE', status: 'failed', records_emitted: 0, error: { message: m, retryable } });
-  flushAndExit(1);
-}
-const nowIso = () => new Date().toISOString();
+const runtime = createConnectorRuntime({ connectorName: 'chatgpt' });
+const {
+  emit,
+  flushAndExit,
+  fail,
+  nextInteractionId,
+  sendInteractionAndWait,
+  readOneLine,
+  makeEmitRecord,
+  emitSucceeded,
+  makeTracer,
+  capture,
+} = runtime;
 
-// INTERACTION support for ensureChatGptSession + credential prompts.
-let _interactionCounter = 0;
-const nextInteractionId = () => `int_${Date.now()}_${++_interactionCounter}`;
-async function sendInteractionAndWait(msg) {
-  emit(msg);
-  const reqId = msg.request_id;
-  return new Promise((resolve, reject) => {
-    const onLine = (line) => {
-      try {
-        const parsed = JSON.parse(line);
-        if (parsed.type === 'INTERACTION_RESPONSE' && parsed.request_id === reqId) {
-          rl.off('line', onLine);
-          resolve(parsed);
-        }
-      } catch (err) { reject(err); }
-    };
-    rl.on('line', onLine);
-  });
-}
-
-// Module-level counters so catch block can report accurate records_emitted
-// and terminal PROGRESS message can see the skipped count even on errors.
-let _totalEmitted = 0;
-let _totalSkipped = 0;
+// Module-level counters handle: populated by main() after makeEmitRecord
+// resolves. The module-level main().catch handler references these to report
+// accurate records_emitted + skipped-count even if an async throw bypasses
+// the emitSucceeded() path inside main().
+let _counters = { totalEmitted: 0, totalSkipped: 0 };
 
 // ChatGPT times are unix seconds (number). Some responses use ISO strings.
 // Normalize both to ISO-8601, swallow errors.
@@ -161,6 +136,11 @@ async function apiFetch(page, path, { method = 'GET', body } = {}) {
     if (status === 401 || status === 403) {
       throw new AbortError(`apiFetch got ${status} on ${method} ${path} (auth — not retryable)`);
     }
+    // Fixture capture: every successful HTTP response becomes a replayable
+    // file. Label = method + path (so foo/bar becomes GET-foo-bar). Shape
+    // captured includes status + json — downstream replayers can reconstruct
+    // the full {status, json} tuple that apiFetch returns.
+    if (capture) capture.captureHttp(`${method}-${path}`, result.json, { status, path, method });
     return result;
   }, {
     retries: 3,
@@ -393,45 +373,32 @@ function extractMessage(nodeId, node, conversationId, onCurrentBranch) {
 }
 
 async function main() {
-  const startMsg = await new Promise((resolve, reject) => {
-    rl.once('line', (line) => { try { resolve(JSON.parse(line)); } catch (e) { reject(e); } });
-  });
+  const startMsg = await readOneLine();
   if (startMsg.type !== 'START') return fail('Expected START');
 
   const requested = new Map((startMsg.scope?.streams || []).map((s) => [s.name, s]));
   if (!requested.size) return fail('START.scope.streams is required');
 
-  const resFilters = new Map();
-  for (const [n, r] of requested) resFilters.set(n, resourceSet(r));
-
   const state = startMsg.state || {};
   const emittedAt = nowIso();
-  // Shape-check per docs/connector-authoring-guide.md §3. Records that
-  // fail the Zod schema become SKIP_RESULT instead of poisoning the RS
-  // with garbage-that-looks-right. Schemas live in ./schemas.js.
+
+  // Shape-check + resources filter + counters from the runtime.
+  const { emitRecord: baseEmitRecord, counters } = makeEmitRecord({ validateRecord, requested, emittedAt });
+  _counters = counters; // expose to main().catch
+
+  // ChatGPT-specific wrapper: unstringifiable values (bad Date, circular refs)
+  // have historically crashed the whole run when the runtime's shape-check
+  // tried to serialize them into a SKIP_RESULT diagnostic. Guard here so
+  // "Invalid time value" points at the offending row instead of killing the
+  // run.
   const emitRecord = (stream, data) => {
-    if (data.id == null) return;
-    // DEBUG: surface any unstringifiable field so "Invalid time value" points to the bad row.
-    try { JSON.stringify(data); } catch (err) {
-      process.stderr.write(`[chatgpt-debug] emit failed for ${stream} id=${data.id}: ${err.message}\n`);
-      return;
+    if (data?.id != null) {
+      try { JSON.stringify(data); } catch (err) {
+        process.stderr.write(`[chatgpt-debug] emit failed for ${stream} id=${data.id}: ${err.message}\n`);
+        return Promise.resolve();
+      }
     }
-    const resSet = resFilters.get(stream);
-    if (resSet && !resSet.has(String(data.id))) return;
-    const result = validateRecord(stream, data);
-    if (!result.ok) {
-      _totalSkipped++;
-      emit({
-        type: 'SKIP_RESULT',
-        stream,
-        reason: 'shape_check_failed',
-        message: `${data.id}: ${result.issues.map((i) => `${i.path}: ${i.message}`).join('; ')}`,
-        diagnostics: { id: data.id, issues: result.issues, record: data },
-      });
-      return;
-    }
-    emit({ type: 'RECORD', stream, key: data.id, data, emitted_at: emittedAt });
-    _totalEmitted++;
+    return baseEmitRecord(stream, data);
   };
 
   let context;
@@ -452,21 +419,9 @@ async function main() {
     return fail(`could not open browser profile: ${err.message}`, false);
   }
 
-  // Tracing (Playwright feature). Gated behind PDPP_TRACE=1. Produces a
-  // .zip replayable in the Playwright Inspector — invaluable for
-  // debugging silent failures on the multi-thousand-conversation sync.
-  // See docs/connector-authoring-guide.md §9.
-  const tracingEnabled = process.env.PDPP_TRACE === '1';
-  if (tracingEnabled) {
-    const traceName = `chatgpt-${new Date().toISOString().replace(/[:.]/g, '-')}`;
-    await context.tracing.start({
-      name: traceName,
-      screenshots: true,
-      snapshots: true,
-      sources: true,
-    }).catch(() => {});
-    emit({ type: 'PROGRESS', message: `tracing enabled (PDPP_TRACE=1); will write /tmp/${traceName}.zip on exit` });
-  }
+  // Tracing via the runtime's makeTracer — PDPP_TRACE=1 to enable.
+  const tracer = makeTracer(context, 'chatgpt');
+  await tracer.start();
 
   try {
     const page = await context.newPage();
@@ -749,31 +704,20 @@ async function main() {
       }
     }
   } finally {
-    if (tracingEnabled && context) {
-      const tracePath = `/tmp/chatgpt-trace-${new Date().toISOString().replace(/[:.]/g, '-')}.zip`;
-      try {
-        await context.tracing.stop({ path: tracePath });
-        emit({ type: 'PROGRESS', message: `trace written to ${tracePath} — replay with: npx playwright show-trace ${tracePath}` });
-      } catch (err) {
-        emit({ type: 'PROGRESS', message: `failed to write trace: ${err.message}` });
-      }
-    }
+    await tracer.stop();
     await release().catch(() => {});
   }
 
-  if (_totalSkipped > 0) {
-    emit({ type: 'PROGRESS', message: `shape-check skipped ${_totalSkipped} record(s); see SKIP_RESULT events above` });
-  }
-  emit({ type: 'DONE', status: 'succeeded', records_emitted: _totalEmitted });
+  emitSucceeded(_counters);
   flushAndExit(0);
 }
 
 main().catch((e) => {
   const msg = e && e.message ? e.message : String(e);
   const retryable = /ECONN|ETIMEDOUT|fetch failed|429/i.test(msg);
-  if (_totalSkipped > 0) {
-    emit({ type: 'PROGRESS', message: `shape-check skipped ${_totalSkipped} record(s) before failure; see SKIP_RESULT events above` });
+  if (_counters.totalSkipped > 0) {
+    emit({ type: 'PROGRESS', message: `shape-check skipped ${_counters.totalSkipped} record(s) before failure; see SKIP_RESULT events above` });
   }
-  emit({ type: 'DONE', status: 'failed', records_emitted: _totalEmitted, error: { message: msg, retryable } });
+  emit({ type: 'DONE', status: 'failed', records_emitted: _counters.totalEmitted, error: { message: msg, retryable } });
   flushAndExit(1);
 });
