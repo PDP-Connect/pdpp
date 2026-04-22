@@ -63,8 +63,10 @@ export const accountSchema = z.object({
 // ─── transactions ───────────────────────────────────────────────────────
 
 export const transactionSchema = z.object({
-  // id = SHA-256 hash first 32 chars (same pattern as USAA)
-  id: z.string().regex(/^[0-9a-f]{32}$/i, 'must be 32-char hex hash'),
+  // id = composite "<account_id>|<fitid>" (Chase's FITID is already a
+  // stable per-transaction identifier from QFX; the composite ensures
+  // global uniqueness across accounts).
+  id: z.string().min(3).max(200).regex(/\|/, 'must be <account_id>|<fitid>'),
   account_id: accountIdSchema,
   account_name: cleanString(120).nullable(),
   // FITID = Chase's stable per-transaction id from QFX. Alphanumeric, can be long.
@@ -78,8 +80,11 @@ export const transactionSchema = z.object({
   memo: cleanString(500).nullable(),
   check_number: z.string().regex(/^\d{1,8}$/, 'must be 1-8 digit number').nullable(),
   reference_number: z.string().min(1).max(80).nullable(),
-  // source = 'qfx_export' or 'pdf_statement_YYYY-MM' or similar
-  source: z.string().regex(/^(qfx_export|pdf_statement_\d{4}-\d{2})$/, 'must be qfx_export or pdf_statement_YYYY-MM'),
+  // source: today "qfx_download_<activity>_<YYYY-MM-DD>" (e.g.
+  // "qfx_download_all_2026-04-21"). Also future: "pdf_statement_YYYY-MM".
+  // Keep the schema permissive — the source is provenance metadata,
+  // not something a consumer should regex on.
+  source: z.string().min(3).max(120),
   fetched_at: isoTimestamp,
 });
 
