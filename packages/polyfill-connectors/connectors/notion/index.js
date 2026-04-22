@@ -10,37 +10,8 @@
  * Rate limit: 3 req/s average.
  */
 
-import { createInterface } from 'node:readline';
-import { resourceSet, requireCredentialsOrAsk } from '../../src/scope-filters.js';
-import { stringifyForJsonl } from '../../src/safe-emit.js';
-
-const rl = createInterface({ input: process.stdin, terminal: false });
-const emit = (m) => process.stdout.write(stringifyForJsonl(m));
-const flushAndExit = (code) => {
-  if (process.stdout.writableLength > 0) {
-    process.stdout.once('drain', () => process.exit(code));
-    setTimeout(() => process.exit(code), 3000).unref();
-  } else process.exit(code);
-};
-const fail = (m, r = false) => { emit({ type: 'DONE', status: 'failed', records_emitted: 0, error: { message: m, retryable: r } }); flushAndExit(1); };
-const nowIso = () => new Date().toISOString();
-
-let _ic = 0;
-const nextInteractionId = () => `int_${Date.now()}_${++_ic}`;
-async function sendInteractionAndWait(msg) {
-  emit(msg);
-  const reqId = msg.request_id;
-  return new Promise((resolve, reject) => {
-    const onLine = (line) => {
-      try {
-        const p = JSON.parse(line);
-        if (p.type === 'INTERACTION_RESPONSE' && p.request_id === reqId) { rl.off('line', onLine); resolve(p); }
-      } catch (err) { reject(err); }
-    };
-    rl.on('line', onLine);
-  });
-}
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+import { requireCredentialsOrAsk } from '../../src/scope-filters.js';
+import { runConnector, politeDelay } from '../../src/connector-runtime.js';
 
 const API = 'https://api.notion.com/v1';
 const NOTION_VERSION = '2022-06-28';
@@ -76,46 +47,32 @@ function extractTitle(obj) {
   return null;
 }
 
-async function main() {
-  const startMsg = await new Promise((r, j) => rl.once('line', (l) => { try { r(JSON.parse(l)); } catch (e) { j(e); } }));
-  if (startMsg.type !== 'START') return fail('Expected START');
-
-  let token = process.env.NOTION_API_TOKEN;
-  if (!token) {
-    try {
+runConnector({
+  name: 'notion',
+  retryablePattern: /ECONN|fetch failed|rate_limited/i,
+  async collect({ state, requested, emit, emitRecord, progress, sendInteraction, emittedAt }) {
+    let token = process.env.NOTION_API_TOKEN;
+    if (!token) {
       const creds = await requireCredentialsOrAsk({
         required: ['NOTION_API_TOKEN'],
         connectorName: 'Notion',
-        sendInteractionAndWait,
-        nextInteractionId,
+        sendInteractionAndWait: sendInteraction,
+        nextInteractionId: () => undefined,
       });
       token = creds.NOTION_API_TOKEN;
-    } catch (e) { return fail(e.message, false); }
-  }
-
-  const requested = new Map((startMsg.scope?.streams || []).map((s) => [s.name, s]));
-  if (!requested.size) return fail('START.scope.streams is required');
-
-  const resFilters = new Map();
-  for (const [n, r] of requested) resFilters.set(n, resourceSet(r));
-
-  const state = startMsg.state || {};
-  const emittedAt = nowIso();
-  let total = 0;
-  const emitRecord = (s, d) => {
-    if (d.id == null) return;
-    const resSet = resFilters.get(s);
-    if (resSet && !resSet.has(String(d.id))) return;
-    // Archived pages/databases are tombstones per PDPP spec.
-    if (d.archived === true) {
-      emit({ type: 'RECORD', stream: s, key: d.id, data: { id: d.id }, emitted_at: emittedAt, op: 'delete' });
-    } else {
-      emit({ type: 'RECORD', stream: s, key: d.id, data: d, emitted_at: emittedAt });
     }
-    total++;
-  };
 
-  async function searchAll(filter) {
+    // Notion uses tombstones (archived=true) per PDPP spec. The runtime's
+    // emitRecord handles shape-check + resource filter, but tombstones want
+    // a stripped data body + op: 'delete'. Wrap to route archived items.
+    const emitMaybeTombstone = (s, d) => {
+      if (d.archived === true) {
+        return emit({ type: 'RECORD', stream: s, key: d.id, data: { id: d.id }, emitted_at: emittedAt, op: 'delete' });
+      }
+      return emitRecord(s, d);
+    };
+
+    async function searchAll(filter) {
     const results = [];
     let cursor = undefined;
     while (true) {
@@ -126,19 +83,19 @@ async function main() {
       results.push(...(json.results || []));
       if (!json.has_more || !json.next_cursor) break;
       cursor = json.next_cursor;
-      await sleep(400);
+      await politeDelay(400);
     }
     return results;
   }
 
   if (requested.has('pages')) {
-    emit({ type: 'PROGRESS', stream: 'pages', message: 'Searching pages' });
+    progress('Searching pages', { stream: 'pages' });
     const pages = await searchAll({ property: 'object', value: 'page' });
     const prior = state.pages?.last_edited_time;
     let latest = prior;
     for (const p of pages) {
       if (prior && p.last_edited_time && p.last_edited_time <= prior) continue;
-      emitRecord('pages', {
+      emitMaybeTombstone('pages', {
         id: p.id,
         object: p.object,
         parent_type: p.parent?.type ?? null,
@@ -157,13 +114,13 @@ async function main() {
   }
 
   if (requested.has('databases')) {
-    emit({ type: 'PROGRESS', stream: 'databases', message: 'Searching databases' });
+    progress('Searching databases', { stream: 'databases' });
     const dbs = await searchAll({ property: 'object', value: 'database' });
     const prior = state.databases?.last_edited_time;
     let latest = prior;
     for (const d of dbs) {
       if (prior && d.last_edited_time && d.last_edited_time <= prior) continue;
-      emitRecord('databases', {
+      emitMaybeTombstone('databases', {
         id: d.id,
         title: extractTitle(d),
         parent_type: d.parent?.type ?? null,
@@ -178,13 +135,5 @@ async function main() {
     }
     emit({ type: 'STATE', stream: 'databases', cursor: { last_edited_time: latest || prior || null } });
   }
-
-  emit({ type: 'DONE', status: 'succeeded', records_emitted: total });
-  flushAndExit(0);
-}
-
-main().catch((e) => {
-  const msg = e?.message || String(e);
-  emit({ type: 'DONE', status: 'failed', records_emitted: 0, error: { message: msg, retryable: /ECONN|fetch failed|rate_limited/i.test(msg) } });
-  flushAndExit(1);
+  },
 });

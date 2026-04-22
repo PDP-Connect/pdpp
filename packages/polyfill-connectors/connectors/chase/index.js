@@ -33,25 +33,9 @@ import { tmpdir, homedir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
-import { acquireBrowser } from '../../src/browser-profile.js';
-import { acquireIsolatedBrowser } from '../../src/browser-daemon.js';
 import { ensureChaseSession } from '../../src/auto-login/chase.js';
-import { createConnectorRuntime, nowIso } from '../../src/connector-runtime.js';
+import { runConnector } from '../../src/connector-runtime.js';
 import { validateRecord } from './schemas.js';
-
-const runtime = createConnectorRuntime({ connectorName: 'chase' });
-const {
-  emit,
-  flushAndExit,
-  fail,
-  nextInteractionId,
-  sendInteractionAndWait,
-  readOneLine,
-  makeEmitRecord,
-  emitSucceeded,
-  makeTracer,
-  capture,
-} = runtime;
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
 
@@ -525,120 +509,80 @@ function extractFromQfx(parsed) {
 
 // ─── Main ─────────────────────────────────────────────────────────────────
 
-async function main() {
-  const startMsg = await readOneLine();
-  if (startMsg.type !== 'START') return fail('Expected START');
-
-  const requested = new Map((startMsg.scope?.streams || []).map((s) => [s.name, s]));
-  if (!requested.size) return fail('START.scope.streams is required');
-
-  const wantsAccounts = requested.has('accounts');
-  const wantsTransactions = requested.has('transactions');
-  const wantsBalances = requested.has('balances');
-  const wantsStatements = requested.has('statements');
-
-  // State is keyed by stream name at the runtime layer:
-  //   { transactions: { per_account: {<id>: {max_seen_date, ...}} } }
-  // Normalize to an inner shape the rest of the connector reads directly.
-  const rawState = startMsg.state || {};
-  const state = rawState.transactions || rawState || {};
-  const emittedAt = nowIso();
-
-  // Track max_seen_date per account across this run so the STATE cursor
-  // reflects "I've seen transactions up to this date" per account. Used
-  // next run to pick the "since_last_statement" activity for incremental
-  // fetches.
-  const maxSeenByAccount = { ...(state.per_account || {}) };
-
-  // Shape-check + resources filter + time_range filter + counters via the
-  // runtime. Records with null id are skipped; scope.time_range trims by
-  // data.date; Zod drift → SKIP_RESULT.
-  const { emitRecord, counters } = makeEmitRecord({ validateRecord, requested, emittedAt });
-
-  // Choose Chase's Activity option based on scope + prior state.
-  //   - If client asked for a specific time_range → date_range
-  //   - If we have a prior cursor → since_last_statement
-  //   - Otherwise → all (cold-start backfill)
-  function chooseActivity(stream, accountId) {
-    const scope = requested.get(stream);
-    if (scope?.time_range?.since || scope?.time_range?.until) {
-      return { activity: 'date_range', dateRange: { from: scope.time_range.since?.slice(0, 10), to: scope.time_range.until?.slice(0, 10) } };
-    }
-    const cursor = state.per_account?.[accountId];
-    if (cursor?.max_seen_date) {
-      return { activity: 'since_last_statement' };
-    }
-    return { activity: 'all' };
-  }
-
-  let context;
-  let release = async () => {};
+runConnector({
+  name: 'chase',
+  validateRecord,
   // Chase fingerprints the shared daemon profile and bounces it to
   // /#/logon/logon/error regardless of cookie state. See
-  // `design-notes/chase-anti-bot.md`. Use an isolated per-connector profile
-  // instead. Set PDPP_CHASE_SHARED_PROFILE=1 to force the shared daemon
-  // (useful for testing the behavior documented in that note).
-  const useIsolated = process.env.PDPP_CHASE_SHARED_PROFILE !== '1';
-  const headless = process.env.PDPP_CHASE_HEADLESS !== '0';
-  try {
-    if (useIsolated) {
-      // Run headful by default on the isolated profile so Chase's login
-      // accepts the submission. Caller can still set PDPP_CHASE_HEADLESS=1
-      // to attempt headless.
-      ({ context, release } = await acquireIsolatedBrowser({
-        profileName: 'chase',
-        headless: false,
-      }));
-    } else {
-      ({ context, release } = await acquireBrowser({ headless }));
+  // `design-notes/chase-anti-bot.md`. Isolated-per-connector profile works.
+  // Headful by default so Chase's login accepts the submission.
+  browser: { profileName: 'chase', headless: false },
+  async ensureSession({ context, page, sendInteraction }) {
+    await ensureChaseSession({
+      context,
+      page,
+      sendInteractionAndWait: sendInteraction,
+      nextInteractionId: () => undefined,
+    });
+  },
+  async collect({ state: startState, requested, page, emit, emitRecord, progress, capture }) {
+    const wantsAccounts = requested.has('accounts');
+    const wantsTransactions = requested.has('transactions');
+    const wantsBalances = requested.has('balances');
+    const wantsStatements = requested.has('statements');
+
+    // State is keyed by stream name at the runtime layer:
+    //   { transactions: { per_account: {<id>: {max_seen_date, ...}} } }
+    // Normalize to an inner shape the rest of the connector reads directly.
+    const state = startState.transactions || startState || {};
+
+    // Track max_seen_date per account across this run so the STATE cursor
+    // reflects "I've seen transactions up to this date" per account. Used
+    // next run to pick the "since_last_statement" activity for incremental
+    // fetches.
+    const maxSeenByAccount = { ...(state.per_account || {}) };
+
+    // Choose Chase's Activity option based on scope + prior state.
+    //   - If client asked for a specific time_range → date_range
+    //   - If we have a prior cursor → since_last_statement
+    //   - Otherwise → all (cold-start backfill)
+    function chooseActivity(stream, accountId) {
+      const streamScope = requested.get(stream);
+      if (streamScope?.time_range?.since || streamScope?.time_range?.until) {
+        return { activity: 'date_range', dateRange: { from: streamScope.time_range.since?.slice(0, 10), to: streamScope.time_range.until?.slice(0, 10) } };
+      }
+      const cursor = state.per_account?.[accountId];
+      if (cursor?.max_seen_date) {
+        return { activity: 'since_last_statement' };
+      }
+      return { activity: 'all' };
     }
-  } catch (err) {
-    return fail(`could not open browser: ${err.message}`, false);
-  }
 
-  // Tracing (Playwright feature). Gated behind PDPP_TRACE=1. Produces a
-  // .zip replayable in the Playwright Inspector — invaluable for
-  // debugging silent failures on Chase's Shadow-DOM-heavy UI.
-  // See docs/connector-authoring-guide.md §9.
-  const tracer = makeTracer(context, 'chase');
-  await tracer.start();
-
-  const tmpDir = await mkdtemp(join(tmpdir(), 'pdpp-chase-'));
-
-  try {
-    const page = await context.newPage();
+    const tmpDir = await mkdtemp(join(tmpdir(), 'pdpp-chase-'));
 
     try {
-      await ensureChaseSession({ context, page, sendInteractionAndWait, nextInteractionId });
-    } catch (e) {
-      return fail(`chase_session_failed: ${e.message}`, false);
-    }
-    await emit({ type: 'PROGRESS', message: 'Chase session verified; enumerating accounts' });
+      progress('Chase session verified; enumerating accounts');
 
-    const accounts = await discoverAccounts(page);
-    // Fixture capture: dashboard account-list DOM (after discoverAccounts
-    // has landed on it). Covers the `accounts-name-link-button-*` selector.
-    if (capture) await capture.captureDom(page, 'dashboard-accounts');
-    if (!accounts.length) {
-      // Dashboard selectors need calibration — emit diagnostic and fail gracefully.
-      const diag = await page.evaluate(() => ({
-        url: location.href,
-        title: document.title,
-        body_preview: (document.body?.innerText || '').replace(/\s+/g, ' ').slice(0, 500),
-      })).catch(() => null);
-      await emit({
-        type: 'SKIP_RESULT',
-        stream: 'accounts',
-        reason: 'selectors_pending',
-        message: 'No accounts discovered from dashboard. Selectors need calibration against live DOM.',
-        diagnostics: diag,
-      });
-      await emit({ type: 'DONE', status: 'succeeded', records_emitted: totalEmitted });
-      flushAndExit(0);
-      return;
-    }
+      const accounts = await discoverAccounts(page);
+      // Fixture capture: dashboard account-list DOM.
+      if (capture) await capture.captureDom(page, 'dashboard-accounts');
+      if (!accounts.length) {
+        const diag = await page.evaluate(() => ({
+          url: location.href,
+          title: document.title,
+          body_preview: (document.body?.innerText || '').replace(/\s+/g, ' ').slice(0, 500),
+        })).catch(() => null);
+        await emit({
+          type: 'SKIP_RESULT',
+          stream: 'accounts',
+          reason: 'selectors_pending',
+          message: 'No accounts discovered from dashboard. Selectors need calibration against live DOM.',
+          diagnostics: diag,
+        });
+        return; // runtime emits DONE succeeded
+      }
 
-    await emit({ type: 'PROGRESS', message: `Found ${accounts.length} account(s)` });
+    progress(`Found ${accounts.length} account(s)`);
 
     // Apply the `accounts` stream's resources filter to the per-account
     // loop so we don't hit Chase's download page for accounts the client
@@ -846,28 +790,19 @@ async function main() {
         });
       }
     }
-  } finally {
-    await tracer.stop();
-    await release().catch(() => {});
-    await rm(tmpDir, { recursive: true, force: true }).catch(() => {});
-  }
+    } finally {
+      await rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
 
-  // Emit STATE for incremental resumption. The per_account cursor drives
-  // the next run's chooseActivity() — when max_seen_date is present we'll
-  // use "since_last_statement" instead of re-downloading all transactions.
-  if (wantsTransactions && Object.keys(maxSeenByAccount).length) {
-    await emit({
-      type: 'STATE',
-      stream: 'transactions',
-      cursor: { per_account: maxSeenByAccount },
-    });
-  }
-
-  emitSucceeded(counters);
-  flushAndExit(0);
-}
-
-main().catch((err) => {
-  const msg = err && err.message ? err.message : String(err);
-  fail(msg, /ECONN|ETIMEDOUT|timeout/i.test(msg));
+    // Emit STATE for incremental resumption. The per_account cursor drives
+    // the next run's chooseActivity() — when max_seen_date is present we'll
+    // use "since_last_statement" instead of re-downloading all transactions.
+    if (wantsTransactions && Object.keys(maxSeenByAccount).length) {
+      await emit({
+        type: 'STATE',
+        stream: 'transactions',
+        cursor: { per_account: maxSeenByAccount },
+      });
+    }
+  },
 });

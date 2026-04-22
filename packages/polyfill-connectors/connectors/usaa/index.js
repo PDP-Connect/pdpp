@@ -22,29 +22,11 @@ import { readFile, unlink, readdir } from 'node:fs/promises';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { acquireIsolatedBrowser } from '../../src/browser-daemon.js';
 import { attachDownloadQueue } from '../../src/download-queue.js';
 import { ensureUsaaSession } from '../../src/auto-login/usaa.js';
-import { createConnectorRuntime, nowIso, politeDelay } from '../../src/connector-runtime.js';
+import { runConnector, nowIso, politeDelay } from '../../src/connector-runtime.js';
 import { hydrateStatementPdfs, parsePdfStatement, fileUrlForPath } from './statement-pdfs.js';
 import { validateRecord } from './schemas.js';
-
-const runtime = createConnectorRuntime({ connectorName: 'usaa' });
-const {
-  emit,
-  flushAndExit,
-  fail,
-  nextInteractionId,
-  sendInteractionAndWait,
-  readOneLine,
-  makeEmitRecord,
-  emitSucceeded,
-  makeTracer,
-  capture,
-} = runtime;
-
-// Alias kept for local call sites; the runtime exports politeDelay.
-const sleep = politeDelay;
 
 function hashId(s) { return createHash('sha256').update(s).digest('hex').slice(0, 32); }
 function currencyToCents(s) {
@@ -76,7 +58,7 @@ async function sessionProbe(context) {
 async function extractAccounts(page) {
   await page.goto('https://www.usaa.com/my/usaa', { waitUntil: 'domcontentloaded', timeout: 30000 });
   await page.waitForSelector('a[href^="/my/checking"], a[href^="/my/credit-card"], a[href^="/my/external-account"]', { timeout: 20000 }).catch(() => {});
-  await sleep(4000);
+  await politeDelay(4000);
   return page.evaluate(() => {
     const out = [];
     const links = document.querySelectorAll('a[href^="/my/checking"], a[href^="/my/savings"], a[href^="/my/credit-card"], a[href^="/my/external-account"], a[href^="/my/loan"], a[href^="/my/mortgage"], a[href^="/my/investing"], a[href^="/my/retirement"]');
@@ -184,7 +166,7 @@ async function locateExportPage(page, accountUrl, _accountType) {
     } catch {
       continue;
     }
-    await sleep(6000);
+    await politeDelay(6000);
     // Fast-fail if we got bounced to login. We learned 2026-04-21 that
     // silent re-auth bounces show as an otherwise-successful navigation
     // whose final URL is /my/logon; the connector was treating this as
@@ -245,7 +227,7 @@ async function driveExport(_context, page, accountUrl, { sinceDate, untilDate, a
     }
     return null;
   }
-  await sleep(2500);
+  await politeDelay(2500);
 
   // Verify the date-range dialog we expect actually opened. If not (credit-card
   // flow may present a different modal entirely — e.g., "pick statement period"
@@ -272,7 +254,7 @@ async function driveExport(_context, page, accountUrl, { sinceDate, untilDate, a
 
   // Select "Select Date Range" in the native select
   await page.selectOption('select[name="selectionType"]', 'date-range').catch(() => {});
-  await sleep(1500);
+  await politeDelay(1500);
 
   // Fill From and End date inputs. USAA uses self-formatting React inputs
   // that need real keystrokes (page.fill skips React's validators). Input
@@ -290,10 +272,10 @@ async function driveExport(_context, page, accountUrl, { sinceDate, untilDate, a
   await page.keyboard.press('Control+A').catch(() => {});
   await page.keyboard.press('Delete').catch(() => {});
   await endIn.pressSequentially(mmddyyyy(untilDate), { delay: 30 }).catch(() => {});
-  await sleep(1500);
+  await politeDelay(1500);
 
   // Let the SPA reconcile form state after the dates are filled.
-  await sleep(1500);
+  await politeDelay(1500);
 
   // Prepare to capture the download (USAA can take 2+ minutes for multi-year ranges).
   // Use the shared context-level download queue (microsoft/playwright#40158
@@ -424,67 +406,31 @@ function rowsToTransactions(rows, { accountId, accountName }) {
 
 // ─── Main ────────────────────────────────────────────────────────────────
 
-async function main() {
-  const startMsg = await readOneLine();
-  if (startMsg.type !== 'START') return fail('Expected START');
-
-  const requested = new Map((startMsg.scope?.streams || []).map((s) => [s.name, s]));
-  if (!requested.size) return fail('START.scope.streams is required');
-
-  const state = startMsg.state || {};
-  const emittedAt = nowIso();
-
-  // Shape-check + resources filter + counters from the runtime.
-  const { emitRecord, counters } = makeEmitRecord({ validateRecord, requested, emittedAt });
-
-  let context;
-  let release = async () => {};
-  // Default headless=true for unattended runs. Override via
-  // PDPP_USAA_HEADLESS=0 when a first-time login or re-auth needs a
-  // visible browser window (helpful for observing challenges and 2FA).
-  const headless = process.env.PDPP_USAA_HEADLESS !== '0';
-  // Use the isolated-per-connector browser path (patchright-launched,
-  // persistent profile at ~/.pdpp/profiles/usaa/). This:
-  //   - gets FULL patchright stealth (launch-side + client-side) because
-  //     we import patchright directly in acquireIsolatedBrowser
-  //   - persists auth, trusted-device state, and Akamai fingerprint
-  //     across runs via the on-disk profile dir (critical for banking
-  //     sites that burn trusted-device markers on profile changes)
-  //   - enables concurrent runs with other connectors (no shared lock)
-  // See docs/connector-authoring-guide.md §2.
-  try {
-    ({ context, release } = await acquireIsolatedBrowser({ profileName: 'usaa', headless }));
-  } catch (err) {
-    return fail(`could not open browser profile: ${err.message}`, false);
-  }
-
-  // Tracing via the runtime's makeTracer — PDPP_TRACE=1 to enable.
-  const tracer = makeTracer(context, 'usaa');
-  await tracer.start();
-
-  let downloadQueue;
-
-  try {
-    const page = await context.newPage();
+runConnector({
+  name: 'usaa',
+  validateRecord,
+  browser: { profileName: 'usaa' },
+  async ensureSession({ context, page, sendInteraction }) {
+    await ensureUsaaSession({
+      context,
+      page,
+      sendInteractionAndWait: sendInteraction,
+      nextInteractionId: () => undefined,
+    });
+  },
+  async collect({ state, requested, context, page, emit, emitRecord, progress, capture, sendInteraction, emittedAt }) {
     // Page-level download listener — verified 2026-04-21 that
     // context.on('download') doesn't fire over CDP; page.on does.
     // Attach BEFORE any clicks that might download.
-    downloadQueue = attachDownloadQueue(page);
-    // Automated session management: probe + if dead, drive full login with
-    // stored creds + 2FA via INTERACTION kind=otp. No human laptop needed.
-    try {
-      await ensureUsaaSession({ context, page, sendInteractionAndWait, nextInteractionId });
-    } catch (e) {
-      return fail(`usaa_session_failed: ${e.message}`, false);
-    }
+    const downloadQueue = attachDownloadQueue(page);
 
+    try {
     // ACCOUNTS
-    emit({ type: 'PROGRESS', message: 'Extracting accounts from dashboard' });
-    // Fixture capture: dashboard page with account list. Drives the core
-    // account-enumeration selectors for offline tests.
+    progress('Extracting accounts from dashboard');
+    // Fixture capture: dashboard page with account list.
     if (capture) await capture.captureDom(page, 'dashboard-accounts');
     const accounts = await extractAccounts(page);
-    emit({ type: 'PROGRESS', message: `Found ${accounts.length} account(s)` });
+    progress(`Found ${accounts.length} account(s)`);
 
     // Keep a.account_url internally for transaction drilldown but don't emit it
     // on the record (P2 finding from Layer 1 audit — internal scrape artifact,
@@ -582,7 +528,12 @@ async function main() {
                 message: `${a.name}: session lapsed — re-authenticating before retry`,
               });
               try {
-                await ensureUsaaSession({ context, page, sendInteractionAndWait, nextInteractionId });
+                await ensureUsaaSession({
+                  context,
+                  page,
+                  sendInteractionAndWait: sendInteraction,
+                  nextInteractionId: () => undefined,
+                });
                 // Retry this sinceDate. The loop's next iteration will
                 // call driveExport again for this same account.
                 continue;
@@ -677,7 +628,7 @@ async function main() {
       try {
         emit({ type: 'PROGRESS', stream: 'statements', message: 'Fetching statements index' });
         await page.goto('https://www.usaa.com/my/documents', { waitUntil: 'domcontentloaded', timeout: 25000 });
-        await sleep(5000);
+        await politeDelay(5000);
         const docs = await page.evaluate(() => {
           const t = document.querySelector('table');
           if (!t) return [];
@@ -892,7 +843,7 @@ async function main() {
       try {
         emit({ type: 'PROGRESS', stream: 'inbox_messages', message: 'Fetching inbox' });
         await page.goto('https://www.usaa.com/my/inbox', { waitUntil: 'domcontentloaded', timeout: 25000 });
-        await sleep(5000);
+        await politeDelay(5000);
         const msgs = await page.evaluate(() => {
           const t = document.querySelector('table');
           if (!t) return [];
@@ -934,7 +885,7 @@ async function main() {
         const cards = accounts.filter((a) => /credit-card/.test(a.account_type));
         for (const a of cards) {
           await page.goto(`https://www.usaa.com${a.account_url}`, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
-          await sleep(6000);
+          await politeDelay(6000);
           const billing = await page.evaluate(() => {
             const kv = {};
             const labels = [...document.querySelectorAll('dt, .label, .field-label')];
@@ -979,31 +930,12 @@ async function main() {
         });
       }
     }
-  } finally {
-    if (downloadQueue) { try { downloadQueue.detach(); } catch {} }
-    await tracer.stop();
-    await release().catch(() => {});
-  }
 
-  if (sessionDeadMidRun) {
-    emit({
-      type: 'DONE',
-      status: 'failed',
-      records_emitted: counters.totalEmitted,
-      error: {
-        message: 'usaa session expired mid-run; re-run with fresh auth to complete',
-        retryable: true,
-      },
-    });
-    flushAndExit(1);
-  }
-
-  emitSucceeded(counters);
-  flushAndExit(0);
-}
-
-main().catch((e) => {
-  const msg = e && e.message ? e.message : String(e);
-  emit({ type: 'DONE', status: 'failed', records_emitted: 0, error: { message: msg, retryable: /ECONN|ETIMEDOUT|timeout/i.test(msg) } });
-  flushAndExit(1);
+    if (sessionDeadMidRun) {
+      throw new Error('usaa session expired mid-run; re-run with fresh auth to complete');
+    }
+    } finally {
+      if (downloadQueue) { try { downloadQueue.detach(); } catch {} }
+    }
+  },
 });

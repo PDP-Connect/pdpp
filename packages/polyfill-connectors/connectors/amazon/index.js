@@ -17,24 +17,9 @@
  */
 
 import pRetry, { AbortError } from 'p-retry';
-import { acquireIsolatedBrowser } from '../../src/browser-daemon.js';
 import { ensureAmazonSession } from '../../src/auto-login/amazon.js';
-import { createConnectorRuntime, nowIso, politeDelay } from '../../src/connector-runtime.js';
+import { runConnector, nowIso, politeDelay } from '../../src/connector-runtime.js';
 import { validateRecord, listPageOrderShape } from './schemas.js';
-
-const runtime = createConnectorRuntime({ connectorName: 'amazon' });
-const {
-  emit,
-  flushAndExit,
-  fail,
-  nextInteractionId,
-  sendInteractionAndWait,
-  readOneLine,
-  makeEmitRecord,
-  emitSucceeded,
-  makeTracer,
-  capture,
-} = runtime;
 
 // ─── Session probes ──────────────────────────────────────────────────────
 
@@ -460,73 +445,37 @@ function itemId(orderId, it) {
 
 // ─── Main ────────────────────────────────────────────────────────────────
 
-async function main() {
-  const startMsg = await readOneLine();
-  if (startMsg.type !== 'START') return fail('Expected START');
-
-  const requested = new Map((startMsg.scope?.streams || []).map((s) => [s.name, s]));
-  if (!requested.size) return fail('START.scope.streams is required');
-
-  const wantsOrders = requested.has('orders');
-  const wantsItems = requested.has('order_items');
-
-  const state = startMsg.state || {};
-  // STATE is stream-keyed per Collection Profile: `state` is
-  // { <stream>: <cursor>, ... }. We write STATE stream='orders'
-  // cursor={years:{...}}, so reads must go through state.orders.
-  const yearsState = state.orders?.years || state.years || {};
-  const emittedAt = nowIso();
-
-  // Shape-check + resources filter + counters are provided by the runtime.
-  // Runtime's emitRecord returns the emit promise for backpressure; awaiting
-  // matters during high-volume years.
-  const { emitRecord, counters } = makeEmitRecord({ validateRecord, requested, emittedAt });
-
-  let context;
-  let release = async () => {};
-  // Amazon's bot detection fingerprints the headless Chromium build and will
-  // challenge/captcha on cold sessions. Opt into headed mode for first-run and
-  // re-auth flows via PDPP_AMAZON_HEADLESS=0; subsequent runs on a warm session
-  // can go headless since cookies + TLS fingerprint stay consistent through
-  // the daemon. Default headless=true to match other connectors' behavior.
-  const headless = process.env.PDPP_AMAZON_HEADLESS !== '0';
-  // Use the isolated-per-connector browser path (patchright-launched,
-  // persistent profile at ~/.pdpp/profiles/amazon/). This:
-  //   - gets FULL patchright stealth (launch-side + client-side) because
-  //     we import patchright directly in acquireIsolatedBrowser
-  //   - persists auth/cookies/trusted-device across runs via the on-disk
-  //     profile dir
-  //   - enables concurrent runs with other connectors (no shared lock)
-  // See docs/connector-authoring-guide.md §2.
-  try {
-    ({ context, release } = await acquireIsolatedBrowser({ profileName: 'amazon', headless }));
-  } catch (err) {
-    return fail(`could not open browser profile: ${err.message}`, false);
-  }
-
-  // Tracing (Playwright feature) — gated behind PDPP_TRACE=1 by the runtime.
-  // Produces a .zip replayable in the Playwright Inspector, invaluable for
-  // debugging silent scraper failures deep in a multi-hour run.
-  const tracer = makeTracer(context, 'amazon');
-  await tracer.start();
-
-  try {
-    const page = await context.newPage();
-
-    // Automated session management: probe + login with stored creds, OTP via
-    // INTERACTION when 2FA is required (ntfy → the owner's phone → forwarded
-    // from wife's phone).
-    try {
-      await ensureAmazonSession({ context, page, sendInteractionAndWait, nextInteractionId });
-    } catch (e) {
-      return fail(`amazon_session_failed: ${e.message}`, false);
-    }
-
-    // Verify post-login with deep check
+runConnector({
+  name: 'amazon',
+  validateRecord,
+  // Amazon's bot detection fingerprints headless Chromium; cold sessions get
+  // challenged. Opt into headed mode via PDPP_AMAZON_HEADLESS=0 (first-run,
+  // re-auth). Warm sessions can go headless since cookies + TLS fingerprint
+  // stay consistent across runs on the persistent profile.
+  browser: { profileName: 'amazon' },
+  async ensureSession({ context, page, sendInteraction }) {
+    // Automated session management: probe + login with stored creds; OTP via
+    // INTERACTION when 2FA is required.
+    await ensureAmazonSession({
+      context,
+      page,
+      sendInteractionAndWait: sendInteraction,
+      nextInteractionId: () => undefined,
+    });
     const deepOk = await deepSessionCheck(page);
-    if (!deepOk) return fail('amazon_session_required', false);
+    if (!deepOk) throw new Error('amazon_session_required');
+  },
+  async collect({ scope, state, page, emitRecord, emit, progress, capture, emittedAt }) {
+    const requested = new Map((scope?.streams || []).map((s) => [s.name, s]));
+    const wantsOrders = requested.has('orders');
+    const wantsItems = requested.has('order_items');
 
-    emit({ type: 'PROGRESS', message: 'Amazon session verified; discovering years' });
+    // STATE is stream-keyed per Collection Profile: `state` is
+    // { <stream>: <cursor>, ... }. We write STATE stream='orders'
+    // cursor={years:{...}}, so reads must go through state.orders.
+    const yearsState = state.orders?.years || state.years || {};
+
+    progress('Amazon session verified; discovering years');
     let years = await discoverYears(page);
     // Targeted-year override for spot checks and incremental backfills.
     // Accepts a comma-separated list, e.g. PDPP_AMAZON_YEARS=2025,2024.
@@ -534,7 +483,7 @@ async function main() {
       const filter = new Set(process.env.PDPP_AMAZON_YEARS.split(',').map((y) => Number(y.trim())));
       years = years.filter((y) => filter.has(y));
     }
-    emit({ type: 'PROGRESS', message: `Years to scrape: ${years.join(', ')}` });
+    progress(`Years to scrape: ${years.join(', ')}`);
 
     // Capture fixtures (gated on PDPP_CAPTURE_FIXTURES=1). One orders-list
     // page per year and one order-detail page overall is enough to drive
@@ -547,7 +496,7 @@ async function main() {
       const prior = yearsState[String(year)];
       // Year-freezing: skip if already frozen
       if (prior?.frozen) {
-        emit({ type: 'PROGRESS', message: `Skipping year ${year} (frozen)` });
+        progress(`Skipping year ${year} (frozen)`);
         continue;
       }
 
@@ -726,18 +675,5 @@ async function main() {
       };
       emit({ type: 'STATE', stream: 'orders', cursor: { years: newYearsState } });
     }
-  } finally {
-    await tracer.stop();
-    await release().catch(() => {});
-  }
-
-  emitSucceeded(counters);
-  flushAndExit(0);
-}
-
-main().catch((e) => {
-  const msg = e && e.message ? e.message : String(e);
-  const retryable = /ECONN|ETIMEDOUT|timeout/i.test(msg);
-  emit({ type: 'DONE', status: 'failed', records_emitted: 0, error: { message: msg, retryable } });
-  flushAndExit(1);
+  },
 });

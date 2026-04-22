@@ -13,30 +13,14 @@
  */
 
 import pRetry, { AbortError } from 'p-retry';
-import { acquireIsolatedBrowser } from '../../src/browser-daemon.js';
 import { ensureChatGptSession } from '../../src/auto-login/chatgpt.js';
-import { createConnectorRuntime, nowIso } from '../../src/connector-runtime.js';
+import { runConnector, nowIso } from '../../src/connector-runtime.js';
 import { validateRecord } from './schemas.js';
 
-const runtime = createConnectorRuntime({ connectorName: 'chatgpt' });
-const {
-  emit,
-  flushAndExit,
-  fail,
-  nextInteractionId,
-  sendInteractionAndWait,
-  readOneLine,
-  makeEmitRecord,
-  emitSucceeded,
-  makeTracer,
-  capture,
-} = runtime;
-
-// Module-level counters handle: populated by main() after makeEmitRecord
-// resolves. The module-level main().catch handler references these to report
-// accurate records_emitted + skipped-count even if an async throw bypasses
-// the emitSucceeded() path inside main().
-let _counters = { totalEmitted: 0, totalSkipped: 0 };
+// `capture` is set to the module-level variable once runConnector invokes
+// collect(). apiFetch references it at every HTTP call site — module-level
+// so it doesn't thread through all the helper functions.
+let captureRef = null;
 
 // ChatGPT times are unix seconds (number). Some responses use ISO strings.
 // Normalize both to ISO-8601, swallow errors.
@@ -140,7 +124,7 @@ async function apiFetch(page, path, { method = 'GET', body } = {}) {
     // file. Label = method + path (so foo/bar becomes GET-foo-bar). Shape
     // captured includes status + json — downstream replayers can reconstruct
     // the full {status, json} tuple that apiFetch returns.
-    if (capture) capture.captureHttp(`${method}-${path}`, result.json, { status, path, method });
+    if (captureRef) captureRef.captureHttp(`${method}-${path}`, result.json, { status, path, method });
     return result;
   }, {
     retries: 3,
@@ -372,72 +356,39 @@ function extractMessage(nodeId, node, conversationId, onCurrentBranch) {
   };
 }
 
-async function main() {
-  const startMsg = await readOneLine();
-  if (startMsg.type !== 'START') return fail('Expected START');
+runConnector({
+  name: 'chatgpt',
+  validateRecord,
+  browser: { profileName: 'chatgpt' },
+  async ensureSession({ context, page, sendInteraction }) {
+    await ensureChatGptSession({
+      context,
+      page,
+      sendInteractionAndWait: sendInteraction,
+      nextInteractionId: () => undefined,
+    });
+  },
+  async collect({ state, requested, page, emit, emitRecord: baseEmitRecord, progress, capture }) {
+    captureRef = capture;
 
-  const requested = new Map((startMsg.scope?.streams || []).map((s) => [s.name, s]));
-  if (!requested.size) return fail('START.scope.streams is required');
-
-  const state = startMsg.state || {};
-  const emittedAt = nowIso();
-
-  // Shape-check + resources filter + counters from the runtime.
-  const { emitRecord: baseEmitRecord, counters } = makeEmitRecord({ validateRecord, requested, emittedAt });
-  _counters = counters; // expose to main().catch
-
-  // ChatGPT-specific wrapper: unstringifiable values (bad Date, circular refs)
-  // have historically crashed the whole run when the runtime's shape-check
-  // tried to serialize them into a SKIP_RESULT diagnostic. Guard here so
-  // "Invalid time value" points at the offending row instead of killing the
-  // run.
-  const emitRecord = (stream, data) => {
-    if (data?.id != null) {
-      try { JSON.stringify(data); } catch (err) {
-        process.stderr.write(`[chatgpt-debug] emit failed for ${stream} id=${data.id}: ${err.message}\n`);
-        return Promise.resolve();
+    // ChatGPT-specific wrapper: unstringifiable values (bad Date, circular
+    // refs) historically crashed the whole run when the runtime's shape-check
+    // tried to serialize them into a SKIP_RESULT diagnostic. Guard here so
+    // "Invalid time value" points at the offending row instead of killing
+    // the run.
+    const emitRecord = (stream, data) => {
+      if (data?.id != null) {
+        try { JSON.stringify(data); } catch (err) {
+          process.stderr.write(`[chatgpt-debug] emit failed for ${stream} id=${data.id}: ${err.message}\n`);
+          return Promise.resolve();
+        }
       }
-    }
-    return baseEmitRecord(stream, data);
-  };
-
-  let context;
-  let release = async () => {};
-  // Default headless=true for unattended runs. Override via
-  // PDPP_CHATGPT_HEADLESS=0 when a first-time login needs a visible
-  // browser (helpful for Cloudflare challenges, 2FA entry, etc.).
-  const headless = process.env.PDPP_CHATGPT_HEADLESS !== '0';
-  // Use the isolated-per-connector browser path (patchright-launched,
-  // persistent profile at ~/.pdpp/profiles/chatgpt/). This:
-  //   - gets FULL patchright stealth (launch-side + client-side)
-  //   - persists auth/cookies across runs via the on-disk profile dir
-  //   - enables concurrent runs with other connectors (no shared lock)
-  // See docs/connector-authoring-guide.md §2.
-  try {
-    ({ context, release } = await acquireIsolatedBrowser({ profileName: 'chatgpt', headless }));
-  } catch (err) {
-    return fail(`could not open browser profile: ${err.message}`, false);
-  }
-
-  // Tracing via the runtime's makeTracer — PDPP_TRACE=1 to enable.
-  const tracer = makeTracer(context, 'chatgpt');
-  await tracer.start();
-
-  try {
-    const page = await context.newPage();
-
-    // Automated session management: probe first, drive login with stored
-    // email/password if dead. Falls back to INTERACTION manual_action if
-    // Cloudflare challenge or unexpected UI.
-    try {
-      await ensureChatGptSession({ context, page, sendInteractionAndWait, nextInteractionId });
-    } catch (e) {
-      return fail(`chatgpt_session_failed: ${e.message}`, false);
-    }
+      return baseEmitRecord(stream, data);
+    };
 
     // Verify session (extract bearer token for /backend-api calls)
     const auth = await _auth(page);
-    emit({ type: 'PROGRESS', message: `Authenticated to ChatGPT (device_id=${auth.deviceId ? auth.deviceId.slice(0, 8) + '…' : 'unknown'})` });
+    progress(`Authenticated to ChatGPT (device_id=${auth.deviceId ? auth.deviceId.slice(0, 8) + '…' : 'unknown'})`);
 
     // MEMORIES
     if (requested.has('memories')) {
@@ -703,21 +654,6 @@ async function main() {
         });
       }
     }
-  } finally {
-    await tracer.stop();
-    await release().catch(() => {});
-  }
-
-  emitSucceeded(_counters);
-  flushAndExit(0);
-}
-
-main().catch((e) => {
-  const msg = e && e.message ? e.message : String(e);
-  const retryable = /ECONN|ETIMEDOUT|fetch failed|429/i.test(msg);
-  if (_counters.totalSkipped > 0) {
-    emit({ type: 'PROGRESS', message: `shape-check skipped ${_counters.totalSkipped} record(s) before failure; see SKIP_RESULT events above` });
-  }
-  emit({ type: 'DONE', status: 'failed', records_emitted: _counters.totalEmitted, error: { message: msg, retryable } });
-  flushAndExit(1);
+  },
+  retryablePattern: /ECONN|ETIMEDOUT|fetch failed|429/i,
 });
