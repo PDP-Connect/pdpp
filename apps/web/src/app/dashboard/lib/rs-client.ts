@@ -154,7 +154,24 @@ export type ConnectorOverview = {
   connector: ConnectorManifest;
   streams: StreamSummary[];
   totalRecords: number;
+  /** Most recent run (any status). Drives the status chip + elapsed time. */
+  lastRun: ConnectorRunRef | null;
+  /** Most recent SUCCEEDED run. Drives the "last synced" timestamp + delta. */
+  lastSuccessfulRun: ConnectorRunRef | null;
+  /** Shortcut: true iff lastRun.status ∈ {started, in_progress}. */
+  isRunning: boolean;
   error?: string;
+};
+
+/** Thin projection of RunSummary fields the dashboard index needs.
+ *  Keeps this module decoupled from ref-client (which is AS-scoped). */
+export type ConnectorRunRef = {
+  run_id: string;
+  first_at: string;
+  last_at: string;
+  event_count: number;
+  status: string;
+  failure_reason: string | null;
 };
 
 // ─── Display helpers (colocated to keep page files small) ────────────────
@@ -529,19 +546,63 @@ export async function streamHealth(
   };
 }
 
+const RUNNING_STATUSES = new Set(['started', 'in_progress']);
+
+function projectRun(summary: {
+  run_id: string;
+  first_at: string;
+  last_at: string;
+  event_count: number;
+  status: string;
+  failure_reason: string | null;
+} | undefined): ConnectorRunRef | null {
+  if (!summary) return null;
+  return {
+    run_id: summary.run_id,
+    first_at: summary.first_at,
+    last_at: summary.last_at,
+    event_count: summary.event_count,
+    status: summary.status,
+    failure_reason: summary.failure_reason,
+  };
+}
+
 export async function getConnectorOverview(
   connector: ConnectorManifest,
 ): Promise<ConnectorOverview> {
   try {
     const streams = await listStreams(connector.connector_id);
     const totalRecords = streams.reduce((sum, s) => sum + (s.record_count ?? 0), 0);
-    return { connector, streams, totalRecords };
+
+    // Run data: most-recent run (any status) + most-recent succeeded.
+    // Kept lazy-import to avoid a cycle: ref-client imports from owner-token
+    // which imports from here in some flows. Deferred require pattern.
+    const { listRuns } = await import('./ref-client');
+    const [latestResp, successResp] = await Promise.all([
+      listRuns({ connector_id: connector.connector_id, limit: 1 }),
+      listRuns({ connector_id: connector.connector_id, status: 'succeeded', limit: 1 }),
+    ]);
+    const lastRun = projectRun(latestResp.data?.[0]);
+    const lastSuccessfulRun = projectRun(successResp.data?.[0]);
+    const isRunning = lastRun != null && RUNNING_STATUSES.has(lastRun.status);
+
+    return {
+      connector,
+      streams,
+      totalRecords,
+      lastRun,
+      lastSuccessfulRun,
+      isRunning,
+    };
   } catch (err) {
     if (err instanceof ReferenceServerUnreachableError) throw err;
     return {
       connector,
       streams: [],
       totalRecords: 0,
+      lastRun: null,
+      lastSuccessfulRun: null,
+      isRunning: false,
       error: err instanceof Error ? err.message : String(err),
     };
   }
