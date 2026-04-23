@@ -49,5 +49,7 @@ The steward started `pnpm dev` once earlier today. Next.js (:3000) has crashed t
 
 (none — integration-test extractions for gmail, chase, usaa, chatgpt, slack, codex, claude_code all landed cleanly in pairs 2026-04-23.)
 
+- 2026-04-23 evening: `packages/polyfill-connectors/connectors/claude_code/index.ts` — 140-line disk-spool redesign (Tranche C follow-up) with no paired test yet. Skipped pending the matching test/commit to land together.
+
 ---
 Questions/trouble: ping the owner.
