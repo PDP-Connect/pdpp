@@ -62,19 +62,25 @@ test("parseOrderDate: V8 Date parser is lenient with label-prefixed input", () =
 // ─── parseCurrencyCents ──────────────────────────────────────────────────
 
 test("parseCurrencyCents: basic dollar amounts", () => {
-  // NOTE: the regex /(\d+(?:\.\d+)?)/ stops at the thousands comma, so
-  // "$1,234.56" matches only "1" and yields 100. This is the current
-  // production semantics — preserved here so a future fix is a conscious
-  // change, not a silent one. See task report.
-  assert.equal(parseCurrencyCents("$1,234.56"), 100);
   assert.equal(parseCurrencyCents("$0.99"), 99);
   assert.equal(parseCurrencyCents("$1"), 100);
   assert.equal(parseCurrencyCents("$15.54"), 1554);
 });
 
-test("parseCurrencyCents: negative / sign-prefixed is parsed as positive magnitude", () => {
-  // Regex has no sign group; the minus is dropped.
-  assert.equal(parseCurrencyCents("-$5.00"), 500);
+test("parseCurrencyCents: handles thousands separators", () => {
+  // Regression: the old regex stopped at the comma and read "$1,234.56" as
+  // 100 cents. Amazon totals >= $1,000 would be dramatically understated.
+  assert.equal(parseCurrencyCents("$1,234.56"), 123_456);
+  assert.equal(parseCurrencyCents("$12,345.00"), 1_234_500);
+  assert.equal(parseCurrencyCents("$1,000,000"), 100_000_000);
+});
+
+test("parseCurrencyCents: handles negative values (leading minus or parens)", () => {
+  // Refund amounts on detail pages can be negative. Previously the sign
+  // was dropped and a refund was recorded as a positive charge.
+  assert.equal(parseCurrencyCents("-$5.00"), -500);
+  assert.equal(parseCurrencyCents("($5.00)"), -500);
+  assert.equal(parseCurrencyCents("-$1,234.56"), -123_456);
 });
 
 test("parseCurrencyCents: unparseable / empty / nullish returns null", () => {
@@ -167,10 +173,7 @@ test("parseOrderDetailDom: synthetic-minimal fixture parses full OrderDetail", (
   assert.ok(d, "expected non-null OrderDetail");
   assert.equal(d.grand_total, "$42.99");
   assert.equal(d.recipient_name, "Fictional Person");
-  assert.equal(
-    d.shipping_address_summary,
-    "Fictional Person, Fictional Person, 123 Placeholder Ln, 123 Placeholder Ln, Fakeville, TX 00000, Fakeville, TX 00000"
-  );
+  assert.equal(d.shipping_address_summary, "Fictional Person, 123 Placeholder Ln, Fakeville, TX 00000");
   assert.equal(d.payment_method_summary, "Visa ending in 1234");
   assert.equal(d.gift_order, false);
   assert.equal(d.digital_order, false);
@@ -186,6 +189,25 @@ test("parseOrderDetailDom: synthetic-minimal fixture parses full OrderDetail", (
   assert.equal(item.quantity, 1);
   assert.equal(item.item_image_url, "https://example.com/img.jpg");
   assert.equal(item.refund_status, null);
+});
+
+test("parseOrderDetailDom: shipping address <li>-only fallback (no inner span)", () => {
+  // Old Amazon layouts render address lines as plain <li> without the
+  // a-list-item <span>. The parser must still extract one line per <li>,
+  // not match both outer + inner and duplicate.
+  const html = `<!doctype html><html><body><div id="orderDetails">
+    <div data-component="shippingAddress">
+      <ul>
+        <li>Jane Doe</li>
+        <li>456 Main St</li>
+        <li>Oakland, CA 94607</li>
+      </ul>
+    </div>
+  </div></body></html>`;
+  const d = parseOrderDetailDom(html);
+  assert.ok(d);
+  assert.equal(d.recipient_name, "Jane Doe");
+  assert.equal(d.shipping_address_summary, "Jane Doe, 456 Main St, Oakland, CA 94607");
 });
 
 test("parseOrderDetailDom: missing #orderDetails container returns null", () => {
@@ -362,20 +384,17 @@ test("mergeOrderItems: detail has items the list page missed — appended after 
 });
 
 test("mergeOrderItems: matches by normalized name when ASIN missing", () => {
-  // NB: the existing implementation's detail-lookup key uses
-  // `name.trim().toLowerCase()` without collapsing internal whitespace —
-  // so only surrounding whitespace / case normalize. Matches that.
+  // Matching collapses internal whitespace + trims + lowercases, so two
+  // items that differ only in whitespace / case still merge.
   const listOrder = makeListOrder({
-    items: [{ asin: null, name: "  Super Widget ", url: null }],
+    items: [{ asin: null, name: "  Super   Widget\tPro ", url: null }],
   });
   const detail = makeDetail({
-    items: [makeDetailItem({ asin: null, name: "super widget", unit_price: "$7.50", seller: "NameMatch" })],
+    items: [makeDetailItem({ asin: null, name: "super widget pro", unit_price: "$7.50", seller: "NameMatch" })],
   });
   const merged = mergeOrderItems(listOrder, detail);
   assert.equal(merged.length, 1);
-  // Spread: ...it, ...d — detail's non-null fields override, name replaced by
-  // the detail's normalized form.
-  assert.equal(merged[0]?.name, "super widget");
+  assert.equal(merged[0]?.name, "super widget pro");
   assert.equal(merged[0]?.seller, "NameMatch");
   assert.equal(merged[0]?.unit_price, "$7.50");
 });

@@ -14,7 +14,11 @@ import type {
 } from "./types.ts";
 
 const CURRENCY_CENTS_MULTIPLIER = 100;
-const CURRENCY_NUMBER_RE = /(\d+(?:\.\d+)?)/;
+// Strip thousands-separators (commas or locale spaces) before the numeric
+// match, otherwise "$1,234.56" was previously misread as "$1.00".
+const CURRENCY_THOUSANDS_RE = /[,_\s](?=\d{3}(?:\D|$))/g;
+const CURRENCY_NUMBER_RE = /-?(\d+(?:\.\d+)?)/;
+const CURRENCY_NEGATIVE_SIGN_RE = /^\s*-|^\s*\(/;
 const ITEM_ID_WHITESPACE_RE = /\s+/g;
 
 // Shared regexes for orders-list DOM parsing (hoisted from the old in-browser
@@ -157,8 +161,18 @@ function parseShippingAddress(shipEl: Element | null): { recipient_name: string 
   if (!shipEl) {
     return { recipient_name: null, summary: null };
   }
-  const lines = [...shipEl.querySelectorAll<HTMLElement>("ul li span.a-list-item, ul li")]
-    .map((li) => normText(li))
+  // Amazon wraps each address line as <li><span class="a-list-item">…</span></li>.
+  // The previous selector "ul li span.a-list-item, ul li" matched BOTH the
+  // outer <li> and its inner <span>, producing duplicated entries like
+  // "Name, Name, 123 Main St, 123 Main St". Prefer the inner span when
+  // present (it's the clean text node); fall back to the <li> text for
+  // address layouts without the spans.
+  const lis = [...shipEl.querySelectorAll<HTMLElement>("ul li")];
+  const lines = lis
+    .map((li) => {
+      const span = li.querySelector<HTMLElement>("span.a-list-item");
+      return normText(span ?? li);
+    })
     .filter(Boolean);
   const first = lines[0];
   const recipient_name = first && first.length < RECIPIENT_MAX_LEN ? first : null;
@@ -368,15 +382,30 @@ export function parseCurrencyCents(raw: string | null | undefined): number | nul
   if (!raw) {
     return null;
   }
-  const m = String(raw).match(CURRENCY_NUMBER_RE);
+  const s = String(raw);
+  const negative = CURRENCY_NEGATIVE_SIGN_RE.test(s);
+  // "$1,234.56" → "$1234.56" so the numeric match captures the full value.
+  const stripped = s.replace(CURRENCY_THOUSANDS_RE, "");
+  const m = stripped.match(CURRENCY_NUMBER_RE);
   if (!m?.[1]) {
     return null;
   }
-  return Math.round(Number(m[1]) * CURRENCY_CENTS_MULTIPLIER);
+  const cents = Math.round(Number(m[1]) * CURRENCY_CENTS_MULTIPLIER);
+  return negative ? -cents : cents;
+}
+
+/**
+ * Canonical form for name-based item identity. Collapses runs of whitespace
+ * (so "Item  Name" and "Item\tName" dedupe), trims, and lowercases. Used as
+ * the map key in mergeDetailByKey and by itemId's name fallback, so both
+ * sides agree on what "same item" means.
+ */
+function normalizeItemName(name: string): string {
+  return name.replace(ITEM_ID_WHITESPACE_RE, " ").trim().toLowerCase();
 }
 
 export function itemId(orderId: string, it: { asin?: string | null; name?: string }): string {
-  const key = it.asin || it.name?.toLowerCase().replace(ITEM_ID_WHITESPACE_RE, " ").trim() || "unknown";
+  const key = it.asin || (it.name ? normalizeItemName(it.name) : "") || "unknown";
   return `${orderId}|${key}`;
 }
 
@@ -390,7 +419,7 @@ export function mergeDetailByKey(detailItems: DetailItem[]): {
     if (di.asin) {
       byAsin.set(di.asin, di);
     } else if (di.name) {
-      byName.set(di.name.trim().toLowerCase(), di);
+      byName.set(normalizeItemName(di.name), di);
     }
   }
   return { byAsin, byName };
@@ -428,15 +457,15 @@ export function mergeOrderItems(listOrder: ListPageOrder, detail: OrderDetail | 
   for (const it of listOrder.items) {
     const d: Partial<DetailItem> =
       (it.asin ? detailByAsin.get(it.asin) : undefined) ??
-      (it.name ? detailByName.get(it.name.trim().toLowerCase()) : undefined) ??
+      (it.name ? detailByName.get(normalizeItemName(it.name)) : undefined) ??
       {};
     push({ ...it, ...d });
   }
   // Detail-page items that weren't in the list.
   for (const di of detailItems) {
     const dupByAsin = di.asin && listOrder.items.some((x) => x.asin === di.asin);
-    const dupByName =
-      di.name && listOrder.items.some((x) => x.name?.trim().toLowerCase() === di.name.trim().toLowerCase());
+    const diNorm = di.name ? normalizeItemName(di.name) : "";
+    const dupByName = diNorm && listOrder.items.some((x) => x.name && normalizeItemName(x.name) === diNorm);
     if (!(dupByAsin || dupByName)) {
       push(di);
     }
