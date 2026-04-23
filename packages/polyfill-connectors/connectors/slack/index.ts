@@ -565,8 +565,9 @@ function loadMessageRows(db: DatabaseSync, priorTs: string | null): MessageRow[]
  * arrive on old parents (parent ts from 2022, new reply in 2026). See
  * cursor-finality-and-gap-awareness-open-question.md.
  *
- * The loop body (pure over MessageRow[]) lives in collect-helpers.ts so
- * integration.test.ts can drive it without opening sqlite.
+ * The loop body (pure over MessageRow[]) is exported as
+ * `emitMessagesPass` from this file so integration.test.ts can drive
+ * it without opening sqlite.
  */
 function runMessagesUnifiedPass(deps: StreamDeps, priorTs: string | null): Promise<{ maxMessageTs: string | null }> {
   // Slack message TS strings collate lexically the same way they order

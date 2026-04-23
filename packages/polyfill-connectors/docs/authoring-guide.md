@@ -8,14 +8,12 @@ start here and don't invent structure.
 
 ```
 connectors/<name>/
-├── index.ts              # Runtime entry. Calls runConnector({...}).
+├── index.ts              # Runtime entry. runConnector({...}) guarded by isMainModule.
 ├── parsers.ts            # Pure functions. Imported by index.ts + tests.
 ├── types.ts              # Shared interfaces (record shapes, cursors).
 ├── schemas.ts            # Zod validators (if the stream has a schema).
 ├── parsers.test.ts       # node:test, table-driven, synthetic fixtures.
 ├── integration.test.ts   # Optional. collect()-layer invariant tests.
-├── collect-helpers.ts    # Optional. Exports for integration tests
-│                         # when index.ts has side effects at module load.
 ├── __fixtures__/         # Hand-crafted HTML/JSON. Committed.
 └── scrub-rules.ts        # Optional. Connector-specific PII patterns.
 ```
@@ -160,11 +158,12 @@ test("parseX: local real fixture parses ≥N records", {
 ```
 
 `integration.test.ts` — covers `collect()` invariants consumers depend
-on. Mock `emitRecord` with an array-recorder; assert emit order, scope
-filtering, cursor advancement. If `index.ts` calls `runConnector` at
-module scope, extract the testable helpers into `collect-helpers.ts`
-to avoid importing the runtime side effects. See amazon for the full
-pattern.
+on. Mock `emitRecord` with `makeRecordingEmit(validateRecord)` from
+`src/test-harness.ts` so records land through the real zod shape-check;
+assert emit order, scope filtering, cursor advancement. Import the
+testable helpers directly from `./index.ts` — the `isMainModule` guard
+on `runConnector({...})` keeps the runtime from firing at import time.
+See amazon for the full pattern.
 
 ## Fixture capture
 
@@ -184,5 +183,7 @@ LLM-based scrubber lands, captured fixtures stay local-only.
 - `integration.test.ts` — unit tests on parsers prove record *shapes*
   are correct. Integration tests prove the *sequence* of emit calls is
   correct. Both matter.
-- `collect-helpers.ts` — splits the testable subset of `collect()` out
-  of the side-effectful `index.ts` so tests don't hang on stdin.
+- `isMainModule` guard on `runConnector({...})` in `index.ts` — lets
+  tests import `index.ts` directly. Without it, the runtime would fire
+  at import time and block the test runner's event loop waiting for
+  the stdin protocol handshake.

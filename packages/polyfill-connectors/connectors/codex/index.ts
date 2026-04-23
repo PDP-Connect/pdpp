@@ -723,8 +723,8 @@ function emitSessions({ stateDbPath, rolloutAggregates, emitRecord }: EmitSessio
   // Sessions: prefer state_5.sqlite#threads; fall back to rollout-derived
   // fields only when state_5 doesn't have the session. Session PK stays the
   // thread/session id — the same UUID is used by both sources. The I/O-free
-  // merge + dedup lives in collect-helpers.ts so integration tests can pin
-  // it without touching sqlite.
+  // merge + dedup (`emitSessionsFromMaps`) is exported from this file so
+  // integration tests can pin it without touching sqlite.
   const { map: threadsById } = loadThreadsMap(stateDbPath);
   emitSessionsFromMaps({ threadsMap: threadsById, rolloutAggregates, emitRecord });
 }

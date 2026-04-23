@@ -1,6 +1,6 @@
 /**
  * Integration tests for the Chase connector's `collect()` emit path —
- * the per-stream helpers in collect-helpers.ts (emitAccountsStream,
+ * the per-stream helpers exported from index.ts (emitAccountsStream,
  * emitTransactionsForAccount, emitStatementIndexOnly) and the pure
  * scope gates (filterAccountsByScope, statementRowOutsideTimeRange,
  * emitTransactionsStateIfAny).
