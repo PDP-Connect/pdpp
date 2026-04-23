@@ -189,6 +189,13 @@ export interface LineEmitDeps {
 }
 
 export interface ProcessJsonlLineArgs {
+  /**
+   * When `true`, update `obs` (including `obs.messageCount`) but do not
+   * emit message/attachment records. Used by the parent-first two-pass
+   * orchestration: pass 1 builds session accumulators silently, pass 2
+   * emits messages/attachments after sessions have landed.
+   */
+  buildOnly?: boolean;
   deps: LineEmitDeps;
   obj: JsonlObject;
   obs: JsonlObservations;
@@ -210,7 +217,7 @@ export interface ProcessJsonlLineArgs {
  *     `summary` header).
  *   - No uuid → no record (uuid is the emitted record id).
  */
-export async function processJsonlLine({ deps, obj, obs }: ProcessJsonlLineArgs): Promise<void> {
+export async function processJsonlLine({ buildOnly, deps, obj, obs }: ProcessJsonlLineArgs): Promise<void> {
   const sessionId = obs.sessionId;
   if (!sessionId) {
     return;
@@ -220,13 +227,13 @@ export async function processJsonlLine({ deps, obj, obs }: ProcessJsonlLineArgs)
 
   if (isMessageType(type)) {
     obs.messageCount++;
-    if (deps.requested.has("messages") && uuid) {
+    if (!buildOnly && deps.requested.has("messages") && uuid) {
       await deps.emitRecord("messages", buildMessageRecord(obj, sessionId, uuid));
     }
     return;
   }
 
-  if (isAttachmentType(type) && deps.requested.has("attachments") && uuid) {
+  if (!buildOnly && isAttachmentType(type) && deps.requested.has("attachments") && uuid) {
     await deps.emitRecord("attachments", buildAttachmentRecord(obj, sessionId, uuid));
   }
 }
@@ -407,6 +414,11 @@ function updateSessionAccumulator(
 }
 
 interface ParseJsonlFileArgs {
+  /** When true, line-level message/attachment emits are suppressed.
+   *  Used by the parent-first two-pass orchestration — pass 1 scans
+   *  to populate accumulators silently; pass 2 replays the scan to
+   *  emit the per-line records after sessions have landed. */
+  buildOnly: boolean;
   emit: CollectContext["emit"];
   emitRecord: (stream: string, data: RecordData) => Promise<void>;
   forcedSessionId: string | null;
@@ -417,7 +429,7 @@ interface ParseJsonlFileArgs {
 }
 
 async function parseJsonlFile(args: ParseJsonlFileArgs): Promise<string | null> {
-  const { path, projectDir, requested, emit, emitRecord, sessionAccumulators, forcedSessionId } = args;
+  const { buildOnly, path, projectDir, requested, emit, emitRecord, sessionAccumulators, forcedSessionId } = args;
   const obs: JsonlObservations = makeJsonlObservations(forcedSessionId);
   let lineCount = 0;
 
@@ -430,10 +442,14 @@ async function parseJsonlFile(args: ParseJsonlFileArgs): Promise<string | null> 
       });
     }
     observeJsonlFields(obj, obs, forcedSessionId);
-    await processJsonlLine({ obj, obs, deps: { requested, emitRecord } });
+    await processJsonlLine({ buildOnly, deps: { emitRecord, requested }, obj, obs });
   }
 
-  updateSessionAccumulator(sessionAccumulators, projectDir, obs);
+  // Only update the accumulator on the build pass. On the emit pass,
+  // accumulators are already populated and we must not double-count.
+  if (buildOnly) {
+    updateSessionAccumulator(sessionAccumulators, projectDir, obs);
+  }
   return obs.sessionId;
 }
 
@@ -550,6 +566,9 @@ async function emitSlashCommands({ claudeHome, requested, emitRecord }: EmitSkil
 
 interface ScanProjectDirsArgs {
   baseDir: string;
+  /** Threaded through to parseJsonlFile/processJsonlLine so pass 1 is
+   *  silent (accumulator-only) and pass 2 emits messages/attachments. */
+  buildOnly: boolean;
   emit: CollectContext["emit"];
   emitRecord: (stream: string, data: RecordData) => Promise<void>;
   fileMtimes: Record<string, number>;
@@ -589,13 +608,14 @@ async function processJsonlFile({
     message: `Parsing ${progressLabel} (${(st.size / BYTES_PER_MB).toFixed(1)}MB)`,
   });
   await parseJsonlFile({
+    buildOnly: args.buildOnly,
+    emit: args.emit,
+    emitRecord: args.emitRecord,
+    forcedSessionId,
     path,
     projectDir,
     requested: args.requested,
-    emit: args.emit,
-    emitRecord: args.emitRecord,
     sessionAccumulators: args.sessionAccumulators,
-    forcedSessionId,
   });
   args.newMtimes[path] = mtime;
 }
@@ -767,8 +787,20 @@ if (isMainModule(import.meta.url)) {
       const newMtimes: Record<string, number> = { ...fileMtimes };
       const sessionAccumulators = new Map<string, SessionAccumulator>();
 
+      // Parent-first emit (Tranche C 2026-04-23): sessions must emit
+      // before messages/attachments, but sessions are aggregates built
+      // from scanning all jsonl lines. Two-pass approach:
+      //   Pass 1 — scan to build sessionAccumulators. `buildOnly=true`
+      //            suppresses per-line message/attachment emits; the
+      //            scope filter still controls whether it's worth
+      //            scanning (if sessions is the only stream requested,
+      //            only Pass 1 runs).
+      //   Emit sessions.
+      //   Pass 2 — scan again to emit messages/attachments, now that
+      //            consumers have seen all parent session records.
       await scanProjectDirs({
         baseDir,
+        buildOnly: true,
         emit,
         emitRecord,
         fileMtimes,
@@ -783,6 +815,21 @@ if (isMainModule(import.meta.url)) {
           type: "STATE",
           stream: "sessions",
           cursor: { fetched_at: nowIso() },
+        });
+      }
+
+      if (requested.has("messages") || requested.has("attachments")) {
+        // Pass 2: emit messages + attachments. Accumulators already
+        // built, so skip the accumulator-update side effects this time.
+        await scanProjectDirs({
+          baseDir,
+          buildOnly: false,
+          emit,
+          emitRecord,
+          fileMtimes,
+          newMtimes,
+          requested,
+          sessionAccumulators,
         });
       }
 
