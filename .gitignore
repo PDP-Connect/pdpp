@@ -8,6 +8,9 @@ local/
 .env.*
 !.env.example
 
+# Local ad-hoc notes (not committed)
+agent-access.md
+
 # Working artifacts
 *.png
 *.yml
