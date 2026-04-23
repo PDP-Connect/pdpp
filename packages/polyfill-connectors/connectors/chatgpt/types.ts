@@ -179,6 +179,17 @@ export interface RawGizmoWrapper {
   resource?: { gizmo?: unknown } | unknown;
 }
 
+// Raw body of GET /backend-api/user_system_messages.
+export interface RawCustomInstructionsBody {
+  about_model_message?: string | null;
+  about_user?: string | null;
+  about_user_message?: string | null;
+  enabled?: boolean | null;
+  response_style?: string | null;
+  update_time_detail?: number | string | null;
+  updated_at?: number | string | null;
+}
+
 export interface RawSharedConversation {
   anonymous?: boolean;
   conversation_id?: string;

@@ -9,6 +9,7 @@ import type {
   ChatGptMessage,
   ChatGptNode,
   ConversationListItem,
+  RawCustomInstructionsBody,
   RawGizmo,
   RawGizmoWrapper,
   RawMemoryEntry,
@@ -455,16 +456,6 @@ export function buildGizmoRecord(raw: unknown): RecordData | null {
 }
 
 // ─── Custom instructions ────────────────────────────────────────────────
-
-export interface RawCustomInstructionsBody {
-  about_model_message?: string | null;
-  about_user?: string | null;
-  about_user_message?: string | null;
-  enabled?: boolean | null;
-  response_style?: string | null;
-  update_time_detail?: number | string | null;
-  updated_at?: number | string | null;
-}
 
 export function buildCustomInstructionsRecord(j: RawCustomInstructionsBody | null | undefined): RecordData {
   const body = j || {};
