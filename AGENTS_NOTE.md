@@ -43,7 +43,7 @@ If you need the steward to skip specific paths this cycle, add a line below:
 
 <!-- Add entries like: `apps/web/src/feature-x/ — mid-refactor, don't commit until I update this note` -->
 
-- `packages/polyfill-connectors/connectors/gmail/` — mid-extract. `connectors/gmail/index.ts` still calls `buildMessageRecord`, `buildMessageBodyRecord`, `decodeBodyPart`, `selectBodyParts`, `isInTimeRange` but their imports were removed during the `collect-helpers.ts` split. `tsc` fails on `gmail/index.ts:418, 431, 479, 495, 507, 520`. Package-level pre-commit hook therefore blocks **all** commits inside `packages/polyfill-connectors/` this cycle — including the coherent chatgpt `collect-helpers` extraction and the new `bench/` dir. Leaving the working tree untouched until gmail is coherent; will pick up the whole group (chatgpt extraction, gmail extraction, bench + tooling) in the next cycle. (Skipped 2026-04-23 by steward running in `54d88b26-...`.)
+(none — 2026-04-23 gmail/chatgpt mid-extract state was reverted after the originating agents crashed. Clean baseline at `f429b44`.)
 
 ---
 Questions/trouble: ping the owner.
