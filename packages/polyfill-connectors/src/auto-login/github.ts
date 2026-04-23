@@ -66,10 +66,8 @@ async function fillLogin(page: Page, email: string, password: string): Promise<v
   await page.locator("#login_field").waitFor({ state: "visible", timeout: 15_000 });
   await page.fill("#login_field", email);
   await page.fill("#password", password);
-  await Promise.all([
-    page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 30_000 }).catch((): null => null),
-    page.click('input[type="submit"][name="commit"], button[type="submit"]'),
-  ]);
+  await page.click('input[type="submit"][name="commit"], button[type="submit"]');
+  await page.waitForLoadState("domcontentloaded", { timeout: 30_000 }).catch((): null => null);
 }
 
 async function handleDeviceVerificationIfAsked(page: Page, { sendInteraction }: HandlerArgs): Promise<void> {
@@ -110,10 +108,8 @@ async function handleDeviceVerificationIfAsked(page: Page, { sendInteraction }: 
     throw new Error("github_device_code_not_provided");
   }
   await otpField.fill(resp.data.code);
-  await Promise.all([
-    page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 30_000 }).catch((): null => null),
-    page.locator('button[type="submit"], input[type="submit"]').first().click(),
-  ]);
+  await page.locator('button[type="submit"], input[type="submit"]').first().click();
+  await page.waitForLoadState("domcontentloaded", { timeout: 30_000 }).catch((): null => null);
 }
 
 async function handleTotpIfAsked(page: Page, { sendInteraction }: HandlerArgs): Promise<void> {
@@ -142,10 +138,8 @@ async function handleTotpIfAsked(page: Page, { sendInteraction }: HandlerArgs): 
   const code = resp.data.code;
 
   await totpField.fill(code);
-  await Promise.all([
-    page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 30_000 }).catch((): null => null),
-    page.locator('button[type="submit"], input[type="submit"]').first().click(),
-  ]);
+  await page.locator('button[type="submit"], input[type="submit"]').first().click();
+  await page.waitForLoadState("domcontentloaded", { timeout: 30_000 }).catch((): null => null);
 }
 
 async function handleSudoIfAsked(page: Page, { password, sendInteraction }: SudoHandlerArgs): Promise<void> {
@@ -178,10 +172,8 @@ async function handleSudoIfAsked(page: Page, { password, sendInteraction }: Sudo
       throw new Error("github_sudo_password_required");
     }
     await page.fill('input[name="sudo_password"]', password);
-    await Promise.all([
-      page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 30_000 }).catch((): null => null),
-      page.locator('button[type="submit"]').first().click(),
-    ]);
+    await page.locator('button[type="submit"]').first().click();
+    await page.waitForLoadState("domcontentloaded", { timeout: 30_000 }).catch((): null => null);
     return;
   }
 

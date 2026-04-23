@@ -127,15 +127,8 @@ async function createPat({ page, name, scopes }: { page: Page; name: string; sco
       await page.locator("#login_field").waitFor({ state: "visible", timeout: 15_000 });
       await page.fill("#login_field", loginId);
       await page.fill("#password", password);
-      await Promise.all([
-        page
-          .waitForNavigation({
-            waitUntil: "domcontentloaded",
-            timeout: 30_000,
-          })
-          .catch(() => null),
-        page.click('input[type="submit"][name="commit"]'),
-      ]);
+      await page.click('input[type="submit"][name="commit"]');
+      await page.waitForLoadState("domcontentloaded", { timeout: 30_000 }).catch(() => null);
       continue;
     }
 
@@ -156,23 +149,16 @@ async function createPat({ page, name, scopes }: { page: Page; name: string; sco
         throw new Error("github_totp_not_provided");
       }
       await totpField.fill(resp.data.code);
-      // GitHub auto-submits the OTP form on input length; race a nav event with an explicit click.
-      await Promise.race([
-        page
-          .waitForNavigation({
-            waitUntil: "domcontentloaded",
-            timeout: 30_000,
-          })
-          .catch(() => null),
-        (async (): Promise<void> => {
-          const btn = page.locator('form button[type="submit"], form input[type="submit"]').first();
-          if (await btn.isVisible().catch(() => false)) {
-            await btn.click().catch(() => {
-              /* ignore */
-            });
-          }
-        })(),
-      ]);
+      // GitHub auto-submits the OTP form when the input hits its expected
+      // length; if that didn't happen, click the explicit submit button.
+      // Then wait for whatever navigation/load occurs.
+      const submitBtn = page.locator('form button[type="submit"], form input[type="submit"]').first();
+      if (await submitBtn.isVisible().catch(() => false)) {
+        await submitBtn.click().catch(() => {
+          /* ignore: autosubmit may have already fired */
+        });
+      }
+      await page.waitForLoadState("domcontentloaded", { timeout: 30_000 }).catch(() => null);
       continue;
     }
 
@@ -193,22 +179,15 @@ async function createPat({ page, name, scopes }: { page: Page; name: string; sco
         throw new Error("github_device_code_not_provided");
       }
       await deviceField.fill(resp.data.code);
-      await Promise.race([
-        page
-          .waitForNavigation({
-            waitUntil: "domcontentloaded",
-            timeout: 30_000,
-          })
-          .catch(() => null),
-        (async (): Promise<void> => {
-          const btn = page.locator('form button[type="submit"], form input[type="submit"]').first();
-          if (await btn.isVisible().catch(() => false)) {
-            await btn.click().catch(() => {
-              /* ignore */
-            });
-          }
-        })(),
-      ]);
+      // Device-verification may auto-submit on length; click explicitly if
+      // the submit button is still visible, then wait for navigation/load.
+      const submitBtn = page.locator('form button[type="submit"], form input[type="submit"]').first();
+      if (await submitBtn.isVisible().catch(() => false)) {
+        await submitBtn.click().catch(() => {
+          /* ignore: autosubmit may have already fired */
+        });
+      }
+      await page.waitForLoadState("domcontentloaded", { timeout: 30_000 }).catch(() => null);
       continue;
     }
 
