@@ -7,8 +7,9 @@
  */
 import {
   ReferenceServerUnreachableError,
-  getAsUrl,
-  getRsUrl,
+  getAsInternalUrl,
+  getReferencePublicOrigin,
+  withOwnerSessionCookie,
 } from './owner-token';
 
 export const DASHBOARD_BOOTSTRAP_CLIENT_ID = 'pdpp-web-dashboard';
@@ -100,13 +101,16 @@ function saveFlow(flow: OwnerBootstrapFlow): OwnerBootstrapFlow {
 
 async function fetchAs(path: string, init: RequestInit): Promise<Response> {
   try {
-    return await fetch(`${getAsUrl()}${path}`, {
-      cache: 'no-store',
-      ...init,
-    });
+    return await fetch(
+      `${getAsInternalUrl()}${path}`,
+      await withOwnerSessionCookie({
+        cache: 'no-store',
+        ...init,
+      }),
+    );
   } catch (err) {
     throw new ReferenceServerUnreachableError(
-      `Cannot reach authorization server at ${getAsUrl()}`,
+      `Cannot reach authorization server at ${getAsInternalUrl()}`,
       err,
     );
   }
@@ -291,9 +295,10 @@ export async function introspectOwnerBootstrapToken(
   });
 }
 
-export function buildOwnerBootstrapExamples(flow: OwnerBootstrapFlow) {
-  const asUrl = getAsUrl();
-  const rsUrl = getRsUrl();
+export async function buildOwnerBootstrapExamples(flow: OwnerBootstrapFlow) {
+  const referenceOrigin = await getReferencePublicOrigin();
+  const asUrl = referenceOrigin;
+  const rsUrl = referenceOrigin;
   return {
     cliLogin: `pdpp auth login --client-id ${shellQuote(flow.clientId)} --as-url ${shellQuote(asUrl)} --format json`,
     cliIntrospect: flow.token

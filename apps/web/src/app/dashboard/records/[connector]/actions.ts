@@ -1,6 +1,7 @@
 'use server';
 
 import { redirect } from 'next/navigation';
+import { requireDashboardAccess } from '../../lib/dashboard-access';
 import {
   deleteConnectorSchedule,
   pauseConnectorSchedule,
@@ -28,6 +29,7 @@ function errorMessage(err: unknown): string {
 
 export async function runConnectorNowAction(formData: FormData) {
   const connectorId = asString(formData.get('connector_id'));
+  await requireDashboardAccess(connectorHref(connectorId));
   let message: string | undefined;
   let error: string | undefined;
   try {
@@ -43,6 +45,7 @@ export async function runConnectorNowAction(formData: FormData) {
 
 export async function saveConnectorScheduleAction(formData: FormData) {
   const connectorId = asString(formData.get('connector_id'));
+  await requireDashboardAccess(connectorHref(connectorId));
   const every = asString(formData.get('every'));
   const jitter = asString(formData.get('jitter'));
   const enabled = formData.get('enabled') === 'on';
@@ -60,6 +63,7 @@ export async function saveConnectorScheduleAction(formData: FormData) {
 
 export async function pauseConnectorScheduleAction(formData: FormData) {
   const connectorId = asString(formData.get('connector_id'));
+  await requireDashboardAccess(connectorHref(connectorId));
   let message: string | undefined;
   let error: string | undefined;
   try {
@@ -73,6 +77,7 @@ export async function pauseConnectorScheduleAction(formData: FormData) {
 
 export async function resumeConnectorScheduleAction(formData: FormData) {
   const connectorId = asString(formData.get('connector_id'));
+  await requireDashboardAccess(connectorHref(connectorId));
   let message: string | undefined;
   let error: string | undefined;
   try {
@@ -86,6 +91,7 @@ export async function resumeConnectorScheduleAction(formData: FormData) {
 
 export async function deleteConnectorScheduleAction(formData: FormData) {
   const connectorId = asString(formData.get('connector_id'));
+  await requireDashboardAccess(connectorHref(connectorId));
   let message: string | undefined;
   let error: string | undefined;
   try {

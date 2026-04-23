@@ -1679,8 +1679,9 @@ function buildAsApp(opts = {}) {
   // The persisted pending-consent substrate remains the same; only the public start surface changes.
   app.post('/oauth/par', { contract: 'createPushedAuthorizationRequest' }, async (req, res) => {
     try {
+      const explicitBaseUrl = opts.asPublicUrl || (!opts.ignoreAmbientPublicUrls ? process.env.AS_PUBLIC_URL : null);
       const result = await initiateGrant(req.body, {
-        baseUrl: process.env.AS_PUBLIC_URL || `${req.protocol}://${req.get('host')}`,
+        baseUrl: explicitBaseUrl || `${req.protocol}://${req.get('host')}`,
         nativeManifest: resolveNativeManifest(opts),
       });
       const traceContext = result.trace_context || null;
@@ -2517,27 +2518,43 @@ export async function startServer(opts = {}) {
 
   const requestedAsPort = opts.asPort ?? AS_PORT;
   const requestedRsPort = opts.rsPort ?? RS_PORT;
+  const ignoreAmbientPublicUrls =
+    opts.ignoreAmbientPublicUrls ??
+    ((requestedAsPort === 0 || requestedRsPort === 0) &&
+      !opts.asPublicUrl &&
+      !opts.rsPublicUrl &&
+      !opts.asIssuer);
+  const configuredAsPublicUrl =
+    opts.asPublicUrl ||
+    (!ignoreAmbientPublicUrls ? process.env.AS_PUBLIC_URL : null) ||
+    null;
+  const configuredAsIssuer =
+    opts.asIssuer ||
+    opts.asPublicUrl ||
+    (!ignoreAmbientPublicUrls ? (process.env.AS_ISSUER || process.env.AS_PUBLIC_URL) : null) ||
+    null;
+  const configuredRsPublicUrl =
+    opts.rsPublicUrl ||
+    (!ignoreAmbientPublicUrls ? process.env.RS_PUBLIC_URL : null) ||
+    null;
   const runtimeContext = {
-    rsUrl: opts.rsPublicUrl || null,
+    rsUrl: configuredRsPublicUrl || null,
   };
   const controller = createController({
     db: getDb(),
-    asPublicUrl: opts.asPublicUrl,
+    asPublicUrl: configuredAsPublicUrl,
     ownerSubjectId: opts.ownerAuthSubjectId,
     connectorPathResolver: opts.connectorPathResolver,
     runtimeContext,
   });
-  const ignoreAmbientPublicUrls =
-    opts.ignoreAmbientPublicUrls ??
-    ((requestedAsPort === 0 || requestedRsPort === 0) && !opts.asPublicUrl && !opts.rsPublicUrl && !opts.asIssuer);
   const asApp = buildAsApp({
     nativeManifest: nativeConfig?.nativeManifest || null,
     controller,
     providerName,
     enableDynamicClientRegistration: resolveDynamicClientRegistrationEnabled(opts),
     dynamicClientRegistrationInitialAccessTokens: resolveDynamicClientRegistrationInitialAccessTokens(opts),
-    asPublicUrl: opts.asPublicUrl,
-    asIssuer: opts.asIssuer,
+    asPublicUrl: configuredAsPublicUrl,
+    asIssuer: configuredAsIssuer,
     ignoreAmbientPublicUrls,
     ownerAuthPassword: opts.ownerAuthPassword,
     ownerAuthSubjectId: opts.ownerAuthSubjectId,
@@ -2550,7 +2567,7 @@ export async function startServer(opts = {}) {
 
   const asServer = await asApp.listen(requestedAsPort, bindHost);
   const asPort = asServer.address().port;
-  const asPublicUrl = opts.asPublicUrl || opts.asIssuer || `http://localhost:${asPort}`;
+  const asPublicUrl = configuredAsPublicUrl || configuredAsIssuer || `http://localhost:${asPort}`;
   log(`[PDPP AS] Authorization server on http://localhost:${asPort}`);
 
   const rsApp = buildRsApp({
@@ -2558,13 +2575,13 @@ export async function startServer(opts = {}) {
     nativeManifest: nativeConfig?.nativeManifest || null,
     providerName,
     asPublicUrl,
-    asIssuer: opts.asIssuer || asPublicUrl,
-    rsPublicUrl: opts.rsPublicUrl,
+    asIssuer: configuredAsIssuer || asPublicUrl,
+    rsPublicUrl: configuredRsPublicUrl,
     ignoreAmbientPublicUrls,
   });
   const rsServer = await rsApp.listen(requestedRsPort, bindHost);
   const rsPort = rsServer.address().port;
-  runtimeContext.rsUrl = opts.rsPublicUrl || `http://localhost:${rsPort}`;
+  runtimeContext.rsUrl = configuredRsPublicUrl || `http://localhost:${rsPort}`;
   log(`[PDPP RS] Resource server on http://localhost:${rsPort}`);
   return { asServer, rsServer, asPort, rsPort };
 }

@@ -2,6 +2,30 @@ import { NextRequest, NextResponse } from 'next/server';
 import { isMarkdownPreferred, rewritePath } from 'fumadocs-core/negotiation';
 
 const { rewrite: rewriteLLM } = rewritePath('/docs{/*path}', '/llms.mdx/docs{/*path}');
+const AS_PROXY_TARGET = stripTrailingSlash(process.env.PDPP_AS_URL || 'http://localhost:7662');
+const RS_PROXY_TARGET = stripTrailingSlash(process.env.PDPP_RS_URL || 'http://localhost:7663');
+
+function stripTrailingSlash(value: string): string {
+  return value.replace(/\/+$/, '');
+}
+
+function resolveReferenceProxyTarget(pathname: string): string | null {
+  if (pathname === '/.well-known/oauth-protected-resource') return RS_PROXY_TARGET;
+  if (pathname.startsWith('/.well-known/')) return AS_PROXY_TARGET;
+  if (pathname.startsWith('/oauth/')) return AS_PROXY_TARGET;
+  if (pathname === '/introspect') return AS_PROXY_TARGET;
+  if (pathname.startsWith('/grants/') && pathname.endsWith('/revoke')) return AS_PROXY_TARGET;
+  if (pathname.startsWith('/_ref/')) return AS_PROXY_TARGET;
+  if (pathname.startsWith('/owner/')) return AS_PROXY_TARGET;
+  if (pathname === '/device' || pathname.startsWith('/device/')) return AS_PROXY_TARGET;
+  if (pathname === '/consent' || pathname.startsWith('/consent/')) return AS_PROXY_TARGET;
+  if (pathname.startsWith('/__pdpp/')) return AS_PROXY_TARGET;
+  if (pathname === '/connectors' || pathname.startsWith('/connectors/')) return AS_PROXY_TARGET;
+  if (pathname.startsWith('/v1/')) {
+    return RS_PROXY_TARGET;
+  }
+  return null;
+}
 
 export default function proxy(request: NextRequest) {
   if (isMarkdownPreferred(request)) {
@@ -12,9 +36,48 @@ export default function proxy(request: NextRequest) {
     }
   }
 
+  if (request.nextUrl.pathname === '/dashboard' || request.nextUrl.pathname.startsWith('/dashboard/')) {
+    const requestHeaders = new Headers(request.headers);
+    requestHeaders.set(
+      'x-pdpp-return-to',
+      `${request.nextUrl.pathname}${request.nextUrl.search}`,
+    );
+    return NextResponse.next({
+      request: {
+        headers: requestHeaders,
+      },
+    });
+  }
+
+  const proxyTarget = resolveReferenceProxyTarget(request.nextUrl.pathname);
+  if (proxyTarget) {
+    return NextResponse.rewrite(
+      new URL(`${request.nextUrl.pathname}${request.nextUrl.search}`, proxyTarget),
+    );
+  }
+
   return NextResponse.next();
 }
 
 export const config = {
-  matcher: ['/docs', '/docs/:path*'],
+  matcher: [
+    '/docs',
+    '/docs/:path*',
+    '/dashboard',
+    '/dashboard/:path*',
+    '/.well-known/:path*',
+    '/oauth/:path*',
+    '/introspect',
+    '/grants/:path*',
+    '/_ref/:path*',
+    '/owner/:path*',
+    '/device',
+    '/device/:path*',
+    '/consent',
+    '/consent/:path*',
+    '/__pdpp/:path*',
+    '/connectors',
+    '/connectors/:path*',
+    '/v1/:path*',
+  ],
 };

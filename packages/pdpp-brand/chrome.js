@@ -1,4 +1,4 @@
 export const siteNav = [
   { text: 'Docs', link: '/docs' },
-  { text: 'OpenSpec', link: '/openspec' },
+  { text: 'Planning', link: '/planning' },
 ];

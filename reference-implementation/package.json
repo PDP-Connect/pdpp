@@ -10,9 +10,14 @@
     "./reference-local-defaults": {
       "types": "./server/reference-local-defaults.d.ts",
       "default": "./server/reference-local-defaults.js"
+    },
+    "./owner-session": {
+      "types": "./server/owner-session.d.ts",
+      "default": "./server/owner-session.js"
     }
   },
   "scripts": {
+    "dev": "sh -c 'AS_PUBLIC_URL=${AS_PUBLIC_URL:-http://localhost:3000} RS_PUBLIC_URL=${RS_PUBLIC_URL:-http://localhost:3000} PDPP_DB_PATH=${PDPP_DB_PATH:-../packages/polyfill-connectors/.pdpp-data/polyfill.sqlite} node --watch server/index.js'",
     "server": "node server/index.js",
     "cli": "node cli/index.js",
     "example-client": "node examples/third-party-app/server.js",

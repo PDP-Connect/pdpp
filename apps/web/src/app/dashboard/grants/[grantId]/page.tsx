@@ -1,7 +1,7 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { DashboardShell, ServerUnreachable } from '../../components/shell';
-import { ReferenceServerUnreachableError, getAsUrl } from '../../lib/owner-token';
+import { ReferenceServerUnreachableError } from '../../lib/owner-token';
 import { getGrantTimeline, type TimelineEnvelope } from '../../lib/ref-client';
 import { TimelineView } from '../../components/timeline-view';
 
@@ -90,7 +90,7 @@ export default async function GrantDetailPage({
           pdpp grant timeline {grantId}
         </pre>
         <p className="text-muted-foreground mt-1 text-[11px] break-all">
-          raw: <code>{`${getAsUrl()}/_ref/grants/${encodeURIComponent(grantId)}/timeline`}</code>
+          raw: <code>{`/_ref/grants/${encodeURIComponent(grantId)}/timeline`}</code>
         </p>
       </section>
     </DashboardShell>

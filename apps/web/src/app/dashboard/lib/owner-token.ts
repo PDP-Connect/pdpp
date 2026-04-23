@@ -1,33 +1,183 @@
 /**
- * Server-only helper: mint and cache an owner token from the reference AS.
- *
- * Matches the device-code flow used by
- * packages/polyfill-connectors/src/orchestrator.js (issueOwnerToken).
- * The owner token is the standard PDPP owner-self-export credential — the
- * dashboard is an ordinary PDPP client holding that token.
- *
- * Server-only: this module must not be imported by client components. It
- * reads env vars and holds a module-level token cache.
+ * Server-only dashboard helpers for:
+ * - internal AS/RS fetch targets
+ * - browser-facing reference URLs on the composed Next origin
+ * - owner-session forwarding and dashboard gating
+ * - owner self-export token minting
  */
+import 'server-only';
 
-const AS_URL = process.env.PDPP_AS_URL || 'http://localhost:7662';
-const RS_URL = process.env.PDPP_RS_URL || 'http://localhost:7663';
+import { cookies, headers } from 'next/headers';
+import { redirect } from 'next/navigation';
+import {
+  createOwnerSessionController,
+  OWNER_AUTH_COOKIE_NAME,
+} from 'pdpp-reference-implementation/owner-session';
+
+const INTERNAL_AS_URL = process.env.PDPP_AS_URL || 'http://localhost:7662';
+const INTERNAL_RS_URL = process.env.PDPP_RS_URL || 'http://localhost:7663';
+const DEFAULT_REFERENCE_BROWSER_ORIGIN = 'http://localhost:3000';
 const SUBJECT_ID = process.env.PDPP_SUBJECT_ID || 'the owner';
 const CLIENT_ID = 'pdpp-polyfill-owner-bootstrap';
 
 let cachedToken: string | null = null;
 let inFlight: Promise<string> | null = null;
 
-export function getAsUrl(): string {
-  return AS_URL;
+function stripTrailingSlash(value: string): string {
+  return value.replace(/\/+$/, '');
 }
 
-export function getOwnerLoginUrl(): string {
-  return `${AS_URL}/owner/login`;
+function ensureLeadingSlash(value: string): string {
+  return value.startsWith('/') ? value : `/${value}`;
 }
 
-export function getRsUrl(): string {
-  return RS_URL;
+async function getRequestOrigin(): Promise<string | null> {
+  try {
+    const headerList = await headers();
+    const host =
+      headerList.get('x-forwarded-host') ??
+      headerList.get('host');
+    if (!host) return null;
+
+    const protocol =
+      headerList
+        .get('x-forwarded-proto')
+        ?.split(',')[0]
+        ?.trim() ||
+      (host.startsWith('localhost') || host.startsWith('127.0.0.1') ? 'http' : 'https');
+
+    return `${protocol}://${host}`;
+  } catch {
+    return null;
+  }
+}
+
+function resolveConfiguredReferenceOrigin(): string | null {
+  const configured = process.env.PDPP_REFERENCE_ORIGIN?.trim();
+  return configured ? stripTrailingSlash(configured) : null;
+}
+
+function normalizeDashboardReturnTo(input: string | null | undefined): string {
+  if (typeof input !== 'string' || !input) return '/dashboard';
+  if (!input.startsWith('/dashboard')) return '/dashboard';
+  if (input.startsWith('//')) return '/dashboard';
+  if (input.includes('\\')) return '/dashboard';
+  if (/[\u0000-\u001F\u007F]/.test(input)) return '/dashboard';
+  return input;
+}
+
+const ownerSessionController = createOwnerSessionController({
+  password: process.env.PDPP_OWNER_PASSWORD,
+  subjectId: process.env.PDPP_OWNER_SUBJECT_ID,
+});
+
+export function getAsInternalUrl(): string {
+  return stripTrailingSlash(INTERNAL_AS_URL);
+}
+
+export function getRsInternalUrl(): string {
+  return stripTrailingSlash(INTERNAL_RS_URL);
+}
+
+export function getOwnerLoginPath(): string {
+  return '/owner/login';
+}
+
+export function getReferencePublicPath(path: string): string {
+  return ensureLeadingSlash(path);
+}
+
+export async function getReferencePublicOrigin(): Promise<string> {
+  return (
+    resolveConfiguredReferenceOrigin() ??
+    stripTrailingSlash((await getRequestOrigin()) ?? DEFAULT_REFERENCE_BROWSER_ORIGIN)
+  );
+}
+
+export async function getReferencePublicUrl(path: string): Promise<string> {
+  const origin = await getReferencePublicOrigin();
+  return new URL(getReferencePublicPath(path), `${origin}/`).toString();
+}
+
+export async function toReferencePublicUrl(input: string): Promise<string> {
+  if (!input) return input;
+  if (input.startsWith('/')) {
+    return getReferencePublicUrl(input);
+  }
+
+  try {
+    const url = new URL(input);
+    const origin = stripTrailingSlash(url.origin);
+    const publicOrigin = await getReferencePublicOrigin();
+    if (origin === stripTrailingSlash(publicOrigin)) {
+      return url.toString();
+    }
+
+    if (origin === getAsInternalUrl() || origin === getRsInternalUrl()) {
+      return new URL(
+        `${url.pathname}${url.search}${url.hash}`,
+        `${publicOrigin}/`,
+      ).toString();
+    }
+
+    return url.toString();
+  } catch {
+    return input;
+  }
+}
+
+export async function getOwnerSessionCookieHeader(): Promise<string | null> {
+  if (!ownerSessionController.enabled) return null;
+
+  try {
+    const cookieStore = await cookies();
+    const rawCookie = cookieStore.get(OWNER_AUTH_COOKIE_NAME)?.value ?? null;
+    return rawCookie ? `${OWNER_AUTH_COOKIE_NAME}=${rawCookie}` : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function withOwnerSessionCookie(
+  init: RequestInit = {},
+): Promise<RequestInit> {
+  const cookieHeader = await getOwnerSessionCookieHeader();
+  if (!cookieHeader) return init;
+
+  const requestHeaders = new Headers(init.headers);
+  const existingCookie = requestHeaders.get('cookie');
+  requestHeaders.set(
+    'cookie',
+    existingCookie ? `${existingCookie}; ${cookieHeader}` : cookieHeader,
+  );
+
+  return {
+    ...init,
+    headers: requestHeaders,
+  };
+}
+
+export function isOwnerSessionGateEnabled(): boolean {
+  return ownerSessionController.enabled;
+}
+
+export async function requireDashboardOwnerSession(explicitReturnTo?: string) {
+  if (!ownerSessionController.enabled) return null;
+
+  const cookieStore = await cookies();
+  const rawCookie = cookieStore.get(OWNER_AUTH_COOKIE_NAME)?.value ?? null;
+  const session = ownerSessionController.readSessionFromCookieValue(rawCookie);
+  if (session) return session;
+
+  let returnTo = explicitReturnTo;
+  if (!returnTo) {
+    const headerList = await headers();
+    returnTo = headerList.get('x-pdpp-return-to') ?? '/dashboard';
+  }
+
+  redirect(
+    `${getOwnerLoginPath()}?return_to=${encodeURIComponent(normalizeDashboardReturnTo(returnTo))}`,
+  );
 }
 
 export class ReferenceServerUnreachableError extends Error {
@@ -43,15 +193,18 @@ async function mintOwnerToken(): Promise<string> {
 
   let deviceRes: Response;
   try {
-    deviceRes = await fetch(`${AS_URL}/oauth/device_authorization`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: form({ client_id: CLIENT_ID }),
-      cache: 'no-store',
-    });
+    deviceRes = await fetch(
+      `${getAsInternalUrl()}/oauth/device_authorization`,
+      await withOwnerSessionCookie({
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: form({ client_id: CLIENT_ID }),
+        cache: 'no-store',
+      }),
+    );
   } catch (err) {
     throw new ReferenceServerUnreachableError(
-      `Cannot reach authorization server at ${AS_URL}`,
+      `Cannot reach authorization server at ${getAsInternalUrl()}`,
       err,
     );
   }
@@ -65,28 +218,34 @@ async function mintOwnerToken(): Promise<string> {
     user_code: string;
   };
 
-  const approveRes = await fetch(`${AS_URL}/device/approve`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: form({ user_code: device.user_code, subject_id: SUBJECT_ID }),
-    cache: 'no-store',
-  });
+  const approveRes = await fetch(
+    `${getAsInternalUrl()}/device/approve`,
+    await withOwnerSessionCookie({
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: form({ user_code: device.user_code, subject_id: SUBJECT_ID }),
+      cache: 'no-store',
+    }),
+  );
   if (!approveRes.ok) {
     throw new Error(
       `device/approve failed (${approveRes.status}): ${await approveRes.text()}`,
     );
   }
 
-  const tokenRes = await fetch(`${AS_URL}/oauth/token`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: form({
-      grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
-      device_code: device.device_code,
-      client_id: CLIENT_ID,
+  const tokenRes = await fetch(
+    `${getAsInternalUrl()}/oauth/token`,
+    await withOwnerSessionCookie({
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: form({
+        grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
+        device_code: device.device_code,
+        client_id: CLIENT_ID,
+      }),
+      cache: 'no-store',
     }),
-    cache: 'no-store',
-  });
+  );
   if (!tokenRes.ok) {
     throw new Error(
       `/oauth/token failed (${tokenRes.status}): ${await tokenRes.text()}`,

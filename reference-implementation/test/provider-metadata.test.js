@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 
 import { startServer } from '../server/index.js';
 
@@ -116,6 +117,91 @@ test('provider metadata routes expose current honest capability set', async () =
     assert.deepEqual(authorizationServer.body.token_endpoint_auth_methods_supported, ['none']);
     assert.equal(authorizationServer.body.device_authorization_endpoint, `${asUrl}/oauth/device_authorization`);
     assert.deepEqual(authorizationServer.body.grant_types_supported, ['urn:ietf:params:oauth:grant-type:device_code']);
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test('explicit browser-facing public urls drive metadata, device verification, and PAR links', async () => {
+  const publicOrigin = 'http://localhost:3000';
+  const server = await startServer({
+    quiet: true,
+    asPort: 0,
+    rsPort: 0,
+    dbPath: ':memory:',
+    asPublicUrl: publicOrigin,
+    rsPublicUrl: publicOrigin,
+  });
+  const asUrl = `http://localhost:${server.asPort}`;
+  const rsUrl = `http://localhost:${server.rsPort}`;
+
+  try {
+    const protectedResource = await fetchJson(`${rsUrl}/.well-known/oauth-protected-resource`);
+    assert.equal(protectedResource.status, 200);
+    assert.equal(protectedResource.body.resource, publicOrigin);
+    assert.deepEqual(protectedResource.body.authorization_servers, [publicOrigin]);
+    assert.equal(protectedResource.body.pdpp_core_query_base, `${publicOrigin}/v1`);
+
+    const authorizationServer = await fetchJson(`${asUrl}/.well-known/oauth-authorization-server`);
+    assert.equal(authorizationServer.status, 200);
+    assert.equal(authorizationServer.body.issuer, publicOrigin);
+    assert.equal(
+      authorizationServer.body.device_authorization_endpoint,
+      `${publicOrigin}/oauth/device_authorization`,
+    );
+    assert.equal(
+      authorizationServer.body.pushed_authorization_request_endpoint,
+      `${publicOrigin}/oauth/par`,
+    );
+
+    const device = await fetch(`${asUrl}/oauth/device_authorization`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ client_id: 'pdpp-web-dashboard' }).toString(),
+    });
+    assert.equal(device.status, 200);
+    const deviceBody = await device.json();
+    assert.equal(deviceBody.verification_uri, `${publicOrigin}/device`);
+    assert.match(
+      deviceBody.verification_uri_complete,
+      /^http:\/\/localhost:3000\/device\?user_code=/,
+    );
+
+    const spotifyManifest = JSON.parse(
+      await readFile(new URL('../manifests/spotify.json', import.meta.url), 'utf8'),
+    );
+    const registerConnector = await fetch(`${asUrl}/connectors`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(spotifyManifest),
+    });
+    assert.equal(registerConnector.status, 201);
+
+    const par = await fetch(`${asUrl}/oauth/par`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        client_id: 'cli_longview',
+        client_display: { name: 'Longview' },
+        authorization_details: [
+          {
+            type: 'https://pdpp.org/data-access',
+            connector_id: 'https://registry.pdpp.org/connectors/spotify',
+            purpose_code: 'https://pdpp.org/purpose/recommendation',
+            purpose_description: 'Review top artists',
+            access_mode: 'single_use',
+            retention: 'P30D',
+            streams: [{ name: 'top_artists' }],
+          },
+        ],
+      }),
+    });
+    assert.equal(par.status, 201);
+    const parBody = await par.json();
+    assert.match(
+      parBody.authorization_url,
+      /^http:\/\/localhost:3000\/consent\?request_uri=/,
+    );
   } finally {
     await closeServer(server);
   }

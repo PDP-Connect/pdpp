@@ -2,7 +2,7 @@ import { Fragment } from 'react';
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { DashboardShell, ServerUnreachable } from '../../components/shell';
-import { ReferenceServerUnreachableError, getAsUrl } from '../../lib/owner-token';
+import { ReferenceServerUnreachableError } from '../../lib/owner-token';
 import { getRunTimeline, type SpineEvent, type TimelineEnvelope } from '../../lib/ref-client';
 import { TimelineView } from '../../components/timeline-view';
 
@@ -110,7 +110,7 @@ export default async function RunDetailPage({
           pdpp run timeline {runId}
         </pre>
         <p className="text-muted-foreground mt-1 text-[11px] break-all">
-          raw: <code>{`${getAsUrl()}/_ref/runs/${encodeURIComponent(runId)}/timeline`}</code>
+          raw: <code>{`/_ref/runs/${encodeURIComponent(runId)}/timeline`}</code>
         </p>
       </section>
     </DashboardShell>

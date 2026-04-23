@@ -1,7 +1,7 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { DashboardShell, ServerUnreachable } from '../../components/shell';
-import { ReferenceServerUnreachableError, getAsUrl } from '../../lib/owner-token';
+import { ReferenceServerUnreachableError } from '../../lib/owner-token';
 import { getTraceTimeline, type TimelineEnvelope } from '../../lib/ref-client';
 import { TimelineView } from '../../components/timeline-view';
 
@@ -95,7 +95,7 @@ function CliEquivalent({ traceId }: { traceId: string }) {
         pdpp trace show {traceId}
       </pre>
       <p className="text-muted-foreground mt-1 text-[11px] break-all">
-        raw: <code>{`${getAsUrl()}/_ref/traces/${encodeURIComponent(traceId)}`}</code>
+        raw: <code>{`/_ref/traces/${encodeURIComponent(traceId)}`}</code>
       </p>
     </section>
   );

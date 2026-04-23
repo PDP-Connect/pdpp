@@ -13,7 +13,10 @@ import {
   getOwnerBootstrapFlow,
   type OwnerBootstrapFlow,
 } from '../../lib/operator-bootstrap';
-import { getOwnerLoginUrl } from '../../lib/owner-token';
+import {
+  getOwnerLoginPath,
+  toReferencePublicUrl,
+} from '../../lib/owner-token';
 import {
   approveOwnerTokenFlowAction,
   denyOwnerTokenFlowAction,
@@ -36,9 +39,15 @@ export default async function OwnerTokenBootstrapPage({
 }) {
   const params = await searchParams;
   const flow = params.flow ? getOwnerBootstrapFlow(params.flow) : null;
-  const examples = flow ? buildOwnerBootstrapExamples(flow) : null;
+  const examples = flow ? await buildOwnerBootstrapExamples(flow) : null;
   const error = params.error ?? null;
-  const ownerLoginUrl = getOwnerLoginUrl();
+  const ownerLoginPath = getOwnerLoginPath();
+  const verificationUriComplete = flow?.verificationUriComplete
+    ? await toReferencePublicUrl(flow.verificationUriComplete)
+    : null;
+  const verificationUri = !verificationUriComplete && flow?.verificationUri
+    ? await toReferencePublicUrl(flow.verificationUri)
+    : null;
 
   return (
     <DashboardShell active="grants">
@@ -63,12 +72,12 @@ export default async function OwnerTokenBootstrapPage({
             >
               register or inspect client →
             </Link>
-            <a
-              href={ownerLoginUrl}
+            <Link
+              href={ownerLoginPath}
               className="border-border hover:bg-muted/50 rounded-xl border px-2.5 py-1.5"
             >
               owner access →
-            </a>
+            </Link>
             <Link
               href="/dashboard/records"
               className="border-border hover:bg-muted/50 rounded-xl border px-2.5 py-1.5"
@@ -178,14 +187,14 @@ export default async function OwnerTokenBootstrapPage({
                   value={
                     flow.verificationUriComplete ? (
                       <a
-                        href={flow.verificationUriComplete}
+                        href={verificationUriComplete ?? flow.verificationUriComplete}
                         className="underline-offset-2 hover:underline"
                       >
-                        {flow.verificationUriComplete}
+                        {verificationUriComplete ?? flow.verificationUriComplete}
                       </a>
                     ) : flow.verificationUri ? (
-                      <a href={flow.verificationUri} className="underline-offset-2 hover:underline">
-                        {flow.verificationUri}
+                      <a href={verificationUri ?? flow.verificationUri} className="underline-offset-2 hover:underline">
+                        {verificationUri ?? flow.verificationUri}
                       </a>
                     ) : (
                       '—'
@@ -196,9 +205,9 @@ export default async function OwnerTokenBootstrapPage({
                   This is the real public device flow. You can also open the verification URI in a
                   browser and approve manually.
                   {' '}
-                  <a href={ownerLoginUrl} className="underline-offset-2 hover:underline">
+                  <Link href={ownerLoginPath} className="underline-offset-2 hover:underline">
                     Owner access
-                  </a>
+                  </Link>
                   {' '}
                   is the stable hosted entry point.
                 </p>
@@ -239,12 +248,12 @@ export default async function OwnerTokenBootstrapPage({
                 {flow.approvalUpdatedAt ? ` · last updated ${flow.approvalUpdatedAt}` : ''}
               </p>
               <p className="text-muted-foreground mt-2 text-[11px]">
-                These direct dashboard shortcut buttons only work while the reference AS approval
-                pages are still open locally. If placeholder owner auth is enabled, sign in at{' '}
-                <a href={ownerLoginUrl} className="underline-offset-2 hover:underline">
+                These actions call the live approval endpoints. If placeholder owner auth is
+                enabled and this dashboard session expires, sign in again at{' '}
+                <Link href={ownerLoginPath} className="underline-offset-2 hover:underline">
                   owner access
-                </a>
-                {' '}and finish approval in the hosted UI instead.
+                </Link>
+                .
               </p>
             </Card>
           </section>

@@ -1,6 +1,7 @@
 'use server';
 
 import { redirect } from 'next/navigation';
+import { requireDashboardAccess } from '../lib/dashboard-access';
 import {
   approvePendingApproval,
   denyPendingApproval,
@@ -21,6 +22,7 @@ function errorMessage(err: unknown): string {
 }
 
 export async function approvePendingApprovalAction(formData: FormData) {
+  await requireDashboardAccess('/dashboard/grants#pending-approvals');
   const kind = asString(formData.get('kind')) as 'consent' | 'owner_device';
   const approvalId = asString(formData.get('approval_id'));
   const userCode = asString(formData.get('user_code')) || undefined;
@@ -42,6 +44,7 @@ export async function approvePendingApprovalAction(formData: FormData) {
 }
 
 export async function denyPendingApprovalAction(formData: FormData) {
+  await requireDashboardAccess('/dashboard/grants#pending-approvals');
   const kind = asString(formData.get('kind')) as 'consent' | 'owner_device';
   const approvalId = asString(formData.get('approval_id'));
   const userCode = asString(formData.get('user_code')) || undefined;

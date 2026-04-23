@@ -4,7 +4,9 @@
  */
 import {
   ReferenceServerUnreachableError,
-  getAsUrl,
+  getAsInternalUrl,
+  getReferencePublicOrigin,
+  withOwnerSessionCookie,
 } from './owner-token';
 import {
   approveConsentRequest,
@@ -206,13 +208,16 @@ function describeError(body: unknown, fallback: string): string {
 
 async function fetchAs(path: string, init: RequestInit): Promise<Response> {
   try {
-    return await fetch(`${getAsUrl()}${path}`, {
-      cache: 'no-store',
-      ...init,
-    });
+    return await fetch(
+      `${getAsInternalUrl()}${path}`,
+      await withOwnerSessionCookie({
+        cache: 'no-store',
+        ...init,
+      }),
+    );
   } catch (err) {
     throw new ReferenceServerUnreachableError(
-      `Cannot reach authorization server at ${getAsUrl()}`,
+      `Cannot reach authorization server at ${getAsInternalUrl()}`,
       err,
     );
   }
@@ -395,8 +400,8 @@ export async function denyGrantRequestWorkspace(
   });
 }
 
-export function buildGrantRequestExamples(workspace: GrantRequestWorkspace) {
-  const asUrl = getAsUrl();
+export async function buildGrantRequestExamples(workspace: GrantRequestWorkspace) {
+  const asUrl = await getReferencePublicOrigin();
   const streamSelection = {
     name: workspace.draft.streamName || '<stream>',
     ...(normalizeFields(workspace.draft.fields)

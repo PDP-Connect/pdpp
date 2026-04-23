@@ -1,6 +1,7 @@
 'use server';
 
 import { redirect } from 'next/navigation';
+import { requireDashboardAccess } from '../../lib/dashboard-access';
 import {
   approveGrantRequestWorkspace,
   denyGrantRequestWorkspace,
@@ -38,18 +39,24 @@ function workspaceHref(workspaceId: string): string {
   return `/dashboard/grants/request?workspace=${encodeURIComponent(workspaceId)}`;
 }
 
+function workspaceReturnTo(workspaceId: string | undefined): string {
+  return workspaceId ? workspaceHref(workspaceId) : '/dashboard/grants/request';
+}
+
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : 'Unexpected grant-request action failure';
 }
 
 export async function saveGrantRequestDraftAction(formData: FormData) {
   const workspaceId = asString(formData.get('workspace_id')) || undefined;
+  await requireDashboardAccess(workspaceReturnTo(workspaceId));
   const workspace = updateGrantRequestWorkspaceDraft(workspaceId, readDraft(formData));
   redirect(workspaceHref(workspace.workspaceId));
 }
 
 export async function registerGrantRequestClientAction(formData: FormData) {
   const workspaceId = asString(formData.get('workspace_id')) || undefined;
+  await requireDashboardAccess(workspaceReturnTo(workspaceId));
   const draft = readDraft(formData);
   let target: string;
   try {
@@ -65,6 +72,7 @@ export async function registerGrantRequestClientAction(formData: FormData) {
 
 export async function stageGrantRequestAction(formData: FormData) {
   const workspaceId = asString(formData.get('workspace_id')) || undefined;
+  await requireDashboardAccess(workspaceReturnTo(workspaceId));
   const draft = readDraft(formData);
   let target: string;
   try {
@@ -80,6 +88,7 @@ export async function stageGrantRequestAction(formData: FormData) {
 
 export async function approveGrantRequestAction(formData: FormData) {
   const workspaceId = asString(formData.get('workspace_id'));
+  await requireDashboardAccess(workspaceReturnTo(workspaceId));
   try {
     await approveGrantRequestWorkspace(workspaceId);
   } catch (err) {
@@ -90,6 +99,7 @@ export async function approveGrantRequestAction(formData: FormData) {
 
 export async function denyGrantRequestAction(formData: FormData) {
   const workspaceId = asString(formData.get('workspace_id'));
+  await requireDashboardAccess(workspaceReturnTo(workspaceId));
   try {
     await denyGrantRequestWorkspace(workspaceId);
   } catch (err) {

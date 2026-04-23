@@ -1,6 +1,5 @@
 import Link from 'next/link';
 import type { ReactNode } from 'react';
-import { getRsUrl } from '../lib/owner-token';
 import { CommandPalette } from './command-palette';
 
 type NavItem = {
@@ -32,7 +31,7 @@ export function DashboardShell({
           <div className="mb-4">
             <div className="text-xs font-semibold uppercase tracking-wide">pdpp</div>
             <div className="text-muted-foreground text-[10px] break-all">
-              {getRsUrl()}
+              same-origin /v1/*
             </div>
           </div>
           <nav className="flex flex-row flex-wrap gap-1 md:flex-col md:gap-0">
@@ -70,12 +69,12 @@ export function ServerUnreachable() {
     <div className="border-destructive/40 bg-destructive/5 rounded border p-4 break-words">
       <h2 className="text-destructive font-semibold">Reference server unreachable</h2>
       <p className="mt-2 break-words">
-        Could not reach the PDPP authorization/resource server at{' '}
-        <code className="break-all">{getRsUrl()}</code>. Start it with:
+        Could not reach the internal PDPP authorization/resource servers that back the same-origin{' '}
+        <code className="break-all">/v1/*</code> and <code className="break-all">/_ref/*</code>{' '}
+        surfaces. Start them with:
       </p>
       <pre className="bg-muted mt-3 overflow-x-auto rounded p-3 text-xs">
-        PDPP_DB_PATH=packages/polyfill-connectors/.pdpp-data/polyfill.sqlite {'\n'}
-        node reference-implementation/server/index.js
+        pnpm dev
       </pre>
     </div>
   );

@@ -8,7 +8,8 @@
  */
 import {
   ReferenceServerUnreachableError,
-  getAsUrl,
+  getAsInternalUrl,
+  withOwnerSessionCookie,
 } from './owner-token';
 
 export type SpineEvent = {
@@ -131,7 +132,7 @@ class RefNotFoundError extends Error {
 }
 
 async function refFetch(path: string, params?: Record<string, string | number | undefined>) {
-  const url = new URL(`${getAsUrl()}${path}`);
+  const url = new URL(`${getAsInternalUrl()}${path}`);
   if (params) {
     for (const [k, v] of Object.entries(params)) {
       if (v !== undefined && v !== null && v !== '') url.searchParams.set(k, String(v));
@@ -139,10 +140,13 @@ async function refFetch(path: string, params?: Record<string, string | number | 
   }
   let res: Response;
   try {
-    res = await fetch(url.toString(), { cache: 'no-store' });
+    res = await fetch(
+      url.toString(),
+      await withOwnerSessionCookie({ cache: 'no-store' }),
+    );
   } catch (err) {
     throw new ReferenceServerUnreachableError(
-      `Cannot reach authorization server at ${getAsUrl()}`,
+      `Cannot reach authorization server at ${getAsInternalUrl()}`,
       err,
     );
   }

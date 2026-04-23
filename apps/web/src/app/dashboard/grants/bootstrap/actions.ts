@@ -1,6 +1,7 @@
 'use server';
 
 import { redirect } from 'next/navigation';
+import { requireDashboardAccess } from '../../lib/dashboard-access';
 import {
   DASHBOARD_BOOTSTRAP_CLIENT_ID,
   approveOwnerBootstrapFlow,
@@ -28,6 +29,7 @@ function errorMessage(err: unknown): string {
 }
 
 export async function startOwnerTokenFlowAction(formData: FormData) {
+  await requireDashboardAccess('/dashboard/grants/bootstrap');
   const clientId = asString(formData.get('client_id')) || DASHBOARD_BOOTSTRAP_CLIENT_ID;
   let target: string;
   try {
@@ -41,6 +43,7 @@ export async function startOwnerTokenFlowAction(formData: FormData) {
 
 export async function approveOwnerTokenFlowAction(formData: FormData) {
   const flowId = asString(formData.get('flow_id'));
+  await requireDashboardAccess(flowHref(flowId));
   const subjectId = asString(formData.get('subject_id')) || 'owner_local';
   try {
     await approveOwnerBootstrapFlow(flowId, subjectId);
@@ -52,6 +55,7 @@ export async function approveOwnerTokenFlowAction(formData: FormData) {
 
 export async function denyOwnerTokenFlowAction(formData: FormData) {
   const flowId = asString(formData.get('flow_id'));
+  await requireDashboardAccess(flowHref(flowId));
   const subjectId = asString(formData.get('subject_id')) || 'owner_local';
   try {
     await denyOwnerBootstrapFlow(flowId, subjectId);
@@ -63,6 +67,7 @@ export async function denyOwnerTokenFlowAction(formData: FormData) {
 
 export async function exchangeOwnerTokenFlowAction(formData: FormData) {
   const flowId = asString(formData.get('flow_id'));
+  await requireDashboardAccess(flowHref(flowId));
   try {
     await exchangeOwnerBootstrapToken(flowId);
   } catch (err) {
@@ -73,6 +78,7 @@ export async function exchangeOwnerTokenFlowAction(formData: FormData) {
 
 export async function introspectOwnerTokenFlowAction(formData: FormData) {
   const flowId = asString(formData.get('flow_id'));
+  await requireDashboardAccess(flowHref(flowId));
   try {
     await introspectOwnerBootstrapToken(flowId);
   } catch (err) {

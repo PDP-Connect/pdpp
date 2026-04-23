@@ -15,7 +15,7 @@ import { join } from 'node:path';
 import {
   ReferenceServerUnreachableError,
   getOwnerToken,
-  getRsUrl,
+  getRsInternalUrl,
 } from './owner-token';
 
 export type StreamSummary = {
@@ -59,7 +59,7 @@ const MANIFESTS_DIR = join(
 
 async function authedFetch(path: string, params?: Record<string, string | number | undefined>) {
   const token = await getOwnerToken();
-  const url = new URL(`${getRsUrl()}${path}`);
+  const url = new URL(`${getRsInternalUrl()}${path}`);
   if (params) {
     for (const [k, v] of Object.entries(params)) {
       if (v !== undefined && v !== null && v !== '') url.searchParams.set(k, String(v));
@@ -73,7 +73,7 @@ async function authedFetch(path: string, params?: Record<string, string | number
     });
   } catch (err) {
     throw new ReferenceServerUnreachableError(
-      `Cannot reach resource server at ${getRsUrl()}`,
+      `Cannot reach resource server at ${getRsInternalUrl()}`,
       err,
     );
   }

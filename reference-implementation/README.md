@@ -151,19 +151,20 @@ for the design rationale.
 
 ### Reference-only owner-auth placeholder
 
-The reference ships a minimal local-only owner-auth placeholder for the approval surfaces. It is **not** part of the PDPP protocol and is **not** a finished owner-auth product. See
+The reference ships a minimal local-only owner-auth placeholder for the current owner/operator browser surfaces. It is **not** part of the PDPP protocol and is **not** a finished owner-auth product. See
 [`openspec/changes/reference-implementation-program/design-notes/owner-auth-placeholder-open-question-2026-04-22.md`](../openspec/changes/reference-implementation-program/design-notes/owner-auth-placeholder-open-question-2026-04-22.md)
 for scope and rationale.
 
 Environment variables:
 
-- `PDPP_OWNER_PASSWORD` — if set, the approval surfaces below require a valid owner session. If unset, the server keeps its current open local-dev behavior.
+- `PDPP_OWNER_PASSWORD` — if set, the current owner/operator browser surfaces below require a valid owner session. If unset, the server keeps its current open local-dev behavior.
 - `PDPP_OWNER_SUBJECT_ID` — optional. Defaults to `owner_local`. When placeholder auth is enabled, this value is the owner subject id used for every approved grant and device authorization; any `subject_id` submitted from a form or JSON body is ignored.
 
 Routes gated by the placeholder (when enabled):
 
 - `GET /consent`, `POST /consent/approve`, `POST /consent/deny`
 - `GET /device`, `POST /device/approve`, `POST /device/deny`
+- `/dashboard`, `/dashboard/*` (via the composed web origin)
 
 Stable owner-entry routes:
 
@@ -178,7 +179,7 @@ The placeholder is intentionally narrow:
 - no user table, no external IdP, no multi-user auth
 - stateless HMAC-signed session cookie — rotating `PDPP_OWNER_PASSWORD` invalidates existing sessions
 - public protocol surfaces (`/oauth/par`, `/oauth/register`, `/oauth/token`, `/v1/*`, `/.well-known/*`) are **not** gated
-- `/dashboard` is **not** gated in this tranche and remains an open follow-up when a more durable owner-auth story is chosen
+- the placeholder is still not a durable owner-auth story; it is only the current reference-local browser/session gate
 
 ### Reference-only hosted-UI layer
 
@@ -188,11 +189,54 @@ This hosted-UI layer is **reference-only** implementation support. It is **not**
 
 ## How to use it
 
+### Same-origin local reference composition
+
+The preferred local reference-product entrypoint is now the composed browser
+origin at `http://localhost:3000`.
+
+Run the full local stack from the repo root:
+
+```bash
+pnpm dev
+```
+
+In that mode:
+
+- the Next app serves the browser-facing origin on `http://localhost:3000`
+- the internal AS/RS still listen on `:7662` / `:7663`
+- the browser-facing origin proxies the reference namespaces:
+  - `/.well-known/*`
+  - `/oauth/*`
+  - `/v1/*`
+  - `/_ref/*`
+  - `/owner/*`
+  - `/device`
+  - `/consent`
+  - `/__pdpp/hosted-ui.css`
+- when `PDPP_OWNER_PASSWORD` is set, `/owner/*` and `/dashboard/*` share the
+  same `pdpp_owner_session` cookie on the browser-facing origin
+
+If you only need the backing AS/RS side of that composed setup while the web
+app is already running, start this package in composition mode:
+
+```bash
+pnpm --dir reference-implementation dev
+```
+
+That mode pins `AS_PUBLIC_URL` and `RS_PUBLIC_URL` to
+`http://localhost:3000` so the internal AS/RS advertise the browser-facing
+origin in metadata, device verification URLs, and PAR authorization URLs.
+
+### Standalone reference server
+
 Run the server:
 
 ```bash
 pnpm --dir reference-implementation server
 ```
+
+That starts the AS/RS directly on their own listen ports (`:7662` / `:7663`)
+without the composed browser-facing web origin.
 
 Inspect the CLI:
 

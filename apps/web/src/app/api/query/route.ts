@@ -6,8 +6,7 @@
  * Native and grant-bound client queries are token-scoped.
  */
 import { NextResponse } from 'next/server';
-
-const RS_URL = process.env.PDPP_RS_URL || 'http://localhost:7663';
+import { getRsInternalUrl } from '../../dashboard/lib/owner-token';
 
 export async function GET(req: Request) {
   const url = new URL(req.url);
@@ -21,7 +20,9 @@ export async function GET(req: Request) {
     );
   }
 
-  const rsUrl = new URL(`${RS_URL}/v1/streams/${encodeURIComponent(stream)}/records`);
+  const rsUrl = new URL(
+    `${getRsInternalUrl()}/v1/streams/${encodeURIComponent(stream)}/records`,
+  );
   if (connectorId) rsUrl.searchParams.set('connector_id', connectorId);
   rsUrl.searchParams.set('limit', url.searchParams.get('limit') || '200');
 

@@ -1,6 +1,7 @@
 import {
   ReferenceServerUnreachableError,
-  getAsUrl,
+  getAsInternalUrl,
+  withOwnerSessionCookie,
 } from './owner-token';
 import { formatDurationCompact } from './duration';
 
@@ -41,13 +42,16 @@ function describeError(body: unknown, fallback: string): string {
 
 async function fetchAs(path: string, init: RequestInit): Promise<Response> {
   try {
-    return await fetch(`${getAsUrl()}${path}`, {
-      cache: 'no-store',
-      ...init,
-    });
+    return await fetch(
+      `${getAsInternalUrl()}${path}`,
+      await withOwnerSessionCookie({
+        cache: 'no-store',
+        ...init,
+      }),
+    );
   } catch (err) {
     throw new ReferenceServerUnreachableError(
-      `Cannot reach authorization server at ${getAsUrl()}`,
+      `Cannot reach authorization server at ${getAsInternalUrl()}`,
       err,
     );
   }

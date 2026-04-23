@@ -1,6 +1,6 @@
 # Owner Auth Placeholder Open Question (2026-04-22)
 
-**Status:** partially landed — reference implementation now ships the recommended placeholder behind `PDPP_OWNER_PASSWORD` for the approval surfaces; `/dashboard` is intentionally **still not gated** and remains the open follow-up question  
+**Status:** landed as the current reference-only placeholder — when `PDPP_OWNER_PASSWORD` is set, the reference now shares one local owner session across the hosted approval surfaces and `/dashboard`; the remaining open question is the durable owner-auth story beyond this placeholder
 **Scope:** reference-only owner approval/authentication surfaces; not a PDPP Core protocol change
 
 ## Why this exists
@@ -35,12 +35,14 @@ The current reference behaves like this:
   approval surfaces require a valid owner session established via
   `/owner/login`, and the submitted `subject_id` is ignored in favor of
   `PDPP_OWNER_SUBJECT_ID` (defaulting to `owner_local`)
+- when `PDPP_OWNER_PASSWORD` is **set** and the composed local reference is in
+  use, `/dashboard/*` is gated by the same owner session; unauthenticated
+  browsers are redirected to `/owner/login?return_to=/dashboard...`
 - no durable session, passkey, or external identity provider is required —
   the placeholder is a stateless HMAC-signed cookie only
-- `/dashboard` is **not** gated in this tranche and remains an open follow-up
 - public protocol surfaces (`/oauth/par`, `/oauth/register`, `/oauth/token`,
   `/v1/*`, `/.well-known/*`) are not gated; the placeholder only affects the
-  local approval UIs
+  local owner/operator browser surfaces
 - this is still grant issuance / owner approval, not a durable answer to "how
   does the owner authenticate?"
 
@@ -63,10 +65,9 @@ chosen?**
 
 ### Status
 
-The **approval** half of that question is now answered affirmatively and
-landed: the reference ships an env-gated password-and-session placeholder in
-front of `/consent` and `/device` approval routes. The **dashboard** half
-remains open — see the open questions section below.
+That question is now answered affirmatively for the current reference: the
+same env-gated password-and-session placeholder fronts `/consent`, `/device`,
+and `/dashboard` when the placeholder is enabled.
 
 ## Placeholder direction (landed for approval surfaces)
 
@@ -87,14 +88,15 @@ The landed placeholder uses this shape:
 - unauthenticated HTML requests to a protected route redirect to
   `/owner/login?return_to=...`; non-HTML callers get an honest `401` with
   error code `owner_session_required`
-- requires that session for the approval surfaces:
+- requires that session for the owner/operator browser surfaces:
   - `/consent`
   - `/consent/approve`
   - `/consent/deny`
   - `/device`
   - `/device/approve`
   - `/device/deny`
-- **not** applied to `/dashboard` in this tranche — see open questions
+  - `/dashboard`
+  - `/dashboard/*`
 - if the env var is not set, remain in the current open local-dev mode
 
 Why this is the recommended placeholder:
@@ -119,11 +121,6 @@ Why this is the recommended placeholder:
 - whether the launch reference should stay openly local-only by default, with
   placeholder auth merely optional (still the current default: placeholder is
   off until `PDPP_OWNER_PASSWORD` is set)
-- whether `/dashboard` should be protected by the same owner session as the
-  approval/device pages — **still open**: the approval/device tranche landed
-  without gating `/dashboard`, and the dashboard remains an open follow-up
-  until we can gate it with the exact same cookie/session model and no
-  parallel auth implementation
 - whether the placeholder session should continue to identify only one local
   owner subject or grow to support explicit multi-subject local testing
 - whether a later reference auth choice should be:
@@ -135,10 +132,10 @@ Why this is the recommended placeholder:
 
 ## Owner recommendation today
 
-The current state is that the approval-surface placeholder landed — the
-reference is now truthful about not pretending freeform `subject_id` entry is
-authentication and is safer against casual local-network exposure when
-`PDPP_OWNER_PASSWORD` is set. The placeholder is still not a durable owner-auth
-story: `/dashboard` is not gated, there is no multi-subject support, and the
-mechanism should be replaced (not extended) when a durable reference auth
-choice is made.
+The current state is that the reference-only placeholder landed for the
+owner/operator browser surfaces — the reference is now truthful about not
+pretending freeform `subject_id` entry is authentication, and `/dashboard`
+shares the same session gate as the hosted approval UI when
+`PDPP_OWNER_PASSWORD` is set. The placeholder is still not a durable
+owner-auth story: there is no multi-subject support, and the mechanism should
+be replaced (not extended) when a durable reference auth choice is made.

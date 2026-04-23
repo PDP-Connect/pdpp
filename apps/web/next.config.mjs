@@ -82,6 +82,16 @@ const nextConfig = {
         destination: '/docs/reference-implementation',
         permanent: true,
       },
+      {
+        source: '/openspec',
+        destination: '/planning',
+        permanent: false,
+      },
+      {
+        source: '/openspec/:path*',
+        destination: '/planning/:path*',
+        permanent: false,
+      },
       // Dashboard IA migration: connector browsing lives under /dashboard/records/
       // and the standalone /dashboard/timeline route is now /dashboard/records/timeline.
       {
@@ -123,6 +133,14 @@ const nextConfig = {
       {
         source: '/docs/:path*.mdx',
         destination: '/llms.mdx/docs/:path*',
+      },
+      {
+        source: '/planning',
+        destination: '/openspec',
+      },
+      {
+        source: '/planning/:path*',
+        destination: '/openspec/:path*',
       },
     ];
   },

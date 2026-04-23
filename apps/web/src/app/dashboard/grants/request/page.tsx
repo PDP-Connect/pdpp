@@ -12,7 +12,10 @@ import {
   createDefaultGrantRequestDraft,
   getGrantRequestWorkspace,
 } from '../../lib/operator-grant-request';
-import { getOwnerLoginUrl } from '../../lib/owner-token';
+import {
+  getOwnerLoginPath,
+  toReferencePublicUrl,
+} from '../../lib/owner-token';
 import {
   approveGrantRequestAction,
   denyGrantRequestAction,
@@ -36,9 +39,13 @@ export default async function GrantRequestPage({
   const params = await searchParams;
   const workspace = params.workspace ? getGrantRequestWorkspace(params.workspace) : null;
   const draft = workspace?.draft ?? createDefaultGrantRequestDraft();
-  const examples = workspace ? buildGrantRequestExamples(workspace) : null;
+  const examples = workspace ? await buildGrantRequestExamples(workspace) : null;
   const error = params.error ?? workspace?.lastError ?? null;
-  const ownerLoginUrl = getOwnerLoginUrl();
+  const ownerLoginPath = getOwnerLoginPath();
+  const authorizationUrl =
+    typeof workspace?.stagedRequest?.authorization_url === 'string'
+      ? await toReferencePublicUrl(workspace.stagedRequest.authorization_url)
+      : null;
 
   return (
     <DashboardShell active="grants">
@@ -63,12 +70,12 @@ export default async function GrantRequestPage({
             >
               owner device flow →
             </Link>
-            <a
-              href={ownerLoginUrl}
+            <Link
+              href={ownerLoginPath}
               className="border-border hover:bg-muted/50 rounded-xl border px-2.5 py-1.5"
             >
               owner access →
-            </a>
+            </Link>
           </>
         }
         meta={
@@ -327,12 +334,12 @@ export default async function GrantRequestPage({
                 <DetailRow
                   label="authorization"
                   value={
-                    typeof workspace.stagedRequest.authorization_url === 'string' ? (
+                    authorizationUrl ? (
                       <a
-                        href={workspace.stagedRequest.authorization_url}
+                        href={authorizationUrl}
                         className="underline-offset-2 hover:underline"
                       >
-                        {workspace.stagedRequest.authorization_url}
+                        {authorizationUrl}
                       </a>
                     ) : (
                       '—'
@@ -367,13 +374,13 @@ export default async function GrantRequestPage({
                 </Link>
               </form>
               <p className="text-muted-foreground mt-3 text-[11px]">
-                These direct dashboard shortcut buttons are only for the open local-dev approval
-                mode. If placeholder owner auth is enabled, open the hosted consent page or sign in
-                at{' '}
-                <a href={ownerLoginUrl} className="underline-offset-2 hover:underline">
+                These actions call the live approval endpoints. If placeholder owner auth is
+                enabled and this dashboard session expires, open the hosted consent page or sign in
+                again at{' '}
+                <Link href={ownerLoginPath} className="underline-offset-2 hover:underline">
                   owner access
-                </a>
-                {' '}first and approve there.
+                </Link>
+                .
               </p>
             </>
           ) : (

@@ -297,4 +297,11 @@
   - [x] Seed `pdpp-web-dashboard` and `pdpp-polyfill-owner-bootstrap` as default pre-registered public clients so owner-device bootstrap works out of the box without additional configuration
   - [x] Make the dashboard DCR workspace pick up the same shared fallback token when no env override is set, via a workspace import rather than a duplicated literal
   - [x] Add an example third-party client app (`reference-implementation/examples/third-party-app/`) that exercises the current real provider-connect flow end to end (register &rarr; PAR &rarr; owner approval &rarr; token &rarr; RS query), including an honest hosted-approval fallback when owner-auth is enabled
+- [x] Collapse the local reference product to one browser-facing origin by composition
+  - [x] Record the single-origin composition target in OpenSpec as a reference-hosting choice, not a PDPP protocol requirement
+  - [x] Proxy the browser-facing reference AS/RS/owner/reference-only routes through the web origin so `/.well-known/*`, `/oauth/*`, `/v1/*`, `/_ref/*`, hosted approval pages, and hosted UI assets are all reachable from one browser-facing origin
+  - [x] Make the reference server advertise browser-facing public URLs in local/dev composition mode so metadata, verification URIs, and pending-consent authorization URLs stop leaking internal `:7662/:7663` listen ports
+  - [x] Share one owner-session verifier between the reference server and the Next dashboard so `/dashboard/*` is gated by the same placeholder owner session when `PDPP_OWNER_PASSWORD` is set
+  - [x] Rewrite dashboard owner/hosted-flow affordances to same-origin browser paths and keep the real owner-device and consent flows working through the composed origin
+  - [x] Validate the single-origin local reference experience end to end, including owner login, dashboard gating, metadata, device verification, pending consent, and public `/v1/*` reads
 - [ ] Add broad storage abstraction beyond the current explicit seams

@@ -25,87 +25,20 @@ import {
   renderResultState,
   renderSurface,
 } from './hosted-ui.js';
+import {
+  createOwnerSessionController,
+  OWNER_SESSION_COOKIE_NAME,
+  OWNER_SESSION_DEFAULT_SUBJECT_ID,
+  OWNER_SESSION_DEFAULT_TTL_SECONDS,
+} from './owner-session.js';
 
-const COOKIE_NAME = 'pdpp_owner_session';
-const DEFAULT_SESSION_TTL_SECONDS = 12 * 60 * 60; // 12 hours
-const DEFAULT_SUBJECT_ID = 'owner_local';
 const DEFAULT_RETURN_TO = '/owner/login';
-
-function base64UrlEncode(input) {
-  return Buffer.from(input).toString('base64url');
-}
-
-function base64UrlDecodeToString(input) {
-  return Buffer.from(String(input), 'base64url').toString('utf8');
-}
 
 function timingSafeEqualString(a, b) {
   const bufA = Buffer.from(a);
   const bufB = Buffer.from(b);
   if (bufA.length !== bufB.length) return false;
   return crypto.timingSafeEqual(bufA, bufB);
-}
-
-function signPayload(payload, secret) {
-  return crypto.createHmac('sha256', secret).update(payload).digest('base64url');
-}
-
-/**
- * Encode a signed session token. The token is a base64url(JSON).base64url(hmac)
- * two-part string. We deliberately avoid a full JWT implementation here — this
- * is reference placeholder auth, not a product.
- */
-function encodeSession(payload, secret) {
-  const body = base64UrlEncode(JSON.stringify(payload));
-  const sig = signPayload(body, secret);
-  return `${body}.${sig}`;
-}
-
-function decodeSession(token, secret) {
-  if (typeof token !== 'string' || !token.includes('.')) return null;
-  const [body, sig] = token.split('.', 2);
-  if (!body || !sig) return null;
-  const expectedSig = signPayload(body, secret);
-  if (!timingSafeEqualString(sig, expectedSig)) return null;
-  let payload;
-  try {
-    payload = JSON.parse(base64UrlDecodeToString(body));
-  } catch {
-    return null;
-  }
-  if (!payload || typeof payload !== 'object') return null;
-  if (typeof payload.exp !== 'number' || payload.exp <= Math.floor(Date.now() / 1000)) {
-    return null;
-  }
-  return payload;
-}
-
-/**
- * Derive a stable per-password signing secret. This keeps the signed cookie
- * tied to the current configured password — rotating the password
- * invalidates existing sessions, which is the behavior we want for a
- * placeholder.
- */
-function deriveSecret(password) {
-  return crypto.createHash('sha256').update(`pdpp-owner-session:${password}`).digest();
-}
-
-function parseCookies(header) {
-  const out = {};
-  if (!header || typeof header !== 'string') return out;
-  for (const part of header.split(';')) {
-    const eq = part.indexOf('=');
-    if (eq < 0) continue;
-    const name = part.slice(0, eq).trim();
-    const value = part.slice(eq + 1).trim();
-    if (!name) continue;
-    try {
-      out[name] = decodeURIComponent(value);
-    } catch {
-      out[name] = value;
-    }
-  }
-  return out;
 }
 
 function isSecureRequest(req) {
@@ -115,26 +48,6 @@ function isSecureRequest(req) {
     return true;
   }
   return false;
-}
-
-function buildSetCookie(value, { maxAgeSeconds, secure }) {
-  const parts = [`${COOKIE_NAME}=${value}`];
-  parts.push('HttpOnly');
-  parts.push('SameSite=Lax');
-  parts.push('Path=/');
-  if (secure) parts.push('Secure');
-  if (typeof maxAgeSeconds === 'number') parts.push(`Max-Age=${maxAgeSeconds}`);
-  return parts.join('; ');
-}
-
-function clearCookieHeader({ secure }) {
-  const parts = [`${COOKIE_NAME}=`];
-  parts.push('HttpOnly');
-  parts.push('SameSite=Lax');
-  parts.push('Path=/');
-  if (secure) parts.push('Secure');
-  parts.push('Max-Age=0');
-  return parts.join('; ');
 }
 
 function wantsHtml(req) {
@@ -313,41 +226,33 @@ export function createOwnerAuthPlaceholder({
   password,
   subjectId,
   providerName = 'PDPP Reference Provider',
-  sessionTtlSeconds = DEFAULT_SESSION_TTL_SECONDS,
+  sessionTtlSeconds = OWNER_SESSION_DEFAULT_TTL_SECONDS,
 } = {}) {
-  const enabled = typeof password === 'string' && password.length > 0;
-  const resolvedSubjectId = (typeof subjectId === 'string' && subjectId) || DEFAULT_SUBJECT_ID;
-
-  const secret = enabled ? deriveSecret(password) : null;
-
-  function readSession(req) {
-    if (!enabled || !secret) return null;
-    const cookies = parseCookies(req.headers.cookie);
-    const raw = cookies[COOKIE_NAME];
-    if (!raw) return null;
-    return decodeSession(raw, secret);
-  }
+  const sessionController = createOwnerSessionController({
+    password,
+    subjectId,
+    sessionTtlSeconds,
+  });
+  const { enabled, subjectId: resolvedSubjectId } = sessionController;
 
   function issueSession(res, req) {
-    if (!enabled || !secret) return;
-    const now = Math.floor(Date.now() / 1000);
-    const payload = {
-      sub: resolvedSubjectId,
-      iat: now,
-      exp: now + sessionTtlSeconds,
-    };
-    const token = encodeSession(payload, secret);
-    res.setHeader(
-      'Set-Cookie',
-      buildSetCookie(token, {
-        maxAgeSeconds: sessionTtlSeconds,
-        secure: isSecureRequest(req),
-      })
-    );
+    const cookieHeader = sessionController.issueSessionCookieHeader({
+      secure: isSecureRequest(req),
+    });
+    if (cookieHeader) {
+      res.setHeader('Set-Cookie', cookieHeader);
+    }
   }
 
   function clearSession(res, req) {
-    res.setHeader('Set-Cookie', clearCookieHeader({ secure: isSecureRequest(req) }));
+    res.setHeader(
+      'Set-Cookie',
+      sessionController.clearSessionCookieHeader({ secure: isSecureRequest(req) })
+    );
+  }
+
+  function readSession(req) {
+    return sessionController.readSessionFromCookieHeader(req.headers.cookie);
   }
 
   function attachRoutes(app) {
@@ -463,5 +368,5 @@ export function createOwnerAuthPlaceholder({
   };
 }
 
-export const OWNER_AUTH_DEFAULT_SUBJECT_ID = DEFAULT_SUBJECT_ID;
-export const OWNER_AUTH_COOKIE_NAME = COOKIE_NAME;
+export const OWNER_AUTH_DEFAULT_SUBJECT_ID = OWNER_SESSION_DEFAULT_SUBJECT_ID;
+export const OWNER_AUTH_COOKIE_NAME = OWNER_SESSION_COOKIE_NAME;
