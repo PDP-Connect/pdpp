@@ -44,25 +44,25 @@ import type { EmittedMessage, RecordData, StreamScope } from "../../src/connecto
 import { stringifyForJsonl } from "../../src/safe-emit.ts";
 import { resourceSet } from "../../src/scope-filters.ts";
 import {
+  emitSessionsFromMaps,
+  flushPendingCalls,
+  type LineEmitDeps,
+  makeRolloutParseState,
+  processRolloutLine,
+} from "./collect-helpers.ts";
+import {
   buildPromptRecord,
-  buildRolloutOnlySessionRecord,
   buildRuleRecord,
   buildSkillRecord,
-  buildThreadSessionRecord,
-  extendTimestampRange,
-  extractMessageText,
   isRolloutFile,
   isSkippableRulesLine,
   parseFrontmatter,
-  payloadOutputPreview,
   RULES_SUFFIX_RE,
   splitRulesLines,
-  type TimestampRange,
   TWO_DIGIT_DIR_RE,
-  textPreview,
   YEAR_DIR_RE,
 } from "./parsers.ts";
-import type { PendingCall, RolloutAggregate, RolloutObject, RolloutPayload, StartMessage, ThreadRow } from "./types.ts";
+import type { RolloutAggregate, RolloutObject, StartMessage, ThreadRow } from "./types.ts";
 
 const rl = createInterface({ input: process.stdin, terminal: false });
 const emit = (m: EmittedMessage): boolean => process.stdout.write(stringifyForJsonl(m));
@@ -365,166 +365,10 @@ async function emitSkillsStream(
 }
 
 // ─── Rollout-file line processing ───────────────────────────────────────
-
-interface RolloutParseState {
-  firstTimestamp: string | null;
-  functionCallCount: number;
-  lastTimestamp: string | null;
-  lineCount: number;
-  messageCount: number;
-  pendingCalls: Map<string, PendingCall>;
-  sessionId: string | null;
-  sessionMeta: RolloutPayload | null;
-}
-
-function makeRolloutParseState(): RolloutParseState {
-  return {
-    sessionId: null,
-    sessionMeta: null,
-    firstTimestamp: null,
-    lastTimestamp: null,
-    messageCount: 0,
-    functionCallCount: 0,
-    pendingCalls: new Map(),
-    lineCount: 0,
-  };
-}
-
-function emitMessageRecord(
-  state: RolloutParseState,
-  payload: RolloutPayload,
-  ts: string | null,
-  emitRecord: (stream: string, data: RecordData) => void
-): void {
-  const sessionId = state.sessionId;
-  if (!sessionId) {
-    return;
-  }
-  const id = `${sessionId}:${state.lineCount}`;
-  emitRecord("messages", {
-    id,
-    session_id: sessionId,
-    role: payload.role || null,
-    type: "message",
-    content: textPreview(extractMessageText(payload), 5000),
-    timestamp: ts,
-  });
-}
-
-function registerFunctionCall(state: RolloutParseState, payload: RolloutPayload, ts: string | null): void {
-  const sessionId = state.sessionId;
-  if (!sessionId) {
-    return;
-  }
-  const callId = payload.call_id || `${sessionId}:${state.lineCount}`;
-  state.pendingCalls.set(callId, {
-    id: callId,
-    session_id: sessionId,
-    call_id: callId,
-    name: payload.name || null,
-    arguments: textPreview(payload.arguments || null, 2000),
-    output_preview: null,
-    timestamp: ts,
-  });
-}
-
-function applyFunctionCallOutput(
-  state: RolloutParseState,
-  payload: RolloutPayload,
-  ts: string | null,
-  emitRecord: (stream: string, data: RecordData) => void
-): void {
-  const sessionId = state.sessionId;
-  if (!sessionId) {
-    return;
-  }
-  const callId = payload.call_id;
-  const existing = callId ? state.pendingCalls.get(callId) : null;
-  if (existing) {
-    existing.output_preview = payloadOutputPreview(payload.output);
-    return;
-  }
-  emitRecord("function_calls", {
-    id: `${sessionId}:${state.lineCount}:output`,
-    session_id: sessionId,
-    call_id: callId || null,
-    name: null,
-    arguments: null,
-    output_preview: payloadOutputPreview(payload.output),
-    timestamp: ts,
-  });
-}
-
-interface ProcessResponseItemArgs {
-  emitRecord: (stream: string, data: RecordData) => void;
-  payload: RolloutPayload;
-  requested: Map<string, StreamScope>;
-  state: RolloutParseState;
-  ts: string | null;
-}
-
-function processResponseItem({ payload, ts, state, requested, emitRecord }: ProcessResponseItemArgs): void {
-  if (payload.type === "message") {
-    state.messageCount++;
-    if (requested.has("messages")) {
-      emitMessageRecord(state, payload, ts, emitRecord);
-    }
-    return;
-  }
-  if (payload.type === "function_call") {
-    state.functionCallCount++;
-    if (requested.has("function_calls")) {
-      registerFunctionCall(state, payload, ts);
-    }
-    return;
-  }
-  if (payload.type === "function_call_output" && requested.has("function_calls")) {
-    applyFunctionCallOutput(state, payload, ts, emitRecord);
-  }
-  // reasoning is skipped — encrypted_content is opaque.
-}
-
-interface ProcessRolloutLineArgs {
-  emitRecord: (stream: string, data: RecordData) => void;
-  file: string;
-  obj: RolloutObject;
-  requested: Map<string, StreamScope>;
-  state: RolloutParseState;
-}
-
-function processRolloutLine({ obj, state, requested, emitRecord, file }: ProcessRolloutLineArgs): void {
-  state.lineCount++;
-  if (state.lineCount % 2000 === 0) {
-    emit({
-      type: "PROGRESS",
-      message: `  ${file}: ${state.lineCount} lines parsed`,
-    });
-  }
-  const ts = obj.timestamp || null;
-  const range: TimestampRange = { firstTs: state.firstTimestamp, lastTs: state.lastTimestamp };
-  extendTimestampRange(range, ts);
-  state.firstTimestamp = range.firstTs;
-  state.lastTimestamp = range.lastTs;
-
-  if (obj.type === "session_meta") {
-    state.sessionMeta = obj.payload || {};
-    state.sessionId = state.sessionMeta.id || null;
-    return;
-  }
-  if (!state.sessionId) {
-    return;
-  }
-  if (obj.type !== "response_item") {
-    return;
-  }
-  processResponseItem({
-    payload: obj.payload || {},
-    ts,
-    state,
-    requested,
-    emitRecord,
-  });
-}
+// Per-line / per-payload dispatchers + end-of-file flush now live in
+// collect-helpers.ts so integration tests can exercise them without touching
+// the filesystem. This wrapper still owns the JSONL iterator + the post-file
+// rolloutAggregates write-back.
 
 interface ParseRolloutFileArgs {
   emitRecord: (stream: string, data: RecordData) => void;
@@ -536,19 +380,17 @@ interface ParseRolloutFileArgs {
 
 async function parseRolloutFile(args: ParseRolloutFileArgs): Promise<void> {
   const state = makeRolloutParseState();
+  const deps: LineEmitDeps = {
+    emitRecord: args.emitRecord,
+    progress: (message: string): void => {
+      emit({ type: "PROGRESS", message });
+    },
+    requested: args.requested,
+  };
   for await (const obj of iterJsonlLines(args.path)) {
-    processRolloutLine({
-      obj,
-      state,
-      requested: args.requested,
-      emitRecord: args.emitRecord,
-      file: args.file,
-    });
+    processRolloutLine({ obj, state, deps, file: args.file });
   }
-  // Flush paired function_calls at end of file.
-  for (const call of state.pendingCalls.values()) {
-    args.emitRecord("function_calls", { ...call });
-  }
+  flushPendingCalls(state, deps);
   if (state.sessionId) {
     args.rolloutAggregates.set(state.sessionId, {
       meta: state.sessionMeta || {},
@@ -632,23 +474,11 @@ interface EmitSessionsArgs {
 function emitSessions({ stateDbPath, rolloutAggregates, emitRecord }: EmitSessionsArgs): void {
   // Sessions: prefer state_5.sqlite#threads; fall back to rollout-derived
   // fields only when state_5 doesn't have the session. Session PK stays the
-  // thread/session id — the same UUID is used by both sources.
+  // thread/session id — the same UUID is used by both sources. The I/O-free
+  // merge + dedup lives in collect-helpers.ts so integration tests can pin
+  // it without touching sqlite.
   const { map: threadsById } = loadThreadsMap(stateDbPath);
-  const emittedSessionIds = new Set<string>();
-
-  for (const [id, t] of threadsById) {
-    emitRecord("sessions", buildThreadSessionRecord(id, t, rolloutAggregates.get(id)));
-    emittedSessionIds.add(id);
-  }
-
-  // Rollouts present on disk but not in state_5 — emit with nulls for
-  // state_5-only fields so schema stays consistent.
-  for (const [id, agg] of rolloutAggregates) {
-    if (emittedSessionIds.has(id)) {
-      continue;
-    }
-    emitRecord("sessions", buildRolloutOnlySessionRecord(id, agg));
-  }
+  emitSessionsFromMaps({ threadsMap: threadsById, rolloutAggregates, emitRecord });
 }
 
 // ─── Start-message + state-cursor helpers ───────────────────────────────
