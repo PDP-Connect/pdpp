@@ -13,9 +13,9 @@
  * emits a messages row), dedup-is-upstream (same row twice → two emits),
  * emittedAt propagation, and maxMessageTs tracking across rows.
  *
- * Imports from ./collect-helpers.ts (not ./index.ts) because index.ts
- * calls `runConnector({...})` at module load — importing it would open
- * stdin and keep the test runner's event loop alive forever.
+ * Imports directly from ./index.ts — `runConnector({...})` is guarded by
+ * `isMainModule(import.meta.url)` so it only fires when index.ts is the
+ * process entry point, not when a test imports it.
  *
  * Why bother: parsers.test.ts proves each record *shape* is correct from
  * an individual MessageRow. Integration tests on the emit pass prove the
@@ -28,7 +28,7 @@
  * the workspace → channels → messages ordering is owned by
  * `runRequestedStreams` in index.ts, not by this seam. That orchestrator
  * is sqlite-bound (each runner reads from DatabaseSync) and isn't
- * factored into collect-helpers.ts today; see the last test below for the
+ * factored into a testable seam today; see the last test below for the
  * narrower "parent-before-child within a single row" assertion that this
  * seam does own.
  */
@@ -37,7 +37,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { StreamScope } from "../../src/connector-runtime.ts";
 import { type EmittedRecord, makeRecordingEmit } from "../../src/test-harness.ts";
-import { emitMessagesPass, type MessagesPassDeps } from "./collect-helpers.ts";
+import { emitMessagesPass, type MessagesPassDeps } from "./index.ts";
 import type { MessageRow, SlackDataBlob } from "./types.ts";
 
 interface RecordingHarness {
