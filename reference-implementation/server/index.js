@@ -25,7 +25,7 @@ import {
   ingestRecord, queryRecords, getRecord, deleteRecord, deleteAllRecords,
   listStreams, listAllStreams, getSyncState, putSyncState, getDatasetSummary,
 } from './records.js';
-import { runLexicalSearch } from './search.js';
+import { lexicalIndexBackfillForManifest, runLexicalSearch } from './search.js';
 import { createOwnerAuthPlaceholder, OWNER_AUTH_DEFAULT_SUBJECT_ID } from './owner-auth.js';
 import { createController } from '../runtime/controller.js';
 import { createApp } from './transport.js';
@@ -2618,6 +2618,20 @@ export async function startServer(opts = {}) {
   log('[PDPP] Database initialized');
 
   configureNativeManifest(nativeConfig?.nativeManifest || null);
+
+  // Lexical retrieval index startup drift-detect + backfill. For native
+  // mode, the configured native manifest is the only known connector at
+  // startup, so we backfill it directly here. For polyfill mode, connectors
+  // are registered via POST /connectors after startup; their backfill
+  // happens inside registerConnector. Either way: pre-existing records
+  // become searchable without requiring re-ingest.
+  if (nativeConfig?.nativeManifest) {
+    await lexicalIndexBackfillForManifest({
+      manifest: nativeConfig.nativeManifest,
+      log,
+    });
+  }
+
   const providerName =
     opts.providerName ||
     nativeConfig?.nativeManifest?.display_name ||

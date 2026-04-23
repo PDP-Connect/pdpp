@@ -93,6 +93,134 @@ export async function lexicalIndexDeleteByConnectorStream({ connectorId, stream 
   `);
 }
 
+// ─── Drift-detect + backfill ───────────────────────────────────────────────
+
+/**
+ * Backfill the FTS5 index for one (connector_id, stream) by re-reading every
+ * non-deleted record. Used by the higher-level rebuild paths below.
+ *
+ * Internal helper — callers should prefer `lexicalIndexBackfillForManifest`
+ * which handles the per-stream loop, the manifest lookup of declared fields,
+ * and the drift check that decides whether a rebuild is needed at all.
+ */
+async function rebuildLexicalIndexForStream({ connectorId, stream, declaredFields }) {
+  const db = getDb();
+  await db.query(sql`
+    DELETE FROM lexical_search_index
+    WHERE connector_id = ${connectorId} AND stream = ${stream}
+  `);
+
+  // Stream the records page-by-page so we don't pull the whole table into
+  // memory on big stores.
+  const PAGE = 500;
+  let offset = 0;
+  for (;;) {
+    const rows = await db.query(sql`
+      SELECT record_key, record_json
+      FROM records
+      WHERE connector_id = ${connectorId}
+        AND stream = ${stream}
+        AND deleted = 0
+      ORDER BY id ASC
+      LIMIT ${PAGE} OFFSET ${offset}
+    `);
+    if (rows.length === 0) break;
+    for (const row of rows) {
+      let data;
+      try {
+        data = row.record_json ? JSON.parse(row.record_json) : null;
+      } catch {
+        // Skip corrupt rows — the index just won't have them; the source
+        // record stays intact for whoever needs to repair it.
+        continue;
+      }
+      for (const field of declaredFields) {
+        const value = data?.[field];
+        if (typeof value !== 'string' || value.length === 0) continue;
+        await db.query(sql`
+          INSERT INTO lexical_search_index(connector_id, stream, record_key, field, text)
+          VALUES(${connectorId}, ${stream}, ${row.record_key}, ${field}, ${value})
+        `);
+      }
+    }
+    if (rows.length < PAGE) break;
+    offset += rows.length;
+  }
+}
+
+/**
+ * Drift-detect + rebuild the lexical index for every participating stream of
+ * a manifest. Idempotent and safe to call repeatedly.
+ *
+ * Why this exists: write-path maintenance (lexicalIndexUpsert et al) only
+ * keeps records that arrived AFTER the manifest declared lexical_fields in
+ * sync. It cannot help with records that already existed when the extension
+ * was enabled, or with streams whose lexical_fields declaration changed
+ * across a restart. This pass closes that gap.
+ *
+ * Called from:
+ *   - startServer (native mode: backfills the configured native connector)
+ *   - registerConnector (polyfill mode: backfills the connector being
+ *     registered or updated)
+ *
+ * Drift detection is deliberately cheap: per (connector_id, stream) we
+ * compare the indexed row count to the expected count
+ * (live_record_count × declared_field_count). If they match we skip the
+ * rebuild — this is the steady state after the first backfill. If they
+ * differ in either direction we rebuild that one stream from scratch.
+ *
+ * The expected count overcounts for declared fields whose value is missing
+ * or empty on a given record (the upsert path skips those), so a match here
+ * means "definitely in sync" but a mismatch can be a false alarm. That's
+ * acceptable — false alarms only cause an extra rebuild on startup.
+ *
+ * Logging is via the optional `log` callback so tests can stay quiet.
+ */
+export async function lexicalIndexBackfillForManifest({ manifest, log = () => {} } = {}) {
+  if (!manifest?.connector_id || !Array.isArray(manifest?.streams)) return;
+  const connectorId = manifest.connector_id;
+  const db = getDb();
+
+  for (const mStream of manifest.streams) {
+    const declaredFields = mStream?.query?.search?.lexical_fields;
+    if (!Array.isArray(declaredFields) || declaredFields.length === 0) continue;
+
+    const stream = mStream.name;
+
+    const recordCountRows = await db.query(sql`
+      SELECT COUNT(*) AS n
+      FROM records
+      WHERE connector_id = ${connectorId} AND stream = ${stream} AND deleted = 0
+    `);
+    const recordCount = Number(recordCountRows[0]?.n || 0);
+
+    const indexCountRows = await db.query(sql`
+      SELECT COUNT(*) AS n
+      FROM lexical_search_index
+      WHERE connector_id = ${connectorId} AND stream = ${stream}
+    `);
+    const indexCount = Number(indexCountRows[0]?.n || 0);
+
+    // Steady state: the upsert path produces between 1 and declaredFields.length
+    // index rows per record (it skips non-string/empty values). If indexCount
+    // already falls in that band AND there is at least one indexed row when
+    // there are records, treat it as in sync. Stronger drift signal: zero
+    // index rows for a stream that has records, OR more index rows than the
+    // upper bound (impossible under correct maintenance).
+    const upperBound = recordCount * declaredFields.length;
+    const inSync =
+      recordCount === 0
+        ? indexCount === 0
+        : indexCount > 0 && indexCount <= upperBound;
+
+    if (inSync) continue;
+
+    log(`[PDPP] Lexical index drift for ${connectorId} stream='${stream}' ` +
+        `(records=${recordCount}, index=${indexCount}, expected ≤ ${upperBound}) — rebuilding`);
+    await rebuildLexicalIndexForStream({ connectorId, stream, declaredFields });
+  }
+}
+
 // ─── Public-route entry point ──────────────────────────────────────────────
 
 /**

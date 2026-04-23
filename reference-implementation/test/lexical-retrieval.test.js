@@ -736,3 +736,169 @@ test('buildSearchPlanForGrant honors declared ∩ authorized; parseSearchParams 
   assert.equal(parseSearchParams({ q: 'foo', limit: '500' }).limit, 100);
   assert.equal(parseSearchParams({ q: 'foo', limit: '7' }).limit, 7);
 });
+
+// ─── startup drift-detect + rebuild ─────────────────────────────────────────
+
+/**
+ * Pre-existing records become searchable when a manifest later declares
+ * lexical_fields, without requiring any record rewrite or re-ingest.
+ *
+ * Scenario:
+ *   1. Register a connector manifest WITHOUT query.search.lexical_fields.
+ *   2. Ingest records.
+ *   3. Re-register the same connector with the SAME records still in the DB,
+ *      but now declaring lexical_fields. This is the "operator turns the
+ *      extension on for an existing stream" case.
+ *   4. Issue /v1/search — the historical records must show up immediately.
+ *
+ * Without the registerConnector backfill hook, step (4) would return zero
+ * hits because the FTS5 write-path maintenance (lexicalIndexUpsert) only
+ * runs on subsequent record writes, not on records that already existed.
+ */
+test('pre-existing records become searchable after lexical_fields are declared (no re-ingest)', async () => {
+  // Bypass the standard withHarness — it pre-registers manifests with
+  // lexical_fields already declared, which would skip past the case under
+  // test. Run a bespoke harness that registers a non-participating manifest
+  // first.
+  const server = await startServer({
+    quiet: true,
+    asPort: 0,
+    rsPort: 0,
+    dbPath: ':memory:',
+    dynamicClientRegistrationInitialAccessTokens: [TEST_DCR_INITIAL_ACCESS_TOKEN],
+  });
+  const asUrl = `http://localhost:${server.asPort}`;
+  const rsUrl = `http://localhost:${server.rsPort}`;
+
+  // A v1 connector manifest WITHOUT lexical_fields. Same connector_id,
+  // schema, and primary_key as the eventual v2 — only the query.search
+  // block differs.
+  const CONNECTOR_ID = 'https://test.pdpp.org/connectors/late-bloomer';
+  const baseStream = (overrides = {}) => ({
+    name: 'posts',
+    semantics: 'append_only',
+    schema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string' },
+        title: { type: 'string' },
+        selftext: { type: 'string' },
+        source_created_at: { type: 'string', format: 'date-time' },
+      },
+      required: ['id', 'title'],
+    },
+    primary_key: ['id'],
+    cursor_field: 'source_created_at',
+    consent_time_field: 'source_created_at',
+    selection: { fields: true, resources: false },
+    ...overrides,
+  });
+  const manifestV1 = {
+    protocol_version: '0.1.0',
+    connector_id: CONNECTOR_ID,
+    version: '1.0.0',
+    display_name: 'Late Bloomer',
+    capabilities: { human_interaction: ['credentials'] },
+    streams: [baseStream()],
+  };
+  const manifestV2 = {
+    ...manifestV1,
+    version: '2.0.0',
+    streams: [baseStream({
+      query: { search: { lexical_fields: ['title', 'selftext'] } },
+    })],
+  };
+
+  try {
+    // (1) Register without lexical_fields.
+    const regV1 = await fetch(`${asUrl}/connectors`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(manifestV1),
+    });
+    assert.equal(regV1.status, 201);
+
+    // (2) Ingest records BEFORE the extension is enabled. These records
+    // never reach lexicalIndexUpsert because the manifest declares no
+    // lexical_fields at the time of write.
+    const ownerToken = await issueOwnerToken(asUrl);
+    await ingest(rsUrl, ownerToken, CONNECTOR_ID, 'posts', [
+      { id: 'h1', title: 'pre-existing watermelon harvest', selftext: 'no index yet', source_created_at: '2026-04-01T00:00:00Z' },
+      { id: 'h2', title: 'cold storage notes',              selftext: 'watermelon stays crisp', source_created_at: '2026-04-02T00:00:00Z' },
+      { id: 'h3', title: 'unrelated heading',               selftext: 'no match here',          source_created_at: '2026-04-03T00:00:00Z' },
+    ]);
+
+    // Sanity check: the index has zero rows for this stream because the
+    // manifest declared no lexical_fields when the records arrived.
+    const baselineSearch = await fetchJson(
+      `${rsUrl}/v1/search?q=watermelon`,
+      { headers: { 'Authorization': `Bearer ${ownerToken}` } },
+    );
+    assert.equal(baselineSearch.status, 200);
+    const baselineMatchedFromLateBloomer = baselineSearch.body.data.filter(
+      (r) => r.connector_id === CONNECTOR_ID,
+    );
+    assert.deepEqual(
+      baselineMatchedFromLateBloomer,
+      [],
+      'before the extension is enabled, the late-bloomer connector contributes zero hits',
+    );
+
+    // (3) Re-register the SAME connector_id with lexical_fields declared.
+    // No record rewrite; no re-ingest; the records table is untouched.
+    const regV2 = await fetch(`${asUrl}/connectors`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(manifestV2),
+    });
+    assert.equal(regV2.status, 201);
+
+    // (4) Search should now return the historical records. This proves the
+    // registerConnector backfill hook in auth.js + the
+    // lexicalIndexBackfillForManifest helper in search.js do the right thing.
+    const afterBackfill = await fetchJson(
+      `${rsUrl}/v1/search?q=watermelon`,
+      { headers: { 'Authorization': `Bearer ${ownerToken}` } },
+    );
+    assert.equal(afterBackfill.status, 200);
+    const matched = afterBackfill.body.data
+      .filter((r) => r.connector_id === CONNECTOR_ID)
+      .map((r) => r.record_key)
+      .sort();
+    assert.deepEqual(
+      matched,
+      ['h1', 'h2'],
+      'historical records must be searchable after lexical_fields are declared, with no re-ingest',
+    );
+    // h3 has no match anywhere — must NOT appear.
+    assert.equal(
+      afterBackfill.body.data.find((r) => r.record_key === 'h3'),
+      undefined,
+      'records that do not match q must not appear, even after backfill',
+    );
+
+    // The backfill is idempotent: re-register again with the same v2
+    // manifest and the result count must be unchanged.
+    const regV2Again = await fetch(`${asUrl}/connectors`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(manifestV2),
+    });
+    assert.equal(regV2Again.status, 201);
+    const afterIdempotentBackfill = await fetchJson(
+      `${rsUrl}/v1/search?q=watermelon`,
+      { headers: { 'Authorization': `Bearer ${ownerToken}` } },
+    );
+    const matchedAgain = afterIdempotentBackfill.body.data
+      .filter((r) => r.connector_id === CONNECTOR_ID)
+      .map((r) => r.record_key)
+      .sort();
+    assert.deepEqual(
+      matchedAgain,
+      ['h1', 'h2'],
+      'idempotent: re-registering with the same lexical_fields does not duplicate or drop hits',
+    );
+  } finally {
+    await closeServer(server);
+  }
+});

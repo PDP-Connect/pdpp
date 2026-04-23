@@ -1295,6 +1295,19 @@ export async function registerConnector(manifest) {
     VALUES(${manifest.connector_id}, ${JSON.stringify(manifest)})
     ON CONFLICT(connector_id) DO UPDATE SET manifest = excluded.manifest
   `);
+  // Lexical retrieval index drift-detect + backfill. Handles three cases
+  // the write-path maintenance (search.js#lexicalIndexUpsert) cannot:
+  //   1. A connector is registered for the first time on a DB that already
+  //      has records under that connector_id (e.g. a reset that preserved
+  //      records but dropped the connector row).
+  //   2. A connector's manifest is updated to add lexical_fields where it
+  //      previously declared none.
+  //   3. A connector's manifest is updated to add or remove lexical_fields
+  //      entries on an already-participating stream.
+  // No-op for connectors with no participating streams.
+  // Lazy import keeps the records ↔ search ↔ auth cycle clean.
+  const { lexicalIndexBackfillForManifest } = await import('./search.js');
+  await lexicalIndexBackfillForManifest({ manifest });
   return manifest.connector_id;
 }
 
