@@ -332,7 +332,11 @@ For a personal data API where grants constrain access:
 - **AI agent ingestion** works better with stable per-stream envelopes that can be resumed record-by-record.
 - **Expansion** handles the hydration use case without GraphQL's complexity.
 
-If richer cross-stream search is needed later, add `POST /v1/search` with a query DSL on top of the same grant enforcement engine.
+## Lexical retrieval
+
+Public lexical retrieval lives in the optional **lexical retrieval extension** at `GET /v1/search`. See the [Lexical Retrieval Extension](./spec-lexical-retrieval-extension) doc for the full contract: required `q`, optional `limit` / `cursor` / `streams[]`, candidate-reference results carrying `connector_id`, grant-safe snippets, and the `capabilities.lexical_retrieval` advertisement on the protected-resource metadata document.
+
+A future `POST /v1/search` body-DSL is reserved for richer queries (boolean predicates, etc.) but is **not** specified yet. Don't rely on it.
 
 
 ## Design Attribution
