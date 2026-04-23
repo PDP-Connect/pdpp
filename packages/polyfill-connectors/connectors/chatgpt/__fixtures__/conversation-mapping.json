@@ -1,0 +1,38 @@
+{
+  "mapping": {
+    "root": {
+      "parent": null,
+      "children": ["u1"]
+    },
+    "u1": {
+      "parent": "root",
+      "children": ["a1", "a2"],
+      "message": {
+        "author": { "role": "user" },
+        "create_time": 1700000000,
+        "content": { "content_type": "text", "parts": ["hello"] }
+      }
+    },
+    "a1": {
+      "parent": "u1",
+      "children": [],
+      "message": {
+        "author": { "role": "assistant" },
+        "create_time": 1700000001,
+        "end_turn": true,
+        "content": { "content_type": "text", "parts": ["hi there"] },
+        "metadata": { "model_slug": "gpt-4o", "finish_details": { "type": "stop" } }
+      }
+    },
+    "a2": {
+      "parent": "u1",
+      "children": [],
+      "message": {
+        "author": { "role": "assistant" },
+        "create_time": 1700000002,
+        "content": { "content_type": "text", "parts": ["alt branch"] }
+      }
+    }
+  },
+  "current_node": "a1"
+}
