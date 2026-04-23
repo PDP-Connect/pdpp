@@ -48,6 +48,7 @@ import {
   DEFAULT_LOCAL_DCR_INITIAL_ACCESS_TOKEN,
   DEFAULT_PRE_REGISTERED_PUBLIC_CLIENTS,
 } from './reference-local-defaults.js';
+import { resolveReferenceTopology } from './reference-topology.js';
 
 const AS_PORT = parseInt(process.env.AS_PORT || '7662');
 const RS_PORT = parseInt(process.env.RS_PORT || '7663');
@@ -2524,19 +2525,20 @@ export async function startServer(opts = {}) {
       !opts.asPublicUrl &&
       !opts.rsPublicUrl &&
       !opts.asIssuer);
-  const configuredAsPublicUrl =
-    opts.asPublicUrl ||
-    (!ignoreAmbientPublicUrls ? process.env.AS_PUBLIC_URL : null) ||
-    null;
+  const referenceTopology = resolveReferenceTopology({
+    explicitMode: opts.referenceMode,
+    referenceOrigin: opts.referenceOrigin,
+    asPublicUrl: opts.asPublicUrl,
+    rsPublicUrl: opts.rsPublicUrl,
+    ignoreAmbient: ignoreAmbientPublicUrls,
+  });
+  const configuredAsPublicUrl = referenceTopology.asPublicUrl || null;
   const configuredAsIssuer =
     opts.asIssuer ||
-    opts.asPublicUrl ||
+    configuredAsPublicUrl ||
     (!ignoreAmbientPublicUrls ? (process.env.AS_ISSUER || process.env.AS_PUBLIC_URL) : null) ||
     null;
-  const configuredRsPublicUrl =
-    opts.rsPublicUrl ||
-    (!ignoreAmbientPublicUrls ? process.env.RS_PUBLIC_URL : null) ||
-    null;
+  const configuredRsPublicUrl = referenceTopology.rsPublicUrl || null;
   const runtimeContext = {
     rsUrl: configuredRsPublicUrl || null,
   };

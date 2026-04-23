@@ -189,6 +189,20 @@ This hosted-UI layer is **reference-only** implementation support. It is **not**
 
 ## How to use it
 
+### Reference hosting modes
+
+The reference now supports two deliberate local hosting modes:
+
+- `direct` — AS on `:7662`, RS on `:7663`; best for protocol debugging, conformance-style testing, CLI, and agents
+- `composed` — one browser-facing origin (default `http://localhost:3000`) proxying the internal AS/RS; best for the dashboard, owner flows, and demos
+
+The shared topology inputs are:
+
+- `PDPP_REFERENCE_MODE=direct|composed`
+- `PDPP_REFERENCE_ORIGIN=http://...` for the browser-facing origin in composed mode
+
+Legacy `AS_PUBLIC_URL` / `RS_PUBLIC_URL` overrides still work, but the preferred local/product path is the explicit composed-mode pair above.
+
 ### Same-origin local reference composition
 
 The preferred local reference-product entrypoint is now the composed browser
@@ -223,9 +237,10 @@ app is already running, start this package in composition mode:
 pnpm --dir reference-implementation dev
 ```
 
-That mode pins `AS_PUBLIC_URL` and `RS_PUBLIC_URL` to
-`http://localhost:3000` so the internal AS/RS advertise the browser-facing
-origin in metadata, device verification URLs, and PAR authorization URLs.
+That mode sets `PDPP_REFERENCE_MODE=composed` and defaults
+`PDPP_REFERENCE_ORIGIN` to `http://localhost:3000`, so the internal AS/RS
+still listen on `:7662/:7663` while advertising the browser-facing origin in
+metadata, device verification URLs, and PAR authorization URLs.
 
 ### Standalone reference server
 
@@ -237,6 +252,13 @@ pnpm --dir reference-implementation server
 
 That starts the AS/RS directly on their own listen ports (`:7662` / `:7663`)
 without the composed browser-facing web origin.
+
+If you need to force direct mode while other composition-oriented env is set in
+your shell, run:
+
+```bash
+PDPP_REFERENCE_MODE=direct pnpm --dir reference-implementation server
+```
 
 Inspect the CLI:
 

@@ -13,19 +13,17 @@ import {
   createOwnerSessionController,
   OWNER_AUTH_COOKIE_NAME,
 } from 'pdpp-reference-implementation/owner-session';
+import {
+  resolveReferenceBrowserOrigin,
+  resolveReferenceTopology,
+  stripTrailingSlash,
+} from 'pdpp-reference-implementation/reference-topology';
 
-const INTERNAL_AS_URL = process.env.PDPP_AS_URL || 'http://localhost:7662';
-const INTERNAL_RS_URL = process.env.PDPP_RS_URL || 'http://localhost:7663';
-const DEFAULT_REFERENCE_BROWSER_ORIGIN = 'http://localhost:3000';
 const SUBJECT_ID = process.env.PDPP_SUBJECT_ID || 'the owner';
 const CLIENT_ID = 'pdpp-polyfill-owner-bootstrap';
 
 let cachedToken: string | null = null;
 let inFlight: Promise<string> | null = null;
-
-function stripTrailingSlash(value: string): string {
-  return value.replace(/\/+$/, '');
-}
 
 function ensureLeadingSlash(value: string): string {
   return value.startsWith('/') ? value : `/${value}`;
@@ -57,6 +55,8 @@ function resolveConfiguredReferenceOrigin(): string | null {
   return configured ? stripTrailingSlash(configured) : null;
 }
 
+const referenceTopology = resolveReferenceTopology();
+
 function normalizeDashboardReturnTo(input: string | null | undefined): string {
   if (typeof input !== 'string' || !input) return '/dashboard';
   if (!input.startsWith('/dashboard')) return '/dashboard';
@@ -72,11 +72,11 @@ const ownerSessionController = createOwnerSessionController({
 });
 
 export function getAsInternalUrl(): string {
-  return stripTrailingSlash(INTERNAL_AS_URL);
+  return referenceTopology.asInternalUrl;
 }
 
 export function getRsInternalUrl(): string {
-  return stripTrailingSlash(INTERNAL_RS_URL);
+  return referenceTopology.rsInternalUrl;
 }
 
 export function getOwnerLoginPath(): string {
@@ -88,10 +88,10 @@ export function getReferencePublicPath(path: string): string {
 }
 
 export async function getReferencePublicOrigin(): Promise<string> {
-  return (
-    resolveConfiguredReferenceOrigin() ??
-    stripTrailingSlash((await getRequestOrigin()) ?? DEFAULT_REFERENCE_BROWSER_ORIGIN)
-  );
+  return resolveReferenceBrowserOrigin({
+    explicitOrigin: resolveConfiguredReferenceOrigin(),
+    requestOrigin: await getRequestOrigin(),
+  });
 }
 
 export async function getReferencePublicUrl(path: string): Promise<string> {

@@ -47,12 +47,21 @@ test('ephemeral local servers ignore leaked public-url env when computing metada
     AS_PUBLIC_URL: process.env.AS_PUBLIC_URL,
     AS_ISSUER: process.env.AS_ISSUER,
     RS_PUBLIC_URL: process.env.RS_PUBLIC_URL,
+    PDPP_REFERENCE_MODE: process.env.PDPP_REFERENCE_MODE,
+    PDPP_REFERENCE_ORIGIN: process.env.PDPP_REFERENCE_ORIGIN,
   };
   process.env.AS_PUBLIC_URL = 'https://wrong-as.example';
   process.env.AS_ISSUER = 'https://wrong-issuer.example';
   process.env.RS_PUBLIC_URL = 'https://wrong-rs.example';
+  process.env.PDPP_REFERENCE_MODE = 'composed';
+  process.env.PDPP_REFERENCE_ORIGIN = 'https://wrong-web.example';
 
-  const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
+  const server = await startServer({
+    quiet: true,
+    asPort: 0,
+    rsPort: 0,
+    dbPath: ':memory:',
+  });
   const asUrl = `http://localhost:${server.asPort}`;
   const rsUrl = `http://localhost:${server.rsPort}`;
 
@@ -66,6 +75,58 @@ test('ephemeral local servers ignore leaked public-url env when computing metada
     assert.equal(authorizationServer.status, 200);
     assert.equal(authorizationServer.body.issuer, asUrl);
     assert.equal(authorizationServer.body.device_authorization_endpoint, `${asUrl}/oauth/device_authorization`);
+  } finally {
+    await closeServer(server);
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+});
+
+test('composed mode env drives browser-facing metadata when explicit public urls are unset', async () => {
+  const previous = {
+    PDPP_REFERENCE_MODE: process.env.PDPP_REFERENCE_MODE,
+    PDPP_REFERENCE_ORIGIN: process.env.PDPP_REFERENCE_ORIGIN,
+    AS_PUBLIC_URL: process.env.AS_PUBLIC_URL,
+    RS_PUBLIC_URL: process.env.RS_PUBLIC_URL,
+  };
+  process.env.PDPP_REFERENCE_MODE = 'composed';
+  process.env.PDPP_REFERENCE_ORIGIN = 'http://localhost:3200';
+  delete process.env.AS_PUBLIC_URL;
+  delete process.env.RS_PUBLIC_URL;
+
+  const server = await startServer({
+    quiet: true,
+    asPort: 0,
+    rsPort: 0,
+    dbPath: ':memory:',
+    ignoreAmbientPublicUrls: false,
+  });
+  const asUrl = `http://localhost:${server.asPort}`;
+  const rsUrl = `http://localhost:${server.rsPort}`;
+
+  try {
+    const protectedResource = await fetchJson(`${rsUrl}/.well-known/oauth-protected-resource`);
+    assert.equal(protectedResource.status, 200);
+    assert.equal(protectedResource.body.resource, 'http://localhost:3200');
+    assert.deepEqual(protectedResource.body.authorization_servers, ['http://localhost:3200']);
+    assert.equal(protectedResource.body.pdpp_core_query_base, 'http://localhost:3200/v1');
+
+    const authorizationServer = await fetchJson(`${asUrl}/.well-known/oauth-authorization-server`);
+    assert.equal(authorizationServer.status, 200);
+    assert.equal(authorizationServer.body.issuer, 'http://localhost:3200');
+    assert.equal(
+      authorizationServer.body.device_authorization_endpoint,
+      'http://localhost:3200/oauth/device_authorization',
+    );
+    assert.equal(
+      authorizationServer.body.pushed_authorization_request_endpoint,
+      'http://localhost:3200/oauth/par',
+    );
   } finally {
     await closeServer(server);
     for (const [key, value] of Object.entries(previous)) {

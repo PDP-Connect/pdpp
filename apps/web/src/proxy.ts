@@ -1,13 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { isMarkdownPreferred, rewritePath } from 'fumadocs-core/negotiation';
+import {
+  resolveReferenceTopology,
+} from 'pdpp-reference-implementation/reference-topology';
 
 const { rewrite: rewriteLLM } = rewritePath('/docs{/*path}', '/llms.mdx/docs{/*path}');
-const AS_PROXY_TARGET = stripTrailingSlash(process.env.PDPP_AS_URL || 'http://localhost:7662');
-const RS_PROXY_TARGET = stripTrailingSlash(process.env.PDPP_RS_URL || 'http://localhost:7663');
-
-function stripTrailingSlash(value: string): string {
-  return value.replace(/\/+$/, '');
-}
+const referenceTopology = resolveReferenceTopology();
+const AS_PROXY_TARGET = referenceTopology.asInternalUrl;
+const RS_PROXY_TARGET = referenceTopology.rsInternalUrl;
 
 function resolveReferenceProxyTarget(pathname: string): string | null {
   if (pathname === '/.well-known/oauth-protected-resource') return RS_PROXY_TARGET;

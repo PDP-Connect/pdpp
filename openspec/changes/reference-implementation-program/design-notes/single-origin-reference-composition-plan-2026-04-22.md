@@ -1,6 +1,6 @@
 # Single-Origin Reference Composition Plan (2026-04-22)
 
-**Status:** landed as the current local reference-hosting default  
+**Status:** landed as the current local reference-hosting default, with explicit `direct` and `composed` local modes  
 **Scope:** reference-hosting and control-plane composition choice; not a PDPP Core protocol change
 
 ## Why this exists
@@ -28,6 +28,22 @@ The owner target architecture for the **reference product** is therefore:
 - multiple explicit namespaces
 
 This remains a **reference-hosting choice**, not a PDPP protocol law.
+
+## Current landed shape
+
+The landed reference now treats the hosting choice as two explicit local modes:
+
+- `direct` — the AS and RS are consumed on their own listen ports (`:7662` / `:7663`)
+- `composed` — the Next app presents one browser-facing origin (default `http://localhost:3000`) and proxies the internal AS/RS surfaces
+
+The local control knobs are:
+
+- `PDPP_REFERENCE_MODE=direct|composed`
+- `PDPP_REFERENCE_ORIGIN=http://...` for the browser-facing origin in composed mode
+
+Legacy `AS_PUBLIC_URL` / `RS_PUBLIC_URL` overrides still work, but the owner
+recommendation is to treat `PDPP_REFERENCE_MODE` and `PDPP_REFERENCE_ORIGIN` as
+the first-class local reference topology controls.
 
 ## North star
 
@@ -99,10 +115,12 @@ aliased or moved under `/owner/*`.
 The AS/RS must stop leaking internal listen ports in browser-facing metadata and
 generated verification URLs.
 
-In local/dev composition mode, the reference server should therefore publish:
+In local/dev composition mode, the reference server should therefore publish
+the browser-facing origin through the shared reference-topology layer. Today
+that is driven primarily by:
 
-- `AS_PUBLIC_URL=<browser-origin>`
-- `RS_PUBLIC_URL=<browser-origin>`
+- `PDPP_REFERENCE_MODE=composed`
+- `PDPP_REFERENCE_ORIGIN=<browser-origin>`
 
 so that:
 
