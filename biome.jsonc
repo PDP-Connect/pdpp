@@ -1,0 +1,63 @@
+{
+  "$schema": "./node_modules/@biomejs/biome/configuration_schema.json",
+  "extends": ["ultracite/biome/core", "ultracite/biome/type-aware"],
+  "formatter": {
+    "lineWidth": 120
+  },
+  "files": {
+    "ignoreUnknown": true,
+    // During the JS→TS migration, Biome only lints/formats .ts files plus
+    // config. Legacy .js files are exempt until migrated — renaming to .ts
+    // automatically brings them under the strict bar. Flip this to include
+    // *.js once the migration is complete and delete the note.
+    "includes": [
+      "src/**/*.ts",
+      "connectors/**/*.ts",
+      "bin/**/*.ts",
+      "*.jsonc",
+      "*.json",
+      "!node_modules",
+      "!fixtures",
+      "!dist",
+      "!**/*.test.*"
+    ]
+  },
+  "overrides": [
+    {
+      // Connector-specific override. As of 2026-04-22 only
+      // noExcessiveCognitiveComplexity is relaxed here — all other migration
+      // escape valves (useTopLevelRegex, noNestedTernary, noAssignInExpressions,
+      // noBitwiseOperators, noImplicitAnyLet, noEvolvingTypes, useTemplate)
+      // have been eliminated and their violations fixed in-place.
+      //
+      // 30 connector functions exceed the default cognitive-complexity budget
+      // of 20 (range 21–255). They fall into three buckets that cannot be
+      // cleanly decomposed:
+      //   (a) page.evaluate(() => {...}) callbacks (chase enumerate,
+      //       chatgpt auth, usaa diagnostics, etc.). The callback body is
+      //       serialized and shipped to the browser — helpers defined in
+      //       Node cannot cross the bridge, so decomposition forces either
+      //       duplicated inline helpers or contorted parameter threading.
+      //   (b) collect() orchestrators that own cursor lifetime, emit
+      //       ordering, dedup keys, and multi-stream coordination
+      //       (chatgpt c=199, gmail c=220, slack c=255, usaa c=236).
+      //       Breaking these fragments invariants that must hold together
+      //       ("emit RECORD before advance cursor", "normalize → shape-check
+      //       → emit → state-advance per item").
+      //   (c) Tree/DOM walkers and loosely-typed parsers (chase QFX-tree
+      //       extraction, codex walkRollouts generator, ical VEVENT line
+      //       parser). Their branching mirrors the external format.
+      // Re-enable per file after the connector moves to the
+      // makeEmitRecord + named stream-helper pattern (see
+      // src/connector-runtime.ts).
+      "includes": ["connectors/**/*.ts"],
+      "linter": {
+        "rules": {
+          "complexity": {
+            "noExcessiveCognitiveComplexity": "off"
+          }
+        }
+      }
+    }
+  ]
+}
