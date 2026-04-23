@@ -1,6 +1,12 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
-import { DashboardShell, ServerUnreachable } from '../../components/shell';
+import { DashboardShell, OwnerTokenRequired, ServerUnreachable } from '../../components/shell';
+import { buttonVariants } from '@/components/ui/button';
+import {
+  DataList,
+  PageHeader,
+  Section,
+} from '../../components/primitives';
 import {
   formatTimestamp,
   listConnectorManifests,
@@ -31,6 +37,7 @@ export default async function ConnectorPage({
     if (err instanceof ReferenceServerUnreachableError) {
       return (
         <DashboardShell active="records">
+          <PageHeader title="Records" />
           <ServerUnreachable />
         </DashboardShell>
       );
@@ -38,54 +45,47 @@ export default async function ConnectorPage({
     throw err;
   }
 
+  const totalRecords = streams.reduce((sum, s) => sum + s.record_count, 0);
+
   return (
     <DashboardShell active="records">
-      <nav className="text-muted-foreground mb-3 flex flex-wrap items-center gap-x-2 text-xs">
-        <Link href="/dashboard/records" className="hover:text-foreground">records</Link>
-        <span>/</span>
-        <span className="text-foreground break-all">{connectorId}</span>
-      </nav>
-      <header className="mb-4">
-        <h1 className="text-lg font-semibold break-all">{connectorId}</h1>
-        {manifest.provider_id && (
-          <p className="text-muted-foreground mt-1 text-xs break-all">provider: {manifest.provider_id}</p>
-        )}
-      </header>
+      <PageHeader
+        title={<code className="font-mono">{connectorId}</code>}
+        description={manifest.provider_id ? `Provider: ${manifest.provider_id}` : undefined}
+        breadcrumbs={[{ label: 'Records', href: '/dashboard/records' }, { label: connectorId }]}
+        count={`${totalRecords.toLocaleString()} records · ${streams.length} stream${streams.length === 1 ? '' : 's'}`}
+        actions={
+          <Link
+            href={`/dashboard/runs?connector_id=${encodeURIComponent(connectorId)}`}
+            className={buttonVariants({ variant: 'outline', size: 'sm' })}
+          >
+            Runs for this connector →
+          </Link>
+        }
+      />
 
-      <div className="mb-4 flex flex-wrap gap-2 text-xs">
-        <Link
-          href={`/dashboard/runs?connector_id=${encodeURIComponent(connectorId)}`}
-          className="border-border hover:bg-muted/50 rounded border px-2 py-1"
-        >
-          runs for this connector →
-        </Link>
-      </div>
-
-      <section>
-        <h2 className="text-muted-foreground mb-2 text-xs uppercase tracking-wide">
-          streams ({streams.length})
-        </h2>
+      <Section title={`Streams (${streams.length})`}>
         {streams.length === 0 ? (
-          <p className="text-muted-foreground text-xs">No records for this connector yet.</p>
+          <p className="pdpp-caption text-muted-foreground italic">No records for this connector yet.</p>
         ) : (
-          <ul className="divide-border divide-y border-y">
+          <DataList>
             {streams.map((s) => (
               <li key={s.name}>
                 <Link
                   href={`/dashboard/records/${encodeURIComponent(connectorId)}/${encodeURIComponent(s.name)}`}
-                  className="hover:bg-muted/50 flex flex-col gap-1 px-2 py-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4"
+                  className="hover:bg-muted/40 flex flex-col gap-1 px-3 py-3 transition-colors sm:flex-row sm:items-center sm:justify-between sm:gap-4"
                 >
-                  <span className="font-medium break-all">{s.name}</span>
-                  <span className="text-muted-foreground tabular-nums text-xs sm:text-sm">
+                  <span className="pdpp-body break-all font-mono font-medium">{s.name}</span>
+                  <span className="pdpp-caption text-muted-foreground tabular-nums">
                     {s.record_count.toLocaleString()} records
                     {s.last_updated ? ` · ${formatTimestamp(s.last_updated)}` : ''}
                   </span>
                 </Link>
               </li>
             ))}
-          </ul>
+          </DataList>
         )}
-      </section>
+      </Section>
     </DashboardShell>
   );
 }

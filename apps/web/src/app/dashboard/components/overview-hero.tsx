@@ -22,8 +22,8 @@ export function OverviewHero({ summary }: { summary: DatasetSummary }) {
   }
 
   return (
-    <section className="border-border mb-4 border-b pb-4" aria-label="Dataset overview">
-      <p className="text-foreground text-[22px] font-semibold leading-snug tracking-tight tabular-nums">
+    <section className="mb-8" aria-label="Dataset overview">
+      <p className="pdpp-heading text-foreground font-semibold tabular-nums">
         <span>{formatBytes(summary.total_retained_bytes)}</span>
         <span className="text-muted-foreground font-normal"> across </span>
         <span>{formatInteger(summary.record_count)}</span>
@@ -45,7 +45,7 @@ export function OverviewHero({ summary }: { summary: DatasetSummary }) {
         totalConnectors={summary.connector_count}
       />
 
-      <p className="text-muted-foreground mt-3 text-[13px] leading-relaxed">
+      <p className="pdpp-body text-muted-foreground mt-3">
         Each approved grant issues runs that write records into streams —{' '}
         <Link
           href="/dashboard/records"
@@ -53,7 +53,7 @@ export function OverviewHero({ summary }: { summary: DatasetSummary }) {
         >
           every record is inspectable
         </Link>{' '}
-        through <code className="text-[12px]">/v1/streams</code>.
+        through <code className="pdpp-caption font-mono">/v1/streams</code>.
       </p>
     </section>
   );
@@ -61,14 +61,14 @@ export function OverviewHero({ summary }: { summary: DatasetSummary }) {
 
 function EmptyHero() {
   return (
-    <section className="border-border mb-4 border-b pb-4" aria-label="Dataset overview">
-      <p className="text-foreground text-[22px] font-semibold leading-snug tracking-tight">
+    <section className="mb-8" aria-label="Dataset overview">
+      <p className="pdpp-heading text-foreground font-semibold">
         <span>No records yet</span>
         <span className="text-muted-foreground font-normal"> · 0 connectors connected</span>
       </p>
-      <p className="text-muted-foreground mt-3 text-[13px] leading-relaxed">
+      <p className="pdpp-body text-muted-foreground mt-3">
         Start a grant to begin ingesting. Every record lands inspectable through{' '}
-        <code className="text-[12px]">/v1/streams</code>.
+        <code className="pdpp-caption font-mono">/v1/streams</code>.
       </p>
     </section>
   );
@@ -84,7 +84,7 @@ function BreadthRow({
   if (connectors.length === 0) return null;
   const extra = Math.max(totalConnectors - connectors.length, 0);
   return (
-    <p className="text-muted-foreground mt-2 flex flex-wrap items-baseline gap-x-4 gap-y-1 text-[13px]">
+    <p className="pdpp-body text-muted-foreground mt-2 flex flex-wrap items-baseline gap-x-4 gap-y-1">
       {connectors.map((c, i) => (
         <span key={c.connector_id} className="inline-flex items-baseline gap-1.5">
           <span
@@ -92,7 +92,7 @@ function BreadthRow({
             className="inline-block h-1.5 w-1.5 rounded-full"
             style={{ backgroundColor: identityColor(i) }}
           />
-          <code className="text-foreground text-[12px]" title={c.connector_id}>
+          <code className="pdpp-caption text-foreground font-mono" title={c.connector_id}>
             {displayConnectorSlug(c.connector_id)}
           </code>
           <span className="tabular-nums">{formatInteger(c.record_count)}</span>

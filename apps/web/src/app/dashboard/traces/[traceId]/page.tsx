@@ -1,7 +1,8 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { DashboardShell, ServerUnreachable } from '../../components/shell';
-import { ReferenceServerUnreachableError } from '../../lib/owner-token';
+import { PageHeader, Section } from '../../components/primitives';
+import { ReferenceServerUnreachableError, getAsInternalUrl } from '../../lib/owner-token';
 import { getTraceTimeline, type TimelineEnvelope } from '../../lib/ref-client';
 import { TimelineView } from '../../components/timeline-view';
 
@@ -22,6 +23,7 @@ export default async function TraceDetailPage({
     if (err instanceof ReferenceServerUnreachableError) {
       return (
         <DashboardShell active="traces">
+          <PageHeader title="Trace" />
           <ServerUnreachable />
         </DashboardShell>
       );
@@ -41,62 +43,58 @@ export default async function TraceDetailPage({
 
   return (
     <DashboardShell active="traces">
-      <nav className="text-muted-foreground mb-3 text-xs">
-        <Link href="/dashboard/traces" className="hover:text-foreground">
-          traces
-        </Link>
-        <span className="mx-1">/</span>
-        <span className="text-foreground">trace</span>
-      </nav>
-      <header className="mb-4">
-        <h1 className="text-lg font-semibold break-all">trace {traceId}</h1>
-        <div className="text-muted-foreground mt-1 text-xs">
-          {envelope.events.length} events · actor {first?.actor_type}/{first?.actor_id}
-        </div>
-      </header>
+      <PageHeader
+        title={<code className="font-mono">{traceId}</code>}
+        breadcrumbs={[{ label: 'Traces', href: '/dashboard/traces' }, { label: 'Trace' }]}
+        description={
+          <>
+            {envelope.events.length} events
+            {first ? (
+              <>
+                {' · '}actor <span className="text-foreground font-mono">
+                  {first.actor_type}/{first.actor_id}
+                </span>
+              </>
+            ) : null}
+          </>
+        }
+      />
 
-      {(grantIds.length > 0 || runIds.length > 0) && (
-        <section className="mb-4 flex flex-wrap gap-2 text-xs">
+      {grantIds.length > 0 || runIds.length > 0 ? (
+        <div className="mb-6 flex flex-wrap gap-2">
           {grantIds.map((id) => (
             <Link
               key={id}
               href={`/dashboard/grants/${encodeURIComponent(id)}`}
-              className="border-border hover:bg-muted/50 rounded border px-2 py-1"
+              className="pdpp-caption border-border hover:bg-muted/60 inline-flex items-center rounded-md border px-2.5 py-1"
             >
-              grant {id} →
+              grant <code className="ml-1 font-mono">{id}</code> →
             </Link>
           ))}
           {runIds.map((id) => (
             <Link
               key={id}
               href={`/dashboard/runs/${encodeURIComponent(id)}`}
-              className="border-border hover:bg-muted/50 rounded border px-2 py-1"
+              className="pdpp-caption border-border hover:bg-muted/60 inline-flex items-center rounded-md border px-2.5 py-1"
             >
-              run {id} →
+              run <code className="ml-1 font-mono">{id}</code> →
             </Link>
           ))}
-        </section>
-      )}
+        </div>
+      ) : null}
 
-      <TimelineView events={envelope.events} />
+      <Section title="Timeline">
+        <TimelineView events={envelope.events} />
+      </Section>
 
-      <CliEquivalent traceId={traceId} />
+      <Section title="CLI equivalent">
+        <pre className="pdpp-caption border-border/80 bg-muted/30 overflow-x-auto rounded-md border p-3 font-mono">
+          pdpp trace show {traceId}
+        </pre>
+        <p className="pdpp-caption text-muted-foreground mt-1 break-all">
+          raw: <code>{`${getAsInternalUrl()}/_ref/traces/${encodeURIComponent(traceId)}`}</code>
+        </p>
+      </Section>
     </DashboardShell>
-  );
-}
-
-function CliEquivalent({ traceId }: { traceId: string }) {
-  return (
-    <section className="mt-6">
-      <h2 className="text-muted-foreground mb-2 text-xs uppercase tracking-wide">
-        CLI equivalent
-      </h2>
-      <pre className="bg-muted overflow-x-auto rounded p-3 text-[11px]">
-        pdpp trace show {traceId}
-      </pre>
-      <p className="text-muted-foreground mt-1 text-[11px] break-all">
-        raw: <code>{`/_ref/traces/${encodeURIComponent(traceId)}`}</code>
-      </p>
-    </section>
   );
 }

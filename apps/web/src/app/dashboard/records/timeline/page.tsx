@@ -1,5 +1,13 @@
 import Link from 'next/link';
-import { DashboardShell, ServerUnreachable } from '../../components/shell';
+import { DashboardShell, OwnerTokenRequired, ServerUnreachable } from '../../components/shell';
+import { Button, buttonVariants } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import {
+  DataList,
+  PageHeader,
+  Section,
+  Toolbar,
+} from '../../components/primitives';
 import { ReferenceServerUnreachableError } from '../../lib/owner-token';
 import { formatTimestamp } from '../../lib/rs-client';
 import {
@@ -28,6 +36,7 @@ export default async function RecordsTimelinePage({
     if (err instanceof ReferenceServerUnreachableError) {
       return (
         <DashboardShell active="records">
+          <PageHeader title="Timeline" />
           <ServerUnreachable />
         </DashboardShell>
       );
@@ -37,59 +46,67 @@ export default async function RecordsTimelinePage({
 
   return (
     <DashboardShell active="records">
-      <nav className="text-muted-foreground mb-3 flex flex-wrap items-center gap-x-2 text-xs">
-        <Link href="/dashboard/records" className="hover:text-foreground">records</Link>
-        <span>/</span>
-        <span className="text-foreground">timeline</span>
-      </nav>
-      <header className="mb-4 flex flex-col gap-1 sm:flex-row sm:items-baseline sm:justify-between sm:gap-4">
-        <h1 className="text-lg font-semibold">timeline</h1>
-        <span className="text-muted-foreground text-xs">
-          {result.entries.length} entries · {result.sources} streams scanned · {result.scanned} records
-        </span>
-      </header>
+      <PageHeader
+        title="Timeline"
+        description="Time-anchored records across all connectors, sorted by the owner's data time."
+        breadcrumbs={[{ label: 'Records', href: '/dashboard/records' }, { label: 'Timeline' }]}
+        count={`${result.entries.length} entries · ${result.sources} streams scanned · ${result.scanned} records`}
+      />
 
-      <form method="get" className="text-muted-foreground mb-4 flex flex-wrap items-center gap-2 text-xs">
-        <label className="flex items-center gap-1">
-          since
-          <input
-            type="date"
-            name="since"
-            defaultValue={since}
-            className="border-border bg-background text-foreground rounded border px-2 py-1"
-          />
-        </label>
-        <label className="flex items-center gap-1">
-          until
-          <input
-            type="date"
-            name="until"
-            defaultValue={until}
-            className="border-border bg-background text-foreground rounded border px-2 py-1"
-          />
-        </label>
-        <button
-          type="submit"
-          className="border-border hover:bg-muted/50 rounded border px-2 py-1"
+      <form method="get">
+        <Toolbar
+          trailing={
+            <div className="pdpp-caption flex flex-wrap gap-3">
+              {([1, 7, 30, 90] as const).map((d) => {
+                const { since: s, until: u } = defaultWindow(d);
+                return (
+                  <Link
+                    key={d}
+                    href={`/dashboard/records/timeline?since=${s}&until=${u}`}
+                    className="text-muted-foreground hover:text-foreground underline-offset-2 hover:underline"
+                  >
+                    {d}d
+                  </Link>
+                );
+              })}
+            </div>
+          }
         >
-          apply
-        </button>
-        <WindowPresetLinks />
+          <label className="flex min-w-0 flex-col gap-1">
+            <span className="pdpp-eyebrow">Since</span>
+            <Input type="date" name="since" defaultValue={since} />
+          </label>
+          <label className="flex min-w-0 flex-col gap-1">
+            <span className="pdpp-eyebrow">Until</span>
+            <Input type="date" name="until" defaultValue={until} />
+          </label>
+          <Button type="submit" size="sm" className="mt-5">
+            Apply
+          </Button>
+          <Link
+            href="/dashboard/records/timeline"
+            className={`${buttonVariants({ variant: 'ghost', size: 'sm' })} mt-5`}
+          >
+            Reset
+          </Link>
+        </Toolbar>
       </form>
 
-      {result.entries.length === 0 ? (
-        <p className="text-muted-foreground text-xs">
-          No time-anchored records in this window. Try widening the range or loading more data.
-        </p>
-      ) : (
-        <ul className="divide-border divide-y border-y">
-          {result.entries.map((e) => (
-            <li key={`${e.connectorId}::${e.stream}::${e.recordId}`}>
-              <TimelineRow entry={e} />
-            </li>
-          ))}
-        </ul>
-      )}
+      <Section>
+        {result.entries.length === 0 ? (
+          <p className="pdpp-caption text-muted-foreground italic">
+            No time-anchored records in this window. Try widening the range or loading more data.
+          </p>
+        ) : (
+          <DataList>
+            {result.entries.map((e) => (
+              <li key={`${e.connectorId}::${e.stream}::${e.recordId}`}>
+                <TimelineRow entry={e} />
+              </li>
+            ))}
+          </DataList>
+        )}
+      </Section>
     </DashboardShell>
   );
 }
@@ -100,35 +117,16 @@ function TimelineRow({ entry }: { entry: TimelineEntry }) {
   return (
     <Link
       href={href}
-      className="hover:bg-muted/50 grid gap-1 px-2 py-2 text-xs sm:grid-cols-[10rem_9rem_1fr] sm:items-baseline sm:gap-4"
+      className="pdpp-caption hover:bg-muted/40 grid gap-1 px-3 py-2.5 transition-colors sm:grid-cols-[11rem_11rem_1fr] sm:items-baseline sm:gap-4"
     >
       <span className="text-muted-foreground whitespace-nowrap tabular-nums">
         {formatTimestamp(entry.timestamp)}
       </span>
       <span className="text-foreground flex items-baseline gap-2 whitespace-nowrap">
-        <span className="truncate font-medium">{connectorShort}</span>
-        <span className="text-muted-foreground truncate">{entry.stream}</span>
+        <span className="truncate font-mono font-medium">{connectorShort}</span>
+        <span className="pdpp-caption text-muted-foreground truncate font-mono">{entry.stream}</span>
       </span>
       <span className="break-words">{entry.summary}</span>
     </Link>
-  );
-}
-
-function WindowPresetLinks() {
-  return (
-    <span className="ml-auto flex flex-wrap gap-2">
-      {([1, 7, 30, 90] as const).map((d) => {
-        const { since, until } = defaultWindow(d);
-        return (
-          <Link
-            key={d}
-            href={`/dashboard/records/timeline?since=${since}&until=${until}`}
-            className="hover:text-foreground"
-          >
-            {d}d
-          </Link>
-        );
-      })}
-    </span>
   );
 }

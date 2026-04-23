@@ -18,13 +18,13 @@ export function PeekPane({
 }) {
   return (
     <aside
-      className="border-border bg-background sticky top-6 max-h-[calc(100vh-3rem)] overflow-y-auto rounded border"
+      className="border-border/80 bg-background sticky top-16 max-h-[calc(100vh-5rem)] overflow-y-auto overscroll-contain rounded-md border"
       aria-label="peek"
       data-testid="peek-pane"
     >
-      <div className="border-border bg-muted/30 sticky top-0 flex items-center justify-between gap-2 border-b px-3 py-2 text-xs">
+      <div className="pdpp-caption border-border/80 bg-muted/40 sticky top-0 flex items-center justify-between gap-2 border-b px-3 py-2 backdrop-blur">
         <span className="font-medium truncate">{title}</span>
-        <div className="flex items-center gap-2 whitespace-nowrap">
+        <div className="flex items-center gap-3 whitespace-nowrap">
           <Link
             href={openHref}
             className="hover:text-foreground text-muted-foreground underline-offset-2 hover:underline"
@@ -40,14 +40,12 @@ export function PeekPane({
           </Link>
         </div>
       </div>
-      <div className="p-3 text-xs">
+      <div className="pdpp-caption p-3">
         {children}
         {cliCommand && (
           <div className="mt-3">
-            <div className="text-muted-foreground mb-1 text-[10px] uppercase tracking-wide">
-              CLI equivalent
-            </div>
-            <pre className="bg-muted overflow-x-auto rounded p-2 text-[11px]">{cliCommand}</pre>
+            <div className="pdpp-eyebrow mb-1">CLI equivalent</div>
+            <pre className="pdpp-caption bg-muted overflow-x-auto rounded p-2 font-mono">{cliCommand}</pre>
           </div>
         )}
       </div>
@@ -58,10 +56,10 @@ export function PeekPane({
 export function PeekEmpty() {
   return (
     <aside
-      className="border-border text-muted-foreground hidden items-center justify-center rounded border p-6 text-xs md:flex"
+      className="pdpp-caption border-border/80 border-dashed text-muted-foreground hidden items-center justify-center rounded-md border p-6 italic xl:flex"
       aria-label="peek hint"
     >
-      select an item to peek
+      Select a row to peek its timeline
     </aside>
   );
 }

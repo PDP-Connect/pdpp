@@ -1,5 +1,11 @@
 import Link from 'next/link';
-import { DashboardShell, ServerUnreachable } from './components/shell';
+import { DashboardShell, EmptyState, ServerUnreachable } from './components/shell';
+import {
+  DataList,
+  PageHeader,
+  Section,
+  StatusBadge,
+} from './components/primitives';
 import { OverviewHero } from './components/overview-hero';
 import { ReferenceServerUnreachableError } from './lib/owner-token';
 import {
@@ -25,36 +31,37 @@ type OverviewData = {
 };
 
 async function loadOverview(): Promise<OverviewData> {
-  // Pull small focused slices in parallel. The dataset summary powers the
-  // credibility hero; the failed-only slices feed the action banner + failure
-  // panels; the lifecycle "decisions" slice surfaces recent issued/revoked/
-  // denied grants together for the operator.
-  const [summaryRes, failedTracesRes, failedRunsRes, revokedGrantsRes, deniedGrantsRes, issuedGrantsRes, recentRunsRes] =
-    await Promise.all([
-      getDatasetSummary(),
-      listTraces({ status: 'failed', limit: 5 }),
-      listRuns({ status: 'failed', limit: 5 }),
-      listGrants({ status: 'revoked', limit: 5 }),
-      listGrants({ status: 'denied', limit: 5 }),
-      listGrants({ status: 'issued', limit: 5 }),
-      listRuns({ limit: 10 }),
-    ]);
+  // Scale first. Then the things that need attention: failed traces/runs
+  // and recently-decided grants. Recent runs support "what's happening now".
+  const [
+    summary,
+    failedTraces,
+    failedRuns,
+    revokedGrants,
+    deniedGrants,
+    issuedGrants,
+    recentRuns,
+  ] = await Promise.all([
+    getDatasetSummary(),
+    listTraces({ status: 'failed', limit: 5 }),
+    listRuns({ status: 'failed', limit: 5 }),
+    listGrants({ status: 'revoked', limit: 5 }),
+    listGrants({ status: 'denied', limit: 5 }),
+    listGrants({ status: 'issued', limit: 5 }),
+    listRuns({ limit: 8 }),
+  ]);
 
-  const recentDecisions = [
-    ...revokedGrantsRes.data,
-    ...deniedGrantsRes.data,
-    ...issuedGrantsRes.data,
-  ]
+  const recentDecisions = [...revokedGrants.data, ...deniedGrants.data, ...issuedGrants.data]
     .sort((a, b) => (a.last_at < b.last_at ? 1 : a.last_at > b.last_at ? -1 : 0))
     .slice(0, 6);
 
   return {
-    summary: summaryRes,
-    failedTraces: failedTracesRes.data,
-    failedRuns: failedRunsRes.data,
+    summary,
+    failedTraces: failedTraces.data,
+    failedRuns: failedRuns.data,
     recentDecisions,
-    recentRuns: recentRunsRes.data,
-    actionNeeded: failedTracesRes.data.length + failedRunsRes.data.length,
+    recentRuns: recentRuns.data,
+    actionNeeded: failedTraces.data.length + failedRuns.data.length,
   };
 }
 
@@ -66,6 +73,7 @@ export default async function DashboardPage() {
     if (err instanceof ReferenceServerUnreachableError) {
       return (
         <DashboardShell active="overview">
+          <PageHeader title="Overview" />
           <ServerUnreachable />
         </DashboardShell>
       );
@@ -73,211 +81,212 @@ export default async function DashboardPage() {
     throw err;
   }
 
-  const hasFailures = data.failedTraces.length > 0 || data.failedRuns.length > 0;
+  const hasFailures = data.actionNeeded > 0;
 
   return (
     <DashboardShell active="overview">
-      <header className="mb-3">
-        <h1 className="text-lg font-semibold">Overview</h1>
-        <p className="text-muted-foreground text-xs">
-          Local-first operator console. Inspection of traces, grants, runs, and records.
-        </p>
-      </header>
+      <PageHeader
+        title="Overview"
+        description="A local-first operator console for the PDPP reference stack. Inspect traces, grants, runs, and retained records."
+      />
 
       <OverviewHero summary={data.summary} />
 
-      <ActionBanner
+      <StatusStrip
         actionNeeded={data.actionNeeded}
         hasFailures={hasFailures}
       />
 
-      <section className="mb-6 grid gap-3 md:grid-cols-2">
-        <FailuresPanel title="Recent failed traces" href="/dashboard/traces?status=failed" items={data.failedTraces} render={(t) => (
-          <Link
-            href={`/dashboard/traces?peek=${encodeURIComponent(t.trace_id)}`}
-            className="hover:bg-muted/50 block px-2 py-2"
-          >
-            <div className="flex flex-wrap items-baseline justify-between gap-2 text-xs">
-              <code className="break-all font-medium">{t.trace_id}</code>
-              <span className="text-muted-foreground tabular-nums">{t.last_at}</span>
-            </div>
-            <div className="text-destructive text-[11px]">
-              {t.status}
-              {t.failure?.reason ? ` · ${t.failure.reason}` : ''}
-              {' · '}
-              {t.kinds.slice(0, 3).join(', ')}
-            </div>
-          </Link>
-        )} emptyLabel="No failed traces in the recent window." />
-
-        <FailuresPanel title="Recent failed runs" href="/dashboard/runs?status=failed" items={data.failedRuns} render={(r) => (
-          <Link
-            href={`/dashboard/runs?peek=${encodeURIComponent(r.run_id)}`}
-            className="hover:bg-muted/50 block px-2 py-2"
-          >
-            <div className="flex flex-wrap items-baseline justify-between gap-2 text-xs">
-              <code className="break-all font-medium">{r.run_id}</code>
-              <span className="text-muted-foreground tabular-nums">{r.last_at}</span>
-            </div>
-            <div className="text-destructive text-[11px]">
-              {r.status}
-              {r.failure_reason ? ` · ${r.failure_reason}` : ''}
-              {r.connector_id ? ` · ${r.connector_id}` : ''}
-            </div>
-          </Link>
-        )} emptyLabel="No failed runs in the recent window." />
-      </section>
-
-      <RecentSection title="Recent decisions" href="/dashboard/grants" items={data.recentDecisions} render={(g) => (
-        <Link
-          href={`/dashboard/grants?peek=${encodeURIComponent(g.grant_id)}`}
-          className="hover:bg-muted/50 block px-2 py-2"
+      <div className="grid gap-8 lg:grid-cols-2">
+        <Section
+          title="Failed traces"
+          description="Recent protocol interactions that did not complete."
+          action={
+            <Link
+              href="/dashboard/traces?status=failed"
+              className="text-muted-foreground hover:text-foreground underline-offset-2 hover:underline"
+            >
+              view all →
+            </Link>
+          }
         >
-          <div className="flex flex-wrap items-baseline justify-between gap-2 text-xs">
-            <code className="break-all font-medium">{g.grant_id}</code>
-            <span className="text-muted-foreground tabular-nums">{g.last_at}</span>
-          </div>
-          <div className="text-[11px]">
-            <LifecycleBadge status={g.status} />{' '}
-            <span className="text-muted-foreground">
-              client {g.client_id ?? '—'}
-              {g.connector_id ? ` · connector ${g.connector_id}` : g.provider_id ? ` · provider ${g.provider_id}` : ''}
-            </span>
-          </div>
-        </Link>
-      )} emptyLabel="No recent grant decisions." />
+          {data.failedTraces.length === 0 ? (
+            <EmptyState title="No failed traces" hint="Nothing has failed in the recent window." />
+          ) : (
+            <DataList>
+              {data.failedTraces.map((t) => (
+                <li key={t.trace_id}>
+                  <Link
+                    href={`/dashboard/traces?peek=${encodeURIComponent(t.trace_id)}`}
+                    className="hover:bg-muted/40 block px-3 py-2.5 transition-colors"
+                  >
+                    <div className="flex flex-wrap items-baseline justify-between gap-2">
+                      <code className="pdpp-caption text-foreground break-all font-mono font-medium">
+                        {t.trace_id}
+                      </code>
+                      <span className="pdpp-caption text-muted-foreground tabular-nums">{t.last_at}</span>
+                    </div>
+                    <div className="pdpp-caption mt-1 flex flex-wrap items-center gap-2">
+                      <StatusBadge status={t.status} />
+                      <span className="text-muted-foreground">
+                        {t.failure?.reason ?? t.kinds.slice(0, 3).join(', ')}
+                      </span>
+                    </div>
+                  </Link>
+                </li>
+              ))}
+            </DataList>
+          )}
+        </Section>
 
-      <RecentSection title="Recent runs" href="/dashboard/runs" items={data.recentRuns} render={(r) => {
-        const failed = r.status === 'failed' || r.status === 'cancelled';
-        return (
+        <Section
+          title="Failed runs"
+          description="Connector runs that errored or were cancelled."
+          action={
+            <Link
+              href="/dashboard/runs?status=failed"
+              className="text-muted-foreground hover:text-foreground underline-offset-2 hover:underline"
+            >
+              view all →
+            </Link>
+          }
+        >
+          {data.failedRuns.length === 0 ? (
+            <EmptyState title="No failed runs" hint="Nothing has failed in the recent window." />
+          ) : (
+            <DataList>
+              {data.failedRuns.map((r) => (
+                <li key={r.run_id}>
+                  <Link
+                    href={`/dashboard/runs?peek=${encodeURIComponent(r.run_id)}`}
+                    className="hover:bg-muted/40 block px-3 py-2.5 transition-colors"
+                  >
+                    <div className="flex flex-wrap items-baseline justify-between gap-2">
+                      <code className="pdpp-caption text-foreground break-all font-mono font-medium">
+                        {r.run_id}
+                      </code>
+                      <span className="pdpp-caption text-muted-foreground tabular-nums">{r.last_at}</span>
+                    </div>
+                    <div className="pdpp-caption mt-1 flex flex-wrap items-center gap-2">
+                      <StatusBadge status={r.status} />
+                      <span className="text-muted-foreground">
+                        {r.failure_reason ?? r.connector_id ?? '—'}
+                      </span>
+                    </div>
+                  </Link>
+                </li>
+              ))}
+            </DataList>
+          )}
+        </Section>
+      </div>
+
+      <Section
+        title="Recent grant decisions"
+        description="Issued, revoked, or denied in the last window."
+        action={
           <Link
-            href={`/dashboard/runs?peek=${encodeURIComponent(r.run_id)}`}
-            className="hover:bg-muted/50 block px-2 py-2"
+            href="/dashboard/grants"
+            className="text-muted-foreground hover:text-foreground underline-offset-2 hover:underline"
           >
-            <div className="flex flex-wrap items-baseline justify-between gap-2 text-xs">
-              <code className="break-all font-medium">{r.run_id}</code>
-              <span className="text-muted-foreground tabular-nums">{r.last_at}</span>
-            </div>
-            <div className="text-[11px]">
-              <span className={failed ? 'text-destructive' : 'text-muted-foreground'}>
-                {r.status}
-              </span>
-              {' · '}
-              <span className="text-muted-foreground">
-                {r.connector_id ?? r.provider_id ?? '—'}
-                {r.failure_reason ? ` · ${r.failure_reason}` : ''}
-              </span>
-            </div>
+            view all →
           </Link>
-        );
-      }} emptyLabel="No recent runs." />
+        }
+      >
+        {data.recentDecisions.length === 0 ? (
+          <EmptyState title="No recent grant decisions" />
+        ) : (
+          <DataList>
+            {data.recentDecisions.map((g) => (
+              <li key={g.grant_id}>
+                <Link
+                  href={`/dashboard/grants?peek=${encodeURIComponent(g.grant_id)}`}
+                  className="pdpp-caption hover:bg-muted/40 grid gap-1 px-3 py-2.5 transition-colors sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_9rem]"
+                >
+                  <code className="text-foreground break-all font-mono font-medium">{g.grant_id}</code>
+                  <span className="text-muted-foreground min-w-0 truncate">
+                    client {g.client_id ?? '—'}
+                    {g.connector_id ? ` · ${g.connector_id}` : g.provider_id ? ` · ${g.provider_id}` : ''}
+                  </span>
+                  <span className="pdpp-caption flex items-center gap-2 justify-self-end">
+                    <StatusBadge status={g.status} />
+                    <span className="text-muted-foreground tabular-nums">{g.last_at}</span>
+                  </span>
+                </Link>
+              </li>
+            ))}
+          </DataList>
+        )}
+      </Section>
+
+      <Section
+        title="Recent runs"
+        action={
+          <Link
+            href="/dashboard/runs"
+            className="text-muted-foreground hover:text-foreground underline-offset-2 hover:underline"
+          >
+            view all →
+          </Link>
+        }
+      >
+        {data.recentRuns.length === 0 ? (
+          <EmptyState title="No recent runs" />
+        ) : (
+          <DataList>
+            {data.recentRuns.map((r) => (
+              <li key={r.run_id}>
+                <Link
+                  href={`/dashboard/runs?peek=${encodeURIComponent(r.run_id)}`}
+                  className="pdpp-caption hover:bg-muted/40 grid gap-1 px-3 py-2.5 transition-colors sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_9rem]"
+                >
+                  <code className="text-foreground break-all font-mono font-medium">{r.run_id}</code>
+                  <span className="text-muted-foreground min-w-0 truncate">
+                    {r.connector_id ?? r.provider_id ?? '—'}
+                    {r.failure_reason ? ` · ${r.failure_reason}` : ''}
+                  </span>
+                  <span className="pdpp-caption flex items-center gap-2 justify-self-end">
+                    <StatusBadge status={r.status} />
+                    <span className="text-muted-foreground tabular-nums">{r.last_at}</span>
+                  </span>
+                </Link>
+              </li>
+            ))}
+          </DataList>
+        )}
+      </Section>
     </DashboardShell>
   );
 }
 
-function ActionBanner({ actionNeeded, hasFailures }: { actionNeeded: number; hasFailures: boolean }) {
+function StatusStrip({ actionNeeded, hasFailures }: { actionNeeded: number; hasFailures: boolean }) {
   if (!hasFailures) {
     return (
-      <div className="border-border bg-muted/30 mb-6 rounded border px-3 py-2 text-xs">
-        <span className="text-muted-foreground">All clear.</span>{' '}
-        <span className="text-muted-foreground">
-          No failed traces or runs in the recent window.
-        </span>
+      <div className="pdpp-caption mb-8 flex items-center gap-2">
+        <span
+          aria-hidden
+          className="inline-block h-1.5 w-1.5 rounded-full"
+          style={{ background: 'var(--success)' }}
+        />
+        <span className="text-foreground font-medium">All clear.</span>
+        <span className="text-muted-foreground">No failed traces or runs in the recent window.</span>
       </div>
     );
   }
   return (
-    <div className="border-destructive/40 bg-destructive/5 mb-6 rounded border px-3 py-2 text-xs">
-      <span className="text-destructive font-medium">Action needed:</span>{' '}
-      <span className="text-foreground">{actionNeeded} recent failure{actionNeeded === 1 ? '' : 's'}.</span>{' '}
-      <Link href="/dashboard/traces?status=failed" className="underline-offset-2 hover:underline">
-        review traces →
-      </Link>{' '}
-      <Link href="/dashboard/runs?status=failed" className="underline-offset-2 hover:underline">
-        review runs →
-      </Link>
+    <div className="pdpp-caption border-destructive/30 bg-destructive/5 mb-8 flex flex-wrap items-center gap-3 rounded-md border-l-4 border-l-destructive/60 border px-4 py-2.5">
+      <span className="text-destructive font-medium">
+        {actionNeeded} recent failure{actionNeeded === 1 ? '' : 's'}
+      </span>
+      <span className="text-muted-foreground">needs attention</span>
+      <div className="ml-auto flex flex-wrap items-center gap-3">
+        <Link href="/dashboard/traces?status=failed" className="underline-offset-2 hover:underline">
+          review traces →
+        </Link>
+        <Link href="/dashboard/runs?status=failed" className="underline-offset-2 hover:underline">
+          review runs →
+        </Link>
+      </div>
     </div>
-  );
-}
-
-function LifecycleBadge({ status }: { status: string }) {
-  const tone =
-    status === 'revoked' || status === 'failed' || status === 'denied'
-      ? 'bg-destructive/10 text-destructive'
-      : status === 'issued'
-      ? 'bg-muted text-foreground'
-      : 'bg-muted text-muted-foreground';
-  return (
-    <span className={`rounded px-1.5 py-0.5 text-[10px] ${tone}`}>{status}</span>
-  );
-}
-
-function FailuresPanel<T>({
-  title,
-  href,
-  items,
-  render,
-  emptyLabel,
-}: {
-  title: string;
-  href: string;
-  items: T[];
-  render: (item: T) => React.ReactNode;
-  emptyLabel: string;
-}) {
-  return (
-    <section className="border-border rounded border">
-      <h2 className="text-muted-foreground border-border flex items-baseline justify-between border-b px-3 py-2 text-xs uppercase tracking-wide">
-        <span>{title}</span>
-        <Link href={href} className="hover:text-foreground normal-case tracking-normal">
-          all →
-        </Link>
-      </h2>
-      {items.length === 0 ? (
-        <p className="text-muted-foreground px-3 py-3 text-xs">{emptyLabel}</p>
-      ) : (
-        <ul className="divide-border divide-y">
-          {items.map((item, i) => (
-            <li key={i}>{render(item)}</li>
-          ))}
-        </ul>
-      )}
-    </section>
-  );
-}
-
-function RecentSection<T>({
-  title,
-  href,
-  items,
-  render,
-  emptyLabel,
-}: {
-  title: string;
-  href: string;
-  items: T[];
-  render: (item: T) => React.ReactNode;
-  emptyLabel: string;
-}) {
-  return (
-    <section className="mb-6">
-      <h2 className="text-muted-foreground mb-2 flex items-baseline justify-between text-xs uppercase tracking-wide">
-        <span>{title}</span>
-        <Link href={href} className="hover:text-foreground normal-case tracking-normal">
-          all →
-        </Link>
-      </h2>
-      {items.length === 0 ? (
-        <p className="text-muted-foreground border-border rounded border px-3 py-3 text-xs">
-          {emptyLabel}
-        </p>
-      ) : (
-        <ul className="divide-border divide-y border-y">
-          {items.map((item, i) => (
-            <li key={i}>{render(item)}</li>
-          ))}
-        </ul>
-      )}
-    </section>
   );
 }

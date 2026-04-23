@@ -1,21 +1,20 @@
 import Link from 'next/link';
+import { Button, buttonVariants } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Select } from '@/components/ui/select';
+import { Textarea } from '@/components/ui/textarea';
 import {
-  DashboardMetaPill,
-  DashboardPageHeader,
-  DashboardSectionCard,
+  MetaPill,
+  PageHeader,
+  Section,
 } from '../../components/primitives';
-import {
-  DashboardShell,
-} from '../../components/shell';
+import { DashboardShell } from '../../components/shell';
 import {
   buildGrantRequestExamples,
   createDefaultGrantRequestDraft,
   getGrantRequestWorkspace,
 } from '../../lib/operator-grant-request';
-import {
-  getOwnerLoginPath,
-  toReferencePublicUrl,
-} from '../../lib/owner-token';
+import { getOwnerLoginPath } from '../../lib/owner-token';
 import {
   approveGrantRequestAction,
   denyGrantRequestAction,
@@ -41,425 +40,301 @@ export default async function GrantRequestPage({
   const draft = workspace?.draft ?? createDefaultGrantRequestDraft();
   const examples = workspace ? await buildGrantRequestExamples(workspace) : null;
   const error = params.error ?? workspace?.lastError ?? null;
-  const ownerLoginPath = getOwnerLoginPath();
-  const authorizationUrl =
-    typeof workspace?.stagedRequest?.authorization_url === 'string'
-      ? await toReferencePublicUrl(workspace.stagedRequest.authorization_url)
-      : null;
+  const ownerLoginUrl = getOwnerLoginPath();
 
   return (
     <DashboardShell active="grants">
-      <DashboardPageHeader
+      <PageHeader
         title="Grant request workspace"
         description="Register a public client, stage a real PAR request with PDPP authorization details, then drive the resulting consent through the public approval path."
         breadcrumbs={[
           { label: 'Grants', href: '/dashboard/grants' },
-          { label: 'Grant request workspace' },
+          { label: 'Grant request' },
         ]}
         actions={
           <>
             <Link
               href="/dashboard/grants#pending-approvals"
-              className="border-border hover:bg-muted/50 rounded-xl border px-2.5 py-1.5"
+              className={buttonVariants({ variant: 'outline', size: 'sm' })}
             >
-              pending approvals →
+              Pending approvals
             </Link>
             <Link
               href="/dashboard/grants/bootstrap"
-              className="border-border hover:bg-muted/50 rounded-xl border px-2.5 py-1.5"
+              className={buttonVariants({ variant: 'outline', size: 'sm' })}
             >
-              owner device flow →
+              Owner device flow
             </Link>
-            <Link
-              href={ownerLoginPath}
-              className="border-border hover:bg-muted/50 rounded-xl border px-2.5 py-1.5"
-            >
-              owner access →
-            </Link>
+            <a href={ownerLoginUrl} className={buttonVariants({ variant: 'outline', size: 'sm' })}>
+              Owner access
+            </a>
           </>
         }
         meta={
           <>
-            <DashboardMetaPill
+            <MetaPill
               label="workspace"
               value={workspace ? 'active' : 'not started'}
-              tone="human"
+              tone={workspace ? 'human' : 'neutral'}
             />
-            <DashboardMetaPill
+            <MetaPill
               label="client"
               value={workspace?.registeredClient ? 'registered' : 'not registered'}
               tone={workspace?.registeredClient ? 'protocol' : 'neutral'}
             />
-            <DashboardMetaPill
+            <MetaPill
               label="PAR"
               value={workspace?.stagedRequest ? 'staged' : 'not staged'}
               tone={workspace?.stagedRequest ? 'protocol' : 'neutral'}
             />
           </>
         }
-        surface="human"
       />
 
       {error ? (
-        <div className="border-destructive/40 bg-destructive/5 mb-6 rounded-2xl border px-4 py-3 text-xs">
+        <div className="pdpp-caption border-destructive/30 bg-destructive/5 mb-6 rounded-md border-l-4 border-l-destructive/60 border px-4 py-2.5">
           <span className="text-destructive font-medium">Workspace error:</span>{' '}
           <span>{error}</span>
         </div>
       ) : null}
 
-      <section className="mb-6 grid gap-3 lg:grid-cols-[minmax(0,1fr)_20rem]">
-        <Card title="1. Draft + register client">
-          <form className="space-y-4">
-            <input type="hidden" name="workspace_id" value={workspace?.workspaceId ?? ''} />
+      <Section
+        title="1. Draft request and register client"
+        description="Fill out the PAR parameters, save the draft, then register the client against the AS."
+      >
+        <form className="space-y-4">
+          <input type="hidden" name="workspace_id" value={workspace?.workspaceId ?? ''} />
 
-            <div className="grid gap-3 md:grid-cols-2">
-              <label className="flex flex-col gap-1 text-xs">
-                initial access token
-                <input
-                  type="text"
-                  name="initial_access_token"
-                  defaultValue={draft.initialAccessToken}
-                  className="border-border bg-background rounded border px-3 py-2"
-                />
-              </label>
-              <label className="flex flex-col gap-1 text-xs">
-                subject id
-                <input
-                  type="text"
-                  name="subject_id"
-                  defaultValue={draft.subjectId}
-                  className="border-border bg-background rounded border px-3 py-2"
-                />
-              </label>
-              <label className="flex flex-col gap-1 text-xs">
-                client name
-                <input
-                  type="text"
-                  name="client_name"
-                  defaultValue={draft.clientName}
-                  className="border-border bg-background rounded border px-3 py-2"
-                />
-              </label>
-              <label className="flex flex-col gap-1 text-xs">
-                client id
-                <input
-                  type="text"
-                  name="client_id"
-                  defaultValue={draft.clientId}
-                  className="border-border bg-background rounded border px-3 py-2"
-                />
-              </label>
-              <label className="flex flex-col gap-1 text-xs">
-                client uri
-                <input
-                  type="text"
-                  name="client_uri"
-                  defaultValue={draft.clientUri}
-                  placeholder="https://client.example"
-                  className="border-border bg-background rounded border px-3 py-2"
-                />
-              </label>
-              <label className="flex flex-col gap-1 text-xs">
-                redirect uri
-                <input
-                  type="text"
-                  name="redirect_uri"
-                  defaultValue={draft.redirectUri}
-                  placeholder="https://client.example/callback"
-                  className="border-border bg-background rounded border px-3 py-2"
-                />
-              </label>
-              <label className="flex flex-col gap-1 text-xs">
-                connector id
-                <input
-                  type="text"
-                  name="connector_id"
-                  defaultValue={draft.connectorId}
-                  className="border-border bg-background rounded border px-3 py-2"
-                />
-              </label>
-              <label className="flex flex-col gap-1 text-xs">
-                provider id
-                <input
-                  type="text"
-                  name="provider_id"
-                  defaultValue={draft.providerId}
-                  className="border-border bg-background rounded border px-3 py-2"
-                />
-              </label>
-              <label className="flex flex-col gap-1 text-xs">
-                purpose code
-                <input
-                  type="text"
-                  name="purpose_code"
-                  defaultValue={draft.purposeCode}
-                  className="border-border bg-background rounded border px-3 py-2"
-                />
-              </label>
-              <label className="flex flex-col gap-1 text-xs">
-                access mode
-                <select
-                  name="access_mode"
-                  defaultValue={draft.accessMode}
-                  className="border-border bg-background rounded border px-3 py-2"
-                >
-                  <option value="single_use">single_use</option>
-                  <option value="ongoing">ongoing</option>
-                </select>
-              </label>
-              <label className="flex flex-col gap-1 text-xs">
-                retention
-                <input
-                  type="text"
-                  name="retention"
-                  defaultValue={draft.retention}
-                  className="border-border bg-background rounded border px-3 py-2"
-                />
-              </label>
-              <label className="flex flex-col gap-1 text-xs">
-                stream name
-                <input
-                  type="text"
-                  name="stream_name"
-                  defaultValue={draft.streamName}
-                  className="border-border bg-background rounded border px-3 py-2"
-                />
-              </label>
-              <label className="md:col-span-2 flex flex-col gap-1 text-xs">
-                purpose description
-                <textarea
-                  name="purpose_description"
-                  defaultValue={draft.purposeDescription}
-                  rows={3}
-                  className="border-border bg-background rounded border px-3 py-2"
-                />
-              </label>
-              <label className="flex flex-col gap-1 text-xs">
-                fields (comma-separated)
-                <input
-                  type="text"
-                  name="fields"
-                  defaultValue={draft.fields}
-                  placeholder="id, name"
-                  className="border-border bg-background rounded border px-3 py-2"
-                />
-              </label>
-              <label className="flex flex-col gap-1 text-xs">
-                view
-                <input
-                  type="text"
-                  name="view"
-                  defaultValue={draft.view}
-                  className="border-border bg-background rounded border px-3 py-2"
-                />
-              </label>
-            </div>
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+            <FormField label="Initial access token" name="initial_access_token" defaultValue={draft.initialAccessToken} />
+            <FormField label="Subject id" name="subject_id" defaultValue={draft.subjectId} />
+            <FormField label="Client name" name="client_name" defaultValue={draft.clientName} />
+            <FormField label="Client id" name="client_id" defaultValue={draft.clientId} />
+            <FormField label="Client uri" name="client_uri" defaultValue={draft.clientUri} placeholder="https://client.example" />
+            <FormField label="Redirect uri" name="redirect_uri" defaultValue={draft.redirectUri} placeholder="https://client.example/callback" />
+            <FormField label="Connector id" name="connector_id" defaultValue={draft.connectorId} />
+            <FormField label="Provider id" name="provider_id" defaultValue={draft.providerId} />
+            <FormField label="Purpose code" name="purpose_code" defaultValue={draft.purposeCode} />
+            <FormSelect
+              label="Access mode"
+              name="access_mode"
+              defaultValue={draft.accessMode}
+              options={[
+                { value: 'single_use', label: 'single_use' },
+                { value: 'ongoing', label: 'ongoing' },
+              ]}
+            />
+            <FormField label="Retention" name="retention" defaultValue={draft.retention} />
+            <FormField label="Stream name" name="stream_name" defaultValue={draft.streamName} />
+            <FormField label="Fields (comma-separated)" name="fields" defaultValue={draft.fields} placeholder="id, name" />
+            <FormField label="View" name="view" defaultValue={draft.view} />
+            <label className="flex flex-col gap-1 md:col-span-2 xl:col-span-3">
+              <span className="pdpp-eyebrow">Purpose description</span>
+              <Textarea
+                name="purpose_description"
+                defaultValue={draft.purposeDescription}
+                rows={3}
+              />
+            </label>
+          </div>
 
-            <div className="flex flex-wrap gap-2">
-              <button
-                formAction={saveGrantRequestDraftAction}
-                type="submit"
-                className="border-border hover:bg-muted/50 rounded border px-3 py-2 text-xs"
-              >
-                save draft
-              </button>
-              <button
-                formAction={registerGrantRequestClientAction}
-                type="submit"
-                className="border-border hover:bg-muted/50 rounded border px-3 py-2 text-xs"
-              >
-                register via `/oauth/register`
-              </button>
-              <button
-                formAction={stageGrantRequestAction}
-                type="submit"
-                className="border-border hover:bg-muted/50 rounded border px-3 py-2 text-xs"
-              >
-                stage via `/oauth/par`
-              </button>
-            </div>
-          </form>
-        </Card>
+          <div className="flex flex-wrap gap-2 pt-2">
+            <Button
+              formAction={saveGrantRequestDraftAction}
+              type="submit"
+              variant="outline"
+              size="sm"
+            >
+              Save draft
+            </Button>
+            <Button
+              formAction={registerGrantRequestClientAction}
+              type="submit"
+              variant="outline"
+              size="sm"
+            >
+              <span className="font-mono">POST /oauth/register</span>
+            </Button>
+            <Button formAction={stageGrantRequestAction} type="submit" size="sm">
+              <span className="font-mono">POST /oauth/par</span>
+            </Button>
+          </div>
+        </form>
+      </Section>
 
-        <Card title="Current workspace state">
-          {workspace ? (
-            <div className="space-y-2 text-xs">
-              <DetailRow label="workspace id" value={<code className="break-all">{workspace.workspaceId}</code>} />
+      <Section title="2. Workspace state">
+        {workspace ? (
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+            <DetailCard title="Workspace">
+              <DetailRow label="id" value={<code className="break-all">{workspace.workspaceId}</code>} />
               <DetailRow label="created" value={workspace.createdAt} />
               <DetailRow label="updated" value={workspace.updatedAt} />
-              <DetailRow
-                label="client"
-                value={
-                  typeof workspace.registeredClient?.client_id === 'string'
-                    ? <code className="break-all">{workspace.registeredClient.client_id}</code>
-                    : draft.clientId || '—'
-                }
-              />
-              <DetailRow
-                label="request"
-                value={
-                  typeof workspace.stagedRequest?.request_uri === 'string'
-                    ? <code className="break-all">{workspace.stagedRequest.request_uri}</code>
-                    : '—'
-                }
-              />
-            </div>
-          ) : (
-            <p className="text-muted-foreground text-xs">
-              No workspace yet. Save a draft, register a client, or stage a request to start one.
-            </p>
-          )}
-        </Card>
-      </section>
+            </DetailCard>
+            <DetailCard title="Registered client">
+              {workspace.registeredClient ? (
+                <CodeBlock>{JSON.stringify(workspace.registeredClient, null, 2)}</CodeBlock>
+              ) : (
+                <p className="pdpp-caption text-muted-foreground italic">
+                  No client registered in this workspace yet.
+                </p>
+              )}
+            </DetailCard>
+            <DetailCard title="Staged request">
+              {workspace.stagedRequest ? (
+                <div className="space-y-1.5">
+                  <DetailRow
+                    label="request uri"
+                    value={<code className="break-all">{String(workspace.stagedRequest.request_uri ?? '—')}</code>}
+                  />
+                  <DetailRow
+                    label="authorization"
+                    value={
+                      typeof workspace.stagedRequest.authorization_url === 'string' ? (
+                        <a href={workspace.stagedRequest.authorization_url} className="underline-offset-2 hover:underline">
+                          {workspace.stagedRequest.authorization_url}
+                        </a>
+                      ) : (
+                        '—'
+                      )
+                    }
+                  />
+                  <DetailRow label="request id" value={String(workspace.stagedRequest.request_id ?? '—')} />
+                  <DetailRow label="trace" value={String(workspace.stagedRequest.reference_trace_id ?? '—')} />
+                </div>
+              ) : (
+                <p className="pdpp-caption text-muted-foreground italic">No PAR request staged yet.</p>
+              )}
+            </DetailCard>
+          </div>
+        ) : (
+          <p className="pdpp-caption text-muted-foreground">
+            No workspace yet. Save a draft, register a client, or stage a request to start one.
+          </p>
+        )}
+      </Section>
 
-      <section className="mb-6 grid gap-3 xl:grid-cols-2">
-        <Card title="2. Registered client">
-          {workspace?.registeredClient ? (
-            <CodeBlock>{JSON.stringify(workspace.registeredClient, null, 2)}</CodeBlock>
-          ) : (
-            <p className="text-muted-foreground text-xs">
-              No client has been registered in this workspace yet.
-            </p>
-          )}
-        </Card>
-
-        <Card title="3. Staged request">
-          {workspace?.stagedRequest ? (
-            <>
-              <div className="space-y-2 text-xs">
-                <DetailRow
-                  label="request uri"
-                  value={<code className="break-all">{String(workspace.stagedRequest.request_uri ?? '—')}</code>}
-                />
-                <DetailRow
-                  label="authorization"
-                  value={
-                    authorizationUrl ? (
-                      <a
-                        href={authorizationUrl}
-                        className="underline-offset-2 hover:underline"
-                      >
-                        {authorizationUrl}
-                      </a>
-                    ) : (
-                      '—'
-                    )
-                  }
-                />
-                <DetailRow label="request id" value={String(workspace.stagedRequest.request_id ?? '—')} />
-                <DetailRow label="trace" value={String(workspace.stagedRequest.reference_trace_id ?? '—')} />
-              </div>
-
-              <form className="mt-3 flex flex-wrap gap-2">
-                <input type="hidden" name="workspace_id" value={workspace.workspaceId} />
-                <button
-                  formAction={approveGrantRequestAction}
-                  type="submit"
-                  className="border-border hover:bg-muted/50 rounded border px-3 py-2 text-xs"
-                >
-                  approve via `/consent/approve`
-                </button>
-                <button
-                  formAction={denyGrantRequestAction}
-                  type="submit"
-                  className="border-border hover:bg-muted/50 rounded border px-3 py-2 text-xs"
-                >
-                  deny via `/consent/deny`
-                </button>
-                <Link
-                  href="/dashboard/grants#pending-approvals"
-                  className="text-muted-foreground text-xs underline-offset-2 hover:underline"
-                >
-                  queue →
-                </Link>
-              </form>
-              <p className="text-muted-foreground mt-3 text-[11px]">
-                These actions call the live approval endpoints. If placeholder owner auth is
-                enabled and this dashboard session expires, open the hosted consent page or sign in
-                again at{' '}
-                <Link href={ownerLoginPath} className="underline-offset-2 hover:underline">
-                  owner access
-                </Link>
-                .
-              </p>
-            </>
-          ) : (
-            <p className="text-muted-foreground text-xs">
-              No PAR request staged yet.
-            </p>
-          )}
-        </Card>
-      </section>
+      {workspace?.stagedRequest ? (
+        <Section
+          title="3. Drive consent"
+          description="Approve or deny the staged request via the public consent routes. In placeholder-owner-auth mode these direct buttons are disabled — use owner access instead."
+        >
+          <form className="flex flex-wrap items-center gap-2">
+            <input type="hidden" name="workspace_id" value={workspace.workspaceId} />
+            <Button formAction={approveGrantRequestAction} type="submit" size="sm">
+              <span className="font-mono">POST /consent/approve</span>
+            </Button>
+            <Button
+              formAction={denyGrantRequestAction}
+              type="submit"
+              size="sm"
+              variant="destructive"
+            >
+              <span className="font-mono">POST /consent/deny</span>
+            </Button>
+            <Link
+              href="/dashboard/grants#pending-approvals"
+              className="pdpp-caption text-muted-foreground ml-2 underline-offset-2 hover:underline"
+            >
+              pending queue →
+            </Link>
+          </form>
+          <p className="pdpp-caption text-muted-foreground mt-3">
+            These buttons only work in open local-dev approval mode. If placeholder owner auth is
+            enabled, open the hosted consent page or sign in at{' '}
+            <a href={ownerLoginUrl} className="underline-offset-2 hover:underline">owner access</a>
+            {' '}first and approve there.
+          </p>
+        </Section>
+      ) : null}
 
       {examples ? (
-        <section className="mb-6 grid gap-3 xl:grid-cols-2">
-          <Card title="4. Curl equivalents">
-            <div className="space-y-3">
-              <CodeExample label="register client">{examples.registerCurl}</CodeExample>
-              <CodeExample label="stage request">{examples.stageCurl}</CodeExample>
+        <Section title="4. Equivalents" description="Copy these to reproduce the flow outside the dashboard.">
+          <div className="grid gap-4 xl:grid-cols-2">
+            <div>
+              <h3 className="pdpp-eyebrow mb-2">Register client</h3>
+              <CodeBlock>{examples.registerCurl}</CodeBlock>
             </div>
-          </Card>
-
-          <Card title="What this workspace exercises">
-            <ul className="text-muted-foreground space-y-2 text-xs">
-              <li>1. `POST /oauth/register` with the current protected public-client profile</li>
-              <li>2. `POST /oauth/par` with PDPP `authorization_details`</li>
-              <li>3. `POST /consent/approve` and `POST /consent/deny` for the resulting pending request</li>
-            </ul>
-          </Card>
-        </section>
+            <div>
+              <h3 className="pdpp-eyebrow mb-2">Stage request</h3>
+              <CodeBlock>{examples.stageCurl}</CodeBlock>
+            </div>
+          </div>
+        </Section>
       ) : null}
     </DashboardShell>
   );
 }
 
-function Card({
-  title,
-  children,
+function FormField({
+  label,
+  name,
+  defaultValue,
+  placeholder,
 }: {
-  title: string;
-  children: React.ReactNode;
+  label: string;
+  name: string;
+  defaultValue?: string;
+  placeholder?: string;
 }) {
   return (
-    <DashboardSectionCard title={title} surface="human">
-      {children}
-    </DashboardSectionCard>
+    <label className="flex min-w-0 flex-col gap-1">
+      <span className="pdpp-eyebrow">{label}</span>
+      <Input
+        type="text"
+        name={name}
+        defaultValue={defaultValue}
+        placeholder={placeholder}
+      />
+    </label>
   );
 }
 
-function DetailRow({
+function FormSelect({
   label,
-  value,
+  name,
+  defaultValue,
+  options,
 }: {
   label: string;
-  value: React.ReactNode;
+  name: string;
+  defaultValue?: string;
+  options: Array<{ value: string; label: string }>;
 }) {
   return (
-    <div className="grid gap-1 sm:grid-cols-[7rem_minmax(0,1fr)] sm:items-start">
-      <span className="text-muted-foreground">{label}</span>
-      <div className="min-w-0 break-words">{value}</div>
+    <label className="flex min-w-0 flex-col gap-1">
+      <span className="pdpp-eyebrow">{label}</span>
+      <Select name={name} defaultValue={defaultValue}>
+        {options.map((opt) => (
+          <option key={opt.value} value={opt.value}>
+            {opt.label}
+          </option>
+        ))}
+      </Select>
+    </label>
+  );
+}
+
+function DetailCard({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div className="border-border/80 bg-muted/20 rounded-md border p-3">
+      <h3 className="pdpp-eyebrow mb-2">{title}</h3>
+      {children}
     </div>
   );
 }
 
-function CodeExample({
-  label,
-  children,
-}: {
-  label: string;
-  children: string;
-}) {
+function DetailRow({ label, value }: { label: string; value: React.ReactNode }) {
   return (
-    <div>
-      <div className="text-muted-foreground mb-1 text-[11px]">{label}</div>
-      <CodeBlock>{children}</CodeBlock>
+    <div className="pdpp-caption grid gap-0.5 sm:grid-cols-[6rem_minmax(0,1fr)] sm:items-baseline sm:gap-2">
+      <span className="pdpp-caption text-muted-foreground">{label}</span>
+      <div className="min-w-0 break-words">{value}</div>
     </div>
   );
 }
 
 function CodeBlock({ children }: { children: string }) {
   return (
-    <pre className="bg-muted overflow-x-auto rounded p-3 text-[11px] whitespace-pre-wrap break-words">
+    <pre className="pdpp-caption border-border/80 bg-muted/30 overflow-x-auto rounded-md border p-3 font-mono whitespace-pre-wrap break-words">
       <code>{children}</code>
     </pre>
   );

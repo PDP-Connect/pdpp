@@ -260,3 +260,21 @@ export async function refSearch(query: string): Promise<{
     exact: { kind: 'trace' | 'grant' | 'run'; id: string } | null;
   };
 }
+
+export type PendingApproval = {
+  object: 'approval';
+  kind: 'consent' | 'owner_device';
+  approval_id: string;
+  client_id?: string | null;
+  user_code?: string | null;
+  created_at: string;
+  grant_preview?: {
+    connector_id?: string | null;
+    provider_id?: string | null;
+    streams?: Array<{ name?: string } | string>;
+  } | null;
+};
+
+export async function listPendingApprovals(): Promise<ListResponse<PendingApproval>> {
+  return (await refFetch('/_ref/approvals')) as ListResponse<PendingApproval>;
+}

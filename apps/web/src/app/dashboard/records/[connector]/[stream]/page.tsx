@@ -1,31 +1,41 @@
 import { Fragment } from 'react';
 import Link from 'next/link';
-import { DashboardShell, ServerUnreachable } from '../../../components/shell';
+import { DashboardShell, OwnerTokenRequired, ServerUnreachable } from '../../../components/shell';
+import { buttonVariants } from '@/components/ui/button';
 import {
-  deriveColumns,
+  PageHeader,
+  Pager,
+} from '../../../components/primitives';
+import {
+  computeDefaultColumns,
+  deriveAllColumns,
+  listConnectorManifests,
   queryRecords,
+  resolveSelectedColumns,
   stringifyCell,
   truncate,
   type RecordsPage,
+  type StreamManifest,
   type StreamRecord,
 } from '../../../lib/rs-client';
 import { ReferenceServerUnreachableError } from '../../../lib/owner-token';
+import { ColumnsMenu } from './columns-menu';
 
 export const dynamic = 'force-dynamic';
 
 const PAGE_SIZE = 50;
-const TH = 'border-border border-b px-3 py-2 font-semibold';
-const TD = 'border-border border-b px-3 py-2';
+const TH = 'pdpp-eyebrow border-border/70 border-b px-3 py-2 text-left text-muted-foreground';
+const TD = 'pdpp-caption border-border/70 border-b px-3 py-2';
 
 export default async function StreamPage({
   params,
   searchParams,
 }: {
   params: Promise<{ connector: string; stream: string }>;
-  searchParams: Promise<{ cursors?: string }>;
+  searchParams: Promise<{ cursors?: string; columns?: string }>;
 }) {
   const { connector, stream } = await params;
-  const { cursors: cursorsParam } = await searchParams;
+  const { cursors: cursorsParam, columns: columnsParam } = await searchParams;
   const connectorId = decodeURIComponent(connector);
   const streamName = decodeURIComponent(stream);
 
@@ -33,15 +43,24 @@ export default async function StreamPage({
   const streamPath = `/dashboard/records/${encodeURIComponent(connectorId)}/${encodeURIComponent(streamName)}`;
 
   let page: RecordsPage;
+  let streamManifest: StreamManifest | null = null;
   try {
-    page = await queryRecords(connectorId, streamName, {
-      limit: PAGE_SIZE,
-      cursor: trail[trail.length - 1],
-    });
+    const [pageResult, manifests] = await Promise.all([
+      queryRecords(connectorId, streamName, {
+        limit: PAGE_SIZE,
+        cursor: trail[trail.length - 1],
+      }),
+      listConnectorManifests().catch(() => []),
+    ]);
+    page = pageResult;
+    const connectorManifest = manifests.find((m) => m.connector_id === connectorId);
+    const maybeStream = connectorManifest?.streams?.find((s: { name: string }) => s.name === streamName);
+    streamManifest = (maybeStream ?? null) as StreamManifest | null;
   } catch (err) {
     if (err instanceof ReferenceServerUnreachableError) {
       return (
         <DashboardShell active="records">
+          <PageHeader title="Records" />
           <ServerUnreachable />
         </DashboardShell>
       );
@@ -49,48 +68,61 @@ export default async function StreamPage({
     throw err;
   }
 
-  const columns = deriveColumns(page.data);
-  const prevHref = trail.length ? hrefFor(streamPath, trail.slice(0, -1)) : null;
-  const nextHref = page.next_cursor ? hrefFor(streamPath, [...trail, page.next_cursor]) : null;
+  const allColumns = deriveAllColumns(page.data);
+  const defaultColumns = computeDefaultColumns(page.data, streamManifest);
+  const { columns, mode } = resolveSelectedColumns(columnsParam, allColumns, defaultColumns);
+  const prevHref = trail.length ? hrefFor(streamPath, trail.slice(0, -1), columnsParam) : null;
+  const nextHref = page.next_cursor
+    ? hrefFor(streamPath, [...trail, page.next_cursor], columnsParam)
+    : null;
   const recordHref = (id: string) => `${streamPath}/${encodeURIComponent(id)}`;
 
   return (
     <DashboardShell active="records">
-      <nav className="text-muted-foreground mb-3 flex flex-wrap items-center gap-x-2 text-xs">
-        <Link href="/dashboard/records" className="hover:text-foreground">records</Link>
-        <span>/</span>
-        <Link href={`/dashboard/records/${encodeURIComponent(connectorId)}`} className="hover:text-foreground break-all">{connectorId}</Link>
-        <span>/</span>
-        <span className="text-foreground break-all">{streamName}</span>
-      </nav>
-      <header className="mb-4 flex flex-col gap-1 sm:flex-row sm:items-baseline sm:justify-between sm:gap-4">
-        <h1 className="text-lg font-semibold break-all">{streamName}</h1>
-        <span className="text-muted-foreground flex items-center gap-3 text-xs">
-          <Link href={`${streamPath}/health`} className="hover:text-foreground underline-offset-2 hover:underline">
-            health →
-          </Link>
-          <span>page {trail.length + 1} · {page.data.length} records</span>
-        </span>
-      </header>
+      <PageHeader
+        title={<code className="font-mono">{streamName}</code>}
+        breadcrumbs={[
+          { label: 'Records', href: '/dashboard/records' },
+          { label: connectorId, href: `/dashboard/records/${encodeURIComponent(connectorId)}` },
+          { label: streamName },
+        ]}
+        count={`page ${trail.length + 1} · ${page.data.length} records`}
+        actions={
+          <>
+            {allColumns.length > 0 && (
+              <ColumnsMenu
+                allColumns={allColumns}
+                defaultColumns={defaultColumns}
+                selectedColumns={columns}
+                mode={mode}
+              />
+            )}
+            <Link href={`${streamPath}/health`} className={buttonVariants({ variant: 'outline', size: 'sm' })}>
+              Stream health →
+            </Link>
+          </>
+        }
+      />
+
       {page.data.length === 0 ? (
-        <p className="text-muted-foreground text-xs">No records.</p>
+        <p className="pdpp-caption text-muted-foreground italic">No records.</p>
       ) : (
         <>
-          {/* Mobile */}
-          <ul className="divide-border divide-y border-y sm:hidden">
+          {/* Mobile list */}
+          <ul className="divide-border/70 divide-y border-y border-border/70 sm:hidden">
             {page.data.map((r) => (
               <li key={r.id}>
-                <Link href={recordHref(r.id)} className="hover:bg-muted/50 block px-2 py-3">
+                <Link href={recordHref(r.id)} className="hover:bg-muted/40 block px-3 py-3">
                   <RecordCard record={r} columns={columns} />
                 </Link>
               </li>
             ))}
           </ul>
 
-          {/* Desktop */}
-          <div className="border-border hidden overflow-x-auto rounded border sm:block">
-            <table className="min-w-full text-xs">
-              <thead className="bg-muted/50 text-left">
+          {/* Desktop table */}
+          <div className="border-border/70 hidden overflow-x-auto rounded-md border sm:block">
+            <table className="min-w-full">
+              <thead className="bg-muted/40">
                 <tr>
                   <th className={TH}>emitted_at</th>
                   <th className={TH}>id</th>
@@ -101,12 +133,15 @@ export default async function StreamPage({
               </thead>
               <tbody>
                 {page.data.map((r) => (
-                  <tr key={r.id} className="hover:bg-muted/30">
-                    <td className={`${TD} text-muted-foreground whitespace-nowrap`}>
+                  <tr key={r.id} className="hover:bg-muted/30 transition-colors">
+                    <td className={`${TD} text-muted-foreground whitespace-nowrap tabular-nums`}>
                       <Link href={recordHref(r.id)} className="block">{r.emitted_at}</Link>
                     </td>
                     <td className={`${TD} whitespace-nowrap`}>
-                      <Link href={recordHref(r.id)} className="text-foreground hover:text-foreground block underline-offset-2 hover:underline">
+                      <Link
+                        href={recordHref(r.id)}
+                        className="text-foreground block font-mono underline-offset-2 hover:underline"
+                      >
                         {truncate(r.id, 32)}
                       </Link>
                     </td>
@@ -126,21 +161,19 @@ export default async function StreamPage({
           </div>
         </>
       )}
-      <nav className="mt-4 flex items-center justify-between text-xs">
-        <PagerLink href={prevHref} label="← prev" />
-        <PagerLink href={nextHref} label="next →" />
-      </nav>
+
+      <Pager prev={prevHref} next={nextHref} />
     </DashboardShell>
   );
 }
 
 function RecordCard({ record, columns }: { record: StreamRecord; columns: string[] }) {
   return (
-    <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
+    <dl className="pdpp-caption grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
       <dt className="text-muted-foreground">emitted_at</dt>
-      <dd className="text-muted-foreground break-all">{record.emitted_at}</dd>
+      <dd className="text-muted-foreground break-all tabular-nums">{record.emitted_at}</dd>
       <dt className="text-muted-foreground">id</dt>
-      <dd className="break-all">{truncate(record.id, 48)}</dd>
+      <dd className="break-all font-mono">{truncate(record.id, 48)}</dd>
       {columns.map((c) => {
         const v = stringifyCell(record.data?.[c]);
         if (!v) return null;
@@ -155,15 +188,9 @@ function RecordCard({ record, columns }: { record: StreamRecord; columns: string
   );
 }
 
-function hrefFor(base: string, trail: string[]): string {
-  return trail.length ? `${base}?cursors=${trail.join(',')}` : base;
-}
-
-function PagerLink({ href, label }: { href: string | null; label: string }) {
-  if (!href) return <span className="text-muted-foreground/50">{label}</span>;
-  return (
-    <Link href={href} className="hover:text-foreground text-muted-foreground">
-      {label}
-    </Link>
-  );
+function hrefFor(base: string, trail: string[], columnsParam?: string): string {
+  const parts: string[] = [];
+  if (trail.length) parts.push(`cursors=${trail.join(',')}`);
+  if (columnsParam) parts.push(`columns=${encodeURIComponent(columnsParam)}`);
+  return parts.length ? `${base}?${parts.join('&')}` : base;
 }

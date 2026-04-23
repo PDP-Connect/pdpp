@@ -1,6 +1,18 @@
 import Link from 'next/link';
 import { DashboardShell, EmptyState, ServerUnreachable } from '../components/shell';
 import { PeekEmpty, PeekPane, PeekTimeline, pivotsFromEnvelope } from '../components/peek';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Select } from '@/components/ui/select';
+import {
+  DataList,
+  FilterSummary,
+  PageHeader,
+  Pager,
+  SplitLayout,
+  StatusBadge,
+  Toolbar,
+} from '../components/primitives';
 import { ReferenceServerUnreachableError } from '../lib/owner-token';
 import {
   getRunTimeline,
@@ -54,6 +66,7 @@ export default async function RunsPage({
     if (err instanceof ReferenceServerUnreachableError) {
       return (
         <DashboardShell active="runs">
+          <PageHeader title="Runs" />
           <ServerUnreachable />
         </DashboardShell>
       );
@@ -66,73 +79,84 @@ export default async function RunsPage({
     ? `/dashboard/runs/${encodeURIComponent(params.peek)}`
     : '';
 
+  const activeFilters = [
+    params.status ? { label: 'status', value: params.status } : null,
+    params.connector_id ? { label: 'connector', value: params.connector_id } : null,
+    params.q ? { label: 'query', value: params.q } : null,
+  ].filter((item): item is { label: string; value: string } => Boolean(item));
+
   return (
     <DashboardShell active="runs">
-      <header className="mb-4 flex items-baseline justify-between">
-        <h1 className="text-lg font-semibold">Runs</h1>
-        <span className="text-muted-foreground text-xs">
-          {result.data.length} {result.has_more ? '+ more' : ''}
-        </span>
-      </header>
+      <PageHeader
+        title="Runs"
+        description="Connector runs and their lifecycle: staging, advance, progress, and failures."
+        count={`${result.data.length}${result.has_more ? '+' : ''}`}
+      />
 
-      <form method="get" className="mb-4 flex flex-wrap items-center gap-2 text-xs">
-        <input
-          type="search"
-          name="q"
-          defaultValue={params.q ?? ''}
-          placeholder="id contains…"
-          className="border-border bg-background rounded border px-2 py-1"
-        />
-        <input
-          type="text"
-          name="connector_id"
-          defaultValue={params.connector_id ?? ''}
-          placeholder="connector_id"
-          className="border-border bg-background rounded border px-2 py-1"
-        />
-        <select
-          name="status"
-          defaultValue={params.status ?? ''}
-          className="border-border bg-background rounded border px-2 py-1"
-        >
-          <option value="">any status</option>
-          <option value="succeeded">succeeded</option>
-          <option value="failed">failed</option>
-          <option value="cancelled">cancelled</option>
-          <option value="started">started</option>
-        </select>
-        <button type="submit" className="border-border hover:bg-muted/50 rounded border px-2 py-1">
-          filter
-        </button>
+      <form method="get">
+        <Toolbar>
+          <label className="flex min-w-0 flex-col gap-1">
+            <span className="pdpp-eyebrow">Query</span>
+            <Input
+              type="search"
+              name="q"
+              defaultValue={params.q ?? ''}
+              placeholder="id contains…"
+              className="w-56 font-mono"
+            />
+          </label>
+          <label className="flex min-w-0 flex-col gap-1">
+            <span className="pdpp-eyebrow">Connector</span>
+            <Input
+              type="text"
+              name="connector_id"
+              defaultValue={params.connector_id ?? ''}
+              placeholder="connector_id"
+              className="w-48 font-mono"
+            />
+          </label>
+          <label className="flex min-w-0 flex-col gap-1">
+            <span className="pdpp-eyebrow">Status</span>
+            <Select name="status" defaultValue={params.status ?? ''}>
+              <option value="">Any</option>
+              <option value="succeeded">succeeded</option>
+              <option value="failed">failed</option>
+              <option value="cancelled">cancelled</option>
+              <option value="started">started</option>
+            </Select>
+          </label>
+          <Button type="submit" size="sm" className="mt-5">
+            Filter
+          </Button>
+        </Toolbar>
       </form>
 
-      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_22rem]">
-        <div className="min-w-0">
-          {result.data.length === 0 ? (
-            <EmptyState title="No runs yet" hint="Run artifacts appear after connector runs stage, advance, or fail." />
-          ) : (
-            <ul className="divide-border divide-y border-y">
-              {result.data.map((r) => (
-                <li key={r.run_id}>
-                  <RunRow run={r} params={params} />
-                </li>
-              ))}
-            </ul>
-          )}
-          {result.has_more && result.next_cursor && (
-            <div className="mt-4 text-xs">
-              <Link
-                href={listHref(params, { cursor: result.next_cursor })}
-                className="hover:text-foreground text-muted-foreground hover:underline"
-              >
-                next page →
-              </Link>
-            </div>
-          )}
-        </div>
+      <FilterSummary items={activeFilters} resetHref="/dashboard/runs" />
 
-        <div className="min-w-0">
-          {params.peek ? (
+      <SplitLayout
+        main={
+          <>
+            {result.data.length === 0 ? (
+              <EmptyState
+                title="No runs yet"
+                hint="Run artifacts appear after connector runs stage, advance, or fail."
+              />
+            ) : (
+              <DataList>
+                {result.data.map((r) => (
+                  <li key={r.run_id}>
+                    <RunRow run={r} params={params} />
+                  </li>
+                ))}
+              </DataList>
+            )}
+            {result.has_more && result.next_cursor && (
+              <Pager next={listHref(params, { cursor: result.next_cursor })} />
+            )}
+          </>
+        }
+        peek={
+          params.peek ? (
             peekEnvelope ? (
               <PeekPane
                 title={`run ${params.peek}`}
@@ -141,7 +165,7 @@ export default async function RunsPage({
                 cliCommand={`pdpp run timeline ${params.peek}`}
               >
                 <Pivots envelope={peekEnvelope} currentKind="run" />
-                <div className="text-muted-foreground mb-2 text-[11px]">
+                <div className="pdpp-caption text-muted-foreground mb-2">
                   {peekEnvelope.events.length} events
                 </div>
                 <PeekTimeline events={peekEnvelope.events} />
@@ -157,34 +181,36 @@ export default async function RunsPage({
             )
           ) : (
             <PeekEmpty />
-          )}
-        </div>
-      </div>
+          )
+        }
+      />
     </DashboardShell>
   );
 }
 
 function RunRow({ run, params }: { run: RunSummary; params: Params }) {
   const peeked = params.peek === run.run_id;
-  const isFailure = run.status === 'failed' || run.status === 'cancelled';
   return (
     <Link
       href={listHref(params, { peek: run.run_id })}
       scroll={false}
       aria-current={peeked ? 'true' : undefined}
-      className={`block px-2 py-2 ${peeked ? 'bg-muted' : 'hover:bg-muted/50'}`}
+      className={`block px-3 py-2.5 transition-colors ${peeked ? 'bg-muted' : 'hover:bg-muted/40'}`}
     >
-      <div className="flex flex-wrap items-baseline justify-between gap-2 text-xs">
-        <code className="break-all font-medium">{run.run_id}</code>
-        <span className="text-muted-foreground tabular-nums">{run.last_at}</span>
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <code className="pdpp-caption text-foreground break-all font-mono font-medium">
+          {run.run_id}
+        </code>
+        <div className="flex items-center gap-2">
+          <StatusBadge status={run.status} />
+          <span className="pdpp-caption text-muted-foreground tabular-nums">{run.last_at}</span>
+        </div>
       </div>
-      <div className="text-muted-foreground mt-1 text-[11px]">
-        <span className={isFailure ? 'text-destructive' : ''}>{run.status}</span>
-        {' · '}
+      <div className="pdpp-caption text-muted-foreground mt-1">
         {run.event_count} events
         {run.connector_id ? ` · ${run.connector_id}` : ''}
         {run.provider_id ? ` · provider ${run.provider_id}` : ''}
-        {run.failure_reason ? ` · reason: ${run.failure_reason}` : ''}
+        {run.failure_reason ? ` · ${run.failure_reason}` : ''}
       </div>
     </Link>
   );
@@ -205,7 +231,7 @@ function Pivots({
         <Link
           key={`${p.kind}:${p.id}`}
           href={`/dashboard/${p.kind}s?peek=${encodeURIComponent(p.id)}`}
-          className="border-border hover:bg-muted/50 rounded border px-2 py-0.5 text-[10px]"
+          className="pdpp-eyebrow border-border hover:bg-muted/60 rounded border px-2 py-0.5"
         >
           {p.kind} {p.id} →
         </Link>

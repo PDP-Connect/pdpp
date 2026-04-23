@@ -1,18 +1,68 @@
 import Link from 'next/link';
 import type { ReactNode } from 'react';
 
-export type DashboardBreadcrumb = {
+// ─── Types ──────────────────────────────────────────────────────────────────
+
+export type Breadcrumb = {
   label: string;
   href?: string;
 };
 
-export function DashboardBreadcrumbs({ items }: { items: DashboardBreadcrumb[] }) {
-  if (!items.length) return null;
+export type MetaPillTone = 'neutral' | 'protocol' | 'human' | 'success' | 'danger';
+
+// ─── Layout: page header ────────────────────────────────────────────────────
+// One header per page. Breadcrumbs above, title row, optional meta below.
+// Always divides from content with a single `border-b`. No surface, no box.
+
+export function PageHeader({
+  title,
+  description,
+  breadcrumbs,
+  actions,
+  meta,
+  count,
+}: {
+  title: ReactNode;
+  description?: ReactNode;
+  breadcrumbs?: Breadcrumb[];
+  actions?: ReactNode;
+  meta?: ReactNode;
+  count?: ReactNode;
+}) {
   return (
-    <nav className="text-muted-foreground mb-3 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+    <header className="mb-6 border-b border-border/80 pb-5">
+      {breadcrumbs?.length ? <Breadcrumbs items={breadcrumbs} /> : null}
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-baseline gap-3">
+            <h1 className="pdpp-heading text-foreground break-words">{title}</h1>
+            {count ? (
+              <span className="pdpp-caption text-muted-foreground tabular-nums">{count}</span>
+            ) : null}
+          </div>
+          {description ? (
+            <p className="pdpp-body text-muted-foreground mt-1.5 max-w-3xl">
+              {description}
+            </p>
+          ) : null}
+        </div>
+        {actions ? (
+          <div className="flex flex-wrap items-center gap-2">{actions}</div>
+        ) : null}
+      </div>
+      {meta ? (
+        <div className="mt-4 flex flex-wrap items-center gap-2">{meta}</div>
+      ) : null}
+    </header>
+  );
+}
+
+function Breadcrumbs({ items }: { items: Breadcrumb[] }) {
+  return (
+    <nav className="pdpp-caption text-muted-foreground mb-3 flex flex-wrap items-center gap-x-1.5" aria-label="Breadcrumb">
       {items.map((item, index) => (
-        <div key={`${item.label}:${index}`} className="contents">
-          {index > 0 ? <span>/</span> : null}
+        <span key={`${item.label}:${index}`} className="inline-flex items-center gap-1.5">
+          {index > 0 ? <span className="text-muted-foreground/60">/</span> : null}
           {item.href ? (
             <Link href={item.href} className="hover:text-foreground underline-offset-2 hover:underline">
               {item.label}
@@ -20,221 +70,279 @@ export function DashboardBreadcrumbs({ items }: { items: DashboardBreadcrumb[] }
           ) : (
             <span className="text-foreground">{item.label}</span>
           )}
-        </div>
+        </span>
       ))}
     </nav>
   );
 }
 
-export function DashboardFrame({
-  children,
-  className = '',
-}: {
-  children: ReactNode;
-  className?: string;
-}) {
-  return (
-    <div
-      className={`rounded-[1.25rem] border border-border/70 bg-background/80 px-4 py-4 shadow-[inset_0_1px_0_rgb(255_255_255_/_0.7)] sm:px-5 sm:py-5 ${className}`.trim()}
-    >
-      {children}
-    </div>
-  );
-}
+// ─── Layout: section ────────────────────────────────────────────────────────
+// Silent: title + optional action + children. No border, no padding box.
 
-export function DashboardRail({
-  children,
-  className = '',
-}: {
-  children: ReactNode;
-  className?: string;
-}) {
-  return (
-    <aside
-      className={`rounded-[1.5rem] border border-border/70 bg-background/85 px-3 py-3 shadow-[inset_0_1px_0_rgb(255_255_255_/_0.8),0_1px_2px_rgb(0_0_0_/_0.04)] ${className}`.trim()}
-    >
-      {children}
-    </aside>
-  );
-}
-
-export function DashboardRailSection({
+export function Section({
   title,
+  description,
+  action,
   children,
   className = '',
+  id,
 }: {
-  title: string;
+  title?: ReactNode;
+  description?: ReactNode;
+  action?: ReactNode;
   children: ReactNode;
   className?: string;
+  id?: string;
 }) {
   return (
-    <section className={`border-t border-border/70 px-2 pt-3 first:border-t-0 first:pt-1 ${className}`.trim()}>
-      <div className="pdpp-label text-muted-foreground mb-2 uppercase tracking-[0.12em]">{title}</div>
+    <section id={id} className={`mb-8 scroll-mt-16 ${className}`.trim()}>
+      {title || action || description ? (
+        <div className="mb-3 flex flex-col gap-1 sm:flex-row sm:items-baseline sm:justify-between sm:gap-4">
+          <div className="min-w-0">
+            {title ? <h2 className="pdpp-title text-foreground">{title}</h2> : null}
+            {description ? (
+              <p className="pdpp-caption text-muted-foreground mt-0.5">{description}</p>
+            ) : null}
+          </div>
+          {action ? <div className="pdpp-caption">{action}</div> : null}
+        </div>
+      ) : null}
       {children}
     </section>
   );
 }
 
-export function DashboardMasthead({
-  title,
-  description,
-  eyebrow = 'control plane',
-  breadcrumbs = [],
-  actions,
-  meta,
-  surface: _surface,
+// ─── Layout: toolbar ────────────────────────────────────────────────────────
+// A filter/action row. Auto-flows children; right-aligned items with
+// `data-align="end"` or via the `trailing` prop.
+
+export function Toolbar({
+  children,
+  trailing,
+  className = '',
 }: {
-  title: string;
-  description?: ReactNode;
-  eyebrow?: string;
-  breadcrumbs?: DashboardBreadcrumb[];
-  actions?: ReactNode;
-  meta?: ReactNode;
-  surface?: 'protocol' | 'human';
+  children: ReactNode;
+  trailing?: ReactNode;
+  className?: string;
 }) {
   return (
-    <header className="mb-8 border-b border-border/80 pb-6">
-      <DashboardBreadcrumbs items={breadcrumbs} />
-      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-        <div className="min-w-0">
-          <div className="pdpp-label text-muted-foreground uppercase tracking-[0.12em]">
-            {eyebrow}
-          </div>
-          <h1 className="pdpp-heading mt-1 break-words">{title}</h1>
-          {description ? (
-            <div className="text-muted-foreground mt-2 max-w-3xl text-sm leading-6">
-              {description}
-            </div>
-          ) : null}
-        </div>
-        {actions ? <div className="flex flex-wrap items-center gap-2 text-xs">{actions}</div> : null}
-      </div>
-      {meta ? <div className="mt-4 flex flex-wrap items-center gap-2 text-xs">{meta}</div> : null}
-    </header>
+    <div
+      className={`pdpp-caption mb-5 flex flex-wrap items-end gap-x-3 gap-y-2 ${className}`.trim()}
+    >
+      {children}
+      {trailing ? <div className="ml-auto flex flex-wrap items-center gap-2">{trailing}</div> : null}
+    </div>
   );
 }
 
-export function DashboardMetaPill({
+export function ToolbarField({
+  label,
+  children,
+  width = '',
+}: {
+  label: string;
+  children: ReactNode;
+  width?: string;
+}) {
+  return (
+    <label className={`flex min-w-0 flex-col gap-1 ${width}`.trim()}>
+      <span className="pdpp-eyebrow">{label}</span>
+      {children}
+    </label>
+  );
+}
+
+// ─── Layout: split — main + peek pane ──────────────────────────────────────
+
+export function SplitLayout({
+  main,
+  peek,
+}: {
+  main: ReactNode;
+  peek: ReactNode;
+}) {
+  return (
+    <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_22rem]">
+      <div className="min-w-0">{main}</div>
+      <div className="min-w-0">{peek}</div>
+    </div>
+  );
+}
+
+// ─── List: data list wrapper ───────────────────────────────────────────────
+// Single source of truth for the divide-y list pattern.
+
+export function DataList({
+  children,
+  className = '',
+  dense = false,
+  emptyState,
+  ariaLabel,
+}: {
+  children?: ReactNode;
+  className?: string;
+  dense?: boolean;
+  emptyState?: ReactNode;
+  ariaLabel?: string;
+}) {
+  const hasChildren = Array.isArray(children) ? children.length > 0 : Boolean(children);
+  if (!hasChildren && emptyState) return <>{emptyState}</>;
+  return (
+    <ul
+      aria-label={ariaLabel}
+      className={`divide-border/70 divide-y border-y border-border/70 ${dense ? '' : ''} ${className}`.trim()}
+    >
+      {children}
+    </ul>
+  );
+}
+
+// ─── Pager ──────────────────────────────────────────────────────────────────
+
+export function Pager({
+  prev,
+  next,
+  countLabel,
+}: {
+  prev?: string | null;
+  next?: string | null;
+  countLabel?: ReactNode;
+}) {
+  return (
+    <nav
+      className="pdpp-caption mt-5 flex flex-wrap items-center justify-between gap-3"
+      aria-label="Pagination"
+    >
+      <span className="text-muted-foreground tabular-nums">{countLabel}</span>
+      <div className="flex flex-wrap items-center gap-3">
+        {prev ? (
+          <Link href={prev} className="text-muted-foreground hover:text-foreground underline-offset-2 hover:underline">
+            ← previous
+          </Link>
+        ) : (
+          <span className="text-muted-foreground/40">← previous</span>
+        )}
+        {next ? (
+          <Link href={next} className="text-muted-foreground hover:text-foreground underline-offset-2 hover:underline">
+            next →
+          </Link>
+        ) : (
+          <span className="text-muted-foreground/40">next →</span>
+        )}
+      </div>
+    </nav>
+  );
+}
+
+// ─── Surface: meta pill (small inline key/value) ───────────────────────────
+
+export function MetaPill({
   label,
   value,
   tone = 'neutral',
 }: {
   label: string;
   value: ReactNode;
-  tone?: 'neutral' | 'protocol' | 'human' | 'danger';
+  tone?: MetaPillTone;
 }) {
   const toneClass =
     tone === 'protocol'
-      ? 'border-primary/20 bg-primary/6'
+      ? 'border-primary/25 bg-primary/5 text-foreground'
       : tone === 'human'
-        ? 'border-[color:var(--human)]/20 bg-[color:var(--human-wash)]'
-        : tone === 'danger'
-          ? 'border-destructive/20 bg-destructive/5 text-destructive'
-          : 'border-border bg-background/80';
+        ? 'border-[color:var(--human)]/25 bg-[color:var(--human-wash)] text-foreground'
+        : tone === 'success'
+          ? 'border-[color:var(--success)]/30 bg-[color:var(--success-wash)] text-foreground'
+          : tone === 'danger'
+            ? 'border-destructive/25 bg-destructive/5 text-destructive'
+            : 'border-border/80 bg-background';
   return (
-    <span className={`inline-flex items-center gap-2 rounded-full border px-2.5 py-1 ${toneClass}`}>
+    <span
+      className={`pdpp-caption inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 ${toneClass}`}
+    >
       <span className="text-muted-foreground">{label}</span>
-      <span className="text-foreground font-medium">{value}</span>
+      <span className="text-foreground font-medium tabular-nums">{value}</span>
     </span>
   );
 }
 
-export function DashboardToolbar({
+// ─── Status badge ──────────────────────────────────────────────────────────
+// Consolidates scattered status-chip styles across grants, runs, traces.
+
+export function StatusBadge({
+  status,
+  inline = false,
+}: {
+  status: string;
+  inline?: boolean;
+}) {
+  const tone = statusTone(status);
+  const toneClass =
+    tone === 'danger'
+      ? 'bg-destructive/10 text-destructive'
+      : tone === 'success'
+        ? 'bg-[color:var(--success-wash)] text-[color:var(--success)]'
+        : tone === 'warning'
+          ? 'bg-[color:var(--warning-wash)] text-[color:var(--warning)]'
+          : 'bg-muted text-muted-foreground';
+  return (
+    <span
+      className={`pdpp-eyebrow ${inline ? '' : 'inline-flex'} rounded-[3px] px-1.5 py-0.5 font-medium tabular-nums ${toneClass}`}
+    >
+      {status.replace(/_/g, ' ')}
+    </span>
+  );
+}
+
+function statusTone(status: string): 'success' | 'danger' | 'warning' | 'neutral' {
+  if (['failed', 'rejected', 'denied', 'revoked', 'cancelled'].includes(status)) return 'danger';
+  if (['succeeded', 'issued', 'token_issued', 'approved'].includes(status)) return 'success';
+  if (['started', 'pending', 'staged', 'verification_pending'].includes(status)) return 'warning';
+  return 'neutral';
+}
+
+// ─── Callout: the one card pattern ─────────────────────────────────────────
+// Use sparingly. Reserved for genuinely bounded context:
+//   - inline human-tinted workspace step (grant request / device flow)
+//   - protocol-tinted protocol-data emphasis
+//   - neutral bordered box (last resort)
+
+export function Callout({
+  title,
+  description,
   children,
+  surface = 'neutral',
+  action,
   className = '',
 }: {
-  children: ReactNode;
+  title?: ReactNode;
+  description?: ReactNode;
+  children?: ReactNode;
+  surface?: 'neutral' | 'human' | 'protocol';
+  action?: ReactNode;
   className?: string;
 }) {
+  const surfaceAttr = surface === 'neutral' ? undefined : surface;
+  const neutralClass =
+    surface === 'neutral' ? 'border-border/80 bg-muted/30 border rounded-md' : 'rounded-md';
   return (
-    <div className={`mb-4 flex flex-wrap items-center gap-2 text-xs ${className}`.trim()}>
+    <div data-surface={surfaceAttr} className={`${neutralClass} px-4 py-3 ${className}`.trim()}>
+      {title || action ? (
+        <div className="mb-2 flex flex-wrap items-baseline justify-between gap-2">
+          {title ? <h3 className="pdpp-title text-foreground">{title}</h3> : <span />}
+          {action ? <div className="pdpp-caption">{action}</div> : null}
+        </div>
+      ) : null}
+      {description ? (
+        <p className="pdpp-caption text-muted-foreground mb-2">{description}</p>
+      ) : null}
       {children}
     </div>
   );
 }
 
-export function DashboardSection({
-  title,
-  description,
-  href,
-  actions,
-  children,
-  className = '',
-}: {
-  title: string;
-  description?: ReactNode;
-  href?: string;
-  actions?: ReactNode;
-  children: ReactNode;
-  className?: string;
-}) {
-  return (
-    <section className={`mb-8 border-t border-border/80 pt-4 ${className}`.trim()}>
-      <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <div className="min-w-0">
-          <h2 className="pdpp-title">{title}</h2>
-          {description ? (
-            <div className="text-muted-foreground mt-1 text-xs leading-5">{description}</div>
-          ) : null}
-        </div>
-        <div className="flex flex-wrap items-center gap-2 text-xs">
-          {actions}
-          {href ? (
-            <Link href={href} className="text-muted-foreground underline-offset-2 hover:underline">
-              view all →
-            </Link>
-          ) : null}
-        </div>
-      </div>
-      {children}
-    </section>
-  );
-}
+// ─── Filter summary (active filter chips) ──────────────────────────────────
 
-export function DashboardSurfaceCard({
-  title,
-  description,
-  href,
-  actions,
-  children,
-  surface = 'protocol',
-  className = '',
-}: {
-  title: string;
-  description?: ReactNode;
-  href?: string;
-  actions?: ReactNode;
-  children: ReactNode;
-  surface?: 'protocol' | 'human';
-  className?: string;
-}) {
-  return (
-    <section
-      data-surface={surface}
-      className={`rounded-2xl px-4 py-4 sm:px-5 sm:py-5 ${className}`.trim()}
-    >
-      <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <div className="min-w-0">
-          <h2 className="pdpp-title">{title}</h2>
-          {description ? (
-            <div className="text-muted-foreground mt-1 text-xs leading-5">{description}</div>
-          ) : null}
-        </div>
-        <div className="flex flex-wrap items-center gap-2 text-xs">
-          {actions}
-          {href ? (
-            <Link href={href} className="text-muted-foreground underline-offset-2 hover:underline">
-              view all →
-            </Link>
-          ) : null}
-        </div>
-      </div>
-      {children}
-    </section>
-  );
-}
-
-export function DashboardFilterSummary({
+export function FilterSummary({
   items,
   resetHref,
 }: {
@@ -243,25 +351,22 @@ export function DashboardFilterSummary({
 }) {
   if (items.length === 0) return null;
   return (
-    <div className="mb-4 flex flex-wrap items-center gap-2 text-xs">
-      <span className="text-muted-foreground">active filters</span>
+    <div className="pdpp-caption mb-4 flex flex-wrap items-center gap-2">
+      <span className="text-muted-foreground">Active</span>
       {items.map((item) => (
         <span
           key={`${item.label}:${item.value}`}
-          className="inline-flex items-center gap-1 rounded-full border border-border bg-background/80 px-2.5 py-1"
+          className="border-border/80 bg-background inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5"
         >
           <span className="text-muted-foreground">{item.label}</span>
-          <span className="font-medium">{item.value}</span>
+          <span className="text-foreground font-medium">{item.value}</span>
         </span>
       ))}
       {resetHref ? (
-        <Link href={resetHref} className="text-muted-foreground underline-offset-2 hover:underline">
+        <Link href={resetHref} className="text-muted-foreground hover:text-foreground underline-offset-2 hover:underline">
           clear all
         </Link>
       ) : null}
     </div>
   );
 }
-
-export const DashboardPageHeader = DashboardMasthead;
-export const DashboardSectionCard = DashboardSurfaceCard;

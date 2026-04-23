@@ -35,44 +35,42 @@ function eventRowClass(ev: SpineEvent): string {
 
 export function TimelineView({ events }: { events: SpineEvent[] }) {
   return (
-    <ol className="relative space-y-2">
+    <ol className="relative space-y-1.5">
       {events.map((ev, i) => (
         <li
           key={ev.event_id}
-          className={`border-border bg-muted/10 rounded border border-l-4 px-3 py-2 ${eventRowClass(ev)}`}
+          className={`border-border/70 bg-muted/15 rounded-md border border-l-4 px-3 py-2 ${eventRowClass(ev)}`}
         >
           <div className="flex flex-wrap items-baseline justify-between gap-2">
             <div className="flex flex-wrap items-baseline gap-2">
-              <span className="text-muted-foreground tabular-nums text-[10px]">
+              <span className="pdpp-caption text-muted-foreground/70 tabular-nums">
                 {String(i + 1).padStart(2, '0')}
               </span>
-              <code className="text-xs font-medium">{ev.event_type}</code>
+              <code className="pdpp-caption font-mono font-medium">{ev.event_type}</code>
               <span
-                className={`rounded px-1.5 py-0.5 text-[10px] ${
+                className={`pdpp-eyebrow rounded px-1.5 py-0.5 font-medium ${
                   ev.status === 'failed' || ev.status === 'rejected'
                     ? 'bg-destructive/10 text-destructive'
-                    : ev.status === 'succeeded'
-                    ? 'bg-muted text-muted-foreground'
                     : 'bg-muted text-muted-foreground'
                 }`}
               >
                 {ev.status}
               </span>
             </div>
-            <span className="text-muted-foreground tabular-nums text-[10px]">
+            <span className="pdpp-caption text-muted-foreground tabular-nums">
               {ev.occurred_at}
             </span>
           </div>
-          <div className="text-muted-foreground mt-1 text-[11px]">
-            {ev.actor_type}/{ev.actor_id}
+          <div className="pdpp-caption text-muted-foreground mt-1">
+            <span className="font-mono">{ev.actor_type}/{ev.actor_id}</span>
             {ev.stream_id ? ` · stream ${ev.stream_id}` : ''}
             {ev.request_id ? ` · req ${ev.request_id}` : ''}
           </div>
           <details className="mt-1">
-            <summary className="text-muted-foreground cursor-pointer text-[11px]">
+            <summary className="pdpp-caption text-muted-foreground hover:text-foreground cursor-pointer">
               data
             </summary>
-            <pre className="bg-background mt-1 overflow-x-auto rounded border border-border p-2 text-[10px]">
+            <pre className="pdpp-caption bg-background mt-1 overflow-x-auto rounded border border-border/70 p-2 font-mono">
               {JSON.stringify(redactSecrets(ev.data || {}), null, 2)}
             </pre>
           </details>

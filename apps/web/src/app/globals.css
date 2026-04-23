@@ -31,6 +31,46 @@
   --color-ring: var(--ring);
   --color-success: var(--success);
   --color-warning: var(--warning);
+
+  /*
+   * PDPP type scale — size-only tokens matching the .pdpp-* classes in
+   * packages/pdpp-brand/base.css. Exposes `text-pdpp-*` Tailwind utilities
+   * (incl. responsive and hover variants) for cases where you want the
+   * scale step but not the full semantic bundle. For font-family,
+   * font-weight, and letter-spacing, use the .pdpp-* class directly —
+   * those properties don't compress into a single Tailwind utility.
+   *
+   * `pdpp-eyebrow` is intentionally class-only: its identity *is* its
+   * mono family + uppercase + letter-spacing bundle. A size utility for
+   * it would invite misuse.
+   */
+  --text-pdpp-caption: 0.75rem;
+  --text-pdpp-caption--line-height: 1.5;
+  --text-pdpp-label: 0.75rem;
+  --text-pdpp-label--line-height: 1.4;
+  --text-pdpp-body: 0.875rem;
+  --text-pdpp-body--line-height: 1.6;
+  --text-pdpp-title: 0.875rem;
+  --text-pdpp-title--line-height: 1.4;
+  --text-pdpp-body-lg: 1.125rem;
+  --text-pdpp-body-lg--line-height: 1.625;
+  --text-pdpp-heading: 1.25rem;
+  --text-pdpp-heading--line-height: 1.3;
+  --text-pdpp-display: 2.5rem;
+  --text-pdpp-display--line-height: 1.08;
+  --text-pdpp-display-lg: 3.75rem;
+  --text-pdpp-display-lg--line-height: 1.05;
+
+  /*
+   * Letter-spacing tokens for the display/heading/eyebrow steps.
+   * The eyebrow's tracking is the only value the brand uses that
+   * doesn't match a Tailwind default (tracking-widest is 0.1em; ours
+   * is 0.12em). Exposing as a token lets consumers compose eyebrow-
+   * adjacent treatments without the full .pdpp-eyebrow class.
+   */
+  --tracking-pdpp-display: -0.025em;
+  --tracking-pdpp-heading: -0.01em;
+  --tracking-pdpp-eyebrow: 0.12em;
 }
 
 @layer base {

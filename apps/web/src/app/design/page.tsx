@@ -26,6 +26,21 @@ import {
   LONGVIEW_TOS_URI,
 } from '@/lib/longview-world';
 import { PdppLogo } from '@/components/PdppLogo';
+import { Input } from '@/components/ui/input';
+import { Select } from '@/components/ui/select';
+import { Textarea } from '@/components/ui/textarea';
+import {
+  Callout,
+  DataList,
+  FilterSummary,
+  MetaPill,
+  PageHeader,
+  Pager,
+  Section as DashboardSectionPrimitive,
+  SplitLayout,
+  StatusBadge,
+  Toolbar,
+} from '@/app/dashboard/components/primitives';
 
 // ─── Nav ──────────────────────────────────────────────────────────────────────
 
@@ -38,6 +53,7 @@ const NAV_SECTIONS = [
   { id: 'motion',     label: 'Motion' },
   { id: 'surfaces',   label: 'Surfaces' },
   { id: 'components', label: 'Components' },
+  { id: 'dashboard',  label: 'Dashboard' },
   { id: 'examples',   label: 'Examples' },
   { id: 'docs',       label: 'Docs' },
   { id: 'status',     label: 'Status' },
@@ -151,6 +167,7 @@ export default function DesignSystemPage() {
                 <MotionSection />
                 <SurfacesSection />
                 <ComponentsSection />
+                <DashboardPrimitivesSection />
                 <ExampleWorldsSection />
                 <DocsSection />
                 <StatusSection />
@@ -748,6 +765,71 @@ function TypographySection() {
             </tbody>
           </table>
           </div>
+        </div>
+
+        {/* Dual access — class vs utility */}
+        <div>
+          <SubLabel>Dual access — class vs Tailwind utility</SubLabel>
+          <p className="pdpp-caption mb-6 text-muted-foreground max-w-[56ch]">
+            Every Geist step is reachable two ways. Use the <code className="font-mono">.pdpp-*</code> class
+            when you want the full semantic bundle (family + size + weight + line-height + letter-spacing).
+            Use the <code className="font-mono">text-pdpp-*</code> Tailwind utility when you need the size
+            step alone — e.g. paired with <code className="font-mono">font-mono</code>, or inside a
+            responsive variant like <code className="font-mono">md:text-pdpp-heading</code>. Both
+            resolve to the same CSS custom property; rendering is pixel-identical.
+          </p>
+          <div className="overflow-x-auto">
+            <table className="w-full" style={{ borderCollapse: 'collapse' }}>
+              <colgroup>
+                <col style={{ width: '120px' }} />
+                <col />
+                <col />
+                <col className="hidden md:table-column" style={{ width: '80px' }} />
+              </colgroup>
+              <thead>
+                <tr style={{ borderBottom: '1px solid var(--border)' }}>
+                  {['Step', 'Class form', 'Utility form', 'Spec'].map((h, i) => (
+                    <th key={h} className={`text-left pb-2 text-xs font-medium${i === 3 ? ' hidden md:table-cell' : ''}`} style={{ color: 'var(--muted-foreground)' }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {[
+                  { step: 'heading',  utility: 'text-pdpp-heading font-semibold tracking-[-0.01em]',  className: 'pdpp-heading',  sample: 'Grant request',  spec: '20/600' },
+                  { step: 'title',    utility: 'text-pdpp-title font-semibold',                        className: 'pdpp-title',    sample: 'Longview',        spec: '14/600' },
+                  { step: 'body-lg',  utility: 'text-pdpp-body-lg',                                    className: 'pdpp-body-lg',  sample: 'An authorization and disclosure protocol.', spec: '18/400' },
+                  { step: 'body',     utility: 'text-pdpp-body',                                       className: 'pdpp-body',     sample: 'Comparing salary, equity, benefits, and tax tradeoffs.', spec: '14/400' },
+                  { step: 'label',    utility: 'text-pdpp-label font-medium',                          className: 'pdpp-label',    sample: 'What they can access', spec: '12/500' },
+                  { step: 'caption',  utility: 'text-pdpp-caption',                                    className: 'pdpp-caption',  sample: 'Helper copy.',    spec: '12/400' },
+                ].map(({ step, className, utility, sample, spec }) => (
+                  <tr key={step}>
+                    <td className="py-3 pr-4" style={{ verticalAlign: 'baseline' }}>
+                      <span className="font-mono text-xs" style={{ color: 'var(--muted-foreground)' }}>{step}</span>
+                    </td>
+                    <td className="py-3 pr-4" style={{ verticalAlign: 'baseline', overflow: 'hidden', maxWidth: 0 }}>
+                      <span className={className} style={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{sample}</span>
+                      <span className="font-mono text-[10px] mt-0.5" style={{ color: 'var(--muted-foreground)', opacity: 0.6, display: 'block' }}>.{className}</span>
+                    </td>
+                    <td className="py-3 pr-4" style={{ verticalAlign: 'baseline', overflow: 'hidden', maxWidth: 0 }}>
+                      <span className={utility} style={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{sample}</span>
+                      <span className="font-mono text-[10px] mt-0.5" style={{ color: 'var(--muted-foreground)', opacity: 0.6, display: 'block' }}>{utility}</span>
+                    </td>
+                    <td className="py-3 hidden md:table-cell" style={{ verticalAlign: 'baseline' }}>
+                      <span className="font-mono text-xs tabular-nums" style={{ color: 'var(--muted-foreground)' }}>{spec}</span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p className="pdpp-caption mt-6 text-muted-foreground/80 max-w-[56ch]">
+            <span className="text-foreground font-medium">Eyebrow</span> is intentionally class-only —
+            its identity <em>is</em> the mono family + uppercase + <code className="font-mono">0.12em</code>{' '}
+            tracking bundle. A utility alias for the size alone would invite misuse. Reach for{' '}
+            <code className="font-mono">.pdpp-eyebrow</code> directly, or compose from{' '}
+            <code className="font-mono">font-mono uppercase tracking-pdpp-eyebrow</code> when you
+            need to vary the size.
+          </p>
         </div>
 
         {/* JetBrains Mono */}
@@ -1455,6 +1537,301 @@ function ComponentsSection() {
             specimens={CITATION_SPECIMENS}
             render={(data) => <SpecCitationGroup key={data.citations.map(c => c.section).join(',')} {...data} />}
           />
+        </div>
+      </div>
+    </SectionWrap>
+  );
+}
+
+// ─── 07b Dashboard Primitives ─────────────────────────────────────────────────
+// The control-plane grammar. These primitives are consumed across every
+// /dashboard route. Document them here so the grammar is discoverable.
+
+function DashboardPrimitivesSection() {
+  return (
+    <SectionWrap id="dashboard">
+      <SectionHeader
+        title="Dashboard primitives"
+        description="The control-plane grammar. Layout first, surfaces selective. Every /dashboard route composes these pieces; no page should invent its own header, list, or status affordance."
+      />
+
+      <div className="flex flex-col gap-12">
+        {/* PageHeader */}
+        <div>
+          <SubLabel>PageHeader — breadcrumbs, title, count, actions, meta</SubLabel>
+          <p className="pdpp-caption mb-4 text-muted-foreground max-w-[52ch]">
+            One header per page. Divides from content with a single border-b. No card, no surface.
+            {'`title`'} may be prose or a{' '}<code className="font-mono pdpp-caption">&lt;code&gt;</code>{' '}element; {'`count`'} is a muted caption; {'`meta`'} is a row of MetaPills.
+          </p>
+          <div className="rounded-lg border border-border/80 bg-background p-6">
+            <PageHeader
+              title={<code className="font-mono">run_1776830422766</code>}
+              breadcrumbs={[
+                { label: 'Runs', href: '#' },
+                { label: 'Run' },
+              ]}
+              description="connector github · 1,159 events"
+              count="page 1"
+              meta={
+                <>
+                  <MetaPill label="status" value="succeeded" tone="success" />
+                  <MetaPill label="connector" value="github" tone="protocol" />
+                  <MetaPill label="duration" value="00:01:04" />
+                </>
+              }
+            />
+          </div>
+        </div>
+
+        {/* Section */}
+        <div>
+          <SubLabel>Section — silent visual boundary</SubLabel>
+          <p className="pdpp-caption mb-4 text-muted-foreground max-w-[52ch]">
+            A titled region with optional description and right-aligned action. No border, no card —
+            just typographic weight and rhythm.
+          </p>
+          <div className="rounded-lg border border-border/80 bg-background p-6">
+            <DashboardSectionPrimitive
+              title="Failed traces"
+              description="Recent protocol interactions that did not complete."
+              action={<a className="text-muted-foreground hover:text-foreground underline-offset-2 hover:underline">view all →</a>}
+            >
+              <DataList>
+                <li className="px-3 py-2.5">
+                  <div className="flex items-baseline justify-between gap-2">
+                    <code className="pdpp-caption text-foreground font-mono font-medium">trc_qry_0bb58c8f4bcc4c3f</code>
+                    <span className="pdpp-caption text-muted-foreground tabular-nums">2026-04-23T04:19:43Z</span>
+                  </div>
+                  <div className="pdpp-caption mt-1 flex items-center gap-2">
+                    <StatusBadge status="failed" />
+                    <span className="text-muted-foreground">query.rejected</span>
+                  </div>
+                </li>
+                <li className="px-3 py-2.5">
+                  <div className="flex items-baseline justify-between gap-2">
+                    <code className="pdpp-caption text-foreground font-mono font-medium">trc_qry_de0eef952cc1e4f0</code>
+                    <span className="pdpp-caption text-muted-foreground tabular-nums">2026-04-23T04:19:43Z</span>
+                  </div>
+                  <div className="pdpp-caption mt-1 flex items-center gap-2">
+                    <StatusBadge status="failed" />
+                    <span className="text-muted-foreground">query.rejected</span>
+                  </div>
+                </li>
+              </DataList>
+            </DashboardSectionPrimitive>
+          </div>
+        </div>
+
+        {/* Toolbar */}
+        <div>
+          <SubLabel>Toolbar — filter/action row</SubLabel>
+          <p className="pdpp-caption mb-4 text-muted-foreground max-w-[52ch]">
+            Horizontal flex of labelled fields and buttons. Fields stack their label above
+            (<code className="font-mono">pdpp-eyebrow</code>). Reuse across search, grants, runs,
+            traces, and timeline.
+          </p>
+          <div className="rounded-lg border border-border/80 bg-background p-6">
+            <Toolbar>
+              <label className="flex min-w-0 flex-col gap-1">
+                <span className="pdpp-eyebrow">Query</span>
+                <Input type="search" placeholder="id contains…" className="w-56 font-mono" defaultValue="" />
+              </label>
+              <label className="flex min-w-0 flex-col gap-1">
+                <span className="pdpp-eyebrow">Status</span>
+                <Select defaultValue="">
+                  <option value="">Any</option>
+                  <option value="succeeded">succeeded</option>
+                  <option value="failed">failed</option>
+                </Select>
+              </label>
+              <Button size="sm" className="mt-5">Filter</Button>
+            </Toolbar>
+            <FilterSummary
+              items={[
+                { label: 'status', value: 'failed' },
+                { label: 'connector', value: 'github' },
+              ]}
+              resetHref="#"
+            />
+          </div>
+        </div>
+
+        {/* Form elements */}
+        <div>
+          <SubLabel>Form elements — Input, Select, Textarea</SubLabel>
+          <p className="pdpp-caption mb-4 text-muted-foreground max-w-[52ch]">
+            Three styled form primitives with a shared border, focus ring, and body-size type. Native
+            elements under the hood so GET-form URL state works without JS. Paired with an eyebrow
+            label above and the field gap rhythm from the Toolbar.
+          </p>
+          <div className="rounded-lg border border-border/80 bg-background p-6">
+            <div className="grid gap-4 md:grid-cols-3">
+              <label className="flex min-w-0 flex-col gap-1">
+                <span className="pdpp-eyebrow">Text input</span>
+                <Input type="text" placeholder="client_id" defaultValue="" />
+              </label>
+              <label className="flex min-w-0 flex-col gap-1">
+                <span className="pdpp-eyebrow">Select</span>
+                <Select defaultValue="">
+                  <option value="">Any state</option>
+                  <option value="issued">issued</option>
+                  <option value="revoked">revoked</option>
+                  <option value="denied">denied</option>
+                </Select>
+              </label>
+              <label className="flex min-w-0 flex-col gap-1 md:col-span-3">
+                <span className="pdpp-eyebrow">Textarea</span>
+                <Textarea
+                  rows={3}
+                  placeholder="Describe the purpose of this grant…"
+                  defaultValue=""
+                />
+              </label>
+            </div>
+          </div>
+        </div>
+
+        {/* DataList */}
+        <div>
+          <SubLabel>DataList — divide-y rows</SubLabel>
+          <p className="pdpp-caption mb-4 text-muted-foreground max-w-[52ch]">
+            The canonical list pattern for dense operator surfaces. One <code className="font-mono">&lt;ul&gt;</code>,
+            divide-y between rows, border-y outside. Intentionally flat — no alternating row backgrounds.
+          </p>
+          <div className="rounded-lg border border-border/80 bg-background p-6">
+            <DataList>
+              {['run_1776830422766', 'run_1776753603111', 'run_1776755678518'].map((id, i) => (
+                <li key={id} className="px-3 py-2.5">
+                  <div className="flex flex-wrap items-baseline justify-between gap-2">
+                    <code className="pdpp-caption text-foreground font-mono font-medium">{id}</code>
+                    <div className="flex items-center gap-2">
+                      <StatusBadge status={i === 0 ? 'succeeded' : i === 1 ? 'failed' : 'cancelled'} />
+                      <span className="pdpp-caption text-muted-foreground tabular-nums">2026-04-22T04:11:00Z</span>
+                    </div>
+                  </div>
+                  <div className="pdpp-caption text-muted-foreground mt-1">
+                    {i + 1} events · github
+                  </div>
+                </li>
+              ))}
+            </DataList>
+            <Pager
+              prev="#"
+              next="#"
+              countLabel="3 of 50"
+            />
+          </div>
+        </div>
+
+        {/* SplitLayout */}
+        <div>
+          <SubLabel>SplitLayout — main + peek pane</SubLabel>
+          <p className="pdpp-caption mb-4 text-muted-foreground max-w-[52ch]">
+            Two-column grid (1fr, 22rem) with responsive stack. Reserved for list+peek pages: grants,
+            runs, traces.
+          </p>
+          <div className="rounded-lg border border-border/80 bg-background p-6">
+            <SplitLayout
+              main={
+                <DataList>
+                  <li className="px-3 py-2.5">
+                    <code className="pdpp-caption font-mono font-medium">trc_qry_0bb58c8f4bcc4c3f</code>
+                  </li>
+                  <li className="px-3 py-2.5">
+                    <code className="pdpp-caption font-mono font-medium">trc_qry_de0eef952cc1e4f0</code>
+                  </li>
+                </DataList>
+              }
+              peek={
+                <aside className="border-border/80 rounded-md border bg-background">
+                  <div className="pdpp-caption border-b border-border/80 bg-muted/40 px-3 py-2">
+                    <span className="font-medium">trace trc_qry_…</span>
+                  </div>
+                  <div className="pdpp-caption p-3 text-muted-foreground">
+                    3 events · actor/runtime · peek contents render here.
+                  </div>
+                </aside>
+              }
+            />
+          </div>
+        </div>
+
+        {/* Tones: StatusBadge + MetaPill */}
+        <div>
+          <SubLabel>StatusBadge + MetaPill — tones</SubLabel>
+          <p className="pdpp-caption mb-4 text-muted-foreground max-w-[52ch]">
+            StatusBadge maps a string status to a tone (success / warning / danger / neutral). MetaPill
+            is a small inline key/value chip with optional tone. Use MetaPill on PageHeader `meta`;
+            StatusBadge per row.
+          </p>
+          <div className="rounded-lg border border-border/80 bg-background p-6">
+            <div className="flex flex-wrap items-center gap-2 mb-4">
+              <StatusBadge status="succeeded" />
+              <StatusBadge status="issued" />
+              <StatusBadge status="pending" />
+              <StatusBadge status="started" />
+              <StatusBadge status="failed" />
+              <StatusBadge status="revoked" />
+              <StatusBadge status="cancelled" />
+              <StatusBadge status="token_issued" />
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <MetaPill label="workspace" value="active" tone="human" />
+              <MetaPill label="client" value="registered" tone="protocol" />
+              <MetaPill label="status" value="issued" tone="success" />
+              <MetaPill label="attempts" value={3} />
+              <MetaPill label="error" value="timeout" tone="danger" />
+            </div>
+          </div>
+        </div>
+
+        {/* Callout */}
+        <div>
+          <SubLabel>Callout — the one card pattern</SubLabel>
+          <p className="pdpp-caption mb-4 text-muted-foreground max-w-[52ch]">
+            Selective emphasis where a real boundary or action exists. Neutral (bordered),
+            human (owner-tinted left rule), or protocol (primary-tinted left rule). Use sparingly.
+          </p>
+          <div className="flex flex-col gap-3">
+            <Callout title="Neutral" description="Default bordered box for advisory content.">
+              <p className="pdpp-caption text-muted-foreground">A quiet bordered surface.</p>
+            </Callout>
+            <Callout
+              surface="human"
+              title="Human — owner identity"
+              description="Owner self-export, device-flow approval, grant-request workspace."
+            >
+              <p className="pdpp-caption text-muted-foreground">Copper left-rule + warm wash.</p>
+            </Callout>
+            <Callout
+              surface="protocol"
+              title="Protocol — spec data"
+              description="Grant envelopes, token introspection, spec citations."
+            >
+              <p className="pdpp-caption text-muted-foreground">Primary blue left-rule + cool wash.</p>
+            </Callout>
+          </div>
+        </div>
+
+        {/* Interactive primitives — note only */}
+        <div>
+          <SubLabel>Interactive primitives</SubLabel>
+          <p className="pdpp-caption mb-4 text-muted-foreground max-w-[52ch]">
+            Two client-only primitives live alongside the layout pieces; they require routing and
+            viewport context and are best demonstrated in situ.
+          </p>
+          <ul className="pdpp-body space-y-2">
+            <li>
+              <code className="pdpp-caption font-mono">ColumnsMenu</code> — progressive column
+              disclosure on <a href="/dashboard/records" className="underline-offset-2 hover:underline">stream
+              record tables</a>. Base UI Popover, URL state via <code className="pdpp-caption font-mono">?columns</code>.
+            </li>
+            <li>
+              <code className="pdpp-caption font-mono">MobileDrawer</code> — slide-in shell nav
+              below md. Base UI Dialog, focus trap, Escape/backdrop dismiss, matchMedia-based
+              auto-close on breakpoint crossover.
+            </li>
+          </ul>
         </div>
       </div>
     </SectionWrap>

@@ -1,12 +1,18 @@
 import Link from 'next/link';
-import { DashboardShell, EmptyState, ServerUnreachable } from '../components/shell';
+import { DashboardShell, EmptyState, OwnerTokenRequired, ServerUnreachable } from '../components/shell';
+import { buttonVariants } from '@/components/ui/button';
+import {
+  DataList,
+  PageHeader,
+  Section,
+} from '../components/primitives';
 import { ReferenceServerUnreachableError } from '../lib/owner-token';
-import { getConnectorOverview, listConnectorManifests } from '../lib/rs-client';
+import { getConnectorOverview, listConnectorManifests, type ConnectorOverview } from '../lib/rs-client';
 
 export const dynamic = 'force-dynamic';
 
 export default async function RecordsIndexPage() {
-  let overviews;
+  let overviews: ConnectorOverview[];
   try {
     const manifests = await listConnectorManifests();
     overviews = await Promise.all(manifests.map((m) => getConnectorOverview(m)));
@@ -14,6 +20,7 @@ export default async function RecordsIndexPage() {
     if (err instanceof ReferenceServerUnreachableError) {
       return (
         <DashboardShell active="records">
+          <PageHeader title="Records" />
           <ServerUnreachable />
         </DashboardShell>
       );
@@ -23,59 +30,59 @@ export default async function RecordsIndexPage() {
 
   const withData = overviews.filter((o) => o.totalRecords > 0);
   const empty = overviews.filter((o) => o.totalRecords === 0 && !o.error);
+  const totalRecords = withData.reduce((sum, o) => sum + o.totalRecords, 0);
+  const totalStreams = withData.reduce((sum, o) => sum + o.streams.length, 0);
 
   return (
     <DashboardShell active="records">
-      <header className="mb-4">
-        <h1 className="text-lg font-semibold">Records</h1>
-        <p className="text-muted-foreground text-xs">
-          Owner self-export: drill into connectors, streams, and records.
-        </p>
-      </header>
+      <PageHeader
+        title="Records"
+        description="Owner self-export of retained connector data. Drill from connectors to streams to individual records."
+        count={`${totalRecords.toLocaleString()} records · ${totalStreams} streams · ${withData.length} connectors`}
+        actions={
+          <Link href="/dashboard/records/timeline" className={buttonVariants({ variant: 'outline', size: 'sm' })}>
+            Activity timeline →
+          </Link>
+        }
+      />
 
-      <nav className="mb-6 flex flex-wrap gap-2 text-xs">
-        <Link
-          href="/dashboard/records/timeline"
-          className="border-border hover:bg-muted/50 rounded border px-2 py-1"
-        >
-          timeline / activity →
-        </Link>
-      </nav>
-
-      <section className="mb-6">
-        <h2 className="text-muted-foreground mb-2 text-xs uppercase tracking-wide">
-          connectors with records ({withData.length})
-        </h2>
+      <Section title={`Connectors with records (${withData.length})`}>
         {withData.length === 0 ? (
-          <EmptyState title="No data ingested yet" hint="Run a connector through the polyfill orchestrator to populate streams." />
+          <EmptyState
+            title="No data ingested yet"
+            hint="Run a connector through the polyfill orchestrator to populate streams."
+          />
         ) : (
-          <ul className="divide-border divide-y border-y">
+          <DataList>
             {withData.map((o) => (
               <li key={o.connector.connector_id}>
                 <Link
                   href={`/dashboard/records/${encodeURIComponent(o.connector.connector_id)}`}
-                  className="hover:bg-muted/50 flex flex-col gap-1 px-2 py-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4"
+                  className="hover:bg-muted/40 flex flex-col gap-1 px-3 py-3 transition-colors sm:flex-row sm:items-center sm:justify-between sm:gap-4"
                 >
-                  <span className="font-medium break-all">{o.connector.connector_id}</span>
-                  <span className="text-muted-foreground tabular-nums text-xs sm:text-sm">
-                    {o.totalRecords.toLocaleString()} records · {o.streams.length} streams
+                  <span className="pdpp-body break-all font-mono font-medium">
+                    {o.connector.connector_id}
+                  </span>
+                  <span className="pdpp-caption text-muted-foreground tabular-nums">
+                    {o.totalRecords.toLocaleString()} records · {o.streams.length} stream
+                    {o.streams.length === 1 ? '' : 's'}
                   </span>
                 </Link>
               </li>
             ))}
-          </ul>
+          </DataList>
         )}
-      </section>
+      </Section>
 
       {empty.length > 0 && (
-        <section>
-          <h2 className="text-muted-foreground mb-2 text-xs uppercase tracking-wide">
-            registered but empty ({empty.length})
-          </h2>
-          <p className="text-muted-foreground text-xs break-words">
+        <Section
+          title={`Registered but empty (${empty.length})`}
+          description="These connectors are registered but have not ingested any records."
+        >
+          <p className="pdpp-caption text-muted-foreground break-words font-mono">
             {empty.map((o) => o.connector.connector_id).join(', ')}
           </p>
-        </section>
+        </Section>
       )}
     </DashboardShell>
   );

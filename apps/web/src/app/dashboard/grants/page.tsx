@@ -1,14 +1,33 @@
 import Link from 'next/link';
 import { DashboardShell, EmptyState, ServerUnreachable } from '../components/shell';
 import { PeekEmpty, PeekPane, PeekTimeline, pivotsFromEnvelope } from '../components/peek';
-import { ReferenceServerUnreachableError } from '../lib/owner-token';
+import { Button, buttonVariants } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Select } from '@/components/ui/select';
+import {
+  DataList,
+  FilterSummary,
+  PageHeader,
+  Pager,
+  Section,
+  SplitLayout,
+  StatusBadge,
+  Toolbar,
+} from '../components/primitives';
+import { getOwnerLoginPath, ReferenceServerUnreachableError } from '../lib/owner-token';
 import {
   getGrantTimeline,
   listGrants,
+  listPendingApprovals,
   type GrantSummary,
   type ListResponse,
+  type PendingApproval,
   type TimelineEnvelope,
 } from '../lib/ref-client';
+import {
+  approvePendingApprovalAction,
+  denyPendingApprovalAction,
+} from './pending-actions';
 
 export const dynamic = 'force-dynamic';
 
@@ -19,6 +38,7 @@ type Params = {
   provider_id?: string;
   q?: string;
   peek?: string;
+  approval_error?: string;
 };
 
 function listHref(params: Params, overrides: Partial<Params> = {}): string {
@@ -46,9 +66,13 @@ export default async function GrantsPage({
   };
 
   let result: ListResponse<GrantSummary>;
+  let approvals: ListResponse<PendingApproval>;
   let peekEnvelope: TimelineEnvelope | null = null;
   try {
-    result = await listGrants(filters);
+    [result, approvals] = await Promise.all([
+      listGrants(filters),
+      listPendingApprovals(),
+    ]);
     if (params.peek) {
       peekEnvelope = await getGrantTimeline(params.peek);
     }
@@ -56,6 +80,7 @@ export default async function GrantsPage({
     if (err instanceof ReferenceServerUnreachableError) {
       return (
         <DashboardShell active="grants">
+          <PageHeader title="Grants" />
           <ServerUnreachable />
         </DashboardShell>
       );
@@ -67,96 +92,201 @@ export default async function GrantsPage({
   const openPeekFullHref = params.peek
     ? `/dashboard/grants/${encodeURIComponent(params.peek)}`
     : '';
+  const ownerLoginUrl = getOwnerLoginPath();
+  const activeFilters = [
+    params.status ? { label: 'state', value: params.status } : null,
+    params.q ? { label: 'query', value: params.q } : null,
+  ].filter((item): item is { label: string; value: string } => Boolean(item));
 
   return (
     <DashboardShell active="grants">
-      <header className="mb-4 flex items-baseline justify-between">
-        <h1 className="text-lg font-semibold">Grants</h1>
-        <span className="text-muted-foreground text-xs">
-          {result.data.length} {result.has_more ? '+ more' : ''}
-        </span>
-      </header>
+      <PageHeader
+        title="Grants"
+        description="Issued authorizations and lifecycle decisions for client access to owner data."
+        count={`${result.data.length}${result.has_more ? '+' : ''}`}
+        actions={
+          <>
+            <Link href="/dashboard/grants/request" className={buttonVariants({ variant: 'outline', size: 'sm' })}>
+              Grant request workspace
+            </Link>
+            <Link href="/dashboard/grants/bootstrap" className={buttonVariants({ variant: 'outline', size: 'sm' })}>
+              Owner device flow
+            </Link>
+          </>
+        }
+      />
 
-      <form method="get" className="mb-4 flex flex-wrap items-center gap-2 text-xs">
-        <input
-          type="search"
-          name="q"
-          defaultValue={params.q ?? ''}
-          placeholder="id contains…"
-          className="border-border bg-background rounded border px-2 py-1"
-        />
-        <select
-          name="status"
-          defaultValue={params.status ?? ''}
-          className="border-border bg-background rounded border px-2 py-1"
-        >
-          <option value="">any state</option>
-          <option value="issued">issued</option>
-          <option value="revoked">revoked</option>
-          <option value="denied">denied</option>
-          <option value="failed">failed</option>
-          <option value="pending">pending</option>
-        </select>
-        <button type="submit" className="border-border hover:bg-muted/50 rounded border px-2 py-1">
-          filter
-        </button>
-      </form>
+      {params.approval_error ? (
+        <div className="pdpp-caption border-destructive/30 bg-destructive/5 mb-6 rounded-md border-l-4 border-l-destructive/60 border px-4 py-2.5">
+          <span className="text-destructive font-medium">Approval error:</span>{' '}
+          <span>{params.approval_error}</span>
+        </div>
+      ) : null}
 
-      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_22rem]">
-        <div className="min-w-0">
-          {result.data.length === 0 ? (
-            <EmptyState title="No grants yet" hint="Grant artifacts appear after client/provider-connect consent flows issue or reject grants." />
-          ) : (
-            <ul className="divide-border divide-y border-y">
-              {result.data.map((g) => (
-                <li key={g.grant_id}>
-                  <GrantRow grant={g} params={params} />
+      <Section
+        id="pending-approvals"
+        title={`Pending approvals (${approvals.data.length})`}
+        description={
+          approvals.data.length > 0
+            ? `Device-flow and consent requests waiting for the owner.`
+            : undefined
+        }
+      >
+        {approvals.data.length === 0 ? (
+          <EmptyState
+            title="No pending approvals"
+            hint="Device-flow and consent requests appear here while waiting for owner approval."
+          />
+        ) : (
+          <>
+            <DataList>
+              {approvals.data.map((approval) => (
+                <li key={approval.approval_id}>
+                  <PendingApprovalRow approval={approval} />
                 </li>
               ))}
-            </ul>
-          )}
-          {result.has_more && result.next_cursor && (
-            <div className="mt-4 text-xs">
-              <Link
-                href={listHref(params, { cursor: result.next_cursor })}
-                className="hover:text-foreground text-muted-foreground hover:underline"
-              >
-                next page →
-              </Link>
-            </div>
-          )}
-        </div>
+            </DataList>
+            <p className="pdpp-caption text-muted-foreground mt-2">
+              These dashboard shortcut buttons work in open local-dev mode. If placeholder owner
+              auth is enabled, sign in at{' '}
+              <a href={ownerLoginUrl} className="underline-offset-2 hover:underline">
+                owner access
+              </a>{' '}
+              and approve there instead.
+            </p>
+          </>
+        )}
+      </Section>
 
-        <div className="min-w-0">
-          {params.peek ? (
-            peekEnvelope ? (
-              <PeekPane
-                title={`grant ${params.peek}`}
-                closeHref={closePeekHref}
-                openHref={openPeekFullHref}
-                cliCommand={`pdpp grant timeline ${params.peek}`}
-              >
-                <Pivots envelope={peekEnvelope} currentKind="grant" />
-                <div className="text-muted-foreground mb-2 text-[11px]">
-                  {peekEnvelope.events.length} events
-                </div>
-                <PeekTimeline events={peekEnvelope.events} />
-              </PeekPane>
+      <Section title="All grants">
+        <form method="get">
+          <Toolbar>
+            <label className="flex min-w-0 flex-col gap-1">
+              <span className="pdpp-eyebrow">Query</span>
+              <Input
+                type="search"
+                name="q"
+                defaultValue={params.q ?? ''}
+                placeholder="id contains…"
+                className="w-64 font-mono"
+              />
+            </label>
+            <label className="flex min-w-0 flex-col gap-1">
+              <span className="pdpp-eyebrow">State</span>
+              <Select name="status" defaultValue={params.status ?? ''}>
+                <option value="">Any state</option>
+                <option value="issued">issued</option>
+                <option value="revoked">revoked</option>
+                <option value="denied">denied</option>
+                <option value="failed">failed</option>
+                <option value="pending">pending</option>
+              </Select>
+            </label>
+            <Button type="submit" size="sm" className="mt-5">
+              Filter
+            </Button>
+          </Toolbar>
+        </form>
+
+        <FilterSummary items={activeFilters} resetHref="/dashboard/grants" />
+
+        <SplitLayout
+          main={
+            <>
+              {result.data.length === 0 ? (
+                <EmptyState
+                  title="No grants yet"
+                  hint="Grant artifacts appear after client/provider-connect consent flows issue or reject grants."
+                />
+              ) : (
+                <DataList>
+                  {result.data.map((g) => (
+                    <li key={g.grant_id}>
+                      <GrantRow grant={g} params={params} />
+                    </li>
+                  ))}
+                </DataList>
+              )}
+              {result.has_more && result.next_cursor && (
+                <Pager next={listHref(params, { cursor: result.next_cursor })} />
+              )}
+            </>
+          }
+          peek={
+            params.peek ? (
+              peekEnvelope ? (
+                <PeekPane
+                  title={`grant ${params.peek}`}
+                  closeHref={closePeekHref}
+                  openHref={openPeekFullHref}
+                  cliCommand={`pdpp grant timeline ${params.peek}`}
+                >
+                  <Pivots envelope={peekEnvelope} currentKind="grant" />
+                  <div className="pdpp-caption text-muted-foreground mb-2">
+                    {peekEnvelope.events.length} events
+                  </div>
+                  <PeekTimeline events={peekEnvelope.events} />
+                </PeekPane>
+              ) : (
+                <PeekPane
+                  title={`grant ${params.peek}`}
+                  closeHref={closePeekHref}
+                  openHref={openPeekFullHref}
+                >
+                  <p className="text-muted-foreground">Grant not found.</p>
+                </PeekPane>
+              )
             ) : (
-              <PeekPane
-                title={`grant ${params.peek}`}
-                closeHref={closePeekHref}
-                openHref={openPeekFullHref}
-              >
-                <p className="text-muted-foreground">Grant not found.</p>
-              </PeekPane>
+              <PeekEmpty />
             )
-          ) : (
-            <PeekEmpty />
-          )}
+          }
+        />
+      </Section>
+    </DashboardShell>
+  );
+}
+
+function PendingApprovalRow({ approval }: { approval: PendingApproval }) {
+  const previewStreams = Array.isArray(approval.grant_preview?.streams)
+    ? approval.grant_preview.streams
+        .map((stream) => (typeof stream === 'string' ? stream : stream?.name || ''))
+        .filter(Boolean)
+    : [];
+
+  return (
+    <div className="grid gap-3 px-3 py-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
+      <div className="min-w-0">
+        <div className="flex flex-wrap items-baseline gap-2">
+          <code className="pdpp-caption text-foreground break-all font-mono font-medium">
+            {approval.approval_id}
+          </code>
+          <span className="pdpp-caption text-muted-foreground tabular-nums">{approval.created_at}</span>
+          <StatusBadge status={approval.kind} />
+        </div>
+        <div className="pdpp-caption text-muted-foreground mt-1 break-words">
+          client {approval.client_id ?? '—'}
+          {approval.grant_preview?.connector_id ? ` · connector ${approval.grant_preview.connector_id}` : ''}
+          {approval.grant_preview?.provider_id ? ` · provider ${approval.grant_preview.provider_id}` : ''}
+          {previewStreams.length ? ` · streams ${previewStreams.join(', ')}` : ''}
         </div>
       </div>
-    </DashboardShell>
+      <form className="flex flex-wrap gap-2">
+        <input type="hidden" name="kind" value={approval.kind} />
+        <input type="hidden" name="approval_id" value={approval.approval_id} />
+        {approval.user_code ? <input type="hidden" name="user_code" value={approval.user_code} /> : null}
+        <Button formAction={approvePendingApprovalAction} type="submit" size="sm">
+          Approve
+        </Button>
+        <Button
+          formAction={denyPendingApprovalAction}
+          type="submit"
+          size="sm"
+          variant="destructive"
+        >
+          Deny
+        </Button>
+      </form>
+    </div>
   );
 }
 
@@ -167,21 +297,22 @@ function GrantRow({ grant, params }: { grant: GrantSummary; params: Params }) {
       href={listHref(params, { peek: grant.grant_id })}
       scroll={false}
       aria-current={peeked ? 'true' : undefined}
-      className={`block px-2 py-2 ${peeked ? 'bg-muted' : 'hover:bg-muted/50'}`}
+      className={`block px-3 py-2.5 transition-colors ${peeked ? 'bg-muted' : 'hover:bg-muted/40'}`}
     >
-      <div className="flex flex-wrap items-baseline justify-between gap-2 text-xs">
-        <code className="break-all font-medium">{grant.grant_id}</code>
-        <span className="text-muted-foreground tabular-nums">{grant.last_at}</span>
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <code className="pdpp-caption text-foreground break-all font-mono font-medium">
+          {grant.grant_id}
+        </code>
+        <div className="flex items-center gap-2">
+          <StatusBadge status={grant.status} />
+          <span className="pdpp-caption text-muted-foreground tabular-nums">{grant.last_at}</span>
+        </div>
       </div>
-      <div className="text-muted-foreground mt-1 text-[11px]">
-        <span className={grant.status === 'failed' || grant.status === 'revoked' || grant.status === 'denied' ? 'text-destructive' : ''}>
-          {grant.status}
-        </span>
-        {' · '}
+      <div className="pdpp-caption text-muted-foreground mt-1">
         {grant.event_count} events
         {grant.client_id ? ` · client ${grant.client_id}` : ''}
         {grant.provider_id ? ` · provider ${grant.provider_id}` : ''}
-        {grant.connector_id ? ` · connector ${grant.connector_id}` : ''}
+        {grant.connector_id ? ` · ${grant.connector_id}` : ''}
       </div>
     </Link>
   );
@@ -202,7 +333,7 @@ function Pivots({
         <Link
           key={`${p.kind}:${p.id}`}
           href={`/dashboard/${p.kind}s?peek=${encodeURIComponent(p.id)}`}
-          className="border-border hover:bg-muted/50 rounded border px-2 py-0.5 text-[10px]"
+          className="pdpp-eyebrow border-border hover:bg-muted/60 rounded border px-2 py-0.5"
         >
           {p.kind} {p.id} →
         </Link>

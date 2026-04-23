@@ -2,7 +2,8 @@ import { Fragment } from 'react';
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { DashboardShell, ServerUnreachable } from '../../components/shell';
-import { ReferenceServerUnreachableError } from '../../lib/owner-token';
+import { PageHeader, Section } from '../../components/primitives';
+import { ReferenceServerUnreachableError, getAsInternalUrl } from '../../lib/owner-token';
 import { getRunTimeline, type SpineEvent, type TimelineEnvelope } from '../../lib/ref-client';
 import { TimelineView } from '../../components/timeline-view';
 
@@ -23,6 +24,7 @@ export default async function RunDetailPage({
     if (err instanceof ReferenceServerUnreachableError) {
       return (
         <DashboardShell active="runs">
+          <PageHeader title="Run" />
           <ServerUnreachable />
         </DashboardShell>
       );
@@ -44,80 +46,80 @@ export default async function RunDetailPage({
 
   return (
     <DashboardShell active="runs">
-      <nav className="text-muted-foreground mb-3 text-xs">
-        <Link href="/dashboard/runs" className="hover:text-foreground">
-          runs
-        </Link>
-        <span className="mx-1">/</span>
-        <span className="text-foreground">run</span>
-      </nav>
-      <header className="mb-4">
-        <h1 className="text-lg font-semibold break-all">run {runId}</h1>
-        <div className="text-muted-foreground mt-1 text-xs">
-          {connectorId ? `${connectorId} · ` : ''}
-          {events.length} events
-        </div>
-      </header>
+      <PageHeader
+        title={<code className="font-mono">{runId}</code>}
+        breadcrumbs={[{ label: 'Runs', href: '/dashboard/runs' }, { label: 'Run' }]}
+        description={
+          <>
+            {connectorId ? (
+              <>
+                connector <span className="text-foreground font-mono">{connectorId}</span>
+                {' · '}
+              </>
+            ) : null}
+            {events.length} events
+          </>
+        }
+      />
 
-      {(traceIds.length > 0 || grantIds.length > 0) && (
-        <section className="mb-4 flex flex-wrap gap-2 text-xs">
+      {traceIds.length > 0 || grantIds.length > 0 ? (
+        <div className="mb-6 flex flex-wrap gap-2">
           {traceIds.map((id) => (
             <Link
               key={id}
               href={`/dashboard/traces/${encodeURIComponent(id)}`}
-              className="border-border hover:bg-muted/50 rounded border px-2 py-1"
+              className="pdpp-caption border-border hover:bg-muted/60 inline-flex items-center rounded-md border px-2.5 py-1"
             >
-              trace {id} →
+              trace <code className="ml-1 font-mono">{id}</code> →
             </Link>
           ))}
           {grantIds.map((id) => (
             <Link
               key={id}
               href={`/dashboard/grants/${encodeURIComponent(id)}`}
-              className="border-border hover:bg-muted/50 rounded border px-2 py-1"
+              className="pdpp-caption border-border hover:bg-muted/60 inline-flex items-center rounded-md border px-2.5 py-1"
             >
-              grant {id} →
+              grant <code className="ml-1 font-mono">{id}</code> →
             </Link>
           ))}
-        </section>
-      )}
+        </div>
+      ) : null}
 
-      <section className="mb-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        <Panel title="checkpoints" rows={checkpoints} />
-        <Panel title="progress" rows={progress} />
-        <Panel title="interactions" rows={interactions} />
-        <Panel
-          title="failure"
+      <div className="mb-8 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <Stat title="Checkpoints" rows={checkpoints} />
+        <Stat title="Progress" rows={progress} />
+        <Stat title="Interactions" rows={interactions} />
+        <Stat
+          title="Failure"
           rows={
             failure
               ? [
                   ['reason', String(failure.data.reason ?? failure.data.failure_reason ?? '—')],
                   ['retryable', String(failure.data.connector_error_retryable ?? '—')],
                 ]
-              : [['—', 'no failure']]
+              : [['status', 'no failure']]
           }
           emphasis={Boolean(failure)}
         />
-      </section>
+      </div>
 
-      <TimelineView events={events} />
+      <Section title="Timeline">
+        <TimelineView events={events} />
+      </Section>
 
-      <section className="mt-6">
-        <h2 className="text-muted-foreground mb-2 text-xs uppercase tracking-wide">
-          CLI equivalent
-        </h2>
-        <pre className="bg-muted overflow-x-auto rounded p-3 text-[11px]">
+      <Section title="CLI equivalent">
+        <pre className="pdpp-caption border-border/80 bg-muted/30 overflow-x-auto rounded-md border p-3 font-mono">
           pdpp run timeline {runId}
         </pre>
-        <p className="text-muted-foreground mt-1 text-[11px] break-all">
-          raw: <code>{`/_ref/runs/${encodeURIComponent(runId)}/timeline`}</code>
+        <p className="pdpp-caption text-muted-foreground mt-1 break-all">
+          raw: <code>{`${getAsInternalUrl()}/_ref/runs/${encodeURIComponent(runId)}/timeline`}</code>
         </p>
-      </section>
+      </Section>
     </DashboardShell>
   );
 }
 
-function Panel({
+function Stat({
   title,
   rows,
   emphasis,
@@ -128,12 +130,14 @@ function Panel({
 }) {
   return (
     <div
-      className={`border-border rounded border px-3 py-2 ${
-        emphasis ? 'border-destructive/40 bg-destructive/5' : ''
-      }`}
+      className={
+        emphasis
+          ? 'border-destructive/30 bg-destructive/5 rounded-md border border-l-4 border-l-destructive/60 px-3 py-2.5'
+          : 'border-border/70 bg-muted/20 rounded-md border px-3 py-2.5'
+      }
     >
-      <h3 className="text-muted-foreground mb-2 text-[10px] uppercase tracking-wide">{title}</h3>
-      <dl className="grid grid-cols-[auto_1fr] gap-x-2 gap-y-1 text-[11px]">
+      <h3 className="pdpp-eyebrow mb-2">{title}</h3>
+      <dl className="pdpp-caption grid grid-cols-[auto_1fr] gap-x-2 gap-y-1">
         {rows.map(([k, v], i) => (
           <Fragment key={i}>
             <dt className="text-muted-foreground">{k}</dt>

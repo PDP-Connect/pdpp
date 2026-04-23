@@ -159,16 +159,119 @@ export type ConnectorOverview = {
 
 // ─── Display helpers (colocated to keep page files small) ────────────────
 
-export function deriveColumns(records: StreamRecord[], max = 10): string[] {
+/**
+ * All observed data keys across the provided records, in insertion order.
+ * Used as the "All columns" superset the user can customize against.
+ */
+export function deriveAllColumns(records: StreamRecord[]): string[] {
   if (!records.length) return [];
   const keys = new Set<string>();
-  for (const r of records.slice(0, 5)) {
+  for (const r of records) {
     if (r.data && typeof r.data === 'object') {
       for (const k of Object.keys(r.data)) keys.add(k);
     }
   }
-  return Array.from(keys).slice(0, max);
+  return Array.from(keys);
 }
+
+/**
+ * Backward-compatible cap — used only by callers that want a truncated view
+ * and do not need quality filtering.
+ */
+export function deriveColumns(records: StreamRecord[], max = 10): string[] {
+  return deriveAllColumns(records).slice(0, max);
+}
+
+const PRIORITY_KEYS = [
+  'id',
+  'name',
+  'title',
+  'subject',
+  'label',
+  'status',
+  'state',
+  'created_at',
+  'updated_at',
+  'emitted_at',
+];
+
+/**
+ * Progressive disclosure default column set. SLVP convention:
+ *   1. If the stream's manifest declares `preview_fields: string[]`, use it
+ *      (subset to keys actually present in the current page — a manifest
+ *      may declare fields that don't appear in every record).
+ *   2. Otherwise, heuristic: drop always-null, always-constant, and
+ *      always-long-blob columns, then prefer PRIORITY_KEYS, cap at `limit`.
+ */
+export function computeDefaultColumns(
+  records: StreamRecord[],
+  streamManifest?: StreamManifest | null,
+  limit = 6,
+): string[] {
+  const all = deriveAllColumns(records);
+  if (all.length === 0) return [];
+
+  const declared = Array.isArray(streamManifest?.preview_fields)
+    ? streamManifest!.preview_fields!.filter((f) => all.includes(f))
+    : [];
+  if (declared.length > 0) return declared;
+
+  const keep = all.filter((key) => {
+    let nonNullCount = 0;
+    let firstValue: string | null = null;
+    let allSameValue = true;
+    let allLong = true;
+    for (const r of records) {
+      const v = r.data?.[key];
+      if (v === null || v === undefined) continue;
+      nonNullCount += 1;
+      const s = stringifyCell(v);
+      if (firstValue === null) firstValue = s;
+      else if (s !== firstValue) allSameValue = false;
+      if (s.length <= 120) allLong = false;
+    }
+    if (nonNullCount === 0) return false; // all-null in this page
+    if (nonNullCount >= 2 && allSameValue) return false; // constant column
+    if (nonNullCount >= 2 && allLong) return false; // blob column
+    return true;
+  });
+
+  keep.sort((a, b) => {
+    const ai = PRIORITY_KEYS.indexOf(a);
+    const bi = PRIORITY_KEYS.indexOf(b);
+    if (ai !== -1 && bi !== -1) return ai - bi;
+    if (ai !== -1) return -1;
+    if (bi !== -1) return 1;
+    return a.localeCompare(b);
+  });
+
+  return keep.slice(0, limit);
+}
+
+/**
+ * Parse the user's URL `columns` selection into a resolved column list.
+ *   - undefined / empty → defaults (caller-computed)
+ *   - '*' → all observed columns
+ *   - 'a,b,c' → exactly these, in this order, filtered to keys that appear
+ */
+export function resolveSelectedColumns(
+  param: string | undefined,
+  allColumns: string[],
+  defaults: string[],
+): { columns: string[]; mode: 'default' | 'custom' | 'all' } {
+  if (!param || param === '') return { columns: defaults, mode: 'default' };
+  if (param === '*') return { columns: allColumns, mode: 'all' };
+  const requested = param.split(',').map((s) => s.trim()).filter(Boolean);
+  const valid = requested.filter((c) => allColumns.includes(c));
+  if (valid.length === 0) return { columns: defaults, mode: 'default' };
+  return { columns: valid, mode: 'custom' };
+}
+
+export type StreamManifest = {
+  name: string;
+  preview_fields?: string[];
+  [k: string]: unknown;
+};
 
 export function stringifyCell(v: unknown): string {
   if (v === null || v === undefined) return '';

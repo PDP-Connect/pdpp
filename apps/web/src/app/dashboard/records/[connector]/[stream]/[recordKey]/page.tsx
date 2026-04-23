@@ -1,6 +1,6 @@
-import Link from 'next/link';
 import { notFound } from 'next/navigation';
-import { DashboardShell, ServerUnreachable } from '../../../../components/shell';
+import { DashboardShell, OwnerTokenRequired, ServerUnreachable } from '../../../../components/shell';
+import { PageHeader, Section } from '../../../../components/primitives';
 import { getRecord, type StreamRecord } from '../../../../lib/rs-client';
 import { ReferenceServerUnreachableError } from '../../../../lib/owner-token';
 
@@ -23,6 +23,7 @@ export default async function RecordDetailPage({
     if (err instanceof ReferenceServerUnreachableError) {
       return (
         <DashboardShell active="records">
+          <PageHeader title="Records" />
           <ServerUnreachable />
         </DashboardShell>
       );
@@ -45,29 +46,26 @@ export default async function RecordDetailPage({
 
   return (
     <DashboardShell active="records">
-      <nav className="text-muted-foreground mb-3 flex flex-wrap items-center gap-x-2 text-xs">
-        <Link href="/dashboard/records" className="hover:text-foreground">records</Link>
-        <span>/</span>
-        <Link href={connectorHref} className="hover:text-foreground break-all">{connectorId}</Link>
-        <span>/</span>
-        <Link href={streamHref} className="hover:text-foreground break-all">{streamName}</Link>
-        <span>/</span>
-        <span className="text-foreground break-all">{recordId}</span>
-      </nav>
+      <PageHeader
+        title={<code className="font-mono break-all">{recordId}</code>}
+        breadcrumbs={[
+          { label: 'Records', href: '/dashboard/records' },
+          { label: connectorId, href: connectorHref },
+          { label: streamName, href: streamHref },
+          { label: recordId },
+        ]}
+        description={
+          <>
+            emitted_at <span className="text-foreground font-mono">{record.emitted_at}</span>
+          </>
+        }
+      />
 
-      <header className="mb-4">
-        <h1 className="text-lg font-semibold break-all">{recordId}</h1>
-        <p className="text-muted-foreground mt-1 text-xs">
-          emitted_at: <span className="text-foreground">{record.emitted_at}</span>
-        </p>
-      </header>
-
-      <section>
-        <h2 className="text-muted-foreground mb-2 text-xs uppercase tracking-wide">record</h2>
-        <pre className="border-border bg-muted/30 overflow-x-auto whitespace-pre-wrap break-words rounded border p-4 text-xs leading-relaxed">
+      <Section title="Record">
+        <pre className="pdpp-caption border-border/80 bg-muted/30 overflow-x-auto rounded-md border p-4 font-mono whitespace-pre-wrap break-words">
           {pretty}
         </pre>
-      </section>
+      </Section>
     </DashboardShell>
   );
 }
