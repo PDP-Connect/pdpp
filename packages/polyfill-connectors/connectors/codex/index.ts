@@ -43,90 +43,26 @@ import { DatabaseSync } from "node:sqlite";
 import type { EmittedMessage, RecordData, StreamScope } from "../../src/connector-runtime.ts";
 import { stringifyForJsonl } from "../../src/safe-emit.ts";
 import { resourceSet } from "../../src/scope-filters.ts";
-
-interface StartMessage {
-  scope?: { streams?: readonly StreamScope[] };
-  state?: {
-    messages?: { file_mtimes?: Record<string, number> };
-    function_calls?: { file_mtimes?: Record<string, number> };
-    sessions?: { file_mtimes?: Record<string, number> };
-    file_mtimes?: Record<string, number>;
-  };
-  type: string;
-}
-
-interface RolloutObject {
-  payload?: RolloutPayload;
-  timestamp?: string;
-  type?: string;
-}
-
-interface RolloutPayload {
-  arguments?: string | null;
-  call_id?: string;
-  cli_version?: string;
-  content?: Array<{ text?: string }>;
-  cwd?: string;
-  git?: {
-    commit_hash?: string;
-    branch?: string;
-    repository_url?: string;
-  };
-  id?: string;
-  model_provider?: string;
-  name?: string;
-  originator?: string;
-  output?: string | object;
-  role?: string;
-  timestamp?: string;
-  type?: string;
-}
-
-interface ThreadRow {
-  agent_nickname: string | null;
-  agent_role: string | null;
-  approval_mode: string | null;
-  archived: number | boolean | null;
-  archived_at: number | null;
-  cli_version: string | null;
-  created_at: number | null;
-  cwd: string | null;
-  first_user_message: string | null;
-  git_branch: string | null;
-  git_origin_url: string | null;
-  git_sha: string | null;
-  has_user_event: number | null;
-  id: string;
-  memory_mode: string | null;
-  model: string | null;
-  model_provider: string | null;
-  reasoning_effort: string | null;
-  rollout_path: string | null;
-  sandbox_policy: string | null;
-  source: string | null;
-  title: string | null;
-  tokens_used: number | null;
-  updated_at: number | null;
-}
-
-interface RolloutAggregate {
-  firstTs: string | null;
-  functionCallCount: number;
-  lastTs: string | null;
-  messageCount: number;
-  meta: RolloutPayload;
-  rolloutPath: string;
-}
-
-interface PendingCall {
-  arguments: string | null;
-  call_id: string;
-  id: string;
-  name: string | null;
-  output_preview: string | null;
-  session_id: string;
-  timestamp: string | null;
-}
+import {
+  buildPromptRecord,
+  buildRolloutOnlySessionRecord,
+  buildRuleRecord,
+  buildSkillRecord,
+  buildThreadSessionRecord,
+  extendTimestampRange,
+  extractMessageText,
+  isRolloutFile,
+  isSkippableRulesLine,
+  parseFrontmatter,
+  payloadOutputPreview,
+  RULES_SUFFIX_RE,
+  splitRulesLines,
+  type TimestampRange,
+  TWO_DIGIT_DIR_RE,
+  textPreview,
+  YEAR_DIR_RE,
+} from "./parsers.ts";
+import type { PendingCall, RolloutAggregate, RolloutObject, RolloutPayload, StartMessage, ThreadRow } from "./types.ts";
 
 const rl = createInterface({ input: process.stdin, terminal: false });
 const emit = (m: EmittedMessage): boolean => process.stdout.write(stringifyForJsonl(m));
@@ -148,20 +84,7 @@ const fail = (m: string, r = false): void => {
   flushAndExit(1);
 };
 
-function textPreview(s: unknown, max = 5000): string | null {
-  if (typeof s !== "string") {
-    return null;
-  }
-  return s.length > max ? `${s.slice(0, max)}…` : s;
-}
-
-function extractMessageText(payload: RolloutPayload): string | null {
-  if (!(payload?.content && Array.isArray(payload.content))) {
-    return null;
-  }
-  const parts = payload.content.map((p) => p?.text).filter(Boolean);
-  return parts.join("\n") || null;
-}
+// ─── JSONL line iteration ───────────────────────────────────────────────
 
 async function* iterJsonlLines(path: string): AsyncGenerator<RolloutObject> {
   const r = createFileReader({
@@ -180,74 +103,119 @@ async function* iterJsonlLines(path: string): AsyncGenerator<RolloutObject> {
   }
 }
 
-// Recursively walk the yyyy/mm/dd hierarchy and yield rollout-*.jsonl paths.
-async function* walkRollouts(baseDir: string): AsyncGenerator<{
-  path: string;
-  year: string;
-  month: string;
-  day: string;
-  file: string;
-}> {
-  let years: string[];
+// ─── Rollout directory walking ──────────────────────────────────────────
+
+async function listIfExists(dir: string): Promise<string[] | null> {
   try {
-    years = await readdir(baseDir);
+    return await readdir(dir);
   } catch {
+    return null;
+  }
+}
+
+async function* walkDayFiles(
+  dayPath: string,
+  year: string,
+  month: string,
+  day: string
+): AsyncGenerator<{ path: string; year: string; month: string; day: string; file: string }> {
+  const files = await listIfExists(dayPath);
+  if (files === null) {
+    return;
+  }
+  for (const f of files) {
+    if (isRolloutFile(f)) {
+      yield { path: join(dayPath, f), year, month, day, file: f };
+    }
+  }
+}
+
+async function* walkMonthDays(
+  monthPath: string,
+  year: string,
+  month: string
+): AsyncGenerator<{ path: string; year: string; month: string; day: string; file: string }> {
+  const days = await listIfExists(monthPath);
+  if (days === null) {
+    return;
+  }
+  for (const d of days) {
+    if (!TWO_DIGIT_DIR_RE.test(d)) {
+      continue;
+    }
+    yield* walkDayFiles(join(monthPath, d), year, month, d);
+  }
+}
+
+async function* walkYearMonths(
+  yearPath: string,
+  year: string
+): AsyncGenerator<{ path: string; year: string; month: string; day: string; file: string }> {
+  const months = await listIfExists(yearPath);
+  if (months === null) {
+    return;
+  }
+  for (const m of months) {
+    if (!TWO_DIGIT_DIR_RE.test(m)) {
+      continue;
+    }
+    yield* walkMonthDays(join(yearPath, m), year, m);
+  }
+}
+
+// Recursively walk the yyyy/mm/dd hierarchy and yield rollout-*.jsonl paths.
+async function* walkRollouts(
+  baseDir: string
+): AsyncGenerator<{ path: string; year: string; month: string; day: string; file: string }> {
+  const years = await listIfExists(baseDir);
+  if (years === null) {
     return;
   }
   for (const y of years) {
     if (!YEAR_DIR_RE.test(y)) {
       continue;
     }
-    const yPath = join(baseDir, y);
-    let months: string[];
-    try {
-      months = await readdir(yPath);
-    } catch {
-      continue;
-    }
-    for (const m of months) {
-      if (!TWO_DIGIT_DIR_RE.test(m)) {
-        continue;
-      }
-      const mPath = join(yPath, m);
-      let days: string[];
-      try {
-        days = await readdir(mPath);
-      } catch {
-        continue;
-      }
-      for (const d of days) {
-        if (!TWO_DIGIT_DIR_RE.test(d)) {
-          continue;
-        }
-        const dPath = join(mPath, d);
-        let files: string[];
-        try {
-          files = await readdir(dPath);
-        } catch {
-          continue;
-        }
-        for (const f of files) {
-          if (f.startsWith("rollout-") && f.endsWith(".jsonl")) {
-            yield {
-              path: join(dPath, f),
-              year: y,
-              month: m,
-              day: d,
-              file: f,
-            };
-          }
-        }
-      }
-    }
+    yield* walkYearMonths(join(baseDir, y), y);
   }
 }
 
-function epochToIso(sec: number | null | undefined): string | null {
-  return Number.isFinite(sec) && typeof sec === "number" && sec > 0 ? new Date(sec * 1000).toISOString() : null;
+// ─── state_5.sqlite reader ─────────────────────────────────────────────
+
+const THREADS_QUERY = `
+  SELECT id, rollout_path, created_at, updated_at, source, model_provider,
+         cwd, title, sandbox_policy, approval_mode, tokens_used,
+         has_user_event, archived, archived_at, git_sha, git_branch,
+         git_origin_url, cli_version, first_user_message, agent_nickname,
+         agent_role, memory_mode, model, reasoning_effort
+  FROM threads
+`;
+
+function openThreadsDb(dbPath: string): DatabaseSync | null {
+  try {
+    return new DatabaseSync(dbPath, { readOnly: true });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    emit({
+      type: "PROGRESS",
+      message: `state_5.sqlite unreadable (${msg}); falling back to rollouts only`,
+    });
+    return null;
+  }
 }
 
-// ---- state_5.sqlite reader ----------------------------------------------
+function queryThreadsRows(db: DatabaseSync): ThreadRow[] {
+  try {
+    const rawRows: unknown = db.prepare(THREADS_QUERY).all();
+    return rawRows as ThreadRow[];
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    emit({
+      type: "PROGRESS",
+      message: `threads query failed (${msg}); falling back to rollouts only`,
+    });
+    return [];
+  }
+}
 
 /**
  * Load `threads` rows keyed by id. Opens the DB read-only to be safe against
@@ -260,39 +228,15 @@ function loadThreadsMap(dbPath: string): {
   if (!existsSync(dbPath)) {
     return { map: new Map(), present: false };
   }
-  let db: DatabaseSync;
-  try {
-    db = new DatabaseSync(dbPath, { readOnly: true });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    emit({
-      type: "PROGRESS",
-      message: `state_5.sqlite unreadable (${msg}); falling back to rollouts only`,
-    });
+  const db = openThreadsDb(dbPath);
+  if (!db) {
     return { map: new Map(), present: false };
   }
   const map = new Map<string, ThreadRow>();
   try {
-    const rawRows: unknown = db
-      .prepare(`
-      SELECT id, rollout_path, created_at, updated_at, source, model_provider,
-             cwd, title, sandbox_policy, approval_mode, tokens_used,
-             has_user_event, archived, archived_at, git_sha, git_branch,
-             git_origin_url, cli_version, first_user_message, agent_nickname,
-             agent_role, memory_mode, model, reasoning_effort
-      FROM threads
-    `)
-      .all();
-    const rows = rawRows as ThreadRow[];
-    for (const r of rows) {
+    for (const r of queryThreadsRows(db)) {
       map.set(r.id, r);
     }
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    emit({
-      type: "PROGRESS",
-      message: `threads query failed (${msg}); falling back to rollouts only`,
-    });
   } finally {
     try {
       db.close();
@@ -303,51 +247,30 @@ function loadThreadsMap(dbPath: string): {
   return { map, present: true };
 }
 
-// ---- file-based stream helpers ------------------------------------------
+// ─── Static-file streams ────────────────────────────────────────────────
 
-const FRONTMATTER_RE = /^---\s*\r?\n([\s\S]*?)\r?\n---\s*\r?\n?([\s\S]*)$/;
-const YEAR_DIR_RE = /^\d{4}$/;
-const TWO_DIGIT_DIR_RE = /^\d{2}$/;
-const LINE_SPLIT_RE = /\r?\n/;
-const FRONTMATTER_KV_RE = /^([A-Za-z0-9_-]+)\s*:\s*(.*)$/;
-const RULES_SUFFIX_RE = /\.rules$/;
-const MD_SUFFIX_RE = /\.md$/;
+interface LoadedFile {
+  mtimeMs: number;
+  size: number;
+  text: string;
+}
 
-function parseFrontmatter(text: string): {
-  meta: Record<string, string>;
-  body: string;
-} {
-  const m = text.match(FRONTMATTER_RE);
-  if (!m) {
-    return { meta: {}, body: text };
+async function statAndRead(path: string): Promise<LoadedFile | null> {
+  try {
+    const st = await stat(path);
+    const text = await readFile(path, "utf8");
+    return { mtimeMs: Number(st.mtimeMs), size: Number(st.size), text };
+  } catch {
+    return null;
   }
-  const meta: Record<string, string> = {};
-  for (const line of (m[1] ?? "").split(LINE_SPLIT_RE)) {
-    const kv = line.match(FRONTMATTER_KV_RE);
-    if (!kv) {
-      continue;
-    }
-    let val = (kv[2] ?? "").trim();
-    // Strip surrounding quotes if present.
-    if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
-      val = val.slice(1, -1);
-    }
-    const key = kv[1];
-    if (key) {
-      meta[key] = val;
-    }
-  }
-  return { meta, body: m[2] ?? "" };
 }
 
 async function emitRulesStream(
   rulesDir: string,
   emitRecord: (stream: string, data: RecordData) => void
 ): Promise<void> {
-  let entries: string[];
-  try {
-    entries = await readdir(rulesDir);
-  } catch {
+  const entries = await listIfExists(rulesDir);
+  if (entries === null) {
     return;
   }
   for (const f of entries) {
@@ -355,32 +278,19 @@ async function emitRulesStream(
       continue;
     }
     const p = join(rulesDir, f);
-    let st: Awaited<ReturnType<typeof stat>>;
-    let text: string;
-    try {
-      st = await stat(p);
-      text = await readFile(p, "utf8");
-    } catch {
+    const loaded = await statAndRead(p);
+    if (!loaded) {
       continue;
     }
-    const mtime = Math.floor(st.mtimeMs / 1000);
+    const mtime = Math.floor(loaded.mtimeMs / 1000);
     const ruleset = f.replace(RULES_SUFFIX_RE, "");
-    const lines = text.split(LINE_SPLIT_RE);
     let idx = 0;
-    for (const raw of lines) {
+    for (const raw of splitRulesLines(loaded.text)) {
       const line = raw.trim();
-      if (!line || line.startsWith("#")) {
+      if (isSkippableRulesLine(line)) {
         continue;
       }
-      const id = `rules:${ruleset}:${idx}`;
-      emitRecord("rules", {
-        id,
-        ruleset,
-        rule_text: textPreview(line, 4000),
-        rule_index: idx,
-        path: p,
-        mtime_epoch: mtime,
-      });
+      emitRecord("rules", buildRuleRecord({ ruleset, line, index: idx, path: p, mtime }));
       idx++;
     }
   }
@@ -390,10 +300,8 @@ async function emitPromptsStream(
   promptsDir: string,
   emitRecord: (stream: string, data: RecordData) => void
 ): Promise<void> {
-  let entries: string[];
-  try {
-    entries = await readdir(promptsDir);
-  } catch {
+  const entries = await listIfExists(promptsDir);
+  if (entries === null) {
     return;
   }
   for (const f of entries) {
@@ -401,24 +309,25 @@ async function emitPromptsStream(
       continue;
     }
     const p = join(promptsDir, f);
-    let st: Awaited<ReturnType<typeof stat>>;
-    let text: string;
-    try {
-      st = await stat(p);
-      text = await readFile(p, "utf8");
-    } catch {
+    const loaded = await statAndRead(p);
+    if (!loaded) {
       continue;
     }
-    const { meta, body } = parseFrontmatter(text);
-    const name = meta.name || f.replace(MD_SUFFIX_RE, "");
-    emitRecord("prompts", {
-      id: `prompts:${f}`,
-      name,
-      description: meta.description || null,
-      content: textPreview(body, 20_000),
-      path: p,
-      mtime_epoch: Math.floor(st.mtimeMs / 1000),
-    });
+    const { meta, body } = parseFrontmatter(loaded.text);
+    emitRecord("prompts", buildPromptRecord({ fileName: f, meta, body, path: p, mtimeMs: loaded.mtimeMs }));
+  }
+}
+
+function shouldSkipSkillEntry(ent: Dirent): boolean {
+  return ent.name.startsWith(".") || ent.name === "skills.backup";
+}
+
+async function isDirectoryPath(p: string): Promise<boolean> {
+  try {
+    const s = await stat(p);
+    return s.isDirectory();
+  } catch {
+    return false;
   }
 }
 
@@ -435,89 +344,414 @@ async function emitSkillsStream(
     return;
   }
   for (const ent of entries) {
-    if (ent.name.startsWith(".")) {
+    if (shouldSkipSkillEntry(ent)) {
       continue;
     }
-    if (ent.name === "skills.backup") {
-      continue;
-    }
-    // Resolve symlinks — if it's a dir (or symlink to one), look for SKILL.md.
     const dirPath = join(skillsDir, ent.name);
-    let dirStat: Awaited<ReturnType<typeof stat>>;
-    try {
-      dirStat = await stat(dirPath);
-    } catch {
-      continue;
-    }
-    if (!dirStat.isDirectory()) {
+    if (!(await isDirectoryPath(dirPath))) {
       continue;
     }
     const skillMdPath = join(dirPath, "SKILL.md");
-    let fileStat: Awaited<ReturnType<typeof stat>>;
-    let text: string;
-    try {
-      fileStat = await stat(skillMdPath);
-      text = await readFile(skillMdPath, "utf8");
-    } catch {
+    const loaded = await statAndRead(skillMdPath);
+    if (!loaded) {
       continue;
     }
-    const { meta, body } = parseFrontmatter(text);
-    const name = meta.name || ent.name;
-    emitRecord("skills", {
-      id: `skills:${ent.name}`,
-      name,
-      description: meta.description || null,
-      content: textPreview(body, 20_000),
-      path: skillMdPath,
-      mtime_epoch: Math.floor(fileStat.mtimeMs / 1000),
+    const { meta, body } = parseFrontmatter(loaded.text);
+    emitRecord(
+      "skills",
+      buildSkillRecord({ dirName: ent.name, meta, body, path: skillMdPath, mtimeMs: loaded.mtimeMs })
+    );
+  }
+}
+
+// ─── Rollout-file line processing ───────────────────────────────────────
+
+interface RolloutParseState {
+  firstTimestamp: string | null;
+  functionCallCount: number;
+  lastTimestamp: string | null;
+  lineCount: number;
+  messageCount: number;
+  pendingCalls: Map<string, PendingCall>;
+  sessionId: string | null;
+  sessionMeta: RolloutPayload | null;
+}
+
+function makeRolloutParseState(): RolloutParseState {
+  return {
+    sessionId: null,
+    sessionMeta: null,
+    firstTimestamp: null,
+    lastTimestamp: null,
+    messageCount: 0,
+    functionCallCount: 0,
+    pendingCalls: new Map(),
+    lineCount: 0,
+  };
+}
+
+function emitMessageRecord(
+  state: RolloutParseState,
+  payload: RolloutPayload,
+  ts: string | null,
+  emitRecord: (stream: string, data: RecordData) => void
+): void {
+  const sessionId = state.sessionId;
+  if (!sessionId) {
+    return;
+  }
+  const id = `${sessionId}:${state.lineCount}`;
+  emitRecord("messages", {
+    id,
+    session_id: sessionId,
+    role: payload.role || null,
+    type: "message",
+    content: textPreview(extractMessageText(payload), 5000),
+    timestamp: ts,
+  });
+}
+
+function registerFunctionCall(state: RolloutParseState, payload: RolloutPayload, ts: string | null): void {
+  const sessionId = state.sessionId;
+  if (!sessionId) {
+    return;
+  }
+  const callId = payload.call_id || `${sessionId}:${state.lineCount}`;
+  state.pendingCalls.set(callId, {
+    id: callId,
+    session_id: sessionId,
+    call_id: callId,
+    name: payload.name || null,
+    arguments: textPreview(payload.arguments || null, 2000),
+    output_preview: null,
+    timestamp: ts,
+  });
+}
+
+function applyFunctionCallOutput(
+  state: RolloutParseState,
+  payload: RolloutPayload,
+  ts: string | null,
+  emitRecord: (stream: string, data: RecordData) => void
+): void {
+  const sessionId = state.sessionId;
+  if (!sessionId) {
+    return;
+  }
+  const callId = payload.call_id;
+  const existing = callId ? state.pendingCalls.get(callId) : null;
+  if (existing) {
+    existing.output_preview = payloadOutputPreview(payload.output);
+    return;
+  }
+  emitRecord("function_calls", {
+    id: `${sessionId}:${state.lineCount}:output`,
+    session_id: sessionId,
+    call_id: callId || null,
+    name: null,
+    arguments: null,
+    output_preview: payloadOutputPreview(payload.output),
+    timestamp: ts,
+  });
+}
+
+interface ProcessResponseItemArgs {
+  emitRecord: (stream: string, data: RecordData) => void;
+  payload: RolloutPayload;
+  requested: Map<string, StreamScope>;
+  state: RolloutParseState;
+  ts: string | null;
+}
+
+function processResponseItem({ payload, ts, state, requested, emitRecord }: ProcessResponseItemArgs): void {
+  if (payload.type === "message") {
+    state.messageCount++;
+    if (requested.has("messages")) {
+      emitMessageRecord(state, payload, ts, emitRecord);
+    }
+    return;
+  }
+  if (payload.type === "function_call") {
+    state.functionCallCount++;
+    if (requested.has("function_calls")) {
+      registerFunctionCall(state, payload, ts);
+    }
+    return;
+  }
+  if (payload.type === "function_call_output" && requested.has("function_calls")) {
+    applyFunctionCallOutput(state, payload, ts, emitRecord);
+  }
+  // reasoning is skipped — encrypted_content is opaque.
+}
+
+interface ProcessRolloutLineArgs {
+  emitRecord: (stream: string, data: RecordData) => void;
+  file: string;
+  obj: RolloutObject;
+  requested: Map<string, StreamScope>;
+  state: RolloutParseState;
+}
+
+function processRolloutLine({ obj, state, requested, emitRecord, file }: ProcessRolloutLineArgs): void {
+  state.lineCount++;
+  if (state.lineCount % 2000 === 0) {
+    emit({
+      type: "PROGRESS",
+      message: `  ${file}: ${state.lineCount} lines parsed`,
+    });
+  }
+  const ts = obj.timestamp || null;
+  const range: TimestampRange = { firstTs: state.firstTimestamp, lastTs: state.lastTimestamp };
+  extendTimestampRange(range, ts);
+  state.firstTimestamp = range.firstTs;
+  state.lastTimestamp = range.lastTs;
+
+  if (obj.type === "session_meta") {
+    state.sessionMeta = obj.payload || {};
+    state.sessionId = state.sessionMeta.id || null;
+    return;
+  }
+  if (!state.sessionId) {
+    return;
+  }
+  if (obj.type !== "response_item") {
+    return;
+  }
+  processResponseItem({
+    payload: obj.payload || {},
+    ts,
+    state,
+    requested,
+    emitRecord,
+  });
+}
+
+interface ParseRolloutFileArgs {
+  emitRecord: (stream: string, data: RecordData) => void;
+  file: string;
+  path: string;
+  requested: Map<string, StreamScope>;
+  rolloutAggregates: Map<string, RolloutAggregate>;
+}
+
+async function parseRolloutFile(args: ParseRolloutFileArgs): Promise<void> {
+  const state = makeRolloutParseState();
+  for await (const obj of iterJsonlLines(args.path)) {
+    processRolloutLine({
+      obj,
+      state,
+      requested: args.requested,
+      emitRecord: args.emitRecord,
+      file: args.file,
+    });
+  }
+  // Flush paired function_calls at end of file.
+  for (const call of state.pendingCalls.values()) {
+    args.emitRecord("function_calls", { ...call });
+  }
+  if (state.sessionId) {
+    args.rolloutAggregates.set(state.sessionId, {
+      meta: state.sessionMeta || {},
+      firstTs: state.firstTimestamp,
+      lastTs: state.lastTimestamp,
+      messageCount: state.messageCount,
+      functionCallCount: state.functionCallCount,
+      rolloutPath: args.path,
     });
   }
 }
 
-// ---- main ---------------------------------------------------------------
+interface ScanRolloutsArgs {
+  baseDir: string;
+  emitRecord: (stream: string, data: RecordData) => void;
+  fileMtimes: Record<string, number>;
+  newMtimes: Record<string, number>;
+  requested: Map<string, StreamScope>;
+  rolloutAggregates: Map<string, RolloutAggregate>;
+}
 
-async function main(): Promise<void> {
-  const startMsg = await new Promise<StartMessage>((r, j) =>
+async function processRolloutEntry(
+  entry: { path: string; year: string; month: string; day: string; file: string },
+  args: ScanRolloutsArgs
+): Promise<boolean> {
+  let st: Stats;
+  try {
+    st = statSync(entry.path);
+  } catch {
+    return false;
+  }
+  const mtime = st.mtimeMs;
+  if (args.fileMtimes[entry.path] === mtime) {
+    args.newMtimes[entry.path] = mtime;
+    // Skip unchanged files; the previously-emitted rollout record stays valid.
+    return true;
+  }
+  emit({
+    type: "PROGRESS",
+    message: `Parsing ${entry.year}/${entry.month}/${entry.day}/${entry.file} (${(st.size / 1024 / 1024).toFixed(1)}MB)`,
+  });
+  await parseRolloutFile({
+    path: entry.path,
+    file: entry.file,
+    requested: args.requested,
+    emitRecord: args.emitRecord,
+    rolloutAggregates: args.rolloutAggregates,
+  });
+  args.newMtimes[entry.path] = mtime;
+  return true;
+}
+
+async function scanRollouts(args: ScanRolloutsArgs): Promise<void> {
+  const baseExists = (await listIfExists(args.baseDir)) !== null;
+  if (!baseExists) {
+    emit({
+      type: "PROGRESS",
+      message: `${args.baseDir} not readable`,
+    });
+    return;
+  }
+  let fileCount = 0;
+  for await (const entry of walkRollouts(args.baseDir)) {
+    fileCount++;
+    await processRolloutEntry(entry, args);
+  }
+  emit({
+    type: "PROGRESS",
+    message: `Scanned ${fileCount} rollout files`,
+  });
+}
+
+// ─── Session emission ───────────────────────────────────────────────────
+
+interface EmitSessionsArgs {
+  emitRecord: (stream: string, data: RecordData) => void;
+  rolloutAggregates: Map<string, RolloutAggregate>;
+  stateDbPath: string;
+}
+
+function emitSessions({ stateDbPath, rolloutAggregates, emitRecord }: EmitSessionsArgs): void {
+  // Sessions: prefer state_5.sqlite#threads; fall back to rollout-derived
+  // fields only when state_5 doesn't have the session. Session PK stays the
+  // thread/session id — the same UUID is used by both sources.
+  const { map: threadsById } = loadThreadsMap(stateDbPath);
+  const emittedSessionIds = new Set<string>();
+
+  for (const [id, t] of threadsById) {
+    emitRecord("sessions", buildThreadSessionRecord(id, t, rolloutAggregates.get(id)));
+    emittedSessionIds.add(id);
+  }
+
+  // Rollouts present on disk but not in state_5 — emit with nulls for
+  // state_5-only fields so schema stays consistent.
+  for (const [id, agg] of rolloutAggregates) {
+    if (emittedSessionIds.has(id)) {
+      continue;
+    }
+    emitRecord("sessions", buildRolloutOnlySessionRecord(id, agg));
+  }
+}
+
+// ─── Start-message + state-cursor helpers ───────────────────────────────
+
+async function readStartMessage(): Promise<StartMessage> {
+  return await new Promise<StartMessage>((resolve, reject) =>
     rl.once("line", (l) => {
       try {
-        r(JSON.parse(l) as StartMessage);
+        resolve(JSON.parse(l) as StartMessage);
       } catch (e) {
-        j(e);
+        reject(e);
       }
     })
   );
-  if (startMsg.type !== "START") {
-    return fail("Expected START");
-  }
+}
 
-  const requested = new Map<string, StreamScope>((startMsg.scope?.streams || []).map((s) => [s.name, s]));
-  if (!requested.size) {
-    return fail("START.scope.streams is required");
-  }
+interface CodexDirs {
+  baseDir: string;
+  promptsDir: string;
+  rulesDir: string;
+  skillsDir: string;
+  stateDbPath: string;
+}
 
-  const resFilters = new Map<string, ReadonlySet<string> | null>();
-  for (const [n, r] of requested) {
-    resFilters.set(n, resourceSet(r));
-  }
-
+function resolveCodexDirs(): CodexDirs {
   const codexHome = process.env.CODEX_HOME || join(homedir(), ".codex");
-  const baseDir = process.env.CODEX_SESSIONS_DIR || join(codexHome, "sessions");
-  const stateDbPath = process.env.CODEX_STATE_DB || join(codexHome, "state_5.sqlite");
-  const rulesDir = process.env.CODEX_RULES_DIR || join(codexHome, "rules");
-  const promptsDir = process.env.CODEX_PROMPTS_DIR || join(codexHome, "prompts");
-  const skillsDir = process.env.CODEX_SKILLS_DIR || join(codexHome, "skills");
+  return {
+    baseDir: process.env.CODEX_SESSIONS_DIR || join(codexHome, "sessions"),
+    stateDbPath: process.env.CODEX_STATE_DB || join(codexHome, "state_5.sqlite"),
+    rulesDir: process.env.CODEX_RULES_DIR || join(codexHome, "rules"),
+    promptsDir: process.env.CODEX_PROMPTS_DIR || join(codexHome, "prompts"),
+    skillsDir: process.env.CODEX_SKILLS_DIR || join(codexHome, "skills"),
+  };
+}
 
+function readFileMtimes(startMsg: StartMessage): Record<string, number> {
   const state = startMsg.state || {};
   // STATE is stream-keyed per Collection Profile: `state` is
   // { <stream>: <cursor>, ... }. This connector emits STATE with a
   // stream name (see cursorStream below), cursor={file_mtimes:{...}}.
   // Check all streams that might carry file_mtimes plus legacy top-level.
-  const fileMtimes: Record<string, number> =
+  return (
     state.messages?.file_mtimes ||
     state.function_calls?.file_mtimes ||
     state.sessions?.file_mtimes ||
     state.file_mtimes ||
-    {};
+    {}
+  );
+}
+
+function buildRequestedMap(startMsg: StartMessage): Map<string, StreamScope> {
+  return new Map<string, StreamScope>((startMsg.scope?.streams || []).map((s) => [s.name, s]));
+}
+
+function buildResourceFilters(requested: Map<string, StreamScope>): Map<string, ReadonlySet<string> | null> {
+  const resFilters = new Map<string, ReadonlySet<string> | null>();
+  for (const [n, r] of requested) {
+    resFilters.set(n, resourceSet(r));
+  }
+  return resFilters;
+}
+
+interface EmitStateCursorsArgs {
+  newMtimes: Record<string, number>;
+  nowIso: () => string;
+  requested: Map<string, StreamScope>;
+}
+
+function emitStateCursors({ requested, newMtimes, nowIso }: EmitStateCursorsArgs): void {
+  if (requested.has("sessions")) {
+    emit({ type: "STATE", stream: "sessions", cursor: { fetched_at: nowIso() } });
+  }
+  if (requested.has("messages") || requested.has("function_calls")) {
+    const cursorStream = requested.has("messages") ? "messages" : "function_calls";
+    emit({
+      type: "STATE",
+      stream: cursorStream,
+      cursor: { file_mtimes: newMtimes, fetched_at: nowIso() },
+    });
+  }
+  for (const s of ["rules", "prompts", "skills"]) {
+    if (requested.has(s)) {
+      emit({ type: "STATE", stream: s, cursor: { fetched_at: nowIso() } });
+    }
+  }
+}
+
+// ─── main ───────────────────────────────────────────────────────────────
+
+async function main(): Promise<void> {
+  const startMsg = await readStartMessage();
+  if (startMsg.type !== "START") {
+    return fail("Expected START");
+  }
+
+  const requested = buildRequestedMap(startMsg);
+  if (!requested.size) {
+    return fail("START.scope.streams is required");
+  }
+
+  const resFilters = buildResourceFilters(requested);
+  const dirs = resolveCodexDirs();
+  const fileMtimes = readFileMtimes(startMsg);
 
   let total = 0;
   const nowIso = (): string => new Date().toISOString();
@@ -545,267 +779,34 @@ async function main(): Promise<void> {
   // Rollout aggregates per session (so `sessions` can carry message_count /
   // function_call_count even when state_5 provides the canonical metadata).
   const rolloutAggregates = new Map<string, RolloutAggregate>();
-
   const newMtimes: Record<string, number> = { ...fileMtimes };
 
   if (needRollouts) {
-    let baseExists = true;
-    try {
-      await readdir(baseDir);
-    } catch (err) {
-      baseExists = false;
-      const msg = err instanceof Error ? err.message : String(err);
-      emit({
-        type: "PROGRESS",
-        message: `${baseDir} not readable: ${msg}`,
-      });
-    }
-
-    if (baseExists) {
-      let fileCount = 0;
-      for await (const { path: p, year, month, day, file } of walkRollouts(baseDir)) {
-        fileCount++;
-        let st: Stats;
-        try {
-          st = statSync(p);
-        } catch {
-          continue;
-        }
-        const mtime = st.mtimeMs;
-        if (fileMtimes[p] === mtime) {
-          newMtimes[p] = mtime;
-          // We still need session aggregates for the `sessions` stream on
-          // unchanged files, but only if the session was previously emitted.
-          // To keep things simple, skip the whole file when unchanged — the
-          // `sessions` emission will upsert against state_5 anyway and the
-          // previously-emitted rollout-derived record stays valid.
-          continue;
-        }
-
-        emit({
-          type: "PROGRESS",
-          message: `Parsing ${year}/${month}/${day}/${file} (${(st.size / 1024 / 1024).toFixed(1)}MB)`,
-        });
-
-        let sessionId: string | null = null;
-        let sessionMeta: RolloutPayload | null = null;
-        let firstTimestamp: string | null = null;
-        let lastTimestamp: string | null = null;
-        let messageCount = 0;
-        let functionCallCount = 0;
-        const pendingCalls = new Map<string, PendingCall>();
-        let lineCount = 0;
-
-        for await (const obj of iterJsonlLines(p)) {
-          lineCount++;
-          if (lineCount % 2000 === 0) {
-            emit({
-              type: "PROGRESS",
-              message: `  ${file}: ${lineCount} lines parsed`,
-            });
-          }
-
-          const ts = obj.timestamp || null;
-          if (ts) {
-            if (!firstTimestamp || ts < firstTimestamp) {
-              firstTimestamp = ts;
-            }
-            if (!lastTimestamp || ts > lastTimestamp) {
-              lastTimestamp = ts;
-            }
-          }
-
-          if (obj.type === "session_meta") {
-            sessionMeta = obj.payload || {};
-            sessionId = sessionMeta.id || null;
-            continue;
-          }
-
-          if (!sessionId) {
-            continue;
-          }
-          if (obj.type !== "response_item") {
-            continue;
-          }
-          const payload: RolloutPayload = obj.payload || {};
-
-          if (payload.type === "message") {
-            messageCount++;
-            if (requested.has("messages")) {
-              const role = payload.role || null;
-              const content = extractMessageText(payload);
-              const id = `${sessionId}:${lineCount}`;
-              emitRecord("messages", {
-                id,
-                session_id: sessionId,
-                role,
-                type: "message",
-                content: textPreview(content, 5000),
-                timestamp: ts,
-              });
-            }
-          } else if (payload.type === "function_call") {
-            functionCallCount++;
-            if (requested.has("function_calls")) {
-              const callId = payload.call_id || `${sessionId}:${lineCount}`;
-              pendingCalls.set(callId, {
-                id: callId,
-                session_id: sessionId,
-                call_id: callId,
-                name: payload.name || null,
-                arguments: textPreview(payload.arguments || null, 2000),
-                output_preview: null,
-                timestamp: ts,
-              });
-            }
-          } else if (payload.type === "function_call_output" && requested.has("function_calls")) {
-            const callId = payload.call_id;
-            const existing = callId ? pendingCalls.get(callId) : null;
-            if (existing) {
-              existing.output_preview = textPreview(
-                typeof payload.output === "string" ? payload.output : JSON.stringify(payload.output),
-                2000
-              );
-            } else {
-              const id = `${sessionId}:${lineCount}:output`;
-              emitRecord("function_calls", {
-                id,
-                session_id: sessionId,
-                call_id: callId || null,
-                name: null,
-                arguments: null,
-                output_preview: textPreview(
-                  typeof payload.output === "string" ? payload.output : JSON.stringify(payload.output),
-                  2000
-                ),
-                timestamp: ts,
-              });
-            }
-          }
-          // reasoning is skipped — encrypted_content is opaque.
-        }
-
-        // Flush paired function_calls at end of file.
-        for (const call of pendingCalls.values()) {
-          emitRecord("function_calls", { ...call });
-        }
-
-        if (sessionId) {
-          rolloutAggregates.set(sessionId, {
-            meta: sessionMeta || {},
-            firstTs: firstTimestamp,
-            lastTs: lastTimestamp,
-            messageCount,
-            functionCallCount,
-            rolloutPath: p,
-          });
-        }
-        newMtimes[p] = mtime;
-      }
-      emit({
-        type: "PROGRESS",
-        message: `Scanned ${fileCount} rollout files`,
-      });
-    }
+    await scanRollouts({
+      baseDir: dirs.baseDir,
+      fileMtimes,
+      newMtimes,
+      requested,
+      emitRecord,
+      rolloutAggregates,
+    });
   }
 
-  // Sessions: prefer state_5.sqlite#threads; fall back to rollout-derived
-  // fields only when state_5 doesn't have the session. Session PK stays the
-  // thread/session id — the same UUID is used by both sources.
   if (requested.has("sessions")) {
-    const { map: threadsById } = loadThreadsMap(stateDbPath);
-    const emittedSessionIds = new Set<string>();
-
-    for (const [id, t] of threadsById) {
-      const agg = rolloutAggregates.get(id);
-      emitRecord("sessions", {
-        id,
-        cwd: t.cwd || null,
-        originator: t.source || null,
-        cli_version: t.cli_version || null,
-        model_provider: t.model_provider || null,
-        git_commit: t.git_sha || null,
-        git_branch: t.git_branch || null,
-        repository_url: t.git_origin_url || null,
-        started_at: epochToIso(t.created_at) || agg?.meta?.timestamp || agg?.firstTs || null,
-        last_event_at: epochToIso(t.updated_at) || agg?.lastTs || null,
-        message_count: agg?.messageCount ?? null,
-        function_call_count: agg?.functionCallCount ?? null,
-        // Codex can stuff large assistant output into `title` and
-        // `first_user_message`; cap to keep records reasonable.
-        title: textPreview(t.title || null, 500),
-        archived: t.archived === 1 || t.archived === true,
-        tokens_used: t.tokens_used ?? null,
-        first_user_message: textPreview(t.first_user_message || null, 2000),
-        sandbox_policy: t.sandbox_policy || null,
-        approval_mode: t.approval_mode || null,
-        rollout_path: t.rollout_path || agg?.rolloutPath || null,
-      });
-      emittedSessionIds.add(id);
-    }
-
-    // Rollouts present on disk but not in state_5 — emit with nulls for
-    // state_5-only fields so schema stays consistent.
-    for (const [id, agg] of rolloutAggregates) {
-      if (emittedSessionIds.has(id)) {
-        continue;
-      }
-      const meta = agg.meta || {};
-      emitRecord("sessions", {
-        id,
-        cwd: meta.cwd || null,
-        originator: meta.originator || null,
-        cli_version: meta.cli_version || null,
-        model_provider: meta.model_provider || null,
-        git_commit: meta.git?.commit_hash || null,
-        git_branch: meta.git?.branch || null,
-        repository_url: meta.git?.repository_url || null,
-        started_at: meta.timestamp || agg.firstTs,
-        last_event_at: agg.lastTs,
-        message_count: agg.messageCount,
-        function_call_count: agg.functionCallCount,
-        title: null,
-        archived: null,
-        tokens_used: null,
-        first_user_message: null,
-        sandbox_policy: null,
-        approval_mode: null,
-        rollout_path: agg.rolloutPath || null,
-      });
-    }
+    emitSessions({ stateDbPath: dirs.stateDbPath, rolloutAggregates, emitRecord });
   }
 
   if (requested.has("rules")) {
-    await emitRulesStream(rulesDir, emitRecord);
+    await emitRulesStream(dirs.rulesDir, emitRecord);
   }
   if (requested.has("prompts")) {
-    await emitPromptsStream(promptsDir, emitRecord);
+    await emitPromptsStream(dirs.promptsDir, emitRecord);
   }
   if (requested.has("skills")) {
-    await emitSkillsStream(skillsDir, emitRecord);
+    await emitSkillsStream(dirs.skillsDir, emitRecord);
   }
 
-  // State cursors
-  if (requested.has("sessions")) {
-    emit({
-      type: "STATE",
-      stream: "sessions",
-      cursor: { fetched_at: nowIso() },
-    });
-  }
-  if (requested.has("messages") || requested.has("function_calls")) {
-    const cursorStream = requested.has("messages") ? "messages" : "function_calls";
-    emit({
-      type: "STATE",
-      stream: cursorStream,
-      cursor: { file_mtimes: newMtimes, fetched_at: nowIso() },
-    });
-  }
-  for (const s of ["rules", "prompts", "skills"]) {
-    if (requested.has(s)) {
-      emit({ type: "STATE", stream: s, cursor: { fetched_at: nowIso() } });
-    }
-  }
+  emitStateCursors({ requested, newMtimes, nowIso });
 
   emit({ type: "DONE", status: "succeeded", records_emitted: total });
   flushAndExit(0);
