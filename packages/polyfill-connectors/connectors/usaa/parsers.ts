@@ -1,6 +1,6 @@
 // Pure parsers for the USAA connector. Kept free of Playwright / Node I/O
 // (except sha256 + pathToFileURL which are purely computational) so they
-// can be unit-tested in isolation.
+// can be unit-tested in isolation. See parsers.test.ts for coverage.
 
 import { createHash } from "node:crypto";
 import { pathToFileURL } from "node:url";
