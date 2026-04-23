@@ -26,8 +26,15 @@ import {
   runConnector,
   type ValidateRecord,
 } from "../../src/connector-runtime.ts";
-import { type CaptureDep, type EmitDeps, type EmitFn, emitOrderAndItems, type RunFlags } from "./collect-helpers.ts";
-import { parseOrderDate, parseOrderDetailDom, parseOrdersListDom } from "./parsers.ts";
+import { isMainModule } from "../../src/is-main-module.ts";
+import {
+  buildOrderItemRecord,
+  buildOrderRecord,
+  mergeOrderItems,
+  parseOrderDate,
+  parseOrderDetailDom,
+  parseOrdersListDom,
+} from "./parsers.ts";
 import { listPageOrderShape, validateRecord as validateRecordRaw } from "./schemas.ts";
 import type { ListPageDiagnostics, ListPageOrder, OrderDetail } from "./types.ts";
 
@@ -206,9 +213,54 @@ async function extractOrdersOnPage(page: Page): Promise<ListPageOrder[]> {
 }
 
 // ─── collect() helpers ───────────────────────────────────────────────────
-// EmitDeps, RunFlags, and emitOrderAndItems live in ./collect-helpers.ts
-// so tests can import them without loading this file (which fires
-// runConnector at module scope and would keep the event loop alive).
+
+export type EmitFn = BrowserCollectContext["emit"];
+export type EmitRecordFn = BrowserCollectContext["emitRecord"];
+export type CaptureDep = BrowserCollectContext["capture"];
+
+/** Ephemeral per-run flags that cross year boundaries. */
+export interface RunFlags {
+  detailCaptured: boolean;
+}
+
+/** Per-run dependencies threaded through processListOrder → emitOrderAndItems. */
+export interface EmitDeps {
+  capture: CaptureDep;
+  emit: EmitFn;
+  emitRecord: EmitRecordFn;
+  emittedAt: string;
+  skipDetail: boolean;
+  wantsItems: boolean;
+  wantsOrders: boolean;
+}
+
+/** Emit the order record + per-item records for a single list-page order.
+ *
+ * The invariants this enforces:
+ *   1. The order record emits BEFORE its item records (so downstream
+ *      readers see the parent-child relationship in order).
+ *   2. Items emit in mergeOrderItems() order — list-page items first,
+ *      detail-only items appended — which is the dedup + enrichment
+ *      order consumers depend on.
+ *   3. Streams disabled via scope (wantsOrders/wantsItems) emit nothing;
+ *      the other stream still flows.
+ * Regressing any of these is a real bug; integration.test.ts covers them.
+ */
+export async function emitOrderAndItems(
+  deps: EmitDeps,
+  listOrder: ListPageOrder,
+  detail: OrderDetail | null,
+  orderDate: string
+): Promise<void> {
+  if (deps.wantsOrders) {
+    await deps.emitRecord("orders", buildOrderRecord(listOrder, detail, orderDate, deps.emittedAt));
+  }
+  if (deps.wantsItems) {
+    for (const merged of mergeOrderItems(listOrder, detail)) {
+      await deps.emitRecord("order_items", buildOrderItemRecord(listOrder.orderId, orderDate, merged));
+    }
+  }
+}
 
 /**
  * Run list-page extraction through the zod shape-check. Orders that fail
@@ -358,83 +410,88 @@ async function runYear(page: Page, deps: EmitDeps, flags: RunFlags, year: number
 
 // ─── Main ────────────────────────────────────────────────────────────────
 
-runConnector({
-  name: "amazon",
-  validateRecord,
-  // Amazon's bot detection fingerprints headless Chromium; cold sessions get
-  // challenged. Opt into headed mode via PDPP_AMAZON_HEADLESS=0 (first-run,
-  // re-auth). Warm sessions can go headless since cookies + TLS fingerprint
-  // stay consistent across runs on the persistent profile.
-  browser: { profileName: "amazon" },
-  async ensureSession({ context, page, sendInteraction }): Promise<void> {
-    await ensureAmazonSession({
-      context,
-      page,
-      sendInteraction,
-    });
-    const deepOk = await deepSessionCheck(page);
-    if (!deepOk) {
-      throw new Error("amazon_session_required");
-    }
-  },
-  async collect(ctx: BrowserCollectContext): Promise<void> {
-    const { scope, state, emitRecord, emit, progress, capture, emittedAt, page } = ctx;
-    const requested = new Map((scope?.streams || []).map((s) => [s.name, s]));
-
-    // STATE is stream-keyed per Collection Profile: `state` is
-    // { <stream>: <cursor>, ... }. We write STATE stream='orders'
-    // cursor={years:{...}}, so reads must go through state.orders.
-    const ordersState = (state.orders ?? {}) as OrdersStateShape;
-    const legacyYears = (state as { years?: YearsCursor }).years;
-    const yearsState: YearsCursor = ordersState.years ?? legacyYears ?? {};
-
-    await progress("Amazon session verified; discovering years");
-    let years = await discoverYears(page);
-    // Targeted-year override for spot checks and incremental backfills.
-    if (process.env.PDPP_AMAZON_YEARS) {
-      const filter = new Set(process.env.PDPP_AMAZON_YEARS.split(",").map((y) => Number(y.trim())));
-      years = years.filter((y) => filter.has(y));
-    }
-    await progress(`Years to scrape: ${years.join(", ")}`);
-
-    // Capture fixtures (gated on PDPP_CAPTURE_FIXTURES=1). One orders-list
-    // page per year and one order-detail page overall is enough to drive
-    // offline parser tests — more just bloats the fixture tree.
-    const flags: RunFlags = { detailCaptured: false };
-    const deps: EmitDeps = {
-      capture,
-      emit,
-      emitRecord,
-      emittedAt,
-      skipDetail: process.env.PDPP_AMAZON_SKIP_DETAIL === "1",
-      wantsItems: requested.has("order_items"),
-      wantsOrders: requested.has("orders"),
-    };
-
-    const newYearsState: YearsCursor = { ...yearsState };
-
-    for (const year of years) {
-      const prior = yearsState[String(year)];
-      // Year-freezing: skip if already frozen
-      if (prior?.frozen) {
-        await progress(`Skipping year ${year} (frozen)`);
-        continue;
-      }
-
-      const yearOrderCount = await runYear(page, deps, flags, year);
-
-      // Year completion state with freeze-once-stable policy
-      const stableCount = prior !== undefined && prior.order_count === yearOrderCount;
-      newYearsState[String(year)] = {
-        order_count: yearOrderCount,
-        frozen: year < new Date().getFullYear() && stableCount,
-        last_scraped: nowIso(),
-      };
-      await emit({
-        type: "STATE",
-        stream: "orders",
-        cursor: { years: newYearsState },
+// Guarded so `import "./index.ts"` in tests doesn't spin up the runtime
+// and block the Node event loop on stdin. Only fires when this module
+// IS the process entry point (i.e. `tsx connectors/amazon/index.ts`).
+if (isMainModule(import.meta.url)) {
+  runConnector({
+    name: "amazon",
+    validateRecord,
+    // Amazon's bot detection fingerprints headless Chromium; cold sessions get
+    // challenged. Opt into headed mode via PDPP_AMAZON_HEADLESS=0 (first-run,
+    // re-auth). Warm sessions can go headless since cookies + TLS fingerprint
+    // stay consistent across runs on the persistent profile.
+    browser: { profileName: "amazon" },
+    async ensureSession({ context, page, sendInteraction }): Promise<void> {
+      await ensureAmazonSession({
+        context,
+        page,
+        sendInteraction,
       });
-    }
-  },
-});
+      const deepOk = await deepSessionCheck(page);
+      if (!deepOk) {
+        throw new Error("amazon_session_required");
+      }
+    },
+    async collect(ctx: BrowserCollectContext): Promise<void> {
+      const { scope, state, emitRecord, emit, progress, capture, emittedAt, page } = ctx;
+      const requested = new Map((scope?.streams || []).map((s) => [s.name, s]));
+
+      // STATE is stream-keyed per Collection Profile: `state` is
+      // { <stream>: <cursor>, ... }. We write STATE stream='orders'
+      // cursor={years:{...}}, so reads must go through state.orders.
+      const ordersState = (state.orders ?? {}) as OrdersStateShape;
+      const legacyYears = (state as { years?: YearsCursor }).years;
+      const yearsState: YearsCursor = ordersState.years ?? legacyYears ?? {};
+
+      await progress("Amazon session verified; discovering years");
+      let years = await discoverYears(page);
+      // Targeted-year override for spot checks and incremental backfills.
+      if (process.env.PDPP_AMAZON_YEARS) {
+        const filter = new Set(process.env.PDPP_AMAZON_YEARS.split(",").map((y) => Number(y.trim())));
+        years = years.filter((y) => filter.has(y));
+      }
+      await progress(`Years to scrape: ${years.join(", ")}`);
+
+      // Capture fixtures (gated on PDPP_CAPTURE_FIXTURES=1). One orders-list
+      // page per year and one order-detail page overall is enough to drive
+      // offline parser tests — more just bloats the fixture tree.
+      const flags: RunFlags = { detailCaptured: false };
+      const deps: EmitDeps = {
+        capture,
+        emit,
+        emitRecord,
+        emittedAt,
+        skipDetail: process.env.PDPP_AMAZON_SKIP_DETAIL === "1",
+        wantsItems: requested.has("order_items"),
+        wantsOrders: requested.has("orders"),
+      };
+
+      const newYearsState: YearsCursor = { ...yearsState };
+
+      for (const year of years) {
+        const prior = yearsState[String(year)];
+        // Year-freezing: skip if already frozen
+        if (prior?.frozen) {
+          await progress(`Skipping year ${year} (frozen)`);
+          continue;
+        }
+
+        const yearOrderCount = await runYear(page, deps, flags, year);
+
+        // Year completion state with freeze-once-stable policy
+        const stableCount = prior !== undefined && prior.order_count === yearOrderCount;
+        newYearsState[String(year)] = {
+          order_count: yearOrderCount,
+          frozen: year < new Date().getFullYear() && stableCount,
+          last_scraped: nowIso(),
+        };
+        await emit({
+          type: "STATE",
+          stream: "orders",
+          cursor: { years: newYearsState },
+        });
+      }
+    },
+  });
+}

@@ -11,9 +11,9 @@
  * emitted before items, items in dedup+merge order, stream-scope
  * respected, cursor timing preserved.
  *
- * Imports from ./collect-helpers.ts (not ./index.ts) so that
- * `runConnector({...})` doesn't fire at module load and keep the test
- * runner's event loop alive.
+ * Imports directly from ./index.ts — `runConnector({...})` is guarded by
+ * `isMainModule(import.meta.url)` so it only fires when index.ts is the
+ * process entry point, not when a test imports it.
  *
  * Why bother: unit tests on pure parsers prove record *shapes* are
  * correct. Integration tests on emitOrderAndItems prove the invariants
@@ -27,7 +27,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { type EmittedRecord, makeRecordingEmit } from "../../src/test-harness.ts";
-import { type EmitDeps, emitOrderAndItems } from "./collect-helpers.ts";
+import { type EmitDeps, emitOrderAndItems } from "./index.ts";
 import { validateRecord } from "./schemas.ts";
 import type { DetailItem, ListPageOrder, OrderDetail } from "./types.ts";
 
