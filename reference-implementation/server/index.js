@@ -18,12 +18,14 @@ import {
   approveGrant, introspect, revokeGrant, denyGrant,
   initiateOwnerDeviceAuthorization, getOwnerDeviceAuthorizationByUserCode,
   approveOwnerDeviceAuthorization, denyOwnerDeviceAuthorization, exchangeOwnerDeviceCode, configureNativeManifest,
+  listRegisteredConnectorIds,
   parsePendingConsentRequestUri, registerDynamicClient, requireGrantContractAgainstManifest, requireResolvedPersistedGrantState, seedPreRegisteredClients,
 } from './auth.js';
 import {
   ingestRecord, queryRecords, getRecord, deleteRecord, deleteAllRecords,
   listStreams, listAllStreams, getSyncState, putSyncState, getDatasetSummary,
 } from './records.js';
+import { runLexicalSearch } from './search.js';
 import { createOwnerAuthPlaceholder, OWNER_AUTH_DEFAULT_SUBJECT_ID } from './owner-auth.js';
 import { createController } from '../runtime/controller.js';
 import { createApp } from './transport.js';
@@ -1477,6 +1479,11 @@ function buildAsApp(opts = {}) {
     }
   });
 
+  // Reference-only — not the public lexical retrieval surface.
+  // /_ref/search is a spine-only artifact/id-jump helper for the operator
+  // console. The public lexical retrieval contract lives at GET /v1/search;
+  // these two routes share neither shape nor backing. See:
+  //   openspec/changes/add-lexical-retrieval-extension/specs/lexical-retrieval/spec.md
   app.get('/_ref/search', { contract: 'refSearch' }, async (req, res) => {
     try {
       const result = await searchSpine(req.query.q || '');
@@ -2290,6 +2297,92 @@ function buildRsApp(opts = {}) {
     } catch (err) {
       if (queryContext) {
         await emitQueryReceived(queryContext, req);
+        return await rejectQuery(res, req, queryContext, err);
+      }
+      handleError(res, err);
+    }
+  });
+
+  // GET /v1/search — public lexical retrieval extension. Thin route handler;
+  // all logic (parameter parsing, owner-vs-client mode, planning, FTS5,
+  // snippet hydration, response shaping) lives in search.js. See the
+  // approved spec at:
+  //   openspec/changes/add-lexical-retrieval-extension/specs/lexical-retrieval/spec.md
+  app.get('/v1/search', { contract: 'searchRecordsLexical' }, requireToken, async (req, res) => {
+    let queryContext = null;
+    try {
+      const { tokenInfo } = req;
+      const queryId = ensureRequestId(res);
+      const { actorType, actorId, traceId, scenarioId } = buildQueryActorContext(tokenInfo);
+      setReferenceTraceId(res, traceId);
+
+      const isOwner = tokenInfo.pdpp_token_kind === 'owner';
+      queryContext = {
+        tokenInfo,
+        queryId,
+        actorType,
+        actorId,
+        traceId,
+        scenarioId,
+        sourceDescriptor: isOwner ? null : buildSourceDescriptor(tokenInfo.grant?.source),
+        streamId: null,
+        queryData: { query_shape: 'search' },
+      };
+      await emitQueryReceived(queryContext, req);
+
+      const { envelope, disclosureData } = await runLexicalSearch({
+        req,
+        opts,
+        tokenInfo,
+        // Owner-mode helpers — bound to the request so the helper stays
+        // generic across tests, native mode, and polyfill mode.
+        resolveOwnerVisibleConnectorIds: async () => {
+          const native = resolveNativeManifest(opts);
+          if (native?.storage_binding?.connector_id) {
+            // Native mode: a single owner-visible connector identity.
+            return [native.storage_binding.connector_id];
+          }
+          // Polyfill mode: every registered connector is owner-visible.
+          return await listRegisteredConnectorIds();
+        },
+        resolveOwnerScopeForConnector: (connectorId) => ({
+          public_scope: 'polyfill',
+          source: { binding_kind: 'connector', connector_id: connectorId },
+          storage_binding: { connector_id: connectorId },
+        }),
+        resolveOwnerManifestFromScope: (ownerScope) =>
+          resolveOwnerManifestFromScope(ownerScope, opts),
+        // Synthetic owner read grant covering every stream of the manifest;
+        // fields = undefined ⇒ "all fields authorized" per
+        // buildSearchPlanForGrant semantics.
+        buildOwnerReadGrantForManifest: (manifest) => ({
+          streams: (manifest?.streams || []).map((s) => ({ name: s.name })),
+        }),
+        // Client-mode resolver
+        resolveGrantManifest: (info) => resolveGrantManifest(info, opts),
+      });
+
+      await emitSpineEvent({
+        event_type: 'disclosure.served',
+        trace_id: traceId,
+        scenario_id: scenarioId,
+        actor_type: actorType,
+        actor_id: actorId,
+        subject_type: 'subject',
+        subject_id: tokenInfo.subject_id || null,
+        object_type: 'query',
+        object_id: queryId,
+        status: 'succeeded',
+        grant_id: tokenInfo.grant_id || null,
+        client_id: tokenInfo.client_id || null,
+        stream_id: null,
+        token_id: req.headers.authorization?.slice(7) || null,
+        data: disclosureData,
+      });
+
+      res.json(envelope);
+    } catch (err) {
+      if (queryContext) {
         return await rejectQuery(res, req, queryContext, err);
       }
       handleError(res, err);

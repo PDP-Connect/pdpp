@@ -252,6 +252,30 @@ const AuthorizationServerMetadataSchema = {
   ],
 };
 
+// `capabilities` is the layered server-level capability layer. v1 carries
+// only `lexical_retrieval` from the optional lexical-retrieval extension.
+// additionalProperties: true so future extensions can add their own keys
+// without a contract bump.
+const ServerCapabilitiesSchema = {
+  type: 'object',
+  additionalProperties: true,
+  properties: {
+    lexical_retrieval: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        supported: { type: 'boolean' },
+        endpoint: NonEmptyStringSchema,
+        cross_stream: { type: 'boolean' },
+        snippets: { type: 'boolean' },
+        default_limit: { type: 'integer', minimum: 1 },
+        max_limit: { type: 'integer', minimum: 1 },
+      },
+      required: ['supported'],
+    },
+  },
+};
+
 const ProtectedResourceMetadataSchema = {
   type: 'object',
   additionalProperties: false,
@@ -276,6 +300,7 @@ const ProtectedResourceMetadataSchema = {
       items: { type: 'string', enum: ['owner', 'client'] },
     },
     pdpp_core_query_base: UriSchema,
+    capabilities: ServerCapabilitiesSchema,
   },
   required: [
     'resource',
@@ -816,6 +841,87 @@ export const publicManifests = [
     responses: {
       200: { schema: RecordSchema },
       ...ProtectedReadErrors,
+    },
+  },
+  {
+    id: 'searchRecordsLexical',
+    method: 'GET',
+    path: '/v1/search',
+    surface: 'public',
+    tags: ['records', 'lexical-retrieval'],
+    summary: 'Optional lexical retrieval extension: search records across authorized streams by text. See the lexical-retrieval capability spec.',
+    request: {
+      headers: AuthHeaderSchema,
+      // additionalProperties: false locks the v1 param allowlist at the schema
+      // layer in addition to the runtime check in search.js. connector_id is
+      // intentionally NOT in the allowlist — owner-mode search is
+      // cross-connector with no public connector-scope param. See:
+      //   openspec/changes/add-lexical-retrieval-extension/specs/lexical-retrieval/spec.md
+      query: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          q: NonEmptyStringSchema,
+          limit: { type: 'integer', minimum: 1, maximum: 100 },
+          cursor: CursorSchema,
+          streams: {
+            anyOf: [
+              NonEmptyStringSchema,
+              { type: 'array', items: NonEmptyStringSchema, minItems: 1 },
+            ],
+          },
+        },
+        required: ['q'],
+      },
+    },
+    responses: {
+      200: {
+        schema: {
+          type: 'object',
+          additionalProperties: true,
+          properties: {
+            object: { const: 'list' },
+            url: { type: 'string' },
+            has_more: { type: 'boolean' },
+            next_cursor: { type: 'string' },
+            data: {
+              type: 'array',
+              items: {
+                type: 'object',
+                additionalProperties: true,
+                properties: {
+                  object: { const: 'search_result' },
+                  stream: NonEmptyStringSchema,
+                  record_key: NonEmptyStringSchema,
+                  connector_id: NonEmptyStringSchema,
+                  record_url: { type: 'string' },
+                  emitted_at: NonEmptyStringSchema,
+                  matched_fields: {
+                    type: 'array',
+                    minItems: 1,
+                    items: NonEmptyStringSchema,
+                  },
+                  snippet: {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      field: NonEmptyStringSchema,
+                      text: { type: 'string' },
+                    },
+                    required: ['field', 'text'],
+                  },
+                },
+                required: ['object', 'stream', 'record_key', 'connector_id', 'emitted_at', 'matched_fields'],
+              },
+            },
+          },
+          required: ['object', 'data', 'has_more'],
+        },
+      },
+      400: { schema: ErrorObjectSchema, description: 'Invalid request (e.g. unsupported v1 query parameter, missing q)' },
+      401: { schema: ErrorObjectSchema, description: 'Missing or invalid access token' },
+      403: { schema: ErrorObjectSchema, description: 'Grant does not permit a named stream (client tokens only)' },
+      410: { schema: ErrorObjectSchema, description: 'Cursor expired or refers to an unknown snapshot' },
     },
   },
   {

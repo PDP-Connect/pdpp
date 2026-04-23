@@ -1299,6 +1299,19 @@ export async function registerConnector(manifest) {
 }
 
 /**
+ * List all registered connector_ids. Returned in stable id order so callers
+ * (e.g. the lexical retrieval extension's owner-mode cross-connector
+ * fan-out) get deterministic enumeration.
+ */
+export async function listRegisteredConnectorIds() {
+  const db = getDb();
+  const rows = await db.query(sql`
+    SELECT connector_id FROM connectors ORDER BY connector_id ASC
+  `);
+  return rows.map((row) => row.connector_id);
+}
+
+/**
  * Get manifest by connector_id
  */
 export async function getConnectorManifest(connectorId) {
