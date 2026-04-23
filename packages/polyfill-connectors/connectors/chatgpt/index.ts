@@ -25,14 +25,16 @@ import {
 } from "../../src/connector-runtime.ts";
 import type { CaptureSession } from "../../src/fixture-capture.ts";
 import {
+  processConversationDetail,
+  runCustomInstructionsStream,
+  runMemoriesStream,
+  type StreamDeps,
+} from "./collect-helpers.ts";
+import {
   buildConversationRecord,
-  buildCustomInstructionsRecord,
   buildGizmoRecord,
-  buildMemoryRecord,
   buildSharedConversationRecord,
   type ConversationDetail,
-  extractMessage,
-  flattenTreeCurrentBranch,
   maxUpdateTimeIso,
   tsToIso,
 } from "./parsers.ts";
@@ -42,8 +44,6 @@ import type {
   ChatGptAuth,
   ChatGptFetchResult,
   ConversationListItem,
-  RawCustomInstructionsBody,
-  RawMemoryEntry,
   RawSharedConversation,
 } from "./types.ts";
 
@@ -202,49 +202,13 @@ function createChatGptApi({ page, capture }: { page: Page; capture: CaptureSessi
 }
 
 // ─── Per-stream helpers ────────────────────────────────────────────────
-
-interface StreamDeps {
-  api: ChatGptApi;
-  emit: CollectContext["emit"];
-  emitRecord: (stream: string, data: RecordData) => Promise<void>;
-  progress: CollectContext["progress"];
-  requested: CollectContext["requested"];
-}
+// runMemoriesStream, runCustomInstructionsStream, and processConversationDetail
+// (plus the shared StreamDeps interface) live in collect-helpers.ts so they can
+// be imported by integration tests without pulling in runConnector()'s
+// stdin-reading side effect. The pagination-heavy helpers below stay here.
 
 const PAGINATION_SAFETY_LIMIT = 5000;
 const GIZMO_MAX_PAGES = 50;
-const MEMORIES_PATH = "/memories?include_memory_entries=true";
-
-async function runMemoriesStream(deps: StreamDeps): Promise<void> {
-  deps.emit({
-    type: "PROGRESS",
-    stream: "memories",
-    message: "Fetching memories",
-  });
-  const res = await deps.api.fetch(MEMORIES_PATH);
-  if (res.status !== 200) {
-    deps.emit({
-      type: "SKIP_RESULT",
-      stream: "memories",
-      reason: "http_error",
-      message: `memories fetch http ${res.status}`,
-    });
-    return;
-  }
-  const entries =
-    (res.json?.memories as RawMemoryEntry[] | undefined) || (res.json?.items as RawMemoryEntry[] | undefined) || [];
-  for (const m of entries) {
-    const rec = buildMemoryRecord(m);
-    if (rec) {
-      await deps.emitRecord("memories", rec);
-    }
-  }
-  deps.emit({
-    type: "STATE",
-    stream: "memories",
-    cursor: { fetched_at: nowIso() },
-  });
-}
 
 async function runCustomGptsStream(deps: StreamDeps): Promise<void> {
   deps.emit({
@@ -301,39 +265,6 @@ async function runCustomGptsStream(deps: StreamDeps): Promise<void> {
       cursor: { fetched_at: nowIso() },
     });
   }
-}
-
-async function runCustomInstructionsStream(deps: StreamDeps): Promise<void> {
-  deps.emit({
-    type: "PROGRESS",
-    stream: "custom_instructions",
-    message: "Fetching custom instructions",
-  });
-  const res = await deps.api.fetch("/user_system_messages");
-  if (res.status === 404 || res.status === 403) {
-    deps.emit({
-      type: "SKIP_RESULT",
-      stream: "custom_instructions",
-      reason: "not_available",
-      message: `user_system_messages http ${res.status}`,
-    });
-    return;
-  }
-  if (res.status !== 200) {
-    deps.emit({
-      type: "SKIP_RESULT",
-      stream: "custom_instructions",
-      reason: "http_error",
-      message: `user_system_messages http ${res.status}`,
-    });
-    return;
-  }
-  await deps.emitRecord("custom_instructions", buildCustomInstructionsRecord(res.json as RawCustomInstructionsBody));
-  deps.emit({
-    type: "STATE",
-    stream: "custom_instructions",
-    cursor: { fetched_at: nowIso() },
-  });
 }
 
 async function runSharedConversationsStream(deps: StreamDeps): Promise<void> {
@@ -446,42 +377,6 @@ async function listConversationsSinceCursor(
     }
   }
   return convosToSync;
-}
-
-/**
- * Process a single fetched conversation detail payload: emit messages along
- * the current branch (if messages stream requested), then emit the merged
- * conversation record.
- */
-async function processConversationDetail(
-  deps: StreamDeps,
-  c: ConversationListItem,
-  detail: ChatGptFetchResult,
-  emitConversation: (c: ConversationListItem, detail: ConversationDetail | null) => Promise<void>
-): Promise<void> {
-  if (detail.status !== 200 || !detail.json?.mapping) {
-    deps.emit({
-      type: "SKIP_RESULT",
-      stream: "messages",
-      reason: "http_error",
-      message: `conversation ${c.id} http ${detail.status}`,
-    });
-    // Fall back to list-only conversation record.
-    await emitConversation(c, null);
-    return;
-  }
-  const mapping = detail.json.mapping;
-  const currentNode = detail.json.current_node || c.current_node;
-  const currentBranchIds = new Set(flattenTreeCurrentBranch(mapping, currentNode).map((x) => x.nodeId));
-  for (const [nodeId, node] of Object.entries(mapping)) {
-    const msg = extractMessage(nodeId, node, c.id, currentBranchIds.has(nodeId));
-    if (!msg?.role) {
-      // synthetic root — skip
-      continue;
-    }
-    await deps.emitRecord("messages", msg);
-  }
-  await emitConversation(c, detail.json as ConversationDetail);
 }
 
 const CONVO_DETAIL_BATCH = 3; // conservative concurrency
