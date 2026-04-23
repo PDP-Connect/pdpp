@@ -47,3 +47,15 @@ Inbox memos, scratch notes, and other temporary planning artifacts MAY exist dur
 #### Scenario: A working memo has been absorbed
 - **WHEN** the substance of a temporary planning note has been incorporated into OpenSpec, code, tests, or the root PDPP specs
 - **THEN** contributors SHOULD stop extending that temporary note as an active source of execution truth
+
+### Requirement: Supplemental project notes stay clearly non-canonical
+This repository MAY surface change-local supplemental notes to help contributors and partners review the project, but those notes SHALL be clearly distinguished from official OpenSpec artifacts.
+
+#### Scenario: The website renders change-local notes
+- **WHEN** `apps/web` or another repository surface renders markdown from `openspec/changes/*/design-notes/`
+- **THEN** that surface SHALL label those documents as supplemental project notes rather than as official change artifacts
+- **AND** it SHALL continue to distinguish official change artifacts (`proposal.md`, `design.md`, `tasks.md`, and `specs/**`) from the supplemental note layer
+
+#### Scenario: A supplemental note conflicts with canonical artifacts
+- **WHEN** a supplemental project note conflicts with an official OpenSpec artifact, executable behavior, or the root PDPP specs
+- **THEN** contributors SHALL treat the supplemental note as stale context rather than as execution truth

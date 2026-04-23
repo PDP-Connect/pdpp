@@ -38,6 +38,7 @@ The original plan remains correct in current repo terms:
 - one shared event/trace spine
 - two disciplined downstream projections:
   - curated illustrated/docs surfaces in `apps/web`
+  - a reader-facing planning surface in `apps/web` that exposes official change artifacts and clearly labeled supplemental project notes without competing with root specs or executable behavior
   - optional future operator console/replay surfaces
 
 ## Authority order

@@ -70,7 +70,11 @@ Debugging, replay, and trace surfaces that are useful for the reference implemen
   - `GET /_ref/traces/:traceId`
   - `GET /_ref/grants/:grantId/timeline`
   - `GET /_ref/runs/:runId/timeline`
-- **AND** the reference SHALL NOT add broader `_ref` listing or mutation/control endpoints until a later control-plane phase explicitly widens that boundary
+  - `GET /_ref/traces` (list, filter, paginate)
+  - `GET /_ref/grants` (list, filter, paginate)
+  - `GET /_ref/runs` (list, filter, paginate)
+  - `GET /_ref/search?q=…` (id-aware read-only jump helper)
+- **AND** the reference SHALL NOT add mutation/control `_ref` endpoints until a later control-plane phase explicitly widens that boundary
 
 #### Scenario: Run timelines expose checkpoint staging separately from checkpoint commit
 - **WHEN** the reference runtime receives `STATE` during a bounded collection run

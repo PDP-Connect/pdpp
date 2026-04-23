@@ -2,6 +2,7 @@
 - [x] Create a canonical OpenSpec program artifact for the reference-implementation program
 - [x] Re-express the original E2E/reference plan in current repo terms (`reference-implementation/`, `apps/web`, OpenSpec)
 - [x] Mark the older inbox plan/status memos as historical working notes rather than the active steering layer
+- [x] Ship a reader-facing planning surface in `apps/web` that exposes official change artifacts and clearly labeled supplemental project notes from the repository itself
 - [x] Preserve the original program north star:
   - [x] forkable engine substrate
   - [x] honest native/polyfill split
