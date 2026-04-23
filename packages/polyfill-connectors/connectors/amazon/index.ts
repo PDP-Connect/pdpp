@@ -27,7 +27,14 @@ import {
   runConnector,
   type ValidateRecord,
 } from "../../src/connector-runtime.ts";
-import { itemId, mergeDetailByKey, parseCurrencyCents, parseOrderDate, parseOrdersListDom } from "./parsers.ts";
+import {
+  itemId,
+  mergeDetailByKey,
+  parseCurrencyCents,
+  parseOrderDate,
+  parseOrderDetailDom,
+  parseOrdersListDom,
+} from "./parsers.ts";
 import { listPageOrderShape, validateRecord as validateRecordRaw } from "./schemas.ts";
 import type { DetailItem, ListPageDiagnostics, ListPageOrder, MergedItem, OrderDetail } from "./types.ts";
 
@@ -188,206 +195,12 @@ async function fetchOrderDetail(page: Page, orderId: string): Promise<OrderDetai
     return null;
   }
 
-  return page
-    .evaluate((): OrderDetail | null => {
-      // biome-ignore-start lint/performance/useTopLevelRegex: runs in browser context (page.evaluate); module-scoped regexes in Node cannot cross the bridge.
-      const WHITESPACE_RE = /\s+/g;
-      const CANCELLED_RE = /has been cancelled/i;
-      const PAY_PREFIX_RE = /^Payment method\s*/i;
-      const PAY_SUFFIX_RE = /\s*View related transactions.*$/i;
-      const CARD_PATCH_RE =
-        /(Visa|Mastercard|Amex|Discover|Diners|Unknown Credit Card|Credit Card|Debit Card)ending in/gi;
-      const CARD_ONLY_RE =
-        /((?:Visa|Mastercard|Amex|Discover|Diners|Unknown Credit Card|Credit Card|Debit Card) ending in \d{3,5})/i;
-      const UNABLE_RE = /Unable to display payment details/i;
-      const GRAND_TOTAL_RE = /Grand Total:?\s*\$([\d,]+\.\d{2})/i;
-      const ASIN_RE = /\/(?:gp\/product|dp)\/([A-Z0-9]{10})/;
-      const SOLD_BY_RE = /^Sold by:?\s*(.+)$/i;
-      const DOLLAR_RE = /\$([\d,]+\.\d{2})/;
-      const INT_RE = /^\d+$/;
-      // biome-ignore-end lint/performance/useTopLevelRegex: runs in browser context (page.evaluate); module-scoped regexes in Node cannot cross the bridge.
-
-      interface El {
-        getAttribute: (name: string) => string | null;
-        innerText?: string;
-        parentElement: El | null;
-        querySelector: (sel: string) => El | null;
-        querySelectorAll: (sel: string) => El[];
-      }
-
-      const od = document.querySelector("#orderDetails") as El | null;
-      if (!od) {
-        return null;
-      }
-
-      const cancelledEl = od.querySelector('[data-component="cancelled"]');
-      const cancelledText = (cancelledEl?.innerText || "").replace(WHITESPACE_RE, " ").trim();
-      const isCancelled = CANCELLED_RE.test(cancelledText);
-
-      // ── Shipping address (structural) ──────────────────────────────────
-      const shipEl = od.querySelector('[data-component="shippingAddress"]');
-      let recipient_name: string | null = null;
-      let shipping_address_summary: string | null = null;
-      if (shipEl) {
-        const lines = [...shipEl.querySelectorAll("ul li span.a-list-item, ul li")]
-          .map((li) => (li.innerText || "").replace(WHITESPACE_RE, " ").trim())
-          .filter(Boolean);
-        const first = lines[0];
-        if (first && first.length < 80) {
-          recipient_name = first;
-        }
-        if (lines.length) {
-          shipping_address_summary = lines.join(", ").slice(0, 240);
-        }
-      }
-
-      // ── Payment method (structural, with cleanup) ───────────────────────
-      const payEl = od.querySelector('[data-component="viewPaymentPlanSummaryWidget"]');
-      let payment_method_summary: string | null = null;
-      if (payEl) {
-        let raw = (payEl.innerText || "").replace(WHITESPACE_RE, " ").trim();
-        raw = raw.replace(PAY_PREFIX_RE, "").replace(PAY_SUFFIX_RE, "").replace(CARD_PATCH_RE, "$1 ending in").trim();
-        const cardOnly = raw.match(CARD_ONLY_RE);
-        if (cardOnly?.[1]) {
-          payment_method_summary = cardOnly[1];
-        } else if (raw && !UNABLE_RE.test(raw)) {
-          payment_method_summary = raw.slice(0, 200);
-        }
-      }
-
-      // ── Grand total (structural) ───────────────────────────────────────
-      let grand_total: string | null = null;
-      const chargeEl = od.querySelector('[data-component="chargeSummary"]');
-      if (chargeEl) {
-        const rows = [...chargeEl.querySelectorAll("li, .od-line-item-row")];
-        for (const r of rows) {
-          const t = (r.innerText || "").replace(WHITESPACE_RE, " ");
-          const m = t.match(GRAND_TOTAL_RE);
-          if (m?.[1]) {
-            grand_total = `$${m[1]}`;
-            break;
-          }
-        }
-        if (!grand_total) {
-          const m = (chargeEl.innerText || "").replace(WHITESPACE_RE, " ").match(GRAND_TOTAL_RE);
-          if (m?.[1]) {
-            grand_total = `$${m[1]}`;
-          }
-        }
-      }
-
-      // ── Status detail (status banner only; delivery phrasing needs text) ─
-      let status_detail: string | null = null;
-      if (isCancelled) {
-        status_detail = "This order has been cancelled";
-      } else {
-        const alertsEl = od.querySelector('[data-component="alerts"]');
-        const alertText = (alertsEl?.innerText || "").replace(WHITESPACE_RE, " ").trim();
-        if (alertText && alertText.length < 180) {
-          status_detail = alertText;
-        }
-      }
-
-      // ── Gift / digital flags ───────────────────────────────────────────
-      const giftEl = od.querySelector(
-        '[data-component="giftMessage"], [data-component="giftcardsSender"], [data-component="giftCardDetails"]'
-      );
-      const gift_order = Boolean(giftEl && (giftEl.innerText || "").trim());
-      const digital_order = false;
-
-      if (isCancelled) {
-        return {
-          status_detail,
-          recipient_name: null,
-          shipping_address_summary: null,
-          payment_method_summary: null,
-          grand_total: null,
-          gift_order: false,
-          digital_order: false,
-          items: [],
-        };
-      }
-
-      // ── Items (structural) ─────────────────────────────────────────────
-      const itemContainers = [...od.querySelectorAll('[data-component="purchasedItemsRightGrid"]')];
-      const items: DetailItem[] = [];
-      for (const rightGrid of itemContainers) {
-        let rowRoot: El | null = rightGrid;
-        for (let i = 0; i < 5 && rowRoot; i++) {
-          if (rowRoot.querySelector('[data-component="purchasedItemsLeftGrid"]')) {
-            break;
-          }
-          rowRoot = rowRoot.parentElement;
-        }
-        const scanRoot: El = rowRoot || rightGrid;
-
-        const titleEl = rightGrid.querySelector('[data-component="itemTitle"]');
-        const titleLink = titleEl?.querySelector("a") ?? null;
-        const name = (titleLink?.innerText || titleEl?.innerText || "").replace(WHITESPACE_RE, " ").trim();
-        const href = titleLink?.getAttribute("href") || "";
-        const asinM = href.match(ASIN_RE);
-        const absoluteHref = href.startsWith("/") ? `https://www.amazon.com${href}` : href || null;
-
-        const merchantEl = rightGrid.querySelector('[data-component="orderedMerchant"]');
-        let seller: string | null = null;
-        if (merchantEl) {
-          const t = (merchantEl.innerText || "").replace(WHITESPACE_RE, " ").trim();
-          const sm = t.match(SOLD_BY_RE);
-          seller = sm?.[1] ? sm[1].trim().slice(0, 120) : t.slice(0, 120) || null;
-        }
-
-        const priceEl = rightGrid.querySelector('[data-component="unitPrice"]');
-        let unit_price: string | null = null;
-        if (priceEl) {
-          const pt = (priceEl.innerText || "").replace(WHITESPACE_RE, " ").trim();
-          const pm = pt.match(DOLLAR_RE);
-          unit_price = pm?.[1] ? `$${pm[1]}` : null;
-        }
-
-        const qtyOverlayEl = scanRoot.querySelector(".od-item-view-qty span, .od-item-view-qty");
-        const qtyOverlayText = (qtyOverlayEl?.innerText || "").trim();
-        const quantity = INT_RE.test(qtyOverlayText) ? Number(qtyOverlayText) : 1;
-
-        const img = scanRoot.querySelector(
-          '[data-component="itemImage"] img, [data-component="purchasedItemsLeftGrid"] img'
-        );
-        const item_image_url = img?.getAttribute("src") || null;
-
-        let refund_status: string | null = null;
-        const returnEl = rightGrid.querySelector('[data-component="itemReturnEligibility"]');
-        const returnText = (returnEl?.innerText || "").replace(WHITESPACE_RE, " ").trim();
-        if (returnText && returnText.length < 180) {
-          refund_status = returnText;
-        }
-
-        if (!(asinM?.[1] && name)) {
-          continue;
-        }
-
-        items.push({
-          asin: asinM[1],
-          name: name.slice(0, 240),
-          url: absoluteHref,
-          unit_price,
-          quantity,
-          seller,
-          item_image_url,
-          refund_status,
-        });
-      }
-
-      return {
-        status_detail,
-        recipient_name,
-        shipping_address_summary,
-        payment_method_summary,
-        grand_total,
-        gift_order,
-        digital_order,
-        items,
-      };
-    })
-    .catch((): OrderDetail | null => null);
+  try {
+    const html = await page.content();
+    return parseOrderDetailDom(html);
+  } catch {
+    return null;
+  }
 }
 
 // ─── Per-page order extraction ────────────────────────────────────────────

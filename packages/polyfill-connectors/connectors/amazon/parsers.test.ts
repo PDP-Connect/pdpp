@@ -3,7 +3,14 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { itemId, mergeDetailByKey, parseCurrencyCents, parseOrderDate, parseOrdersListDom } from "./parsers.ts";
+import {
+  itemId,
+  mergeDetailByKey,
+  parseCurrencyCents,
+  parseOrderDate,
+  parseOrderDetailDom,
+  parseOrdersListDom,
+} from "./parsers.ts";
 import type { DetailItem } from "./types.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -148,6 +155,92 @@ test("parseOrdersListDom: local real fixture parses ≥5 orders with ids + dates
     assert.ok(o.orderDateRaw, `order ${o.orderId} missing orderDateRaw`);
   }
 });
+
+// ─── parseOrderDetailDom ─────────────────────────────────────────────────
+
+test("parseOrderDetailDom: synthetic-minimal fixture parses full OrderDetail", () => {
+  const html = readFixture("order-detail-minimal.html");
+  const d = parseOrderDetailDom(html);
+  assert.ok(d, "expected non-null OrderDetail");
+  assert.equal(d.grand_total, "$42.99");
+  assert.equal(d.recipient_name, "Fictional Person");
+  assert.equal(
+    d.shipping_address_summary,
+    "Fictional Person, Fictional Person, 123 Placeholder Ln, 123 Placeholder Ln, Fakeville, TX 00000, Fakeville, TX 00000"
+  );
+  assert.equal(d.payment_method_summary, "Visa ending in 1234");
+  assert.equal(d.gift_order, false);
+  assert.equal(d.digital_order, false);
+  assert.equal(d.status_detail, null);
+  assert.equal(d.items.length, 1);
+  const item = d.items[0];
+  assert.ok(item);
+  assert.equal(item.asin, "B01ABCDEFG");
+  assert.equal(item.name, "Synthetic Widget Model A");
+  assert.equal(item.url, "https://www.amazon.com/dp/B01ABCDEFG?ref=fake");
+  assert.equal(item.seller, "Fictional Seller Inc");
+  assert.equal(item.unit_price, "$39.99");
+  assert.equal(item.quantity, 1);
+  assert.equal(item.item_image_url, "https://example.com/img.jpg");
+  assert.equal(item.refund_status, null);
+});
+
+test("parseOrderDetailDom: missing #orderDetails container returns null", () => {
+  assert.equal(parseOrderDetailDom("<!doctype html><html><body><div>no details</div></body></html>"), null);
+  assert.equal(parseOrderDetailDom(""), null);
+});
+
+test("parseOrderDetailDom: #orderDetails present but no data-components returns empty-ish OrderDetail", () => {
+  // Matches the original browser-context behavior: container exists → returns an
+  // OrderDetail with every structural field null and items=[].
+  const html = "<!doctype html><html><body><div id=\"orderDetails\"></div></body></html>";
+  const d = parseOrderDetailDom(html);
+  assert.ok(d);
+  assert.equal(d.grand_total, null);
+  assert.equal(d.recipient_name, null);
+  assert.equal(d.shipping_address_summary, null);
+  assert.equal(d.payment_method_summary, null);
+  assert.equal(d.status_detail, null);
+  assert.equal(d.gift_order, false);
+  assert.equal(d.digital_order, false);
+  assert.deepEqual(d.items, []);
+});
+
+test("parseOrderDetailDom: cancelled order returns cancelled shape with empty items", () => {
+  const html = `<!doctype html><html><body>
+    <div id="orderDetails">
+      <div data-component="cancelled">This order has been cancelled</div>
+      <div data-component="purchasedItemsRightGrid">
+        <div data-component="itemTitle"><a href="/dp/B01ABCDEFG">Synthetic Widget</a></div>
+      </div>
+    </div>
+  </body></html>`;
+  const d = parseOrderDetailDom(html);
+  assert.ok(d);
+  assert.equal(d.status_detail, "This order has been cancelled");
+  assert.equal(d.recipient_name, null);
+  assert.equal(d.grand_total, null);
+  assert.deepEqual(d.items, []);
+});
+
+test(
+  "parseOrderDetailDom: local real fixtures yield items and grand_total",
+  { skip: !existsSync(LOCAL_RAW_DIR) },
+  () => {
+    for (const name of ["order-detail-111-1177311-6377828.html", "order-detail-111-2841132-0656246.html"]) {
+      const path = join(LOCAL_RAW_DIR, name);
+      if (!existsSync(path)) {
+        continue;
+      }
+      const html = readFileSync(path, "utf8");
+      const d = parseOrderDetailDom(html);
+      assert.ok(d, `${name}: expected non-null OrderDetail`);
+      assert.ok(d.items.length >= 1, `${name}: expected at least 1 item`);
+      assert.ok(d.grand_total, `${name}: expected non-null grand_total`);
+      assert.match(d.grand_total, /^\$[\d,]+\.\d{2}$/);
+    }
+  }
+);
 
 test("mergeDetailByKey: buckets by ASIN first, name second", () => {
   const items: DetailItem[] = [

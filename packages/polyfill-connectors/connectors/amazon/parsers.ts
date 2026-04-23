@@ -3,7 +3,7 @@
 
 // biome-ignore lint/correctness/noUnresolvedImports: linkedom is declared in package.json; Biome's resolver can't follow its conditional exports
 import { parseHTML } from "linkedom";
-import type { DetailItem, ListPageItem, ListPageOrder } from "./types.ts";
+import type { DetailItem, ListPageItem, ListPageOrder, OrderDetail } from "./types.ts";
 
 const CURRENCY_CENTS_MULTIPLIER = 100;
 const CURRENCY_NUMBER_RE = /(\d+(?:\.\d+)?)/;
@@ -101,6 +101,220 @@ function parseOrderCard(card: HTMLElement): ListPageOrder | null {
     orderDateRaw,
     orderTotal,
     deliveryStatus,
+    items,
+  };
+}
+
+// ─── Order-detail DOM parsing ───────────────────────────────────────────
+
+const CANCELLED_RE = /has been cancelled/i;
+const PAY_PREFIX_RE = /^Payment method\s*/i;
+const PAY_SUFFIX_RE = /\s*View related transactions.*$/i;
+const CARD_PATCH_RE = /(Visa|Mastercard|Amex|Discover|Diners|Unknown Credit Card|Credit Card|Debit Card)ending in/gi;
+const CARD_ONLY_RE =
+  /((?:Visa|Mastercard|Amex|Discover|Diners|Unknown Credit Card|Credit Card|Debit Card) ending in \d{3,5})/i;
+const UNABLE_RE = /Unable to display payment details/i;
+const GRAND_TOTAL_RE = /Grand Total:?\s*\$([\d,]+\.\d{2})/i;
+const ASIN_RE = /\/(?:gp\/product|dp)\/([A-Z0-9]{10})/;
+const SOLD_BY_RE = /^Sold by:?\s*(.+)$/i;
+const DOLLAR_RE = /\$([\d,]+\.\d{2})/;
+const INT_RE = /^\d+$/;
+
+const PAY_METHOD_MAX_LEN = 200;
+const ADDRESS_MAX_LEN = 240;
+const RECIPIENT_MAX_LEN = 80;
+const STATUS_MAX_LEN = 180;
+const ITEM_NAME_MAX_LEN = 240;
+const SELLER_MAX_LEN = 120;
+const ROW_ANCESTOR_SEARCH_DEPTH = 5;
+
+function normText(el: Element | null | undefined): string {
+  return textOf(el).replace(WHITESPACE_RE, " ").trim();
+}
+
+function parseShippingAddress(shipEl: Element | null): { recipient_name: string | null; summary: string | null } {
+  if (!shipEl) {
+    return { recipient_name: null, summary: null };
+  }
+  const lines = [...shipEl.querySelectorAll<HTMLElement>("ul li span.a-list-item, ul li")]
+    .map((li) => normText(li))
+    .filter(Boolean);
+  const first = lines[0];
+  const recipient_name = first && first.length < RECIPIENT_MAX_LEN ? first : null;
+  const summary = lines.length ? lines.join(", ").slice(0, ADDRESS_MAX_LEN) : null;
+  return { recipient_name, summary };
+}
+
+function parsePaymentMethod(payEl: Element | null): string | null {
+  if (!payEl) {
+    return null;
+  }
+  let raw = normText(payEl);
+  raw = raw.replace(PAY_PREFIX_RE, "").replace(PAY_SUFFIX_RE, "").replace(CARD_PATCH_RE, "$1 ending in").trim();
+  const cardOnly = raw.match(CARD_ONLY_RE);
+  if (cardOnly?.[1]) {
+    return cardOnly[1];
+  }
+  if (raw && !UNABLE_RE.test(raw)) {
+    return raw.slice(0, PAY_METHOD_MAX_LEN);
+  }
+  return null;
+}
+
+function parseGrandTotal(chargeEl: Element | null): string | null {
+  if (!chargeEl) {
+    return null;
+  }
+  const rows = [...chargeEl.querySelectorAll<HTMLElement>("li, .od-line-item-row")];
+  for (const r of rows) {
+    const t = textOf(r).replace(WHITESPACE_RE, " ");
+    const m = t.match(GRAND_TOTAL_RE);
+    if (m?.[1]) {
+      return `$${m[1]}`;
+    }
+  }
+  const m2 = textOf(chargeEl).replace(WHITESPACE_RE, " ").match(GRAND_TOTAL_RE);
+  if (m2?.[1]) {
+    return `$${m2[1]}`;
+  }
+  return null;
+}
+
+function findRowRoot(rightGrid: Element): Element {
+  let rowRoot: Element | null = rightGrid;
+  for (let i = 0; i < ROW_ANCESTOR_SEARCH_DEPTH && rowRoot; i++) {
+    if (rowRoot.querySelector('[data-component="purchasedItemsLeftGrid"]')) {
+      return rowRoot;
+    }
+    rowRoot = rowRoot.parentElement;
+  }
+  return rightGrid;
+}
+
+function parseDetailItem(rightGrid: Element): DetailItem | null {
+  const scanRoot = findRowRoot(rightGrid);
+
+  const titleEl = rightGrid.querySelector<HTMLElement>('[data-component="itemTitle"]');
+  const titleLink = titleEl?.querySelector<HTMLAnchorElement>("a") ?? null;
+  const name = normText(titleLink ?? titleEl);
+  const href = titleLink?.getAttribute("href") ?? "";
+  const asinM = href.match(ASIN_RE);
+  if (!(asinM?.[1] && name)) {
+    return null;
+  }
+  const absoluteHref = href.startsWith("/") ? `https://www.amazon.com${href}` : href || null;
+
+  const merchantEl = rightGrid.querySelector<HTMLElement>('[data-component="orderedMerchant"]');
+  let seller: string | null = null;
+  if (merchantEl) {
+    const t = normText(merchantEl);
+    const sm = t.match(SOLD_BY_RE);
+    seller = sm?.[1] ? sm[1].trim().slice(0, SELLER_MAX_LEN) : t.slice(0, SELLER_MAX_LEN) || null;
+  }
+
+  const priceEl = rightGrid.querySelector<HTMLElement>('[data-component="unitPrice"]');
+  let unit_price: string | null = null;
+  if (priceEl) {
+    const pt = normText(priceEl);
+    const pm = pt.match(DOLLAR_RE);
+    unit_price = pm?.[1] ? `$${pm[1]}` : null;
+  }
+
+  const qtyOverlayEl = scanRoot.querySelector<HTMLElement>(".od-item-view-qty span, .od-item-view-qty");
+  const qtyOverlayText = textOf(qtyOverlayEl).trim();
+  const quantity = INT_RE.test(qtyOverlayText) ? Number(qtyOverlayText) : 1;
+
+  const img = scanRoot.querySelector<HTMLElement>(
+    '[data-component="itemImage"] img, [data-component="purchasedItemsLeftGrid"] img'
+  );
+  const item_image_url = img?.getAttribute("src") ?? null;
+
+  let refund_status: string | null = null;
+  const returnEl = rightGrid.querySelector<HTMLElement>('[data-component="itemReturnEligibility"]');
+  const returnText = normText(returnEl);
+  if (returnText && returnText.length < STATUS_MAX_LEN) {
+    refund_status = returnText;
+  }
+
+  return {
+    asin: asinM[1],
+    name: name.slice(0, ITEM_NAME_MAX_LEN),
+    url: absoluteHref,
+    unit_price,
+    quantity,
+    seller,
+    item_image_url,
+    refund_status,
+  };
+}
+
+export function parseOrderDetailDom(html: string): OrderDetail | null {
+  const { document } = parseHTML(html);
+  const od = document.querySelector("#orderDetails");
+  if (!od) {
+    return null;
+  }
+
+  const cancelledEl = od.querySelector('[data-component="cancelled"]');
+  const cancelledText = normText(cancelledEl);
+  const isCancelled = CANCELLED_RE.test(cancelledText);
+
+  const shipEl = od.querySelector('[data-component="shippingAddress"]');
+  const { recipient_name, summary: shipping_address_summary } = parseShippingAddress(shipEl);
+
+  const payEl = od.querySelector('[data-component="viewPaymentPlanSummaryWidget"]');
+  const payment_method_summary = parsePaymentMethod(payEl);
+
+  const chargeEl = od.querySelector('[data-component="chargeSummary"]');
+  const grand_total = parseGrandTotal(chargeEl);
+
+  let status_detail: string | null = null;
+  if (isCancelled) {
+    status_detail = "This order has been cancelled";
+  } else {
+    const alertsEl = od.querySelector('[data-component="alerts"]');
+    const alertText = normText(alertsEl);
+    if (alertText && alertText.length < STATUS_MAX_LEN) {
+      status_detail = alertText;
+    }
+  }
+
+  const giftEl = od.querySelector(
+    '[data-component="giftMessage"], [data-component="giftcardsSender"], [data-component="giftCardDetails"]'
+  );
+  const gift_order = Boolean(giftEl && textOf(giftEl).trim());
+  const digital_order = false;
+
+  if (isCancelled) {
+    return {
+      status_detail,
+      recipient_name: null,
+      shipping_address_summary: null,
+      payment_method_summary: null,
+      grand_total: null,
+      gift_order: false,
+      digital_order: false,
+      items: [],
+    };
+  }
+
+  const itemContainers = [...od.querySelectorAll('[data-component="purchasedItemsRightGrid"]')];
+  const items: DetailItem[] = [];
+  for (const rightGrid of itemContainers) {
+    const item = parseDetailItem(rightGrid);
+    if (item) {
+      items.push(item);
+    }
+  }
+
+  return {
+    status_detail,
+    recipient_name,
+    shipping_address_summary,
+    payment_method_summary,
+    grand_total,
+    gift_order,
+    digital_order,
     items,
   };
 }
