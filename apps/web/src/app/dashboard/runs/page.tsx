@@ -21,6 +21,7 @@ import {
   type RunSummary,
   type TimelineEnvelope,
 } from '../lib/ref-client';
+import { Timestamp } from '@/components/ui/timestamp';
 
 export const dynamic = 'force-dynamic';
 
@@ -203,7 +204,7 @@ function RunRow({ run, params }: { run: RunSummary; params: Params }) {
         </code>
         <div className="flex items-center gap-2">
           <StatusBadge status={run.status} />
-          <span className="pdpp-caption text-muted-foreground tabular-nums">{run.last_at}</span>
+          <span className="pdpp-caption text-muted-foreground"><Timestamp value={run.last_at} /></span>
         </div>
       </div>
       <div className="pdpp-caption text-muted-foreground mt-1">

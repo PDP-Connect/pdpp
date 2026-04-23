@@ -18,6 +18,7 @@ import {
   type RunSummary,
   type TraceSummary,
 } from './lib/ref-client';
+import { Timestamp } from '@/components/ui/timestamp';
 
 export const dynamic = 'force-dynamic';
 
@@ -124,7 +125,7 @@ export default async function DashboardPage() {
                       <code className="pdpp-caption text-foreground break-all font-mono font-medium">
                         {t.trace_id}
                       </code>
-                      <span className="pdpp-caption text-muted-foreground tabular-nums">{t.last_at}</span>
+                      <span className="pdpp-caption text-muted-foreground"><Timestamp value={t.last_at} /></span>
                     </div>
                     <div className="pdpp-caption mt-1 flex flex-wrap items-center gap-2">
                       <StatusBadge status={t.status} />
@@ -165,7 +166,7 @@ export default async function DashboardPage() {
                       <code className="pdpp-caption text-foreground break-all font-mono font-medium">
                         {r.run_id}
                       </code>
-                      <span className="pdpp-caption text-muted-foreground tabular-nums">{r.last_at}</span>
+                      <span className="pdpp-caption text-muted-foreground"><Timestamp value={r.last_at} /></span>
                     </div>
                     <div className="pdpp-caption mt-1 flex flex-wrap items-center gap-2">
                       <StatusBadge status={r.status} />
@@ -210,7 +211,7 @@ export default async function DashboardPage() {
                   </span>
                   <span className="pdpp-caption flex items-center gap-2 justify-self-end">
                     <StatusBadge status={g.status} />
-                    <span className="text-muted-foreground tabular-nums">{g.last_at}</span>
+                    <span className="text-muted-foreground"><Timestamp value={g.last_at} /></span>
                   </span>
                 </Link>
               </li>
@@ -247,7 +248,7 @@ export default async function DashboardPage() {
                   </span>
                   <span className="pdpp-caption flex items-center gap-2 justify-self-end">
                     <StatusBadge status={r.status} />
-                    <span className="text-muted-foreground tabular-nums">{r.last_at}</span>
+                    <span className="text-muted-foreground"><Timestamp value={r.last_at} /></span>
                   </span>
                 </Link>
               </li>

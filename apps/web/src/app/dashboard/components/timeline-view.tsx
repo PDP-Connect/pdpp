@@ -1,4 +1,5 @@
 import type { SpineEvent } from '../lib/ref-client';
+import { Timestamp } from '@/components/ui/timestamp';
 
 const SECRET_KEYS = new Set([
   'interaction_response',
@@ -57,8 +58,8 @@ export function TimelineView({ events }: { events: SpineEvent[] }) {
                 {ev.status}
               </span>
             </div>
-            <span className="pdpp-caption text-muted-foreground tabular-nums">
-              {ev.occurred_at}
+            <span className="pdpp-caption text-muted-foreground">
+              <Timestamp value={ev.occurred_at} />
             </span>
           </div>
           <div className="pdpp-caption text-muted-foreground mt-1">

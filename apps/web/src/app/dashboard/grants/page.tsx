@@ -308,7 +308,7 @@ function GrantRow({ grant, params }: { grant: GrantSummary; params: Params }) {
         </code>
         <div className="flex items-center gap-2">
           <StatusBadge status={grant.status} />
-          <span className="pdpp-caption text-muted-foreground tabular-nums">{grant.last_at}</span>
+          <span className="pdpp-caption text-muted-foreground"><Timestamp value={grant.last_at} /></span>
         </div>
       </div>
       <div className="pdpp-caption text-muted-foreground mt-1">

@@ -21,6 +21,7 @@ import {
   type TimelineEnvelope,
   type TraceSummary,
 } from '../lib/ref-client';
+import { Timestamp } from '@/components/ui/timestamp';
 
 export const dynamic = 'force-dynamic';
 
@@ -194,7 +195,7 @@ function TraceRow({ trace, params }: { trace: TraceSummary; params: Params }) {
         </code>
         <div className="flex items-center gap-2">
           <StatusBadge status={trace.status} />
-          <span className="pdpp-caption text-muted-foreground tabular-nums">{trace.last_at}</span>
+          <span className="pdpp-caption text-muted-foreground"><Timestamp value={trace.last_at} /></span>
         </div>
       </div>
       <div className="pdpp-caption text-muted-foreground mt-1">

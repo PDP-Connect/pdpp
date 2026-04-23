@@ -3,11 +3,6 @@
 import * as React from "react";
 
 import { cn } from "@/lib/utils";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
 
 export type TimestampMode = "auto" | "relative" | "absolute";
 export type TimestampPrecision = "datetime" | "date";
@@ -16,8 +11,6 @@ export type TimestampProps = {
   value: string | number | Date | null | undefined;
   mode?: TimestampMode;
   precision?: TimestampPrecision;
-  /** Disable the hover tooltip (e.g. inside another tooltip). */
-  noTooltip?: boolean;
   className?: string;
 };
 
@@ -40,15 +33,15 @@ const dateTimeFmt = new Intl.DateTimeFormat(undefined, {
   minute: "2-digit",
 });
 
-const utcFmt = new Intl.DateTimeFormat("en-US", {
+const tooltipFmt = new Intl.DateTimeFormat(undefined, {
+  weekday: "short",
   year: "numeric",
   month: "short",
   day: "numeric",
-  hour: "2-digit",
+  hour: "numeric",
   minute: "2-digit",
   second: "2-digit",
-  hour12: false,
-  timeZone: "UTC",
+  timeZoneName: "short",
 });
 
 const relFmt = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
@@ -112,7 +105,6 @@ export function Timestamp({
   value,
   mode = "auto",
   precision = "datetime",
-  noTooltip = false,
   className,
 }: TimestampProps) {
   const date = parse(value);
@@ -143,44 +135,13 @@ export function Timestamp({
       ? formatRelative(date, now)
       : formatAbsolute(date, precision);
 
-  if (noTooltip) {
-    return (
-      <time dateTime={iso} className={cn("tabular-nums", className)}>
-        {label}
-      </time>
-    );
-  }
-
   return (
-    <Tooltip>
-      <TooltipTrigger
-        render={
-          <time
-            dateTime={iso}
-            className={cn(
-              "tabular-nums underline decoration-dotted decoration-muted-foreground/40 underline-offset-[3px] hover:decoration-foreground/70 focus-visible:decoration-foreground/70 cursor-help transition-[text-decoration-color] outline-none",
-              className,
-            )}
-          />
-        }
-      >
-        {label}
-      </TooltipTrigger>
-      <TooltipContent
-        className="max-w-none min-w-[15rem] px-3 py-2 font-mono text-[11px] leading-relaxed text-background"
-        side="top"
-      >
-        <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5">
-          <dt className="text-background/60 uppercase tracking-wide text-[9px]">Local</dt>
-          <dd className="tabular-nums">{dateTimeFmt.format(date)}</dd>
-          <dt className="text-background/60 uppercase tracking-wide text-[9px]">UTC</dt>
-          <dd className="tabular-nums">{utcFmt.format(date)}Z</dd>
-          <dt className="text-background/60 uppercase tracking-wide text-[9px]">ISO</dt>
-          <dd className="break-all tabular-nums">{iso}</dd>
-          <dt className="text-background/60 uppercase tracking-wide text-[9px]">Epoch</dt>
-          <dd className="tabular-nums">{date.getTime()} ms</dd>
-        </dl>
-      </TooltipContent>
-    </Tooltip>
+    <time
+      dateTime={iso}
+      title={mounted ? tooltipFmt.format(date) : iso}
+      className={cn("tabular-nums", className)}
+    >
+      {label}
+    </time>
   );
 }
