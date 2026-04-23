@@ -112,11 +112,7 @@ export const DM_ENTRY_WITH_MALFORMED: DMEntry = {
 };
 
 /** Raw .js archive body, as served by Twitter, for the tweets file. */
-export const TWEETS_JS_TEXT =
-  "window.YTD.tweets.part0 = " +
-  JSON.stringify([TWEET_ENTRY_MODERN]) +
-  ";\n";
+export const TWEETS_JS_TEXT = `window.YTD.tweets.part0 = ${JSON.stringify([TWEET_ENTRY_MODERN])};\n`;
 
 /** Raw .js archive body for direct-messages. */
-export const DM_JS_TEXT =
-  "window.YTD.direct_messages.part0 = " + JSON.stringify([DM_ENTRY]) + ";\n";
+export const DM_JS_TEXT = `window.YTD.direct_messages.part0 = ${JSON.stringify([DM_ENTRY])};\n`;

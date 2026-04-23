@@ -24,37 +24,20 @@
   },
   "overrides": [
     {
-      // Connector-specific override. As of 2026-04-22 only
-      // noExcessiveCognitiveComplexity is relaxed here — all other migration
-      // escape valves (useTopLevelRegex, noNestedTernary, noAssignInExpressions,
-      // noBitwiseOperators, noImplicitAnyLet, noEvolvingTypes, useTemplate)
-      // have been eliminated and their violations fixed in-place.
-      //
-      // 30 connector functions exceed the default cognitive-complexity budget
-      // of 20 (range 21–255). They fall into three buckets that cannot be
-      // cleanly decomposed:
-      //   (a) page.evaluate(() => {...}) callbacks (chase enumerate,
-      //       chatgpt auth, usaa diagnostics, etc.). The callback body is
-      //       serialized and shipped to the browser — helpers defined in
-      //       Node cannot cross the bridge, so decomposition forces either
-      //       duplicated inline helpers or contorted parameter threading.
-      //   (b) collect() orchestrators that own cursor lifetime, emit
-      //       ordering, dedup keys, and multi-stream coordination
-      //       (chatgpt c=199, gmail c=220, slack c=255, usaa c=236).
-      //       Breaking these fragments invariants that must hold together
-      //       ("emit RECORD before advance cursor", "normalize → shape-check
-      //       → emit → state-advance per item").
-      //   (c) Tree/DOM walkers and loosely-typed parsers (chase QFX-tree
-      //       extraction, codex walkRollouts generator, ical VEVENT line
-      //       parser). Their branching mirrors the external format.
-      // Re-enable per file after the connector moves to the
-      // makeEmitRecord + named stream-helper pattern (see
-      // src/connector-runtime.ts).
+      // Connector-specific override. Every migration escape valve that
+      // once lived here — useTopLevelRegex, noNestedTernary,
+      // noAssignInExpressions, noBitwiseOperators, noImplicitAnyLet,
+      // noEvolvingTypes, useTemplate, and (as of 2026-04-22)
+      // noExcessiveCognitiveComplexity — has been eliminated and its
+      // violations fixed in-place. The override now escalates
+      // noExcessiveCognitiveComplexity from `warn` to `error` so any
+      // connector function that drifts above the default budget of 20
+      // fails CI, matching the bar every other package already holds.
       "includes": ["connectors/**/*.ts"],
       "linter": {
         "rules": {
           "complexity": {
-            "noExcessiveCognitiveComplexity": "off"
+            "noExcessiveCognitiveComplexity": "error"
           }
         }
       }
