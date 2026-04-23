@@ -38,10 +38,12 @@ When advertised, the extension SHALL be reachable as `GET /v1/search`. The endpo
 - **THEN** the server SHALL return an `invalid_request_error`
 - **AND** the error SHALL identify the rejected parameter
 
-#### Scenario: A request names a stream the caller is not authorized to read
-- **WHEN** a client calls `GET /v1/search?q=overdraft&streams[]=private_journal` and the grant does not include `private_journal`
+#### Scenario: A client-token request names a stream the caller is not authorized to read
+- **WHEN** a client-token caller calls `GET /v1/search?q=overdraft&streams[]=private_journal` and the grant does not include `private_journal`
 - **THEN** the server SHALL return a `permission_error` with code `grant_stream_not_allowed`
 - **AND** the unauthorized stream SHALL NOT contribute hits to any other request shape
+
+(Owner-token `streams[]` semantics are defined separately below: an owner-token caller's `streams[]` is a soft filter across all owner-visible connectors, not a hard authorization check.)
 
 #### Scenario: Cross-stream search when the server does not support it
 - **WHEN** a client calls `GET /v1/search?q=overdraft` (no `streams[]`) on a server whose advertisement reports `cross_stream: false`
@@ -49,22 +51,25 @@ When advertised, the extension SHALL be reachable as `GET /v1/search`. The endpo
 
 ### Requirement: The extension SHALL return candidate references, not hydrated records
 
-`GET /v1/search` SHALL return a list envelope whose `data[]` entries are `search_result` objects. Each `search_result` SHALL identify a candidate record by stream and `record_key` and SHALL NOT include the full record payload. A portable numeric relevance score SHALL NOT be exposed in v1. The `record_url` field is OPTIONAL: implementations MAY include it to give clients a ready-made canonical single-record read URL, and MAY omit it without changing the rest of the response shape.
+`GET /v1/search` SHALL return a list envelope whose `data[]` entries are `search_result` objects. Each `search_result` SHALL identify a candidate record by `stream`, `record_key`, and the originating connector via `connector_id`. Each `search_result` SHALL NOT include the full record payload. A portable numeric relevance score SHALL NOT be exposed in v1. The `record_url` field is OPTIONAL: implementations MAY include it to give clients a ready-made canonical single-record read URL, and MAY omit it without changing the rest of the response shape.
+
+`connector_id` is the identifier of the connector whose records contributed the hit. It is required on every result so that callers can hydrate each candidate against the correct per-connector scope. For client-token callers, `connector_id` mirrors the connector identity already encoded in the caller's grant for that stream. For owner-token callers, `connector_id` identifies which owner-visible connector the hit came from, since owner reads of records and stream metadata are scoped per connector on the resource server.
 
 #### Scenario: A successful search returns candidate references
 - **WHEN** the server returns matching results for a search query
 - **THEN** each entry in `data[]` SHALL have `object: "search_result"`
-- **AND** each entry SHALL include `stream`, `record_key`, and `emitted_at`
+- **AND** each entry SHALL include `stream`, `record_key`, `emitted_at`, and `connector_id`
 - **AND** no entry SHALL include a portable numeric relevance score field
 
 #### Scenario: `record_url` is optional
 - **WHEN** an implementation chooses not to emit `record_url` on a result
-- **THEN** the result SHALL still be valid as long as `stream`, `record_key`, and `emitted_at` are present
-- **AND** the client SHALL be able to reconstruct the canonical single-record read URL from `stream` and `record_key` using the existing record-listing convention
+- **THEN** the result SHALL still be valid as long as `stream`, `record_key`, `emitted_at`, and `connector_id` are present
+- **AND** the client SHALL be able to reconstruct the canonical single-record read URL from `stream`, `record_key`, and (for owner-token callers) `connector_id` using the existing record-listing convention
 
 #### Scenario: `record_url`, when present, points to the canonical single-record read endpoint
 - **WHEN** an implementation emits `record_url` on a result
 - **THEN** that URL SHALL resolve to the canonical `GET /v1/streams/{stream}/records/{record_key}` endpoint for the same stream and `record_key`
+- **AND** when the caller is an owner-token caller and the resource server scopes owner record reads per connector, the URL SHALL include the canonical owner-mode `connector_id` query parameter for that connector
 - **AND** the URL SHALL NOT point to a different retrieval surface
 
 #### Scenario: Matched fields list which declared searchable fields matched
@@ -102,6 +107,32 @@ The extension SHALL search only over (stream, field) pairs where the stream is i
 - **WHEN** an implementation cannot compute matches without first matching against fields outside the searchable+authorized intersection
 - **THEN** the implementation SHALL restructure its search path so unauthorized fields are not considered
 - **AND** the implementation SHALL NOT post-filter unauthorized hits out of the result list as its enforcement strategy
+
+### Requirement: Owner-token callers SHALL search across all owner-visible connectors with no public connector-scope parameter
+
+When the caller is an owner-token caller (the resource owner performing self-export rather than a grant-bound third-party client), `GET /v1/search` SHALL search across every connector the owner can read on this resource server. The endpoint SHALL NOT expose a public `connector_id` query parameter for owner callers in v1; the search request shape is identical for owner-token and client-token callers. Each `search_result` SHALL identify the originating connector via `connector_id` so that callers can hydrate each hit against the correct per-connector owner read scope.
+
+The grant-safety, declared-searchable-field, and snippet-safety invariants apply identically: for each owner-visible connector, the server SHALL search only over `(stream, field)` pairs the owner can read AND that the connector's stream has declared in `query.search.lexical_fields`. Connectors with zero searchable streams contribute zero hits.
+
+#### Scenario: Owner-token caller searches without naming a connector
+- **WHEN** an owner-token caller calls `GET /v1/search?q=overdraft` without `streams[]`
+- **THEN** the server SHALL search across every connector the owner can read on this resource server
+- **AND** SHALL NOT require a `connector_id` query parameter
+
+#### Scenario: Owner-token caller narrows by stream
+- **WHEN** an owner-token caller calls `GET /v1/search?q=overdraft&streams[]=transactions`
+- **THEN** the server SHALL search the `transactions` stream of every owner-visible connector that exposes that stream and declares searchable fields on it
+- **AND** SHALL NOT silently scope the search to a single connector
+
+#### Scenario: Owner-token search results identify the originating connector
+- **WHEN** an owner-token caller receives a `search_result` for a hit from connector `C` and stream `S`
+- **THEN** the `search_result` SHALL include `connector_id: "C"` and `stream: "S"`
+- **AND** the caller SHALL be able to use that `connector_id` to hydrate the record through the owner-mode single-record read endpoint
+
+#### Scenario: A `connector_id` query parameter is rejected on the public surface
+- **WHEN** any caller passes `connector_id=...` to `GET /v1/search` in v1
+- **THEN** the server SHALL return an `invalid_request_error`
+- **AND** the parameter SHALL NOT be silently honored
 
 ### Requirement: Streams that participate in lexical retrieval SHALL declare searchable fields in their stream metadata
 

@@ -273,6 +273,55 @@ export async function initDb(path = ':memory:') {
     ON spine_events(run_id, occurred_at, recorded_at)
   `);
 
+  // Lexical retrieval extension — SQLite FTS5 backing for GET /v1/search.
+  // One row per (connector_id, stream, record_key, field) where `field` is
+  // declared in the stream's manifest under query.search.lexical_fields.
+  // Maintenance is JS-side at the record write/update/delete call sites
+  // (see search.js); the manifest decides what's indexable, which triggers
+  // can't see. The non-content columns are UNINDEXED to keep the FTS index
+  // small and the full-text matching focused on `text`.
+  // Spec: openspec/changes/add-lexical-retrieval-extension/specs/lexical-retrieval/spec.md
+  await db.query(sql`
+    CREATE VIRTUAL TABLE IF NOT EXISTS lexical_search_index USING fts5(
+      connector_id UNINDEXED,
+      stream       UNINDEXED,
+      record_key   UNINDEXED,
+      field        UNINDEXED,
+      text,
+      tokenize = 'unicode61'
+    )
+  `);
+
+  // Snapshots for opaque-cursor pagination on /v1/search. A snapshot freezes
+  // a query's full ranked result list at first-page time so cursoring is
+  // stable within a session. Snapshots have a TTL; expired snapshots make
+  // the cursor return `invalid_cursor`, which the spec already permits.
+  await db.query(sql`
+    CREATE TABLE IF NOT EXISTS lexical_search_snapshots (
+      snapshot_id   TEXT PRIMARY KEY,
+      query         TEXT NOT NULL,
+      plan_hash     TEXT NOT NULL,
+      results_json  TEXT NOT NULL,
+      created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+    )
+  `);
+
+  // Per-(connector, stream) fingerprint of the last-rebuilt declared
+  // lexical_fields set. Used by the backfill drift detector in search.js
+  // to force a rebuild when the manifest changes the field set, even when
+  // the field count stays the same (e.g. ['title'] -> ['selftext']). The
+  // row-count heuristic alone cannot detect that case because stale rows
+  // satisfy the count band.
+  await db.query(sql`
+    CREATE TABLE IF NOT EXISTS lexical_search_meta (
+      connector_id        TEXT NOT NULL,
+      stream              TEXT NOT NULL,
+      fields_fingerprint  TEXT NOT NULL,
+      updated_at          TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY(connector_id, stream)
+    )
+  `);
+
   return db;
 }
 

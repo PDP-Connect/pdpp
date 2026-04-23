@@ -48,6 +48,11 @@
           "fields": ["id", "title", "subreddit", "selftext", "url", "score", "upvote_ratio", "num_comments", "is_self", "source_created_at"]
         }
       ],
+      "query": {
+        "search": {
+          "lexical_fields": ["title", "selftext"]
+        }
+      },
       "incremental": true
     },
     {
@@ -83,6 +88,11 @@
           "fields": ["id", "post_id", "subreddit", "body", "score", "post_title", "source_created_at"]
         }
       ],
+      "query": {
+        "search": {
+          "lexical_fields": ["body", "post_title"]
+        }
+      },
       "incremental": true
     },
     {

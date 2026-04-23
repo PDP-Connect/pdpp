@@ -1257,6 +1257,30 @@ function validateConnectorManifest(manifest = {}, code = 'invalid_request') {
         throw invalidConnectorManifest(`Stream '${stream.name}' view '${view.id}' references unknown fields: ${unknownViewFields.join(', ')}`, code);
       }
     }
+
+    // query.search.lexical_fields — the public lexical-retrieval extension's
+    // stream-level declaration. v1 accepts only top-level scalar string fields
+    // declared in schema.properties. Nested paths, arrays, blobs, and unknown
+    // fields are rejected. See:
+    //   openspec/changes/add-lexical-retrieval-extension/specs/lexical-retrieval/spec.md
+    if (stream.query?.search?.lexical_fields !== undefined) {
+      const declared = stream.query.search.lexical_fields;
+      if (!Array.isArray(declared) || declared.length === 0) {
+        throw invalidConnectorManifest(`Stream '${stream.name}' query.search.lexical_fields must be a non-empty array of strings`, code);
+      }
+      if (declared.some((field) => !isNonEmptyString(field))) {
+        throw invalidConnectorManifest(`Stream '${stream.name}' query.search.lexical_fields entries must be non-empty strings`, code);
+      }
+      for (const fieldName of declared) {
+        if (!schemaFieldNames.has(fieldName)) {
+          throw invalidConnectorManifest(`Stream '${stream.name}' query.search.lexical_fields references unknown field '${fieldName}'`, code);
+        }
+        const fieldSchema = schemaProperties[fieldName];
+        if (fieldSchema?.type !== 'string') {
+          throw invalidConnectorManifest(`Stream '${stream.name}' query.search.lexical_fields entry '${fieldName}' must be a top-level string field; v1 does not support nested paths, arrays, or non-string types`, code);
+        }
+      }
+    }
   }
 }
 
@@ -1271,7 +1295,33 @@ export async function registerConnector(manifest) {
     VALUES(${manifest.connector_id}, ${JSON.stringify(manifest)})
     ON CONFLICT(connector_id) DO UPDATE SET manifest = excluded.manifest
   `);
+  // Lexical retrieval index drift-detect + backfill. Handles three cases
+  // the write-path maintenance (search.js#lexicalIndexUpsert) cannot:
+  //   1. A connector is registered for the first time on a DB that already
+  //      has records under that connector_id (e.g. a reset that preserved
+  //      records but dropped the connector row).
+  //   2. A connector's manifest is updated to add lexical_fields where it
+  //      previously declared none.
+  //   3. A connector's manifest is updated to add or remove lexical_fields
+  //      entries on an already-participating stream.
+  // No-op for connectors with no participating streams.
+  // Lazy import keeps the records ↔ search ↔ auth cycle clean.
+  const { lexicalIndexBackfillForManifest } = await import('./search.js');
+  await lexicalIndexBackfillForManifest({ manifest });
   return manifest.connector_id;
+}
+
+/**
+ * List all registered connector_ids. Returned in stable id order so callers
+ * (e.g. the lexical retrieval extension's owner-mode cross-connector
+ * fan-out) get deterministic enumeration.
+ */
+export async function listRegisteredConnectorIds() {
+  const db = getDb();
+  const rows = await db.query(sql`
+    SELECT connector_id FROM connectors ORDER BY connector_id ASC
+  `);
+  return rows.map((row) => row.connector_id);
 }
 
 /**

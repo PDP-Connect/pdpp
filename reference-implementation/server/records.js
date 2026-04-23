@@ -2,6 +2,11 @@
  * PDPP Resource Server — record storage and grant-enforced query
  */
 import { getDb, sql } from './db.js';
+import {
+  lexicalIndexDelete,
+  lexicalIndexDeleteByConnectorStream,
+  lexicalIndexUpsert,
+} from './search.js';
 
 function nowIso() {
   return new Date().toISOString();
@@ -105,6 +110,7 @@ export async function ingestRecord(storageTarget, record) {
         ${emitted_at || nowIso()}
       )
     `);
+    await lexicalIndexDelete({ connectorId, stream, recordKey });
   } else {
     await db.query(sql`
       INSERT INTO records(connector_id, stream, record_key, record_json, emitted_at, version)
@@ -129,6 +135,7 @@ export async function ingestRecord(storageTarget, record) {
         NULL
       )
     `);
+    await lexicalIndexUpsert({ connectorId, stream, recordKey, data });
   }
 
   // Advance version counter
@@ -1093,6 +1100,8 @@ export async function deleteRecord(storageTarget, stream, recordId) {
     ON CONFLICT(connector_id, stream) DO UPDATE SET max_version = excluded.max_version
   `);
 
+  await lexicalIndexDelete({ connectorId, stream, recordKey: recordId });
+
   const changeHistoryLimit = getChangeHistoryLimit();
   if (changeHistoryLimit > 0) {
     await db.query(sql`
@@ -1149,6 +1158,7 @@ export async function deleteAllRecords(storageTarget, stream) {
     DELETE FROM version_counter
     WHERE connector_id = ${connectorId} AND stream = ${stream}
   `);
+  await lexicalIndexDeleteByConnectorStream({ connectorId, stream });
   return deletedRecordCount;
 }
 

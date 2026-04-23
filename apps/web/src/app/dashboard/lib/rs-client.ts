@@ -133,6 +133,75 @@ export async function getRecord(
   )) as StreamRecord;
 }
 
+/**
+ * One result from the lexical retrieval extension's GET /v1/search.
+ * Mirrors the public contract at:
+ *   openspec/changes/add-lexical-retrieval-extension/specs/lexical-retrieval/spec.md
+ *
+ * `connector_id` is required on every result so owner-mode hydration knows
+ * which per-connector scope to read under. `record_url` and `snippet` are
+ * optional; the page must render correctly when they are absent.
+ */
+export type SearchResultHit = {
+  object: 'search_result';
+  stream: string;
+  record_key: string;
+  connector_id: string;
+  record_url?: string;
+  emitted_at: string;
+  matched_fields: string[];
+  snippet?: { field: string; text: string };
+};
+
+export type SearchResultPage = {
+  object: 'list';
+  url?: string;
+  has_more: boolean;
+  next_cursor?: string;
+  data: SearchResultHit[];
+};
+
+/**
+ * Call the public lexical retrieval extension at GET /v1/search with the
+ * dashboard's owner-bound bearer token. Owner-mode search fans out across
+ * every owner-visible connector internally; the dashboard never sends a
+ * connector_id query param (the public surface rejects it in v1).
+ *
+ * `streams` narrows the cross-connector scope. Empty/undefined means
+ * "every owner-visible stream that declares lexical_fields".
+ */
+export async function searchRecordsLexical(
+  query: string,
+  opts: { streams?: string[]; limit?: number; cursor?: string } = {},
+): Promise<SearchResultPage> {
+  const token = await getOwnerToken();
+  const url = new URL(`${getRsInternalUrl()}/v1/search`);
+  url.searchParams.set('q', query);
+  if (typeof opts.limit === 'number') url.searchParams.set('limit', String(opts.limit));
+  if (typeof opts.cursor === 'string' && opts.cursor) url.searchParams.set('cursor', opts.cursor);
+  // Repeated `streams=` entries — server normalizes to an array.
+  for (const s of opts.streams ?? []) {
+    if (typeof s === 'string' && s.length > 0) url.searchParams.append('streams', s);
+  }
+  let res: Response;
+  try {
+    res = await fetch(url.toString(), {
+      headers: { Authorization: `Bearer ${token}` },
+      cache: 'no-store',
+    });
+  } catch (err) {
+    throw new ReferenceServerUnreachableError(
+      `Cannot reach resource server at ${getRsInternalUrl()}`,
+      err,
+    );
+  }
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`RS /v1/search failed (${res.status}): ${body}`);
+  }
+  return (await res.json()) as SearchResultPage;
+}
+
 export async function listConnectorManifests(): Promise<ConnectorManifest[]> {
   const files = await readdir(MANIFESTS_DIR);
   const manifests: ConnectorManifest[] = [];
