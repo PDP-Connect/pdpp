@@ -54,18 +54,56 @@ function findHeaderValue(card: Element, labelPattern: RegExp): string | null {
   return null;
 }
 
-function parseOrderCard(card: HTMLElement): ListPageOrder | null {
+function findOrderId(card: HTMLElement): string | null {
   const orderIdEl = card.querySelector<HTMLElement>(".yohtmlc-order-id");
-  let orderId: string | null = null;
-  if (orderIdEl) {
-    for (const span of orderIdEl.querySelectorAll<HTMLElement>("span")) {
-      const txt = textOf(span).trim();
-      if (ORDER_ID_RE.test(txt)) {
-        orderId = txt;
-        break;
-      }
+  if (!orderIdEl) {
+    return null;
+  }
+  for (const span of orderIdEl.querySelectorAll<HTMLElement>("span")) {
+    const txt = textOf(span).trim();
+    if (ORDER_ID_RE.test(txt)) {
+      return txt;
     }
   }
+  return null;
+}
+
+function parseListPageItem(titleEl: HTMLElement): ListPageItem | null {
+  const name = textOf(titleEl).replace(WHITESPACE_RE, " ").trim();
+  if (!name) {
+    return null;
+  }
+  const itemBox = titleEl.closest<HTMLElement>(".item-box, .a-fixed-left-grid") ?? titleEl.parentElement;
+  const link =
+    itemBox?.querySelector<HTMLAnchorElement>('a[href*="/dp/"], a[href*="/gp/product/"]') ??
+    titleEl.querySelector<HTMLAnchorElement>("a");
+  const href = link?.getAttribute("href") ?? "";
+  const url = href.startsWith("/") ? `https://www.amazon.com${href}` : href || null;
+  const asin = href.match(ASIN_HREF_RE)?.[1] ?? null;
+  return { name, url, asin };
+}
+
+function collectListPageItems(card: HTMLElement): ListPageItem[] {
+  const items: ListPageItem[] = [];
+  const seenAsins = new Set<string>();
+  for (const titleEl of card.querySelectorAll<HTMLElement>(".yohtmlc-product-title")) {
+    const item = parseListPageItem(titleEl);
+    if (!item) {
+      continue;
+    }
+    if (item.asin) {
+      if (seenAsins.has(item.asin)) {
+        continue;
+      }
+      seenAsins.add(item.asin);
+    }
+    items.push(item);
+  }
+  return items;
+}
+
+function parseOrderCard(card: HTMLElement): ListPageOrder | null {
+  const orderId = findOrderId(card);
   if (!orderId) {
     return null;
   }
@@ -79,37 +117,12 @@ function parseOrderCard(card: HTMLElement): ListPageOrder | null {
   );
   const deliveryStatus = primaryStatusEl ? textOf(primaryStatusEl).replace(WHITESPACE_RE, " ").trim() || null : null;
 
-  const items: ListPageItem[] = [];
-  const seenAsins = new Set<string>();
-  for (const titleEl of card.querySelectorAll<HTMLElement>(".yohtmlc-product-title")) {
-    const name = textOf(titleEl).replace(WHITESPACE_RE, " ").trim();
-    if (!name) {
-      continue;
-    }
-    const itemBox = titleEl.closest<HTMLElement>(".item-box, .a-fixed-left-grid") ?? titleEl.parentElement;
-    const link =
-      itemBox?.querySelector<HTMLAnchorElement>('a[href*="/dp/"], a[href*="/gp/product/"]') ??
-      titleEl.querySelector<HTMLAnchorElement>("a");
-    const href = link?.getAttribute("href") ?? "";
-    const url = href.startsWith("/") ? `https://www.amazon.com${href}` : href || null;
-    const asinMatch = href.match(ASIN_HREF_RE);
-    const asin = asinMatch?.[1] ?? null;
-
-    if (asin && seenAsins.has(asin)) {
-      continue;
-    }
-    if (asin) {
-      seenAsins.add(asin);
-    }
-    items.push({ name, url, asin });
-  }
-
   return {
     orderId,
     orderDateRaw,
     orderTotal,
     deliveryStatus,
-    items,
+    items: collectListPageItems(card),
   };
 }
 
