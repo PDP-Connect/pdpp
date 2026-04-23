@@ -85,18 +85,13 @@ async function getAccessToken(): Promise<string> {
     }).toString(),
   });
   if (!res.ok) {
-    throw new Error(
-      `reddit_token_${String(res.status)}: ${(await res.text()).slice(0, 200)}`
-    );
+    throw new Error(`reddit_token_${String(res.status)}: ${(await res.text()).slice(0, 200)}`);
   }
   const body = (await res.json()) as RedditAccessTokenResponse;
   return body.access_token;
 }
 
-async function redditFetch(
-  path: string,
-  token: string
-): Promise<RedditListing> {
+async function redditFetch(path: string, token: string): Promise<RedditListing> {
   const res = await fetch(`https://oauth.reddit.com${path}`, {
     headers: { Authorization: `Bearer ${token}`, "User-Agent": USER_AGENT },
   });
@@ -107,9 +102,7 @@ async function redditFetch(
     throw new Error("reddit_rate_limited");
   }
   if (!res.ok) {
-    throw new Error(
-      `reddit_http_${String(res.status)}: ${(await res.text()).slice(0, 200)}`
-    );
+    throw new Error(`reddit_http_${String(res.status)}: ${(await res.text()).slice(0, 200)}`);
   }
   return (await res.json()) as RedditListing;
 }
@@ -119,11 +112,7 @@ async function redditFetch(
  * opaque `after` cursor. We support incremental sync by stopping pagination
  * once we cross the earliest `created_utc` from the prior run.
  */
-async function paginate(
-  endpointTemplate: string,
-  token: string,
-  sinceEpochUtc: number | null
-): Promise<RedditChild[]> {
+async function paginate(endpointTemplate: string, token: string, sinceEpochUtc: number | null): Promise<RedditChild[]> {
   const all: RedditChild[] = [];
   let after: string | null = null;
   let guard = MAX_PAGES;
@@ -206,11 +195,7 @@ interface StreamCursor {
 }
 
 interface CollectStreamArgs {
-  emit: (msg: {
-    type: "STATE";
-    stream: string;
-    cursor: unknown;
-  }) => Promise<void>;
+  emit: (msg: { type: "STATE"; stream: string; cursor: unknown }) => Promise<void>;
   emitRecord: (stream: string, data: Record<string, unknown>) => Promise<void>;
   endpoint: string;
   progress: (message: string, extra?: { stream?: string }) => Promise<void>;
@@ -222,17 +207,7 @@ interface CollectStreamArgs {
 }
 
 async function collectStream(args: CollectStreamArgs): Promise<void> {
-  const {
-    streamName,
-    endpoint,
-    token,
-    state,
-    toRecord,
-    emit,
-    emitRecord,
-    progress,
-    progressMessage,
-  } = args;
+  const { streamName, endpoint, token, state, toRecord, emit, emitRecord, progress, progressMessage } = args;
   await progress(progressMessage, { stream: streamName });
   const cursor = state[streamName] as StreamCursor | undefined;
   const sinceEpoch = cursor?.last_created_utc || null;

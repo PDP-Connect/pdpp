@@ -40,9 +40,7 @@ const PROFILE_DIR = join(homedir(), ".pdpp", "browser-profile");
 const PDPP_DIR = join(homedir(), ".pdpp");
 const DISCOVERY_PATH = join(PDPP_DIR, "browser-daemon.json");
 const LOG_PATH = join(PDPP_DIR, "browser-daemon.log");
-const WORKER_PATH = fileURLToPath(
-  new URL("../bin/browser-daemon-worker.js", import.meta.url)
-);
+const WORKER_PATH = fileURLToPath(new URL("../bin/browser-daemon-worker.js", import.meta.url));
 
 const PROFILE_NAME_RE = /^[A-Za-z0-9_-]+$/;
 
@@ -91,10 +89,7 @@ function isPidAlive(pid: number | undefined | null): boolean {
   }
 }
 
-async function probeCdp(
-  wsEndpoint: string,
-  timeoutMs = 2000
-): Promise<boolean> {
+async function probeCdp(wsEndpoint: string, timeoutMs = 2000): Promise<boolean> {
   try {
     const browser = await chromium.connectOverCDP(wsEndpoint, {
       timeout: timeoutMs,
@@ -127,17 +122,11 @@ export async function daemonStatus(): Promise<DaemonStatus> {
   return { running: alive && reachable, info, reachable, alive };
 }
 
-async function waitForDiscoveryReady(
-  timeoutMs = 20_000
-): Promise<DiscoveryInfo> {
+async function waitForDiscoveryReady(timeoutMs = 20_000): Promise<DiscoveryInfo> {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     const info = readDiscovery();
-    if (
-      info?.wsEndpoint &&
-      isPidAlive(info.pid) &&
-      (await probeCdp(info.wsEndpoint, 1500))
-    ) {
+    if (info?.wsEndpoint && isPidAlive(info.pid) && (await probeCdp(info.wsEndpoint, 1500))) {
       return info;
     }
     await new Promise((r) => setTimeout(r, 250));
@@ -176,10 +165,7 @@ export interface StartDaemonOptions {
  *   desktop session. This is the standard unattended-operation answer for
  *   Akamai-protected sites (Chase).
  */
-export async function startDaemon({
-  headless = true,
-  xvfb = false,
-}: StartDaemonOptions = {}): Promise<DiscoveryInfo> {
+export async function startDaemon({ headless = true, xvfb = false }: StartDaemonOptions = {}): Promise<DiscoveryInfo> {
   ensurePdppDir();
   const existing = await daemonStatus();
   if (existing.running && existing.info) {
@@ -203,12 +189,7 @@ export async function startDaemon({
   // `--auto-servernum` so concurrent daemons get different display numbers.
   const cmd = xvfb ? "xvfb-run" : process.execPath;
   const args = xvfb
-    ? [
-        "--auto-servernum",
-        "--server-args=-screen 0 1920x1080x24",
-        process.execPath,
-        WORKER_PATH,
-      ]
+    ? ["--auto-servernum", "--server-args=-screen 0 1920x1080x24", process.execPath, WORKER_PATH]
     : [WORKER_PATH];
 
   const child = spawn(cmd, args, {
@@ -320,8 +301,7 @@ export async function acquireIsolatedBrowser({
   // double-cast — @ts-expect-error is self-healing if patchright ever
   // re-exports playwright-core's types directly.
   // @ts-expect-error — patchright.chromium is runtime-identical to playwright.chromium
-  const { chromium: localChromium }: { chromium: typeof chromium } =
-    await import("patchright");
+  const { chromium: localChromium }: { chromium: typeof chromium } = await import("patchright");
 
   const context = await localChromium.launchPersistentContext(isolatedDir, {
     headless,

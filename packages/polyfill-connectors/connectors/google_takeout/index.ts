@@ -71,8 +71,7 @@ const RECORD_ID_HASH_LENGTH = 24;
 // Module-level regex.
 const SEARCHED_FOR_PREFIX_RE = /^Searched for /;
 
-const hashId = (s: string): string =>
-  createHash("sha256").update(s).digest("hex").slice(0, RECORD_ID_HASH_LENGTH);
+const hashId = (s: string): string => createHash("sha256").update(s).digest("hex").slice(0, RECORD_ID_HASH_LENGTH);
 
 async function readJsonIf(path: string): Promise<unknown> {
   if (!existsSync(path)) {
@@ -88,19 +87,13 @@ async function readJsonIf(path: string): Promise<unknown> {
 runConnector({
   name: "google_takeout",
   async collect({ state, requested, emit, emitRecord }) {
-    const importDir =
-      process.env.GOOGLE_TAKEOUT_DIR ||
-      join(homedir(), ".pdpp/imports/google_takeout");
+    const importDir = process.env.GOOGLE_TAKEOUT_DIR || join(homedir(), ".pdpp/imports/google_takeout");
 
     const typedState = state as GoogleTakeoutState;
 
     // LOCATION HISTORY
     if (requested.has("location_history")) {
-      const path = join(
-        importDir,
-        "Location History (Timeline)",
-        "Records.json"
-      );
+      const path = join(importDir, "Location History (Timeline)", "Records.json");
       const alt = join(importDir, "Location History", "Records.json");
       let file: string | null;
       if (existsSync(path)) {
@@ -110,9 +103,7 @@ runConnector({
       } else {
         file = null;
       }
-      const json = (
-        file ? await readJsonIf(file) : null
-      ) as LocationFile | null;
+      const json = (file ? await readJsonIf(file) : null) as LocationFile | null;
       if (json?.locations) {
         const since = typedState.location_history?.last_timestamp;
         let latest: string | undefined = since;
@@ -137,14 +128,8 @@ runConnector({
           if (since && ts <= since) {
             continue;
           }
-          const lat =
-            typeof loc.latitudeE7 === "number"
-              ? loc.latitudeE7 / GOOGLE_E7_DIVISOR
-              : null;
-          const lon =
-            typeof loc.longitudeE7 === "number"
-              ? loc.longitudeE7 / GOOGLE_E7_DIVISOR
-              : null;
+          const lat = typeof loc.latitudeE7 === "number" ? loc.latitudeE7 / GOOGLE_E7_DIVISOR : null;
+          const lon = typeof loc.longitudeE7 === "number" ? loc.longitudeE7 / GOOGLE_E7_DIVISOR : null;
           const id = hashId(`loc|${ts}|${lat}|${lon}`);
           await emitRecord("location_history", {
             id,
@@ -177,12 +162,7 @@ runConnector({
 
     // YOUTUBE WATCH HISTORY
     if (requested.has("youtube_watch_history")) {
-      const path = join(
-        importDir,
-        "YouTube and YouTube Music",
-        "history",
-        "watch-history.json"
-      );
+      const path = join(importDir, "YouTube and YouTube Music", "history", "watch-history.json");
       const json = (await readJsonIf(path)) as WatchHistoryEntry[] | null;
       if (Array.isArray(json)) {
         const since = typedState.youtube_watch_history?.last_timestamp;

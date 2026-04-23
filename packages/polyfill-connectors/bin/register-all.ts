@@ -98,9 +98,7 @@ async function run(): Promise<void> {
     try {
       const manifest = readManifest(name);
       await registerManifest(asUrl, manifest);
-      console.log(
-        `  ✓ ${name.padEnd(12)} ${String((manifest as { connector_id?: string }).connector_id ?? "")}`
-      );
+      console.log(`  ✓ ${name.padEnd(12)} ${String((manifest as { connector_id?: string }).connector_id ?? "")}`);
       ok++;
     } catch (err) {
       const m = err instanceof Error ? err.message : String(err);

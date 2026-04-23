@@ -22,20 +22,14 @@ export interface LaunchPersistentContextOptions {
   headless: boolean;
 }
 
-export async function launchPersistentContext({
-  headless,
-}: LaunchPersistentContextOptions): Promise<BrowserContext> {
+export async function launchPersistentContext({ headless }: LaunchPersistentContextOptions): Promise<BrowserContext> {
   ensureProfileDir();
   const context = await chromium.launchPersistentContext(PROFILE_DIR, {
     headless,
     channel: BROWSER_CHANNEL,
     viewport: VIEWPORT,
     userAgent: USER_AGENT,
-    args: [
-      "--disable-blink-features=AutomationControlled",
-      "--no-default-browser-check",
-      "--no-first-run",
-    ],
+    args: ["--disable-blink-features=AutomationControlled", "--no-default-browser-check", "--no-first-run"],
   });
 
   await context.addInitScript(() => {

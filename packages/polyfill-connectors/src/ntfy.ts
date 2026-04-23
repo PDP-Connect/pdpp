@@ -8,10 +8,7 @@
 
 const TRAILING_SLASH = /\/$/;
 
-function basicAuth(
-  user: string | undefined,
-  pass: string | undefined
-): string | undefined {
+function basicAuth(user: string | undefined, pass: string | undefined): string | undefined {
   if (!(user && pass)) {
     return;
   }
@@ -71,10 +68,7 @@ export async function notify(opts: NtfyOptions): Promise<NtfyResult> {
   }
   if (opts.actions?.length) {
     headers.Actions = opts.actions
-      .map(
-        (a) =>
-          `${a.action}, ${a.label}, ${a.url}${a.clear ? ", clear=true" : ""}`
-      )
+      .map((a) => `${a.action}, ${a.label}, ${a.url}${a.clear ? ", clear=true" : ""}`)
       .join("; ");
   }
   const auth = basicAuth(process.env.NTFY_USERNAME, process.env.NTFY_PASSWORD);
@@ -83,14 +77,11 @@ export async function notify(opts: NtfyOptions): Promise<NtfyResult> {
   }
 
   try {
-    const res = await fetch(
-      `${serverUrl.replace(TRAILING_SLASH, "")}/${encodeURIComponent(topic)}`,
-      {
-        method: "POST",
-        headers,
-        body: opts.message || "",
-      }
-    );
+    const res = await fetch(`${serverUrl.replace(TRAILING_SLASH, "")}/${encodeURIComponent(topic)}`, {
+      method: "POST",
+      headers,
+      body: opts.message || "",
+    });
     if (!res.ok) {
       const body = await res.text().catch(() => "");
       console.error(`[ntfy] ${res.status} ${body.slice(0, 120)}`);
@@ -113,16 +104,11 @@ export interface InboxItemNotice {
 
 export function notifyInboxItem(item: InboxItemNotice): Promise<NtfyResult> {
   const title = `PDPP needs you: ${item.kind}`;
-  const msg =
-    item.message ||
-    `A connector (${item.connector_id}) is parked waiting for ${item.kind}.`;
+  const msg = item.message || `A connector (${item.connector_id}) is parked waiting for ${item.kind}.`;
   return notify({
     title,
     message: msg,
-    tags:
-      item.kind === "credentials" || item.kind === "otp"
-        ? ["key"]
-        : ["construction"],
+    tags: item.kind === "credentials" || item.kind === "otp" ? ["key"] : ["construction"],
     priority: "high",
   });
 }
@@ -133,11 +119,7 @@ export interface OvernightSummary {
   ok: boolean;
 }
 
-export function notifyOvernightSummary({
-  ok,
-  counts,
-  failures,
-}: OvernightSummary): Promise<NtfyResult> {
+export function notifyOvernightSummary({ ok, counts, failures }: OvernightSummary): Promise<NtfyResult> {
   const lines: string[] = [];
   lines.push(`status: ${ok ? "green" : "attention needed"}`);
   if (counts) {

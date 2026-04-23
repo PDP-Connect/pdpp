@@ -109,12 +109,7 @@ async function probe(url: string, label: string): Promise<ProbeResult> {
           .slice(0, limit)
           .map((el): ProbeSample => {
             let attr: string | null = null;
-            for (const a of [
-              "data-qa",
-              "data-testid",
-              "data-automation-id",
-              "data-component",
-            ]) {
+            for (const a of ["data-qa", "data-testid", "data-automation-id", "data-component"]) {
               const v = el.getAttribute(a);
               if (v) {
                 attr = `${a}="${v}"`;
@@ -124,10 +119,7 @@ async function probe(url: string, label: string): Promise<ProbeResult> {
             return {
               tag: el.tagName,
               attr,
-              text: (el.innerText || "")
-                .replace(/\s+/g, " ")
-                .trim()
-                .slice(0, 80),
+              text: (el.innerText || "").replace(/\s+/g, " ").trim().slice(0, 80),
             };
           });
 
@@ -154,9 +146,7 @@ async function probe(url: string, label: string): Promise<ProbeResult> {
               id.length < 60
           )
           .slice(0, 30),
-        bodyPreview: (doc.body?.innerText || "")
-          .replace(/\s+/g, " ")
-          .slice(0, 200),
+        bodyPreview: (doc.body?.innerText || "").replace(/\s+/g, " ").slice(0, 200),
       };
     })
     .catch(
@@ -172,11 +162,7 @@ async function probe(url: string, label: string): Promise<ProbeResult> {
 const results: Record<string, ProbeResult | undefined> = {};
 results.dashboard = await probe("https://www.usaa.com/my/usaa", "dashboard");
 // Try to grab the first account link, then drill into its activity page
-if (
-  results.dashboard &&
-  !results.dashboard.signinRedirect &&
-  !results.dashboard.error
-) {
+if (results.dashboard && !results.dashboard.signinRedirect && !results.dashboard.error) {
   try {
     const page = await context.newPage();
     await page.goto("https://www.usaa.com/my/usaa", {
@@ -205,10 +191,7 @@ if (
     };
   }
 }
-results.statements = await probe(
-  "https://www.usaa.com/my/statements",
-  "statements"
-);
+results.statements = await probe("https://www.usaa.com/my/statements", "statements");
 results.inbox = await probe("https://www.usaa.com/my/inbox", "inbox");
 
 await context.close();

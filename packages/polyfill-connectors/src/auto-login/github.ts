@@ -12,19 +12,14 @@
  */
 
 import type { Page } from "playwright";
-import type {
-  InteractionRequest,
-  InteractionResponse,
-} from "../connector-runtime.ts";
+import type { InteractionRequest, InteractionResponse } from "../connector-runtime.ts";
 
 const AUTH_REDIRECT_URL = /\/login|\/sessions|verified-device|two-factor/;
 const DEVICE_VERIFICATION_URL = /verified-device|device-verification/;
 const VERIFY_HEADING_TEXT = /verify|device/;
 const SUDO_URL = /\/sessions\/sudo/;
 
-type SendInteraction = (
-  req: InteractionRequest
-) => Promise<InteractionResponse>;
+type SendInteraction = (req: InteractionRequest) => Promise<InteractionResponse>;
 
 interface EnsureGithubSessionArgs {
   page: Page;
@@ -63,32 +58,21 @@ async function isLoggedIn(page: Page): Promise<boolean> {
   return userLoginMeta > 0;
 }
 
-async function fillLogin(
-  page: Page,
-  email: string,
-  password: string
-): Promise<void> {
+async function fillLogin(page: Page, email: string, password: string): Promise<void> {
   await page.goto("https://github.com/login", {
     waitUntil: "domcontentloaded",
     timeout: 30_000,
   });
-  await page
-    .locator("#login_field")
-    .waitFor({ state: "visible", timeout: 15_000 });
+  await page.locator("#login_field").waitFor({ state: "visible", timeout: 15_000 });
   await page.fill("#login_field", email);
   await page.fill("#password", password);
   await Promise.all([
-    page
-      .waitForNavigation({ waitUntil: "domcontentloaded", timeout: 30_000 })
-      .catch((): null => null),
+    page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 30_000 }).catch((): null => null),
     page.click('input[type="submit"][name="commit"], button[type="submit"]'),
   ]);
 }
 
-async function handleDeviceVerificationIfAsked(
-  page: Page,
-  { sendInteraction }: HandlerArgs
-): Promise<void> {
+async function handleDeviceVerificationIfAsked(page: Page, { sendInteraction }: HandlerArgs): Promise<void> {
   const url = page.url();
   if (!DEVICE_VERIFICATION_URL.test(url)) {
     // Also check the page content — sometimes the URL doesn't match but the page asks for a device code.
@@ -104,11 +88,7 @@ async function handleDeviceVerificationIfAsked(
     }
   }
 
-  const otpField = page
-    .locator(
-      'input[name="otp"], input#otp, input[autocomplete="one-time-code"]'
-    )
-    .first();
+  const otpField = page.locator('input[name="otp"], input#otp, input[autocomplete="one-time-code"]').first();
   if (!(await otpField.isVisible().catch((): boolean => false))) {
     return;
   }
@@ -118,8 +98,7 @@ async function handleDeviceVerificationIfAsked(
   }
   const resp = await sendInteraction({
     kind: "otp",
-    message:
-      "GitHub sent a device-verification code to your email. Reply with the code.",
+    message: "GitHub sent a device-verification code to your email. Reply with the code.",
     schema: {
       type: "object",
       properties: { code: { type: "string" } },
@@ -132,20 +111,13 @@ async function handleDeviceVerificationIfAsked(
   }
   await otpField.fill(resp.data.code);
   await Promise.all([
-    page
-      .waitForNavigation({ waitUntil: "domcontentloaded", timeout: 30_000 })
-      .catch((): null => null),
+    page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 30_000 }).catch((): null => null),
     page.locator('button[type="submit"], input[type="submit"]').first().click(),
   ]);
 }
 
-async function handleTotpIfAsked(
-  page: Page,
-  { sendInteraction }: HandlerArgs
-): Promise<void> {
-  const totpField = page
-    .locator('#app_totp, #sms_totp, input[name="otp"], input#otp')
-    .first();
+async function handleTotpIfAsked(page: Page, { sendInteraction }: HandlerArgs): Promise<void> {
+  const totpField = page.locator('#app_totp, #sms_totp, input[name="otp"], input#otp').first();
   const visible = await totpField.isVisible().catch((): boolean => false);
   if (!visible) {
     return;
@@ -156,8 +128,7 @@ async function handleTotpIfAsked(
   }
   const resp = await sendInteraction({
     kind: "otp",
-    message:
-      "GitHub wants a 2FA code. Reply with the 6-digit TOTP from your authenticator app.",
+    message: "GitHub wants a 2FA code. Reply with the 6-digit TOTP from your authenticator app.",
     schema: {
       type: "object",
       properties: { code: { type: "string", pattern: "^\\d{6}$" } },
@@ -172,35 +143,25 @@ async function handleTotpIfAsked(
 
   await totpField.fill(code);
   await Promise.all([
-    page
-      .waitForNavigation({ waitUntil: "domcontentloaded", timeout: 30_000 })
-      .catch((): null => null),
+    page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 30_000 }).catch((): null => null),
     page.locator('button[type="submit"], input[type="submit"]').first().click(),
   ]);
 }
 
-async function handleSudoIfAsked(
-  page: Page,
-  { password, sendInteraction }: SudoHandlerArgs
-): Promise<void> {
+async function handleSudoIfAsked(page: Page, { password, sendInteraction }: SudoHandlerArgs): Promise<void> {
   if (!SUDO_URL.test(page.url())) {
     return;
   }
 
   // Prefer password path (TOTP in sudo needs recent re-auth too and adds a hop).
-  const usePasswordLink = page
-    .locator('a:has-text("password"), a[href*="sudo_password"]')
-    .first();
+  const usePasswordLink = page.locator('a:has-text("password"), a[href*="sudo_password"]').first();
   const passwordFieldVisible = await page
     .locator('input[name="sudo_password"]')
     .isVisible()
     .catch((): boolean => false);
 
   // Try to switch to password input if the field isn't already visible.
-  if (
-    !passwordFieldVisible &&
-    (await usePasswordLink.isVisible().catch((): boolean => false))
-  ) {
+  if (!passwordFieldVisible && (await usePasswordLink.isVisible().catch((): boolean => false))) {
     await usePasswordLink.click();
     await page
       .locator('input[name="sudo_password"]')
@@ -218,9 +179,7 @@ async function handleSudoIfAsked(
     }
     await page.fill('input[name="sudo_password"]', password);
     await Promise.all([
-      page
-        .waitForNavigation({ waitUntil: "domcontentloaded", timeout: 30_000 })
-        .catch((): null => null),
+      page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 30_000 }).catch((): null => null),
       page.locator('button[type="submit"]').first().click(),
     ]);
     return;
@@ -242,14 +201,9 @@ async function handleSudoIfAsked(
 /**
  * Ensure the browser is logged into github.com. Returns when ready.
  */
-export async function ensureGithubSession({
-  page,
-  sendInteraction,
-}: EnsureGithubSessionArgs): Promise<boolean> {
+export async function ensureGithubSession({ page, sendInteraction }: EnsureGithubSessionArgs): Promise<boolean> {
   const alreadyLoggedIn = await isLoggedIn(page);
-  process.stderr.write(
-    `[github-login] initial isLoggedIn=${alreadyLoggedIn} url=${page.url()}\n`
-  );
+  process.stderr.write(`[github-login] initial isLoggedIn=${alreadyLoggedIn} url=${page.url()}\n`);
   if (alreadyLoggedIn) {
     return true;
   }
@@ -257,22 +211,16 @@ export async function ensureGithubSession({
   const email = process.env.GITHUB_EMAIL ?? process.env.GITHUB_USERNAME;
   const password = process.env.GITHUB_PASSWORD;
   if (!(email && password)) {
-    throw new Error(
-      "GITHUB_EMAIL/USERNAME + GITHUB_PASSWORD must be set; cannot auto-login"
-    );
+    throw new Error("GITHUB_EMAIL/USERNAME + GITHUB_PASSWORD must be set; cannot auto-login");
   }
 
   await fillLogin(page, email, password);
   // Diagnostic trace so we can see where GitHub routes us post-credentials.
-  process.stderr.write(
-    `[github-login] after password submit, url=${page.url()}\n`
-  );
+  process.stderr.write(`[github-login] after password submit, url=${page.url()}\n`);
   await handleTotpIfAsked(page, { sendInteraction });
   process.stderr.write(`[github-login] after totp, url=${page.url()}\n`);
   await handleDeviceVerificationIfAsked(page, { sendInteraction });
-  process.stderr.write(
-    `[github-login] after device-verify, url=${page.url()}\n`
-  );
+  process.stderr.write(`[github-login] after device-verify, url=${page.url()}\n`);
 
   if (!(await isLoggedIn(page))) {
     const url = page.url();
@@ -286,10 +234,7 @@ export async function ensureGithubSession({
  * should navigate the page to a sudo-triggering URL first (e.g.
  * /settings/tokens/new) and then call this.
  */
-export async function ensureSudoMode(
-  page: Page,
-  { sendInteraction }: EnsureSudoModeArgs = {}
-): Promise<boolean> {
+export async function ensureSudoMode(page: Page, { sendInteraction }: EnsureSudoModeArgs = {}): Promise<boolean> {
   if (SUDO_URL.test(page.url())) {
     await handleSudoIfAsked(page, {
       password: process.env.GITHUB_PASSWORD,

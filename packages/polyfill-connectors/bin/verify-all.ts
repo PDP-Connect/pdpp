@@ -23,8 +23,7 @@ interface RunRow {
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DB_PATH = join(__dirname, "..", ".pdpp-data", "polyfill.sqlite");
-const CONNECTOR_REGISTRY_PREFIX =
-  /^https:\/\/registry\.pdpp\.org\/connectors\//;
+const CONNECTOR_REGISTRY_PREFIX = /^https:\/\/registry\.pdpp\.org\/connectors\//;
 
 async function main(): Promise<void> {
   // @ts-expect-error — @databases/sqlite's default export is callable at

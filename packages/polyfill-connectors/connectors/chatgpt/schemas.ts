@@ -20,11 +20,7 @@
 import { z } from "zod";
 
 // Permissive ID: non-empty, bounded, no whitespace or control chars.
-const idSchema = z
-  .string()
-  .min(1)
-  .max(128)
-  .regex(/^\S+$/, "must not contain whitespace");
+const idSchema = z.string().min(1).max(128).regex(/^\S+$/, "must not contain whitespace");
 
 // ISO-8601 timestamp — not all ChatGPT API responses use strict ISO, so
 // be lenient: accept anything parseable by Date as long as it looks
@@ -52,12 +48,7 @@ export const conversationSchema = z.object({
   is_starred: z.boolean().nullable(),
   workspace_id: idSchema.nullable(),
   current_node: idSchema.nullable(),
-  message_count_on_current_branch: z
-    .number()
-    .int()
-    .min(0)
-    .max(100_000)
-    .nullable(),
+  message_count_on_current_branch: z.number().int().min(0).max(100_000).nullable(),
   gizmo_id: idSchema.nullable(),
 });
 
@@ -151,9 +142,7 @@ export const SCHEMAS: Record<string, z.ZodTypeAny> = {
 export function validateRecord(
   stream: string,
   data: Record<string, unknown>
-):
-  | { ok: true; data: Record<string, unknown> }
-  | { ok: false; issues: Array<{ path: string; message: string }> } {
+): { ok: true; data: Record<string, unknown> } | { ok: false; issues: Array<{ path: string; message: string }> } {
   const schema = SCHEMAS[stream];
   if (!schema) {
     return { ok: true, data };

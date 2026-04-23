@@ -13,10 +13,7 @@
  */
 
 import type { BrowserContext, Page } from "playwright";
-import type {
-  InteractionRequest,
-  InteractionResponse,
-} from "../connector-runtime.ts";
+import type { InteractionRequest, InteractionResponse } from "../connector-runtime.ts";
 
 interface EnsureChatGptSessionArgs {
   context: BrowserContext;
@@ -57,11 +54,8 @@ async function checkSession(page: Page): Promise<boolean> {
 async function checkLoggedInViaDOM(page: Page): Promise<boolean> {
   try {
     return await page.evaluate((): boolean => {
-      // @ts-expect-error — runs in browser context, `document` exists at runtime
       const allButtons = document.querySelectorAll("button, a");
-      const hasLoginButton = Array.from(
-        allButtons as Iterable<{ textContent: string | null }>
-      ).some((el): boolean => {
+      const hasLoginButton = Array.from(allButtons).some((el): boolean => {
         const text = el.textContent?.toLowerCase() ?? "";
         return text.includes("log in") || text.includes("sign up");
       });
@@ -69,16 +63,11 @@ async function checkLoggedInViaDOM(page: Page): Promise<boolean> {
         return false;
       }
       const hasSidebar =
-        // @ts-expect-error — runs in browser context, `document` exists at runtime
         !!document.querySelector('nav[aria-label="Chat history"]') ||
-        // @ts-expect-error — runs in browser context, `document` exists at runtime
         !!document.querySelector('nav a[href^="/c/"]') ||
-        // @ts-expect-error — runs in browser context, `document` exists at runtime
         document.querySelectorAll("nav").length > 0;
       const hasUserMenu =
-        // @ts-expect-error — runs in browser context, `document` exists at runtime
         !!document.querySelector('[data-testid="profile-button"]') ||
-        // @ts-expect-error — runs in browser context, `document` exists at runtime
         !!document.querySelector('button[aria-label*="User menu"]');
       return hasSidebar || hasUserMenu;
     });
@@ -120,11 +109,8 @@ export async function ensureChatGptSession({
 
   // Click "Log in" button to reach auth.openai.com
   await page.evaluate((): boolean => {
-    // @ts-expect-error — runs in browser context, `document` exists at runtime
-    const buttons = document.querySelectorAll("button, a");
-    for (const btn of Array.from(
-      buttons as Iterable<{ textContent: string | null; click: () => void }>
-    )) {
+    const buttons = document.querySelectorAll<HTMLElement>("button, a");
+    for (const btn of Array.from(buttons)) {
       const text = (btn.textContent ?? "").trim().toLowerCase();
       if (text === "log in") {
         btn.click();
@@ -136,9 +122,7 @@ export async function ensureChatGptSession({
   await page.waitForTimeout(3000);
 
   // Email input
-  const emailIn = page
-    .locator('input[type="email"], input[name="username"], input[name="email"]')
-    .first();
+  const emailIn = page.locator('input[type="email"], input[name="username"], input[name="email"]').first();
   if (!(await emailIn.count())) {
     await sendInteraction({
       kind: "manual_action",
@@ -157,9 +141,7 @@ export async function ensureChatGptSession({
   await page.waitForTimeout(3000);
 
   // ChatGPT may default to email-code login; click "Continue with password" if present.
-  const continueWithPw = page
-    .locator(':text-matches("Continue with password", "i")')
-    .first();
+  const continueWithPw = page.locator(':text-matches("Continue with password", "i")').first();
   if (await continueWithPw.count()) {
     await continueWithPw.click();
     await page.waitForTimeout(3000);
@@ -177,16 +159,11 @@ export async function ensureChatGptSession({
     await page.waitForTimeout(5000);
 
     // Handle 2FA code entry if prompted (input[name="code"], tel, or numeric).
-    const tfaIn = page
-      .locator(
-        'input[name="code"], input[type="tel"], input[inputmode="numeric"]'
-      )
-      .first();
+    const tfaIn = page.locator('input[name="code"], input[type="tel"], input[inputmode="numeric"]').first();
     if (await tfaIn.count()) {
       const resp = await sendInteraction({
         kind: "text_input",
-        message:
-          "ChatGPT requires a 2FA verification code. Enter the 6-digit code:",
+        message: "ChatGPT requires a 2FA verification code. Enter the 6-digit code:",
         timeout_seconds: 300,
       });
       if (resp?.value) {

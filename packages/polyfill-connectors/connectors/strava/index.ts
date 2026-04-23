@@ -61,9 +61,7 @@ async function fetchActivitiesPage(
     throw new Error("strava_rate_limited");
   }
   if (!res.ok) {
-    throw new Error(
-      `strava_http_${String(res.status)}: ${(await res.text()).slice(0, 200)}`
-    );
+    throw new Error(`strava_http_${String(res.status)}: ${(await res.text()).slice(0, 200)}`);
   }
   return (await res.json()) as StravaActivity[];
 }
@@ -108,9 +106,7 @@ runConnector({
       return;
     }
     await progress("Fetching activities", { stream: "activities" });
-    const activitiesState = state.activities as
-      | { last_start_epoch?: number }
-      | undefined;
+    const activitiesState = state.activities as { last_start_epoch?: number } | undefined;
     const lastEpoch = activitiesState?.last_start_epoch;
     let page = 1;
     let latest = lastEpoch || 0;

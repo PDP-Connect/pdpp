@@ -33,8 +33,7 @@ runConnector({
       type: "SKIP_RESULT",
       stream: "orders",
       reason: "wholefoods_filter_pending",
-      message:
-        "Amazon session reachable. Whole Foods filter + USDA nutrition lookup deferred to live session.",
+      message: "Amazon session reachable. Whole Foods filter + USDA nutrition lookup deferred to live session.",
     });
   },
 });

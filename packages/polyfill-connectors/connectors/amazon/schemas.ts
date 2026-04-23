@@ -24,8 +24,7 @@ const PAYMENT_DOLLAR_RE = /\$\d/;
 const RECIPIENT_FORBIDDEN_RE = /[$\t\n]|Buy it again|View your item/i;
 const CURRENCY_STRING_RE = /^\$\d+(,\d{3})*\.\d{2}$/;
 const ASIN_RE = /^[A-Z0-9]{10}$/;
-const ITEM_NAME_CRUFT_RE =
-  /Buy it again|View your item|Get product support|Write a product review/i;
+const ITEM_NAME_CRUFT_RE = /Buy it again|View your item|Get product support|Write a product review/i;
 const ITEM_NAME_SOLD_BY_RE = /^Sold by/i;
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const AMAZON_ORDER_ID_RE = /^\d{3}-\d{7}-\d{7}$/;
@@ -56,10 +55,7 @@ const recipientNameSchema = z
   })
   .nullable();
 
-const currencyStringSchema = z
-  .string()
-  .regex(CURRENCY_STRING_RE, "not a $N.NN formatted currency string")
-  .nullable();
+const currencyStringSchema = z.string().regex(CURRENCY_STRING_RE, "not a $N.NN formatted currency string").nullable();
 
 const centsSchema = z
   .number()
@@ -68,10 +64,7 @@ const centsSchema = z
   .max(10_000_000) // $100,000 max — sane upper bound for consumer orders
   .nullable();
 
-const asinSchema = z
-  .string()
-  .regex(ASIN_RE, "ASIN must be 10 uppercase alphanumeric")
-  .nullable();
+const asinSchema = z.string().regex(ASIN_RE, "ASIN must be 10 uppercase alphanumeric").nullable();
 
 // Item name: non-empty, bounded, must not contain obvious cruft patterns.
 // Amazon product names run long on multi-pack / gift-basket / variant
@@ -124,14 +117,9 @@ export const orderItemSchema = z.object({
 // wrong elements, we'd rather see a SKIP_RESULT with diagnostics than
 // silently emit garbage orders.
 export const listPageOrderShape = z.object({
-  orderId: z
-    .string()
-    .regex(AMAZON_ORDER_ID_RE, "orderId must match NNN-NNNNNNN-NNNNNNN"),
+  orderId: z.string().regex(AMAZON_ORDER_ID_RE, "orderId must match NNN-NNNNNNN-NNNNNNN"),
   orderDateRaw: z.string().min(4).max(60).nullable(),
-  orderTotal: z
-    .string()
-    .regex(LIST_PAGE_TOTAL_RE, "orderTotal must be $N.NN when present")
-    .nullable(),
+  orderTotal: z.string().regex(LIST_PAGE_TOTAL_RE, "orderTotal must be $N.NN when present").nullable(),
   deliveryStatus: z.string().max(200).nullable(),
   items: z.array(
     z.object({
@@ -157,9 +145,7 @@ export const SCHEMAS: Record<string, z.ZodTypeAny> = {
 export function validateRecord(
   stream: string,
   data: Record<string, unknown>
-):
-  | { ok: true; data: Record<string, unknown> }
-  | { ok: false; issues: Array<{ path: string; message: string }> } {
+): { ok: true; data: Record<string, unknown> } | { ok: false; issues: Array<{ path: string; message: string }> } {
   const schema = SCHEMAS[stream];
   if (!schema) {
     return { ok: true, data }; // unknown stream, no validation

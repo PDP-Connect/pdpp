@@ -40,10 +40,7 @@ import { createInterface } from "node:readline";
 import type { BrowserContext, Page } from "playwright";
 
 import { type AuthConfig, resolveAuth } from "./auth.ts";
-import {
-  type CaptureSession,
-  createCaptureSession,
-} from "./fixture-capture.ts";
+import { type CaptureSession, createCaptureSession } from "./fixture-capture.ts";
 import { emitToStdout } from "./safe-emit.ts";
 import { resourceSet } from "./scope-filters.ts";
 
@@ -80,11 +77,7 @@ export interface InteractionResponse {
   value?: string;
 }
 
-export type InteractionKind =
-  | "credentials"
-  | "otp"
-  | "text_input"
-  | "manual_action";
+export type InteractionKind = "credentials" | "otp" | "text_input" | "manual_action";
 
 /** All messages a connector emits over stdout. */
 export type EmittedMessage =
@@ -134,9 +127,7 @@ export interface InteractionRequest {
 export type ValidateRecord = (
   stream: string,
   data: RecordData
-) =>
-  | { ok: true; data: RecordData }
-  | { ok: false; issues: Array<{ path: string; message: string }> };
+) => { ok: true; data: RecordData } | { ok: false; issues: Array<{ path: string; message: string }> };
 
 // ─── Collect context ────────────────────────────────────────────────────
 
@@ -212,9 +203,7 @@ export interface BrowserConnectorConfig extends BaseRunConnectorConfig {
  * otherwise it doesn't. TS narrows the right way at each call site so
  * destructuring `{ page }` in a browser connector's collect() is type-safe.
  */
-export type RunConnectorConfig =
-  | NonBrowserConnectorConfig
-  | BrowserConnectorConfig;
+export type RunConnectorConfig = NonBrowserConnectorConfig | BrowserConnectorConfig;
 
 // ─── Primitive helpers (exported for connector convenience) ─────────────
 
@@ -237,10 +226,7 @@ class TerminalError extends Error {
 }
 
 /** Returns true if the scope's time_range excludes this record's date value. */
-function isOutsideTimeRange(
-  timeRange: { since?: string; until?: string },
-  dateValue: unknown
-): boolean {
+function isOutsideTimeRange(timeRange: { since?: string; until?: string }, dateValue: unknown): boolean {
   if (typeof dateValue !== "string" || !dateValue) {
     return false;
   }
@@ -277,8 +263,7 @@ export const nowIso = (): string => new Date().toISOString();
  * which wait for a page condition. This one is "slow us down so we look
  * human", not "wait until X is ready". See authoring guide §7.
  */
-export const politeDelay = (ms: number): Promise<void> =>
-  new Promise((r) => setTimeout(r, ms));
+export const politeDelay = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 // ─── Runtime entry point ────────────────────────────────────────────────
 
@@ -309,9 +294,7 @@ export function runConnector(config: RunConnectorConfig): void {
   const probeSession = browser ? config.probeSession : undefined;
 
   const timeRangeFieldFor: (stream: string) => string =
-    typeof timeRangeField === "function"
-      ? timeRangeField
-      : (): string => timeRangeField;
+    typeof timeRangeField === "function" ? timeRangeField : (): string => timeRangeField;
 
   // Capture session: null unless PDPP_CAPTURE_FIXTURES=1.
   const capture = createCaptureSession(name);
@@ -328,9 +311,7 @@ export function runConnector(config: RunConnectorConfig): void {
   };
 
   if (capture) {
-    process.stderr.write(
-      `[capture] PDPP_CAPTURE_FIXTURES=1; writing to ${capture.baseDir}\n`
-    );
+    process.stderr.write(`[capture] PDPP_CAPTURE_FIXTURES=1; writing to ${capture.baseDir}\n`);
   }
 
   const flushAndExit = (code: number): void => {
@@ -342,11 +323,7 @@ export function runConnector(config: RunConnectorConfig): void {
     }
   };
 
-  const emitFailed = (
-    message: string,
-    retryable = false,
-    records_emitted = 0
-  ): void => {
+  const emitFailed = (message: string, retryable = false, records_emitted = 0): void => {
     // Fire-and-forget. emit() resolves after stdout drains; we're about to
     // exit(1) anyway, so we don't need to block. If it rejects (the write
     // fails), the process is dying either way.
@@ -360,12 +337,9 @@ export function runConnector(config: RunConnectorConfig): void {
   };
 
   let interactionCounter = 0;
-  const nextInteractionId = (): string =>
-    `int_${Date.now()}_${++interactionCounter}`;
+  const nextInteractionId = (): string => `int_${Date.now()}_${++interactionCounter}`;
 
-  const sendInteraction = (
-    req: InteractionRequest
-  ): Promise<InteractionResponse> => {
+  const sendInteraction = (req: InteractionRequest): Promise<InteractionResponse> => {
     const request_id = req.request_id ?? nextInteractionId();
     const wrapped: EmittedMessage = {
       type: "INTERACTION",
@@ -373,9 +347,7 @@ export function runConnector(config: RunConnectorConfig): void {
       kind: req.kind,
       message: req.message,
       ...(req.schema === undefined ? {} : { schema: req.schema }),
-      ...(req.timeout_seconds === undefined
-        ? {}
-        : { timeout_seconds: req.timeout_seconds }),
+      ...(req.timeout_seconds === undefined ? {} : { timeout_seconds: req.timeout_seconds }),
     };
     // Fire the INTERACTION; response arrives separately on stdin.
     emit(wrapped).catch((): undefined => undefined);
@@ -383,10 +355,7 @@ export function runConnector(config: RunConnectorConfig): void {
       const onLine = (line: string): void => {
         try {
           const parsed = JSON.parse(line) as InteractionResponse;
-          if (
-            parsed.type === "INTERACTION_RESPONSE" &&
-            parsed.request_id === request_id
-          ) {
+          if (parsed.type === "INTERACTION_RESPONSE" && parsed.request_id === request_id) {
             rl.off("line", onLine);
             resolve(parsed);
           }
@@ -409,10 +378,8 @@ export function runConnector(config: RunConnectorConfig): void {
       });
     });
 
-  const progress = (
-    message: string,
-    extra: { stream?: string } = {}
-  ): Promise<void> => emit({ type: "PROGRESS", message, ...extra });
+  const progress = (message: string, extra: { stream?: string } = {}): Promise<void> =>
+    emit({ type: "PROGRESS", message, ...extra });
 
   // Kick off the run. The outer catch distinguishes TerminalError (which
   // the runtime threw deliberately with an explicit retryable bit) from
@@ -485,9 +452,7 @@ export function runConnector(config: RunConnectorConfig): void {
  * TerminalError on malformed input or wrong type — the runtime can't
  * proceed without a valid START.
  */
-async function parseStart(
-  readStart: () => Promise<StartMessage>
-): Promise<StartMessage> {
+async function parseStart(readStart: () => Promise<StartMessage>): Promise<StartMessage> {
   const startMsg = await readStart();
   if (startMsg.type !== "START") {
     throw new TerminalError("Expected START message", false);
@@ -497,9 +462,7 @@ async function parseStart(
 
 /** Build the requested-streams map; the runtime requires at least one stream. */
 function buildRequested(startMsg: StartMessage): Map<string, StreamScope> {
-  const requested = new Map<string, StreamScope>(
-    (startMsg.scope.streams ?? []).map((s) => [s.name, s])
-  );
+  const requested = new Map<string, StreamScope>((startMsg.scope.streams ?? []).map((s) => [s.name, s]));
   if (requested.size === 0) {
     throw new TerminalError("START.scope.streams is required", false);
   }
@@ -537,14 +500,7 @@ function makeEmitRecord(deps: {
   emit: (stream: string, data: RecordData) => Promise<void>;
   counters: { totalEmitted: number; totalSkipped: number };
 } {
-  const {
-    requested,
-    emit,
-    emittedAt,
-    validateRecord,
-    isTombstone,
-    timeRangeFieldFor,
-  } = deps;
+  const { requested, emit, emittedAt, validateRecord, isTombstone, timeRangeFieldFor } = deps;
   const counters = { totalEmitted: 0, totalSkipped: 0 };
   const resFilters = new Map<string, ReadonlySet<string> | null>();
   for (const [streamName, scope] of requested) {
@@ -574,10 +530,7 @@ function makeEmitRecord(deps: {
 
     const streamScope = requested.get(stream);
     const field = timeRangeFieldFor(stream);
-    if (
-      streamScope?.time_range &&
-      isOutsideTimeRange(streamScope.time_range, data[field])
-    ) {
+    if (streamScope?.time_range && isOutsideTimeRange(streamScope.time_range, data[field])) {
       return Promise.resolve();
     }
 
@@ -613,26 +566,13 @@ async function runInBrowser(args: {
   collect: BrowserConnectorConfig["collect"];
   baseCtx: BaseCollectContext;
 }): Promise<void> {
-  const {
-    browser,
-    name,
-    emit,
-    sendInteraction,
-    progress,
-    ensureSession,
-    probeSession,
-    collect,
-    baseCtx,
-  } = args;
+  const { browser, name, emit, sendInteraction, progress, ensureSession, probeSession, collect, baseCtx } = args;
   const { context: ctx, release } = await acquireBrowser(browser, name);
   const tracer = makeTracer(ctx, name, emit);
   await tracer.start();
   try {
     const page = await ctx.newPage();
-    await establishSession(
-      { ensureSession, probeSession },
-      { context: ctx, page, name, sendInteraction, progress }
-    );
+    await establishSession({ ensureSession, probeSession }, { context: ctx, page, name, sendInteraction, progress });
     await collect({ ...baseCtx, context: ctx, page });
   } finally {
     await tracer.stop();
@@ -647,9 +587,7 @@ async function finalizeRun(
   emit: (msg: EmittedMessage) => Promise<void>
 ): Promise<void> {
   if (counters.totalSkipped > 0) {
-    await progress(
-      `shape-check skipped ${String(counters.totalSkipped)} record(s); see SKIP_RESULT events above`
-    );
+    await progress(`shape-check skipped ${String(counters.totalSkipped)} record(s); see SKIP_RESULT events above`);
   }
   await emit({
     type: "DONE",
@@ -666,10 +604,7 @@ interface AcquiredBrowser {
 }
 
 /** Acquire an isolated browser context; throws TerminalError on failure. */
-async function acquireBrowser(
-  browser: BrowserConfig,
-  name: string
-): Promise<AcquiredBrowser> {
+async function acquireBrowser(browser: BrowserConfig, name: string): Promise<AcquiredBrowser> {
   const { acquireIsolatedBrowser } = await import("./browser-daemon.ts");
   const profileName = browser.profileName ?? name;
   const envKey = `PDPP_${profileName.toUpperCase()}_HEADLESS`;
@@ -678,10 +613,7 @@ async function acquireBrowser(
     return await acquireIsolatedBrowser({ profileName, headless });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    throw new TerminalError(
-      `could not open browser profile: ${message}`,
-      false
-    );
+    throw new TerminalError(`could not open browser profile: ${message}`, false);
   }
 }
 
@@ -750,11 +682,7 @@ interface Tracer {
  * Start/stop Playwright tracing, gated on PDPP_TRACE=1. Produces a
  * replayable .zip for debugging silent scraper failures. See §9.
  */
-function makeTracer(
-  context: BrowserContext,
-  name: string,
-  emit: (msg: EmittedMessage) => Promise<void>
-): Tracer {
+function makeTracer(context: BrowserContext, name: string, emit: (msg: EmittedMessage) => Promise<void>): Tracer {
   const enabled = process.env.PDPP_TRACE === "1";
   return {
     async start(): Promise<void> {

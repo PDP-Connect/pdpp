@@ -38,8 +38,7 @@ const OPTIONS_BUTTON_TEXT_RE = /^\s*(Options|More|\.{3})\s*$/i;
 const DOWNLOAD_MENU_ITEM_RE = /download/i;
 const DOWNLOAD_BUTTON_TEXT_RE = /^\s*Download( PDF)?\s*$/i;
 const DOCUMENTS_PATH_RE = /\/my\/documents/;
-const CREDIT_CARD_CLOSING_RE =
-  /Statement\s+Closing\s+Date\s+(\d{1,2})\/\d{1,2}\/(\d{2,4})/i;
+const CREDIT_CARD_CLOSING_RE = /Statement\s+Closing\s+Date\s+(\d{1,2})\/\d{1,2}\/(\d{2,4})/i;
 const CHECKING_STATEMENT_PERIOD_RE =
   /Statement\s+Period\s+\d{1,2}\/\d{1,2}\/\d{4}\s*[-–]\s*(\d{1,2})\/\d{1,2}\/(\d{4})/i;
 const FOUR_DIGIT_YEAR_RE = /\b(19|20)\d{2}\b/;
@@ -50,18 +49,14 @@ const NON_CURRENCY_CHARS_RE = /[^0-9.]/g;
 const STMT_LINE_SPLIT_RE = /\r?\n/;
 const MODERN_SECTION_START_RE =
   /^\s*(TRANSACTIONS|ACCOUNT\s+ACTIVITY|DEPOSITS?\s+AND\s+OTHER\s+CREDITS|WITHDRAWALS?\s+AND\s+OTHER\s+DEBITS)\s*$/i;
-const MODERN_SECTION_END_RE =
-  /^\s*(ENDING\s+BALANCE|TOTAL\s+FEES|FEE\s+SUMMARY|DAILY\s+BALANCE\s+SUMMARY)/i;
+const MODERN_SECTION_END_RE = /^\s*(ENDING\s+BALANCE|TOTAL\s+FEES|FEE\s+SUMMARY|DAILY\s+BALANCE\s+SUMMARY)/i;
 const MODERN_TXN_LINE_RE =
   /^(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?\s+(.+?)\s+(-?\$?[\d,]+\.\d{2})(?:\s+(-?\$?[\d,]+\.\d{2}))?\s*$/;
 const WS_RUN_2PLUS_RE = /\s{2,}/g;
-const CREDIT_SECTION_START_RE =
-  /^\s*(TRANSACTIONS|PURCHASES|PAYMENTS\s+AND\s+CREDITS)\s*$/i;
+const CREDIT_SECTION_START_RE = /^\s*(TRANSACTIONS|PURCHASES|PAYMENTS\s+AND\s+CREDITS)\s*$/i;
 const CREDIT_SECTION_TOTAL_RE = /^\s*TOTAL/i;
-const CREDIT_SECTION_END_RE =
-  /^\s*(TOTAL\b|FEES\s+CHARGED|INTEREST\s+CHARGED|YEAR-TO-DATE|IMPORTANT\s+ACCOUNT)/i;
-const CREDIT_TXN_LINE_RE =
-  /^(\d{1,2})\/(\d{1,2})\s+(\d{1,2})\/(\d{1,2})\s+(.+?)\s+(-?\$?[\d,]+\.\d{2}-?)\s*$/;
+const CREDIT_SECTION_END_RE = /^\s*(TOTAL\b|FEES\s+CHARGED|INTEREST\s+CHARGED|YEAR-TO-DATE|IMPORTANT\s+ACCOUNT)/i;
+const CREDIT_TXN_LINE_RE = /^(\d{1,2})\/(\d{1,2})\s+(\d{1,2})\/(\d{1,2})\s+(.+?)\s+(-?\$?[\d,]+\.\d{2}-?)\s*$/;
 const CHECK_NUMBER_RE = /CHECK\s*#?\s*0*(\d+)/i;
 
 // ─── Types ────────────────────────────────────────────────────────────────
@@ -97,11 +92,7 @@ export interface HydratedStatement {
 }
 
 /** {closingYear, closingMonth} or a bare year (legacy callers). */
-type ClosingContext =
-  | number
-  | { closingMonth: number; closingYear: number }
-  | null
-  | undefined;
+type ClosingContext = number | { closingMonth: number; closingYear: number } | null | undefined;
 
 interface ParsedTxn {
   amount: number;
@@ -149,10 +140,7 @@ function sha256Hex(buf: Buffer): string {
   return createHash("sha256").update(buf).digest("hex");
 }
 
-function safeAccountSlug(
-  accountId: string | null | undefined,
-  fallback: string | null | undefined
-): string {
+function safeAccountSlug(accountId: string | null | undefined, fallback: string | null | undefined): string {
   if (accountId && SLUG_SAFE_RE.test(accountId)) {
     return accountId;
   }
@@ -181,14 +169,8 @@ function yearMonthFromDate(isoDate: string | null | undefined): string {
  */
 async function locateRowOptionsButton(row: Locator): Promise<Locator | null> {
   const candidates: Locator[] = [
-    row
-      .locator('button[aria-label*="Options" i], button[aria-label*="More" i]')
-      .first(),
-    row
-      .locator(
-        '[role="button"][aria-label*="Options" i], [role="button"][aria-label*="More" i]'
-      )
-      .first(),
+    row.locator('button[aria-label*="Options" i], button[aria-label*="More" i]').first(),
+    row.locator('[role="button"][aria-label*="Options" i], [role="button"][aria-label*="More" i]').first(),
     row.locator("button", { hasText: OPTIONS_BUTTON_TEXT_RE }).first(),
     // Icon-only kebab: last button in the last cell.
     row.locator("td").last().locator('button, [role="button"]').last(),
@@ -208,18 +190,13 @@ async function locateRowOptionsButton(row: Locator): Promise<Locator | null> {
  */
 async function locateDownloadMenuItem(page: Page): Promise<Locator | null> {
   const candidates: Locator[] = [
-    page
-      .locator('[role="menuitem"]', { hasText: DOWNLOAD_MENU_ITEM_RE })
-      .first(),
+    page.locator('[role="menuitem"]', { hasText: DOWNLOAD_MENU_ITEM_RE }).first(),
     page
       .locator('[role="menu"] a, [role="menu"] button', {
         hasText: DOWNLOAD_MENU_ITEM_RE,
       })
       .first(),
-    page
-      .locator("a, button")
-      .filter({ hasText: DOWNLOAD_BUTTON_TEXT_RE })
-      .first(),
+    page.locator("a, button").filter({ hasText: DOWNLOAD_BUTTON_TEXT_RE }).first(),
   ];
   for (const c of candidates) {
     if (await c.count().catch(() => 0)) {
@@ -308,9 +285,7 @@ async function downloadStatementFromRow({
       ok: false,
       reason: "no_download_menuitem",
       diag: {
-        menu_html: menuHtml
-          ? menuHtml.replace(/\s+/g, " ").slice(0, 500)
-          : null,
+        menu_html: menuHtml ? menuHtml.replace(/\s+/g, " ").slice(0, 500) : null,
       },
     };
   }
@@ -405,16 +380,8 @@ export async function hydrateStatementPdfs({
   page: Page;
   statements: StatementRow[];
   downloadQueue: DownloadQueue;
-  onProgress?: (p: {
-    index: number;
-    total: number;
-    title: string | null;
-  }) => void;
-  onSkip?: (p: {
-    statement: StatementRow;
-    reason: string;
-    diag: Record<string, unknown> | null;
-  }) => void;
+  onProgress?: (p: { index: number; total: number; title: string | null }) => void;
+  onSkip?: (p: { statement: StatementRow; reason: string; diag: Record<string, unknown> | null }) => void;
 }): Promise<HydratedStatement[]> {
   const hydrated: HydratedStatement[] = [];
   if (!statements.length) {
@@ -525,9 +492,7 @@ export function fileUrlForPath(p: string): string {
  * uses "Statement Period MM/DD/YYYY - MM/DD/YYYY" (we take the closing side).
  * Returns {closingMonth, closingYear} or null if neither pattern hits.
  */
-function detectStatementClosing(
-  text: string
-): { closingMonth: number; closingYear: number } | null {
+function detectStatementClosing(text: string): { closingMonth: number; closingYear: number } | null {
   // Credit-card: "Statement Closing Date 02/17/26"
   const cc = text.match(CREDIT_CARD_CLOSING_RE);
   if (cc?.[1] && cc[2]) {
@@ -567,11 +532,7 @@ function detectStatementYear(text: string): number | null {
  * Example: closing 2026-01, txn 12/26 → 2025-12-26 (prior year).
  * Example: closing 2026-03, txn 02/14 → 2026-02-14 (same year).
  */
-function toIso(
-  mm: string | number,
-  dd: string | number,
-  closingContext: ClosingContext
-): string | null {
+function toIso(mm: string | number, dd: string | number, closingContext: ClosingContext): string | null {
   const m = Number(mm);
   const d = Number(dd);
   if (!m || m < 1 || m > 12 || !d || d < 1 || d > 31) {
@@ -603,9 +564,7 @@ function toIso(
   return `${year}-${mmStr}-${ddStr}`;
 }
 
-function currencyToCentsFromStatement(
-  s: string | null | undefined
-): number | null {
+function currencyToCentsFromStatement(s: string | null | undefined): number | null {
   if (!s) {
     return null;
   }
@@ -613,10 +572,7 @@ function currencyToCentsFromStatement(
   // card statements: "$10.00-" = payment/credit), or accountants' parens
   // "(10.00)" = legacy negative.
   const trimmed = s.trim();
-  const neg =
-    LEADING_MINUS_RE.test(trimmed) ||
-    TRAILING_MINUS_RE.test(trimmed) ||
-    LEADING_PAREN_RE.test(trimmed);
+  const neg = LEADING_MINUS_RE.test(trimmed) || TRAILING_MINUS_RE.test(trimmed) || LEADING_PAREN_RE.test(trimmed);
   // Drop everything except digits and the single decimal point, then parse.
   const numeric = trimmed.replace(NON_CURRENCY_CHARS_RE, "");
   if (!numeric) {
@@ -687,9 +643,7 @@ function parseModernCheckingEra(
     }
     const description = descRaw.replace(WS_RUN_2PLUS_RE, " ").trim();
     const amount = currencyToCentsFromStatement(amountRaw);
-    const balance = balanceRaw
-      ? currencyToCentsFromStatement(balanceRaw)
-      : null;
+    const balance = balanceRaw ? currencyToCentsFromStatement(balanceRaw) : null;
     if (amount == null) {
       continue;
     }
@@ -720,10 +674,7 @@ function parseCreditCardEra(
       continue;
     }
     // Section starts: match full-line labels but not "Total Payments And Credits".
-    if (
-      CREDIT_SECTION_START_RE.test(line) &&
-      !CREDIT_SECTION_TOTAL_RE.test(line)
-    ) {
+    if (CREDIT_SECTION_START_RE.test(line) && !CREDIT_SECTION_TOTAL_RE.test(line)) {
       inTable = true;
       continue;
     }
@@ -818,10 +769,7 @@ export async function parsePdfStatement({
 
   const attempts: Array<{
     era: string;
-    fn: (
-      t: string,
-      c: { closing: { closingMonth: number; closingYear: number } }
-    ) => ParsedTxn[];
+    fn: (t: string, c: { closing: { closingMonth: number; closingYear: number } }) => ParsedTxn[];
   }> = [
     { era: "modern_checking", fn: parseModernCheckingEra },
     { era: "credit_card", fn: parseCreditCardEra },

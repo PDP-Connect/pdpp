@@ -29,14 +29,7 @@
  */
 
 import { createHash } from "node:crypto";
-import {
-  mkdir,
-  mkdtemp,
-  readFile,
-  rm,
-  stat,
-  writeFile,
-} from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -83,13 +76,7 @@ interface ChaseAccount {
   type: ChaseAccountType;
 }
 
-type ActivityKind =
-  | "all"
-  | "since_last_statement"
-  | "year_to_date"
-  | "last_year"
-  | "current"
-  | "date_range";
+type ActivityKind = "all" | "since_last_statement" | "year_to_date" | "last_year" | "current" | "date_range";
 
 interface DateRange {
   from?: string | undefined;
@@ -268,10 +255,10 @@ async function discoverAccounts(page: Page): Promise<ChaseAccount[]> {
   // Navigate to dashboard overview — not the generic /dashboard URL which
   // often redirects to the last-viewed account. Overview consistently lists
   // all accounts.
-  await page.goto(
-    "https://secure.chase.com/web/auth/dashboard#/dashboard/overview",
-    { waitUntil: "domcontentloaded", timeout: NAV_TIMEOUT_MS }
-  );
+  await page.goto("https://secure.chase.com/web/auth/dashboard#/dashboard/overview", {
+    waitUntil: "domcontentloaded",
+    timeout: NAV_TIMEOUT_MS,
+  });
   // Wait for at least one account label to appear rather than a fixed delay —
   // the dashboard renders cards asynchronously from an XHR, so fixed sleeps
   // are both slow and flaky. Fail soft if the selector never appears (returns
@@ -290,8 +277,7 @@ async function discoverAccounts(page: Page): Promise<ChaseAccount[]> {
   return page.evaluate((): ChaseAccount[] => {
     // biome-ignore-start lint/performance/useTopLevelRegex: runs in browser context (page.evaluate); module-scoped regexes in Node cannot cross the bridge.
     const ID_RE = /^accounts-name-link-button-(\d+)-label$/;
-    const CARD_RE =
-      /(Sapphire|Freedom|Ink|Amazon|Southwest|United|Hyatt|Disney|Marriott|IHG|Prime|Platinum|Slate)/i;
+    const CARD_RE = /(Sapphire|Freedom|Ink|Amazon|Southwest|United|Hyatt|Disney|Marriott|IHG|Prime|Platinum|Slate)/i;
     const CHK_RE = /(Checking|Total Checking|Premier Checking)/i;
     const SAV_RE = /(Savings|Premier Savings)/i;
     const WS_RE = /\s+/g;
@@ -318,14 +304,10 @@ async function discoverAccounts(page: Page): Promise<ChaseAccount[]> {
 
     // @ts-expect-error — browser context globals (document)
     const rootDoc: El = document;
-    const labels = walk(rootDoc).filter(
-      (el) => Boolean(el.id) && ID_RE.test(el.id ?? "")
-    );
+    const labels = walk(rootDoc).filter((el) => Boolean(el.id) && ID_RE.test(el.id ?? ""));
     return labels.map((el): ChaseAccount => {
       const idMatch = ID_RE.exec(el.id ?? "");
-      const displayName = (el.innerText || el.textContent || "")
-        .replace(WS_RE, " ")
-        .trim();
+      const displayName = (el.innerText || el.textContent || "").replace(WS_RE, " ").trim();
       const lastFourMatch = LAST4_RE.exec(displayName);
       // Infer type from the display name — rough heuristic; refined by
       // inspecting the BAC/DDA/ABS param in the transactions URL if needed.
@@ -356,9 +338,7 @@ async function discoverAccounts(page: Page): Promise<ChaseAccount[]> {
 // We use the visible labels as locators (Playwright's `getByRole('option')`
 // pierces shadow DOM).
 async function selectActivity(page: Page, optionLabel: string): Promise<void> {
-  await page
-    .locator("#select-downloadActivityOptionId")
-    .click({ timeout: CLICK_TIMEOUT_MS });
+  await page.locator("#select-downloadActivityOptionId").click({ timeout: CLICK_TIMEOUT_MS });
   const opt = page.getByRole("option", {
     name: new RegExp(`^${optionLabel}$`, "i"),
   });
@@ -374,9 +354,7 @@ async function selectActivity(page: Page, optionLabel: string): Promise<void> {
  * Range on Activity) revert file type back to CSV. Clicking is durable.
  */
 async function selectFileType(page: Page, label: string): Promise<void> {
-  await page
-    .locator("#select-downloadFileTypeOption")
-    .click({ timeout: CLICK_TIMEOUT_MS });
+  await page.locator("#select-downloadFileTypeOption").click({ timeout: CLICK_TIMEOUT_MS });
   const opt = page.getByRole("option", {
     name: new RegExp(`^${label}`, "i"),
   });
@@ -419,9 +397,7 @@ async function downloadQfx(
     waitUntil: "domcontentloaded",
     timeout: NAV_TIMEOUT_MS,
   });
-  await page
-    .locator("#downloadFileTypeOption")
-    .waitFor({ state: "attached", timeout: DOM_WAIT_MS });
+  await page.locator("#downloadFileTypeOption").waitFor({ state: "attached", timeout: DOM_WAIT_MS });
 
   // Select activity option FIRST so the Date-Range pickers render before we
   // set file type. Chase's form re-renders when Activity changes; doing file
@@ -469,17 +445,13 @@ async function downloadQfx(
   }
 
   // Wait for the Download button to be enabled before clicking.
-  await page
-    .locator("mds-button#download")
-    .waitFor({ state: "visible", timeout: OPTION_WAIT_MS });
+  await page.locator("mds-button#download").waitFor({ state: "visible", timeout: OPTION_WAIT_MS });
 
   const downloadPromise = page.waitForEvent("download", {
     timeout: DOWNLOAD_TIMEOUT_MS,
   });
   try {
-    await page
-      .locator("mds-button#download")
-      .click({ timeout: CLICK_TIMEOUT_MS });
+    await page.locator("mds-button#download").click({ timeout: CLICK_TIMEOUT_MS });
   } catch (err) {
     return {
       downloaded: false,
@@ -489,10 +461,7 @@ async function downloadQfx(
 
   try {
     const dl = await downloadPromise;
-    const qfxPath = join(
-      tmpDir,
-      `chase-${account.internal_id}-${activity}-${Date.now()}.qfx`
-    );
+    const qfxPath = join(tmpDir, `chase-${account.internal_id}-${activity}-${Date.now()}.qfx`);
     await dl.saveAs(qfxPath);
     return { downloaded: true, qfxPath, activity };
   } catch (err) {
@@ -525,11 +494,7 @@ function isoToPacked(iso: string): string | null {
   return `${m}${d}${y}`;
 }
 
-async function fillDateRange(
-  page: Page,
-  from: string,
-  to: string
-): Promise<DateFillResult> {
+async function fillDateRange(page: Page, from: string, to: string): Promise<DateFillResult> {
   const fromPacked = isoToPacked(from);
   const toPacked = isoToPacked(to);
   if (!(fromPacked && toPacked)) {
@@ -582,10 +547,10 @@ const LAST_FOUR_RE = /\.\.\.(\d{3,4})/;
 async function navigateToStatementsPage(page: Page): Promise<void> {
   // Warm overview first — direct-nav to the documents URL can bounce through
   // login if the SPA isn't fully hydrated.
-  await page.goto(
-    "https://secure.chase.com/web/auth/dashboard#/dashboard/overview",
-    { waitUntil: "domcontentloaded", timeout: NAV_TIMEOUT_MS }
-  );
+  await page.goto("https://secure.chase.com/web/auth/dashboard#/dashboard/overview", {
+    waitUntil: "domcontentloaded",
+    timeout: NAV_TIMEOUT_MS,
+  });
   // Wait for any account label to render before routing onward.
   await page
     .locator('[id^="accounts-name-link-button-"][id$="-label"]')
@@ -593,15 +558,12 @@ async function navigateToStatementsPage(page: Page): Promise<void> {
     .waitFor({ state: "attached", timeout: DOM_WAIT_MS })
     .catch((): undefined => undefined);
 
-  await page.goto(
-    "https://secure.chase.com/web/auth/dashboard#/dashboard/documents/myDocs/index;mode=documents",
-    { waitUntil: "domcontentloaded", timeout: NAV_TIMEOUT_MS }
-  );
+  await page.goto("https://secure.chase.com/web/auth/dashboard#/dashboard/documents/myDocs/index;mode=documents", {
+    waitUntil: "domcontentloaded",
+    timeout: NAV_TIMEOUT_MS,
+  });
   // Wait for the accordion trigger to appear — confirms the page rendered.
-  await page
-    .locator('[id^="button-documentsAccordion-"]')
-    .first()
-    .waitFor({ state: "visible", timeout: DOM_WAIT_MS });
+  await page.locator('[id^="button-documentsAccordion-"]').first().waitFor({ state: "visible", timeout: DOM_WAIT_MS });
 }
 
 /**
@@ -612,8 +574,7 @@ async function navigateToStatementsPage(page: Page): Promise<void> {
 function enumerateStatementRows(page: Page): Promise<StatementRow[]> {
   return page.evaluate((): StatementRow[] => {
     // biome-ignore-start lint/performance/useTopLevelRegex: runs in browser context (page.evaluate); module-scoped regexes in Node cannot cross the bridge.
-    const ANCHOR_ID_RE =
-      /accountsTable-\d+-row\d+-cell\d+-requestThisDocumentAnchor-download/;
+    const ANCHOR_ID_RE = /accountsTable-\d+-row\d+-cell\d+-requestThisDocumentAnchor-download/;
     const ACCORDION_ID_RE = /documentsAccordion-(\d+)/;
     const TABLE_ROW_RE = /accountsTable-(\d+)-row(\d+)-/;
     const STATEMENT_RE = /statement/i;
@@ -642,17 +603,12 @@ function enumerateStatementRows(page: Page): Promise<StatementRow[]> {
     // @ts-expect-error — browser context globals (document)
     const rootDoc: El = document;
     const els = walk(rootDoc);
-    const anchors = els.filter(
-      (el) => el.tagName === "A" && ANCHOR_ID_RE.test(el.id ?? "")
-    );
+    const anchors = els.filter((el) => el.tagName === "A" && ANCHOR_ID_RE.test(el.id ?? ""));
     // Parallel: find account accordion buttons, to associate each table with an account label.
-    const accordions = [
-      // @ts-expect-error — browser context globals (document)
-      ...document.querySelectorAll('[id^="button-documentsAccordion-"]'),
-    ].map((b: El) => {
-      const m = ACCORDION_ID_RE.exec(b.id ?? "");
+    const accordions = [...document.querySelectorAll<HTMLElement>('[id^="button-documentsAccordion-"]')].map((b) => {
+      const m = ACCORDION_ID_RE.exec(b.id);
       return {
-        id: b.id ?? "",
+        id: b.id,
         tableIdx: m?.[1],
         label: (b.innerText || "").replace(WS_RE, " ").trim(),
       };
@@ -678,12 +634,8 @@ function enumerateStatementRows(page: Page): Promise<StatementRow[]> {
       const cells: El[] = tr ? [...tr.querySelectorAll("td, th")] : [];
       const date_delivered_raw = (cells[0]?.innerText || "").trim();
       const doc_kind = (cells[1]?.innerText || "").trim();
-      const account_reference = tableIdx
-        ? (accountByTableIdx.get(tableIdx) ?? null)
-        : null;
-      const title = [date_delivered_raw, doc_kind, account_reference]
-        .filter(Boolean)
-        .join(" ");
+      const account_reference = tableIdx ? (accountByTableIdx.get(tableIdx) ?? null) : null;
+      const title = [date_delivered_raw, doc_kind, account_reference].filter(Boolean).join(" ");
       if (!(doc_kind && STATEMENT_RE.test(doc_kind))) {
         continue;
       }
@@ -779,10 +731,7 @@ async function downloadStatementPdf(
   const slug = accountSlug(accountId);
   const dir = join(STATEMENT_ROOT, slug);
   await mkdir(dir, { recursive: true });
-  const pdfPath = join(
-    dir,
-    `${yearMonthFromIso(isoDate)}-${pdfSha256.slice(0, HASH_SHORT_LEN)}.pdf`
-  );
+  const pdfPath = join(dir, `${yearMonthFromIso(isoDate)}-${pdfSha256.slice(0, HASH_SHORT_LEN)}.pdf`);
 
   // Idempotent: skip rewrite when the content is already at the expected path.
   const existing = await stat(pdfPath).catch((): null => null);
@@ -798,10 +747,7 @@ async function downloadStatementPdf(
  * "SAPPHIRE PREFERRED (...9241)") to the stable Chase internal account id
  * from our accounts array.
  */
-function resolveAccountIdForRow(
-  row: StatementRow,
-  accounts: readonly ChaseAccount[]
-): string | null {
+function resolveAccountIdForRow(row: StatementRow, accounts: readonly ChaseAccount[]): string | null {
   if (!row.account_reference) {
     return null;
   }
@@ -813,9 +759,7 @@ function resolveAccountIdForRow(
     }
   }
   const refLower = row.account_reference.toLowerCase();
-  const byName = accounts.find(
-    (a) => a.name && refLower.includes(a.name.toLowerCase())
-  );
+  const byName = accounts.find((a) => a.name && refLower.includes(a.name.toLowerCase()));
   return byName ? byName.internal_id : null;
 }
 
@@ -826,12 +770,7 @@ interface OfxParser {
 }
 
 function hasParse(v: unknown): v is OfxParser {
-  return (
-    typeof v === "object" &&
-    v !== null &&
-    "parse" in v &&
-    typeof (v as { parse: unknown }).parse === "function"
-  );
+  return typeof v === "object" && v !== null && "parse" in v && typeof (v as { parse: unknown }).parse === "function";
 }
 
 async function parseQfxFile(path: string): Promise<unknown> {
@@ -845,12 +784,7 @@ async function parseQfxFile(path: string): Promise<unknown> {
   const modObj = isOfxRecord(mod) ? mod : {};
   const defaultExport = modObj.default;
   const defaultObj = isOfxRecord(defaultExport) ? defaultExport : {};
-  const candidates: unknown[] = [
-    modObj.OFX,
-    defaultExport,
-    defaultObj.OFX,
-    mod,
-  ];
+  const candidates: unknown[] = [modObj.OFX, defaultExport, defaultObj.OFX, mod];
   const parser = candidates.find(hasParse);
   if (!parser) {
     throw new Error("ofx-js module shape not recognized");
@@ -904,14 +838,8 @@ function extractFromQfx(parsed: unknown): QfxExtracted {
     return { transactions: [], balance: null };
   }
 
-  const cc = ofxGet(
-    ofxGet(ofxGet(root, "CREDITCARDMSGSRSV1"), "CCSTMTTRNRS"),
-    "CCSTMTRS"
-  );
-  const bank = ofxGet(
-    ofxGet(ofxGet(root, "BANKMSGSRSV1"), "STMTTRNRS"),
-    "STMTRS"
-  );
+  const cc = ofxGet(ofxGet(ofxGet(root, "CREDITCARDMSGSRSV1"), "CCSTMTTRNRS"), "CCSTMTRS");
+  const bank = ofxGet(ofxGet(ofxGet(root, "BANKMSGSRSV1"), "STMTTRNRS"), "STMTRS");
   let stmtRaw: OfxValue = null;
   if (isOfxRecord(cc)) {
     stmtRaw = cc;
@@ -962,18 +890,14 @@ function extractFromQfx(parsed: unknown): QfxExtracted {
   const ledgerBal = ofxGet(stmtRaw, "LEDGERBAL");
   const availBal = ofxGet(stmtRaw, "AVAILBAL");
   if (ledgerBal || availBal) {
-    const asOf = ofxDateToFullIso(
-      ofxGet(ledgerBal, "DTASOF") ?? ofxGet(availBal, "DTASOF")
-    );
+    const asOf = ofxDateToFullIso(ofxGet(ledgerBal, "DTASOF") ?? ofxGet(availBal, "DTASOF"));
     if (asOf) {
       const ledgerAmt = ofxNumber(ofxGet(ledgerBal, "BALAMT"));
       const availAmt = ofxNumber(ofxGet(availBal, "BALAMT"));
       balance = {
         as_of: asOf,
-        ledger_cents:
-          ledgerAmt == null ? null : Math.round(ledgerAmt * CENTS_MULTIPLIER),
-        available_cents:
-          availAmt == null ? null : Math.round(availAmt * CENTS_MULTIPLIER),
+        ledger_cents: ledgerAmt == null ? null : Math.round(ledgerAmt * CENTS_MULTIPLIER),
+        available_cents: availAmt == null ? null : Math.round(availAmt * CENTS_MULTIPLIER),
       };
     }
   }
@@ -1023,16 +947,7 @@ runConnector({
     });
   },
   async collect(ctx: BrowserCollectContext): Promise<void> {
-    const {
-      state: startState,
-      requested,
-      page,
-      emit,
-      emitRecord,
-      progress,
-      capture,
-      emittedAt,
-    } = ctx;
+    const { state: startState, requested, page, emit, emitRecord, progress, capture, emittedAt } = ctx;
     const wantsAccounts = requested.has("accounts");
     const wantsTransactions = requested.has("transactions");
     const wantsBalances = requested.has("balances");
@@ -1041,8 +956,7 @@ runConnector({
     // State is keyed by stream name at the runtime layer:
     //   { transactions: { per_account: {<id>: {max_seen_date, ...}} } }
     // Normalize to an inner shape the rest of the connector reads directly.
-    const txState = (startState.transactions ??
-      startState) as TransactionsStateShape;
+    const txState = (startState.transactions ?? startState) as TransactionsStateShape;
 
     // Track max_seen_date per account across this run so the STATE cursor
     // reflects "I've seen transactions up to this date" per account. Used
@@ -1075,13 +989,9 @@ runConnector({
           .evaluate((): DashboardDiagnostics => {
             const WS = /\s+/g;
             return {
-              // @ts-expect-error — browser context globals (location)
               url: location.href,
-              // @ts-expect-error — browser context globals (document)
               title: document.title,
-              body_preview:
-                // @ts-expect-error — browser context globals (document)
-                (document.body?.innerText || "").replace(WS, " ").slice(0, 500),
+              body_preview: (document.body?.innerText || "").replace(WS, " ").slice(0, 500),
             };
           })
           .catch((): DashboardDiagnostics | null => null);
@@ -1089,8 +999,7 @@ runConnector({
           type: "SKIP_RESULT",
           stream: "accounts",
           reason: "selectors_pending",
-          message:
-            "No accounts discovered from dashboard. Selectors need calibration against live DOM.",
+          message: "No accounts discovered from dashboard. Selectors need calibration against live DOM.",
           diagnostics: diag,
         });
         return; // runtime emits DONE succeeded
@@ -1102,10 +1011,7 @@ runConnector({
       // loop so we don't hit Chase's download page for accounts the client
       // didn't ask for.
       const accountsResFilter =
-        resFilters.get("accounts") ??
-        resFilters.get("transactions") ??
-        resFilters.get("balances") ??
-        null;
+        resFilters.get("accounts") ?? resFilters.get("transactions") ?? resFilters.get("balances") ?? null;
       const filteredAccounts: ChaseAccount[] = accountsResFilter?.size
         ? accounts.filter((a) => accountsResFilter.has(a.internal_id))
         : accounts;
@@ -1264,42 +1170,26 @@ runConnector({
           for (const row of rows) {
             try {
               const dateIso = parseDateDelivered(row.date_delivered_raw);
-              const accountId =
-                resolveAccountIdForRow(row, filteredAccounts) ??
-                resolveAccountIdForRow(row, accounts);
+              const accountId = resolveAccountIdForRow(row, filteredAccounts) ?? resolveAccountIdForRow(row, accounts);
 
               // Apply resources filter: if the accounts res filter excludes
               // this statement's account, skip it. (emitRecord will also
               // skip, but doing it here saves the PDF download.)
-              if (
-                accountsResFilter?.size &&
-                accountId &&
-                !accountsResFilter.has(accountId)
-              ) {
+              if (accountsResFilter?.size && accountId && !accountsResFilter.has(accountId)) {
                 continue;
               }
 
               // Apply time_range filter: if client asked for statements.since
               // and this row predates it, skip the download.
               const stmtScope = requested.get("statements");
-              if (
-                stmtScope?.time_range?.since &&
-                dateIso &&
-                dateIso < stmtScope.time_range.since.slice(0, 10)
-              ) {
+              if (stmtScope?.time_range?.since && dateIso && dateIso < stmtScope.time_range.since.slice(0, 10)) {
                 continue;
               }
-              if (
-                stmtScope?.time_range?.until &&
-                dateIso &&
-                dateIso >= stmtScope.time_range.until.slice(0, 10)
-              ) {
+              if (stmtScope?.time_range?.until && dateIso && dateIso >= stmtScope.time_range.until.slice(0, 10)) {
                 continue;
               }
 
-              const id = shortHash(
-                `${row.account_reference ?? ""}|${dateIso ?? row.date_delivered_raw}|${row.title}`
-              );
+              const id = shortHash(`${row.account_reference ?? ""}|${dateIso ?? row.date_delivered_raw}|${row.title}`);
 
               await emit({
                 type: "PROGRESS",
@@ -1368,9 +1258,7 @@ runConnector({
         }
       }
     } finally {
-      await rm(tmpDir, { recursive: true, force: true }).catch(
-        (): undefined => undefined
-      );
+      await rm(tmpDir, { recursive: true, force: true }).catch((): undefined => undefined);
     }
 
     // Emit STATE for incremental resumption. The per_account cursor drives

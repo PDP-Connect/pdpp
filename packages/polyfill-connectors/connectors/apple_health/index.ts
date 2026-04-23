@@ -36,12 +36,10 @@ const PROGRESS_INTERVAL_EVENTS = 10_000;
 // Module-level regexes (Biome useTopLevelRegex).
 const APPLE_HEALTH_TAG_RE = /<(Record|Workout)\s+([^/>]+)\/?>/g;
 const APPLE_HEALTH_ATTR_RE = /(\w+)="([^"]*)"/g;
-const APPLE_HEALTH_TYPE_PREFIX_RE =
-  /^HKQuantityTypeIdentifier|^HKCategoryTypeIdentifier|^HKDataType/;
+const APPLE_HEALTH_TYPE_PREFIX_RE = /^HKQuantityTypeIdentifier|^HKCategoryTypeIdentifier|^HKDataType/;
 const APPLE_HEALTH_WORKOUT_PREFIX_RE = /^HKWorkoutActivityType/;
 
-const hashId = (s: string): string =>
-  createHash("sha256").update(s).digest("hex").slice(0, 24);
+const hashId = (s: string): string => createHash("sha256").update(s).digest("hex").slice(0, 24);
 
 function parseAttrs(tag: string): AppleHealthAttrs {
   const attrs: AppleHealthAttrs = {};
@@ -75,12 +73,7 @@ function isoDate(v: string | undefined): string | null {
   return null;
 }
 
-async function streamParse({
-  path,
-  onRecord,
-  onWorkout,
-  onProgress,
-}: StreamParseArgs): Promise<void> {
+async function streamParse({ path, onRecord, onWorkout, onProgress }: StreamParseArgs): Promise<void> {
   // Async iteration on a Readable pauses the stream between awaits, so we can
   // await async handlers without losing chunks. Older sync-callback form got
   // away with unawaited promises; we cannot.
@@ -111,10 +104,7 @@ async function streamParse({
       m = re.exec(buf);
     }
     buf = buf.slice(lastEnd);
-    if (
-      recordCount + workoutCount > 0 &&
-      (recordCount + workoutCount) % PROGRESS_INTERVAL_EVENTS === 0
-    ) {
+    if (recordCount + workoutCount > 0 && (recordCount + workoutCount) % PROGRESS_INTERVAL_EVENTS === 0) {
       await onProgress(recordCount, workoutCount);
     }
   }
@@ -124,9 +114,7 @@ async function streamParse({
 runConnector({
   name: "apple_health",
   async collect({ state, requested, emit, emitRecord, progress }) {
-    const dir =
-      process.env.APPLE_HEALTH_EXPORT_DIR ||
-      join(homedir(), ".pdpp/imports/apple_health");
+    const dir = process.env.APPLE_HEALTH_EXPORT_DIR || join(homedir(), ".pdpp/imports/apple_health");
     const path = ((): string | null => {
       const direct = join(dir, "export.xml");
       if (existsSync(direct)) {
@@ -159,8 +147,7 @@ runConnector({
 
     await streamParse({
       path,
-      onProgress: (rc, wc): Promise<void> =>
-        progress(`Parsed ${rc} records, ${wc} workouts`),
+      onProgress: (rc, wc): Promise<void> => progress(`Parsed ${rc} records, ${wc} workouts`),
       onRecord: async (attrs): Promise<void> => {
         if (!requested.has("records")) {
           return;
@@ -174,9 +161,7 @@ runConnector({
         }
         const type = healthTypeShort(attrs.type) || attrs.type || "Unknown";
         const value = attrs.value == null ? null : Number(attrs.value);
-        const id = hashId(
-          `${type}|${attrs.sourceName || ""}|${startDate}|${attrs.value || ""}`
-        );
+        const id = hashId(`${type}|${attrs.sourceName || ""}|${startDate}|${attrs.value || ""}`);
         await emitRecord("records", {
           id,
           type,
@@ -184,10 +169,7 @@ runConnector({
           source_version: attrs.sourceVersion || null,
           unit: attrs.unit || null,
           value: value != null && Number.isFinite(value) ? value : null,
-          value_raw:
-            (value == null || !Number.isFinite(value)) && attrs.value
-              ? attrs.value
-              : null,
+          value_raw: (value == null || !Number.isFinite(value)) && attrs.value ? attrs.value : null,
           start_date: startDate,
           end_date: isoDate(attrs.endDate),
         });
@@ -206,24 +188,15 @@ runConnector({
         if (sinceWork && startDate <= sinceWork) {
           return;
         }
-        const id = hashId(
-          `${attrs.workoutActivityType || ""}|${attrs.sourceName || ""}|${startDate}`
-        );
+        const id = hashId(`${attrs.workoutActivityType || ""}|${attrs.sourceName || ""}|${startDate}`);
         await emitRecord("workouts", {
           id,
           workout_activity_type: attrs.workoutActivityType
-            ? attrs.workoutActivityType.replace(
-                APPLE_HEALTH_WORKOUT_PREFIX_RE,
-                ""
-              )
+            ? attrs.workoutActivityType.replace(APPLE_HEALTH_WORKOUT_PREFIX_RE, "")
             : null,
           duration_minutes: attrs.duration ? Number(attrs.duration) : null,
-          total_energy_burned_kcal: attrs.totalEnergyBurned
-            ? Number(attrs.totalEnergyBurned)
-            : null,
-          total_distance_km: attrs.totalDistance
-            ? Number(attrs.totalDistance)
-            : null,
+          total_energy_burned_kcal: attrs.totalEnergyBurned ? Number(attrs.totalEnergyBurned) : null,
+          total_distance_km: attrs.totalDistance ? Number(attrs.totalDistance) : null,
           source_name: attrs.sourceName || null,
           start_date: startDate,
           end_date: isoDate(attrs.endDate),

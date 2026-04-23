@@ -41,10 +41,10 @@ const results: Record<number, Snap> = {};
 
 for (const year of years) {
   const page = await context.newPage();
-  await page.goto(
-    `https://www.amazon.com/your-orders/orders?timeFilter=year-${year}&startIndex=0`,
-    { waitUntil: "domcontentloaded", timeout: 45_000 }
-  );
+  await page.goto(`https://www.amazon.com/your-orders/orders?timeFilter=year-${year}&startIndex=0`, {
+    waitUntil: "domcontentloaded",
+    timeout: 45_000,
+  });
   await page
     .locator(".order-card")
     .first()
@@ -54,73 +54,52 @@ for (const year of years) {
     });
 
   const snap: Snap = await page.evaluate((): Snap => {
-    // @ts-expect-error — browser context globals (document)
-    const cards = [...document.querySelectorAll(".order-card, .js-order-card")];
+    const cards = [...document.querySelectorAll<HTMLElement>(".order-card, .js-order-card")];
     const cardCount = cards.length;
-    if (!cardCount) {
+    const card = cards[0];
+    if (!card) {
       return { cardCount, firstCard: null };
     }
 
-    const card = cards[0];
-
     // Probe for each field we want to extract
-    const getText = (el: { innerText?: string } | null | undefined): string =>
-      (el?.innerText || "").replace(/\s+/g, " ").trim();
+    const getText = (el: HTMLElement | null | undefined): string => (el?.innerText || "").replace(/\s+/g, " ").trim();
 
     // Order ID: .yohtmlc-order-id contains <span>ORDER #</span> <span>id</span>
     const orderIdEl = card.querySelector(".yohtmlc-order-id");
-    const orderIdSpans: string[] = orderIdEl
-      ? [...orderIdEl.querySelectorAll("span")].map(getText)
-      : [];
+    const orderIdSpans: string[] = orderIdEl ? [...orderIdEl.querySelectorAll<HTMLElement>("span")].map(getText) : [];
 
     // Order date: the order-header__header-list-item that contains "Order placed"
-    const headerItems: HeaderItem[] = [
-      ...card.querySelectorAll(".order-header__header-list-item"),
-    ].map((el: { querySelector: (s: string) => unknown }): HeaderItem => {
-      const label = el.querySelector(".a-color-secondary.a-text-caps") as {
-        innerText?: string;
-      } | null;
-      const value = el.querySelector(
-        ".a-size-base, .a-color-secondary:not(.a-text-caps)"
-      ) as { innerText?: string } | null;
-      return {
-        label: getText(label),
-        valueNode: getText(value),
-        allText: getText(el as { innerText?: string }),
-      };
-    });
+    const headerItems: HeaderItem[] = [...card.querySelectorAll<HTMLElement>(".order-header__header-list-item")].map(
+      (el): HeaderItem => {
+        const label = el.querySelector<HTMLElement>(".a-color-secondary.a-text-caps");
+        const value = el.querySelector<HTMLElement>(".a-size-base, .a-color-secondary:not(.a-text-caps)");
+        return {
+          label: getText(label),
+          valueNode: getText(value),
+          allText: getText(el),
+        };
+      }
+    );
 
     // Delivery status
     const primaryStatus = getText(
-      card.querySelector(
-        ".yohtmlc-shipment-status-primaryText, .delivery-box__primary-text"
-      )
+      card.querySelector<HTMLElement>(".yohtmlc-shipment-status-primaryText, .delivery-box__primary-text")
     );
     const secondaryStatus = getText(
-      card.querySelector(
-        ".yohtmlc-shipment-status-secondaryText, .delivery-box__secondary-text"
-      )
+      card.querySelector<HTMLElement>(".yohtmlc-shipment-status-secondaryText, .delivery-box__secondary-text")
     );
 
     // Item titles
-    const titles: string[] = [
-      ...card.querySelectorAll(".yohtmlc-product-title"),
-    ].map(getText);
+    const titles: string[] = [...card.querySelectorAll<HTMLElement>(".yohtmlc-product-title")].map(getText);
 
     // Item links (for ASIN)
-    const links: string[] = [
-      ...card.querySelectorAll('a[href*="/dp/"], a[href*="/gp/product/"]'),
-    ]
-      .map((a: { getAttribute: (n: string) => string | null }) =>
-        a.getAttribute("href")
-      )
-      .filter((h: string | null): h is string => Boolean(h));
+    const links: string[] = [...card.querySelectorAll('a[href*="/dp/"], a[href*="/gp/product/"]')]
+      .map((a) => a.getAttribute("href"))
+      .filter((h): h is string => Boolean(h));
 
     // Total: look for a "Total" area. Not always in a yohtmlc-* class.
     // Modern: .yohtmlc-order-total ; older may lack this
-    const totalEl = card.querySelector(
-      '.yohtmlc-order-total, [class*="order-total" i]'
-    );
+    const totalEl = card.querySelector<HTMLElement>('.yohtmlc-order-total, [class*="order-total" i]');
     const totalText = getText(totalEl);
 
     return {
@@ -138,12 +117,11 @@ for (const year of years) {
       // Also dump all classes starting with 'yohtmlc-' found within the card
       yohtmlcClasses: [
         ...new Set(
-          [...card.querySelectorAll('*[class*="yohtmlc-"]')].flatMap(
-            (el: { className?: string }) =>
-              (el.className || "")
-                // biome-ignore lint/performance/useTopLevelRegex: runs inside page.evaluate, serialized to browser
-                .split(/\s+/)
-                .filter((c: string) => c.startsWith("yohtmlc-"))
+          [...card.querySelectorAll('*[class*="yohtmlc-"]')].flatMap((el) =>
+            (el.className || "")
+              // biome-ignore lint/performance/useTopLevelRegex: runs inside page.evaluate, serialized to browser
+              .split(/\s+/)
+              .filter((c: string) => c.startsWith("yohtmlc-"))
           )
         ),
       ].sort(),

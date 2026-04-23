@@ -27,13 +27,7 @@ import {
 } from "../src/orchestrator.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const REFERENCE_IMPL_DIR = join(
-  __dirname,
-  "..",
-  "..",
-  "..",
-  "reference-implementation"
-);
+const REFERENCE_IMPL_DIR = join(__dirname, "..", "..", "..", "reference-implementation");
 const REPO_ROOT = join(__dirname, "..", "..", "..");
 
 dotenvConfig({ path: join(REPO_ROOT, ".env.local") });
@@ -78,11 +72,7 @@ interface RunConnectorOpts {
 }
 
 interface RuntimeModule {
-  loadSyncState: (args: {
-    connectorId: string;
-    ownerToken: string;
-    rsUrl: string;
-  }) => Promise<Record<string, unknown>>;
+  loadSyncState: (args: { connectorId: string; ownerToken: string; rsUrl: string }) => Promise<Record<string, unknown>>;
   runConnector: (opts: RunConnectorOpts) => Promise<RunResult>;
 }
 
@@ -90,16 +80,12 @@ interface StreamManifest {
   name: string;
 }
 
-async function cmdRun(
-  name: string
-): Promise<{ ok: boolean; result: RunResult }> {
+async function cmdRun(name: string): Promise<{ ok: boolean; result: RunResult }> {
   const manifest = readManifest(name);
   const streams = (manifest.streams ?? []) as StreamManifest[];
   const { connectorPath } = getConnectorPaths(name);
 
-  const dbPath =
-    process.env.PDPP_DB_PATH ||
-    join(REPO_ROOT, "packages/polyfill-connectors/.pdpp-data/polyfill.sqlite");
+  const dbPath = process.env.PDPP_DB_PATH || join(REPO_ROOT, "packages/polyfill-connectors/.pdpp-data/polyfill.sqlite");
 
   console.error(`[orchestrate] starting embedded server (db=${dbPath})...`);
   const server = (await startEmbeddedServer({ dbPath })) as EmbeddedServer;
@@ -112,15 +98,10 @@ async function cmdRun(
     await registerManifest(asUrl, manifest);
 
     console.error("[orchestrate] minting owner token...");
-    const ownerToken = await issueOwnerToken(
-      asUrl,
-      process.env.PDPP_SUBJECT_ID || "the owner"
-    );
+    const ownerToken = await issueOwnerToken(asUrl, process.env.PDPP_SUBJECT_ID || "the owner");
 
     console.error("[orchestrate] loading prior sync state...");
-    const runtime = (await import(
-      join(REFERENCE_IMPL_DIR, "runtime/index.js")
-    )) as RuntimeModule;
+    const runtime = (await import(join(REFERENCE_IMPL_DIR, "runtime/index.js"))) as RuntimeModule;
     const { runConnector, loadSyncState } = runtime;
     const prior = await loadSyncState({
       connectorId: manifest.connector_id,
@@ -128,9 +109,7 @@ async function cmdRun(
       rsUrl,
     }).catch(() => ({}));
     const priorState = prior && Object.keys(prior).length ? prior : null;
-    console.error(
-      `[orchestrate] prior state: ${priorState ? "present (incremental)" : "none (full_refresh)"}`
-    );
+    console.error(`[orchestrate] prior state: ${priorState ? "present (incremental)" : "none (full_refresh)"}`);
 
     console.error(`[orchestrate] running connector: ${connectorPath}`);
     const result = await runConnector({
@@ -144,9 +123,7 @@ async function cmdRun(
       rsUrl,
       onProgress: (p) => {
         if (p.message) {
-          process.stderr.write(
-            `  • ${p.stream ? `[${p.stream}] ` : ""}${p.message}\n`
-          );
+          process.stderr.write(`  • ${p.stream ? `[${p.stream}] ` : ""}${p.message}\n`);
         }
         if (p.type === "stderr" && p.text) {
           process.stderr.write(`[child-stderr] ${p.text}`);
@@ -158,13 +135,9 @@ async function cmdRun(
         }),
     });
 
-    console.error(
-      `[orchestrate] result: status=${result.status} records_emitted=${result.records_emitted}`
-    );
+    console.error(`[orchestrate] result: status=${result.status} records_emitted=${result.records_emitted}`);
     if (result.error) {
-      console.error(
-        `[orchestrate] error: ${JSON.stringify(result.error).slice(0, 800)}`
-      );
+      console.error(`[orchestrate] error: ${JSON.stringify(result.error).slice(0, 800)}`);
     }
 
     // Verify: query each stream and report record count
@@ -186,9 +159,7 @@ async function cmdRun(
       } | null;
       const count = Array.isArray(body?.data) ? body.data.length : 0;
       const hasMore = body?.has_more ? "+" : "";
-      console.error(
-        `  ✓ ${stream.name.padEnd(28)} ${count}${hasMore} record(s)`
-      );
+      console.error(`  ✓ ${stream.name.padEnd(28)} ${count}${hasMore} record(s)`);
     }
 
     return { ok: result.status === "succeeded", result };
@@ -204,10 +175,7 @@ async function cmdRun(
 async function cmdQuery(stream: string): Promise<void> {
   const asUrl = DEFAULT_AS_URL;
   const rsUrl = DEFAULT_RS_URL;
-  const ownerToken = await issueOwnerToken(
-    asUrl,
-    process.env.PDPP_SUBJECT_ID || "the owner"
-  );
+  const ownerToken = await issueOwnerToken(asUrl, process.env.PDPP_SUBJECT_ID || "the owner");
   const q = await queryStream(rsUrl, ownerToken, stream, { limit: 10 });
   console.log(JSON.stringify(q.body, null, 2));
 }
@@ -222,12 +190,8 @@ async function main(): Promise<void> {
     process.exit(0);
   }
   console.error("Usage:");
-  console.error(
-    "  orchestrate run <connector>       # ynab | gmail | chatgpt | usaa | amazon"
-  );
-  console.error(
-    "  orchestrate query <stream>        # against already-running server"
-  );
+  console.error("  orchestrate run <connector>       # ynab | gmail | chatgpt | usaa | amazon");
+  console.error("  orchestrate query <stream>        # against already-running server");
   process.exit(2);
 }
 

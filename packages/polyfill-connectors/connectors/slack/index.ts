@@ -56,12 +56,7 @@ import { join } from "node:path";
 // biome-ignore lint/correctness/noUnresolvedImports: node:sqlite is a built-in Node 22.5+ module; Biome's resolver doesn't see built-ins here
 import { DatabaseSync } from "node:sqlite";
 import { readOptions } from "../../src/connector-options.ts";
-import {
-  type CollectContext,
-  nowIso,
-  type RecordData,
-  runConnector,
-} from "../../src/connector-runtime.ts";
+import { type CollectContext, nowIso, type RecordData, runConnector } from "../../src/connector-runtime.ts";
 import { passesTimeRange, resourceSet } from "../../src/scope-filters.ts";
 
 // ─── SQLite row shapes (from slackdump's sqlite archive) ────────────────
@@ -275,11 +270,7 @@ function runSlackdump(
       if (code === 0) {
         resolve({ stdout, stderr });
       } else {
-        reject(
-          new Error(
-            `slackdump_exit_${code}: ${stderr.slice(0, 400) || stdout.slice(0, 400)}`
-          )
-        );
+        reject(new Error(`slackdump_exit_${code}: ${stderr.slice(0, 400) || stdout.slice(0, 400)}`));
       }
     });
     child.on("error", (e) => {
@@ -314,10 +305,10 @@ async function ensureWorkspaceCached({
   } catch {
     /* fall through to register */
   }
-  await runSlackdump(
-    ["workspace", "new", "-token", token, "-cookie", cookie, "-no-encryption"],
-    { env, timeoutMs: 30_000 }
-  );
+  await runSlackdump(["workspace", "new", "-token", token, "-cookie", cookie, "-no-encryption"], {
+    env,
+    timeoutMs: 30_000,
+  });
 }
 
 runConnector({
@@ -385,18 +376,11 @@ runConnector({
     // STATE is stream-keyed per Collection Profile: state is returned as
     // { <stream>: <cursor>, ... }. We write `archive_dir` into the messages
     // stream's cursor, so reads must qualify by that stream.
-    const messagesState = state.messages as
-      | { archive_dir?: string; last_ts?: string | null }
-      | undefined;
-    const legacyArchiveDir = (state as Record<string, unknown>).archive_dir as
-      | string
-      | undefined;
+    const messagesState = state.messages as { archive_dir?: string; last_ts?: string | null } | undefined;
+    const legacyArchiveDir = (state as Record<string, unknown>).archive_dir as string | undefined;
     const priorArchive = messagesState?.archive_dir || legacyArchiveDir; // fallback for pre-fix state
     const discoveredArchive = existsSync(archivePath) ? archivePath : null;
-    const resumeTarget =
-      priorArchive && existsSync(priorArchive)
-        ? priorArchive
-        : discoveredArchive;
+    const resumeTarget = priorArchive && existsSync(priorArchive) ? priorArchive : discoveredArchive;
     const useResume = Boolean(resumeTarget);
 
     // Map time_range from messages stream scope into -time-from / -time-to.
@@ -423,19 +407,12 @@ runConnector({
       SLACK_COOKIE: cookie,
     };
     for (const [k, v] of Object.entries(process.env)) {
-      if (
-        k !== "SLACK_WORKSPACE" &&
-        k !== "SLACK_TOKEN" &&
-        k !== "SLACK_COOKIE"
-      ) {
+      if (k !== "SLACK_WORKSPACE" && k !== "SLACK_TOKEN" && k !== "SLACK_COOKIE") {
         childEnv[k] = v;
       }
     }
     const msgResFilter = resFilters.get("messages");
-    const positionalChannels: string[] = [
-      ...(msgResFilter ? [...msgResFilter] : []),
-      ...opts.CHANNEL_ALLOWLIST,
-    ];
+    const positionalChannels: string[] = [...(msgResFilter ? [...msgResFilter] : []), ...opts.CHANNEL_ALLOWLIST];
 
     // Escape hatch: when the on-disk archive is valid but slackdump keeps
     // failing (e.g. Slack 500 errors on a specific channel, exit 6 loops),
@@ -450,14 +427,10 @@ runConnector({
           `Skipping slackdump refresh (PDPP_SLACK_SKIP_SLACKDUMP=1); reading existing archive at ${archivePath}`
         );
         if (!existsSync(sqlitePath)) {
-          throw new Error(
-            `PDPP_SLACK_SKIP_SLACKDUMP=1 but no archive found at ${sqlitePath}`
-          );
+          throw new Error(`PDPP_SLACK_SKIP_SLACKDUMP=1 but no archive found at ${sqlitePath}`);
         }
       } else {
-        progress(
-          `Ensuring slackdump workspace is cached (SLACKDUMP_BIN=${process.env.SLACKDUMP_BIN || "<unset>"})`
-        );
+        progress(`Ensuring slackdump workspace is cached (SLACKDUMP_BIN=${process.env.SLACKDUMP_BIN || "<unset>"})`);
         await ensureWorkspaceCached({ token, cookie, env: childEnv });
 
         progress(
@@ -467,9 +440,7 @@ runConnector({
         );
         // slackdump time format is 'YYYY-MM-DDTHH:MM:SS' (no Z, UTC implied).
         const toSlackTime = (iso: string | null): string | null =>
-          iso
-            ? iso.replace(SLACK_TIME_FRAC, "").replace(SLACK_TIME_Z, "")
-            : null;
+          iso ? iso.replace(SLACK_TIME_FRAC, "").replace(SLACK_TIME_Z, "") : null;
 
         // WHY we ship an API-limits config: slackdump's defaults set tier_3 /
         // tier_4 retries to 3, which exhausts quickly on bot-heavy channels
@@ -481,10 +452,7 @@ runConnector({
         // default retries. A handful of OTHER channels also hit 500s but
         // recovered — eng_github got unlucky on retry-count, not access.
         // See config/slackdump-api-config.toml.
-        const apiConfigPath = new URL(
-          "../../config/slackdump-api-config.toml",
-          import.meta.url
-        ).pathname;
+        const apiConfigPath = new URL("../../config/slackdump-api-config.toml", import.meta.url).pathname;
 
         if (useResume && resumeTarget) {
           // `resume` does not accept `-y` (unlike `archive`): passing it aborts
@@ -502,15 +470,7 @@ runConnector({
           ];
           await runSlackdump(args, { env: childEnv });
         } else {
-          const args = [
-            "archive",
-            "-y",
-            "-no-encryption",
-            "-api-config",
-            apiConfigPath,
-            "-o",
-            archivePath,
-          ];
+          const args = ["archive", "-y", "-no-encryption", "-api-config", apiConfigPath, "-o", archivePath];
           const tf = toSlackTime(timeFrom);
           const tt = toSlackTime(timeTo);
           if (tf) {
@@ -553,9 +513,7 @@ runConnector({
         return;
       }
       const streamScope = requested.get(s);
-      const tr = streamScope?.time_range as
-        | { since?: string; until?: string }
-        | undefined;
+      const tr = streamScope?.time_range as { since?: string; until?: string } | undefined;
       if (tr) {
         const sentAt = d.sent_at;
         const sentAtStr = typeof sentAt === "string" ? sentAt : null;
@@ -576,9 +534,7 @@ runConnector({
     // (full Slack API JSON). Tables are UPPERCASE singular.
     // node:sqlite returns BLOB as Uint8Array, not Buffer — use TextDecoder.
     const td = new TextDecoder("utf-8");
-    const parseBlob = (
-      blob: Uint8Array | string | null | undefined
-    ): SlackDataBlob => {
+    const parseBlob = (blob: Uint8Array | string | null | undefined): SlackDataBlob => {
       if (!blob) {
         return {};
       }
@@ -600,9 +556,7 @@ runConnector({
     const tsToIso = (ts: string | null | undefined): string | null =>
       ts ? new Date(Number.parseFloat(ts) * 1000).toISOString() : null;
     const epochToIso = (sec: number | null | undefined): string | null =>
-      Number.isFinite(sec)
-        ? new Date((sec as number) * 1000).toISOString()
-        : null;
+      Number.isFinite(sec) ? new Date((sec as number) * 1000).toISOString() : null;
 
     if (requested.has("workspace")) {
       const rows = safeAll<WorkspaceRow>(
@@ -668,16 +622,10 @@ runConnector({
           purpose_last_set: d.purpose?.last_set ?? null,
           num_members: d.num_members ?? null,
           user: d.user || null,
-          shared_team_ids: Array.isArray(d.shared_team_ids)
-            ? d.shared_team_ids
-            : null,
+          shared_team_ids: Array.isArray(d.shared_team_ids) ? d.shared_team_ids : null,
           context_team_id: d.context_team_id ?? null,
-          previous_names: Array.isArray(d.previous_names)
-            ? d.previous_names
-            : null,
-          has_canvas: d.properties?.canvas
-            ? !d.properties.canvas.is_empty
-            : null,
+          previous_names: Array.isArray(d.previous_names) ? d.previous_names : null,
+          has_canvas: d.properties?.canvas ? !d.properties.canvas.is_empty : null,
           canvas_file_id: d.properties?.canvas?.file_id || null,
           posting_restricted: d.properties?.posting_restricted_to?.type != null,
           threads_restricted: d.properties?.threads_restricted_to?.type != null,
@@ -756,11 +704,7 @@ runConnector({
 
     // Messages, reactions, message_attachments share one pass for efficiency.
     let maxMessageTs: string | null = null;
-    if (
-      requested.has("messages") ||
-      requested.has("reactions") ||
-      requested.has("message_attachments")
-    ) {
+    if (requested.has("messages") || requested.has("reactions") || requested.has("message_attachments")) {
       // Incremental sync: honor prior state.messages.last_ts by filtering in SQL.
       // Slack message TS strings collate lexically the same way they order
       // chronologically (fixed-width integer-dot-decimal), so string > works.
@@ -805,10 +749,9 @@ runConnector({
       }));
 
       if (priorTs) {
-        progress(
-          `incremental: filtering messages newer than ${priorTs} (${rows.length} to process)`,
-          { stream: "messages" }
-        );
+        progress(`incremental: filtering messages newer than ${priorTs} (${rows.length} to process)`, {
+          stream: "messages",
+        });
       }
 
       const wantMessages = requested.has("messages");
@@ -852,16 +795,12 @@ runConnector({
             edited_ts: d.edited?.ts || null,
             edited_by: d.edited?.user || null,
             has_files: (r.NUM_FILES ?? 0) > 0 || Array.isArray(d.files),
-            file_count:
-              r.NUM_FILES ?? (Array.isArray(d.files) ? d.files.length : null),
+            file_count: r.NUM_FILES ?? (Array.isArray(d.files) ? d.files.length : null),
             has_attachments: attachments.length > 0,
             attachment_count: attachments.length || null,
             has_blocks: Array.isArray(d.blocks) && d.blocks.length > 0,
             reaction_count: Array.isArray(d.reactions)
-              ? d.reactions.reduce(
-                  (a, x) => a + (x.count ?? (x.users?.length || 0)),
-                  0
-                )
+              ? d.reactions.reduce((a, x) => a + (x.count ?? (x.users?.length || 0)), 0)
               : 0,
             is_pinned: pinnedTo != null && pinnedTo.length > 0,
             pinned_to: pinnedTo,
@@ -1046,23 +985,19 @@ runConnector({
     const unavailableStreams = [
       {
         name: "stars",
-        reason:
-          "slackdump does not archive starred/saved items (stars.list is not called in archive mode)",
+        reason: "slackdump does not archive starred/saved items (stars.list is not called in archive mode)",
       },
       {
         name: "user_groups",
-        reason:
-          "slackdump does not archive user groups (usergroups.list is not called in archive mode)",
+        reason: "slackdump does not archive user groups (usergroups.list is not called in archive mode)",
       },
       {
         name: "reminders",
-        reason:
-          "slackdump does not archive reminders (reminders.list is not called in archive mode)",
+        reason: "slackdump does not archive reminders (reminders.list is not called in archive mode)",
       },
       {
         name: "dm_read_states",
-        reason:
-          "slackdump archive strips last_read / unread_count_display from channel data",
+        reason: "slackdump archive strips last_read / unread_count_display from channel data",
       },
     ];
     for (const s of unavailableStreams) {
@@ -1091,9 +1026,7 @@ runConnector({
     // slackdump state on the PDPP side.
     const priorMaxTs = messagesState?.last_ts || null;
     const committedMaxTs =
-      maxMessageTs && (priorMaxTs === null || maxMessageTs > priorMaxTs)
-        ? maxMessageTs
-        : priorMaxTs;
+      maxMessageTs && (priorMaxTs === null || maxMessageTs > priorMaxTs) ? maxMessageTs : priorMaxTs;
     emit({
       type: "STATE",
       stream: "messages",
@@ -1106,13 +1039,7 @@ runConnector({
     // Declare the other incremental streams' cursors as synced-now. Small
     // volume + full-refresh semantics, so no per-record filter — but the
     // spec wants a STATE per incremental stream.
-    for (const stream of [
-      "channels",
-      "users",
-      "files",
-      "canvases",
-      "workspace",
-    ]) {
+    for (const stream of ["channels", "users", "files", "canvases", "workspace"]) {
       if (requested.has(stream)) {
         emit({
           type: "STATE",

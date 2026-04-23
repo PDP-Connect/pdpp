@@ -81,10 +81,7 @@ async function readJsArchive(path: string): Promise<unknown[] | null> {
   }
   const text = await readFile(path, "utf8");
   // Archive files start like:  window.YTD.tweets.part0 = [ ... ]
-  const stripped = text
-    .replace(WINDOW_ASSIGN_PREFIX_RE, "")
-    .trim()
-    .replace(TRAILING_SEMICOLON_RE, "");
+  const stripped = text.replace(WINDOW_ASSIGN_PREFIX_RE, "").trim().replace(TRAILING_SEMICOLON_RE, "");
   try {
     const parsed = JSON.parse(stripped) as unknown;
     return Array.isArray(parsed) ? parsed : null;
@@ -96,9 +93,7 @@ async function readJsArchive(path: string): Promise<unknown[] | null> {
 runConnector({
   name: "twitter_archive",
   async collect({ state, requested, emit, emitRecord }) {
-    const importDir =
-      process.env.TWITTER_ARCHIVE_DIR ||
-      join(homedir(), ".pdpp/imports/twitter_archive");
+    const importDir = process.env.TWITTER_ARCHIVE_DIR || join(homedir(), ".pdpp/imports/twitter_archive");
 
     const typedState = state as Record<string, StreamState | undefined>;
 
@@ -118,9 +113,7 @@ runConnector({
         for (const rawEntry of arr) {
           const entry = rawEntry as TweetEntry;
           const t: TweetShape = entry.tweet || (entry as TweetShape);
-          const createdAt = t.created_at
-            ? new Date(t.created_at).toISOString()
-            : null;
+          const createdAt = t.created_at ? new Date(t.created_at).toISOString() : null;
           if (!createdAt) {
             continue;
           }
@@ -131,12 +124,8 @@ runConnector({
             id: t.id_str || t.id || null,
             text: t.full_text ?? t.text ?? null,
             created_at: createdAt,
-            favorite_count: t.favorite_count
-              ? Number.parseInt(String(t.favorite_count), 10)
-              : null,
-            retweet_count: t.retweet_count
-              ? Number.parseInt(String(t.retweet_count), 10)
-              : null,
+            favorite_count: t.favorite_count ? Number.parseInt(String(t.favorite_count), 10) : null,
+            retweet_count: t.retweet_count ? Number.parseInt(String(t.retweet_count), 10) : null,
             in_reply_to_status_id: t.in_reply_to_status_id_str ?? null,
             in_reply_to_screen_name: t.in_reply_to_screen_name ?? null,
             lang: t.lang ?? null,
@@ -163,22 +152,17 @@ runConnector({
     }
 
     if (requested.has("direct_messages")) {
-      const arr = await readJsArchive(
-        join(importDir, "data", "direct-messages.js")
-      );
+      const arr = await readJsArchive(join(importDir, "data", "direct-messages.js"));
       if (arr) {
         const since = typedState.direct_messages?.last_created_at;
         let latest: string | undefined = since;
         for (const rawConvo of arr) {
           const convo = rawConvo as DMEntry;
-          const conversation: DMConversation =
-            convo.dmConversation || (convo as DMConversation);
+          const conversation: DMConversation = convo.dmConversation || (convo as DMConversation);
           const convId = conversation.conversationId || null;
           for (const m of conversation.messages || []) {
             const mm: DMShape = m.messageCreate || (m as DMShape);
-            const createdAt = mm.createdAt
-              ? new Date(mm.createdAt).toISOString()
-              : null;
+            const createdAt = mm.createdAt ? new Date(mm.createdAt).toISOString() : null;
             if (!createdAt) {
               continue;
             }

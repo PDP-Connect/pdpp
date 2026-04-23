@@ -50,17 +50,15 @@ export const PLATFORMS: Record<string, PlatformProbe> = {
     probeUrl: "https://chatgpt.com/api/auth/session",
     async isLoggedIn(page): Promise<boolean> {
       try {
-        const body = (await page.evaluate(
-          async (): Promise<ChatGptSession | null> => {
-            const r = await fetch("/api/auth/session", {
-              credentials: "include",
-            });
-            if (!r.ok) {
-              return null;
-            }
-            return r.json() as Promise<ChatGptSession>;
+        const body = (await page.evaluate(async (): Promise<ChatGptSession | null> => {
+          const r = await fetch("/api/auth/session", {
+            credentials: "include",
+          });
+          if (!r.ok) {
+            return null;
           }
-        )) as ChatGptSession | null;
+          return r.json() as Promise<ChatGptSession>;
+        })) as ChatGptSession | null;
         return Boolean(body?.user);
       } catch {
         return false;
@@ -77,9 +75,7 @@ export const PLATFORMS: Record<string, PlatformProbe> = {
       // path-based probes.
       try {
         const cookies = await context.cookies("https://www.usaa.com/");
-        const loggedInCookie = cookies.find(
-          (c) => c.name === "UsaaMbWebMemberLoggedIn"
-        );
+        const loggedInCookie = cookies.find((c) => c.name === "UsaaMbWebMemberLoggedIn");
         if (loggedInCookie?.value && loggedInCookie.value !== "false") {
           return true;
         }

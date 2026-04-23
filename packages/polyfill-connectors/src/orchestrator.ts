@@ -12,12 +12,7 @@ import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PACKAGE_ROOT = join(__dirname, "..");
-const REFERENCE_IMPL_DIR = join(
-  PACKAGE_ROOT,
-  "..",
-  "..",
-  "reference-implementation"
-);
+const REFERENCE_IMPL_DIR = join(PACKAGE_ROOT, "..", "..", "reference-implementation");
 
 export const DEFAULT_AS_URL = process.env.AS_URL || "http://localhost:7662";
 export const DEFAULT_RS_URL = process.env.RS_URL || "http://localhost:7663";
@@ -108,11 +103,7 @@ interface AsFetchResult {
   status: number;
 }
 
-async function asFetch(
-  asUrl: string,
-  path: string,
-  opts: RequestInit = {}
-): Promise<AsFetchResult> {
+async function asFetch(asUrl: string, path: string, opts: RequestInit = {}): Promise<AsFetchResult> {
   const res = await fetch(`${asUrl}${path}`, opts);
   const text = await res.text();
   let body: unknown;
@@ -124,10 +115,7 @@ async function asFetch(
   return { status: res.status, body };
 }
 
-export async function registerManifest(
-  asUrl: string,
-  manifest: Manifest
-): Promise<unknown> {
+export async function registerManifest(asUrl: string, manifest: Manifest): Promise<unknown> {
   const { status, body } = await asFetch(asUrl, "/connectors", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -135,9 +123,7 @@ export async function registerManifest(
   });
   // 409 Conflict on re-register is fine — manifest version unchanged.
   if (status !== 201 && status !== 200 && status !== 409) {
-    throw new Error(
-      `register manifest failed ${status}: ${JSON.stringify(body)}`
-    );
+    throw new Error(`register manifest failed ${status}: ${JSON.stringify(body)}`);
   }
   return body;
 }
@@ -151,10 +137,7 @@ interface TokenBody {
   access_token: string;
 }
 
-export async function issueOwnerToken(
-  asUrl: string,
-  subjectId: string = DEFAULT_SUBJECT_ID
-): Promise<string> {
+export async function issueOwnerToken(asUrl: string, subjectId: string = DEFAULT_SUBJECT_ID): Promise<string> {
   const clientId = OWNER_BOOTSTRAP_CLIENT;
   const deviceReq = await asFetch(asUrl, "/oauth/device_authorization", {
     method: "POST",
@@ -162,9 +145,7 @@ export async function issueOwnerToken(
     body: new URLSearchParams({ client_id: clientId }).toString(),
   });
   if (deviceReq.status !== 200) {
-    throw new Error(
-      `device_authorization failed ${deviceReq.status}: ${JSON.stringify(deviceReq.body)}`
-    );
+    throw new Error(`device_authorization failed ${deviceReq.status}: ${JSON.stringify(deviceReq.body)}`);
   }
   const device = deviceReq.body as DeviceAuthorizationBody;
 
@@ -191,9 +172,7 @@ export async function issueOwnerToken(
     }).toString(),
   });
   if (tokenReq.status !== 200) {
-    throw new Error(
-      `/oauth/token failed ${tokenReq.status}: ${JSON.stringify(tokenReq.body)}`
-    );
+    throw new Error(`/oauth/token failed ${tokenReq.status}: ${JSON.stringify(tokenReq.body)}`);
   }
   return (tokenReq.body as TokenBody).access_token;
 }
@@ -205,9 +184,7 @@ export interface StartEmbeddedServerOptions {
 export async function startEmbeddedServer({
   dbPath = join(PACKAGE_ROOT, ".pdpp-data/polyfill.sqlite"),
 }: StartEmbeddedServerOptions = {}): Promise<unknown> {
-  const { startServer } = (await import(
-    join(REFERENCE_IMPL_DIR, "server/index.js")
-  )) as {
+  const { startServer } = (await import(join(REFERENCE_IMPL_DIR, "server/index.js"))) as {
     startServer: (opts: Record<string, unknown>) => Promise<unknown>;
   };
   // Ensure dir exists
@@ -236,9 +213,7 @@ export async function loadPriorState(
   ownerToken: string,
   connectorId: string
 ): Promise<Record<string, unknown> | null> {
-  const { loadSyncState } = (await import(
-    join(REFERENCE_IMPL_DIR, "runtime/index.js")
-  )) as {
+  const { loadSyncState } = (await import(join(REFERENCE_IMPL_DIR, "runtime/index.js"))) as {
     loadSyncState: (args: {
       connectorId: string;
       ownerToken: string;
@@ -263,29 +238,17 @@ export interface RunOneResult {
 
 export async function runOne(
   name: string,
-  {
-    asUrl = DEFAULT_AS_URL,
-    rsUrl = DEFAULT_RS_URL,
-    subjectId = DEFAULT_SUBJECT_ID,
-    onInteraction,
-  }: RunOneOptions = {}
+  { asUrl = DEFAULT_AS_URL, rsUrl = DEFAULT_RS_URL, subjectId = DEFAULT_SUBJECT_ID, onInteraction }: RunOneOptions = {}
 ): Promise<RunOneResult> {
   const manifest = readManifest(name);
   const { connectorPath } = getConnectorPaths(name);
 
   await registerManifest(asUrl, manifest);
   const ownerToken = await issueOwnerToken(asUrl, subjectId);
-  const state = await loadPriorState(
-    rsUrl,
-    ownerToken,
-    manifest.connector_id
-  ).catch((): null => null);
-  const collectionMode =
-    state && Object.keys(state).length ? "incremental" : "full_refresh";
+  const state = await loadPriorState(rsUrl, ownerToken, manifest.connector_id).catch((): null => null);
+  const collectionMode = state && Object.keys(state).length ? "incremental" : "full_refresh";
 
-  const { runConnector } = (await import(
-    join(REFERENCE_IMPL_DIR, "runtime/index.js")
-  )) as {
+  const { runConnector } = (await import(join(REFERENCE_IMPL_DIR, "runtime/index.js"))) as {
     runConnector: (args: Record<string, unknown>) => Promise<unknown>;
   };
   const result = await runConnector({
@@ -323,10 +286,7 @@ export async function queryStream(
   stream: string,
   { limit = 5, connectorId, ...filters }: QueryStreamOptions = {}
 ): Promise<QueryStreamResult> {
-  const url = new URL(
-    `/v1/streams/${encodeURIComponent(stream)}/records`,
-    rsUrl
-  );
+  const url = new URL(`/v1/streams/${encodeURIComponent(stream)}/records`, rsUrl);
   url.searchParams.set("limit", String(limit));
   if (connectorId) {
     url.searchParams.set("connector_id", connectorId);

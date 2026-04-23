@@ -28,11 +28,7 @@
  * and most-recent month).
  */
 
-import {
-  nowIso,
-  type RecordData,
-  runConnector,
-} from "../../src/connector-runtime.ts";
+import { nowIso, type RecordData, runConnector } from "../../src/connector-runtime.ts";
 
 const API_BASE = "https://api.ynab.com/v1";
 
@@ -231,11 +227,7 @@ interface YnabMonthDetailResponse {
   data: { month: YnabMonth };
 }
 
-async function ynab<T>(
-  path: string,
-  token: string,
-  { knowledge, sinceDate }: YnabFetchOptions = {}
-): Promise<T> {
+async function ynab<T>(path: string, token: string, { knowledge, sinceDate }: YnabFetchOptions = {}): Promise<T> {
   const url = new URL(`${API_BASE}${path}`);
   if (knowledge != null) {
     url.searchParams.set("last_knowledge_of_server", String(knowledge));
@@ -264,10 +256,7 @@ interface TimeRange {
   until?: string;
 }
 
-function withinTimeRange(
-  dateStr: string,
-  timeRange: TimeRange | undefined
-): boolean {
+function withinTimeRange(dateStr: string, timeRange: TimeRange | undefined): boolean {
   if (!timeRange) {
     return true;
   }
@@ -280,14 +269,8 @@ function withinTimeRange(
   return true;
 }
 
-function priorKnowledge(
-  state: Record<string, unknown>,
-  streamName: string,
-  budgetId: string
-): number | undefined {
-  const streamState = state[streamName] as
-    | Record<string, { server_knowledge?: number } | undefined>
-    | undefined;
+function priorKnowledge(state: Record<string, unknown>, streamName: string, budgetId: string): number | undefined {
+  const streamState = state[streamName] as Record<string, { server_knowledge?: number } | undefined> | undefined;
   return streamState?.[budgetId]?.server_knowledge;
 }
 
@@ -346,10 +329,7 @@ function accountRecord(a: YnabAccount, budgetId: string): RecordData {
   };
 }
 
-function categoryGroupRecord(
-  group: YnabCategoryGroup,
-  budgetId: string
-): RecordData {
+function categoryGroupRecord(group: YnabCategoryGroup, budgetId: string): RecordData {
   return {
     id: group.id,
     budget_id: budgetId,
@@ -360,11 +340,7 @@ function categoryGroupRecord(
   };
 }
 
-function categoryRecord(
-  c: YnabCategory,
-  group: YnabCategoryGroup,
-  budgetId: string
-): RecordData {
+function categoryRecord(c: YnabCategory, group: YnabCategoryGroup, budgetId: string): RecordData {
   return {
     id: c.id,
     budget_id: budgetId,
@@ -404,10 +380,7 @@ function payeeRecord(p: YnabPayee, budgetId: string): RecordData {
   };
 }
 
-function payeeLocationRecord(
-  loc: YnabPayeeLocation,
-  budgetId: string
-): RecordData {
+function payeeLocationRecord(loc: YnabPayeeLocation, budgetId: string): RecordData {
   return {
     id: loc.id,
     budget_id: budgetId,
@@ -418,11 +391,7 @@ function payeeLocationRecord(
   };
 }
 
-function transactionRecord(
-  t: YnabTransaction,
-  budgetId: string,
-  accountTypeById: Map<string, string>
-): RecordData {
+function transactionRecord(t: YnabTransaction, budgetId: string, accountTypeById: Map<string, string>): RecordData {
   return {
     id: t.id,
     budget_id: budgetId,
@@ -453,10 +422,7 @@ function transactionRecord(
   };
 }
 
-function scheduledTransactionRecord(
-  s: YnabScheduledTransaction,
-  budgetId: string
-): RecordData {
+function scheduledTransactionRecord(s: YnabScheduledTransaction, budgetId: string): RecordData {
   return {
     id: s.id,
     budget_id: budgetId,
@@ -494,11 +460,7 @@ function monthRecord(m: YnabMonth, budgetId: string): RecordData {
   };
 }
 
-function monthCategoryRecord(
-  c: YnabCategory,
-  month: string,
-  budgetId: string
-): RecordData {
+function monthCategoryRecord(c: YnabCategory, month: string, budgetId: string): RecordData {
   return {
     id: `${budgetId}:${month}:${c.id}`,
     budget_id: budgetId,
@@ -526,18 +488,11 @@ function monthCategoryRecord(
 
 // ─── Per-budget stream collectors ───────────────────────────────────────
 
-type EmitFn = (msg: {
-  type: "STATE";
-  stream: string;
-  cursor: unknown;
-}) => Promise<void>;
+type EmitFn = (msg: { type: "STATE"; stream: string; cursor: unknown }) => Promise<void>;
 
 type TrackedEmitRecord = (stream: string, data: RecordData) => Promise<void>;
 
-type ProgressFn = (
-  message: string,
-  extra?: { stream?: string }
-) => Promise<void>;
+type ProgressFn = (message: string, extra?: { stream?: string }) => Promise<void>;
 
 interface BudgetCtx {
   budgetId: string;
@@ -551,55 +506,35 @@ interface BudgetCtx {
 }
 
 async function collectAccounts(ctx: BudgetCtx): Promise<void> {
-  const { budgetId, token, state, newState, emit, trackAndEmit, progress } =
-    ctx;
+  const { budgetId, token, state, newState, emit, trackAndEmit, progress } = ctx;
   await progress(`Fetching accounts for budget ${budgetId}`, {
     stream: "accounts",
   });
   const knowledge = priorKnowledge(state, "accounts", budgetId);
-  const res = await ynab<YnabAccountsResponse>(
-    `/budgets/${budgetId}/accounts`,
-    token,
-    { ...(knowledge === undefined ? {} : { knowledge }) }
-  );
+  const res = await ynab<YnabAccountsResponse>(`/budgets/${budgetId}/accounts`, token, {
+    ...(knowledge === undefined ? {} : { knowledge }),
+  });
   for (const a of res.data.accounts) {
     await trackAndEmit("accounts", accountRecord(a, budgetId));
   }
-  const accounts =
-    (newState.accounts as
-      | Record<string, { server_knowledge: number }>
-      | undefined) ?? {};
+  const accounts = (newState.accounts as Record<string, { server_knowledge: number }> | undefined) ?? {};
   accounts[budgetId] = { server_knowledge: res.data.server_knowledge };
   newState.accounts = accounts;
   await emit({ type: "STATE", stream: "accounts", cursor: newState.accounts });
 }
 
 async function collectCategoriesAndGroups(ctx: BudgetCtx): Promise<void> {
-  const {
-    budgetId,
-    token,
-    state,
-    newState,
-    requested,
-    emit,
-    trackAndEmit,
-    progress,
-  } = ctx;
+  const { budgetId, token, state, newState, requested, emit, trackAndEmit, progress } = ctx;
   await progress(`Fetching categories for budget ${budgetId}`, {
     stream: "categories",
   });
   const knowledge = priorKnowledge(state, "categories", budgetId);
-  const res = await ynab<YnabCategoriesResponse>(
-    `/budgets/${budgetId}/categories`,
-    token,
-    { ...(knowledge === undefined ? {} : { knowledge }) }
-  );
+  const res = await ynab<YnabCategoriesResponse>(`/budgets/${budgetId}/categories`, token, {
+    ...(knowledge === undefined ? {} : { knowledge }),
+  });
   for (const group of res.data.category_groups) {
     if (requested.has("category_groups")) {
-      await trackAndEmit(
-        "category_groups",
-        categoryGroupRecord(group, budgetId)
-      );
+      await trackAndEmit("category_groups", categoryGroupRecord(group, budgetId));
     }
     if (requested.has("categories")) {
       for (const c of group.categories ?? []) {
@@ -607,10 +542,7 @@ async function collectCategoriesAndGroups(ctx: BudgetCtx): Promise<void> {
       }
     }
   }
-  const cats =
-    (newState.categories as
-      | Record<string, { server_knowledge: number }>
-      | undefined) ?? {};
+  const cats = (newState.categories as Record<string, { server_knowledge: number }> | undefined) ?? {};
   cats[budgetId] = { server_knowledge: res.data.server_knowledge };
   newState.categories = cats;
   await emit({
@@ -621,24 +553,18 @@ async function collectCategoriesAndGroups(ctx: BudgetCtx): Promise<void> {
 }
 
 async function collectPayees(ctx: BudgetCtx): Promise<void> {
-  const { budgetId, token, state, newState, emit, trackAndEmit, progress } =
-    ctx;
+  const { budgetId, token, state, newState, emit, trackAndEmit, progress } = ctx;
   await progress(`Fetching payees for budget ${budgetId}`, {
     stream: "payees",
   });
   const knowledge = priorKnowledge(state, "payees", budgetId);
-  const res = await ynab<YnabPayeesResponse>(
-    `/budgets/${budgetId}/payees`,
-    token,
-    { ...(knowledge === undefined ? {} : { knowledge }) }
-  );
+  const res = await ynab<YnabPayeesResponse>(`/budgets/${budgetId}/payees`, token, {
+    ...(knowledge === undefined ? {} : { knowledge }),
+  });
   for (const p of res.data.payees) {
     await trackAndEmit("payees", payeeRecord(p, budgetId));
   }
-  const payees =
-    (newState.payees as
-      | Record<string, { server_knowledge: number }>
-      | undefined) ?? {};
+  const payees = (newState.payees as Record<string, { server_knowledge: number }> | undefined) ?? {};
   payees[budgetId] = { server_knowledge: res.data.server_knowledge };
   newState.payees = payees;
   await emit({ type: "STATE", stream: "payees", cursor: newState.payees });
@@ -649,48 +575,30 @@ async function collectPayeeLocations(ctx: BudgetCtx): Promise<void> {
   await progress(`Fetching payee locations for budget ${budgetId}`, {
     stream: "payee_locations",
   });
-  const res = await ynab<YnabPayeeLocationsResponse>(
-    `/budgets/${budgetId}/payee_locations`,
-    token
-  );
+  const res = await ynab<YnabPayeeLocationsResponse>(`/budgets/${budgetId}/payee_locations`, token);
   for (const loc of res.data.payee_locations) {
     await trackAndEmit("payee_locations", payeeLocationRecord(loc, budgetId));
   }
 }
 
 async function collectTransactions(ctx: BudgetCtx): Promise<void> {
-  const {
-    budgetId,
-    token,
-    state,
-    newState,
-    requested,
-    emit,
-    trackAndEmit,
-    progress,
-  } = ctx;
+  const { budgetId, token, state, newState, requested, emit, trackAndEmit, progress } = ctx;
   await progress(`Fetching transactions for budget ${budgetId}`, {
     stream: "transactions",
   });
   const stream = requested.get("transactions");
   const knowledge = priorKnowledge(state, "transactions", budgetId);
-  const txnState = state.transactions as
-    | Record<string, { server_knowledge?: number; since_date?: string }>
-    | undefined;
+  const txnState = state.transactions as Record<string, { server_knowledge?: number; since_date?: string }> | undefined;
   const priorSinceDate = txnState?.[budgetId]?.since_date;
   const scopeSince = stream?.time_range?.since?.slice(0, 10);
   // Use server-side since_date only on first run (no delta cursor yet).
-  const sinceDate =
-    knowledge == null ? scopeSince || priorSinceDate || undefined : undefined;
+  const sinceDate = knowledge == null ? scopeSince || priorSinceDate || undefined : undefined;
 
   // Build account_id → account_type map for convenience enrichment.
   const accountTypeById = new Map<string, string>();
   // Always re-fetch accounts summary for the type map. Small payload, negligible cost.
   try {
-    const aRes = await ynab<YnabAccountsResponse>(
-      `/budgets/${budgetId}/accounts`,
-      token
-    );
+    const aRes = await ynab<YnabAccountsResponse>(`/budgets/${budgetId}/accounts`, token);
     for (const a of aRes.data.accounts) {
       accountTypeById.set(a.id, a.type);
     }
@@ -698,27 +606,18 @@ async function collectTransactions(ctx: BudgetCtx): Promise<void> {
     /* non-fatal */
   }
 
-  const res = await ynab<YnabTransactionsResponse>(
-    `/budgets/${budgetId}/transactions`,
-    token,
-    {
-      ...(knowledge === undefined ? {} : { knowledge }),
-      ...(sinceDate === undefined ? {} : { sinceDate }),
-    }
-  );
+  const res = await ynab<YnabTransactionsResponse>(`/budgets/${budgetId}/transactions`, token, {
+    ...(knowledge === undefined ? {} : { knowledge }),
+    ...(sinceDate === undefined ? {} : { sinceDate }),
+  });
   for (const t of res.data.transactions) {
     if (!withinTimeRange(t.date, stream?.time_range)) {
       continue;
     }
-    await trackAndEmit(
-      "transactions",
-      transactionRecord(t, budgetId, accountTypeById)
-    );
+    await trackAndEmit("transactions", transactionRecord(t, budgetId, accountTypeById));
   }
   const txns =
-    (newState.transactions as
-      | Record<string, { server_knowledge: number; since_date?: string }>
-      | undefined) ?? {};
+    (newState.transactions as Record<string, { server_knowledge: number; since_date?: string }> | undefined) ?? {};
   const storedSince = sinceDate || priorSinceDate || scopeSince;
   txns[budgetId] = {
     server_knowledge: res.data.server_knowledge,
@@ -733,27 +632,18 @@ async function collectTransactions(ctx: BudgetCtx): Promise<void> {
 }
 
 async function collectScheduledTransactions(ctx: BudgetCtx): Promise<void> {
-  const { budgetId, token, state, newState, emit, trackAndEmit, progress } =
-    ctx;
+  const { budgetId, token, state, newState, emit, trackAndEmit, progress } = ctx;
   await progress(`Fetching scheduled transactions for budget ${budgetId}`, {
     stream: "scheduled_transactions",
   });
   const knowledge = priorKnowledge(state, "scheduled_transactions", budgetId);
-  const res = await ynab<YnabScheduledTransactionsResponse>(
-    `/budgets/${budgetId}/scheduled_transactions`,
-    token,
-    { ...(knowledge === undefined ? {} : { knowledge }) }
-  );
+  const res = await ynab<YnabScheduledTransactionsResponse>(`/budgets/${budgetId}/scheduled_transactions`, token, {
+    ...(knowledge === undefined ? {} : { knowledge }),
+  });
   for (const s of res.data.scheduled_transactions) {
-    await trackAndEmit(
-      "scheduled_transactions",
-      scheduledTransactionRecord(s, budgetId)
-    );
+    await trackAndEmit("scheduled_transactions", scheduledTransactionRecord(s, budgetId));
   }
-  const scheduled =
-    (newState.scheduled_transactions as
-      | Record<string, { server_knowledge: number }>
-      | undefined) ?? {};
+  const scheduled = (newState.scheduled_transactions as Record<string, { server_knowledge: number }> | undefined) ?? {};
   scheduled[budgetId] = { server_knowledge: res.data.server_knowledge };
   newState.scheduled_transactions = scheduled;
   await emit({
@@ -763,41 +653,24 @@ async function collectScheduledTransactions(ctx: BudgetCtx): Promise<void> {
   });
 }
 
-async function fetchMonthsIfNeeded(
-  ctx: BudgetCtx,
-  shouldFetch: boolean
-): Promise<YnabMonth[] | null> {
+async function fetchMonthsIfNeeded(ctx: BudgetCtx, shouldFetch: boolean): Promise<YnabMonth[] | null> {
   if (!shouldFetch) {
     return null;
   }
-  const {
-    budgetId,
-    token,
-    state,
-    newState,
-    requested,
-    emit,
-    trackAndEmit,
-    progress,
-  } = ctx;
+  const { budgetId, token, state, newState, requested, emit, trackAndEmit, progress } = ctx;
   await progress(`Fetching months for budget ${budgetId}`, {
     stream: "months",
   });
   const knowledge = priorKnowledge(state, "months", budgetId);
-  const res = await ynab<YnabMonthsResponse>(
-    `/budgets/${budgetId}/months`,
-    token,
-    { ...(knowledge === undefined ? {} : { knowledge }) }
-  );
+  const res = await ynab<YnabMonthsResponse>(`/budgets/${budgetId}/months`, token, {
+    ...(knowledge === undefined ? {} : { knowledge }),
+  });
   const monthList = res.data.months;
   if (requested.has("months")) {
     for (const m of monthList) {
       await trackAndEmit("months", monthRecord(m, budgetId));
     }
-    const months =
-      (newState.months as
-        | Record<string, { server_knowledge: number }>
-        | undefined) ?? {};
+    const months = (newState.months as Record<string, { server_knowledge: number }> | undefined) ?? {};
     months[budgetId] = { server_knowledge: res.data.server_knowledge };
     newState.months = months;
     await emit({ type: "STATE", stream: "months", cursor: newState.months });
@@ -810,11 +683,8 @@ async function collectMonthCategories(
   monthList: YnabMonth[],
   monthCategoriesStream: { time_range?: TimeRange }
 ): Promise<void> {
-  const { budgetId, token, state, newState, emit, trackAndEmit, progress } =
-    ctx;
-  const mcState = state.month_categories as
-    | Record<string, { last_fetched_month?: string }>
-    | undefined;
+  const { budgetId, token, state, newState, emit, trackAndEmit, progress } = ctx;
+  const mcState = state.month_categories as Record<string, { last_fetched_month?: string }> | undefined;
   const priorCutoff = mcState?.[budgetId]?.last_fetched_month;
   const scopeSince = monthCategoriesStream.time_range?.since?.slice(0, 10);
   // Active months: exclude soft-deleted, apply time_range and prior cutoff.
@@ -843,36 +713,22 @@ async function collectMonthCategories(
 
   let highestMonth: string | null = priorCutoff || scopeSince || null;
   for (const m of activeMonths) {
-    await progress(
-      `Fetching categories for budget ${budgetId} month ${m.month}`,
-      { stream: "month_categories" }
-    );
-    const monthRes = await ynab<YnabMonthDetailResponse>(
-      `/budgets/${budgetId}/months/${m.month}`,
-      token
-    );
+    await progress(`Fetching categories for budget ${budgetId} month ${m.month}`, { stream: "month_categories" });
+    const monthRes = await ynab<YnabMonthDetailResponse>(`/budgets/${budgetId}/months/${m.month}`, token);
     const monthDetail = monthRes.data.month;
     for (const c of monthDetail.categories ?? []) {
-      await trackAndEmit(
-        "month_categories",
-        monthCategoryRecord(c, m.month, budgetId)
-      );
+      await trackAndEmit("month_categories", monthCategoryRecord(c, m.month, budgetId));
     }
     if (!highestMonth || m.month > highestMonth) {
       highestMonth = m.month;
     }
   }
-  const mcNew =
-    (newState.month_categories as
-      | Record<string, { last_fetched_month?: string }>
-      | undefined) ?? {};
+  const mcNew = (newState.month_categories as Record<string, { last_fetched_month?: string }> | undefined) ?? {};
   // Rewind cutoff by one month so the most recently closed month gets
   // one more pass next run (guards against late-arriving edits).
   const cutoffToStore = highestMonth ? rewindOneMonth(highestMonth) : undefined;
   mcNew[budgetId] = {
-    ...(cutoffToStore === undefined
-      ? {}
-      : { last_fetched_month: cutoffToStore }),
+    ...(cutoffToStore === undefined ? {} : { last_fetched_month: cutoffToStore }),
   };
   newState.month_categories = mcNew;
   await emit({
@@ -920,14 +776,7 @@ runConnector({
   // to { id } and emits with op: 'delete'.
   isTombstone: (_stream, d) => d.deleted === true,
   auth: { kind: "env", required: ["YNAB_PERSONAL_ACCESS_TOKEN"] },
-  async collect({
-    state,
-    requested,
-    credentials,
-    emit,
-    emitRecord: runtimeEmitRecord,
-    progress,
-  }) {
+  async collect({ state, requested, credentials, emit, emitRecord: runtimeEmitRecord, progress }) {
     const token = credentials.YNAB_PERSONAL_ACCESS_TOKEN;
     if (!token) {
       throw new Error("ynab_auth_failed");

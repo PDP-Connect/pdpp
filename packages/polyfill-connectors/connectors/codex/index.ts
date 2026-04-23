@@ -33,27 +33,14 @@
  *   CODEX_SKILLS_DIR       default $CODEX_HOME/skills
  */
 
-import {
-  createReadStream,
-  type Dirent,
-  existsSync,
-  type Stats,
-  statSync,
-} from "node:fs";
+import { createReadStream, type Dirent, existsSync, type Stats, statSync } from "node:fs";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import {
-  createInterface as createFileReader,
-  createInterface,
-} from "node:readline";
+import { createInterface as createFileReader, createInterface } from "node:readline";
 // biome-ignore lint/correctness/noUnresolvedImports: node:sqlite is a Node 22.5+ built-in module; Biome's resolver doesn't see built-ins
 import { DatabaseSync } from "node:sqlite";
-import type {
-  EmittedMessage,
-  RecordData,
-  StreamScope,
-} from "../../src/connector-runtime.ts";
+import type { EmittedMessage, RecordData, StreamScope } from "../../src/connector-runtime.ts";
 import { stringifyForJsonl } from "../../src/safe-emit.ts";
 import { resourceSet } from "../../src/scope-filters.ts";
 
@@ -142,8 +129,7 @@ interface PendingCall {
 }
 
 const rl = createInterface({ input: process.stdin, terminal: false });
-const emit = (m: EmittedMessage): boolean =>
-  process.stdout.write(stringifyForJsonl(m));
+const emit = (m: EmittedMessage): boolean => process.stdout.write(stringifyForJsonl(m));
 const flushAndExit = (code: number): void => {
   if (process.stdout.writableLength > 0) {
     process.stdout.once("drain", () => process.exit(code));
@@ -258,9 +244,7 @@ async function* walkRollouts(baseDir: string): AsyncGenerator<{
 }
 
 function epochToIso(sec: number | null | undefined): string | null {
-  return Number.isFinite(sec) && typeof sec === "number" && sec > 0
-    ? new Date(sec * 1000).toISOString()
-    : null;
+  return Number.isFinite(sec) && typeof sec === "number" && sec > 0 ? new Date(sec * 1000).toISOString() : null;
 }
 
 // ---- state_5.sqlite reader ----------------------------------------------
@@ -345,10 +329,7 @@ function parseFrontmatter(text: string): {
     }
     let val = (kv[2] ?? "").trim();
     // Strip surrounding quotes if present.
-    if (
-      (val.startsWith('"') && val.endsWith('"')) ||
-      (val.startsWith("'") && val.endsWith("'"))
-    ) {
+    if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
       val = val.slice(1, -1);
     }
     const key = kv[1];
@@ -509,9 +490,7 @@ async function main(): Promise<void> {
     return fail("Expected START");
   }
 
-  const requested = new Map<string, StreamScope>(
-    (startMsg.scope?.streams || []).map((s) => [s.name, s])
-  );
+  const requested = new Map<string, StreamScope>((startMsg.scope?.streams || []).map((s) => [s.name, s]));
   if (!requested.size) {
     return fail("START.scope.streams is required");
   }
@@ -523,11 +502,9 @@ async function main(): Promise<void> {
 
   const codexHome = process.env.CODEX_HOME || join(homedir(), ".codex");
   const baseDir = process.env.CODEX_SESSIONS_DIR || join(codexHome, "sessions");
-  const stateDbPath =
-    process.env.CODEX_STATE_DB || join(codexHome, "state_5.sqlite");
+  const stateDbPath = process.env.CODEX_STATE_DB || join(codexHome, "state_5.sqlite");
   const rulesDir = process.env.CODEX_RULES_DIR || join(codexHome, "rules");
-  const promptsDir =
-    process.env.CODEX_PROMPTS_DIR || join(codexHome, "prompts");
+  const promptsDir = process.env.CODEX_PROMPTS_DIR || join(codexHome, "prompts");
   const skillsDir = process.env.CODEX_SKILLS_DIR || join(codexHome, "skills");
 
   const state = startMsg.state || {};
@@ -563,10 +540,7 @@ async function main(): Promise<void> {
     total++;
   };
 
-  const needRollouts =
-    requested.has("sessions") ||
-    requested.has("messages") ||
-    requested.has("function_calls");
+  const needRollouts = requested.has("sessions") || requested.has("messages") || requested.has("function_calls");
 
   // Rollout aggregates per session (so `sessions` can carry message_count /
   // function_call_count even when state_5 provides the canonical metadata).
@@ -589,9 +563,7 @@ async function main(): Promise<void> {
 
     if (baseExists) {
       let fileCount = 0;
-      for await (const { path: p, year, month, day, file } of walkRollouts(
-        baseDir
-      )) {
+      for await (const { path: p, year, month, day, file } of walkRollouts(baseDir)) {
         fileCount++;
         let st: Stats;
         try {
@@ -686,17 +658,12 @@ async function main(): Promise<void> {
                 timestamp: ts,
               });
             }
-          } else if (
-            payload.type === "function_call_output" &&
-            requested.has("function_calls")
-          ) {
+          } else if (payload.type === "function_call_output" && requested.has("function_calls")) {
             const callId = payload.call_id;
             const existing = callId ? pendingCalls.get(callId) : null;
             if (existing) {
               existing.output_preview = textPreview(
-                typeof payload.output === "string"
-                  ? payload.output
-                  : JSON.stringify(payload.output),
+                typeof payload.output === "string" ? payload.output : JSON.stringify(payload.output),
                 2000
               );
             } else {
@@ -708,9 +675,7 @@ async function main(): Promise<void> {
                 name: null,
                 arguments: null,
                 output_preview: textPreview(
-                  typeof payload.output === "string"
-                    ? payload.output
-                    : JSON.stringify(payload.output),
+                  typeof payload.output === "string" ? payload.output : JSON.stringify(payload.output),
                   2000
                 ),
                 timestamp: ts,
@@ -762,11 +727,7 @@ async function main(): Promise<void> {
         git_commit: t.git_sha || null,
         git_branch: t.git_branch || null,
         repository_url: t.git_origin_url || null,
-        started_at:
-          epochToIso(t.created_at) ||
-          agg?.meta?.timestamp ||
-          agg?.firstTs ||
-          null,
+        started_at: epochToIso(t.created_at) || agg?.meta?.timestamp || agg?.firstTs || null,
         last_event_at: epochToIso(t.updated_at) || agg?.lastTs || null,
         message_count: agg?.messageCount ?? null,
         function_call_count: agg?.functionCallCount ?? null,
@@ -833,9 +794,7 @@ async function main(): Promise<void> {
     });
   }
   if (requested.has("messages") || requested.has("function_calls")) {
-    const cursorStream = requested.has("messages")
-      ? "messages"
-      : "function_calls";
+    const cursorStream = requested.has("messages") ? "messages" : "function_calls";
     emit({
       type: "STATE",
       stream: cursorStream,

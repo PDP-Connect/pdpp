@@ -66,11 +66,7 @@ interface OuraParams {
   start_date?: string;
 }
 
-async function oura<T>(
-  endpoint: string,
-  token: string,
-  params: OuraParams
-): Promise<OuraListResponse<T>> {
+async function oura<T>(endpoint: string, token: string, params: OuraParams): Promise<OuraListResponse<T>> {
   const url = new URL(`${API}/${endpoint}`);
   for (const [k, v] of Object.entries(params)) {
     if (v != null) {
@@ -87,18 +83,12 @@ async function oura<T>(
     throw new Error("oura_rate_limited");
   }
   if (!res.ok) {
-    throw new Error(
-      `oura_http_${String(res.status)}: ${(await res.text()).slice(0, 200)}`
-    );
+    throw new Error(`oura_http_${String(res.status)}: ${(await res.text()).slice(0, 200)}`);
   }
   return (await res.json()) as OuraListResponse<T>;
 }
 
-async function fetchAll<T>(
-  endpoint: string,
-  token: string,
-  startDate: string | null
-): Promise<T[]> {
+async function fetchAll<T>(endpoint: string, token: string, startDate: string | null): Promise<T[]> {
   const all: T[] = [];
   let nextToken: string | undefined;
   let guard = MAX_PAGES;
@@ -174,11 +164,7 @@ interface StreamConfig<T extends OuraRow> {
 
 interface RunStreamArgs<T extends OuraRow> {
   config: StreamConfig<T>;
-  emit: (msg: {
-    type: "STATE";
-    stream: string;
-    cursor: unknown;
-  }) => Promise<void>;
+  emit: (msg: { type: "STATE"; stream: string; cursor: unknown }) => Promise<void>;
   emitRecord: (stream: string, data: RecordData) => Promise<void>;
   progress: (message: string, extra?: { stream?: string }) => Promise<void>;
   requested: Map<string, { time_range?: { since?: string } }>;
@@ -198,9 +184,7 @@ function sinceFor(
   return priorDay || scopeSince || null;
 }
 
-async function runStream<T extends OuraRow>(
-  args: RunStreamArgs<T>
-): Promise<void> {
+async function runStream<T extends OuraRow>(args: RunStreamArgs<T>): Promise<void> {
   const { config, token, state, requested, emit, emitRecord, progress } = args;
   const { streamName, endpoint, toRecord } = config;
   await progress(`Fetching ${streamName}`, { stream: streamName });

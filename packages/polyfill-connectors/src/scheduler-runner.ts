@@ -10,26 +10,11 @@
 
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import {
-  type InboxItemNotice,
-  notifyInboxItem,
-  notifyOvernightSummary,
-} from "./ntfy.ts";
-import {
-  getConnectorPaths,
-  issueOwnerToken,
-  readManifest,
-  registerManifest,
-} from "./orchestrator.ts";
+import { type InboxItemNotice, notifyInboxItem, notifyOvernightSummary } from "./ntfy.ts";
+import { getConnectorPaths, issueOwnerToken, readManifest, registerManifest } from "./orchestrator.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const REFERENCE_IMPL_DIR = join(
-  __dirname,
-  "..",
-  "..",
-  "..",
-  "reference-implementation"
-);
+const REFERENCE_IMPL_DIR = join(__dirname, "..", "..", "..", "reference-implementation");
 
 const DEFAULT_INTERVALS: Record<string, number> = {
   ynab: 4 * 60 * 60 * 1000, // 4h
@@ -113,12 +98,10 @@ export async function startPolyfillScheduler({
   subjectId = "the owner",
   inboxHandler,
 }: StartPolyfillSchedulerOptions): Promise<PolyfillSchedulerHandle> {
-  const { createScheduler } = (await import(
-    join(REFERENCE_IMPL_DIR, "runtime/scheduler.js")
-  )) as { createScheduler: (args: CreateSchedulerArgs) => Scheduler };
-  const { loadSyncState } = (await import(
-    join(REFERENCE_IMPL_DIR, "runtime/index.js")
-  )) as {
+  const { createScheduler } = (await import(join(REFERENCE_IMPL_DIR, "runtime/scheduler.js"))) as {
+    createScheduler: (args: CreateSchedulerArgs) => Scheduler;
+  };
+  const { loadSyncState } = (await import(join(REFERENCE_IMPL_DIR, "runtime/index.js"))) as {
     loadSyncState: (args: {
       connectorId: string;
       ownerToken: string;
@@ -199,8 +182,7 @@ export async function startPolyfillScheduler({
       const counts: Record<string, string> = {};
       const failures: string[] = [];
       for (const [cid, s] of Object.entries(stats)) {
-        counts[cid] =
-          `${String(s.succeeded)}/${String(s.totalRuns)} succeeded, ${String(s.totalRecords)} records`;
+        counts[cid] = `${String(s.succeeded)}/${String(s.totalRuns)} succeeded, ${String(s.totalRecords)} records`;
         if (s.lastRun?.status === "failed") {
           failures.push(`${cid}: ${s.lastRun.error || "unknown"}`);
         }

@@ -140,10 +140,7 @@ interface ToolCallSynthetic {
 
 interface ChatGptApi {
   auth: () => Promise<ChatGptAuth>;
-  fetch: (
-    path: string,
-    opts?: { method?: string; body?: unknown }
-  ) => Promise<ChatGptFetchResult>;
+  fetch: (path: string, opts?: { method?: string; body?: unknown }) => Promise<ChatGptFetchResult>;
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────
@@ -184,7 +181,6 @@ async function getAuthFromPage(page: Page): Promise<ChatGptAuth> {
   await page
     .waitForFunction(
       () => {
-        // @ts-expect-error — browser context, `document` exists at runtime
         const el = document.getElementById("client-bootstrap");
         return el?.textContent && el.textContent.length > 10;
       },
@@ -196,7 +192,6 @@ async function getAuthFromPage(page: Page): Promise<ChatGptAuth> {
   const auth = (await page.evaluate(() => {
     let accessToken: string | null = null;
     let deviceId: string | null = null;
-    // @ts-expect-error — browser context globals
     const el = document.getElementById("client-bootstrap");
     if (el) {
       try {
@@ -206,16 +201,15 @@ async function getAuthFromPage(page: Page): Promise<ChatGptAuth> {
         /* ignore */
       }
     }
-    // @ts-expect-error — browser context globals
+    // @ts-expect-error — __NEXT_DATA__ is a Next.js-injected global not in the DOM lib
     if (!accessToken && window.__NEXT_DATA__) {
       accessToken =
-        // @ts-expect-error — browser context globals
+        // @ts-expect-error — __NEXT_DATA__ is a Next.js-injected global not in the DOM lib
         window.__NEXT_DATA__?.props?.pageProps?.session?.accessToken || null;
     }
-    // @ts-expect-error — browser context globals
     // biome-ignore lint/performance/useTopLevelRegex: runs in browser context (page.evaluate); module-scoped regexes in Node cannot cross the bridge.
     const m = (document.cookie || "").match(/oai-did=([^;]+)/);
-    if (m) {
+    if (m?.[1]) {
       deviceId = decodeURIComponent(m[1]);
     }
     return { accessToken, deviceId };
@@ -238,13 +232,7 @@ async function getAuthFromPage(page: Page): Promise<ChatGptAuth> {
  *   - Terminal (AbortError): 401/403 (auth dead); 4xx except 429
  *   - Caller decides what to do with a successful response body
  */
-function createChatGptApi({
-  page,
-  capture,
-}: {
-  page: Page;
-  capture: CaptureSession | null;
-}): ChatGptApi {
+function createChatGptApi({ page, capture }: { page: Page; capture: CaptureSession | null }): ChatGptApi {
   let authCache: ChatGptAuth | null = null;
   async function auth(): Promise<ChatGptAuth> {
     if (authCache) {
@@ -252,9 +240,7 @@ function createChatGptApi({
     }
     const fresh = await getAuthFromPage(page);
     if (!fresh.accessToken) {
-      throw new Error(
-        "chatgpt_auth_missing: could not extract bearer token from #client-bootstrap"
-      );
+      throw new Error("chatgpt_auth_missing: could not extract bearer token from #client-bootstrap");
     }
     authCache = fresh;
     return fresh;
@@ -309,23 +295,14 @@ function createChatGptApi({
             result = await fetchOnce(path, { method, body });
           } catch (err) {
             const m = err instanceof Error ? err.message : String(err);
-            throw new Error(
-              `apiFetch network error on ${method} ${path}: ${m}`
-            );
+            throw new Error(`apiFetch network error on ${method} ${path}: ${m}`);
           }
           const { status } = result;
-          if (
-            status === 429 ||
-            status === 502 ||
-            status === 503 ||
-            status === 504
-          ) {
+          if (status === 429 || status === 502 || status === 503 || status === 504) {
             throw new Error(`apiFetch got ${status} on ${method} ${path}`);
           }
           if (status === 401 || status === 403) {
-            throw new AbortError(
-              `apiFetch got ${status} on ${method} ${path} (auth — not retryable)`
-            );
+            throw new AbortError(`apiFetch got ${status} on ${method} ${path} (auth — not retryable)`);
           }
           if (capture) {
             capture.captureHttp(`${method}-${path}`, result.json, {
@@ -523,10 +500,7 @@ function extractContent(content: ChatGptContent | undefined): string | null {
   // { content_type: "model_editable_context", model_set_context, repository?, repo_summary? }
   if (type === "model_editable_context") {
     const pieces: string[] = [];
-    if (
-      typeof content.model_set_context === "string" &&
-      content.model_set_context
-    ) {
+    if (typeof content.model_set_context === "string" && content.model_set_context) {
       pieces.push(content.model_set_context);
     }
     if (typeof content.repository === "string" && content.repository) {
@@ -555,10 +529,7 @@ function extractContent(content: ChatGptContent | undefined): string | null {
     if (typeof content.user_profile === "string" && content.user_profile) {
       pieces.push(content.user_profile);
     }
-    if (
-      typeof content.user_instructions === "string" &&
-      content.user_instructions
-    ) {
+    if (typeof content.user_instructions === "string" && content.user_instructions) {
       pieces.push(content.user_instructions);
     }
     return pieces.join("\n\n").trim() || null;
@@ -633,15 +604,10 @@ function extractMessage(
     content_type: m.content?.content_type ?? null,
     model_slug: m.metadata?.model_slug ?? null,
     create_time: tsToIso(m.create_time),
-    finish_reason:
-      m.end_turn === false
-        ? "tool_calls"
-        : (m.metadata?.finish_details?.type ?? null),
+    finish_reason: m.end_turn === false ? "tool_calls" : (m.metadata?.finish_details?.type ?? null),
     citations: m.metadata?.citations ?? [],
     tool_calls: extractToolCalls(m),
-    attachment_ids: (m.metadata?.attachments ?? [])
-      .map((a) => a.id)
-      .filter(Boolean),
+    attachment_ids: (m.metadata?.attachments ?? []).map((a) => a.id).filter(Boolean),
     on_current_branch: onCurrentBranch,
   };
 }
@@ -658,14 +624,7 @@ runConnector({
     });
   },
   async collect(ctx: CollectContext | BrowserCollectContext): Promise<void> {
-    const {
-      state,
-      requested,
-      emit,
-      emitRecord: baseEmitRecord,
-      progress,
-      capture,
-    } = ctx;
+    const { state, requested, emit, emitRecord: baseEmitRecord, progress, capture } = ctx;
     const { page } = ctx as BrowserCollectContext;
 
     // API client closes over page + capture — no module-level mutable state,
@@ -683,9 +642,7 @@ runConnector({
           JSON.stringify(data);
         } catch (err) {
           const m = err instanceof Error ? err.message : String(err);
-          process.stderr.write(
-            `[chatgpt-debug] emit failed for ${stream} id=${String(data.id)}: ${m}\n`
-          );
+          process.stderr.write(`[chatgpt-debug] emit failed for ${stream} id=${String(data.id)}: ${m}\n`);
           return Promise.resolve();
         }
       }
@@ -694,9 +651,7 @@ runConnector({
 
     // Verify session (extract bearer token for /backend-api calls)
     const auth = await api.auth();
-    progress(
-      `Authenticated to ChatGPT (device_id=${auth.deviceId ? `${auth.deviceId.slice(0, 8)}…` : "unknown"})`
-    );
+    progress(`Authenticated to ChatGPT (device_id=${auth.deviceId ? `${auth.deviceId.slice(0, 8)}…` : "unknown"})`);
 
     // MEMORIES
     if (requested.has("memories")) {
@@ -767,9 +722,7 @@ runConnector({
       let pages = 0;
       let anyError = false;
       do {
-        const qs = cursor
-          ? `?cursor=${encodeURIComponent(cursor)}&limit=100`
-          : "?limit=100";
+        const qs = cursor ? `?cursor=${encodeURIComponent(cursor)}&limit=100` : "?limit=100";
         const res = await api.fetch(`/gizmos/mine${qs}`);
         if (res.status === 404 || res.status === 403) {
           emit({
@@ -791,21 +744,14 @@ runConnector({
           anyError = true;
           break;
         }
-        const items =
-          (res.json?.items as unknown[] | undefined) ||
-          (res.json?.gizmos as unknown[] | undefined) ||
-          [];
+        const items = (res.json?.items as unknown[] | undefined) || (res.json?.gizmos as unknown[] | undefined) || [];
         for (const raw of items) {
           // Unwrap {resource: {gizmo: {...}}} or {resource: {...}} shapes.
           const rawObj = raw as {
             resource?: { gizmo?: unknown };
             gizmo?: unknown;
           };
-          const g =
-            (rawObj?.resource as { gizmo?: unknown })?.gizmo ||
-            rawObj?.resource ||
-            rawObj?.gizmo ||
-            raw;
+          const g = (rawObj?.resource as { gizmo?: unknown })?.gizmo || rawObj?.resource || rawObj?.gizmo || raw;
           const gObj = g as
             | {
                 id?: string;
@@ -962,9 +908,7 @@ runConnector({
       const stopPaging = false;
       let sawError = false;
       while (!stopPaging) {
-        const res = await api.fetch(
-          `/shared_conversations?offset=${offset}&limit=${limit}&order=created`
-        );
+        const res = await api.fetch(`/shared_conversations?offset=${offset}&limit=${limit}&order=created`);
         if (res.status === 404 || res.status === 403) {
           emit({
             type: "SKIP_RESULT",
@@ -1047,9 +991,7 @@ runConnector({
 
     // CONVERSATIONS — list + per-conversation detail
     if (requested.has("conversations") || requested.has("messages")) {
-      const conversationsCursor = state.conversations as
-        | { last_update_time?: string | null }
-        | undefined;
+      const conversationsCursor = state.conversations as { last_update_time?: string | null } | undefined;
       const priorCursor = conversationsCursor?.last_update_time || null;
 
       const convosToSync: ConversationListItem[] = [];
@@ -1062,9 +1004,7 @@ runConnector({
         message: "Listing conversations",
       });
       while (!stopPaging) {
-        const res = await api.fetch(
-          `/conversations?offset=${offset}&limit=${limit}&order=updated`
-        );
+        const res = await api.fetch(`/conversations?offset=${offset}&limit=${limit}&order=updated`);
         if (res.status !== 200) {
           emit({
             type: "SKIP_RESULT",
@@ -1074,8 +1014,7 @@ runConnector({
           });
           break;
         }
-        const items =
-          (res.json?.items as ConversationListItem[] | undefined) || [];
+        const items = (res.json?.items as ConversationListItem[] | undefined) || [];
         if (!items.length) {
           break;
         }
@@ -1102,10 +1041,7 @@ runConnector({
         message: `Found ${convosToSync.length} conversations to sync`,
       });
 
-      const emitConversation = (
-        c: ConversationListItem,
-        detail: ChatGptJson | null
-      ): void => {
+      const emitConversation = (c: ConversationListItem, detail: ChatGptJson | null): void => {
         if (!requested.has("conversations")) {
           return;
         }
@@ -1142,11 +1078,7 @@ runConnector({
         const BATCH = 3; // conservative concurrency
         for (let i = 0; i < convosToSync.length; i += BATCH) {
           const batch = convosToSync.slice(i, i + BATCH);
-          const results = await Promise.all(
-            batch.map((c) =>
-              api.fetch(`/conversation/${encodeURIComponent(c.id)}`)
-            )
-          );
+          const results = await Promise.all(batch.map((c) => api.fetch(`/conversation/${encodeURIComponent(c.id)}`)));
           for (let j = 0; j < batch.length; j++) {
             const c = batch[j];
             const detail = results[j];
@@ -1166,18 +1098,9 @@ runConnector({
             }
             const mapping = detail.json.mapping;
             const currentNode = detail.json.current_node || c.current_node;
-            const currentBranchIds = new Set(
-              flattenTreeCurrentBranch(mapping, currentNode).map(
-                (x) => x.nodeId
-              )
-            );
+            const currentBranchIds = new Set(flattenTreeCurrentBranch(mapping, currentNode).map((x) => x.nodeId));
             for (const [nodeId, node] of Object.entries(mapping)) {
-              const msg = extractMessage(
-                nodeId,
-                node,
-                c.id,
-                currentBranchIds.has(nodeId)
-              );
+              const msg = extractMessage(nodeId, node, c.id, currentBranchIds.has(nodeId));
               if (!msg) {
                 continue;
               }

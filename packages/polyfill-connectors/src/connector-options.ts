@@ -71,11 +71,7 @@ export function readOptions(
   return out;
 }
 
-function coerce(
-  raw: unknown,
-  parse: OptionParseKind,
-  fallback: unknown
-): unknown {
+function coerce(raw: unknown, parse: OptionParseKind, fallback: unknown): unknown {
   if (raw == null) {
     return fallback;
   }

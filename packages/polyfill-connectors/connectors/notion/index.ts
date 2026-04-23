@@ -65,11 +65,7 @@ interface NotionSearchBody {
   start_cursor?: string;
 }
 
-async function ntn(
-  path: string,
-  token: string,
-  body: NotionSearchBody
-): Promise<NotionSearchResponse> {
+async function ntn(path: string, token: string, body: NotionSearchBody): Promise<NotionSearchResponse> {
   const res = await fetch(`${API}${path}`, {
     method: "POST",
     headers: {
@@ -86,9 +82,7 @@ async function ntn(
     throw new Error("notion_rate_limited");
   }
   if (!res.ok) {
-    throw new Error(
-      `notion_http_${String(res.status)}: ${(await res.text()).slice(0, 200)}`
-    );
+    throw new Error(`notion_http_${String(res.status)}: ${(await res.text()).slice(0, 200)}`);
   }
   return (await res.json()) as NotionSearchResponse;
 }
@@ -124,10 +118,7 @@ function parentId(parent: NotionParent | null | undefined): string | null {
   return null;
 }
 
-async function searchAll(
-  token: string,
-  filter: NotionSearchFilter | undefined
-): Promise<NotionObject[]> {
+async function searchAll(token: string, filter: NotionSearchFilter | undefined): Promise<NotionObject[]> {
   const results: NotionObject[] = [];
   let cursor: string | undefined;
   while (true) {
@@ -183,11 +174,7 @@ function toDatabaseRecord(d: NotionObject): Record<string, unknown> {
 }
 
 interface RunStreamArgs {
-  emit: (msg: {
-    type: "STATE";
-    stream: string;
-    cursor: unknown;
-  }) => Promise<void>;
+  emit: (msg: { type: "STATE"; stream: string; cursor: unknown }) => Promise<void>;
   emitRecord: (stream: string, data: Record<string, unknown>) => Promise<void>;
   filter: NotionSearchFilter;
   progress: (message: string, extra?: { stream?: string }) => Promise<void>;
@@ -198,21 +185,10 @@ interface RunStreamArgs {
 }
 
 async function runStream(args: RunStreamArgs): Promise<void> {
-  const {
-    streamName,
-    filter,
-    toRecord,
-    state,
-    token,
-    emit,
-    emitRecord,
-    progress,
-  } = args;
+  const { streamName, filter, toRecord, state, token, emit, emitRecord, progress } = args;
   await progress(`Searching ${streamName}`, { stream: streamName });
   const items = await searchAll(token, filter);
-  const streamState = state[streamName] as
-    | { last_edited_time?: string }
-    | undefined;
+  const streamState = state[streamName] as { last_edited_time?: string } | undefined;
   const prior = streamState?.last_edited_time;
   let latest = prior;
   for (const item of items) {

@@ -77,9 +77,7 @@ async function sp<T>(path: string, token: string): Promise<T> {
     throw new Error("spotify_rate_limited");
   }
   if (!res.ok) {
-    throw new Error(
-      `spotify_http_${String(res.status)}: ${(await res.text()).slice(0, 200)}`
-    );
+    throw new Error(`spotify_http_${String(res.status)}: ${(await res.text()).slice(0, 200)}`);
   }
   return (await res.json()) as T;
 }
@@ -104,10 +102,7 @@ async function collectPlaylists(
   progress: (message: string, extra?: { stream?: string }) => Promise<void>
 ): Promise<void> {
   await progress("Fetching playlists", { stream: "playlists" });
-  const items = await paginate<SpotifyPlaylist>(
-    "/me/playlists?limit=50",
-    token
-  );
+  const items = await paginate<SpotifyPlaylist>("/me/playlists?limit=50", token);
   for (const p of items) {
     await emitRecord("playlists", {
       id: p.id,
@@ -130,11 +125,7 @@ interface SavedTracksState {
 async function collectSavedTracks(
   token: string,
   state: Record<string, unknown>,
-  emit: (msg: {
-    type: "STATE";
-    stream: string;
-    cursor: unknown;
-  }) => Promise<void>,
+  emit: (msg: { type: "STATE"; stream: string; cursor: unknown }) => Promise<void>,
   emitRecord: (stream: string, data: Record<string, unknown>) => Promise<void>,
   progress: (message: string, extra?: { stream?: string }) => Promise<void>
 ): Promise<void> {
@@ -179,10 +170,7 @@ async function collectTopArtists(
 ): Promise<void> {
   await progress("Fetching top artists", { stream: "top_artists" });
   for (const range of ["short_term", "medium_term", "long_term"] as const) {
-    const json = await sp<{ items?: SpotifyArtist[] }>(
-      `/me/top/artists?time_range=${range}&limit=50`,
-      token
-    );
+    const json = await sp<{ items?: SpotifyArtist[] }>(`/me/top/artists?time_range=${range}&limit=50`, token);
     for (const a of json.items || []) {
       await emitRecord("top_artists", {
         id: a.id,
@@ -203,11 +191,7 @@ interface RecentlyPlayedState {
 async function collectRecentlyPlayed(
   token: string,
   state: Record<string, unknown>,
-  emit: (msg: {
-    type: "STATE";
-    stream: string;
-    cursor: unknown;
-  }) => Promise<void>,
+  emit: (msg: { type: "STATE"; stream: string; cursor: unknown }) => Promise<void>,
   emitRecord: (stream: string, data: Record<string, unknown>) => Promise<void>,
   progress: (message: string, extra?: { stream?: string }) => Promise<void>
 ): Promise<void> {

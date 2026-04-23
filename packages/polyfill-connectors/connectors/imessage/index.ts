@@ -52,9 +52,7 @@ function appleDateToIso(raw: number | null | undefined): string | null {
 runConnector({
   name: "imessage",
   async collect({ state, requested, emit, emitRecord, progress }) {
-    const dbPath =
-      process.env.IMESSAGE_DB_PATH ||
-      join(homedir(), "Library/Messages/chat.db");
+    const dbPath = process.env.IMESSAGE_DB_PATH || join(homedir(), "Library/Messages/chat.db");
     if (!existsSync(dbPath)) {
       throw new Error(
         `imessage_db_not_found: ${dbPath}. On macOS the path is ~/Library/Messages/chat.db; on Linux copy it over and set IMESSAGE_DB_PATH.`

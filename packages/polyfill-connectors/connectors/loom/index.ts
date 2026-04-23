@@ -27,8 +27,7 @@ runConnector({
       type: "SKIP_RESULT",
       stream: "videos",
       reason: "loom_apollo_wiring_pending",
-      message:
-        "Loom session reachable. Apollo cache extraction + transcript endpoint wiring deferred to live session.",
+      message: "Loom session reachable. Apollo cache extraction + transcript endpoint wiring deferred to live session.",
     });
   },
 });

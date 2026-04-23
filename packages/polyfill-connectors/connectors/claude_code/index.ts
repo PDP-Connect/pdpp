@@ -26,12 +26,7 @@ import { readdir, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { createInterface as createFileReader } from "node:readline";
-import {
-  type CollectContext,
-  type RecordData,
-  runConnector,
-  type StreamScope,
-} from "../../src/connector-runtime.ts";
+import { type CollectContext, type RecordData, runConnector, type StreamScope } from "../../src/connector-runtime.ts";
 
 interface JsonlObject {
   agentId?: string | null;
@@ -220,14 +215,9 @@ function parseFrontmatter(text: string): {
           break;
         }
       }
-      value = folded
-        ? collected.join(" ").replace(CLAUDE_FM_COLLAPSE_WS_RE, " ").trim()
-        : collected.join("\n").trim();
+      value = folded ? collected.join(" ").replace(CLAUDE_FM_COLLAPSE_WS_RE, " ").trim() : collected.join("\n").trim();
     } else {
-      value = value
-        .replace(CLAUDE_FM_QUOTED_DOUBLE_RE, "$1")
-        .replace(CLAUDE_FM_QUOTED_SINGLE_RE, "$1")
-        .trim();
+      value = value.replace(CLAUDE_FM_QUOTED_DOUBLE_RE, "$1").replace(CLAUDE_FM_QUOTED_SINGLE_RE, "$1").trim();
       i++;
     }
     frontmatter[key] = value;
@@ -396,10 +386,7 @@ async function parseJsonlFile({
           parent_uuid: parentUuid,
           role: type,
           type,
-          content: textPreview(
-            extractContent(obj.message || obj),
-            MESSAGE_CONTENT_PREVIEW_CHARS
-          ),
+          content: textPreview(extractContent(obj.message || obj), MESSAGE_CONTENT_PREVIEW_CHARS),
           timestamp: obj.timestamp || null,
           is_sidechain: obj.isSidechain ?? null,
           user_type: obj.userType ?? null,
@@ -422,10 +409,7 @@ async function parseJsonlFile({
         event_type: type,
         hook_name: att.hookName || null,
         tool_use_id: att.toolUseID || null,
-        content_preview: textPreview(
-          extractContent(att) || extractContent(obj),
-          ATTACHMENT_PREVIEW_CHARS
-        ),
+        content_preview: textPreview(extractContent(att) || extractContent(obj), ATTACHMENT_PREVIEW_CHARS),
         content_bytes: null,
         timestamp: obj.timestamp || null,
       });
@@ -460,16 +444,10 @@ async function parseJsonlFile({
     if (entrypoint) {
       acc.entrypoint = entrypoint;
     }
-    if (
-      firstTimestamp &&
-      (!acc.started_at || firstTimestamp < acc.started_at)
-    ) {
+    if (firstTimestamp && (!acc.started_at || firstTimestamp < acc.started_at)) {
       acc.started_at = firstTimestamp;
     }
-    if (
-      lastTimestamp &&
-      (!acc.last_event_at || lastTimestamp > acc.last_event_at)
-    ) {
+    if (lastTimestamp && (!acc.last_event_at || lastTimestamp > acc.last_event_at)) {
       acc.last_event_at = lastTimestamp;
     }
     acc.message_count += messageCount;
@@ -484,11 +462,7 @@ interface EmitSkillsArgs {
   requested: Map<string, StreamScope>;
 }
 
-async function emitSkills({
-  claudeHome,
-  requested,
-  emitRecord,
-}: EmitSkillsArgs): Promise<void> {
+async function emitSkills({ claudeHome, requested, emitRecord }: EmitSkillsArgs): Promise<void> {
   if (!requested.has("skills")) {
     return;
   }
@@ -526,21 +500,14 @@ async function emitSkills({
       description: frontmatter.description || null,
       source: "user",
       path: skillPath,
-      content:
-        body.length > SKILL_BODY_MAX_CHARS
-          ? body.slice(0, SKILL_BODY_MAX_CHARS)
-          : body,
+      content: body.length > SKILL_BODY_MAX_CHARS ? body.slice(0, SKILL_BODY_MAX_CHARS) : body,
       frontmatter,
       mtime_epoch: Math.floor(st.mtimeMs / 1000),
     });
   }
 }
 
-async function emitSlashCommands({
-  claudeHome,
-  requested,
-  emitRecord,
-}: EmitSkillsArgs): Promise<void> {
+async function emitSlashCommands({ claudeHome, requested, emitRecord }: EmitSkillsArgs): Promise<void> {
   if (!requested.has("slash_commands")) {
     return;
   }
@@ -587,10 +554,7 @@ async function emitSlashCommands({
         name: frontmatter.name || base,
         description: frontmatter.description || null,
         path: full,
-        content:
-          body.length > SKILL_BODY_MAX_CHARS
-            ? body.slice(0, SKILL_BODY_MAX_CHARS)
-            : body,
+        content: body.length > SKILL_BODY_MAX_CHARS ? body.slice(0, SKILL_BODY_MAX_CHARS) : body,
         frontmatter,
         mtime_epoch: Math.floor(st.mtimeMs / 1000),
       });
@@ -608,20 +572,10 @@ async function scanProjectDirs(args: {
   requested: Map<string, StreamScope>;
   sessionAccumulators: Map<string, SessionAccumulator>;
 }): Promise<void> {
-  const {
-    baseDir,
-    emit,
-    emitRecord,
-    fileMtimes,
-    newMtimes,
-    requested,
-    sessionAccumulators,
-  } = args;
+  const { baseDir, emit, emitRecord, fileMtimes, newMtimes, requested, sessionAccumulators } = args;
   let projectDirs: string[];
   try {
-    projectDirs = (await readdir(baseDir)).filter(
-      (name) => !name.startsWith(".")
-    );
+    projectDirs = (await readdir(baseDir)).filter((name) => !name.startsWith("."));
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
     await emit({
@@ -646,9 +600,7 @@ async function scanProjectDirs(args: {
     projectDirs = projectDirs.filter((d) => include.some((s) => d.includes(s)));
   }
   if (exclude.length) {
-    projectDirs = projectDirs.filter(
-      (d) => !exclude.some((s) => d.includes(s))
-    );
+    projectDirs = projectDirs.filter((d) => !exclude.some((s) => d.includes(s)));
   }
   await emit({
     type: "PROGRESS",
@@ -665,9 +617,7 @@ async function scanProjectDirs(args: {
     }
 
     // Top-level *.jsonl (filename === sessionId).
-    const topJsonl = entries
-      .filter((e) => e.isFile() && e.name.endsWith(".jsonl"))
-      .map((e) => e.name);
+    const topJsonl = entries.filter((e) => e.isFile() && e.name.endsWith(".jsonl")).map((e) => e.name);
     for (const f of topJsonl) {
       const p = join(projectPath, f);
       let st: ReturnType<typeof statSync>;
@@ -698,9 +648,7 @@ async function scanProjectDirs(args: {
     }
 
     // Per-session subdirs: <sessionId>/subagents/*.jsonl and <sessionId>/tool-results/*.txt.
-    const sessionDirs = entries.filter(
-      (e) => e.isDirectory() && SESSION_DIR_PREFIX_RE.test(e.name)
-    );
+    const sessionDirs = entries.filter((e) => e.isDirectory() && SESSION_DIR_PREFIX_RE.test(e.name));
     for (const sessEnt of sessionDirs) {
       const sessionId = sessEnt.name;
       const sessionDir = join(projectPath, sessionId);
@@ -710,9 +658,7 @@ async function scanProjectDirs(args: {
       let subFiles: string[] = [];
       try {
         const sEntries = await readdir(subagentsDir, { withFileTypes: true });
-        subFiles = sEntries
-          .filter((e) => e.isFile() && e.name.endsWith(".jsonl"))
-          .map((e) => e.name);
+        subFiles = sEntries.filter((e) => e.isFile() && e.name.endsWith(".jsonl")).map((e) => e.name);
       } catch {
         /* no subagents dir */
       }
@@ -763,17 +709,14 @@ async function scanProjectDirs(args: {
 runConnector({
   name: "claude_code",
   async collect({ state, requested, emit, emitRecord }) {
-    const claudeHome =
-      process.env.CLAUDE_CODE_HOME || join(homedir(), ".claude");
-    const baseDir =
-      process.env.CLAUDE_CODE_PROJECTS_DIR || join(claudeHome, "projects");
+    const claudeHome = process.env.CLAUDE_CODE_HOME || join(homedir(), ".claude");
+    const baseDir = process.env.CLAUDE_CODE_PROJECTS_DIR || join(claudeHome, "projects");
     const typedState = state as ClaudeCodeState;
     // STATE is stream-keyed per Collection Profile: `state` is
     // { <stream>: <cursor>, ... }. This connector emits STATE with
     // stream='messages', cursor={file_mtimes:{...}}, so reads must
     // qualify by that stream. Fall back to top-level for pre-fix state.
-    const fileMtimes: Record<string, number> =
-      typedState.messages?.file_mtimes || typedState.file_mtimes || {};
+    const fileMtimes: Record<string, number> = typedState.messages?.file_mtimes || typedState.file_mtimes || {};
 
     // ---- skills + slash_commands (independent of projects dir) ----
     try {
@@ -810,10 +753,7 @@ runConnector({
     }
 
     // ---- sessions / messages / attachments ----
-    const needsProjects =
-      requested.has("sessions") ||
-      requested.has("messages") ||
-      requested.has("attachments");
+    const needsProjects = requested.has("sessions") || requested.has("messages") || requested.has("attachments");
     if (!needsProjects) {
       return;
     }

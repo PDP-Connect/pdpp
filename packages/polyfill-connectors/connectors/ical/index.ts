@@ -64,18 +64,14 @@ const ICS_EXT_RE = /\.ics$/i;
 const RETRYABLE_FETCH_RE = /ECONN|fetch failed/i;
 const ICAL_LINE_SPLIT_RE = /\r?\n/;
 
-const hashId = (s: string): string =>
-  createHash("sha256").update(s).digest("hex").slice(0, RECORD_ID_HASH_LENGTH);
+const hashId = (s: string): string => createHash("sha256").update(s).digest("hex").slice(0, RECORD_ID_HASH_LENGTH);
 
 function unfoldIcal(text: string): string {
   // RFC 5545 line folding: continuation lines start with space/tab.
   return text.replace(ICAL_LINE_FOLD_RE, "");
 }
 
-function parseIcsDate(
-  raw: string | undefined,
-  isDateOnly: boolean
-): string | null {
+function parseIcsDate(raw: string | undefined, isDateOnly: boolean): string | null {
   if (!raw) {
     return null;
   }
@@ -136,14 +132,10 @@ function parseIcs(source: string, calendarName: string): IcsEvent[] {
         cur.uid = value;
         break;
       case "SUMMARY":
-        cur.summary = value
-          .replace(ICAL_ESC_NEWLINE_RE, "\n")
-          .replace(ICAL_ESC_COMMA_RE, ",");
+        cur.summary = value.replace(ICAL_ESC_NEWLINE_RE, "\n").replace(ICAL_ESC_COMMA_RE, ",");
         break;
       case "DESCRIPTION":
-        cur.description = value
-          .replace(ICAL_ESC_NEWLINE_RE, "\n")
-          .replace(ICAL_ESC_COMMA_RE, ",");
+        cur.description = value.replace(ICAL_ESC_NEWLINE_RE, "\n").replace(ICAL_ESC_COMMA_RE, ",");
         break;
       case "LOCATION":
         cur.location = value;
@@ -198,8 +190,7 @@ runConnector({
   name: "ical",
   retryablePattern: RETRYABLE_FETCH_RE,
   async collect({ state, emit, emitRecord, progress }) {
-    const dir =
-      process.env.ICAL_IMPORT_DIR || join(homedir(), ".pdpp/imports/ical");
+    const dir = process.env.ICAL_IMPORT_DIR || join(homedir(), ".pdpp/imports/ical");
     const subscriptionUrls = (process.env.ICAL_SUBSCRIPTION_URL || "")
       .split(",")
       .map((s) => s.trim())
@@ -208,9 +199,7 @@ runConnector({
     const sources: IcsSource[] = [];
     try {
       if (existsSync(dir)) {
-        const files = (await readdir(dir)).filter((f) =>
-          f.toLowerCase().endsWith(".ics")
-        );
+        const files = (await readdir(dir)).filter((f) => f.toLowerCase().endsWith(".ics"));
         for (const f of files) {
           sources.push({
             name: f.replace(ICS_EXT_RE, ""),

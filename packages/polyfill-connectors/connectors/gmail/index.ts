@@ -33,15 +33,11 @@ import {
   // biome-ignore lint/correctness/noUnresolvedImports: imapflow is declared in package.json; Biome's resolver doesn't see it here
 } from "imapflow";
 import { stringifyForJsonl } from "../../src/safe-emit.ts";
-import {
-  requireCredentialsOrAsk,
-  resourceSet,
-} from "../../src/scope-filters.ts";
+import { requireCredentialsOrAsk, resourceSet } from "../../src/scope-filters.ts";
 
 // ─── Module-scoped regexes (Biome useTopLevelRegex) ─────────────────────
 
-const LONE_SURROGATE_RE =
-  /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
+const LONE_SURROGATE_RE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
 // biome-ignore lint/suspicious/noControlCharactersInRegex: stripping these control chars is the point (JSONL safety)
 const CONTROL_CHAR_RE = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g;
 const GMAIL_PREFIX_RE = /^\[Gmail\]\/(.+)$/;
@@ -54,8 +50,7 @@ const SCRIPT_BLOCK_RE = /<script\b[^>]*>[\s\S]*?<\/script>/gi;
 const STYLE_BLOCK_RE = /<style\b[^>]*>[\s\S]*?<\/style>/gi;
 const HTML_COMMENT_RE = /<!--[\s\S]*?-->/g;
 const BR_TAG_RE = /<\s*br\s*\/?\s*>/gi;
-const BLOCK_CLOSE_TAG_RE =
-  /<\s*\/\s*(p|div|li|tr|h[1-6]|section|article|header|footer|blockquote|pre)\s*>/gi;
+const BLOCK_CLOSE_TAG_RE = /<\s*\/\s*(p|div|li|tr|h[1-6]|section|article|header|footer|blockquote|pre)\s*>/gi;
 const HTML_TAG_RE = /<[^>]+>/g;
 const ENTITY_NBSP_RE = /&nbsp;/g;
 const ENTITY_AMP_RE = /&amp;/g;
@@ -144,12 +139,7 @@ interface DoneMessage {
   type: "DONE";
 }
 
-type EmittedMessage =
-  | ProgressMessage
-  | StateMessage
-  | RecordMessage
-  | DoneMessage
-  | InteractionMessage;
+type EmittedMessage = ProgressMessage | StateMessage | RecordMessage | DoneMessage | InteractionMessage;
 
 // ─── imapflow interface augmentation ────────────────────────────────────
 
@@ -293,19 +283,14 @@ function nextInteractionId(): string {
 }
 
 // Block on stdin until we receive INTERACTION_RESPONSE matching request_id.
-async function sendInteractionAndWait(
-  msg: InteractionMessage
-): Promise<InteractionResponse> {
+async function sendInteractionAndWait(msg: InteractionMessage): Promise<InteractionResponse> {
   await emit(msg);
   const reqId = msg.request_id;
   return new Promise<InteractionResponse>((resolve, reject) => {
     const onLine = (line: string): void => {
       try {
         const parsed = JSON.parse(line) as InteractionResponse;
-        if (
-          parsed.type === "INTERACTION_RESPONSE" &&
-          parsed.request_id === reqId
-        ) {
+        if (parsed.type === "INTERACTION_RESPONSE" && parsed.request_id === reqId) {
           rl.off("line", onLine);
           resolve(parsed);
         }
@@ -369,12 +354,8 @@ function decodeBodystructureForAttachments(
       return;
     }
     const disposition = node.disposition;
-    const filename =
-      node.dispositionParameters?.filename ?? node.parameters?.name ?? null;
-    const isAttachmentLike =
-      disposition === "attachment" ||
-      disposition === "inline" ||
-      Boolean(filename);
+    const filename = node.dispositionParameters?.filename ?? node.parameters?.name ?? null;
+    const isAttachmentLike = disposition === "attachment" || disposition === "inline" || Boolean(filename);
     if (!isAttachmentLike) {
       return;
     }
@@ -406,19 +387,13 @@ function findFirstPartByType(
   if (!structure) {
     return null;
   }
-  const walk = (
-    node: MessageStructureObject | undefined,
-    p: string
-  ): string | null => {
+  const walk = (node: MessageStructureObject | undefined, p: string): string | null => {
     if (!node) {
       return null;
     }
     if (Array.isArray(node.childNodes) && node.childNodes.length > 0) {
       for (let i = 0; i < node.childNodes.length; i++) {
-        const found = walk(
-          node.childNodes[i],
-          p ? `${p}.${i + 1}` : String(i + 1)
-        );
+        const found = walk(node.childNodes[i], p ? `${p}.${i + 1}` : String(i + 1));
         if (found) {
           return found;
         }
@@ -433,17 +408,11 @@ function findFirstPartByType(
   return walk(structure, path);
 }
 
-function findTextPlainPart(
-  structure: MessageStructureObject | undefined,
-  path = ""
-): string | null {
+function findTextPlainPart(structure: MessageStructureObject | undefined, path = ""): string | null {
   return findFirstPartByType(structure, "text/plain", path);
 }
 
-function findTextHtmlPart(
-  structure: MessageStructureObject | undefined,
-  path = ""
-): string | null {
+function findTextHtmlPart(structure: MessageStructureObject | undefined, path = ""): string | null {
   return findFirstPartByType(structure, "text/html", path);
 }
 
@@ -452,19 +421,13 @@ function findLeafByPath(
   structure: MessageStructureObject | undefined,
   targetPath: string
 ): MessageStructureObject | null {
-  const walk = (
-    node: MessageStructureObject | undefined,
-    p: string
-  ): MessageStructureObject | null => {
+  const walk = (node: MessageStructureObject | undefined, p: string): MessageStructureObject | null => {
     if (!node) {
       return null;
     }
     if (Array.isArray(node.childNodes) && node.childNodes.length > 0) {
       for (let i = 0; i < node.childNodes.length; i++) {
-        const found = walk(
-          node.childNodes[i],
-          p ? `${p}.${i + 1}` : String(i + 1)
-        );
+        const found = walk(node.childNodes[i], p ? `${p}.${i + 1}` : String(i + 1));
         if (found) {
           return found;
         }
@@ -480,11 +443,7 @@ function findLeafByPath(
 
 // Decode a body part buffer according to its MIME transfer encoding and
 // charset into a JavaScript string. Best-effort; never throws.
-function decodeBodyPart(
-  buffer: Buffer | null | undefined,
-  encoding: string | null,
-  charset: string | null
-): string {
+function decodeBodyPart(buffer: Buffer | null | undefined, encoding: string | null, charset: string | null): string {
   if (!buffer?.length) {
     return "";
   }
@@ -501,11 +460,7 @@ function decodeBodyPart(
       const bytes: number[] = [];
       let i = 0;
       while (i < unfolded.length) {
-        if (
-          unfolded[i] === "=" &&
-          i + 2 < unfolded.length &&
-          HEX_PAIR_RE.test(unfolded.slice(i + 1, i + 3))
-        ) {
+        if (unfolded[i] === "=" && i + 2 < unfolded.length && HEX_PAIR_RE.test(unfolded.slice(i + 1, i + 3))) {
           bytes.push(Number.parseInt(unfolded.slice(i + 1, i + 3), 16));
           i += 3;
         } else {
@@ -575,15 +530,11 @@ function stripHtmlToText(html: string | null | undefined): string {
 // Parse a "References:" header value into an array of Message-IDs.
 // IMAP may return headers as a Buffer; References is a whitespace-separated
 // list of <id@host> tokens, possibly wrapped across lines.
-function parseReferencesHeader(
-  rawHeaders: Buffer | string | null | undefined
-): string[] {
+function parseReferencesHeader(rawHeaders: Buffer | string | null | undefined): string[] {
   if (!rawHeaders) {
     return [];
   }
-  const text = Buffer.isBuffer(rawHeaders)
-    ? rawHeaders.toString("utf8")
-    : String(rawHeaders);
+  const text = Buffer.isBuffer(rawHeaders) ? rawHeaders.toString("utf8") : String(rawHeaders);
   // Unfold: collapse CRLF+WSP into a single space
   const unfolded = text.replace(HEADER_FOLD_RE, " ");
   // Find the References header value (case-insensitive)
@@ -624,9 +575,7 @@ function makeSnippet(
       // Minimal QP decode: =HH hex + soft line breaks (=\r?\n)
       const raw = buffer.toString("ascii");
       const unfolded = raw.replace(QP_SOFT_BREAK_RE, "");
-      decoded = unfolded.replace(HEX_ESCAPE_RE, (_, h: string) =>
-        String.fromCharCode(Number.parseInt(h, 16))
-      );
+      decoded = unfolded.replace(HEX_ESCAPE_RE, (_, h: string) => String.fromCharCode(Number.parseInt(h, 16)));
     } else {
       decoded = buffer.toString(cs);
     }
@@ -643,9 +592,7 @@ function makeSnippet(
   if (!cleaned) {
     return null;
   }
-  return cleaned.length > maxChars
-    ? cleaned.slice(0, maxChars).trim()
-    : cleaned;
+  return cleaned.length > maxChars ? cleaned.slice(0, maxChars).trim() : cleaned;
 }
 
 // ─── Narrowing helpers ─────────────────────────────────────────────────
@@ -743,17 +690,13 @@ async function main(): Promise<void> {
             kind: req.kind,
             message: req.message,
             ...(req.schema === undefined ? {} : { schema: req.schema }),
-            ...(req.timeout_seconds === undefined
-              ? {}
-              : { timeout_seconds: req.timeout_seconds }),
+            ...(req.timeout_seconds === undefined ? {} : { timeout_seconds: req.timeout_seconds }),
           };
           return sendInteractionAndWait(wrapped).then((resp) => ({
             type: "INTERACTION_RESPONSE" as const,
             request_id: resp.request_id,
             status: resp.status,
-            ...(resp.data === undefined
-              ? {}
-              : { data: resp.data as Record<string, string> }),
+            ...(resp.data === undefined ? {} : { data: resp.data as Record<string, string> }),
           }));
         },
       });
@@ -766,11 +709,7 @@ async function main(): Promise<void> {
 
   let address: string | null = process.env.GMAIL_ADDRESS || null;
   // Fallback: Amazon username often matches the user's email
-  if (
-    !address &&
-    process.env.AMAZON_USERNAME &&
-    EMAIL_AT_RE.test(process.env.AMAZON_USERNAME)
-  ) {
+  if (!address && process.env.AMAZON_USERNAME && EMAIL_AT_RE.test(process.env.AMAZON_USERNAME)) {
     address = process.env.AMAZON_USERNAME;
   }
   if (!address) {
@@ -779,8 +718,7 @@ async function main(): Promise<void> {
       type: "INTERACTION",
       request_id: nextInteractionId(),
       kind: "credentials",
-      message:
-        "Gmail address to sync (the account the app password was generated for)",
+      message: "Gmail address to sync (the account the app password was generated for)",
       schema: {
         type: "object",
         properties: { email: { type: "string", format: "email" } },
@@ -789,11 +727,7 @@ async function main(): Promise<void> {
       timeout_seconds: DEFAULT_CRED_TIMEOUT_S,
     });
     const respEmail =
-      resp.status === "success" &&
-      resp.data &&
-      typeof resp.data.email === "string"
-        ? resp.data.email
-        : null;
+      resp.status === "success" && resp.data && typeof resp.data.email === "string" ? resp.data.email : null;
     if (!respEmail) {
       fail("no Gmail address provided");
       return;
@@ -806,9 +740,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  const requested = new Map<string, StreamRequest>(
-    (startMsg.scope?.streams || []).map((s) => [s.name, s])
-  );
+  const requested = new Map<string, StreamRequest>((startMsg.scope?.streams || []).map((s) => [s.name, s]));
   if (!requested.size) {
     fail("START.scope.streams is required");
     return;
@@ -838,8 +770,7 @@ async function main(): Promise<void> {
     if (resSet && !resSet.has(canonical)) {
       return;
     }
-    const key: string | number =
-      typeof keyCandidate === "number" ? keyCandidate : canonical;
+    const key: string | number = typeof keyCandidate === "number" ? keyCandidate : canonical;
     await emit({
       type: "RECORD",
       stream,
@@ -870,8 +801,7 @@ async function main(): Promise<void> {
         const name = mb.path;
         const is_system = name === "INBOX" || GMAIL_PREFIX_TEST_RE.test(name);
         const parts = name.split("/");
-        const parent_name =
-          parts.length > 1 ? parts.slice(0, -1).join("/") : null;
+        const parent_name = parts.length > 1 ? parts.slice(0, -1).join("/") : null;
         await emitRecord(
           "labels",
           {
@@ -893,9 +823,7 @@ async function main(): Promise<void> {
 
     // Find All Mail (special-use \All or fallback to [Gmail]/All Mail)
     const mailboxes: ListResponse[] = await client.list();
-    const allMail = mailboxes.find(
-      (m) => m.specialUse === "\\All" || m.path === "[Gmail]/All Mail"
-    );
+    const allMail = mailboxes.find((m) => m.specialUse === "\\All" || m.path === "[Gmail]/All Mail");
     if (!allMail) {
       fail("could not find [Gmail]/All Mail mailbox; is this a Gmail account?");
       return;
@@ -931,20 +859,16 @@ async function main(): Promise<void> {
       // in case any historical state was written before this fix.
       const messagesState = (state.messages ?? {}) as PriorMessagesState;
       const legacyState = state as { all_mail?: AllMailCursor };
-      const priorAllMail: AllMailCursor =
-        messagesState.all_mail ?? legacyState.all_mail ?? {};
+      const priorAllMail: AllMailCursor = messagesState.all_mail ?? legacyState.all_mail ?? {};
       const priorUidvalidity = priorAllMail.uidvalidity;
-      const fullResync =
-        !priorUidvalidity || priorUidvalidity !== uidvalidityNum;
+      const fullResync = !priorUidvalidity || priorUidvalidity !== uidvalidityNum;
       const priorUidnext = priorAllMail.uidnext ?? 1;
       const priorModseq = priorAllMail.highest_modseq;
 
       // Determine fetch range.
       // - Full resync: 1..*
       // - Incremental: new UIDs (priorUidnext..*) + flag/label changes (CHANGEDSINCE priorModseq).
-      const timeRange =
-        requested.get("messages")?.time_range ||
-        requested.get("attachments")?.time_range;
+      const timeRange = requested.get("messages")?.time_range || requested.get("attachments")?.time_range;
 
       // Pass 1: new messages (or everything on full resync)
       const fetchRange = fullResync ? "1:*" : `${priorUidnext}:*`;
@@ -1019,11 +943,7 @@ async function main(): Promise<void> {
           const flagsArr = toFlagsArray(msg.flags);
           const labels = toLabelsArray(msg.labels);
 
-          const attachments = decodeBodystructureForAttachments(
-            msg.bodyStructure,
-            gmMsgid,
-            receivedAt
-          );
+          const attachments = decodeBodystructureForAttachments(msg.bodyStructure, gmMsgid, receivedAt);
 
           // Body fetching — scope-driven.
           // - If `messages` is requested (and not `message_bodies`): fetch the
@@ -1037,15 +957,9 @@ async function main(): Promise<void> {
           let bodyTextFull: string | null = null; // decoded string, text/plain
           let bodyHtmlFull: string | null = null; // decoded string, text/html
           const plainPart = findTextPlainPart(msg.bodyStructure);
-          const htmlPart = wantBodies
-            ? findTextHtmlPart(msg.bodyStructure)
-            : null;
-          const plainLeaf = plainPart
-            ? findLeafByPath(msg.bodyStructure, plainPart)
-            : null;
-          const htmlLeaf = htmlPart
-            ? findLeafByPath(msg.bodyStructure, htmlPart)
-            : null;
+          const htmlPart = wantBodies ? findTextHtmlPart(msg.bodyStructure) : null;
+          const plainLeaf = plainPart ? findLeafByPath(msg.bodyStructure, plainPart) : null;
+          const htmlLeaf = htmlPart ? findLeafByPath(msg.bodyStructure, htmlPart) : null;
           const plainEncoding = plainLeaf?.encoding ?? null;
           const htmlEncoding = htmlLeaf?.encoding ?? null;
           const textCharset = plainLeaf?.parameters?.charset ?? null;
@@ -1077,49 +991,21 @@ async function main(): Promise<void> {
             }
             if (parts.length) {
               try {
-                const bodyResp = await client.fetchOne(
-                  String(msg.uid),
-                  { bodyParts: parts },
-                  { uid: true }
-                );
-                const plainBuf =
-                  plainPart && bodyResp
-                    ? (bodyResp.bodyParts?.get(plainPart) ?? null)
-                    : null;
-                const htmlBuf =
-                  htmlPart && bodyResp
-                    ? (bodyResp.bodyParts?.get(htmlPart) ?? null)
-                    : null;
+                const bodyResp = await client.fetchOne(String(msg.uid), { bodyParts: parts }, { uid: true });
+                const plainBuf = plainPart && bodyResp ? (bodyResp.bodyParts?.get(plainPart) ?? null) : null;
+                const htmlBuf = htmlPart && bodyResp ? (bodyResp.bodyParts?.get(htmlPart) ?? null) : null;
                 if (plainBuf) {
                   if (wantBodies) {
-                    bodyTextFull = decodeBodyPart(
-                      plainBuf,
-                      plainEncoding,
-                      textCharset
-                    );
+                    bodyTextFull = decodeBodyPart(plainBuf, plainEncoding, textCharset);
                     if (wantMessages) {
-                      snippet = makeSnippet(
-                        plainBuf,
-                        plainEncoding,
-                        textCharset,
-                        SNIPPET_MAX_CHARS
-                      );
+                      snippet = makeSnippet(plainBuf, plainEncoding, textCharset, SNIPPET_MAX_CHARS);
                     }
                   } else if (wantMessages) {
-                    snippet = makeSnippet(
-                      plainBuf,
-                      plainEncoding,
-                      textCharset,
-                      SNIPPET_MAX_CHARS
-                    );
+                    snippet = makeSnippet(plainBuf, plainEncoding, textCharset, SNIPPET_MAX_CHARS);
                   }
                 }
                 if (htmlBuf && wantBodies) {
-                  bodyHtmlFull = decodeBodyPart(
-                    htmlBuf,
-                    htmlEncoding,
-                    htmlCharset
-                  );
+                  bodyHtmlFull = decodeBodyPart(htmlBuf, htmlEncoding, htmlCharset);
                 }
               } catch {
                 // Best-effort: body fetch failures shouldn't block message emit.
@@ -1129,11 +1015,7 @@ async function main(): Promise<void> {
 
           if (wantBodies) {
             let bodyText = bodyTextFull;
-            let bodySource:
-              | "text_plain"
-              | "html_stripped"
-              | "text_html"
-              | "empty";
+            let bodySource: "text_plain" | "html_stripped" | "text_html" | "empty";
             if (bodyText?.length) {
               bodySource = "text_plain";
             } else if (bodyHtmlFull?.length) {
@@ -1162,27 +1044,19 @@ async function main(): Promise<void> {
             };
             const truncTxt =
               bodyText && bodyText.length > MAX_BODY_FIELD_CHARS
-                ? toCleanString(
-                    `${bodyText.slice(0, MAX_BODY_FIELD_CHARS)}…[truncated]`
-                  )
+                ? toCleanString(`${bodyText.slice(0, MAX_BODY_FIELD_CHARS)}…[truncated]`)
                 : toCleanString(bodyText);
             const truncHtml =
               bodyHtmlFull && bodyHtmlFull.length > MAX_BODY_FIELD_CHARS
-                ? toCleanString(
-                    `${bodyHtmlFull.slice(0, MAX_BODY_FIELD_CHARS)}…[truncated]`
-                  )
+                ? toCleanString(`${bodyHtmlFull.slice(0, MAX_BODY_FIELD_CHARS)}…[truncated]`)
                 : toCleanString(bodyHtmlFull);
             await emitRecord("message_bodies", {
               id: gmMsgid,
               message_id: gmMsgid,
               body_text: truncTxt,
               body_html: truncHtml,
-              body_text_bytes: bodyText
-                ? Buffer.byteLength(bodyText, "utf8")
-                : null,
-              body_html_bytes: bodyHtmlFull
-                ? Buffer.byteLength(bodyHtmlFull, "utf8")
-                : null,
+              body_text_bytes: bodyText ? Buffer.byteLength(bodyText, "utf8") : null,
+              body_html_bytes: bodyHtmlFull ? Buffer.byteLength(bodyHtmlFull, "utf8") : null,
               body_source: bodySource,
               // Language detection is out of scope for v1; emit null so
               // consumers know the field exists but wasn't computed.
@@ -1236,21 +1110,15 @@ async function main(): Promise<void> {
             });
           }
         } catch (perMsgErr) {
-          const emsg =
-            perMsgErr instanceof Error
-              ? (perMsgErr.stack ?? perMsgErr.message)
-              : String(perMsgErr);
-          process.stderr.write(
-            `[gmail] per-message error at UID ${String(msg.uid)}: ${emsg}\n`
-          );
+          const emsg = perMsgErr instanceof Error ? (perMsgErr.stack ?? perMsgErr.message) : String(perMsgErr);
+          process.stderr.write(`[gmail] per-message error at UID ${String(msg.uid)}: ${emsg}\n`);
           // Continue with next message; don't let one bad record halt the whole run.
         }
       }
 
       // Pass 2: detect flag/label changes on already-seen messages (if incremental)
       if (!fullResync && priorModseq !== undefined && priorModseq !== null) {
-        const priorModseqBig =
-          typeof priorModseq === "bigint" ? priorModseq : BigInt(priorModseq);
+        const priorModseqBig = typeof priorModseq === "bigint" ? priorModseq : BigInt(priorModseq);
         await emit({
           type: "PROGRESS",
           message: `Fetching flag/label deltas since modseq=${String(priorModseq)}`,
@@ -1347,15 +1215,9 @@ async function main(): Promise<void> {
             ...(env.to || []).map((a) => a.address),
             ...(env.cc || []).map((a) => a.address),
           ];
-          const participant = participantRaw.filter(
-            (a): a is string => typeof a === "string" && a.length > 0
-          );
+          const participant = participantRaw.filter((a): a is string => typeof a === "string" && a.length > 0);
           const msgHasAttachments =
-            decodeBodystructureForAttachments(
-              msg.bodyStructure,
-              String(msg.emailId ?? tid),
-              rcv
-            ).length > 0;
+            decodeBodystructureForAttachments(msg.bodyStructure, String(msg.emailId ?? tid), rcv).length > 0;
           const agg: ThreadAggregate = threadAgg.get(tid) ?? {
             id: tid,
             subject: env.subject || null,
@@ -1369,10 +1231,8 @@ async function main(): Promise<void> {
             has_attachments: false,
           };
           agg.message_count += 1;
-          agg.first_message_date =
-            rcv < agg.first_message_date ? rcv : agg.first_message_date;
-          agg.last_message_date =
-            rcv > agg.last_message_date ? rcv : agg.last_message_date;
+          agg.first_message_date = rcv < agg.first_message_date ? rcv : agg.first_message_date;
+          agg.last_message_date = rcv > agg.last_message_date ? rcv : agg.last_message_date;
           for (const p of participant) {
             agg.participant_set.add(p);
           }
@@ -1437,8 +1297,7 @@ async function main(): Promise<void> {
 }
 
 process.on("unhandledRejection", (reason: unknown) => {
-  const msg =
-    reason instanceof Error ? (reason.stack ?? reason.message) : String(reason);
+  const msg = reason instanceof Error ? (reason.stack ?? reason.message) : String(reason);
   process.stderr.write(`[gmail] unhandledRejection: ${msg}\n`);
   const summary = reason instanceof Error ? reason.message : String(reason);
   emit({

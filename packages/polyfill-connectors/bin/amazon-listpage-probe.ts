@@ -18,9 +18,7 @@ const AMAZON_PROFILE_DIR = `${process.env.HOME}/.pdpp/profiles/amazon`;
 // We'll use the isolated profile directly rather than CDP attach.
 // Simpler; no daemon dependency.
 
-const years = process.argv.slice(2).length
-  ? process.argv.slice(2).map(Number)
-  : [2025, 2015, 2008];
+const years = process.argv.slice(2).length ? process.argv.slice(2).map(Number) : [2025, 2015, 2008];
 
 const context = await chromium.launchPersistentContext(AMAZON_PROFILE_DIR, {
   headless: true,
@@ -59,7 +57,6 @@ for (const year of years) {
     const counts: Record<string, number | string> = {};
     for (const sel of cardSelectors) {
       try {
-        // @ts-expect-error — browser context globals (document)
         counts[sel] = document.querySelectorAll(sel).length;
       } catch {
         counts[sel] = "err";
@@ -67,25 +64,19 @@ for (const year of years) {
     }
 
     // Find the first plausible order-card element
-    // @ts-expect-error — browser context globals (document)
-    const firstCard = document.querySelector(
-      '.order-card, .js-order-card, [data-component="orderCard"]'
-    );
+    const firstCard = document.querySelector('.order-card, .js-order-card, [data-component="orderCard"]');
 
     let firstCardDataComponents: Array<string | null> = [];
     let firstCardHtml: string | null = null;
     if (firstCard) {
       firstCardHtml = firstCard.outerHTML.slice(0, 2500);
-      firstCardDataComponents = [
-        ...firstCard.querySelectorAll("[data-component]"),
-      ].map((el: { getAttribute: (n: string) => string | null }) =>
+      firstCardDataComponents = [...firstCard.querySelectorAll("[data-component]")].map((el) =>
         el.getAttribute("data-component")
       );
     }
 
     // All data-components on the whole page, grouped
     const allComponents: Record<string, number> = {};
-    // @ts-expect-error — browser context globals (document)
     for (const el of document.querySelectorAll("[data-component]")) {
       const name = el.getAttribute("data-component");
       if (name) {
@@ -94,24 +85,14 @@ for (const year of years) {
     }
 
     // Plausible order-id pattern matches in body (sanity: did orders load?)
-    // @ts-expect-error — browser context globals (document)
-    const bodyPreview = (document.body?.innerText || "")
-      .replace(/\s+/g, " ")
-      .slice(0, 300);
-    const orderIdMatches =
-      // @ts-expect-error — browser context globals (document)
-      (document.body?.innerText || "").match(/\d{3}-\d{7}-\d{7}/g) || [];
+    const bodyPreview = (document.body?.innerText || "").replace(/\s+/g, " ").slice(0, 300);
+    const orderIdMatches = (document.body?.innerText || "").match(/\d{3}-\d{7}-\d{7}/g) || [];
 
     return {
-      // @ts-expect-error — browser context globals (location)
       url: location.href,
-      // @ts-expect-error — browser context globals (document)
       title: document.title,
       cardCounts: counts,
-      firstCardDataComponents: [...new Set(firstCardDataComponents)].slice(
-        0,
-        40
-      ),
+      firstCardDataComponents: [...new Set(firstCardDataComponents)].slice(0, 40),
       firstCardHtmlSnippet: firstCardHtml,
       pageLevelComponents: Object.fromEntries(
         Object.entries(allComponents)

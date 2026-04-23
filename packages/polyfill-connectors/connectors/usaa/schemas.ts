@@ -21,13 +21,9 @@ import { z } from "zod";
 
 // ─── Shared atoms ──────────────────────────────────────────────────────
 
-const dateString = z
-  .string()
-  .regex(/^\d{4}-\d{2}-\d{2}$/, "must be YYYY-MM-DD");
+const dateString = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "must be YYYY-MM-DD");
 
-const isoTimestamp = z
-  .string()
-  .regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/, "must be ISO-8601 timestamp");
+const isoTimestamp = z.string().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/, "must be ISO-8601 timestamp");
 
 // Cents can be any integer (transactions sign negatively; balances can be
 // negative for overdrawn accounts). Keep a sane upper bound — $100M is
@@ -40,8 +36,7 @@ const nonNegativeCents = z.number().int().min(0).max(10_000_000_000);
 const accountIdSchema = z.string().min(1).max(64);
 
 // Generic cruft guard: string must not look like a UI label or innerText leak.
-const CRUFT_PATTERNS =
-  /Loading|Please wait|undefined|\[object Object\]|<[a-z]+>|\n\n/i;
+const CRUFT_PATTERNS = /Loading|Please wait|undefined|\[object Object\]|<[a-z]+>|\n\n/i;
 const cleanString = (maxLen: number) =>
   z
     .string()
@@ -89,12 +84,7 @@ export const transactionSchema = z.object({
     .nullable(),
   balance_after_cents: cents.nullable(),
   // source is either "csv_export" or "pdf_statement_YYYY-MM"
-  source: z
-    .string()
-    .regex(
-      /^(csv_export|pdf_statement_\d{4}-\d{2})$/,
-      "must be csv_export or pdf_statement_YYYY-MM"
-    ),
+  source: z.string().regex(/^(csv_export|pdf_statement_\d{4}-\d{2})$/, "must be csv_export or pdf_statement_YYYY-MM"),
   fetched_at: isoTimestamp,
 });
 
@@ -170,9 +160,7 @@ export const SCHEMAS: Record<string, z.ZodTypeAny> = {
 export function validateRecord(
   stream: string,
   data: Record<string, unknown>
-):
-  | { ok: true; data: Record<string, unknown> }
-  | { ok: false; issues: Array<{ path: string; message: string }> } {
+): { ok: true; data: Record<string, unknown> } | { ok: false; issues: Array<{ path: string; message: string }> } {
   const schema = SCHEMAS[stream];
   if (!schema) {
     return { ok: true, data };

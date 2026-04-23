@@ -27,10 +27,7 @@ import {
   runConnector,
   type ValidateRecord,
 } from "../../src/connector-runtime.ts";
-import {
-  listPageOrderShape,
-  validateRecord as validateRecordRaw,
-} from "./schemas.ts";
+import { listPageOrderShape, validateRecord as validateRecordRaw } from "./schemas.ts";
 
 const validateRecord = validateRecordRaw as ValidateRecord;
 
@@ -141,9 +138,7 @@ async function deepSessionCheck(page: Page): Promise<boolean> {
   // Wait for either the orders page to render or a sign-in form (both are
   // valid post-nav states; we branch on them).
   await page
-    .locator(
-      'form[name="signIn"], #orderTypeMenuContainer, #yourOrdersHeader, [data-component="orderCardList"]'
-    )
+    .locator('form[name="signIn"], #orderTypeMenuContainer, #yourOrdersHeader, [data-component="orderCardList"]')
     .first()
     .waitFor({ state: "attached", timeout: DEEP_PROBE_WAIT_MS })
     .catch((): undefined => undefined);
@@ -169,29 +164,18 @@ async function discoverYears(page: Page): Promise<number[]> {
   const fromSelect = await page
     .evaluate((): string[] => {
       const sel =
-        // @ts-expect-error — browser context globals (document)
-        document.querySelector("select#time-filter") ||
-        // @ts-expect-error — browser context globals (document)
-        document.querySelector('select[name="timeFilter"]');
+        document.querySelector<HTMLSelectElement>("select#time-filter") ||
+        document.querySelector<HTMLSelectElement>('select[name="timeFilter"]');
       if (!sel) {
         return [];
       }
-      return [...sel.options]
-        .map((o: { value: string }) => o.value)
-        .filter(Boolean);
+      return [...sel.options].map((o) => o.value).filter(Boolean);
     })
     .catch((): string[] => []);
   const fromLinks = await page
     .evaluate((): string[] => {
-      const links = [
-        // @ts-expect-error — browser context globals (document)
-        ...document.querySelectorAll('a[href*="timeFilter=year-"]'),
-      ];
-      return links
-        .map((a: { getAttribute: (n: string) => string | null }) =>
-          a.getAttribute("href")
-        )
-        .filter((v: string | null): v is string => Boolean(v));
+      const links = [...document.querySelectorAll('a[href*="timeFilter=year-"]')];
+      return links.map((a) => a.getAttribute("href")).filter((v): v is string => Boolean(v));
     })
     .catch((): string[] => []);
   const years = new Set<number>();
@@ -233,10 +217,7 @@ async function discoverYears(page: Page): Promise<number[]> {
 // Cancelled orders have [data-component="cancelled"] with "This order has
 // been cancelled" text and NO other structural fields. We detect and
 // emit status_detail only.
-async function fetchOrderDetail(
-  page: Page,
-  orderId: string
-): Promise<OrderDetail | null> {
+async function fetchOrderDetail(page: Page, orderId: string): Promise<OrderDetail | null> {
   const url = `https://www.amazon.com/gp/your-account/order-details?orderID=${orderId}`;
 
   // Retry transient navigation failures (network, timeout, 5xx) with
@@ -254,21 +235,16 @@ async function fetchOrderDetail(
         // Wait for #orderDetails to appear OR for the cancellation/redirect
         // page signature. waitForSelector replaces `await sleep(800)` —
         // real sync primitive instead of a pacing guess.
-        await page.waitForSelector(
-          '#orderDetails, [data-component="cancelled"]',
-          {
-            timeout: DETAIL_WAIT_MS,
-            state: "attached",
-          }
-        );
+        await page.waitForSelector('#orderDetails, [data-component="cancelled"]', {
+          timeout: DETAIL_WAIT_MS,
+          state: "attached",
+        });
       },
       {
         retries: RETRY_COUNT,
         minTimeout: RETRY_MIN_TIMEOUT_MS,
         factor: RETRY_FACTOR,
-        shouldRetry: ({ error }): boolean =>
-          !(error instanceof AbortError) &&
-          RETRYABLE_ERROR_RE.test(error.message),
+        shouldRetry: ({ error }): boolean => !(error instanceof AbortError) && RETRYABLE_ERROR_RE.test(error.message),
       }
     );
   } catch {
@@ -302,16 +278,13 @@ async function fetchOrderDetail(
         querySelectorAll: (sel: string) => El[];
       }
 
-      // @ts-expect-error — browser context globals (document)
       const od = document.querySelector("#orderDetails") as El | null;
       if (!od) {
         return null;
       }
 
       const cancelledEl = od.querySelector('[data-component="cancelled"]');
-      const cancelledText = (cancelledEl?.innerText || "")
-        .replace(WHITESPACE_RE, " ")
-        .trim();
+      const cancelledText = (cancelledEl?.innerText || "").replace(WHITESPACE_RE, " ").trim();
       const isCancelled = CANCELLED_RE.test(cancelledText);
 
       // ── Shipping address (structural) ──────────────────────────────────
@@ -319,9 +292,7 @@ async function fetchOrderDetail(
       let recipient_name: string | null = null;
       let shipping_address_summary: string | null = null;
       if (shipEl) {
-        const lines = [
-          ...shipEl.querySelectorAll("ul li span.a-list-item, ul li"),
-        ]
+        const lines = [...shipEl.querySelectorAll("ul li span.a-list-item, ul li")]
           .map((li) => (li.innerText || "").replace(WHITESPACE_RE, " ").trim())
           .filter(Boolean);
         const first = lines[0];
@@ -334,17 +305,11 @@ async function fetchOrderDetail(
       }
 
       // ── Payment method (structural, with cleanup) ───────────────────────
-      const payEl = od.querySelector(
-        '[data-component="viewPaymentPlanSummaryWidget"]'
-      );
+      const payEl = od.querySelector('[data-component="viewPaymentPlanSummaryWidget"]');
       let payment_method_summary: string | null = null;
       if (payEl) {
         let raw = (payEl.innerText || "").replace(WHITESPACE_RE, " ").trim();
-        raw = raw
-          .replace(PAY_PREFIX_RE, "")
-          .replace(PAY_SUFFIX_RE, "")
-          .replace(CARD_PATCH_RE, "$1 ending in")
-          .trim();
+        raw = raw.replace(PAY_PREFIX_RE, "").replace(PAY_SUFFIX_RE, "").replace(CARD_PATCH_RE, "$1 ending in").trim();
         const cardOnly = raw.match(CARD_ONLY_RE);
         if (cardOnly?.[1]) {
           payment_method_summary = cardOnly[1];
@@ -367,9 +332,7 @@ async function fetchOrderDetail(
           }
         }
         if (!grand_total) {
-          const m = (chargeEl.innerText || "")
-            .replace(WHITESPACE_RE, " ")
-            .match(GRAND_TOTAL_RE);
+          const m = (chargeEl.innerText || "").replace(WHITESPACE_RE, " ").match(GRAND_TOTAL_RE);
           if (m?.[1]) {
             grand_total = `$${m[1]}`;
           }
@@ -382,9 +345,7 @@ async function fetchOrderDetail(
         status_detail = "This order has been cancelled";
       } else {
         const alertsEl = od.querySelector('[data-component="alerts"]');
-        const alertText = (alertsEl?.innerText || "")
-          .replace(WHITESPACE_RE, " ")
-          .trim();
+        const alertText = (alertsEl?.innerText || "").replace(WHITESPACE_RE, " ").trim();
         if (alertText && alertText.length < 180) {
           status_detail = alertText;
         }
@@ -411,16 +372,12 @@ async function fetchOrderDetail(
       }
 
       // ── Items (structural) ─────────────────────────────────────────────
-      const itemContainers = [
-        ...od.querySelectorAll('[data-component="purchasedItemsRightGrid"]'),
-      ];
+      const itemContainers = [...od.querySelectorAll('[data-component="purchasedItemsRightGrid"]')];
       const items: DetailItem[] = [];
       for (const rightGrid of itemContainers) {
         let rowRoot: El | null = rightGrid;
         for (let i = 0; i < 5 && rowRoot; i++) {
-          if (
-            rowRoot.querySelector('[data-component="purchasedItemsLeftGrid"]')
-          ) {
+          if (rowRoot.querySelector('[data-component="purchasedItemsLeftGrid"]')) {
             break;
           }
           rowRoot = rowRoot.parentElement;
@@ -429,46 +386,30 @@ async function fetchOrderDetail(
 
         const titleEl = rightGrid.querySelector('[data-component="itemTitle"]');
         const titleLink = titleEl?.querySelector("a") ?? null;
-        const name = (titleLink?.innerText || titleEl?.innerText || "")
-          .replace(WHITESPACE_RE, " ")
-          .trim();
+        const name = (titleLink?.innerText || titleEl?.innerText || "").replace(WHITESPACE_RE, " ").trim();
         const href = titleLink?.getAttribute("href") || "";
         const asinM = href.match(ASIN_RE);
-        const absoluteHref = href.startsWith("/")
-          ? `https://www.amazon.com${href}`
-          : href || null;
+        const absoluteHref = href.startsWith("/") ? `https://www.amazon.com${href}` : href || null;
 
-        const merchantEl = rightGrid.querySelector(
-          '[data-component="orderedMerchant"]'
-        );
+        const merchantEl = rightGrid.querySelector('[data-component="orderedMerchant"]');
         let seller: string | null = null;
         if (merchantEl) {
-          const t = (merchantEl.innerText || "")
-            .replace(WHITESPACE_RE, " ")
-            .trim();
+          const t = (merchantEl.innerText || "").replace(WHITESPACE_RE, " ").trim();
           const sm = t.match(SOLD_BY_RE);
-          seller = sm?.[1]
-            ? sm[1].trim().slice(0, 120)
-            : t.slice(0, 120) || null;
+          seller = sm?.[1] ? sm[1].trim().slice(0, 120) : t.slice(0, 120) || null;
         }
 
         const priceEl = rightGrid.querySelector('[data-component="unitPrice"]');
         let unit_price: string | null = null;
         if (priceEl) {
-          const pt = (priceEl.innerText || "")
-            .replace(WHITESPACE_RE, " ")
-            .trim();
+          const pt = (priceEl.innerText || "").replace(WHITESPACE_RE, " ").trim();
           const pm = pt.match(DOLLAR_RE);
           unit_price = pm?.[1] ? `$${pm[1]}` : null;
         }
 
-        const qtyOverlayEl = scanRoot.querySelector(
-          ".od-item-view-qty span, .od-item-view-qty"
-        );
+        const qtyOverlayEl = scanRoot.querySelector(".od-item-view-qty span, .od-item-view-qty");
         const qtyOverlayText = (qtyOverlayEl?.innerText || "").trim();
-        const quantity = INT_RE.test(qtyOverlayText)
-          ? Number(qtyOverlayText)
-          : 1;
+        const quantity = INT_RE.test(qtyOverlayText) ? Number(qtyOverlayText) : 1;
 
         const img = scanRoot.querySelector(
           '[data-component="itemImage"] img, [data-component="purchasedItemsLeftGrid"] img'
@@ -476,12 +417,8 @@ async function fetchOrderDetail(
         const item_image_url = img?.getAttribute("src") || null;
 
         let refund_status: string | null = null;
-        const returnEl = rightGrid.querySelector(
-          '[data-component="itemReturnEligibility"]'
-        );
-        const returnText = (returnEl?.innerText || "")
-          .replace(WHITESPACE_RE, " ")
-          .trim();
+        const returnEl = rightGrid.querySelector('[data-component="itemReturnEligibility"]');
+        const returnText = (returnEl?.innerText || "").replace(WHITESPACE_RE, " ").trim();
         if (returnText && returnText.length < 180) {
           refund_status = returnText;
         }
@@ -529,24 +466,12 @@ function extractOrdersOnPage(page: Page): Promise<ListPageOrder[]> {
       const WHITESPACE_RE = /\s+/g;
       // biome-ignore-end lint/performance/useTopLevelRegex: runs in browser context (page.evaluate); module-scoped regexes in Node cannot cross the bridge.
 
-      interface El {
-        closest: (sel: string) => El | null;
-        getAttribute: (name: string) => string | null;
-        innerText?: string;
-        parentElement: El | null;
-        querySelector: (sel: string) => El | null;
-        querySelectorAll: (sel: string) => El[];
-      }
-
-      const cards = [
-        // @ts-expect-error — browser context globals (document)
-        ...document.querySelectorAll(".order-card, .js-order-card"),
-      ] as El[];
+      const cards = [...document.querySelectorAll<HTMLElement>(".order-card, .js-order-card")];
       const results: ListPageOrder[] = [];
       for (const card of cards) {
-        const orderIdEl = card.querySelector(".yohtmlc-order-id");
+        const orderIdEl = card.querySelector<HTMLElement>(".yohtmlc-order-id");
         const orderId = orderIdEl
-          ? [...orderIdEl.querySelectorAll("span")]
+          ? [...orderIdEl.querySelectorAll<HTMLElement>("span")]
               .map((s) => (s.innerText || "").trim())
               .find((t) => ORDER_ID_RE.test(t)) || null
           : null;
@@ -555,17 +480,13 @@ function extractOrdersOnPage(page: Page): Promise<ListPageOrder[]> {
         }
 
         const findHeaderValue = (labelPattern: RegExp): string | null => {
-          for (const item of card.querySelectorAll(
-            ".order-header__header-list-item"
-          )) {
-            const labelEl = item.querySelector(
-              ".a-color-secondary.a-text-caps"
-            );
+          for (const item of card.querySelectorAll<HTMLElement>(".order-header__header-list-item")) {
+            const labelEl = item.querySelector<HTMLElement>(".a-color-secondary.a-text-caps");
             const label = (labelEl?.innerText || "").trim();
             if (!labelPattern.test(label)) {
               continue;
             }
-            const valueEls = [...item.querySelectorAll("span")]
+            const valueEls = [...item.querySelectorAll<HTMLElement>("span")]
               .filter((s) => s !== labelEl)
               .map((s) => (s.innerText || "").trim())
               .filter(Boolean);
@@ -576,38 +497,26 @@ function extractOrdersOnPage(page: Page): Promise<ListPageOrder[]> {
 
         const orderDateRaw = findHeaderValue(HEADER_DATE_RE);
         const totalRaw = findHeaderValue(HEADER_TOTAL_RE);
-        const orderTotal =
-          totalRaw && TOTAL_VALUE_RE.test(totalRaw) ? totalRaw : null;
+        const orderTotal = totalRaw && TOTAL_VALUE_RE.test(totalRaw) ? totalRaw : null;
 
-        const primaryStatusEl = card.querySelector(
+        const primaryStatusEl = card.querySelector<HTMLElement>(
           ".yohtmlc-shipment-status-primaryText, .delivery-box__primary-text"
         );
         const deliveryStatus = primaryStatusEl
-          ? (primaryStatusEl.innerText || "")
-              .replace(WHITESPACE_RE, " ")
-              .trim() || null
+          ? (primaryStatusEl.innerText || "").replace(WHITESPACE_RE, " ").trim() || null
           : null;
 
         const items: ListPageItem[] = [];
         const seenAsins = new Set<string>();
-        for (const titleEl of card.querySelectorAll(".yohtmlc-product-title")) {
-          const name = (titleEl.innerText || "")
-            .replace(WHITESPACE_RE, " ")
-            .trim();
+        for (const titleEl of card.querySelectorAll<HTMLElement>(".yohtmlc-product-title")) {
+          const name = (titleEl.innerText || "").replace(WHITESPACE_RE, " ").trim();
           if (!name) {
             continue;
           }
-          const itemBox =
-            titleEl.closest(".item-box, .a-fixed-left-grid") ||
-            titleEl.parentElement;
-          const link =
-            itemBox?.querySelector(
-              'a[href*="/dp/"], a[href*="/gp/product/"]'
-            ) || titleEl.querySelector("a");
+          const itemBox = titleEl.closest<HTMLElement>(".item-box, .a-fixed-left-grid") || titleEl.parentElement;
+          const link = itemBox?.querySelector('a[href*="/dp/"], a[href*="/gp/product/"]') || titleEl.querySelector("a");
           const href = link?.getAttribute("href") || "";
-          const url = href.startsWith("/")
-            ? `https://www.amazon.com${href}`
-            : href || null;
+          const url = href.startsWith("/") ? `https://www.amazon.com${href}` : href || null;
           const asinMatch = href.match(ASIN_HREF_RE);
           const asin = asinMatch?.[1] ?? null;
 
@@ -655,14 +564,8 @@ function parseCurrencyCents(raw: string | null | undefined): number | null {
   return Math.round(Number(m[1]) * CURRENCY_CENTS_MULTIPLIER);
 }
 
-function itemId(
-  orderId: string,
-  it: { asin?: string | null; name?: string }
-): string {
-  const key =
-    it.asin ||
-    it.name?.toLowerCase().replace(ITEM_ID_WHITESPACE_RE, " ").trim() ||
-    "unknown";
+function itemId(orderId: string, it: { asin?: string | null; name?: string }): string {
+  const key = it.asin || it.name?.toLowerCase().replace(ITEM_ID_WHITESPACE_RE, " ").trim() || "unknown";
   return `${orderId}|${key}`;
 }
 
@@ -704,8 +607,7 @@ runConnector({
     }
   },
   async collect(ctx: BrowserCollectContext): Promise<void> {
-    const { scope, state, emitRecord, emit, progress, capture, emittedAt } =
-      ctx;
+    const { scope, state, emitRecord, emit, progress, capture, emittedAt } = ctx;
     const { page } = ctx;
     const requested = new Map((scope?.streams || []).map((s) => [s.name, s]));
     const wantsOrders = requested.has("orders");
@@ -722,9 +624,7 @@ runConnector({
     let years = await discoverYears(page);
     // Targeted-year override for spot checks and incremental backfills.
     if (process.env.PDPP_AMAZON_YEARS) {
-      const filter = new Set(
-        process.env.PDPP_AMAZON_YEARS.split(",").map((y) => Number(y.trim()))
-      );
+      const filter = new Set(process.env.PDPP_AMAZON_YEARS.split(",").map((y) => Number(y.trim())));
       years = years.filter((y) => filter.has(y));
     }
     await progress(`Years to scrape: ${years.join(", ")}`);
@@ -793,58 +693,25 @@ runConnector({
             .evaluate((): ListPageDiagnostics => {
               // biome-ignore-start lint/performance/useTopLevelRegex: runs in browser context (page.evaluate); module-scoped regexes in Node cannot cross the bridge.
               const CAPTCHA_RE = /captcha|robot|unusual traffic/i;
-              const NO_ORDERS_RE =
-                /you have not placed any orders|no orders found/i;
+              const NO_ORDERS_RE = /you have not placed any orders|no orders found/i;
               const WS = /\s+/g;
               // biome-ignore-end lint/performance/useTopLevelRegex: runs in browser context (page.evaluate); module-scoped regexes in Node cannot cross the bridge.
               return {
-                // @ts-expect-error — browser context globals (location)
                 url: location.href,
-                // @ts-expect-error — browser context globals (document)
                 title: document.title,
-                order_cards:
-                  // @ts-expect-error — browser context globals (document)
-                  document.querySelectorAll("div.order-card, div.js-order-card")
-                    .length,
-                any_card:
-                  // @ts-expect-error — browser context globals (document)
-                  document.querySelectorAll(
-                    '[class*="order" i][class*="card" i]'
-                  ).length,
-                any_order_header:
-                  // @ts-expect-error — browser context globals (document)
-                  document.querySelectorAll(
-                    '[class*="order" i][class*="header" i]'
-                  ).length,
-                sign_in_form: Boolean(
-                  // @ts-expect-error — browser context globals (document)
-                  document.querySelector('form[name="signIn"]')
-                ),
-                captcha: CAPTCHA_RE.test(
-                  // @ts-expect-error — browser context globals (document)
-                  document.body?.innerText || ""
-                ).toString(),
-                no_orders_text: NO_ORDERS_RE.test(
-                  // @ts-expect-error — browser context globals (document)
-                  document.body?.innerText || ""
-                ).toString(),
-                body_preview:
-                  // @ts-expect-error — browser context globals (document)
-                  (document.body?.innerText || "")
-                    .replace(WS, " ")
-                    .slice(0, 240),
+                order_cards: document.querySelectorAll("div.order-card, div.js-order-card").length,
+                any_card: document.querySelectorAll('[class*="order" i][class*="card" i]').length,
+                any_order_header: document.querySelectorAll('[class*="order" i][class*="header" i]').length,
+                sign_in_form: Boolean(document.querySelector('form[name="signIn"]')),
+                captcha: CAPTCHA_RE.test(document.body?.innerText || "").toString(),
+                no_orders_text: NO_ORDERS_RE.test(document.body?.innerText || "").toString(),
+                body_preview: (document.body?.innerText || "").replace(WS, " ").slice(0, 240),
               };
             })
             .catch((): ListPageDiagnostics | null => null);
-          if (
-            diag &&
-            (diag.any_card > 0 || diag.any_order_header > 0) &&
-            diag.order_cards === 0
-          ) {
+          if (diag && (diag.any_card > 0 || diag.any_order_header > 0) && diag.order_cards === 0) {
             const shotPath = `/tmp/amazon-drift-${year}-${startIndex}.png`;
-            await page
-              .screenshot({ path: shotPath, fullPage: true })
-              .catch((): undefined => undefined);
+            await page.screenshot({ path: shotPath, fullPage: true }).catch((): undefined => undefined);
             await emit({
               type: "SKIP_RESULT",
               stream: "orders",
@@ -866,9 +733,7 @@ runConnector({
           // Navigate to the order-details page to enrich fields absent
           // from the list page.
           const skipDetail = process.env.PDPP_AMAZON_SKIP_DETAIL === "1";
-          const detail: OrderDetail | null = skipDetail
-            ? null
-            : await fetchOrderDetail(page, o.orderId);
+          const detail: OrderDetail | null = skipDetail ? null : await fetchOrderDetail(page, o.orderId);
           if (capture && !(detailCaptured || skipDetail) && detail) {
             await capture.captureDom(page, `order-detail-${o.orderId}`);
             detailCaptured = true;
@@ -886,8 +751,7 @@ runConnector({
               delivery_status: o.deliveryStatus || null,
               status_detail: detail?.status_detail || null,
               recipient_name: detail?.recipient_name || null,
-              shipping_address_summary:
-                detail?.shipping_address_summary || null,
+              shipping_address_summary: detail?.shipping_address_summary || null,
               payment_method_summary: detail?.payment_method_summary || null,
               gift_order: detail?.gift_order ?? false,
               digital_order: detail?.digital_order ?? false,
@@ -899,8 +763,7 @@ runConnector({
 
           if (wantsItems) {
             const detailItems = detail?.items ?? [];
-            const { byAsin: detailByAsin, byName: detailByName } =
-              mergeDetailByKey(detailItems);
+            const { byAsin: detailByAsin, byName: detailByName } = mergeDetailByKey(detailItems);
             const emittedItemIds = new Set<string>();
             const writeItem = async (merged: MergedItem): Promise<void> => {
               const id = itemId(o.orderId, merged);
@@ -927,23 +790,15 @@ runConnector({
             for (const it of o.items) {
               const d: Partial<DetailItem> =
                 (it.asin ? detailByAsin.get(it.asin) : undefined) ||
-                (it.name
-                  ? detailByName.get(it.name.trim().toLowerCase())
-                  : undefined) ||
+                (it.name ? detailByName.get(it.name.trim().toLowerCase()) : undefined) ||
                 {};
               await writeItem({ ...it, ...d });
             }
             // Detail-page items that weren't in the list.
             for (const di of detailItems) {
-              const dupByAsin =
-                di.asin && o.items.some((x) => x.asin === di.asin);
+              const dupByAsin = di.asin && o.items.some((x) => x.asin === di.asin);
               const dupByName =
-                di.name &&
-                o.items.some(
-                  (x) =>
-                    x.name?.trim().toLowerCase() ===
-                    di.name.trim().toLowerCase()
-                );
+                di.name && o.items.some((x) => x.name?.trim().toLowerCase() === di.name.trim().toLowerCase());
               if (!(dupByAsin || dupByName)) {
                 await writeItem(di);
               }
@@ -957,8 +812,7 @@ runConnector({
       }
 
       // Year completion state with freeze-once-stable policy
-      const stableCount =
-        prior !== undefined && prior.order_count === yearOrderCount;
+      const stableCount = prior !== undefined && prior.order_count === yearOrderCount;
       newYearsState[String(year)] = {
         order_count: yearOrderCount,
         frozen: year < new Date().getFullYear() && stableCount,

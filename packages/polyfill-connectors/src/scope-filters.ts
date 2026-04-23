@@ -8,11 +8,7 @@
  */
 
 import type { AuthStrategyContext, Credentials } from "./auth.ts";
-import type {
-  EmittedMessage,
-  InteractionRequest,
-  InteractionResponse,
-} from "./connector-runtime.ts";
+import type { EmittedMessage, InteractionRequest, InteractionResponse } from "./connector-runtime.ts";
 
 export interface TimeRange {
   since?: string;
@@ -28,16 +24,8 @@ export interface StreamRequest {
  * Returns a Set of canonical-key strings if resources were requested, else
  * null (meaning "all records allowed").
  */
-export function resourceSet(
-  streamRequest: StreamRequest | null | undefined
-): Set<string> | null {
-  if (
-    !(
-      streamRequest &&
-      Array.isArray(streamRequest.resources) &&
-      streamRequest.resources.length
-    )
-  ) {
+export function resourceSet(streamRequest: StreamRequest | null | undefined): Set<string> | null {
+  if (!(streamRequest && Array.isArray(streamRequest.resources) && streamRequest.resources.length)) {
     return null;
   }
   const s = new Set<string>();
@@ -53,26 +41,18 @@ export function resourceSet(
  * Primary key may be a string or an array; we normalize both to canonical
  * key-string form matching the core spec (minified JSON array for compound).
  */
-export function passesResourceFilter(
-  resSet: ReadonlySet<string> | null,
-  primaryKey: unknown
-): boolean {
+export function passesResourceFilter(resSet: ReadonlySet<string> | null, primaryKey: unknown): boolean {
   if (!resSet) {
     return true;
   }
-  const canonical = Array.isArray(primaryKey)
-    ? JSON.stringify(primaryKey.map(String))
-    : String(primaryKey);
+  const canonical = Array.isArray(primaryKey) ? JSON.stringify(primaryKey.map(String)) : String(primaryKey);
   return resSet.has(canonical);
 }
 
 /**
  * True if an ISO date/datetime string falls within the stream's time_range.
  */
-export function passesTimeRange(
-  isoValue: string | null | undefined,
-  timeRange: TimeRange | null | undefined
-): boolean {
+export function passesTimeRange(isoValue: string | null | undefined, timeRange: TimeRange | null | undefined): boolean {
   if (!timeRange) {
     return true;
   }
@@ -117,18 +97,12 @@ export function makeEmitGate(
   const resSet = resourceSet(streamRequest);
   const emitted = new Set<string>();
 
-  const gate = ((
-    stream: string,
-    data: EmitGateRecord,
-    keyField = "id"
-  ): boolean => {
+  const gate = ((stream: string, data: EmitGateRecord, keyField = "id"): boolean => {
     const key = data[keyField];
     if (key == null) {
       return false;
     }
-    const canonical = Array.isArray(key)
-      ? JSON.stringify(key.map(String))
-      : String(key);
+    const canonical = Array.isArray(key) ? JSON.stringify(key.map(String)) : String(key);
     if (resSet && !resSet.has(canonical)) {
       return false;
     }
@@ -159,13 +133,7 @@ export interface EmitTombstonesArgs {
  * Emit tombstones for record IDs present in `priorIds` but absent from
  * `currentIds`. For mutable_state streams only.
  */
-export function emitTombstones({
-  emit,
-  stream,
-  priorIds,
-  currentIds,
-  emittedAt,
-}: EmitTombstonesArgs): number {
+export function emitTombstones({ emit, stream, priorIds, currentIds, emittedAt }: EmitTombstonesArgs): number {
   let count = 0;
   for (const id of priorIds || []) {
     if (!currentIds.has(id)) {

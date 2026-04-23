@@ -16,14 +16,11 @@ const context = await chromium.launchPersistentContext(AMAZON_PROFILE_DIR, {
 });
 
 const page = await context.newPage();
-await page.goto(
-  `https://www.amazon.com/your-orders/orders?timeFilter=year-${year}&startIndex=0`,
-  { waitUntil: "domcontentloaded", timeout: 45_000 }
-);
-await page
-  .locator(".order-card")
-  .first()
-  .waitFor({ state: "attached", timeout: 15_000 });
+await page.goto(`https://www.amazon.com/your-orders/orders?timeFilter=year-${year}&startIndex=0`, {
+  waitUntil: "domcontentloaded",
+  timeout: 45_000,
+});
+await page.locator(".order-card").first().waitFor({ state: "attached", timeout: 15_000 });
 
 interface ProbeElement {
   cls: string | null;
@@ -46,29 +43,19 @@ interface ProbeSnap {
 }
 
 const snap: ProbeSnap = await page.evaluate((): ProbeSnap => {
-  // @ts-expect-error — browser context globals (document)
   const card = document.querySelector(".order-card");
   if (!card) {
     return { error: "no card" };
   }
 
   // All descendants with a class attribute, record their class + tag + first-40-chars text.
-  const elements: ProbeElement[] = [...card.querySelectorAll("*[class]")]
-    .filter(
-      (el: { tagName: string }) =>
-        el.tagName !== "SCRIPT" && el.tagName !== "STYLE"
-    )
-    .map(
-      (el: {
-        getAttribute: (name: string) => string | null;
-        innerText?: string;
-        tagName: string;
-      }): ProbeElement => {
-        const cls = el.getAttribute("class");
-        const text = (el.innerText || "").replace(/\s+/g, " ").trim();
-        return { tag: el.tagName, cls, text: text.slice(0, 80) };
-      }
-    )
+  const elements: ProbeElement[] = [...card.querySelectorAll<HTMLElement>("*[class]")]
+    .filter((el) => el.tagName !== "SCRIPT" && el.tagName !== "STYLE")
+    .map((el): ProbeElement => {
+      const cls = el.getAttribute("class");
+      const text = (el.innerText || "").replace(/\s+/g, " ").trim();
+      return { tag: el.tagName, cls, text: text.slice(0, 80) };
+    })
     .filter((e) => e.text.length > 0);
 
   // Group: distinct classes that appear, each with representative text
@@ -97,13 +84,11 @@ const snap: ProbeSnap = await page.evaluate((): ProbeSnap => {
 
   // Also dump the nav-level / section headings
   const headers = [
-    ...card.querySelectorAll(
+    ...card.querySelectorAll<HTMLElement>(
       ".a-color-secondary, .a-color-base, .a-text-bold, span.a-color-secondary, .yohtmlc-order-level-connections"
     ),
   ]
-    .map((el: { innerText?: string }) =>
-      (el.innerText || "").replace(/\s+/g, " ").trim()
-    )
+    .map((el) => (el.innerText || "").replace(/\s+/g, " ").trim())
     .filter(Boolean)
     .slice(0, 20);
 

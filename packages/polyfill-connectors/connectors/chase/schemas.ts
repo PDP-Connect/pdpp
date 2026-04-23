@@ -17,13 +17,9 @@ import { z } from "zod";
 
 // ─── Shared atoms ───────────────────────────────────────────────────────
 
-const dateString = z
-  .string()
-  .regex(/^\d{4}-\d{2}-\d{2}$/, "must be YYYY-MM-DD");
+const dateString = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "must be YYYY-MM-DD");
 
-const dateTimeString = z
-  .string()
-  .regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/, "must be ISO-8601 timestamp");
+const dateTimeString = z.string().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/, "must be ISO-8601 timestamp");
 
 const isoTimestamp = dateTimeString;
 
@@ -36,8 +32,7 @@ const nonNegativeCents = z.number().int().min(0).max(10_000_000_000);
 const accountIdSchema = z.string().min(1).max(128);
 
 // Clean-string guard: catches accidentally-captured DOM innerText leaks.
-const CRUFT_PATTERNS =
-  /Loading|Please wait|undefined|\[object Object\]|<[a-z]+>|\n\n/i;
+const CRUFT_PATTERNS = /Loading|Please wait|undefined|\[object Object\]|<[a-z]+>|\n\n/i;
 const cleanString = (maxLen: number): z.ZodString =>
   z
     .string()
@@ -138,9 +133,7 @@ export const SCHEMAS: Record<string, z.ZodTypeAny> = {
 export function validateRecord(
   stream: string,
   data: Record<string, unknown>
-):
-  | { ok: true; data: Record<string, unknown> }
-  | { ok: false; issues: Array<{ path: string; message: string }> } {
+): { ok: true; data: Record<string, unknown> } | { ok: false; issues: Array<{ path: string; message: string }> } {
   const schema = SCHEMAS[stream];
   if (!schema) {
     return { ok: true, data };

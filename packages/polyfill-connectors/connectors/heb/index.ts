@@ -27,8 +27,7 @@ runConnector({
       type: "SKIP_RESULT",
       stream: "orders",
       reason: "heb_dom_wiring_pending",
-      message:
-        "H-E-B session reachable. Per-order detail DOM selectors deferred to live session.",
+      message: "H-E-B session reachable. Per-order detail DOM selectors deferred to live session.",
     });
   },
 });

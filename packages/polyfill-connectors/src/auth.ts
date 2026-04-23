@@ -16,10 +16,7 @@
  * { access_token, refresh_token, expires_at, ... }.
  */
 
-import type {
-  InteractionRequest,
-  InteractionResponse,
-} from "./connector-runtime.ts";
+import type { InteractionRequest, InteractionResponse } from "./connector-runtime.ts";
 
 // ─── Public types ───────────────────────────────────────────────────────
 
@@ -53,10 +50,7 @@ export type AuthStrategy<C extends AuthConfig = AuthConfig> = (
 
 const strategies = new Map<string, AuthStrategy>();
 
-export function registerAuthStrategy<C extends AuthConfig>(
-  kind: C["kind"],
-  resolver: AuthStrategy<C>
-): void {
+export function registerAuthStrategy<C extends AuthConfig>(kind: C["kind"], resolver: AuthStrategy<C>): void {
   // Cast narrows from the specific C to the general registry shape. Safe
   // because resolveAuth dispatches by kind before invoking the resolver.
   strategies.set(kind, resolver as AuthStrategy);
@@ -66,10 +60,7 @@ export function hasAuthStrategy(kind: string): boolean {
   return strategies.has(kind);
 }
 
-export function resolveAuth(
-  config: AuthConfig | undefined,
-  runtime: AuthStrategyContext
-): Promise<Credentials> {
+export function resolveAuth(config: AuthConfig | undefined, runtime: AuthStrategyContext): Promise<Credentials> {
   if (!config) {
     return Promise.resolve({});
   }
@@ -91,9 +82,7 @@ interface CredentialProperty {
 }
 
 /** Resolve one `required` entry (string or alias-array) against process.env. */
-function resolveEnvEntry(
-  entry: string | readonly string[]
-): { primary: string; value: string | undefined } | null {
+function resolveEnvEntry(entry: string | readonly string[]): { primary: string; value: string | undefined } | null {
   const aliases = Array.isArray(entry) ? entry : [entry];
   const primary = aliases[0];
   if (!primary) {
@@ -122,9 +111,7 @@ function buildCredentialSchema(
       type: "string",
       description: `${name} for ${connectorName}`,
     };
-    properties[name] = SECRET_NAME.test(name)
-      ? { ...base, format: "password" }
-      : base;
+    properties[name] = SECRET_NAME.test(name) ? { ...base, format: "password" } : base;
   }
   return { type: "object", properties, required: missing };
 }
@@ -147,9 +134,7 @@ function buildCredentialSchema(
 registerAuthStrategy<EnvAuthConfig>("env", async (config, runtime) => {
   const { required } = config;
   if (!Array.isArray(required) || required.length === 0) {
-    throw new Error(
-      "auth_env_required_missing: auth.required must be a non-empty array"
-    );
+    throw new Error("auth_env_required_missing: auth.required must be a non-empty array");
   }
 
   const have: Credentials = {};

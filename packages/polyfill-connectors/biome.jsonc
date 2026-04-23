@@ -1,6 +1,9 @@
 {
   "$schema": "./node_modules/@biomejs/biome/configuration_schema.json",
   "extends": ["ultracite/biome/core", "ultracite/biome/type-aware"],
+  "formatter": {
+    "lineWidth": 120
+  },
   "files": {
     "ignoreUnknown": true,
     // During the JS→TS migration, Biome only lints/formats .ts files plus

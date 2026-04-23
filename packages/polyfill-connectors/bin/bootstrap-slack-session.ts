@@ -29,11 +29,7 @@ import { fileURLToPath } from "node:url";
 import { config as dotenvConfig } from "dotenv";
 import type { BrowserContext, Page } from "playwright";
 import { launchPersistentContext } from "../src/browser-profile.ts";
-import {
-  handleInteraction,
-  type InteractionMessage,
-  type InteractionResponse,
-} from "../src/interaction-handler.ts";
+import { handleInteraction, type InteractionMessage, type InteractionResponse } from "../src/interaction-handler.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, "..", "..", "..");
@@ -62,9 +58,7 @@ function parseArgs(argv: string[]): Args {
 
 let _ic = 0;
 const nextInteractionId = (): string => `int_${Date.now()}_${++_ic}`;
-const sendInteractionAndWait = (
-  msg: InteractionMessage
-): Promise<InteractionResponse> =>
+const sendInteractionAndWait = (msg: InteractionMessage): Promise<InteractionResponse> =>
   handleInteraction(msg, { connectorName: "slack-bootstrap" });
 
 async function extractToken(page: Page): Promise<string | null> {
@@ -135,18 +129,11 @@ function appendEnv(varName: string, value: string): string {
   if (existsSync(ENV_FILE)) {
     const current = readFileSync(ENV_FILE, "utf8");
     if (new RegExp(`^${varName}=`, "m").test(current)) {
-      const updated = current.replace(
-        new RegExp(`^${varName}=.*$`, "m"),
-        `${varName}=${value}`
-      );
+      const updated = current.replace(new RegExp(`^${varName}=.*$`, "m"), `${varName}=${value}`);
       writeFileSync(ENV_FILE, updated, { mode: 0o600 });
       return "updated";
     }
-    writeFileSync(
-      ENV_FILE,
-      current.endsWith("\n") ? current + line : `${current}\n${line}`,
-      { mode: 0o600 }
-    );
+    writeFileSync(ENV_FILE, current.endsWith("\n") ? current + line : `${current}\n${line}`, { mode: 0o600 });
     return "appended";
   }
   writeFileSync(ENV_FILE, line, { mode: 0o600 });
@@ -156,14 +143,10 @@ function appendEnv(varName: string, value: string): string {
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   if (!args.workspace) {
-    console.error(
-      "Usage: bootstrap-slack-session.js --workspace=<subdomain> [--headed]"
-    );
+    console.error("Usage: bootstrap-slack-session.js --workspace=<subdomain> [--headed]");
     process.exit(2);
   }
-  console.error(
-    `[bootstrap-slack-session] workspace="${args.workspace}" headed=${args.headed}`
-  );
+  console.error(`[bootstrap-slack-session] workspace="${args.workspace}" headed=${args.headed}`);
 
   const context = await launchPersistentContext({ headless: !args.headed });
   try {
@@ -219,9 +202,7 @@ async function main(): Promise<void> {
       appendEnv("SLACK_WORKSPACE", args.workspace);
       appendEnv("SLACK_TOKEN", manualToken);
       appendEnv("SLACK_COOKIE", manualCookie);
-      console.error(
-        "[bootstrap-slack-session] credentials written via manual paste"
-      );
+      console.error("[bootstrap-slack-session] credentials written via manual paste");
       return;
     }
 

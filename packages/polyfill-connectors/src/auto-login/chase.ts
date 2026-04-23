@@ -28,20 +28,15 @@
  */
 
 import type { BrowserContext, Page } from "playwright";
-import type {
-  InteractionRequest,
-  InteractionResponse,
-} from "../connector-runtime.ts";
+import type { InteractionRequest, InteractionResponse } from "../connector-runtime.ts";
 
 const DASHBOARD_URL = "https://secure.chase.com/web/auth/dashboard";
 const LOGON_URL = "https://secure.chase.com/web/auth/";
 
 const SIGN_OUT_TEXT = /Sign Out|Log Off/i;
 const CHALLENGE_TEXT = /Confirm Your Identity|Choose a confirmation method/i;
-const OTP_PROMPT_TEXT =
-  /Enter (the|your) code|identification code|verification code/i;
-const OTP_PROMPT_TEXT_WITH_SENT =
-  /Enter (the|your) code|identification code|verification code|we sent/i;
+const OTP_PROMPT_TEXT = /Enter (the|your) code|identification code|verification code/i;
+const OTP_PROMPT_TEXT_WITH_SENT = /Enter (the|your) code|identification code|verification code|we sent/i;
 const REMEMBER_DEVICE_TEXT = /remember|trust|don't ask/i;
 
 const METHOD_LABELS: Record<string, string> = {
@@ -62,9 +57,7 @@ async function probeSession(page: Page): Promise<boolean> {
   // Auto-wait on "Sign out" being visible (logged in) or the logon form input
   // being visible (logged out), whichever shows first. Race with a timeout to
   // tolerate Chase serving a slow response.
-  await page
-    .goto(DASHBOARD_URL, { waitUntil: "domcontentloaded", timeout: 30_000 })
-    .catch((): undefined => undefined);
+  await page.goto(DASHBOARD_URL, { waitUntil: "domcontentloaded", timeout: 30_000 }).catch((): undefined => undefined);
   const signOutVisible = await page
     .getByText(SIGN_OUT_TEXT)
     .first()
@@ -113,10 +106,7 @@ export async function ensureChaseSession({
     .first();
   await passField.fill(password);
 
-  await page
-    .locator('button#signin-button, button[type="submit"]')
-    .first()
-    .click({ timeout: 5000 });
+  await page.locator('button#signin-button, button[type="submit"]').first().click({ timeout: 5000 });
 
   // After submit, Chase either advances to the challenge page or loads the
   // dashboard. Wait for a recognizable post-submit state rather than a fixed
@@ -216,10 +206,7 @@ export async function ensureChaseSession({
         })
         .first();
       const count = await rememberBox.count().catch((): number => 0);
-      if (
-        count > 0 &&
-        !(await rememberBox.isChecked().catch((): boolean => true))
-      ) {
+      if (count > 0 && !(await rememberBox.isChecked().catch((): boolean => true))) {
         await rememberBox.check({ timeout: 2000 });
       }
     } catch {
@@ -228,9 +215,7 @@ export async function ensureChaseSession({
 
     const submitByText = page.locator('text="Next"').first();
     if (await submitByText.count().catch((): number => 0)) {
-      await submitByText
-        .click({ timeout: 5000 })
-        .catch((): undefined => undefined);
+      await submitByText.click({ timeout: 5000 }).catch((): undefined => undefined);
     } else {
       await page
         .locator("mds-button#next-content")
@@ -241,10 +226,7 @@ export async function ensureChaseSession({
     }
 
     // Wait for redirect to dashboard (Sign out visible).
-    await page
-      .getByText(SIGN_OUT_TEXT)
-      .first()
-      .waitFor({ state: "visible", timeout: 30_000 });
+    await page.getByText(SIGN_OUT_TEXT).first().waitFor({ state: "visible", timeout: 30_000 });
   }
 
   if (!(await probeSession(page))) {

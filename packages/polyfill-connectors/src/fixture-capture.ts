@@ -55,9 +55,7 @@ export interface CaptureSession {
   readonly runId: string;
 }
 
-export function createCaptureSession(
-  connectorName: string
-): CaptureSession | null {
+export function createCaptureSession(connectorName: string): CaptureSession | null {
   if (process.env.PDPP_CAPTURE_FIXTURES !== "1") {
     return null;
   }
@@ -93,9 +91,7 @@ export function createCaptureSession(
         writeFileSync(join(baseDir, "dom", `${safeLabel(label)}.html`), html);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        process.stderr.write(
-          `[capture] dom write failed for ${label}: ${message}\n`
-        );
+        process.stderr.write(`[capture] dom write failed for ${label}: ${message}\n`);
       }
     },
     captureHttp(label, body, meta = {}): void {
@@ -107,9 +103,7 @@ export function createCaptureSession(
         writeFileSync(file, JSON.stringify(payload, null, 2));
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        process.stderr.write(
-          `[capture] http write failed for ${label}: ${message}\n`
-        );
+        process.stderr.write(`[capture] http write failed for ${label}: ${message}\n`);
       }
     },
   };

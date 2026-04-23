@@ -50,10 +50,7 @@ async function walk(dir: string): Promise<string[]> {
   return out;
 }
 
-function scopeMatches(
-  fileScope: ScrubScope,
-  ruleScope: ScrubScope | undefined
-): boolean {
+function scopeMatches(fileScope: ScrubScope, ruleScope: ScrubScope | undefined): boolean {
   if (ruleScope === "all" || !ruleScope) {
     return true;
   }
@@ -71,11 +68,7 @@ function fileScopeOf(path: string): ScrubScope {
   return "all";
 }
 
-function applyRules(
-  content: string,
-  rules: ScrubRule[],
-  fileScope: ScrubScope
-): string {
+function applyRules(content: string, rules: ScrubRule[], fileScope: ScrubScope): string {
   let out = content;
   for (const rule of rules) {
     if (!scopeMatches(fileScope, rule.scope)) {
@@ -132,13 +125,11 @@ async function main(): Promise<void> {
   // which is truthy). Keep behaviour but type it honestly.
   const runIds = runIdArg
     ? [runIdArg]
-    : (await readdir(rawRoot)).filter(async (n) =>
-        (await stat(join(rawRoot, n))).isDirectory()
-      );
+    : (await readdir(rawRoot)).filter(async (n) => (await stat(join(rawRoot, n))).isDirectory());
 
-  const { defaultScrubRules } = (await import(
-    pathToFileURL(join(PACKAGE_ROOT, "src/scrub-defaults.ts")).href
-  )) as { defaultScrubRules: ScrubRule[] };
+  const { defaultScrubRules } = (await import(pathToFileURL(join(PACKAGE_ROOT, "src/scrub-defaults.ts")).href)) as {
+    defaultScrubRules: ScrubRule[];
+  };
   const connectorRules = await loadConnectorRules(connector);
   const allRules: ScrubRule[] = [...defaultScrubRules, ...connectorRules];
 
@@ -165,9 +156,7 @@ async function main(): Promise<void> {
       await writeFile(dst, out);
       scrubbed++;
     }
-    console.log(
-      `  wrote ${scrubbed} scrubbed files to ${relative(PACKAGE_ROOT, outDir)}`
-    );
+    console.log(`  wrote ${scrubbed} scrubbed files to ${relative(PACKAGE_ROOT, outDir)}`);
   }
 
   console.log("\nDone. Review the scrubbed/ tree before committing.");

@@ -55,47 +55,32 @@ for (const url of candidates) {
   }
   const snap: SnapResult = await page
     .evaluate((): SnapResult => {
-      // @ts-expect-error — browser context globals
-      const loc: { href: string } = location;
-      // @ts-expect-error — browser context globals
-      const doc = document;
       return {
-        url: loc.href,
-        title: doc.title,
-        headingsFirst: [...doc.querySelectorAll("h1, h2, h3")]
-          .map((h: { innerText?: string }) => (h.innerText || "").trim())
+        url: location.href,
+        title: document.title,
+        headingsFirst: [...document.querySelectorAll<HTMLElement>("h1, h2, h3")]
+          .map((h) => (h.innerText || "").trim())
           .filter(Boolean)
           .slice(0, 10),
-        hasRequestForm: !!doc.querySelector(
+        hasRequestForm: !!document.querySelector(
           'select[name*="request" i], select[name*="category" i], button[id*="request" i]'
         ),
         // biome-ignore lint/performance/useTopLevelRegex: runs inside page.evaluate, serialized to browser context
-        signIn: /\/ap\/(signin|challenge|mfa)/.test(loc.href),
+        signIn: /\/ap\/(signin|challenge|mfa)/.test(location.href),
         // Look for anchors containing "Request My Data" / "Data Request" / "Privacy Central"
-        relevantLinks: [...doc.querySelectorAll("a")]
-          .filter((a: { innerText?: string; textContent?: string }) =>
+        relevantLinks: [...document.querySelectorAll("a")]
+          .filter((a) =>
             // biome-ignore lint/performance/useTopLevelRegex: runs inside page.evaluate, serialized to browser context
             /request.{0,20}data|data.{0,10}request|privacy.{0,10}(center|central)|gdpr|ccpa/i.test(
               (a.innerText || a.textContent || "").trim()
             )
           )
-          .map(
-            (a: {
-              innerText?: string;
-              textContent?: string;
-              href: string;
-            }) => ({
-              text: (a.innerText || a.textContent || "")
-                .replace(/\s+/g, " ")
-                .trim()
-                .slice(0, 100),
-              href: a.href,
-            })
-          )
+          .map((a) => ({
+            text: (a.innerText || a.textContent || "").replace(/\s+/g, " ").trim().slice(0, 100),
+            href: a.href,
+          }))
           .slice(0, 12),
-        bodyPreview: (doc.body?.innerText || "")
-          .replace(/\s+/g, " ")
-          .slice(0, 500),
+        bodyPreview: (document.body?.innerText || "").replace(/\s+/g, " ").slice(0, 500),
       };
     })
     .catch(

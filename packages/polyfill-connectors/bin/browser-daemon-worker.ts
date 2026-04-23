@@ -10,14 +10,7 @@
  * this as a detached process.
  */
 
-import {
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  rmSync,
-  unlinkSync,
-  writeFileSync,
-} from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 // Use patchright which patches the Runtime.Enable CDP leak (the headline
@@ -53,9 +46,7 @@ function log(msg: string): void {
   process.stderr.write(`[browser-daemon ${new Date().toISOString()}] ${msg}\n`);
 }
 
-async function waitForDevToolsPort(
-  timeoutMs = 15_000
-): Promise<{ browserPath: string; port: number }> {
+async function waitForDevToolsPort(timeoutMs = 15_000): Promise<{ browserPath: string; port: number }> {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     if (existsSync(DEVTOOLS_PORT_FILE)) {

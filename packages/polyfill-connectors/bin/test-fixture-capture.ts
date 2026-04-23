@@ -24,9 +24,7 @@ const PACKAGE_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 
 process.env.PDPP_CAPTURE_FIXTURES = "1";
 
-const { createCaptureSession } = await import(
-  `file://${join(PACKAGE_ROOT, "src/fixture-capture.js")}`
-);
+const { createCaptureSession } = await import(`file://${join(PACKAGE_ROOT, "src/fixture-capture.js")}`);
 
 const CONNECTOR = "_capture_smoke";
 const fixturesRoot = join(PACKAGE_ROOT, "fixtures", CONNECTOR);
@@ -38,9 +36,7 @@ if (existsSync(fixturesRoot)) {
 
 const capture = createCaptureSession(CONNECTOR);
 if (!capture) {
-  throw new Error(
-    "capture session not created (PDPP_CAPTURE_FIXTURES not respected?)"
-  );
+  throw new Error("capture session not created (PDPP_CAPTURE_FIXTURES not respected?)");
 }
 
 // Simulate RECORDs with PII
@@ -62,19 +58,13 @@ capture.recordRecord({
 // Simulate DOM capture via a stub page with a content() method
 const stubPage = {
   content(): Promise<string> {
-    return Promise.resolve(
-      "<html><body>Email: alice@example.com, phone (555) 123-4567</body></html>"
-    );
+    return Promise.resolve("<html><body>Email: alice@example.com, phone (555) 123-4567</body></html>");
   },
 };
 await capture.captureDom(stubPage, "orders-list");
 
 // Simulate HTTP capture
-capture.captureHttp(
-  "orders-endpoint",
-  JSON.stringify({ email: "charlie@foo.co" }),
-  { status: 200 }
-);
+capture.captureHttp("orders-endpoint", JSON.stringify({ email: "charlie@foo.co" }), { status: 200 });
 
 // Assert raw files exist and contain the PII verbatim
 const rawRecordsFile = join(capture.baseDir, "records", "orders.jsonl");
@@ -83,22 +73,15 @@ if (!rawRecords.includes("alice@example.com")) {
   throw new Error("raw records should contain PII");
 }
 
-const rawDom = await readFile(
-  join(capture.baseDir, "dom", "orders-list.html"),
-  "utf8"
-);
+const rawDom = await readFile(join(capture.baseDir, "dom", "orders-list.html"), "utf8");
 if (!rawDom.includes("alice@example.com")) {
   throw new Error("raw dom should contain PII");
 }
 
 // Run the scrubber
-const res = spawnSync(
-  "node",
-  [join(PACKAGE_ROOT, "bin/scrub-fixtures.mjs"), CONNECTOR],
-  {
-    encoding: "utf8",
-  }
-);
+const res = spawnSync("node", [join(PACKAGE_ROOT, "bin/scrub-fixtures.mjs"), CONNECTOR], {
+  encoding: "utf8",
+});
 if (res.status !== 0) {
   console.error(res.stdout);
   console.error(res.stderr);
@@ -106,29 +89,13 @@ if (res.status !== 0) {
 }
 
 // Assert scrubbed files are sanitized
-const scrubbedDir = join(
-  PACKAGE_ROOT,
-  "fixtures",
-  CONNECTOR,
-  "scrubbed",
-  capture.runId
-);
-const scrubbedRecords = await readFile(
-  join(scrubbedDir, "records/orders.jsonl"),
-  "utf8"
-);
-const scrubbedDom = await readFile(
-  join(scrubbedDir, "dom/orders-list.html"),
-  "utf8"
-);
+const scrubbedDir = join(PACKAGE_ROOT, "fixtures", CONNECTOR, "scrubbed", capture.runId);
+const scrubbedRecords = await readFile(join(scrubbedDir, "records/orders.jsonl"), "utf8");
+const scrubbedDom = await readFile(join(scrubbedDir, "dom/orders-list.html"), "utf8");
 
-const emailsRemainingInRecords = scrubbedRecords.match(
-  /alice@example\.com|bob@test\.org/
-);
+const emailsRemainingInRecords = scrubbedRecords.match(/alice@example\.com|bob@test\.org/);
 if (emailsRemainingInRecords) {
-  throw new Error(
-    `scrubbed records still contain original email: ${emailsRemainingInRecords[0]}`
-  );
+  throw new Error(`scrubbed records still contain original email: ${emailsRemainingInRecords[0]}`);
 }
 if (!scrubbedRecords.includes("redacted@example.com")) {
   throw new Error("scrubbed records missing redaction marker");

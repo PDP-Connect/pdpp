@@ -87,16 +87,11 @@ function itemRecord(it: PocketItem): RecordData {
     archived: it.status === "1",
     favorite: it.favorite === "1",
     word_count: it.word_count ? Number.parseInt(it.word_count, 10) : null,
-    reading_time_minutes: it.time_to_read
-      ? Number.parseInt(it.time_to_read, 10)
-      : null,
+    reading_time_minutes: it.time_to_read ? Number.parseInt(it.time_to_read, 10) : null,
   };
 }
 
-async function fetchPocketPage(
-  body: PocketRequestBody,
-  offset: number
-): Promise<PocketItem[]> {
+async function fetchPocketPage(body: PocketRequestBody, offset: number): Promise<PocketItem[]> {
   const res = await fetch(POCKET_URL, {
     method: "POST",
     headers: {
@@ -117,10 +112,7 @@ async function fetchPocketPage(
     throw new Error(msg);
   }
   const data = (await res.json()) as PocketGetResponse;
-  if (
-    !(data.list && typeof data.list === "object") ||
-    Array.isArray(data.list)
-  ) {
+  if (!(data.list && typeof data.list === "object") || Array.isArray(data.list)) {
     return [];
   }
   return Object.values(data.list) as PocketItem[];
@@ -147,9 +139,7 @@ runConnector({
     }
 
     await progress("Fetching Pocket items", { stream: "items" });
-    const itemsState = state.items as
-      | { last_time_updated_unix?: number }
-      | undefined;
+    const itemsState = state.items as { last_time_updated_unix?: number } | undefined;
     const since = itemsState?.last_time_updated_unix;
     const body: PocketRequestBody = {
       consumer_key: consumerKey,
@@ -168,10 +158,7 @@ runConnector({
         break;
       }
       for (const it of items) {
-        const updated = Number.parseInt(
-          String(it.time_updated || it.time_added || "0"),
-          10
-        );
+        const updated = Number.parseInt(String(it.time_updated || it.time_added || "0"), 10);
         await emitRecord("items", itemRecord(it));
         if (updated > latest) {
           latest = updated;

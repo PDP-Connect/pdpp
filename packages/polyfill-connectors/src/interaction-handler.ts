@@ -55,10 +55,7 @@ function pathFor(id: string, suffix: string): string {
   return join(tmpdir(), `pdpp-interaction-${safeId}${suffix}`);
 }
 
-async function waitForFile(
-  path: string,
-  timeoutMs: number
-): Promise<InteractionResponseInner> {
+async function waitForFile(path: string, timeoutMs: number): Promise<InteractionResponseInner> {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     try {
@@ -86,15 +83,11 @@ function promptStdin(question: string): Promise<string> {
   });
 }
 
-async function respondViaTerminal(
-  msg: InteractionMessage
-): Promise<InteractionResponseInner | null> {
+async function respondViaTerminal(msg: InteractionMessage): Promise<InteractionResponseInner | null> {
   // Only handle the simple/common kinds inline. Anything else falls back to
   // file drop so we don't fake a response the user didn't intend.
   if (msg.kind === "otp") {
-    const code = await promptStdin(
-      `[interaction] OTP required (${msg.message || ""}): `
-    );
+    const code = await promptStdin(`[interaction] OTP required (${msg.message || ""}): `);
     return { status: "success", data: { code: code.trim() } };
   }
   if (msg.kind === "credentials" && msg.schema?.properties) {
@@ -118,17 +111,12 @@ export async function handleInteraction(
   { connectorName = "connector" }: HandleInteractionOptions = {}
 ): Promise<InteractionResponse> {
   const id = msg.request_id || `anon_${Date.now()}`;
-  const timeoutSeconds = Math.min(
-    Math.max(msg.timeout_seconds || 1800, 60),
-    3600
-  );
+  const timeoutSeconds = Math.min(Math.max(msg.timeout_seconds || 1800, 60), 3600);
   const timeoutMs = timeoutSeconds * 1000;
   const reqPath = pathFor(id, ".json");
   const respPath = pathFor(id, ".response.json");
 
-  await writeFile(reqPath, JSON.stringify(msg, null, 2), "utf8").catch(
-    (): undefined => undefined
-  );
+  await writeFile(reqPath, JSON.stringify(msg, null, 2), "utf8").catch((): undefined => undefined);
 
   const instructions = [
     `[interaction] ${connectorName} needs ${msg.kind}: ${msg.message || "(no message)"}`,
@@ -143,10 +131,7 @@ export async function handleInteraction(
   const ntfyPromise = notify({
     title: `PDPP ${connectorName}: ${msg.kind} needed`,
     message: `${msg.message || ""}\n\nReply: write to ${respPath}`,
-    tags:
-      msg.kind === "otp" || msg.kind === "credentials"
-        ? ["key"]
-        : ["construction"],
+    tags: msg.kind === "otp" || msg.kind === "credentials" ? ["key"] : ["construction"],
     priority: "high",
   }).catch((): undefined => undefined);
 

@@ -40,8 +40,7 @@ interface ParsedChat {
 //   Android: DD/MM/YYYY, HH:MM - Author: Message
 const LINE_RE =
   /^\s*(?:\[)?(\d{1,4}[/\-.]\d{1,2}[/\-.]\d{1,4}),?\s+(\d{1,2}:\d{2}(?::\d{2})?(?:\s?[APap][Mm])?)(?:\])?\s*[-–]?\s*([^:]+?):\s?(.*)$/;
-const ATTACHMENT_RE =
-  /<attached: |<Media omitted>|image omitted|video omitted|audio omitted|document omitted/i;
+const ATTACHMENT_RE = /<attached: |<Media omitted>|image omitted|video omitted|audio omitted|document omitted/i;
 const TXT_EXT_RE = /\.txt$/i;
 const WHATSAPP_TITLE_PREFIX_RE = /^WhatsApp Chat - /;
 const WHATSAPP_LINE_SPLIT_RE = /\r?\n/;
@@ -92,15 +91,10 @@ function parseChatFile(filename: string, content: string): ParsedChat {
     msg.has_attachment = ATTACHMENT_RE.test(msg.content);
   }
 
-  const chatId = createHash("sha256")
-    .update(filename)
-    .digest("hex")
-    .slice(0, CHAT_ID_HASH_LENGTH);
+  const chatId = createHash("sha256").update(filename).digest("hex").slice(0, CHAT_ID_HASH_LENGTH);
   return {
     chatId,
-    title: filename
-      .replace(TXT_EXT_RE, "")
-      .replace(WHATSAPP_TITLE_PREFIX_RE, ""),
+    title: filename.replace(TXT_EXT_RE, "").replace(WHATSAPP_TITLE_PREFIX_RE, ""),
     participants: [...participants],
     messages,
   };
@@ -109,19 +103,13 @@ function parseChatFile(filename: string, content: string): ParsedChat {
 runConnector({
   name: "whatsapp",
   async collect({ requested, emit, emitRecord }) {
-    const importDir =
-      process.env.WHATSAPP_EXPORT_DIR ||
-      join(homedir(), ".pdpp/imports/whatsapp");
+    const importDir = process.env.WHATSAPP_EXPORT_DIR || join(homedir(), ".pdpp/imports/whatsapp");
 
     let files: string[];
     try {
-      files = (await readdir(importDir)).filter((f) =>
-        f.toLowerCase().endsWith(".txt")
-      );
+      files = (await readdir(importDir)).filter((f) => f.toLowerCase().endsWith(".txt"));
     } catch {
-      throw new Error(
-        `import_dir_not_found: ${importDir} (set WHATSAPP_EXPORT_DIR or create the directory)`
-      );
+      throw new Error(`import_dir_not_found: ${importDir} (set WHATSAPP_EXPORT_DIR or create the directory)`);
     }
     if (!files.length) {
       await emit({
@@ -134,9 +122,7 @@ runConnector({
     }
 
     for (const f of files) {
-      const content = await readFile(join(importDir, f), "utf8").catch(
-        (): string => ""
-      );
+      const content = await readFile(join(importDir, f), "utf8").catch((): string => "");
       if (!content) {
         continue;
       }

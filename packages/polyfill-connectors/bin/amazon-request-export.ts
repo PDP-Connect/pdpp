@@ -45,12 +45,10 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, "..", "..", "..");
 dotenvConfig({ path: join(REPO_ROOT, ".env.local") });
 
-const PRIVACY_CENTRAL_URL =
-  "https://www.amazon.com/hz/privacy-central/data-requests/preview.html";
+const PRIVACY_CENTRAL_URL = "https://www.amazon.com/hz/privacy-central/data-requests/preview.html";
 
 const SIGNIN_CHALLENGE_URL = /\/ap\/(signin|challenge|mfa)/;
-const TFA_PROMPT_TEXT =
-  /verification|two.?step|authenticator|passcode|code we sent|sent a text/i;
+const TFA_PROMPT_TEXT = /verification|two.?step|authenticator|passcode|code we sent|sent a text/i;
 
 // Mapping from a CLI --category flag to the exact button text on the
 // Privacy Central form. Button text is stable-looking ("Submit Request
@@ -90,8 +88,7 @@ const category = ((): string | null => {
 // Stdin is a terminal here, not a Collection Profile orchestrator, so
 // we implement INTERACTION by reading a 6-digit code from stdin.
 let interactionCounter = 0;
-const nextInteractionId = (): string =>
-  `cli_${Date.now()}_${++interactionCounter}`;
+const nextInteractionId = (): string => `cli_${Date.now()}_${++interactionCounter}`;
 
 interface InteractionMessage {
   kind?: string;
@@ -106,13 +103,9 @@ interface InteractionResponse {
   status: string;
 }
 
-function sendInteractionAndWait(
-  msg: InteractionMessage
-): Promise<InteractionResponse> {
+function sendInteractionAndWait(msg: InteractionMessage): Promise<InteractionResponse> {
   console.error(`\n[interaction] ${msg.message || msg.kind}`);
-  console.error(
-    "[interaction] waiting for input on stdin (enter 6-digit code)..."
-  );
+  console.error("[interaction] waiting for input on stdin (enter 6-digit code)...");
   return new Promise((resolve) => {
     const onData = (buf: Buffer): void => {
       const s = buf.toString().trim();
@@ -133,14 +126,10 @@ interface BrowserDaemonDiscovery {
 
 function readDaemonDiscovery(): BrowserDaemonDiscovery {
   try {
-    return JSON.parse(
-      readFileSync(`${process.env.HOME}/.pdpp/browser-daemon.json`, "utf8")
-    ) as BrowserDaemonDiscovery;
+    return JSON.parse(readFileSync(`${process.env.HOME}/.pdpp/browser-daemon.json`, "utf8")) as BrowserDaemonDiscovery;
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    throw new Error(
-      `could not read browser-daemon.json: ${msg}. Start the daemon first.`
-    );
+    throw new Error(`could not read browser-daemon.json: ${msg}. Start the daemon first.`);
   }
 }
 
@@ -171,78 +160,55 @@ interface FormStateSnapshot {
 }
 
 function snapshotFormState(page: Page): Promise<FormStateSnapshot> {
-  return page.evaluate((): FormStateSnapshot => {
-    // @ts-expect-error — browser context globals (document)
-    const qa = (sel: string) => [...document.querySelectorAll(sel)];
-    return {
-      // @ts-expect-error — browser context globals (location)
+  return page.evaluate(
+    (): FormStateSnapshot => ({
       url: location.href,
-      // @ts-expect-error — browser context globals (document)
       title: document.title,
-      headings: qa("h1, h2, h3")
-        .map((h: { innerText?: string }) => (h.innerText || "").trim())
+      headings: [...document.querySelectorAll<HTMLElement>("h1, h2, h3")]
+        .map((h) => (h.innerText || "").trim())
         .filter(Boolean)
         .slice(0, 20),
-      selects: qa("select").map(
-        (s: {
-          id: string;
-          name: string;
-          options: Array<{ textContent?: string; value: string }>;
-        }) => ({
-          name: s.name,
-          id: s.id,
-          options: [...s.options]
-            .map((o) => ({
-              value: o.value,
-              label: (o.textContent || "").trim(),
-            }))
-            .slice(0, 40),
-        })
-      ),
-      radios: qa('input[type="radio"]').map(
-        (r: { checked: boolean; id: string; name: string; value: string }) => ({
+      selects: [...document.querySelectorAll<HTMLSelectElement>("select")].map((s) => ({
+        name: s.name,
+        id: s.id,
+        options: [...s.options]
+          .map((o) => ({
+            value: o.value,
+            label: (o.textContent || "").trim(),
+          }))
+          .slice(0, 40),
+      })),
+      radios: [...document.querySelectorAll<HTMLInputElement>('input[type="radio"]')].map((r) => {
+        const label = document.querySelector<HTMLLabelElement>(`label[for="${r.id}"]`);
+        return {
           name: r.name,
           id: r.id,
           value: r.value,
-          labelText:
-            // @ts-expect-error — browser context globals (document)
-            (document.querySelector(`label[for="${r.id}"]`)?.innerText || "")
-              .trim()
-              .slice(0, 120),
+          labelText: (label?.innerText || "").trim().slice(0, 120),
           checked: r.checked,
-        })
-      ),
-      buttons: qa('button, input[type="submit"]')
-        .map(
-          (b: {
-            disabled: boolean;
-            id: string;
-            innerText?: string;
-            name: string;
-            type: string;
-            value?: string;
-          }) => ({
+        };
+      }),
+      buttons: [...document.querySelectorAll<HTMLButtonElement | HTMLInputElement>('button, input[type="submit"]')]
+        .map((b) => {
+          const text = b instanceof HTMLButtonElement ? b.innerText || b.value || "" : b.value || "";
+          return {
             id: b.id,
             name: b.name,
             type: b.type,
-            text: (b.innerText || b.value || "").trim().slice(0, 80),
+            text: text.trim().slice(0, 80),
             disabled: b.disabled,
-          })
-        )
-        .filter((b: { text: string }) => b.text)
+          };
+        })
+        .filter((b) => b.text)
         .slice(0, 30),
-      bodyPreview:
-        // @ts-expect-error — browser context globals (document)
-        (document.body?.innerText || "").replace(/\s+/g, " ").slice(0, 1200),
-    };
-  });
+      bodyPreview: (document.body?.innerText || "").replace(/\s+/g, " ").slice(0, 1200),
+    })
+  );
 }
 
 async function main(): Promise<void> {
   const disc = readDaemonDiscovery();
-  console.error(
-    `[request-export] attaching to daemon ws=${disc.wsEndpoint.slice(0, 40)}…`
-  );
+  console.error(`[request-export] attaching to daemon ws=${disc.wsEndpoint.slice(0, 40)}…`);
   const browser = await chromium.connectOverCDP(disc.wsEndpoint);
   const context = browser.contexts()[0];
   if (!context) {
@@ -267,14 +233,10 @@ async function main(): Promise<void> {
     // typically pre-seeded with the right email, so we only need to fill
     // password and submit. Fall back to full auto-login on 2FA.
     if (SIGNIN_CHALLENGE_URL.test(page.url())) {
-      console.error(
-        "[request-export] Privacy Central triggered re-auth challenge"
-      );
+      console.error("[request-export] Privacy Central triggered re-auth challenge");
       const password = process.env.AMAZON_PASSWORD;
       if (!password) {
-        throw new Error(
-          "AMAZON_PASSWORD not set; cannot drive Privacy Central re-auth"
-        );
+        throw new Error("AMAZON_PASSWORD not set; cannot drive Privacy Central re-auth");
       }
 
       // Password input on the re-auth page is `#ap_password`. The email
@@ -282,12 +244,7 @@ async function main(): Promise<void> {
       const pwLoc = page.locator("input#ap_password");
       await pwLoc.waitFor({ state: "visible", timeout: 15_000 });
       await pwLoc.fill(password);
-      await page
-        .locator(
-          'input#signInSubmit, input[type="submit"], button[type="submit"]'
-        )
-        .first()
-        .click();
+      await page.locator('input#signInSubmit, input[type="submit"], button[type="submit"]').first().click();
       await page.waitForTimeout(5000);
 
       // 2FA may follow on some challenges. Reuse the INTERACTION shim.
@@ -298,30 +255,20 @@ async function main(): Promise<void> {
           .catch(() => "")
       ).slice(0, 500);
       if (TFA_PROMPT_TEXT.test(bodyAfter)) {
-        console.error(
-          "[request-export] 2FA challenge after password — prompting for code"
-        );
+        console.error("[request-export] 2FA challenge after password — prompting for code");
         const resp = await sendInteractionAndWait({
           type: "INTERACTION",
           request_id: nextInteractionId(),
           kind: "otp",
-          message:
-            "Amazon 2FA required for Privacy Central. Reply with the code from your phone or authenticator.",
+          message: "Amazon 2FA required for Privacy Central. Reply with the code from your phone or authenticator.",
         });
         if (resp.status !== "success" || !resp.data?.code) {
           throw new Error("2FA code not provided");
         }
-        const otp = page.locator(
-          'input[name="otpCode"], input#auth-mfa-otpcode, input[autocomplete="one-time-code"]'
-        );
+        const otp = page.locator('input[name="otpCode"], input#auth-mfa-otpcode, input[autocomplete="one-time-code"]');
         await otp.first().waitFor({ state: "visible", timeout: 15_000 });
         await otp.first().fill(resp.data.code);
-        await page
-          .locator(
-            'input#auth-signin-button, button[type="submit"], input[type="submit"]'
-          )
-          .first()
-          .click();
+        await page.locator('input#auth-signin-button, button[type="submit"], input[type="submit"]').first().click();
         await page.waitForTimeout(6000);
       }
 
@@ -329,16 +276,12 @@ async function main(): Promise<void> {
       // something else is wrong — fall back to the full ensureAmazonSession
       // path in case the session itself is actually dead.
       if (SIGNIN_CHALLENGE_URL.test(page.url())) {
-        console.error(
-          "[request-export] still on sign-in; falling back to full auto-login"
-        );
+        console.error("[request-export] still on sign-in; falling back to full auto-login");
         // Historical call site predates the unified sendInteraction signature.
         // Preserved verbatim for business-logic fidelity; adapter wraps the
         // legacy (sendInteractionAndWait, nextInteractionId) pair into the
         // current sendInteraction contract.
-        const sendInteraction: Parameters<
-          typeof ensureAmazonSession
-        >[0]["sendInteraction"] = async (req) => {
+        const sendInteraction: Parameters<typeof ensureAmazonSession>[0]["sendInteraction"] = async (req) => {
           const resp = await sendInteractionAndWait({
             type: "INTERACTION",
             request_id: req.request_id ?? nextInteractionId(),
@@ -365,33 +308,19 @@ async function main(): Promise<void> {
     console.log(JSON.stringify(snap, null, 2));
 
     if (!submit) {
-      console.error(
-        "\n[request-export] --submit not passed; printing form state and exiting."
-      );
-      console.error(
-        "[request-export] re-run with --submit --category <name> to actually request data."
-      );
-      console.error(
-        '[request-export] known categories (button-text prefix "Submit Request "):'
-      );
-      console.error(
-        AMAZON_CATEGORIES.map(
-          (c) => `  - ${c.flag.padEnd(20)} → "${c.buttonText}"`
-        ).join("\n")
-      );
+      console.error("\n[request-export] --submit not passed; printing form state and exiting.");
+      console.error("[request-export] re-run with --submit --category <name> to actually request data.");
+      console.error('[request-export] known categories (button-text prefix "Submit Request "):');
+      console.error(AMAZON_CATEGORIES.map((c) => `  - ${c.flag.padEnd(20)} → "${c.buttonText}"`).join("\n"));
       return;
     }
 
     if (!category) {
-      throw new Error(
-        "--submit requires --category <name>. See listed categories above."
-      );
+      throw new Error("--submit requires --category <name>. See listed categories above.");
     }
     const match = AMAZON_CATEGORIES.find((c) => c.flag === category);
     if (!match) {
-      throw new Error(
-        `unknown category "${category}". Known: ${AMAZON_CATEGORIES.map((c) => c.flag).join(", ")}`
-      );
+      throw new Error(`unknown category "${category}". Known: ${AMAZON_CATEGORIES.map((c) => c.flag).join(", ")}`);
     }
 
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
@@ -400,30 +329,22 @@ async function main(): Promise<void> {
     const postShotPath = `${outDir}/amazon-request-${match.flag}-${stamp}-post.png`;
     const postDomPath = `${outDir}/amazon-request-${match.flag}-${stamp}-post.html`;
 
-    console.error(
-      `[request-export] capturing pre-submit screenshot → ${preShotPath}`
-    );
-    await page
-      .screenshot({ path: preShotPath, fullPage: true })
-      .catch((e: unknown) => {
-        const m = e instanceof Error ? e.message : String(e);
-        console.error(`  screenshot failed: ${m}`);
-      });
+    console.error(`[request-export] capturing pre-submit screenshot → ${preShotPath}`);
+    await page.screenshot({ path: preShotPath, fullPage: true }).catch((e: unknown) => {
+      const m = e instanceof Error ? e.message : String(e);
+      console.error(`  screenshot failed: ${m}`);
+    });
 
     // Start listening for the response to the form POST before we click,
     // so we can capture the server's confirmation URL and status cleanly.
     const postPromise = page
       .waitForResponse(
-        (r) =>
-          r.url().includes("/privacy-central/data-requests/create.html") &&
-          r.request().method() === "POST",
+        (r) => r.url().includes("/privacy-central/data-requests/create.html") && r.request().method() === "POST",
         { timeout: 30_000 }
       )
       .catch(() => null);
 
-    console.error(
-      `[request-export] submitting category="${match.flag}" via button text "${match.buttonText}"`
-    );
+    console.error(`[request-export] submitting category="${match.flag}" via button text "${match.buttonText}"`);
     const submitBtn = page
       .getByRole("button", { name: match.buttonText, exact: true })
       .or(page.locator(`input[type="submit"][value="${match.buttonText}"]`));
@@ -432,31 +353,21 @@ async function main(): Promise<void> {
 
     const postResp = await postPromise;
     if (postResp) {
-      console.error(
-        `[request-export] POST response: status=${postResp.status()} url=${postResp.url()}`
-      );
+      console.error(`[request-export] POST response: status=${postResp.status()} url=${postResp.url()}`);
     } else {
-      console.error(
-        "[request-export] POST response was not observed within timeout (may have already redirected)"
-      );
+      console.error("[request-export] POST response was not observed within timeout (may have already redirected)");
     }
 
-    await page
-      .waitForLoadState("domcontentloaded", { timeout: 20_000 })
-      .catch(() => {
-        /* ignore */
-      });
+    await page.waitForLoadState("domcontentloaded", { timeout: 20_000 }).catch(() => {
+      /* ignore */
+    });
     await page.waitForTimeout(4000);
 
-    console.error(
-      `[request-export] capturing post-submit screenshot → ${postShotPath}`
-    );
-    await page
-      .screenshot({ path: postShotPath, fullPage: true })
-      .catch((e: unknown) => {
-        const m = e instanceof Error ? e.message : String(e);
-        console.error(`  screenshot failed: ${m}`);
-      });
+    console.error(`[request-export] capturing post-submit screenshot → ${postShotPath}`);
+    await page.screenshot({ path: postShotPath, fullPage: true }).catch((e: unknown) => {
+      const m = e instanceof Error ? e.message : String(e);
+      console.error(`  screenshot failed: ${m}`);
+    });
 
     interface PostSnap {
       bodyText: string;
@@ -474,60 +385,52 @@ async function main(): Promise<void> {
     }
 
     const postSnap: PostSnap = await page.evaluate((): PostSnap => {
-      // @ts-expect-error — browser context globals (document)
-      const qa = (sel: string) => [...document.querySelectorAll(sel)];
+      const buttonText = (b: HTMLButtonElement | HTMLInputElement | HTMLAnchorElement): string => {
+        if (b instanceof HTMLInputElement) {
+          return b.value || "";
+        }
+        return b.innerText || "";
+      };
       return {
-        // @ts-expect-error — browser context globals (location)
         url: location.href,
-        // @ts-expect-error — browser context globals (document)
         title: document.title,
-        bodyText:
-          // @ts-expect-error — browser context globals (document)
-          (document.body?.innerText || "").replace(/\s+/g, " ").slice(0, 3000),
-        headings: qa("h1, h2, h3")
-          .map((h: { innerText?: string }) => (h.innerText || "").trim())
+        bodyText: (document.body?.innerText || "").replace(/\s+/g, " ").slice(0, 3000),
+        headings: [...document.querySelectorAll<HTMLElement>("h1, h2, h3")]
+          .map((h) => (h.innerText || "").trim())
           .filter(Boolean)
           .slice(0, 20),
-        forms: qa("form").map(
-          (f: {
-            action: string;
-            id: string;
-            method: string;
-            querySelectorAll: (s: string) => Array<{
-              innerText?: string;
-              value?: string;
-            }>;
-          }) => ({
-            id: f.id,
-            action: f.action,
-            method: f.method,
-            buttons: [...f.querySelectorAll('input[type="submit"], button')]
-              .map((b) => (b.value || b.innerText || "").trim())
-              .filter(Boolean)
-              .slice(0, 10),
-          })
-        ),
-        buttons: qa('button, input[type="submit"], a[role="button"]')
-          .map(
-            (b: {
-              href?: string;
-              innerText?: string;
-              tagName: string;
-              value?: string;
-            }) => ({
-              tag: b.tagName,
-              text: (b.value || b.innerText || "").trim().slice(0, 120),
-              href: b.href || null,
+        forms: [...document.querySelectorAll<HTMLFormElement>("form")].map((f) => ({
+          id: f.id,
+          action: f.action,
+          method: f.method,
+          buttons: [...f.querySelectorAll<HTMLButtonElement | HTMLInputElement>('input[type="submit"], button')]
+            .map((b) => {
+              if (b instanceof HTMLInputElement) {
+                return (b.value || "").trim();
+              }
+              return (b.innerText || "").trim();
             })
-          )
-          .filter((b: { text: string }) => b.text)
+            .filter(Boolean)
+            .slice(0, 10),
+        })),
+        buttons: [
+          ...document.querySelectorAll<HTMLButtonElement | HTMLInputElement | HTMLAnchorElement>(
+            'button, input[type="submit"], a[role="button"]'
+          ),
+        ]
+          .map((b) => ({
+            tag: b.tagName,
+            text: buttonText(b).trim().slice(0, 120),
+            href: b instanceof HTMLAnchorElement ? b.href || null : null,
+          }))
+          .filter((b) => b.text)
           .slice(0, 30),
-        links: qa("a[href]")
-          .map((a: { href: string; innerText?: string }) => ({
+        links: [...document.querySelectorAll<HTMLAnchorElement>("a[href]")]
+          .map((a) => ({
             text: (a.innerText || "").replace(/\s+/g, " ").trim().slice(0, 100),
             href: a.href,
           }))
-          .filter((a: { href: string; text: string }) =>
+          .filter((a) =>
             // biome-ignore lint/performance/useTopLevelRegex: runs inside page.evaluate, serialized to browser
             /request|privacy|data|confirm|cancel|verif/i.test(a.text + a.href)
           )
@@ -535,9 +438,7 @@ async function main(): Promise<void> {
       };
     });
 
-    console.error(
-      `[request-export] capturing post-submit DOM → ${postDomPath}`
-    );
+    console.error(`[request-export] capturing post-submit DOM → ${postDomPath}`);
     const { writeFileSync } = await import("node:fs");
     writeFileSync(postDomPath, await page.content());
 
@@ -546,9 +447,7 @@ async function main(): Promise<void> {
     console.error("===== END SNAPSHOT =====");
 
     console.error(`\n[request-export] URL: ${postSnap.url}`);
-    console.error(
-      `[request-export] screenshots: pre=${preShotPath} post=${postShotPath}`
-    );
+    console.error(`[request-export] screenshots: pre=${preShotPath} post=${postShotPath}`);
     console.error(`[request-export] DOM: ${postDomPath}`);
   } finally {
     await page.close().catch(() => {

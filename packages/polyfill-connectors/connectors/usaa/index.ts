@@ -35,17 +35,9 @@ import {
   runConnector,
   type ValidateRecord,
 } from "../../src/connector-runtime.ts";
-import {
-  attachDownloadQueue,
-  type DownloadQueue,
-} from "../../src/download-queue.ts";
+import { attachDownloadQueue, type DownloadQueue } from "../../src/download-queue.ts";
 import { validateRecord as validateRecordRaw } from "./schemas.ts";
-import {
-  fileUrlForPath,
-  hydrateStatementPdfs,
-  parsePdfStatement,
-  type StatementRow,
-} from "./statement-pdfs.ts";
+import { fileUrlForPath, hydrateStatementPdfs, parsePdfStatement, type StatementRow } from "./statement-pdfs.ts";
 
 const validateRecord = validateRecordRaw as ValidateRecord;
 
@@ -56,17 +48,14 @@ const NEGATIVE_PREFIX_RE = /^-|\(/;
 const COMMA_RE = /,/g;
 const ACCOUNT_URL_PREFIXES =
   'a[href^="/my/checking"], a[href^="/my/savings"], a[href^="/my/credit-card"], a[href^="/my/external-account"], a[href^="/my/loan"], a[href^="/my/mortgage"], a[href^="/my/investing"], a[href^="/my/retirement"]';
-const DASHBOARD_SELECTOR_WAIT =
-  'a[href^="/my/checking"], a[href^="/my/credit-card"], a[href^="/my/external-account"]';
-const LOGON_REDIRECT_RE =
-  /\/my\/logon|\/access-management\/oauth2\/member\/authorize/;
+const DASHBOARD_SELECTOR_WAIT = 'a[href^="/my/checking"], a[href^="/my/credit-card"], a[href^="/my/external-account"]';
+const LOGON_REDIRECT_RE = /\/my\/logon|\/access-management\/oauth2\/member\/authorize/;
 const TRANSACTION_ACCOUNT_TYPE_RE = /checking|savings|credit-card/;
 const CREDIT_CARD_TYPE_RE = /credit-card/;
 const CHECK_NUMBER_RE = /CHECK\s*#?\s*0*(\d+)/i;
 const DESCRIPTION_HEADER_RE = /^(description|payee|merchant|memo)$/i;
 const STATEMENT_TITLE_RE = /STATEMENT/i;
-const NON_STATEMENT_TITLE_RE =
-  /(TERMS\b|AGREEMENT\b|NOTICE\b|DISCLOSURE\b|CONDITION)/i;
+const NON_STATEMENT_TITLE_RE = /(TERMS\b|AGREEMENT\b|NOTICE\b|DISCLOSURE\b|CONDITION)/i;
 const UNREAD_RE = /UNREAD/i;
 const MET_RE = /met/i;
 const LAST4_REF_RE = /\*(\d{4})/;
@@ -316,8 +305,7 @@ async function extractAccounts(page: Page): Promise<DashboardAccount[]> {
   return page.evaluate((linkSelector: string): DashboardAccount[] => {
     // biome-ignore-start lint/performance/useTopLevelRegex: runs in browser context (page.evaluate); module-scoped regexes in Node cannot cross the bridge.
     const WHITESPACE_RE = /\s+/g;
-    const SKIP_TEXT_RE =
-      /^(Get started|Add account|View|Manage|Open|Apply|Browse)/i;
+    const SKIP_TEXT_RE = /^(Get started|Add account|View|Manage|Open|Apply|Browse)/i;
     const TYPE_URL_RE = /^\/my\/([^/?]+)/;
     const ACCOUNT_ID_RE = /(?:accountId|acctId)=([^&]+)/;
     const LAST4_RE = /\*(\d{4})/;
@@ -326,16 +314,8 @@ async function extractAccounts(page: Page): Promise<DashboardAccount[]> {
     const COMMA_RE_LOCAL = /,/g;
     // biome-ignore-end lint/performance/useTopLevelRegex: runs in browser context (page.evaluate); module-scoped regexes in Node cannot cross the bridge.
 
-    interface El {
-      getAttribute: (name: string) => string | null;
-      innerText?: string;
-    }
-
     const out: DashboardAccount[] = [];
-    const links = [
-      // @ts-expect-error — browser context globals (document)
-      ...document.querySelectorAll(linkSelector),
-    ] as El[];
+    const links = [...document.querySelectorAll<HTMLElement>(linkSelector)];
     for (const a of links) {
       const href = a.getAttribute("href") || "";
       const text = (a.innerText || "").replace(WHITESPACE_RE, " ").trim();
@@ -355,9 +335,7 @@ async function extractAccounts(page: Page): Promise<DashboardAccount[]> {
         .map((m) => (m[1] ? m[1] : null))
         .filter((v): v is string => Boolean(v));
       const firstAmount = amounts[0];
-      const balanceCents = firstAmount
-        ? Math.round(Number(firstAmount.replace(COMMA_RE_LOCAL, "")) * 100)
-        : null;
+      const balanceCents = firstAmount ? Math.round(Number(firstAmount.replace(COMMA_RE_LOCAL, "")) * 100) : null;
       out.push({
         account_id_raw: accountId,
         account_url: href,
@@ -380,16 +358,12 @@ async function findExportAffordance(page: Page): Promise<Locator | null> {
     return bankClass.first();
   }
 
-  const creditClass = page.locator(
-    "button.as_credit__utility-bar-item.as_credit__export"
-  );
+  const creditClass = page.locator("button.as_credit__utility-bar-item.as_credit__export");
   if (await creditClass.count().catch((): number => 0)) {
     return creditClass.first();
   }
 
-  const buttonText = page
-    .locator('button, [role="button"]')
-    .filter({ hasText: EXPORT_BUTTON_TEXT_RE });
+  const buttonText = page.locator('button, [role="button"]').filter({ hasText: EXPORT_BUTTON_TEXT_RE });
   if (await buttonText.count().catch((): number => 0)) {
     return buttonText.first();
   }
@@ -405,16 +379,8 @@ function capturePageDiagnostics(page: Page): Promise<PageDiagnostics | null> {
       const EXPORT_OR_DL_RE = /export|download/i;
       // biome-ignore-end lint/performance/useTopLevelRegex: runs in browser context (page.evaluate); module-scoped regexes in Node cannot cross the bridge.
 
-      interface El {
-        className?: string | { toString(): string };
-        id?: string;
-        innerText?: string;
-        tagName: string;
-      }
-
       const take = (sel: string, max = 8): DiagnosticCandidate[] => {
-        // @ts-expect-error — browser context globals (document)
-        const els = [...document.querySelectorAll(sel)] as El[];
+        const els = [...document.querySelectorAll<HTMLElement>(sel)];
         return els.slice(0, max).map((el) => ({
           tag: el.tagName,
           text: (el.innerText || "").replace(WS_RE, " ").trim().slice(0, 50),
@@ -423,34 +389,18 @@ function capturePageDiagnostics(page: Page): Promise<PageDiagnostics | null> {
         }));
       };
       return {
-        // @ts-expect-error — browser context globals (location)
         url: location.href,
-        // @ts-expect-error — browser context globals (document)
         title: document.title,
-        has_utility_bar: Boolean(
-          // @ts-expect-error — browser context globals (document)
-          document.querySelector(
-            '.ent-as-utility-bar, [class*="utility-bar" i]'
-          )
-        ),
-        export_candidates: take('button, [role="button"]').filter((c) =>
-          EXPORT_OR_DL_RE.test(c.text)
-        ),
-        nav_candidates: take(
-          'a[href*="/my/credit-card"], a[role="tab"], [role="tab"]'
-        ),
-        dialogs_open:
-          // @ts-expect-error — browser context globals (document)
-          document.querySelectorAll('[role="dialog"]').length,
+        has_utility_bar: Boolean(document.querySelector('.ent-as-utility-bar, [class*="utility-bar" i]')),
+        export_candidates: take('button, [role="button"]').filter((c) => EXPORT_OR_DL_RE.test(c.text)),
+        nav_candidates: take('a[href*="/my/credit-card"], a[role="tab"], [role="tab"]'),
+        dialogs_open: document.querySelectorAll('[role="dialog"]').length,
       };
     })
     .catch((): PageDiagnostics | null => null);
 }
 
-async function locateExportPage(
-  page: Page,
-  accountUrl: string
-): Promise<LocatedExportPage | null> {
+async function locateExportPage(page: Page, accountUrl: string): Promise<LocatedExportPage | null> {
   const candidates = [accountUrl];
 
   const seen = new Set<string>();
@@ -511,9 +461,7 @@ async function driveExport(
   await politeDelay(EXPORT_DIALOG_DELAY_MS);
 
   const selectCount = await page
-    .locator(
-      '[role="dialog"] select[name="selectionType"], select[name="selectionType"]'
-    )
+    .locator('[role="dialog"] select[name="selectionType"], select[name="selectionType"]')
     .count()
     .catch((): number => 0);
   if (!selectCount) {
@@ -524,9 +472,7 @@ async function driveExport(
         .first()
         .innerHTML()
         .catch((): string | null => null);
-      const preview = dialogHtml
-        ? dialogHtml.replace(/\s+/g, " ").slice(0, HTML_PREVIEW_MAX)
-        : null;
+      const preview = dialogHtml ? dialogHtml.replace(/\s+/g, " ").slice(0, HTML_PREVIEW_MAX) : null;
       onDiagnostics({
         phase: "export_dialog_unexpected_shape",
         diag: base
@@ -546,27 +492,19 @@ async function driveExport(
     return null;
   }
 
-  await page
-    .selectOption('select[name="selectionType"]', "date-range")
-    .catch((): string[] => []);
+  await page.selectOption('select[name="selectionType"]', "date-range").catch((): string[] => []);
   await politeDelay(EXPORT_STATE_DELAY_MS);
 
-  const fromIn = page
-    .locator('input[name="fromDate"], input[name="startDate"]')
-    .first();
+  const fromIn = page.locator('input[name="fromDate"], input[name="startDate"]').first();
   const endIn = page.locator('input[name="endDate"]').first();
   await fromIn.click().catch((): undefined => undefined);
   await page.keyboard.press("Control+A").catch((): undefined => undefined);
   await page.keyboard.press("Delete").catch((): undefined => undefined);
-  await fromIn
-    .pressSequentially(mmddyyyy(sinceDate), { delay: KEY_TYPE_DELAY_MS })
-    .catch((): undefined => undefined);
+  await fromIn.pressSequentially(mmddyyyy(sinceDate), { delay: KEY_TYPE_DELAY_MS }).catch((): undefined => undefined);
   await endIn.click().catch((): undefined => undefined);
   await page.keyboard.press("Control+A").catch((): undefined => undefined);
   await page.keyboard.press("Delete").catch((): undefined => undefined);
-  await endIn
-    .pressSequentially(mmddyyyy(untilDate), { delay: KEY_TYPE_DELAY_MS })
-    .catch((): undefined => undefined);
+  await endIn.pressSequentially(mmddyyyy(untilDate), { delay: KEY_TYPE_DELAY_MS }).catch((): undefined => undefined);
   await politeDelay(EXPORT_STATE_DELAY_MS);
   await politeDelay(EXPORT_STATE_DELAY_MS);
 
@@ -594,10 +532,7 @@ async function driveExport(
           d: Awaited<ReturnType<DownloadQueue["waitForNextDownload"]>>;
         }
       | { kind: "error" }
-    >([
-      downloadPromise.then((d) => ({ kind: "download", d }) as const),
-      errorPromise,
-    ]);
+    >([downloadPromise.then((d) => ({ kind: "download", d }) as const), errorPromise]);
     if (outcome.kind === "error") {
       rmSync(tempDir, { recursive: true, force: true });
       await page
@@ -685,8 +620,7 @@ function rowsToTransactions(
       continue;
     }
     const description = idxDesc >= 0 ? (r[idxDesc] ?? "").trim() : "";
-    const original =
-      idxOrig >= 0 ? (r[idxOrig] ?? "").trim() || description : description;
+    const original = idxOrig >= 0 ? (r[idxOrig] ?? "").trim() || description : description;
     const amount = idxAmt >= 0 ? (r[idxAmt] ?? "").trim() : "";
     const tupleKey = `${date}|${amount}|${original}`;
     const ord = tupleOrdinal.get(tupleKey) || 0;
@@ -736,18 +670,7 @@ runConnector({
     });
   },
   async collect(ctx: BrowserCollectContext): Promise<void> {
-    const {
-      state,
-      requested,
-      context,
-      page,
-      emit,
-      emitRecord,
-      progress,
-      capture,
-      sendInteraction,
-      emittedAt,
-    } = ctx;
+    const { state, requested, context, page, emit, emitRecord, progress, capture, sendInteraction, emittedAt } = ctx;
 
     // Page-level download listener — context.on('download') doesn't fire over
     // CDP; page.on does. Attach BEFORE any clicks that might download.
@@ -792,12 +715,9 @@ runConnector({
       if (requested.has("transactions")) {
         const stream = requested.get("transactions");
         const sinceDateCfg = stream?.time_range?.since?.slice(0, 10);
-        const seventeenMonthsAgo = new Date(Date.now() - BACKFILL_17MO)
-          .toISOString()
-          .slice(0, 10);
+        const seventeenMonthsAgo = new Date(Date.now() - BACKFILL_17MO).toISOString().slice(0, 10);
 
-        const priorStateForTxns =
-          (state.transactions as TransactionsPriorState | undefined) ?? {};
+        const priorStateForTxns = (state.transactions as TransactionsPriorState | undefined) ?? {};
         const transactionsCursor: TransactionsStreamCursor = {
           ...priorStateForTxns,
         };
@@ -813,26 +733,16 @@ runConnector({
           const perAccState = priorStateForTxns[accountKey];
           const priorLastDate = perAccState?.last_date ?? null;
           const desiredSince = priorLastDate
-            ? new Date(Date.parse(priorLastDate) - INCREMENTAL_OVERLAP_MS)
-                .toISOString()
-                .slice(0, 10)
+            ? new Date(Date.parse(priorLastDate) - INCREMENTAL_OVERLAP_MS).toISOString().slice(0, 10)
             : (sinceDateCfg ?? seventeenMonthsAgo);
           const todayIso = new Date().toISOString().slice(0, 10);
 
           // Ladder: desired → 5y → 2y → 1y → 3mo.
           const candidateStarts: string[] = [desiredSince];
-          const fiveYearsAgo = new Date(Date.now() - BACKFILL_DAYS_5Y)
-            .toISOString()
-            .slice(0, 10);
-          const twoYearsAgo = new Date(Date.now() - BACKFILL_DAYS_2Y)
-            .toISOString()
-            .slice(0, 10);
-          const oneYearAgo = new Date(Date.now() - BACKFILL_DAYS_1Y)
-            .toISOString()
-            .slice(0, 10);
-          const threeMonthsAgo = new Date(Date.now() - BACKFILL_DAYS_3MO)
-            .toISOString()
-            .slice(0, 10);
+          const fiveYearsAgo = new Date(Date.now() - BACKFILL_DAYS_5Y).toISOString().slice(0, 10);
+          const twoYearsAgo = new Date(Date.now() - BACKFILL_DAYS_2Y).toISOString().slice(0, 10);
+          const oneYearAgo = new Date(Date.now() - BACKFILL_DAYS_1Y).toISOString().slice(0, 10);
+          const threeMonthsAgo = new Date(Date.now() - BACKFILL_DAYS_3MO).toISOString().slice(0, 10);
           if (fiveYearsAgo > desiredSince) {
             candidateStarts.push(fiveYearsAgo);
           }
@@ -859,17 +769,13 @@ runConnector({
               message: `Export ${a.name ?? "?"} (${a.last_four || "n/a"}) from ${sinceDate} to ${todayIso}`,
             });
             try {
-              csvPath = await driveExport(
-                page,
-                `https://www.usaa.com${a.account_url}`,
-                {
-                  sinceDate,
-                  untilDate: todayIso,
-                  accountType: a.account_type,
-                  onDiagnostics,
-                  downloadQueue,
-                }
-              );
+              csvPath = await driveExport(page, `https://www.usaa.com${a.account_url}`, {
+                sinceDate,
+                untilDate: todayIso,
+                accountType: a.account_type,
+                onDiagnostics,
+                downloadQueue,
+              });
             } catch (err) {
               const msg = err instanceof Error ? err.message : String(err);
               if (msg === "session_dead_redirect_to_logon") {
@@ -887,10 +793,7 @@ runConnector({
                   continue;
                 } catch (reauthErr) {
                   sessionDeadMidRun = true;
-                  const reauthMsg =
-                    reauthErr instanceof Error
-                      ? reauthErr.message
-                      : String(reauthErr);
+                  const reauthMsg = reauthErr instanceof Error ? reauthErr.message : String(reauthErr);
                   await emit({
                     type: "SKIP_RESULT",
                     stream: "transactions",
@@ -915,8 +818,7 @@ runConnector({
             const diagNow = lastDiag as DiagnosticInfo | null;
             if (
               diagNow &&
-              (diagNow.phase === "no_export_affordance" ||
-                diagNow.phase === "export_dialog_unexpected_shape")
+              (diagNow.phase === "no_export_affordance" || diagNow.phase === "export_dialog_unexpected_shape")
             ) {
               await emit({
                 type: "PROGRESS",
@@ -943,9 +845,7 @@ runConnector({
             await emit({
               type: "SKIP_RESULT",
               stream: "transactions",
-              reason: isCreditCard
-                ? "credit_card_export_unverified"
-                : "export_no_download",
+              reason: isCreditCard ? "credit_card_export_unverified" : "export_no_download",
               message: `${baseMessage}${ccSuffix}`,
               diagnostics: finalDiag,
             });
@@ -987,10 +887,7 @@ runConnector({
       }
 
       // STATEMENTS — scrape /my/documents table, then hydrate PDF blobs per row.
-      if (
-        (requested.has("statements") || requested.has("transactions")) &&
-        !sessionDeadMidRun
-      ) {
+      if ((requested.has("statements") || requested.has("transactions")) && !sessionDeadMidRun) {
         try {
           await emit({
             type: "PROGRESS",
@@ -1010,25 +907,22 @@ runConnector({
               querySelectorAll: (s: string) => El[];
             }
 
-            // @ts-expect-error — browser context globals (document)
             const t = document.querySelector("table") as El | null;
             if (!t) {
               return [];
             }
-            return [...t.querySelectorAll("tbody tr")].map(
-              (tr: El, rowIndex: number) => {
-                const cells = [...tr.querySelectorAll("td")] as El[];
-                const c0 = cells[0];
-                const c1 = cells[1];
-                const c2 = cells[2];
-                return {
-                  rowIndex,
-                  title: (c0?.innerText || "").replace(WS_RE, " ").trim(),
-                  date_delivered: (c1?.innerText || "").trim(),
-                  account_reference: (c2?.innerText || "").trim(),
-                };
-              }
-            );
+            return [...t.querySelectorAll("tbody tr")].map((tr: El, rowIndex: number) => {
+              const cells = [...tr.querySelectorAll("td")] as El[];
+              const c0 = cells[0];
+              const c1 = cells[1];
+              const c2 = cells[2];
+              return {
+                rowIndex,
+                title: (c0?.innerText || "").replace(WS_RE, " ").trim(),
+                date_delivered: (c1?.innerText || "").trim(),
+                account_reference: (c2?.innerText || "").trim(),
+              };
+            });
           });
 
           const resolveAccountId = (ref: string): string | null => {
@@ -1044,9 +938,7 @@ runConnector({
               }
             }
             const refLower = ref.toLowerCase();
-            const byName = accounts.find(
-              (a) => a.name && refLower.includes(a.name.toLowerCase())
-            );
+            const byName = accounts.find((a) => a.name && refLower.includes(a.name.toLowerCase()));
             if (byName?.account_id_raw) {
               return byName.account_id_raw;
             }
@@ -1057,9 +949,7 @@ runConnector({
             .filter((d) => d.date_delivered)
             .map((d) => ({
               rowIndex: d.rowIndex,
-              id: hashId(
-                `${d.account_reference}|${d.date_delivered}|${d.title}`
-              ),
+              id: hashId(`${d.account_reference}|${d.date_delivered}|${d.title}`),
               account_id: resolveAccountId(d.account_reference),
               title: d.title,
               date_delivered: isoDate(d.date_delivered),
@@ -1068,9 +958,7 @@ runConnector({
 
           const accountById = new Map<string, DashboardAccount>(
             accounts
-              .filter((a): a is DashboardAccount & { account_id_raw: string } =>
-                Boolean(a.account_id_raw)
-              )
+              .filter((a): a is DashboardAccount & { account_id_raw: string } => Boolean(a.account_id_raw))
               .map((a) => [a.account_id_raw, a])
           );
 
@@ -1167,22 +1055,16 @@ runConnector({
                 continue;
               }
               const title = row.title || "";
-              if (
-                !STATEMENT_TITLE_RE.test(title) ||
-                NON_STATEMENT_TITLE_RE.test(title)
-              ) {
+              if (!STATEMENT_TITLE_RE.test(title) || NON_STATEMENT_TITLE_RE.test(title)) {
                 continue;
               }
               const period = (row.date_delivered || "").slice(0, 7) || null;
-              const acct = row.account_id
-                ? accountById.get(row.account_id)
-                : null;
+              const acct = row.account_id ? accountById.get(row.account_id) : null;
               const accountName = acct?.name ?? row.account_reference ?? null;
               try {
                 const { txns, parseMeta } = await parsePdfStatement({
                   buffer: ok.buffer,
-                  accountId:
-                    row.account_id || row.account_reference || "unknown",
+                  accountId: row.account_id || row.account_reference || "unknown",
                   accountName,
                   period,
                 });
@@ -1196,10 +1078,7 @@ runConnector({
                     diagnostics: {
                       statement_id: row.id,
                       year: parseMeta.year,
-                      raw_text_sample:
-                        "rawTextSample" in parseMeta
-                          ? parseMeta.rawTextSample
-                          : null,
+                      raw_text_sample: "rawTextSample" in parseMeta ? parseMeta.rawTextSample : null,
                     },
                   });
                   continue;
@@ -1257,7 +1136,6 @@ runConnector({
               querySelectorAll: (s: string) => El[];
             }
 
-            // @ts-expect-error — browser context globals (document)
             const t = document.querySelector("table") as El | null;
             if (!t) {
               return [];
@@ -1280,9 +1158,7 @@ runConnector({
               continue;
             }
             const parsed = new Date(`${m.date_short} ${year}`);
-            const iso = Number.isNaN(parsed.getTime())
-              ? null
-              : parsed.toISOString().slice(0, 10);
+            const iso = Number.isNaN(parsed.getTime()) ? null : parsed.toISOString().slice(0, 10);
             const id = hashId(`${m.date_short}|${m.preview.slice(0, 120)}`);
             const record: InboxMessageRecord = {
               id,
@@ -1318,9 +1194,7 @@ runConnector({
             stream: "credit_card_billing",
             message: "Fetching credit card billing details",
           });
-          const cards = accounts.filter((a) =>
-            CREDIT_CARD_TYPE_RE.test(a.account_type)
-          );
+          const cards = accounts.filter((a) => CREDIT_CARD_TYPE_RE.test(a.account_type));
           for (const a of cards) {
             await page
               .goto(`https://www.usaa.com${a.account_url}`, {
@@ -1335,10 +1209,7 @@ runConnector({
                 nextElementSibling?: El | null;
               }
               const kv: BillingKv = {};
-              const labels = [
-                // @ts-expect-error — browser context globals (document)
-                ...document.querySelectorAll("dt, .label, .field-label"),
-              ] as El[];
+              const labels = [...document.querySelectorAll("dt, .label, .field-label")] as El[];
               for (const el of labels) {
                 const label = (el.innerText || "").trim();
                 const value = (el.nextElementSibling?.innerText || "").trim();
@@ -1352,26 +1223,15 @@ runConnector({
             const record: CreditCardBillingRecord = {
               id,
               account_id: a.account_id_raw,
-              account_nickname:
-                billing["Account Nickname"] ?? billing.Nickname ?? null,
-              current_balance_cents: currencyToCents(
-                billing["Current Balance"] ?? null
-              ),
-              available_credit_cents: currencyToCents(
-                billing["Available Credit"] ?? null
-              ),
-              credit_limit_cents: currencyToCents(
-                billing["Credit Limit"] ?? null
-              ),
+              account_nickname: billing["Account Nickname"] ?? billing.Nickname ?? null,
+              current_balance_cents: currencyToCents(billing["Current Balance"] ?? null),
+              available_credit_cents: currencyToCents(billing["Available Credit"] ?? null),
+              credit_limit_cents: currencyToCents(billing["Credit Limit"] ?? null),
               annual_percent_rate: billing["Annual Percent Rate"] ?? null,
               cash_advance_apr: billing["Cash Advance APR"] ?? null,
-              cash_rewards_cents: currencyToCents(
-                billing["Cash Rewards"] ?? null
-              ),
+              cash_rewards_cents: currencyToCents(billing["Cash Rewards"] ?? null),
               billing_status: billing["Billing Information"] ?? null,
-              minimum_payment_met: MET_RE.test(
-                billing["Billing Information"] ?? ""
-              ),
+              minimum_payment_met: MET_RE.test(billing["Billing Information"] ?? ""),
               card_holders: billing["Card Holders"] ?? null,
               fetched_at: nowIso(),
             };
@@ -1394,12 +1254,7 @@ runConnector({
       }
 
       // Still-deferred streams (need live DOM + more work):
-      const deferred: string[] = [
-        "transfers",
-        "bill_payments",
-        "scheduled_transactions",
-        "external_accounts",
-      ];
+      const deferred: string[] = ["transfers", "bill_payments", "scheduled_transactions", "external_accounts"];
       for (const s of deferred) {
         if (requested.has(s)) {
           const msg: EmittedMessage = {
@@ -1413,9 +1268,7 @@ runConnector({
       }
 
       if (sessionDeadMidRun) {
-        throw new Error(
-          "usaa session expired mid-run; re-run with fresh auth to complete"
-        );
+        throw new Error("usaa session expired mid-run; re-run with fresh auth to complete");
       }
     } finally {
       try {

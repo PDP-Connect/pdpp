@@ -27,8 +27,7 @@ runConnector({
       type: "SKIP_RESULT",
       stream: "orders",
       reason: "shopify_apollo_wiring_pending",
-      message:
-        "Shop app reachable. Apollo-cache extraction from React fiber wiring deferred to live session.",
+      message: "Shop app reachable. Apollo-cache extraction from React fiber wiring deferred to live session.",
     });
   },
 });

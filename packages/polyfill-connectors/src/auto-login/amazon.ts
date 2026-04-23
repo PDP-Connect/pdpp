@@ -17,15 +17,11 @@
  */
 
 import type { BrowserContext, Locator, Page } from "playwright";
-import type {
-  InteractionRequest,
-  InteractionResponse,
-} from "../connector-runtime.ts";
+import type { InteractionRequest, InteractionResponse } from "../connector-runtime.ts";
 
 const SIGNIN_CHALLENGE_URL = /\/ap\/(signin|challenge|mfa)/;
 const ORDER_URL = /\/your-orders|\/order-history/;
-const TFA_PROMPT_TEXT =
-  /verification|two.?step|authenticator|passcode|code we sent|sent a text/i;
+const TFA_PROMPT_TEXT = /verification|two.?step|authenticator|passcode|code we sent|sent a text/i;
 
 interface EnsureAmazonSessionArgs {
   context: BrowserContext;
@@ -104,9 +100,7 @@ export async function ensureAmazonSession({
   //   - `#ap_email` on the legacy flow (some account tiers / regions)
   // We prefer the new id first but fall back to the legacy one. We also
   // skip filling if the field already has the right value.
-  const emailLoc = page.locator(
-    'input#ap_email_login, input#ap_email, input[name="email"]'
-  );
+  const emailLoc = page.locator('input#ap_email_login, input#ap_email, input[name="email"]');
   const currentEmail = await emailLoc
     .first()
     .inputValue()
@@ -145,8 +139,7 @@ export async function ensureAmazonSession({
   if (TFA_PROMPT_TEXT.test(bodyText)) {
     const resp = await sendInteraction({
       kind: "otp",
-      message:
-        "Amazon 2FA required. Check your phone / authenticator and reply with the code.",
+      message: "Amazon 2FA required. Check your phone / authenticator and reply with the code.",
       schema: {
         type: "object",
         properties: { code: { type: "string", pattern: "^\\d{4,10}$" } },
@@ -159,9 +152,7 @@ export async function ensureAmazonSession({
     }
     await fillWhenVisible(
       page,
-      page.locator(
-        'input[name="otpCode"], input#auth-mfa-otpcode, input[autocomplete="one-time-code"]'
-      ),
+      page.locator('input[name="otpCode"], input#auth-mfa-otpcode, input[autocomplete="one-time-code"]'),
       resp.data.code
     );
     await page

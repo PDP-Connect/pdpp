@@ -41,9 +41,7 @@ const MIN_SAFE = BigInt(Number.MIN_SAFE_INTEGER);
  */
 function bigIntSafeReplacer(_key: string, value: unknown): unknown {
   if (typeof value === "bigint") {
-    return value <= MAX_SAFE && value >= MIN_SAFE
-      ? Number(value)
-      : value.toString();
+    return value <= MAX_SAFE && value >= MIN_SAFE ? Number(value) : value.toString();
   }
   return value;
 }
@@ -58,10 +56,7 @@ function escapeJsonlTerminator(c: string): string {
  * any BigInt values are coerced to Number or String.
  */
 export function stringifyForJsonl(msg: unknown): string {
-  return `${JSON.stringify(msg, bigIntSafeReplacer).replace(
-    JSONL_TERMINATOR,
-    escapeJsonlTerminator
-  )}\n`;
+  return `${JSON.stringify(msg, bigIntSafeReplacer).replace(JSONL_TERMINATOR, escapeJsonlTerminator)}\n`;
 }
 
 /**

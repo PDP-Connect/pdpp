@@ -11,10 +11,7 @@
  */
 
 import type { BrowserContext, Page } from "playwright";
-import type {
-  InteractionRequest,
-  InteractionResponse,
-} from "../connector-runtime.ts";
+import type { InteractionRequest, InteractionResponse } from "../connector-runtime.ts";
 
 const LOGGED_IN_TEXT = /Log Off|Good (Morning|Afternoon|Evening)/i;
 const LOG_OFF_TEXT = /Log Off/i;
@@ -32,16 +29,10 @@ interface InputProbe {
   type: string;
 }
 
-export async function ensureUsaaSession({
-  context,
-  page,
-  sendInteraction,
-}: EnsureUsaaSessionArgs): Promise<boolean> {
+export async function ensureUsaaSession({ context, page, sendInteraction }: EnsureUsaaSessionArgs): Promise<boolean> {
   // Probe first — no need to re-login if session is alive.
   const cookies = await context.cookies("https://www.usaa.com/");
-  const loggedIn = cookies.find(
-    (c): boolean => c.name === "UsaaMbWebMemberLoggedIn"
-  );
+  const loggedIn = cookies.find((c): boolean => c.name === "UsaaMbWebMemberLoggedIn");
   if (loggedIn?.value && loggedIn.value !== "false") {
     // Verify by hitting a cheap authenticated page
     await page
@@ -82,9 +73,7 @@ export async function ensureUsaaSession({
   // Wait until Next is enabled; USAA gates it on client-side validation.
   // If it stays disabled, tick a key event to try again, then check.
   try {
-    await page
-      .locator("#next-button:not([disabled])")
-      .waitFor({ state: "visible", timeout: 5000 });
+    await page.locator("#next-button:not([disabled])").waitFor({ state: "visible", timeout: 5000 });
   } catch {
     // Fallback: press a throwaway key to nudge React
     await page
@@ -105,15 +94,8 @@ export async function ensureUsaaSession({
     ).slice(0, 800);
     const inputs = await page
       .evaluate((): InputProbe[] => {
-        // @ts-expect-error — runs in browser context, `document` exists at runtime
         const els = document.querySelectorAll("input");
-        return Array.from(
-          els as Iterable<{
-            name: string;
-            type: string;
-            placeholder: string;
-          }>
-        ).map(
+        return Array.from(els).map(
           (i): InputProbe => ({
             name: i.name,
             type: i.type,
@@ -149,8 +131,7 @@ export async function ensureUsaaSession({
 
     const resp = await sendInteraction({
       kind: "otp",
-      message:
-        "USAA sent a 6-digit security code to your phone. Reply with the code to continue.",
+      message: "USAA sent a 6-digit security code to your phone. Reply with the code to continue.",
       schema: {
         type: "object",
         properties: { code: { type: "string", pattern: "^\\d{6}$" } },
@@ -163,23 +144,17 @@ export async function ensureUsaaSession({
     }
 
     const otpInput = page
-      .locator(
-        'input[autocomplete="one-time-code"], input[name*="code" i], input[placeholder*="code" i]'
-      )
+      .locator('input[autocomplete="one-time-code"], input[name*="code" i], input[placeholder*="code" i]')
       .first();
     await otpInput.fill(resp.data.code);
-    await page
-      .click('button[type="submit"], #next-button')
-      .catch((): undefined => undefined);
+    await page.click('button[type="submit"], #next-button').catch((): undefined => undefined);
     await page.waitForTimeout(6000);
   }
 
   // Verify we're logged in now
   const finalText = (await page.locator("body").innerText()).slice(0, 500);
   if (!LOG_OFF_TEXT.test(finalText)) {
-    throw new Error(
-      "USAA login completed but final state shows no Log Off — may need fresh bootstrap"
-    );
+    throw new Error("USAA login completed but final state shows no Log Off — may need fresh bootstrap");
   }
   return true;
 }

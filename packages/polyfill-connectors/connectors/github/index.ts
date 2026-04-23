@@ -234,9 +234,7 @@ function repoRecord(r: GitHubRepo): Record<string, unknown> {
   };
 }
 
-function labelNames(
-  labels: Array<string | GitHubLabelObj> | undefined
-): string[] {
+function labelNames(labels: Array<string | GitHubLabelObj> | undefined): string[] {
   if (!Array.isArray(labels)) {
     return [];
   }
@@ -251,9 +249,7 @@ function labelNames(
   return out;
 }
 
-function assigneeNames(
-  assignees: Array<{ login?: string }> | undefined
-): string[] {
+function assigneeNames(assignees: Array<{ login?: string }> | undefined): string[] {
   if (!Array.isArray(assignees)) {
     return [];
   }
@@ -281,10 +277,7 @@ function issueRecord(it: GitHubIssue): Record<string, unknown> {
     labels: labelNames(it.labels),
     milestone_title: it.milestone?.title ?? null,
     repository_full_name:
-      it.repository?.full_name ??
-      (it.repository_url
-        ? it.repository_url.replace(`${BASE}/repos/`, "")
-        : null),
+      it.repository?.full_name ?? (it.repository_url ? it.repository_url.replace(`${BASE}/repos/`, "") : null),
     repository_id: it.repository?.id == null ? null : String(it.repository.id),
     html_url: it.html_url ?? null,
     comments: it.comments ?? null,
@@ -305,9 +298,7 @@ function pullRequestRecord(
 ): Record<string, unknown> {
   const body = typeof it.body === "string" ? it.body.slice(0, 20_000) : null;
   const reviewerLogins: string[] = Array.isArray(detail?.requested_reviewers)
-    ? detail.requested_reviewers
-        .map((r) => r.login)
-        .filter((l): l is string => Boolean(l))
+    ? detail.requested_reviewers.map((r) => r.login).filter((l): l is string => Boolean(l))
     : [];
   return {
     id: String(it.id),
@@ -322,8 +313,7 @@ function pullRequestRecord(
     labels: labelNames(it.labels),
     milestone_title: it.milestone?.title ?? null,
     repository_full_name: repoFull,
-    repository_id:
-      detail?.base?.repo?.id == null ? null : String(detail.base.repo.id),
+    repository_id: detail?.base?.repo?.id == null ? null : String(detail.base.repo.id),
     html_url: it.html_url ?? null,
     comments: it.comments ?? null,
     reactions_total_count: it.reactions?.total_count ?? null,
@@ -345,8 +335,7 @@ function pullRequestRecord(
 }
 
 function gistRecord(g: GitHubGist): Record<string, unknown> {
-  const fileEntries =
-    g.files && typeof g.files === "object" ? Object.values(g.files) : [];
+  const fileEntries = g.files && typeof g.files === "object" ? Object.values(g.files) : [];
   const capped = fileEntries.slice(0, 10);
   const files = capped.map((f) => ({
     filename: f.filename ?? null,
@@ -371,11 +360,7 @@ function gistRecord(g: GitHubGist): Record<string, unknown> {
 // ─── Stream collectors ──────────────────────────────────────────────────
 
 interface StreamCtx {
-  emit: (msg: {
-    type: "STATE";
-    stream: string;
-    cursor: unknown;
-  }) => Promise<void>;
+  emit: (msg: { type: "STATE"; stream: string; cursor: unknown }) => Promise<void>;
   emitRecord: (stream: string, data: Record<string, unknown>) => Promise<void>;
   progress: (message: string, extra?: { stream?: string }) => Promise<void>;
   requested: Map<string, { time_range?: { since?: string; until?: string } }>;
@@ -396,19 +381,13 @@ async function collectUser(ctx: StreamCtx): Promise<void> {
 
 async function collectRepositories(ctx: StreamCtx): Promise<void> {
   await ctx.progress("Fetching repositories", { stream: "repositories" });
-  let path: string | null =
-    "/user/repos?per_page=100&sort=pushed&direction=desc";
-  const repoState = ctx.state.repositories as
-    | { last_pushed_at?: string }
-    | undefined;
+  let path: string | null = "/user/repos?per_page=100&sort=pushed&direction=desc";
+  const repoState = ctx.state.repositories as { last_pushed_at?: string } | undefined;
   const priorPushed = repoState?.last_pushed_at;
   let latestPushed = priorPushed;
   let stop = false;
   while (path && !stop) {
-    const page: GhResult<GitHubRepo[]> = await gh<GitHubRepo[]>(
-      path,
-      ctx.token
-    );
+    const page: GhResult<GitHubRepo[]> = await gh<GitHubRepo[]>(path, ctx.token);
     for (const r of page.data) {
       if (priorPushed && r.pushed_at && r.pushed_at <= priorPushed) {
         stop = true;
@@ -430,21 +409,16 @@ async function collectRepositories(ctx: StreamCtx): Promise<void> {
 
 async function collectStarred(ctx: StreamCtx): Promise<void> {
   await ctx.progress("Fetching starred repositories", { stream: "starred" });
-  const starredState = ctx.state.starred as
-    | { last_starred_at?: string }
-    | undefined;
+  const starredState = ctx.state.starred as { last_starred_at?: string } | undefined;
   const priorStarred = starredState?.last_starred_at;
   let latestStarred = priorStarred;
-  let path: string | null =
-    "/user/starred?per_page=100&sort=created&direction=desc";
+  let path: string | null = "/user/starred?per_page=100&sort=created&direction=desc";
   let stop = false;
   while (path && !stop) {
     // Use star:timestamp media type to get starred_at
-    const page: GhResult<GitHubStarredEntry[]> = await gh<GitHubStarredEntry[]>(
-      path,
-      ctx.token,
-      { accept: "application/vnd.github.star+json" }
-    );
+    const page: GhResult<GitHubStarredEntry[]> = await gh<GitHubStarredEntry[]>(path, ctx.token, {
+      accept: "application/vnd.github.star+json",
+    });
     for (const entry of page.data) {
       const repo = entry.repo;
       const starredAt = entry.starred_at || null;
@@ -480,30 +454,19 @@ async function collectStarred(ctx: StreamCtx): Promise<void> {
 async function collectIssues(ctx: StreamCtx): Promise<void> {
   await ctx.progress("Fetching issues", { stream: "issues" });
   const req = ctx.requested.get("issues");
-  const issuesState = ctx.state.issues as
-    | { last_updated_at?: string }
-    | undefined;
+  const issuesState = ctx.state.issues as { last_updated_at?: string } | undefined;
   const priorUpdated = issuesState?.last_updated_at;
   // Prefer explicit scope time_range.since over stored cursor (narrower wins).
   const sinceParam = req?.time_range?.since || priorUpdated || null;
   const until = req?.time_range?.until || null;
   let latestUpdated = priorUpdated;
-  const qs = [
-    "filter=all",
-    "state=all",
-    "per_page=100",
-    "sort=updated",
-    "direction=desc",
-  ];
+  const qs = ["filter=all", "state=all", "per_page=100", "sort=updated", "direction=desc"];
   if (sinceParam) {
     qs.push(`since=${encodeURIComponent(sinceParam)}`);
   }
   let path: string | null = `/issues?${qs.join("&")}`;
   while (path) {
-    const page: GhResult<GitHubIssue[]> = await gh<GitHubIssue[]>(
-      path,
-      ctx.token
-    );
+    const page: GhResult<GitHubIssue[]> = await gh<GitHubIssue[]>(path, ctx.token);
     for (const it of page.data) {
       if (until && it.updated_at && it.updated_at >= until) {
         continue;
@@ -543,10 +506,7 @@ async function fetchPullDetail(
     return null;
   }
   try {
-    const r = await gh<GitHubPullDetail>(
-      `/repos/${repoFull}/pulls/${String(number)}`,
-      token
-    );
+    const r = await gh<GitHubPullDetail>(`/repos/${repoFull}/pulls/${String(number)}`, token);
     return r.data;
   } catch (e) {
     // Non-fatal: emit what we have from search. Rate-limit errors
@@ -562,9 +522,7 @@ async function fetchPullDetail(
 async function collectPullRequests(ctx: StreamCtx): Promise<void> {
   await ctx.progress("Fetching pull requests", { stream: "pull_requests" });
   const req = ctx.requested.get("pull_requests");
-  const prState = ctx.state.pull_requests as
-    | { last_updated_at?: string }
-    | undefined;
+  const prState = ctx.state.pull_requests as { last_updated_at?: string } | undefined;
   const priorUpdated = prState?.last_updated_at;
   const sinceParam = req?.time_range?.since || priorUpdated || null;
   const until = req?.time_range?.until || null;
@@ -580,14 +538,10 @@ async function collectPullRequests(ctx: StreamCtx): Promise<void> {
     qParts.push(`updated:>=${sinceParam.slice(0, 10)}`);
   }
   const q = encodeURIComponent(qParts.join(" "));
-  let path: string | null =
-    `/search/issues?q=${q}&sort=updated&order=desc&per_page=100`;
+  let path: string | null = `/search/issues?q=${q}&sort=updated&order=desc&per_page=100`;
   let stop = false;
   while (path && !stop) {
-    const page: GhResult<GitHubSearchResponse> = await gh<GitHubSearchResponse>(
-      path,
-      ctx.token
-    );
+    const page: GhResult<GitHubSearchResponse> = await gh<GitHubSearchResponse>(path, ctx.token);
     const items = page.data.items || [];
     for (const it of items) {
       if (sinceParam && it.updated_at && it.updated_at < sinceParam) {
@@ -598,15 +552,10 @@ async function collectPullRequests(ctx: StreamCtx): Promise<void> {
         continue;
       }
       // Parse owner/repo from repository_url "https://api.github.com/repos/owner/repo"
-      const repoFull = it.repository_url
-        ? it.repository_url.replace(`${BASE}/repos/`, "")
-        : null;
+      const repoFull = it.repository_url ? it.repository_url.replace(`${BASE}/repos/`, "") : null;
       // Fetch PR detail for fields not in search summary.
       const detail = await fetchPullDetail(repoFull, it.number, ctx.token);
-      await ctx.emitRecord(
-        "pull_requests",
-        pullRequestRecord(it, detail, repoFull)
-      );
+      await ctx.emitRecord("pull_requests", pullRequestRecord(it, detail, repoFull));
       if (it.updated_at && (!latestUpdated || it.updated_at > latestUpdated)) {
         latestUpdated = it.updated_at;
       }
@@ -634,10 +583,7 @@ async function collectGists(ctx: StreamCtx): Promise<void> {
   }
   let path: string | null = `/gists?${qs.join("&")}`;
   while (path) {
-    const page: GhResult<GitHubGist[]> = await gh<GitHubGist[]>(
-      path,
-      ctx.token
-    );
+    const page: GhResult<GitHubGist[]> = await gh<GitHubGist[]>(path, ctx.token);
     for (const g of page.data) {
       if (until && g.updated_at && g.updated_at >= until) {
         continue;

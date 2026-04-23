@@ -25,10 +25,7 @@ import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, "..", "..", "..");
-const DEFAULT_TARGET = join(
-  REPO_ROOT,
-  "packages/polyfill-connectors/.pdpp-data/polyfill.sqlite"
-);
+const DEFAULT_TARGET = join(REPO_ROOT, "packages/polyfill-connectors/.pdpp-data/polyfill.sqlite");
 
 interface Args {
   deleteSource: boolean;
@@ -75,9 +72,7 @@ interface CountRow {
 }
 
 function tableExists(db: SqliteDb, name: string): boolean {
-  const r = db
-    .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?")
-    .get(name);
+  const r = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(name);
   return !!r;
 }
 
@@ -92,9 +87,7 @@ function tableColumns(db: SqliteDb, name: string): string[] {
 function main(): void {
   const args = parseArgs(process.argv.slice(2));
   if (!args.source) {
-    console.error(
-      "Usage: merge-db.js <source.sqlite> [--into <target.sqlite>] [--dry-run] [--delete-source]"
-    );
+    console.error("Usage: merge-db.js <source.sqlite> [--into <target.sqlite>] [--dry-run] [--delete-source]");
     process.exit(2);
   }
   if (!existsSync(args.source)) {
@@ -120,9 +113,7 @@ function main(): void {
   db.exec(`ATTACH DATABASE '${args.source.replace(/'/g, "''")}' AS src`);
 
   const srcTables = db
-    .prepare(
-      "SELECT name FROM src.sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
-    )
+    .prepare("SELECT name FROM src.sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
     .all()
     .map((r) => String(r.name));
   console.error(`source tables: ${srcTables.join(", ")}`);
@@ -155,18 +146,8 @@ function main(): void {
   if (args.dryRun) {
     console.error("\nDry run — would execute:");
     for (const p of plan) {
-      const srcCount =
-        (
-          db.prepare(`SELECT COUNT(*) AS n FROM src.${p.table}`).get() as
-            | CountRow
-            | undefined
-        )?.n ?? 0;
-      const tgtCount =
-        (
-          db.prepare(`SELECT COUNT(*) AS n FROM main.${p.table}`).get() as
-            | CountRow
-            | undefined
-        )?.n ?? 0;
+      const srcCount = (db.prepare(`SELECT COUNT(*) AS n FROM src.${p.table}`).get() as CountRow | undefined)?.n ?? 0;
+      const tgtCount = (db.prepare(`SELECT COUNT(*) AS n FROM main.${p.table}`).get() as CountRow | undefined)?.n ?? 0;
       console.error(`  ${p.table.padEnd(22)} src=${srcCount} tgt=${tgtCount}`);
     }
     db.close();
@@ -177,19 +158,9 @@ function main(): void {
   const mergedCounts: Record<string, { added: number; tgt_total: number }> = {};
   try {
     for (const p of plan) {
-      const before =
-        (
-          db.prepare(`SELECT COUNT(*) AS n FROM main.${p.table}`).get() as
-            | CountRow
-            | undefined
-        )?.n ?? 0;
+      const before = (db.prepare(`SELECT COUNT(*) AS n FROM main.${p.table}`).get() as CountRow | undefined)?.n ?? 0;
       db.prepare(p.sql).run();
-      const after =
-        (
-          db.prepare(`SELECT COUNT(*) AS n FROM main.${p.table}`).get() as
-            | CountRow
-            | undefined
-        )?.n ?? 0;
+      const after = (db.prepare(`SELECT COUNT(*) AS n FROM main.${p.table}`).get() as CountRow | undefined)?.n ?? 0;
       mergedCounts[p.table] = { added: after - before, tgt_total: after };
     }
     db.exec("COMMIT");
@@ -202,17 +173,13 @@ function main(): void {
 
   console.error("\nMerge summary:");
   for (const [t, c] of Object.entries(mergedCounts)) {
-    console.error(
-      `  ${t.padEnd(22)} +${c.added.toString().padStart(6)} new (target total now ${c.tgt_total})`
-    );
+    console.error(`  ${t.padEnd(22)} +${c.added.toString().padStart(6)} new (target total now ${c.tgt_total})`);
   }
 
   if (tableExists(db, "records")) {
     console.error("\nRecords per connector after merge:");
     const rows = db
-      .prepare(
-        "SELECT connector_id, stream, COUNT(*) AS n FROM main.records GROUP BY 1, 2 ORDER BY 1, 2"
-      )
+      .prepare("SELECT connector_id, stream, COUNT(*) AS n FROM main.records GROUP BY 1, 2 ORDER BY 1, 2")
       .all();
     for (const r of rows) {
       const cid = String(r.connector_id);

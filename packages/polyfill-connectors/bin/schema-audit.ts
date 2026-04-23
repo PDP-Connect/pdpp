@@ -15,11 +15,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 const DB_PATH =
-  process.env.PDPP_DB_PATH ||
-  join(
-    homedir(),
-    "code/pdpp/packages/polyfill-connectors/.pdpp-data/polyfill.sqlite"
-  );
+  process.env.PDPP_DB_PATH || join(homedir(), "code/pdpp/packages/polyfill-connectors/.pdpp-data/polyfill.sqlite");
 
 interface ValidateResult {
   data: Record<string, unknown>;
@@ -33,25 +29,14 @@ type ValidateReturn = ValidateResult | ValidateError;
 
 interface SchemasModule {
   SCHEMAS: Record<string, unknown>;
-  validateRecord: (
-    stream: string,
-    data: Record<string, unknown>
-  ) => ValidateReturn;
+  validateRecord: (stream: string, data: Record<string, unknown>) => ValidateReturn;
 }
 
 const CONNECTORS: Record<string, SchemasModule> = {
-  "https://registry.pdpp.org/connectors/amazon": (await import(
-    "../connectors/amazon/schemas.ts"
-  )) as SchemasModule,
-  "https://registry.pdpp.org/connectors/chase": (await import(
-    "../connectors/chase/schemas.ts"
-  )) as SchemasModule,
-  "https://registry.pdpp.org/connectors/chatgpt": (await import(
-    "../connectors/chatgpt/schemas.ts"
-  )) as SchemasModule,
-  "https://registry.pdpp.org/connectors/usaa": (await import(
-    "../connectors/usaa/schemas.ts"
-  )) as SchemasModule,
+  "https://registry.pdpp.org/connectors/amazon": (await import("../connectors/amazon/schemas.ts")) as SchemasModule,
+  "https://registry.pdpp.org/connectors/chase": (await import("../connectors/chase/schemas.ts")) as SchemasModule,
+  "https://registry.pdpp.org/connectors/chatgpt": (await import("../connectors/chatgpt/schemas.ts")) as SchemasModule,
+  "https://registry.pdpp.org/connectors/usaa": (await import("../connectors/usaa/schemas.ts")) as SchemasModule,
 };
 
 interface DbRow {
@@ -160,9 +145,7 @@ for (const [conn, streams] of Object.entries(summary)) {
     } else {
       status = "⚠ ";
     }
-    console.log(
-      `│  ${status} ${stream.padEnd(28)} ${result.pass}/${total} pass (${pct}%)`
-    );
+    console.log(`│  ${status} ${stream.padEnd(28)} ${result.pass}/${total} pass (${pct}%)`);
     if (result.fail > 0) {
       const issues = Object.entries(result.issueCountByPath)
         .sort((a, b) => b[1] - a[1])
