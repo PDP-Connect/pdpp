@@ -89,12 +89,10 @@ export function buildWorkspaceRecord(r: WorkspaceRow, emittedAt: string): Record
   };
 }
 
-export function buildChannelRecord(r: ChannelRow): RecordData {
-  const d = parseBlob(r.data);
+/** Channel "is_*" kind/visibility flags. Ten of them so pulling into its
+ * own helper drops the parent's complexity score without losing legibility. */
+function channelKindFlags(d: SlackDataBlob): Record<string, boolean | null> {
   return {
-    id: r.id,
-    name: r.name ?? d.name ?? null,
-    name_normalized: d.name_normalized ?? null,
     is_channel: d.is_channel ?? null,
     is_group: d.is_group ?? null,
     is_im: d.is_im ?? null,
@@ -107,24 +105,49 @@ export function buildChannelRecord(r: ChannelRow): RecordData {
     is_general: d.is_general ?? null,
     is_member: d.is_member ?? null,
     is_read_only: d.is_read_only ?? null,
-    creator: d.creator || null,
-    created: d.created ?? null,
-    created_at: epochToIso(d.created),
+  };
+}
+
+/** Channel topic/purpose subfields flattened into snake_case columns. */
+function channelTopicPurpose(d: SlackDataBlob): Record<string, unknown> {
+  return {
     topic: d.topic?.value ?? null,
     topic_creator: d.topic?.creator || null,
     topic_last_set: d.topic?.last_set ?? null,
     purpose: d.purpose?.value ?? null,
     purpose_creator: d.purpose?.creator || null,
     purpose_last_set: d.purpose?.last_set ?? null,
+  };
+}
+
+/** Channel `properties` subfields (canvas, posting/threads restrictions). */
+function channelPropertiesFlags(d: SlackDataBlob): Record<string, unknown> {
+  const canvas = d.properties?.canvas;
+  return {
+    has_canvas: canvas ? !canvas.is_empty : null,
+    canvas_file_id: canvas?.file_id || null,
+    posting_restricted: d.properties?.posting_restricted_to?.type != null,
+    threads_restricted: d.properties?.threads_restricted_to?.type != null,
+  };
+}
+
+export function buildChannelRecord(r: ChannelRow): RecordData {
+  const d = parseBlob(r.data);
+  return {
+    id: r.id,
+    name: r.name ?? d.name ?? null,
+    name_normalized: d.name_normalized ?? null,
+    ...channelKindFlags(d),
+    creator: d.creator || null,
+    created: d.created ?? null,
+    created_at: epochToIso(d.created),
+    ...channelTopicPurpose(d),
     num_members: d.num_members ?? null,
     user: d.user || null,
     shared_team_ids: Array.isArray(d.shared_team_ids) ? d.shared_team_ids : null,
     context_team_id: d.context_team_id ?? null,
     previous_names: Array.isArray(d.previous_names) ? d.previous_names : null,
-    has_canvas: d.properties?.canvas ? !d.properties.canvas.is_empty : null,
-    canvas_file_id: d.properties?.canvas?.file_id || null,
-    posting_restricted: d.properties?.posting_restricted_to?.type != null,
-    threads_restricted: d.properties?.threads_restricted_to?.type != null,
+    ...channelPropertiesFlags(d),
   };
 }
 
@@ -137,14 +160,9 @@ export function buildChannelMembershipRecord(r: ChannelUserRow, emittedAt: strin
   };
 }
 
-export function buildUserRecord(r: UserRow): RecordData {
-  const d = parseBlob(r.data);
-  const profile = d.profile || {};
+/** Flatten the `profile` subobject into snake_case columns. */
+function userProfileFields(profile: NonNullable<SlackDataBlob["profile"]>): Record<string, unknown> {
   return {
-    id: r.id,
-    team_id: d.team_id ?? null,
-    name: r.username ?? d.name ?? null,
-    real_name: d.real_name ?? null,
     real_name_normalized: profile.real_name_normalized ?? null,
     display_name: profile.display_name ?? null,
     display_name_normalized: profile.display_name_normalized ?? null,
@@ -156,10 +174,13 @@ export function buildUserRecord(r: UserRow): RecordData {
     status_text: profile.status_text || null,
     status_emoji: profile.status_emoji || null,
     status_expiration: profile.status_expiration ?? null,
-    tz: d.tz ?? null,
-    tz_label: d.tz_label ?? null,
-    tz_offset: d.tz_offset ?? null,
-    color: d.color || null,
+    image_192_url: profile.image_192 ?? null,
+  };
+}
+
+/** User role / membership flags — all boolean-ish nullable fields. */
+function userRoleFlags(d: SlackDataBlob): Record<string, boolean | null> {
+  return {
     is_bot: d.is_bot ?? null,
     is_admin: d.is_admin ?? null,
     is_owner: d.is_owner ?? null,
@@ -170,9 +191,25 @@ export function buildUserRecord(r: UserRow): RecordData {
     is_invited_user: d.is_invited_user ?? null,
     is_app_user: d.is_app_user ?? null,
     deleted: d.deleted ?? null,
+  };
+}
+
+export function buildUserRecord(r: UserRow): RecordData {
+  const d = parseBlob(r.data);
+  const profile = d.profile || {};
+  return {
+    id: r.id,
+    team_id: d.team_id ?? null,
+    name: r.username ?? d.name ?? null,
+    real_name: d.real_name ?? null,
+    ...userProfileFields(profile),
+    tz: d.tz ?? null,
+    tz_label: d.tz_label ?? null,
+    tz_offset: d.tz_offset ?? null,
+    color: d.color || null,
+    ...userRoleFlags(d),
     has_2fa: d.has_2fa ?? null,
     two_factor_type: d.two_factor_type || null,
-    image_192_url: profile.image_192 ?? null,
     enterprise_id: d.enterprise_user?.enterprise_id || null,
     updated: d.updated ?? null,
   };
@@ -212,9 +249,52 @@ export function parseMessageRow(r: MessageRow, sentAtFallback: string): ParsedMe
   };
 }
 
-export function buildMessageRecord(parsed: ParsedMessage): RecordData {
-  const { blob: d, row: r, attachments, channelId, messageId, sentAt, ts } = parsed;
+/** Total reaction count across all emoji reactions on a message. Falls back
+ * to `users.length` when an individual reaction omits `count`. */
+function countReactions(reactions: SlackDataBlob["reactions"]): number {
+  if (!Array.isArray(reactions)) {
+    return 0;
+  }
+  let total = 0;
+  for (const x of reactions) {
+    total += x.count ?? x.users?.length ?? 0;
+  }
+  return total;
+}
+
+/** Thread / reply columns — subtype-derived fields too. */
+function messageThreadFields(parsed: ParsedMessage): Record<string, unknown> {
+  const { blob: d, row: r } = parsed;
+  return {
+    thread_ts: r.THREAD_TS || null,
+    parent_user_id: d.parent_user_id || null,
+    is_thread_parent: r.IS_PARENT === 1 || Boolean(d.reply_count),
+    reply_count: d.reply_count ?? null,
+    reply_user_ids: Array.isArray(d.reply_users) ? d.reply_users : null,
+    latest_reply: d.latest_reply || null,
+    subtype: d.subtype || null,
+    is_tombstone: d.subtype === "tombstone",
+  };
+}
+
+/** File/attachment/block counts + reaction count + pinned-to summary. */
+function messageContentCounts(parsed: ParsedMessage): Record<string, unknown> {
+  const { blob: d, row: r, attachments } = parsed;
   const pinnedTo = Array.isArray(d.pinned_to) ? d.pinned_to : null;
+  return {
+    has_files: (r.NUM_FILES ?? 0) > 0 || Array.isArray(d.files),
+    file_count: r.NUM_FILES ?? (Array.isArray(d.files) ? d.files.length : null),
+    has_attachments: attachments.length > 0,
+    attachment_count: attachments.length || null,
+    has_blocks: Array.isArray(d.blocks) && d.blocks.length > 0,
+    reaction_count: countReactions(d.reactions),
+    is_pinned: pinnedTo != null && pinnedTo.length > 0,
+    pinned_to: pinnedTo,
+  };
+}
+
+export function buildMessageRecord(parsed: ParsedMessage): RecordData {
+  const { blob: d, row: r, channelId, messageId, sentAt, ts } = parsed;
   return {
     id: messageId,
     channel_id: channelId,
@@ -224,27 +304,11 @@ export function buildMessageRecord(parsed: ParsedMessage): RecordData {
     client_msg_id: d.client_msg_id || null,
     ts,
     sent_at: sentAt,
-    thread_ts: r.THREAD_TS || null,
-    parent_user_id: d.parent_user_id || null,
-    is_thread_parent: r.IS_PARENT === 1 || Boolean(d.reply_count),
-    reply_count: d.reply_count ?? null,
-    reply_user_ids: Array.isArray(d.reply_users) ? d.reply_users : null,
-    latest_reply: d.latest_reply || null,
-    subtype: d.subtype || null,
-    is_tombstone: d.subtype === "tombstone",
+    ...messageThreadFields(parsed),
     text: r.TXT ?? d.text ?? null,
     edited_ts: d.edited?.ts || null,
     edited_by: d.edited?.user || null,
-    has_files: (r.NUM_FILES ?? 0) > 0 || Array.isArray(d.files),
-    file_count: r.NUM_FILES ?? (Array.isArray(d.files) ? d.files.length : null),
-    has_attachments: attachments.length > 0,
-    attachment_count: attachments.length || null,
-    has_blocks: Array.isArray(d.blocks) && d.blocks.length > 0,
-    reaction_count: Array.isArray(d.reactions)
-      ? d.reactions.reduce((a, x) => a + (x.count ?? (x.users?.length || 0)), 0)
-      : 0,
-    is_pinned: pinnedTo != null && pinnedTo.length > 0,
-    pinned_to: pinnedTo,
+    ...messageContentCounts(parsed),
     metadata_event_type: d.metadata?.event_type || null,
   };
 }
