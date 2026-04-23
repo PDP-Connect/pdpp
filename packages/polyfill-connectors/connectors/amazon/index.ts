@@ -23,20 +23,19 @@ import {
   type BrowserCollectContext,
   nowIso,
   politeDelay,
-  type RecordData,
   runConnector,
   type ValidateRecord,
 } from "../../src/connector-runtime.ts";
 import {
-  itemId,
-  mergeDetailByKey,
-  parseCurrencyCents,
+  buildOrderItemRecord,
+  buildOrderRecord,
+  mergeOrderItems,
   parseOrderDate,
   parseOrderDetailDom,
   parseOrdersListDom,
 } from "./parsers.ts";
 import { listPageOrderShape, validateRecord as validateRecordRaw } from "./schemas.ts";
-import type { DetailItem, ListPageDiagnostics, ListPageOrder, MergedItem, OrderDetail } from "./types.ts";
+import type { ListPageDiagnostics, ListPageOrder, OrderDetail } from "./types.ts";
 
 const validateRecord = validateRecordRaw as ValidateRecord;
 
@@ -66,7 +65,6 @@ const RETRY_MIN_TIMEOUT_MS = 1500;
 const RETRY_FACTOR = 2;
 const RETRY_COUNT = 2;
 // Module-scoped regexes (Biome useTopLevelRegex)
-const RETURNED_RE = /return/i;
 const RETRYABLE_ERROR_RE = /timeout|ECONN|ETIMEDOUT|net::|5\d\d/i;
 const SIGNIN_URL_RE = /\/ap\/(signin|challenge|mfa)/;
 const ORDERS_URL_RE = /\/your-orders|\/order-history/;
@@ -368,68 +366,12 @@ runConnector({
           }
 
           if (wantsOrders) {
-            // Prefer detail-page Grand Total (includes tax); fall back to
-            // the list-page total.
-            const orderTotalRaw = detail?.grand_total || o.orderTotal || null;
-            const orderRecord: RecordData = {
-              id: o.orderId,
-              order_date: orderDate,
-              order_total: orderTotalRaw,
-              order_total_cents: parseCurrencyCents(orderTotalRaw),
-              delivery_status: o.deliveryStatus || null,
-              status_detail: detail?.status_detail || null,
-              recipient_name: detail?.recipient_name || null,
-              shipping_address_summary: detail?.shipping_address_summary || null,
-              payment_method_summary: detail?.payment_method_summary || null,
-              gift_order: detail?.gift_order ?? false,
-              digital_order: detail?.digital_order ?? false,
-              item_count: Math.max(o.items.length, detail?.items?.length ?? 0),
-              fetched_at: emittedAt,
-            };
-            await emitRecord("orders", orderRecord);
+            await emitRecord("orders", buildOrderRecord(o, detail, orderDate, emittedAt));
           }
 
           if (wantsItems) {
-            const detailItems = detail?.items ?? [];
-            const { byAsin: detailByAsin, byName: detailByName } = mergeDetailByKey(detailItems);
-            const emittedItemIds = new Set<string>();
-            const writeItem = async (merged: MergedItem): Promise<void> => {
-              const id = itemId(o.orderId, merged);
-              if (emittedItemIds.has(id)) {
-                return;
-              }
-              emittedItemIds.add(id);
-              await emitRecord("order_items", {
-                id,
-                order_id: o.orderId,
-                order_date: orderDate,
-                asin: merged.asin || null,
-                name: merged.name,
-                url: merged.url || null,
-                unit_price: merged.unit_price || null,
-                unit_price_cents: parseCurrencyCents(merged.unit_price ?? null),
-                quantity: merged.quantity ?? 1,
-                seller: merged.seller || null,
-                item_image_url: merged.item_image_url || null,
-                returned: RETURNED_RE.test(merged.refund_status || ""),
-                refund_status: merged.refund_status || null,
-              });
-            };
-            for (const it of o.items) {
-              const d: Partial<DetailItem> =
-                (it.asin ? detailByAsin.get(it.asin) : undefined) ||
-                (it.name ? detailByName.get(it.name.trim().toLowerCase()) : undefined) ||
-                {};
-              await writeItem({ ...it, ...d });
-            }
-            // Detail-page items that weren't in the list.
-            for (const di of detailItems) {
-              const dupByAsin = di.asin && o.items.some((x) => x.asin === di.asin);
-              const dupByName =
-                di.name && o.items.some((x) => x.name?.trim().toLowerCase() === di.name.trim().toLowerCase());
-              if (!(dupByAsin || dupByName)) {
-                await writeItem(di);
-              }
+            for (const merged of mergeOrderItems(o, detail)) {
+              await emitRecord("order_items", buildOrderItemRecord(o.orderId, orderDate, merged));
             }
           }
         }

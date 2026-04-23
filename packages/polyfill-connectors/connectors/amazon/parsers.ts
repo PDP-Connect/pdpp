@@ -3,7 +3,15 @@
 
 // biome-ignore lint/correctness/noUnresolvedImports: linkedom is declared in package.json; Biome's resolver can't follow its conditional exports
 import { parseHTML } from "linkedom";
-import type { DetailItem, ListPageItem, ListPageOrder, OrderDetail } from "./types.ts";
+import type {
+  DetailItem,
+  ListPageItem,
+  ListPageOrder,
+  MergedItem,
+  OrderDetail,
+  OrderItemRecord,
+  OrdersRecord,
+} from "./types.ts";
 
 const CURRENCY_CENTS_MULTIPLIER = 100;
 const CURRENCY_NUMBER_RE = /(\d+(?:\.\d+)?)/;
@@ -373,4 +381,100 @@ export function mergeDetailByKey(detailItems: DetailItem[]): {
     }
   }
   return { byAsin, byName };
+}
+
+// ─── Order record + item merge ───────────────────────────────────────────
+
+const RETURNED_RE = /return/i;
+
+/**
+ * Merge list-page items with detail-page items into the final emit-ordered
+ * sequence. Preserves original collect() semantics exactly:
+ *   1. For each list-page item, find its detail-page counterpart (ASIN first,
+ *      then normalized name), spread list→detail, emit.
+ *   2. After that, append any detail-page items not seen in the list
+ *      (dedup by ASIN or normalized name against list items).
+ *   3. Dedup emitted items by their final itemId() so repeats within a
+ *      single order aren't duplicated.
+ */
+export function mergeOrderItems(listOrder: ListPageOrder, detail: OrderDetail | null): MergedItem[] {
+  const detailItems = detail?.items ?? [];
+  const { byAsin: detailByAsin, byName: detailByName } = mergeDetailByKey(detailItems);
+  const emittedIds = new Set<string>();
+  const out: MergedItem[] = [];
+
+  const push = (merged: MergedItem): void => {
+    const id = itemId(listOrder.orderId, merged);
+    if (emittedIds.has(id)) {
+      return;
+    }
+    emittedIds.add(id);
+    out.push(merged);
+  };
+
+  for (const it of listOrder.items) {
+    const d: Partial<DetailItem> =
+      (it.asin ? detailByAsin.get(it.asin) : undefined) ??
+      (it.name ? detailByName.get(it.name.trim().toLowerCase()) : undefined) ??
+      {};
+    push({ ...it, ...d });
+  }
+  // Detail-page items that weren't in the list.
+  for (const di of detailItems) {
+    const dupByAsin = di.asin && listOrder.items.some((x) => x.asin === di.asin);
+    const dupByName =
+      di.name && listOrder.items.some((x) => x.name?.trim().toLowerCase() === di.name.trim().toLowerCase());
+    if (!(dupByAsin || dupByName)) {
+      push(di);
+    }
+  }
+  return out;
+}
+
+/** Build the emitted OrderItemRecord for a single merged item. */
+export function buildOrderItemRecord(orderId: string, orderDate: string, merged: MergedItem): OrderItemRecord {
+  return {
+    id: itemId(orderId, merged),
+    order_id: orderId,
+    order_date: orderDate,
+    asin: merged.asin || null,
+    name: merged.name,
+    url: merged.url || null,
+    unit_price: merged.unit_price || null,
+    unit_price_cents: parseCurrencyCents(merged.unit_price ?? null),
+    quantity: merged.quantity ?? 1,
+    seller: merged.seller || null,
+    item_image_url: merged.item_image_url || null,
+    returned: RETURNED_RE.test(merged.refund_status || ""),
+    refund_status: merged.refund_status || null,
+  };
+}
+
+/**
+ * Build the emitted OrdersRecord for a list-page order, optionally enriched
+ * with the detail-page fetch. Prefers detail-page grand total (includes tax)
+ * over the list-page total.
+ */
+export function buildOrderRecord(
+  listOrder: ListPageOrder,
+  detail: OrderDetail | null,
+  orderDate: string,
+  emittedAt: string
+): OrdersRecord {
+  const orderTotalRaw = detail?.grand_total || listOrder.orderTotal || null;
+  return {
+    id: listOrder.orderId,
+    order_date: orderDate,
+    order_total: orderTotalRaw,
+    order_total_cents: parseCurrencyCents(orderTotalRaw),
+    delivery_status: listOrder.deliveryStatus || null,
+    status_detail: detail?.status_detail || null,
+    recipient_name: detail?.recipient_name || null,
+    shipping_address_summary: detail?.shipping_address_summary || null,
+    payment_method_summary: detail?.payment_method_summary || null,
+    gift_order: detail?.gift_order ?? false,
+    digital_order: detail?.digital_order ?? false,
+    item_count: Math.max(listOrder.items.length, detail?.items?.length ?? 0),
+    fetched_at: emittedAt,
+  };
 }

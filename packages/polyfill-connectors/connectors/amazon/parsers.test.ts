@@ -4,14 +4,17 @@ import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import {
+  buildOrderItemRecord,
+  buildOrderRecord,
   itemId,
   mergeDetailByKey,
+  mergeOrderItems,
   parseCurrencyCents,
   parseOrderDate,
   parseOrderDetailDom,
   parseOrdersListDom,
 } from "./parsers.ts";
-import type { DetailItem } from "./types.ts";
+import type { DetailItem, ListPageOrder, OrderDetail } from "./types.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const FIXTURE_DIR = join(__dirname, "__fixtures__");
@@ -241,6 +244,226 @@ test(
     }
   }
 );
+
+// ─── mergeOrderItems + buildOrderRecord + buildOrderItemRecord ──────────
+
+function makeListOrder(overrides: Partial<ListPageOrder> = {}): ListPageOrder {
+  return {
+    orderId: "111-2222222-3333333",
+    orderDateRaw: "January 15, 2024",
+    orderTotal: "$10.00",
+    deliveryStatus: "Delivered Jan 17",
+    items: [],
+    ...overrides,
+  };
+}
+
+function makeDetailItem(overrides: Partial<DetailItem> = {}): DetailItem {
+  return {
+    asin: null,
+    name: "",
+    url: null,
+    unit_price: null,
+    quantity: 1,
+    seller: null,
+    item_image_url: null,
+    refund_status: null,
+    ...overrides,
+  };
+}
+
+function makeDetail(overrides: Partial<OrderDetail> = {}): OrderDetail {
+  return {
+    status_detail: null,
+    recipient_name: null,
+    shipping_address_summary: null,
+    payment_method_summary: null,
+    grand_total: null,
+    gift_order: false,
+    digital_order: false,
+    items: [],
+    ...overrides,
+  };
+}
+
+test("mergeOrderItems: merges list-page + detail items by ASIN, preferring detail enrichment", () => {
+  const listOrder = makeListOrder({
+    items: [
+      { asin: "B01ABCDEFG", name: "Widget", url: "/dp/B01ABCDEFG" },
+      { asin: "B02HIJKLMN", name: "Gadget", url: "/dp/B02HIJKLMN" },
+    ],
+  });
+  const detail = makeDetail({
+    items: [
+      makeDetailItem({
+        asin: "B01ABCDEFG",
+        name: "Widget Pro Edition",
+        unit_price: "$9.99",
+        quantity: 2,
+        seller: "FirstSeller",
+        item_image_url: "https://ex/img.jpg",
+      }),
+      makeDetailItem({
+        asin: "B02HIJKLMN",
+        name: "Gadget X",
+        unit_price: "$14.99",
+        quantity: 1,
+        seller: "SecondSeller",
+      }),
+    ],
+  });
+  const merged = mergeOrderItems(listOrder, detail);
+  assert.equal(merged.length, 2);
+  // First item: list fields (url, asin) present, spread of detail wins for
+  // name/unit_price/seller. Spread order in parsers.ts: ...it, ...d — so
+  // detail fields override list fields.
+  assert.equal(merged[0]?.asin, "B01ABCDEFG");
+  assert.equal(merged[0]?.name, "Widget Pro Edition");
+  assert.equal(merged[0]?.unit_price, "$9.99");
+  assert.equal(merged[0]?.seller, "FirstSeller");
+  assert.equal(merged[0]?.quantity, 2);
+  assert.equal(merged[1]?.asin, "B02HIJKLMN");
+  assert.equal(merged[1]?.unit_price, "$14.99");
+});
+
+test("mergeOrderItems: detail null — list items emitted as-is", () => {
+  const listOrder = makeListOrder({
+    items: [
+      { asin: "B01ABCDEFG", name: "Widget", url: "/dp/B01ABCDEFG" },
+      { asin: null, name: "Unboxed Thing", url: null },
+    ],
+  });
+  const merged = mergeOrderItems(listOrder, null);
+  assert.equal(merged.length, 2);
+  assert.equal(merged[0]?.asin, "B01ABCDEFG");
+  assert.equal(merged[0]?.name, "Widget");
+  assert.equal(merged[1]?.name, "Unboxed Thing");
+  // Unit price is undefined since list items carry no price.
+  assert.equal(merged[0]?.unit_price, undefined);
+});
+
+test("mergeOrderItems: detail has items the list page missed — appended after list items", () => {
+  const listOrder = makeListOrder({
+    items: [{ asin: "B01ABCDEFG", name: "Widget", url: "/dp/B01ABCDEFG" }],
+  });
+  const detail = makeDetail({
+    items: [
+      makeDetailItem({ asin: "B01ABCDEFG", name: "Widget", unit_price: "$9.99" }),
+      makeDetailItem({ asin: "B09EXTRA01", name: "Bonus Extra", unit_price: "$5.00" }),
+    ],
+  });
+  const merged = mergeOrderItems(listOrder, detail);
+  assert.equal(merged.length, 2);
+  assert.equal(merged[0]?.asin, "B01ABCDEFG");
+  assert.equal(merged[0]?.unit_price, "$9.99");
+  // Detail-only item appended.
+  assert.equal(merged[1]?.asin, "B09EXTRA01");
+  assert.equal(merged[1]?.name, "Bonus Extra");
+});
+
+test("mergeOrderItems: matches by normalized name when ASIN missing", () => {
+  // NB: the existing implementation's detail-lookup key uses
+  // `name.trim().toLowerCase()` without collapsing internal whitespace —
+  // so only surrounding whitespace / case normalize. Matches that.
+  const listOrder = makeListOrder({
+    items: [{ asin: null, name: "  Super Widget ", url: null }],
+  });
+  const detail = makeDetail({
+    items: [makeDetailItem({ asin: null, name: "super widget", unit_price: "$7.50", seller: "NameMatch" })],
+  });
+  const merged = mergeOrderItems(listOrder, detail);
+  assert.equal(merged.length, 1);
+  // Spread: ...it, ...d — detail's non-null fields override, name replaced by
+  // the detail's normalized form.
+  assert.equal(merged[0]?.name, "super widget");
+  assert.equal(merged[0]?.seller, "NameMatch");
+  assert.equal(merged[0]?.unit_price, "$7.50");
+});
+
+test("mergeOrderItems: dedups duplicate ASINs across list+detail", () => {
+  // Deduping is by final itemId (orderId|asin). If the list and detail
+  // both reference ASIN B01X only the first emission is kept.
+  const listOrder = makeListOrder({
+    items: [
+      { asin: "B01DUPDUPDX", name: "A", url: null },
+      { asin: "B01DUPDUPDX", name: "A again", url: null },
+    ],
+  });
+  const merged = mergeOrderItems(listOrder, null);
+  assert.equal(merged.length, 1);
+  assert.equal(merged[0]?.name, "A");
+});
+
+test("buildOrderRecord: both list + detail present — detail wins for enrichment fields", () => {
+  const listOrder = makeListOrder({
+    orderId: "111-2222222-3333333",
+    orderTotal: "$10.00",
+    deliveryStatus: "Arriving tomorrow",
+    items: [{ asin: "B01", name: "A", url: null }],
+  });
+  const detail = makeDetail({
+    grand_total: "$11.50",
+    recipient_name: "Fictional Person",
+    shipping_address_summary: "Somewhere",
+    payment_method_summary: "Visa ending in 1234",
+    gift_order: false,
+    items: [makeDetailItem({ asin: "B01", name: "A" }), makeDetailItem({ asin: "B02", name: "B" })],
+  });
+  const rec = buildOrderRecord(listOrder, detail, "2024-01-15", "2024-01-20T00:00:00Z");
+  assert.equal(rec.id, "111-2222222-3333333");
+  assert.equal(rec.order_date, "2024-01-15");
+  assert.equal(rec.order_total, "$11.50");
+  assert.equal(rec.order_total_cents, 1150);
+  assert.equal(rec.delivery_status, "Arriving tomorrow");
+  assert.equal(rec.recipient_name, "Fictional Person");
+  assert.equal(rec.payment_method_summary, "Visa ending in 1234");
+  // item_count = max(list.items.length, detail.items.length) = max(1, 2) = 2.
+  assert.equal(rec.item_count, 2);
+  assert.equal(rec.fetched_at, "2024-01-20T00:00:00Z");
+});
+
+test("buildOrderRecord: detail null — falls back to list-page fields", () => {
+  const listOrder = makeListOrder({
+    orderTotal: "$42.99",
+    items: [
+      { asin: "B01", name: "A", url: null },
+      { asin: "B02", name: "B", url: null },
+    ],
+  });
+  const rec = buildOrderRecord(listOrder, null, "2024-01-15", "2024-01-20T00:00:00Z");
+  assert.equal(rec.order_total, "$42.99");
+  // Parse bug: commas aren't consumed; "$42.99" has no comma so 4299.
+  assert.equal(rec.order_total_cents, 4299);
+  assert.equal(rec.recipient_name, null);
+  assert.equal(rec.payment_method_summary, null);
+  assert.equal(rec.gift_order, false);
+  assert.equal(rec.digital_order, false);
+  assert.equal(rec.item_count, 2);
+});
+
+test("buildOrderItemRecord: builds emit-ready shape with cents, returned flag, and itemId", () => {
+  const rec = buildOrderItemRecord("111-2222222-3333333", "2024-01-15", {
+    asin: "B01ABCDEFG",
+    name: "Widget",
+    url: "https://www.amazon.com/dp/B01ABCDEFG",
+    unit_price: "$9.99",
+    quantity: 3,
+    seller: "Amazon.com",
+    item_image_url: "https://img",
+    refund_status: "Returned January 20",
+  });
+  assert.equal(rec.id, "111-2222222-3333333|B01ABCDEFG");
+  assert.equal(rec.order_id, "111-2222222-3333333");
+  assert.equal(rec.order_date, "2024-01-15");
+  assert.equal(rec.asin, "B01ABCDEFG");
+  assert.equal(rec.name, "Widget");
+  assert.equal(rec.unit_price, "$9.99");
+  assert.equal(rec.unit_price_cents, 999);
+  assert.equal(rec.quantity, 3);
+  assert.equal(rec.seller, "Amazon.com");
+  assert.equal(rec.returned, true);
+  assert.equal(rec.refund_status, "Returned January 20");
+});
 
 test("mergeDetailByKey: buckets by ASIN first, name second", () => {
   const items: DetailItem[] = [
