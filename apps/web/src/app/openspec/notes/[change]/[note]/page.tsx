@@ -59,7 +59,11 @@ export default async function OpenSpecDesignNotePage({ params }: PageProps) {
             <span aria-hidden="true" className="text-muted-foreground/50">·</span>
             <span>Design note</span>
           </div>
-          <OpenSpecSourceLink repoRelativePath={designNote.repoRelativePath} />
+          <OpenSpecSourceLink
+            repoRelativePath={designNote.repoRelativePath}
+            createdAt={designNote.createdAt}
+            lastModified={designNote.lastModified}
+          />
         </header>
         <OpenSpecMarkdownPage markdown={designNote.markdown} />
       </article>

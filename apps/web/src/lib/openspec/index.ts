@@ -1,7 +1,9 @@
 import {
   changeArtifactPath,
+  changeDesignNotePath,
   changeSpecDeltaPath,
   fileExistsAt,
+  listChangeDesignNoteFiles,
   listChangeNames,
   listChangeSpecCapabilities,
   listSpecCapabilities,
@@ -17,6 +19,8 @@ import type {
   OpenSpecChangeDetail,
   OpenSpecChangeStatus,
   OpenSpecChangeSummary,
+  OpenSpecDesignNoteDetail,
+  OpenSpecDesignNoteSummary,
   OpenSpecLandingSummary,
   OpenSpecSpecDetail,
   OpenSpecSpecSummary,
@@ -34,11 +38,20 @@ function deriveStatus(
 
 function pickLatest(...values: Array<string | null>): string | null {
   let latest: string | null = null;
-  for (const v of values) {
-    if (!v) continue;
-    if (!latest || v > latest) latest = v;
+  for (const value of values) {
+    if (!value) continue;
+    if (!latest || value > latest) latest = value;
   }
   return latest;
+}
+
+function pickEarliest(...values: Array<string | null>): string | null {
+  let earliest: string | null = null;
+  for (const value of values) {
+    if (!value) continue;
+    if (!earliest || value < earliest) earliest = value;
+  }
+  return earliest;
 }
 
 function extractStatusLabel(markdown: string | null): string | null {
@@ -57,21 +70,25 @@ async function loadChangeSummary(
     readArtifactIfExists(repoRoot, changeArtifactPath(changeName, 'tasks.md')),
   ]);
 
-  // A directory under changes/ with no official artifacts is not a real change.
   if (!proposal && !design && !tasks) return null;
 
   const affectedCapabilities = await listChangeSpecCapabilities(repoRoot, changeName);
-  const taskCounts = tasks ? countTasks(tasks.markdown) : { completed: 0, total: 0 };
+  const deltaArtifacts = await Promise.all(
+    affectedCapabilities.map((capability) =>
+      readArtifactIfExists(repoRoot, changeSpecDeltaPath(changeName, capability)),
+    ),
+  );
 
+  const taskCounts = tasks ? countTasks(tasks.markdown) : { completed: 0, total: 0 };
   const fallbackTitle = humanizeName(changeName);
   const title = proposal
     ? extractTitle(proposal.markdown, fallbackTitle)
     : design
       ? extractTitle(design.markdown, fallbackTitle)
       : fallbackTitle;
-
   const excerpt = proposal ? extractExcerpt(proposal.markdown) : null;
   const statusLabel = extractStatusLabel(proposal?.markdown ?? null);
+  const timestampSources = [proposal, design, tasks, ...deltaArtifacts].filter(Boolean);
 
   return {
     name: changeName,
@@ -80,10 +97,9 @@ async function loadChangeSummary(
     statusLabel,
     completedTasks: taskCounts.completed,
     totalTasks: taskCounts.total,
+    createdAt: pickEarliest(...timestampSources.map((artifact) => artifact?.createdAt ?? null)),
     lastModified: pickLatest(
-      proposal?.lastModified ?? null,
-      design?.lastModified ?? null,
-      tasks?.lastModified ?? null,
+      ...timestampSources.map((artifact) => artifact?.lastModified ?? null),
     ),
     excerpt,
     affectedCapabilities,
@@ -102,13 +118,31 @@ const STATUS_ORDER: Record<OpenSpecChangeStatus, number> = {
 
 function sortChangeSummaries(rows: OpenSpecChangeSummary[]): OpenSpecChangeSummary[] {
   return [...rows].sort((a, b) => {
-    const so = STATUS_ORDER[a.status] - STATUS_ORDER[b.status];
-    if (so !== 0) return so;
-    const am = a.lastModified ?? '';
-    const bm = b.lastModified ?? '';
-    if (am !== bm) return am < bm ? 1 : -1;
+    const statusOrder = STATUS_ORDER[a.status] - STATUS_ORDER[b.status];
+    if (statusOrder !== 0) return statusOrder;
+    const aModified = a.lastModified ?? '';
+    const bModified = b.lastModified ?? '';
+    if (aModified !== bModified) return aModified < bModified ? 1 : -1;
     return a.name.localeCompare(b.name);
   });
+}
+
+async function buildRelatedChangesMap(
+  repoRoot: string,
+  changeNames: string[],
+): Promise<Map<string, string[]>> {
+  const map = new Map<string, string[]>();
+  await Promise.all(
+    changeNames.map(async (changeName) => {
+      const capabilities = await listChangeSpecCapabilities(repoRoot, changeName);
+      for (const capability of capabilities) {
+        const list = map.get(capability) ?? [];
+        list.push(changeName);
+        map.set(capability, list);
+      }
+    }),
+  );
+  return map;
 }
 
 async function loadSpecSummary(
@@ -123,34 +157,63 @@ async function loadSpecSummary(
     title: extractTitle(raw.markdown, humanizeName(capability)),
     excerpt: extractExcerpt(raw.markdown),
     repoRelativePath: raw.repoRelativePath,
+    createdAt: raw.createdAt,
     lastModified: raw.lastModified,
     relatedChanges: (relatedByCapability.get(capability) ?? []).slice().sort(),
   };
 }
 
-async function buildRelatedChangesMap(
+function noteSlugFromFilename(filename: string): string {
+  return filename.replace(/\.md$/i, '');
+}
+
+async function loadDesignNoteSummary(
   repoRoot: string,
-  changeNames: string[],
-): Promise<Map<string, string[]>> {
-  const map = new Map<string, string[]>();
-  await Promise.all(
-    changeNames.map(async (changeName) => {
-      const caps = await listChangeSpecCapabilities(repoRoot, changeName);
-      for (const cap of caps) {
-        const list = map.get(cap) ?? [];
-        list.push(changeName);
-        map.set(cap, list);
-      }
-    }),
+  changeName: string,
+  noteFilename: string,
+): Promise<OpenSpecDesignNoteSummary | null> {
+  const raw = await readArtifactIfExists(
+    repoRoot,
+    changeDesignNotePath(changeName, noteFilename),
   );
-  return map;
+  if (!raw) return null;
+
+  const noteSlug = noteSlugFromFilename(noteFilename);
+
+  return {
+    changeName,
+    noteSlug,
+    title: extractTitle(raw.markdown, humanizeName(noteSlug)),
+    excerpt: extractExcerpt(raw.markdown),
+    repoRelativePath: raw.repoRelativePath,
+    createdAt: raw.createdAt,
+    lastModified: raw.lastModified,
+  };
+}
+
+function sortDesignNotes(rows: OpenSpecDesignNoteSummary[]): OpenSpecDesignNoteSummary[] {
+  return [...rows].sort((a, b) => {
+    const aModified = a.lastModified ?? '';
+    const bModified = b.lastModified ?? '';
+    if (aModified !== bModified) return aModified < bModified ? 1 : -1;
+    const aCreated = a.createdAt ?? '';
+    const bCreated = b.createdAt ?? '';
+    if (aCreated !== bCreated) return aCreated < bCreated ? 1 : -1;
+    const changeOrder = a.changeName.localeCompare(b.changeName);
+    if (changeOrder !== 0) return changeOrder;
+    return a.noteSlug.localeCompare(b.noteSlug);
+  });
 }
 
 export async function listOpenSpecChanges(): Promise<OpenSpecChangeSummary[]> {
   const repoRoot = await resolveRepoRoot();
-  const names = await listChangeNames(repoRoot);
-  const summaries = await Promise.all(names.map((name) => loadChangeSummary(repoRoot, name)));
-  return sortChangeSummaries(summaries.filter((s): s is OpenSpecChangeSummary => s !== null));
+  const changeNames = await listChangeNames(repoRoot);
+  const summaries = await Promise.all(
+    changeNames.map((changeName) => loadChangeSummary(repoRoot, changeName)),
+  );
+  return sortChangeSummaries(
+    summaries.filter((summary): summary is OpenSpecChangeSummary => summary !== null),
+  );
 }
 
 export async function listOpenSpecSpecs(): Promise<OpenSpecSpecSummary[]> {
@@ -161,16 +224,38 @@ export async function listOpenSpecSpecs(): Promise<OpenSpecSpecSummary[]> {
   ]);
   const related = await buildRelatedChangesMap(repoRoot, changeNames);
   const summaries = await Promise.all(
-    capabilities.map((cap) => loadSpecSummary(repoRoot, cap, related)),
+    capabilities.map((capability) => loadSpecSummary(repoRoot, capability, related)),
   );
   return summaries
-    .filter((s): s is OpenSpecSpecSummary => s !== null)
+    .filter((summary): summary is OpenSpecSpecSummary => summary !== null)
     .sort((a, b) => a.capability.localeCompare(b.capability));
 }
 
+export async function listOpenSpecDesignNotes(): Promise<OpenSpecDesignNoteSummary[]> {
+  const repoRoot = await resolveRepoRoot();
+  const changeNames = await listChangeNames(repoRoot);
+  const noteGroups = await Promise.all(
+    changeNames.map(async (changeName) => {
+      const files = await listChangeDesignNoteFiles(repoRoot, changeName);
+      const summaries = await Promise.all(
+        files.map((file) => loadDesignNoteSummary(repoRoot, changeName, file)),
+      );
+      return summaries.filter(
+        (summary): summary is OpenSpecDesignNoteSummary => summary !== null,
+      );
+    }),
+  );
+
+  return sortDesignNotes(noteGroups.flat());
+}
+
 export async function getOpenSpecLandingSummary(): Promise<OpenSpecLandingSummary> {
-  const [changes, specs] = await Promise.all([listOpenSpecChanges(), listOpenSpecSpecs()]);
-  return { changes, specs };
+  const [changes, specs, designNotes] = await Promise.all([
+    listOpenSpecChanges(),
+    listOpenSpecSpecs(),
+    listOpenSpecDesignNotes(),
+  ]);
+  return { changes, specs, designNotes };
 }
 
 export async function getOpenSpecChange(
@@ -192,7 +277,10 @@ export async function getOpenSpecChange(
   };
 }
 
-const KIND_TO_FILENAME: Record<Exclude<OpenSpecArtifactKind, 'spec'>, 'proposal.md' | 'design.md' | 'tasks.md'> = {
+const KIND_TO_FILENAME: Record<
+  Exclude<OpenSpecArtifactKind, 'spec'>,
+  'proposal.md' | 'design.md' | 'tasks.md'
+> = {
   proposal: 'proposal.md',
   design: 'design.md',
   tasks: 'tasks.md',
@@ -214,9 +302,12 @@ export async function getOpenSpecChangeArtifact(
   kind: Exclude<OpenSpecArtifactKind, 'spec'>,
 ): Promise<OpenSpecArtifact | null> {
   const repoRoot = await resolveRepoRoot();
-  const filename = KIND_TO_FILENAME[kind];
-  const raw = await readArtifactIfExists(repoRoot, changeArtifactPath(changeName, filename));
+  const raw = await readArtifactIfExists(
+    repoRoot,
+    changeArtifactPath(changeName, KIND_TO_FILENAME[kind]),
+  );
   if (!raw) return null;
+
   return {
     kind,
     title: extractTitle(raw.markdown, humanizeName(changeName)),
@@ -224,6 +315,7 @@ export async function getOpenSpecChangeArtifact(
     excerpt: extractExcerpt(raw.markdown),
     repoRelativePath: raw.repoRelativePath,
     absolutePath: raw.absolutePath,
+    createdAt: raw.createdAt,
     lastModified: raw.lastModified,
   };
 }
@@ -232,15 +324,12 @@ export async function listOpenSpecChangeSpecDeltas(
   changeName: string,
 ): Promise<OpenSpecSpecSummary[]> {
   const repoRoot = await resolveRepoRoot();
-  const changeExists = await fileExistsAt(
-    repoRoot,
-    changeArtifactPath(changeName, 'proposal.md'),
-  );
+  const changeExists = await fileExistsAt(repoRoot, changeArtifactPath(changeName, 'proposal.md'));
   if (!changeExists) {
-    // Still allow specs/ to exist if proposal is missing; only return empty if change dir absent.
     const allChanges = await listChangeNames(repoRoot);
     if (!allChanges.includes(changeName)) return [];
   }
+
   const capabilities = await listChangeSpecCapabilities(repoRoot, changeName);
   const summaries = await Promise.all(
     capabilities.map(async (capability) => {
@@ -249,19 +338,20 @@ export async function listOpenSpecChangeSpecDeltas(
         changeSpecDeltaPath(changeName, capability),
       );
       if (!raw) return null;
-      const summary: OpenSpecSpecSummary = {
+      return {
         capability,
         title: extractTitle(raw.markdown, humanizeName(capability)),
         excerpt: extractExcerpt(raw.markdown),
         repoRelativePath: raw.repoRelativePath,
+        createdAt: raw.createdAt,
         lastModified: raw.lastModified,
         relatedChanges: [changeName],
-      };
-      return summary;
+      } satisfies OpenSpecSpecSummary;
     }),
   );
+
   return summaries
-    .filter((s): s is OpenSpecSpecSummary => s !== null)
+    .filter((summary): summary is OpenSpecSpecSummary => summary !== null)
     .sort((a, b) => a.capability.localeCompare(b.capability));
 }
 
@@ -275,6 +365,7 @@ export async function getOpenSpecChangeSpecDelta(
     changeSpecDeltaPath(changeName, capability),
   );
   if (!raw) return null;
+
   return {
     kind: 'spec',
     title: extractTitle(raw.markdown, humanizeName(capability)),
@@ -282,6 +373,7 @@ export async function getOpenSpecChangeSpecDelta(
     excerpt: extractExcerpt(raw.markdown),
     repoRelativePath: raw.repoRelativePath,
     absolutePath: raw.absolutePath,
+    createdAt: raw.createdAt,
     lastModified: raw.lastModified,
   };
 }
@@ -292,15 +384,41 @@ export async function getOpenSpecSpec(
   const repoRoot = await resolveRepoRoot();
   const raw = await readArtifactIfExists(repoRoot, specPathFor(capability));
   if (!raw) return null;
+
   const changeNames = await listChangeNames(repoRoot);
   const related = await buildRelatedChangesMap(repoRoot, changeNames);
+
   return {
     capability,
     title: extractTitle(raw.markdown, humanizeName(capability)),
     excerpt: extractExcerpt(raw.markdown),
     repoRelativePath: raw.repoRelativePath,
+    createdAt: raw.createdAt,
     lastModified: raw.lastModified,
     relatedChanges: (related.get(capability) ?? []).slice().sort(),
+    markdown: raw.markdown,
+  };
+}
+
+export async function getOpenSpecDesignNote(
+  changeName: string,
+  noteSlug: string,
+): Promise<OpenSpecDesignNoteDetail | null> {
+  const repoRoot = await resolveRepoRoot();
+  const raw = await readArtifactIfExists(
+    repoRoot,
+    changeDesignNotePath(changeName, `${noteSlug}.md`),
+  );
+  if (!raw) return null;
+
+  return {
+    changeName,
+    noteSlug,
+    title: extractTitle(raw.markdown, humanizeName(noteSlug)),
+    excerpt: extractExcerpt(raw.markdown),
+    repoRelativePath: raw.repoRelativePath,
+    createdAt: raw.createdAt,
+    lastModified: raw.lastModified,
     markdown: raw.markdown,
   };
 }
@@ -309,10 +427,10 @@ export const REPO_RELATIVE_OPENSPEC_DIR = 'openspec';
 
 export async function repoRelativeFromAbsolute(absolutePath: string): Promise<string> {
   const repoRoot = await resolveRepoRoot();
-  const rel = absolutePath.startsWith(repoRoot)
+  const relativePath = absolutePath.startsWith(repoRoot)
     ? absolutePath.slice(repoRoot.length).replace(/^[\\/]+/, '')
     : absolutePath;
-  return toPosix(rel);
+  return toPosix(relativePath);
 }
 
 export type {
@@ -321,6 +439,8 @@ export type {
   OpenSpecChangeDetail,
   OpenSpecChangeStatus,
   OpenSpecChangeSummary,
+  OpenSpecDesignNoteDetail,
+  OpenSpecDesignNoteSummary,
   OpenSpecLandingSummary,
   OpenSpecSpecDetail,
   OpenSpecSpecSummary,

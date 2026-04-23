@@ -3,6 +3,7 @@ import type { OpenSpecSidebarSection } from './OpenSpecSidebar';
 export type OpenSpecActiveScope =
   | { kind: 'overview' }
   | { kind: 'specs'; capability?: string }
+  | { kind: 'notes'; changeName?: string; noteSlug?: string }
   | {
       kind: 'change';
       changeName: string;
@@ -16,6 +17,7 @@ export function buildOpenSpecSidebarSections(scope: OpenSpecActiveScope): OpenSp
       { href: '/openspec', label: 'Overview', active: scope.kind === 'overview' },
       { href: '/openspec/changes', label: 'Changes', active: scope.kind === 'change' },
       { href: '/openspec/specs', label: 'Specs', active: scope.kind === 'specs' },
+      { href: '/openspec/notes', label: 'Notes', active: scope.kind === 'notes' },
     ],
   };
 

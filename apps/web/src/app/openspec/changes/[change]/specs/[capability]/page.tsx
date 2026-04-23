@@ -64,7 +64,11 @@ export default async function ChangeSpecDeltaPage({ params }: PageProps) {
           <h1 className="text-[clamp(1.6rem,2.8vw,2.05rem)] font-semibold tracking-tight leading-tight">
             {artifact.title}
           </h1>
-          <OpenSpecSourceLink repoRelativePath={artifact.repoRelativePath} />
+          <OpenSpecSourceLink
+            repoRelativePath={artifact.repoRelativePath}
+            createdAt={artifact.createdAt}
+            lastModified={artifact.lastModified}
+          />
         </header>
         <OpenSpecMarkdownPage markdown={artifact.markdown} />
       </article>

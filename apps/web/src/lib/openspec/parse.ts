@@ -1,4 +1,4 @@
-const METADATA_LINE_RE = /^\*\*[A-Za-z][\w \-/]*:\*\*/;
+const METADATA_LINE_RE = /^\*\*[^*]+:\*\*/;
 
 export function humanizeName(slug: string): string {
   return slug
@@ -19,11 +19,25 @@ export function extractTitle(markdown: string, fallback: string): string {
   return fallback;
 }
 
+function stripMarkdownInline(text: string): string {
+  return text
+    .replace(/!\[([^\]]*)\]\([^)]+\)/g, '$1')
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/\*\*([^*]+)\*\*/g, '$1')
+    .replace(/__([^_]+)__/g, '$1')
+    .replace(/\*([^*]+)\*/g, '$1')
+    .replace(/_([^_]+)_/g, '$1')
+    .replace(/~~([^~]+)~~/g, '$1')
+    .replace(/^>\s?/gm, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 export function extractExcerpt(markdown: string): string | null {
   const lines = markdown.split('\n');
   let i = 0;
 
-  // Skip leading blank lines, H1, and any contiguous metadata block (e.g. **Status:**, **Owner:**).
   while (i < lines.length && lines[i].trim() === '') i++;
   if (i < lines.length && lines[i].trim().startsWith('# ')) {
     i++;
@@ -31,37 +45,48 @@ export function extractExcerpt(markdown: string): string | null {
   }
 
   while (i < lines.length) {
-    const line = lines[i];
-    const trimmed = line.trim();
+    const trimmed = lines[i].trim();
 
     if (trimmed === '') {
       i++;
       continue;
     }
 
-    // Skip pure metadata lines (single-line bold-key definitions).
     if (METADATA_LINE_RE.test(trimmed)) {
       i++;
       continue;
     }
 
-    // Skip subheadings — find a real paragraph.
     if (trimmed.startsWith('#')) {
       i++;
       continue;
     }
 
-    // Collect contiguous non-empty lines as one paragraph.
     const paragraph: string[] = [];
     while (i < lines.length && lines[i].trim() !== '') {
       paragraph.push(lines[i].trim());
       i++;
     }
-    const joined = paragraph.join(' ').trim();
+
+    const joined = stripMarkdownInline(paragraph.join(' '));
     if (joined) return joined;
   }
 
   return null;
+}
+
+export function stripLeadingDocumentTitle(markdown: string): string {
+  const lines = markdown.split('\n');
+  let i = 0;
+
+  while (i < lines.length && lines[i].trim() === '') i++;
+  if (i < lines.length && lines[i].trim().startsWith('# ')) {
+    i++;
+    while (i < lines.length && lines[i].trim() === '') i++;
+    return lines.slice(i).join('\n');
+  }
+
+  return markdown;
 }
 
 export type TaskCounts = { completed: number; total: number };

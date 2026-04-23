@@ -49,7 +49,11 @@ export default async function CapabilitySpecPage({ params }: PageProps) {
           <h1 className="text-[clamp(1.6rem,2.8vw,2.05rem)] font-semibold tracking-tight leading-tight">
             {spec.title}
           </h1>
-          <OpenSpecSourceLink repoRelativePath={spec.repoRelativePath} />
+          <OpenSpecSourceLink
+            repoRelativePath={spec.repoRelativePath}
+            createdAt={spec.createdAt}
+            lastModified={spec.lastModified}
+          />
           {spec.relatedChanges.length > 0 && (
             <div className="pdpp-caption flex flex-wrap items-center gap-2 text-muted-foreground">
               <span>Related changes:</span>

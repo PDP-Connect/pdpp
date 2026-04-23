@@ -65,7 +65,11 @@ export default async function ChangeTasksPage({ params }: PageProps) {
               total={summary.totalTasks}
             />
           </div>
-          <OpenSpecSourceLink repoRelativePath={artifact.repoRelativePath} />
+          <OpenSpecSourceLink
+            repoRelativePath={artifact.repoRelativePath}
+            createdAt={artifact.createdAt}
+            lastModified={artifact.lastModified}
+          />
         </header>
         <OpenSpecMarkdownPage markdown={artifact.markdown} />
       </article>

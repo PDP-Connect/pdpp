@@ -6,6 +6,7 @@ import {
   OpenSpecShell,
   buildOpenSpecSidebarSections,
 } from '@/components/openspec';
+import { formatOpenSpecDate } from '@/lib/openspec/format';
 import { listOpenSpecDesignNotes } from '@/lib/openspec';
 
 export const metadata: Metadata = {
@@ -48,6 +49,16 @@ export default async function OpenSpecDesignNotesPage() {
                 title={note.title}
                 excerpt={note.excerpt}
                 eyebrow={note.changeName}
+                footer={
+                  <>
+                    {note.createdAt && (
+                      <span>created {formatOpenSpecDate(note.createdAt)}</span>
+                    )}
+                    {note.lastModified && (
+                      <span>updated {formatOpenSpecDate(note.lastModified)}</span>
+                    )}
+                  </>
+                }
               />
             ))}
           </div>
