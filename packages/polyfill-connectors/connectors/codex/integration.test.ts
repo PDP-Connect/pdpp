@@ -34,6 +34,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { RecordData, StreamScope } from "../../src/connector-runtime.ts";
+import { type EmittedRecord, makeRecordingEmit } from "../../src/test-harness.ts";
 import {
   emitSessionsFromMaps,
   flushPendingCalls,
@@ -43,36 +44,40 @@ import {
 } from "./collect-helpers.ts";
 import type { RolloutAggregate, RolloutObject, RolloutPayload, ThreadRow } from "./types.ts";
 
-interface EmittedRecord {
-  data: RecordData;
-  stream: string;
-}
-
 interface RecordingHarness {
   deps: LineEmitDeps;
   emitted: EmittedRecord[];
   progressMessages: string[];
 }
 
-/** Build a LineEmitDeps that records every emitRecord() + progress() call. */
+/** Build a LineEmitDeps that records every emitRecord() + progress() call.
+ *  Uses makeRecordingEmit() in pass-through mode — the codex connector
+ *  does not currently ship a validateRecord helper, so the production
+ *  runtime performs no shape-check on its records; matching that here
+ *  keeps the test truthful. LineEmitDeps expects a sync emitRecord
+ *  returning void; the shared harness returns Promise<void>, so we wrap
+ *  to drop the promise — the underlying push into .emitted is synchronous. */
 function makeHarness({
   requested = ["messages", "function_calls", "sessions"],
 }: {
   requested?: readonly string[];
 } = {}): RecordingHarness {
-  const emitted: EmittedRecord[] = [];
+  const harness = makeRecordingEmit();
   const progressMessages: string[] = [];
   const requestedMap = new Map<string, StreamScope>(requested.map((name) => [name, { name }]));
   const deps: LineEmitDeps = {
     emitRecord: (stream: string, data: RecordData): void => {
-      emitted.push({ stream, data });
+      // Fire-and-forget: harness.emitRecord resolves synchronously in
+      // pass-through mode (no await points). We ignore the resolved
+      // promise to honour the sync void return LineEmitDeps declares.
+      harness.emitRecord(stream, data).catch((): undefined => undefined);
     },
     progress: (message: string): void => {
       progressMessages.push(message);
     },
     requested: requestedMap,
   };
-  return { deps, emitted, progressMessages };
+  return { deps, emitted: harness.emitted, progressMessages };
 }
 
 /** Synthetic session_meta line. `id` is the session UUID downstream records
