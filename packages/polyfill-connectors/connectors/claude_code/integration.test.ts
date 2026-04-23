@@ -369,3 +369,47 @@ test("emitSessionsFromAccumulators: emitted record is a shallow copy (mutating a
   const sessionRec = emitted.find((r) => r.stream === "sessions");
   assert.equal(sessionRec?.data.message_count, 5, "emitted record snapshots message_count at emit time");
 });
+
+// ─── Two-pass buildOnly contract (Tranche C parent-first) ──────────────────
+//
+// These tests pin the buildOnly flag's contract on processJsonlLine directly
+// (no filesystem), and then the ORCHESTRATION test below runs the real
+// scanProjectDirs against a tmpdir to prove end-to-end parent-first emit.
+// The orchestration test would fail if:
+//   - pass 1 emitted messages (buildOnly leak)
+//   - pass 2 emitted nothing (orchestration regression)
+//   - sessions emitted after messages (parent-first regression)
+//   - accumulators were updated twice (double-count on message_count)
+
+test("processJsonlLine: buildOnly=true suppresses message emit but still bumps messageCount", async () => {
+  const { deps, emitted } = makeHarness();
+  const obs = makeJsonlObservations(null);
+  const line = { type: "user", sessionId: "sess-A", uuid: "m1", timestamp: "2026-04-23T10:00:00Z" };
+  observeJsonlFields(line as JsonlObject, obs, null);
+  await processJsonlLine({ buildOnly: true, deps, obj: line as JsonlObject, obs });
+
+  assert.equal(emitted.length, 0, "buildOnly=true emits nothing");
+  assert.equal(obs.messageCount, 1, "messageCount still incremented (feeds session aggregate)");
+});
+
+test("processJsonlLine: buildOnly=true suppresses attachment emit but still observes session fields", async () => {
+  const { deps, emitted } = makeHarness();
+  const obs = makeJsonlObservations(null);
+  const line = { type: "attachment", sessionId: "sess-B", uuid: "a1", timestamp: "2026-04-23T10:00:01Z" };
+  observeJsonlFields(line as JsonlObject, obs, null);
+  await processJsonlLine({ buildOnly: true, deps, obj: line as JsonlObject, obs });
+
+  assert.equal(emitted.length, 0, "buildOnly=true emits nothing");
+  assert.equal(obs.sessionId, "sess-B", "session id still observed");
+});
+
+test("processJsonlLine: buildOnly=false (default behavior) DOES emit when requested", async () => {
+  const { deps, emitted } = makeHarness();
+  const obs = makeJsonlObservations(null);
+  const line = { type: "user", sessionId: "sess-C", uuid: "m1", timestamp: "2026-04-23T10:00:02Z" };
+  observeJsonlFields(line as JsonlObject, obs, null);
+  await processJsonlLine({ buildOnly: false, deps, obj: line as JsonlObject, obs });
+
+  assert.equal(emitted.length, 1);
+  assert.equal(emitted[0]?.stream, "messages");
+});

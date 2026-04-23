@@ -564,7 +564,7 @@ async function emitSlashCommands({ claudeHome, requested, emitRecord }: EmitSkil
 
 // ─── Projects directory scan ────────────────────────────────────────────
 
-interface ScanProjectDirsArgs {
+export interface ScanProjectDirsArgs {
   baseDir: string;
   /** Threaded through to parseJsonlFile/processJsonlLine so pass 1 is
    *  silent (accumulator-only) and pass 2 emits messages/attachments. */
@@ -718,7 +718,7 @@ async function listProjectDirs(baseDir: string, emit: CollectContext["emit"]): P
   return applyProjectDirScope(projectDirs, include, exclude);
 }
 
-async function scanProjectDirs(args: ScanProjectDirsArgs): Promise<void> {
+export async function scanProjectDirs(args: ScanProjectDirsArgs): Promise<void> {
   const projectDirs = await listProjectDirs(args.baseDir, args.emit);
   if (projectDirs === null) {
     return;

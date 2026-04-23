@@ -78,6 +78,11 @@ streams.
 
 ### Parent-first emit order
 
+> Historical note: gmail, chatgpt, and claude_code inverted this on
+> 2026-04-23 as an intentional behavior change, not a bug fix. See
+> [`behavior-changes-2026-04-23.md`](./behavior-changes-2026-04-23.md)
+> for the consumer-facing note.
+
 When a connector emits streams that relate to each other (orders +
 order_items, accounts + transactions, sessions + messages,
 conversations + messages, threads + messages) the **parent record
