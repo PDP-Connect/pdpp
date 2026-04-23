@@ -5,7 +5,18 @@
 import type { Locator } from "playwright";
 import type { RecordData } from "../../src/connector-runtime.ts";
 import type { DownloadQueue } from "../../src/download-queue.ts";
-import type { StatementRow } from "./statement-pdfs.ts";
+
+// ─── Statements index row ────────────────────────────────────────────────
+
+/** Per-row input to hydrateStatementPdfs. */
+export interface StatementRow {
+  account_id: string | null;
+  account_reference?: string | null;
+  date_delivered: string | null;
+  id: string;
+  rowIndex: number;
+  title: string | null;
+}
 
 // ─── Dashboard / account extraction ──────────────────────────────────────
 
@@ -178,4 +189,80 @@ export interface DriveExportOptions {
 export interface LocatedExportPage {
   export: Locator;
   url: string;
+}
+
+// ─── Statement-PDF parser shapes ─────────────────────────────────────────
+
+/** Closing context for toIso year-assignment. Bare number = legacy year-only. */
+export type ClosingContext = number | { closingMonth: number; closingYear: number } | null | undefined;
+
+/** Closing month + year extracted from a statement PDF's header text. */
+export interface StatementClosing {
+  closingMonth: number;
+  closingYear: number;
+}
+
+/** One transaction parsed from a statement PDF, pre-record-shape. */
+export interface ParsedStatementTxn {
+  amount: number;
+  balance: number | null;
+  description: string;
+  iso: string;
+  ord: number;
+  tupleKey: string;
+}
+
+/** Full transaction record emitted from a statement PDF. */
+export interface StatementTxnRecord {
+  account_id: string;
+  account_name: string | null;
+  amount: number;
+  balance_after_cents: number | null;
+  category: string | null;
+  check_number: string | null;
+  currency: "USD";
+  date: string;
+  description: string;
+  fetched_at: string;
+  id: string;
+  original_description: string;
+  source: string;
+}
+
+export interface ParseMetaOk {
+  closingMonth?: number;
+  era: string;
+  year: number;
+}
+
+export interface ParseMetaUnknown {
+  era: "unknown";
+  rawTextSample: string;
+  year: number;
+}
+
+export type ParseMeta = ParseMetaOk | ParseMetaUnknown;
+
+// ─── Statement-PDF download driver ───────────────────────────────────────
+
+export interface DownloadOk {
+  buffer: Buffer;
+  ok: true;
+  suggestedFilename: string;
+}
+
+export interface DownloadFail {
+  diag?: Record<string, unknown> | null;
+  ok: false;
+  reason: string;
+}
+
+export type DownloadResult = DownloadOk | DownloadFail;
+
+export interface HydratedStatement {
+  buffer: Buffer;
+  pdfPath: string;
+  pdfSha256: string;
+  statement: StatementRow;
+  suggestedFilename: string;
 }

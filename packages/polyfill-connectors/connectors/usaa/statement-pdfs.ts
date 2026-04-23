@@ -28,6 +28,15 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { Locator, Page } from "playwright";
 import type { DownloadQueue } from "../../src/download-queue.ts";
+import type {
+  ClosingContext,
+  DownloadResult,
+  HydratedStatement,
+  ParsedStatementTxn as ParsedTxn,
+  ParseMeta,
+  StatementRow,
+  StatementTxnRecord,
+} from "./types.ts";
 
 const STATEMENT_ROOT = join(homedir(), ".pdpp", "usaa-statements");
 
@@ -59,77 +68,7 @@ const CREDIT_SECTION_END_RE = /^\s*(TOTAL\b|FEES\s+CHARGED|INTEREST\s+CHARGED|YE
 const CREDIT_TXN_LINE_RE = /^(\d{1,2})\/(\d{1,2})\s+(\d{1,2})\/(\d{1,2})\s+(.+?)\s+(-?\$?[\d,]+\.\d{2}-?)\s*$/;
 const CHECK_NUMBER_RE = /CHECK\s*#?\s*0*(\d+)/i;
 
-// ─── Types ────────────────────────────────────────────────────────────────
-
-/** Per-row input to hydrateStatementPdfs. */
-export interface StatementRow {
-  account_id: string | null;
-  account_reference?: string | null;
-  date_delivered: string | null;
-  id: string;
-  rowIndex: number;
-  title: string | null;
-}
-
-interface DownloadOk {
-  buffer: Buffer;
-  ok: true;
-  suggestedFilename: string;
-}
-interface DownloadFail {
-  diag?: Record<string, unknown> | null;
-  ok: false;
-  reason: string;
-}
-type DownloadResult = DownloadOk | DownloadFail;
-
-export interface HydratedStatement {
-  buffer: Buffer;
-  pdfPath: string;
-  pdfSha256: string;
-  statement: StatementRow;
-  suggestedFilename: string;
-}
-
-/** {closingYear, closingMonth} or a bare year (legacy callers). */
-type ClosingContext = number | { closingMonth: number; closingYear: number } | null | undefined;
-
-interface ParsedTxn {
-  amount: number;
-  balance: number | null;
-  description: string;
-  iso: string;
-  ord: number;
-  tupleKey: string;
-}
-
-export interface StatementTxnRecord {
-  account_id: string;
-  account_name: string | null;
-  amount: number;
-  balance_after_cents: number | null;
-  category: string | null;
-  check_number: string | null;
-  currency: "USD";
-  date: string;
-  description: string;
-  fetched_at: string;
-  id: string;
-  original_description: string;
-  source: string;
-}
-
-export interface ParseMetaOk {
-  closingMonth?: number;
-  era: string;
-  year: number;
-}
-export interface ParseMetaUnknown {
-  era: "unknown";
-  rawTextSample: string;
-  year: number;
-}
-export type ParseMeta = ParseMetaOk | ParseMetaUnknown;
+// Shapes live in ./types.ts; this module focuses on PDF hydration + parse.
 
 // ─── Download orchestration ───────────────────────────────────────────────
 
