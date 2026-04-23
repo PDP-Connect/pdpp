@@ -49,6 +49,7 @@ The steward started `pnpm dev` once earlier today. Next.js (:3000) has crashed t
 (none — integration-test extractions for gmail, chase, usaa, chatgpt, slack, codex, claude_code all landed cleanly in pairs 2026-04-23.)
 
 - 2026-04-23 evening: `packages/polyfill-connectors/connectors/claude_code/index.ts` — 140-line disk-spool redesign (Tranche C follow-up) with no paired test yet. Skipped pending the matching test/commit to land together.
+- 2026-04-23 later evening: claude_code "Option 2" stop-report set (index.ts disk-spool + orchestration.test.ts + bench + docs) is ready to commit BUT lefthook is blocking with 2 real lint errors: (1) extra JSDoc asterisks in `connectors/claude_code/index.ts:654`, (2) `resolveSessionGroups()` cognitive complexity 25 > 20 at line 661. Steward won't fix — author should resolve these lints and then either commit themselves or signal the steward. Also new untracked `bench/discover-probe.ts` rides along in the same working set.
 
 ---
 Questions/trouble: ping the owner.
