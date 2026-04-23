@@ -8,6 +8,7 @@ import { runOwner } from './commands/owner.js';
 import { runProvider } from './commands/provider.js';
 import { runQuery } from './commands/query.js';
 import { runRun } from './commands/run.js';
+import { runSeed } from './commands/seed.js';
 import { runTrace } from './commands/trace.js';
 
 const HELP = `PDPP CLI (reference implementation surface; some commands are reference-only)
@@ -30,6 +31,10 @@ Usage:
   pdpp grant timeline <grant-id> [--as-url <url> | --rs-url <url>] [--format json|table]
   pdpp trace show <trace-id> [--as-url <url> | --rs-url <url>] [--format json|table]
   pdpp inspect <grant|request|manifest> <path-or-> [--format json|table]
+  pdpp seed [--connector <name[,name...]>] [--as-url <url>] [--rs-url <url>] [--subject <id>]
+    Seeds the running reference server with deterministic fixture data for local
+    development. Defaults to spotify, github, reddit. Requires open local-dev owner
+    auth (no PDPP_OWNER_PASSWORD).
 
 Notes:
   --connector-id is only for polyfill/personal-server owner access. Native-provider owner access is provider-local.
@@ -43,6 +48,7 @@ const COMMANDS = {
   provider: runProvider,
   query: runQuery,
   run: runRun,
+  seed: runSeed,
   trace: runTrace,
 };
 
