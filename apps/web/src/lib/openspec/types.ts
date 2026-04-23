@@ -7,6 +7,7 @@ export type OpenSpecArtifact = {
   excerpt: string | null;
   repoRelativePath: string;
   absolutePath: string;
+  createdAt: string | null;
   lastModified: string | null;
 };
 
@@ -15,6 +16,7 @@ export type OpenSpecSpecSummary = {
   title: string;
   excerpt: string | null;
   repoRelativePath: string;
+  createdAt: string | null;
   lastModified: string | null;
   relatedChanges: string[];
 };
@@ -38,6 +40,7 @@ export type OpenSpecChangeSummary = {
   statusLabel: string | null;
   completedTasks: number;
   totalTasks: number;
+  createdAt: string | null;
   lastModified: string | null;
   excerpt: string | null;
   affectedCapabilities: string[];
@@ -52,7 +55,22 @@ export type OpenSpecChangeDetail = OpenSpecChangeSummary & {
   designExcerpt: string | null;
 };
 
+export type OpenSpecDesignNoteSummary = {
+  changeName: string;
+  noteSlug: string;
+  title: string;
+  excerpt: string | null;
+  repoRelativePath: string;
+  createdAt: string | null;
+  lastModified: string | null;
+};
+
+export type OpenSpecDesignNoteDetail = OpenSpecDesignNoteSummary & {
+  markdown: string;
+};
+
 export type OpenSpecLandingSummary = {
   changes: OpenSpecChangeSummary[];
   specs: OpenSpecSpecSummary[];
+  designNotes: OpenSpecDesignNoteSummary[];
 };
