@@ -28,14 +28,18 @@ import { basename, join } from "node:path";
 import { createInterface as createFileReader } from "node:readline";
 import { type CollectContext, type RecordData, runConnector, type StreamScope } from "../../src/connector-runtime.ts";
 import {
-  ATTACHMENT_PREVIEW_CHARS,
+  emitSessionsFromAccumulators,
+  type JsonlObservations,
+  makeJsonlObservations,
+  observeJsonlFields,
+  processJsonlLine,
+} from "./collect-helpers.ts";
+import {
   applyProjectDirScope,
   BYTES_PER_MB,
   buildSkillRecord,
   buildSlashCommandRecord,
-  extractContent,
   LINE_PROGRESS_INTERVAL,
-  MESSAGE_CONTENT_PREVIEW_CHARS,
   makeEmptySessionAccumulator,
   mergeSessionObservations,
   parseCsvEnv,
@@ -187,116 +191,6 @@ async function walkToolResults(args: WalkToolResultsArgs): Promise<void> {
 
 // ─── JSONL-file parsing ─────────────────────────────────────────────────
 
-interface JsonlObservations {
-  cwd: string | null;
-  entrypoint: string | null;
-  firstTimestamp: string | null;
-  gitBranch: string | null;
-  lastTimestamp: string | null;
-  messageCount: number;
-  sessionId: string | null;
-  userType: string | null;
-  version: string | null;
-}
-
-function observeJsonlFields(obj: JsonlObject, obs: JsonlObservations, forcedSessionId: string | null): void {
-  if (obj.sessionId && !forcedSessionId) {
-    obs.sessionId = obj.sessionId;
-  }
-  if (obj.cwd && !obs.cwd) {
-    obs.cwd = obj.cwd;
-  }
-  if (obj.gitBranch && !obs.gitBranch) {
-    obs.gitBranch = obj.gitBranch;
-  }
-  if (obj.userType && !obs.userType) {
-    obs.userType = obj.userType;
-  }
-  if (obj.entrypoint && !obs.entrypoint) {
-    obs.entrypoint = obj.entrypoint;
-  }
-  if (obj.version && !obs.version) {
-    obs.version = obj.version;
-  }
-  if (obj.timestamp) {
-    if (!obs.firstTimestamp || obj.timestamp < obs.firstTimestamp) {
-      obs.firstTimestamp = obj.timestamp;
-    }
-    if (!obs.lastTimestamp || obj.timestamp > obs.lastTimestamp) {
-      obs.lastTimestamp = obj.timestamp;
-    }
-  }
-}
-
-function isMessageType(type: string | undefined): boolean {
-  return type === "user" || type === "assistant";
-}
-
-function isAttachmentType(type: string | undefined): boolean {
-  return (
-    type === "attachment" || type === "file-history-snapshot" || type === "permission-mode" || type === "last-prompt"
-  );
-}
-
-function buildMessageRecord(obj: JsonlObject, sessionId: string, uuid: string): RecordData {
-  return {
-    id: uuid,
-    session_id: sessionId,
-    parent_uuid: obj.parentUuid ?? null,
-    role: obj.type ?? null,
-    type: obj.type ?? null,
-    content: textPreview(extractContent(obj.message || obj), MESSAGE_CONTENT_PREVIEW_CHARS),
-    timestamp: obj.timestamp || null,
-    is_sidechain: obj.isSidechain ?? null,
-    user_type: obj.userType ?? null,
-    agent_id: obj.agentId ?? null,
-  };
-}
-
-function buildAttachmentRecord(obj: JsonlObject, sessionId: string, uuid: string): RecordData {
-  const att = obj.attachment || {};
-  return {
-    id: uuid,
-    session_id: sessionId,
-    parent_uuid: obj.parentUuid ?? null,
-    event_type: obj.type ?? null,
-    hook_name: att.hookName || null,
-    tool_use_id: att.toolUseID || null,
-    content_preview: textPreview(extractContent(att) || extractContent(obj), ATTACHMENT_PREVIEW_CHARS),
-    content_bytes: null,
-    timestamp: obj.timestamp || null,
-  };
-}
-
-interface ProcessJsonlLineArgs {
-  emitRecord: (stream: string, data: RecordData) => Promise<void>;
-  obj: JsonlObject;
-  obs: JsonlObservations;
-  requested: Map<string, StreamScope>;
-}
-
-async function processJsonlLine(args: ProcessJsonlLineArgs): Promise<void> {
-  const { obj, obs, requested, emitRecord } = args;
-  const sessionId = obs.sessionId;
-  if (!sessionId) {
-    return;
-  }
-  const uuid = obj.uuid;
-  const type = obj.type;
-
-  if (isMessageType(type)) {
-    obs.messageCount++;
-    if (requested.has("messages") && uuid) {
-      await emitRecord("messages", buildMessageRecord(obj, sessionId, uuid));
-    }
-    return;
-  }
-
-  if (isAttachmentType(type) && requested.has("attachments") && uuid) {
-    await emitRecord("attachments", buildAttachmentRecord(obj, sessionId, uuid));
-  }
-}
-
 function updateSessionAccumulator(
   sessionAccumulators: Map<string, SessionAccumulator>,
   projectDir: string,
@@ -331,17 +225,7 @@ interface ParseJsonlFileArgs {
 
 async function parseJsonlFile(args: ParseJsonlFileArgs): Promise<string | null> {
   const { path, projectDir, requested, emit, emitRecord, sessionAccumulators, forcedSessionId } = args;
-  const obs: JsonlObservations = {
-    sessionId: forcedSessionId || null,
-    firstTimestamp: null,
-    lastTimestamp: null,
-    messageCount: 0,
-    cwd: null,
-    gitBranch: null,
-    userType: null,
-    entrypoint: null,
-    version: null,
-  };
+  const obs: JsonlObservations = makeJsonlObservations(forcedSessionId);
   let lineCount = 0;
 
   for await (const obj of iterJsonlLines(path)) {
@@ -353,7 +237,7 @@ async function parseJsonlFile(args: ParseJsonlFileArgs): Promise<string | null> 
       });
     }
     observeJsonlFields(obj, obs, forcedSessionId);
-    await processJsonlLine({ obj, obs, requested, emitRecord });
+    await processJsonlLine({ obj, obs, deps: { requested, emitRecord } });
   }
 
   updateSessionAccumulator(sessionAccumulators, projectDir, obs);
@@ -696,10 +580,8 @@ runConnector({
       sessionAccumulators,
     });
 
+    await emitSessionsFromAccumulators({ emitRecord, requested, sessionAccumulators });
     if (requested.has("sessions")) {
-      for (const session of sessionAccumulators.values()) {
-        await emitRecord("sessions", { ...session });
-      }
       await emit({
         type: "STATE",
         stream: "sessions",
