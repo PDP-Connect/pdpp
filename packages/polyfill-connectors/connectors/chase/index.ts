@@ -433,10 +433,10 @@ function hasParse(v: unknown): v is OfxParser {
 async function parseQfxFile(path: string): Promise<unknown> {
   // ofx-js (0.2.x) ships no declaration file. The default export has
   // shifted shape across versions (top-level OFX, nested under default,
-  // bare parse). Import as unknown and narrow structurally instead of
+  // bare parse). types/ofx-js.d.ts shims the module as `unknown`; we
+  // narrow structurally at runtime (see hasParse below) instead of
   // claiming a fixed module shape.
-  // @ts-expect-error — ofx-js has no type declarations; narrowed via hasParse below
-  // biome-ignore lint/correctness/noUnresolvedImports: ofx-js is declared in package.json; Biome's resolver can't follow its CJS/ESM conditional exports
+  // biome-ignore lint/correctness/noUnresolvedImports: ofx-js resolves via types/ofx-js.d.ts; Biome's resolver doesn't walk ambient declaration shims
   const mod: unknown = await import("ofx-js");
   const modObj = isOfxRecord(mod) ? mod : {};
   const defaultExport = modObj.default;

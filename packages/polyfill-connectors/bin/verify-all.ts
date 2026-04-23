@@ -26,9 +26,6 @@ const DB_PATH = join(__dirname, "..", ".pdpp-data", "polyfill.sqlite");
 const CONNECTOR_REGISTRY_PREFIX = /^https:\/\/registry\.pdpp\.org\/connectors\//;
 
 async function main(): Promise<void> {
-  // @ts-expect-error — @databases/sqlite's default export is callable at
-  // runtime; its .d.ts declares the default as a namespace because of
-  // CJS-interop quirks. Same pattern as connectors/imessage.
   const db = connect(DB_PATH);
 
   try {

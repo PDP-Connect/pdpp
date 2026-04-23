@@ -44,7 +44,12 @@
     // TypeScript packages.
     "allowImportingTsExtensions": true
   },
-  "include": ["src/**/*.ts", "connectors/**/*.ts", "bin/**/*.ts"],
+  "include": [
+    "src/**/*.ts",
+    "connectors/**/*.ts",
+    "bin/**/*.ts",
+    "types/**/*.d.ts"
+  ],
   // __fixtures__/ holds hand-crafted HTML/JSON used by parser tests; they
   // aren't TypeScript. fixtures/ holds gitignored live captures. Tests
   // (*.test.ts) ARE included so typecheck covers them — earlier they were

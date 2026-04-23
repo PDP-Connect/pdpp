@@ -59,9 +59,6 @@ runConnector({
       );
     }
 
-    // @ts-expect-error — @databases/sqlite exports default function, but its
-    // CJS-shaped .d.ts types the default export as a namespace rather than a
-    // callable. Runtime invocation works (verified live).
     const db = connect(dbPath);
 
     if (!requested.has("messages")) {
