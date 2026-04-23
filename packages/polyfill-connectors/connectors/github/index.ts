@@ -21,132 +21,22 @@
  */
 
 import { nowIso, runConnector } from "../../src/connector-runtime.ts";
+import type {
+  GhFetchOptions,
+  GhResult,
+  GitHubGist,
+  GitHubIssue,
+  GitHubLabelObj,
+  GitHubPullDetail,
+  GitHubRepo,
+  GitHubSearchResponse,
+  GitHubStarredEntry,
+  GitHubUser,
+} from "./types.ts";
 
 const BASE = "https://api.github.com";
 const USER_AGENT = "pdpp-connector-github/0.1";
 const NEXT_LINK_PATTERN = /<([^>]+)>; rel="next"/;
-
-interface GhResult<T> {
-  data: T;
-  nextUrl: string | null;
-}
-
-interface GhFetchOptions {
-  accept?: string;
-}
-
-interface GitHubUser {
-  avatar_url?: string | null;
-  bio?: string | null;
-  blog?: string | null;
-  company?: string | null;
-  created_at?: string | null;
-  email?: string | null;
-  followers?: number | null;
-  following?: number | null;
-  id: number;
-  location?: string | null;
-  login: string;
-  name?: string | null;
-  public_gists?: number | null;
-  public_repos?: number | null;
-  twitter_username?: string | null;
-  updated_at?: string | null;
-}
-
-interface GitHubRepo {
-  archived: boolean;
-  created_at?: string | null;
-  default_branch?: string | null;
-  description?: string | null;
-  disabled: boolean;
-  fork: boolean;
-  forks_count?: number | null;
-  full_name: string;
-  homepage?: string | null;
-  html_url?: string | null;
-  id: number;
-  language?: string | null;
-  license?: { key?: string | null } | null;
-  name: string;
-  open_issues_count?: number | null;
-  owner?: { login?: string };
-  private: boolean;
-  pushed_at?: string | null;
-  size?: number | null;
-  stargazers_count?: number | null;
-  topics?: string[];
-  updated_at?: string | null;
-  watchers_count?: number | null;
-}
-
-interface GitHubStarredEntry {
-  repo?: GitHubRepo;
-  starred_at?: string | null;
-}
-
-interface GitHubLabelObj {
-  name?: string;
-}
-
-interface GitHubIssue {
-  assignees?: Array<{ login?: string }>;
-  body?: string | null;
-  closed_at?: string | null;
-  comments?: number | null;
-  created_at?: string | null;
-  draft?: boolean;
-  html_url?: string | null;
-  id: number;
-  labels?: Array<string | GitHubLabelObj>;
-  milestone?: { title?: string | null } | null;
-  number?: number;
-  pull_request?: { html_url?: string | null } | null;
-  reactions?: { total_count?: number | null };
-  repository?: { full_name?: string; id?: number } | null;
-  repository_url?: string;
-  state?: string | null;
-  state_reason?: string | null;
-  title?: string | null;
-  updated_at?: string | null;
-  user?: { login?: string; id?: number };
-}
-
-interface GitHubSearchResponse {
-  items?: GitHubIssue[];
-}
-
-interface GitHubPullDetail {
-  additions?: number | null;
-  base?: { ref?: string; repo?: { id?: number } };
-  changed_files?: number | null;
-  commits?: number | null;
-  deletions?: number | null;
-  draft?: boolean;
-  head?: { ref?: string };
-  merged_at?: string | null;
-  merged_by?: { login?: string } | null;
-  requested_reviewers?: Array<{ login?: string }>;
-  review_comments?: number | null;
-}
-
-interface GitHubGistFile {
-  filename?: string | null;
-  language?: string | null;
-  raw_url?: string | null;
-  size?: number;
-}
-
-interface GitHubGist {
-  comments?: number | null;
-  created_at?: string | null;
-  description?: string | null;
-  files?: Record<string, GitHubGistFile>;
-  html_url?: string | null;
-  id: string;
-  public: boolean;
-  updated_at?: string | null;
-}
 
 function parseNextLink(link: string | null): string | null {
   if (!link) {

@@ -25,123 +25,22 @@ import {
 } from "../../src/connector-runtime.ts";
 import type { CaptureSession } from "../../src/fixture-capture.ts";
 import { validateRecord as validateRecordRaw } from "./schemas.ts";
+import type {
+  ChatGptApi,
+  ChatGptAuth,
+  ChatGptContent,
+  ChatGptFetchResult,
+  ChatGptJson,
+  ChatGptMessage,
+  ChatGptNode,
+  ConversationListItem,
+  ToolCallSynthetic,
+} from "./types.ts";
 
 // schemas.js is a plain-JS Zod validator; cast at the boundary to the
 // runtime's ValidateRecord contract. The JS module's safeParse already
 // returns { ok, data, issues } in the shape the runtime expects.
 const validateRecord = validateRecordRaw as ValidateRecord;
-
-// ─── ChatGPT API shapes (from /backend-api responses) ───────────────────
-
-interface ChatGptAuth {
-  accessToken: string | null;
-  deviceId: string | null;
-}
-
-interface ChatGptFetchResult {
-  json: ChatGptJson | null;
-  status: number;
-}
-
-// The JSON bodies vary by endpoint; we deliberately keep these loose but typed.
-interface ChatGptJson {
-  about_model_message?: string | null;
-  about_user?: string | null;
-  about_user_message?: string | null;
-  create_time?: number | string | null;
-  current_node?: string | null;
-  cursor?: string | null;
-  enabled?: boolean | null;
-  gizmo_id?: string | null;
-  gizmos?: unknown[];
-  is_archived?: boolean | null;
-  is_starred?: boolean | null;
-  items?: unknown[];
-  mapping?: Record<string, ChatGptNode>;
-  memories?: unknown[];
-  response_style?: string | null;
-  title?: string | null;
-  update_time?: number | string | null;
-  update_time_detail?: number | string | null;
-  updated_at?: number | string | null;
-  workspace_id?: string | null;
-  [field: string]: unknown;
-}
-
-interface ChatGptContent {
-  assets?: unknown;
-  content?: string;
-  content_type?: string;
-  domain?: string;
-  language?: string;
-  model_set_context?: string;
-  name?: string;
-  parts?: unknown[];
-  repo_summary?: string;
-  repository?: string;
-  result?: string;
-  summary?: string;
-  tether_id?: string;
-  text?: string;
-  thoughts?: unknown[];
-  title?: string;
-  url?: string;
-  user_instructions?: string;
-  user_profile?: string;
-  [field: string]: unknown;
-}
-
-interface ChatGptMessage {
-  author?: { role?: string | null };
-  content?: ChatGptContent;
-  create_time?: number | string | null;
-  end_turn?: boolean;
-  id?: string;
-  metadata?: {
-    model_slug?: string | null;
-    finish_details?: { type?: string | null };
-    citations?: unknown[];
-    tool_calls?: unknown[];
-    attachments?: Array<{ id?: string }>;
-    invoked_plugin?: unknown;
-    [field: string]: unknown;
-  };
-  recipient?: string;
-  [field: string]: unknown;
-}
-
-interface ChatGptNode {
-  children?: string[];
-  message?: ChatGptMessage;
-  parent?: string | null;
-  [field: string]: unknown;
-}
-
-interface ConversationListItem {
-  create_time?: number | string | null;
-  current_node?: string | null;
-  gizmo_id?: string | null;
-  id: string;
-  is_archived?: boolean | null;
-  is_starred?: boolean | null;
-  title?: string | null;
-  update_time?: number | string | null;
-  workspace_id?: string | null;
-  [field: string]: unknown;
-}
-
-interface ToolCallSynthetic {
-  content_type?: string;
-  invoked_plugin?: unknown;
-  language?: string;
-  recipient?: string;
-  text?: string;
-}
-
-interface ChatGptApi {
-  auth: () => Promise<ChatGptAuth>;
-  fetch: (path: string, opts?: { method?: string; body?: unknown }) => Promise<ChatGptFetchResult>;
-}
 
 // ─── Helpers ────────────────────────────────────────────────────────────
 
