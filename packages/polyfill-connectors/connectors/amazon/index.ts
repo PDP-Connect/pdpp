@@ -211,6 +211,190 @@ async function extractOrdersOnPage(page: Page): Promise<ListPageOrder[]> {
   }
 }
 
+// ─── collect() helpers ───────────────────────────────────────────────────
+
+type EmitFn = BrowserCollectContext["emit"];
+type EmitRecordFn = BrowserCollectContext["emitRecord"];
+type CaptureDep = BrowserCollectContext["capture"];
+
+/** Ephemeral per-run flags that cross year boundaries. */
+interface RunFlags {
+  detailCaptured: boolean;
+}
+
+interface EmitDeps {
+  capture: CaptureDep;
+  emit: EmitFn;
+  emitRecord: EmitRecordFn;
+  emittedAt: string;
+  skipDetail: boolean;
+  wantsItems: boolean;
+  wantsOrders: boolean;
+}
+
+/**
+ * Run list-page extraction through the zod shape-check. Orders that fail
+ * the shape-check become SKIP_RESULT events; the successful subset is
+ * returned in source order.
+ */
+async function extractAndShapeCheckOrders(page: Page, emit: EmitFn): Promise<ListPageOrder[]> {
+  const rawOrders = await extractOrdersOnPage(page);
+  const orders: ListPageOrder[] = [];
+  for (const r of rawOrders) {
+    const parsed = listPageOrderShape.safeParse(r);
+    if (parsed.success) {
+      orders.push(parsed.data as ListPageOrder);
+    } else {
+      await emit({
+        type: "SKIP_RESULT",
+        stream: "orders",
+        reason: "list_page_shape_check_failed",
+        message: `list card ${r.orderId ?? "<no id>"}: ${parsed.error.issues
+          .map((i) => `${i.path.join(".")}: ${i.message}`)
+          .join("; ")}`,
+        diagnostics: { card: r, issues: parsed.error.issues },
+      });
+    }
+  }
+  return orders;
+}
+
+/**
+ * Empty-page diagnostic branch: distinguish "no more orders" from
+ * "our selectors missed the DOM". Emits SKIP_RESULT with drift details
+ * + screenshot when the page clearly has order-like elements but our
+ * selectors matched nothing.
+ */
+async function reportEmptyPageDiagnostics(page: Page, year: number, startIndex: number, emit: EmitFn): Promise<void> {
+  const diag = await page
+    .evaluate((): ListPageDiagnostics => {
+      // biome-ignore-start lint/performance/useTopLevelRegex: runs in browser context (page.evaluate); module-scoped regexes in Node cannot cross the bridge.
+      const CAPTCHA_RE = /captcha|robot|unusual traffic/i;
+      const NO_ORDERS_RE = /you have not placed any orders|no orders found/i;
+      const WS = /\s+/g;
+      // biome-ignore-end lint/performance/useTopLevelRegex: runs in browser context (page.evaluate); module-scoped regexes in Node cannot cross the bridge.
+      return {
+        url: location.href,
+        title: document.title,
+        order_cards: document.querySelectorAll("div.order-card, div.js-order-card").length,
+        any_card: document.querySelectorAll('[class*="order" i][class*="card" i]').length,
+        any_order_header: document.querySelectorAll('[class*="order" i][class*="header" i]').length,
+        sign_in_form: Boolean(document.querySelector('form[name="signIn"]')),
+        captcha: CAPTCHA_RE.test(document.body?.innerText || "").toString(),
+        no_orders_text: NO_ORDERS_RE.test(document.body?.innerText || "").toString(),
+        body_preview: (document.body?.innerText || "").replace(WS, " ").slice(0, 240),
+      };
+    })
+    .catch((): ListPageDiagnostics | null => null);
+  if (diag && (diag.any_card > 0 || diag.any_order_header > 0) && diag.order_cards === 0) {
+    const shotPath = `/tmp/amazon-drift-${year}-${startIndex}.png`;
+    await page.screenshot({ path: shotPath, fullPage: true }).catch((): undefined => undefined);
+    await emit({
+      type: "SKIP_RESULT",
+      stream: "orders",
+      reason: "selector_drift",
+      message: `Year ${year} startIndex=${startIndex}: order containers visible on page but .order-card/.js-order-card selector matched 0. Screenshot=${shotPath}`,
+      diagnostics: diag,
+    });
+  }
+}
+
+/** Emit the order record + per-item records for a single list-page order. */
+async function emitOrderAndItems(
+  deps: EmitDeps,
+  listOrder: ListPageOrder,
+  detail: OrderDetail | null,
+  orderDate: string
+): Promise<void> {
+  if (deps.wantsOrders) {
+    await deps.emitRecord("orders", buildOrderRecord(listOrder, detail, orderDate, deps.emittedAt));
+  }
+  if (deps.wantsItems) {
+    for (const merged of mergeOrderItems(listOrder, detail)) {
+      await deps.emitRecord("order_items", buildOrderItemRecord(listOrder.orderId, orderDate, merged));
+    }
+  }
+}
+
+/**
+ * Navigate to one list-page URL for `year` at `startIndex`, wait for the
+ * list signal, optionally capture a fixture, and return the shape-checked
+ * orders. On zero orders, emits drift diagnostics before returning [].
+ */
+async function scrapeListPage(
+  page: Page,
+  capture: CaptureDep,
+  year: number,
+  startIndex: number,
+  emit: EmitFn
+): Promise<ListPageOrder[]> {
+  const url = `https://www.amazon.com/your-orders/orders?timeFilter=year-${year}&startIndex=${startIndex}`;
+  await page
+    .goto(url, {
+      waitUntil: "domcontentloaded",
+      timeout: NAV_TIMEOUT_MS,
+    })
+    .catch((): undefined => undefined);
+  // Wait for list-page signal. `.order-card` is the standard container
+  // in modern layouts; `#ordersContainer` catches legacy. Either appears
+  // when the orders list has rendered.
+  await page
+    .locator(".order-card, .js-order-card, #ordersContainer, #no-orders")
+    .first()
+    .waitFor({ state: "attached", timeout: LIST_PAGE_WAIT_MS })
+    .catch((): undefined => undefined);
+  // Fixture capture: one list-page snapshot per year (page 1 only).
+  if (capture && startIndex === 0) {
+    await capture.captureDom(page, `orders-list-${year}`);
+  }
+  const orders = await extractAndShapeCheckOrders(page, emit);
+  if (orders.length === 0) {
+    await reportEmptyPageDiagnostics(page, year, startIndex, emit);
+  }
+  return orders;
+}
+
+/**
+ * Fetch the order detail page (if enabled), capture one detail fixture
+ * per run, and emit the order + item records.
+ */
+async function processListOrder(page: Page, deps: EmitDeps, flags: RunFlags, listOrder: ListPageOrder): Promise<void> {
+  const orderDate = parseOrderDate(listOrder.orderDateRaw);
+  if (!orderDate) {
+    return;
+  }
+  const detail: OrderDetail | null = deps.skipDetail ? null : await fetchOrderDetail(page, listOrder.orderId);
+  if (deps.capture && !(flags.detailCaptured || deps.skipDetail) && detail) {
+    await deps.capture.captureDom(page, `order-detail-${listOrder.orderId}`);
+    flags.detailCaptured = true;
+  }
+  await emitOrderAndItems(deps, listOrder, detail, orderDate);
+}
+
+/**
+ * Scrape every list page for one year and emit records. Returns the total
+ * order count seen for the year (used for freeze-once-stable policy).
+ */
+async function runYear(page: Page, deps: EmitDeps, flags: RunFlags, year: number): Promise<number> {
+  let startIndex = 0;
+  let pageCount = 0;
+  let yearOrderCount = 0;
+  while (pageCount < PAGE_LIMIT) {
+    const orders = await scrapeListPage(page, deps.capture, year, startIndex, deps.emit);
+    if (orders.length === 0) {
+      break;
+    }
+    yearOrderCount += orders.length;
+    for (const o of orders) {
+      await processListOrder(page, deps, flags, o);
+    }
+    pageCount++;
+    startIndex += START_INDEX_STEP;
+    await politeDelay(POLITE_DELAY_MS);
+  }
+  return yearOrderCount;
+}
+
 // ─── Main ────────────────────────────────────────────────────────────────
 
 runConnector({
@@ -233,11 +417,8 @@ runConnector({
     }
   },
   async collect(ctx: BrowserCollectContext): Promise<void> {
-    const { scope, state, emitRecord, emit, progress, capture, emittedAt } = ctx;
-    const { page } = ctx;
+    const { scope, state, emitRecord, emit, progress, capture, emittedAt, page } = ctx;
     const requested = new Map((scope?.streams || []).map((s) => [s.name, s]));
-    const wantsOrders = requested.has("orders");
-    const wantsItems = requested.has("order_items");
 
     // STATE is stream-keyed per Collection Profile: `state` is
     // { <stream>: <cursor>, ... }. We write STATE stream='orders'
@@ -258,7 +439,16 @@ runConnector({
     // Capture fixtures (gated on PDPP_CAPTURE_FIXTURES=1). One orders-list
     // page per year and one order-detail page overall is enough to drive
     // offline parser tests — more just bloats the fixture tree.
-    let detailCaptured = false;
+    const flags: RunFlags = { detailCaptured: false };
+    const deps: EmitDeps = {
+      capture,
+      emit,
+      emitRecord,
+      emittedAt,
+      skipDetail: process.env.PDPP_AMAZON_SKIP_DETAIL === "1",
+      wantsItems: requested.has("order_items"),
+      wantsOrders: requested.has("orders"),
+    };
 
     const newYearsState: YearsCursor = { ...yearsState };
 
@@ -270,116 +460,7 @@ runConnector({
         continue;
       }
 
-      let startIndex = 0;
-      let pageCount = 0;
-      let yearOrderCount = 0;
-      while (pageCount < PAGE_LIMIT) {
-        const url = `https://www.amazon.com/your-orders/orders?timeFilter=year-${year}&startIndex=${startIndex}`;
-        await page
-          .goto(url, {
-            waitUntil: "domcontentloaded",
-            timeout: NAV_TIMEOUT_MS,
-          })
-          .catch((): undefined => undefined);
-        // Wait for list-page signal. `.order-card` is the standard container
-        // in modern layouts; `#ordersContainer` catches legacy. Either appears
-        // when the orders list has rendered.
-        await page
-          .locator(".order-card, .js-order-card, #ordersContainer, #no-orders")
-          .first()
-          .waitFor({ state: "attached", timeout: LIST_PAGE_WAIT_MS })
-          .catch((): undefined => undefined);
-        // Fixture capture: one list-page snapshot per year (page 1 only).
-        if (capture && startIndex === 0) {
-          await capture.captureDom(page, `orders-list-${year}`);
-        }
-        const rawOrders = await extractOrdersOnPage(page);
-
-        // Shape-check list-page extraction.
-        const orders: ListPageOrder[] = [];
-        for (const r of rawOrders) {
-          const parsed = listPageOrderShape.safeParse(r);
-          if (parsed.success) {
-            orders.push(parsed.data as ListPageOrder);
-          } else {
-            await emit({
-              type: "SKIP_RESULT",
-              stream: "orders",
-              reason: "list_page_shape_check_failed",
-              message: `list card ${r.orderId ?? "<no id>"}: ${parsed.error.issues
-                .map((i) => `${i.path.join(".")}: ${i.message}`)
-                .join("; ")}`,
-              diagnostics: { card: r, issues: parsed.error.issues },
-            });
-          }
-        }
-        if (orders.length === 0) {
-          // Distinguish "no more orders" from "selectors missed the DOM".
-          const diag = await page
-            .evaluate((): ListPageDiagnostics => {
-              // biome-ignore-start lint/performance/useTopLevelRegex: runs in browser context (page.evaluate); module-scoped regexes in Node cannot cross the bridge.
-              const CAPTCHA_RE = /captcha|robot|unusual traffic/i;
-              const NO_ORDERS_RE = /you have not placed any orders|no orders found/i;
-              const WS = /\s+/g;
-              // biome-ignore-end lint/performance/useTopLevelRegex: runs in browser context (page.evaluate); module-scoped regexes in Node cannot cross the bridge.
-              return {
-                url: location.href,
-                title: document.title,
-                order_cards: document.querySelectorAll("div.order-card, div.js-order-card").length,
-                any_card: document.querySelectorAll('[class*="order" i][class*="card" i]').length,
-                any_order_header: document.querySelectorAll('[class*="order" i][class*="header" i]').length,
-                sign_in_form: Boolean(document.querySelector('form[name="signIn"]')),
-                captcha: CAPTCHA_RE.test(document.body?.innerText || "").toString(),
-                no_orders_text: NO_ORDERS_RE.test(document.body?.innerText || "").toString(),
-                body_preview: (document.body?.innerText || "").replace(WS, " ").slice(0, 240),
-              };
-            })
-            .catch((): ListPageDiagnostics | null => null);
-          if (diag && (diag.any_card > 0 || diag.any_order_header > 0) && diag.order_cards === 0) {
-            const shotPath = `/tmp/amazon-drift-${year}-${startIndex}.png`;
-            await page.screenshot({ path: shotPath, fullPage: true }).catch((): undefined => undefined);
-            await emit({
-              type: "SKIP_RESULT",
-              stream: "orders",
-              reason: "selector_drift",
-              message: `Year ${year} startIndex=${startIndex}: order containers visible on page but .order-card/.js-order-card selector matched 0. Screenshot=${shotPath}`,
-              diagnostics: diag,
-            });
-          }
-          break;
-        }
-        yearOrderCount += orders.length;
-
-        for (const o of orders) {
-          const orderDate = parseOrderDate(o.orderDateRaw);
-          if (!orderDate) {
-            continue;
-          }
-
-          // Navigate to the order-details page to enrich fields absent
-          // from the list page.
-          const skipDetail = process.env.PDPP_AMAZON_SKIP_DETAIL === "1";
-          const detail: OrderDetail | null = skipDetail ? null : await fetchOrderDetail(page, o.orderId);
-          if (capture && !(detailCaptured || skipDetail) && detail) {
-            await capture.captureDom(page, `order-detail-${o.orderId}`);
-            detailCaptured = true;
-          }
-
-          if (wantsOrders) {
-            await emitRecord("orders", buildOrderRecord(o, detail, orderDate, emittedAt));
-          }
-
-          if (wantsItems) {
-            for (const merged of mergeOrderItems(o, detail)) {
-              await emitRecord("order_items", buildOrderItemRecord(o.orderId, orderDate, merged));
-            }
-          }
-        }
-
-        pageCount++;
-        startIndex += START_INDEX_STEP;
-        await politeDelay(POLITE_DELAY_MS);
-      }
+      const yearOrderCount = await runYear(page, deps, flags, year);
 
       // Year completion state with freeze-once-stable policy
       const stableCount = prior !== undefined && prior.order_count === yearOrderCount;
