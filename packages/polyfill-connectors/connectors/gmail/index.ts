@@ -21,7 +21,7 @@
  * Rate budget: keep to one concurrent connection; fetch in windows of 200.
  */
 
-import { createInterface } from "node:readline";
+import { createInterface, type Interface as ReadlineInterface } from "node:readline";
 import {
   type FetchMessageObject,
   type FetchQueryObject,
@@ -33,23 +33,23 @@ import {
 import { stringifyForJsonl } from "../../src/safe-emit.ts";
 import { requireCredentialsOrAsk, resourceSet } from "../../src/scope-filters.ts";
 import {
-  addressListToArray,
   bigintToCursor,
   bigintToNumber,
+  buildDeltaMessageRecord,
+  buildMessageBodyRecord,
+  buildMessageRecord,
   buildThreadRecord,
   canonicalLabelName,
   decodeBodyPart,
   decodeBodystructureForAttachments,
-  findLeafByPath,
-  findTextHtmlPart,
-  findTextPlainPart,
+  envelopeParticipants,
   isGmailSystemLabel,
+  isInTimeRange,
   labelParentName,
   makeSnippet,
-  parseReferencesHeader,
   SNIPPET_MAX_CHARS,
   sanitizeForJsonl,
-  stripHtmlToText,
+  selectBodyParts,
   toFlagsArray,
   toLabelsArray,
   updateThreadAggregate,
@@ -68,7 +68,6 @@ import type {
 // ─── Module-scoped regexes (Biome useTopLevelRegex) ─────────────────────
 
 const EMAIL_AT_RE = /@/;
-const CR_OR_LF_RE = /[\r\n]/g;
 const RETRYABLE_ERROR_RE = /ECONN|ETIMEDOUT|fetch failed|EPIPE|timeout/i;
 
 // ─── Constants ──────────────────────────────────────────────────────────
@@ -76,8 +75,6 @@ const RETRYABLE_ERROR_RE = /ECONN|ETIMEDOUT|fetch failed|EPIPE|timeout/i;
 const FETCH_HEADER_BATCH_PROGRESS = 1000;
 const FETCH_MSG_PROGRESS = 500;
 const SNIPPET_FETCH_MAX_BYTES = 4096;
-const KB = 1024;
-const MAX_BODY_FIELD_CHARS = 32 * KB;
 const ERROR_MSG_TAIL = 400;
 const FLUSH_HARD_TIMEOUT_MS = 3000;
 const DEFAULT_CRED_TIMEOUT_S = 1800;
@@ -181,11 +178,14 @@ function internalDateToIso(date: Date | string | undefined): string {
   return new Date(date).toISOString();
 }
 
-// ─── Main ──────────────────────────────────────────────────────────────
+// ─── Startup: credentials + scope ───────────────────────────────────────
 
-async function main(): Promise<void> {
-  const startMsg = await new Promise<StartMessage>((resolve, reject) => {
-    rl.once("line", (line: string) => {
+type EmitRecordFn = (stream: string, data: Record<string, unknown>, keyField?: "id" | "name") => Promise<void>;
+
+/** Read one START line from stdin, or reject if malformed. */
+function readStartMessage(reader: ReadlineInterface): Promise<StartMessage> {
+  return new Promise<StartMessage>((resolve, reject) => {
+    reader.once("line", (line: string) => {
       try {
         resolve(JSON.parse(line) as StartMessage);
       } catch (e) {
@@ -193,95 +193,590 @@ async function main(): Promise<void> {
       }
     });
   });
-  if (startMsg.type !== "START") {
-    fail("Expected START");
-    return;
-  }
+}
 
-  let password = process.env.GOOGLE_APP_PASSWORD_PDPP;
-  if (!password) {
-    try {
-      const creds = await requireCredentialsOrAsk({
-        required: ["GOOGLE_APP_PASSWORD_PDPP"],
-        connectorName: "Gmail",
-        sendInteraction: (req) => {
-          const wrapped: InteractionMessage = {
-            type: "INTERACTION",
-            request_id: req.request_id ?? nextInteractionId(),
-            kind: req.kind,
-            message: req.message,
-            ...(req.schema === undefined ? {} : { schema: req.schema }),
-            ...(req.timeout_seconds === undefined ? {} : { timeout_seconds: req.timeout_seconds }),
-          };
-          return sendInteractionAndWait(wrapped).then((resp) => ({
-            type: "INTERACTION_RESPONSE" as const,
-            request_id: resp.request_id,
-            status: resp.status,
-            ...(resp.data === undefined ? {} : { data: resp.data as Record<string, string> }),
-          }));
-        },
-      });
-      password = creds.GOOGLE_APP_PASSWORD_PDPP;
-    } catch (e) {
-      fail(e instanceof Error ? e.message : String(e), false);
-      return;
-    }
+/** Resolve the Gmail app password from env or via INTERACTION kind=credentials. */
+async function resolvePassword(): Promise<string | null> {
+  const envPassword = process.env.GOOGLE_APP_PASSWORD_PDPP;
+  if (envPassword) {
+    return envPassword;
   }
-
-  let address: string | null = process.env.GMAIL_ADDRESS || null;
-  // Fallback: Amazon username often matches the user's email
-  if (!address && process.env.AMAZON_USERNAME && EMAIL_AT_RE.test(process.env.AMAZON_USERNAME)) {
-    address = process.env.AMAZON_USERNAME;
-  }
-  if (!address) {
-    // Ask via INTERACTION kind=credentials
-    const resp = await sendInteractionAndWait({
-      type: "INTERACTION",
-      request_id: nextInteractionId(),
-      kind: "credentials",
-      message: "Gmail address to sync (the account the app password was generated for)",
-      schema: {
-        type: "object",
-        properties: { email: { type: "string", format: "email" } },
-        required: ["email"],
+  try {
+    const creds = await requireCredentialsOrAsk({
+      required: ["GOOGLE_APP_PASSWORD_PDPP"],
+      connectorName: "Gmail",
+      sendInteraction: (req) => {
+        const wrapped: InteractionMessage = {
+          type: "INTERACTION",
+          request_id: req.request_id ?? nextInteractionId(),
+          kind: req.kind,
+          message: req.message,
+          ...(req.schema === undefined ? {} : { schema: req.schema }),
+          ...(req.timeout_seconds === undefined ? {} : { timeout_seconds: req.timeout_seconds }),
+        };
+        return sendInteractionAndWait(wrapped).then((resp) => ({
+          type: "INTERACTION_RESPONSE" as const,
+          request_id: resp.request_id,
+          status: resp.status,
+          ...(resp.data === undefined ? {} : { data: resp.data as Record<string, string> }),
+        }));
       },
-      timeout_seconds: DEFAULT_CRED_TIMEOUT_S,
     });
-    const respEmail =
-      resp.status === "success" && resp.data && typeof resp.data.email === "string" ? resp.data.email : null;
-    if (!respEmail) {
-      fail("no Gmail address provided");
-      return;
+    return creds.GOOGLE_APP_PASSWORD_PDPP ?? null;
+  } catch (e) {
+    fail(e instanceof Error ? e.message : String(e), false);
+    return null;
+  }
+}
+
+/**
+ * Resolve the Gmail address from env (GMAIL_ADDRESS, or AMAZON_USERNAME if
+ * it looks like an email) or by asking the user via INTERACTION.
+ */
+async function resolveAddress(): Promise<string | null> {
+  const fromEnv = process.env.GMAIL_ADDRESS;
+  if (fromEnv) {
+    return fromEnv;
+  }
+  if (process.env.AMAZON_USERNAME && EMAIL_AT_RE.test(process.env.AMAZON_USERNAME)) {
+    return process.env.AMAZON_USERNAME;
+  }
+  const resp = await sendInteractionAndWait({
+    type: "INTERACTION",
+    request_id: nextInteractionId(),
+    kind: "credentials",
+    message: "Gmail address to sync (the account the app password was generated for)",
+    schema: {
+      type: "object",
+      properties: { email: { type: "string", format: "email" } },
+      required: ["email"],
+    },
+    timeout_seconds: DEFAULT_CRED_TIMEOUT_S,
+  });
+  if (resp.status === "success" && resp.data && typeof resp.data.email === "string") {
+    return resp.data.email;
+  }
+  return null;
+}
+
+// ─── Labels stream ──────────────────────────────────────────────────────
+
+async function emitLabelsStream(client: ImapFlow, emitRecord: EmitRecordFn): Promise<void> {
+  const mailboxes: ListResponse[] = await client.list();
+  for (const mb of mailboxes) {
+    const name = mb.path;
+    await emitRecord(
+      "labels",
+      {
+        name,
+        canonical_name: canonicalLabelName(name),
+        is_system: isGmailSystemLabel(name),
+        parent_name: labelParentName(name),
+        message_count: null, // we could SELECT each to get EXISTS but not worth it
+      },
+      "name"
+    );
+  }
+  await emit({
+    type: "STATE",
+    stream: "labels",
+    cursor: { fetched_at: nowIso() },
+  });
+}
+
+// ─── All Mail resolution + cursor ───────────────────────────────────────
+
+/** Locate the [Gmail]/All Mail mailbox via \All special-use or fallback path. */
+async function findAllMailbox(client: ImapFlow): Promise<ListResponse | null> {
+  const mailboxes: ListResponse[] = await client.list();
+  return mailboxes.find((m) => m.specialUse === "\\All" || m.path === "[Gmail]/All Mail") ?? null;
+}
+
+interface AllMailSession {
+  fullResync: boolean;
+  highestModseqCursor: number | string | null;
+  priorModseq: number | string | null | undefined;
+  priorUidnext: number;
+  uidnext: number | undefined;
+  uidvalidityNum: number;
+}
+
+/**
+ * Narrow the MailboxObject + prior state into the (UIDVALIDITY, cursor,
+ * resync-flag) triple the fetch loop needs. Returns null when UIDVALIDITY
+ * is missing (caller should fail).
+ */
+function deriveAllMailSession(mailbox: MailboxObject, state: Record<string, unknown>): AllMailSession | null {
+  const uidvalidityNum = bigintToNumber(mailbox.uidValidity);
+  if (uidvalidityNum === null) {
+    return null;
+  }
+  // The RS returns state as { <stream>: <cursor>, ... } where each <cursor>
+  // is the object the connector put in the STATE message's .cursor field.
+  // This connector emits STATE with stream='messages' and
+  // cursor={all_mail:{uidvalidity,uidnext,highest_modseq}}, so the correct
+  // read path is state.messages.all_mail — NOT state.all_mail. Prior code
+  // read the top level, resolving to undefined on every run and silently
+  // forcing full-refresh. Observed 2026-04-21: state persisted correctly
+  // but every run did a full 1:* fetch. Also accept the legacy top-level
+  // shape in case any historical state was written before this fix.
+  const messagesState = (state.messages ?? {}) as PriorMessagesState;
+  const legacyState = state as { all_mail?: AllMailCursor };
+  const priorAllMail: AllMailCursor = messagesState.all_mail ?? legacyState.all_mail ?? {};
+  const priorUidvalidity = priorAllMail.uidvalidity;
+  return {
+    fullResync: !priorUidvalidity || priorUidvalidity !== uidvalidityNum,
+    highestModseqCursor: bigintToCursor(mailbox.highestModseq),
+    priorModseq: priorAllMail.highest_modseq,
+    priorUidnext: priorAllMail.uidnext ?? 1,
+    uidnext: mailbox.uidNext,
+    uidvalidityNum,
+  };
+}
+
+// ─── Phase A: metadata collection ───────────────────────────────────────
+
+async function collectMetadata(client: ImapFlow, fetchRange: string): Promise<FetchMessageObject[]> {
+  const metaQuery: ExtendedFetchQuery = {
+    uid: true,
+    envelope: true,
+    internalDate: true,
+    flags: true,
+    size: true,
+    bodyStructure: true,
+    headers: ["list-unsubscribe", "auto-submitted", "references"],
+    source: false,
+    labels: true,
+    threadId: true,
+    emailId: true,
+  };
+  const metas: FetchMessageObject[] = [];
+  for await (const m of client.fetch(fetchRange, metaQuery, { uid: true })) {
+    metas.push(m);
+    if (metas.length % FETCH_HEADER_BATCH_PROGRESS === 0) {
+      await emit({
+        type: "PROGRESS",
+        stream: "messages",
+        message: `Collected ${metas.length} message headers`,
+      });
     }
-    address = respEmail;
+  }
+  return metas;
+}
+
+// ─── Phase B: per-message body fetch + emit ────────────────────────────
+
+interface FetchedBodies {
+  bodyHtmlFull: string | null;
+  bodyTextFull: string | null;
+  snippet: string | null;
+}
+
+type BodyPartRequest =
+  | string
+  | {
+      key: string;
+      start?: number;
+      maxLength?: number;
+    };
+
+/** Build the bodyParts request list given the selection + scope. */
+function buildBodyPartsRequest(selection: ReturnType<typeof selectBodyParts>, wantBodies: boolean): BodyPartRequest[] {
+  const parts: BodyPartRequest[] = [];
+  if (selection.plainPart) {
+    // Full body if we need message_bodies; otherwise bounded for snippet.
+    parts.push(
+      wantBodies
+        ? { key: selection.plainPart }
+        : {
+            key: selection.plainPart,
+            start: 0,
+            maxLength: SNIPPET_FETCH_MAX_BYTES,
+          }
+    );
+  }
+  if (wantBodies && selection.htmlPart) {
+    parts.push({ key: selection.htmlPart });
+  }
+  return parts;
+}
+
+/**
+ * Decode fetched body buffers into strings + optional snippet per the
+ * caller's scope. Never throws; missing buffers resolve to nulls.
+ */
+function decodeFetchedBodies(
+  plainBuf: Buffer | null,
+  htmlBuf: Buffer | null,
+  selection: ReturnType<typeof selectBodyParts>,
+  wantBodies: boolean,
+  wantMessages: boolean
+): FetchedBodies {
+  let bodyTextFull: string | null = null;
+  let bodyHtmlFull: string | null = null;
+  let snippet: string | null = null;
+  if (plainBuf) {
+    if (wantBodies) {
+      bodyTextFull = decodeBodyPart(plainBuf, selection.plainEncoding, selection.plainCharset);
+    }
+    if (wantMessages) {
+      snippet = makeSnippet(plainBuf, selection.plainEncoding, selection.plainCharset, SNIPPET_MAX_CHARS);
+    }
+  }
+  if (htmlBuf && wantBodies) {
+    bodyHtmlFull = decodeBodyPart(htmlBuf, selection.htmlEncoding, selection.htmlCharset);
+  }
+  return { bodyHtmlFull, bodyTextFull, snippet };
+}
+
+/**
+ * Fetch (and decode) the parts we need for one message in a single IMAP
+ * round-trip. Best-effort: body fetch failures return all-nulls so the
+ * caller can still emit the envelope record.
+ */
+async function fetchBodies(
+  client: ImapFlow,
+  msg: FetchMessageObject,
+  selection: ReturnType<typeof selectBodyParts>,
+  wantBodies: boolean,
+  wantMessages: boolean
+): Promise<FetchedBodies> {
+  const empty: FetchedBodies = { bodyHtmlFull: null, bodyTextFull: null, snippet: null };
+  if (!(msg.uid && (wantBodies || (wantMessages && selection.plainPart)))) {
+    return empty;
+  }
+  const parts = buildBodyPartsRequest(selection, wantBodies);
+  if (parts.length === 0) {
+    return empty;
+  }
+  try {
+    const bodyResp = await client.fetchOne(String(msg.uid), { bodyParts: parts }, { uid: true });
+    const plainBuf = selection.plainPart && bodyResp ? (bodyResp.bodyParts?.get(selection.plainPart) ?? null) : null;
+    const htmlBuf = selection.htmlPart && bodyResp ? (bodyResp.bodyParts?.get(selection.htmlPart) ?? null) : null;
+    return decodeFetchedBodies(plainBuf, htmlBuf, selection, wantBodies, wantMessages);
+  } catch {
+    // Best-effort: body fetch failures shouldn't block message emit.
+    return empty;
+  }
+}
+
+interface PerMessageDeps {
+  client: ImapFlow;
+  emitRecord: EmitRecordFn;
+  requested: Map<string, StreamRequest>;
+  timeRange: { since?: string; until?: string } | undefined;
+  wantBodies: boolean;
+  wantMessages: boolean;
+}
+
+/**
+ * Emit the per-stream records for one message. Returns true when the
+ * message was processed; false when it was skipped by early filters
+ * (missing X-GM-MSGID, time_range) so the caller can skip its progress
+ * accounting.
+ */
+async function processMessage(deps: PerMessageDeps, msg: FetchMessageObject): Promise<boolean> {
+  // Gmail-specific IDs via imapflow: msg.emailId = X-GM-MSGID; msg.threadId = X-GM-THRID
+  const gmMsgid = String(msg.emailId ?? "");
+  const gmThrid = String(msg.threadId ?? "");
+  if (!gmMsgid) {
+    return false; // without X-GM-MSGID we can't key
   }
 
-  if (!password) {
-    fail("no Gmail app password provided");
+  const env = msg.envelope ?? {};
+  const receivedAt = internalDateToIso(msg.internalDate);
+  if (!isInTimeRange(receivedAt, deps.timeRange)) {
+    return false;
+  }
+  const dateHeader = env.date ? new Date(env.date).toISOString() : null;
+  const flagsArr = toFlagsArray(msg.flags);
+  const labels = toLabelsArray(msg.labels);
+  const attachments = decodeBodystructureForAttachments(msg.bodyStructure, gmMsgid, receivedAt);
+
+  // Body fetching — scope-driven.
+  // - If `messages` is requested (and not `message_bodies`): fetch the
+  //   first 4096 bytes of text/plain only, for the snippet.
+  // - If `message_bodies` is requested: fetch the full text/plain AND
+  //   text/html parts (if present) in a single round-trip, and reuse
+  //   the text/plain buffer for the snippet when messages is also in
+  //   scope. We never fetch image/attachment parts — metadata for those
+  //   lives in the `attachments` stream.
+  const selection = selectBodyParts(msg.bodyStructure, deps.wantBodies);
+  const { bodyHtmlFull, bodyTextFull, snippet } = await fetchBodies(
+    deps.client,
+    msg,
+    selection,
+    deps.wantBodies,
+    deps.wantMessages
+  );
+
+  if (deps.wantBodies) {
+    await deps.emitRecord(
+      "message_bodies",
+      buildMessageBodyRecord({
+        bodyHtmlFull,
+        bodyTextFull,
+        gmMsgid,
+        htmlCharset: selection.htmlCharset,
+        textCharset: selection.plainCharset,
+      })
+    );
+  }
+
+  if (deps.wantMessages) {
+    await deps.emitRecord(
+      "messages",
+      buildMessageRecord({
+        attachmentsCount: attachments.length,
+        dateHeader,
+        envelope: env,
+        flagsArr,
+        gmMsgid,
+        gmThrid,
+        labels,
+        rawHeaders: msg.headers,
+        receivedAt,
+        sizeBytes: typeof msg.size === "number" ? msg.size : null,
+        snippet,
+      })
+    );
+  }
+
+  if (deps.requested.has("attachments") && attachments.length) {
+    for (const a of attachments) {
+      await deps.emitRecord("attachments", { ...a });
+    }
+  }
+  return true;
+}
+
+/** Phase B driver: iterate metas, emit records, report progress. */
+async function emitMessagesPass(deps: PerMessageDeps, metas: readonly FetchMessageObject[]): Promise<void> {
+  let count = 0;
+  for (const msg of metas) {
+    try {
+      const processed = await processMessage(deps, msg);
+      if (!processed) {
+        continue;
+      }
+      count += 1;
+      if (count % FETCH_MSG_PROGRESS === 0) {
+        await emit({
+          type: "PROGRESS",
+          stream: "messages",
+          message: `Fetched ${count} messages`,
+        });
+      }
+    } catch (perMsgErr) {
+      const emsg = perMsgErr instanceof Error ? (perMsgErr.stack ?? perMsgErr.message) : String(perMsgErr);
+      process.stderr.write(`[gmail] per-message error at UID ${String(msg.uid)}: ${emsg}\n`);
+      // Continue with next message; don't let one bad record halt the whole run.
+    }
+  }
+}
+
+// ─── Delta pass (flag/label changes since priorModseq) ──────────────────
+
+async function runDeltaPass(
+  client: ImapFlow,
+  session: AllMailSession,
+  requested: Map<string, StreamRequest>,
+  emitRecord: EmitRecordFn,
+  receivedAtFallback: string
+): Promise<void> {
+  if (session.fullResync || session.priorModseq === undefined || session.priorModseq === null) {
+    return;
+  }
+  const priorModseq = session.priorModseq;
+  const priorModseqBig = typeof priorModseq === "bigint" ? priorModseq : BigInt(priorModseq);
+  await emit({
+    type: "PROGRESS",
+    message: `Fetching flag/label deltas since modseq=${String(priorModseq)}`,
+  });
+  const deltaQuery: ExtendedFetchQuery = {
+    uid: true,
+    flags: true,
+    labels: true,
+    threadId: true,
+    emailId: true,
+    envelope: false,
+  };
+  for await (const msg of client.fetch("1:*", deltaQuery, {
+    uid: true,
+    changedSince: priorModseqBig,
+  })) {
+    const gmMsgid = String(msg.emailId ?? "");
+    if (!gmMsgid) {
+      continue;
+    }
+    // Flag/label delta update: emit a tombstone-free upsert of the message
+    // envelope (minimal fields since envelope not re-fetched). For now, we
+    // emit a RECORD with the same id so the RS upserts flag/label state.
+    // Note: PDPP records are "whole-document" upserts in the current RS,
+    // so this delta path is effectively a full re-fetch. Simpler: mark
+    // this path as "only flags" by emitting the fields we have plus nulls.
+    // For robustness, let's actually re-fetch envelope in v2. For v1, emit
+    // flags only.
+    if (!requested.has("messages")) {
+      continue;
+    }
+    await emitRecord(
+      "messages",
+      buildDeltaMessageRecord({
+        flagsArr: toFlagsArray(msg.flags),
+        gmMsgid,
+        gmThrid: String(msg.threadId ?? ""),
+        labels: toLabelsArray(msg.labels),
+        receivedAtFallback,
+      })
+    );
+  }
+}
+
+// ─── Threads pass ───────────────────────────────────────────────────────
+
+async function runThreadsPass(client: ImapFlow, emitRecord: EmitRecordFn): Promise<void> {
+  await emit({
+    type: "PROGRESS",
+    stream: "threads",
+    message: "Deriving threads from All Mail",
+  });
+  const threadAgg = new Map<string, ThreadAggregate>();
+  const threadQuery: ExtendedFetchQuery = {
+    uid: true,
+    threadId: true,
+    emailId: true,
+    envelope: true,
+    flags: true,
+    internalDate: true,
+    // Needed for per-thread labels + has_attachments aggregation.
+    labels: true,
+    bodyStructure: true,
+  };
+  for await (const msg of client.fetch("1:*", threadQuery, { uid: true })) {
+    const tid = String(msg.threadId ?? "");
+    if (!tid) {
+      continue;
+    }
+    const env = msg.envelope ?? {};
+    const rcv = internalDateToIso(msg.internalDate);
+    const msgHasAttachments =
+      decodeBodystructureForAttachments(msg.bodyStructure, String(msg.emailId ?? tid), rcv).length > 0;
+    const next = updateThreadAggregate(threadAgg.get(tid), {
+      flagsArr: toFlagsArray(msg.flags),
+      hasAttachments: msgHasAttachments,
+      labels: toLabelsArray(msg.labels),
+      participants: envelopeParticipants(env),
+      receivedAt: rcv,
+      subject: env.subject || null,
+      threadId: tid,
+    });
+    threadAgg.set(tid, next);
+  }
+  for (const agg of threadAgg.values()) {
+    await emitRecord("threads", buildThreadRecord(agg));
+  }
+}
+
+// ─── All Mail orchestration (inside the mailbox lock) ───────────────────
+
+interface AllMailDeps {
+  emitRecord: EmitRecordFn;
+  emittedAt: string;
+  requested: Map<string, StreamRequest>;
+}
+
+/**
+ * Drive Pass 1 (new messages or full resync), Pass 2 (flag/label deltas),
+ * threads aggregation, and the final STATE emit — all inside the mailbox
+ * lock. The list-mailbox lookup happens in `main()` before entering here.
+ */
+async function runAllMailPasses(
+  client: ImapFlow,
+  allMail: ListResponse,
+  state: Record<string, unknown>,
+  deps: AllMailDeps
+): Promise<void> {
+  const mailbox = client.mailbox;
+  if (!mailbox) {
+    fail("mailbox not selected after lock");
+    return;
+  }
+  const session = deriveAllMailSession(mailbox, state);
+  if (!session) {
+    fail("missing UIDVALIDITY on All Mail mailbox");
     return;
   }
 
-  const requested = new Map<string, StreamRequest>((startMsg.scope?.streams || []).map((s) => [s.name, s]));
-  if (!requested.size) {
-    fail("START.scope.streams is required");
-    return;
+  // Determine fetch range.
+  // - Full resync: 1..*
+  // - Incremental: new UIDs (priorUidnext..*) + flag/label changes
+  //   (CHANGEDSINCE priorModseq).
+  const timeRange = deps.requested.get("messages")?.time_range || deps.requested.get("attachments")?.time_range;
+  const fetchRange = session.fullResync ? "1:*" : `${session.priorUidnext}:*`;
+  await emit({
+    type: "PROGRESS",
+    message: `Fetching ${session.fullResync ? "all" : "new"} messages (${fetchRange}) from ${allMail.path}`,
+  });
+
+  // Phase A: pull all metadata into an array up-front.
+  // Phase B: for each metadata row, do any additional IMAP commands
+  // (body fetches) we need — we cannot issue other IMAP commands WHILE the
+  // outer fetch iterator is still open, because imapflow multiplexes one
+  // command at a time over a single connection and a nested call hangs the
+  // outer iterator.
+  const metas = await collectMetadata(client, fetchRange);
+  await emit({
+    type: "PROGRESS",
+    stream: "messages",
+    message: `Collected ${metas.length} headers; beginning body pass`,
+  });
+
+  await emitMessagesPass(
+    {
+      client,
+      emitRecord: deps.emitRecord,
+      requested: deps.requested,
+      timeRange,
+      wantBodies: deps.requested.has("message_bodies"),
+      wantMessages: deps.requested.has("messages"),
+    },
+    metas
+  );
+
+  // Pass 2: detect flag/label changes on already-seen messages (incremental only)
+  await runDeltaPass(client, session, deps.requested, deps.emitRecord, deps.emittedAt);
+
+  // THREADS stream derived server-side per run: group messages we just
+  // emitted by thread_id. Simpler: a separate threads pass querying SEARCH
+  // by thread grouping is not directly supported in IMAP; we derive from a
+  // second fetch focused on emailId + threadId.
+  if (deps.requested.has("threads")) {
+    await runThreadsPass(client, deps.emitRecord);
   }
 
-  const resFilters = new Map<string, Set<string> | null>();
-  for (const [n, r] of requested) {
-    resFilters.set(n, resourceSet(r));
-  }
+  // Keep the cursor value (possibly string if out of safe-integer range) on STATE.
+  await emit({
+    type: "STATE",
+    stream: "messages",
+    cursor: {
+      all_mail: {
+        uidvalidity: session.uidvalidityNum,
+        uidnext: session.uidnext,
+        highest_modseq: session.highestModseqCursor ?? null,
+      },
+    },
+  });
+}
 
-  const state: Record<string, unknown> = startMsg.state ?? {};
-  const emittedAt = nowIso();
-  let totalEmitted = 0;
-  // Async so callers can await backpressure on large bodies (message_bodies
-  // records can be 100+ KB, above the 64 KB pipe buffer).
-  const emitRecord = async (
-    stream: string,
-    data: Record<string, unknown>,
-    keyField: "id" | "name" = "id"
-  ): Promise<void> => {
+// ─── emitRecord factory ─────────────────────────────────────────────────
+
+function makeEmitRecord(
+  resFilters: Map<string, Set<string> | null>,
+  emittedAt: string,
+  incTotal: () => void
+): EmitRecordFn {
+  return async (stream: string, data: Record<string, unknown>, keyField: "id" | "name" = "id"): Promise<void> => {
     const keyCandidate = data[keyField] ?? data.name;
     if (keyCandidate == null) {
       return;
@@ -299,8 +794,50 @@ async function main(): Promise<void> {
       data,
       emitted_at: emittedAt,
     });
-    totalEmitted += 1;
+    incTotal();
   };
+}
+
+// ─── Main ──────────────────────────────────────────────────────────────
+
+async function main(): Promise<void> {
+  const startMsg = await readStartMessage(rl);
+  if (startMsg.type !== "START") {
+    fail("Expected START");
+    return;
+  }
+
+  const password = await resolvePassword();
+  if (!password) {
+    // resolvePassword already calls fail() on error path; the early-fail
+    // exits the process, so reaching here means the prompt returned null.
+    fail("no Gmail app password provided");
+    return;
+  }
+
+  const address = await resolveAddress();
+  if (!address) {
+    fail("no Gmail address provided");
+    return;
+  }
+
+  const requested = new Map<string, StreamRequest>((startMsg.scope?.streams || []).map((s) => [s.name, s]));
+  if (!requested.size) {
+    fail("START.scope.streams is required");
+    return;
+  }
+
+  const resFilters = new Map<string, Set<string> | null>();
+  for (const [n, r] of requested) {
+    resFilters.set(n, resourceSet(r));
+  }
+
+  const state: Record<string, unknown> = startMsg.state ?? {};
+  const emittedAt = nowIso();
+  let totalEmitted = 0;
+  const emitRecord = makeEmitRecord(resFilters, emittedAt, () => {
+    totalEmitted += 1;
+  });
 
   const client = new ImapFlow({
     host: "imap.gmail.com",
@@ -315,33 +852,11 @@ async function main(): Promise<void> {
   try {
     await emit({ type: "PROGRESS", message: `Connected to ${address}` });
 
-    // LABELS stream — list mailboxes
     if (requested.has("labels")) {
-      const mailboxes: ListResponse[] = await client.list();
-      for (const mb of mailboxes) {
-        const name = mb.path;
-        await emitRecord(
-          "labels",
-          {
-            name,
-            canonical_name: canonicalLabelName(name),
-            is_system: isGmailSystemLabel(name),
-            parent_name: labelParentName(name),
-            message_count: null, // we could SELECT each to get EXISTS but not worth it
-          },
-          "name"
-        );
-      }
-      await emit({
-        type: "STATE",
-        stream: "labels",
-        cursor: { fetched_at: nowIso() },
-      });
+      await emitLabelsStream(client, emitRecord);
     }
 
-    // Find All Mail (special-use \All or fallback to [Gmail]/All Mail)
-    const mailboxes: ListResponse[] = await client.list();
-    const allMail = mailboxes.find((m) => m.specialUse === "\\All" || m.path === "[Gmail]/All Mail");
+    const allMail = await findAllMailbox(client);
     if (!allMail) {
       fail("could not find [Gmail]/All Mail mailbox; is this a Gmail account?");
       return;
@@ -349,420 +864,10 @@ async function main(): Promise<void> {
 
     const lock = await client.getMailboxLock(allMail.path);
     try {
-      const mailbox = client.mailbox;
-      if (!mailbox) {
-        fail("mailbox not selected after lock");
-        return;
-      }
-      // `client.mailbox` is typed as `MailboxObject | false`; we've narrowed
-      // out the false branch above.
-      const mailboxObj: MailboxObject = mailbox;
-      const uidvalidityNum = bigintToNumber(mailboxObj.uidValidity);
-      if (uidvalidityNum === null) {
-        fail("missing UIDVALIDITY on All Mail mailbox");
-        return;
-      }
-      const uidnext = mailboxObj.uidNext;
-      const highestModseqCursor = bigintToCursor(mailboxObj.highestModseq);
-
-      // The RS returns state as { <stream>: <cursor>, ... } where each
-      // <cursor> is the object the connector put in the STATE message's
-      // .cursor field. This connector emits STATE with stream='messages'
-      // and cursor={all_mail:{uidvalidity,uidnext,highest_modseq}}, so
-      // the correct read path is state.messages.all_mail — NOT
-      // state.all_mail. Prior code read the top level, resolving to
-      // undefined on every run and silently forcing full-refresh.
-      // Observed 2026-04-21: state persisted correctly but every run
-      // did a full 1:* fetch. Also accept the legacy top-level shape
-      // in case any historical state was written before this fix.
-      const messagesState = (state.messages ?? {}) as PriorMessagesState;
-      const legacyState = state as { all_mail?: AllMailCursor };
-      const priorAllMail: AllMailCursor = messagesState.all_mail ?? legacyState.all_mail ?? {};
-      const priorUidvalidity = priorAllMail.uidvalidity;
-      const fullResync = !priorUidvalidity || priorUidvalidity !== uidvalidityNum;
-      const priorUidnext = priorAllMail.uidnext ?? 1;
-      const priorModseq = priorAllMail.highest_modseq;
-
-      // Determine fetch range.
-      // - Full resync: 1..*
-      // - Incremental: new UIDs (priorUidnext..*) + flag/label changes (CHANGEDSINCE priorModseq).
-      const timeRange = requested.get("messages")?.time_range || requested.get("attachments")?.time_range;
-
-      // Pass 1: new messages (or everything on full resync)
-      const fetchRange = fullResync ? "1:*" : `${priorUidnext}:*`;
-      await emit({
-        type: "PROGRESS",
-        message: `Fetching ${fullResync ? "all" : "new"} messages (${fetchRange}) from ${allMail.path}`,
-      });
-
-      let count = 0;
-      const wantMessages = requested.has("messages");
-      const wantBodies = requested.has("message_bodies");
-
-      // Phase A: pull all metadata into an array up-front.
-      // Phase B: for each metadata row, do any additional IMAP commands
-      // (body fetches) we need — we cannot issue other IMAP commands WHILE the
-      // outer fetch iterator is still open, because imapflow multiplexes one
-      // command at a time over a single connection and a nested call hangs the
-      // outer iterator.
-      const metaQuery: ExtendedFetchQuery = {
-        uid: true,
-        envelope: true,
-        internalDate: true,
-        flags: true,
-        size: true,
-        bodyStructure: true,
-        headers: ["list-unsubscribe", "auto-submitted", "references"],
-        source: false,
-        labels: true,
-        threadId: true,
-        emailId: true,
-      };
-      const metas: FetchMessageObject[] = [];
-      for await (const m of client.fetch(fetchRange, metaQuery, {
-        uid: true,
-      })) {
-        metas.push(m);
-        if (metas.length % FETCH_HEADER_BATCH_PROGRESS === 0) {
-          await emit({
-            type: "PROGRESS",
-            stream: "messages",
-            message: `Collected ${metas.length} message headers`,
-          });
-        }
-      }
-      await emit({
-        type: "PROGRESS",
-        stream: "messages",
-        message: `Collected ${metas.length} headers; beginning body pass`,
-      });
-
-      for (const msg of metas) {
-        try {
-          // Gmail-specific IDs via imapflow: msg.emailId = X-GM-MSGID; msg.threadId = X-GM-THRID
-          const gmMsgid = String(msg.emailId ?? "");
-          const gmThrid = String(msg.threadId ?? "");
-          if (!gmMsgid) {
-            continue; // without X-GM-MSGID we can't key
-          }
-
-          const env = msg.envelope ?? {};
-          const receivedAt = internalDateToIso(msg.internalDate);
-          const dateHeader = env.date ? new Date(env.date).toISOString() : null;
-
-          // time_range filtering (against received_at)
-          if (timeRange?.since && receivedAt < timeRange.since) {
-            continue;
-          }
-          if (timeRange?.until && receivedAt >= timeRange.until) {
-            continue;
-          }
-
-          const flagsArr = toFlagsArray(msg.flags);
-          const labels = toLabelsArray(msg.labels);
-
-          const attachments = decodeBodystructureForAttachments(msg.bodyStructure, gmMsgid, receivedAt);
-
-          // Body fetching — scope-driven.
-          // - If `messages` is requested (and not `message_bodies`): fetch the
-          //   first 4096 bytes of text/plain only, for the snippet.
-          // - If `message_bodies` is requested: fetch the full text/plain AND
-          //   text/html parts (if present) in a single round-trip, and reuse
-          //   the text/plain buffer for the snippet when messages is also in
-          //   scope. We never fetch image/attachment parts — metadata for
-          //   those lives in the `attachments` stream.
-          let snippet: string | null = null;
-          let bodyTextFull: string | null = null; // decoded string, text/plain
-          let bodyHtmlFull: string | null = null; // decoded string, text/html
-          const plainPart = findTextPlainPart(msg.bodyStructure);
-          const htmlPart = wantBodies ? findTextHtmlPart(msg.bodyStructure) : null;
-          const plainLeaf = plainPart ? findLeafByPath(msg.bodyStructure, plainPart) : null;
-          const htmlLeaf = htmlPart ? findLeafByPath(msg.bodyStructure, htmlPart) : null;
-          const plainEncoding = plainLeaf?.encoding ?? null;
-          const htmlEncoding = htmlLeaf?.encoding ?? null;
-          const textCharset = plainLeaf?.parameters?.charset ?? null;
-          const htmlCharset = htmlLeaf?.parameters?.charset ?? null;
-
-          if (msg.uid && (wantBodies || (wantMessages && plainPart))) {
-            const parts: Array<
-              | string
-              | {
-                  key: string;
-                  start?: number;
-                  maxLength?: number;
-                }
-            > = [];
-            if (plainPart) {
-              // Full body if we need message_bodies; otherwise bounded for snippet.
-              parts.push(
-                wantBodies
-                  ? { key: plainPart }
-                  : {
-                      key: plainPart,
-                      start: 0,
-                      maxLength: SNIPPET_FETCH_MAX_BYTES,
-                    }
-              );
-            }
-            if (wantBodies && htmlPart) {
-              parts.push({ key: htmlPart });
-            }
-            if (parts.length) {
-              try {
-                const bodyResp = await client.fetchOne(String(msg.uid), { bodyParts: parts }, { uid: true });
-                const plainBuf = plainPart && bodyResp ? (bodyResp.bodyParts?.get(plainPart) ?? null) : null;
-                const htmlBuf = htmlPart && bodyResp ? (bodyResp.bodyParts?.get(htmlPart) ?? null) : null;
-                if (plainBuf) {
-                  if (wantBodies) {
-                    bodyTextFull = decodeBodyPart(plainBuf, plainEncoding, textCharset);
-                    if (wantMessages) {
-                      snippet = makeSnippet(plainBuf, plainEncoding, textCharset, SNIPPET_MAX_CHARS);
-                    }
-                  } else if (wantMessages) {
-                    snippet = makeSnippet(plainBuf, plainEncoding, textCharset, SNIPPET_MAX_CHARS);
-                  }
-                }
-                if (htmlBuf && wantBodies) {
-                  bodyHtmlFull = decodeBodyPart(htmlBuf, htmlEncoding, htmlCharset);
-                }
-              } catch {
-                // Best-effort: body fetch failures shouldn't block message emit.
-              }
-            }
-          }
-
-          if (wantBodies) {
-            let bodyText = bodyTextFull;
-            let bodySource: "text_plain" | "html_stripped" | "text_html" | "empty";
-            if (bodyText?.length) {
-              bodySource = "text_plain";
-            } else if (bodyHtmlFull?.length) {
-              const stripped = stripHtmlToText(bodyHtmlFull);
-              if (stripped) {
-                bodyText = stripped;
-                bodySource = "html_stripped";
-              } else {
-                bodySource = "text_html";
-              }
-            } else {
-              bodySource = "empty";
-            }
-            // Cap per-field length defensively. We store the FULL body's byte
-            // length separately for auditing; records themselves are truncated to
-            // keep single JSONL lines within a safe pipe-buffer envelope.
-            // DEFENSIVE: force-stringify to eliminate any non-string type (Buffer, etc.)
-            const toCleanString = (v: unknown): string | null => {
-              if (v == null) {
-                return null;
-              }
-              const s = typeof v === "string" ? v : String(v);
-              // Additional belt-and-suspenders: escape any stray LF/CR in place.
-              // sanitizeForJsonl also does this but gives us a defense-in-depth at the call site.
-              return s.replace(CR_OR_LF_RE, " ");
-            };
-            const truncTxt =
-              bodyText && bodyText.length > MAX_BODY_FIELD_CHARS
-                ? toCleanString(`${bodyText.slice(0, MAX_BODY_FIELD_CHARS)}…[truncated]`)
-                : toCleanString(bodyText);
-            const truncHtml =
-              bodyHtmlFull && bodyHtmlFull.length > MAX_BODY_FIELD_CHARS
-                ? toCleanString(`${bodyHtmlFull.slice(0, MAX_BODY_FIELD_CHARS)}…[truncated]`)
-                : toCleanString(bodyHtmlFull);
-            await emitRecord("message_bodies", {
-              id: gmMsgid,
-              message_id: gmMsgid,
-              body_text: truncTxt,
-              body_html: truncHtml,
-              body_text_bytes: bodyText ? Buffer.byteLength(bodyText, "utf8") : null,
-              body_html_bytes: bodyHtmlFull ? Buffer.byteLength(bodyHtmlFull, "utf8") : null,
-              body_source: bodySource,
-              // Language detection is out of scope for v1; emit null so
-              // consumers know the field exists but wasn't computed.
-              content_languages: null,
-              charset: textCharset || htmlCharset || null,
-            });
-          }
-
-          if (wantMessages) {
-            const fromAddr = env.from?.[0];
-            const references = parseReferencesHeader(msg.headers);
-
-            await emitRecord("messages", {
-              id: gmMsgid,
-              thread_id: gmThrid,
-              subject: env.subject || null,
-              from_name: fromAddr?.name || null,
-              from_email: fromAddr?.address || null,
-              to: addressListToArray(env.to),
-              cc: addressListToArray(env.cc),
-              bcc: addressListToArray(env.bcc),
-              reply_to: addressListToArray(env.replyTo),
-              date: dateHeader,
-              received_at: receivedAt,
-              message_id: env.messageId || null,
-              in_reply_to: env.inReplyTo || null,
-              references,
-              size_bytes: typeof msg.size === "number" ? msg.size : null,
-              labels,
-              is_draft: flagsArr.includes("\\Draft"),
-              is_flagged: flagsArr.includes("\\Flagged"),
-              is_seen: flagsArr.includes("\\Seen"),
-              is_answered: flagsArr.includes("\\Answered"),
-              has_attachments: attachments.length > 0,
-              snippet,
-            });
-          }
-
-          if (requested.has("attachments") && attachments.length) {
-            for (const a of attachments) {
-              await emitRecord("attachments", { ...a });
-            }
-          }
-
-          count += 1;
-          if (count % FETCH_MSG_PROGRESS === 0) {
-            await emit({
-              type: "PROGRESS",
-              stream: "messages",
-              message: `Fetched ${count} messages`,
-            });
-          }
-        } catch (perMsgErr) {
-          const emsg = perMsgErr instanceof Error ? (perMsgErr.stack ?? perMsgErr.message) : String(perMsgErr);
-          process.stderr.write(`[gmail] per-message error at UID ${String(msg.uid)}: ${emsg}\n`);
-          // Continue with next message; don't let one bad record halt the whole run.
-        }
-      }
-
-      // Pass 2: detect flag/label changes on already-seen messages (if incremental)
-      if (!fullResync && priorModseq !== undefined && priorModseq !== null) {
-        const priorModseqBig = typeof priorModseq === "bigint" ? priorModseq : BigInt(priorModseq);
-        await emit({
-          type: "PROGRESS",
-          message: `Fetching flag/label deltas since modseq=${String(priorModseq)}`,
-        });
-        const deltaQuery: ExtendedFetchQuery = {
-          uid: true,
-          flags: true,
-          labels: true,
-          threadId: true,
-          emailId: true,
-          envelope: false,
-        };
-        for await (const msg of client.fetch("1:*", deltaQuery, {
-          uid: true,
-          changedSince: priorModseqBig,
-        })) {
-          const gmMsgid = String(msg.emailId ?? "");
-          if (!gmMsgid) {
-            continue;
-          }
-          // Flag/label delta update: emit a tombstone-free upsert of the message envelope
-          // (minimal fields since envelope not re-fetched). For now, we emit a RECORD
-          // with the same id so the RS upserts flag/label state.
-          if (requested.has("messages")) {
-            const flagsArr = toFlagsArray(msg.flags);
-            await emitRecord("messages", {
-              id: gmMsgid,
-              thread_id: String(msg.threadId ?? ""),
-              // Minimal: flag-state delta. We don't re-send envelope; RS retains existing fields.
-              // Note: PDPP records are "whole-document" upserts in the current RS, so this
-              // delta path is effectively a full re-fetch. Simpler: mark this path as "only
-              // flags" by emitting the fields we have plus nulls.
-              // For robustness, let's actually re-fetch envelope in v2. For v1, emit flags only.
-              subject: null,
-              from_name: null,
-              from_email: null,
-              to: [],
-              cc: [],
-              bcc: [],
-              reply_to: [],
-              date: null,
-              received_at: emittedAt, // fallback so schema-required field is satisfied
-              message_id: null,
-              in_reply_to: null,
-              references: [],
-              size_bytes: null,
-              labels: toLabelsArray(msg.labels),
-              is_draft: flagsArr.includes("\\Draft"),
-              is_flagged: flagsArr.includes("\\Flagged"),
-              is_seen: flagsArr.includes("\\Seen"),
-              is_answered: flagsArr.includes("\\Answered"),
-              has_attachments: false,
-              snippet: null,
-            });
-          }
-        }
-      }
-
-      // THREADS stream derived server-side per run: group messages we just emitted by thread_id.
-      // Simpler: a separate threads pass querying SEARCH by thread grouping is not directly supported
-      // in IMAP; we derive from the fetch just done. For v1, we emit threads based on a second fetch
-      // focused on emailId + threadId only if threads is requested.
-      if (requested.has("threads")) {
-        await emit({
-          type: "PROGRESS",
-          stream: "threads",
-          message: "Deriving threads from All Mail",
-        });
-        const threadAgg = new Map<string, ThreadAggregate>();
-        const threadQuery: ExtendedFetchQuery = {
-          uid: true,
-          threadId: true,
-          emailId: true,
-          envelope: true,
-          flags: true,
-          internalDate: true,
-          // Needed for per-thread labels + has_attachments aggregation.
-          labels: true,
-          bodyStructure: true,
-        };
-        for await (const msg of client.fetch("1:*", threadQuery, {
-          uid: true,
-        })) {
-          const tid = String(msg.threadId ?? "");
-          if (!tid) {
-            continue;
-          }
-          const env = msg.envelope ?? {};
-          const rcv = internalDateToIso(msg.internalDate);
-          const flagsArr = toFlagsArray(msg.flags);
-          const msgLabels = toLabelsArray(msg.labels);
-          const participantRaw: Array<string | undefined> = [
-            env.from?.[0]?.address,
-            ...(env.to || []).map((a) => a.address),
-            ...(env.cc || []).map((a) => a.address),
-          ];
-          const participant = participantRaw.filter((a): a is string => typeof a === "string" && a.length > 0);
-          const msgHasAttachments =
-            decodeBodystructureForAttachments(msg.bodyStructure, String(msg.emailId ?? tid), rcv).length > 0;
-          const next = updateThreadAggregate(threadAgg.get(tid), {
-            flagsArr,
-            hasAttachments: msgHasAttachments,
-            labels: msgLabels,
-            participants: participant,
-            receivedAt: rcv,
-            subject: env.subject || null,
-            threadId: tid,
-          });
-          threadAgg.set(tid, next);
-        }
-        for (const agg of threadAgg.values()) {
-          await emitRecord("threads", buildThreadRecord(agg));
-        }
-      }
-
-      // Keep the cursor value (possibly string if out of safe-integer range) on STATE.
-      await emit({
-        type: "STATE",
-        stream: "messages",
-        cursor: {
-          all_mail: {
-            uidvalidity: uidvalidityNum,
-            uidnext,
-            highest_modseq: highestModseqCursor ?? null,
-          },
-        },
+      await runAllMailPasses(client, allMail, state, {
+        emitRecord,
+        emittedAt,
+        requested,
       });
     } finally {
       lock.release();
