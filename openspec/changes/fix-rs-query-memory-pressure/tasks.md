@@ -8,19 +8,29 @@
 - [ ] 1.6 Safety/resilience audit — request timeouts, max concurrent requests, max response size, process supervisor expectation.
 - [ ] 1.7 Write `audit-report.md` with severity-ranked findings, each backed by a concrete measurement.
 
-## 2. Fix the four query sites
+## 2. Fix the unbounded read paths (all in scope this tranche)
 
 - [ ] 2.1 `server/records.js::fetchVisibleRecordRows` — replace `.all()` with `.iterate()`, push `time_range` into `WHERE json_extract(record_json, $.field) BETWEEN ? AND ?`, push `resources` into `WHERE record_key IN (?, ?, ...)`, emit SQL `ORDER BY` + `LIMIT` + cursor.
 - [ ] 2.2 `server/records.js::listStreams` — replace per-stream `.all()` + JS count with one aggregate SQL per stream that applies `time_range`/`resources` in WHERE.
-- [ ] 2.3 `lib/spine.js::listSpineCorrelations` — replace `SELECT * FROM spine_events` + JS group/sort with SQL `GROUP BY <correlation_key>` + SQL pagination. Handle `status` derivation and `kinds`/`connector_id` fields via a second page-scope pass on the already-paginated set.
-- [ ] 2.4 `lib/spine.js::searchSpine` — replace full-scan + JS filter with SQL `WHERE trace_id LIKE ? OR grant_id LIKE ? ...` (or `=` for exact match) on indexed columns.
-- [ ] 2.5 `server/records.js::getRealWorldTimeBounds` — coalesce the per-stream MIN/MAX loop into a single UNION ALL, or cache the result (manifest-stream set changes rarely).
+- [ ] 2.3 `server/records.js::hydrateExpandedRelations` — replace per-child `fetchVisibleRecordRows` with a single SQL per expansion that narrows by parent foreign keys:
+  - `has_many`: `WITH ranked AS (SELECT ..., ROW_NUMBER() OVER (PARTITION BY json_extract(record_json, '$.<fk>') ORDER BY <order>) AS rn FROM records WHERE ... AND json_extract(record_json, '$.<fk>') IN (?, ?, ...) AND <grant_filters>) SELECT * FROM ranked WHERE rn <= ?`
+  - `has_one`: similar, `WHERE rn = 1`
+  - Parent keys arity is bounded by page size (limit + 1); cache prepared statements per (parent_stream, child_stream, relation_name, parent_arity).
+- [ ] 2.4 `server/ref-control.js::listRecordsTimeline` — push `since`/`until` window into SQL as `WHERE json_extract(record_json, '$.<consent_time_field>') BETWEEN ? AND ?` per (connector, stream) pair. Emit prepared statements per (connector, stream, timestamp-mode). Apply SQL `LIMIT`. Stream via `.iterate()`.
+- [ ] 2.5 `lib/spine.js::listSpineCorrelations` — replace `SELECT * FROM spine_events` + JS group/sort with SQL `GROUP BY <correlation_key>` + SQL pagination. Handle `status` derivation and `kinds`/`connector_id` fields via a second page-scope pass on the already-paginated set.
+- [ ] 2.6 `lib/spine.js::searchSpine` — replace full-scan + JS filter with SQL `WHERE trace_id LIKE ? OR grant_id LIKE ? ...` (or `=` for exact match) on indexed columns.
+- [ ] 2.7 `server/records.js::getRealWorldTimeBounds` — coalesce the per-stream MIN/MAX loop into a single UNION ALL, or cache the result (manifest-stream set changes rarely).
 
-## 3. Add standing defenses
+## 3. Add standing defenses (server) and coordinated client backpressure
 
 - [ ] 3.1 Per-route concurrency cap: Fastify `onRequest`/`onResponse` hooks with an in-memory semaphore keyed by `(method, routePath)`. Limit from env `PDPP_MAX_INFLIGHT_PER_ROUTE`, default 4. Return 503 on exceed.
-- [ ] 3.2 Response-size budget: `preSerialization` hook checks estimated response size against `PDPP_MAX_RESPONSE_BYTES` (default 20 MB). Log + 500 envelope on exceed. Exempt blob/binary routes.
-- [ ] 3.3 Document supervisor expectation: add a section to `openspec/specs/reference-implementation-architecture/spec.md` stating that the reference, when deployed as a long-running service, SHALL run under a supervisor that restarts on non-zero exit. Provide a reference systemd unit file or PM2 ecosystem file as a supplementary artifact.
+- [ ] 3.2 **Dashboard 503 coordination (non-optional, ships with 3.1)**:
+  - Add `pMapLimit(array, fn, {concurrency})` helper in `apps/web/src/app/dashboard/lib/` (or a shared `apps/web/src/lib/p-limit.ts`). Default concurrency 3 — below the server cap of 4 to leave headroom.
+  - Update `apps/web/src/app/dashboard/lib/rs-client.ts` fetch wrapper to detect 503 responses and retry up to twice with 100 ms and 400 ms delays.
+  - Update `apps/web/src/app/dashboard/search/page.tsx::searchRecords` and `apps/web/src/app/dashboard/lib/timeline.ts::loadTimeline` to use `pMapLimit` instead of `Promise.all` and to return `{records, failures}` or equivalent partial-failure shape.
+  - Render partial-failure banner on search + records-timeline pages when `failures.length > 0`.
+- [ ] 3.3 Response-size budget: `preSerialization` hook checks estimated response size against `PDPP_MAX_RESPONSE_BYTES` (default 20 MB). Log + 500 envelope on exceed. Exempt blob/binary routes.
+- [ ] 3.4 Document supervisor expectation: add a section to `openspec/specs/reference-implementation-architecture/spec.md` stating that the reference, when deployed as a long-running service, SHALL run under a supervisor that restarts on non-zero exit. Provide a reference systemd unit file or PM2 ecosystem file as a supplementary artifact.
 
 ## 4. Extend the reproduction oracle
 

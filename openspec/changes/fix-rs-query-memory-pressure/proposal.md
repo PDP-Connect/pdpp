@@ -28,28 +28,42 @@ This change replaces the four unbounded `.all()` sites with streaming / filter-p
 
 ## What Changes
 
-Four primary code changes, each scoped to one query site:
+Six code changes covering every unbounded-read path the audit found. If any is deferred, the architecture invariant in §spec-delta must be narrowed or the whole change blocks.
 
 1. **`server/records.js::fetchVisibleRecordRows`** — currently `db.prepare('SELECT record_json FROM records WHERE connector_id = ? AND stream = ? AND deleted = 0').all(...)`, then filters / sorts / paginates in JS. Replace with:
    - Push `time_range` and `resources` filters into SQL WHERE.
    - Stream rows via `.iterate(...)` and stop early once `limit + 1` visible rows are collected.
    - Sort is handled by a SQL `ORDER BY` derived from the stream's `cursor_field` + primary key.
 2. **`server/records.js::listStreams`** — currently `.all()`s every record for every granted stream to count visible rows. Replace with a **single aggregate SQL query** per stream that applies time_range + resources in WHERE and returns `{record_count, last_updated}` — no JSON parse per row.
-3. **`lib/spine.js::listSpineCorrelations` and `searchSpine`** — currently `SELECT * FROM spine_events ORDER BY rowid`, loading the entire spine table (92 K rows, growing unbounded over a session). Replace with:
+3. **`server/records.js::hydrateExpandedRelations`** — currently calls `fetchVisibleRecordRows` over the entire child stream for every parent page, then groups by foreign key in JS, then slices per-parent. Replace with:
+   - Collect parent foreign-key values (at most `parent_limit` of them) into an `IN (?, …)` clause.
+   - Push `WHERE child.foreign_key IN (…parent keys…)` plus the child stream's grant filters into SQL.
+   - For `has_many` expansions, use a window-function query (`ROW_NUMBER() OVER (PARTITION BY foreign_key ORDER BY …)`) to fetch at most `expansion.limit + 1` rows per parent, preserving the `has_more` signal.
+   - For `has_one`, `LIMIT parent_count` is sufficient.
+   - Child visibility checks (time_range, resources on the child grant) remain enforced in SQL alongside the foreign-key filter.
+4. **`lib/spine.js::listSpineCorrelations` and `searchSpine`** — currently `SELECT * FROM spine_events ORDER BY rowid`, loading the entire spine table (92 K rows, growing unbounded over a session). Replace with:
    - A per-correlation-key SQL that groups/aggregates inside SQL (`SELECT trace_id, MIN(occurred_at) AS first_at, MAX(occurred_at) AS last_at, COUNT(*) AS event_count ... FROM spine_events GROUP BY trace_id ...`).
    - Pagination at the SQL level.
    - Search filter pushed into SQL `WHERE` with `LIKE` / `=` on indexed columns.
-4. **`server/records.js::getRealWorldTimeBounds`** — already bounded (per-stream MIN/MAX) but issues O(~50) queries in a loop; coalesce into one UNION ALL query or cache the result.
+5. **`server/ref-control.js::listRecordsTimeline`** — currently `SELECT … FROM records WHERE deleted = 0` (plus optional connector_id/stream filters) with no LIMIT, then parses every row and filters by time window in JS. Called by `/planning/changes` and other timeline surfaces. Replace with:
+   - Push the `since`/`until` window into SQL as `WHERE json_extract(record_json, '$.<consent_time_field>') BETWEEN ? AND ?` — this requires a per-connector join with the manifest's `consent_time_field`, built at statement-prepare time per (connector, stream) pair, since that field is manifest-authored.
+   - Apply SQL `LIMIT ?` bounded by the handler's `limit` param.
+   - Stream via `.iterate()`; stop after `limit` visible rows.
+6. **`server/records.js::getRealWorldTimeBounds`** — already bounded (per-stream MIN/MAX) but issues O(~50) queries in a loop; coalesce into one UNION ALL query or cache the result.
 
-Three standing defenses:
+Three standing defenses (and one coordinated client change):
 
-5. **Fastify concurrency cap per route**: limit inflight large-result handlers to N (start N=4) via Fastify's built-in connection count or a small per-handler semaphore. Reject with 503 when exceeded so dashboard load can't fan out unboundedly.
-6. **Response-size budget**: declare a per-handler max response size (e.g. 20 MB for `/v1/streams/*/records`). If a handler exceeds, log and return an error envelope instead of serializing gigabytes.
-7. **Process supervisor**: add a PM2 or systemd unit (or `node --max-old-space-size=1536 ...` + an exit-zero restart wrapper) so production recovers on SIGSEGV — even if our fix is incomplete, the reference doesn't go permanently down.
+7. **Fastify concurrency cap per route**: limit inflight large-result handlers to N (start N=4) via a small per-handler semaphore. Reject with `503 Service Unavailable` when exceeded so dashboard load can't fan out unboundedly.
+8. **Dashboard 503 coordination (coupled to #7, non-optional)**: `apps/web/src/app/dashboard/{search,lib/timeline}.ts` currently fire `Promise.all` across all streams and swallow per-target failures as empty record sets (`apps/web/src/app/dashboard/search/page.tsx:102`, `apps/web/src/app/dashboard/lib/rs-client.ts:80`). With #7 in place, 503s would silently degrade to missing search hits. This change adds:
+   - Bounded-parallelism helper (`pMap`-style) in the RS client that fires at most N requests at a time (default 3) to match the server cap with headroom.
+   - Explicit 503 handling: on 503, retry with bounded backoff (up to 2 retries with 100 ms / 400 ms delay) before considering the target failed.
+   - Surface partial-failure state to the page: return `{records, missing}` so the dashboard can distinguish "zero results" from "some streams couldn't be queried."
+9. **Response-size budget**: declare a per-handler max response size (e.g. 20 MB for `/v1/streams/*/records`). If a handler exceeds, log and return an error envelope instead of serializing gigabytes.
+10. **Process supervisor**: add a PM2 or systemd unit (or `node --max-old-space-size=1536 ...` + an exit-zero restart wrapper) so production recovers on SIGSEGV — even if our fix is incomplete, the reference doesn't go permanently down.
 
 One validation artifact:
 
-8. **Extend `repro-crash.sh`** into an N-run harness (`--runs=5`) that reports PASS (0 crashes) / FAIL (any crash) so a fix is checked against a consistent bar.
+11. **Extend `repro-crash.sh`** into an N-run harness (`--runs=5`) that reports PASS (0 crashes) / FAIL (any crash) so a fix is checked against a consistent bar.
 
 ## Capabilities
 
@@ -59,15 +73,20 @@ One validation artifact:
 
 ## Impact
 
-- `reference-implementation/server/records.js` (4 query sites, plus the helpers they feed)
-- `reference-implementation/lib/spine.js` (2 query sites + grouping helpers)
-- `reference-implementation/server/transport.js` (concurrency cap, response-size budget hooks)
-- `reference-implementation/package.json` or a new systemd unit (supervisor)
-- `repro-crash.sh` (extend to N-run mode)
-- `openspec/specs/reference-implementation-architecture/spec.md` (new Requirement)
-- `openspec/changes/fix-rs-query-memory-pressure/audit-report.md` (the supporting audit — query surface, handler allocation, concurrency, memory budget, connector ingest, safety)
+- `reference-implementation/server/records.js` — rewrites for `fetchVisibleRecordRows`, `hydrateExpandedRelations`, `listStreams`, `getRealWorldTimeBounds`
+- `reference-implementation/server/ref-control.js` — rewrite for `listRecordsTimeline`
+- `reference-implementation/lib/spine.js` — rewrites for `listSpineCorrelations` and `searchSpine`
+- `reference-implementation/server/transport.js` — per-route concurrency cap hook, response-size budget hook
+- `reference-implementation/package.json` — `--max-old-space-size=1536`, ops hints for systemd unit / PM2 ecosystem file
+- `apps/web/src/app/dashboard/lib/rs-client.ts` — 503-aware retry wrapper
+- `apps/web/src/app/dashboard/lib/timeline.ts` — bounded-parallelism + partial-failure shape
+- `apps/web/src/app/dashboard/search/page.tsx` — bounded-parallelism + partial-failure banner
+- `apps/web/src/lib/p-limit.ts` (new) — `pMapLimit` helper
+- `repro-crash.sh` — extend to N-run mode
+- `openspec/changes/fix-rs-query-memory-pressure/specs/reference-implementation-architecture/spec.md` — three new Requirements
+- `openspec/changes/fix-rs-query-memory-pressure/audit-report.md` — the supporting audit
 
-No protocol change. No web-app change (unless the concurrency cap forces SSR to retry on 503 — if so, a small guard in `apps/web`'s RS client).
+No protocol change. Web-app changes are **part of this tranche**, not optional: per-route concurrency cap + dashboard 503 handling must land together or the crash fix trades one failure mode (SIGSEGV) for another (silent under-reporting of search/timeline results).
 
 ## Follow-ups
 

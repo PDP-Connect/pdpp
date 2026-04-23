@@ -31,6 +31,42 @@ A few compounding factors:
 
 The crash is V8 failing to stay safe under our pathological load, not V8 misbehaving under normal load. Our fix is to never put V8 in this state.
 
+## Expansion (child-stream `expand=...` parameter)
+
+`hydrateExpandedRelations` currently reads every non-deleted row of the child stream for every parent page, groups by foreign key in JS, and slices per parent. For a `has_many` relation against any of our large streams (`slack/messages`, `gmail/messages`) this is as bad as the parent query. Fix shape:
+
+```sql
+-- Window-function version; requires SQLite 3.25+.
+-- Build at statement-prepare time per (parent_stream, child_stream, expansion_name, parent_count).
+WITH ranked AS (
+  SELECT
+    record_key,
+    record_json,
+    emitted_at,
+    json_extract(record_json, '$.<child_foreign_key>') AS fk,
+    ROW_NUMBER() OVER (
+      PARTITION BY json_extract(record_json, '$.<child_foreign_key>')
+      ORDER BY /* child order — same cursor_field/primary_key basis as the parent path */
+    ) AS rn
+  FROM records
+  WHERE connector_id = ?
+    AND stream = ?
+    AND deleted = 0
+    AND json_extract(record_json, '$.<child_foreign_key>') IN (?, ?, ?, …)  -- parent record_keys
+    ${child_time_range_clause}
+    ${child_resources_clause}
+)
+SELECT * FROM ranked WHERE rn <= ?  -- expansion.limit + 1 for has_more signal
+```
+
+Cardinality handling:
+- `has_many`: `ROW_NUMBER()` partitioned by foreign key, `rn <= limit + 1`.
+- `has_one`: `ROW_NUMBER()` partitioned by foreign key, `rn = 1`. Or a simpler `SELECT ... GROUP BY fk HAVING rowid = MIN(rowid)`.
+
+The SQL is built per (parent_stream, child_stream, parent_count) because the `IN` arity is dynamic. Cache by parent_count so we only re-prepare on arity change. In practice the parent page size is fixed per handler, so we pay this once per page.
+
+Grant enforcement: the child's `time_range` and `resources` (from `expansion.childGrant`) ride in on the same WHERE. A parent page of N rows with expansion produces at most `N × (expansion.limit + 1)` child rows read, bounded by the page size, not by the child stream's total size.
+
 ## Alternatives considered
 
 - **Workaround with `--no-parallel-scavenge`.** Tested. Makes the crash much harder to trigger in short runs but does not eliminate it at steady state. Rejected: masks the real problem and slows GC globally. Not acceptable for production per steering constraint "I won't accept a workaround."
@@ -105,6 +141,19 @@ The `kinds` field (distinct event types per trace, top 16) and `connector_id` de
 
 We'll pick whichever is cleaner in implementation. Both are bounded.
 
+## `listRecordsTimeline` (ref-control.js)
+
+This one serves `/_ref/records/timeline`, consumed by `/planning/changes` and some dashboard surfaces. Today it issues `SELECT … FROM records WHERE deleted = 0` with optional connector_id/stream filters (no LIMIT at the SQL level), parses every row, filters by `since`/`until` against the manifest's `consent_time_field` in JS, then slices to the handler's `limit`.
+
+Target: push the time window into SQL at the smallest layer that knows the `consent_time_field`. Because that field is manifest-authored per (connector, stream), the query has to be built per pair:
+
+1. Look up the manifest for each candidate (connector_id, stream) and extract its `consent_time_field`.
+2. For each pair, `SELECT … WHERE connector_id = ? AND stream = ? AND deleted = 0 AND json_extract(record_json, '$.<field>') BETWEEN ? AND ? ORDER BY <emitted_at or cursor_field> DESC LIMIT ?`.
+3. The caller already iterates over manifests-with-data; we emit one prepared-and-cached statement per (connector, stream, timestamp-mode) tuple.
+4. Stream via `.iterate()` and stop after `limit` rows.
+
+When `connector_id` / `stream` params are supplied by the caller, only one pair runs. When they aren't, the handler unions across all matching pairs and applies the top-level `limit` globally (either via SQL `UNION ALL` + final `ORDER BY` + `LIMIT`, or by draining from a merge-sort heap of per-pair iterators).
+
 ## Concurrency cap
 
 Fastify doesn't ship a built-in per-route concurrency cap. Two reasonable implementations:
@@ -113,6 +162,18 @@ Fastify doesn't ship a built-in per-route concurrency cap. Two reasonable implem
 2. **`@fastify/rate-limit` plugin**: comprehensive but heavier.
 
 Start with option 1. The cap is per-(method, route-pattern) and the limit is configurable via env. Default: `PDPP_MAX_INFLIGHT_PER_ROUTE=4`.
+
+### Cap + dashboard client: the non-optional coupling
+
+A per-route cap with 503-on-exceed is only safe if the callers handle 503s explicitly. Our current client (`apps/web/src/app/dashboard/lib/rs-client.ts:80`) throws on any non-OK response, and `searchRecords` / `loadTimeline` catch that exception into `return []`. A 503 would land as "this stream had zero records" — silent under-reporting, the opposite of what users see. That would be worse than the crash it's trying to prevent.
+
+So the cap ships with a **coordinated client-side change**:
+
+1. **Bounded parallelism**: a small `pMapLimit(array, fn, {concurrency})` helper. Search + timeline switch from `Promise.all` to `pMapLimit(targets, fn, {concurrency: 3})`. Three is chosen so the client voluntarily stays below the server's cap of four; leaves headroom for other dashboard requests that hit the same route class.
+2. **503 is retried, not swallowed**: `rs-client.ts` distinguishes 503 from other non-OK statuses. On 503 it retries up to 2× with 100 ms and 400 ms delays. A 503 that persists past those retries is surfaced as an error, not silently converted to empty results.
+3. **Partial-failure visibility**: where per-target failures happen, the returned object is `{records, failures: [{target, reason}]}` instead of `[]`. The page renders zero records *and* a visible "N streams couldn't be queried: retry?" banner — not silent truncation.
+
+Implementation scope for #1–#3: `apps/web/src/app/dashboard/lib/rs-client.ts` (add `pMapLimit` helper and 503-aware fetch), `apps/web/src/app/dashboard/search/page.tsx` (use helper, render partial-failure banner), `apps/web/src/app/dashboard/lib/timeline.ts` (same), and a small helper `apps/web/src/lib/p-limit.ts` (or just inline).
 
 ## Response-size budget
 
