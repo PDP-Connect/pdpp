@@ -9,17 +9,17 @@ import {
   type TraceSummary,
 } from '../lib/ref-client';
 import {
+  getRecord,
   listConnectorManifests,
   listStreams,
-  queryRecords,
-  type StreamRecord,
+  searchRecordsLexical,
+  type SearchResultHit,
 } from '../lib/rs-client';
 import { summarize } from '../lib/timeline-summaries';
 import { shortConnectorName } from '../lib/timeline';
 
 export const dynamic = 'force-dynamic';
 
-const PER_STREAM_LIMIT = 500;
 const DEFAULT_MAX_RESULTS = 50;
 
 type RecordHit = {
@@ -36,8 +36,6 @@ type SearchResult = {
   grants: GrantSummary[];
   runs: RunSummary[];
   records: RecordHit[];
-  recordScanned: number;
-  recordSources: number;
 };
 
 function looksLikeMessagesStream(name: string): boolean {
@@ -54,86 +52,74 @@ function looksLikeMessagesStream(name: string): boolean {
   );
 }
 
-function extractSnippet(data: Record<string, unknown>, query: string, radius = 60): string {
-  const needle = query.toLowerCase();
-  for (const [, v] of Object.entries(data)) {
-    if (typeof v !== 'string') continue;
-    const idx = v.toLowerCase().indexOf(needle);
-    if (idx === -1) continue;
-    const start = Math.max(0, idx - radius);
-    const end = Math.min(v.length, idx + needle.length + radius);
-    const prefix = start > 0 ? '…' : '';
-    const suffix = end < v.length ? '…' : '';
-    return `${prefix}${v.slice(start, end).replace(/\s+/g, ' ').trim()}${suffix}`;
-  }
-  return '';
-}
-
-function recordMatches(record: StreamRecord, query: string): boolean {
-  if (!record.data) return false;
-  const needle = query.toLowerCase();
-  try {
-    return JSON.stringify(record.data).toLowerCase().includes(needle);
-  } catch {
-    return false;
-  }
-}
-
-async function searchRecords(query: string, scope: 'messages' | 'all'): Promise<{
-  hits: RecordHit[];
-  scanned: number;
-  sources: number;
-}> {
+/**
+ * Build the streams[] filter for `scope=messages` from the owner-visible
+ * stream list. The reference's RS scopes owner reads per connector, so we
+ * enumerate connectors locally to discover stream names. The /v1/search
+ * helper then sends the unique set as `streams[]=...&streams[]=...` and
+ * the server fans out across every owner-visible connector that exposes
+ * one of those names AND declares lexical_fields on it.
+ *
+ * Empty result here means "no owner-visible messages-like stream exists".
+ * Per the owner spec, `messages` scope MUST NOT silently widen to `all`
+ * in that case — the page returns zero record hits instead.
+ */
+async function discoverMessagesLikeStreamNames(): Promise<string[]> {
   const manifests = await listConnectorManifests();
-  const perConnectorStreams = await Promise.all(
+  const perConnector = await Promise.all(
     manifests.map(async (m) => {
       try {
         const streams = await listStreams(m.connector_id);
         return streams
           .filter((s) => s.record_count > 0)
-          .filter((s) => (scope === 'all' ? true : looksLikeMessagesStream(s.name)))
-          .map((s) => ({ connectorId: m.connector_id, streamName: s.name }));
+          .filter((s) => looksLikeMessagesStream(s.name))
+          .map((s) => s.name);
       } catch {
         return [];
       }
     }),
   );
-  const targets = perConnectorStreams.flat();
-  const pages = await Promise.all(
-    targets.map(async (t) => {
-      try {
-        const page = await queryRecords(t.connectorId, t.streamName, {
-          limit: PER_STREAM_LIMIT,
-          order: 'desc',
-        });
-        return { t, records: page.data };
-      } catch {
-        return { t, records: [] as StreamRecord[] };
-      }
-    }),
-  );
+  return Array.from(new Set(perConnector.flat()));
+}
 
-  let scanned = 0;
-  const hits: RecordHit[] = [];
-  for (const { t, records } of pages) {
-    scanned += records.length;
-    for (const r of records) {
-      if (!recordMatches(r, query)) continue;
-      const data = (r.data ?? {}) as Record<string, unknown>;
-      const snippet = extractSnippet(data, query) || summarize(t.connectorId, t.streamName, data);
-      hits.push({
-        connectorId: t.connectorId,
-        stream: t.streamName,
-        recordId: r.id,
-        emittedAt: r.emitted_at,
-        snippet,
-      });
-      if (hits.length >= DEFAULT_MAX_RESULTS * 3) break;
+/**
+ * Map a public search_result hit into the dashboard's RecordHit shape. The
+ * snippet is OPTIONAL in the public contract; when absent we hydrate a
+ * one-line summary by reading the canonical record under the owner token.
+ *
+ * If hydration fails (record removed between index match and read, etc.)
+ * we degrade to a stream-and-key label so the row still renders.
+ */
+async function hitToRecordHit(hit: SearchResultHit): Promise<RecordHit> {
+  let snippet: string;
+  if (hit.snippet?.text) {
+    snippet = hit.snippet.text;
+  } else {
+    try {
+      const record = await getRecord(hit.connector_id, hit.stream, hit.record_key);
+      const data = (record.data ?? {}) as Record<string, unknown>;
+      snippet = summarize(hit.connector_id, hit.stream, data) || `${hit.stream}/${hit.record_key}`;
+    } catch {
+      snippet = `${hit.stream}/${hit.record_key}`;
     }
-    if (hits.length >= DEFAULT_MAX_RESULTS * 3) break;
   }
-  hits.sort((a, b) => (a.emittedAt < b.emittedAt ? 1 : a.emittedAt > b.emittedAt ? -1 : 0));
-  return { hits: hits.slice(0, DEFAULT_MAX_RESULTS), scanned, sources: targets.length };
+  return {
+    connectorId: hit.connector_id,
+    stream: hit.stream,
+    recordId: hit.record_key,
+    emittedAt: hit.emitted_at,
+    snippet,
+  };
+}
+
+async function searchRecords(query: string, scope: 'messages' | 'all'): Promise<RecordHit[]> {
+  const streams = scope === 'messages' ? await discoverMessagesLikeStreamNames() : undefined;
+  // Owner explicit: do NOT widen `messages` to `all` when the stream set is
+  // empty. Return zero record hits instead.
+  if (scope === 'messages' && (!streams || streams.length === 0)) return [];
+
+  const page = await searchRecordsLexical(query, { streams, limit: DEFAULT_MAX_RESULTS });
+  return Promise.all(page.data.map(hitToRecordHit));
 }
 
 export default async function SearchPage({
@@ -164,15 +150,13 @@ export default async function SearchPage({
         redirect(target);
       }
 
-      const recordResult = await searchRecords(query, scope);
+      const records = await searchRecords(query, scope);
       result = {
         exact: spineResult.exact,
         traces: spineResult.traces,
         grants: spineResult.grants,
         runs: spineResult.runs,
-        records: recordResult.hits,
-        recordScanned: recordResult.scanned,
-        recordSources: recordResult.sources,
+        records,
       };
     } catch (err) {
       if (err instanceof ReferenceServerUnreachableError) {
@@ -229,8 +213,8 @@ export default async function SearchPage({
 
       {!query ? (
         <p className="text-muted-foreground text-xs">
-          Paste a request/trace/grant/run id for a direct jump, or enter text to substring-search
-          records across streams.
+          Paste a request/trace/grant/run id for a direct jump, or enter text to lexically search
+          records across streams that declare searchable fields.
         </p>
       ) : !result ? null : (
         <>
@@ -256,9 +240,6 @@ export default async function SearchPage({
           <section className="mb-6">
             <h2 className="text-muted-foreground mb-2 text-xs uppercase tracking-wide">
               records ({result.records.length})
-              <span className="ml-2 normal-case tracking-normal">
-                — {result.recordSources} streams scanned · {result.recordScanned} records
-              </span>
             </h2>
             {result.records.length === 0 ? (
               <p className="text-muted-foreground text-xs">No record-content hits.</p>
