@@ -30,24 +30,28 @@ import {
   type MailboxObject,
   // biome-ignore lint/correctness/noUnresolvedImports: imapflow is declared in package.json; Biome's resolver doesn't see it here
 } from "imapflow";
+import { isMainModule } from "../../src/is-main-module.ts";
 import { stringifyForJsonl } from "../../src/safe-emit.ts";
 import { requireCredentialsOrAsk, resourceSet } from "../../src/scope-filters.ts";
-import { emitMessagesPass, type FetchBodiesFn, type FetchedBodies, type PerMessageDeps } from "./collect-helpers.ts";
 import {
+  type BodyPartSelection,
   bigintToCursor,
   bigintToNumber,
   buildDeltaMessageRecord,
+  buildMessageBodyRecord,
+  buildMessageRecord,
   buildThreadRecord,
   canonicalLabelName,
   decodeBodyPart,
   decodeBodystructureForAttachments,
   envelopeParticipants,
   isGmailSystemLabel,
+  isInTimeRange,
   labelParentName,
   makeSnippet,
   SNIPPET_MAX_CHARS,
   sanitizeForJsonl,
-  type selectBodyParts,
+  selectBodyParts,
   toFlagsArray,
   toLabelsArray,
   updateThreadAggregate,
@@ -58,6 +62,7 @@ import type {
   InteractionMessage,
   InteractionResponse,
   PriorMessagesState,
+  ProgressMessage,
   StartMessage,
   StreamRequest,
   ThreadAggregate,
@@ -89,7 +94,17 @@ interface ExtendedFetchQuery extends FetchQueryObject {
 
 // ─── Stdin / stdout plumbing ────────────────────────────────────────────
 
-const rl = createInterface({ input: process.stdin, terminal: false });
+// Readline interface for stdin. Initialized inside the isMainModule guard
+// at the bottom of the file so importing index.ts from tests doesn't
+// open stdin and keep the Node event loop alive.
+let rl: ReadlineInterface | null = null;
+
+function getReadline(): ReadlineInterface {
+  if (!rl) {
+    rl = createInterface({ input: process.stdin, terminal: false });
+  }
+  return rl;
+}
 
 // Track in-flight writes so back-pressured, partial stdout writes can't
 // produce interleaved or truncated JSONL lines on the runtime side. Bodies
@@ -150,19 +165,20 @@ function nextInteractionId(): string {
 async function sendInteractionAndWait(msg: InteractionMessage): Promise<InteractionResponse> {
   await emit(msg);
   const reqId = msg.request_id;
+  const reader = getReadline();
   return new Promise<InteractionResponse>((resolve, reject) => {
     const onLine = (line: string): void => {
       try {
         const parsed = JSON.parse(line) as InteractionResponse;
         if (parsed.type === "INTERACTION_RESPONSE" && parsed.request_id === reqId) {
-          rl.off("line", onLine);
+          reader.off("line", onLine);
           resolve(parsed);
         }
       } catch (err) {
         reject(err instanceof Error ? err : new Error(String(err)));
       }
     };
-    rl.on("line", onLine);
+    reader.on("line", onLine);
   });
 }
 
@@ -177,7 +193,167 @@ function internalDateToIso(date: Date | string | undefined): string {
 
 // ─── Startup: credentials + scope ───────────────────────────────────────
 
-type EmitRecordFn = (stream: string, data: Record<string, unknown>, keyField?: "id" | "name") => Promise<void>;
+/** Progress cadence for the body pass — emit a PROGRESS message every N
+ *  processed rows. Exported so the extraction preserves observable
+ *  behavior; tests rely on the boundary. */
+export const FETCH_MSG_PROGRESS = 500;
+
+export type EmitRecordFn = (stream: string, data: Record<string, unknown>, keyField?: "id" | "name") => Promise<void>;
+
+export type ProgressEmitter = (msg: ProgressMessage) => Promise<void>;
+
+/** Bodies resolved for one message. All fields may be null if the fetch
+ *  failed, the message has no matching parts, or scope didn't ask. */
+export interface FetchedBodies {
+  bodyHtmlFull: string | null;
+  bodyTextFull: string | null;
+  snippet: string | null;
+}
+
+/**
+ * Injected body fetcher. Production wires this to an IMAP round-trip;
+ * tests wire it to a pure function that returns canned bodies (or a
+ * rejected promise to simulate fetch failure — the helper turns that
+ * into all-nulls internally).
+ */
+export type FetchBodiesFn = (
+  msg: FetchMessageObject,
+  selection: BodyPartSelection,
+  wantBodies: boolean,
+  wantMessages: boolean
+) => Promise<FetchedBodies>;
+
+export interface PerMessageDeps {
+  emitProgress: ProgressEmitter;
+  emitRecord: EmitRecordFn;
+  fetchBodies: FetchBodiesFn;
+  nowIso: () => string;
+  requested: Map<string, StreamRequest>;
+  timeRange: { since?: string; until?: string } | undefined;
+  wantBodies: boolean;
+  wantMessages: boolean;
+}
+
+function perMessageInternalDateToIso(date: Date | string | undefined, nowIsoFn: () => string): string {
+  if (!date) {
+    return nowIsoFn();
+  }
+  return new Date(date).toISOString();
+}
+
+/**
+ * Emit the per-stream records for one Gmail message.
+ *
+ * Invariants (tested in integration.test.ts):
+ *   1. No X-GM-MSGID → skip silently (return false).
+ *   2. time_range filter skips out-of-range messages.
+ *   3. Emit order within a single message: message_bodies → messages →
+ *      attachments. The per-message order matters because downstream
+ *      consumers rely on bodies being present before the messages row
+ *      that references them.
+ *   4. wantBodies / wantMessages / requested.has("attachments") each
+ *      gate their own stream; disabling one doesn't suppress siblings.
+ *   5. Body-fetch failure (returned all-nulls) still emits the messages
+ *      record with a null snippet — never silently drops the envelope.
+ *
+ * Returns true if the message produced any emits (or would have, modulo
+ * scope). Returns false when skipped by an early filter so the caller
+ * can skip progress accounting.
+ */
+export async function processMessage(deps: PerMessageDeps, msg: FetchMessageObject): Promise<boolean> {
+  // Gmail-specific IDs via imapflow: msg.emailId = X-GM-MSGID; msg.threadId = X-GM-THRID.
+  const gmMsgid = String(msg.emailId ?? "");
+  const gmThrid = String(msg.threadId ?? "");
+  if (!gmMsgid) {
+    return false;
+  }
+
+  const env = msg.envelope ?? {};
+  const receivedAt = perMessageInternalDateToIso(msg.internalDate, deps.nowIso);
+  if (!isInTimeRange(receivedAt, deps.timeRange)) {
+    return false;
+  }
+  const dateHeader = env.date ? new Date(env.date).toISOString() : null;
+  const flagsArr = toFlagsArray(msg.flags);
+  const labels = toLabelsArray(msg.labels);
+  const attachments = decodeBodystructureForAttachments(msg.bodyStructure, gmMsgid, receivedAt);
+
+  const selection = selectBodyParts(msg.bodyStructure, deps.wantBodies);
+  const { bodyHtmlFull, bodyTextFull, snippet } = await deps.fetchBodies(
+    msg,
+    selection,
+    deps.wantBodies,
+    deps.wantMessages
+  );
+
+  if (deps.wantBodies) {
+    await deps.emitRecord(
+      "message_bodies",
+      buildMessageBodyRecord({
+        bodyHtmlFull,
+        bodyTextFull,
+        gmMsgid,
+        htmlCharset: selection.htmlCharset,
+        textCharset: selection.plainCharset,
+      })
+    );
+  }
+
+  if (deps.wantMessages) {
+    await deps.emitRecord(
+      "messages",
+      buildMessageRecord({
+        attachmentsCount: attachments.length,
+        dateHeader,
+        envelope: env,
+        flagsArr,
+        gmMsgid,
+        gmThrid,
+        labels,
+        rawHeaders: msg.headers,
+        receivedAt,
+        sizeBytes: typeof msg.size === "number" ? msg.size : null,
+        snippet,
+      })
+    );
+  }
+
+  if (deps.requested.has("attachments") && attachments.length) {
+    for (const a of attachments) {
+      await deps.emitRecord("attachments", { ...a });
+    }
+  }
+  return true;
+}
+
+/**
+ * Phase B driver: iterate metas, emit records, report progress every
+ * FETCH_MSG_PROGRESS rows. Per-message errors are logged to stderr and
+ * swallowed so a single bad message doesn't halt the whole pass.
+ */
+export async function emitMessagesPass(deps: PerMessageDeps, metas: readonly FetchMessageObject[]): Promise<void> {
+  let count = 0;
+  for (const msg of metas) {
+    try {
+      const processed = await processMessage(deps, msg);
+      if (!processed) {
+        continue;
+      }
+      count += 1;
+      if (count % FETCH_MSG_PROGRESS === 0) {
+        await deps.emitProgress({
+          type: "PROGRESS",
+          stream: "messages",
+          message: `Fetched ${count} messages`,
+        });
+      }
+    } catch (perMsgErr) {
+      const emsg = perMsgErr instanceof Error ? (perMsgErr.stack ?? perMsgErr.message) : String(perMsgErr);
+      process.stderr.write(`[gmail] per-message error at UID ${String(msg.uid)}: ${emsg}\n`);
+      // Continue with next message; don't let one bad record halt the whole run.
+    }
+  }
+}
 
 /** Read one START line from stdin, or reject if malformed. */
 function readStartMessage(reader: ReadlineInterface): Promise<StartMessage> {
@@ -679,7 +855,7 @@ function makeEmitRecord(
 // ─── Main ──────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
-  const startMsg = await readStartMessage(rl);
+  const startMsg = await readStartMessage(getReadline());
   if (startMsg.type !== "START") {
     fail("Expected START");
     return;
@@ -762,46 +938,52 @@ async function main(): Promise<void> {
   flushAndExit(0);
 }
 
-process.on("unhandledRejection", (reason: unknown) => {
-  const msg = reason instanceof Error ? (reason.stack ?? reason.message) : String(reason);
-  process.stderr.write(`[gmail] unhandledRejection: ${msg}\n`);
-  const summary = reason instanceof Error ? reason.message : String(reason);
-  emit({
-    type: "DONE",
-    status: "failed",
-    records_emitted: 0,
-    error: {
-      message: `unhandledRejection: ${summary.slice(0, ERROR_MSG_TAIL)}`,
-      retryable: false,
-    },
-  }).catch((): undefined => undefined);
-  flushAndExit(1);
-});
-process.on("uncaughtException", (err: Error) => {
-  const msg = err.stack ?? err.message;
-  process.stderr.write(`[gmail] uncaughtException: ${msg}\n`);
-  emit({
-    type: "DONE",
-    status: "failed",
-    records_emitted: 0,
-    error: {
-      message: `uncaughtException: ${err.message.slice(0, ERROR_MSG_TAIL)}`,
-      retryable: false,
-    },
-  }).catch((): undefined => undefined);
-  flushAndExit(1);
-});
+// Guarded so `import "./index.ts"` in tests doesn't spin up the runtime
+// (process-level handlers, stdin reader, IMAP connect) and block the
+// Node event loop. Only fires when this module IS the process entry
+// point (i.e. `tsx connectors/gmail/index.ts`).
+if (isMainModule(import.meta.url)) {
+  process.on("unhandledRejection", (reason: unknown) => {
+    const msg = reason instanceof Error ? (reason.stack ?? reason.message) : String(reason);
+    process.stderr.write(`[gmail] unhandledRejection: ${msg}\n`);
+    const summary = reason instanceof Error ? reason.message : String(reason);
+    emit({
+      type: "DONE",
+      status: "failed",
+      records_emitted: 0,
+      error: {
+        message: `unhandledRejection: ${summary.slice(0, ERROR_MSG_TAIL)}`,
+        retryable: false,
+      },
+    }).catch((): undefined => undefined);
+    flushAndExit(1);
+  });
+  process.on("uncaughtException", (err: Error) => {
+    const msg = err.stack ?? err.message;
+    process.stderr.write(`[gmail] uncaughtException: ${msg}\n`);
+    emit({
+      type: "DONE",
+      status: "failed",
+      records_emitted: 0,
+      error: {
+        message: `uncaughtException: ${err.message.slice(0, ERROR_MSG_TAIL)}`,
+        retryable: false,
+      },
+    }).catch((): undefined => undefined);
+    flushAndExit(1);
+  });
 
-main().catch((e: unknown) => {
-  const msg = e instanceof Error ? e.message : String(e);
-  const retryable = RETRYABLE_ERROR_RE.test(msg);
-  const trace = e instanceof Error ? (e.stack ?? msg) : msg;
-  process.stderr.write(`[gmail] main rejected: ${trace}\n`);
-  emit({
-    type: "DONE",
-    status: "failed",
-    records_emitted: 0,
-    error: { message: msg, retryable },
-  }).catch((): undefined => undefined);
-  flushAndExit(1);
-});
+  main().catch((e: unknown) => {
+    const msg = e instanceof Error ? e.message : String(e);
+    const retryable = RETRYABLE_ERROR_RE.test(msg);
+    const trace = e instanceof Error ? (e.stack ?? msg) : msg;
+    process.stderr.write(`[gmail] main rejected: ${trace}\n`);
+    emit({
+      type: "DONE",
+      status: "failed",
+      records_emitted: 0,
+      error: { message: msg, retryable },
+    }).catch((): undefined => undefined);
+    flushAndExit(1);
+  });
+}

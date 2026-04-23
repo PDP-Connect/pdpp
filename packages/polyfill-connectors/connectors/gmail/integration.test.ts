@@ -11,9 +11,9 @@
  *   - freezes nowIso() so timestamp fallbacks are deterministic,
  *   - captures PROGRESS emits (none expected at N<FETCH_MSG_PROGRESS).
  *
- * Imports from ./collect-helpers.ts (not ./index.ts) because index.ts
- * runs main() at module load — importing it would open stdin and hang
- * the test process.
+ * Imports directly from ./index.ts — `main().catch(...)` is guarded by
+ * `isMainModule(import.meta.url)` so it only fires when index.ts is the
+ * process entry point, not when a test imports it.
  *
  * Why bother: parsers.test.ts proves record *shapes*. Integration tests
  * on the emit path prove the invariants downstream consumers observe:
@@ -41,7 +41,7 @@ import {
   type FetchedBodies,
   type PerMessageDeps,
   processMessage,
-} from "./collect-helpers.ts";
+} from "./index.ts";
 import type { ProgressMessage, StreamRequest } from "./types.ts";
 
 interface RecordingHarness {
