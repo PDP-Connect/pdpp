@@ -28,36 +28,44 @@
  * CHASE_2FA_METHOD=text|voice|email (default text).
  */
 
-import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
 import type { Page } from "playwright";
 import { ensureChaseSession } from "../../src/auto-login/chase.ts";
 import {
   type BrowserCollectContext,
   type EmittedMessage,
   runConnector,
-  type StreamScope,
   type ValidateRecord,
 } from "../../src/connector-runtime.ts";
 import { resourceSet } from "../../src/scope-filters.ts";
+import {
+  ACTIVITY_LABELS,
+  accountSlug,
+  chooseActivity,
+  errMessage,
+  extractFromQfx,
+  fileUrl,
+  isOfxRecord,
+  isoToPacked,
+  parseDashboardAccountsDom,
+  parseDateDelivered,
+  parseStatementsListDom,
+  resolveAccountIdForRow,
+  sha256Hex,
+  shortHash,
+  truncate,
+  yearMonthFromIso,
+} from "./parsers.ts";
 import { validateRecord as validateRecordRaw } from "./schemas.ts";
 import type {
-  ActivityChoice,
   ActivityKind,
   ChaseAccount,
-  ChaseAccountType,
   DashboardDiagnostics,
   DateFillResult,
   DownloadOptions,
   DownloadResult,
-  OfxRecord,
-  OfxValue,
-  QfxBalance,
-  QfxExtracted,
-  QfxTransaction,
   StatementDownloadResult,
   StatementRow,
   TransactionCursor,
@@ -81,73 +89,6 @@ const ERROR_MESSAGE_SLICE = 120;
 const ERROR_MESSAGE_SLICE_LONG = 160;
 const ERROR_MESSAGE_SLICE_MAX = 200;
 const HASH_SHORT_LEN = 16;
-const HASH_SLUG_LEN = 32;
-const CENTS_MULTIPLIER = 100;
-
-// ─── Helpers ──────────────────────────────────────────────────────────────
-
-function errMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
-
-function truncate(s: string, max: number): string {
-  return s.length > max ? s.slice(0, max) : s;
-}
-
-function isOfxRecord(v: OfxValue): v is OfxRecord {
-  return typeof v === "object" && v !== null && !Array.isArray(v);
-}
-
-function ofxGet(v: OfxValue, key: string): OfxValue {
-  return isOfxRecord(v) ? v[key] : undefined;
-}
-
-function ofxString(v: OfxValue): string | null {
-  if (v == null) {
-    return null;
-  }
-  if (typeof v === "string") {
-    return v;
-  }
-  if (typeof v === "number" || typeof v === "boolean") {
-    return String(v);
-  }
-  return null;
-}
-
-function ofxNumber(v: OfxValue): number | null {
-  if (v == null) {
-    return null;
-  }
-  let s: string;
-  if (typeof v === "string") {
-    s = v;
-  } else if (typeof v === "number") {
-    s = String(v);
-  } else {
-    s = "";
-  }
-  if (!s) {
-    return null;
-  }
-  const n = Number(s);
-  return Number.isFinite(n) ? n : null;
-}
-
-function sha256Hex(buf: Buffer | Uint8Array): string {
-  return createHash("sha256").update(buf).digest("hex");
-}
-
-function shortHash(s: string): string {
-  return createHash("sha256").update(s).digest("hex").slice(0, HASH_SLUG_LEN);
-}
-
-function fileUrl(p: string | null | undefined): string | null {
-  if (!p) {
-    return null;
-  }
-  return pathToFileURL(p).href;
-}
 
 // ─── Dashboard scrape: enumerate accounts ─────────────────────────────────
 
@@ -173,60 +114,15 @@ async function discoverAccounts(page: Page): Promise<ChaseAccount[]> {
   // <span class="accessible-text" id="accounts-name-link-button-<INTERNAL_ID>-label">
   // with text like "Sapphire Preferred (...9241)". The internal id matches
   // the transactionDetails param and is what the download form's
-  // account-selector expects.
-  return page.evaluate((): ChaseAccount[] => {
-    // biome-ignore-start lint/performance/useTopLevelRegex: runs in browser context (page.evaluate); module-scoped regexes in Node cannot cross the bridge.
-    const ID_RE = /^accounts-name-link-button-(\d+)-label$/;
-    const CARD_RE = /(Sapphire|Freedom|Ink|Amazon|Southwest|United|Hyatt|Disney|Marriott|IHG|Prime|Platinum|Slate)/i;
-    const CHK_RE = /(Checking|Total Checking|Premier Checking)/i;
-    const SAV_RE = /(Savings|Premier Savings)/i;
-    const WS_RE = /\s+/g;
-    const LAST4_RE = /\.\.\.(\d{3,4})/;
-    // biome-ignore-end lint/performance/useTopLevelRegex: runs in browser context (page.evaluate); module-scoped regexes in Node cannot cross the bridge.
-
-    interface El {
-      id?: string;
-      innerText?: string;
-      querySelectorAll: (sel: string) => El[];
-      shadowRoot?: El | null;
-      textContent?: string;
-    }
-
-    function walk(root: El, out: El[] = []): El[] {
-      for (const el of root.querySelectorAll("*")) {
-        out.push(el);
-        if (el.shadowRoot) {
-          walk(el.shadowRoot, out);
-        }
-      }
-      return out;
-    }
-
-    // @ts-expect-error — browser context globals (document)
-    const rootDoc: El = document;
-    const labels = walk(rootDoc).filter((el) => Boolean(el.id) && ID_RE.test(el.id ?? ""));
-    return labels.map((el): ChaseAccount => {
-      const idMatch = ID_RE.exec(el.id ?? "");
-      const displayName = (el.innerText || el.textContent || "").replace(WS_RE, " ").trim();
-      const lastFourMatch = LAST4_RE.exec(displayName);
-      // Infer type from the display name — rough heuristic; refined by
-      // inspecting the BAC/DDA/ABS param in the transactions URL if needed.
-      let typeHint: ChaseAccountType = "unknown";
-      if (CARD_RE.test(displayName)) {
-        typeHint = "credit_card";
-      } else if (CHK_RE.test(displayName)) {
-        typeHint = "checking";
-      } else if (SAV_RE.test(displayName)) {
-        typeHint = "savings";
-      }
-      return {
-        internal_id: idMatch?.[1] ?? "",
-        name: displayName,
-        type: typeHint,
-        last_four: lastFourMatch?.[1] ?? null,
-      };
-    });
-  });
+  // account-selector expects. DOM parsing now runs in Node via linkedom
+  // (see connectors/chase/parsers.ts#parseDashboardAccountsDom) so it can
+  // be unit-tested offline.
+  try {
+    const html = await page.content();
+    return parseDashboardAccountsDom(html);
+  } catch {
+    return [];
+  }
 }
 
 // ─── QFX download click-path ──────────────────────────────────────────────
@@ -261,15 +157,6 @@ async function selectFileType(page: Page, label: string): Promise<void> {
   await opt.waitFor({ state: "visible", timeout: OPTION_WAIT_MS });
   await opt.click({ timeout: OPTION_WAIT_MS });
 }
-
-const ACTIVITY_LABELS: Record<ActivityKind, string> = {
-  all: "All transactions",
-  since_last_statement: "Since last statement",
-  year_to_date: "Year to date",
-  last_year: "Last year",
-  current: "Current display, including filters",
-  date_range: "Choose a date range",
-};
 
 /** Drive a single QFX download. */
 async function downloadQfx(
@@ -385,15 +272,6 @@ async function downloadQfx(
  * The inputs accept mm/dd/yyyy typed character-by-character. Playwright's
  * pressSequentially on the shadow-piercing `input` locator works.
  */
-function isoToPacked(iso: string): string | null {
-  const parts = iso.split("-");
-  const [y, m, d] = parts;
-  if (!(y && m && d)) {
-    return null;
-  }
-  return `${m}${d}${y}`;
-}
-
 async function fillDateRange(page: Page, from: string, to: string): Promise<DateFillResult> {
   const fromPacked = isoToPacked(from);
   const toPacked = isoToPacked(to);
@@ -441,8 +319,6 @@ async function fillDateRange(page: Page, from: string, to: string): Promise<Date
 //            (also -pdf which OPENS instead of saves)
 
 const STATEMENT_ROOT = join(homedir(), ".pdpp", "chase-statements");
-const ACCOUNT_SLUG_SAFE_RE = /^[A-Za-z0-9_-]+$/;
-const LAST_FOUR_RE = /\.\.\.(\d{3,4})/;
 
 async function navigateToStatementsPage(page: Page): Promise<void> {
   // Warm overview first — direct-nav to the documents URL can bounce through
@@ -469,114 +345,16 @@ async function navigateToStatementsPage(page: Page): Promise<void> {
 /**
  * Enumerate the statement rows currently visible on the Statements page.
  * Each row maps to one monthly statement PDF. Returns an array of rows in
- * DOM order (newest first, per Chase's default ordering).
+ * DOM order (newest first, per Chase's default ordering). DOM parsing now
+ * runs in Node via linkedom (see parsers.ts#parseStatementsListDom).
  */
-function enumerateStatementRows(page: Page): Promise<StatementRow[]> {
-  return page.evaluate((): StatementRow[] => {
-    // biome-ignore-start lint/performance/useTopLevelRegex: runs in browser context (page.evaluate); module-scoped regexes in Node cannot cross the bridge.
-    const ANCHOR_ID_RE = /accountsTable-\d+-row\d+-cell\d+-requestThisDocumentAnchor-download/;
-    const ACCORDION_ID_RE = /documentsAccordion-(\d+)/;
-    const TABLE_ROW_RE = /accountsTable-(\d+)-row(\d+)-/;
-    const STATEMENT_RE = /statement/i;
-    const WS_RE = /\s+/g;
-    // biome-ignore-end lint/performance/useTopLevelRegex: runs in browser context (page.evaluate); module-scoped regexes in Node cannot cross the bridge.
-
-    interface El {
-      id?: string;
-      innerText?: string;
-      parentElement: El | null;
-      querySelectorAll: (sel: string) => El[];
-      shadowRoot?: El | null;
-      tagName?: string;
-    }
-
-    function walk(root: El, out: El[] = []): El[] {
-      for (const el of root.querySelectorAll("*")) {
-        out.push(el);
-        if (el.shadowRoot) {
-          walk(el.shadowRoot, out);
-        }
-      }
-      return out;
-    }
-
-    // @ts-expect-error — browser context globals (document)
-    const rootDoc: El = document;
-    const els = walk(rootDoc);
-    const anchors = els.filter((el) => el.tagName === "A" && ANCHOR_ID_RE.test(el.id ?? ""));
-    // Parallel: find account accordion buttons, to associate each table with an account label.
-    const accordions = [...document.querySelectorAll<HTMLElement>('[id^="button-documentsAccordion-"]')].map((b) => {
-      const m = ACCORDION_ID_RE.exec(b.id);
-      return {
-        id: b.id,
-        tableIdx: m?.[1],
-        label: (b.innerText || "").replace(WS_RE, " ").trim(),
-      };
-    });
-    const accountByTableIdx = new Map<string, string>();
-    for (const a of accordions) {
-      if (a.tableIdx) {
-        accountByTableIdx.set(a.tableIdx, a.label);
-      }
-    }
-
-    const rows: StatementRow[] = [];
-    for (const a of anchors) {
-      // anchor id: accountsTable-<T>-row<R>-cell3-requestThisDocumentAnchor-download
-      const m = TABLE_ROW_RE.exec(a.id ?? "");
-      const tableIdx = m?.[1];
-      const rowIdx = m?.[2];
-      // Walk up to the <tr> for date + type cells.
-      let tr: El | null = a;
-      while (tr && tr.tagName !== "TR") {
-        tr = tr.parentElement;
-      }
-      const cells: El[] = tr ? [...tr.querySelectorAll("td, th")] : [];
-      const date_delivered_raw = (cells[0]?.innerText || "").trim();
-      const doc_kind = (cells[1]?.innerText || "").trim();
-      const account_reference = tableIdx ? (accountByTableIdx.get(tableIdx) ?? null) : null;
-      const title = [date_delivered_raw, doc_kind, account_reference].filter(Boolean).join(" ");
-      if (!(doc_kind && STATEMENT_RE.test(doc_kind))) {
-        continue;
-      }
-      rows.push({
-        rowAnchorId: a.id ?? "",
-        tableIdx,
-        rowIdx,
-        date_delivered_raw,
-        doc_kind,
-        account_reference,
-        title,
-      });
-    }
-    return rows;
-  });
-}
-
-function parseDateDelivered(raw: string | null | undefined): string | null {
-  // Chase renders "Apr 13, 2026"; `new Date` parses reliably on v8 for this.
-  if (!raw) {
-    return null;
+async function enumerateStatementRows(page: Page): Promise<StatementRow[]> {
+  try {
+    const html = await page.content();
+    return parseStatementsListDom(html);
+  } catch {
+    return [];
   }
-  const d = new Date(raw);
-  if (Number.isNaN(d.getTime())) {
-    return null;
-  }
-  return d.toISOString().slice(0, 10);
-}
-
-function yearMonthFromIso(iso: string | null): string {
-  return iso ? iso.slice(0, 7) : "unknown";
-}
-
-function accountSlug(accountId: string | null): string {
-  if (!accountId) {
-    return "unknown";
-  }
-  if (ACCOUNT_SLUG_SAFE_RE.test(accountId)) {
-    return accountId;
-  }
-  return shortHash(accountId);
 }
 
 /**
@@ -642,27 +420,6 @@ async function downloadStatementPdf(
   return { ok: true, pdfPath, pdfSha256 };
 }
 
-/**
- * Resolve a statement row's `account_reference` text (e.g.
- * "SAPPHIRE PREFERRED (...9241)") to the stable Chase internal account id
- * from our accounts array.
- */
-function resolveAccountIdForRow(row: StatementRow, accounts: readonly ChaseAccount[]): string | null {
-  if (!row.account_reference) {
-    return null;
-  }
-  const last4Match = LAST_FOUR_RE.exec(row.account_reference);
-  if (last4Match?.[1]) {
-    const byLast4 = accounts.find((a) => a.last_four === last4Match[1]);
-    if (byLast4) {
-      return byLast4.internal_id;
-    }
-  }
-  const refLower = row.account_reference.toLowerCase();
-  const byName = accounts.find((a) => a.name && refLower.includes(a.name.toLowerCase()));
-  return byName ? byName.internal_id : null;
-}
-
 // ─── QFX parsing ──────────────────────────────────────────────────────────
 
 interface OfxParser {
@@ -693,143 +450,7 @@ async function parseQfxFile(path: string): Promise<unknown> {
   return parser.parse(content);
 }
 
-// OFX datetime format: YYYYMMDDHHMMSS[.sss][TZ] — strip to YYYY-MM-DD.
-function ofxDateToIso(raw: OfxValue): string | null {
-  const src = ofxString(raw);
-  if (!src) {
-    return null;
-  }
-  const s = src.trim();
-  if (s.length < 8) {
-    return null;
-  }
-  const y = s.slice(0, 4);
-  const m = s.slice(4, 6);
-  const d = s.slice(6, 8);
-  return `${y}-${m}-${d}`;
-}
-
-function ofxDateToFullIso(raw: OfxValue): string | null {
-  const src = ofxString(raw);
-  if (!src) {
-    return null;
-  }
-  const s = src.trim();
-  if (s.length < 8) {
-    return null;
-  }
-  const date = ofxDateToIso(s);
-  if (!date) {
-    return null;
-  }
-  const hh = s.slice(8, 10) || "00";
-  const mm = s.slice(10, 12) || "00";
-  const ss = s.slice(12, 14) || "00";
-  return `${date}T${hh}:${mm}:${ss}Z`;
-}
-
-// Walk an ofx-js parsed structure and extract our canonical shape.
-// ofx-js yields deeply-nested objects matching OFX XML. Credit cards live
-// under CREDITCARDMSGSRSV1 > CCSTMTTRNRS > CCSTMTRS; checking/savings under
-// BANKMSGSRSV1 > STMTTRNRS > STMTRS. Structure is otherwise parallel.
-function extractFromQfx(parsed: unknown): QfxExtracted {
-  const root: OfxValue = ofxGet(parsed, "OFX") ?? parsed;
-  if (!isOfxRecord(root)) {
-    return { transactions: [], balance: null };
-  }
-
-  const cc = ofxGet(ofxGet(ofxGet(root, "CREDITCARDMSGSRSV1"), "CCSTMTTRNRS"), "CCSTMTRS");
-  const bank = ofxGet(ofxGet(ofxGet(root, "BANKMSGSRSV1"), "STMTTRNRS"), "STMTRS");
-  let stmtRaw: OfxValue = null;
-  if (isOfxRecord(cc)) {
-    stmtRaw = cc;
-  } else if (isOfxRecord(bank)) {
-    stmtRaw = bank;
-  }
-  if (!stmtRaw) {
-    return { transactions: [], balance: null };
-  }
-
-  const currency = ofxString(ofxGet(stmtRaw, "CURDEF")) ?? "USD";
-
-  // Transactions — BANKTRANLIST > STMTTRN (can be a single object or an array).
-  const trList = ofxGet(stmtRaw, "BANKTRANLIST");
-  const rawTxns = ofxGet(trList, "STMTTRN");
-  let txnArray: OfxValue[];
-  if (Array.isArray(rawTxns)) {
-    txnArray = rawTxns;
-  } else if (rawTxns) {
-    txnArray = [rawTxns];
-  } else {
-    txnArray = [];
-  }
-  const transactions: QfxTransaction[] = [];
-  for (const t of txnArray) {
-    const amtStr = (ofxString(ofxGet(t, "TRNAMT")) ?? "0").trim();
-    const amountCents = Math.round(Number(amtStr) * CENTS_MULTIPLIER);
-    const fitid = ofxString(ofxGet(t, "FITID")) ?? "";
-    const date = ofxDateToIso(ofxGet(t, "DTPOSTED"));
-    if (!(fitid && date)) {
-      continue;
-    }
-    transactions.push({
-      fitid,
-      date,
-      amount_cents: amountCents,
-      currency,
-      type: ofxString(ofxGet(t, "TRNTYPE")),
-      name: ofxString(ofxGet(t, "NAME")),
-      memo: ofxString(ofxGet(t, "MEMO")),
-      check_number: ofxString(ofxGet(t, "CHECKNUM")),
-      reference_number: ofxString(ofxGet(t, "REFNUM")),
-    });
-  }
-
-  // Balance — LEDGERBAL + AVAILBAL.
-  let balance: QfxBalance | null = null;
-  const ledgerBal = ofxGet(stmtRaw, "LEDGERBAL");
-  const availBal = ofxGet(stmtRaw, "AVAILBAL");
-  if (ledgerBal || availBal) {
-    const asOf = ofxDateToFullIso(ofxGet(ledgerBal, "DTASOF") ?? ofxGet(availBal, "DTASOF"));
-    if (asOf) {
-      const ledgerAmt = ofxNumber(ofxGet(ledgerBal, "BALAMT"));
-      const availAmt = ofxNumber(ofxGet(availBal, "BALAMT"));
-      balance = {
-        as_of: asOf,
-        ledger_cents: ledgerAmt == null ? null : Math.round(ledgerAmt * CENTS_MULTIPLIER),
-        available_cents: availAmt == null ? null : Math.round(availAmt * CENTS_MULTIPLIER),
-      };
-    }
-  }
-
-  return { transactions, balance };
-}
-
 // ─── Main ─────────────────────────────────────────────────────────────────
-
-function chooseActivity(
-  requested: Map<string, StreamScope>,
-  state: TransactionsStateShape,
-  stream: string,
-  accountId: string
-): ActivityChoice {
-  const streamScope = requested.get(stream);
-  const timeRange = streamScope?.time_range;
-  if (timeRange?.since || timeRange?.until) {
-    return {
-      activity: "date_range",
-      dateRange: {
-        from: timeRange.since?.slice(0, 10),
-        to: timeRange.until?.slice(0, 10),
-      },
-    };
-  }
-  const cursor = state.per_account?.[accountId];
-  if (cursor?.max_seen_date) {
-    return { activity: "since_last_statement" };
-  }
-  return { activity: "all" };
-}
 
 runConnector({
   name: "chase",
