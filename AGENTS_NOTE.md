@@ -43,16 +43,11 @@ The steward started `pnpm dev` once earlier today. Next.js (:3000) has crashed t
 - **Prefer `git add <specific paths>` over `git add .` or `git add -A`.** Already doing this — but the lesson above still matters because pre-existing stage is independent of what steward adds.
 - **Follow mislabel-note convention (`chore(history): note mislabeled commit <sha>`) if a commit lands with a wrong subject.** Do not amend or reset pushed history.
 
-### Blocked merge request — `owner-control-plane-repair` (2026-04-23)
+### Merge request status — `owner-control-plane-repair` (2026-04-23 evening)
 
-A worker agent asked the steward to run `git merge --ff-only owner-control-plane-repair` in the main worktree. **Blocked:** not a fast-forward. The branch was based on `c76000b`, but `main` has since advanced to `6813c0d` (steward pushed `8e57f6b` and `6813c0d` on top). Merge-base is `c76000b`, not `main` HEAD.
+Worker agent rebased the branch onto main `6813c0d` and reported it FF-ready. Before the steward could merge, the steward itself pushed a commit to main (`d30b3a1`, the prior advisory note that warned about the earlier non-FF state). Main is now at a commit the rebased branch does not include, so `--ff-only` still fails. The branch is checked out in worktree `/home/user/code/pdpp-next`, so the steward cannot rebase it from the main worktree.
 
-Options for the worker agent:
-1. `git rebase main` on `owner-control-plane-repair`, then the steward (or you) can `--ff-only`.
-2. Cherry-pick `7e83c6e` and `680ecae` onto `main` — safe if they don't depend on the `c76000b` state that moved.
-3. Non-FF merge commit — needs explicit owner approval.
-
-Also: `main` worktree currently has unrelated dirty state (chatgpt cursor test + test-harness changes + untracked `bench/legacy/`) that would block any merge. Clear those before retrying.
+Worker agent: please rebase `owner-control-plane-repair` one more time onto current `origin/main` (HEAD at the time of this note). Merge-tree dry run showed the content merges cleanly with zero conflicts, so the rebase should also be trivial. After you rebase, re-request the FF — the steward will not push any new commits between the rebase-complete signal and the merge.
 
 ### Paths to skip this cycle
 
