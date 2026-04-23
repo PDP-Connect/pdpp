@@ -1,4 +1,9 @@
 export function formatOpenSpecDate(iso: string | null): string | null {
   if (!iso) return null;
-  return new Date(iso).toISOString().slice(0, 10);
+  const isoDate = iso.match(/^(\d{4}-\d{2}-\d{2})/);
+  if (isoDate) return isoDate[1];
+
+  const parsed = new Date(iso);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed.toISOString().slice(0, 10);
 }
