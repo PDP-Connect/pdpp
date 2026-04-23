@@ -27,58 +27,11 @@ import {
   runConnector,
   type ValidateRecord,
 } from "../../src/connector-runtime.ts";
+import { itemId, mergeDetailByKey, parseCurrencyCents, parseOrderDate } from "./parsers.ts";
 import { listPageOrderShape, validateRecord as validateRecordRaw } from "./schemas.ts";
+import type { DetailItem, ListPageDiagnostics, ListPageItem, ListPageOrder, MergedItem, OrderDetail } from "./types.ts";
 
 const validateRecord = validateRecordRaw as ValidateRecord;
-
-// ─── Parsed shapes ──────────────────────────────────────────────────────
-
-interface ListPageItem {
-  asin: string | null;
-  name: string;
-  url: string | null;
-}
-
-interface ListPageOrder {
-  deliveryStatus: string | null;
-  items: ListPageItem[];
-  orderDateRaw: string | null;
-  orderId: string;
-  orderTotal: string | null;
-}
-
-interface DetailItem {
-  asin: string | null;
-  item_image_url: string | null;
-  name: string;
-  quantity: number;
-  refund_status: string | null;
-  seller: string | null;
-  unit_price: string | null;
-  url: string | null;
-}
-
-interface OrderDetail {
-  digital_order: boolean;
-  gift_order: boolean;
-  grand_total: string | null;
-  items: DetailItem[];
-  payment_method_summary: string | null;
-  recipient_name: string | null;
-  shipping_address_summary: string | null;
-  status_detail: string | null;
-}
-
-interface MergedItem {
-  asin?: string | null;
-  item_image_url?: string | null;
-  name: string;
-  quantity?: number | null;
-  refund_status?: string | null;
-  seller?: string | null;
-  unit_price?: string | null;
-  url?: string | null;
-}
 
 interface YearState {
   frozen: boolean;
@@ -94,18 +47,6 @@ interface OrdersStateShape {
   years?: YearsCursor;
 }
 
-interface ListPageDiagnostics {
-  any_card: number;
-  any_order_header: number;
-  body_preview: string;
-  captcha: string;
-  no_orders_text: string;
-  order_cards: number;
-  sign_in_form: boolean;
-  title: string;
-  url: string;
-}
-
 // Navigation timeouts + pacing knobs
 const NAV_TIMEOUT_MS = 30_000;
 const DEEP_PROBE_WAIT_MS = 15_000;
@@ -117,11 +58,7 @@ const POLITE_DELAY_MS = 800;
 const RETRY_MIN_TIMEOUT_MS = 1500;
 const RETRY_FACTOR = 2;
 const RETRY_COUNT = 2;
-const CURRENCY_CENTS_MULTIPLIER = 100;
-
 // Module-scoped regexes (Biome useTopLevelRegex)
-const CURRENCY_NUMBER_RE = /(\d+(?:\.\d+)?)/;
-const ITEM_ID_WHITESPACE_RE = /\s+/g;
 const RETURNED_RE = /return/i;
 const RETRYABLE_ERROR_RE = /timeout|ECONN|ETIMEDOUT|net::|5\d\d/i;
 const SIGNIN_URL_RE = /\/ap\/(signin|challenge|mfa)/;
@@ -540,49 +477,6 @@ function extractOrdersOnPage(page: Page): Promise<ListPageOrder[]> {
       return results;
     })
     .catch((): ListPageOrder[] => []);
-}
-
-function parseOrderDate(raw: string | null | undefined): string | null {
-  if (!raw) {
-    return null;
-  }
-  const d = new Date(raw);
-  if (Number.isNaN(d.getTime())) {
-    return null;
-  }
-  return d.toISOString().slice(0, 10);
-}
-
-function parseCurrencyCents(raw: string | null | undefined): number | null {
-  if (!raw) {
-    return null;
-  }
-  const m = String(raw).match(CURRENCY_NUMBER_RE);
-  if (!m?.[1]) {
-    return null;
-  }
-  return Math.round(Number(m[1]) * CURRENCY_CENTS_MULTIPLIER);
-}
-
-function itemId(orderId: string, it: { asin?: string | null; name?: string }): string {
-  const key = it.asin || it.name?.toLowerCase().replace(ITEM_ID_WHITESPACE_RE, " ").trim() || "unknown";
-  return `${orderId}|${key}`;
-}
-
-function mergeDetailByKey(detailItems: DetailItem[]): {
-  byAsin: Map<string, DetailItem>;
-  byName: Map<string, DetailItem>;
-} {
-  const byAsin = new Map<string, DetailItem>();
-  const byName = new Map<string, DetailItem>();
-  for (const di of detailItems) {
-    if (di.asin) {
-      byAsin.set(di.asin, di);
-    } else if (di.name) {
-      byName.set(di.name.trim().toLowerCase(), di);
-    }
-  }
-  return { byAsin, byName };
 }
 
 // ─── Main ────────────────────────────────────────────────────────────────
