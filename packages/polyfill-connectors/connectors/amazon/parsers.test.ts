@@ -1,7 +1,18 @@
 import assert from "node:assert/strict";
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { test } from "node:test";
-import { itemId, mergeDetailByKey, parseCurrencyCents, parseOrderDate } from "./parsers.ts";
+import { fileURLToPath } from "node:url";
+import { itemId, mergeDetailByKey, parseCurrencyCents, parseOrderDate, parseOrdersListDom } from "./parsers.ts";
 import type { DetailItem } from "./types.ts";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const FIXTURE_DIR = join(__dirname, "__fixtures__");
+const LOCAL_RAW_DIR = join(__dirname, "..", "..", "fixtures", "amazon", "raw", "2026-04-23T00-13-01-167Z", "dom");
+
+function readFixture(relPath: string): string {
+  return readFileSync(join(FIXTURE_DIR, relPath), "utf8");
+}
 
 // ─── parseOrderDate ──────────────────────────────────────────────────────
 
@@ -93,6 +104,50 @@ test("itemId: falls back to 'unknown' when both ASIN and name are absent/empty",
 });
 
 // ─── mergeDetailByKey (covered as a sanity check on the extracted helper) ─
+
+// ─── parseOrdersListDom ──────────────────────────────────────────────────
+
+test("parseOrdersListDom: synthetic-minimal fixture extracts one full order", () => {
+  const html = readFixture("orders-list-minimal.html");
+  const orders = parseOrdersListDom(html);
+  assert.equal(orders.length, 1);
+  const o = orders[0];
+  assert.ok(o);
+  assert.equal(o.orderId, "111-2222222-3333333");
+  assert.equal(o.orderDateRaw, "January 15, 2024");
+  assert.equal(o.orderTotal, "$42.99");
+  assert.equal(o.deliveryStatus, "Delivered January 17");
+  assert.equal(o.items.length, 2);
+  assert.deepEqual(o.items[0], {
+    name: "Synthetic Widget Model A",
+    url: "https://www.amazon.com/dp/B01ABCDEFG?ref=fake",
+    asin: "B01ABCDEFG",
+  });
+  assert.deepEqual(o.items[1], {
+    name: "Synthetic Gadget Model B",
+    url: "https://www.amazon.com/gp/product/B02HIJKLMN?ref=fake",
+    asin: "B02HIJKLMN",
+  });
+});
+
+test("parseOrdersListDom: empty page returns []", () => {
+  assert.deepEqual(parseOrdersListDom("<!doctype html><html><body><div>no orders</div></body></html>"), []);
+  assert.deepEqual(parseOrdersListDom(""), []);
+});
+
+test("parseOrdersListDom: local real fixture parses ≥5 orders with ids + dates", { skip: !existsSync(LOCAL_RAW_DIR) }, () => {
+  const path = join(LOCAL_RAW_DIR, "orders-list-2024.html");
+  if (!existsSync(path)) {
+    return;
+  }
+  const html = readFileSync(path, "utf8");
+  const orders = parseOrdersListDom(html);
+  assert.ok(orders.length >= 5, `expected ≥5 orders, got ${orders.length}`);
+  for (const o of orders) {
+    assert.match(o.orderId, /^\d{3}-\d{7}-\d{7}$/);
+    assert.ok(o.orderDateRaw, `order ${o.orderId} missing orderDateRaw`);
+  }
+});
 
 test("mergeDetailByKey: buckets by ASIN first, name second", () => {
   const items: DetailItem[] = [

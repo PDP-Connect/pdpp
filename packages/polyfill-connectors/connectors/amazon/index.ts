@@ -27,9 +27,9 @@ import {
   runConnector,
   type ValidateRecord,
 } from "../../src/connector-runtime.ts";
-import { itemId, mergeDetailByKey, parseCurrencyCents, parseOrderDate } from "./parsers.ts";
+import { itemId, mergeDetailByKey, parseCurrencyCents, parseOrderDate, parseOrdersListDom } from "./parsers.ts";
 import { listPageOrderShape, validateRecord as validateRecordRaw } from "./schemas.ts";
-import type { DetailItem, ListPageDiagnostics, ListPageItem, ListPageOrder, MergedItem, OrderDetail } from "./types.ts";
+import type { DetailItem, ListPageDiagnostics, ListPageOrder, MergedItem, OrderDetail } from "./types.ts";
 
 const validateRecord = validateRecordRaw as ValidateRecord;
 
@@ -391,92 +391,13 @@ async function fetchOrderDetail(page: Page, orderId: string): Promise<OrderDetai
 }
 
 // ─── Per-page order extraction ────────────────────────────────────────────
-function extractOrdersOnPage(page: Page): Promise<ListPageOrder[]> {
-  return page
-    .evaluate((): ListPageOrder[] => {
-      // biome-ignore-start lint/performance/useTopLevelRegex: runs in browser context (page.evaluate); module-scoped regexes in Node cannot cross the bridge.
-      const ORDER_ID_RE = /^\d{3}-\d{7}-\d{7}$/;
-      const HEADER_DATE_RE = /^(ORDER PLACED|ORDER DATE|PLACED)$/i;
-      const HEADER_TOTAL_RE = /^TOTAL$/i;
-      const TOTAL_VALUE_RE = /^\$[\d,]+\.\d{2}$/;
-      const ASIN_HREF_RE = /\/(?:dp|gp\/product)\/([A-Z0-9]{10})/;
-      const WHITESPACE_RE = /\s+/g;
-      // biome-ignore-end lint/performance/useTopLevelRegex: runs in browser context (page.evaluate); module-scoped regexes in Node cannot cross the bridge.
-
-      const cards = [...document.querySelectorAll<HTMLElement>(".order-card, .js-order-card")];
-      const results: ListPageOrder[] = [];
-      for (const card of cards) {
-        const orderIdEl = card.querySelector<HTMLElement>(".yohtmlc-order-id");
-        const orderId = orderIdEl
-          ? [...orderIdEl.querySelectorAll<HTMLElement>("span")]
-              .map((s) => (s.innerText || "").trim())
-              .find((t) => ORDER_ID_RE.test(t)) || null
-          : null;
-        if (!orderId) {
-          continue;
-        }
-
-        const findHeaderValue = (labelPattern: RegExp): string | null => {
-          for (const item of card.querySelectorAll<HTMLElement>(".order-header__header-list-item")) {
-            const labelEl = item.querySelector<HTMLElement>(".a-color-secondary.a-text-caps");
-            const label = (labelEl?.innerText || "").trim();
-            if (!labelPattern.test(label)) {
-              continue;
-            }
-            const valueEls = [...item.querySelectorAll<HTMLElement>("span")]
-              .filter((s) => s !== labelEl)
-              .map((s) => (s.innerText || "").trim())
-              .filter(Boolean);
-            return valueEls[0] || null;
-          }
-          return null;
-        };
-
-        const orderDateRaw = findHeaderValue(HEADER_DATE_RE);
-        const totalRaw = findHeaderValue(HEADER_TOTAL_RE);
-        const orderTotal = totalRaw && TOTAL_VALUE_RE.test(totalRaw) ? totalRaw : null;
-
-        const primaryStatusEl = card.querySelector<HTMLElement>(
-          ".yohtmlc-shipment-status-primaryText, .delivery-box__primary-text"
-        );
-        const deliveryStatus = primaryStatusEl
-          ? (primaryStatusEl.innerText || "").replace(WHITESPACE_RE, " ").trim() || null
-          : null;
-
-        const items: ListPageItem[] = [];
-        const seenAsins = new Set<string>();
-        for (const titleEl of card.querySelectorAll<HTMLElement>(".yohtmlc-product-title")) {
-          const name = (titleEl.innerText || "").replace(WHITESPACE_RE, " ").trim();
-          if (!name) {
-            continue;
-          }
-          const itemBox = titleEl.closest<HTMLElement>(".item-box, .a-fixed-left-grid") || titleEl.parentElement;
-          const link = itemBox?.querySelector('a[href*="/dp/"], a[href*="/gp/product/"]') || titleEl.querySelector("a");
-          const href = link?.getAttribute("href") || "";
-          const url = href.startsWith("/") ? `https://www.amazon.com${href}` : href || null;
-          const asinMatch = href.match(ASIN_HREF_RE);
-          const asin = asinMatch?.[1] ?? null;
-
-          if (asin && seenAsins.has(asin)) {
-            continue;
-          }
-          if (asin) {
-            seenAsins.add(asin);
-          }
-          items.push({ name, url, asin });
-        }
-
-        results.push({
-          orderId,
-          orderDateRaw,
-          orderTotal,
-          deliveryStatus,
-          items,
-        });
-      }
-      return results;
-    })
-    .catch((): ListPageOrder[] => []);
+async function extractOrdersOnPage(page: Page): Promise<ListPageOrder[]> {
+  try {
+    const html = await page.content();
+    return parseOrdersListDom(html);
+  } catch {
+    return [];
+  }
 }
 
 // ─── Main ────────────────────────────────────────────────────────────────
