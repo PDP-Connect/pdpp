@@ -16,9 +16,9 @@
  * `ChatGptFetchResult` queue so per-stream tests can thread a 200 / 404
  * / 500 response without any network.
  *
- * Imports from ./collect-helpers.ts (not ./index.ts) because index.ts
- * calls `runConnector({...})` at module load — importing it would open
- * stdin and keep the test runner's event loop alive forever.
+ * Imports directly from ./index.ts — `runConnector({...})` is guarded by
+ * `isMainModule(import.meta.url)` so it only fires when index.ts is the
+ * process entry point, not when a test imports it.
  *
  * Why bother: parsers.test.ts proves record *shapes* are correct from
  * individual message/conversation objects. Integration tests on the
@@ -51,12 +51,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { EmittedMessage } from "../../src/connector-runtime.ts";
 import { type EmittedRecord, makeRecordingEmit } from "../../src/test-harness.ts";
-import {
-  processConversationDetail,
-  runCustomInstructionsStream,
-  runMemoriesStream,
-  type StreamDeps,
-} from "./collect-helpers.ts";
+import { processConversationDetail, runCustomInstructionsStream, runMemoriesStream, type StreamDeps } from "./index.ts";
 import { buildConversationRecord, type ConversationDetail } from "./parsers.ts";
 import { validateRecord } from "./schemas.ts";
 import type { ChatGptApi, ChatGptFetchResult, ChatGptJson, ChatGptNode, ConversationListItem } from "./types.ts";
