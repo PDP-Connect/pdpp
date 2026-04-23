@@ -1,4 +1,5 @@
 import type { OpenSpecSidebarSection } from './OpenSpecSidebar';
+import { PLANNING_LABEL, planningPath } from '@/lib/openspec/public';
 
 export type OpenSpecActiveScope =
   | { kind: 'overview' }
@@ -12,18 +13,18 @@ export type OpenSpecActiveScope =
 
 export function buildOpenSpecSidebarSections(scope: OpenSpecActiveScope): OpenSpecSidebarSection[] {
   const top: OpenSpecSidebarSection = {
-    heading: 'OpenSpec',
+    heading: PLANNING_LABEL,
     items: [
-      { href: '/openspec', label: 'Overview', active: scope.kind === 'overview' },
-      { href: '/openspec/changes', label: 'Changes', active: scope.kind === 'change' },
-      { href: '/openspec/specs', label: 'Specs', active: scope.kind === 'specs' },
-      { href: '/openspec/notes', label: 'Notes', active: scope.kind === 'notes' },
+      { href: planningPath(), label: 'Overview', active: scope.kind === 'overview' },
+      { href: planningPath('/changes'), label: 'Changes', active: scope.kind === 'change' },
+      { href: planningPath('/specs'), label: 'Specs', active: scope.kind === 'specs' },
+      { href: planningPath('/notes'), label: 'Notes', active: scope.kind === 'notes' },
     ],
   };
 
   if (scope.kind !== 'change') return [top];
 
-  const base = `/openspec/changes/${scope.changeName}`;
+  const base = planningPath(`/changes/${scope.changeName}`);
   const changeSection: OpenSpecSidebarSection = {
     heading: scope.changeName,
     items: [

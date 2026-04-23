@@ -30,8 +30,16 @@ function stripMarkdownInline(text: string): string {
     .replace(/_([^_]+)_/g, '$1')
     .replace(/~~([^~]+)~~/g, '$1')
     .replace(/^>\s?/gm, '')
+    .replace(/^\s*(?:[-*+]|\d+\.)\s+/gm, '')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+function isListBlock(lines: string[]): boolean {
+  return (
+    lines.length > 0 &&
+    lines.every((line) => /^\s*(?:[-*+]|\d+\.)\s+/.test(line))
+  );
 }
 
 export function extractExcerpt(markdown: string): string | null {
@@ -66,6 +74,10 @@ export function extractExcerpt(markdown: string): string | null {
     while (i < lines.length && lines[i].trim() !== '') {
       paragraph.push(lines[i].trim());
       i++;
+    }
+
+    if (isListBlock(paragraph)) {
+      continue;
     }
 
     const joined = stripMarkdownInline(paragraph.join(' '));

@@ -12,6 +12,7 @@ import {
   listOpenSpecChangeSpecDeltas,
   listOpenSpecChanges,
 } from '@/lib/openspec';
+import { PLANNING_LABEL, planningPath } from '@/lib/openspec/public';
 
 type PageProps = { params: Promise<{ change: string; capability: string }> };
 
@@ -30,9 +31,9 @@ export async function generateStaticParams() {
 export async function generateMetadata({ params }: PageProps): Promise<Metadata> {
   const { change, capability } = await params;
   const artifact = await getOpenSpecChangeSpecDelta(change, capability);
-  if (!artifact) return { title: 'Spec delta not found — OpenSpec — PDPP' };
+  if (!artifact) return { title: `Spec delta not found — ${PLANNING_LABEL} — PDPP` };
   return {
-    title: `${artifact.title} — ${change} — OpenSpec — PDPP`,
+    title: `${artifact.title} — ${change} — ${PLANNING_LABEL} — PDPP`,
     description: artifact.excerpt ?? undefined,
   };
 }
@@ -53,10 +54,10 @@ export default async function ChangeSpecDeltaPage({ params }: PageProps) {
       <article className="flex flex-col gap-6">
         <OpenSpecBreadcrumbs
           crumbs={[
-            { label: 'OpenSpec', href: '/openspec' },
-            { label: 'Changes', href: '/openspec/changes' },
-            { label: change, href: `/openspec/changes/${change}` },
-            { label: 'Spec Deltas', href: `/openspec/changes/${change}/specs` },
+            { label: PLANNING_LABEL, href: planningPath() },
+            { label: 'Changes', href: planningPath('/changes') },
+            { label: change, href: planningPath(`/changes/${change}`) },
+            { label: 'Spec Deltas', href: planningPath(`/changes/${change}/specs`) },
             { label: capability },
           ]}
         />

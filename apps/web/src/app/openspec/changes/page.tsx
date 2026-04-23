@@ -9,10 +9,11 @@ import {
   buildOpenSpecSidebarSections,
 } from '@/components/openspec';
 import { listOpenSpecChanges } from '@/lib/openspec';
+import { PLANNING_LABEL, planningPath } from '@/lib/openspec/public';
 
 export const metadata: Metadata = {
-  title: 'OpenSpec changes — PDPP',
-  description: 'All discovered OpenSpec changes for the PDPP reference implementation.',
+  title: `Changes — ${PLANNING_LABEL} — PDPP`,
+  description: 'All discovered official change entries for the PDPP reference implementation.',
 };
 
 function formatLastModified(iso: string | null): string | null {
@@ -27,7 +28,7 @@ export default async function OpenSpecChangesPage() {
   const sections = buildOpenSpecSidebarSections({ kind: 'overview' }).map((section) => ({
     ...section,
     items: section.items.map((item) =>
-      item.href === '/openspec/changes' ? { ...item, active: true } : item,
+      item.href === planningPath('/changes') ? { ...item, active: true } : item,
     ),
   }));
 
@@ -35,7 +36,7 @@ export default async function OpenSpecChangesPage() {
     <OpenSpecShell sections={sections}>
       <div className="flex flex-col gap-6">
         <OpenSpecBreadcrumbs
-          crumbs={[{ label: 'OpenSpec', href: '/openspec' }, { label: 'Changes' }]}
+          crumbs={[{ label: PLANNING_LABEL, href: planningPath() }, { label: 'Changes' }]}
         />
         <header className="flex flex-col gap-2">
           <h1 className="text-[clamp(1.6rem,2.8vw,2.05rem)] font-semibold tracking-tight leading-tight">Changes</h1>
@@ -57,7 +58,7 @@ export default async function OpenSpecChangesPage() {
               return (
                 <OpenSpecArtifactCard
                   key={c.name}
-                  href={`/openspec/changes/${c.name}`}
+                  href={planningPath(`/changes/${c.name}`)}
                   eyebrow={c.name}
                   title={c.title}
                   excerpt={c.excerpt}

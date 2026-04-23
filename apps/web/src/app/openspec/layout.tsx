@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 import { SiteHeader } from '@/components/SiteHeader';
+import { PLANNING_LABEL } from '@/lib/openspec/public';
 
 export default function OpenSpecLayout({ children }: { children: ReactNode }) {
   return (
@@ -12,7 +13,7 @@ export default function OpenSpecLayout({ children }: { children: ReactNode }) {
           borderBottom: '1px solid var(--border)',
         }}
       >
-        <SiteHeader currentLabel="OpenSpec" />
+        <SiteHeader currentLabel={PLANNING_LABEL} />
       </header>
       {children}
     </div>

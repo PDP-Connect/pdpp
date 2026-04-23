@@ -55,9 +55,20 @@ export type OpenSpecChangeDetail = OpenSpecChangeSummary & {
   designExcerpt: string | null;
 };
 
+export type OpenSpecDesignNoteKind =
+  | 'open-question'
+  | 'plan'
+  | 'audit'
+  | 'research'
+  | 'strategy'
+  | 'connector-note'
+  | 'working-note';
+
 export type OpenSpecDesignNoteSummary = {
   changeName: string;
   noteSlug: string;
+  noteKind: OpenSpecDesignNoteKind;
+  noteKindLabel: string;
   title: string;
   excerpt: string | null;
   repoRelativePath: string;
@@ -67,6 +78,16 @@ export type OpenSpecDesignNoteSummary = {
 
 export type OpenSpecDesignNoteDetail = OpenSpecDesignNoteSummary & {
   markdown: string;
+};
+
+export type OpenSpecDesignNoteGroup = {
+  changeName: string;
+  changeTitle: string;
+  noteCount: number;
+  createdAt: string | null;
+  lastModified: string | null;
+  countsByKind: Partial<Record<OpenSpecDesignNoteKind, number>>;
+  notes: OpenSpecDesignNoteSummary[];
 };
 
 export type OpenSpecLandingSummary = {

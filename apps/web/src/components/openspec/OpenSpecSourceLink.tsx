@@ -1,9 +1,12 @@
 import { formatOpenSpecDate } from '@/lib/openspec/format';
 
-const GITHUB_BASE = 'https://github.com/vana-com/pdpp/blob/main';
+const GITHUB_BLOB_BASE = 'https://github.com/vana-com/pdpp/blob/main';
+const GITHUB_TREE_BASE = 'https://github.com/vana-com/pdpp/tree/main';
 
 export function openSpecGithubUrl(repoRelativePath: string): string {
-  return `${GITHUB_BASE}/${repoRelativePath}`;
+  const normalizedPath = repoRelativePath.replace(/\/+$/, '');
+  const base = repoRelativePath.endsWith('/') ? GITHUB_TREE_BASE : GITHUB_BLOB_BASE;
+  return `${base}/${normalizedPath}`;
 }
 
 export function OpenSpecSourceLink({
@@ -17,6 +20,7 @@ export function OpenSpecSourceLink({
 }) {
   const created = formatOpenSpecDate(createdAt ?? null);
   const updated = formatOpenSpecDate(lastModified ?? null);
+  const showUpdated = updated && updated !== created;
 
   return (
     <div className="pdpp-caption flex flex-wrap items-center gap-2 text-muted-foreground">
@@ -28,7 +32,7 @@ export function OpenSpecSourceLink({
           </span>
         </>
       )}
-      {updated && (
+      {showUpdated && (
         <>
           <span>Updated {updated}</span>
           <span aria-hidden="true" className="opacity-40">

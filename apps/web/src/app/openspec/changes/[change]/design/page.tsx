@@ -12,6 +12,7 @@ import {
   getOpenSpecChangeArtifact,
   listOpenSpecChanges,
 } from '@/lib/openspec';
+import { PLANNING_LABEL, planningPath } from '@/lib/openspec/public';
 
 type PageProps = { params: Promise<{ change: string }> };
 
@@ -23,9 +24,9 @@ export async function generateStaticParams() {
 export async function generateMetadata({ params }: PageProps): Promise<Metadata> {
   const { change } = await params;
   const summary = await getOpenSpecChange(change);
-  if (!summary) return { title: 'Design not found — OpenSpec — PDPP' };
+  if (!summary) return { title: `Design not found — ${PLANNING_LABEL} — PDPP` };
   return {
-    title: `${summary.title} — Design — OpenSpec — PDPP`,
+    title: `${summary.title} — Design — ${PLANNING_LABEL} — PDPP`,
     description: summary.designExcerpt ?? summary.excerpt ?? undefined,
   };
 }
@@ -45,9 +46,9 @@ export default async function ChangeDesignPage({ params }: PageProps) {
       <article className="flex flex-col gap-6">
         <OpenSpecBreadcrumbs
           crumbs={[
-            { label: 'OpenSpec', href: '/openspec' },
-            { label: 'Changes', href: '/openspec/changes' },
-            { label: change, href: `/openspec/changes/${change}` },
+            { label: PLANNING_LABEL, href: planningPath() },
+            { label: 'Changes', href: planningPath('/changes') },
+            { label: change, href: planningPath(`/changes/${change}`) },
             { label: 'Design' },
           ]}
         />

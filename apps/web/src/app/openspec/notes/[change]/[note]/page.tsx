@@ -8,6 +8,7 @@ import {
   buildOpenSpecSidebarSections,
 } from '@/components/openspec';
 import { getOpenSpecDesignNote, listOpenSpecDesignNotes } from '@/lib/openspec';
+import { PLANNING_LABEL, planningPath } from '@/lib/openspec/public';
 
 type PageProps = {
   params: Promise<{ change: string; note: string }>;
@@ -21,9 +22,9 @@ export async function generateStaticParams() {
 export async function generateMetadata({ params }: PageProps): Promise<Metadata> {
   const { change, note } = await params;
   const designNote = await getOpenSpecDesignNote(change, note);
-  if (!designNote) return { title: 'Design note not found — OpenSpec — PDPP' };
+  if (!designNote) return { title: `Project note not found — ${PLANNING_LABEL} — PDPP` };
   return {
-    title: `${designNote.title} — Design Note — OpenSpec — PDPP`,
+    title: `${designNote.title} — Project note — ${PLANNING_LABEL} — PDPP`,
     description: designNote.excerpt ?? undefined,
   };
 }
@@ -44,9 +45,9 @@ export default async function OpenSpecDesignNotePage({ params }: PageProps) {
       <article className="flex flex-col gap-6">
         <OpenSpecBreadcrumbs
           crumbs={[
-            { label: 'OpenSpec', href: '/openspec' },
-            { label: 'Design Notes', href: '/openspec/notes' },
-            { label: change, href: `/openspec/changes/${change}` },
+            { label: PLANNING_LABEL, href: planningPath() },
+            { label: 'Project notes', href: planningPath('/notes') },
+            { label: change, href: planningPath(`/changes/${change}`) },
             { label: designNote.title },
           ]}
         />
@@ -57,7 +58,9 @@ export default async function OpenSpecDesignNotePage({ params }: PageProps) {
           <div className="pdpp-caption flex flex-wrap items-center gap-2 text-muted-foreground">
             <span className="font-mono">{change}</span>
             <span aria-hidden="true" className="text-muted-foreground/50">·</span>
-            <span>Design note</span>
+            <span>Project note</span>
+            <span aria-hidden="true" className="text-muted-foreground/50">·</span>
+            <span>{designNote.noteKindLabel}</span>
           </div>
           <OpenSpecSourceLink
             repoRelativePath={designNote.repoRelativePath}

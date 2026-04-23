@@ -10,6 +10,7 @@ import {
   buildOpenSpecSidebarSections,
 } from '@/components/openspec';
 import { getOpenSpecSpec, listOpenSpecSpecs } from '@/lib/openspec';
+import { PLANNING_LABEL, planningPath } from '@/lib/openspec/public';
 
 type PageProps = { params: Promise<{ capability: string }> };
 
@@ -21,9 +22,9 @@ export async function generateStaticParams() {
 export async function generateMetadata({ params }: PageProps): Promise<Metadata> {
   const { capability } = await params;
   const spec = await getOpenSpecSpec(capability);
-  if (!spec) return { title: 'Spec not found — OpenSpec — PDPP' };
+  if (!spec) return { title: `Spec not found — ${PLANNING_LABEL} — PDPP` };
   return {
-    title: `${spec.title} — OpenSpec — PDPP`,
+    title: `${spec.title} — ${PLANNING_LABEL} — PDPP`,
     description: spec.excerpt ?? undefined,
   };
 }
@@ -40,8 +41,8 @@ export default async function CapabilitySpecPage({ params }: PageProps) {
       <article className="flex flex-col gap-6">
         <OpenSpecBreadcrumbs
           crumbs={[
-            { label: 'OpenSpec', href: '/openspec' },
-            { label: 'Specs', href: '/openspec/specs' },
+            { label: PLANNING_LABEL, href: planningPath() },
+            { label: 'Specs', href: planningPath('/specs') },
             { label: spec.capability },
           ]}
         />
@@ -61,7 +62,7 @@ export default async function CapabilitySpecPage({ params }: PageProps) {
                 <Fragment key={name}>
                   {index > 0 && <span aria-hidden="true" className="opacity-40">,</span>}
                   <Link
-                    href={`/openspec/changes/${name}`}
+                    href={planningPath(`/changes/${name}`)}
                     className="font-mono transition-colors hover:text-foreground"
                   >
                     {name}

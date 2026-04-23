@@ -20,6 +20,8 @@ import type {
   OpenSpecChangeStatus,
   OpenSpecChangeSummary,
   OpenSpecDesignNoteDetail,
+  OpenSpecDesignNoteGroup,
+  OpenSpecDesignNoteKind,
   OpenSpecDesignNoteSummary,
   OpenSpecLandingSummary,
   OpenSpecSpecDetail,
@@ -116,6 +118,16 @@ const STATUS_ORDER: Record<OpenSpecChangeStatus, number> = {
   unknown: 2,
 };
 
+const NOTE_KIND_ORDER: Record<OpenSpecDesignNoteKind, number> = {
+  'open-question': 0,
+  plan: 1,
+  strategy: 2,
+  audit: 3,
+  research: 4,
+  'connector-note': 5,
+  'working-note': 6,
+};
+
 function sortChangeSummaries(rows: OpenSpecChangeSummary[]): OpenSpecChangeSummary[] {
   return [...rows].sort((a, b) => {
     const statusOrder = STATUS_ORDER[a.status] - STATUS_ORDER[b.status];
@@ -167,6 +179,71 @@ function noteSlugFromFilename(filename: string): string {
   return filename.replace(/\.md$/i, '');
 }
 
+function classifyDesignNote(noteSlug: string): {
+  noteKind: OpenSpecDesignNoteSummary['noteKind'];
+  noteKindLabel: string;
+} {
+  if (noteSlug.includes('open-question')) {
+    return { noteKind: 'open-question', noteKindLabel: 'Open questions' };
+  }
+  if (
+    noteSlug.includes('execution-plan') ||
+    noteSlug.includes('implementation-plan') ||
+    /(?:^|-)plan(?:-|$)/.test(noteSlug)
+  ) {
+    return { noteKind: 'plan', noteKindLabel: 'Plans' };
+  }
+  if (
+    noteSlug.includes('audit') ||
+    noteSlug.includes('review') ||
+    noteSlug.includes('assessment') ||
+    noteSlug.includes('triage')
+  ) {
+    return { noteKind: 'audit', noteKindLabel: 'Audits & reviews' };
+  }
+  if (noteSlug.includes('research') || noteSlug.includes('prior-art')) {
+    return { noteKind: 'research', noteKindLabel: 'Research' };
+  }
+  if (
+    noteSlug.includes('framing') ||
+    noteSlug.includes('synthesis') ||
+    noteSlug.includes('brief') ||
+    noteSlug.includes('follow-up') ||
+    noteSlug.includes('proposed-direction')
+  ) {
+    return { noteKind: 'strategy', noteKindLabel: 'Strategy & framing' };
+  }
+  if (
+    [
+      'amazon',
+      'gmail',
+      'chatgpt',
+      'usaa',
+      'ynab',
+      'chase',
+      'claude-code-codex-connectors',
+      'wide-build',
+      'layer-2-coverage',
+    ].some((token) => noteSlug.includes(token))
+  ) {
+    return { noteKind: 'connector-note', noteKindLabel: 'Connector notes' };
+  }
+  return { noteKind: 'working-note', noteKindLabel: 'Working notes' };
+}
+
+function sortNotesWithinGroup(
+  rows: OpenSpecDesignNoteSummary[],
+): OpenSpecDesignNoteSummary[] {
+  return [...rows].sort((a, b) => {
+    const kindOrder = NOTE_KIND_ORDER[a.noteKind] - NOTE_KIND_ORDER[b.noteKind];
+    if (kindOrder !== 0) return kindOrder;
+    const aModified = a.lastModified ?? '';
+    const bModified = b.lastModified ?? '';
+    if (aModified !== bModified) return aModified < bModified ? 1 : -1;
+    return a.title.localeCompare(b.title);
+  });
+}
+
 async function loadDesignNoteSummary(
   repoRoot: string,
   changeName: string,
@@ -179,10 +256,13 @@ async function loadDesignNoteSummary(
   if (!raw) return null;
 
   const noteSlug = noteSlugFromFilename(noteFilename);
+  const { noteKind, noteKindLabel } = classifyDesignNote(noteSlug);
 
   return {
     changeName,
     noteSlug,
+    noteKind,
+    noteKindLabel,
     title: extractTitle(raw.markdown, humanizeName(noteSlug)),
     excerpt: extractExcerpt(raw.markdown),
     repoRelativePath: raw.repoRelativePath,
@@ -247,6 +327,56 @@ export async function listOpenSpecDesignNotes(): Promise<OpenSpecDesignNoteSumma
   );
 
   return sortDesignNotes(noteGroups.flat());
+}
+
+export async function listOpenSpecChangeDesignNotes(
+  changeName: string,
+): Promise<OpenSpecDesignNoteSummary[]> {
+  const notes = await listOpenSpecDesignNotes();
+  return sortNotesWithinGroup(notes.filter((note) => note.changeName === changeName));
+}
+
+export async function listOpenSpecDesignNoteGroups(): Promise<OpenSpecDesignNoteGroup[]> {
+  const [changes, notes] = await Promise.all([
+    listOpenSpecChanges(),
+    listOpenSpecDesignNotes(),
+  ]);
+
+  const changeTitleByName = new Map(changes.map((change) => [change.name, change.title]));
+  const grouped = new Map<string, OpenSpecDesignNoteSummary[]>();
+
+  for (const note of notes) {
+    const list = grouped.get(note.changeName) ?? [];
+    list.push(note);
+    grouped.set(note.changeName, list);
+  }
+
+  return [...grouped.entries()]
+    .map(([changeName, changeNotes]) => {
+      const countsByKind = changeNotes.reduce<OpenSpecDesignNoteGroup['countsByKind']>(
+        (acc, note) => {
+          acc[note.noteKind] = (acc[note.noteKind] ?? 0) + 1;
+          return acc;
+        },
+        {},
+      );
+
+      return {
+        changeName,
+        changeTitle: changeTitleByName.get(changeName) ?? humanizeName(changeName),
+        noteCount: changeNotes.length,
+        createdAt: pickEarliest(...changeNotes.map((note) => note.createdAt)),
+        lastModified: pickLatest(...changeNotes.map((note) => note.lastModified)),
+        countsByKind,
+        notes: sortNotesWithinGroup(changeNotes),
+      } satisfies OpenSpecDesignNoteGroup;
+    })
+    .sort((a, b) => {
+      const aModified = a.lastModified ?? '';
+      const bModified = b.lastModified ?? '';
+      if (aModified !== bModified) return aModified < bModified ? 1 : -1;
+      return a.changeTitle.localeCompare(b.changeTitle);
+    });
 }
 
 export async function getOpenSpecLandingSummary(): Promise<OpenSpecLandingSummary> {
@@ -414,6 +544,7 @@ export async function getOpenSpecDesignNote(
   return {
     changeName,
     noteSlug,
+    ...classifyDesignNote(noteSlug),
     title: extractTitle(raw.markdown, humanizeName(noteSlug)),
     excerpt: extractExcerpt(raw.markdown),
     repoRelativePath: raw.repoRelativePath,
@@ -440,6 +571,8 @@ export type {
   OpenSpecChangeStatus,
   OpenSpecChangeSummary,
   OpenSpecDesignNoteDetail,
+  OpenSpecDesignNoteGroup,
+  OpenSpecDesignNoteKind,
   OpenSpecDesignNoteSummary,
   OpenSpecLandingSummary,
   OpenSpecSpecDetail,
