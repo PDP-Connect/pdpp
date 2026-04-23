@@ -25,6 +25,7 @@ import type { BrowserContext, Locator, Page } from "playwright";
 import { ensureUsaaSession } from "../../src/auto-login/usaa.ts";
 import {
   type BrowserCollectContext,
+  type EmittedMessage,
   type InteractionRequest,
   type InteractionResponse,
   nowIso,
@@ -33,29 +34,23 @@ import {
   type ValidateRecord,
 } from "../../src/connector-runtime.ts";
 import { attachDownloadQueue, type DownloadQueue } from "../../src/download-queue.ts";
+import { isMainModule } from "../../src/is-main-module.ts";
 import {
-  buildIndexRows,
-  type EmitDeps,
-  emitAccountsStream,
-  emitDeferredStreams,
-  emitExportFailure,
-  emitStatementRecords,
-  type HydrationSummary,
-  hydrationSuccess,
-  shouldParseStatementTitle,
-} from "./collect-helpers.ts";
-import {
+  buildAccountRecord,
   buildCandidateStarts,
   buildCreditCardBillingRecord,
   buildInboxMessageRecord,
+  hashId,
+  isoDate,
   mmddyyyy,
   BACKFILL_17MO as PARSERS_BACKFILL_17MO,
   INCREMENTAL_OVERLAP_MS as PARSERS_INCREMENTAL_OVERLAP_MS,
   parseCsv,
+  resolveAccountIdForRef,
   rowsToTransactions,
 } from "./parsers.ts";
 import { validateRecord as validateRecordRaw } from "./schemas.ts";
-import { hydrateStatementPdfs, parsePdfStatement } from "./statement-pdfs.ts";
+import { fileUrlForPath, hydrateStatementPdfs, parsePdfStatement } from "./statement-pdfs.ts";
 import type {
   BillingKv,
   DashboardAccount,
@@ -69,6 +64,7 @@ import type {
   IndexRow,
   LocatedExportPage,
   PageDiagnostics,
+  StatementRecord,
   TransactionsPriorState,
   TransactionsStreamCursor,
 } from "./types.ts";
@@ -109,6 +105,185 @@ const HTML_PREVIEW_MAX = 600;
 
 // Pure helpers — hashId, currencyToCents, isoDate, mmddyyyy, parseCsv,
 // rowsToTransactions — live in ./parsers.ts.
+
+// ─── Emit-path helpers (cross-stream seams) ─────────────────────────────
+
+export type EmitFn = BrowserCollectContext["emit"];
+export type EmitRecordFn = BrowserCollectContext["emitRecord"];
+export type RequestedScopes = BrowserCollectContext["requested"];
+
+// Module-scope regexes (Biome useTopLevelRegex). CREDIT_CARD_TYPE_RE is
+// defined above in the existing regex block; reuse it here rather than
+// redeclare to avoid a lint collision.
+const STATEMENT_TITLE_RE = /STATEMENT/i;
+const NON_STATEMENT_TITLE_RE = /(TERMS\b|AGREEMENT\b|NOTICE\b|DISCLOSURE\b|CONDITION)/i;
+
+/** Per-run dependency bag for the emit-path helpers. */
+export interface EmitDeps {
+  emit: EmitFn;
+  emitRecord: EmitRecordFn;
+}
+
+/** Aggregate shape from the PDF hydration pass. Exposed so the emit-
+ *  path caller can thread successes/attempts into the per-run PROGRESS. */
+export interface HydrationSummary {
+  attempts: number;
+  results: Map<number, HydrationResult>;
+  successes: number;
+}
+
+/** Streams scaffolded in design-notes but without live selectors. Each
+ *  requested-but-deferred stream gets a SKIP_RESULT so the client sees
+ *  the intent without data. */
+export const DEFERRED_STREAMS: readonly string[] = [
+  "transfers",
+  "bill_payments",
+  "scheduled_transactions",
+  "external_accounts",
+];
+
+/** True iff we should try to extract transactions from this statement
+ *  title. USAA's document index mixes statements with agreements /
+ *  disclosures — the parser only understands the former. */
+export function shouldParseStatementTitle(title: string): boolean {
+  return STATEMENT_TITLE_RE.test(title) && !NON_STATEMENT_TITLE_RE.test(title);
+}
+
+/** Narrow a HydrationResult to the success branch. Used by the record-
+ *  emit path to decide between a hydrated row and an index-only row. */
+export function hydrationSuccess(h: HydrationResult | undefined): HydrationResultSuccess | null {
+  if (h && "pdfPath" in h) {
+    return h;
+  }
+  return null;
+}
+
+/** Build `statements` IndexRows from scraped DocRows. Rows missing a
+ *  `date_delivered` are dropped — we can't reliably key them. Account
+ *  resolution falls through last-four then name substring. */
+export function buildIndexRows(docs: readonly DocRow[], accounts: readonly DashboardAccount[]): IndexRow[] {
+  return docs
+    .filter((d) => d.date_delivered)
+    .map((d) => ({
+      rowIndex: d.rowIndex,
+      id: hashId(`${d.account_reference}|${d.date_delivered}|${d.title}`),
+      account_id: resolveAccountIdForRef(d.account_reference, accounts),
+      title: d.title,
+      date_delivered: isoDate(d.date_delivered),
+      account_reference: d.account_reference,
+    }));
+}
+
+/** Emit one `accounts` record per dashboard account, followed by a
+ *  STATE checkpoint. Record `fetched_at` threads the run-level
+ *  emittedAt so every record in a run shares one timestamp; STATE
+ *  cursor uses `nowIso()` at emit time since it's a heartbeat, not a
+ *  record field. */
+export async function emitAccountsStream(
+  deps: EmitDeps,
+  accounts: readonly DashboardAccount[],
+  emittedAt: string
+): Promise<void> {
+  for (const a of accounts) {
+    await deps.emitRecord("accounts", buildAccountRecord(a, emittedAt));
+  }
+  await deps.emit({
+    type: "STATE",
+    stream: "accounts",
+    cursor: { fetched_at: nowIso() },
+  });
+}
+
+/** Emit a SKIP_RESULT for every requested-but-deferred stream. Keeps
+ *  the client informed that we understood the request but can't fulfil
+ *  it in this revision — rather than silently dropping the scope. */
+export async function emitDeferredStreams(emit: EmitFn, requested: RequestedScopes): Promise<void> {
+  for (const s of DEFERRED_STREAMS) {
+    if (requested.has(s)) {
+      const msg: EmittedMessage = {
+        type: "SKIP_RESULT",
+        stream: s,
+        reason: "selectors_pending",
+        message: `${s} stream scaffolded in design-notes; click-chain or SPA-component wiring deferred.`,
+      };
+      await emit(msg);
+    }
+  }
+}
+
+/**
+ * Emit the "backfill ladder exhausted" SKIP_RESULT for transactions.
+ * Called when `tryExportLadder` returns no CSV across every candidate
+ * start — either the dialog shape shifted or the account has no
+ * transactions in any supported window.
+ */
+export async function emitExportFailure(
+  deps: EmitDeps,
+  a: DashboardAccount,
+  lastDiag: DiagnosticInfo | null
+): Promise<void> {
+  const isCreditCard = CREDIT_CARD_TYPE_RE.test(a.account_type);
+  const baseMessage = lastDiag
+    ? `${a.name ?? "?"}: ${lastDiag.phase} at ${lastDiag.diag?.url ?? "unknown url"}`
+    : `${a.name ?? "?"}: export dialog didn't produce a download across all ranges — account may have no transactions or selectors shifted`;
+  const ccSuffix = isCreditCard
+    ? ' (credit-card export flow not verified live 2026-04-19 — see design-notes/usaa.md "Fallback path: DOM scrape")'
+    : "";
+  await deps.emit({
+    type: "SKIP_RESULT",
+    stream: "transactions",
+    reason: isCreditCard ? "credit_card_export_unverified" : "export_no_download",
+    message: `${baseMessage}${ccSuffix}`,
+    diagnostics: lastDiag,
+  });
+}
+
+/**
+ * Emit one `statements` record per index row. A hydrated row gets a
+ * populated `pdf_path` / `pdf_sha256` / `document_url`; a failed
+ * hydration falls back to an index-only row (all three are null) so
+ * the client never loses the fact that the statement exists. Emits a
+ * final PROGRESS + STATE for the stream.
+ *
+ * Invariants (tested in integration.test.ts):
+ *   - same number of records emitted as rows in, regardless of
+ *     hydration success (null fallback, not drop),
+ *   - hydrated rows set pdf_path + pdf_sha256 + document_url; index-
+ *     only rows leave all three null,
+ *   - STATE emits exactly once after all records.
+ */
+export async function emitStatementRecords(
+  deps: EmitDeps,
+  indexRows: readonly IndexRow[],
+  hydrationResults: Map<number, HydrationResult>,
+  summary: HydrationSummary
+): Promise<void> {
+  for (const row of indexRows) {
+    const ok = hydrationSuccess(hydrationResults.get(row.rowIndex));
+    const rec: StatementRecord = {
+      id: row.id,
+      account_id: row.account_id,
+      title: row.title,
+      date_delivered: row.date_delivered,
+      account_reference: row.account_reference,
+      document_url: ok ? fileUrlForPath(ok.pdfPath) : null,
+      pdf_sha256: ok?.pdfSha256 ?? null,
+      pdf_path: ok?.pdfPath ?? null,
+      fetched_at: nowIso(),
+    };
+    await deps.emitRecord("statements", rec);
+  }
+  await deps.emit({
+    type: "PROGRESS",
+    stream: "statements",
+    message: `Hydrated ${summary.successes}/${summary.attempts || indexRows.length} PDFs`,
+  });
+  await deps.emit({
+    type: "STATE",
+    stream: "statements",
+    cursor: { fetched_at: nowIso() },
+  });
+}
 
 // ─── Account extraction from the /my/usaa dashboard ───────────────────────
 
@@ -1053,91 +1228,96 @@ async function runCreditCardBillingStream(
 
 // ─── Connector entry point ────────────────────────────────────────────────
 
-runConnector({
-  name: "usaa",
-  validateRecord,
-  browser: { profileName: "usaa" },
-  async ensureSession({
-    context,
-    page,
-    sendInteraction,
-  }: {
-    context: BrowserContext;
-    page: Page;
-    sendInteraction: (req: InteractionRequest) => Promise<InteractionResponse>;
-  }): Promise<void> {
-    await ensureUsaaSession({
+// Guarded so `import "./index.ts"` in tests doesn't spin up the runtime
+// and block the Node event loop on stdin. Only fires when this module
+// IS the process entry point (i.e. `tsx connectors/usaa/index.ts`).
+if (isMainModule(import.meta.url)) {
+  runConnector({
+    name: "usaa",
+    validateRecord,
+    browser: { profileName: "usaa" },
+    async ensureSession({
       context,
       page,
       sendInteraction,
-    });
-  },
-  async collect(ctx: BrowserCollectContext): Promise<void> {
-    const { state, requested, context, page, emit, emitRecord, progress, capture, sendInteraction, emittedAt } = ctx;
-    const deps: EmitDeps = { emit, emitRecord };
+    }: {
+      context: BrowserContext;
+      page: Page;
+      sendInteraction: (req: InteractionRequest) => Promise<InteractionResponse>;
+    }): Promise<void> {
+      await ensureUsaaSession({
+        context,
+        page,
+        sendInteraction,
+      });
+    },
+    async collect(ctx: BrowserCollectContext): Promise<void> {
+      const { state, requested, context, page, emit, emitRecord, progress, capture, sendInteraction, emittedAt } = ctx;
+      const deps: EmitDeps = { emit, emitRecord };
 
-    // Page-level download listener — context.on('download') doesn't fire over
-    // CDP; page.on does. Attach BEFORE any clicks that might download.
-    const downloadQueue = attachDownloadQueue(page);
+      // Page-level download listener — context.on('download') doesn't fire over
+      // CDP; page.on does. Attach BEFORE any clicks that might download.
+      const downloadQueue = attachDownloadQueue(page);
 
-    try {
-      // ACCOUNTS — extract from dashboard; emit optionally based on requested.
-      await progress("Extracting accounts from dashboard");
-      if (capture) {
-        await capture.captureDom(page, "dashboard-accounts");
-      }
-      const accounts = await extractAccounts(page);
-      await progress(`Found ${accounts.length} account(s)`);
-
-      if (requested.has("accounts")) {
-        await emitAccountsStream(deps, accounts, emittedAt);
-      }
-
-      // Signal raised by the transactions loop when a page redirects to
-      // /my/logon mid-run — meaning USAA's session has lapsed.
-      const streamState: TransactionsStreamState = { sessionDeadMidRun: false };
-
-      // TRANSACTIONS — drive Export per account where applicable.
-      if (requested.has("transactions")) {
-        await runTransactionsStream(
-          deps,
-          context,
-          page,
-          sendInteraction,
-          downloadQueue,
-          accounts,
-          state,
-          requested,
-          streamState
-        );
-      }
-
-      // STATEMENTS — scrape /my/documents + hydrate PDFs + (optionally) parse txns.
-      if ((requested.has("statements") || requested.has("transactions")) && !streamState.sessionDeadMidRun) {
-        await runStatementsStream({ ...deps, page, downloadQueue }, accounts, requested);
-      }
-
-      // INBOX_MESSAGES — scrape /my/inbox.
-      if (requested.has("inbox_messages") && !streamState.sessionDeadMidRun) {
-        await runInboxStream(deps, page);
-      }
-
-      // CREDIT_CARD_BILLING — one record per credit-card account.
-      if (requested.has("credit_card_billing") && !streamState.sessionDeadMidRun) {
-        await runCreditCardBillingStream(deps, page, accounts);
-      }
-
-      await emitDeferredStreams(emit, requested);
-
-      if (streamState.sessionDeadMidRun) {
-        throw new Error("usaa session expired mid-run; re-run with fresh auth to complete");
-      }
-    } finally {
       try {
-        downloadQueue.detach();
-      } catch {
-        /* ignore */
+        // ACCOUNTS — extract from dashboard; emit optionally based on requested.
+        await progress("Extracting accounts from dashboard");
+        if (capture) {
+          await capture.captureDom(page, "dashboard-accounts");
+        }
+        const accounts = await extractAccounts(page);
+        await progress(`Found ${accounts.length} account(s)`);
+
+        if (requested.has("accounts")) {
+          await emitAccountsStream(deps, accounts, emittedAt);
+        }
+
+        // Signal raised by the transactions loop when a page redirects to
+        // /my/logon mid-run — meaning USAA's session has lapsed.
+        const streamState: TransactionsStreamState = { sessionDeadMidRun: false };
+
+        // TRANSACTIONS — drive Export per account where applicable.
+        if (requested.has("transactions")) {
+          await runTransactionsStream(
+            deps,
+            context,
+            page,
+            sendInteraction,
+            downloadQueue,
+            accounts,
+            state,
+            requested,
+            streamState
+          );
+        }
+
+        // STATEMENTS — scrape /my/documents + hydrate PDFs + (optionally) parse txns.
+        if ((requested.has("statements") || requested.has("transactions")) && !streamState.sessionDeadMidRun) {
+          await runStatementsStream({ ...deps, page, downloadQueue }, accounts, requested);
+        }
+
+        // INBOX_MESSAGES — scrape /my/inbox.
+        if (requested.has("inbox_messages") && !streamState.sessionDeadMidRun) {
+          await runInboxStream(deps, page);
+        }
+
+        // CREDIT_CARD_BILLING — one record per credit-card account.
+        if (requested.has("credit_card_billing") && !streamState.sessionDeadMidRun) {
+          await runCreditCardBillingStream(deps, page, accounts);
+        }
+
+        await emitDeferredStreams(emit, requested);
+
+        if (streamState.sessionDeadMidRun) {
+          throw new Error("usaa session expired mid-run; re-run with fresh auth to complete");
+        }
+      } finally {
+        try {
+          downloadQueue.detach();
+        } catch {
+          /* ignore */
+        }
       }
-    }
-  },
-});
+    },
+  });
+}

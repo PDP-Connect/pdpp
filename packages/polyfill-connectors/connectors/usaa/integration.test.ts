@@ -1,6 +1,6 @@
 /**
  * Integration tests for the USAA connector's `collect()` emit path —
- * the per-stream helpers in collect-helpers.ts (emitAccountsStream,
+ * the per-stream helpers in index.ts (emitAccountsStream,
  * emitStatementRecords, emitDeferredStreams, emitExportFailure) plus
  * the pure buildIndexRows / hydrationSuccess / shouldParseStatementTitle
  * filters.
@@ -16,9 +16,9 @@
  * hydration → index-only row), backfill-ladder-exhausted SKIP shape,
  * and emittedAt propagation into account records.
  *
- * Imports from ./collect-helpers.ts (not ./index.ts) because index.ts
- * calls `runConnector({...})` at module load — importing it would open
- * stdin and keep the test runner's event loop alive forever.
+ * Imports directly from ./index.ts — `runConnector({...})` is guarded by
+ * `isMainModule(import.meta.url)` so it only fires when index.ts is the
+ * process entry point, not when a test imports it.
  *
  * Why bother: parsers.test.ts proves record *shapes* are correct from
  * DOM/CSV/PDF input. Integration tests on the emit path prove the
@@ -53,7 +53,7 @@ import {
   type HydrationSummary,
   hydrationSuccess,
   shouldParseStatementTitle,
-} from "./collect-helpers.ts";
+} from "./index.ts";
 import { validateRecord } from "./schemas.ts";
 import type {
   DashboardAccount,
