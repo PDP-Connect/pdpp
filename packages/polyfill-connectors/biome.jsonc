@@ -15,6 +15,7 @@
       "src/**/*.ts",
       "connectors/**/*.ts",
       "bin/**/*.ts",
+      "bench/**/*.ts",
       "*.jsonc",
       "*.json",
       "!node_modules",

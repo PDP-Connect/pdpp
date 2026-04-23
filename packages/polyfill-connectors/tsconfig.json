@@ -48,6 +48,7 @@
     "src/**/*.ts",
     "connectors/**/*.ts",
     "bin/**/*.ts",
+    "bench/**/*.ts",
     "types/**/*.d.ts"
   ],
   // __fixtures__/ holds hand-crafted HTML/JSON used by parser tests; they
