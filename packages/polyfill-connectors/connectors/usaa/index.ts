@@ -25,7 +25,6 @@ import type { BrowserContext, Locator, Page } from "playwright";
 import { ensureUsaaSession } from "../../src/auto-login/usaa.ts";
 import {
   type BrowserCollectContext,
-  type EmittedMessage,
   type InteractionRequest,
   type InteractionResponse,
   nowIso,
@@ -35,21 +34,28 @@ import {
 } from "../../src/connector-runtime.ts";
 import { attachDownloadQueue, type DownloadQueue } from "../../src/download-queue.ts";
 import {
-  buildAccountRecord,
+  buildIndexRows,
+  type EmitDeps,
+  emitAccountsStream,
+  emitDeferredStreams,
+  emitExportFailure,
+  emitStatementRecords,
+  type HydrationSummary,
+  hydrationSuccess,
+  shouldParseStatementTitle,
+} from "./collect-helpers.ts";
+import {
   buildCandidateStarts,
   buildCreditCardBillingRecord,
   buildInboxMessageRecord,
-  hashId,
-  isoDate,
   mmddyyyy,
   BACKFILL_17MO as PARSERS_BACKFILL_17MO,
   INCREMENTAL_OVERLAP_MS as PARSERS_INCREMENTAL_OVERLAP_MS,
   parseCsv,
-  resolveAccountIdForRef,
   rowsToTransactions,
 } from "./parsers.ts";
 import { validateRecord as validateRecordRaw } from "./schemas.ts";
-import { fileUrlForPath, hydrateStatementPdfs, parsePdfStatement } from "./statement-pdfs.ts";
+import { hydrateStatementPdfs, parsePdfStatement } from "./statement-pdfs.ts";
 import type {
   BillingKv,
   DashboardAccount,
@@ -63,7 +69,6 @@ import type {
   IndexRow,
   LocatedExportPage,
   PageDiagnostics,
-  StatementRecord,
   TransactionsPriorState,
   TransactionsStreamCursor,
 } from "./types.ts";
@@ -78,8 +83,6 @@ const DASHBOARD_SELECTOR_WAIT = 'a[href^="/my/checking"], a[href^="/my/credit-ca
 const LOGON_REDIRECT_RE = /\/my\/logon|\/access-management\/oauth2\/member\/authorize/;
 const TRANSACTION_ACCOUNT_TYPE_RE = /checking|savings|credit-card/;
 const CREDIT_CARD_TYPE_RE = /credit-card/;
-const STATEMENT_TITLE_RE = /STATEMENT/i;
-const NON_STATEMENT_TITLE_RE = /(TERMS\b|AGREEMENT\b|NOTICE\b|DISCLOSURE\b|CONDITION)/i;
 const TEMP_DIR_PREFIX_RE = /\/[^/]+$/;
 const EXPORT_BUTTON_TEXT_RE = /^\s*Export\s*$/i;
 
@@ -419,30 +422,9 @@ async function driveExport(
 
 // ─── Stream orchestration helpers ────────────────────────────────────────
 
-interface EmitDeps {
-  emit: BrowserCollectContext["emit"];
-  emitRecord: BrowserCollectContext["emitRecord"];
-}
-
 interface StatementsSubDeps extends EmitDeps {
   downloadQueue: DownloadQueue;
   page: Page;
-}
-
-/** Emit account records + a STATE checkpoint. */
-async function emitAccountsStream(
-  deps: EmitDeps,
-  accounts: readonly DashboardAccount[],
-  emittedAt: string
-): Promise<void> {
-  for (const a of accounts) {
-    await deps.emitRecord("accounts", buildAccountRecord(a, emittedAt));
-  }
-  await deps.emit({
-    type: "STATE",
-    stream: "accounts",
-    cursor: { fetched_at: nowIso() },
-  });
 }
 
 interface TransactionsStreamState {
@@ -601,23 +583,6 @@ async function tryExportLadder(
     });
   }
   return { csvPath: null, usedSince: null, lastDiag: diagBox.current };
-}
-
-async function emitExportFailure(deps: EmitDeps, a: DashboardAccount, lastDiag: DiagnosticInfo | null): Promise<void> {
-  const isCreditCard = CREDIT_CARD_TYPE_RE.test(a.account_type);
-  const baseMessage = lastDiag
-    ? `${a.name ?? "?"}: ${lastDiag.phase} at ${lastDiag.diag?.url ?? "unknown url"}`
-    : `${a.name ?? "?"}: export dialog didn't produce a download across all ranges — account may have no transactions or selectors shifted`;
-  const ccSuffix = isCreditCard
-    ? ' (credit-card export flow not verified live 2026-04-19 — see design-notes/usaa.md "Fallback path: DOM scrape")'
-    : "";
-  await deps.emit({
-    type: "SKIP_RESULT",
-    stream: "transactions",
-    reason: isCreditCard ? "credit_card_export_unverified" : "export_no_download",
-    message: `${baseMessage}${ccSuffix}`,
-    diagnostics: lastDiag,
-  });
 }
 
 /** Parse the downloaded CSV, emit each transaction, return the latest date seen. */
@@ -780,25 +745,6 @@ function scrapeStatementsIndex(page: Page): Promise<DocRow[]> {
   });
 }
 
-function buildIndexRows(docs: readonly DocRow[], accounts: readonly DashboardAccount[]): IndexRow[] {
-  return docs
-    .filter((d) => d.date_delivered)
-    .map((d) => ({
-      rowIndex: d.rowIndex,
-      id: hashId(`${d.account_reference}|${d.date_delivered}|${d.title}`),
-      account_id: resolveAccountIdForRef(d.account_reference, accounts),
-      title: d.title,
-      date_delivered: isoDate(d.date_delivered),
-      account_reference: d.account_reference,
-    }));
-}
-
-interface HydrationSummary {
-  attempts: number;
-  results: Map<number, HydrationResult>;
-  successes: number;
-}
-
 async function hydratePdfsForIndex(deps: StatementsSubDeps, indexRows: readonly IndexRow[]): Promise<HydrationSummary> {
   const results = new Map<number, HydrationResult>();
   let attempts = 0;
@@ -853,50 +799,6 @@ async function hydratePdfsForIndex(deps: StatementsSubDeps, indexRows: readonly 
     });
   }
   return { attempts, successes, results };
-}
-
-function hydrationSuccess(h: HydrationResult | undefined): HydrationResultSuccess | null {
-  if (h && "pdfPath" in h) {
-    return h;
-  }
-  return null;
-}
-
-async function emitStatementRecords(
-  deps: EmitDeps,
-  indexRows: readonly IndexRow[],
-  hydrationResults: Map<number, HydrationResult>,
-  summary: HydrationSummary
-): Promise<void> {
-  for (const row of indexRows) {
-    const ok = hydrationSuccess(hydrationResults.get(row.rowIndex));
-    const rec: StatementRecord = {
-      id: row.id,
-      account_id: row.account_id,
-      title: row.title,
-      date_delivered: row.date_delivered,
-      account_reference: row.account_reference,
-      document_url: ok ? fileUrlForPath(ok.pdfPath) : null,
-      pdf_sha256: ok?.pdfSha256 ?? null,
-      pdf_path: ok?.pdfPath ?? null,
-      fetched_at: nowIso(),
-    };
-    await deps.emitRecord("statements", rec);
-  }
-  await deps.emit({
-    type: "PROGRESS",
-    stream: "statements",
-    message: `Hydrated ${summary.successes}/${summary.attempts || indexRows.length} PDFs`,
-  });
-  await deps.emit({
-    type: "STATE",
-    stream: "statements",
-    cursor: { fetched_at: nowIso() },
-  });
-}
-
-function shouldParseStatementTitle(title: string): boolean {
-  return STATEMENT_TITLE_RE.test(title) && !NON_STATEMENT_TITLE_RE.test(title);
 }
 
 interface PdfParseCounters {
@@ -1146,24 +1048,6 @@ async function runCreditCardBillingStream(
       reason: "scrape_failed",
       message: msg.slice(0, ID_TEXT_SNIP),
     });
-  }
-}
-
-async function emitDeferredStreams(
-  emit: BrowserCollectContext["emit"],
-  requested: BrowserCollectContext["requested"]
-): Promise<void> {
-  const deferred: string[] = ["transfers", "bill_payments", "scheduled_transactions", "external_accounts"];
-  for (const s of deferred) {
-    if (requested.has(s)) {
-      const msg: EmittedMessage = {
-        type: "SKIP_RESULT",
-        stream: s,
-        reason: "selectors_pending",
-        message: `${s} stream scaffolded in design-notes; click-chain or SPA-component wiring deferred.`,
-      };
-      await emit(msg);
-    }
   }
 }
 
