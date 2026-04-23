@@ -39,7 +39,7 @@ The steward started `pnpm dev` once earlier today. Next.js (:3000) has crashed t
 
 ### Steward discipline (lessons learned)
 
-- **Always clear the index before `git add`.** If another agent has pre-staged files, `git commit` will sweep them into the steward's commit under a misleading subject. Steward should check `git diff --cached --name-only` before staging, and `git reset` the index if it holds anything the steward didn't put there.
+- **HARD RULE: before every `git commit`, run `git diff --cached --name-only`. If it shows any path the steward didn't just `git add`, run `git reset` to unstage everything, then re-add only the steward's paths.** This has been violated twice (d96c500 on 04-22, 072d08a on 04-23). Reading-past the check output counts as violating the rule. No exceptions.
 - **Prefer `git add <specific paths>` over `git add .` or `git add -A`.** Already doing this — but the lesson above still matters because pre-existing stage is independent of what steward adds.
 - **Follow mislabel-note convention (`chore(history): note mislabeled commit <sha>`) if a commit lands with a wrong subject.** Do not amend or reset pushed history.
 
