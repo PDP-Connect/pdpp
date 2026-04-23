@@ -6,11 +6,13 @@
  * emitTransactionsStateIfAny).
  *
  * These tests DON'T drive Playwright. They construct a fake `EmitDeps`
- * that captures every (stream, data) pair pushed through emitRecord
- * plus every non-RECORD EmittedMessage pushed through emit, then assert
- * on the observable invariants: ordering across streams, stream-scope
- * suppression, res-filter + time_range gating, cursor propagation, and
- * the index-only fallback when PDF download fails.
+ * backed by `makeRecordingEmit(validateRecord)` — records go through
+ * the real zod schema so fixture drift here fails the test instead of
+ * silently passing. Captures every (stream, data) pair pushed through
+ * emitRecord plus every non-RECORD EmittedMessage pushed through emit,
+ * then asserts on the observable invariants: ordering across streams,
+ * stream-scope suppression, res-filter + time_range gating, cursor
+ * propagation, and the index-only fallback when PDF download fails.
  *
  * Imports from ./collect-helpers.ts (not ./index.ts) because index.ts
  * calls `runConnector({...})` at module load — importing it would open
@@ -38,6 +40,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { EmittedMessage, StreamScope } from "../../src/connector-runtime.ts";
+import { type EmittedRecord, makeRecordingEmit } from "../../src/test-harness.ts";
 import {
   type EmitDeps,
   emitAccountsStream,
@@ -47,12 +50,8 @@ import {
   filterAccountsByScope,
   statementRowOutsideTimeRange,
 } from "./collect-helpers.ts";
+import { validateRecord } from "./schemas.ts";
 import type { ChaseAccount, QfxTransaction, StatementRow, TransactionCursor, TransactionsStateShape } from "./types.ts";
-
-interface EmittedRecord {
-  data: Record<string, unknown>;
-  stream: string;
-}
 
 interface RecordingHarness {
   deps: EmitDeps;
@@ -77,8 +76,7 @@ interface HarnessOverrides {
  *  capture/progress/tmpDir are unused by the helpers under test — the
  *  recording harness fills them with inert defaults. */
 function makeHarness(overrides: HarnessOverrides = {}): RecordingHarness {
-  const emitted: EmittedRecord[] = [];
-  const messages: EmittedMessage[] = [];
+  const harness = makeRecordingEmit(validateRecord);
   const requestedStreams = overrides.requestedStreams ?? [
     { name: "accounts" },
     { name: "transactions" },
@@ -88,14 +86,8 @@ function makeHarness(overrides: HarnessOverrides = {}): RecordingHarness {
   const requested = new Map<string, StreamScope>(requestedStreams.map((s) => [s.name, s]));
   const deps: EmitDeps = {
     capture: null,
-    emit: (msg: EmittedMessage): Promise<void> => {
-      messages.push(msg);
-      return Promise.resolve();
-    },
-    emitRecord: (stream: string, data: Record<string, unknown>): Promise<void> => {
-      emitted.push({ stream, data });
-      return Promise.resolve();
-    },
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
     emittedAt: FROZEN_EMITTED_AT,
     maxSeenByAccount: overrides.maxSeenByAccount ?? {},
     progress: (): Promise<void> => Promise.resolve(),
@@ -108,7 +100,7 @@ function makeHarness(overrides: HarnessOverrides = {}): RecordingHarness {
     wantsStatements: overrides.wantsStatements ?? true,
     wantsTransactions: overrides.wantsTransactions ?? true,
   };
-  return { deps, emitted, messages };
+  return { deps, emitted: harness.emitted, messages: harness.protocolMessages };
 }
 
 function makeAccount(overrides: Partial<ChaseAccount> = {}): ChaseAccount {
