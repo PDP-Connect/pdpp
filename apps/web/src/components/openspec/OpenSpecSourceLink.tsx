@@ -1,4 +1,4 @@
-import { formatOpenSpecDate } from '@/lib/openspec/format';
+import { Timestamp } from '@/components/ui/timestamp';
 
 const GITHUB_BLOB_BASE = 'https://github.com/vana-com/pdpp/blob/main';
 const GITHUB_TREE_BASE = 'https://github.com/vana-com/pdpp/tree/main';
@@ -18,15 +18,17 @@ export function OpenSpecSourceLink({
   createdAt?: string | null;
   lastModified?: string | null;
 }) {
-  const created = formatOpenSpecDate(createdAt ?? null);
-  const updated = formatOpenSpecDate(lastModified ?? null);
-  const showUpdated = updated && updated !== created;
+  const showUpdated = Boolean(
+    lastModified && createdAt && new Date(lastModified).getTime() !== new Date(createdAt).getTime(),
+  );
 
   return (
     <div className="pdpp-caption flex flex-wrap items-center gap-2 text-muted-foreground">
-      {created && (
+      {createdAt && (
         <>
-          <span>Created {created}</span>
+          <span className="inline-flex items-baseline gap-1">
+            Created <Timestamp value={createdAt} precision="date" />
+          </span>
           <span aria-hidden="true" className="opacity-40">
             ·
           </span>
@@ -34,7 +36,9 @@ export function OpenSpecSourceLink({
       )}
       {showUpdated && (
         <>
-          <span>Updated {updated}</span>
+          <span className="inline-flex items-baseline gap-1">
+            Updated <Timestamp value={lastModified} precision="date" />
+          </span>
           <span aria-hidden="true" className="opacity-40">
             ·
           </span>

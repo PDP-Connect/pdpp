@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import type { DatasetSummary } from '../lib/ref-client';
+import { Timestamp } from '@/components/ui/timestamp';
 
 /**
  * Overview-page credibility hero.
@@ -35,7 +36,7 @@ export function OverviewHero({ summary }: { summary: DatasetSummary }) {
         {summary.earliest_record_time ? (
           <>
             <span className="text-muted-foreground font-normal"> · since </span>
-            <span className="font-medium">{formatDate(summary.earliest_record_time)}</span>
+            <Timestamp value={summary.earliest_record_time} precision="date" mode="absolute" className="font-medium" />
           </>
         ) : null}
       </p>
@@ -144,10 +145,6 @@ function displayConnectorSlug(connectorId: string): string {
   }
 }
 
-function formatDate(iso: string): string {
-  // ISO-8601 date part for developer-tool register.
-  return iso.slice(0, 10);
-}
 
 /**
  * Decimal byte formatter (MB = 1,000,000 bytes) matching Stripe/Vercel/Plaid

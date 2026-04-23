@@ -4,9 +4,9 @@ import type {
   OpenSpecDesignNoteKind,
   OpenSpecDesignNoteSummary,
 } from '@/lib/openspec';
-import { formatOpenSpecDate } from '@/lib/openspec/format';
 import { planningPath } from '@/lib/openspec/public';
 import { OpenSpecArtifactCard } from './OpenSpecArtifactCard';
+import { Timestamp } from '@/components/ui/timestamp';
 
 const NOTE_KIND_LABELS: Record<OpenSpecDesignNoteKind, string> = {
   'open-question': 'Open questions',
@@ -42,20 +42,22 @@ const NOTE_KIND_ORDER: OpenSpecDesignNoteKind[] = [
 ];
 
 function noteDates(note: OpenSpecDesignNoteSummary) {
-  const created = formatOpenSpecDate(note.createdAt);
-  const updated = formatOpenSpecDate(note.lastModified);
+  const created = note.createdAt;
+  const updated = note.lastModified;
+  const differ =
+    created && updated && new Date(created).getTime() !== new Date(updated).getTime();
 
-  if (created && updated && created !== updated) {
+  if (differ) {
     return (
       <>
-        <span>created {created}</span>
-        <span>updated {updated}</span>
+        <span className="inline-flex items-baseline gap-1">created <Timestamp value={created} precision="date" /></span>
+        <span className="inline-flex items-baseline gap-1">updated <Timestamp value={updated} precision="date" /></span>
       </>
     );
   }
 
-  if (created) return <span>created {created}</span>;
-  if (updated) return <span>updated {updated}</span>;
+  if (created) return <span className="inline-flex items-baseline gap-1">created <Timestamp value={created} precision="date" /></span>;
+  if (updated) return <span className="inline-flex items-baseline gap-1">updated <Timestamp value={updated} precision="date" /></span>;
   return null;
 }
 
@@ -126,7 +128,6 @@ export function OpenSpecNoteGroups({
     <div className="flex flex-col gap-8">
       {groups.map((group, index) => {
         const summary = describeGroup(group);
-        const updated = formatOpenSpecDate(group.lastModified);
 
         if (collapsible) {
           return (
@@ -141,7 +142,9 @@ export function OpenSpecNoteGroups({
                   <div className="pdpp-body text-muted-foreground">
                     {group.noteCount} notes
                     {summary ? ` · ${summary}` : ''}
-                    {updated ? ` · updated ${updated}` : ''}
+                    {group.lastModified ? (
+                      <> · updated <Timestamp value={group.lastModified} precision="date" /></>
+                    ) : null}
                   </div>
                 </div>
               </summary>
@@ -160,7 +163,9 @@ export function OpenSpecNoteGroups({
                 <p className="pdpp-body text-muted-foreground">
                   {group.noteCount} notes
                   {summary ? ` · ${summary}` : ''}
-                  {updated ? ` · updated ${updated}` : ''}
+                  {group.lastModified ? (
+                    <> · updated <Timestamp value={group.lastModified} precision="date" /></>
+                  ) : null}
                 </p>
               </div>
               {showChangeLink && (

@@ -20,6 +20,7 @@ import {
 } from '../../../lib/rs-client';
 import { ReferenceServerUnreachableError } from '../../../lib/owner-token';
 import { ColumnsMenu } from './columns-menu';
+import { Timestamp } from '@/components/ui/timestamp';
 
 export const dynamic = 'force-dynamic';
 
@@ -134,8 +135,10 @@ export default async function StreamPage({
               <tbody>
                 {page.data.map((r) => (
                   <tr key={r.id} className="hover:bg-muted/30 transition-colors">
-                    <td className={`${TD} text-muted-foreground whitespace-nowrap tabular-nums`}>
-                      <Link href={recordHref(r.id)} className="block">{r.emitted_at}</Link>
+                    <td className={`${TD} text-muted-foreground whitespace-nowrap`}>
+                      <Link href={recordHref(r.id)} className="block">
+                        <Timestamp value={r.emitted_at} />
+                      </Link>
                     </td>
                     <td className={`${TD} whitespace-nowrap`}>
                       <Link
@@ -171,7 +174,9 @@ function RecordCard({ record, columns }: { record: StreamRecord; columns: string
   return (
     <dl className="pdpp-caption grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
       <dt className="text-muted-foreground">emitted_at</dt>
-      <dd className="text-muted-foreground break-all tabular-nums">{record.emitted_at}</dd>
+      <dd className="text-muted-foreground break-all">
+        <Timestamp value={record.emitted_at} />
+      </dd>
       <dt className="text-muted-foreground">id</dt>
       <dd className="break-all font-mono">{truncate(record.id, 48)}</dd>
       {columns.map((c) => {

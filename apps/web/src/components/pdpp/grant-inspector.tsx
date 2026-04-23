@@ -2,6 +2,22 @@
 
 import React from 'react';
 import { Button } from '@/components/ui/button';
+import { Timestamp } from '@/components/ui/timestamp';
+
+// Render a timestamp-ish string: if it parses as a real Date, use the
+// interactive <Timestamp> component (human-readable + tooltip w/ full
+// detail); otherwise render it verbatim. Lets pre-formatted specimen
+// strings like 'Apr 15, 2026' pass through untouched while real ISO
+// values get the full treatment.
+function DateLike({ value }: { value: string | null | undefined }) {
+  if (value == null || value === '') return <>Never</>;
+  const looksISO = /^\d{4}-\d{2}-\d{2}([T ].+)?$/.test(value);
+  const parsed = looksISO ? new Date(value) : null;
+  if (parsed && !Number.isNaN(parsed.getTime())) {
+    return <Timestamp value={parsed} precision="date" mode="absolute" />;
+  }
+  return <>{value}</>;
+}
 
 // ─── Grant Inspector ─────────────────────────────────────────────────────────
 
@@ -112,11 +128,11 @@ export function GrantInspector({
           <div className="grid grid-cols-2 gap-x-4 gap-y-2 mt-3">
             <div>
               <div className="text-xs mb-0.5" style={{ color: 'var(--muted-foreground)', opacity: 0.7 }}>Issued</div>
-              <div className="font-mono text-xs" style={{ color: 'var(--muted-foreground)' }}>{issuedAt}</div>
+              <div className="font-mono text-xs" style={{ color: 'var(--muted-foreground)' }}><DateLike value={issuedAt} /></div>
             </div>
             <div>
               <div className="text-xs mb-0.5" style={{ color: 'var(--muted-foreground)', opacity: 0.7 }}>Expires</div>
-              <div className="font-mono text-xs" style={{ color: 'var(--muted-foreground)' }}>{expiresAt ?? 'Never'}</div>
+              <div className="font-mono text-xs" style={{ color: 'var(--muted-foreground)' }}><DateLike value={expiresAt ?? null} /></div>
             </div>
             <div>
               <div className="text-xs mb-0.5" style={{ color: 'var(--muted-foreground)', opacity: 0.7 }}>Access</div>

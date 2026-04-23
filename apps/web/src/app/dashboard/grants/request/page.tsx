@@ -22,6 +22,7 @@ import {
   saveGrantRequestDraftAction,
   stageGrantRequestAction,
 } from './actions';
+import { Timestamp } from '@/components/ui/timestamp';
 
 export const dynamic = 'force-dynamic';
 
@@ -167,8 +168,8 @@ export default async function GrantRequestPage({
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
             <DetailCard title="Workspace">
               <DetailRow label="id" value={<code className="break-all">{workspace.workspaceId}</code>} />
-              <DetailRow label="created" value={workspace.createdAt} />
-              <DetailRow label="updated" value={workspace.updatedAt} />
+              <DetailRow label="created" value={<Timestamp value={workspace.createdAt} />} />
+              <DetailRow label="updated" value={<Timestamp value={workspace.updatedAt} />} />
             </DetailCard>
             <DetailCard title="Registered client">
               {workspace.registeredClient ? (

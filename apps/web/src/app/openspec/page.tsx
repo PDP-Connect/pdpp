@@ -10,8 +10,8 @@ import {
   OpenSpecStatusPill,
   buildOpenSpecSidebarSections,
 } from '@/components/openspec';
-import { formatOpenSpecDate } from '@/lib/openspec/format';
 import { getOpenSpecLandingSummary, listOpenSpecDesignNoteGroups } from '@/lib/openspec';
+import { Timestamp } from '@/components/ui/timestamp';
 import { OPENSPEC_IMPLEMENTATION_LABEL, PLANNING_LABEL, planningPath } from '@/lib/openspec/public';
 
 export const metadata: Metadata = {
@@ -63,11 +63,13 @@ export default async function OpenSpecLandingPage() {
               <span className="font-semibold text-foreground">{openQuestionCount}</span> open questions
             </span>
             {lastTouched && (
-              <span className="pdpp-body text-muted-foreground">
+              <span className="pdpp-body text-muted-foreground inline-flex items-baseline gap-1">
                 last updated{' '}
-                <span className="font-semibold text-foreground">
-                  {formatOpenSpecDate(lastTouched)}
-                </span>
+                <Timestamp
+                  value={lastTouched}
+                  precision="date"
+                  className="font-semibold text-foreground"
+                />
               </span>
             )}
           </div>
@@ -124,7 +126,9 @@ export default async function OpenSpecLandingPage() {
                         </span>
                       )}
                       {c.lastModified && (
-                        <span>updated {formatOpenSpecDate(c.lastModified)}</span>
+                        <span className="inline-flex items-baseline gap-1">
+                          updated <Timestamp value={c.lastModified} precision="date" />
+                        </span>
                       )}
                     </>
                   }
@@ -161,7 +165,9 @@ export default async function OpenSpecLandingPage() {
                       </span>
                       )}
                       {s.lastModified && (
-                        <span>updated {formatOpenSpecDate(s.lastModified)}</span>
+                        <span className="inline-flex items-baseline gap-1">
+                          updated <Timestamp value={s.lastModified} precision="date" />
+                        </span>
                       )}
                     </>
                   }

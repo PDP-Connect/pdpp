@@ -8,12 +8,12 @@ import {
   Section,
 } from '../../components/primitives';
 import {
-  formatTimestamp,
   listConnectorManifests,
   listStreams,
   type ConnectorManifest,
   type StreamSummary,
 } from '../../lib/rs-client';
+import { Timestamp } from '@/components/ui/timestamp';
 import { ReferenceServerUnreachableError } from '../../lib/owner-token';
 
 export const dynamic = 'force-dynamic';
@@ -76,9 +76,14 @@ export default async function ConnectorPage({
                   className="hover:bg-muted/40 flex flex-col gap-1 px-3 py-3 transition-colors sm:flex-row sm:items-center sm:justify-between sm:gap-4"
                 >
                   <span className="pdpp-body break-all font-mono font-medium">{s.name}</span>
-                  <span className="pdpp-caption text-muted-foreground tabular-nums">
-                    {s.record_count.toLocaleString()} records
-                    {s.last_updated ? ` · ${formatTimestamp(s.last_updated)}` : ''}
+                  <span className="pdpp-caption text-muted-foreground tabular-nums inline-flex flex-wrap items-baseline gap-x-1">
+                    <span>{s.record_count.toLocaleString()} records</span>
+                    {s.last_updated ? (
+                      <>
+                        <span aria-hidden>·</span>
+                        <Timestamp value={s.last_updated} />
+                      </>
+                    ) : null}
                   </span>
                 </Link>
               </li>

@@ -28,6 +28,7 @@ import {
   approvePendingApprovalAction,
   denyPendingApprovalAction,
 } from './pending-actions';
+import { Timestamp } from '@/components/ui/timestamp';
 
 export const dynamic = 'force-dynamic';
 
@@ -260,7 +261,9 @@ function PendingApprovalRow({ approval }: { approval: PendingApproval }) {
           <code className="pdpp-caption text-foreground break-all font-mono font-medium">
             {approval.approval_id}
           </code>
-          <span className="pdpp-caption text-muted-foreground tabular-nums">{approval.created_at}</span>
+          <span className="pdpp-caption text-muted-foreground">
+            <Timestamp value={approval.created_at} />
+          </span>
           <StatusBadge status={approval.kind} />
         </div>
         <div className="pdpp-caption text-muted-foreground mt-1 break-words">

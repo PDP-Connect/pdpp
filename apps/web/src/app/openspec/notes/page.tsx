@@ -6,8 +6,8 @@ import {
   OpenSpecShell,
   buildOpenSpecSidebarSections,
 } from '@/components/openspec';
-import { formatOpenSpecDate } from '@/lib/openspec/format';
 import { listOpenSpecDesignNoteGroups, listOpenSpecDesignNotes } from '@/lib/openspec';
+import { Timestamp } from '@/components/ui/timestamp';
 import { OPENSPEC_IMPLEMENTATION_LABEL, PLANNING_LABEL, planningPath } from '@/lib/openspec/public';
 
 export const metadata: Metadata = {
@@ -59,11 +59,13 @@ export default async function OpenSpecDesignNotesPage() {
               <span className="font-semibold text-foreground">{openQuestionCount}</span> open questions
             </span>
             {latestNote && (
-              <span className="pdpp-body text-muted-foreground">
+              <span className="pdpp-body text-muted-foreground inline-flex items-baseline gap-1">
                 last updated{' '}
-                <span className="font-semibold text-foreground">
-                  {formatOpenSpecDate(latestNote)}
-                </span>
+                <Timestamp
+                  value={latestNote}
+                  precision="date"
+                  className="font-semibold text-foreground"
+                />
               </span>
             )}
           </div>

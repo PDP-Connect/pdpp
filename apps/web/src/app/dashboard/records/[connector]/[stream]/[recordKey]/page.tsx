@@ -3,6 +3,7 @@ import { DashboardShell, OwnerTokenRequired, ServerUnreachable } from '../../../
 import { PageHeader, Section } from '../../../../components/primitives';
 import { getRecord, type StreamRecord } from '../../../../lib/rs-client';
 import { ReferenceServerUnreachableError } from '../../../../lib/owner-token';
+import { Timestamp } from '@/components/ui/timestamp';
 
 export const dynamic = 'force-dynamic';
 
@@ -56,7 +57,7 @@ export default async function RecordDetailPage({
         ]}
         description={
           <>
-            emitted_at <span className="text-foreground font-mono">{record.emitted_at}</span>
+            emitted_at <Timestamp value={record.emitted_at} className="text-foreground" />
           </>
         }
       />

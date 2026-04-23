@@ -964,13 +964,13 @@ export function ReferenceApp({ hero, currentLabel = 'Reference' }: ReferenceAppP
   // Derive grant inspector props from protocol state
   const grantProps: GrantInspectorProps = protocol.grant ? {
     grantId: protocol.grant.grant_id,
-    issuedAt: new Date(protocol.grant.issued_at).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' }),
+    issuedAt: protocol.grant.issued_at,
     status: protocol.grant.status,
     client: { clientId: protocol.grant.client_id, name: LONGVIEW_CLIENT_NAME },
     purposeCode: protocol.grant.purpose_code,
     purposeDescription: protocol.grant.purpose_description,
     accessMode: protocol.grant.access_mode,
-    expiresAt: protocol.grant.expires_at ? new Date(protocol.grant.expires_at).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' }) : null,
+    expiresAt: protocol.grant.expires_at ?? null,
     retention: protocol.grant.retention ? { duration: '90 days', onExpiry: protocol.grant.retention.on_expiry } : undefined,
     streams: protocol.grant.streams.map(s => ({
       name: s.name,

@@ -9,7 +9,7 @@ import {
   Toolbar,
 } from '../../components/primitives';
 import { ReferenceServerUnreachableError } from '../../lib/owner-token';
-import { formatTimestamp } from '../../lib/rs-client';
+import { Timestamp } from '@/components/ui/timestamp';
 import {
   defaultWindow,
   loadTimeline,
@@ -119,8 +119,8 @@ function TimelineRow({ entry }: { entry: TimelineEntry }) {
       href={href}
       className="pdpp-caption hover:bg-muted/40 grid gap-1 px-3 py-2.5 transition-colors sm:grid-cols-[11rem_11rem_1fr] sm:items-baseline sm:gap-4"
     >
-      <span className="text-muted-foreground whitespace-nowrap tabular-nums">
-        {formatTimestamp(entry.timestamp)}
+      <span className="text-muted-foreground whitespace-nowrap">
+        <Timestamp value={entry.timestamp} />
       </span>
       <span className="text-foreground flex items-baseline gap-2 whitespace-nowrap">
         <span className="truncate font-mono font-medium">{connectorShort}</span>

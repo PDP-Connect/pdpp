@@ -21,6 +21,7 @@ import {
   introspectOwnerTokenFlowAction,
   startOwnerTokenFlowAction,
 } from './actions';
+import { Timestamp } from '@/components/ui/timestamp';
 
 export const dynamic = 'force-dynamic';
 
@@ -145,8 +146,8 @@ export default async function OwnerTokenBootstrapPage({
                 <DetailRow label="status" value={<StatusBadge status={flow.status} />} />
                 <DetailRow label="client" value={<code className="break-all">{flow.clientId}</code>} />
                 <DetailRow label="subject" value={flow.subjectId ?? '—'} />
-                <DetailRow label="started" value={flow.startedAt} />
-                <DetailRow label="expires" value={flow.expiresAt ?? '—'} />
+                <DetailRow label="started" value={<Timestamp value={flow.startedAt} />} />
+                <DetailRow label="expires" value={flow.expiresAt ? <Timestamp value={flow.expiresAt} /> : '—'} />
               </DetailCard>
               <DetailCard title="Device authorization">
                 <DetailRow
@@ -201,9 +202,11 @@ export default async function OwnerTokenBootstrapPage({
                     </Button>
                   </div>
                 </form>
-                <p className="pdpp-caption text-muted-foreground mt-2">
+                <p className="pdpp-caption text-muted-foreground mt-2 inline-flex flex-wrap items-baseline gap-1">
                   State: <StatusBadge status={flow.status} inline />
-                  {flow.approvalUpdatedAt ? ` · updated ${flow.approvalUpdatedAt}` : ''}
+                  {flow.approvalUpdatedAt ? (
+                    <>· updated <Timestamp value={flow.approvalUpdatedAt} /></>
+                  ) : null}
                 </p>
               </DetailCard>
             </div>
@@ -220,8 +223,8 @@ export default async function OwnerTokenBootstrapPage({
                 </form>
                 {flow.token ? (
                   <div className="mt-3">
-                    <div className="pdpp-caption text-muted-foreground mb-1">
-                      issued {flow.tokenIssuedAt ?? 'just now'}
+                    <div className="pdpp-caption text-muted-foreground mb-1 inline-flex items-baseline gap-1">
+                      issued {flow.tokenIssuedAt ? <Timestamp value={flow.tokenIssuedAt} /> : 'just now'}
                     </div>
                     <CodeBlock>{flow.token}</CodeBlock>
                   </div>
@@ -240,8 +243,8 @@ export default async function OwnerTokenBootstrapPage({
                 </form>
                 {flow.introspection ? (
                   <div className="mt-3">
-                    <div className="pdpp-caption text-muted-foreground mb-1">
-                      refreshed {flow.introspectedAt ?? 'just now'}
+                    <div className="pdpp-caption text-muted-foreground mb-1 inline-flex items-baseline gap-1">
+                      refreshed {flow.introspectedAt ? <Timestamp value={flow.introspectedAt} /> : 'just now'}
                     </div>
                     <CodeBlock>{JSON.stringify(flow.introspection, null, 2)}</CodeBlock>
                   </div>
