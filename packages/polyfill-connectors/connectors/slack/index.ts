@@ -58,19 +58,16 @@ import { DatabaseSync } from "node:sqlite";
 import { readOptions } from "../../src/connector-options.ts";
 import { type CollectContext, nowIso, type RecordData, runConnector } from "../../src/connector-runtime.ts";
 import { passesTimeRange, resourceSet } from "../../src/scope-filters.ts";
+import { emitMessagesPass } from "./collect-helpers.ts";
 import {
   buildCanvasRecord,
   buildChannelCanvasIndex,
   buildChannelMembershipRecord,
   buildChannelRecord,
   buildFileRecord,
-  buildMessageAttachmentRecords,
-  buildMessageRecord,
-  buildReactionRecords,
   buildUserRecord,
   buildWorkspaceRecord,
   extractMessageTimeRange,
-  parseMessageRow,
   selectCommittedMaxTs,
   toSlackTime,
   WORKSPACE_LIST_ARROW,
@@ -468,10 +465,6 @@ function loadMessageRows(db: DatabaseSync, priorTs: string | null): MessageRow[]
   }));
 }
 
-interface MessagesPassResult {
-  maxMessageTs: string | null;
-}
-
 /**
  * Single-pass co-traversal of the MESSAGE table emitting into messages,
  * reactions, and message_attachments streams as requested. Advances
@@ -480,46 +473,15 @@ interface MessagesPassResult {
  * KNOWN LIMITATION: filtering by ts > prior_ts misses thread replies that
  * arrive on old parents (parent ts from 2022, new reply in 2026). See
  * cursor-finality-and-gap-awareness-open-question.md.
+ *
+ * The loop body (pure over MessageRow[]) lives in collect-helpers.ts so
+ * integration.test.ts can drive it without opening sqlite.
  */
-async function runMessagesUnifiedPass(deps: StreamDeps, priorTs: string | null): Promise<MessagesPassResult> {
+function runMessagesUnifiedPass(deps: StreamDeps, priorTs: string | null): Promise<{ maxMessageTs: string | null }> {
   // Slack message TS strings collate lexically the same way they order
   // chronologically (fixed-width integer-dot-decimal), so string > works.
   const rows = loadMessageRows(deps.db, priorTs);
-  if (priorTs) {
-    deps.progress(`incremental: filtering messages newer than ${priorTs} (${rows.length} to process)`, {
-      stream: "messages",
-    });
-  }
-
-  const wantMessages = deps.requested.has("messages");
-  const wantReactions = deps.requested.has("reactions");
-  const wantMsgAttachments = deps.requested.has("message_attachments");
-
-  let maxMessageTs: string | null = null;
-  for (const r of rows) {
-    const parsed = parseMessageRow(r, nowIso());
-    const ts = parsed.ts;
-    // Track the max ts seen in this run for the post-loop STATE emit.
-    // Slack ts is a fixed-shape "seconds.micros" string; string compare
-    // matches numeric order because both halves are zero-padded by Slack.
-    if (ts && (maxMessageTs === null || ts > maxMessageTs)) {
-      maxMessageTs = ts;
-    }
-    if (wantMessages) {
-      await deps.emitRecord("messages", buildMessageRecord(parsed));
-    }
-    if (wantReactions) {
-      for (const rec of buildReactionRecords(parsed)) {
-        await deps.emitRecord("reactions", rec);
-      }
-    }
-    if (wantMsgAttachments) {
-      for (const rec of buildMessageAttachmentRecords(parsed)) {
-        await deps.emitRecord("message_attachments", rec);
-      }
-    }
-  }
-  return { maxMessageTs };
+  return emitMessagesPass(deps, rows, priorTs);
 }
 
 async function runFilesStream(deps: StreamDeps): Promise<void> {
