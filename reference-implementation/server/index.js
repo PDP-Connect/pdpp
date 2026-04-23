@@ -7,6 +7,7 @@
 import { getDb, initDb, sql } from './db.js';
 import {
   buildAuthorizationServerMetadata,
+  buildLexicalRetrievalCapability,
   buildProtectedResourceMetadata,
   resolvePublicUrl,
   stripTrailingSlash,
@@ -1851,6 +1852,19 @@ function buildRsApp(opts = {}) {
     const explicitIssuer = opts.asIssuer || opts.asPublicUrl || (!opts.ignoreAmbientPublicUrls ? (process.env.AS_ISSUER || process.env.AS_PUBLIC_URL) : null);
     const fallbackIssuer = `${req.protocol}://${req.hostname}:${opts.asPort || AS_PORT}`;
     const issuer = stripTrailingSlash(explicitIssuer || fallbackIssuer);
+
+    // Lexical retrieval extension advertisement. Exposed by default; reference
+    // forks or test fixtures can suppress it by passing
+    // opts.lexicalRetrievalSupported === false (omits the block) or
+    // opts.lexicalRetrievalCapability (overrides the shape outright). See:
+    //   openspec/changes/add-lexical-retrieval-extension/specs/lexical-retrieval/spec.md
+    const capabilities = {};
+    if (opts.lexicalRetrievalCapability) {
+      capabilities.lexical_retrieval = opts.lexicalRetrievalCapability;
+    } else if (opts.lexicalRetrievalSupported !== false) {
+      capabilities.lexical_retrieval = buildLexicalRetrievalCapability();
+    }
+
     res.json(
       buildProtectedResourceMetadata({
         resource,
@@ -1860,6 +1874,7 @@ function buildRsApp(opts = {}) {
         providerConnectVersion: PDPP_PROVIDER_CONNECT_VERSION,
         selfExportSupported: true,
         tokenKindsSupported: ['owner', 'client'],
+        capabilities,
       })
     );
   });

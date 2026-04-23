@@ -1257,6 +1257,30 @@ function validateConnectorManifest(manifest = {}, code = 'invalid_request') {
         throw invalidConnectorManifest(`Stream '${stream.name}' view '${view.id}' references unknown fields: ${unknownViewFields.join(', ')}`, code);
       }
     }
+
+    // query.search.lexical_fields — the public lexical-retrieval extension's
+    // stream-level declaration. v1 accepts only top-level scalar string fields
+    // declared in schema.properties. Nested paths, arrays, blobs, and unknown
+    // fields are rejected. See:
+    //   openspec/changes/add-lexical-retrieval-extension/specs/lexical-retrieval/spec.md
+    if (stream.query?.search?.lexical_fields !== undefined) {
+      const declared = stream.query.search.lexical_fields;
+      if (!Array.isArray(declared) || declared.length === 0) {
+        throw invalidConnectorManifest(`Stream '${stream.name}' query.search.lexical_fields must be a non-empty array of strings`, code);
+      }
+      if (declared.some((field) => !isNonEmptyString(field))) {
+        throw invalidConnectorManifest(`Stream '${stream.name}' query.search.lexical_fields entries must be non-empty strings`, code);
+      }
+      for (const fieldName of declared) {
+        if (!schemaFieldNames.has(fieldName)) {
+          throw invalidConnectorManifest(`Stream '${stream.name}' query.search.lexical_fields references unknown field '${fieldName}'`, code);
+        }
+        const fieldSchema = schemaProperties[fieldName];
+        if (fieldSchema?.type !== 'string') {
+          throw invalidConnectorManifest(`Stream '${stream.name}' query.search.lexical_fields entry '${fieldName}' must be a top-level string field; v1 does not support nested paths, arrays, or non-string types`, code);
+        }
+      }
+    }
   }
 }
 

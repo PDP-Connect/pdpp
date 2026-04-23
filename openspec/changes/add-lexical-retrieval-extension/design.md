@@ -54,7 +54,7 @@ Arguments against reusing `GET /v1/streams/{stream}/records`:
 | `q` | yes | string | The lexical query. Opaque to clients beyond "lexical match over authorized declared searchable fields". |
 | `limit` | no | integer | Default 25, max 100. Same envelope as record listing for client ergonomics, but not a grant constraint. |
 | `cursor` | no | string | Opaque search-pagination cursor. MUST NOT reuse record-list or `changes_since` cursors. |
-| `streams[]` | no | repeated string | Optional stream-scope narrowing. If omitted, search runs across all authorized streams. If a named stream is not authorized, the request is rejected (`grant_stream_not_allowed`) rather than silently ignored. |
+| `streams[]` | no | repeated string | Optional stream-scope narrowing. If omitted, search runs across all authorized streams (for owner tokens: across every owner-visible connector). For **client tokens**, naming a stream the grant does not authorize is rejected with `grant_stream_not_allowed` rather than silently ignored. For **owner tokens**, `streams[]` is a soft cross-connector filter — naming a stream that no owner-visible connector exposes simply yields zero hits, not an error (see §4.4). |
 
 Not in v1:
 
@@ -191,8 +191,8 @@ Stream metadata (the existing per-stream `GET /v1/streams/{stream}` body) gains 
 Interpretation:
 
 - `query.search` is present iff this stream participates in lexical retrieval.
-- `lexical_fields` is the set of top-level scalar textual fields the stream declares searchable.
-- A stream MAY participate in the extension with an empty `lexical_fields` only in the sense that it is still advertised as "search-aware" (for example, to signal the connector has been evaluated and intentionally exposes nothing). In practice, the recommended form is to omit `query.search` entirely for streams that do not participate.
+- `lexical_fields` is the set of top-level scalar textual fields the stream declares searchable. It MUST be a non-empty array.
+- A stream that does not participate in lexical retrieval MUST omit `query.search` entirely. There is no "search-aware but searches nothing" form: a stream either declares one or more `lexical_fields` or omits the block. (This matches the patched spec scenario "A non-participating stream omits the declaration" and the validator that rejects `lexical_fields: []`.)
 
 ### 5.2 Scope of `lexical_fields` in v1
 
@@ -330,7 +330,7 @@ Explicitly out of scope:
 ### 9.2 Index scope in the reference
 
 - Index only fields declared by streams in `query.search.lexical_fields`. Do not index unauthorized-by-declaration fields.
-- Maintain index via SQLite triggers on the `records` table, with a startup rebuild safeguard for drift recovery (mirroring the `_ref/search` experiment's maintenance model).
+- Maintain the index in JS at the existing record write/update/delete call sites, with a startup rebuild safeguard for drift recovery. JS-side rather than SQLite triggers because the index population needs to consult the connector manifest at write time to know which fields to index — triggers cannot see the manifest, the JS write path can.
 - Treat the index as a derived artifact: it is rebuildable from records, and retention/deletion flow through records first.
 
 ### 9.3 Separation from `/_ref/search`
@@ -392,7 +392,7 @@ Explicit split so promotion/demotion decisions are cheap later.
 ## 13. Acceptance bar (answers to the brief's gating questions)
 
 1. **What exact fields are searched?** Only fields that are both (a) declared in the stream's `query.search.lexical_fields` and (b) readable under the caller's grant.
-2. **How does grant enforcement constrain search?** Streams outside the grant contribute zero hits; fields outside grant projection are never searched for that caller; snippets never quote ungranted text; unauthorized `streams[]` is a hard error.
+2. **How does grant enforcement constrain search?** Streams outside the grant contribute zero hits; fields outside grant projection are never searched for that caller; snippets never quote ungranted text; for client tokens, unauthorized `streams[]` is a hard error (`grant_stream_not_allowed`); for owner tokens, `streams[]` is a soft cross-connector filter (an unknown stream name yields zero hits, not an error).
 3. **What can a third-party client discover before trying the endpoint?** The server-level capability advertisement (support flag, endpoint, `cross_stream`, `snippets`, limits) plus per-stream `query.search.lexical_fields` via existing stream metadata.
 4. **Why lexical and not ambient generic search?** Lexical retrieval avoids embedding/model/language-lock-in and has a tractable portable shape; semantic retrieval does not.
 5. **Why extension, not core?** The need is real but the shape is not yet ecosystem-proven; forcing it everywhere now would freeze a contract we might need to evolve. The ladder says "extension" is the right rung today.
