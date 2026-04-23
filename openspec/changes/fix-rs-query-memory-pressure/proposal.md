@@ -69,7 +69,7 @@ One validation artifact:
 
 ### Modified Capabilities
 
-- `reference-implementation-architecture`: the RS read-path SHALL not materialize unbounded result arrays; it SHALL stream rows and apply access-control + user filters in SQL before application code sees them.
+- `reference-implementation-architecture`: for the read paths enumerated in the spec delta, the RS SHALL not materialize unbounded result arrays; it SHALL stream rows and apply access-control filters (`time_range`, `resources`) and pagination bounds in SQL. Request-level user filters (`filter[field]=…`) stay in application code for this tranche.
 
 ## Impact
 
