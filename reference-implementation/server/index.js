@@ -2688,6 +2688,9 @@ export async function startServer(opts = {}) {
     asIssuer: configuredAsIssuer || asPublicUrl,
     rsPublicUrl: configuredRsPublicUrl,
     ignoreAmbientPublicUrls,
+    // Lexical retrieval extension knobs — see search.js + the metadata route.
+    lexicalRetrievalSupported: opts.lexicalRetrievalSupported,
+    lexicalRetrievalCapability: opts.lexicalRetrievalCapability,
   });
   const rsServer = await rsApp.listen(requestedRsPort, bindHost);
   const rsPort = rsServer.address().port;

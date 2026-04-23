@@ -438,7 +438,7 @@ async function runFtsQueryForConnector({ connectorId, planEntries, q, allowsSnip
         LIMIT 200
       `);
       for (const row of rows) {
-        const key = `${entry.streamName} ${row.record_key}`;
+        const key = `${entry.streamName}:${row.record_key}`;
         const existing = collapsed.get(key);
         if (existing) {
           if (!existing.matchedFields.includes(field)) {
