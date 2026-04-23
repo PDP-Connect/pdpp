@@ -34,6 +34,17 @@ import {
 } from "imapflow";
 import { stringifyForJsonl } from "../../src/safe-emit.ts";
 import { requireCredentialsOrAsk, resourceSet } from "../../src/scope-filters.ts";
+import type {
+  AllMailCursor,
+  AttachmentRecord,
+  EmittedMessage,
+  InteractionMessage,
+  InteractionResponse,
+  PriorMessagesState,
+  StartMessage,
+  StreamRequest,
+  ThreadAggregate,
+} from "./types.ts";
 
 // ─── Module-scoped regexes (Biome useTopLevelRegex) ─────────────────────
 
@@ -82,65 +93,6 @@ const ERROR_MSG_TAIL = 400;
 const FLUSH_HARD_TIMEOUT_MS = 3000;
 const DEFAULT_CRED_TIMEOUT_S = 1800;
 
-// ─── Protocol message shapes ────────────────────────────────────────────
-
-interface StreamRequest {
-  name: string;
-  resources?: readonly string[];
-  time_range?: { since?: string; until?: string };
-}
-
-interface StartMessage {
-  scope?: { streams?: readonly StreamRequest[] };
-  state?: Record<string, unknown>;
-  type: "START";
-}
-
-interface InteractionResponse {
-  data?: Record<string, unknown>;
-  request_id: string;
-  status: "success" | "cancelled" | "error";
-  type: "INTERACTION_RESPONSE";
-}
-
-interface InteractionMessage {
-  kind: "credentials" | "otp" | "text_input" | "manual_action";
-  message: string;
-  request_id: string;
-  schema?: Record<string, unknown>;
-  timeout_seconds?: number;
-  type: "INTERACTION";
-}
-
-interface ProgressMessage {
-  message: string;
-  stream?: string;
-  type: "PROGRESS";
-}
-
-interface StateMessage {
-  cursor: unknown;
-  stream: string;
-  type: "STATE";
-}
-
-interface RecordMessage {
-  data: Record<string, unknown>;
-  emitted_at: string;
-  key: string | number;
-  stream: string;
-  type: "RECORD";
-}
-
-interface DoneMessage {
-  error?: { message: string; retryable: boolean };
-  records_emitted: number;
-  status: "succeeded" | "failed";
-  type: "DONE";
-}
-
-type EmittedMessage = ProgressMessage | StateMessage | RecordMessage | DoneMessage | InteractionMessage;
-
 // ─── imapflow interface augmentation ────────────────────────────────────
 
 /**
@@ -150,44 +102,6 @@ type EmittedMessage = ProgressMessage | StateMessage | RecordMessage | DoneMessa
  */
 interface ExtendedFetchQuery extends FetchQueryObject {
   emailId?: boolean;
-}
-
-// ─── Domain shapes ──────────────────────────────────────────────────────
-
-interface AttachmentRecord {
-  content_id: string | null;
-  content_type: string | null;
-  encoding: string | null;
-  filename: string | null;
-  id: string;
-  is_inline: boolean;
-  message_id: string;
-  message_received_at: string;
-  part_index: string;
-  size_bytes: number | null;
-}
-
-interface AllMailCursor {
-  highest_modseq?: number | string | null;
-  uidnext?: number;
-  uidvalidity?: number;
-}
-
-interface PriorMessagesState {
-  all_mail?: AllMailCursor;
-}
-
-interface ThreadAggregate {
-  first_message_date: string;
-  flagged_count: number;
-  has_attachments: boolean;
-  id: string;
-  labels_set: Set<string>;
-  last_message_date: string;
-  message_count: number;
-  participant_set: Set<string>;
-  subject: string | null;
-  unread_count: number;
 }
 
 // ─── Stdin / stdout plumbing ────────────────────────────────────────────
