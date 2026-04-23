@@ -25,16 +25,23 @@
   },
   "overrides": [
     {
-      // Connector-specific override. Every migration escape valve that
-      // once lived here — useTopLevelRegex, noNestedTernary,
-      // noAssignInExpressions, noBitwiseOperators, noImplicitAnyLet,
-      // noEvolvingTypes, useTemplate, and (as of 2026-04-22)
-      // noExcessiveCognitiveComplexity — has been eliminated and its
-      // violations fixed in-place. The override now escalates
-      // noExcessiveCognitiveComplexity from `warn` to `error` so any
-      // connector function that drifts above the default budget of 20
-      // fails CI, matching the bar every other package already holds.
-      "includes": ["connectors/**/*.ts", "!**/*.test.ts"],
+      // Cognitive-complexity error gate for production source (src/, bin/,
+      // connectors/). Every migration escape valve that once lived here —
+      // useTopLevelRegex, noNestedTernary, noAssignInExpressions,
+      // noBitwiseOperators, noImplicitAnyLet, noEvolvingTypes, useTemplate,
+      // and (as of 2026-04-22) noExcessiveCognitiveComplexity — has been
+      // eliminated and its violations fixed in-place. This override keeps
+      // noExcessiveCognitiveComplexity at "error" so any production
+      // function above Biome's default budget of 20 fails CI, matching
+      // the bar every other package already holds. Tests are excluded
+      // (see the *.test.ts override below) because parametric test
+      // bodies can legitimately exceed the budget.
+      "includes": [
+        "src/**/*.ts",
+        "bin/**/*.ts",
+        "connectors/**/*.ts",
+        "!**/*.test.ts"
+      ],
       "linter": {
         "rules": {
           "complexity": {
