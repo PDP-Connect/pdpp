@@ -1,0 +1,22 @@
+{
+  "locations": [
+    {
+      "timestampMs": "1700000000000",
+      "latitudeE7": 377749000,
+      "longitudeE7": -1224194000,
+      "accuracy": 12,
+      "altitude": 8,
+      "velocity": 1.2,
+      "activity": [{ "activity": [{ "type": "WALKING" }] }]
+    },
+    {
+      "timestamp": "2024-06-05T13:45:22Z",
+      "latitudeE7": 407128000,
+      "longitudeE7": -740060000
+    },
+    {
+      "latitudeE7": 0,
+      "longitudeE7": 0
+    }
+  ]
+}
