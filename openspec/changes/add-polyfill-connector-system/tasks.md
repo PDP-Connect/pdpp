@@ -128,22 +128,23 @@ these tasks are tracked here.
 
 ### Tranche A — establish truth first
 
-- [ ] Compare every decomposed connector against the last pre-decomposition commit before changing behavior.
+- [x] Compare every decomposed connector against the last pre-decomposition commit before changing behavior.
   Output must be a short matrix: connector, last pre-decomp commit, material differences, intentional vs regression, required action.
-- [ ] Replace hand-rolled integration `emitRecord` mocks with a helper that runs the real shape validator and records both emitted and skipped records.
-- [ ] Audit the remaining `@ts-expect-error` directives inside `page.evaluate()` and remove them unless they are still genuinely required.
-- [ ] Investigate the `apple_health` parser timeout hypothesis and record whether it was warmup-only or a real pathological test.
+- [x] Replace hand-rolled integration `emitRecord` mocks with a helper that runs the real shape validator and records both emitted and skipped records.
+- [x] Audit the remaining `@ts-expect-error` directives inside `page.evaluate()` and remove them unless they are still genuinely required.
+- [x] Investigate the `apple_health` parser timeout hypothesis and record whether it was warmup-only or a real pathological test.
 
 ### Tranche B — remove accidental complexity
 
-- [ ] Replace the current `collect-helpers.ts` workaround with a small explicit entrypoint helper (`isMainModule()` / `runConnectorIfMain()` or equivalent) without overloading `runConnector()` with process-launch semantics.
-- [ ] Add package-scoped CI for `packages/polyfill-connectors/**` running `verify` and `test`.
+- [x] Replace the current `collect-helpers.ts` workaround with a small explicit entrypoint helper (`isMainModule()` / `runConnectorIfMain()` or equivalent) without overloading `runConnector()` with process-launch semantics.
+- [x] Add package-scoped CI for `packages/polyfill-connectors/**` running `verify` and `test`.
   Start non-blocking first; only promote to required after a proving period.
 
 ### Tranche C — behavior correction, only after Tranche A
 
-- [ ] Standardize connector emit ordering on `parent-first`, but only after the pre-decomposition audit confirms whether current gmail/chatgpt child-first behavior is drift or intentional.
-- [ ] If parent-first is confirmed as the invariant, update `packages/polyfill-connectors/docs/authoring-guide.md` so connector authors can rely on it explicitly.
+- [x] Standardize connector emit ordering on `parent-first`, after the pre-decomposition audit confirmed gmail/chatgpt/claude_code child-first behavior was intentional pre-existing behavior rather than decomposition drift.
+- [x] Update `packages/polyfill-connectors/docs/authoring-guide.md` so connector authors can rely on `parent-first` explicitly.
+  Owner decision: keep `parent-first` as the reference-quality default because the live-ingest contract benefits outweigh the measured wall-clock cost on large real corpora. This is a connector/runtime quality rule, not a core PDPP protocol requirement. Connector-specific exceptions require explicit owner sign-off after benchmarked evidence.
 
 ### Tranche D — narrow protocol proof
 

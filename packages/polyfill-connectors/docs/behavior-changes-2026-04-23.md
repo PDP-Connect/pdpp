@@ -58,6 +58,13 @@ silently receive the parent first. The records themselves are
 identical; only arrival sequence changed. If your ingest is order-
 sensitive in that way, test against the new order before deploying.
 
+Owner note: this is a deliberate contract-quality choice. For
+`claude_code`, we explicitly accepted materially higher wall-clock on a
+large real corpus rather than give up parent-first live ingest
+semantics. The gain is cleaner incremental consumption and better
+cross-connector consistency, not richer final data after the run
+settles.
+
 ### How the change was implemented
 
 Documented for consumers who want to audit:

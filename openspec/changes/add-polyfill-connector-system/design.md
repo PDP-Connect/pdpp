@@ -59,6 +59,19 @@ Per the owner's direction: no universal normalization layer. Every field uses th
 ### Required field minimality
 For every stream, declare only the subset that's genuinely required for record identity + consent-time filtering. Leave everything else optional. This means a platform renaming a non-required field breaks nothing on the PDPP side; only required-field changes require schema evolution (which YNAB does via the manifest version bump).
 
+## Connector live-ingest contract quality
+
+### Parent-first emit ordering
+
+For connectors with obvious parent/child stream relationships, the
+reference-quality default is `parent-first`: emit the parent record
+before any of its children. This is not a core PDPP protocol rule; it
+is a reference implementation quality decision for live ingest
+semantics.
+
+The owner rationale and exception policy are captured in
+[`design-notes/parent-first-emit-order-decision-2026-04-23.md`](./design-notes/parent-first-emit-order-decision-2026-04-23.md).
+
 ## Package layering
 
 ```

@@ -74,7 +74,8 @@ These are non-negotiable; Biome and lefthook fail the commit otherwise.
 
 These are not auto-enforced but ARE enforced by code review + pinned
 by `integration.test.ts` in every connector with parent-child record
-streams.
+streams. For the reference implementation, this is a quality target for
+live ingest behavior, not a core PDPP protocol rule.
 
 ### Parent-first emit order
 
@@ -82,12 +83,26 @@ streams.
 > 2026-04-23 as an intentional behavior change, not a bug fix. See
 > [`behavior-changes-2026-04-23.md`](./behavior-changes-2026-04-23.md)
 > for the consumer-facing note.
+>
+> Owner decision (2026-04-23): keep this as the reference-quality
+> default even where it imposes material extra wall-clock on a large
+> real corpus. The benefit is cleaner live ingest semantics for
+> downstream incremental consumers, not richer final settled data.
+> Connector-specific exceptions require explicit owner sign-off after
+> measured evidence.
 
 When a connector emits streams that relate to each other (orders +
 order_items, accounts + transactions, sessions + messages,
 conversations + messages, threads + messages) the **parent record
 emits before any of its children**. Downstream consumers doing
 streaming upserts rely on this for referential integrity.
+
+Why this is worth caring about:
+- live ingest stays easier to reason about
+- incremental consumers can upsert parents before children without
+  ad hoc buffering
+- connector behavior stays more uniform across the fleet
+- agent-built consumers have fewer connector-specific ordering rules
 
 Concretely:
 - `emitOrderAndItems` in amazon emits `orders` before `order_items`.
