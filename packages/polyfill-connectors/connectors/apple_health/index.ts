@@ -10,65 +10,33 @@
  * 500MB exports parse incrementally with low memory.
  */
 
-import { createHash } from "node:crypto";
 import { createReadStream, existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { runConnector } from "../../src/connector-runtime.ts";
-
-type AppleHealthAttrs = Record<string, string | undefined>;
-
-interface StreamParseArgs {
-  onProgress: (recordCount: number, workoutCount: number) => Promise<void>;
-  onRecord: (attrs: AppleHealthAttrs) => Promise<void>;
-  onWorkout: (attrs: AppleHealthAttrs) => Promise<void>;
-  path: string;
-}
-
-interface AppleHealthState {
-  last_start_date?: string;
-}
+import { runConnector, type StreamScope } from "../../src/connector-runtime.ts";
+import {
+  APPLE_HEALTH_TAG_RE,
+  advanceCursor,
+  buildHealthRecord,
+  buildWorkoutRecord,
+  isBeforeCursor,
+  parseAttrs,
+} from "./parsers.ts";
+import type { AppleHealthAttrs, AppleHealthState, StreamParseArgs } from "./types.ts";
 
 // Streaming buffer size — 64 KB balances memory and syscalls on large exports.
 const READ_BUFFER_SIZE = 65_536;
 // Emit a PROGRESS every N events so operators see progress on multi-GB exports.
 const PROGRESS_INTERVAL_EVENTS = 10_000;
-// Module-level regexes (Biome useTopLevelRegex).
-const APPLE_HEALTH_TAG_RE = /<(Record|Workout)\s+([^/>]+)\/?>/g;
-const APPLE_HEALTH_ATTR_RE = /(\w+)="([^"]*)"/g;
-const APPLE_HEALTH_TYPE_PREFIX_RE = /^HKQuantityTypeIdentifier|^HKCategoryTypeIdentifier|^HKDataType/;
-const APPLE_HEALTH_WORKOUT_PREFIX_RE = /^HKWorkoutActivityType/;
 
-const hashId = (s: string): string => createHash("sha256").update(s).digest("hex").slice(0, 24);
-
-function parseAttrs(tag: string): AppleHealthAttrs {
-  const attrs: AppleHealthAttrs = {};
-  let m: RegExpExecArray | null = APPLE_HEALTH_ATTR_RE.exec(tag);
-  while (m !== null) {
-    const key = m[1];
-    if (key) {
-      attrs[key] = m[2];
-    }
-    m = APPLE_HEALTH_ATTR_RE.exec(tag);
+function resolveExportPath(dir: string): string | null {
+  const direct = join(dir, "export.xml");
+  if (existsSync(direct)) {
+    return direct;
   }
-  return attrs;
-}
-
-function healthTypeShort(t: string | undefined): string | null {
-  if (!t) {
-    return null;
-  }
-  return t.replace(APPLE_HEALTH_TYPE_PREFIX_RE, "");
-}
-
-function isoDate(v: string | undefined): string | null {
-  if (!v) {
-    return null;
-  }
-  // Apple Health dates look like "2024-06-05 13:45:22 -0700"
-  const d = new Date(v);
-  if (!Number.isNaN(d.getTime())) {
-    return d.toISOString();
+  const nested = join(dir, "apple_health_export", "export.xml");
+  if (existsSync(nested)) {
+    return nested;
   }
   return null;
 }
@@ -111,21 +79,57 @@ async function streamParse({ path, onRecord, onWorkout, onProgress }: StreamPars
   await onProgress(recordCount, workoutCount);
 }
 
+/** Per-stream cursor state mutated across callbacks. */
+interface CursorRef {
+  latest: string | undefined;
+  since: string | undefined;
+}
+
+function handleRecord(
+  attrs: AppleHealthAttrs,
+  ref: CursorRef,
+  requested: ReadonlyMap<string, StreamScope>,
+  emitRecord: (stream: string, rec: Record<string, unknown>) => Promise<void>
+): Promise<void> {
+  if (!requested.has("records")) {
+    return Promise.resolve();
+  }
+  const rec = buildHealthRecord(attrs);
+  if (!rec) {
+    return Promise.resolve();
+  }
+  if (isBeforeCursor(rec.start_date, ref.since)) {
+    return Promise.resolve();
+  }
+  ref.latest = advanceCursor(ref.latest, rec.start_date);
+  return emitRecord("records", { ...rec });
+}
+
+function handleWorkout(
+  attrs: AppleHealthAttrs,
+  ref: CursorRef,
+  requested: ReadonlyMap<string, StreamScope>,
+  emitRecord: (stream: string, rec: Record<string, unknown>) => Promise<void>
+): Promise<void> {
+  if (!requested.has("workouts")) {
+    return Promise.resolve();
+  }
+  const rec = buildWorkoutRecord(attrs);
+  if (!rec) {
+    return Promise.resolve();
+  }
+  if (isBeforeCursor(rec.start_date, ref.since)) {
+    return Promise.resolve();
+  }
+  ref.latest = advanceCursor(ref.latest, rec.start_date);
+  return emitRecord("workouts", { ...rec });
+}
+
 runConnector({
   name: "apple_health",
   async collect({ state, requested, emit, emitRecord, progress }) {
     const dir = process.env.APPLE_HEALTH_EXPORT_DIR || join(homedir(), ".pdpp/imports/apple_health");
-    const path = ((): string | null => {
-      const direct = join(dir, "export.xml");
-      if (existsSync(direct)) {
-        return direct;
-      }
-      const nested = join(dir, "apple_health_export", "export.xml");
-      if (existsSync(nested)) {
-        return nested;
-      }
-      return null;
-    })();
+    const path = resolveExportPath(dir);
     if (!path) {
       await emit({
         type: "SKIP_RESULT",
@@ -138,87 +142,36 @@ runConnector({
 
     const recordsState = (state.records ?? {}) as AppleHealthState;
     const workoutsState = (state.workouts ?? {}) as AppleHealthState;
-    const sinceRec = recordsState.last_start_date;
-    const sinceWork = workoutsState.last_start_date;
-    let latestRec: string | undefined = sinceRec;
-    let latestWork: string | undefined = sinceWork;
+    const recordRef: CursorRef = {
+      since: recordsState.last_start_date,
+      latest: recordsState.last_start_date,
+    };
+    const workoutRef: CursorRef = {
+      since: workoutsState.last_start_date,
+      latest: workoutsState.last_start_date,
+    };
 
     await progress(`Streaming ${path}`);
 
     await streamParse({
       path,
       onProgress: (rc, wc): Promise<void> => progress(`Parsed ${rc} records, ${wc} workouts`),
-      onRecord: async (attrs): Promise<void> => {
-        if (!requested.has("records")) {
-          return;
-        }
-        const startDate = isoDate(attrs.startDate);
-        if (!startDate) {
-          return;
-        }
-        if (sinceRec && startDate <= sinceRec) {
-          return;
-        }
-        const type = healthTypeShort(attrs.type) || attrs.type || "Unknown";
-        const value = attrs.value == null ? null : Number(attrs.value);
-        const id = hashId(`${type}|${attrs.sourceName || ""}|${startDate}|${attrs.value || ""}`);
-        await emitRecord("records", {
-          id,
-          type,
-          source_name: attrs.sourceName || null,
-          source_version: attrs.sourceVersion || null,
-          unit: attrs.unit || null,
-          value: value != null && Number.isFinite(value) ? value : null,
-          value_raw: (value == null || !Number.isFinite(value)) && attrs.value ? attrs.value : null,
-          start_date: startDate,
-          end_date: isoDate(attrs.endDate),
-        });
-        if (!latestRec || startDate > latestRec) {
-          latestRec = startDate;
-        }
-      },
-      onWorkout: async (attrs): Promise<void> => {
-        if (!requested.has("workouts")) {
-          return;
-        }
-        const startDate = isoDate(attrs.startDate);
-        if (!startDate) {
-          return;
-        }
-        if (sinceWork && startDate <= sinceWork) {
-          return;
-        }
-        const id = hashId(`${attrs.workoutActivityType || ""}|${attrs.sourceName || ""}|${startDate}`);
-        await emitRecord("workouts", {
-          id,
-          workout_activity_type: attrs.workoutActivityType
-            ? attrs.workoutActivityType.replace(APPLE_HEALTH_WORKOUT_PREFIX_RE, "")
-            : null,
-          duration_minutes: attrs.duration ? Number(attrs.duration) : null,
-          total_energy_burned_kcal: attrs.totalEnergyBurned ? Number(attrs.totalEnergyBurned) : null,
-          total_distance_km: attrs.totalDistance ? Number(attrs.totalDistance) : null,
-          source_name: attrs.sourceName || null,
-          start_date: startDate,
-          end_date: isoDate(attrs.endDate),
-        });
-        if (!latestWork || startDate > latestWork) {
-          latestWork = startDate;
-        }
-      },
+      onRecord: (attrs): Promise<void> => handleRecord(attrs, recordRef, requested, emitRecord),
+      onWorkout: (attrs): Promise<void> => handleWorkout(attrs, workoutRef, requested, emitRecord),
     });
 
     if (requested.has("records")) {
       await emit({
         type: "STATE",
         stream: "records",
-        cursor: { last_start_date: latestRec },
+        cursor: { last_start_date: recordRef.latest },
       });
     }
     if (requested.has("workouts")) {
       await emit({
         type: "STATE",
         stream: "workouts",
-        cursor: { last_start_date: latestWork },
+        cursor: { last_start_date: workoutRef.latest },
       });
     }
   },
