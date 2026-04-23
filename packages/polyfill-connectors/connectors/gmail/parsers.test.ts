@@ -11,19 +11,27 @@ import {
   addressListToArray,
   bigintToCursor,
   bigintToNumber,
+  buildDeltaMessageRecord,
+  buildMessageBodyRecord,
+  buildMessageRecord,
   buildThreadRecord,
   canonicalLabelName,
+  classifyBodySource,
   decodeBodyPart,
   decodeBodystructureForAttachments,
+  envelopeParticipants,
   findFirstPartByType,
   findLeafByPath,
   findTextHtmlPart,
   findTextPlainPart,
   isGmailSystemLabel,
+  isInTimeRange,
   labelParentName,
   makeSnippet,
+  MAX_BODY_FIELD_CHARS,
   parseReferencesHeader,
   sanitizeForJsonl,
+  selectBodyParts,
   stripHtmlToText,
   toFlagsArray,
   toLabelsArray,
@@ -485,6 +493,269 @@ test("buildThreadRecord: serializes ThreadAggregate to the emit shape", () => {
   assert.equal(rec.unread_count, 1);
   assert.equal(rec.flagged_count, 2);
   assert.equal(rec.has_attachments, true);
+});
+
+// ─── selectBodyParts ────────────────────────────────────────────────────
+
+test("selectBodyParts: resolves plain + html when wantBodies=true", () => {
+  const tree = readBodystructureFixture();
+  const sel = selectBodyParts(tree, true);
+  assert.equal(sel.plainPart, "1.1");
+  assert.equal(sel.htmlPart, "1.2");
+  assert.ok(sel.plainLeaf);
+  assert.ok(sel.htmlLeaf);
+  assert.equal(sel.plainCharset, "utf-8");
+  assert.equal(sel.htmlCharset, "utf-8");
+});
+
+test("selectBodyParts: skips html lookup when wantBodies=false (snippet-only path)", () => {
+  const tree = readBodystructureFixture();
+  const sel = selectBodyParts(tree, false);
+  assert.equal(sel.plainPart, "1.1");
+  assert.equal(sel.htmlPart, null);
+  assert.equal(sel.htmlLeaf, null);
+  assert.equal(sel.htmlEncoding, null);
+});
+
+test("selectBodyParts: undefined structure → all null", () => {
+  const sel = selectBodyParts(undefined, true);
+  assert.equal(sel.plainPart, null);
+  assert.equal(sel.htmlPart, null);
+  assert.equal(sel.plainEncoding, null);
+  assert.equal(sel.plainCharset, null);
+});
+
+// ─── classifyBodySource ─────────────────────────────────────────────────
+
+test("classifyBodySource: prefers non-empty text_plain", () => {
+  const r = classifyBodySource("plain body", "<p>html</p>");
+  assert.equal(r.bodyText, "plain body");
+  assert.equal(r.bodySource, "text_plain");
+});
+
+test("classifyBodySource: falls back to html_stripped when text empty", () => {
+  const r = classifyBodySource(null, "<p>Hello</p>");
+  assert.equal(r.bodyText, "Hello");
+  assert.equal(r.bodySource, "html_stripped");
+});
+
+test("classifyBodySource: text_html when html present but strips to nothing", () => {
+  // stripHtmlToText returns "" for empty bodies after tag removal
+  const r = classifyBodySource(null, "<!-- comment -->");
+  assert.equal(r.bodyText, null);
+  assert.equal(r.bodySource, "text_html");
+});
+
+test("classifyBodySource: empty when both are null/empty", () => {
+  const r = classifyBodySource(null, null);
+  assert.equal(r.bodyText, null);
+  assert.equal(r.bodySource, "empty");
+});
+
+// ─── buildMessageBodyRecord ─────────────────────────────────────────────
+
+test("buildMessageBodyRecord: text_plain path populates full fields + bytes", () => {
+  const rec = buildMessageBodyRecord({
+    bodyTextFull: "plain body text",
+    bodyHtmlFull: "<p>html body</p>",
+    gmMsgid: "msg-1",
+    textCharset: "utf-8",
+    htmlCharset: null,
+  });
+  assert.equal(rec.id, "msg-1");
+  assert.equal(rec.message_id, "msg-1");
+  assert.equal(rec.body_text, "plain body text");
+  assert.equal(rec.body_html, "<p>html body</p>");
+  assert.equal(rec.body_text_bytes, Buffer.byteLength("plain body text", "utf8"));
+  assert.equal(rec.body_html_bytes, Buffer.byteLength("<p>html body</p>", "utf8"));
+  assert.equal(rec.body_source, "text_plain");
+  assert.equal(rec.charset, "utf-8");
+  assert.equal(rec.content_languages, null);
+});
+
+test("buildMessageBodyRecord: truncates body_text past MAX_BODY_FIELD_CHARS and tags truncation", () => {
+  const huge = "x".repeat(MAX_BODY_FIELD_CHARS + 100);
+  const rec = buildMessageBodyRecord({
+    bodyTextFull: huge,
+    bodyHtmlFull: null,
+    gmMsgid: "m",
+    textCharset: null,
+    htmlCharset: null,
+  });
+  assert.ok(typeof rec.body_text === "string");
+  const body = rec.body_text;
+  assert.ok(body);
+  assert.ok(body.endsWith("…[truncated]"));
+  assert.ok(body.length < huge.length);
+  // Pre-truncation bytes recorded for the full body.
+  assert.equal(rec.body_text_bytes, Buffer.byteLength(huge, "utf8"));
+});
+
+test("buildMessageBodyRecord: CR/LF escaped in place for JSONL safety", () => {
+  const rec = buildMessageBodyRecord({
+    bodyTextFull: "line 1\nline 2\rline 3",
+    bodyHtmlFull: null,
+    gmMsgid: "m",
+    textCharset: "utf-8",
+    htmlCharset: null,
+  });
+  const body = rec.body_text;
+  assert.ok(typeof body === "string");
+  assert.ok(body);
+  assert.equal(body.includes("\n"), false);
+  assert.equal(body.includes("\r"), false);
+});
+
+test("buildMessageBodyRecord: empty body → null + body_source='empty'", () => {
+  const rec = buildMessageBodyRecord({
+    bodyTextFull: null,
+    bodyHtmlFull: null,
+    gmMsgid: "m",
+    textCharset: null,
+    htmlCharset: null,
+  });
+  assert.equal(rec.body_text, null);
+  assert.equal(rec.body_html, null);
+  assert.equal(rec.body_source, "empty");
+  assert.equal(rec.charset, null);
+});
+
+// ─── buildMessageRecord ─────────────────────────────────────────────────
+
+test("buildMessageRecord: full envelope maps to expected fields", () => {
+  const rec = buildMessageRecord({
+    attachmentsCount: 2,
+    dateHeader: "2024-01-15T12:00:00.000Z",
+    envelope: {
+      subject: "Hello",
+      messageId: "<mid@x>",
+      inReplyTo: "<parent@x>",
+      from: [{ name: "Alice", address: "alice@x" }],
+      to: [{ name: "Bob", address: "bob@x" }],
+      cc: [],
+      bcc: [],
+      replyTo: [],
+    },
+    flagsArr: ["\\Seen", "\\Flagged"],
+    gmMsgid: "m1",
+    gmThrid: "t1",
+    labels: ["INBOX", "Work"],
+    rawHeaders: "References: <a@x> <b@y>\r\n",
+    receivedAt: "2024-01-15T12:00:00.000Z",
+    sizeBytes: 42,
+    snippet: "hello body",
+  });
+  assert.equal(rec.id, "m1");
+  assert.equal(rec.thread_id, "t1");
+  assert.equal(rec.subject, "Hello");
+  assert.equal(rec.from_name, "Alice");
+  assert.equal(rec.from_email, "alice@x");
+  assert.deepEqual(rec.to, [{ name: "Bob", email: "bob@x" }]);
+  assert.equal(rec.date, "2024-01-15T12:00:00.000Z");
+  assert.equal(rec.received_at, "2024-01-15T12:00:00.000Z");
+  assert.equal(rec.message_id, "<mid@x>");
+  assert.equal(rec.in_reply_to, "<parent@x>");
+  assert.deepEqual(rec.references, ["<a@x>", "<b@y>"]);
+  assert.equal(rec.size_bytes, 42);
+  assert.deepEqual(rec.labels, ["INBOX", "Work"]);
+  assert.equal(rec.is_seen, true);
+  assert.equal(rec.is_flagged, true);
+  assert.equal(rec.is_draft, false);
+  assert.equal(rec.is_answered, false);
+  assert.equal(rec.has_attachments, true);
+  assert.equal(rec.snippet, "hello body");
+});
+
+test("buildMessageRecord: empty envelope + zero attachments maps to null/defaults", () => {
+  const rec = buildMessageRecord({
+    attachmentsCount: 0,
+    dateHeader: null,
+    envelope: {},
+    flagsArr: [],
+    gmMsgid: "m",
+    gmThrid: "",
+    labels: [],
+    rawHeaders: null,
+    receivedAt: "2024-01-15T12:00:00.000Z",
+    sizeBytes: null,
+    snippet: null,
+  });
+  assert.equal(rec.subject, null);
+  assert.equal(rec.from_name, null);
+  assert.equal(rec.from_email, null);
+  assert.deepEqual(rec.to, []);
+  assert.equal(rec.message_id, null);
+  assert.equal(rec.in_reply_to, null);
+  assert.deepEqual(rec.references, []);
+  assert.equal(rec.size_bytes, null);
+  assert.equal(rec.has_attachments, false);
+  assert.equal(rec.snippet, null);
+});
+
+// ─── buildDeltaMessageRecord ────────────────────────────────────────────
+
+test("buildDeltaMessageRecord: minimal shape with flags + labels, received_at fallback", () => {
+  const rec = buildDeltaMessageRecord({
+    flagsArr: ["\\Seen"],
+    gmMsgid: "m1",
+    gmThrid: "t1",
+    labels: ["INBOX"],
+    receivedAtFallback: "2024-02-01T00:00:00.000Z",
+  });
+  assert.equal(rec.id, "m1");
+  assert.equal(rec.thread_id, "t1");
+  assert.equal(rec.subject, null);
+  assert.equal(rec.from_name, null);
+  assert.deepEqual(rec.to, []);
+  assert.equal(rec.received_at, "2024-02-01T00:00:00.000Z");
+  assert.deepEqual(rec.labels, ["INBOX"]);
+  assert.equal(rec.is_seen, true);
+  assert.equal(rec.is_flagged, false);
+  assert.equal(rec.has_attachments, false);
+});
+
+// ─── isInTimeRange ──────────────────────────────────────────────────────
+
+test("isInTimeRange: no range → always true", () => {
+  assert.equal(isInTimeRange("2024-01-15T00:00:00.000Z", undefined), true);
+  assert.equal(isInTimeRange("2024-01-15T00:00:00.000Z", null), true);
+});
+
+test("isInTimeRange: since / until half-open interval [since, until)", () => {
+  const range = { since: "2024-01-01T00:00:00.000Z", until: "2024-02-01T00:00:00.000Z" };
+  assert.equal(isInTimeRange("2024-01-15T00:00:00.000Z", range), true);
+  assert.equal(isInTimeRange("2024-01-01T00:00:00.000Z", range), true); // boundary inclusive
+  assert.equal(isInTimeRange("2023-12-31T00:00:00.000Z", range), false);
+  assert.equal(isInTimeRange("2024-02-01T00:00:00.000Z", range), false); // upper exclusive
+  assert.equal(isInTimeRange("2024-03-01T00:00:00.000Z", range), false);
+});
+
+test("isInTimeRange: only-since / only-until", () => {
+  assert.equal(isInTimeRange("2024-01-15T00:00:00.000Z", { since: "2024-01-01T00:00:00.000Z" }), true);
+  assert.equal(isInTimeRange("2023-12-15T00:00:00.000Z", { since: "2024-01-01T00:00:00.000Z" }), false);
+  assert.equal(isInTimeRange("2024-01-15T00:00:00.000Z", { until: "2024-02-01T00:00:00.000Z" }), true);
+  assert.equal(isInTimeRange("2024-03-15T00:00:00.000Z", { until: "2024-02-01T00:00:00.000Z" }), false);
+});
+
+// ─── envelopeParticipants ───────────────────────────────────────────────
+
+test("envelopeParticipants: flattens from/to/cc into a single string[]", () => {
+  const env = {
+    from: [{ address: "a@x", name: "A" }],
+    to: [
+      { address: "b@y", name: "B" },
+      { address: "c@z", name: "C" },
+    ],
+    cc: [{ address: "d@w", name: "D" }],
+  };
+  const parts = envelopeParticipants(env);
+  assert.deepEqual(parts.sort(), ["a@x", "b@y", "c@z", "d@w"]);
+});
+
+test("envelopeParticipants: filters missing addresses and handles undefined envelope", () => {
+  assert.deepEqual(envelopeParticipants(undefined), []);
+  assert.deepEqual(envelopeParticipants({}), []);
+  assert.deepEqual(envelopeParticipants({ from: [{ name: "X", address: "" }] }), []);
 });
 
 // ─── Gate to any real-fixture tests ─────────────────────────────────────

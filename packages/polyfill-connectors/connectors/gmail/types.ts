@@ -93,3 +93,10 @@ export interface ThreadAggregate {
   subject: string | null;
   unread_count: number;
 }
+
+export type BodySource = "text_plain" | "html_stripped" | "text_html" | "empty";
+
+export interface ClassifiedBody {
+  bodySource: BodySource;
+  bodyText: string | null;
+}

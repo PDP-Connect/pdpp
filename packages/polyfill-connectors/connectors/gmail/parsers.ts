@@ -4,10 +4,11 @@
 
 import type {
   MessageAddressObject,
+  MessageEnvelopeObject,
   MessageStructureObject,
   // biome-ignore lint/correctness/noUnresolvedImports: imapflow is declared in package.json; Biome's resolver doesn't see it here
 } from "imapflow";
-import type { AttachmentRecord, ThreadAggregate } from "./types.ts";
+import type { AttachmentRecord, BodySource, ClassifiedBody, ThreadAggregate } from "./types.ts";
 
 // ─── Module-scoped regexes (Biome useTopLevelRegex) ─────────────────────
 
@@ -40,10 +41,13 @@ const REFERENCES_HEADER_RE = /^references:\s*(.*)$/im;
 const ANGLE_ID_RE = /<([^>]+)>/g;
 const QUOTED_REPLY_RE = /^\s*>/;
 const HEX_ESCAPE_RE = /=([0-9A-Fa-f]{2})/g;
+const CR_OR_LF_RE = /[\r\n]/g;
 
 // ─── Constants ──────────────────────────────────────────────────────────
 
 export const SNIPPET_MAX_CHARS = 200;
+const KB = 1024;
+export const MAX_BODY_FIELD_CHARS = 32 * KB;
 
 // ─── BigInt narrowing ───────────────────────────────────────────────────
 
@@ -527,4 +531,230 @@ export function buildThreadRecord(agg: ThreadAggregate): Record<string, unknown>
     flagged_count: agg.flagged_count,
     has_attachments: agg.has_attachments,
   };
+}
+
+// ─── Body selection + record builders ───────────────────────────────────
+
+/**
+ * Resolved body-part metadata pulled from a BODYSTRUCTURE tree. Used by the
+ * connector's body-fetch branch to decide which IMAP parts to request and
+ * how to decode the returned buffers. Pure: no IMAP IO.
+ */
+export interface BodyPartSelection {
+  htmlCharset: string | null;
+  htmlEncoding: string | null;
+  htmlLeaf: MessageStructureObject | null;
+  htmlPart: string | null;
+  plainCharset: string | null;
+  plainEncoding: string | null;
+  plainLeaf: MessageStructureObject | null;
+  plainPart: string | null;
+}
+
+/**
+ * Given a BODYSTRUCTURE and the caller's intent (wantBodies/wantMessages),
+ * locate the text/plain and text/html leaves and return their encodings +
+ * charsets. htmlPart is only resolved when wantBodies is true because we
+ * otherwise skip the HTML fetch entirely (the snippet comes from text/plain).
+ */
+export function selectBodyParts(structure: MessageStructureObject | undefined, wantBodies: boolean): BodyPartSelection {
+  const plainPart = findTextPlainPart(structure);
+  const htmlPart = wantBodies ? findTextHtmlPart(structure) : null;
+  const plainLeaf = plainPart ? findLeafByPath(structure, plainPart) : null;
+  const htmlLeaf = htmlPart ? findLeafByPath(structure, htmlPart) : null;
+  return {
+    plainPart,
+    htmlPart,
+    plainLeaf,
+    htmlLeaf,
+    plainEncoding: plainLeaf?.encoding ?? null,
+    htmlEncoding: htmlLeaf?.encoding ?? null,
+    plainCharset: plainLeaf?.parameters?.charset ?? null,
+    htmlCharset: htmlLeaf?.parameters?.charset ?? null,
+  };
+}
+
+/**
+ * Classify the final body_text + body_source we'll emit on message_bodies,
+ * falling back to html_stripped when text/plain is absent. Mirrors the
+ * original in-loop branching exactly so the record shape is unchanged.
+ */
+export function classifyBodySource(bodyTextFull: string | null, bodyHtmlFull: string | null): ClassifiedBody {
+  if (bodyTextFull?.length) {
+    return { bodyText: bodyTextFull, bodySource: "text_plain" };
+  }
+  if (bodyHtmlFull?.length) {
+    const stripped = stripHtmlToText(bodyHtmlFull);
+    if (stripped) {
+      return { bodyText: stripped, bodySource: "html_stripped" };
+    }
+    return { bodyText: null, bodySource: "text_html" };
+  }
+  return { bodyText: null, bodySource: "empty" };
+}
+
+function toCleanString(v: unknown): string | null {
+  if (v == null) {
+    return null;
+  }
+  const s = typeof v === "string" ? v : String(v);
+  // Additional belt-and-suspenders: escape any stray LF/CR in place.
+  // sanitizeForJsonl also does this but gives us defense-in-depth at the
+  // call site (see comment on sanitizeForJsonl for full rationale).
+  return s.replace(CR_OR_LF_RE, " ");
+}
+
+function truncateField(value: string | null, max: number): string | null {
+  if (value == null) {
+    return toCleanString(value);
+  }
+  if (value.length > max) {
+    return toCleanString(`${value.slice(0, max)}…[truncated]`);
+  }
+  return toCleanString(value);
+}
+
+/**
+ * Build the `message_bodies` RECORD payload for one message. Mirrors the
+ * original in-loop semantics:
+ *   - Truncate body_text / body_html to MAX_BODY_FIELD_CHARS + "…[truncated]"
+ *   - Emit body_*_bytes from the FULL (pre-truncation) decoded body
+ *   - Fall back to html_stripped when text/plain is absent/empty
+ *   - charset = textCharset || htmlCharset || null
+ */
+export function buildMessageBodyRecord(params: {
+  bodyHtmlFull: string | null;
+  bodyTextFull: string | null;
+  gmMsgid: string;
+  htmlCharset: string | null;
+  textCharset: string | null;
+}): Record<string, unknown> {
+  const { bodyText, bodySource } = classifyBodySource(params.bodyTextFull, params.bodyHtmlFull);
+  return {
+    id: params.gmMsgid,
+    message_id: params.gmMsgid,
+    body_text: truncateField(bodyText, MAX_BODY_FIELD_CHARS),
+    body_html: truncateField(params.bodyHtmlFull, MAX_BODY_FIELD_CHARS),
+    body_text_bytes: bodyText ? Buffer.byteLength(bodyText, "utf8") : null,
+    body_html_bytes: params.bodyHtmlFull ? Buffer.byteLength(params.bodyHtmlFull, "utf8") : null,
+    body_source: bodySource satisfies BodySource,
+    // Language detection is out of scope for v1; emit null so consumers
+    // know the field exists but wasn't computed.
+    content_languages: null,
+    charset: params.textCharset || params.htmlCharset || null,
+  };
+}
+
+/**
+ * Build the `messages` RECORD payload for one full metadata row. Pure over
+ * an envelope + already-parsed flags/labels/attachments — no IMAP IO.
+ */
+export function buildMessageRecord(params: {
+  attachmentsCount: number;
+  dateHeader: string | null;
+  envelope: MessageEnvelopeObject;
+  flagsArr: readonly string[];
+  gmMsgid: string;
+  gmThrid: string;
+  labels: readonly string[];
+  rawHeaders: Buffer | string | null | undefined;
+  receivedAt: string;
+  sizeBytes: number | null;
+  snippet: string | null;
+}): Record<string, unknown> {
+  const env = params.envelope;
+  const fromAddr = env.from?.[0];
+  const references = parseReferencesHeader(params.rawHeaders);
+  return {
+    id: params.gmMsgid,
+    thread_id: params.gmThrid,
+    subject: env.subject || null,
+    from_name: fromAddr?.name || null,
+    from_email: fromAddr?.address || null,
+    to: addressListToArray(env.to),
+    cc: addressListToArray(env.cc),
+    bcc: addressListToArray(env.bcc),
+    reply_to: addressListToArray(env.replyTo),
+    date: params.dateHeader,
+    received_at: params.receivedAt,
+    message_id: env.messageId || null,
+    in_reply_to: env.inReplyTo || null,
+    references,
+    size_bytes: params.sizeBytes,
+    labels: [...params.labels],
+    is_draft: params.flagsArr.includes("\\Draft"),
+    is_flagged: params.flagsArr.includes("\\Flagged"),
+    is_seen: params.flagsArr.includes("\\Seen"),
+    is_answered: params.flagsArr.includes("\\Answered"),
+    has_attachments: params.attachmentsCount > 0,
+    snippet: params.snippet,
+  };
+}
+
+/**
+ * Build the flag/label delta RECORD payload for one message. No envelope
+ * re-fetch on the delta path — callers pass received_at as a fallback to
+ * satisfy the schema-required field.
+ */
+export function buildDeltaMessageRecord(params: {
+  flagsArr: readonly string[];
+  gmMsgid: string;
+  gmThrid: string;
+  labels: readonly string[];
+  receivedAtFallback: string;
+}): Record<string, unknown> {
+  return {
+    id: params.gmMsgid,
+    thread_id: params.gmThrid,
+    subject: null,
+    from_name: null,
+    from_email: null,
+    to: [],
+    cc: [],
+    bcc: [],
+    reply_to: [],
+    date: null,
+    received_at: params.receivedAtFallback,
+    message_id: null,
+    in_reply_to: null,
+    references: [],
+    size_bytes: null,
+    labels: [...params.labels],
+    is_draft: params.flagsArr.includes("\\Draft"),
+    is_flagged: params.flagsArr.includes("\\Flagged"),
+    is_seen: params.flagsArr.includes("\\Seen"),
+    is_answered: params.flagsArr.includes("\\Answered"),
+    has_attachments: false,
+    snippet: null,
+  };
+}
+
+/** Determine whether a received_at timestamp falls inside a since/until window. */
+export function isInTimeRange(
+  receivedAt: string,
+  range: { since?: string; until?: string } | null | undefined
+): boolean {
+  if (!range) {
+    return true;
+  }
+  if (range.since && receivedAt < range.since) {
+    return false;
+  }
+  if (range.until && receivedAt >= range.until) {
+    return false;
+  }
+  return true;
+}
+
+/** Extract the envelope participants (from/to/cc) as a de-duped email list. */
+export function envelopeParticipants(env: MessageEnvelopeObject | undefined): string[] {
+  if (!env) {
+    return [];
+  }
+  const raw: Array<string | undefined> = [
+    env.from?.[0]?.address,
+    ...(env.to || []).map((a) => a.address),
+    ...(env.cc || []).map((a) => a.address),
+  ];
+  return raw.filter((a): a is string => typeof a === "string" && a.length > 0);
 }
