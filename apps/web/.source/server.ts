@@ -1,4 +1,5 @@
 // @ts-nocheck
+import * as __fd_glob_13 from "../content/docs/spec-lexical-retrieval-extension.md?collection=docs"
 import * as __fd_glob_12 from "../content/docs/spec-dti-alignment.md?collection=docs"
 import * as __fd_glob_11 from "../content/docs/spec-deferred.md?collection=docs"
 import * as __fd_glob_10 from "../content/docs/spec-data-query-api.md?collection=docs"
@@ -20,4 +21,4 @@ const create = server<typeof Config, import("fumadocs-mdx/runtime/types").Intern
   }
 }>({"doc":{"passthroughs":["extractedReferences"]}});
 
-export const docs = await create.docs("docs", "content/docs", {"meta.json": __fd_glob_0, }, {"index.mdx": __fd_glob_1, "reference-implementation-examples.md": __fd_glob_2, "reference-implementation.md": __fd_glob_3, "spec-architecture.md": __fd_glob_4, "spec-auth-design.md": __fd_glob_5, "spec-change-tracking.md": __fd_glob_6, "spec-collection-profile.md": __fd_glob_7, "spec-connector-ecosystem.md": __fd_glob_8, "spec-core.md": __fd_glob_9, "spec-data-query-api.md": __fd_glob_10, "spec-deferred.md": __fd_glob_11, "spec-dti-alignment.md": __fd_glob_12, });
+export const docs = await create.docs("docs", "content/docs", {"meta.json": __fd_glob_0, }, {"index.mdx": __fd_glob_1, "reference-implementation-examples.md": __fd_glob_2, "reference-implementation.md": __fd_glob_3, "spec-architecture.md": __fd_glob_4, "spec-auth-design.md": __fd_glob_5, "spec-change-tracking.md": __fd_glob_6, "spec-collection-profile.md": __fd_glob_7, "spec-connector-ecosystem.md": __fd_glob_8, "spec-core.md": __fd_glob_9, "spec-data-query-api.md": __fd_glob_10, "spec-deferred.md": __fd_glob_11, "spec-dti-alignment.md": __fd_glob_12, "spec-lexical-retrieval-extension.md": __fd_glob_13, });

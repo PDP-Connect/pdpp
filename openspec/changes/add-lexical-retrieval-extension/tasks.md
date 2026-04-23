@@ -68,7 +68,7 @@
 
 - [ ] 10.1 Backing store: SQLite FTS5 in the reference. Do NOT make SQLite normative in the spec delta.
 - [ ] 10.2 Index only fields declared in `query.search.lexical_fields`; do not index undeclared fields just because the stream stores them.
-- [ ] 10.3 Maintain the index via SQLite triggers with a startup rebuild safeguard, mirroring the existing `_ref/search` FTS5 experiment's maintenance model.
+- [ ] 10.3 Maintain the index in JS at the existing record write/update/delete call sites (NOT via SQLite triggers — index population needs to consult the connector manifest at write time to know which fields to index, which triggers can't do), with a startup rebuild safeguard for drift recovery.
 - [ ] 10.4 Treat the index as a derived artifact: rebuildable from records; deletion/retention flows through records first.
 - [ ] 10.5 Do NOT introduce sqlite-vec, pgvector, an external search service, or embeddings in this tranche.
 

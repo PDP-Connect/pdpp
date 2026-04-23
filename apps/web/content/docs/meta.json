@@ -7,6 +7,7 @@
     "spec-architecture",
     "spec-core",
     "spec-data-query-api",
+    "spec-lexical-retrieval-extension",
     "spec-auth-design",
     "---Collection Profile---",
     "spec-collection-profile",

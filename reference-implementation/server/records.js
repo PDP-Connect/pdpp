@@ -2,6 +2,11 @@
  * PDPP Resource Server — record storage and grant-enforced query
  */
 import { getDb } from './db.js';
+import {
+  lexicalIndexDelete,
+  lexicalIndexDeleteByConnectorStream,
+  lexicalIndexUpsert,
+} from './search.js';
 
 function nowIso() {
   return new Date().toISOString();
@@ -97,6 +102,7 @@ export async function ingestRecord(storageTarget, record) {
       INSERT INTO record_changes(connector_id, stream, record_key, version, record_json, emitted_at, deleted, deleted_at)
       VALUES(?, ?, ?, ?, ?, ?, 1, ?)
     `).run(connectorId, stream, recordKey, nextVersion, current.record_json, effectiveEmittedAt, effectiveEmittedAt);
+    await lexicalIndexDelete({ connectorId, stream, recordKey });
   } else {
     db.prepare(`
       INSERT INTO records(connector_id, stream, record_key, record_json, emitted_at, version)
@@ -112,6 +118,7 @@ export async function ingestRecord(storageTarget, record) {
       INSERT INTO record_changes(connector_id, stream, record_key, version, record_json, emitted_at, deleted, deleted_at)
       VALUES(?, ?, ?, ?, ?, ?, 0, NULL)
     `).run(connectorId, stream, recordKey, nextVersion, recordJson, effectiveEmittedAt);
+    await lexicalIndexUpsert({ connectorId, stream, recordKey, data });
   }
 
   // Advance version counter
@@ -1061,6 +1068,8 @@ export async function deleteRecord(storageTarget, stream, recordId) {
     ON CONFLICT(connector_id, stream) DO UPDATE SET max_version = excluded.max_version
   `).run(connectorId, stream, nextVersion);
 
+  await lexicalIndexDelete({ connectorId, stream, recordKey: recordId });
+
   const changeHistoryLimit = getChangeHistoryLimit();
   if (changeHistoryLimit > 0) {
     db.prepare(`
@@ -1107,6 +1116,7 @@ export async function deleteAllRecords(storageTarget, stream) {
   db.prepare('DELETE FROM records WHERE connector_id = ? AND stream = ?').run(connectorId, stream);
   db.prepare('DELETE FROM record_changes WHERE connector_id = ? AND stream = ?').run(connectorId, stream);
   db.prepare('DELETE FROM version_counter WHERE connector_id = ? AND stream = ?').run(connectorId, stream);
+  await lexicalIndexDeleteByConnectorStream({ connectorId, stream });
   return deletedRecordCount;
 }
 

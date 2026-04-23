@@ -54,7 +54,7 @@ Arguments against reusing `GET /v1/streams/{stream}/records`:
 | `q` | yes | string | The lexical query. Opaque to clients beyond "lexical match over authorized declared searchable fields". |
 | `limit` | no | integer | Default 25, max 100. Same envelope as record listing for client ergonomics, but not a grant constraint. |
 | `cursor` | no | string | Opaque search-pagination cursor. MUST NOT reuse record-list or `changes_since` cursors. |
-| `streams[]` | no | repeated string | Optional stream-scope narrowing. If omitted, search runs across all authorized streams. If a named stream is not authorized, the request is rejected (`grant_stream_not_allowed`) rather than silently ignored. |
+| `streams[]` | no | repeated string | Optional stream-scope narrowing. If omitted, search runs across all authorized streams (for owner tokens: across every owner-visible connector). For **client tokens**, naming a stream the grant does not authorize is rejected with `grant_stream_not_allowed` rather than silently ignored. For **owner tokens**, `streams[]` is a soft cross-connector filter — naming a stream that no owner-visible connector exposes simply yields zero hits, not an error (see §4.4). |
 
 Not in v1:
 
@@ -62,14 +62,15 @@ Not in v1:
 - `filter[...]`, `filter[{field}][gte]` etc.
 - `fields`, `expand[]`, `expand_limit[...]`
 - `order=` (search is relevance-ordered; any later change would be an extension, not a silent widening)
-- connector-specific parameters
+- `connector_id=...` (intentionally rejected on the public surface; owner-token callers search across all owner-visible connectors with no public connector-scope param — see §4.4)
+- any other connector-specific parameter
 - any semantic/vector parameter
 
 ### 2.4 Authentication and versioning
 
 The endpoint follows the existing `spec-data-query-api.md` conventions:
 
-- `Authorization: Bearer <access_token>` (grant-bound)
+- `Authorization: Bearer <access_token>` (grant-bound for client tokens; owner-token for owner self-export)
 - `PDPP-Version` date header
 - `Request-Id` echoed in the response
 
@@ -86,6 +87,7 @@ Reuse the existing list envelope (`object: "list"`, `has_more`, `next_cursor`, `
   "object": "search_result",
   "stream": "messages",
   "record_key": "msg_123",
+  "connector_id": "https://registry.pdpp.org/connectors/messaging-app",
   "record_url": "/v1/streams/messages/records/msg_123",
   "emitted_at": "2026-04-23T12:34:56Z",
   "matched_fields": ["text"],
@@ -96,10 +98,25 @@ Reuse the existing list envelope (`object: "list"`, `has_more`, `next_cursor`, `
 }
 ```
 
+For owner-token callers on a resource server that scopes owner reads per connector (the reference implementation does this today), `record_url`, when emitted, includes the canonical owner-mode connector scope:
+
+```json
+{
+  "object": "search_result",
+  "stream": "transactions",
+  "record_key": "txn_42",
+  "connector_id": "https://registry.pdpp.org/connectors/usaa",
+  "record_url": "/v1/streams/transactions/records/txn_42?connector_id=https%3A%2F%2Fregistry.pdpp.org%2Fconnectors%2Fusaa",
+  "emitted_at": "2026-04-23T12:34:56Z",
+  "matched_fields": ["description"]
+}
+```
+
 Rationale:
 
 - `record_key` is explicit so agents know exactly what to fetch next without parsing URLs.
-- `record_url` is OPTIONAL: implementations MAY include it for ergonomic hydration, MAY omit it. When emitted it MUST resolve to the canonical `GET /v1/streams/{stream}/records/{record_key}` endpoint for the same `stream` and `record_key`. Recommended in v1 because it eliminates a client-side URL templating step, but never required.
+- `connector_id` is required on every result. For client-token callers it mirrors the connector identity already encoded in the caller's grant for that stream. For owner-token callers it identifies which owner-visible connector the hit came from, which is necessary because owner reads of records and stream metadata are scoped per connector on the resource server.
+- `record_url` is OPTIONAL: implementations MAY include it for ergonomic hydration, MAY omit it. When emitted it MUST resolve to the canonical `GET /v1/streams/{stream}/records/{record_key}` endpoint for the same `stream` and `record_key`. For owner-token callers on a per-connector RS, the URL MUST include the canonical owner-mode `connector_id` query parameter. Recommended in v1 because it eliminates a client-side URL templating step, but never required.
 - `matched_fields` lists which **declared searchable** fields matched; it is a subset of that declaration, never a raw reflection of server-side index internals.
 - `snippet` is optional per result. When emitted, it references a single `matched_fields` entry and contains only text the caller is authorized to read.
 - `score` and any numeric rank are intentionally absent in v1. Portable numeric scoring would require freezing a specific ranking formula across implementations; the brief prohibits that.
@@ -140,6 +157,21 @@ A conforming implementation MUST NOT search over unauthorized fields and then "f
 - `permission_error` / `grant_expired` / `grant_revoked` — reuse existing `spec-data-query-api.md` codes.
 - No new error type is introduced for "no searchable+authorized fields for this caller"; that case returns an empty result list, because the same call would be legal on a stream that had declared no searchable fields at all.
 
+### 4.4 Owner-token search semantics
+
+Resource servers in this ecosystem may scope owner reads per connector — the reference implementation does this today, requiring `connector_id=...` on owner-mode `/v1/streams/...` calls. The lexical retrieval extension does NOT inherit that convention onto its public surface. Specifically:
+
+- The `/v1/search` request shape is identical for owner-token and client-token callers. There is no public `connector_id` query parameter in v1.
+- For an owner-token caller, the server SHALL search across every connector the owner can read on this resource server. Optionally, `streams[]` narrows to a stream name shared across owner-visible connectors (every owner-visible connector that exposes that stream and declares searchable fields on it contributes hits).
+- Each `search_result` carries `connector_id` so the owner-token caller can hydrate each hit through the correct per-connector owner read scope. This is why `connector_id` is required on every result rather than optional.
+- For client-token callers, `connector_id` on results mirrors the connector identity already encoded in the caller's grant for that stream. The presence of `connector_id` on results doesn't grant the client any cross-connector capability — it only describes the hit's origin.
+
+Why no public `connector_id` parameter in v1:
+
+- The point of cross-stream search is "search everywhere I can read." Forcing the caller to pre-name a connector would push back into the per-stream fan-out problem the extension exists to solve.
+- Connector-scoped owner reads are an RS-shape choice in the current reference, not a portable contract. Bolting that shape onto a public param would freeze a reference-internal convention into the extension's public contract.
+- The hit's `connector_id` is sufficient for hydration. Callers that want to filter to a single connector can do so client-side over the result list (and can use `streams[]` to narrow first).
+
 ## 5. Searchable-field declaration: stream-level
 
 ### 5.1 Shape
@@ -159,8 +191,8 @@ Stream metadata (the existing per-stream `GET /v1/streams/{stream}` body) gains 
 Interpretation:
 
 - `query.search` is present iff this stream participates in lexical retrieval.
-- `lexical_fields` is the set of top-level scalar textual fields the stream declares searchable.
-- A stream MAY participate in the extension with an empty `lexical_fields` only in the sense that it is still advertised as "search-aware" (for example, to signal the connector has been evaluated and intentionally exposes nothing). In practice, the recommended form is to omit `query.search` entirely for streams that do not participate.
+- `lexical_fields` is the set of top-level scalar textual fields the stream declares searchable. It MUST be a non-empty array.
+- A stream that does not participate in lexical retrieval MUST omit `query.search` entirely. There is no "search-aware but searches nothing" form: a stream either declares one or more `lexical_fields` or omits the block. (This matches the patched spec scenario "A non-participating stream omits the declaration" and the validator that rejects `lexical_fields: []`.)
 
 ### 5.2 Scope of `lexical_fields` in v1
 
@@ -298,7 +330,7 @@ Explicitly out of scope:
 ### 9.2 Index scope in the reference
 
 - Index only fields declared by streams in `query.search.lexical_fields`. Do not index unauthorized-by-declaration fields.
-- Maintain index via SQLite triggers on the `records` table, with a startup rebuild safeguard for drift recovery (mirroring the `_ref/search` experiment's maintenance model).
+- Maintain the index in JS at the existing record write/update/delete call sites, with a startup rebuild safeguard for drift recovery. JS-side rather than SQLite triggers because the index population needs to consult the connector manifest at write time to know which fields to index — triggers cannot see the manifest, the JS write path can.
 - Treat the index as a derived artifact: it is rebuildable from records, and retention/deletion flow through records first.
 
 ### 9.3 Separation from `/_ref/search`
@@ -328,9 +360,10 @@ None of these cleanups require widening the public contract; they only require m
 Explicit split so promotion/demotion decisions are cheap later.
 
 **Portable contract (spec):**
-- Extension name, discoverability, endpoint path, method, query parameters
-- `search_result` shape
-- Grant-safety invariants
+- Extension name, discoverability, endpoint path, method, query parameters (including the explicit rejection of public `connector_id`)
+- `search_result` shape, including required `connector_id` on every result
+- Grant-safety invariants (client-token AND owner-token)
+- Owner-token search semantics (cross-connector, no public connector-scope param, `connector_id` on results enables hydration)
 - `query.search.lexical_fields` declaration shape
 - Server-level advertisement shape
 - Opaque-cursor pagination semantics
@@ -344,6 +377,7 @@ Explicit split so promotion/demotion decisions are cheap later.
 - Cursor encoding
 - Whether snippets are character- or token-windowed, and exact window size
 - Whether a stream contributes to search at all (controlled by the stream's own `lexical_fields` declaration, not by the extension's advertisement)
+- Whether a resource server scopes owner record reads per connector (the extension only requires that `record_url`, when present, encodes whatever scope is needed for the canonical single-record read)
 
 ## 12. Alternatives considered (and rejected)
 
@@ -358,7 +392,7 @@ Explicit split so promotion/demotion decisions are cheap later.
 ## 13. Acceptance bar (answers to the brief's gating questions)
 
 1. **What exact fields are searched?** Only fields that are both (a) declared in the stream's `query.search.lexical_fields` and (b) readable under the caller's grant.
-2. **How does grant enforcement constrain search?** Streams outside the grant contribute zero hits; fields outside grant projection are never searched for that caller; snippets never quote ungranted text; unauthorized `streams[]` is a hard error.
+2. **How does grant enforcement constrain search?** Streams outside the grant contribute zero hits; fields outside grant projection are never searched for that caller; snippets never quote ungranted text; for client tokens, unauthorized `streams[]` is a hard error (`grant_stream_not_allowed`); for owner tokens, `streams[]` is a soft cross-connector filter (an unknown stream name yields zero hits, not an error).
 3. **What can a third-party client discover before trying the endpoint?** The server-level capability advertisement (support flag, endpoint, `cross_stream`, `snippets`, limits) plus per-stream `query.search.lexical_fields` via existing stream metadata.
 4. **Why lexical and not ambient generic search?** Lexical retrieval avoids embedding/model/language-lock-in and has a tractable portable shape; semantic retrieval does not.
 5. **Why extension, not core?** The need is real but the shape is not yet ecosystem-proven; forcing it everywhere now would freeze a contract we might need to evolve. The ladder says "extension" is the right rung today.

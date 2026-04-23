@@ -26,6 +26,10 @@ reference-implementation/report.*.json
 # but some contents are ignored:
 .claude/projects/
 .claude/CLAUDE.local.md
+# Runtime artifacts from the steward scheduler — machine-local
+# (carry session ids, PIDs, absolute paths). Not portable.
+.claude/scheduled_tasks.json
+.claude/scheduled_tasks.lock
 .playwright-mcp/
 .impeccable.md
 skills-lock.json
