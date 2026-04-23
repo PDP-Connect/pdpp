@@ -34,6 +34,7 @@ import type {
   MessageEnvelopeObject,
   // biome-ignore lint/correctness/noUnresolvedImports: imapflow is declared in package.json; Biome's resolver doesn't see it here
 } from "imapflow";
+import { type EmittedRecord, makeRecordingEmit } from "../../src/test-harness.ts";
 import {
   emitMessagesPass,
   type FetchBodiesFn,
@@ -42,11 +43,6 @@ import {
   processMessage,
 } from "./collect-helpers.ts";
 import type { ProgressMessage, StreamRequest } from "./types.ts";
-
-interface EmittedRecord {
-  data: Record<string, unknown>;
-  stream: string;
-}
 
 interface RecordingHarness {
   deps: PerMessageDeps;
@@ -80,7 +76,10 @@ interface HarnessOverrides {
 }
 
 function makeHarness(overrides: HarnessOverrides = {}): RecordingHarness {
-  const emitted: EmittedRecord[] = [];
+  // gmail has no validateRecord (no schemas.ts). pass-through mirrors
+  // runtime behaviour for this connector; shape-checking kicks in the
+  // moment a schema is threaded into runConnector.
+  const harness = makeRecordingEmit();
   const progress: ProgressMessage[] = [];
   const requested = overrides.requested ?? makeRequested(["messages", "attachments"]);
   const deps: PerMessageDeps = {
@@ -88,10 +87,7 @@ function makeHarness(overrides: HarnessOverrides = {}): RecordingHarness {
       progress.push(m);
       return Promise.resolve();
     },
-    emitRecord: (stream: string, data: Record<string, unknown>): Promise<void> => {
-      emitted.push({ stream, data });
-      return Promise.resolve();
-    },
+    emitRecord: harness.emitRecord,
     fetchBodies: overrides.fetchBodies ?? defaultFetchBodies,
     nowIso: overrides.nowIso ?? ((): string => FROZEN_NOW),
     requested,
@@ -99,7 +95,7 @@ function makeHarness(overrides: HarnessOverrides = {}): RecordingHarness {
     wantBodies: overrides.wantBodies ?? false,
     wantMessages: overrides.wantMessages ?? true,
   };
-  return { deps, emitted, progress };
+  return { deps, emitted: harness.emitted, progress };
 }
 
 /** Minimal-but-complete FetchMessageObject. imapflow only requires seq+uid;
