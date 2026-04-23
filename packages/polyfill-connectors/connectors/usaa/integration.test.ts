@@ -6,9 +6,12 @@
  * filters.
  *
  * These tests DON'T drive Playwright. They construct a fake EmitDeps
- * that captures every (stream, data) pair pushed through emitRecord
- * plus every non-RECORD EmittedMessage pushed through emit, then
- * assert on the observable invariants: parent-before-child ordering,
+ * backed by `makeRecordingEmit(validateRecord)` — every emitted record
+ * is run through the real zod schema so fixture drift fails the test
+ * instead of silently passing. Captures every (stream, data) pair
+ * pushed through emitRecord plus every non-RECORD EmittedMessage
+ * pushed through emit, then asserts on the observable invariants:
+ * parent-before-child ordering,
  * stream-scope suppression, null-enrichment fallback (failed PDF
  * hydration → index-only row), backfill-ladder-exhausted SKIP shape,
  * and emittedAt propagation into account records.
@@ -38,6 +41,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { EmittedMessage, StreamScope } from "../../src/connector-runtime.ts";
+import { type EmittedRecord, makeRecordingEmit } from "../../src/test-harness.ts";
 import {
   buildIndexRows,
   DEFERRED_STREAMS,
@@ -50,6 +54,7 @@ import {
   hydrationSuccess,
   shouldParseStatementTitle,
 } from "./collect-helpers.ts";
+import { validateRecord } from "./schemas.ts";
 import type {
   DashboardAccount,
   DiagnosticInfo,
@@ -59,11 +64,6 @@ import type {
   IndexRow,
 } from "./types.ts";
 
-interface EmittedRecord {
-  data: Record<string, unknown>;
-  stream: string;
-}
-
 interface RecordingHarness {
   deps: EmitDeps;
   emitted: EmittedRecord[];
@@ -72,23 +72,17 @@ interface RecordingHarness {
 
 const FROZEN_EMITTED_AT = "2026-04-22T12:00:00.000Z";
 
-/** Build an EmitDeps that records every emit() + emitRecord() call.
+/** Build an EmitDeps that records every emit() + emitRecord() call
+ *  through the real zod schema the runtime applies in production.
  *  The helpers under test are Playwright-free, so no tmpDir/progress/
  *  capture fakes are needed. */
 function makeHarness(): RecordingHarness {
-  const emitted: EmittedRecord[] = [];
-  const messages: EmittedMessage[] = [];
+  const harness = makeRecordingEmit(validateRecord);
   const deps: EmitDeps = {
-    emit: (msg: EmittedMessage): Promise<void> => {
-      messages.push(msg);
-      return Promise.resolve();
-    },
-    emitRecord: (stream: string, data: Record<string, unknown>): Promise<void> => {
-      emitted.push({ stream, data });
-      return Promise.resolve();
-    },
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
   };
-  return { deps, emitted, messages };
+  return { deps, emitted: harness.emitted, messages: harness.protocolMessages };
 }
 
 function makeAccount(overrides: Partial<DashboardAccount> = {}): DashboardAccount {
