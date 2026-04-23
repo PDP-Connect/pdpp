@@ -21,84 +21,67 @@
  * link (`<a>`) which USAA sometimes surfaces as a direct-PDF link.
  */
 
-import { createHash } from "node:crypto";
-import { mkdir, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
 import type { Locator, Page } from "playwright";
 import type { DownloadQueue } from "../../src/download-queue.ts";
+import {
+  currencyToCentsFromStatement as _currencyFromStatement,
+  detectStatementClosing,
+  detectStatementYear,
+  hashId,
+  parseCreditCardEra,
+  parseModernCheckingEra,
+  fileUrlForPath as parsersFileUrlForPath,
+  safeAccountSlug,
+  sha256Hex,
+  yearMonthFromDate,
+} from "./parsers.ts";
 import type {
-  ClosingContext,
+  DownloadFail,
   DownloadResult,
   HydratedStatement,
-  ParsedStatementTxn as ParsedTxn,
+  ParsedStatementTxn,
   ParseMeta,
+  StatementClosing,
   StatementRow,
   StatementTxnRecord,
 } from "./types.ts";
 
 const STATEMENT_ROOT = join(homedir(), ".pdpp", "usaa-statements");
 
-// Module-level regexes (Biome useTopLevelRegex) — compiled once, reused
-// across parser passes and per-row driver calls.
-const SLUG_SAFE_RE = /^[A-Za-z0-9_-]+$/;
+// ─── Selector regexes (kept here; Node-side, not pure data) ──────────────
 const OPTIONS_BUTTON_TEXT_RE = /^\s*(Options|More|\.{3})\s*$/i;
 const DOWNLOAD_MENU_ITEM_RE = /download/i;
 const DOWNLOAD_BUTTON_TEXT_RE = /^\s*Download( PDF)?\s*$/i;
 const DOCUMENTS_PATH_RE = /\/my\/documents/;
-const CREDIT_CARD_CLOSING_RE = /Statement\s+Closing\s+Date\s+(\d{1,2})\/\d{1,2}\/(\d{2,4})/i;
-const CHECKING_STATEMENT_PERIOD_RE =
-  /Statement\s+Period\s+\d{1,2}\/\d{1,2}\/\d{4}\s*[-–]\s*(\d{1,2})\/\d{1,2}\/(\d{4})/i;
-const FOUR_DIGIT_YEAR_RE = /\b(19|20)\d{2}\b/;
-const LEADING_MINUS_RE = /^-/;
-const TRAILING_MINUS_RE = /-\s*$/;
-const LEADING_PAREN_RE = /\(/;
-const NON_CURRENCY_CHARS_RE = /[^0-9.]/g;
-const STMT_LINE_SPLIT_RE = /\r?\n/;
-const MODERN_SECTION_START_RE =
-  /^\s*(TRANSACTIONS|ACCOUNT\s+ACTIVITY|DEPOSITS?\s+AND\s+OTHER\s+CREDITS|WITHDRAWALS?\s+AND\s+OTHER\s+DEBITS)\s*$/i;
-const MODERN_SECTION_END_RE = /^\s*(ENDING\s+BALANCE|TOTAL\s+FEES|FEE\s+SUMMARY|DAILY\s+BALANCE\s+SUMMARY)/i;
-const MODERN_TXN_LINE_RE =
-  /^(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?\s+(.+?)\s+(-?\$?[\d,]+\.\d{2})(?:\s+(-?\$?[\d,]+\.\d{2}))?\s*$/;
-const WS_RUN_2PLUS_RE = /\s{2,}/g;
-const CREDIT_SECTION_START_RE = /^\s*(TRANSACTIONS|PURCHASES|PAYMENTS\s+AND\s+CREDITS)\s*$/i;
-const CREDIT_SECTION_TOTAL_RE = /^\s*TOTAL/i;
-const CREDIT_SECTION_END_RE = /^\s*(TOTAL\b|FEES\s+CHARGED|INTEREST\s+CHARGED|YEAR-TO-DATE|IMPORTANT\s+ACCOUNT)/i;
-const CREDIT_TXN_LINE_RE = /^(\d{1,2})\/(\d{1,2})\s+(\d{1,2})\/(\d{1,2})\s+(.+?)\s+(-?\$?[\d,]+\.\d{2}-?)\s*$/;
+const MENU_WS_RE = /\s+/g;
+const WS_CLEANUP_RE = /\s+/g;
 const CHECK_NUMBER_RE = /CHECK\s*#?\s*0*(\d+)/i;
 
-// Shapes live in ./types.ts; this module focuses on PDF hydration + parse.
+// ─── Timing constants ────────────────────────────────────────────────────
+const DOWNLOAD_TIMEOUT_MS = 180_000;
+const DOCUMENTS_NAV_TIMEOUT_MS = 30_000;
+const DOCUMENTS_RELOAD_SETTLE_MS = 5000;
+const CLICK_TIMEOUT_MS = 5000;
+const OPTIONS_MENU_SETTLE_MS = 500;
+const ROW_JITTER_MS = 400;
+const MAX_ERROR_MSG = 160;
+const MAX_MENU_HTML_SAMPLE = 500;
+const MAX_RAW_TEXT_SAMPLE = 800;
 
-// ─── Download orchestration ───────────────────────────────────────────────
+// ─── Tiny helpers ────────────────────────────────────────────────────────
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
-function sha256Hex(buf: Buffer): string {
-  return createHash("sha256").update(buf).digest("hex");
+
+function errMsg(err: unknown): string {
+  return (err instanceof Error ? err.message : String(err)).slice(0, MAX_ERROR_MSG);
 }
 
-function safeAccountSlug(accountId: string | null | undefined, fallback: string | null | undefined): string {
-  if (accountId && SLUG_SAFE_RE.test(accountId)) {
-    return accountId;
-  }
-  if (accountId) {
-    return createHash("sha256").update(accountId).digest("hex").slice(0, 16);
-  }
-  if (fallback && SLUG_SAFE_RE.test(fallback)) {
-    return fallback;
-  }
-  return "unknown";
-}
-
-function yearMonthFromDate(isoDate: string | null | undefined): string {
-  // isoDate is "YYYY-MM-DD"; returns "YYYY-MM".
-  if (!isoDate) {
-    return "unknown";
-  }
-  return isoDate.slice(0, 7);
-}
+// ─── Download orchestration ──────────────────────────────────────────────
 
 /**
  * Locate the per-row "Options" trigger. USAA's documents table renders as a
@@ -145,6 +128,119 @@ async function locateDownloadMenuItem(page: Page): Promise<Locator | null> {
   return null;
 }
 
+/** Read a queued download's bytes off disk. */
+async function consumeDownload(
+  dlPromise: ReturnType<DownloadQueue["waitForNextDownload"]>
+): Promise<{ buffer: Buffer; suggestedFilename: string } | null> {
+  const dl = await dlPromise;
+  const path = await dl.path();
+  if (!path) {
+    return null;
+  }
+  const buffer = await readFile(path);
+  return { buffer, suggestedFilename: dl.suggestedFilename() };
+}
+
+/** Fallback path: the row has a direct <a href="*.pdf"> link. */
+async function downloadViaDirectLink(row: Locator, downloadQueue: DownloadQueue): Promise<DownloadResult | null> {
+  const link = row.locator('a[href$=".pdf"], a[href*=".pdf?"]').first();
+  if (!(await link.count().catch(() => 0))) {
+    return null;
+  }
+  const dlPromise = downloadQueue.waitForNextDownload({
+    timeoutMs: DOWNLOAD_TIMEOUT_MS,
+  });
+  await link.click({ timeout: CLICK_TIMEOUT_MS }).catch(() => {
+    /* ignore */
+  });
+  try {
+    const result = await consumeDownload(dlPromise);
+    if (!result) {
+      return { ok: false, reason: "download_no_path" };
+    }
+    return { ok: true, buffer: result.buffer, suggestedFilename: result.suggestedFilename };
+  } catch (err) {
+    return {
+      ok: false,
+      reason: "direct_link_failed",
+      diag: { error: errMsg(err) },
+    };
+  }
+}
+
+/** Open the per-row Options menu. Returns the DownloadResult on failure, null on success. */
+async function openOptionsMenu(optBtn: Locator): Promise<DownloadFail | null> {
+  try {
+    await optBtn.click({ timeout: CLICK_TIMEOUT_MS });
+    return null;
+  } catch (err) {
+    return {
+      ok: false,
+      reason: "options_click_failed",
+      diag: { error: errMsg(err) },
+    };
+  }
+}
+
+/** Capture menu HTML + dismiss the menu when no Download menuitem was found. */
+async function noDownloadMenuitemFailure(page: Page): Promise<DownloadFail> {
+  const menuHtml = await page
+    .locator('[role="menu"]')
+    .first()
+    .innerHTML()
+    .catch(() => null);
+  await page.keyboard.press("Escape").catch(() => {
+    /* ignore */
+  });
+  return {
+    ok: false,
+    reason: "no_download_menuitem",
+    diag: {
+      menu_html: menuHtml ? menuHtml.replace(MENU_WS_RE, " ").slice(0, MAX_MENU_HTML_SAMPLE) : null,
+    },
+  };
+}
+
+/** Click the Download menuitem and consume the resulting download. */
+async function clickDownloadAndConsume(
+  page: Page,
+  dlItem: Locator,
+  downloadQueue: DownloadQueue
+): Promise<DownloadResult> {
+  const dlPromise = downloadQueue.waitForNextDownload({ timeoutMs: DOWNLOAD_TIMEOUT_MS });
+  try {
+    await dlItem.click({ timeout: CLICK_TIMEOUT_MS });
+  } catch (err) {
+    await page.keyboard.press("Escape").catch(() => {
+      /* ignore */
+    });
+    return {
+      ok: false,
+      reason: "download_click_failed",
+      diag: { error: errMsg(err) },
+    };
+  }
+  try {
+    const result = await consumeDownload(dlPromise);
+    await page.keyboard.press("Escape").catch(() => {
+      /* ignore */
+    });
+    if (!result) {
+      return { ok: false, reason: "download_no_path" };
+    }
+    return { ok: true, buffer: result.buffer, suggestedFilename: result.suggestedFilename };
+  } catch (err) {
+    await page.keyboard.press("Escape").catch(() => {
+      /* ignore */
+    });
+    return {
+      ok: false,
+      reason: "download_timeout",
+      diag: { error: errMsg(err) },
+    };
+  }
+}
+
 /**
  * Drive a single statement row to capture its PDF. Returns
  *   { ok: true, buffer, suggestedFilename } on success
@@ -166,108 +262,22 @@ async function downloadStatementFromRow({
 
   const optBtn = await locateRowOptionsButton(row);
   if (!optBtn) {
-    // Fallback: if the row has a direct <a> pointing at a PDF, use that.
-    const link = row.locator('a[href$=".pdf"], a[href*=".pdf?"]').first();
-    if (await link.count().catch(() => 0)) {
-      const dlPromise = downloadQueue.waitForNextDownload({
-        timeoutMs: 180_000,
-      });
-      await link.click({ timeout: 5000 }).catch(() => {
-        /* ignore */
-      });
-      try {
-        const dl = await dlPromise;
-        const path = await dl.path();
-        if (!path) {
-          return { ok: false, reason: "download_no_path" };
-        }
-        const { readFile } = await import("node:fs/promises");
-        const buffer = await readFile(path);
-        return { ok: true, buffer, suggestedFilename: dl.suggestedFilename() };
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        return {
-          ok: false,
-          reason: "direct_link_failed",
-          diag: { error: msg.slice(0, 160) },
-        };
-      }
-    }
-    return { ok: false, reason: "no_options_affordance" };
+    const direct = await downloadViaDirectLink(row, downloadQueue);
+    return direct ?? { ok: false, reason: "no_options_affordance" };
   }
 
-  try {
-    await optBtn.click({ timeout: 5000 });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return {
-      ok: false,
-      reason: "options_click_failed",
-      diag: { error: msg.slice(0, 160) },
-    };
+  const openErr = await openOptionsMenu(optBtn);
+  if (openErr) {
+    return openErr;
   }
-  await sleep(500);
+  await sleep(OPTIONS_MENU_SETTLE_MS);
 
   const dlItem = await locateDownloadMenuItem(page);
   if (!dlItem) {
-    // Dump menu HTML to aid the next runner.
-    const menuHtml = await page
-      .locator('[role="menu"]')
-      .first()
-      .innerHTML()
-      .catch(() => null);
-    // Dismiss whatever popped open so we don't cascade-break the next row.
-    await page.keyboard.press("Escape").catch(() => {
-      /* ignore */
-    });
-    return {
-      ok: false,
-      reason: "no_download_menuitem",
-      diag: {
-        menu_html: menuHtml ? menuHtml.replace(/\s+/g, " ").slice(0, 500) : null,
-      },
-    };
+    return await noDownloadMenuitemFailure(page);
   }
 
-  const dlPromise = downloadQueue.waitForNextDownload({ timeoutMs: 180_000 });
-  try {
-    await dlItem.click({ timeout: 5000 });
-  } catch (err) {
-    await page.keyboard.press("Escape").catch(() => {
-      /* ignore */
-    });
-    const msg = err instanceof Error ? err.message : String(err);
-    return {
-      ok: false,
-      reason: "download_click_failed",
-      diag: { error: msg.slice(0, 160) },
-    };
-  }
-
-  try {
-    const dl = await dlPromise;
-    const path = await dl.path();
-    if (!path) {
-      return { ok: false, reason: "download_no_path" };
-    }
-    const { readFile } = await import("node:fs/promises");
-    const buffer = await readFile(path);
-    // Close any menu that may still be open before returning.
-    await page.keyboard.press("Escape").catch(() => {
-      /* ignore */
-    });
-    return { ok: true, buffer, suggestedFilename: dl.suggestedFilename() };
-  } catch (err) {
-    await page.keyboard.press("Escape").catch(() => {
-      /* ignore */
-    });
-    const msg = err instanceof Error ? err.message : String(err);
-    return {
-      ok: false,
-      reason: "download_timeout",
-      diag: { error: msg.slice(0, 160) },
-    };
-  }
+  return await clickDownloadAndConsume(page, dlItem, downloadQueue);
 }
 
 /**
@@ -298,6 +308,92 @@ async function persistPdf({
   return { pdfPath, pdfSha256 };
 }
 
+/** Defensively (re-)navigate to /my/documents if we're not already there. */
+async function ensureOnDocumentsPage(page: Page): Promise<void> {
+  if (DOCUMENTS_PATH_RE.test(page.url())) {
+    return;
+  }
+  await page
+    .goto("https://www.usaa.com/my/documents", {
+      waitUntil: "domcontentloaded",
+      timeout: DOCUMENTS_NAV_TIMEOUT_MS,
+    })
+    .catch(() => {
+      /* ignore */
+    });
+  await sleep(DOCUMENTS_RELOAD_SETTLE_MS);
+}
+
+interface HydrateCallbacks {
+  onProgress?: ((p: { index: number; total: number; title: string | null }) => void) | undefined;
+  onSkip?: ((p: { statement: StatementRow; reason: string; diag: Record<string, unknown> | null }) => void) | undefined;
+}
+
+/** Persist a single downloaded PDF and append to the hydrated list. */
+async function persistHydratedStatement(
+  statement: StatementRow,
+  download: { buffer: Buffer; suggestedFilename: string },
+  hydrated: HydratedStatement[],
+  onSkip: HydrateCallbacks["onSkip"]
+): Promise<void> {
+  try {
+    const { pdfPath, pdfSha256 } = await persistPdf({
+      buffer: download.buffer,
+      accountId: statement.account_id,
+      dateDelivered: statement.date_delivered,
+    });
+    hydrated.push({
+      statement,
+      pdfPath,
+      pdfSha256,
+      buffer: download.buffer,
+      suggestedFilename: download.suggestedFilename,
+    });
+  } catch (err) {
+    if (onSkip) {
+      onSkip({
+        statement,
+        reason: "persist_failed",
+        diag: { error: errMsg(err) },
+      });
+    }
+  }
+}
+
+/** Handle one statement row: download, persist, emit callbacks. */
+async function hydrateOneStatement(
+  page: Page,
+  statement: StatementRow,
+  total: number,
+  downloadQueue: DownloadQueue,
+  hydrated: HydratedStatement[],
+  { onProgress, onSkip }: HydrateCallbacks
+): Promise<void> {
+  if (onProgress) {
+    onProgress({
+      index: statement.rowIndex,
+      total,
+      title: statement.title,
+    });
+  }
+  const result = await downloadStatementFromRow({
+    page,
+    rowIndex: statement.rowIndex,
+    downloadQueue,
+  });
+  if (!result.ok) {
+    if (onSkip) {
+      onSkip({
+        statement,
+        reason: result.reason,
+        diag: result.diag ?? null,
+      });
+    }
+    return;
+  }
+  await persistHydratedStatement(statement, result, hydrated, onSkip);
+}
+
 /**
  * Hydrate every row in the currently-loaded /my/documents table. Callers
  * pass `onRecord({ index, statement, result })` to react per-row as we go
@@ -311,8 +407,7 @@ async function persistPdf({
 export async function hydrateStatementPdfs({
   page,
   statements,
-  // statements: Array<{ rowIndex, id, account_id, date_delivered, title, account_reference }>
-  downloadQueue, // see src/download-queue.js — MUST be attached before clicks
+  downloadQueue,
   onProgress,
   onSkip,
 }: {
@@ -330,75 +425,21 @@ export async function hydrateStatementPdfs({
     throw new Error("hydrateStatementPdfs requires downloadQueue");
   }
 
-  // Make sure we're on the documents page — caller is expected to have
-  // navigated here already, but a defensive reload protects against state
-  // drift if hydrateStatementPdfs is invoked after other flows ran.
-  if (!DOCUMENTS_PATH_RE.test(page.url())) {
-    await page
-      .goto("https://www.usaa.com/my/documents", {
-        waitUntil: "domcontentloaded",
-        timeout: 30_000,
-      })
-      .catch(() => {
-        /* ignore */
-      });
-    await sleep(5000);
-  }
+  await ensureOnDocumentsPage(page);
 
   for (const s of statements) {
-    if (onProgress) {
-      onProgress({
-        index: s.rowIndex,
-        total: statements.length,
-        title: s.title,
-      });
-    }
-    const result = await downloadStatementFromRow({
-      page,
-      rowIndex: s.rowIndex,
-      downloadQueue,
+    await hydrateOneStatement(page, s, statements.length, downloadQueue, hydrated, {
+      onProgress,
+      onSkip,
     });
-    if (!result.ok) {
-      if (onSkip) {
-        onSkip({
-          statement: s,
-          reason: result.reason,
-          diag: result.diag ?? null,
-        });
-      }
-      continue;
-    }
-    try {
-      const { pdfPath, pdfSha256 } = await persistPdf({
-        buffer: result.buffer,
-        accountId: s.account_id,
-        dateDelivered: s.date_delivered,
-      });
-      hydrated.push({
-        statement: s,
-        pdfPath,
-        pdfSha256,
-        buffer: result.buffer,
-        suggestedFilename: result.suggestedFilename,
-      });
-    } catch (err) {
-      if (onSkip) {
-        const msg = err instanceof Error ? err.message : String(err);
-        onSkip({
-          statement: s,
-          reason: "persist_failed",
-          diag: { error: msg.slice(0, 160) },
-        });
-      }
-    }
     // Small jitter between rows so we don't visibly hammer USAA's SPA.
-    await sleep(400);
+    await sleep(ROW_JITTER_MS);
   }
   return hydrated;
 }
 
 export function fileUrlForPath(p: string): string {
-  return pathToFileURL(p).toString();
+  return parsersFileUrlForPath(p);
 }
 
 // ─── Phase B: PDF -> transactions ─────────────────────────────────────────
@@ -420,243 +461,93 @@ export function fileUrlForPath(p: string): string {
  *   - Section "Transactions" per card-holder
  *
  * We try each parser in order. If none match we emit SKIP_RESULT with the
- * first ~400 chars of raw text so the next iteration has evidence to
+ * first ~800 chars of raw text so the next iteration has evidence to
  * extend the parser. This mirrors the defensive pattern used elsewhere in
  * the USAA connector.
  */
 
-/**
- * Extract the statement's *closing* month + year from the PDF text. Credit-
- * card statements carry "Statement Closing Date MM/DD/YY"; modern checking
- * uses "Statement Period MM/DD/YYYY - MM/DD/YYYY" (we take the closing side).
- * Returns {closingMonth, closingYear} or null if neither pattern hits.
- */
-function detectStatementClosing(text: string): { closingMonth: number; closingYear: number } | null {
-  // Credit-card: "Statement Closing Date 02/17/26"
-  const cc = text.match(CREDIT_CARD_CLOSING_RE);
-  if (cc?.[1] && cc[2]) {
-    const mm = Number(cc[1]);
-    const yy = Number(cc[2]);
-    const year = yy < 100 ? 2000 + yy : yy;
-    return { closingMonth: mm, closingYear: year };
-  }
-  // Modern checking: "Statement Period 01/01/2020 - 01/31/2020"
-  const ck = text.match(CHECKING_STATEMENT_PERIOD_RE);
-  if (ck?.[1] && ck[2]) {
-    return { closingMonth: Number(ck[1]), closingYear: Number(ck[2]) };
-  }
-  return null;
-}
-
-// Back-compat: some callers still want just the year.
-function detectStatementYear(text: string): number | null {
-  const c = detectStatementClosing(text);
-  if (c) {
-    return c.closingYear;
-  }
-  const m3 = text.slice(0, 800).match(FOUR_DIGIT_YEAR_RE);
-  return m3 ? Number(m3[0]) : null;
-}
-
-/**
- * Assign a YYYY to an MM/DD transaction date extracted from a statement,
- * using the statement's closing month to decide whether the transaction
- * falls in the closing year or the prior year. Credit-card statements
- * typically cover the month *before* the closing date, so a Jan-closing
- * statement contains mostly December transactions from the previous year.
- *
- * Rule: if the txn month is AFTER the closing month (interpreted circularly,
- * with a 6-month lookback window), the txn belongs to closingYear - 1.
- *
- * Example: closing 2026-01, txn 12/26 → 2025-12-26 (prior year).
- * Example: closing 2026-03, txn 02/14 → 2026-02-14 (same year).
- */
-function toIso(mm: string | number, dd: string | number, closingContext: ClosingContext): string | null {
-  const m = Number(mm);
-  const d = Number(dd);
-  if (!m || m < 1 || m > 12 || !d || d < 1 || d > 31) {
-    return null;
-  }
-
-  // Support legacy callers that pass a bare year (pre-refactor).
-  let closingMonth: number;
-  let closingYear: number;
-  if (typeof closingContext === "number") {
-    closingMonth = 12; // assume Dec so no roll-back triggers
-    closingYear = closingContext;
-  } else if (closingContext && typeof closingContext === "object") {
-    closingMonth = closingContext.closingMonth || 12;
-    closingYear = closingContext.closingYear;
-  } else {
-    return null;
-  }
-  if (!closingYear || closingYear < 1990 || closingYear > 2100) {
-    return null;
-  }
-
-  // Roll back a year when txn month is more than the closing month + 1
-  // (allows the closing month itself plus a day or two into the next cycle,
-  // but flips a December txn on a January statement to the prior year).
-  const year = m > closingMonth ? closingYear - 1 : closingYear;
-  const mmStr = String(m).padStart(2, "0");
-  const ddStr = String(d).padStart(2, "0");
-  return `${year}-${mmStr}-${ddStr}`;
-}
-
-function currencyToCentsFromStatement(s: string | null | undefined): number | null {
-  if (!s) {
-    return null;
-  }
-  // Sign detection: leading "-" (modern checking), trailing "-" (USAA credit
-  // card statements: "$10.00-" = payment/credit), or accountants' parens
-  // "(10.00)" = legacy negative.
-  const trimmed = s.trim();
-  const neg = LEADING_MINUS_RE.test(trimmed) || TRAILING_MINUS_RE.test(trimmed) || LEADING_PAREN_RE.test(trimmed);
-  // Drop everything except digits and the single decimal point, then parse.
-  const numeric = trimmed.replace(NON_CURRENCY_CHARS_RE, "");
-  if (!numeric) {
-    return null;
-  }
-  const num = Number(numeric);
-  if (!Number.isFinite(num)) {
-    return null;
-  }
-  return Math.round(num * 100) * (neg ? -1 : 1);
-}
-
-function hashId(s: string): string {
-  return createHash("sha256").update(s).digest("hex").slice(0, 32);
-}
-
-/**
- * Era A/B parser: line-by-line scan for rows that start with a date.
- * Handles "MM/DD" (inherits statement year) and "MM/DD/YY" formats.
- */
-function parseModernCheckingEra(
-  text: string,
-  { closing }: { closing: { closingMonth: number; closingYear: number } }
-): ParsedTxn[] {
-  const lines = text.split(STMT_LINE_SPLIT_RE);
-  const txns: ParsedTxn[] = [];
-  // We only enter rows once we see a "TRANSACTIONS" / "Account Activity"
-  // heading. Otherwise we'd accidentally slurp fee-schedule tables etc.
-  let inTable = false;
-  const tupleOrd = new Map<string, number>();
-  for (const raw of lines) {
-    const line = raw.trim();
-    if (!line) {
-      continue;
-    }
-    if (MODERN_SECTION_START_RE.test(line)) {
-      inTable = true;
-      continue;
-    }
-    if (MODERN_SECTION_END_RE.test(line)) {
-      inTable = false;
-      continue;
-    }
-    if (!inTable) {
-      continue;
-    }
-    // "MM/DD <desc> <amount> <balance>" or "MM/DD/YY <desc> <amount>"
-    const m = line.match(MODERN_TXN_LINE_RE);
-    if (!m) {
-      continue;
-    }
-    const [, mmRaw, ddRaw, yRaw, descRaw, amountRaw, balanceRaw] = m;
-    if (!(mmRaw && ddRaw && descRaw && amountRaw)) {
-      continue;
-    }
-    // If the line carries its own year, honor it via a bare-year context.
-    // Otherwise use the statement-wide closing context so MM/DD gets the
-    // correct year for the cycle.
-    let ctx: ClosingContext;
-    if (yRaw) {
-      ctx = yRaw.length === 2 ? 2000 + Number(yRaw) : Number(yRaw);
-    } else {
-      ctx = closing;
-    }
-    const iso = toIso(mmRaw, ddRaw, ctx);
-    if (!iso) {
-      continue;
-    }
-    const description = descRaw.replace(WS_RUN_2PLUS_RE, " ").trim();
-    const amount = currencyToCentsFromStatement(amountRaw);
-    const balance = balanceRaw ? currencyToCentsFromStatement(balanceRaw) : null;
-    if (amount == null) {
-      continue;
-    }
-    const tupleKey = `${iso}|${amount}|${description}`;
-    const ord = tupleOrd.get(tupleKey) || 0;
-    tupleOrd.set(tupleKey, ord + 1);
-    txns.push({ iso, amount, description, balance, tupleKey, ord });
-  }
-  return txns;
-}
-
-/**
- * Era C parser for credit-card statements. Credit card tables typically
- * surface "Trans Date | Post Date | Description | Amount" with "MM/DD"
- * dates and amounts in the rightmost column.
- */
-function parseCreditCardEra(
-  text: string,
-  { closing }: { closing: { closingMonth: number; closingYear: number } }
-): ParsedTxn[] {
-  const lines = text.split(STMT_LINE_SPLIT_RE);
-  const txns: ParsedTxn[] = [];
-  let inTable = false;
-  const tupleOrd = new Map<string, number>();
-  for (const raw of lines) {
-    const line = raw.trim();
-    if (!line) {
-      continue;
-    }
-    // Section starts: match full-line labels but not "Total Payments And Credits".
-    if (CREDIT_SECTION_START_RE.test(line) && !CREDIT_SECTION_TOTAL_RE.test(line)) {
-      inTable = true;
-      continue;
-    }
-    // Section ends: any summary/total line inside a statement.
-    if (CREDIT_SECTION_END_RE.test(line)) {
-      inTable = false;
-      continue;
-    }
-    if (!inTable) {
-      continue;
-    }
-    // "MM/DD MM/DD [Ref#] <desc> <amount>". Amount supports trailing minus
-    // (USAA prints payments as "$10.00-" not "-$10.00") and optional $.
-    const m = line.match(CREDIT_TXN_LINE_RE);
-    if (!m) {
-      continue;
-    }
-    const [, mmRaw, ddRaw, , , descRaw, amountRaw] = m;
-    if (!(mmRaw && ddRaw && descRaw && amountRaw)) {
-      continue;
-    }
-    const iso = toIso(mmRaw, ddRaw, closing);
-    if (!iso) {
-      continue;
-    }
-    const description = descRaw.replace(/\s{2,}/g, " ").trim();
-    const amount = currencyToCentsFromStatement(amountRaw);
-    if (amount == null) {
-      continue;
-    }
-    const tupleKey = `${iso}|${amount}|${description}`;
-    const ord = tupleOrd.get(tupleKey) || 0;
-    tupleOrd.set(tupleKey, ord + 1);
-    txns.push({
-      iso,
-      amount,
-      description,
-      balance: null,
-      tupleKey,
-      ord,
+async function extractPdfText(buffer: Buffer): Promise<string> {
+  // Lazy-load pdf-parse so the connector doesn't pay startup cost on runs
+  // that don't hit the PDF path.
+  // biome-ignore lint/correctness/noUnresolvedImports: pdf-parse is declared in package.json; Biome's resolver can't follow its CJS/ESM conditional exports
+  const { PDFParse } = await import("pdf-parse");
+  const parser = new PDFParse({ data: buffer });
+  let textResult: { text?: string };
+  try {
+    textResult = await parser.getText();
+  } finally {
+    await parser.destroy().catch(() => {
+      /* ignore */
     });
   }
-  return txns;
+  return textResult.text || "";
+}
+
+/**
+ * Determine the statement's closing context: prefer the in-PDF closing date,
+ * then the period supplied by the statement index (YYYY-MM), then current
+ * year as last resort.
+ */
+function resolveClosing(text: string, period: string | null): StatementClosing {
+  const fromText = detectStatementClosing(text);
+  if (fromText) {
+    return fromText;
+  }
+  if (period) {
+    const [y, m] = period.split("-").map(Number);
+    if (y && m) {
+      return { closingYear: y, closingMonth: m };
+    }
+  }
+  return { closingYear: new Date().getFullYear(), closingMonth: 12 };
+}
+
+/** Try each era parser; keep the one that produced the most transactions. */
+function runEraParsers(text: string, closing: StatementClosing): { chosen: string | null; best: ParsedStatementTxn[] } {
+  const attempts: Array<{
+    era: string;
+    fn: (t: string, c: { closing: StatementClosing }) => ParsedStatementTxn[];
+  }> = [
+    { era: "modern_checking", fn: parseModernCheckingEra },
+    { era: "credit_card", fn: parseCreditCardEra },
+  ];
+  let chosen: string | null = null;
+  let best: ParsedStatementTxn[] = [];
+  for (const a of attempts) {
+    const txns = a.fn(text, { closing });
+    if (txns.length > best.length) {
+      best = txns;
+      chosen = a.era;
+    }
+  }
+  return { chosen, best };
+}
+
+/** Shape parsed transactions into emitted records, hashing ids compatibly with CSV path. */
+function buildStatementRecords(
+  best: ParsedStatementTxn[],
+  { accountId, accountName, period }: { accountId: string; accountName: string | null; period: string | null }
+): StatementTxnRecord[] {
+  const nowIso = new Date().toISOString();
+  const provenance = `pdf_statement_${period || "unknown"}`;
+  return best.map((t) => ({
+    // Hash input is intentionally identical in shape to the CSV path so
+    // the same logical transaction from both sources collapses to the same
+    // id on ingest. See rowsToTransactions in parsers.ts.
+    id: hashId(`${accountId}|${t.tupleKey}|#${t.ord}`),
+    account_id: accountId,
+    account_name: accountName,
+    date: t.iso,
+    description: t.description,
+    original_description: t.description,
+    category: null,
+    amount: t.amount,
+    currency: "USD",
+    balance_after_cents: t.balance,
+    check_number: (t.description.match(CHECK_NUMBER_RE) || [])[1] || null,
+    source: provenance,
+    fetched_at: nowIso,
+  }));
 }
 
 /**
@@ -679,49 +570,10 @@ export async function parsePdfStatement({
   accountName: string | null;
   period: string | null;
 }): Promise<{ txns: StatementTxnRecord[]; parseMeta: ParseMeta }> {
-  // Lazy-load pdf-parse so the connector doesn't pay startup cost on runs
-  // that don't hit the PDF path.
-  // biome-ignore lint/correctness/noUnresolvedImports: pdf-parse is declared in package.json; Biome's resolver can't follow its CJS/ESM conditional exports
-  const { PDFParse } = await import("pdf-parse");
-  const parser = new PDFParse({ data: buffer });
-  let textResult: { text?: string };
-  try {
-    textResult = await parser.getText();
-  } finally {
-    await parser.destroy().catch(() => {
-      /* ignore */
-    });
-  }
-  const text = textResult.text || "";
-  // Prefer the in-PDF closing date (most accurate). Fall back to the period
-  // from the statement index (YYYY-MM) when the PDF text doesn't carry one.
-  let closing = detectStatementClosing(text);
-  if (!closing && period) {
-    const [y, m] = period.split("-").map(Number);
-    if (y && m) {
-      closing = { closingYear: y, closingMonth: m };
-    }
-  }
-  if (!closing) {
-    closing = { closingYear: new Date().getFullYear(), closingMonth: 12 };
-  }
+  const text = await extractPdfText(buffer);
+  const closing = resolveClosing(text, period);
+  const { chosen, best } = runEraParsers(text, closing);
 
-  const attempts: Array<{
-    era: string;
-    fn: (t: string, c: { closing: { closingMonth: number; closingYear: number } }) => ParsedTxn[];
-  }> = [
-    { era: "modern_checking", fn: parseModernCheckingEra },
-    { era: "credit_card", fn: parseCreditCardEra },
-  ];
-  let chosen: string | null = null;
-  let best: ParsedTxn[] = [];
-  for (const a of attempts) {
-    const txns = a.fn(text, { closing });
-    if (txns.length > best.length) {
-      best = txns;
-      chosen = a.era;
-    }
-  }
   if (!best.length) {
     return {
       txns: [],
@@ -729,31 +581,12 @@ export async function parsePdfStatement({
         era: "unknown",
         year: closing.closingYear,
         // Trim to keep SKIP_RESULT lines within JSONL-sane bounds.
-        rawTextSample: text.replace(/\s+/g, " ").slice(0, 800),
+        rawTextSample: text.replace(WS_CLEANUP_RE, " ").slice(0, MAX_RAW_TEXT_SAMPLE),
       },
     };
   }
 
-  const nowIso = new Date().toISOString();
-  const provenance = `pdf_statement_${period || "unknown"}`;
-  const records: StatementTxnRecord[] = best.map((t) => ({
-    // Hash input is intentionally identical in shape to the CSV path so
-    // the same logical transaction from both sources collapses to the same
-    // id on ingest. See rowsToTransactions in index.js.
-    id: hashId(`${accountId}|${t.tupleKey}|#${t.ord}`),
-    account_id: accountId,
-    account_name: accountName,
-    date: t.iso,
-    description: t.description,
-    original_description: t.description,
-    category: null,
-    amount: t.amount,
-    currency: "USD",
-    balance_after_cents: t.balance,
-    check_number: (t.description.match(CHECK_NUMBER_RE) || [])[1] || null,
-    source: provenance,
-    fetched_at: nowIso,
-  }));
+  const records = buildStatementRecords(best, { accountId, accountName, period });
   return {
     txns: records,
     parseMeta: {
@@ -769,6 +602,6 @@ export const _internals = {
   parseModernCheckingEra,
   parseCreditCardEra,
   detectStatementYear,
-  currencyToCentsFromStatement,
+  currencyToCentsFromStatement: _currencyFromStatement,
   STATEMENT_ROOT,
 };
