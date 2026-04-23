@@ -41,6 +41,15 @@ import {
 } from "../../src/connector-runtime.ts";
 import { resourceSet } from "../../src/scope-filters.ts";
 import {
+  type EmitDeps,
+  emitAccountsStream,
+  emitStatementIndexOnly,
+  emitTransactionsForAccount,
+  emitTransactionsStateIfAny,
+  filterAccountsByScope,
+  statementRowOutsideTimeRange,
+} from "./collect-helpers.ts";
+import {
   ACTIVITY_LABELS,
   accountSlug,
   chooseActivity,
@@ -460,27 +469,6 @@ async function parseQfxFile(path: string): Promise<unknown> {
 // from commit e62c368) so collect() becomes pure orchestration.
 
 type EmitFn = BrowserCollectContext["emit"];
-type EmitRecordFn = BrowserCollectContext["emitRecord"];
-type ProgressFn = BrowserCollectContext["progress"];
-type CaptureDep = BrowserCollectContext["capture"];
-type RequestedScopes = BrowserCollectContext["requested"];
-
-interface EmitDeps {
-  capture: CaptureDep;
-  emit: EmitFn;
-  emitRecord: EmitRecordFn;
-  emittedAt: string;
-  maxSeenByAccount: Record<string, TransactionCursor>;
-  progress: ProgressFn;
-  requested: RequestedScopes;
-  resFilters: Map<string, ReadonlySet<string> | null>;
-  tmpDir: string;
-  txState: TransactionsStateShape;
-  wantsAccounts: boolean;
-  wantsBalances: boolean;
-  wantsStatements: boolean;
-  wantsTransactions: boolean;
-}
 
 async function emitNoAccountsDiagnostic(page: Page, emit: EmitFn): Promise<void> {
   const diag = await page
@@ -500,79 +488,6 @@ async function emitNoAccountsDiagnostic(page: Page, emit: EmitFn): Promise<void>
     message: "No accounts discovered from dashboard. Selectors need calibration against live DOM.",
     diagnostics: diag,
   });
-}
-
-function filterAccountsByScope(
-  accounts: ChaseAccount[],
-  resFilters: Map<string, ReadonlySet<string> | null>
-): { accountsResFilter: ReadonlySet<string> | null; filteredAccounts: ChaseAccount[] } {
-  const accountsResFilter =
-    resFilters.get("accounts") ?? resFilters.get("transactions") ?? resFilters.get("balances") ?? null;
-  const filteredAccounts: ChaseAccount[] = accountsResFilter?.size
-    ? accounts.filter((a) => accountsResFilter.has(a.internal_id))
-    : accounts;
-  return { accountsResFilter, filteredAccounts };
-}
-
-async function emitAccountsStream(deps: EmitDeps, filteredAccounts: readonly ChaseAccount[]): Promise<void> {
-  for (const a of filteredAccounts) {
-    await deps.emitRecord("accounts", {
-      id: a.internal_id,
-      name: a.name,
-      type: a.type,
-      last_four: a.last_four,
-      balance_cents: null, // populated from QFX LEDGERBAL when downloads run
-      available_balance_cents: null,
-      credit_limit_cents: null,
-      available_credit_cents: null,
-      statement_balance_cents: null,
-      status: null,
-      balance_as_of: null,
-      fetched_at: deps.emittedAt,
-    });
-  }
-}
-
-async function emitTransactionsForAccount(
-  deps: EmitDeps,
-  account: ChaseAccount,
-  activity: ActivityKind,
-  transactions: ReturnType<typeof extractFromQfx>["transactions"]
-): Promise<void> {
-  const prior = deps.maxSeenByAccount[account.internal_id];
-  let maxDate: string | null = prior?.max_seen_date ?? null;
-  for (const t of transactions) {
-    if (!t.date) {
-      continue;
-    }
-    await deps.emitRecord("transactions", {
-      id: `${account.internal_id}|${t.fitid}`,
-      account_id: account.internal_id,
-      account_name: account.name,
-      fitid: t.fitid,
-      date: t.date,
-      amount: t.amount_cents,
-      currency: t.currency,
-      type: t.type,
-      name: t.name,
-      memo: t.memo,
-      check_number: t.check_number,
-      reference_number: t.reference_number,
-      source: `qfx_download_${activity}_${t.date}`,
-      fetched_at: deps.emittedAt,
-    });
-    if (!maxDate || t.date > maxDate) {
-      maxDate = t.date;
-    }
-  }
-  if (maxDate) {
-    deps.maxSeenByAccount[account.internal_id] = {
-      ...(prior ?? {}),
-      max_seen_date: maxDate,
-      last_activity: activity,
-      last_fetched_at: deps.emittedAt,
-    };
-  }
 }
 
 async function processAccountDownload(deps: EmitDeps, page: Page, account: ChaseAccount): Promise<void> {
@@ -647,37 +562,6 @@ async function runTransactionsAndBalances(
   for (const a of filteredAccounts) {
     await processAccountDownload(deps, page, a);
   }
-}
-
-function statementRowOutsideTimeRange(deps: EmitDeps, dateIso: string | null): boolean {
-  const stmtScope = deps.requested.get("statements");
-  if (stmtScope?.time_range?.since && dateIso && dateIso < stmtScope.time_range.since.slice(0, 10)) {
-    return true;
-  }
-  if (stmtScope?.time_range?.until && dateIso && dateIso >= stmtScope.time_range.until.slice(0, 10)) {
-    return true;
-  }
-  return false;
-}
-
-async function emitStatementIndexOnly(
-  deps: EmitDeps,
-  id: string,
-  row: StatementRow,
-  accountId: string | null,
-  dateIso: string | null
-): Promise<void> {
-  await deps.emitRecord("statements", {
-    id,
-    account_id: accountId,
-    title: row.title,
-    date_delivered: dateIso,
-    account_reference: row.account_reference,
-    document_url: null,
-    pdf_path: null,
-    pdf_sha256: null,
-    fetched_at: deps.emittedAt,
-  });
 }
 
 async function processStatementRow(
@@ -786,18 +670,6 @@ async function runStatements(
       message: truncate(errMessage(err), ERROR_MESSAGE_SLICE_MAX),
     });
   }
-}
-
-async function emitTransactionsStateIfAny(deps: EmitDeps): Promise<void> {
-  if (!(deps.wantsTransactions && Object.keys(deps.maxSeenByAccount).length > 0)) {
-    return;
-  }
-  const stateMsg: Extract<EmittedMessage, { type: "STATE" }> = {
-    type: "STATE",
-    stream: "transactions",
-    cursor: { per_account: deps.maxSeenByAccount },
-  };
-  await deps.emit(stateMsg);
 }
 
 // ─── Main ─────────────────────────────────────────────────────────────────
