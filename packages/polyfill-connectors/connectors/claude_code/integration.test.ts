@@ -29,7 +29,8 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { RecordData, StreamScope } from "../../src/connector-runtime.ts";
+import type { StreamScope } from "../../src/connector-runtime.ts";
+import { type EmittedRecord, makeRecordingEmit } from "../../src/test-harness.ts";
 import {
   emitSessionsFromAccumulators,
   type JsonlObservations,
@@ -41,32 +42,30 @@ import {
 import { makeEmptySessionAccumulator } from "./parsers.ts";
 import type { JsonlObject, SessionAccumulator } from "./types.ts";
 
-interface EmittedRecord {
-  data: RecordData;
-  stream: string;
-}
-
 interface RecordingHarness {
   deps: LineEmitDeps;
   emitted: EmittedRecord[];
 }
 
-/** Build a LineEmitDeps that records every emitRecord() call. */
+/** Build a LineEmitDeps that records every emitRecord() call. The
+ *  claude_code connector does not (yet) ship a validateRecord helper, so
+ *  makeRecordingEmit runs in pass-through mode — matching runtime
+ *  semantics, where no shape-check happens for this connector. The
+ *  shared harness still gives us a consistent emit/emitRecord surface
+ *  across connectors, and switching this to validating mode is a
+ *  one-line change once schemas land. */
 function makeHarness({
   requested = ["messages", "attachments", "sessions"],
 }: {
   requested?: readonly string[];
 } = {}): RecordingHarness {
-  const emitted: EmittedRecord[] = [];
+  const harness = makeRecordingEmit();
   const requestedMap = new Map<string, StreamScope>(requested.map((name) => [name, { name }]));
   const deps: LineEmitDeps = {
-    emitRecord: (stream: string, data: RecordData): Promise<void> => {
-      emitted.push({ stream, data });
-      return Promise.resolve();
-    },
+    emitRecord: harness.emitRecord,
     requested: requestedMap,
   };
-  return { deps, emitted };
+  return { deps, emitted: harness.emitted };
 }
 
 /** Process one JSONL object through observe+dispatch — the same order the
