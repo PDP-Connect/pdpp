@@ -5,9 +5,11 @@
  * (`runMemoriesStream`, `runCustomInstructionsStream`).
  *
  * These tests DON'T drive Playwright. They construct a fake `StreamDeps`
- * that captures every (stream, data) pair pushed through `emitRecord`
- * plus every non-RECORD `EmittedMessage` pushed through `emit`, then
- * assert on the observable invariants: emit-order contract,
+ * backed by `makeRecordingEmit(validateRecord)` — every emitted record
+ * is routed through the real zod schema the runtime applies in prod.
+ * Captures every (stream, data) pair pushed through `emitRecord` plus
+ * every non-RECORD `EmittedMessage` pushed through `emit`, then asserts
+ * on the observable invariants: emit-order contract,
  * scope-filter suppression, null-enrichment fallback (failed detail
  * fetch → list-only conversation record + SKIP on messages), and
  * all-streams-disabled yields nothing. A `fakeApi` closes over a canned
@@ -48,19 +50,16 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { EmittedMessage } from "../../src/connector-runtime.ts";
+import { type EmittedRecord, makeRecordingEmit } from "../../src/test-harness.ts";
 import {
   processConversationDetail,
   runCustomInstructionsStream,
   runMemoriesStream,
   type StreamDeps,
 } from "./collect-helpers.ts";
-import type { ConversationDetail } from "./parsers.ts";
+import { buildConversationRecord, type ConversationDetail } from "./parsers.ts";
+import { validateRecord } from "./schemas.ts";
 import type { ChatGptApi, ChatGptFetchResult, ChatGptJson, ChatGptNode, ConversationListItem } from "./types.ts";
-
-interface EmittedRecord {
-  data: Record<string, unknown>;
-  stream: string;
-}
 
 interface RecordingHarness {
   deps: StreamDeps;
@@ -77,8 +76,7 @@ function makeHarness({
   fetchQueue?: readonly ChatGptFetchResult[];
   requested?: readonly string[];
 } = {}): RecordingHarness {
-  const emitted: EmittedRecord[] = [];
-  const messages: EmittedMessage[] = [];
+  const harness = makeRecordingEmit(validateRecord);
   // Shallow queue so consecutive api.fetch() calls pop in order; extra
   // calls fall back to a harmless 200/null body so over-fetching doesn't
   // crash a test — the emit-path tests don't care about over-fetch.
@@ -93,18 +91,12 @@ function makeHarness({
   };
   const deps: StreamDeps = {
     api,
-    emit: (msg: EmittedMessage): Promise<void> => {
-      messages.push(msg);
-      return Promise.resolve();
-    },
-    emitRecord: (stream: string, data: Record<string, unknown>): Promise<void> => {
-      emitted.push({ stream, data });
-      return Promise.resolve();
-    },
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
     progress: (): Promise<void> => Promise.resolve(),
     requested: new Map(requested.map((name) => [name, { name }])),
   };
-  return { deps, emitted, messages };
+  return { deps, emitted: harness.emitted, messages: harness.protocolMessages };
 }
 
 function makeConvo(overrides: Partial<ConversationListItem> = {}): ConversationListItem {
@@ -165,7 +157,12 @@ function makeDetailOk(): ChatGptFetchResult {
 }
 
 /** Convenience: collect the emitConversation callback the way
- *  runConversationsAndMessagesStreams does (gated on requested.has()). */
+ *  runConversationsAndMessagesStreams does (gated on requested.has()).
+ *  Emits through the real buildConversationRecord so the record passes
+ *  the production zod shape-check — a minimal synthetic shape would
+ *  SKIP_RESULT in prod. "detail_present" is read from
+ *  message_count_on_current_branch (null ⇔ detail was null; integer ⇔
+ *  detail.mapping was threaded through). */
 function makeEmitConversation(
   deps: StreamDeps
 ): (c: ConversationListItem, detail: ConversationDetail | null) => Promise<void> {
@@ -173,15 +170,7 @@ function makeEmitConversation(
     if (!deps.requested.has("conversations")) {
       return;
     }
-    // buildConversationRecord would run in production; here we emit a
-    // minimal shape so the integration test stays decoupled from the
-    // parser's field layout.
-    await deps.emitRecord("conversations", {
-      id: c.id,
-      title: detail?.title ?? c.title ?? null,
-      // Non-null when detail landed; null when we fell back to list-only.
-      detail_present: detail != null,
-    });
+    await deps.emitRecord("conversations", buildConversationRecord(c, detail));
   };
 }
 
@@ -275,9 +264,16 @@ test("processConversationDetail: detail.status=404 — still emits conversation 
   await processConversationDetail(deps, makeConvo(), missing, makeEmitConversation(deps));
 
   // Conversation record emits with detail=null (list-only fallback).
+  // With detail=null, buildConversationRecord leaves
+  // message_count_on_current_branch null — that's the signal we fell
+  // back to the list-only view.
   const convo = emitted.find((r) => r.stream === "conversations");
   assert.ok(convo, "conversation record must still emit on http_error so downstream sees the row");
-  assert.equal(convo.data.detail_present, false, "detail=null threads through to list-only record");
+  assert.equal(
+    convo.data.message_count_on_current_branch,
+    null,
+    "detail=null ⇒ message_count_on_current_branch is null (list-only fallback)"
+  );
 
   // No message records — detail had no mapping.
   assert.equal(emitted.filter((r) => r.stream === "messages").length, 0);
