@@ -43,9 +43,7 @@ If you need the steward to skip specific paths this cycle, add a line below:
 
 <!-- Add entries like: `apps/web/src/feature-x/ — mid-refactor, don't commit until I update this note` -->
 
-(none — 2026-04-23 gmail/chatgpt mid-extract state was reverted after the originating agents crashed. Clean baseline at `f429b44`.)
-
-- 2026-04-23 cycle: `packages/polyfill-connectors/connectors/claude_code/{index.ts,collect-helpers.ts}` — mid-extract (10s-old collect-helpers, paired index.ts dirty). Skipped pending the paired integration.test.ts commit that other connectors land together.
+(none — integration-test extractions for gmail, chase, usaa, chatgpt, slack, codex, claude_code all landed cleanly in pairs 2026-04-23.)
 
 ---
 Questions/trouble: ping the owner.
