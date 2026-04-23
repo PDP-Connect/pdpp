@@ -98,6 +98,15 @@ deployments should supply their own `preRegisteredPublicClients` option.
 - `POST /consent/approve`
 - `POST /consent/deny`
 
+The reference AS also exposes a stable owner-entry page at `GET /owner/login`.
+It behaves as a small reference-only owner access hub:
+
+- when `PDPP_OWNER_PASSWORD` is unset, it explains that placeholder auth is
+  disabled and points operators at the hosted device approval UI
+- when `PDPP_OWNER_PASSWORD` is set, it renders the owner sign-in form
+- when already signed in, it becomes a signed-in landing page with device
+  approval and sign-out actions
+
 ### Owner self-export
 
 - `POST /oauth/device_authorization`
@@ -156,11 +165,11 @@ Routes gated by the placeholder (when enabled):
 - `GET /consent`, `POST /consent/approve`, `POST /consent/deny`
 - `GET /device`, `POST /device/approve`, `POST /device/deny`
 
-Routes added by the placeholder:
+Stable owner-entry routes:
 
-- `GET /owner/login` — HTML login page (supports a safe same-origin `return_to` query parameter)
-- `POST /owner/login` — submits the owner password; on success sets a signed HTTP-only session cookie (`pdpp_owner_session`, 12 hour lifetime, `SameSite=Lax`, `Secure` when served over HTTPS) and redirects to `return_to`
-- `POST /owner/logout` — clears the session cookie
+- `GET /owner/login` — owner access page (supports a safe same-origin `return_to` query parameter). When placeholder auth is disabled it renders an honest disabled-state landing page; when enabled it renders either the sign-in form or a signed-in landing page.
+- `POST /owner/login` — when placeholder auth is enabled, submits the owner password; on success sets a signed HTTP-only session cookie (`pdpp_owner_session`, 12 hour lifetime, `SameSite=Lax`, `Secure` when served over HTTPS) and redirects to `return_to`
+- `POST /owner/logout` — clears the session cookie when present
 
 Unauthenticated HTML requests to the protected routes redirect to `/owner/login?return_to=...`; non-HTML callers receive an honest `401` with error code `owner_session_required`.
 
@@ -173,7 +182,7 @@ The placeholder is intentionally narrow:
 
 ### Reference-only hosted-UI layer
 
-Server-rendered HTML pages (`GET /consent`, `GET /device` and its result pages, `POST /consent/approve`/`deny` result pages, and `GET /owner/login` when the placeholder is enabled) all go through a small shared hosted-UI module, [`server/hosted-ui.js`](server/hosted-ui.js). That module renders the PDPP brand mark and typography, reuses the `data-surface="human"` / `data-surface="protocol"` language from `packages/pdpp-brand/base.css`, and serves a single shared stylesheet at `GET /__pdpp/hosted-ui.css`.
+Server-rendered HTML pages (`GET /consent`, `GET /device` and its result pages, `POST /consent/approve`/`deny` result pages, and the stable owner-entry page at `GET /owner/login`) all go through a small shared hosted-UI module, [`server/hosted-ui.js`](server/hosted-ui.js). That module renders the PDPP brand mark and typography, reuses the `data-surface="human"` / `data-surface="protocol"` language from `packages/pdpp-brand/base.css`, and serves a single shared stylesheet at `GET /__pdpp/hosted-ui.css`.
 
 This hosted-UI layer is **reference-only** implementation support. It is **not** a PDPP protocol surface; clients and providers never need to fetch `/__pdpp/hosted-ui.css` or consume any of the `hosted-ui-*` class names. The React/Next website in `apps/web/` remains the canonical design-system surface.
 

@@ -1,0 +1,45 @@
+import type { OpenSpecSidebarSection } from './OpenSpecSidebar';
+
+export type OpenSpecActiveScope =
+  | { kind: 'overview' }
+  | { kind: 'specs'; capability?: string }
+  | {
+      kind: 'change';
+      changeName: string;
+      artifact?: 'overview' | 'proposal' | 'design' | 'tasks' | 'spec-deltas';
+    };
+
+export function buildOpenSpecSidebarSections(scope: OpenSpecActiveScope): OpenSpecSidebarSection[] {
+  const top: OpenSpecSidebarSection = {
+    heading: 'OpenSpec',
+    items: [
+      { href: '/openspec', label: 'Overview', active: scope.kind === 'overview' },
+      { href: '/openspec/changes', label: 'Changes', active: scope.kind === 'change' },
+      { href: '/openspec/specs', label: 'Specs', active: scope.kind === 'specs' },
+    ],
+  };
+
+  if (scope.kind !== 'change') return [top];
+
+  const base = `/openspec/changes/${scope.changeName}`;
+  const changeSection: OpenSpecSidebarSection = {
+    heading: scope.changeName,
+    items: [
+      { href: base, label: 'Overview', active: scope.artifact === 'overview' },
+      {
+        href: `${base}/proposal`,
+        label: 'Proposal',
+        active: scope.artifact === 'proposal',
+      },
+      { href: `${base}/design`, label: 'Design', active: scope.artifact === 'design' },
+      { href: `${base}/tasks`, label: 'Tasks', active: scope.artifact === 'tasks' },
+      {
+        href: `${base}/specs`,
+        label: 'Spec Deltas',
+        active: scope.artifact === 'spec-deltas',
+      },
+    ],
+  };
+
+  return [top, changeSection];
+}

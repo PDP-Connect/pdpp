@@ -77,6 +77,9 @@ The landed placeholder uses this shape:
   placeholder will use for approved grants/device authorizations (defaults to
   `owner_local`); freeform `subject_id` input is ignored when placeholder auth
   is enabled
+- `GET /owner/login` remains a stable owner-entry page even when placeholder
+  auth is disabled; in that case it renders an honest hosted UI explaining
+  that approval pages are open locally and how to enable the placeholder
 - a signed HTTP-only cookie (`pdpp_owner_session`, `SameSite=Lax`, `Secure`
   when served over HTTPS) after successful local login, with a 12 hour
   lifetime

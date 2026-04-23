@@ -18,14 +18,18 @@
 import crypto from 'node:crypto';
 import {
   escapeHtml as hostedEscape,
+  renderActionRow,
   renderHostedDocument,
+  renderKeyValueList,
   renderPageIntro,
+  renderResultState,
+  renderSurface,
 } from './hosted-ui.js';
 
 const COOKIE_NAME = 'pdpp_owner_session';
 const DEFAULT_SESSION_TTL_SECONDS = 12 * 60 * 60; // 12 hours
 const DEFAULT_SUBJECT_ID = 'owner_local';
-const DEFAULT_RETURN_TO = '/consent';
+const DEFAULT_RETURN_TO = '/owner/login';
 
 function base64UrlEncode(input) {
   return Buffer.from(input).toString('base64url');
@@ -175,6 +179,80 @@ function renderLoginPage({ providerName, error, returnTo }) {
   });
 }
 
+function renderOwnerAuthDisabledPage({ providerName }) {
+  const body = [
+    renderPageIntro({
+      eyebrow: 'Owner approval UI',
+      title: `${providerName} owner access`,
+      lede: 'Placeholder owner sign-in is disabled on this local reference instance, so approval pages remain open in local-dev mode.',
+    }),
+    renderSurface({
+      surface: 'human',
+      ariaLabel: 'Owner auth status',
+      children: renderResultState({
+        tone: 'neutral',
+        title: 'Sign-in is not required right now',
+        body: 'Device approvals are open locally. Consent approvals still arrive through pending request links.',
+        footnote: 'Set PDPP_OWNER_PASSWORD to turn on the reference-only session gate.',
+      }),
+    }),
+    renderSurface({
+      surface: 'protocol',
+      ariaLabel: 'Owner auth configuration details',
+      children: renderKeyValueList([
+        { label: 'Current mode', value: 'Open local-dev approval UI' },
+        { label: 'Enable sign-in', html: '<code>PDPP_OWNER_PASSWORD=&lt;password&gt;</code>' },
+        { label: 'Protected when enabled', value: '/consent*, /device*, /owner/login' },
+        { label: 'Consent pages', value: 'Reached from a pending request authorization_url / request_uri flow' },
+      ]),
+    }),
+    renderActionRow([
+      { href: '/device', label: 'Open device approval UI', variant: 'primary' },
+    ]),
+  ].join('\n');
+
+  return renderHostedDocument({
+    title: `${providerName} — Owner access`,
+    providerName,
+    body,
+  });
+}
+
+function renderSignedInOwnerPage({ providerName, subjectId }) {
+  const body = [
+    renderPageIntro({
+      eyebrow: 'Owner approval UI',
+      title: `${providerName} owner access`,
+      lede: 'You are signed in to the local placeholder owner-auth gate for the reference implementation.',
+    }),
+    renderSurface({
+      surface: 'human',
+      ariaLabel: 'Signed-in owner state',
+      children: [
+        renderResultState({
+          tone: 'success',
+          title: 'Signed in',
+          body: 'You can approve device flows directly here, or open a pending consent URL from a staged provider-connect request.',
+          footnote: 'This session is reference-only placeholder auth, not a full owner account system.',
+        }),
+        renderKeyValueList([
+          { label: 'Owner subject', html: `<code>${hostedEscape(subjectId)}</code>` },
+        ]),
+      ].join('\n'),
+    }),
+    renderActionRow([
+      { href: '/device', label: 'Open device approval UI', variant: 'primary' },
+      { action: '/owner/logout', label: 'Sign out' },
+    ]),
+  ].join('\n');
+
+  return renderHostedDocument({
+    title: `${providerName} — Owner access`,
+    providerName,
+    body,
+  });
+}
+
 /**
  * Normalize a `return_to` form/query parameter to a same-origin path. We
  * reject anything that looks like an absolute URL or protocol-relative URL
@@ -240,21 +318,10 @@ export function createOwnerAuthPlaceholder({
   const enabled = typeof password === 'string' && password.length > 0;
   const resolvedSubjectId = (typeof subjectId === 'string' && subjectId) || DEFAULT_SUBJECT_ID;
 
-  if (!enabled) {
-    return {
-      enabled: false,
-      subjectId: resolvedSubjectId,
-      attachRoutes() {},
-      requireOwnerSession(_req, _res, next) {
-        // Disabled: fall through to current open local-dev behavior.
-        next();
-      },
-    };
-  }
-
-  const secret = deriveSecret(password);
+  const secret = enabled ? deriveSecret(password) : null;
 
   function readSession(req) {
+    if (!enabled || !secret) return null;
     const cookies = parseCookies(req.headers.cookie);
     const raw = cookies[COOKIE_NAME];
     if (!raw) return null;
@@ -262,6 +329,7 @@ export function createOwnerAuthPlaceholder({
   }
 
   function issueSession(res, req) {
+    if (!enabled || !secret) return;
     const now = Math.floor(Date.now() / 1000);
     const payload = {
       sub: resolvedSubjectId,
@@ -284,15 +352,27 @@ export function createOwnerAuthPlaceholder({
 
   function attachRoutes(app) {
     app.get('/owner/login', (req, res) => {
+      const hasExplicitReturnTo = typeof req.query?.return_to === 'string' && req.query.return_to.length > 0;
       const returnTo = sanitizeReturnTo(
         typeof req.query?.return_to === 'string' ? req.query.return_to : ''
       );
-      // If already authenticated, skip the form entirely.
-      if (readSession(req)) {
-        return res.redirect(returnTo);
-      }
       res.setHeader('Content-Type', 'text/html; charset=utf-8');
-      res.status(200).send(
+
+      if (!enabled) {
+        return res.status(200).send(renderOwnerAuthDisabledPage({ providerName }));
+      }
+
+      const session = readSession(req);
+      if (session) {
+        if (hasExplicitReturnTo) {
+          return res.redirect(returnTo);
+        }
+        return res.status(200).send(
+          renderSignedInOwnerPage({ providerName, subjectId: resolvedSubjectId })
+        );
+      }
+
+      return res.status(200).send(
         renderLoginPage({ providerName, error: null, returnTo })
       );
     });
@@ -302,6 +382,24 @@ export function createOwnerAuthPlaceholder({
         (req.body && typeof req.body.return_to === 'string' && req.body.return_to) ||
           (typeof req.query?.return_to === 'string' ? req.query.return_to : '')
       );
+
+      if (!enabled) {
+        if (wantsHtml(req)) {
+          res.setHeader('Content-Type', 'text/html; charset=utf-8');
+          return res.status(400).send(renderOwnerAuthDisabledPage({ providerName }));
+        }
+        return res
+          .status(400)
+          .setHeader('Content-Type', 'application/json')
+          .json({
+            error: {
+              type: 'invalid_request',
+              code: 'owner_auth_disabled',
+              message: 'Owner placeholder auth is disabled on this reference instance.',
+            },
+          });
+      }
+
       const submitted =
         req.body && typeof req.body.password === 'string' ? req.body.password : '';
       if (!submitted || !timingSafeEqualString(submitted, password)) {
@@ -329,6 +427,11 @@ export function createOwnerAuthPlaceholder({
   }
 
   function requireOwnerSession(req, res, next) {
+    if (!enabled) {
+      // Disabled: fall through to current open local-dev behavior.
+      return next();
+    }
+
     const session = readSession(req);
     if (session) {
       req.ownerSession = session;
@@ -353,7 +456,7 @@ export function createOwnerAuthPlaceholder({
   }
 
   return {
-    enabled: true,
+    enabled,
     subjectId: resolvedSubjectId,
     attachRoutes,
     requireOwnerSession,

@@ -173,6 +173,7 @@ P0 stream additions identified by the Layer 2 audits (`design-notes/layer-2-cove
 
 ### Gmail
 - [x] `message_bodies` stream — implemented 2026-04-19 (Layer 2 exemplar fix: `body_sha256` + text/html parts, deferred blob hydration pattern)
+- [ ] **Attachment blob collection** (requested 2026-04-22). Today the `attachments` stream emits metadata only (filename, mime, size_bytes, partId) per `decodeBodystructureForAttachments` — the actual bytes never leave IMAP. Wire each attachment record to the reference `POST /v1/blobs` path so attachment content is content-addressed and retrievable via `GET /v1/blobs/{blob_id}`. Pattern to mirror: Slack's `message_attachments` stream + the `/v1/blobs/{blob_id}` contract resolved 2026-04-22 (see `design-notes/blob-id-param-naming-2026-04-22.md`). IMAP fetch path: `client.download(uid, partId)` returns a stream; stream → sha256 → upload → replace `partId` with `blob_id` on the emitted record. Add `content_sha256` + `blob_id` fields to the attachments schema alongside existing metadata. Deferred-hydration pattern (same as `message_bodies`'s `body_sha256`): connector can emit `blob_id=null` + `content_sha256` first, and the storage layer uploads bytes asynchronously — but the link must exist so consumers can resolve. Blocked on nothing; fits naturally into the gmail parsers.ts refactor in progress.
 
 ### Slack
 - [ ] Reactions, message_attachments, etc. — already in v0.2.0 schema, ingesting now; audit v0.3.0 coverage after completion

@@ -128,6 +128,17 @@ async function login(asUrl, password) {
 // ── 1. disabled: unchanged open local-dev behavior ───────────────────────────
 test('owner-auth placeholder: when PDPP_OWNER_PASSWORD unset, /consent and /device remain open', async () => {
   await withServer({}, async ({ asUrl }) => {
+    const loginPage = await fetch(`${asUrl}/owner/login`, {
+      headers: { Accept: 'text/html' },
+      redirect: 'manual',
+    });
+    assert.equal(loginPage.status, 200, '/owner/login should stay discoverable even when auth is disabled');
+    const loginHtml = await loginPage.text();
+    assert.ok(loginHtml.includes('owner access'), 'renders owner-access landing copy');
+    assert.ok(loginHtml.includes('disabled'), 'explains that placeholder auth is disabled');
+    assert.ok(loginHtml.includes('/device'), 'offers a stable device-approval entry point');
+    assert.ok(!loginHtml.includes('Owner password'), 'does not render a password form when disabled');
+
     const requestUri = await startPendingConsent(asUrl);
 
     const consent = await fetch(`${asUrl}/consent?request_uri=${encodeURIComponent(requestUri)}`, {
@@ -237,6 +248,21 @@ test('owner-auth placeholder: correct password issues a session cookie and redir
     const text = await resp.text();
     assert.ok(text.includes('Consent request'));
     assert.ok(text.includes('Longview'));
+  });
+});
+
+test('owner-auth placeholder: authenticated GET /owner/login becomes a signed-in landing page', async () => {
+  await withServer({ ownerAuthPassword: TEST_PASSWORD }, async ({ asUrl }) => {
+    const { cookie } = await login(asUrl, TEST_PASSWORD);
+    const resp = await fetch(`${asUrl}/owner/login`, {
+      headers: { Accept: 'text/html', Cookie: cookie },
+      redirect: 'manual',
+    });
+    assert.equal(resp.status, 200);
+    const text = await resp.text();
+    assert.ok(text.includes('Signed in'), 'shows signed-in state');
+    assert.ok(text.includes('/device'), 'offers a stable device approval entry point');
+    assert.ok(text.includes('owner_local'), 'shows the current owner subject');
   });
 });
 

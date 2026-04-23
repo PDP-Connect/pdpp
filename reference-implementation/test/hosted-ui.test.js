@@ -248,3 +248,15 @@ test('hosted-ui: /owner/login reuses the shared hosted-UI layer', async () => {
     assert.match(html, /data-surface="human"/, 'owner login is framed as a human surface');
   });
 });
+
+test('hosted-ui: /owner/login disabled state still uses the shared hosted-UI layer', async () => {
+  await withServer({}, async ({ asUrl }) => {
+    const resp = await fetch(`${asUrl}/owner/login`, { headers: { Accept: 'text/html' } });
+    assert.equal(resp.status, 200);
+    const html = await resp.text();
+    assertHostedShell(html);
+    assert.match(html, /owner access/i, 'shows owner-access heading');
+    assert.match(html, /disabled/i, 'explains disabled placeholder auth');
+    assert.doesNotMatch(html, /hosted-ui-password/, 'does not render password field');
+  });
+});

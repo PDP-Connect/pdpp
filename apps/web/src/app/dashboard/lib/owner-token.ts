@@ -22,6 +22,10 @@ export function getAsUrl(): string {
   return AS_URL;
 }
 
+export function getOwnerLoginUrl(): string {
+  return `${AS_URL}/owner/login`;
+}
+
 export function getRsUrl(): string {
   return RS_URL;
 }
