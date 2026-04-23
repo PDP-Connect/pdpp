@@ -27,7 +27,7 @@ function readFixture(relPath: string): string {
 // ─── parseOrderDate ──────────────────────────────────────────────────────
 
 test("parseOrderDate: common value-span forms", () => {
-  const cases: Array<[string, string]> = [
+  const cases: [string, string][] = [
     ["January 5, 2024", "2024-01-05"],
     ["Jan 5, 2024", "2024-01-05"],
     ["December 31, 2023", "2023-12-31"],
@@ -99,10 +99,7 @@ test("itemId: prefers ASIN when present", () => {
 });
 
 test("itemId: falls back to normalized name when ASIN missing", () => {
-  assert.equal(
-    itemId("111-2222222-3333333", { asin: null, name: "Super Widget" }),
-    "111-2222222-3333333|super widget"
-  );
+  assert.equal(itemId("111-2222222-3333333", { asin: null, name: "Super Widget" }), "111-2222222-3333333|super widget");
 });
 
 test("itemId: normalizes whitespace in name fallback", () => {
@@ -151,7 +148,9 @@ test("parseOrdersListDom: empty page returns []", () => {
   assert.deepEqual(parseOrdersListDom(""), []);
 });
 
-test("parseOrdersListDom: local real fixture parses ≥5 orders with ids + dates", { skip: !existsSync(LOCAL_RAW_DIR) }, () => {
+test("parseOrdersListDom: local real fixture parses ≥5 orders with ids + dates", {
+  skip: !existsSync(LOCAL_RAW_DIR),
+}, () => {
   const path = join(LOCAL_RAW_DIR, "orders-list-2024.html");
   if (!existsSync(path)) {
     return;
@@ -218,7 +217,7 @@ test("parseOrderDetailDom: missing #orderDetails container returns null", () => 
 test("parseOrderDetailDom: #orderDetails present but no data-components returns empty-ish OrderDetail", () => {
   // Matches the original browser-context behavior: container exists → returns an
   // OrderDetail with every structural field null and items=[].
-  const html = "<!doctype html><html><body><div id=\"orderDetails\"></div></body></html>";
+  const html = '<!doctype html><html><body><div id="orderDetails"></div></body></html>';
   const d = parseOrderDetailDom(html);
   assert.ok(d);
   assert.equal(d.grand_total, null);
@@ -248,24 +247,22 @@ test("parseOrderDetailDom: cancelled order returns cancelled shape with empty it
   assert.deepEqual(d.items, []);
 });
 
-test(
-  "parseOrderDetailDom: local real fixtures yield items and grand_total",
-  { skip: !existsSync(LOCAL_RAW_DIR) },
-  () => {
-    for (const name of ["order-detail-111-1177311-6377828.html", "order-detail-111-2841132-0656246.html"]) {
-      const path = join(LOCAL_RAW_DIR, name);
-      if (!existsSync(path)) {
-        continue;
-      }
-      const html = readFileSync(path, "utf8");
-      const d = parseOrderDetailDom(html);
-      assert.ok(d, `${name}: expected non-null OrderDetail`);
-      assert.ok(d.items.length >= 1, `${name}: expected at least 1 item`);
-      assert.ok(d.grand_total, `${name}: expected non-null grand_total`);
-      assert.match(d.grand_total, /^\$[\d,]+\.\d{2}$/);
+test("parseOrderDetailDom: local real fixtures yield items and grand_total", {
+  skip: !existsSync(LOCAL_RAW_DIR),
+}, () => {
+  for (const name of ["order-detail-111-1177311-6377828.html", "order-detail-111-2841132-0656246.html"]) {
+    const path = join(LOCAL_RAW_DIR, name);
+    if (!existsSync(path)) {
+      continue;
     }
+    const html = readFileSync(path, "utf8");
+    const d = parseOrderDetailDom(html);
+    assert.ok(d, `${name}: expected non-null OrderDetail`);
+    assert.ok(d.items.length >= 1, `${name}: expected at least 1 item`);
+    assert.ok(d.grand_total, `${name}: expected non-null grand_total`);
+    assert.match(d.grand_total, /^\$[\d,]+\.\d{2}$/);
   }
-);
+});
 
 // ─── mergeOrderItems + buildOrderRecord + buildOrderItemRecord ──────────
 

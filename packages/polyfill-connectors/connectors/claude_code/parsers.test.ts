@@ -58,10 +58,7 @@ test("extractContent: array of text parts joined with newlines", () => {
 });
 
 test("extractContent: tool_use / tool_result placeholders", () => {
-  const got = extractContent([
-    { type: "tool_use", name: "bash" },
-    { type: "tool_result" },
-  ]);
+  const got = extractContent([{ type: "tool_use", name: "bash" }, { type: "tool_result" }]);
   assert.equal(got, "[tool_use: bash]\n[tool_result]");
 });
 
@@ -181,7 +178,7 @@ test("buildSkillRecord: frontmatter name beats directory name", () => {
     frontmatter: { name: "fm-name", description: "d" },
     body: "body",
     path: "/p/SKILL.md",
-    mtimeMs: 5_000,
+    mtimeMs: 5000,
   });
   assert.equal(r.id, "skills:dir-name");
   assert.equal(r.name, "fm-name");

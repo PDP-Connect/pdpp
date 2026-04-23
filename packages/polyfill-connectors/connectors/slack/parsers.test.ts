@@ -50,13 +50,13 @@ test("parseBlob: string payload parses identically", () => {
 });
 
 test("tsToIso: Slack ts 'seconds.micros' → ISO, null for missing", () => {
-  assert.equal(tsToIso("1700000000.000000"), new Date(1700000000 * 1000).toISOString());
+  assert.equal(tsToIso("1700000000.000000"), new Date(1_700_000_000 * 1000).toISOString());
   assert.equal(tsToIso(null), null);
   assert.equal(tsToIso(undefined), null);
 });
 
 test("epochToIso: only finite seconds produce an ISO string", () => {
-  assert.equal(epochToIso(1700000000), new Date(1700000000 * 1000).toISOString());
+  assert.equal(epochToIso(1_700_000_000), new Date(1_700_000_000 * 1000).toISOString());
   assert.equal(epochToIso(null), null);
   assert.equal(epochToIso(Number.NaN), null);
 });
@@ -126,7 +126,7 @@ test("buildUserRecord: flattens profile + role flags from fixture", () => {
   assert.equal(rec.is_admin, true);
   assert.equal(rec.is_bot, false);
   assert.equal(rec.enterprise_id, "E789");
-  assert.equal(rec.tz_offset, -18000);
+  assert.equal(rec.tz_offset, -18_000);
 });
 
 // ─── Message record + reactions + attachments ──────────────────────────

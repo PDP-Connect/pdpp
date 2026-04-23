@@ -1,17 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-  BAD_DATE_WORKOUT,
-  RUN_WORKOUT,
-  WALK_WORKOUT_MIN,
-} from "./__fixtures__/workout-run.ts";
-import {
   CATEGORY_RECORD,
   HEART_RATE_RECORD,
   NO_START_DATE_RECORD,
   NON_NUMERIC_VALUE_RECORD,
   STEP_COUNT_RECORD,
 } from "./__fixtures__/record-step-count.ts";
+import { BAD_DATE_WORKOUT, RUN_WORKOUT, WALK_WORKOUT_MIN } from "./__fixtures__/workout-run.ts";
 import {
   advanceCursor,
   buildHealthRecord,
@@ -25,7 +21,7 @@ import {
 
 // ─── parseAttrs ─────────────────────────────────────────────────────────
 
-test("parseAttrs: extracts key=\"value\" pairs", () => {
+test('parseAttrs: extracts key="value" pairs', () => {
   const attrs = parseAttrs('type="HKStep" value="42" sourceName="iPhone"');
   assert.deepEqual(attrs, {
     type: "HKStep",
@@ -175,17 +171,11 @@ test("isBeforeCursor: no cursor → false (keep)", () => {
 });
 
 test("isBeforeCursor: equal → true (skip already-emitted)", () => {
-  assert.equal(
-    isBeforeCursor("2024-06-05T00:00:00.000Z", "2024-06-05T00:00:00.000Z"),
-    true,
-  );
+  assert.equal(isBeforeCursor("2024-06-05T00:00:00.000Z", "2024-06-05T00:00:00.000Z"), true);
 });
 
 test("isBeforeCursor: strictly after cursor → false (keep)", () => {
-  assert.equal(
-    isBeforeCursor("2024-06-06T00:00:00.000Z", "2024-06-05T00:00:00.000Z"),
-    false,
-  );
+  assert.equal(isBeforeCursor("2024-06-06T00:00:00.000Z", "2024-06-05T00:00:00.000Z"), false);
 });
 
 test("advanceCursor: undefined prev → takes next", () => {
@@ -193,15 +183,9 @@ test("advanceCursor: undefined prev → takes next", () => {
 });
 
 test("advanceCursor: next > prev → takes next", () => {
-  assert.equal(
-    advanceCursor("2024-06-05T00:00:00.000Z", "2024-06-06T00:00:00.000Z"),
-    "2024-06-06T00:00:00.000Z",
-  );
+  assert.equal(advanceCursor("2024-06-05T00:00:00.000Z", "2024-06-06T00:00:00.000Z"), "2024-06-06T00:00:00.000Z");
 });
 
 test("advanceCursor: next < prev → keeps prev (monotonic)", () => {
-  assert.equal(
-    advanceCursor("2024-06-06T00:00:00.000Z", "2024-06-05T00:00:00.000Z"),
-    "2024-06-06T00:00:00.000Z",
-  );
+  assert.equal(advanceCursor("2024-06-06T00:00:00.000Z", "2024-06-05T00:00:00.000Z"), "2024-06-06T00:00:00.000Z");
 });

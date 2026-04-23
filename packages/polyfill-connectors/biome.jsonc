@@ -6,10 +6,11 @@
   },
   "files": {
     "ignoreUnknown": true,
-    // During the JS→TS migration, Biome only lints/formats .ts files plus
-    // config. Legacy .js files are exempt until migrated — renaming to .ts
-    // automatically brings them under the strict bar. Flip this to include
-    // *.js once the migration is complete and delete the note.
+    // Everything TypeScript in src/, connectors/, bin/ is linted and
+    // formatted — including *.test.ts so tests are held to the same bar.
+    // Handcrafted fixture artifacts and captured DOM/JSONL live under
+    // __fixtures__/ or fixtures/ and are excluded (they're literal data,
+    // not code). Build outputs and vendored deps are excluded too.
     "includes": [
       "src/**/*.ts",
       "connectors/**/*.ts",
@@ -18,8 +19,8 @@
       "*.json",
       "!node_modules",
       "!fixtures",
-      "!dist",
-      "!**/*.test.*"
+      "!**/__fixtures__",
+      "!dist"
     ]
   },
   "overrides": [
@@ -33,11 +34,32 @@
       // noExcessiveCognitiveComplexity from `warn` to `error` so any
       // connector function that drifts above the default budget of 20
       // fails CI, matching the bar every other package already holds.
-      "includes": ["connectors/**/*.ts"],
+      "includes": ["connectors/**/*.ts", "!**/*.test.ts"],
       "linter": {
         "rules": {
           "complexity": {
             "noExcessiveCognitiveComplexity": "error"
+          }
+        }
+      }
+    },
+    {
+      // Test-file override. Tests are held to the same typecheck + style
+      // bar as production code, with two exceptions that are test-idiomatic:
+      // (a) useTopLevelRegex — test bodies routinely use inline
+      //     /^\d{3}-.../ for `assert.match` calls; perf is irrelevant in
+      //     a test runner, and hoisting them would hurt readability.
+      // (b) noExcessiveCognitiveComplexity — parametric test bodies can
+      //     exceed 20 when iterating many cases; splitting them into
+      //     named helpers hurts the at-a-glance diff when a case fails.
+      "includes": ["**/*.test.ts"],
+      "linter": {
+        "rules": {
+          "performance": {
+            "useTopLevelRegex": "off"
+          },
+          "complexity": {
+            "noExcessiveCognitiveComplexity": "off"
           }
         }
       }

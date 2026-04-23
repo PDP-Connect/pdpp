@@ -27,8 +27,8 @@ import {
   isGmailSystemLabel,
   isInTimeRange,
   labelParentName,
-  makeSnippet,
   MAX_BODY_FIELD_CHARS,
+  makeSnippet,
   parseReferencesHeader,
   sanitizeForJsonl,
   selectBodyParts,
@@ -237,7 +237,7 @@ test("decodeBodystructureForAttachments: extracts both inline and attachment lea
   assert.equal(inline.content_type, "image/png");
   assert.equal(inline.content_id, "<image1@example.com>");
   assert.equal(inline.id, "msg-1:2");
-  assert.equal(inline.size_bytes, 24576);
+  assert.equal(inline.size_bytes, 24_576);
 
   const pdf = items.find((a) => a.filename === "invoice.pdf");
   assert.ok(pdf);
@@ -387,9 +387,9 @@ test("makeSnippet: empty input / all-quoted input → null", () => {
 
 // ─── ThreadAggregate ────────────────────────────────────────────────────
 
-function makeParams(overrides: Partial<Parameters<typeof updateThreadAggregate>[1]> = {}): Parameters<
-  typeof updateThreadAggregate
->[1] {
+function makeParams(
+  overrides: Partial<Parameters<typeof updateThreadAggregate>[1]> = {}
+): Parameters<typeof updateThreadAggregate>[1] {
   return {
     flagsArr: [],
     hasAttachments: false,
@@ -761,13 +761,11 @@ test("envelopeParticipants: filters missing addresses and handles undefined enve
 // ─── Gate to any real-fixture tests ─────────────────────────────────────
 // None yet — Gmail captures land in ../../fixtures/gmail/... Leaving a
 // skipped placeholder so future commits can add real fixture parsing tests.
-test(
-  "real gmail fixtures (if present on disk) smoke-parse",
-  { skip: !existsSync(join(__dirname, "..", "..", "fixtures", "gmail")) },
-  () => {
-    // Placeholder: a future commit can enumerate files under fixtures/gmail
-    // and round-trip parse them. Current fixtures format is JSONL, not raw
-    // IMAP objects, so no parsers target them directly yet.
-    assert.ok(true);
-  }
-);
+test("real gmail fixtures (if present on disk) smoke-parse", {
+  skip: !existsSync(join(__dirname, "..", "..", "fixtures", "gmail")),
+}, () => {
+  // Placeholder: a future commit can enumerate files under fixtures/gmail
+  // and round-trip parse them. Current fixtures format is JSONL, not raw
+  // IMAP objects, so no parsers target them directly yet.
+  assert.ok(true);
+});

@@ -36,7 +36,7 @@ function readFixtureJson<T>(rel: string): T {
 // ─── tsToIso ────────────────────────────────────────────────────────────
 
 test("tsToIso: unix seconds number → ISO", () => {
-  assert.equal(tsToIso(1700000000), new Date(1700000000 * 1000).toISOString());
+  assert.equal(tsToIso(1_700_000_000), new Date(1_700_000_000 * 1000).toISOString());
 });
 
 test("tsToIso: ISO string passes through", () => {
@@ -110,11 +110,7 @@ test("extractContent: code empty body + empty language → null", () => {
 test("extractContent: thoughts combines summary + content per entry, separates entries with blank line", () => {
   const out = extractContent({
     content_type: "thoughts",
-    thoughts: [
-      { summary: "s1", content: "c1" },
-      { summary: "s2" },
-      { content: "c3" },
-    ],
+    thoughts: [{ summary: "s1", content: "c1" }, { summary: "s2" }, { content: "c3" }],
   });
   assert.equal(out, "s1\nc1\n\ns2\n\nc3");
 });
@@ -193,7 +189,13 @@ test("extractToolCalls: assistant addressed to a tool synthesizes a call", () =>
     metadata: { invoked_plugin: { plugin_id: "p1" } },
   });
   assert.equal(out.length, 1);
-  const c = out[0] as { content_type?: string; invoked_plugin?: unknown; language?: string; recipient?: string; text?: string };
+  const c = out[0] as {
+    content_type?: string;
+    invoked_plugin?: unknown;
+    language?: string;
+    recipient?: string;
+    text?: string;
+  };
   assert.equal(c.recipient, "python");
   assert.equal(c.content_type, "code");
   assert.equal(c.language, "python");
@@ -292,13 +294,13 @@ test("buildCustomInstructionsRecord: prefers _message fields; preserves enabled 
     about_user_message: "I'm a dev",
     about_model_message: "Be concise",
     enabled: true,
-    updated_at: 1700000000,
+    updated_at: 1_700_000_000,
   });
   assert.equal(rec.id, "user_custom_instructions");
   assert.equal(rec.about_user, "I'm a dev");
   assert.equal(rec.response_style, "Be concise");
   assert.equal(rec.enabled, true);
-  assert.equal(rec.updated_at, new Date(1700000000 * 1000).toISOString());
+  assert.equal(rec.updated_at, new Date(1_700_000_000 * 1000).toISOString());
 });
 
 test("buildCustomInstructionsRecord: falls back to fallback keys + null enabled when absent", () => {
@@ -317,7 +319,7 @@ test("buildSharedConversationRecord: synthesizes share_url and resolves anonymou
     share_id: "s-1",
     conversation_id: "c-1",
     title: "t",
-    create_time: 1700000000,
+    create_time: 1_700_000_000,
     anonymous: true,
   });
   assert.equal(rec?.id, "s-1");
@@ -330,12 +332,12 @@ test("buildConversationRecord: detail fields overlay list; branchCount uses mapp
   const list: ConversationListItem = {
     id: "conv1",
     title: "list-title",
-    update_time: 1700000000,
+    update_time: 1_700_000_000,
     current_node: null,
   };
   const rec = buildConversationRecord(list, {
     title: "detail-title",
-    update_time: 1710000000,
+    update_time: 1_710_000_000,
     is_archived: true,
     workspace_id: "w-1",
     gizmo_id: "g-1",
@@ -351,7 +353,7 @@ test("buildConversationRecord: detail fields overlay list; branchCount uses mapp
 });
 
 test("buildConversationRecord: null detail falls back to list fields", () => {
-  const rec = buildConversationRecord({ id: "conv1", title: "t", update_time: 1700000000 }, null);
+  const rec = buildConversationRecord({ id: "conv1", title: "t", update_time: 1_700_000_000 }, null);
   assert.equal(rec.title, "t");
   assert.equal(rec.is_archived, null);
   assert.equal(rec.workspace_id, null);
@@ -360,12 +362,12 @@ test("buildConversationRecord: null detail falls back to list fields", () => {
 
 test("maxUpdateTimeIso: picks largest ISO across the list", () => {
   const convos: ConversationListItem[] = [
-    { id: "a", update_time: 1700000000 },
-    { id: "b", update_time: 1710000000 },
+    { id: "a", update_time: 1_700_000_000 },
+    { id: "b", update_time: 1_710_000_000 },
     { id: "c" },
   ];
   const out = maxUpdateTimeIso(convos);
-  assert.equal(out, new Date(1710000000 * 1000).toISOString());
+  assert.equal(out, new Date(1_710_000_000 * 1000).toISOString());
 });
 
 test("maxUpdateTimeIso: empty list → null", () => {

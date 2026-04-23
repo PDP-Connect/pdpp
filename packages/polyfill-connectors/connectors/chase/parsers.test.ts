@@ -78,7 +78,7 @@ test("isoToPacked: malformed input returns null", () => {
 // ─── parseDateDelivered ──────────────────────────────────────────────────
 
 test("parseDateDelivered: common Chase date forms", () => {
-  const cases: Array<[string, string]> = [
+  const cases: [string, string][] = [
     ["Apr 13, 2026", "2026-04-13"],
     ["April 13, 2026", "2026-04-13"],
     ["January 5, 2024", "2024-01-05"],
@@ -99,10 +99,7 @@ test("parseDateDelivered: nullish / empty / malformed returns null", () => {
 // ─── sha256Hex / shortHash ───────────────────────────────────────────────
 
 test("sha256Hex: matches known digest for ASCII buffer", () => {
-  assert.equal(
-    sha256Hex(Buffer.from("abc")),
-    "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
-  );
+  assert.equal(sha256Hex(Buffer.from("abc")), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
 });
 
 test("shortHash: deterministic, 32-char slice of sha256", () => {
@@ -424,9 +421,7 @@ test("resolveAccountIdForRow: matches by last-four first", () => {
 });
 
 test("resolveAccountIdForRow: falls back to name substring match", () => {
-  const accounts: ChaseAccount[] = [
-    makeAccount({ internal_id: "A", name: "Total Checking", last_four: null }),
-  ];
+  const accounts: ChaseAccount[] = [makeAccount({ internal_id: "A", name: "Total Checking", last_four: null })];
   const row = makeRow({ account_reference: "my total checking account" });
   assert.equal(resolveAccountIdForRow(row, accounts), "A");
 });
@@ -466,46 +461,40 @@ test("chooseActivity: no hints → all (bootstrap)", () => {
 
 // ─── Real-fixture gates (skipped if no local raw captures) ───────────────
 
-test(
-  "parseDashboardAccountsDom: local real capture parses ≥1 account",
-  { skip: latestLocalRawDir() === null },
-  () => {
-    const dir = latestLocalRawDir();
-    if (!dir) {
-      return;
-    }
-    const path = join(dir, "dashboard-accounts.html");
-    if (!existsSync(path)) {
-      return;
-    }
-    const html = readFileSync(path, "utf8");
-    const accounts = parseDashboardAccountsDom(html);
-    assert.ok(accounts.length >= 1, `expected ≥1 account, got ${accounts.length}`);
-    for (const a of accounts) {
-      assert.match(a.internal_id, /^\d+$/);
-      assert.ok(a.name.length > 0);
-    }
+test("parseDashboardAccountsDom: local real capture parses ≥1 account", { skip: latestLocalRawDir() === null }, () => {
+  const dir = latestLocalRawDir();
+  if (!dir) {
+    return;
   }
-);
+  const path = join(dir, "dashboard-accounts.html");
+  if (!existsSync(path)) {
+    return;
+  }
+  const html = readFileSync(path, "utf8");
+  const accounts = parseDashboardAccountsDom(html);
+  assert.ok(accounts.length >= 1, `expected ≥1 account, got ${accounts.length}`);
+  for (const a of accounts) {
+    assert.match(a.internal_id, /^\d+$/);
+    assert.ok(a.name.length > 0);
+  }
+});
 
-test(
-  "parseStatementsListDom: local real capture parses ≥1 statement row",
-  { skip: latestLocalRawDir() === null },
-  () => {
-    const dir = latestLocalRawDir();
-    if (!dir) {
-      return;
-    }
-    const path = join(dir, "statements-list.html");
-    if (!existsSync(path)) {
-      return;
-    }
-    const html = readFileSync(path, "utf8");
-    const rows = parseStatementsListDom(html);
-    assert.ok(rows.length >= 1, `expected ≥1 row, got ${rows.length}`);
-    for (const r of rows) {
-      assert.match(r.rowAnchorId, /accountsTable-\d+-row\d+-cell\d+-requestThisDocumentAnchor-download/);
-      assert.ok(r.date_delivered_raw.length > 0);
-    }
+test("parseStatementsListDom: local real capture parses ≥1 statement row", {
+  skip: latestLocalRawDir() === null,
+}, () => {
+  const dir = latestLocalRawDir();
+  if (!dir) {
+    return;
   }
-);
+  const path = join(dir, "statements-list.html");
+  if (!existsSync(path)) {
+    return;
+  }
+  const html = readFileSync(path, "utf8");
+  const rows = parseStatementsListDom(html);
+  assert.ok(rows.length >= 1, `expected ≥1 row, got ${rows.length}`);
+  for (const r of rows) {
+    assert.match(r.rowAnchorId, /accountsTable-\d+-row\d+-cell\d+-requestThisDocumentAnchor-download/);
+    assert.ok(r.date_delivered_raw.length > 0);
+  }
+});

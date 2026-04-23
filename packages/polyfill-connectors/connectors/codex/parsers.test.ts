@@ -14,8 +14,8 @@ import {
   parseFrontmatter,
   payloadOutputPreview,
   splitRulesLines,
-  textPreview,
   type TimestampRange,
+  textPreview,
 } from "./parsers.ts";
 import type { RolloutAggregate, ThreadRow } from "./types.ts";
 
@@ -91,7 +91,7 @@ test("parseFrontmatter: simple key/value", () => {
 });
 
 test("parseFrontmatter: strips surrounding double and single quotes", () => {
-  const text = '---\nname: "foo"\ntitle: \'bar\'\n---\n';
+  const text = "---\nname: \"foo\"\ntitle: 'bar'\n---\n";
   const got = parseFrontmatter(text);
   assert.equal(got.meta.name, "foo");
   assert.equal(got.meta.title, "bar");
@@ -130,8 +130,8 @@ function makeThreadRow(overrides: Partial<ThreadRow> = {}): ThreadRow {
   return {
     id: "sess-1",
     rollout_path: "/rollouts/foo.jsonl",
-    created_at: 1700000000,
-    updated_at: 1700000010,
+    created_at: 1_700_000_000,
+    updated_at: 1_700_000_010,
     source: "cli",
     model_provider: "openai",
     cwd: "/repo",

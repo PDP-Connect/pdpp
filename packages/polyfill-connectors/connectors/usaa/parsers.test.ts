@@ -57,10 +57,7 @@ function latestLocalRawDir(): string | null {
 // ─── hashId / sha256Hex ──────────────────────────────────────────────────
 
 test("sha256Hex: matches known digest for ASCII buffer", () => {
-  assert.equal(
-    sha256Hex(Buffer.from("abc")),
-    "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
-  );
+  assert.equal(sha256Hex(Buffer.from("abc")), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
 });
 
 test("hashId: deterministic 32-char prefix of sha256", () => {
@@ -331,10 +328,7 @@ test("rowsToTransactions: extracts check number from description when present", 
 
 test("rowsToTransactions: empty rows or header-only → []", () => {
   assert.deepEqual(rowsToTransactions([], { accountId: "A", accountName: null, fetchedAt: "t" }), []);
-  assert.deepEqual(
-    rowsToTransactions([["Date", "Amount"]], { accountId: "A", accountName: null, fetchedAt: "t" }),
-    []
-  );
+  assert.deepEqual(rowsToTransactions([["Date", "Amount"]], { accountId: "A", accountName: null, fetchedAt: "t" }), []);
 });
 
 // ─── parseModernCheckingEra ──────────────────────────────────────────────
@@ -560,28 +554,28 @@ test("BACKFILL_17MO / INCREMENTAL_OVERLAP_MS: expected values", () => {
 
 // ─── Real-fixture gate (skipped if no local raw captures) ────────────────
 
-test(
-  "parseModernCheckingEra: local statement text parses ≥1 txn (smoke)",
-  { skip: latestLocalRawDir() === null },
-  () => {
-    const dir = latestLocalRawDir();
-    if (!dir) {
-      return;
-    }
-    const path = join(dir, "sample-modern-checking.txt");
-    if (!existsSync(path)) {
-      return;
-    }
-    const text = readFileSync(path, "utf8");
-    const closing = detectStatementClosing(text) ?? { closingMonth: 12, closingYear: 2026 };
-    const txns = parseModernCheckingEra(text, { closing });
-    assert.ok(txns.length >= 1, `expected ≥1 txn, got ${txns.length}`);
+test("parseModernCheckingEra: local statement text parses ≥1 txn (smoke)", {
+  skip: latestLocalRawDir() === null,
+}, () => {
+  const dir = latestLocalRawDir();
+  if (!dir) {
+    return;
   }
-);
+  const path = join(dir, "sample-modern-checking.txt");
+  if (!existsSync(path)) {
+    return;
+  }
+  const text = readFileSync(path, "utf8");
+  const closing = detectStatementClosing(text) ?? { closingMonth: 12, closingYear: 2026 };
+  const txns = parseModernCheckingEra(text, { closing });
+  assert.ok(txns.length >= 1, `expected ≥1 txn, got ${txns.length}`);
+});
 
 // ─── Synthetic USAA CSV fixture (smoke) ──────────────────────────────────
 
-test("rowsToTransactions: synthetic CSV fixture parses the expected count", { skip: !existsSync(join(FIXTURE_DIR, "csv-export-minimal.csv")) }, () => {
+test("rowsToTransactions: synthetic CSV fixture parses the expected count", {
+  skip: !existsSync(join(FIXTURE_DIR, "csv-export-minimal.csv")),
+}, () => {
   const text = readFixture("csv-export-minimal.csv");
   const rows = parseCsv(text);
   const txns = rowsToTransactions(rows, {

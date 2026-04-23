@@ -52,10 +52,7 @@ test("stripJsArchive: empty array preserved", () => {
 // ─── toIsoOrNull ────────────────────────────────────────────────────────
 
 test("toIsoOrNull: parses RFC-ish Twitter timestamp → ISO Z", () => {
-  assert.equal(
-    toIsoOrNull("Wed Jun 05 13:45:22 +0000 2024"),
-    "2024-06-05T13:45:22.000Z",
-  );
+  assert.equal(toIsoOrNull("Wed Jun 05 13:45:22 +0000 2024"), "2024-06-05T13:45:22.000Z");
 });
 
 test("toIsoOrNull: undefined → null", () => {
@@ -195,27 +192,15 @@ test("isBeforeCursor: no cursor → false (keep)", () => {
 });
 
 test("isBeforeCursor: equal timestamp → true (skip already-emitted)", () => {
-  assert.equal(
-    isBeforeCursor("2024-06-05T13:00:00.000Z", "2024-06-05T13:00:00.000Z"),
-    true,
-  );
+  assert.equal(isBeforeCursor("2024-06-05T13:00:00.000Z", "2024-06-05T13:00:00.000Z"), true);
 });
 
 test("isBeforeCursor: strictly after → false (keep)", () => {
-  assert.equal(
-    isBeforeCursor("2024-06-06T13:00:00.000Z", "2024-06-05T13:00:00.000Z"),
-    false,
-  );
+  assert.equal(isBeforeCursor("2024-06-06T13:00:00.000Z", "2024-06-05T13:00:00.000Z"), false);
 });
 
 test("advanceCursor: monotonic max across prev/next combinations", () => {
   assert.equal(advanceCursor(undefined, "2024-06-05T00:00:00.000Z"), "2024-06-05T00:00:00.000Z");
-  assert.equal(
-    advanceCursor("2024-06-05T00:00:00.000Z", "2024-06-06T00:00:00.000Z"),
-    "2024-06-06T00:00:00.000Z",
-  );
-  assert.equal(
-    advanceCursor("2024-06-06T00:00:00.000Z", "2024-06-05T00:00:00.000Z"),
-    "2024-06-06T00:00:00.000Z",
-  );
+  assert.equal(advanceCursor("2024-06-05T00:00:00.000Z", "2024-06-06T00:00:00.000Z"), "2024-06-06T00:00:00.000Z");
+  assert.equal(advanceCursor("2024-06-06T00:00:00.000Z", "2024-06-05T00:00:00.000Z"), "2024-06-06T00:00:00.000Z");
 });

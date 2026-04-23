@@ -45,5 +45,9 @@
     "allowImportingTsExtensions": true
   },
   "include": ["src/**/*.ts", "connectors/**/*.ts", "bin/**/*.ts"],
-  "exclude": ["node_modules", "fixtures", "**/*.test.*"]
+  // __fixtures__/ holds hand-crafted HTML/JSON used by parser tests; they
+  // aren't TypeScript. fixtures/ holds gitignored live captures. Tests
+  // (*.test.ts) ARE included so typecheck covers them — earlier they were
+  // excluded, which let test-side type errors slip through.
+  "exclude": ["node_modules", "fixtures", "**/__fixtures__"]
 }
