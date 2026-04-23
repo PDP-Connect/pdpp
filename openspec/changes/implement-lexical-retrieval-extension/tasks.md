@@ -38,21 +38,23 @@
 - [ ] 5.4 On startup, detect drift (record count vs index row count, sampled per stream) and rebuild if mismatched. Log the rebuild via the structured logger.
 - [ ] 5.5 Coordinate with `swap-sqlite-driver`: route all FTS5 calls through the existing `db.query(sql\`…\`)` wrapper. If that wrapper changes shape at merge time, retarget but keep the FTS5 schema and maintenance semantics identical.
 
-## 6. `GET /v1/search` route
+## 6. `GET /v1/search` route — keep it thin, all logic in `search.js`
 
-- [ ] 6.1 Register `app.get('/v1/search', { contract: 'searchRecordsLexical' }, requireToken, …)` in `reference-implementation/server/index.js` next to the existing `/v1/streams/...` routes.
-- [ ] 6.2 Strict parameter allowlist: `q`, `limit`, `cursor`, `streams` / `streams[]`. Any other key → `invalid_request_error` with `param` set to the rejected key.
+- [ ] 6.1 Register `app.get('/v1/search', { contract: 'searchRecordsLexical' }, requireToken, …)` in `reference-implementation/server/index.js` next to the existing `/v1/streams/...` routes. The handler body is at most a few dozen lines: build `queryContext`, call `runLexicalSearch({ req, opts, tokenInfo, queryContext })`, emit `query.received` + `disclosure.served`, send the envelope. No parameter parsing or mode branching inline.
+- [ ] 6.2 In `search.js`, parameter allowlist is `q`, `limit`, `cursor`, `streams` / `streams[]`. Any other key → `invalid_request_error` with `param` set to the rejected key. `connector_id` is on the rejection list explicitly (the public surface has no connector-scope param in v1).
 - [ ] 6.3 Required `q`: missing → `invalid_request_error`.
-- [ ] 6.4 Resolve grant + manifest using the same path as the record-list handler. Owner tokens use `resolveOwnerReadScope` + `buildOwnerReadGrant`.
-- [ ] 6.5 `streams[]` membership check against the grant: any unauthorized entry → `permission_error` with code `grant_stream_not_allowed`.
-- [ ] 6.6 Build search plan via `buildSearchPlan`. Run `searchRecordsLexical`. Shape hits into `search_result` objects with `stream`, `record_key`, `record_url` (always emitted on the route; helper-level tests cover the omission branch), `emitted_at`, `matched_fields`, optional `snippet`.
-- [ ] 6.7 Emit a `disclosure.served` spine event with `query_shape: 'search'`, `record_count`, `has_more`, so search disclosures are auditable.
-- [ ] 6.8 Response envelope: `{ object: 'list', url, has_more, next_cursor?, data }`.
+- [ ] 6.4 Per-mode resolution inside `search.js`:
+  - **Client token**: resolve a single grant + manifest via `resolveGrantManifest`. `streams[]` membership check against the grant: any unauthorized entry → `permission_error` with code `grant_stream_not_allowed`.
+  - **Owner token**: enumerate every owner-visible connector (no public `connector_id` param), resolve each connector's manifest + synthetic owner grant, build a per-connector plan. `streams[]` is a soft filter — a stream name not exposed by any owner-visible connector returns zero hits, NOT a hard error (the spec explicitly distinguishes owner vs client `streams[]` semantics).
+- [ ] 6.5 (covered by 6.4)
+- [ ] 6.6 Helper builds `search_result` objects with required `stream`, `record_key`, `connector_id`, `emitted_at`, `matched_fields`. `record_url` is always emitted on the route; for client tokens it's `/v1/streams/.../records/...`; for owner tokens it's `/v1/streams/.../records/...?connector_id=<canonical>`. `snippet` is optional per result.
+- [ ] 6.7 Helper returns a `disclosureData` object the route uses to emit `disclosure.served` with `query_shape: 'search'`, `record_count`, `has_more`, `mode` (`owner` | `client`), `connector_count`. Search disclosures are auditable on the same spine as record reads.
+- [ ] 6.8 Response envelope: `{ object: 'list', url: '/v1/search', has_more, next_cursor?, data }`.
 - [ ] 6.9 Add a `// Reference-only — not the public lexical retrieval surface (see GET /v1/search).` comment band above `app.get('/_ref/search', …)`.
 
 ## 7. Dashboard switchover
 
-- [ ] 7.1 Add `searchRecordsLexical(query, scope)` to `apps/web/src/lib/reference-bridge.ts` (or the existing analogue if the file is named differently — discover at impl time). It calls `GET /v1/search` with the dashboard's owner-bearer token and returns the `RecordHit[]` shape the page already expects.
+- [ ] 7.1 Add `searchRecordsLexical(query, scope)` to the existing `apps/web/src/app/dashboard/lib/rs-client.ts` (the same module that already exposes `listStreams`, `getStreamMetadata`, `queryRecords`, `getRecord` — server-only, owner-token, public RS surface). Do NOT introduce a new generic bridge. Reference-only `_ref` calls keep living in `apps/web/src/app/dashboard/lib/ref-client.ts`.
 - [ ] 7.2 In `apps/web/src/app/dashboard/search/page.tsx`, replace `searchRecords(query, scope)` with the new helper. Delete `recordMatches`, `extractSnippet`, and the per-stream fan-out. Keep `refSearch` for the spine deep-link redirect (that's the `/_ref/search` operator-jump UX, which is unchanged).
 - [ ] 7.3 The page UI is unchanged: the same `SearchResult` shape is produced; only the data source is now the public extension.
 
@@ -71,11 +73,11 @@ Create `reference-implementation/test/lexical-retrieval.test.js` covering:
 - [ ] 9.2 RS metadata: omitted (or `supported: false`) when `opts.lexicalRetrievalSupported === false`.
 - [ ] 9.3 `/v1/search?q=...` returns a list envelope with `object: 'list'`, `data: [...]`.
 - [ ] 9.4 `/v1/search` rejects missing `q` with `invalid_request`.
-- [ ] 9.5 `/v1/search` rejects `filter[…]`, `rank`, `boost`, `embedding`, `vector`, `semantic`, `order` with `invalid_request` and identifies `param`.
-- [ ] 9.6 `/v1/search?streams[]=<not-in-grant>` → `permission_error` / `grant_stream_not_allowed`.
+- [ ] 9.5 `/v1/search` rejects `filter[…]`, `rank`, `boost`, `embedding`, `vector`, `semantic`, `order`, `connector_id` with `invalid_request` and identifies `param`. The `connector_id` rejection holds for both owner and client tokens — it is not a public param in v1.
+- [ ] 9.6 (client token) `/v1/search?streams[]=<not-in-grant>` → `permission_error` / `grant_stream_not_allowed`. (owner token) `/v1/search?streams[]=<nonexistent-anywhere>` → empty result list (NOT an error).
 - [ ] 9.7 `/v1/search?q=...` (no `streams[]`) when an opts-level `lexicalRetrievalCapability.cross_stream === false` advertisement is published → `invalid_request`.
-- [ ] 9.8 Each result has `object: 'search_result'`, required `stream`/`record_key`/`emitted_at`, `record_url` resolving to `/v1/streams/{stream}/records/{record_key}`, no `score` field.
-- [ ] 9.9 Helper-level test: `searchRecordsLexical()` can return results without `record_url` and they're still valid (covers the optional-`record_url` scenario).
+- [ ] 9.8 Each result has `object: 'search_result'`, required `stream`/`record_key`/`emitted_at`/`connector_id`, `record_url` resolving to `/v1/streams/{stream}/records/{record_key}` (client) or `/v1/streams/{stream}/records/{record_key}?connector_id=<canonical>` (owner), no `score` field.
+- [ ] 9.9 Helper-level test: `runLexicalSearch()` (or a finer-grained internal seam) can produce hits that omit `record_url`, and they're still valid as long as `stream`/`record_key`/`emitted_at`/`connector_id` are present.
 - [ ] 9.10 `matched_fields` is a non-empty subset of declared `lexical_fields` ∩ grant projection.
 - [ ] 9.11 Grant authorizes only a subset of declared `lexical_fields` → `matched_fields` constrained accordingly; snippet text never quotes the unauthorized field.
 - [ ] 9.12 Stream with declared `lexical_fields` whose intersection with the grant is empty contributes zero hits and zero per-stream errors.
@@ -83,6 +85,8 @@ Create `reference-implementation/test/lexical-retrieval.test.js` covering:
 - [ ] 9.14 `/_ref/search` and `/v1/search` are independent: hitting `/_ref/search?q=trace_id` returns the spine result shape, not a `list` of `search_result`s; hitting `/v1/search?q=...` returns the `list`/`search_result` shape, not the spine shape.
 - [ ] 9.15 Manifest validator rejects: empty `lexical_fields`, non-array, nested path (`"posts.title"`), array-type schema field, unknown field, integer-type field.
 - [ ] 9.16 Snippet generation is grant-safe: with a grant that omits one of the declared `lexical_fields`, no result snippet contains text from that omitted field.
+- [ ] 9.17 Owner-mode cross-connector: with two owner-visible connectors that both expose a stream named `messages` with overlapping `lexical_fields`, hits from BOTH connectors appear in one `/v1/search?q=...` response, each with its own `connector_id`.
+- [ ] 9.18 Owner-mode hydration round-trip: take `record_url` from a `/v1/search` hit, GET it under the owner token, confirm the same record envelope comes back. (Proves the `?connector_id=...` encoding is correct.)
 
 ## 10. Validation
 

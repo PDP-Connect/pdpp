@@ -64,6 +64,39 @@ The reference's local search backing (a SQLite FTS5 virtual table) SHALL contain
 - **WHEN** the reference starts and detects a mismatch between the records table and the FTS5 index for one or more participating streams
 - **THEN** the reference SHALL rebuild the index from the records table for the affected streams
 
+### Requirement: The reference SHALL realize owner-token lexical retrieval through cross-connector fan-out
+
+The reference scopes owner reads of records and stream metadata per connector. The reference SHALL realize owner-token lexical retrieval by fanning out across every owner-visible connector internally and merging results, so that the public `GET /v1/search` request shape stays identical for owner-token and client-token callers (no public `connector_id` query parameter). Each `search_result` returned to an owner-token caller SHALL carry the originating connector via `connector_id` so the caller can hydrate the record under the correct per-connector owner read scope. The reference SHALL emit a `record_url` that includes the canonical owner-mode `connector_id` query parameter for owner-token callers.
+
+#### Scenario: An owner searches across two connectors that both expose the same stream name
+- **WHEN** an owner-token caller invokes `GET /v1/search?q=alpha` on a reference instance with two owner-visible connectors `C1` and `C2`, both of which expose a `messages` stream that declares `lexical_fields: ["text"]` and both of which contain a record matching `alpha`
+- **THEN** the response SHALL include hits from BOTH connectors
+- **AND** each hit SHALL carry its originating `connector_id` (`"C1"` for hits from `C1`, `"C2"` for hits from `C2`)
+- **AND** the response SHALL NOT silently scope to a single connector
+
+#### Scenario: An owner request includes `connector_id`
+- **WHEN** an owner-token caller invokes `GET /v1/search?q=alpha&connector_id=C1`
+- **THEN** the reference SHALL reject the request with `invalid_request_error` identifying `connector_id` as the rejected parameter
+- **AND** SHALL NOT silently use `connector_id` to scope the search
+
+#### Scenario: An owner-mode `record_url` is hydrated
+- **WHEN** an owner-token caller takes the `record_url` from a `/v1/search` hit and issues a GET against it under the same owner token
+- **THEN** the reference SHALL return the canonical record envelope at `GET /v1/streams/{stream}/records/{record_key}` for the connector identified by the URL's `connector_id` query parameter
+
+### Requirement: The reference's lexical retrieval index SHALL include connector identity in every row
+
+Because the reference's owner reads are per-connector, the lexical retrieval index SHALL include the originating `connector_id` on every indexed row so that owner-mode hits can be attributed to a connector for hydration. Insert/update/delete maintenance for a record SHALL include that record's `connector_id`. Reference search results SHALL carry the indexed `connector_id` through to the `search_result.connector_id` field of the public response.
+
+#### Scenario: Records for two connectors are indexed
+- **WHEN** records arrive for stream `messages` from connectors `C1` and `C2`, both of which declare `lexical_fields: ["text"]`
+- **THEN** the FTS5 lexical search index SHALL contain rows attributed to `C1` for `C1`'s records and rows attributed to `C2` for `C2`'s records
+- **AND** SHALL NOT silently merge rows under a single shared connector identity
+
+#### Scenario: A search result is attributed to its originating connector
+- **WHEN** the reference returns a `search_result` to a caller
+- **THEN** that result's `connector_id` SHALL be the `connector_id` recorded on the matching index row at insert time
+- **AND** the reference SHALL NOT fabricate `connector_id` from configuration or from the caller's identity
+
 ### Requirement: The reference SHALL keep `/_ref/search` distinct from `/v1/search`
 
 The reference SHALL NOT alias `/_ref/search` to `/v1/search`, SHALL NOT serve the public lexical retrieval contract from `/_ref/search`, and SHALL NOT advertise `/_ref/search` as the public lexical retrieval endpoint. The reference's source code SHALL note `/_ref/search`'s reference-only status near its handler so future readers cannot mistake it for the public surface.

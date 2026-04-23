@@ -23,11 +23,12 @@ This change makes the approved contract real in the reference, satisfies all spe
   - rejects unknown fields
 - Add `capabilities.lexical_retrieval` to `buildProtectedResourceMetadata()` in `reference-implementation/server/metadata.js` with the six required keys (`supported`, `endpoint`, `cross_stream`, `snippets`, `default_limit`, `max_limit`) when the reference exposes the extension.
 - Implement `GET /v1/search` in `reference-implementation/server/index.js`:
-  - allow only `q`, `limit`, `cursor`, `streams[]`; reject every other parameter with `invalid_request_error` and identify the rejected parameter
+  - allow only `q`, `limit`, `cursor`, `streams[]`; reject every other parameter (including the now-explicitly-rejected `connector_id`) with `invalid_request_error` and identify the rejected parameter
   - resolve grant + manifest using the same path the existing record-listing handler uses
+  - for owner-token callers, search across every owner-visible connector on this RS (no public `connector_id` param); for client-token callers, scope by the grant
   - hard-error with `permission_error` / `grant_stream_not_allowed` on `streams[]` entries the caller is not authorized to read
   - search only over `(stream, field)` pairs in (declared `lexical_fields`) ∩ (grant-readable fields); silently drop streams whose intersection is empty
-  - return `search_result` candidates with `stream`, `record_key`, `emitted_at`, `matched_fields`; include `record_url` for the canonical single-record read; include grant-safe `snippet` when a match exists
+  - return `search_result` candidates with required `stream`, `record_key`, `emitted_at`, `connector_id`, `matched_fields`; include `record_url` for the canonical single-record read (with the owner-mode `connector_id` query parameter when the caller is an owner-token caller); include grant-safe `snippet` when a match exists
   - opaque cursor pagination distinct from record-list and `changes_since`; cursor encodes a frozen result snapshot for the session
   - emit a `disclosure.served` spine event with `query_shape: 'search'` so search disclosures are auditable on the same spine as record reads
 - Add a new internal helper `searchRecordsLexical(storageTarget, manifest, grant, params)` in a new file `reference-implementation/server/search.js` that the route handler delegates to and that `apps/web` can also call through a server-rendered bridge. The helper goes through the same enforcement path the route does — there is no second contract.

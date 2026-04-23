@@ -12,7 +12,7 @@ This change does not redesign anything. It only describes the implementation cho
 ## 1. What this change does NOT touch
 
 - The approved spec delta in `add-lexical-retrieval-extension/specs/lexical-retrieval/spec.md`. Owned by the prior change. Not re-stated here. If implementation collides with it, stop and report.
-- The contract surface. `GET /v1/search`, parameter allowlist, `search_result` shape, advertisement keys, `lexical_fields` declaration shape, opaque cursor, no portable score — all locked.
+- The contract surface. `GET /v1/search`, parameter allowlist (now including the explicit rejection of public `connector_id`), `search_result` shape (now requiring `connector_id` on every result), owner-token search semantics (cross-connector with no public connector-scope param), advertisement keys, `lexical_fields` declaration shape, opaque cursor, no portable score — all locked by the patched approved spec at `openspec/changes/add-lexical-retrieval-extension/specs/lexical-retrieval/spec.md`.
 - The status rung. Optional extension, not core. Not revisited.
 - The carrier. RS metadata document, not a new top-level metadata document. Not revisited.
 
@@ -24,10 +24,10 @@ If a future implementer thinks any of those need to move, they MUST reopen the a
 |---|---|---|
 | Stream metadata declaration | `reference-implementation/manifests/reddit.json` (+ validator in `auth.js`) | Adds `query.search.lexical_fields` to the seed manifest; tightens validator |
 | RS metadata advertisement | `reference-implementation/server/metadata.js` + the route in `index.js` | Adds `capabilities.lexical_retrieval` |
-| Public route | `reference-implementation/server/index.js` (`GET /v1/search`) | Strict allowlist, grant-safe enforcement, candidate-reference results |
-| Internal helper | `reference-implementation/server/search.js` (new) | Single enforcement path used by the route and the dashboard |
+| Public route | `reference-implementation/server/index.js` (`GET /v1/search`) | Thin handler — strict allowlist, single helper handoff, spine emit |
+| Internal helper | `reference-implementation/server/search.js` (new) | All search logic: param parse, owner/client mode, planner, FTS5, snippet, envelope |
 | Backing index | `reference-implementation/server/db.js` (additive FTS5 table) + `search.js` | SQLite FTS5; declared-fields-only |
-| Dashboard switchover | `apps/web/src/app/dashboard/search/page.tsx` + a bridge helper | Replaces brute-force fan-out |
+| Dashboard switchover | `apps/web/src/app/dashboard/search/page.tsx` + new `searchRecordsLexical` in `apps/web/src/app/dashboard/lib/rs-client.ts` | Replaces brute-force fan-out via the existing rs-client pattern |
 | Docs | `apps/web/content/docs/spec-data-query-api.md` (edit) + `spec-lexical-retrieval-extension.md` (new) | Truthfulness cleanup |
 | Tests | `reference-implementation/test/lexical-retrieval.test.js` (new) | Every spec scenario |
 
@@ -115,7 +115,7 @@ The reference always exposes the extension by default; an opts flag (off by defa
 
 ## 5. `GET /v1/search` route shape
 
-Sketch (real handler in `index.js`):
+The route stays intentionally thin per owner constraint. All search logic — parameter parsing, owner-vs-client mode resolution, plan construction, FTS5 query, snippet hydration, response shaping — lives in `reference-implementation/server/search.js`. The route's job is: accept the request, resolve the token kind once, hand off to the helper, emit the right spine events, return the envelope.
 
 ```js
 app.get('/v1/search', { contract: 'searchRecordsLexical' }, requireToken, async (req, res) => {
@@ -126,95 +126,64 @@ app.get('/v1/search', { contract: 'searchRecordsLexical' }, requireToken, async 
     const { actorType, actorId, traceId, scenarioId } = buildQueryActorContext(tokenInfo);
     setReferenceTraceId(res, traceId);
 
-    // 1. Parameter allowlist
-    const allowed = new Set(['q', 'limit', 'cursor', 'streams', 'streams[]']);
-    for (const k of Object.keys(req.query)) {
-      if (!allowed.has(k)) {
-        const err = new Error(`Unsupported query parameter: ${k}`);
-        err.code = 'invalid_request';
-        err.param = k;
-        return await rejectQuery(res, req, /*ctx*/ ..., err);
-      }
-    }
-    const q = (req.query.q || '').toString();
-    if (!q) {
-      const err = new Error('q is required');
-      err.code = 'invalid_request';
-      err.param = 'q';
-      return await rejectQuery(res, req, ..., err);
-    }
-    const limit = clampLimit(req.query.limit, { default: 25, max: 100 });
-    const cursor = req.query.cursor ? String(req.query.cursor) : null;
-    const streamsParam = normalizeStreamsParam(req.query.streams ?? req.query['streams[]']);
+    queryContext = {
+      tokenInfo, queryId, actorType, actorId, traceId, scenarioId,
+      sourceDescriptor: tokenInfo.pdpp_token_kind === 'owner'
+        ? null
+        : buildSourceDescriptor(tokenInfo.grant?.source),
+      streamId: null,
+      queryData: { query_shape: 'search' },
+    };
 
-    // 2. Resolve grant + manifest (mirrors record-list handler)
-    let { manifest, storageBinding, grant, sourceDescriptor } =
-      await resolveSearchContext(req, opts, tokenInfo);
-
-    queryContext = { /* …same shape as record_list, query_shape: 'search' */ };
+    const { envelope, disclosureData } = await runLexicalSearch({
+      req, opts, tokenInfo, queryContext,
+    });
     await emitQueryReceived(queryContext, req);
-
-    // 3. Reject unauthorized streams[] hard
-    if (streamsParam) {
-      for (const s of streamsParam) {
-        const inGrant = (grant.streams || []).some(g => g.name === s);
-        if (!inGrant) {
-          const err = new Error(`Stream '${s}' not in grant`);
-          err.code = 'grant_stream_not_allowed';
-          return await rejectQuery(res, req, queryContext, err);
-        }
-      }
-    }
-
-    // 4. Compute (stream, field) search plan
-    const plan = buildSearchPlan({ manifest, grant, streamsFilter: streamsParam });
-    // plan = [{ streamName, searchableFields: string[] }] with empty entries dropped
-
-    // 5. Run FTS5 query, gather candidates
-    const { hits, nextCursor, hasMore } = await searchRecordsLexical({
-      storageBinding, manifest, plan, q, limit, cursor,
+    await emitSpineEvent({
+      event_type: 'disclosure.served',
+      trace_id: traceId, scenario_id: scenarioId,
+      actor_type: actorType, actor_id: actorId,
+      subject_type: 'subject', subject_id: tokenInfo.subject_id || null,
+      object_type: 'query', object_id: queryId,
+      status: 'succeeded',
+      grant_id: tokenInfo.grant_id || null,
+      client_id: tokenInfo.client_id || null,
+      stream_id: null,
+      token_id: req.headers.authorization?.slice(7) || null,
+      data: disclosureData,
     });
 
-    // 6. Shape candidates into search_result
-    const data = hits.map(h => ({
-      object: 'search_result',
-      stream: h.stream,
-      record_key: h.recordKey,
-      record_url: `/v1/streams/${encodeURIComponent(h.stream)}/records/${encodeURIComponent(h.recordKey)}`,
-      emitted_at: h.emittedAt,
-      matched_fields: h.matchedFields,
-      ...(h.snippet ? { snippet: h.snippet } : {}),
-    }));
-
-    await emitSpineEvent({ event_type: 'disclosure.served', /* …query_shape: 'search', count, has_more */ });
-
-    res.json({
-      object: 'list',
-      url: req.path,
-      has_more: hasMore,
-      ...(nextCursor ? { next_cursor: nextCursor } : {}),
-      data,
-    });
+    res.json(envelope);
   } catch (err) {
-    if (queryContext) return await rejectQuery(res, req, queryContext, err);
+    if (queryContext) {
+      await emitQueryReceived(queryContext, req);
+      return await rejectQuery(res, req, queryContext, err);
+    }
     handleError(res, err);
   }
 });
 ```
 
+The route handler is ~30 lines. Everything else is in `search.js`.
+
 Notes:
 
-- `streams[]` arrives as either `req.query.streams` (Fastify default) or `req.query['streams[]']` depending on parser; `normalizeStreamsParam` handles both and coerces a single value into a one-element array.
-- Owner tokens reuse the existing `resolveOwnerReadScope` / `buildOwnerReadGrant` pattern from the record-list route, so owner self-export search works for free with the synthetic owner grant.
+- `runLexicalSearch` is the single helper entry point. It does parameter parsing (so the route doesn't have to know the allowlist), owner-vs-client mode resolution (so the route doesn't fork on token kind), per-mode plan construction, FTS5 query, snippet hydration under grant projection, and response envelope shaping.
+- The route doesn't touch the FTS5 backing directly. Ever.
 - `query_shape: 'search'` is the spine event marker.
-- The route handler does not touch the FTS5 backing directly; it always goes through `searchRecordsLexical()`.
+- `disclosureData` carries `record_count`, `has_more`, and per-mode summary so spine consumers can audit search disclosures the same way they audit record reads.
 
 ## 6. Internal helper — single enforcement path
 
-`reference-implementation/server/search.js`:
+`reference-implementation/server/search.js` exposes one entry point used by the route, and a couple of pure helpers:
 
 ```js
-export function buildSearchPlan({ manifest, grant, streamsFilter }) {
+// Pure planner. Per (manifest, grant) pair, computes the (stream, field) tuples
+// the search may legally consider. Field gating happens here, BEFORE any
+// FTS5 query is issued. There is no code path that asks the index about an
+// unauthorized field. This satisfies the "filter-later prohibited" scenario
+// by construction.
+export function buildSearchPlanForGrant({ manifest, grant, streamsFilter }) {
   const plan = [];
   for (const mStream of manifest.streams || []) {
     const declared = mStream.query?.search?.lexical_fields;
@@ -224,7 +193,6 @@ export function buildSearchPlan({ manifest, grant, streamsFilter }) {
     const streamGrant = (grant.streams || []).find(s => s.name === mStream.name);
     if (!streamGrant) continue;
 
-    // Field gating: searchable ∩ authorized.
     // streamGrant.fields = null/undefined means "all fields authorized".
     const grantedFields = streamGrant.fields ? new Set(streamGrant.fields) : null;
     const searchable = grantedFields
@@ -237,19 +205,120 @@ export function buildSearchPlan({ manifest, grant, streamsFilter }) {
   return plan;
 }
 
-export async function searchRecordsLexical({
-  storageBinding, manifest, plan, q, limit, cursor,
-}) {
-  // FTS5 query against the per-(stream, field) index for plan entries only.
-  // Decode opaque cursor (snapshot id + offset). Rebuild snapshot if missing.
-  // Generate a snippet from the matched field's grant-projected text.
-  // …
+// Top-level entry called by the route. Owns parameter parsing,
+// owner-vs-client mode resolution, per-mode plan construction
+// (cross-connector for owner; single-grant for client), FTS5 query,
+// snippet hydration, and response envelope shaping.
+export async function runLexicalSearch({ req, opts, tokenInfo, queryContext }) {
+  // 1. Strict parameter allowlist
+  const params = parseSearchParams(req.query); // throws invalid_request on disallowed keys
+  // params = { q, limit, cursor, streams[] | null }
+
+  // 2. Resolve mode
+  const isOwner = tokenInfo.pdpp_token_kind === 'owner';
+
+  // 3. Per-mode planning
+  let perConnectorPlans;
+  if (isOwner) {
+    // Cross-connector fan-out. Enumerate every connector the owner can read.
+    // For each, resolve its manifest and synthetic owner grant; build a plan.
+    const connectorIds = await listOwnerVisibleConnectorIds(opts);
+    perConnectorPlans = [];
+    for (const connectorId of connectorIds) {
+      const ownerScope = buildOwnerScopeForConnector(connectorId, opts);
+      const { manifest, storageBinding } = await resolveOwnerManifestFromScope(ownerScope, opts);
+      const grant = buildOwnerReadGrantForManifest(manifest); // synthetic grant: all streams, all fields
+      const planEntries = buildSearchPlanForGrant({
+        manifest, grant, streamsFilter: params.streams,
+      });
+      if (planEntries.length === 0) continue;
+      perConnectorPlans.push({ connectorId, manifest, storageBinding, grant, planEntries });
+    }
+
+    // For owner mode, streams[] is NOT a hard error if a stream isn't present
+    // anywhere — it just means zero hits. The hard-error scenario in the spec
+    // applies to client tokens (named stream not in grant). Owner-mode only
+    // hard-errors if the OWNER itself has zero connectors (unreachable) — we
+    // return an empty list, not an error, so the dashboard renders cleanly.
+  } else {
+    // Client token. Single grant, single connector, single plan.
+    const { manifest, storageBinding } = await resolveGrantManifest(tokenInfo, opts);
+    const grant = tokenInfo.grant;
+    const connectorId = grant?.source?.connector_id ?? null;
+
+    if (params.streams) {
+      for (const s of params.streams) {
+        const inGrant = (grant?.streams || []).some(g => g.name === s);
+        if (!inGrant) {
+          const err = new Error(`Stream '${s}' not in grant`);
+          err.code = 'grant_stream_not_allowed';
+          throw err;
+        }
+      }
+    }
+
+    const planEntries = buildSearchPlanForGrant({
+      manifest, grant, streamsFilter: params.streams,
+    });
+    perConnectorPlans = planEntries.length === 0
+      ? []
+      : [{ connectorId, manifest, storageBinding, grant, planEntries }];
+  }
+
+  // 4. FTS5 query, gather candidates with connector_id attached at the source
+  const { hits, nextCursor, hasMore } = await queryLexicalIndex({
+    perConnectorPlans, q: params.q, limit: params.limit, cursor: params.cursor,
+  });
+  // Each hit shape: { connectorId, stream, recordKey, emittedAt, matchedFields, snippet?: { field, text } }
+
+  // 5. Shape candidates into search_result, including required connector_id
+  // and the canonical record_url (with owner-mode connector_id query param
+  // when isOwner, plain when client).
+  const data = hits.map(h => buildSearchResult({ hit: h, isOwner }));
+
+  return {
+    envelope: {
+      object: 'list',
+      url: '/v1/search',
+      has_more: hasMore,
+      ...(nextCursor ? { next_cursor: nextCursor } : {}),
+      data,
+    },
+    disclosureData: {
+      query_shape: 'search',
+      record_count: data.length,
+      has_more: hasMore,
+      mode: isOwner ? 'owner' : 'client',
+      connector_count: perConnectorPlans.length,
+    },
+  };
+}
+
+function buildSearchResult({ hit, isOwner }) {
+  const recordPath = `/v1/streams/${encodeURIComponent(hit.stream)}/records/${encodeURIComponent(hit.recordKey)}`;
+  const recordUrl = isOwner
+    ? `${recordPath}?connector_id=${encodeURIComponent(hit.connectorId)}`
+    : recordPath;
+  return {
+    object: 'search_result',
+    stream: hit.stream,
+    record_key: hit.recordKey,
+    connector_id: hit.connectorId,
+    record_url: recordUrl,
+    emitted_at: hit.emittedAt,
+    matched_fields: hit.matchedFields,
+    ...(hit.snippet ? { snippet: hit.snippet } : {}),
+  };
 }
 ```
 
-Field gating happens in `buildSearchPlan` *before* any FTS5 query is issued. There is no path that asks the index about an unauthorized field. This satisfies the "filter-later prohibited" scenario by construction.
+Field gating happens in `buildSearchPlanForGrant` *before* any FTS5 query is issued. There is no code path that asks the index about an unauthorized field. This satisfies the "filter-later prohibited" scenario by construction, in both client mode and owner mode.
 
-The dashboard's bridge helper calls the route over HTTP rather than calling `searchRecordsLexical` directly, so dashboard search and public search share exactly the same enforcement code path. There is no second contract.
+The dashboard's `apps/web/src/app/dashboard/lib/rs-client.ts` helper calls the route over HTTP rather than calling `runLexicalSearch` directly, so dashboard search and public search share exactly the same enforcement code path. There is no second contract.
+
+### 6.1 Cross-connector ranking and pagination in owner mode
+
+When owner-mode fan-out spans more than one connector, the FTS5 query is issued per connector (since each connector's records sit under that connector's storage binding in the reference). The merged result list is sorted by relevance score within each connector, then merged across connectors using a stable round-robin so no single connector dominates the early pages. The opaque cursor (§9) carries enough state to resume across the merged stream. Cross-connector relevance is intentionally not a portable promise — the spec says "higher-ranked results SHOULD generally be more relevant"; the round-robin merge is one honest realization of that.
 
 ## 7. Snippet generation
 
@@ -308,7 +377,7 @@ The cursor format is implementation-defined per the spec — clients MUST treat 
 After this change:
 
 1. `refSearch(query)` stays exactly as is — it serves the `_ref/search` operator-jump UX and the deep-link redirect on exact id match. That surface is reference-only and continues to be reference-only.
-2. `searchRecords(query, scope)` is replaced by a new `searchRecordsLexical(query, scope)` in `apps/web/src/lib/reference-bridge.ts` that calls `GET /v1/search` with the dashboard's owner token. The brute-force `recordMatches` and `extractSnippet` helpers are deleted — the snippet now comes from the public endpoint. Result rows render the same `RecordHit` shape so the page UI is unchanged.
+2. `searchRecords(query, scope)` is replaced by a new `searchRecordsLexical(query, scope)` in the existing `apps/web/src/app/dashboard/lib/rs-client.ts` (the same module that already exposes `listStreams`, `getStreamMetadata`, `queryRecords`, `getRecord` — server-only, owner-token, public-RS). The new helper calls `GET /v1/search` once with the dashboard's owner token; the public endpoint internally fans out across every owner-visible connector. The response carries `connector_id` on every result, which the page maps to the existing `RecordHit.connectorId` shape. The brute-force `recordMatches`, `extractSnippet`, and per-stream fan-out are deleted — the snippet now comes from the public endpoint. Reference-only `_ref` calls keep living in `apps/web/src/app/dashboard/lib/ref-client.ts`. The page UI is unchanged.
 
 This satisfies the spec scenario "dashboard MUST consume the extension once it ships" and removes the duplicate enforcement path the dashboard had been pretending was equivalent.
 
@@ -346,14 +415,19 @@ The agent on `swap-sqlite-driver` is mid-flight on changing the SQLite driver in
 - `GET /v1/search` rejects missing `q` with `invalid_request_error`
 - `GET /v1/search` accepts `q + limit + streams[]`
 - `GET /v1/search` rejects `filter[recipient]=alice`, `rank=...`, `embedding=...`, vendor-specific params with `invalid_request_error`
-- `GET /v1/search?streams[]=private_journal` returns `permission_error` with code `grant_stream_not_allowed`
+- `GET /v1/search?connector_id=...` is rejected with `invalid_request_error` for both owner and client tokens (the public surface has no `connector_id` param)
+- `GET /v1/search?streams[]=<not-in-grant>` (client token) returns `permission_error` with code `grant_stream_not_allowed`
 - `GET /v1/search` cross-stream returns `invalid_request` when advertisement reports `cross_stream: false` (test uses an opts flag to flip cross_stream)
-- Each result has `object: 'search_result'`, `stream`, `record_key`, `emitted_at`, no portable numeric score
-- Each result has `record_url` resolving to `/v1/streams/{stream}/records/{record_key}` (route-handler test omits then includes per result)
-- `record_url` may be omitted (variant: helper test confirms a result without `record_url` is still valid)
+- Each result has `object: 'search_result'`, required `stream`/`record_key`/`emitted_at`/`connector_id`, no portable numeric score
+- For client tokens, `record_url` resolves to `/v1/streams/{stream}/records/{record_key}` with no `connector_id` query param
+- For owner tokens, `record_url` resolves to `/v1/streams/{stream}/records/{record_key}?connector_id=<canonical>` with the originating connector encoded
+- `record_url` may be omitted (helper test confirms a result without `record_url` is still valid as long as `stream`, `record_key`, `emitted_at`, `connector_id` are present)
 - `matched_fields` is a non-empty subset of declared `lexical_fields` ∩ grant projection
 - A grant that authorizes only a subset of declared `lexical_fields` returns `matched_fields` constrained to that subset; snippet text never quotes the unauthorized field
 - A stream with declared `lexical_fields` but zero overlap with the grant contributes zero hits and no per-stream error
+- Owner-token search: with two owner-visible connectors that both expose a stream named `messages`, hits from BOTH connectors appear, each with its own `connector_id`
+- Owner-token search: `streams[]=nonexistent_stream_anywhere` returns an empty result list (NOT an error — owner-mode `streams[]` is a soft filter, not the client-mode hard error)
+- Owner-token search: `record_url` for a hit is dereference-able by the dashboard's `getRecord(connector_id, stream, recordId)` helper
 - Pagination: `next_cursor` round-trip works; reusing the cursor on `/v1/streams/.../records?cursor=...` returns `invalid_cursor`
 - `/_ref/search` and `/v1/search` are independent routes with independent backings (test calls both, asserts neither aliases the other)
 - Manifest validator rejects: nested paths, array-typed schema fields, blob refs, unknown fields, empty arrays, non-string entries
