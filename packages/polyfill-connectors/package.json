@@ -18,7 +18,7 @@
     "probe:browser": "node ./bin/pdpp-connectors.js browser probe",
     "check": "ultracite check",
     "fix": "ultracite fix",
-    "test": "node --test --import tsx 'connectors/**/*.test.ts' 'src/**/*.test.ts'",
+    "test": "node --test --test-timeout=30000 --import tsx 'connectors/**/*.test.ts' 'src/**/*.test.ts'",
     "typecheck": "tsc --noEmit",
     "verify": "pnpm typecheck && pnpm check"
   },
