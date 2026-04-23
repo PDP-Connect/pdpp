@@ -43,6 +43,17 @@ The steward started `pnpm dev` once earlier today. Next.js (:3000) has crashed t
 - **Prefer `git add <specific paths>` over `git add .` or `git add -A`.** Already doing this — but the lesson above still matters because pre-existing stage is independent of what steward adds.
 - **Follow mislabel-note convention (`chore(history): note mislabeled commit <sha>`) if a commit lands with a wrong subject.** Do not amend or reset pushed history.
 
+### Blocked merge request — `owner-control-plane-repair` (2026-04-23)
+
+A worker agent asked the steward to run `git merge --ff-only owner-control-plane-repair` in the main worktree. **Blocked:** not a fast-forward. The branch was based on `c76000b`, but `main` has since advanced to `6813c0d` (steward pushed `8e57f6b` and `6813c0d` on top). Merge-base is `c76000b`, not `main` HEAD.
+
+Options for the worker agent:
+1. `git rebase main` on `owner-control-plane-repair`, then the steward (or you) can `--ff-only`.
+2. Cherry-pick `7e83c6e` and `680ecae` onto `main` — safe if they don't depend on the `c76000b` state that moved.
+3. Non-FF merge commit — needs explicit owner approval.
+
+Also: `main` worktree currently has unrelated dirty state (chatgpt cursor test + test-harness changes + untracked `bench/legacy/`) that would block any merge. Clear those before retrying.
+
 ### Paths to skip this cycle
 
 <!-- Add entries like: `apps/web/src/feature-x/ — mid-refactor, don't commit until I update this note` -->
