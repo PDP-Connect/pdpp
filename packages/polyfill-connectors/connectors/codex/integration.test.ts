@@ -16,10 +16,9 @@
  * messages, and the sessions pass dedups on session id (thread-preferred
  * when both maps list it).
  *
- * Imports from ./collect-helpers.ts (not ./index.ts) because index.ts
- * runs `main()` at module load — opening stdin and waiting for the
- * runtime START message. Importing it from tests would keep the event
- * loop alive forever.
+ * Imports directly from ./index.ts — `main().catch(...)` is guarded by
+ * `isMainModule(import.meta.url)` so it only fires when index.ts is the
+ * process entry point, not when a test imports it.
  *
  * Why bother: parsers.test.ts proves each record *shape* is correct
  * from an individual payload. These integration tests prove the
@@ -41,7 +40,7 @@ import {
   type LineEmitDeps,
   makeRolloutParseState,
   processRolloutLine,
-} from "./collect-helpers.ts";
+} from "./index.ts";
 import type { RolloutAggregate, RolloutObject, RolloutPayload, ThreadRow } from "./types.ts";
 
 interface RecordingHarness {
