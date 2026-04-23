@@ -23,11 +23,9 @@
  * Why bother: parsers.test.ts proves record *shapes* are correct from
  * individual message/conversation objects. Integration tests on the
  * emit path prove the invariants downstream consumers observe:
- *   - messages along the detail mapping emit before the conversation
- *     record (ChatGPT-specific: the inverse of parent-before-child —
- *     flagged on processConversationDetail; current behaviour is pinned
- *     here so an accidental reorder lands as a failing test, not a
- *     silent schema shift),
+ *   - the conversation record emits BEFORE any of its messages
+ *     (parent-first, per Tranche C 2026-04-23 — aligns chatgpt with
+ *     amazon, chase, usaa, slack, codex, etc.),
  *   - `messages` not requested → only the conversation record emits,
  *     no message records (scope suppresses one stream cleanly),
  *   - all streams disabled → nothing emits,
@@ -175,18 +173,17 @@ function makeEmitConversation(
 // conversation record last. This test pins the existing contract rather
 // than inverting it; see the flagged behaviour note in the task report.
 
-test("processConversationDetail: emits all 'messages' records BEFORE the 'conversations' record", async () => {
+test("processConversationDetail: emits 'conversations' record BEFORE any 'messages' records (parent-first)", async () => {
+  // Tranche C 2026-04-23: standardized on parent-first emit order across
+  // the connector fleet. Regressing this is a contract-level bug.
   const { deps, emitted } = makeHarness();
   await processConversationDetail(deps, makeConvo(), makeDetailOk(), makeEmitConversation(deps));
 
-  const lastMessageIdx = emitted.map((r) => r.stream).lastIndexOf("messages");
+  const firstMessageIdx = emitted.findIndex((r) => r.stream === "messages");
   const convoIdx = emitted.findIndex((r) => r.stream === "conversations");
-  assert.notEqual(lastMessageIdx, -1, "expected at least one messages record");
+  assert.notEqual(firstMessageIdx, -1, "expected at least one messages record");
   assert.notEqual(convoIdx, -1, "expected a conversations record");
-  assert.ok(
-    lastMessageIdx < convoIdx,
-    "conversation record must emit after the final message record (current ChatGPT contract)"
-  );
+  assert.ok(convoIdx < firstMessageIdx, "conversation record must emit before the first message record");
 });
 
 test("processConversationDetail: emits exactly one conversations record per call", async () => {

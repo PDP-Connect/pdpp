@@ -777,6 +777,18 @@ async function runAllMailPasses(
   // outer fetch iterator is still open, because imapflow multiplexes one
   // command at a time over a single connection and a nested call hangs the
   // outer iterator.
+  // THREADS stream first (parent-first convention, Tranche C 2026-04-23).
+  // Threads is derived from its own `1:*` IMAP fetch that aggregates by
+  // thread_id — it doesn't depend on the per-message body pass below, so
+  // emitting it first gives downstream consumers the parent record before
+  // any message records arrive. The cost is one extra IMAP round-trip
+  // before the message pass can start; that's already how it ran anyway
+  // (this fetch happened at the end before the reorder), so no throughput
+  // change.
+  if (deps.requested.has("threads")) {
+    await runThreadsPass(client, deps.emitRecord);
+  }
+
   const metas = await collectMetadata(client, fetchRange);
   await emit({
     type: "PROGRESS",
@@ -800,14 +812,6 @@ async function runAllMailPasses(
 
   // Pass 2: detect flag/label changes on already-seen messages (incremental only)
   await runDeltaPass(client, session, deps.requested, deps.emitRecord, deps.emittedAt);
-
-  // THREADS stream derived server-side per run: group messages we just
-  // emitted by thread_id. Simpler: a separate threads pass querying SEARCH
-  // by thread grouping is not directly supported in IMAP; we derive from a
-  // second fetch focused on emailId + threadId.
-  if (deps.requested.has("threads")) {
-    await runThreadsPass(client, deps.emitRecord);
-  }
 
   // Keep the cursor value (possibly string if out of safe-integer range) on STATE.
   await emit({

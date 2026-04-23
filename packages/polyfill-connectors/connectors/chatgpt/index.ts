@@ -310,15 +310,14 @@ export async function runCustomInstructionsStream(deps: StreamDeps): Promise<voi
 }
 
 /**
- * Process a single fetched conversation detail payload: emit messages
- * along the current branch (if the messages stream was requested), then
- * emit the merged conversation record via the supplied `emitConversation`
- * callback.
+ * Process a single fetched conversation detail payload: emit the merged
+ * conversation record first, then emit messages along the current branch
+ * (if the messages stream was requested).
  *
- * Emit order is messages first, then the conversation record — the
- * inverse of the parent-before-child pattern other connectors use. This
- * is the existing (pre-test) contract; see integration.test.ts for the
- * pinned assertion and a note to owners weighing whether to invert it.
+ * Parent-first emit order per Tranche C decision 2026-04-23 — matches the
+ * rest of the connector fleet (amazon, chase, usaa, slack, codex). Consumers
+ * that upsert conversations + messages see the conversation row before any
+ * of its messages.
  *
  * When `detail.status !== 200` or the mapping is missing, emits a
  * `SKIP_RESULT` on the messages stream and falls back to a list-only
@@ -342,6 +341,8 @@ export async function processConversationDetail(
     await emitConversation(c, null);
     return;
   }
+  // Emit conversation record first (parent-first), then messages.
+  await emitConversation(c, detail.json as ConversationDetail);
   const mapping = detail.json.mapping;
   const currentNode = detail.json.current_node || c.current_node;
   const currentBranchIds = new Set(flattenTreeCurrentBranch(mapping, currentNode).map((x) => x.nodeId));
@@ -353,7 +354,6 @@ export async function processConversationDetail(
     }
     await deps.emitRecord("messages", msg);
   }
-  await emitConversation(c, detail.json as ConversationDetail);
 }
 
 const PAGINATION_SAFETY_LIMIT = 5000;
