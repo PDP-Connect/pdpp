@@ -136,6 +136,7 @@ function makeDeps(
 ): {
   deps: StreamDeps;
   emitted: ReturnType<typeof makeRecordingEmit>["emitted"];
+  events: ReturnType<typeof makeRecordingEmit>["events"];
   protocolMessages: ReturnType<typeof makeRecordingEmit>["protocolMessages"];
 } {
   const harness = makeRecordingEmit(validateRecord);
@@ -146,7 +147,12 @@ function makeDeps(
     progress: silentProgress(),
     requested: new Map(requested.map((name) => [name, { name }])),
   };
-  return { deps, emitted: harness.emitted, protocolMessages: harness.protocolMessages };
+  return {
+    deps,
+    emitted: harness.emitted,
+    events: harness.events,
+    protocolMessages: harness.protocolMessages,
+  };
 }
 
 // ─── Orchestration invariants ──────────────────────────────────────────────
@@ -180,27 +186,49 @@ test("runConversationsAndMessagesStreams: every conversation record emits before
   }
 });
 
-test("runConversationsAndMessagesStreams: STATE cursor emits once, AFTER every record (no per-convo race)", async () => {
+test("runConversationsAndMessagesStreams: STATE cursor emits once, AFTER every record (unified event trace)", async () => {
   const list = [makeListItem("conv-A", "2026-04-22T09:00:00Z"), makeListItem("conv-B", "2026-04-22T10:00:00Z")];
   const details = new Map<string, ChatGptFetchResult>([
     ["conv-A", makeDetail("conv-A", 2)],
     ["conv-B", makeDetail("conv-B", 2)],
   ]);
-  const { deps, emitted, protocolMessages } = makeDeps(makeFakeApi(list, details), ["conversations", "messages"]);
+  const { deps, emitted, events, protocolMessages } = makeDeps(makeFakeApi(list, details), [
+    "conversations",
+    "messages",
+  ]);
 
   await runConversationsAndMessagesStreams(deps, {});
 
-  // There must be exactly ONE STATE for the conversations stream.
+  // Exactly ONE STATE for the conversations stream.
   const states = protocolMessages.filter((m: EmittedMessage) => m.type === "STATE" && m.stream === "conversations");
   assert.equal(states.length, 1, "expected a single STATE cursor for conversations");
 
-  // The STATE must arrive AFTER the last record emit. Our harness puts
-  // emit() into protocolMessages and emitRecord() into emitted, so
-  // compare using emit-call ordering via arrival time: STATE is the
-  // last protocol message, and it arrives after `emitted` is done
-  // because runConversationsAndMessagesStreams emits STATE at the end.
-  //
-  // Sanity: every record we expected is present.
+  // CROSS-KIND ORDERING PROOF via the unified events trace. The previous
+  // version of this test used split arrays (.emitted vs .protocolMessages)
+  // with no shared sequence — it could not actually prove STATE landed
+  // after the last record. The `.events` trace solves that: emit() and
+  // emitRecord() both push into it in call order.
+  const lastRecordIdx = events.findLastIndex((e) => e.kind === "record");
+  const conversationsStateIdx = events.findIndex(
+    (e) => e.kind === "message" && e.message.type === "STATE" && e.message.stream === "conversations"
+  );
+  assert.notEqual(lastRecordIdx, -1, "expected at least one record event");
+  assert.notEqual(conversationsStateIdx, -1, "expected a conversations STATE event");
+  assert.ok(
+    conversationsStateIdx > lastRecordIdx,
+    `STATE must land strictly after the last record in the unified trace (lastRecord=${lastRecordIdx}, state=${conversationsStateIdx})`
+  );
+
+  // Belt-and-braces: no STATE for the conversations stream appears
+  // BEFORE any record. Catches a hypothetical per-batch cursor advance
+  // slipped into the middle of the loop.
+  const firstConversationsStateIdx = events.findIndex(
+    (e) => e.kind === "message" && e.message.type === "STATE" && e.message.stream === "conversations"
+  );
+  const firstRecordIdx = events.findIndex((e) => e.kind === "record");
+  assert.ok(firstConversationsStateIdx > firstRecordIdx, "no STATE for conversations may precede the first record");
+
+  // Sanity on counts.
   assert.equal(emitted.filter((r) => r.stream === "conversations").length, 2);
   assert.equal(emitted.filter((r) => r.stream === "messages").length, 4);
 });

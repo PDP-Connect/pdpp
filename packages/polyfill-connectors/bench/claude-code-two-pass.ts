@@ -5,41 +5,50 @@
  *
  * Question: is the 2x jsonl I/O acceptable for real operator use?
  *
+ * Baseline-correctness note (owner feedback 2026-04-23): the first
+ * version of this bench used `scanProjectDirs({ buildOnly: false })`
+ * as the "single-pass baseline." That was NOT a faithful pre-Tranche-C
+ * reconstruction — current code only updates session accumulators when
+ * buildOnly is TRUE, so the baseline run emitted 0 sessions. This
+ * version fixes that by importing the actual pre-Tranche-C
+ * `scanProjectDirs` from git (commit `0cf0f51^`) as
+ * `bench/legacy/claude-code-pre-tranche-c.ts`. Its parseJsonlFile
+ * always calls updateSessionAccumulator and processJsonlLine always
+ * emits — exactly the pre-change contract. The session count in the
+ * baseline run now matches the two-pass run.
+ *
  * Method:
  *   - Point `baseDir` at `$CLAUDE_CODE_PROJECTS_DIR` if set, else
  *     `~/.claude/projects` — real operator-scale corpus.
- *   - Measure mode A: single-pass (buildOnly=false, no parent-first).
- *     This matches pre-Tranche-C behavior — one scan, emits everything
- *     inline. It's the strongest honest baseline; reconstructing the
- *     exact pre-decomposition code would require a checkout swap and
- *     isn't worth the complexity.
- *   - Measure mode B: two-pass (buildOnly=true + emitSessions +
- *     buildOnly=false). This is the current production behavior.
+ *   - Mode A (baseline): import legacy `scanProjectDirs` from
+ *     `bench/legacy/`. One scan that updates accumulators AND emits
+ *     messages/attachments inline, then emitSessionsFromAccumulators.
+ *     This is the code that ran in production before 0cf0f51.
+ *   - Mode B (current): two-pass — `scanProjectDirs` from current
+ *     index.ts with buildOnly=true, then emitSessionsFromAccumulators,
+ *     then scanProjectDirs with buildOnly=false.
  *   - Run each mode 3 times. Report median wall-clock + emitted-record
  *     totals. Also record per-pass breakdown for B.
  *
- * Caveats:
- *   - OS filesystem cache gets warmer between runs. First run of mode A
- *     is cold; runs 2+ are warm. Mode B runs second, so mostly warm.
- *     Median tames single-outlier effects but does NOT factor out
- *     cache asymmetry. A warmup run is done before the measured runs.
- *   - Mode A is a re-implementation, not a git-checkout-based baseline.
- *     It's behaviorally equivalent to "call scanProjectDirs once with
- *     buildOnly=false then emitSessionsFromAccumulators" — which is
- *     what pre-Tranche-C did, minus the parent-first ordering.
+ * Caveats (honest limitations):
+ *   - OS filesystem cache gets warmer between runs. A warmup pass runs
+ *     before measurement, so both modes see a hot cache. Mode order
+ *     is alternated run-by-run (A,B,A,B,A,B) to minimize systematic
+ *     cache asymmetry between modes.
  *   - emitRecord is a no-op counter; we're measuring scan+parse cost,
- *     not the downstream ingest.
+ *     not downstream ingest.
  */
 
 import { join } from "node:path";
 import { performance } from "node:perf_hooks";
-import {
-  emitSessionsFromAccumulators,
-  type ScanProjectDirsArgs,
-  scanProjectDirs,
-} from "../connectors/claude_code/index.ts";
+import { emitSessionsFromAccumulators, scanProjectDirs } from "../connectors/claude_code/index.ts";
 import type { SessionAccumulator } from "../connectors/claude_code/types.ts";
 import type { EmittedMessage, RecordData, StreamScope } from "../src/connector-runtime.ts";
+import {
+  type ScanProjectDirsArgs as LegacyScanProjectDirsArgs,
+  emitSessionsFromAccumulators as legacyEmitSessionsFromAccumulators,
+  scanProjectDirs as legacyScanProjectDirs,
+} from "./legacy/claude-code-pre-tranche-c.ts";
 
 const baseDir = process.env.CLAUDE_CODE_PROJECTS_DIR || join(process.env.HOME ?? "", ".claude", "projects");
 const ITERATIONS = 3;
@@ -91,16 +100,19 @@ function makeRequested(): Map<string, StreamScope> {
   ]);
 }
 
-async function runSinglePass(): Promise<RunResult> {
+async function runLegacyBaseline(): Promise<RunResult> {
+  // This calls the verbatim pre-Tranche-C scanProjectDirs (from commit
+  // 0cf0f51^, saved at bench/legacy/claude-code-pre-tranche-c.ts). That
+  // implementation's parseJsonlFile always calls updateSessionAccumulator
+  // and its processJsonlLine always emits — one scan, inline everything.
   const counters = { records: 0, sessions: 0, messages: 0, attachments: 0 };
   const sessionAccumulators = new Map<string, SessionAccumulator>();
   const fileMtimes: Record<string, number> = {};
   const newMtimes: Record<string, number> = {};
   const requested = makeRequested();
   const emitRecord = makeCountingEmit(counters);
-  const args: ScanProjectDirsArgs = {
+  const args: LegacyScanProjectDirsArgs = {
     baseDir,
-    buildOnly: false,
     emit: silentEmit(),
     emitRecord,
     fileMtimes,
@@ -110,8 +122,8 @@ async function runSinglePass(): Promise<RunResult> {
   };
 
   const t0 = performance.now();
-  await scanProjectDirs(args);
-  await emitSessionsFromAccumulators({ emitRecord, requested, sessionAccumulators });
+  await legacyScanProjectDirs(args);
+  await legacyEmitSessionsFromAccumulators({ emitRecord, requested, sessionAccumulators });
   const elapsedMs = performance.now() - t0;
 
   return { elapsedMs, ...counters };
@@ -181,30 +193,32 @@ function median(values: number[]): number {
 }
 
 async function main(): Promise<void> {
-  // Warmup run to level the filesystem cache between modes.
   process.stderr.write(`[bench] corpus: ${baseDir}\n`);
-  process.stderr.write("[bench] warmup pass (results ignored)...\n");
-  await runSinglePass();
+  process.stderr.write("[bench] warmup pass (results ignored) — legacy baseline...\n");
+  await runLegacyBaseline();
+  process.stderr.write("[bench] warmup pass (results ignored) — current two-pass...\n");
+  await runTwoPass();
 
-  process.stderr.write(`[bench] MODE A — single-pass (baseline), ${ITERATIONS} runs\n`);
+  // Interleave runs (A,B,A,B,A,B) rather than (A,A,A,B,B,B) to minimize
+  // systematic cache drift between modes. Median across iterations
+  // already tames single-outlier effects; interleaving tames mode-order
+  // asymmetry too.
+  process.stderr.write(`[bench] Interleaved ${ITERATIONS} iterations of (legacy baseline, two-pass)\n`);
   const singleRuns: RunResult[] = [];
-  for (let i = 0; i < ITERATIONS; i++) {
-    const r = await runSinglePass();
-    process.stderr.write(
-      `  run ${i + 1}: ${r.elapsedMs.toFixed(0)}ms (records=${r.records}, sessions=${r.sessions}, messages=${r.messages}, attachments=${r.attachments})\n`
-    );
-    singleRuns.push(r);
-  }
-
-  process.stderr.write(`[bench] MODE B — two-pass (current), ${ITERATIONS} runs\n`);
   const twoPassRuns: RunResult[] = [];
   const pass1Times: number[] = [];
   const emitSessionsTimes: number[] = [];
   const pass2Times: number[] = [];
   for (let i = 0; i < ITERATIONS; i++) {
+    const r = await runLegacyBaseline();
+    process.stderr.write(
+      `  iter ${i + 1} legacy baseline: ${r.elapsedMs.toFixed(0)}ms (records=${r.records}, sessions=${r.sessions}, messages=${r.messages}, attachments=${r.attachments})\n`
+    );
+    singleRuns.push(r);
+
     const { result, pass1Ms, emitSessionsMs, pass2Ms } = await runTwoPass();
     process.stderr.write(
-      `  run ${i + 1}: ${result.elapsedMs.toFixed(0)}ms (pass1=${pass1Ms.toFixed(0)}ms emitSessions=${emitSessionsMs.toFixed(0)}ms pass2=${pass2Ms.toFixed(0)}ms)\n`
+      `  iter ${i + 1} two-pass:         ${result.elapsedMs.toFixed(0)}ms (pass1=${pass1Ms.toFixed(0)}ms emitSessions=${emitSessionsMs.toFixed(0)}ms pass2=${pass2Ms.toFixed(0)}ms, records=${result.records}, sessions=${result.sessions}, messages=${result.messages}, attachments=${result.attachments})\n`
     );
     twoPassRuns.push(result);
     pass1Times.push(pass1Ms);
@@ -236,8 +250,8 @@ async function main(): Promise<void> {
       `Records per run: ~${firstTwoPass.records.toLocaleString()} (sessions=${firstTwoPass.sessions}, messages=${firstTwoPass.messages}, attachments=${firstTwoPass.attachments})\n\n`
     );
   }
-  process.stdout.write(`single-pass median: ${single.medianMs.toFixed(0)}ms (baseline)\n`);
-  process.stdout.write(`two-pass median:    ${twoPass.medianMs.toFixed(0)}ms\n`);
+  process.stdout.write(`legacy baseline median (pre-Tranche-C, commit 0cf0f51^): ${single.medianMs.toFixed(0)}ms\n`);
+  process.stdout.write(`current two-pass median:                                 ${twoPass.medianMs.toFixed(0)}ms\n`);
   process.stdout.write(`  pass 1 (build):   ${twoPass.pass1MedianMs?.toFixed(0)}ms\n`);
   process.stdout.write(`  emit sessions:    ${twoPass.emitSessionsMedianMs?.toFixed(0)}ms\n`);
   process.stdout.write(`  pass 2 (emit):    ${twoPass.pass2MedianMs?.toFixed(0)}ms\n`);

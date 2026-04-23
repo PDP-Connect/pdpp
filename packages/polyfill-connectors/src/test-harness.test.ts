@@ -119,3 +119,60 @@ test("makeRecordingEmit: emit() + emitRecord() populate separate buffers (no cro
   assert.equal(h.emitted.length, 2, "records go to .emitted only");
   assert.equal(h.protocolMessages.length, 1, "protocol messages go to .protocolMessages only");
 });
+
+// ─── Unified events trace ────────────────────────────────────────────────
+
+test("makeRecordingEmit: .events captures emit + emitRecord in call order", async () => {
+  const h = makeRecordingEmit();
+  await h.emitRecord("orders", { id: "ord-1" });
+  await h.emit({ type: "PROGRESS", message: "halfway" });
+  await h.emitRecord("orders", { id: "ord-2" });
+  await h.emit({ type: "STATE", stream: "orders", cursor: { n: 2 } });
+
+  assert.equal(h.events.length, 4);
+  assert.equal(h.events[0]?.kind, "record");
+  assert.equal(h.events[1]?.kind, "message");
+  assert.equal(h.events[2]?.kind, "record");
+  assert.equal(h.events[3]?.kind, "message");
+  const ev3 = h.events[3];
+  if (ev3?.kind === "message" && ev3.message.type === "STATE") {
+    assert.equal(ev3.message.stream, "orders");
+  } else {
+    assert.fail("expected last event to be a STATE message");
+  }
+});
+
+test("makeRecordingEmit: .events proves STATE lands AFTER last record (cross-kind ordering)", async () => {
+  // This is the shape of assertion the chatgpt cursor proof now uses.
+  // If an orchestration helper accidentally advances STATE between
+  // records, this assertion fails — which the old split-array design
+  // couldn't see.
+  const h = makeRecordingEmit();
+  await h.emitRecord("orders", { id: "ord-1" });
+  await h.emitRecord("orders", { id: "ord-2" });
+  await h.emit({ type: "STATE", stream: "orders", cursor: { n: 2 } });
+
+  const lastRecordIdx = h.events.findLastIndex((e) => e.kind === "record");
+  const stateIdx = h.events.findIndex(
+    (e) => e.kind === "message" && e.message.type === "STATE" && e.message.stream === "orders"
+  );
+  assert.notEqual(lastRecordIdx, -1);
+  assert.notEqual(stateIdx, -1);
+  assert.ok(stateIdx > lastRecordIdx, "STATE must land strictly after the last record");
+});
+
+test("makeRecordingEmit: .events records validation failures with kind='record-skipped'", async () => {
+  const validateRecord: ValidateRecord = (_stream, data) => {
+    if (!data.id) {
+      return { ok: false, issues: [{ path: "id", message: "required" }] };
+    }
+    return { ok: true, data };
+  };
+  const h = makeRecordingEmit(validateRecord);
+  await h.emitRecord("orders", { id: "ok" });
+  await h.emitRecord("orders", { total: 10 }); // missing id → skipped
+
+  assert.equal(h.events.length, 2);
+  assert.equal(h.events[0]?.kind, "record");
+  assert.equal(h.events[1]?.kind, "record-skipped");
+});

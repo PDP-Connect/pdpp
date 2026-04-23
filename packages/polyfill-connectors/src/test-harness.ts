@@ -36,10 +36,25 @@ export interface SkippedRecord {
   stream: string;
 }
 
+/** A single event in the unified call-order trace. `.events` interleaves
+ *  emitRecord() calls and emit() calls in the order the helper made
+ *  them. Needed when a test has to prove something like "STATE emitted
+ *  AFTER the last RECORD" — the separate `.emitted` / `.protocolMessages`
+ *  arrays can't express cross-kind ordering because they're two lists
+ *  with no shared sequence. */
+export type RecordedEvent =
+  | { kind: "record"; stream: string; data: RecordData; skipped: false }
+  | { kind: "record-skipped"; stream: string; issues: Array<{ message: string; path: string }>; skipped: true }
+  | { kind: "message"; message: EmittedMessage };
+
 export interface RecordingEmit {
   emit: (msg: EmittedMessage) => Promise<void>;
   emitRecord: (stream: string, data: RecordData) => Promise<void>;
   emitted: EmittedRecord[];
+  /** Unified time-ordered trace of every emit() and emitRecord() call,
+   *  in invocation order. Use this when the assertion is cross-kind
+   *  ordering (e.g. "STATE lands after the last RECORD"). */
+  events: RecordedEvent[];
   protocolMessages: EmittedMessage[];
   skipped: SkippedRecord[];
 }
@@ -61,9 +76,11 @@ export function makeRecordingEmit(validateRecord?: ValidateRecord): RecordingEmi
   const emitted: EmittedRecord[] = [];
   const skipped: SkippedRecord[] = [];
   const protocolMessages: EmittedMessage[] = [];
+  const events: RecordedEvent[] = [];
 
   const emit = (msg: EmittedMessage): Promise<void> => {
     protocolMessages.push(msg);
+    events.push({ kind: "message", message: msg });
     return Promise.resolve();
   };
 
@@ -72,12 +89,14 @@ export function makeRecordingEmit(validateRecord?: ValidateRecord): RecordingEmi
       const result = validateRecord(stream, data);
       if (!result.ok) {
         skipped.push({ stream, issues: result.issues });
+        events.push({ kind: "record-skipped", stream, issues: result.issues, skipped: true });
         return Promise.resolve();
       }
     }
     emitted.push({ stream, data });
+    events.push({ kind: "record", stream, data, skipped: false });
     return Promise.resolve();
   };
 
-  return { emit, emitRecord, emitted, skipped, protocolMessages };
+  return { emit, emitRecord, emitted, events, skipped, protocolMessages };
 }
