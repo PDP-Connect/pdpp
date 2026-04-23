@@ -39,16 +39,8 @@ import {
   runConnector,
   type ValidateRecord,
 } from "../../src/connector-runtime.ts";
+import { isMainModule } from "../../src/is-main-module.ts";
 import { resourceSet } from "../../src/scope-filters.ts";
-import {
-  type EmitDeps,
-  emitAccountsStream,
-  emitStatementIndexOnly,
-  emitTransactionsForAccount,
-  emitTransactionsStateIfAny,
-  filterAccountsByScope,
-  statementRowOutsideTimeRange,
-} from "./collect-helpers.ts";
 import {
   ACTIVITY_LABELS,
   accountSlug,
@@ -468,7 +460,191 @@ async function parseQfxFile(path: string): Promise<unknown> {
 // helper that takes a stable EmitDeps bag (mirrors the amazon pattern
 // from commit e62c368) so collect() becomes pure orchestration.
 
-type EmitFn = BrowserCollectContext["emit"];
+export type EmitFn = BrowserCollectContext["emit"];
+export type EmitRecordFn = BrowserCollectContext["emitRecord"];
+export type ProgressFn = BrowserCollectContext["progress"];
+export type CaptureDep = BrowserCollectContext["capture"];
+export type RequestedScopes = BrowserCollectContext["requested"];
+
+/** Per-run dependency bag threaded through every emit-path helper. Mirrors
+ *  the amazon pattern: one stable bag so collect() becomes pure
+ *  orchestration and the helpers are individually testable. */
+export interface EmitDeps {
+  capture: CaptureDep;
+  emit: EmitFn;
+  emitRecord: EmitRecordFn;
+  emittedAt: string;
+  maxSeenByAccount: Record<string, TransactionCursor>;
+  progress: ProgressFn;
+  requested: RequestedScopes;
+  resFilters: Map<string, ReadonlySet<string> | null>;
+  tmpDir: string;
+  txState: TransactionsStateShape;
+  wantsAccounts: boolean;
+  wantsBalances: boolean;
+  wantsStatements: boolean;
+  wantsTransactions: boolean;
+}
+
+/** STATE message shape the runtime expects for the transactions cursor. */
+type StateMessage = Extract<EmittedMessage, { type: "STATE" }>;
+
+/**
+ * Pick the res filter that applies to per-account work. Falls back
+ * across accounts → transactions → balances so a client asking for just
+ * one of those still narrows the account enumeration.
+ */
+export function filterAccountsByScope(
+  accounts: ChaseAccount[],
+  resFilters: Map<string, ReadonlySet<string> | null>
+): { accountsResFilter: ReadonlySet<string> | null; filteredAccounts: ChaseAccount[] } {
+  const accountsResFilter =
+    resFilters.get("accounts") ?? resFilters.get("transactions") ?? resFilters.get("balances") ?? null;
+  const filteredAccounts: ChaseAccount[] = accountsResFilter?.size
+    ? accounts.filter((a) => accountsResFilter.has(a.internal_id))
+    : accounts;
+  return { accountsResFilter, filteredAccounts };
+}
+
+/**
+ * Emit one `accounts` record per filtered account. Balance fields are
+ * null here; they're populated later from QFX LEDGERBAL/AVAILBAL as
+ * separate `balances` records.
+ */
+export async function emitAccountsStream(deps: EmitDeps, filteredAccounts: readonly ChaseAccount[]): Promise<void> {
+  for (const a of filteredAccounts) {
+    await deps.emitRecord("accounts", {
+      id: a.internal_id,
+      name: a.name,
+      type: a.type,
+      last_four: a.last_four,
+      balance_cents: null,
+      available_balance_cents: null,
+      credit_limit_cents: null,
+      available_credit_cents: null,
+      statement_balance_cents: null,
+      status: null,
+      balance_as_of: null,
+      fetched_at: deps.emittedAt,
+    });
+  }
+}
+
+/**
+ * Emit one `transactions` record per QFX tx, maintain the per-account
+ * max_seen_date cursor, and skip rows with no date.
+ *
+ * Invariants (tested in integration.test.ts):
+ *   - one emit per non-null-dated tx (dedup happens at the runtime's
+ *     RECORD key layer, not here; this helper is faithful to the QFX
+ *     slice it's given),
+ *   - cursor's max_seen_date is the MAX of the input dates (string
+ *     compare is safe on ISO yyyy-mm-dd),
+ *   - emittedAt propagates into every record's fetched_at.
+ */
+export async function emitTransactionsForAccount(
+  deps: EmitDeps,
+  account: ChaseAccount,
+  activity: ActivityKind,
+  transactions: ReturnType<typeof extractFromQfx>["transactions"]
+): Promise<void> {
+  const prior = deps.maxSeenByAccount[account.internal_id];
+  let maxDate: string | null = prior?.max_seen_date ?? null;
+  for (const t of transactions) {
+    if (!t.date) {
+      continue;
+    }
+    await deps.emitRecord("transactions", {
+      id: `${account.internal_id}|${t.fitid}`,
+      account_id: account.internal_id,
+      account_name: account.name,
+      fitid: t.fitid,
+      date: t.date,
+      amount: t.amount_cents,
+      currency: t.currency,
+      type: t.type,
+      name: t.name,
+      memo: t.memo,
+      check_number: t.check_number,
+      reference_number: t.reference_number,
+      source: `qfx_download_${activity}_${t.date}`,
+      fetched_at: deps.emittedAt,
+    });
+    if (!maxDate || t.date > maxDate) {
+      maxDate = t.date;
+    }
+  }
+  if (maxDate) {
+    deps.maxSeenByAccount[account.internal_id] = {
+      ...(prior ?? {}),
+      max_seen_date: maxDate,
+      last_activity: activity,
+      last_fetched_at: deps.emittedAt,
+    };
+  }
+}
+
+/**
+ * True iff this statement's delivered date falls outside the
+ * `statements` stream's time_range. The comparison intentionally
+ * slices to yyyy-mm-dd so a user-specified `since=2025-01-01T00:00Z`
+ * still includes statements delivered 2025-01-01 (the date_delivered
+ * field is date-only).
+ */
+export function statementRowOutsideTimeRange(deps: EmitDeps, dateIso: string | null): boolean {
+  const stmtScope = deps.requested.get("statements");
+  if (stmtScope?.time_range?.since && dateIso && dateIso < stmtScope.time_range.since.slice(0, 10)) {
+    return true;
+  }
+  if (stmtScope?.time_range?.until && dateIso && dateIso >= stmtScope.time_range.until.slice(0, 10)) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Emit a `statements` record with no hydrated PDF. Used when the PDF
+ * download click fails — the caller still wants a record that the
+ * statement exists so the owner can see it in the archive, even if the
+ * bytes aren't available this run.
+ */
+export async function emitStatementIndexOnly(
+  deps: EmitDeps,
+  id: string,
+  row: StatementRow,
+  accountId: string | null,
+  dateIso: string | null
+): Promise<void> {
+  await deps.emitRecord("statements", {
+    id,
+    account_id: accountId,
+    title: row.title,
+    date_delivered: dateIso,
+    account_reference: row.account_reference,
+    document_url: null,
+    pdf_path: null,
+    pdf_sha256: null,
+    fetched_at: deps.emittedAt,
+  });
+}
+
+/**
+ * Emit the transactions STATE cursor iff we actually emitted
+ * transactions this run. Skipping the emit on empty runs keeps
+ * downstream state files from accumulating empty `per_account: {}`
+ * entries that erase any prior cursor.
+ */
+export async function emitTransactionsStateIfAny(deps: EmitDeps): Promise<void> {
+  if (!(deps.wantsTransactions && Object.keys(deps.maxSeenByAccount).length > 0)) {
+    return;
+  }
+  const stateMsg: StateMessage = {
+    type: "STATE",
+    stream: "transactions",
+    cursor: { per_account: deps.maxSeenByAccount },
+  };
+  await deps.emit(stateMsg);
+}
 
 async function emitNoAccountsDiagnostic(page: Page, emit: EmitFn): Promise<void> {
   const diag = await page
@@ -674,105 +850,110 @@ async function runStatements(
 
 // ─── Main ─────────────────────────────────────────────────────────────────
 
-runConnector({
-  name: "chase",
-  validateRecord,
-  // Chase fingerprints the shared daemon profile and bounces it to
-  // /#/logon/logon/error regardless of cookie state. See
-  // `design-notes/chase-anti-bot.md`. Isolated-per-connector profile works.
-  // Headful by default so Chase's login accepts the submission.
-  browser: { profileName: "chase", headless: false },
-  async ensureSession({ context, page, sendInteraction }): Promise<void> {
-    await ensureChaseSession({
-      context,
-      page,
-      sendInteraction,
-    });
-  },
-  async collect(ctx: BrowserCollectContext): Promise<void> {
-    const { state: startState, requested, page, emit, emitRecord, progress, capture, emittedAt } = ctx;
+// Guarded so `import "./index.ts"` in tests doesn't spin up the runtime
+// and block the Node event loop on stdin. Only fires when this module
+// IS the process entry point (i.e. `tsx connectors/chase/index.ts`).
+if (isMainModule(import.meta.url)) {
+  runConnector({
+    name: "chase",
+    validateRecord,
+    // Chase fingerprints the shared daemon profile and bounces it to
+    // /#/logon/logon/error regardless of cookie state. See
+    // `design-notes/chase-anti-bot.md`. Isolated-per-connector profile works.
+    // Headful by default so Chase's login accepts the submission.
+    browser: { profileName: "chase", headless: false },
+    async ensureSession({ context, page, sendInteraction }): Promise<void> {
+      await ensureChaseSession({
+        context,
+        page,
+        sendInteraction,
+      });
+    },
+    async collect(ctx: BrowserCollectContext): Promise<void> {
+      const { state: startState, requested, page, emit, emitRecord, progress, capture, emittedAt } = ctx;
 
-    // State is keyed by stream name at the runtime layer:
-    //   { transactions: { per_account: {<id>: {max_seen_date, ...}} } }
-    // Normalize to an inner shape the rest of the connector reads directly.
-    const txState = (startState.transactions ?? startState) as TransactionsStateShape;
+      // State is keyed by stream name at the runtime layer:
+      //   { transactions: { per_account: {<id>: {max_seen_date, ...}} } }
+      // Normalize to an inner shape the rest of the connector reads directly.
+      const txState = (startState.transactions ?? startState) as TransactionsStateShape;
 
-    // Track max_seen_date per account across this run so the STATE cursor
-    // reflects "I've seen transactions up to this date" per account. Used
-    // next run to pick the "since_last_statement" activity for incremental
-    // fetches.
-    const maxSeenByAccount: Record<string, TransactionCursor> = {
-      ...(txState.per_account ?? {}),
-    } as Record<string, TransactionCursor>;
+      // Track max_seen_date per account across this run so the STATE cursor
+      // reflects "I've seen transactions up to this date" per account. Used
+      // next run to pick the "since_last_statement" activity for incremental
+      // fetches.
+      const maxSeenByAccount: Record<string, TransactionCursor> = {
+        ...(txState.per_account ?? {}),
+      } as Record<string, TransactionCursor>;
 
-    // Build resource filters per stream (runtime also filters at emit time;
-    // we build locally so we can skip PDF downloads / download-page nav for
-    // accounts the client didn't ask for).
-    const resFilters = new Map<string, ReadonlySet<string> | null>();
-    for (const [streamName, scope] of requested) {
-      resFilters.set(streamName, resourceSet(scope));
-    }
-
-    const tmpDir = await mkdtemp(join(tmpdir(), "pdpp-chase-"));
-
-    const deps: EmitDeps = {
-      capture,
-      emit,
-      emitRecord,
-      emittedAt,
-      maxSeenByAccount,
-      progress,
-      requested,
-      resFilters,
-      tmpDir,
-      txState,
-      wantsAccounts: requested.has("accounts"),
-      wantsBalances: requested.has("balances"),
-      wantsStatements: requested.has("statements"),
-      wantsTransactions: requested.has("transactions"),
-    };
-
-    try {
-      await progress("Chase session verified; enumerating accounts");
-
-      const accounts = await discoverAccounts(page);
-      if (capture) {
-        await capture.captureDom(page, "dashboard-accounts");
-      }
-      if (accounts.length === 0) {
-        await emitNoAccountsDiagnostic(page, emit);
-        return; // runtime emits DONE succeeded
+      // Build resource filters per stream (runtime also filters at emit time;
+      // we build locally so we can skip PDF downloads / download-page nav for
+      // accounts the client didn't ask for).
+      const resFilters = new Map<string, ReadonlySet<string> | null>();
+      for (const [streamName, scope] of requested) {
+        resFilters.set(streamName, resourceSet(scope));
       }
 
-      await progress(`Found ${accounts.length} account(s)`);
+      const tmpDir = await mkdtemp(join(tmpdir(), "pdpp-chase-"));
 
-      const { accountsResFilter, filteredAccounts } = filterAccountsByScope(accounts, resFilters);
+      const deps: EmitDeps = {
+        capture,
+        emit,
+        emitRecord,
+        emittedAt,
+        maxSeenByAccount,
+        progress,
+        requested,
+        resFilters,
+        tmpDir,
+        txState,
+        wantsAccounts: requested.has("accounts"),
+        wantsBalances: requested.has("balances"),
+        wantsStatements: requested.has("statements"),
+        wantsTransactions: requested.has("transactions"),
+      };
 
-      // Emit accounts stream. Our record.id is Chase's internal account id
-      // directly — stable, no hashing needed. Keeps transactions.account_id
-      // aligned with the download URL param.
-      if (deps.wantsAccounts) {
-        await emitAccountsStream(deps, filteredAccounts);
+      try {
+        await progress("Chase session verified; enumerating accounts");
+
+        const accounts = await discoverAccounts(page);
+        if (capture) {
+          await capture.captureDom(page, "dashboard-accounts");
+        }
+        if (accounts.length === 0) {
+          await emitNoAccountsDiagnostic(page, emit);
+          return; // runtime emits DONE succeeded
+        }
+
+        await progress(`Found ${accounts.length} account(s)`);
+
+        const { accountsResFilter, filteredAccounts } = filterAccountsByScope(accounts, resFilters);
+
+        // Emit accounts stream. Our record.id is Chase's internal account id
+        // directly — stable, no hashing needed. Keeps transactions.account_id
+        // aligned with the download URL param.
+        if (deps.wantsAccounts) {
+          await emitAccountsStream(deps, filteredAccounts);
+        }
+
+        // Transactions + balances: download QFX per account, parse, emit.
+        if (deps.wantsTransactions || deps.wantsBalances) {
+          await runTransactionsAndBalances(deps, page, filteredAccounts);
+        }
+
+        // Statements: navigate to Statements & Documents, enumerate rows,
+        // download each PDF, emit one record per statement with
+        // content-addressed path.
+        if (deps.wantsStatements) {
+          await runStatements(deps, page, filteredAccounts, accounts, accountsResFilter);
+        }
+      } finally {
+        await rm(tmpDir, { recursive: true, force: true }).catch((): undefined => undefined);
       }
 
-      // Transactions + balances: download QFX per account, parse, emit.
-      if (deps.wantsTransactions || deps.wantsBalances) {
-        await runTransactionsAndBalances(deps, page, filteredAccounts);
-      }
-
-      // Statements: navigate to Statements & Documents, enumerate rows,
-      // download each PDF, emit one record per statement with
-      // content-addressed path.
-      if (deps.wantsStatements) {
-        await runStatements(deps, page, filteredAccounts, accounts, accountsResFilter);
-      }
-    } finally {
-      await rm(tmpDir, { recursive: true, force: true }).catch((): undefined => undefined);
-    }
-
-    // Emit STATE for incremental resumption. The per_account cursor drives
-    // the next run's chooseActivity() — when max_seen_date is present we'll
-    // use "since_last_statement" instead of re-downloading all transactions.
-    await emitTransactionsStateIfAny(deps);
-  },
-});
+      // Emit STATE for incremental resumption. The per_account cursor drives
+      // the next run's chooseActivity() — when max_seen_date is present we'll
+      // use "since_last_statement" instead of re-downloading all transactions.
+      await emitTransactionsStateIfAny(deps);
+    },
+  });
+}

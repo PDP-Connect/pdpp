@@ -14,9 +14,9 @@
  * stream-scope suppression, res-filter + time_range gating, cursor
  * propagation, and the index-only fallback when PDF download fails.
  *
- * Imports from ./collect-helpers.ts (not ./index.ts) because index.ts
- * calls `runConnector({...})` at module load — importing it would open
- * stdin and keep the test runner's event loop alive forever.
+ * Imports directly from ./index.ts — `runConnector({...})` is guarded by
+ * `isMainModule(import.meta.url)` so it only fires when index.ts is the
+ * process entry point, not when a test imports it.
  *
  * Why bother: parsers.test.ts proves record *shapes* are correct from
  * QFX/DOM input. Integration tests on the emit path prove the
@@ -49,7 +49,7 @@ import {
   emitTransactionsStateIfAny,
   filterAccountsByScope,
   statementRowOutsideTimeRange,
-} from "./collect-helpers.ts";
+} from "./index.ts";
 import { validateRecord } from "./schemas.ts";
 import type { ChaseAccount, QfxTransaction, StatementRow, TransactionCursor, TransactionsStateShape } from "./types.ts";
 
