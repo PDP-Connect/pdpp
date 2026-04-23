@@ -3,9 +3,13 @@
  * specifically the per-order emit orchestration.
  *
  * These tests DON'T spin up a browser. They construct a fake `EmitDeps`
- * that captures every (stream, data) pair pushed through `emitRecord`,
- * then assert on the sequence: order emitted before items, items in
- * dedup+merge order, stream-scope respected, cursor timing preserved.
+ * backed by `makeRecordingEmit(validateRecord)` — so every emitted
+ * record is run through the real zod schema the runtime applies in
+ * production. A fixture that would SKIP_RESULT in prod fails the test
+ * here rather than silently passing. Captures every (stream, data) pair
+ * pushed through `emitRecord`, then asserts on the sequence: order
+ * emitted before items, items in dedup+merge order, stream-scope
+ * respected, cursor timing preserved.
  *
  * Imports from ./collect-helpers.ts (not ./index.ts) so that
  * `runConnector({...})` doesn't fire at module load and keep the test
@@ -22,38 +26,35 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { type EmittedRecord, makeRecordingEmit } from "../../src/test-harness.ts";
 import { type EmitDeps, emitOrderAndItems } from "./collect-helpers.ts";
+import { validateRecord } from "./schemas.ts";
 import type { DetailItem, ListPageOrder, OrderDetail } from "./types.ts";
-
-interface EmittedRecord {
-  data: Record<string, unknown>;
-  stream: string;
-}
 
 interface RecordingDeps {
   deps: EmitDeps;
   emitted: EmittedRecord[];
 }
 
-/** Build an EmitDeps that records every emitRecord() call. emit() is a
- *  no-op (emitOrderAndItems doesn't call emit() — only diagnostic paths do).
- *  capture is null since fixture capture is orthogonal to emit ordering. */
+/** Build an EmitDeps that records every emitRecord() call, validating
+ *  each record against the connector's real zod schema (so a test that
+ *  would silently emit drifted data in production now fails loudly).
+ *  emit() is a no-op side-channel (emitOrderAndItems doesn't call emit()
+ *  — only diagnostic paths do). capture is null since fixture capture is
+ *  orthogonal to emit ordering. */
 function makeRecordingDeps(overrides: Partial<EmitDeps> = {}): RecordingDeps {
-  const emitted: EmittedRecord[] = [];
+  const harness = makeRecordingEmit(validateRecord);
   const deps: EmitDeps = {
     capture: null,
-    emit: (): Promise<void> => Promise.resolve(),
-    emitRecord: (stream: string, data: Record<string, unknown>): Promise<void> => {
-      emitted.push({ stream, data });
-      return Promise.resolve();
-    },
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
     emittedAt: "2026-04-22T12:00:00.000Z",
     skipDetail: false,
     wantsItems: true,
     wantsOrders: true,
     ...overrides,
   };
-  return { deps, emitted };
+  return { deps, emitted: harness.emitted };
 }
 
 function makeListOrder(overrides: Partial<ListPageOrder> = {}): ListPageOrder {
@@ -120,21 +121,26 @@ test("emitOrderAndItems: emits exactly one order record per call", async () => {
 
 test("emitOrderAndItems: items emit in mergeOrderItems order (list first, then detail-only appended)", async () => {
   const { deps, emitted } = makeRecordingDeps();
+  // ASINs must be exactly 10 uppercase alphanumeric (schema/asinSchema);
+  // currency strings must be $N.NN (schema/currencyStringSchema). The
+  // original fixture used 11-char ASINs ("B01LIST0001") + cents-less
+  // prices ("$10") which would have SKIP_RESULT'd in production — the
+  // hand-rolled mock let them through silently.
   const listOrder = makeListOrder({
-    items: [{ asin: "B01LIST0001", name: "List Item", url: null }],
+    items: [{ asin: "B01LIST000", name: "List Item", url: null }],
   });
   const detail = makeDetail({
     items: [
-      makeDetailItem({ asin: "B01LIST0001", name: "List Item", unit_price: "$10" }),
-      makeDetailItem({ asin: "B02DETAIL01", name: "Detail-Only Item", unit_price: "$20" }),
+      makeDetailItem({ asin: "B01LIST000", name: "List Item", unit_price: "$10.00" }),
+      makeDetailItem({ asin: "B02DETAIL0", name: "Detail-Only Item", unit_price: "$20.00" }),
     ],
   });
   await emitOrderAndItems(deps, listOrder, detail, "2026-01-05");
 
   const itemRecords = emitted.filter((r) => r.stream === "order_items");
   assert.equal(itemRecords.length, 2, "expected list item + detail-only item");
-  assert.equal(itemRecords[0]?.data.asin, "B01LIST0001", "list-page item emitted first");
-  assert.equal(itemRecords[1]?.data.asin, "B02DETAIL01", "detail-only item appended after");
+  assert.equal(itemRecords[0]?.data.asin, "B01LIST000", "list-page item emitted first");
+  assert.equal(itemRecords[1]?.data.asin, "B02DETAIL0", "detail-only item appended after");
 });
 
 // ─── Invariant 3: scope.streams filters cleanly ──────────────────────────
@@ -165,8 +171,8 @@ test("emitOrderAndItems: detail=null — still emits order record + list-page it
   const { deps, emitted } = makeRecordingDeps();
   const listOrder = makeListOrder({
     items: [
-      { asin: "B01ONE0000A", name: "One", url: null },
-      { asin: "B02TWO0000A", name: "Two", url: null },
+      { asin: "B01ONE0000", name: "One", url: null },
+      { asin: "B02TWO0000", name: "Two", url: null },
     ],
   });
   await emitOrderAndItems(deps, listOrder, null, "2026-01-05");
@@ -178,8 +184,8 @@ test("emitOrderAndItems: detail=null — still emits order record + list-page it
 
   const items = emitted.filter((r) => r.stream === "order_items");
   assert.equal(items.length, 2);
-  assert.equal(items[0]?.data.asin, "B01ONE0000A");
-  assert.equal(items[1]?.data.asin, "B02TWO0000A");
+  assert.equal(items[0]?.data.asin, "B01ONE0000");
+  assert.equal(items[1]?.data.asin, "B02TWO0000");
 });
 
 // ─── Invariant 5: item-level id stability (merge dedup + itemId) ─────────
@@ -188,12 +194,12 @@ test("emitOrderAndItems: duplicate ASINs across list+detail dedupe to one item r
   const { deps, emitted } = makeRecordingDeps();
   const listOrder = makeListOrder({
     items: [
-      { asin: "B01DUPDUP01", name: "Dup", url: null },
-      { asin: "B01DUPDUP01", name: "Dup Again", url: null }, // same ASIN twice on list
+      { asin: "B01DUPDUP0", name: "Dup", url: null },
+      { asin: "B01DUPDUP0", name: "Dup Again", url: null }, // same ASIN twice on list
     ],
   });
   const detail = makeDetail({
-    items: [makeDetailItem({ asin: "B01DUPDUP01", name: "Dup", unit_price: "$5.00" })],
+    items: [makeDetailItem({ asin: "B01DUPDUP0", name: "Dup", unit_price: "$5.00" })],
   });
   await emitOrderAndItems(deps, listOrder, detail, "2026-01-05");
 
