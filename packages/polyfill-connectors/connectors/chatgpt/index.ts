@@ -83,11 +83,19 @@ async function getAuthFromPage(page: Page): Promise<ChatGptAuth> {
         /* ignore */
       }
     }
-    // @ts-expect-error — __NEXT_DATA__ is a Next.js-injected global not in the DOM lib
-    if (!accessToken && window.__NEXT_DATA__) {
-      accessToken =
-        // @ts-expect-error — __NEXT_DATA__ is a Next.js-injected global not in the DOM lib
-        window.__NEXT_DATA__?.props?.pageProps?.session?.accessToken || null;
+    // Next.js injects a __NEXT_DATA__ script-tag-mirrored global on chatgpt.com.
+    // Not in the DOM lib; narrow via a local structural type that describes
+    // just the path we read. Safer than @ts-expect-error because a typo in
+    // the access path (e.g. `pageProps.sesison`) now fails typecheck.
+    interface NextDataShape {
+      props?: { pageProps?: { session?: { accessToken?: string } } };
+    }
+    const nextDataEl = document.getElementById("__NEXT_DATA__");
+    const nextData: NextDataShape | null = nextDataEl?.textContent
+      ? (JSON.parse(nextDataEl.textContent) as NextDataShape)
+      : null;
+    if (!accessToken && nextData) {
+      accessToken = nextData.props?.pageProps?.session?.accessToken || null;
     }
     // biome-ignore lint/performance/useTopLevelRegex: runs in browser context (page.evaluate); module-scoped regexes in Node cannot cross the bridge.
     const m = (document.cookie || "").match(/oai-did=([^;]+)/);
@@ -144,13 +152,19 @@ function createChatGptApi({ page, capture }: { page: Page; capture: CaptureSessi
         if (auth.deviceId) {
           headers["oai-device-id"] = auth.deviceId;
         }
-        // @ts-expect-error — browser context globals (fetch)
-        const res = await fetch(`https://chatgpt.com/backend-api${path}`, {
+        // Build RequestInit with body only when present — under
+        // exactOptionalPropertyTypes, spreading {body: undefined} doesn't
+        // match BodyInit | null. This is what the old @ts-expect-error
+        // was papering over.
+        const init: RequestInit = {
           method,
           credentials: "include",
           headers,
-          body: body ? JSON.stringify(body) : undefined,
-        });
+        };
+        if (body) {
+          init.body = JSON.stringify(body);
+        }
+        const res = await fetch(`https://chatgpt.com/backend-api${path}`, init);
         const status = res.status;
         let json: unknown = null;
         try {
