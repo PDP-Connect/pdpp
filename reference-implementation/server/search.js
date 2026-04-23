@@ -149,6 +149,23 @@ async function rebuildLexicalIndexForStream({ connectorId, stream, declaredField
 }
 
 /**
+ * Stable fingerprint of a declared lexical_fields set. Used by the drift
+ * detector to recognize manifest changes that swap field membership without
+ * changing field count (e.g. ['title'] -> ['selftext']) — the row-count
+ * heuristic alone cannot detect that case because stale rows satisfy the
+ * count band.
+ *
+ * Fingerprint is JSON of the sorted, unique field-name list. v1
+ * lexical_fields are always plain ASCII identifiers from the schema, so the
+ * JSON encoding is stable and collision-free.
+ */
+function fingerprintLexicalFields(declaredFields) {
+  const unique = Array.from(new Set(declaredFields));
+  unique.sort();
+  return JSON.stringify(unique);
+}
+
+/**
  * Drift-detect + rebuild the lexical index for every participating stream of
  * a manifest. Idempotent and safe to call repeatedly.
  *
@@ -163,16 +180,27 @@ async function rebuildLexicalIndexForStream({ connectorId, stream, declaredField
  *   - registerConnector (polyfill mode: backfills the connector being
  *     registered or updated)
  *
- * Drift detection is deliberately cheap: per (connector_id, stream) we
- * compare the indexed row count to the expected count
- * (live_record_count × declared_field_count). If they match we skip the
- * rebuild — this is the steady state after the first backfill. If they
- * differ in either direction we rebuild that one stream from scratch.
+ * Drift detection has two independent signals:
  *
- * The expected count overcounts for declared fields whose value is missing
- * or empty on a given record (the upsert path skips those), so a match here
- * means "definitely in sync" but a mismatch can be a false alarm. That's
- * acceptable — false alarms only cause an extra rebuild on startup.
+ *   1. Field-set fingerprint mismatch (authoritative). Per (connector_id,
+ *      stream) we persist a sorted-JSON fingerprint of the declared
+ *      lexical_fields set in lexical_search_meta after every rebuild. If
+ *      the current declaration differs from the persisted one, we rebuild
+ *      unconditionally. This is what catches same-cardinality field-set
+ *      changes such as ['title'] -> ['selftext']: the row-count heuristic
+ *      alone would skip that case because stale title rows satisfy the
+ *      count band, missing all selftext-only historical hits.
+ *
+ *   2. Row-count band (secondary). For streams whose fingerprint already
+ *      matches, we still check that the indexed row count is in the
+ *      expected band [1, recordCount * declaredFields.length] (or both
+ *      zero). This catches degenerate cases like "manifest unchanged but
+ *      index rows manually deleted" or "extension first enabled on a
+ *      non-empty DB" without requiring a fingerprint comparison.
+ *
+ * Streams that previously participated but no longer declare
+ * lexical_fields are also handled here: their stale index rows and meta
+ * fingerprint are dropped so subsequent searches don't return ghost hits.
  *
  * Logging is via the optional `log` callback so tests can stay quiet.
  */
@@ -181,43 +209,126 @@ export async function lexicalIndexBackfillForManifest({ manifest, log = () => {}
   const connectorId = manifest.connector_id;
   const db = getDb();
 
+  // Track which streams we visited so we can detect "previously
+  // participated, no longer participates" — those need their stale index
+  // rows and meta fingerprint dropped.
+  const visitedStreams = new Set();
+
   for (const mStream of manifest.streams) {
+    const stream = mStream?.name;
+    if (typeof stream !== 'string' || stream.length === 0) continue;
+    visitedStreams.add(stream);
+
     const declaredFields = mStream?.query?.search?.lexical_fields;
-    if (!Array.isArray(declaredFields) || declaredFields.length === 0) continue;
+    const isParticipating = Array.isArray(declaredFields) && declaredFields.length > 0;
 
-    const stream = mStream.name;
+    if (!isParticipating) {
+      // Stream is in the manifest but does not participate. If a prior
+      // version declared lexical_fields for it, drop the stale index +
+      // meta so historical data doesn't keep matching against a field set
+      // that's no longer declared.
+      const metaRows = await db.query(sql`
+        SELECT 1 FROM lexical_search_meta
+        WHERE connector_id = ${connectorId} AND stream = ${stream}
+      `);
+      if (metaRows.length > 0) {
+        log(`[PDPP] Lexical index: stream='${stream}' connector='${connectorId}' ` +
+            `no longer declares lexical_fields — dropping stale index + meta`);
+        await db.query(sql`
+          DELETE FROM lexical_search_index
+          WHERE connector_id = ${connectorId} AND stream = ${stream}
+        `);
+        await db.query(sql`
+          DELETE FROM lexical_search_meta
+          WHERE connector_id = ${connectorId} AND stream = ${stream}
+        `);
+      }
+      continue;
+    }
 
-    const recordCountRows = await db.query(sql`
-      SELECT COUNT(*) AS n
-      FROM records
-      WHERE connector_id = ${connectorId} AND stream = ${stream} AND deleted = 0
-    `);
-    const recordCount = Number(recordCountRows[0]?.n || 0);
+    const newFingerprint = fingerprintLexicalFields(declaredFields);
 
-    const indexCountRows = await db.query(sql`
-      SELECT COUNT(*) AS n
-      FROM lexical_search_index
+    const metaRows = await db.query(sql`
+      SELECT fields_fingerprint
+      FROM lexical_search_meta
       WHERE connector_id = ${connectorId} AND stream = ${stream}
     `);
-    const indexCount = Number(indexCountRows[0]?.n || 0);
+    const persistedFingerprint = metaRows[0]?.fields_fingerprint ?? null;
+    const fingerprintChanged = persistedFingerprint !== newFingerprint;
 
-    // Steady state: the upsert path produces between 1 and declaredFields.length
-    // index rows per record (it skips non-string/empty values). If indexCount
-    // already falls in that band AND there is at least one indexed row when
-    // there are records, treat it as in sync. Stronger drift signal: zero
-    // index rows for a stream that has records, OR more index rows than the
-    // upper bound (impossible under correct maintenance).
-    const upperBound = recordCount * declaredFields.length;
-    const inSync =
-      recordCount === 0
-        ? indexCount === 0
-        : indexCount > 0 && indexCount <= upperBound;
+    let needsRebuild = fingerprintChanged;
+    let recordCount = 0;
+    let indexCount = 0;
+    let upperBound = 0;
 
-    if (inSync) continue;
+    if (!needsRebuild) {
+      // Fingerprint matches — fall back to the row-count band check for
+      // degenerate cases. This is cheap and catches "index rows missing
+      // for a stream that has records" without re-reading the records.
+      const recordCountRows = await db.query(sql`
+        SELECT COUNT(*) AS n
+        FROM records
+        WHERE connector_id = ${connectorId} AND stream = ${stream} AND deleted = 0
+      `);
+      recordCount = Number(recordCountRows[0]?.n || 0);
 
-    log(`[PDPP] Lexical index drift for ${connectorId} stream='${stream}' ` +
-        `(records=${recordCount}, index=${indexCount}, expected ≤ ${upperBound}) — rebuilding`);
+      const indexCountRows = await db.query(sql`
+        SELECT COUNT(*) AS n
+        FROM lexical_search_index
+        WHERE connector_id = ${connectorId} AND stream = ${stream}
+      `);
+      indexCount = Number(indexCountRows[0]?.n || 0);
+
+      upperBound = recordCount * declaredFields.length;
+      const inSync =
+        recordCount === 0
+          ? indexCount === 0
+          : indexCount > 0 && indexCount <= upperBound;
+      needsRebuild = !inSync;
+    }
+
+    if (!needsRebuild) continue;
+
+    if (fingerprintChanged) {
+      log(`[PDPP] Lexical index field-set change for ${connectorId} stream='${stream}' ` +
+          `(was=${persistedFingerprint ?? 'null'}, now=${newFingerprint}) — rebuilding`);
+    } else {
+      log(`[PDPP] Lexical index drift for ${connectorId} stream='${stream}' ` +
+          `(records=${recordCount}, index=${indexCount}, expected ≤ ${upperBound}) — rebuilding`);
+    }
+
     await rebuildLexicalIndexForStream({ connectorId, stream, declaredFields });
+
+    // Persist the new fingerprint so subsequent backfill calls can skip.
+    await db.query(sql`
+      INSERT INTO lexical_search_meta(connector_id, stream, fields_fingerprint, updated_at)
+      VALUES(${connectorId}, ${stream}, ${newFingerprint}, ${new Date().toISOString()})
+      ON CONFLICT(connector_id, stream) DO UPDATE SET
+        fields_fingerprint = excluded.fields_fingerprint,
+        updated_at = excluded.updated_at
+    `);
+  }
+
+  // Streams that previously had a meta row but are no longer in the
+  // manifest at all (entire stream removed). Same cleanup as the
+  // "no-longer-participating" case above.
+  const orphanRows = await db.query(sql`
+    SELECT stream
+    FROM lexical_search_meta
+    WHERE connector_id = ${connectorId}
+  `);
+  for (const row of orphanRows) {
+    if (visitedStreams.has(row.stream)) continue;
+    log(`[PDPP] Lexical index: stream='${row.stream}' connector='${connectorId}' ` +
+        `no longer in manifest — dropping stale index + meta`);
+    await db.query(sql`
+      DELETE FROM lexical_search_index
+      WHERE connector_id = ${connectorId} AND stream = ${row.stream}
+    `);
+    await db.query(sql`
+      DELETE FROM lexical_search_meta
+      WHERE connector_id = ${connectorId} AND stream = ${row.stream}
+    `);
   }
 }
 

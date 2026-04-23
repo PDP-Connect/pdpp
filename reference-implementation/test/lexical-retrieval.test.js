@@ -902,3 +902,174 @@ test('pre-existing records become searchable after lexical_fields are declared (
     await closeServer(server);
   }
 });
+
+/**
+ * Regression: same-cardinality field-set change must trigger backfill.
+ *
+ * The earlier drift detector treated indexCount > 0 && indexCount within
+ * the [1, recordCount * declaredFields.length] band as "in sync" — but
+ * that band is satisfied by stale rows from the previous declaration when
+ * the field count is unchanged. Owner reproduced the failure on this
+ * branch with ['title'] -> ['selftext']: re-registering with the new
+ * field set returned zero hits for selftext-only matches.
+ *
+ * The fix is a per-(connector, stream) fingerprint of the declared
+ * lexical_fields persisted in lexical_search_meta. A fingerprint
+ * mismatch forces rebuild even when the row count is plausible.
+ */
+test('manifest update that swaps lexical_fields (same cardinality) rebuilds the index', async () => {
+  const server = await startServer({
+    quiet: true,
+    asPort: 0,
+    rsPort: 0,
+    dbPath: ':memory:',
+    dynamicClientRegistrationInitialAccessTokens: [TEST_DCR_INITIAL_ACCESS_TOKEN],
+  });
+  const asUrl = `http://localhost:${server.asPort}`;
+  const rsUrl = `http://localhost:${server.rsPort}`;
+
+  const CONNECTOR_ID = 'https://test.pdpp.org/connectors/field-swap';
+  const baseStream = (overrides = {}) => ({
+    name: 'posts',
+    semantics: 'append_only',
+    schema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string' },
+        title: { type: 'string' },
+        selftext: { type: 'string' },
+        source_created_at: { type: 'string', format: 'date-time' },
+      },
+      required: ['id', 'title'],
+    },
+    primary_key: ['id'],
+    cursor_field: 'source_created_at',
+    consent_time_field: 'source_created_at',
+    selection: { fields: true, resources: false },
+    ...overrides,
+  });
+
+  // v1: lexical_fields = ['title']. v2: lexical_fields = ['selftext'].
+  // Same cardinality (1) — defeats the row-count heuristic on its own.
+  const manifestV1 = {
+    protocol_version: '0.1.0',
+    connector_id: CONNECTOR_ID,
+    version: '1.0.0',
+    display_name: 'Field Swap',
+    capabilities: { human_interaction: ['credentials'] },
+    streams: [baseStream({ query: { search: { lexical_fields: ['title'] } } })],
+  };
+  const manifestV2 = {
+    ...manifestV1,
+    version: '2.0.0',
+    streams: [baseStream({ query: { search: { lexical_fields: ['selftext'] } } })],
+  };
+
+  try {
+    // Register v1 (title-searchable).
+    let reg = await fetch(`${asUrl}/connectors`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(manifestV1),
+    });
+    assert.equal(reg.status, 201);
+
+    const ownerToken = await issueOwnerToken(asUrl);
+    // Records whose target term ('blueberry') lives ONLY in selftext, not
+    // in title. Under v1 these contribute zero hits; under v2 they should
+    // appear after the field-set swap.
+    await ingest(rsUrl, ownerToken, CONNECTOR_ID, 'posts', [
+      { id: 's1', title: 'first heading',  selftext: 'blueberry preserves recipe', source_created_at: '2026-04-01T00:00:00Z' },
+      { id: 's2', title: 'second heading', selftext: 'farmers market blueberry haul', source_created_at: '2026-04-02T00:00:00Z' },
+      { id: 's3', title: 'third heading',  selftext: 'no match here', source_created_at: '2026-04-03T00:00:00Z' },
+    ]);
+
+    // To make the drift detector's row-count heuristic legitimately think
+    // the index is "in sync" after the v2 swap, we need it to actually
+    // have plausible content under v1. Ingest a record whose 'blueberry'
+    // term DOES appear in title under v1 — and a few other title-only
+    // records — so the index has rows when v2 arrives.
+    await ingest(rsUrl, ownerToken, CONNECTOR_ID, 'posts', [
+      { id: 't1', title: 'blueberry season opens', selftext: 'unrelated body', source_created_at: '2026-04-04T00:00:00Z' },
+      { id: 't2', title: 'spring planting notes',  selftext: 'unrelated body', source_created_at: '2026-04-05T00:00:00Z' },
+      { id: 't3', title: 'autumn pruning notes',   selftext: 'unrelated body', source_created_at: '2026-04-06T00:00:00Z' },
+    ]);
+
+    // Sanity: under v1, only the title-match record should appear.
+    const v1Search = await fetchJson(
+      `${rsUrl}/v1/search?q=blueberry`,
+      { headers: { 'Authorization': `Bearer ${ownerToken}` } },
+    );
+    assert.equal(v1Search.status, 200);
+    const v1Matched = v1Search.body.data
+      .filter((r) => r.connector_id === CONNECTOR_ID)
+      .map((r) => r.record_key)
+      .sort();
+    assert.deepEqual(
+      v1Matched,
+      ['t1'],
+      'under v1 (lexical_fields=["title"]), only the title-match record should appear',
+    );
+
+    // Re-register v2: same connector_id, same streams, lexical_fields
+    // changed from ['title'] to ['selftext']. Same cardinality.
+    reg = await fetch(`${asUrl}/connectors`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(manifestV2),
+    });
+    assert.equal(reg.status, 201);
+
+    // Under v2, the selftext-match records (s1, s2) MUST appear, and the
+    // v1-only title-match (t1) MUST disappear because 'blueberry' is no
+    // longer in any indexed field for that record.
+    const v2Search = await fetchJson(
+      `${rsUrl}/v1/search?q=blueberry`,
+      { headers: { 'Authorization': `Bearer ${ownerToken}` } },
+    );
+    assert.equal(v2Search.status, 200);
+    const v2Matched = v2Search.body.data
+      .filter((r) => r.connector_id === CONNECTOR_ID)
+      .map((r) => r.record_key)
+      .sort();
+    assert.deepEqual(
+      v2Matched,
+      ['s1', 's2'],
+      'after swapping lexical_fields from ["title"] to ["selftext"] (same cardinality), ' +
+        'historical selftext-only matches must appear and stale title-only matches must not',
+    );
+
+    // matched_fields on the v2 hits must reflect the new declaration.
+    for (const hit of v2Search.body.data.filter((r) => r.connector_id === CONNECTOR_ID)) {
+      assert.deepEqual(
+        hit.matched_fields,
+        ['selftext'],
+        `hit ${hit.record_key} should have matched_fields=['selftext'] under v2, got ${JSON.stringify(hit.matched_fields)}`,
+      );
+    }
+
+    // Round-trip back to v1 to confirm the fingerprint check works in both
+    // directions: re-registering v1 must restore title-only matching.
+    reg = await fetch(`${asUrl}/connectors`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(manifestV1),
+    });
+    assert.equal(reg.status, 201);
+    const v1Again = await fetchJson(
+      `${rsUrl}/v1/search?q=blueberry`,
+      { headers: { 'Authorization': `Bearer ${ownerToken}` } },
+    );
+    const v1AgainMatched = v1Again.body.data
+      .filter((r) => r.connector_id === CONNECTOR_ID)
+      .map((r) => r.record_key)
+      .sort();
+    assert.deepEqual(
+      v1AgainMatched,
+      ['t1'],
+      'reverting lexical_fields from ["selftext"] back to ["title"] must restore title-only matching',
+    );
+  } finally {
+    await closeServer(server);
+  }
+});

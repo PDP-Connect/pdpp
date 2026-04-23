@@ -306,6 +306,22 @@ export async function initDb(path = ':memory:') {
     )
   `);
 
+  // Per-(connector, stream) fingerprint of the last-rebuilt declared
+  // lexical_fields set. Used by the backfill drift detector in search.js
+  // to force a rebuild when the manifest changes the field set, even when
+  // the field count stays the same (e.g. ['title'] -> ['selftext']). The
+  // row-count heuristic alone cannot detect that case because stale rows
+  // satisfy the count band.
+  await db.query(sql`
+    CREATE TABLE IF NOT EXISTS lexical_search_meta (
+      connector_id        TEXT NOT NULL,
+      stream              TEXT NOT NULL,
+      fields_fingerprint  TEXT NOT NULL,
+      updated_at          TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY(connector_id, stream)
+    )
+  `);
+
   return db;
 }
 
