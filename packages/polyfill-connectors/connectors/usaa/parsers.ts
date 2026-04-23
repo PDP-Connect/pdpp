@@ -4,7 +4,18 @@
 
 import { createHash } from "node:crypto";
 import { pathToFileURL } from "node:url";
-import type { ClosingContext, ParsedStatementTxn, StatementClosing, TransactionRecord } from "./types.ts";
+import type {
+  AccountRecord,
+  BillingKv,
+  ClosingContext,
+  CreditCardBillingRecord,
+  DashboardAccount,
+  InboxMessageRecord,
+  InboxRow,
+  ParsedStatementTxn,
+  StatementClosing,
+  TransactionRecord,
+} from "./types.ts";
 
 // ─── Tunables ────────────────────────────────────────────────────────────
 
@@ -44,6 +55,19 @@ const CREDIT_SECTION_START_RE = /^\s*(TRANSACTIONS|PURCHASES|PAYMENTS\s+AND\s+CR
 const CREDIT_SECTION_TOTAL_RE = /^\s*TOTAL/i;
 const CREDIT_SECTION_END_RE = /^\s*(TOTAL\b|FEES\s+CHARGED|INTEREST\s+CHARGED|YEAR-TO-DATE|IMPORTANT\s+ACCOUNT)/i;
 const CREDIT_TXN_LINE_RE = /^(\d{1,2})\/(\d{1,2})\s+(\d{1,2})\/(\d{1,2})\s+(.+?)\s+(-?\$?[\d,]+\.\d{2}-?)\s*$/;
+const LAST4_REF_RE = /\*(\d{4})/;
+const MET_RE = /met/i;
+const UNREAD_RE = /UNREAD/i;
+
+// Backfill window tunables (ms). Used by buildCandidateStarts.
+const MS_PER_DAY = 24 * 3600 * 1000;
+const DAYS_PER_MONTH = 30;
+const BACKFILL_DAYS_5Y = 5 * 365 * MS_PER_DAY;
+const BACKFILL_DAYS_2Y = 2 * 365 * MS_PER_DAY;
+const BACKFILL_DAYS_1Y = 365 * MS_PER_DAY;
+const BACKFILL_DAYS_3MO = 90 * MS_PER_DAY;
+export const BACKFILL_17MO = 17 * DAYS_PER_MONTH * MS_PER_DAY;
+export const INCREMENTAL_OVERLAP_MS = 5 * MS_PER_DAY;
 
 // ─── Hash + URL helpers ──────────────────────────────────────────────────
 
@@ -492,4 +516,102 @@ export function parseCreditCardEra(text: string, { closing }: EraParseArgs): Par
 export function checkNumberFromDescription(description: string): string | null {
   const m = description.match(CHECK_NUMBER_RE);
   return m?.[1] ?? null;
+}
+
+// ─── Per-stream record builders ──────────────────────────────────────────
+
+export function buildAccountRecord(a: DashboardAccount, fetchedAt: string): AccountRecord {
+  return {
+    id: a.account_id_raw || hashId(a.raw_text),
+    type: a.account_type,
+    name: a.name,
+    last_four: a.last_four,
+    balance_cents: a.balance_cents,
+    available_balance_cents: null,
+    status: "open",
+    fetched_at: fetchedAt,
+  };
+}
+
+export function buildInboxMessageRecord(m: InboxRow, year: number, fetchedAt: string): InboxMessageRecord | null {
+  if (!m.date_short) {
+    return null;
+  }
+  const parsed = new Date(`${m.date_short} ${year}`);
+  const iso = Number.isNaN(parsed.getTime()) ? null : parsed.toISOString().slice(0, 10);
+  const id = hashId(`${m.date_short}|${m.preview.slice(0, 120)}`);
+  return {
+    id,
+    date_received: iso,
+    status: UNREAD_RE.test(m.status) ? "unread" : "read",
+    subject: m.preview.slice(0, 120),
+    preview: m.preview,
+    fetched_at: fetchedAt,
+  };
+}
+
+export function buildCreditCardBillingRecord(
+  a: DashboardAccount,
+  billing: BillingKv,
+  fetchedAt: string
+): CreditCardBillingRecord {
+  const id = a.account_id_raw || a.last_four || hashId(a.raw_text);
+  return {
+    id,
+    account_id: a.account_id_raw,
+    account_nickname: billing["Account Nickname"] ?? billing.Nickname ?? null,
+    current_balance_cents: currencyToCents(billing["Current Balance"] ?? null),
+    available_credit_cents: currencyToCents(billing["Available Credit"] ?? null),
+    credit_limit_cents: currencyToCents(billing["Credit Limit"] ?? null),
+    annual_percent_rate: billing["Annual Percent Rate"] ?? null,
+    cash_advance_apr: billing["Cash Advance APR"] ?? null,
+    cash_rewards_cents: currencyToCents(billing["Cash Rewards"] ?? null),
+    billing_status: billing["Billing Information"] ?? null,
+    minimum_payment_met: MET_RE.test(billing["Billing Information"] ?? ""),
+    card_holders: billing["Card Holders"] ?? null,
+    fetched_at: fetchedAt,
+  };
+}
+
+/** Resolve a statement-row's account reference against the dashboard accounts. */
+export function resolveAccountIdForRef(ref: string, accounts: readonly DashboardAccount[]): string | null {
+  if (!ref) {
+    return null;
+  }
+  const last4Match = ref.match(LAST4_REF_RE);
+  const last4 = last4Match?.[1] ?? null;
+  if (last4) {
+    const byLast4 = accounts.find((a) => a.last_four === last4);
+    if (byLast4?.account_id_raw) {
+      return byLast4.account_id_raw;
+    }
+  }
+  const refLower = ref.toLowerCase();
+  const byName = accounts.find((a) => a.name && refLower.includes(a.name.toLowerCase()));
+  if (byName?.account_id_raw) {
+    return byName.account_id_raw;
+  }
+  return null;
+}
+
+/**
+ * Incremental-backfill ladder: start with the desired since-date, then fall
+ * back to progressively narrower windows (5y → 2y → 1y → 3mo) if the export
+ * dialog keeps failing.
+ */
+export function buildCandidateStarts(desiredSince: string, now: number = Date.now()): string[] {
+  const candidateStarts: string[] = [desiredSince];
+  const toIsoDay = (ms: number): string => new Date(ms).toISOString().slice(0, 10);
+  const ladder = [
+    toIsoDay(now - BACKFILL_DAYS_5Y),
+    toIsoDay(now - BACKFILL_DAYS_2Y),
+    toIsoDay(now - BACKFILL_DAYS_1Y),
+    toIsoDay(now - BACKFILL_DAYS_3MO),
+  ];
+  for (const d of ladder) {
+    if (d > desiredSince) {
+      candidateStarts.push(d);
+    }
+  }
+  return candidateStarts;
 }
