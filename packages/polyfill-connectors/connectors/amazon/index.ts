@@ -222,7 +222,10 @@ interface RunFlags {
   detailCaptured: boolean;
 }
 
-interface EmitDeps {
+/** Per-run dependencies threaded through processListOrder → emitOrderAndItems.
+ * Exported for integration testing (see parsers.test.ts).
+ */
+export interface EmitDeps {
   capture: CaptureDep;
   emit: EmitFn;
   emitRecord: EmitRecordFn;
@@ -299,8 +302,19 @@ async function reportEmptyPageDiagnostics(page: Page, year: number, startIndex: 
   }
 }
 
-/** Emit the order record + per-item records for a single list-page order. */
-async function emitOrderAndItems(
+/** Emit the order record + per-item records for a single list-page order.
+ *
+ * Exported for integration testing. The invariant this enforces is:
+ *   1. The order record emits BEFORE its item records (so downstream
+ *      readers see the parent-child relationship in order).
+ *   2. Items emit in mergeOrderItems() order — list-page items first,
+ *      detail-only items appended — which is the dedup + enrichment
+ *      order consumers depend on.
+ *   3. Streams disabled via scope (wantsOrders/wantsItems) emit nothing;
+ *      the other stream still flows.
+ * Regressing any of these is a real bug; parsers.test.ts covers them.
+ */
+export async function emitOrderAndItems(
   deps: EmitDeps,
   listOrder: ListPageOrder,
   detail: OrderDetail | null,
