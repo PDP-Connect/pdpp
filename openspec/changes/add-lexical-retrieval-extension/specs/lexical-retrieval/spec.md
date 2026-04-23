@@ -2,15 +2,15 @@
 
 ### Requirement: Lexical retrieval is an optional, advertised, named extension
 
-PDPP SHALL define a named optional extension `lexical-retrieval` that implementations MAY expose. The extension SHALL NOT be assumed by clients to exist on any server unless the server explicitly advertises it via the server-level capability surface defined below. Core PDPP SHALL NOT require this extension. The extension SHALL NOT be exposed silently as ambient reference behavior.
+PDPP SHALL define a named optional extension `lexical-retrieval` that implementations MAY expose. The extension SHALL NOT be assumed by clients to exist on any server unless the server explicitly advertises it via the resource-server metadata surface defined below. Core PDPP SHALL NOT require this extension. The extension SHALL NOT be exposed silently as ambient reference behavior.
 
 #### Scenario: A client encounters a server that does not advertise the extension
-- **WHEN** a client reads server-level capability metadata and `capabilities.lexical_retrieval.supported` is absent or `false`
+- **WHEN** a client reads resource-server metadata and `capabilities.lexical_retrieval.supported` is absent or `false`
 - **THEN** the client SHALL NOT assume `GET /v1/search` is available
 - **AND** the server MAY return `404` or `not_found_error` if the endpoint is requested
 
 #### Scenario: A client encounters a server that advertises the extension
-- **WHEN** server-level capability metadata reports `capabilities.lexical_retrieval.supported: true`
+- **WHEN** resource-server metadata reports `capabilities.lexical_retrieval.supported: true`
 - **THEN** the client MAY rely on `GET /v1/search` being available at the advertised `endpoint` path
 - **AND** the client MAY rely on the `cross_stream`, `snippets`, `default_limit`, and `max_limit` fields when shaping requests
 
@@ -49,18 +49,27 @@ When advertised, the extension SHALL be reachable as `GET /v1/search`. The endpo
 
 ### Requirement: The extension SHALL return candidate references, not hydrated records
 
-`GET /v1/search` SHALL return a list envelope whose `data[]` entries are `search_result` objects. Each `search_result` SHALL identify a candidate record by stream and `record_key` and SHALL NOT include the full record payload. A portable numeric relevance score SHALL NOT be exposed in v1.
+`GET /v1/search` SHALL return a list envelope whose `data[]` entries are `search_result` objects. Each `search_result` SHALL identify a candidate record by stream and `record_key` and SHALL NOT include the full record payload. A portable numeric relevance score SHALL NOT be exposed in v1. The `record_url` field is OPTIONAL: implementations MAY include it to give clients a ready-made canonical single-record read URL, and MAY omit it without changing the rest of the response shape.
 
 #### Scenario: A successful search returns candidate references
 - **WHEN** the server returns matching results for a search query
 - **THEN** each entry in `data[]` SHALL have `object: "search_result"`
 - **AND** each entry SHALL include `stream`, `record_key`, and `emitted_at`
-- **AND** each entry SHALL include `record_url` referencing the canonical single-record read endpoint when easily computable
 - **AND** no entry SHALL include a portable numeric relevance score field
+
+#### Scenario: `record_url` is optional
+- **WHEN** an implementation chooses not to emit `record_url` on a result
+- **THEN** the result SHALL still be valid as long as `stream`, `record_key`, and `emitted_at` are present
+- **AND** the client SHALL be able to reconstruct the canonical single-record read URL from `stream` and `record_key` using the existing record-listing convention
+
+#### Scenario: `record_url`, when present, points to the canonical single-record read endpoint
+- **WHEN** an implementation emits `record_url` on a result
+- **THEN** that URL SHALL resolve to the canonical `GET /v1/streams/{stream}/records/{record_key}` endpoint for the same stream and `record_key`
+- **AND** the URL SHALL NOT point to a different retrieval surface
 
 #### Scenario: Matched fields list which declared searchable fields matched
 - **WHEN** a result is returned for a stream whose declared `lexical_fields` are `["text", "subject"]` and the caller's grant authorizes both
-- **THEN** the result's `matched_fields` SHALL be a subset of `["text", "subject"]`
+- **THEN** the result's `matched_fields` SHALL be a non-empty subset of `["text", "subject"]`
 - **AND** `matched_fields` SHALL NOT include any field outside the declared searchable set
 
 #### Scenario: Snippets are optional and grant-safe
@@ -94,18 +103,18 @@ The extension SHALL search only over (stream, field) pairs where the stream is i
 - **THEN** the implementation SHALL restructure its search path so unauthorized fields are not considered
 - **AND** the implementation SHALL NOT post-filter unauthorized hits out of the result list as its enforcement strategy
 
-### Requirement: Streams SHALL declare searchable fields in their stream metadata
+### Requirement: Streams that participate in lexical retrieval SHALL declare searchable fields in their stream metadata
 
-A stream that participates in lexical retrieval SHALL declare its searchable fields under `query.search.lexical_fields` in its existing per-stream metadata. v1 SHALL accept only top-level scalar string fields defined by the stream's schema. Nested paths, arrays, blob content, and connector-specific search semantics SHALL NOT be expressible through `lexical_fields` in v1.
+A stream that participates in lexical retrieval SHALL declare its searchable fields under `query.search.lexical_fields` in its existing per-stream metadata. The declaration SHALL accept only top-level scalar string fields defined by the stream's schema in v1. Nested paths, arrays, blob content, and connector-specific search semantics SHALL NOT be expressible through `lexical_fields` in v1. A stream that does not participate in lexical retrieval SHALL omit `query.search` entirely.
 
-#### Scenario: A stream declares searchable fields
-- **WHEN** a client reads `GET /v1/streams/messages`
-- **THEN** the response MAY include `query.search.lexical_fields: [...]`
+#### Scenario: A participating stream emits the declaration
+- **WHEN** a client reads `GET /v1/streams/messages` for a stream that participates in lexical retrieval
+- **THEN** the response SHALL include `query.search.lexical_fields`
 - **AND** every entry in that array SHALL refer to a top-level scalar string field present in the stream's schema
 
-#### Scenario: A stream omits the declaration
-- **WHEN** a stream's metadata does not include `query.search`
-- **THEN** the stream SHALL be treated as not participating in lexical retrieval
+#### Scenario: A non-participating stream omits the declaration
+- **WHEN** a stream does not participate in lexical retrieval
+- **THEN** the stream's metadata SHALL omit the `query.search` object
 - **AND** searches that include this stream SHALL contribute zero hits from it
 
 #### Scenario: A stream attempts to declare an unsupported lexical_field shape
@@ -113,23 +122,30 @@ A stream that participates in lexical retrieval SHALL declare its searchable fie
 - **THEN** the implementation SHALL omit that entry from the declaration in v1
 - **AND** SHALL NOT attempt to match against that field from the public extension surface
 
-### Requirement: The server SHALL advertise the extension through a small global capability surface
+### Requirement: The resource server SHALL advertise the extension through its existing metadata document
 
-Implementations that expose this extension SHALL publish a server-level advertisement describing only global facts about the extension. The advertisement SHALL identify support, endpoint location, whether cross-stream search is supported, whether snippets are emitted, and global limit defaults. The advertisement SHALL NOT enumerate per-stream `lexical_fields`. It SHALL NOT grow into a generalized capability-statement document.
+Implementations that expose this extension SHALL publish the advertisement as a `capabilities.lexical_retrieval` object inside the existing resource-server metadata document (the same document already used by the resource server to publish OAuth-shaped metadata). The advertisement SHALL describe only global facts about the extension. The advertisement SHALL include the keys `supported`, `endpoint`, `cross_stream`, `snippets`, `default_limit`, and `max_limit`. The advertisement SHALL NOT enumerate per-stream `lexical_fields`. It SHALL NOT grow into a generalized capability-statement document.
 
-#### Scenario: A server advertises the extension
-- **WHEN** a client reads server-level capability metadata
-- **THEN** the metadata MAY include a `capabilities.lexical_retrieval` object
-- **AND** when present, that object SHALL include `supported`, `endpoint`, `cross_stream`, `snippets`, `default_limit`, and `max_limit` fields
+#### Scenario: A server that exposes the extension publishes the advertisement
+- **WHEN** an implementation exposes the extension on a resource server
+- **THEN** that resource server's metadata document SHALL include a `capabilities.lexical_retrieval` object
+- **AND** the object SHALL include the keys `supported` (set to `true`), `endpoint`, `cross_stream`, `snippets`, `default_limit`, and `max_limit`
+- **AND** `endpoint` SHALL be a path resolvable on the same resource server, and SHALL be `/v1/search` unless the resource server is mounted under a path prefix, in which case the prefix SHALL be reflected
 
-#### Scenario: A server does not expose the extension
+#### Scenario: A server that does not expose the extension does not publish a positive advertisement
 - **WHEN** a server does not implement the extension
-- **THEN** the server SHALL omit `capabilities.lexical_retrieval` from its capability metadata, OR report `supported: false`
+- **THEN** the server SHALL either omit `capabilities.lexical_retrieval` from its resource-server metadata, OR include it with `supported: false`
+- **AND** in either case clients SHALL treat the extension as unavailable on that server
 
 #### Scenario: The advertisement does not duplicate per-stream declarations
 - **WHEN** a server advertises the extension
 - **THEN** the advertisement SHALL NOT enumerate per-stream `lexical_fields`
 - **AND** clients SHALL discover per-stream searchable fields through existing per-stream metadata at `GET /v1/streams/{stream}`
+
+#### Scenario: The advertisement is discoverable without a grant
+- **WHEN** an unauthenticated client requests the resource-server metadata document
+- **THEN** the `capabilities.lexical_retrieval` advertisement, if present, SHALL be returned without requiring a bearer token
+- **AND** the advertisement SHALL NOT include grant-bound or caller-specific fields
 
 ### Requirement: Search results SHALL paginate via opaque cursors that are independent of record-list and changes_since cursors
 

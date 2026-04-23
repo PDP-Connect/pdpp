@@ -14,7 +14,7 @@
 ## 3. Lock the result shape
 
 - [ ] 3.1 List envelope reuses `object: "list"`, `has_more`, `next_cursor`, `data[]`.
-- [ ] 3.2 Each result is `object: "search_result"` with `stream`, `record_key`, `record_url` (when easily computable), `emitted_at`, `matched_fields`, optional `snippet`.
+- [ ] 3.2 Each result is `object: "search_result"` with required `stream`, `record_key`, `emitted_at`, and `matched_fields`. `record_url` and `snippet` are explicitly OPTIONAL: implementations MAY include either, and MAY omit either, without changing the rest of the response shape.
 - [ ] 3.3 No portable numeric relevance score in v1. Verify the spec delta states this explicitly.
 - [ ] 3.4 Confirm `matched_fields` is constrained to be a subset of (declared `lexical_fields`) ∩ (grant-readable fields).
 
@@ -33,12 +33,13 @@
 - [ ] 5.3 Nested paths, arrays, blob references, and connector-specific search semantics are NOT expressible through `lexical_fields` in v1.
 - [ ] 5.4 Streams that omit `query.search` are treated as not participating in lexical retrieval.
 
-## 6. Lock the server-level capability surface
+## 6. Lock the resource-server capability advertisement
 
-- [ ] 6.1 Define the advertisement shape: `capabilities.lexical_retrieval = { supported, endpoint, cross_stream, snippets, default_limit, max_limit }`.
-- [ ] 6.2 Confirm the advertisement does NOT enumerate per-stream fields.
-- [ ] 6.3 Confirm the advertisement does NOT grow into a generalized capability-statement document. (Cross-link `design-notes/capability-discovery-options-2026-04-22.md`.)
-- [ ] 6.4 Choose the carrier (RS metadata vs AS metadata vs new `/v1/capabilities`) during implementation tranche; document the choice as a follow-up, not as a contract gap. Out of scope for this design tranche.
+- [ ] 6.1 Define the advertisement shape: `capabilities.lexical_retrieval = { supported, endpoint, cross_stream, snippets, default_limit, max_limit }` with all six keys required when `supported: true`.
+- [ ] 6.2 Lock the carrier: the advertisement is published inside the existing **resource-server metadata document**, not the AS metadata document and not a new top-level document. (See `design.md` §6.1 for rationale.)
+- [ ] 6.3 Confirm the advertisement does NOT enumerate per-stream fields.
+- [ ] 6.4 Confirm the advertisement does NOT grow into a generalized capability-statement document. (Cross-link `design-notes/capability-discovery-options-2026-04-22.md`.)
+- [ ] 6.5 Confirm the advertisement is reachable without a grant, since the RS metadata document is itself unauthenticated.
 
 ## 7. Lock pagination semantics
 
@@ -83,7 +84,7 @@
 These belong to a later, explicitly separate change. Listed here so the implementation tranche does not reinvent them.
 
 - [ ] 12.1 Build `GET /v1/search` in the reference, backed by SQLite FTS5, honoring the contract above.
-- [ ] 12.2 Wire the server-level advertisement into the chosen capability carrier.
+- [ ] 12.2 Wire the `capabilities.lexical_retrieval` advertisement into the existing resource-server metadata document.
 - [ ] 12.3 Replace the dashboard's brute-force text fan-out with calls to `/v1/search` (or an internal helper that goes through the same enforcement path).
 - [ ] 12.4 Keep `/_ref/search` separate from `/v1/search`. They MAY share index infrastructure; they MUST NOT share contract.
 - [ ] 12.5 Add tests that prove the grant-safety invariants (stream gating, field gating, snippet gating, hard-error on unauthorized `streams[]`).

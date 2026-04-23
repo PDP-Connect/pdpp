@@ -23,7 +23,7 @@ This capability sits on the **optional extension** rung of the surface-status la
 That rung commits this change to:
 
 - named capability family: `lexical-retrieval`
-- server-level + stream-level declarations
+- resource-server metadata advertisement + per-stream metadata declaration
 - no ecosystem assumption of availability unless advertised
 - no silent protocol gravity from the reference's operational FTS5 index
 
@@ -99,7 +99,7 @@ Reuse the existing list envelope (`object: "list"`, `has_more`, `next_cursor`, `
 Rationale:
 
 - `record_key` is explicit so agents know exactly what to fetch next without parsing URLs.
-- `record_url` is included for ergonomic hydration (optional to emit, but recommended in v1).
+- `record_url` is OPTIONAL: implementations MAY include it for ergonomic hydration, MAY omit it. When emitted it MUST resolve to the canonical `GET /v1/streams/{stream}/records/{record_key}` endpoint for the same `stream` and `record_key`. Recommended in v1 because it eliminates a client-side URL templating step, but never required.
 - `matched_fields` lists which **declared searchable** fields matched; it is a subset of that declaration, never a raw reflection of server-side index internals.
 - `snippet` is optional per result. When emitted, it references a single `matched_fields` entry and contains only text the caller is authorized to read.
 - `score` and any numeric rank are intentionally absent in v1. Portable numeric scoring would require freezing a specific ranking formula across implementations; the brief prohibits that.
@@ -187,11 +187,21 @@ Per `capability-discovery-options-2026-04-22.md`, stream metadata is the authori
 - create drift between stream schema and global registry
 - encourage a broader capability document the project has intentionally deferred
 
-## 6. Server-level capability discovery: small, global-only
+## 6. Resource-server capability advertisement: small, global-only
 
-### 6.1 Shape
+### 6.1 Carrier
 
-A narrow server-level capability layer, colocated with existing server metadata (the project has an AS/RS metadata spine; this extension publishes its advertisement alongside, not as a new broad capability document):
+The advertisement is carried inside the **existing resource-server metadata document** the project already publishes for OAuth-shaped resource-server metadata. The extension does not introduce a new metadata document and does not live on the authorization server.
+
+Rationale for picking the RS metadata document specifically:
+
+- `/v1/search` is a resource-server endpoint, not an AS endpoint. Co-locating the advertisement with the surface it describes minimizes drift.
+- The RS metadata document is already discoverable without a grant, which is a hard requirement for client/agent onboarding (a client must be able to decide whether to attempt the extension before negotiating a token).
+- It mirrors the layered server + stream discovery model preferred in `capability-discovery-options-2026-04-22.md` (SCIM-style global service config + per-resource discovery), without introducing a new top-level document.
+
+This decision is now part of the contract, not deferred. If a later tranche concludes the carrier should move (for example, into a dedicated `/v1/capabilities` document), that move is a separately-tracked change, not an unspecified implementation choice.
+
+### 6.2 Shape
 
 ```json
 {
@@ -210,13 +220,15 @@ A narrow server-level capability layer, colocated with existing server metadata 
 
 Interpretation:
 
-- `supported: true` advertises that the extension is present on this server.
-- `endpoint` is the portable contract endpoint path.
+- `supported: true` advertises that the extension is present on this server. A non-supporting server MUST either omit `capabilities.lexical_retrieval` entirely or set `supported: false`.
+- `endpoint` is the portable contract endpoint path. It MUST resolve on the same resource server. It SHALL be `/v1/search` unless the resource server is mounted under a path prefix, in which case the prefix SHALL be reflected.
 - `cross_stream` reports whether omitting `streams[]` is supported; if `false`, clients MUST always send at least one `streams[]` entry.
-- `snippets` reports whether snippets are emitted.
+- `snippets` reports whether snippets are ever emitted.
 - `default_limit` / `max_limit` are informational and aligned with the per-request `limit` parameter.
 
-### 6.2 What this layer is NOT
+When `supported: true`, all of `endpoint`, `cross_stream`, `snippets`, `default_limit`, and `max_limit` are required keys, so clients can shape requests without trial-and-error. Missing keys make the advertisement invalid, and clients MAY treat them as if `supported: false`.
+
+### 6.3 What this advertisement is NOT
 
 It MUST NOT:
 
@@ -224,18 +236,9 @@ It MUST NOT:
 - describe per-stream ranking
 - duplicate schema information
 - grow into a generalized capability-statement document
+- depend on a bearer token for retrieval — it travels with the unauthenticated RS metadata document
 
 If a future tranche justifies a broader document, that is a separate change per the rubric in `capability-discovery-options-2026-04-22.md`.
-
-### 6.3 Where this layer lives
-
-The exact carrier (for example, RS metadata vs AS metadata vs a dedicated `/v1/capabilities` endpoint) is left to a small follow-up task in `tasks.md`. The spec delta below defines the *shape* of the advertisement; the carrier can be chosen during implementation as long as it is:
-
-- discoverable without a grant (for client/agent onboarding)
-- stable under `PDPP-Version`
-- not pretending to enumerate per-stream power
-
-The tasks file marks this as an open implementation choice, not a contract gap.
 
 ## 7. Ranking and ordering
 
