@@ -94,4 +94,12 @@ test('OpenAPI and docs generation include the auth/control routes alongside reco
   assert.match(docs.routes, /\/grants\/\{grantId\}\/revoke/);
   assert.match(docs.routes, /\/v1\/streams\/\{stream\}\/records/);
   assert.match(docs.referenceRoutes, /\/_ref\/search/);
+  assert.match(docs.cookbook, /consent\/approve.*\{ grant_id, token, grant \}/);
+  assert.ok(!publicDocument.paths['/v1/blobs/{blob_id}'].get.responses['302']);
+  assert.deepEqual(
+    fullDocument.paths['/_ref/records/timeline'].get.parameters
+      .find((parameter) => parameter.name === 'timestamp_mode')?.schema?.enum,
+    ['native', 'ingest'],
+  );
+  assert.ok(!fullDocument.paths['/_ref/dataset/summary'].get.responses['401']);
 });

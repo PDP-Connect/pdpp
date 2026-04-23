@@ -15,6 +15,7 @@ Generated from `packages/reference-contract/src/reference/`. Reference-designate
 | **POST** | `/_ref/connectors/{connectorId}/schedule/resume` | `refResumeConnectorSchedule` | Resume a paused connector schedule. |
 | **DELETE** | `/_ref/connectors/{connectorId}/schedule` | `refDeleteConnectorSchedule` | Delete the connector schedule config. |
 | **GET** | `/_ref/records/timeline` | `refRecordsTimeline` | Server-backed cross-connector recent-record feed for the Records > Timeline UI. |
+| **GET** | `/_ref/dataset/summary` | `refDatasetSummary` | Aggregate dataset summary: live record counts, retained-history bytes, timespan bounds, and top connectors. |
 
 ## refSearch
 
@@ -36,8 +37,6 @@ Search exact trace/grant/run ids and record content across retained records.
 
 - `200` — JSON body
 - `400` — Invalid request
-- `401` — Missing or invalid owner/operator auth
-- `403` — Not permitted
 - `404` — Not found
 - `409` — Conflict (e.g. run_already_active)
 
@@ -51,8 +50,6 @@ List registered connectors with manifest summary, latest run summary, schedule s
 
 - `200` — JSON body
 - `400` — Invalid request
-- `401` — Missing or invalid owner/operator auth
-- `403` — Not permitted
 - `404` — Not found
 - `409` — Conflict (e.g. run_already_active)
 
@@ -70,8 +67,6 @@ Get a single connector with manifest excerpt, schedule, recent runs, and stream 
 
 - `200` — JSON body
 - `400` — Invalid request
-- `401` — Missing or invalid owner/operator auth
-- `403` — Not permitted
 - `404` — Not found
 - `409` — Conflict (e.g. run_already_active)
 
@@ -85,8 +80,6 @@ List pending approvals across provider-connect consents and owner-device flows.
 
 - `200` — JSON body
 - `400` — Invalid request
-- `401` — Missing or invalid owner/operator auth
-- `403` — Not permitted
 - `404` — Not found
 - `409` — Conflict (e.g. run_already_active)
 
@@ -100,8 +93,6 @@ List all configured schedules with runtime status.
 
 - `200` — Schedule list
 - `400` — Invalid request
-- `401` — Missing or invalid owner/operator auth
-- `403` — Not permitted
 - `404` — Not found
 - `409` — Conflict (e.g. run_already_active)
 
@@ -119,8 +110,6 @@ Start a connector run asynchronously. Returns 202 with run_id + trace_id, or 409
 
 - `202` — Accepted
 - `400` — Invalid request
-- `401` — Missing or invalid owner/operator auth
-- `403` — Not permitted
 - `404` — Not found
 - `409` — Conflict (e.g. run_already_active)
 
@@ -145,8 +134,6 @@ Create or replace the single schedule for a connector.
 
 - `200` — Schedule upserted
 - `400` — Invalid request
-- `401` — Missing or invalid owner/operator auth
-- `403` — Not permitted
 - `404` — Not found
 - `409` — Conflict (e.g. run_already_active)
 
@@ -164,8 +151,6 @@ Pause the connector schedule without deleting its config.
 
 - `200` — Paused
 - `400` — Invalid request
-- `401` — Missing or invalid owner/operator auth
-- `403` — Not permitted
 - `404` — Not found
 - `409` — Conflict (e.g. run_already_active)
 
@@ -183,8 +168,6 @@ Resume a paused connector schedule.
 
 - `200` — Resumed
 - `400` — Invalid request
-- `401` — Missing or invalid owner/operator auth
-- `403` — Not permitted
 - `404` — Not found
 - `409` — Conflict (e.g. run_already_active)
 
@@ -202,8 +185,6 @@ Delete the connector schedule config.
 
 - `204` — Deleted
 - `400` — Invalid request
-- `401` — Missing or invalid owner/operator auth
-- `403` — Not permitted
 - `404` — Not found
 - `409` — Conflict (e.g. run_already_active)
 
@@ -221,14 +202,25 @@ Server-backed cross-connector recent-record feed for the Records > Timeline UI.
 - `until` — string
 - `limit` — integer · min: 1 · max: 500
 - `order` — enum `asc | desc`
-- `timestamp_mode` — enum `native | emitted`
+- `timestamp_mode` — enum `native | ingest`
 
 ### Responses
 
 - `200` — JSON body
 - `400` — Invalid request
-- `401` — Missing or invalid owner/operator auth
-- `403` — Not permitted
+- `404` — Not found
+- `409` — Conflict (e.g. run_already_active)
+
+## refDatasetSummary
+
+`GET /_ref/dataset/summary`
+
+Aggregate dataset summary: live record counts, retained-history bytes, timespan bounds, and top connectors.
+
+### Responses
+
+- `200` — JSON body
+- `400` — Invalid request
 - `404` — Not found
 - `409` — Conflict (e.g. run_already_active)
 

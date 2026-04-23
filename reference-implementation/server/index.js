@@ -4,7 +4,6 @@
  * Combined AS + RS implementing PDPP v0.1.0 core spec.
  * Starts on port 7662 (AS/introspection) and 7663 (RS query API).
  */
-import express from 'express';
 import { getDb, initDb, sql } from './db.js';
 import {
   buildAuthorizationServerMetadata,
@@ -22,8 +21,33 @@ import {
 } from './auth.js';
 import {
   ingestRecord, queryRecords, getRecord, deleteRecord, deleteAllRecords,
-  listStreams, listAllStreams, getSyncState, putSyncState,
+  listStreams, listAllStreams, getSyncState, putSyncState, getDatasetSummary,
 } from './records.js';
+import { createOwnerAuthPlaceholder, OWNER_AUTH_DEFAULT_SUBJECT_ID } from './owner-auth.js';
+import { createController } from '../runtime/controller.js';
+import { createApp } from './transport.js';
+import {
+  HOSTED_UI_CSS,
+  HOSTED_UI_CSS_PATH,
+  escapeHtml as hostedEscape,
+  renderActionRow,
+  renderEmptyState,
+  renderHostedDocument,
+  renderKeyValueList,
+  renderPageIntro,
+  renderResultState,
+  renderSurface,
+} from './hosted-ui.js';
+import {
+  getConnectorDetail,
+  listConnectorSummaries,
+  listPendingApprovals,
+  listRecordsTimeline,
+} from './ref-control.js';
+import {
+  DEFAULT_LOCAL_DCR_INITIAL_ACCESS_TOKEN,
+  DEFAULT_PRE_REGISTERED_PUBLIC_CLIENTS,
+} from './reference-local-defaults.js';
 
 const AS_PORT = parseInt(process.env.AS_PORT || '7662');
 const RS_PORT = parseInt(process.env.RS_PORT || '7663');
@@ -77,6 +101,7 @@ const codeToStatus = {
   authentication_error: 401,
   blob_not_found: 404,
   not_found: 404,
+  run_already_active: 409,
   cursor_expired: 410,
 };
 
@@ -598,12 +623,12 @@ function validateNativeConfiguration(opts = {}) {
 }
 
 function defaultPreRegisteredPublicClients() {
-  return [
-    { client_id: 'longview', metadata: { client_name: 'Longview', token_endpoint_auth_method: 'none' } },
-    { client_id: 'longview_planning_v1', metadata: { client_name: 'Longview', token_endpoint_auth_method: 'none' } },
-    { client_id: 'cli_longview', metadata: { client_name: 'Longview CLI', token_endpoint_auth_method: 'none' } },
-    { client_id: 'concert_recommendation_app', metadata: { client_name: 'Concert Recommendation App', token_endpoint_auth_method: 'none' } },
-  ];
+  // Copy the shared frozen defaults into plain mutable entries so downstream
+  // code that mutates metadata during seeding can operate normally.
+  return DEFAULT_PRE_REGISTERED_PUBLIC_CLIENTS.map((client) => ({
+    ...client,
+    metadata: { ...client.metadata },
+  }));
 }
 
 function resolveDynamicClientRegistrationEnabled(opts = {}) {
@@ -613,14 +638,41 @@ function resolveDynamicClientRegistrationEnabled(opts = {}) {
 }
 
 function resolveDynamicClientRegistrationInitialAccessTokens(opts = {}) {
+  // Explicit opts win, including an explicit empty array for tests that want
+  // to prove "DCR off" without toggling the enable flag.
   if (Array.isArray(opts.dynamicClientRegistrationInitialAccessTokens)) {
     return opts.dynamicClientRegistrationInitialAccessTokens.filter(Boolean);
   }
-  return PDPP_DCR_INITIAL_ACCESS_TOKENS;
+  if (PDPP_DCR_INITIAL_ACCESS_TOKENS.length > 0) {
+    return PDPP_DCR_INITIAL_ACCESS_TOKENS;
+  }
+  // Reference-local convenience: if the operator has not configured an
+  // initial access token through env or opts, fall back to the shared local
+  // default so DCR is usable by default in the forkable reference setup.
+  // Explicit `PDPP_ENABLE_DYNAMIC_CLIENT_REGISTRATION=0` still disables DCR
+  // via `resolveDynamicClientRegistrationEnabled`.
+  return [DEFAULT_LOCAL_DCR_INITIAL_ACCESS_TOKEN];
 }
 
 function resolvePreRegisteredPublicClients(opts = {}) {
   return opts.preRegisteredPublicClients || defaultPreRegisteredPublicClients();
+}
+
+function resolveOwnerAuthPlaceholderConfig(opts = {}) {
+  // Explicit opts win over env so the harness can set them per-test. When
+  // neither is set, placeholder auth stays off and the server keeps its
+  // current open local-dev behavior.
+  const password =
+    opts.ownerAuthPassword ??
+    (typeof process.env.PDPP_OWNER_PASSWORD === 'string' && process.env.PDPP_OWNER_PASSWORD
+      ? process.env.PDPP_OWNER_PASSWORD
+      : null);
+  const subjectId =
+    opts.ownerAuthSubjectId ??
+    (typeof process.env.PDPP_OWNER_SUBJECT_ID === 'string' && process.env.PDPP_OWNER_SUBJECT_ID
+      ? process.env.PDPP_OWNER_SUBJECT_ID
+      : null);
+  return { password, subjectId };
 }
 
 function buildSourceDescriptor(sourceBinding = null) {
@@ -750,21 +802,159 @@ function normalizePrimaryKey(primaryKey) {
   return [];
 }
 
+function buildFreshness(lastUpdated = null) {
+  if (!lastUpdated) {
+    return { status: 'unknown' };
+  }
+  return {
+    status: 'unknown',
+    captured_at: lastUpdated,
+    last_attempted_at: lastUpdated,
+  };
+}
+
+function decorateBlobRefValue(blobRef) {
+  if (!blobRef || typeof blobRef !== 'object' || typeof blobRef.blob_id !== 'string' || !blobRef.blob_id) {
+    return blobRef;
+  }
+  return {
+    ...blobRef,
+    fetch_url: `/v1/blobs/${encodeURIComponent(blobRef.blob_id)}`,
+  };
+}
+
+function decorateRecordBlobRefs(record) {
+  if (!record || typeof record !== 'object') return record;
+  const next = { ...record };
+  if (record.data && typeof record.data === 'object' && !Array.isArray(record.data) && record.data.blob_ref) {
+    next.data = {
+      ...record.data,
+      blob_ref: decorateBlobRefValue(record.data.blob_ref),
+    };
+  }
+  if (record.expanded && typeof record.expanded === 'object' && !Array.isArray(record.expanded)) {
+    next.expanded = Object.fromEntries(
+      Object.entries(record.expanded).map(([name, value]) => {
+        if (value && typeof value === 'object' && Array.isArray(value.data)) {
+          return [name, { ...value, data: value.data.map(decorateRecordBlobRefs) }];
+        }
+        return [name, decorateRecordBlobRefs(value)];
+      }),
+    );
+  }
+  return next;
+}
+
+async function getVisibleStreamFreshness({ tokenInfo, storageBinding, stream, manifest }) {
+  if (tokenInfo?.pdpp_token_kind === 'owner') {
+    const summaries = await listAllStreams(storageBinding);
+    const summary = summaries.find((entry) => entry.name === stream);
+    return buildFreshness(summary?.last_updated || null);
+  }
+
+  const streamGrant = tokenInfo?.grant?.streams?.find((entry) => entry.name === stream);
+  if (!streamGrant) {
+    const err = new Error(`Stream '${stream}' not in grant`);
+    err.code = 'grant_stream_not_allowed';
+    throw err;
+  }
+  const summaries = await listStreams(storageBinding, { streams: [streamGrant] }, manifest);
+  return buildFreshness(summaries[0]?.last_updated || null);
+}
+
+async function resolveAuthorizedBlob(req, blobId, opts = {}) {
+  const rows = await getDb().query(sql`
+    SELECT blob_id, connector_id, stream, record_key, mime_type, size_bytes, sha256, data
+    FROM blobs
+    WHERE blob_id = ${blobId}
+    LIMIT 1
+  `);
+  if (!rows.length) {
+    const err = new Error('Blob not found');
+    err.code = 'blob_not_found';
+    throw err;
+  }
+
+  const blob = rows[0];
+  const { tokenInfo } = req;
+  let storageBinding;
+  let manifest;
+  let visibleRecord;
+
+  if (tokenInfo.pdpp_token_kind === 'owner') {
+    const ownerScope = resolveOwnerReadScope(req, opts);
+    const ownerResolved = await resolveOwnerManifestFromScope(ownerScope, opts);
+    storageBinding = ownerResolved.storageBinding;
+    manifest = ownerResolved.manifest;
+    if (storageBinding?.connector_id !== blob.connector_id) {
+      const err = new Error('Blob not found');
+      err.code = 'blob_not_found';
+      throw err;
+    }
+    try {
+      visibleRecord = await getRecord(storageBinding, blob.stream, blob.record_key, buildOwnerReadGrant(blob.stream), manifest);
+    } catch {
+      const err = new Error('Blob not found');
+      err.code = 'blob_not_found';
+      throw err;
+    }
+  } else {
+    const grantResolved = await resolveGrantManifest(tokenInfo, opts);
+    storageBinding = grantResolved.storageBinding;
+    manifest = grantResolved.manifest;
+    if (storageBinding?.connector_id !== blob.connector_id) {
+      const err = new Error('Blob not found');
+      err.code = 'blob_not_found';
+      throw err;
+    }
+    try {
+      visibleRecord = await getRecord(storageBinding, blob.stream, blob.record_key, tokenInfo.grant, manifest);
+    } catch {
+      const err = new Error('Blob not found');
+      err.code = 'blob_not_found';
+      throw err;
+    }
+  }
+
+  if (visibleRecord?.data?.blob_ref?.blob_id !== blobId) {
+    const err = new Error('Blob not found');
+    err.code = 'blob_not_found';
+    throw err;
+  }
+
+  return blob;
+}
+
 // ─── AS App ─────────────────────────────────────────────────────────────────
 
 function buildAsApp(opts = {}) {
-  const app = express();
+  const app = createApp();
   const nativeMode = !!resolveNativeManifest(opts);
   const providerName = resolveProviderName(opts);
+  const controller = opts.controller || null;
   const dynamicClientRegistrationEnabled = resolveDynamicClientRegistrationEnabled(opts);
   const dynamicClientRegistrationInitialAccessTokens = resolveDynamicClientRegistrationInitialAccessTokens(opts);
-  // State-commit payloads on file-import connectors (claude-code, codex,
-  // google_takeout) can carry a per-file-mtime cursor that exceeds the
-  // default Express 100kb limit. A previous claude-code run hit 413
-  // PayloadTooLargeError mid-commit and partially committed 3 of 4 state
-  // streams, silently re-running work on next invocation.
-  app.use(express.json({ limit: '100mb' }));
-  app.use(express.urlencoded({ extended: false, limit: '100mb' }));
+  const ownerAuthConfig = resolveOwnerAuthPlaceholderConfig(opts);
+  const ownerAuth = createOwnerAuthPlaceholder({
+    password: ownerAuthConfig.password,
+    subjectId: ownerAuthConfig.subjectId,
+    providerName,
+  });
+  // Shared hosted-UI stylesheet for reference server-rendered HTML pages
+  // (consent, device, approval results, owner-login). This is a
+  // reference-only asset, not a PDPP protocol surface. See
+  // `reference-implementation/server/hosted-ui.js`.
+  app.get(HOSTED_UI_CSS_PATH, (req, res) => {
+    res.setHeader('Content-Type', 'text/css; charset=utf-8');
+    res.setHeader('Cache-Control', 'public, max-age=300');
+    res.send(HOSTED_UI_CSS);
+  });
+
+  // Reference-only owner-auth placeholder. This is NOT a public PDPP
+  // protocol surface; it gates local approval UIs when
+  // `PDPP_OWNER_PASSWORD` is set, and is a no-op otherwise. See
+  // `reference-implementation/server/owner-auth.js`.
+  ownerAuth.attachRoutes(app);
 
   function renderPendingGrantConsentHtml(pending, requestUri) {
     const request = pending.request;
@@ -775,50 +965,74 @@ function buildAsApp(opts = {}) {
     const connectorId = sourceBinding?.connector_id;
     const providerId = sourceBinding?.provider_id;
     const showConnectorLabel = sourceBinding?.binding_kind !== 'provider_native';
-    return `
-      <!DOCTYPE html>
-      <html>
-      <head><title>${providerName} Consent</title><style>
-        body { font-family: system-ui; max-width: 600px; margin: 40px auto; padding: 20px; }
-        .grant-box { border: 1px solid #ccc; border-radius: 8px; padding: 20px; margin: 20px 0; }
-        .stream { background: #f5f5f5; padding: 8px 12px; border-radius: 4px; margin: 4px 0; font-family: monospace; }
-        button { padding: 10px 24px; font-size: 16px; cursor: pointer; border-radius: 6px; border: none; }
-        .approve { background: #2563eb; color: white; }
-        .deny { background: #dc2626; color: white; margin-left: 10px; }
-        .code { font-size: 32px; font-weight: bold; letter-spacing: 4px; color: #2563eb; }
-      </style></head>
-      <body>
-        <h1>${providerName} Data Access Request</h1>
-        <p class="code">${pending.userCode}</p>
-        <div class="grant-box">
-          <p><strong>App:</strong> ${clientName}</p>
-          ${showConnectorLabel && connectorId ? `<p><strong>Connector:</strong> ${connectorId}</p>` : ''}
-          ${!showConnectorLabel && providerId ? `<p><strong>Provider:</strong> ${providerId}</p>` : ''}
-          <p><strong>Purpose:</strong> ${selection.purpose_description || selection.purpose_code}</p>
-          <p><strong>Access Mode:</strong> ${selection.access_mode}</p>
-          ${selection.retention ? `<p><strong>Retention:</strong> ${selection.retention.on_expiry} after ${selection.retention.max_duration}</p>` : ''}
-          <p><strong>Streams requested:</strong></p>
-          ${(selection.streams || []).map(s => `
-            <div class="stream">
-              ${s.name}
-              ${s.time_range ? ` (since ${s.time_range.since || 'any'})` : ''}
-              ${s.fields ? ` [fields: ${s.fields.join(', ')}]` : ''}
-              ${s.view ? ` [view: ${s.view}]` : ''}
-              ${s.necessity === 'optional' ? ' (optional)' : ''}
-            </div>
-          `).join('')}
-        </div>
-        <form method="POST" action="/consent/approve">
-          <input type="hidden" name="request_uri" value="${requestUri}" />
-          <button type="submit" class="approve">Approve</button>
-        </form>
-        <form method="POST" action="/consent/deny" style="display:inline">
-          <input type="hidden" name="request_uri" value="${requestUri}" />
-          <button type="submit" class="deny">Deny</button>
-        </form>
-      </body>
-      </html>
-    `;
+
+    const streamItems = (selection.streams || [])
+      .map((s) => {
+        const fragments = [
+          s.time_range ? `since ${s.time_range.since || 'any'}` : null,
+          s.fields ? `fields: ${s.fields.join(', ')}` : null,
+          s.view ? `view: ${s.view}` : null,
+          s.necessity === 'optional' ? 'optional' : null,
+        ].filter(Boolean);
+        const meta = fragments.length
+          ? ` <span class="hosted-ui-stream-meta">${hostedEscape(fragments.join(' · '))}</span>`
+          : '';
+        return `<li><span class="hosted-ui-stream-name">${hostedEscape(s.name)}</span>${meta}</li>`;
+      })
+      .join('');
+
+    const facts = renderKeyValueList([
+      { label: 'Requesting app', value: clientName },
+      showConnectorLabel && connectorId ? { label: 'Connector', value: connectorId } : null,
+      !showConnectorLabel && providerId ? { label: 'Provider', value: providerId } : null,
+      { label: 'Purpose', value: selection.purpose_description || selection.purpose_code },
+      { label: 'Access mode', value: selection.access_mode },
+      selection.retention
+        ? { label: 'Retention', value: `${selection.retention.on_expiry} after ${selection.retention.max_duration}` }
+        : null,
+    ].filter(Boolean));
+
+    const streamsBlock = `
+      <div>
+        <span class="pdpp-title">Streams requested</span>
+        <ul class="hosted-ui-streams">${streamItems}</ul>
+      </div>`;
+
+    const codeBlock = pending.userCode
+      ? `<div><span class="pdpp-eyebrow">Verification code</span><div class="hosted-ui-code">${hostedEscape(pending.userCode)}</div></div>`
+      : '';
+
+    const actions = renderActionRow([
+      {
+        label: 'Allow access',
+        variant: 'primary',
+        method: 'POST',
+        action: '/consent/approve',
+        hidden: [{ name: 'request_uri', value: requestUri }],
+      },
+      {
+        label: 'Deny',
+        variant: 'danger',
+        method: 'POST',
+        action: '/consent/deny',
+        hidden: [{ name: 'request_uri', value: requestUri }],
+      },
+    ]);
+
+    const body = [
+      renderPageIntro({
+        eyebrow: 'Data access request',
+        title: `${clientName} wants access to your data`,
+        lede: 'Review what this app is asking for. Your server will only release what you allow here.',
+      }),
+      renderSurface({ surface: 'human', children: [codeBlock, facts, streamsBlock, actions].filter(Boolean).join('\n'), ariaLabel: 'Consent request' }),
+    ].join('\n');
+
+    return renderHostedDocument({
+      title: `${providerName} — Consent request`,
+      providerName,
+      body,
+    });
   }
 
   async function getPendingGrantFromRequestUri(requestUri) {
@@ -834,7 +1048,7 @@ function buildAsApp(opts = {}) {
   });
 
   // Primary reference surface: RFC 8414 authorization-server metadata.
-  app.get('/.well-known/oauth-authorization-server', (req, res) => {
+  app.get('/.well-known/oauth-authorization-server', { contract: 'getAuthorizationServerMetadata' }, (req, res) => {
     const explicitIssuer = opts.asIssuer || opts.asPublicUrl || (!opts.ignoreAmbientPublicUrls ? (process.env.AS_ISSUER || process.env.AS_PUBLIC_URL) : null);
     const issuer = resolvePublicUrl(req, explicitIssuer);
     const providerConnectCapabilities = ['owner_self_export', 'cli_device_connect', 'third_party_client_connect'];
@@ -858,7 +1072,7 @@ function buildAsApp(opts = {}) {
     );
   });
 
-  app.post('/oauth/register', async (req, res) => {
+  app.post('/oauth/register', { contract: 'registerDynamicClient' }, async (req, res) => {
     const traceContext = createTraceContext();
     const requestSummary = summarizeClientRegistrationRequest(req.body);
     res.setHeader('Request-Id', traceContext.request_id);
@@ -930,7 +1144,7 @@ function buildAsApp(opts = {}) {
     }
   });
 
-  app.post('/oauth/device_authorization', async (req, res) => {
+  app.post('/oauth/device_authorization', { contract: 'startOwnerDeviceAuthorization' }, async (req, res) => {
     try {
       const clientId = req.body.client_id;
       if (!clientId) {
@@ -961,7 +1175,7 @@ function buildAsApp(opts = {}) {
     }
   });
 
-  app.post('/oauth/token', async (req, res) => {
+  app.post('/oauth/token', { contract: 'exchangeOwnerDeviceToken' }, async (req, res) => {
     const grantType = req.body.grant_type;
     if (grantType !== 'urn:ietf:params:oauth:grant-type:device_code') {
       return oauthError(res, 400, 'unsupported_grant_type', 'Only device_code grant_type is supported here');
@@ -995,78 +1209,102 @@ function buildAsApp(opts = {}) {
     }
   });
 
-  app.get('/device', async (req, res) => {
+  app.get('/device', ownerAuth.requireOwnerSession, async (req, res) => {
     const userCode = typeof req.query.user_code === 'string' ? req.query.user_code : '';
     const pending = userCode ? await getOwnerDeviceAuthorizationByUserCode(userCode) : null;
 
     if (!userCode || !pending) {
-      return res.send(`
-        <!DOCTYPE html>
-        <html>
-        <head><title>${providerName} Device Verification</title><style>
-          body { font-family: system-ui; max-width: 560px; margin: 40px auto; padding: 20px; }
-          form { display: flex; gap: 12px; align-items: end; }
-          input, button { padding: 10px 12px; font-size: 16px; }
-          button { cursor: pointer; }
-        </style></head>
-        <body>
-          <h1>Enter verification code</h1>
-          <p>Paste the code shown by the CLI to continue the owner sign-in flow.</p>
-          <form method="GET" action="/device">
-            <label>User code<br /><input name="user_code" value="${userCode || ''}" autofocus /></label>
-            <button type="submit">Continue</button>
-          </form>
-        </body>
-        </html>
-      `);
+      const emptyBody = [
+        renderPageIntro({
+          eyebrow: 'Device verification',
+          title: 'Enter verification code',
+          lede: 'Paste the code shown by the CLI to continue the owner sign-in flow.',
+        }),
+        renderEmptyState({
+          form: {
+            method: 'GET',
+            action: '/device',
+            submitLabel: 'Continue',
+            fields: [
+              { name: 'user_code', label: 'User code', value: userCode || '', autofocus: true, autocomplete: 'one-time-code' },
+            ],
+          },
+        }),
+      ].join('\n');
+      return res.send(renderHostedDocument({
+        title: `${providerName} — Device verification`,
+        providerName,
+        body: emptyBody,
+      }));
     }
 
-    res.send(`
-      <!DOCTYPE html>
-      <html>
-      <head><title>Approve ${providerName} CLI Access</title><style>
-        body { font-family: system-ui; max-width: 620px; margin: 40px auto; padding: 20px; }
-        .box { border: 1px solid #d4d4d8; border-radius: 12px; padding: 20px; margin: 20px 0; }
-        .code { font-size: 28px; letter-spacing: 4px; font-weight: 700; color: #1d4ed8; }
-        input, button { padding: 10px 12px; font-size: 16px; }
-        button { cursor: pointer; background: #1d4ed8; color: white; border: none; border-radius: 8px; }
-      </style></head>
-      <body>
-        <h1>Approve owner access to ${providerName}</h1>
-        <div class="box">
-          <p><strong>Client:</strong> ${pending.client_id}</p>
-          <p><strong>User code:</strong> <span class="code">${pending.user_code}</span></p>
-          <p><strong>Expires:</strong> ${pending.expires_at}</p>
-        </div>
-        <form method="POST" action="/device/approve">
-          <input type="hidden" name="user_code" value="${pending.user_code}" />
-          <label>Subject ID<br /><input name="subject_id" value="owner_local" /></label>
-          <div style="margin-top: 16px;">
-            <button type="submit">Approve and issue owner token</button>
-            <button class="deny" type="submit" formaction="/device/deny">Deny</button>
-          </div>
-        </form>
-      </body>
-      </html>
-    `);
+    const facts = renderKeyValueList([
+      { label: 'Client', value: pending.client_id },
+      { label: 'User code', html: `<span class="hosted-ui-code">${hostedEscape(pending.user_code)}</span>` },
+      { label: 'Expires', value: pending.expires_at },
+    ]);
+
+    const ownerBlock = ownerAuth.enabled
+      ? renderKeyValueList([
+          { label: 'Owner subject', html: `<code>${hostedEscape(ownerAuth.subjectId)}</code> <span class="pdpp-caption">signed-in owner</span>` },
+        ])
+      : `<div class="hosted-ui-field">
+  <label for="hosted-ui-subject_id">Subject ID</label>
+  <input id="hosted-ui-subject_id" name="subject_id" value="owner_local" type="text" />
+</div>`;
+
+    const formOpen = `<form class="hosted-ui-surface" method="POST" action="/device/approve" data-surface="human" aria-label="Approve CLI access">
+  <input type="hidden" name="user_code" value="${hostedEscape(pending.user_code)}" />
+  ${facts}
+  ${ownerBlock}
+  <div class="hosted-ui-actions">
+    <button type="submit" class="hosted-ui-button" data-variant="primary">Approve and issue owner token</button>
+    <button type="submit" class="hosted-ui-button" data-variant="danger" formaction="/device/deny">Deny</button>
+  </div>
+</form>`;
+
+    const body = [
+      renderPageIntro({
+        eyebrow: 'Device verification',
+        title: `Approve owner access to ${providerName}`,
+        lede: 'A CLI is asking to sign in on your behalf. Approve only if you started this on a device you trust.',
+      }),
+      formOpen,
+    ].join('\n');
+
+    res.send(renderHostedDocument({
+      title: `${providerName} — Approve CLI access`,
+      providerName,
+      body,
+    }));
   });
 
-  app.post('/device/approve', async (req, res) => {
+  app.post('/device/approve', ownerAuth.requireOwnerSession, async (req, res) => {
     try {
       const userCode = req.body.user_code;
-      const subjectId = req.body.subject_id || 'owner_local';
+      const subjectId = ownerAuth.enabled
+        ? ownerAuth.subjectId
+        : (req.body.subject_id || OWNER_AUTH_DEFAULT_SUBJECT_ID);
       if (!userCode) {
         return oauthError(res, 400, 'invalid_request', 'user_code is required');
       }
 
       await approveOwnerDeviceAuthorization(userCode, subjectId);
-      res.send(`
-        <!DOCTYPE html>
-        <html><body style="font-family: system-ui; max-width: 560px; margin: 40px auto; padding: 20px;">
-          <h1>Approved</h1>
-          <p>The CLI can return to polling and complete sign-in now.</p>
-        </body></html>
-      `);
+      res.send(renderHostedDocument({
+        title: `${providerName} — Device access approved`,
+        providerName,
+        body: [
+          renderPageIntro({ eyebrow: 'Device verification', title: 'Approved' }),
+          renderSurface({
+            surface: 'human',
+            children: renderResultState({
+              tone: 'success',
+              title: 'CLI access approved',
+              body: 'The CLI can return to polling and complete sign-in now.',
+            }),
+          }),
+        ].join('\n'),
+      }));
     } catch (err) {
       if (err.request_id) {
         res.setHeader('Request-Id', err.request_id);
@@ -1078,22 +1316,31 @@ function buildAsApp(opts = {}) {
     }
   });
 
-  app.post('/device/deny', async (req, res) => {
+  app.post('/device/deny', ownerAuth.requireOwnerSession, async (req, res) => {
     try {
       const userCode = req.body.user_code;
-      const subjectId = req.body.subject_id || 'owner_local';
+      const subjectId = ownerAuth.enabled
+        ? ownerAuth.subjectId
+        : (req.body.subject_id || OWNER_AUTH_DEFAULT_SUBJECT_ID);
       if (!userCode) {
         return oauthError(res, 400, 'invalid_request', 'user_code is required');
       }
 
       await denyOwnerDeviceAuthorization(userCode, subjectId);
-      res.send(`
-        <!DOCTYPE html>
-        <html><body style="font-family: system-ui; max-width: 560px; margin: 40px auto; padding: 20px;">
-          <h1>Denied</h1>
-          <p>The CLI will stop polling and report that access was denied.</p>
-        </body></html>
-      `);
+      res.send(renderHostedDocument({
+        title: `${providerName} — Device access denied`,
+        providerName,
+        body: [
+          renderPageIntro({ eyebrow: 'Device verification', title: 'Denied' }),
+          renderSurface({
+            children: renderResultState({
+              tone: 'danger',
+              title: 'CLI access denied',
+              body: 'The CLI will stop polling and report that access was denied.',
+            }),
+          }),
+        ].join('\n'),
+      }));
     } catch (err) {
       if (err.request_id) {
         res.setHeader('Request-Id', err.request_id);
@@ -1106,7 +1353,7 @@ function buildAsApp(opts = {}) {
   });
 
   // RFC 7662-style token introspection with PDPP extensions
-  app.post('/introspect', async (req, res) => {
+  app.post('/introspect', { contract: 'introspectToken' }, async (req, res) => {
     const token = req.body.token;
     if (!token) return pdppError(res, 400, 'invalid_request', 'Missing token parameter');
     const info = await introspect(token);
@@ -1228,7 +1475,7 @@ function buildAsApp(opts = {}) {
     }
   });
 
-  app.get('/_ref/search', async (req, res) => {
+  app.get('/_ref/search', { contract: 'refSearch' }, async (req, res) => {
     try {
       const result = await searchSpine(req.query.q || '');
       res.json({
@@ -1276,6 +1523,133 @@ function buildAsApp(opts = {}) {
     }
   });
 
+  // Reference-only dataset summary for the operator-console hero band. Returns
+  // live aggregate counts and retained-bytes totals across the substrate, plus
+  // top connectors by record count. Not a PDPP protocol surface.
+  app.get('/_ref/dataset/summary', { contract: 'refDatasetSummary' }, async (req, res) => {
+    try {
+      const summary = await getDatasetSummary();
+      res.json(summary);
+    } catch (err) {
+      handleError(res, err);
+    }
+  });
+
+  app.get('/_ref/connectors', { contract: 'refListConnectors' }, async (req, res) => {
+    try {
+      const data = await listConnectorSummaries(controller);
+      res.json({ object: 'list', data });
+    } catch (err) {
+      handleError(res, err);
+    }
+  });
+
+  app.get('/_ref/connectors/:connectorId', { contract: 'refGetConnector' }, async (req, res) => {
+    try {
+      const connectorId = decodeURIComponent(req.params.connectorId);
+      const detail = await getConnectorDetail(connectorId, controller);
+      res.json(detail);
+    } catch (err) {
+      handleError(res, err);
+    }
+  });
+
+  app.get('/_ref/approvals', { contract: 'refListApprovals' }, async (req, res) => {
+    try {
+      const data = await listPendingApprovals();
+      res.json({ object: 'list', data });
+    } catch (err) {
+      handleError(res, err);
+    }
+  });
+
+  app.get('/_ref/records/timeline', { contract: 'refRecordsTimeline' }, async (req, res) => {
+    try {
+      const limit = req.query.limit == null ? 50 : Number.parseInt(String(req.query.limit), 10);
+      const order = req.query.order === 'asc' ? 'asc' : 'desc';
+      const timestampMode = req.query.timestamp_mode === 'ingest' ? 'ingest' : 'native';
+      const connectorId = resolveSingleConnectorIdQueryValue(req.query.connector_id);
+      const stream = typeof req.query.stream === 'string' && req.query.stream.trim() ? req.query.stream.trim() : null;
+      const since = typeof req.query.since === 'string' && req.query.since.trim() ? req.query.since.trim() : null;
+      const until = typeof req.query.until === 'string' && req.query.until.trim() ? req.query.until.trim() : null;
+      const result = await listRecordsTimeline({
+        connectorId,
+        stream,
+        since,
+        until,
+        limit: Number.isFinite(limit) && limit > 0 ? limit : 50,
+        order,
+        timestampMode,
+      });
+      res.json(result);
+    } catch (err) {
+      handleError(res, err);
+    }
+  });
+
+  app.get('/_ref/schedules', { contract: 'refListSchedules' }, async (req, res) => {
+    try {
+      const data = controller ? await controller.listSchedules() : [];
+      res.json({ object: 'list', data });
+    } catch (err) {
+      handleError(res, err);
+    }
+  });
+
+  app.post('/_ref/connectors/:connectorId/run', { contract: 'refRunConnector' }, async (req, res) => {
+    try {
+      const connectorId = decodeURIComponent(req.params.connectorId);
+      const started = await controller.runNow(connectorId);
+      res.status(202).json(started);
+    } catch (err) {
+      handleError(res, err);
+    }
+  });
+
+  app.put('/_ref/connectors/:connectorId/schedule', { contract: 'refPutConnectorSchedule' }, async (req, res) => {
+    try {
+      const connectorId = decodeURIComponent(req.params.connectorId);
+      await resolveRegisteredConnectorManifest(connectorId);
+      const schedule = await controller.upsertSchedule(connectorId, req.body || {});
+      res.json(schedule);
+    } catch (err) {
+      handleError(res, err);
+    }
+  });
+
+  app.post('/_ref/connectors/:connectorId/schedule/pause', { contract: 'refPauseConnectorSchedule' }, async (req, res) => {
+    try {
+      const connectorId = decodeURIComponent(req.params.connectorId);
+      const schedule = await controller.setScheduleEnabled(connectorId, false);
+      res.json(schedule);
+    } catch (err) {
+      handleError(res, err);
+    }
+  });
+
+  app.post('/_ref/connectors/:connectorId/schedule/resume', { contract: 'refResumeConnectorSchedule' }, async (req, res) => {
+    try {
+      const connectorId = decodeURIComponent(req.params.connectorId);
+      const schedule = await controller.setScheduleEnabled(connectorId, true);
+      res.json(schedule);
+    } catch (err) {
+      handleError(res, err);
+    }
+  });
+
+  app.delete('/_ref/connectors/:connectorId/schedule', { contract: 'refDeleteConnectorSchedule' }, async (req, res) => {
+    try {
+      const connectorId = decodeURIComponent(req.params.connectorId);
+      const deleted = await controller.deleteSchedule(connectorId);
+      if (!deleted) {
+        return pdppError(res, 404, 'not_found', `Schedule not found for connector: ${connectorId}`);
+      }
+      res.status(204).end();
+    } catch (err) {
+      handleError(res, err);
+    }
+  });
+
   if (!nativeMode) {
     // Polyfill-only connector registry surface for the reference personal-server world.
     app.post('/connectors', async (req, res) => {
@@ -1303,7 +1677,7 @@ function buildAsApp(opts = {}) {
 
   // Primary provider-connect request front door: RFC 9126-style request staging.
   // The persisted pending-consent substrate remains the same; only the public start surface changes.
-  app.post('/oauth/par', async (req, res) => {
+  app.post('/oauth/par', { contract: 'createPushedAuthorizationRequest' }, async (req, res) => {
     try {
       const result = await initiateGrant(req.body, {
         baseUrl: process.env.AS_PUBLIC_URL || `${req.protocol}://${req.get('host')}`,
@@ -1329,7 +1703,7 @@ function buildAsApp(opts = {}) {
 
 
   // Primary consent shell for the current provider-connect request/approval profile.
-  app.get('/consent', async (req, res) => {
+  app.get('/consent', ownerAuth.requireOwnerSession, async (req, res) => {
     try {
       const requestUri = typeof req.query.request_uri === 'string' ? req.query.request_uri : null;
       if (!requestUri) return pdppError(res, 400, 'invalid_request', 'request_uri is required');
@@ -1343,7 +1717,7 @@ function buildAsApp(opts = {}) {
 
 
   // Primary approval surface for the current provider-connect request/approval profile.
-  app.post('/consent/approve', express.urlencoded({ extended: false }), async (req, res) => {
+  app.post('/consent/approve', { contract: 'approveConsent' }, ownerAuth.requireOwnerSession, async (req, res) => {
     try {
       const requestUri = req.body?.request_uri || req.query?.request_uri;
       const { deviceCode, pending } = await getPendingGrantFromRequestUri(requestUri);
@@ -1355,27 +1729,49 @@ function buildAsApp(opts = {}) {
       if (traceContext?.trace_id) {
         setReferenceTraceId(res, traceContext.trace_id);
       }
-      const subjectId = req.body?.subject_id || req.query?.subject_id || 'owner_local';
+      const subjectId = ownerAuth.enabled
+        ? ownerAuth.subjectId
+        : (req.body?.subject_id || req.query?.subject_id || OWNER_AUTH_DEFAULT_SUBJECT_ID);
       const approveOpts = { ai_training_consented: req.body?.ai_training_consented };
       const { grant, token } = await approveGrant(deviceCode, subjectId, approveOpts);
       const wantsJson = req.is('application/json') || req.accepts(['html', 'json']) === 'json';
       if (wantsJson) {
         return res.json({ grant_id: grant.grant_id, token, grant });
       }
-      res.send(`
-        <html><body>
-        <h2>✓ Access Approved</h2>
-        <p>Grant ID: <code>${grant.grant_id}</code></p>
-        <p>Token (copy to use with RS): <code>${token}</code></p>
-        </body></html>
-      `);
+      res.send(renderHostedDocument({
+        title: `${providerName} — Access approved`,
+        providerName,
+        body: [
+          renderPageIntro({
+            eyebrow: 'Consent result',
+            title: 'Access approved',
+            lede: 'A grant was issued for this request. The client can now call your resource server with the token below.',
+          }),
+          renderSurface({
+            surface: 'human',
+            children: renderResultState({
+              tone: 'success',
+              title: 'Grant issued',
+              body: 'You can revoke this access any time from the grants dashboard.',
+            }),
+          }),
+          renderSurface({
+            surface: 'protocol',
+            ariaLabel: 'Technical grant details',
+            children: renderKeyValueList([
+              { label: 'Grant ID', html: `<code>${hostedEscape(grant.grant_id)}</code>` },
+              { label: 'Token', html: `<code>${hostedEscape(token)}</code>` },
+            ]),
+          }),
+        ].join('\n'),
+      }));
     } catch (err) {
       handleError(res, err);
     }
   });
 
 
-  app.post('/consent/deny', async (req, res) => {
+  app.post('/consent/deny', ownerAuth.requireOwnerSession, async (req, res) => {
     try {
       const requestUri = req.body?.request_uri || req.query?.request_uri;
       const { deviceCode, pending } = await getPendingGrantFromRequestUri(requestUri);
@@ -1389,12 +1785,20 @@ function buildAsApp(opts = {}) {
       }
       const deleted = await denyGrant(deviceCode);
       if (!deleted) return pdppError(res, 404, 'not_found', 'Pending consent request not found');
-      res.send(`
-        <html><body>
-        <h2>Access Denied</h2>
-        <p>The pending data access request was rejected and cleared.</p>
-        </body></html>
-      `);
+      res.send(renderHostedDocument({
+        title: `${providerName} — Access denied`,
+        providerName,
+        body: [
+          renderPageIntro({ eyebrow: 'Consent result', title: 'Access Denied' }),
+          renderSurface({
+            children: renderResultState({
+              tone: 'danger',
+              title: 'Request rejected',
+              body: 'The pending data access request was rejected and cleared.',
+            }),
+          }),
+        ].join('\n'),
+      }));
     } catch (err) {
       handleError(res, err);
     }
@@ -1403,7 +1807,7 @@ function buildAsApp(opts = {}) {
 
 
   // Primary reference surface.
-  app.post('/grants/:grantId/revoke', async (req, res) => {
+  app.post('/grants/:grantId/revoke', { contract: 'revokeGrant' }, async (req, res) => {
     try {
       const requestId = ensureRequestId(res);
       const result = await revokeGrant(req.params.grantId, { request_id: requestId });
@@ -1421,12 +1825,9 @@ function buildAsApp(opts = {}) {
 // ─── RS App ─────────────────────────────────────────────────────────────────
 
 function buildRsApp(opts = {}) {
-  const app = express();
+  const app = createApp();
   const nativeMode = !!resolveNativeManifest(opts);
   const providerName = resolveProviderName(opts);
-  // Match AS limit so ingest batches (especially IMAP with full email bodies
-  // and file-import connectors with large state cursors) don't 413.
-  app.use(express.json({ limit: '100mb' }));
 
   app.use((req, res, next) => {
     res.setHeader('Request-Id', req.get('Request-Id') || generateSpineId('req'));
@@ -1442,7 +1843,7 @@ function buildRsApp(opts = {}) {
   });
 
   // Primary reference surface: RFC 9728 protected-resource metadata.
-  app.get('/.well-known/oauth-protected-resource', (req, res) => {
+  app.get('/.well-known/oauth-protected-resource', { contract: 'getProtectedResourceMetadata' }, (req, res) => {
     const explicitResource = opts.rsPublicUrl || (!opts.ignoreAmbientPublicUrls ? process.env.RS_PUBLIC_URL : null);
     const resource = resolvePublicUrl(req, explicitResource);
     const explicitIssuer = opts.asIssuer || opts.asPublicUrl || (!opts.ignoreAmbientPublicUrls ? (process.env.AS_ISSUER || process.env.AS_PUBLIC_URL) : null);
@@ -1462,7 +1863,7 @@ function buildRsApp(opts = {}) {
   });
 
   // GET /v1/streams — list streams (client or owner)
-  app.get('/v1/streams', requireToken, async (req, res) => {
+  app.get('/v1/streams', { contract: 'listStreams' }, requireToken, async (req, res) => {
     let queryContext = null;
     try {
       const { tokenInfo } = req;
@@ -1525,7 +1926,13 @@ function buildRsApp(opts = {}) {
         },
       });
 
-      res.json({ object: 'list', data: streamSummaries });
+      res.json({
+        object: 'list',
+        data: streamSummaries.map((summary) => ({
+          ...summary,
+          freshness: buildFreshness(summary.last_updated || null),
+        })),
+      });
     } catch (err) {
       if (queryContext) {
         await emitQueryReceived(queryContext, req);
@@ -1536,7 +1943,7 @@ function buildRsApp(opts = {}) {
   });
 
   // GET /v1/streams/:stream — stream metadata
-  app.get('/v1/streams/:stream', requireToken, async (req, res) => {
+  app.get('/v1/streams/:stream', { contract: 'getStreamMetadata' }, requireToken, async (req, res) => {
     let queryContext = null;
     try {
       const { tokenInfo } = req;
@@ -1602,6 +2009,16 @@ function buildRsApp(opts = {}) {
         selection: mStream.selection,
         views: mStream.views || [],
         relationships: mStream.relationships || [],
+        query: mStream.query || {},
+        freshness: await getVisibleStreamFreshness({
+          tokenInfo,
+          storageBinding:
+            tokenInfo.pdpp_token_kind === 'owner'
+              ? resolveOwnerReadScope(req, opts).storage_binding
+              : resolveGrantStorageBinding(tokenInfo),
+          stream: req.params.stream,
+          manifest,
+        }),
       };
 
       await emitSpineEvent({
@@ -1638,7 +2055,7 @@ function buildRsApp(opts = {}) {
   });
 
   // GET /v1/streams/:stream/records
-  app.get('/v1/streams/:stream/records', requireToken, async (req, res) => {
+  app.get('/v1/streams/:stream/records', { contract: 'listRecords' }, requireToken, async (req, res) => {
     let queryContext = null;
     try {
       const { tokenInfo } = req;
@@ -1760,7 +2177,11 @@ function buildRsApp(opts = {}) {
         data: disclosureEventData,
       });
 
-      res.json({ ...result, url: req.path });
+      res.json({
+        ...result,
+        data: result.data.map(decorateRecordBlobRefs),
+        url: req.path,
+      });
     } catch (err) {
       if (queryContext) {
         await emitQueryReceived(queryContext, req);
@@ -1771,7 +2192,7 @@ function buildRsApp(opts = {}) {
   });
 
   // GET /v1/streams/:stream/records/:id
-  app.get('/v1/streams/:stream/records/:id', requireToken, async (req, res) => {
+  app.get('/v1/streams/:stream/records/:id', { contract: 'getRecord' }, requireToken, async (req, res) => {
     let queryContext = null;
     try {
       const { tokenInfo } = req;
@@ -1820,7 +2241,10 @@ function buildRsApp(opts = {}) {
       }
       await emitQueryReceived(queryContext, req);
       const record = await getRecord(storageBinding, req.params.stream,
-        requestedRecordId, grant, manifest);
+        requestedRecordId, grant, manifest, {
+          expand: req.query.expand,
+          expand_limit: req.query.expand_limit,
+        });
       await emitSpineEvent({
         event_type: 'disclosure.served',
         trace_id: traceId,
@@ -1845,12 +2269,24 @@ function buildRsApp(opts = {}) {
           requested_record_id: requestedRecordId,
         },
       });
-      res.json(record);
+      res.json(decorateRecordBlobRefs(record));
     } catch (err) {
       if (queryContext) {
         await emitQueryReceived(queryContext, req);
         return await rejectQuery(res, req, queryContext, err);
       }
+      handleError(res, err);
+    }
+  });
+
+  app.get('/v1/blobs/:blob_id', { contract: 'getBlob' }, requireToken, async (req, res) => {
+    try {
+      const blobId = decodeURIComponent(req.params.blob_id);
+      const blob = await resolveAuthorizedBlob(req, blobId, opts);
+      res.setHeader('Content-Type', blob.mime_type);
+      res.setHeader('Content-Length', String(blob.size_bytes));
+      res.send(Buffer.isBuffer(blob.data) ? blob.data : Buffer.from(blob.data || ''));
+    } catch (err) {
       handleError(res, err);
     }
   });
@@ -1925,7 +2361,7 @@ function buildRsApp(opts = {}) {
     });
 
     // POST /v1/ingest/:stream (Collection Profile, owner-authenticated)
-    app.post('/v1/ingest/:stream', requireToken, requireOwner, express.text({ type: 'application/x-ndjson', limit: '200mb' }), async (req, res) => {
+    app.post('/v1/ingest/:stream', requireToken, requireOwner, async (req, res) => {
       const connectorId = resolveSingleConnectorIdQueryValue(req.query.connector_id);
       const lines = (req.body || '').split('\n').filter((line) => line.trim());
       const mutationContext = buildMutationContext(req, res, {
@@ -2081,17 +2517,30 @@ export async function startServer(opts = {}) {
 
   const requestedAsPort = opts.asPort ?? AS_PORT;
   const requestedRsPort = opts.rsPort ?? RS_PORT;
+  const runtimeContext = {
+    rsUrl: opts.rsPublicUrl || null,
+  };
+  const controller = createController({
+    db: getDb(),
+    asPublicUrl: opts.asPublicUrl,
+    ownerSubjectId: opts.ownerAuthSubjectId,
+    connectorPathResolver: opts.connectorPathResolver,
+    runtimeContext,
+  });
   const ignoreAmbientPublicUrls =
     opts.ignoreAmbientPublicUrls ??
     ((requestedAsPort === 0 || requestedRsPort === 0) && !opts.asPublicUrl && !opts.rsPublicUrl && !opts.asIssuer);
   const asApp = buildAsApp({
     nativeManifest: nativeConfig?.nativeManifest || null,
+    controller,
     providerName,
     enableDynamicClientRegistration: resolveDynamicClientRegistrationEnabled(opts),
     dynamicClientRegistrationInitialAccessTokens: resolveDynamicClientRegistrationInitialAccessTokens(opts),
     asPublicUrl: opts.asPublicUrl,
     asIssuer: opts.asIssuer,
     ignoreAmbientPublicUrls,
+    ownerAuthPassword: opts.ownerAuthPassword,
+    ownerAuthSubjectId: opts.ownerAuthSubjectId,
   });
 
   // opts.bindHost — restrict listening interface (e.g. '127.0.0.1'). Default
@@ -2099,33 +2548,25 @@ export async function startServer(opts = {}) {
   // keeps the server off the LAN/public internet.
   const bindHost = opts.bindHost;
 
-  return new Promise((resolve) => {
-    const asListen = bindHost
-      ? (port, cb) => asApp.listen(port, bindHost, cb)
-      : (port, cb) => asApp.listen(port, cb);
-    const asServer = asListen(requestedAsPort, () => {
-      const asPort = asServer.address().port;
-      const asPublicUrl = opts.asPublicUrl || opts.asIssuer || `http://localhost:${asPort}`;
-      log(`[PDPP AS] Authorization server on http://localhost:${asPort}`);
-      const rsApp = buildRsApp({
-        asPort,
-        nativeManifest: nativeConfig?.nativeManifest || null,
-        providerName,
-        asPublicUrl,
-        asIssuer: opts.asIssuer || asPublicUrl,
-        rsPublicUrl: opts.rsPublicUrl,
-        ignoreAmbientPublicUrls,
-      });
-      const rsListen = bindHost
-        ? (port, cb) => rsApp.listen(port, bindHost, cb)
-        : (port, cb) => rsApp.listen(port, cb);
-      const rsServer = rsListen(requestedRsPort, () => {
-        const rsPort = rsServer.address().port;
-        log(`[PDPP RS] Resource server on http://localhost:${rsPort}`);
-        resolve({ asServer, rsServer, asPort, rsPort });
-      });
-    });
+  const asServer = await asApp.listen(requestedAsPort, bindHost);
+  const asPort = asServer.address().port;
+  const asPublicUrl = opts.asPublicUrl || opts.asIssuer || `http://localhost:${asPort}`;
+  log(`[PDPP AS] Authorization server on http://localhost:${asPort}`);
+
+  const rsApp = buildRsApp({
+    asPort,
+    nativeManifest: nativeConfig?.nativeManifest || null,
+    providerName,
+    asPublicUrl,
+    asIssuer: opts.asIssuer || asPublicUrl,
+    rsPublicUrl: opts.rsPublicUrl,
+    ignoreAmbientPublicUrls,
   });
+  const rsServer = await rsApp.listen(requestedRsPort, bindHost);
+  const rsPort = rsServer.address().port;
+  runtimeContext.rsUrl = opts.rsPublicUrl || `http://localhost:${rsPort}`;
+  log(`[PDPP RS] Resource server on http://localhost:${rsPort}`);
+  return { asServer, rsServer, asPort, rsPort };
 }
 
 // Run directly

@@ -1,0 +1,526 @@
+// Native Fastify transport.
+//
+// `createApp()` returns a small factory with the API that the PDPP reference
+// handlers are written against (`app.get/post/put/delete/head`, `app.use`,
+// `app.set`, `listen`). Internally it builds a Fastify instance and wraps
+// each handler so Fastify's `(request, reply)` is presented to PDPP as
+// `(req, res, next)`. Handlers stay adapter-neutral; the transport is the
+// single place that cares about Fastify specifics.
+//
+// Supported surface (kept tight on purpose; extend with care):
+//   req:  get(name), is(type), accepts(types), body, headers, hostname,
+//         method, params, path, protocol, query
+//   res:  setHeader, getHeader, status, send, json
+//
+// Body parsing:
+//   - application/json                — Fastify's JSON parser (empty bodies ⇒ {})
+//   - application/x-www-form-urlencoded — @fastify/formbody with qs depth 8
+//   - application/x-ndjson             — raw string, parsed by the handler
+//
+// Query parsing:
+//   - qs-backed nested parser so `filter[field][gte]=…` decodes into
+//     `{ filter: { field: { gte: … } } }`, matching PDPP Core §8.
+//     Spec review still pending — see
+//     design-notes/express-5-query-parser-open-question-2026-04-22.md.
+
+import Fastify from 'fastify';
+import fastifyFormbody from '@fastify/formbody';
+import qs from 'qs';
+
+import { publicManifests, referenceManifests } from '@pdpp/reference-contract';
+
+// Index route manifests by operation id so route registration can pick them
+// up by name and attach the JSON-Schema directly onto the Fastify route.
+const CONTRACT_MANIFESTS = new Map();
+for (const manifest of [...publicManifests, ...referenceManifests]) {
+  CONTRACT_MANIFESTS.set(manifest.id, manifest);
+}
+
+/**
+ * Recursively strip JSON-Schema `$id` keys before compile so common schemas
+ * like UriSchema can be referenced by many routes without ajv ambiguous-id
+ * collisions. The reference-contract package's own validator does the same.
+ */
+function stripIds(node) {
+  if (Array.isArray(node)) return node.map((item) => stripIds(item));
+  if (node && typeof node === 'object') {
+    const out = {};
+    for (const [key, value] of Object.entries(node)) {
+      if (key === '$id') continue;
+      out[key] = stripIds(value);
+    }
+    return out;
+  }
+  return node;
+}
+
+/**
+ * Build the `schema` object Fastify accepts on `fastify.route({schema})` from
+ * a contract-package route manifest. Returns `undefined` if the manifest has
+ * no schemas worth attaching.
+ *
+ * We deliberately OMIT the `response` schemas. Fastify otherwise routes
+ * responses through `fast-json-stringify`, which strips properties that
+ * aren't declared in the schema. The contract package's current response
+ * schemas drift from the actual server payload shapes in several places
+ * (e.g. `refGetConnector` declares `streams: items string` but the server
+ * returns `streams: [{ name, freshness }]`). Attaching those shapes would
+ * silently truncate correct runtime responses. Request-side schemas
+ * (`params` / `querystring` / `headers` / `body`) stay attached so the
+ * contract still lives directly on the Fastify route; the response-schema
+ * alignment is tracked as an open design question in
+ * `design-notes/reference-contract-response-schema-drift-2026-04-22.md`.
+ */
+function buildRouteSchema(manifest) {
+  if (!manifest?.request) return undefined;
+  const schema = {};
+  if (manifest.request?.params) schema.params = stripIds(manifest.request.params);
+  if (manifest.request?.query) schema.querystring = stripIds(manifest.request.query);
+  if (manifest.request?.headers) schema.headers = stripIds(manifest.request.headers);
+  if (manifest.request?.body?.schema) schema.body = stripIds(manifest.request.body.schema);
+  if (manifest.summary) schema.summary = manifest.summary;
+  if (Array.isArray(manifest.tags) && manifest.tags.length) schema.tags = manifest.tags;
+  if (manifest.id) schema.operationId = manifest.id;
+  return Object.keys(schema).length ? schema : undefined;
+}
+
+const PASSTHROUGH_CONTENT_TYPES = ['application/x-ndjson', 'text/plain'];
+
+/**
+ * Build a fresh Fastify instance wired up the way PDPP wants it.
+ */
+function buildFastify() {
+  const fastify = Fastify({
+    logger: false,
+    bodyLimit: 200 * 1024 * 1024, // match previous express.text() limit
+    // Fastify auto-registers HEAD shadow routes for every GET by default.
+    // PDPP registers explicit HEAD routes (e.g. /v1/blobs/:blob_id) so we
+    // disable the shadow to avoid "Method 'HEAD' already declared" errors.
+    exposeHeadRoutes: false,
+    // Router-level options moved out of the top-level constructor in Fastify 5
+    // (the deprecated location warns FSTDEP022 and is removed in Fastify 6).
+    routerOptions: {
+      ignoreTrailingSlash: false,
+      // `qs.parse` decodes PDPP's nested bracket shape
+      // (filter[field][gte]=..., expand[]=..., expand_limit[rel]=...) per
+      // Core §8. Depth bounded to 8 + arrayLimit 64 to close the DoS surface
+      // that Express 5's default `simple` parser was tightening.
+      querystringParser: (str) => qs.parse(str, { depth: 8, arrayLimit: 64 }),
+    },
+  });
+
+  // application/x-ndjson + text/plain come in as raw strings. Handlers that
+  // care read `req.body` and parse line-by-line themselves (runtime ingest).
+  for (const type of PASSTHROUGH_CONTENT_TYPES) {
+    fastify.addContentTypeParser(type, { parseAs: 'string' }, (req, body, done) => {
+      done(null, body);
+    });
+  }
+
+  // Express tolerates empty request bodies on `Content-Type: application/json`
+  // (treats `req.body` as `{}`). Fastify's default JSON parser returns
+  // FST_ERR_CTP_EMPTY_JSON_BODY. Replace it with a parser that accepts empty
+  // payloads so routes like `POST /grants/:id/revoke` (no body, header still
+  // JSON) reach their handlers instead of failing at the transport.
+  fastify.removeContentTypeParser('application/json');
+  fastify.addContentTypeParser(
+    'application/json',
+    { parseAs: 'string' },
+    (req, body, done) => {
+      if (!body) { done(null, {}); return; }
+      try { done(null, JSON.parse(body)); }
+      catch (err) {
+        err.statusCode = 400;
+        done(err, undefined);
+      }
+    },
+  );
+
+  return fastify;
+}
+
+/**
+ * Turn a Fastify `(request, reply)` pair into an Express-shaped `(req, res)`
+ * pair so existing route handlers keep working unchanged. Returns the shim
+ * object. Mutations to `req.query` / `req.body` etc. inside handlers are
+ * reflected on the underlying Fastify `request` where it matters.
+ */
+function expressShim(request, reply) {
+  const req = request;
+
+  // Ensure the properties Express handlers rely on are there. Fastify already
+  // populates `headers`, `params`, `query`, `body`, `method`, and `url`.
+  // `req.path` is just the URL path with any query string stripped.
+  if (!Object.prototype.hasOwnProperty.call(req, 'path')) {
+    Object.defineProperty(req, 'path', {
+      get() {
+        const raw = req.raw?.url || req.url || '';
+        const q = raw.indexOf('?');
+        return q >= 0 ? raw.slice(0, q) : raw;
+      },
+      configurable: true,
+    });
+  }
+
+  // Fastify exposes `request.protocol` and `request.hostname` natively, but
+  // only when `trustProxy` is set. We expose simple fallbacks derived from
+  // the raw request.
+  if (!req.protocol) {
+    Object.defineProperty(req, 'protocol', {
+      get() {
+        const encrypted = req.raw?.socket?.encrypted;
+        return encrypted ? 'https' : 'http';
+      },
+      configurable: true,
+    });
+  }
+  if (!req.hostname) {
+    Object.defineProperty(req, 'hostname', {
+      get() {
+        const host = req.headers?.host;
+        if (!host) return '';
+        const colon = host.indexOf(':');
+        return colon >= 0 ? host.slice(0, colon) : host;
+      },
+      configurable: true,
+    });
+  }
+
+  // Express's `req.get(headerName)` is case-insensitive.
+  if (typeof req.get !== 'function') {
+    req.get = (name) => {
+      if (!name) return undefined;
+      return req.headers?.[String(name).toLowerCase()];
+    };
+  }
+
+  // Express's `req.is(type)` returns the matched type string or false.
+  if (typeof req.is !== 'function') {
+    req.is = (types) => {
+      const ct = String(req.headers?.['content-type'] || '').split(';')[0].trim().toLowerCase();
+      if (!ct) return false;
+      const candidates = Array.isArray(types) ? types : [types];
+      for (const candidate of candidates) {
+        if (matchesMediaType(ct, String(candidate).toLowerCase())) return candidate;
+      }
+      return false;
+    };
+  }
+
+  // Minimal `req.accepts(types)` returning the best match from the Accept
+  // header. Handlers in PDPP only care about `req.accepts(['html', 'json'])`.
+  if (typeof req.accepts !== 'function') {
+    req.accepts = (types) => {
+      const accept = String(req.headers?.accept || '').toLowerCase();
+      const candidates = Array.isArray(types) ? types : [types];
+      if (!accept || accept === '*/*') return candidates[0] || false;
+      for (const candidate of candidates) {
+        const short = String(candidate).toLowerCase();
+        const long = short.includes('/') ? short : `application/${short}`;
+        if (accept.includes(short) || accept.includes(long)) return candidate;
+      }
+      return false;
+    };
+  }
+
+  // Express-compatible `res` that proxies onto Fastify's `reply`.
+  const res = {
+    headersSent: false,
+    statusCode: 200,
+    locals: reply.locals || {},
+    setHeader(name, value) { reply.header(name, value); return res; },
+    getHeader(name) { return reply.getHeader ? reply.getHeader(name) : reply.raw?.getHeader?.(name); },
+    removeHeader(name) { if (reply.removeHeader) reply.removeHeader(name); return res; },
+    status(code) { res.statusCode = code; reply.code(code); return res; },
+    sendStatus(code) { res.statusCode = code; reply.code(code).send(); return res; },
+    type(value) { reply.type(value); return res; },
+    redirect(statusOrUrl, maybeUrl) {
+      const statusCode = typeof statusOrUrl === 'number' ? statusOrUrl : 302;
+      const location = typeof statusOrUrl === 'number' ? maybeUrl : statusOrUrl;
+      res.headersSent = true;
+      reply.code(statusCode);
+      reply.header('location', location);
+      reply.send();
+      return res;
+    },
+    json(payload) {
+      res.headersSent = true;
+      reply.header('content-type', reply.getHeader?.('content-type') || 'application/json; charset=utf-8');
+      reply.send(payload);
+      return res;
+    },
+    send(payload) {
+      res.headersSent = true;
+      // Express.send() auto-detects content type: strings → text/html,
+      // objects → JSON, Buffers → application/octet-stream (keep existing
+      // header if set). Fastify's reply.send() already handles Buffer and
+      // object serialization; strings go as text.
+      if (payload === undefined || payload === null) {
+        reply.send();
+      } else if (typeof payload === 'string') {
+        if (!reply.getHeader?.('content-type')) {
+          reply.header('content-type', 'text/html; charset=utf-8');
+        }
+        reply.send(payload);
+      } else if (Buffer.isBuffer(payload)) {
+        if (!reply.getHeader?.('content-type')) {
+          reply.header('content-type', 'application/octet-stream');
+        }
+        reply.send(payload);
+      } else {
+        reply.send(payload);
+      }
+      return res;
+    },
+    end(payload) {
+      res.headersSent = true;
+      if (payload !== undefined) reply.send(payload);
+      else reply.send();
+      return res;
+    },
+  };
+
+  return { req, res };
+}
+
+function matchesMediaType(ct, pattern) {
+  if (pattern === '*/*') return true;
+  if (pattern.endsWith('/*')) {
+    const prefix = pattern.slice(0, -1);
+    return ct.startsWith(prefix);
+  }
+  if (!pattern.includes('/')) {
+    // Express accepts shorthand like 'json' → any */json match.
+    return ct.endsWith(`/${pattern}`) || ct.includes(`+${pattern}`);
+  }
+  return ct === pattern;
+}
+
+/**
+ * Fastify converts its URL pattern syntax to its own format. Express uses
+ * `/foo/:bar` — Fastify supports the same `:param` syntax natively, so no
+ * path transformation is needed.
+ */
+function normalizePath(path) {
+  return path;
+}
+
+/**
+ * Run an ordered list of Express-style `(req, res, next)` middleware until
+ * one calls `next(err)`, one responds, or the chain completes.
+ */
+function runMiddlewareChain(middleware, req, res) {
+  return new Promise((resolve, reject) => {
+    let i = 0;
+    function next(err) {
+      if (err) { reject(err); return; }
+      if (res.headersSent) { resolve(true); return; }
+      if (i >= middleware.length) { resolve(false); return; }
+      const fn = middleware[i++];
+      try {
+        const result = fn(req, res, next);
+        if (result && typeof result.then === 'function') {
+          result.then(() => {
+            if (res.headersSent) resolve(true);
+            // Otherwise rely on the explicit next() call.
+          }, reject);
+        }
+      } catch (err2) {
+        reject(err2);
+      }
+    }
+    next();
+  });
+}
+
+/**
+ * Wrap a list of Express-style middleware + a final handler into a Fastify
+ * route handler.
+ */
+function wrapHandler(middleware, handler) {
+  return async function fastifyRouteHandler(request, reply) {
+    const { req, res } = expressShim(request, reply);
+    if (middleware.length) {
+      const responded = await runMiddlewareChain(middleware, req, res);
+      if (responded || res.headersSent) return reply;
+    }
+    const result = handler(req, res, () => {});
+    if (result && typeof result.then === 'function') {
+      await result;
+    }
+    return reply;
+  };
+}
+
+/**
+ * Express-shaped `app` object backed by Fastify. Not a drop-in for every
+ * Express API — only what PDPP uses. See the header comment for the
+ * exact surface.
+ */
+export function createApp() {
+  const fastify = buildFastify();
+  const settings = new Map();
+  const globalMiddleware = [];
+  let formbodyRegistered = false;
+
+  // Track every registered route so tests and introspection tools can query
+  // which routes came with a contract-package binding. Fastify's
+  // `findRoute()` doesn't expose `config`, so we maintain this list at
+  // registration time.
+  const registeredRoutes = [];
+
+  async function ensureFormbody() {
+    if (formbodyRegistered) return;
+    await fastify.register(fastifyFormbody, {
+      bodyLimit: 100 * 1024 * 1024,
+      parser: (str) => qs.parse(str, { depth: 8, arrayLimit: 64 }),
+    });
+    formbodyRegistered = true;
+  }
+
+  // ─── method helpers ──────────────────────────────────────────────────────
+
+  function registerRoute(method, path, args) {
+    // An args list may include a leading options object carrying a contract
+    // operation id, e.g.
+    //   app.post('/foo', { contract: 'fooOp' }, middleware, handler)
+    // Any non-function entry that looks like a plain options object is
+    // consumed here; everything else is interpreted as middleware/handler.
+    let contractOpId = null;
+    const fns = [];
+    for (const entry of args) {
+      if (typeof entry === 'function') { fns.push(entry); continue; }
+      if (entry && typeof entry === 'object' && typeof entry.contract === 'string') {
+        contractOpId = entry.contract;
+        continue;
+      }
+    }
+    if (!fns.length) throw new Error(`No handler for ${method} ${path}`);
+    const handler = fns[fns.length - 1];
+    const middleware = fns.slice(0, -1);
+    const combinedMiddleware = [...globalMiddleware, ...middleware];
+
+    const routeOptions = {
+      method,
+      url: normalizePath(path),
+      handler: wrapHandler(combinedMiddleware, handler),
+    };
+
+    // Attach the contract-package JSON-Schema directly to the Fastify route
+    // definition when the caller has named an operation. This satisfies the
+    // W6 acceptance criterion that "the contract be registered directly on
+    // Fastify routes." Validation itself stays owned by the existing
+    // `contractValidation()` middleware so PDPP error envelopes are
+    // preserved; we disable Fastify's default validator for this route only.
+    if (contractOpId) {
+      const manifest = CONTRACT_MANIFESTS.get(contractOpId);
+      if (!manifest) {
+        throw new Error(`Unknown contract operation id: ${contractOpId}`);
+      }
+      const schema = buildRouteSchema(manifest);
+      if (schema) {
+        routeOptions.schema = schema;
+        routeOptions.validatorCompiler = () => () => true;
+        routeOptions.config = { pdppContractOp: contractOpId };
+      }
+    }
+
+    fastify.route(routeOptions);
+    registeredRoutes.push({
+      method,
+      url: normalizePath(path),
+      contractOp: contractOpId,
+    });
+  }
+
+  function get(path, ...args) { registerRoute('GET', path, args); return app; }
+  function post(path, ...args) { registerRoute('POST', path, args); return app; }
+  function put(path, ...args) { registerRoute('PUT', path, args); return app; }
+  function del(path, ...args) { registerRoute('DELETE', path, args); return app; }
+  function head(path, ...args) { registerRoute('HEAD', path, args); return app; }
+  function options(path, ...args) { registerRoute('OPTIONS', path, args); return app; }
+
+  // ─── app.use(middleware) ────────────────────────────────────────────────
+
+  function use(fnOrPath, maybeFn) {
+    // Express supports app.use(path, fn) too, but PDPP only uses the bare
+    // app.use(fn) form. Throw if that changes so we notice.
+    if (typeof fnOrPath === 'string') {
+      throw new Error('createApp().use(path, fn) is not supported — use route-level middleware');
+    }
+    if (typeof fnOrPath !== 'function') {
+      throw new Error('createApp().use expects a function');
+    }
+    globalMiddleware.push(fnOrPath);
+    return app;
+  }
+
+  // ─── app.set / app.get (settings) ────────────────────────────────────────
+
+  function set(name, value) {
+    settings.set(name, value);
+    // `app.set('query parser', ...)` — Fastify's parser is baked into the
+    // instance above. We only accept the 'extended' preset to document that
+    // the native nested parsing is on; any other value would be silently
+    // ignored in Express too, so we accept-and-ignore here.
+    return app;
+  }
+
+  function getSetting(name) { return settings.get(name); }
+
+  // ─── listen helper ───────────────────────────────────────────────────────
+
+  async function listen(port, hostOrCb, maybeCb) {
+    const host = typeof hostOrCb === 'string' ? hostOrCb : '0.0.0.0';
+    const cb = typeof maybeCb === 'function'
+      ? maybeCb
+      : (typeof hostOrCb === 'function' ? hostOrCb : null);
+    await ensureFormbody();
+    await fastify.ready();
+    try {
+      await fastify.listen({ port, host });
+      if (cb) cb();
+    } catch (err) {
+      if (cb) cb(err); else throw err;
+    }
+    // Attach the Fastify instance to the raw http.Server so tests that want
+    // to introspect routes (e.g. via `fastify.printRoutes()`) can reach it
+    // through the returned server object without going through the app
+    // closure. Also expose the transport-level route registry so the W6
+    // transport-coverage test can assert every contract manifest has its
+    // binding declared at registration time.
+    fastify.server.__pdppFastify = fastify;
+    fastify.server.__pdppRegisteredRoutes = [...registeredRoutes];
+    // Return the underlying Node http.Server so tests that call
+    // `.closeAllConnections()` / `.close(cb)` keep working.
+    return fastify.server;
+  }
+
+  const app = {
+    // Route methods
+    get(pathOrName, ...rest) {
+      // Express `app.get(name)` reads a setting. Keep that behavior only when
+      // called with a single non-function argument.
+      if (rest.length === 0 && typeof pathOrName === 'string' && !pathOrName.startsWith('/')) {
+        return getSetting(pathOrName);
+      }
+      return get(pathOrName, ...rest);
+    },
+    post, put, delete: del, head, options,
+    use, set,
+
+    // Escape hatch — tests and runtime adapters may need the raw Fastify
+    // instance or its underlying http.Server.
+    fastify,
+    listen,
+
+    // Introspection: returns the list of `{method, url, contractOp}`
+    // registrations. Used by the W6 transport-coverage test to assert that
+    // every @pdpp/reference-contract manifest is attached to a real route.
+    getRegisteredRoutes() {
+      return [...registeredRoutes];
+    },
+  };
+
+  return app;
+}

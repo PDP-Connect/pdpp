@@ -290,4 +290,11 @@
   - [x] Add the planned right-side peek/detail pattern to Traces, Grants, and Runs list pages via `?peek=<id>` so detail inspection is a list-plus-persistent-detail workflow, not a total page swap
   - [x] Preserve the existing URL-addressable `/dashboard/{section}/[id]` full-page detail routes and expose them from inside the peek as "open full →" so deep links and the peek interaction coexist
   - [x] Strengthen `/dashboard` Overview into an operator home that leads with recent failures (traces + runs), recent grant decisions, and recent runs, including an action-needed banner when failures exist
+  - [x] Add a credibility hero band to `/dashboard` Overview backed by a new reference-only `GET /_ref/dataset/summary` endpoint, communicating connectors, streams, live records, retained bytes (live + change history + blobs), and timespan in a single composed sentence plus a quiet top-connectors row and a generic anatomy callout — see `design-notes/dashboard-hero-plan-2026-04-22.md`
+- [x] Make the current thin provider-connect flow usable by default in the local reference setup
+  - [x] Extract a shared reference-local defaults module (`reference-implementation/server/reference-local-defaults.js`) so the default DCR initial access token and default pre-registered public client list have one source of truth
+  - [x] Enable DCR by default in local reference mode backed by the shared default token, while preserving `PDPP_ENABLE_DYNAMIC_CLIENT_REGISTRATION=0` as the explicit off switch and preserving explicit opt overrides in `startServer()` for tests
+  - [x] Seed `pdpp-web-dashboard` and `pdpp-polyfill-owner-bootstrap` as default pre-registered public clients so owner-device bootstrap works out of the box without additional configuration
+  - [x] Make the dashboard DCR workspace pick up the same shared fallback token when no env override is set, via a workspace import rather than a duplicated literal
+  - [x] Add an example third-party client app (`reference-implementation/examples/third-party-app/`) that exercises the current real provider-connect flow end to end (register &rarr; PAR &rarr; owner approval &rarr; token &rarr; RS query), including an honest hosted-approval fallback when owner-auth is enabled
 - [ ] Add broad storage abstraction beyond the current explicit seams

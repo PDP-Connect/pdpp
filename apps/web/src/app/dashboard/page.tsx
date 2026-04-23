@@ -1,10 +1,13 @@
 import Link from 'next/link';
 import { DashboardShell, ServerUnreachable } from './components/shell';
+import { OverviewHero } from './components/overview-hero';
 import { ReferenceServerUnreachableError } from './lib/owner-token';
 import {
+  getDatasetSummary,
   listGrants,
   listRuns,
   listTraces,
+  type DatasetSummary,
   type GrantSummary,
   type RunSummary,
   type TraceSummary,
@@ -13,6 +16,7 @@ import {
 export const dynamic = 'force-dynamic';
 
 type OverviewData = {
+  summary: DatasetSummary;
   failedTraces: TraceSummary[];
   failedRuns: RunSummary[];
   recentDecisions: GrantSummary[];
@@ -21,11 +25,13 @@ type OverviewData = {
 };
 
 async function loadOverview(): Promise<OverviewData> {
-  // Pull small focused slices in parallel. The failed-only slices are what we
-  // highlight up top; the lifecycle "decisions" slice surfaces recent issued/
-  // revoked/denied grants together for the operator.
-  const [failedTracesRes, failedRunsRes, revokedGrantsRes, deniedGrantsRes, issuedGrantsRes, recentRunsRes] =
+  // Pull small focused slices in parallel. The dataset summary powers the
+  // credibility hero; the failed-only slices feed the action banner + failure
+  // panels; the lifecycle "decisions" slice surfaces recent issued/revoked/
+  // denied grants together for the operator.
+  const [summaryRes, failedTracesRes, failedRunsRes, revokedGrantsRes, deniedGrantsRes, issuedGrantsRes, recentRunsRes] =
     await Promise.all([
+      getDatasetSummary(),
       listTraces({ status: 'failed', limit: 5 }),
       listRuns({ status: 'failed', limit: 5 }),
       listGrants({ status: 'revoked', limit: 5 }),
@@ -43,6 +49,7 @@ async function loadOverview(): Promise<OverviewData> {
     .slice(0, 6);
 
   return {
+    summary: summaryRes,
     failedTraces: failedTracesRes.data,
     failedRuns: failedRunsRes.data,
     recentDecisions,
@@ -70,12 +77,14 @@ export default async function DashboardPage() {
 
   return (
     <DashboardShell active="overview">
-      <header className="mb-4">
+      <header className="mb-3">
         <h1 className="text-lg font-semibold">Overview</h1>
         <p className="text-muted-foreground text-xs">
           Local-first operator console. Inspection of traces, grants, runs, and records.
         </p>
       </header>
+
+      <OverviewHero summary={data.summary} />
 
       <ActionBanner
         actionNeeded={data.actionNeeded}

@@ -551,11 +551,15 @@ const AuthHeaderSchema = {
   required: ['authorization'],
 };
 
-const RecordErrors = {
+const ProtectedReadErrors = {
   400: { schema: ErrorObjectSchema, description: 'Invalid request' },
   401: { schema: ErrorObjectSchema, description: 'Missing or invalid access token' },
   403: { schema: ErrorObjectSchema, description: 'Grant does not permit this request' },
   404: { schema: ErrorObjectSchema, description: 'Stream or record not found' },
+};
+
+const ListRecordErrors = {
+  ...ProtectedReadErrors,
   410: { schema: ErrorObjectSchema, description: 'Cursor expired' },
 };
 
@@ -744,7 +748,7 @@ export const publicManifests = [
     },
     responses: {
       200: { schema: StreamListResponseSchema },
-      ...RecordErrors,
+      ...ProtectedReadErrors,
     },
   },
   {
@@ -768,7 +772,7 @@ export const publicManifests = [
     },
     responses: {
       200: { schema: StreamMetadataResponseSchema },
-      ...RecordErrors,
+      ...ProtectedReadErrors,
     },
   },
   {
@@ -785,7 +789,7 @@ export const publicManifests = [
     },
     responses: {
       200: { schema: RecordsListResponseSchema },
-      ...RecordErrors,
+      ...ListRecordErrors,
     },
   },
   {
@@ -794,7 +798,7 @@ export const publicManifests = [
     path: '/v1/streams/{stream}/records/{id}',
     surface: 'public',
     tags: ['records'],
-    summary: 'Fetch a single record by primary key under grant enforcement.',
+    summary: 'Fetch a single record by primary key under grant enforcement, with optional declared expansion.',
     request: {
       headers: AuthHeaderSchema,
       params: RecordIdPathSchema,
@@ -811,7 +815,7 @@ export const publicManifests = [
     },
     responses: {
       200: { schema: RecordSchema },
-      ...RecordErrors,
+      ...ProtectedReadErrors,
     },
   },
   {
@@ -832,8 +836,7 @@ export const publicManifests = [
     },
     responses: {
       200: { description: 'Blob bytes', contentType: 'application/octet-stream' },
-      302: { description: 'Redirect to signed URL' },
-      ...RecordErrors,
+      ...ProtectedReadErrors,
     },
   },
 ];

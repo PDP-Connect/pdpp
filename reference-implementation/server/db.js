@@ -112,6 +112,17 @@ export async function initDb(path = ':memory:') {
   `);
 
   await db.query(sql`
+    CREATE TABLE IF NOT EXISTS connector_schedules (
+      connector_id      TEXT PRIMARY KEY,
+      interval_seconds  INTEGER NOT NULL,
+      jitter_seconds    INTEGER NOT NULL DEFAULT 0,
+      enabled           INTEGER NOT NULL DEFAULT 1,
+      created_at        TEXT NOT NULL,
+      updated_at        TEXT NOT NULL
+    )
+  `);
+
+  await db.query(sql`
     CREATE TABLE IF NOT EXISTS oauth_clients (
       client_id                  TEXT PRIMARY KEY,
       registration_mode          TEXT NOT NULL,

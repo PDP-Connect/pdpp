@@ -713,6 +713,11 @@ Each connector publishes a manifest declaring its consent surface: what streams 
         "fields": true,
         "resources": false
       },
+      "query": {
+        "range_filters": {
+          "source_updated_at": ["gte", "gt", "lte", "lt"]
+        }
+      },
       "views": [
         {
           "id": "basic",
@@ -765,11 +770,12 @@ Each connector publishes a manifest declaring its consent surface: what streams 
 | `streams[].semantics` | `append_only` or `mutable_state`. |
 | `streams[].schema` | JSON Schema for the record's `data` field. `primary_key` and `cursor_field` must reference fields declared here. |
 | `streams[].primary_key` | Fields that uniquely identify a record within the stream. |
-| `streams[].cursor_field` | Field used for incremental sync ordering (Collection Profile). Defined here for manifest syntax completeness; used by the Collection Profile runtime. The RS is not required to use this field for query enforcement; enforcement constraints are carried in the grant. |
+| `streams[].cursor_field` | Field used for logical record ordering in cursor-based reads and incremental sync. List reads sort by `(cursor_field, primary_key)`, with null or absent cursor values sorting after present values. Cursor tokens encode logical sort position rather than storage row ids. |
 | `streams[].consent_time_field` | The temporal consent boundary: the field against which `time_range` is evaluated. Absent means `time_range` is not applicable to this stream. Must reference a field declared in the schema. |
 | `streams[].selection` | Which selection parameters this stream supports (`fields`, `resources`). Time-range capability is derived from `consent_time_field` presence; absent means not time-range-capable. The AS MUST reject grants that request `time_range` on a stream without a `consent_time_field`, or that request an unsupported selection parameter. |
 | `streams[].views` | Named field projections the connector author suggests. Advisory; the AS is authoritative. Each view has `id`, `label`, and `fields` (top-level field names only). |
-| `streams[].relationships` | Declared foreign key relationships to other streams. Used for expansion in the query API. |
+| `streams[].relationships` | Declared foreign key relationships to other streams. Structural graph metadata only; does not by itself make a relation expandable in the read API. |
+| `streams[].query` | Stream-specific query capability declaration. This is the authoritative surface for advanced query power beyond the durable base contract. Initial members are `range_filters` (declared range-queryable fields and operators) and `expand` (declared expandable relations plus per-relation limits). |
 
 ### Stream display metadata {#stream-display}
 
@@ -967,6 +973,14 @@ Returns full source stream metadata. This endpoint is not grant-projected: grant
     "fields": true,
     "resources": false
   },
+  "query": {
+    "range_filters": {
+      "source_updated_at": ["gte", "gt", "lte", "lt"]
+    },
+    "expand": [
+      { "name": "messages", "default_limit": 10, "max_limit": 50 }
+    ]
+  },
   "freshness": {
     "captured_at": "2026-04-06T15:01:00Z",
     "status": "current",
@@ -1009,18 +1023,28 @@ Returns records from a stream, filtered by the grant and any additional request 
 | `limit` | integer | Records per page. Default 25, max 100. |
 | `cursor` | string | Opaque pagination token from a previous response. Clients MUST NOT parse or construct cursor tokens. |
 | `order` | enum | `desc` (default) or `asc`. |
-| `filter[{field}]` | string | Exact match filter. |
-| `filter[{field}][gte]` | string | Greater than or equal (ISO 8601 for dates). |
-| `filter[{field}][gt]` | string | Greater than. |
-| `filter[{field}][lte]` | string | Less than or equal. |
-| `filter[{field}][lt]` | string | Less than. |
+| `filter[{field}]` | string | Exact match filter on an authorized top-level scalar field. |
+| `filter[{field}][gte]` | string | Greater than or equal. Valid only for fields declared in `query.range_filters`. |
+| `filter[{field}][gt]` | string | Greater than. Valid only for fields declared in `query.range_filters`. |
+| `filter[{field}][lte]` | string | Less than or equal. Valid only for fields declared in `query.range_filters`. |
+| `filter[{field}][lt]` | string | Less than. Valid only for fields declared in `query.range_filters`. |
 | `view` | string | Request records projected to a named view. Mutually exclusive with `fields`. |
 | `fields` | comma-separated | Sparse fieldset. Schema-required fields are always included. In v0.1, restricted to top-level field names only. Mutually exclusive with `view`. |
-| `expand[]` | string | Expand a declared foreign key relation inline. Expanded relations appear under the `expanded` key on the parent record. |
-| `expand_limit[{relation}]` | integer | Max records per expanded relation. Default 10, max 50. |
+| `expand[]` | string | Expand a relation declared under `query.expand`. Depth is 1. Expanded relations appear under the `expanded` key on the parent record. |
+| `expand_limit[{relation}]` | integer | Max records per expanded `has_many` relation. Valid only for relations declared under `query.expand`; defaults and limits come from that declaration. |
 | `changes_since` | string | Opaque incremental-sync token from a previous session (distinct token space from `cursor`). Returns only records whose grant-authorized projection changed since that cursor, plus tombstones for deletions. Use `next_changes_since` from the terminal page to seed the next session. Returns HTTP 410 Gone if the cursor has expired. |
 
-**Stable sort:** Records are sorted by `(cursor_field, primary_key)` for cursor safety.
+The durable base query surface in v0.1 is: `limit`, `cursor`, `order`, exact top-level scalar `filter[{field}]`, `fields`, `view`, `changes_since`, and blob fetch. Advanced stream-specific query power MUST be declared in stream metadata under `query`.
+
+Unknown query parameters and unsupported query shapes MUST be rejected with HTTP 400 and MUST NOT be silently ignored.
+
+Exact `filter[{field}]` applies only to authorized top-level scalar fields. Unknown fields and non-scalar fields are HTTP 400. Fields outside the grant's authorized projection are HTTP 403 `field_not_granted`.
+
+Range filters (`gte`, `gt`, `lte`, `lt`) apply only to fields declared in `query.range_filters`. Nested paths, arrays, OR grammar, and full-text search are not part of v0.1.
+
+Expansion is declaration-driven. A relation is structurally present if listed under `relationships`, but it is only expandable if declared under `query.expand`. `expand_limit[{relation}]` is only valid for declared `has_many` relations.
+
+**Stable sort:** Records are sorted by `(cursor_field, primary_key)` for cursor safety. Null or absent `cursor_field` values sort after present values.
 
 **Incremental sync for mutable streams:** Pass `changes_since` to retrieve only records changed since a previous sync. The resource server returns changed records within the grant's authorized field projection. If a record was deleted, a tombstone entry is included. If the cursor has expired (HTTP 410), the client must perform a full re-sync.
 
@@ -1030,7 +1054,7 @@ If a `changes_since` response is paginated, all pages in that session MUST be an
 
 **Filter on unauthorized field:** RS MUST reject a `filter[{field}]` parameter targeting a field outside the grant's authorized projection with 403 `field_not_granted`.
 
-**Expansion:** Requesting an unknown relation returns 400 `invalid_expand`. Requesting expansion of a stream not in the grant returns 403 `insufficient_scope`. Expansion never widens stream or field permissions beyond the grant.
+**Expansion:** Requesting an undeclared relation returns 400 `invalid_expand`. Requesting expansion of a stream not in the grant returns 403 `insufficient_scope`. Expansion never widens stream or field permissions beyond the grant.
 
 **Response:**
 ```json
@@ -1277,9 +1301,10 @@ A conformant Core RS:
 7. Supports incremental sync via `changes_since` for `mutable_state` streams, including tombstone entries, omission of records whose grant-authorized projection did not change, and HTTP 410 on cursor expiry.
 8. Returns `next_changes_since` on the terminal page of every `changes_since` response.
 9. Rejects `filter[{field}]` on fields outside the grant's authorized projection with 403 `field_not_granted`.
-10. Implements the `PDPP-Version` header negotiation.
-11. Scopes owner token access to a single subject's data store; derives `subject_id` from introspection response.
-12. SHOULD support owner-authenticated access to the `/v1/streams/{stream}/records` query endpoints without a client grant, allowing the data subject to export their own data directly (self-export).
+10. Rejects unknown query parameters and unsupported query shapes with 400 instead of silently ignoring them.
+11. Implements the `PDPP-Version` header negotiation.
+12. Scopes owner token access to a single subject's data store; derives `subject_id` from introspection response.
+13. SHOULD support owner-authenticated access to the `/v1/streams/{stream}/records` query endpoints without a client grant, allowing the data subject to export their own data directly (self-export).
 
 **Tier 2: PDPP Collection Profile support**
 
@@ -1507,13 +1532,24 @@ interface StreamRelationship {
   cardinality: 'has_many' | 'has_one';
 }
 
+interface StreamExpandCapability {
+  name: string;
+  default_limit?: number;
+  max_limit?: number;
+}
+
+interface StreamQueryCapabilities {
+  range_filters?: Record<string, Array<'gte' | 'gt' | 'lte' | 'lt'>>;
+  expand?: StreamExpandCapability[];
+}
+
 interface ManifestStream {
   name: string;
   description: string;
   semantics: 'append_only' | 'mutable_state';
   schema: Record<string, unknown>;
   primary_key: string[];
-  cursor_field?: string;           // Collection Profile: incremental sync ordering
+  cursor_field?: string;           // Logical ordering field for cursor-based reads and incremental sync
   consent_time_field?: string;     // Absent means time_range not supported for this stream
   selection: {
     // time_range capability derived from consent_time_field presence
@@ -1522,6 +1558,7 @@ interface ManifestStream {
   };
   views?: StreamView[];
   relationships?: StreamRelationship[];
+  query?: StreamQueryCapabilities;
 }
 
 interface ConnectorManifest {

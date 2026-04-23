@@ -1275,7 +1275,7 @@ test('PDPP reference implementation integration', async (t) => {
       assert.match(consentHtml, /Longview/);
       assert.match(
         consentHtml,
-        new RegExp(`Connector:</strong>\\s*${spotifyManifest.connector_id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`),
+        new RegExp(`<dt>Connector</dt><dd>${spotifyManifest.connector_id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}</dd>`),
       );
 
       const approveResp = await approveGrantRequest(asUrl, initiate.body.request_uri, 'u1');

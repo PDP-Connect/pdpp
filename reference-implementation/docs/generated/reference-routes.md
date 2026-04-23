@@ -16,7 +16,7 @@ Generated from `packages/reference-contract/src/public/`. Do not edit by hand.
 | **GET** | `/v1/streams` | `listStreams` | List streams available under the current grant or owner scope. |
 | **GET** | `/v1/streams/{stream}` | `getStreamMetadata` | Return stream metadata including declared query capabilities and advisory freshness. |
 | **GET** | `/v1/streams/{stream}/records` | `listRecords` | List records in a stream under grant enforcement. Supports logical-cursor pagination, exact and declared range filters, and changes_since. |
-| **GET** | `/v1/streams/{stream}/records/{id}` | `getRecord` | Fetch a single record by primary key under grant enforcement. |
+| **GET** | `/v1/streams/{stream}/records/{id}` | `getRecord` | Fetch a single record by primary key under grant enforcement, with optional declared expansion. |
 | **GET** | `/v1/blobs/{blob_id}` | `getBlob` | Fetch blob bytes authorized by the caller having discovered the referencing record under grant. |
 
 ## getAuthorizationServerMetadata
@@ -190,7 +190,6 @@ List streams available under the current grant or owner scope.
 - `401` — Missing or invalid access token
 - `403` — Grant does not permit this request
 - `404` — Stream or record not found
-- `410` — Cursor expired
 
 ## getStreamMetadata
 
@@ -214,7 +213,6 @@ Return stream metadata including declared query capabilities and advisory freshn
 - `401` — Missing or invalid access token
 - `403` — Grant does not permit this request
 - `404` — Stream or record not found
-- `410` — Cursor expired
 
 ## listRecords
 
@@ -253,7 +251,7 @@ List records in a stream under grant enforcement. Supports logical-cursor pagina
 
 `GET /v1/streams/{stream}/records/{id}`
 
-Fetch a single record by primary key under grant enforcement.
+Fetch a single record by primary key under grant enforcement, with optional declared expansion.
 
 ### Query parameters
 
@@ -274,7 +272,6 @@ Fetch a single record by primary key under grant enforcement.
 - `401` — Missing or invalid access token
 - `403` — Grant does not permit this request
 - `404` — Stream or record not found
-- `410` — Cursor expired
 
 ## getBlob
 
@@ -289,10 +286,8 @@ Fetch blob bytes authorized by the caller having discovered the referencing reco
 ### Responses
 
 - `200` — Blob bytes
-- `302` — Redirect to signed URL
 - `400` — Invalid request
 - `401` — Missing or invalid access token
 - `403` — Grant does not permit this request
 - `404` — Stream or record not found
-- `410` — Cursor expired
 

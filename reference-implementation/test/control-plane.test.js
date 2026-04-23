@@ -16,6 +16,8 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 import { startServer } from '../server/index.js';
+import { ingestRecord } from '../server/records.js';
+import { getDb, sql } from '../server/db.js';
 import { runConnector } from '../runtime/index.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -263,6 +265,233 @@ test('_ref listing helpers', async (t) => {
       assert.ok(startedEvent);
       // actor_id on runtime events is the connectorId, which the run list should report.
       assert.equal(startedEvent.actor_id, spotifyManifest.connector_id);
+    });
+  });
+});
+
+test('_ref dataset summary', async (t) => {
+  await t.test('empty instance returns zeros, null timestamps, and empty top_connectors', async () => {
+    await withHarness(async ({ asUrl }) => {
+      const resp = await fetch(`${asUrl}/_ref/dataset/summary`);
+      const body = await resp.json();
+      assert.equal(resp.status, 200);
+      assert.equal(body.object, 'dataset_summary');
+      assert.equal(body.connector_count, 0);
+      assert.equal(body.stream_count, 0);
+      assert.equal(body.record_count, 0);
+      assert.equal(body.record_json_bytes, 0);
+      assert.equal(body.record_changes_json_bytes, 0);
+      assert.equal(body.blob_bytes, 0);
+      assert.equal(body.total_retained_bytes, 0);
+      assert.equal(body.earliest_record_time, null);
+      assert.equal(body.latest_record_time, null);
+      assert.equal(body.earliest_ingested_at, null);
+      assert.equal(body.latest_ingested_at, null);
+      assert.deepEqual(body.top_connectors, []);
+    });
+  });
+
+  await t.test('populated instance reports honest aggregates across connectors and streams', async () => {
+    await withHarness(async ({ asUrl, spotifyManifest }) => {
+      // Seed records directly via ingestRecord so the test does not depend on
+      // the full Collection-Profile runtime; the dataset summary reads raw
+      // storage regardless of ingestion path.
+      //
+      // The spotify manifest registered by withHarness declares streams
+      // `top_artists` (consent_time_field: source_updated_at), `saved_tracks`
+      // (saved_at), and `recently_played` (played_at). Seed records matching
+      // those streams with real-world timestamps so the dataset summary's
+      // `consent_time_field`-driven bounds exercise the live manifest.
+      const spotifyId = spotifyManifest.connector_id;
+      await ingestRecord(spotifyId, {
+        stream: 'saved_tracks',
+        key: 'track_1',
+        data: { id: 'track_1', name: 'Alpha', saved_at: '2023-01-01T00:00:00.000Z' },
+        emitted_at: '2026-04-20T00:00:00.000Z',
+      });
+      await ingestRecord(spotifyId, {
+        stream: 'saved_tracks',
+        key: 'track_2',
+        data: { id: 'track_2', name: 'Bravo', saved_at: '2024-06-15T12:00:00.000Z' },
+        emitted_at: '2026-04-20T00:00:00.000Z',
+      });
+      await ingestRecord(spotifyId, {
+        stream: 'recently_played',
+        key: 'play_1',
+        data: { id: 'play_1', track_id: 'track_1', played_at: '2022-07-03T09:15:00.000Z' },
+        emitted_at: '2026-04-20T00:00:00.000Z',
+      });
+      // Non-temporal stream (top_artists records without source_updated_at
+      // are still valid; consent_time_field MIN/MAX will just see NULLs).
+      await ingestRecord(spotifyId, {
+        stream: 'top_artists',
+        key: 'artist_1',
+        data: { id: 'artist_1', name: 'X', source_updated_at: '2025-03-10T18:00:00.000Z' },
+        emitted_at: '2026-04-20T00:00:00.000Z',
+      });
+
+      // Seed a blob directly so blob_bytes is exercised.
+      const db = getDb();
+      await db.query(sql`
+        INSERT INTO blobs(blob_id, connector_id, stream, record_key, mime_type, size_bytes, sha256, data)
+        VALUES ('blob_test_1', ${spotifyId}, 'covers', 'cover_1', 'image/png', 2048, 'deadbeef', NULL)
+      `);
+
+      const resp = await fetch(`${asUrl}/_ref/dataset/summary`);
+      const body = await resp.json();
+      assert.equal(resp.status, 200);
+      assert.equal(body.object, 'dataset_summary');
+      assert.equal(body.connector_count, 1, 'one distinct connector_id with live records');
+      assert.equal(body.stream_count, 3, 'distinct (connector_id, stream) pairs with live records');
+      assert.equal(body.record_count, 4);
+      assert.ok(body.record_json_bytes > 0, 'record_json_bytes should be positive with seeded records');
+      assert.ok(
+        body.record_changes_json_bytes >= body.record_json_bytes,
+        'record_changes_json_bytes should include at least one version per seeded record',
+      );
+      assert.equal(body.blob_bytes, 2048);
+      assert.equal(
+        body.total_retained_bytes,
+        body.record_json_bytes + body.record_changes_json_bytes + body.blob_bytes,
+      );
+
+      // Real-world bounds pulled from manifest-declared consent_time_field
+      // values inside record data.
+      assert.equal(
+        body.earliest_record_time,
+        '2022-07-03T09:15:00.000Z',
+        'earliest_record_time comes from recently_played.played_at',
+      );
+      assert.equal(
+        body.latest_record_time,
+        '2025-03-10T18:00:00.000Z',
+        'latest_record_time comes from top_artists.source_updated_at',
+      );
+
+      // Ingestion bounds come from the runtime-set emitted_at column and are
+      // always reported, independent of consent_time_field presence.
+      assert.equal(body.earliest_ingested_at, '2026-04-20T00:00:00.000Z');
+      assert.equal(body.latest_ingested_at, '2026-04-20T00:00:00.000Z');
+
+      // top_connectors is sorted by record_count desc.
+      assert.equal(body.top_connectors.length, 1);
+      assert.equal(body.top_connectors[0].connector_id, spotifyId);
+      assert.equal(body.top_connectors[0].record_count, 4);
+    });
+  });
+
+  await t.test('soft-deleted records are excluded from counts, bytes, and timestamp bounds', async () => {
+    await withHarness(async ({ asUrl, spotifyManifest }) => {
+      const spotifyId = spotifyManifest.connector_id;
+      await ingestRecord(spotifyId, {
+        stream: 'saved_tracks',
+        key: 'track_live',
+        data: { id: 'track_live', name: 'Live', saved_at: '2024-01-01T00:00:00.000Z' },
+        emitted_at: '2026-04-20T00:00:00.000Z',
+      });
+      await ingestRecord(spotifyId, {
+        stream: 'saved_tracks',
+        key: 'track_tombstoned',
+        data: { id: 'track_tombstoned', name: 'Tombstoned', saved_at: '2099-12-31T23:59:59.000Z' },
+        emitted_at: '2026-04-20T00:00:00.000Z',
+      });
+      await ingestRecord(spotifyId, {
+        stream: 'saved_tracks',
+        key: 'track_tombstoned',
+        data: { id: 'track_tombstoned' },
+        op: 'delete',
+        emitted_at: '2026-04-20T00:00:00.000Z',
+      });
+
+      const resp = await fetch(`${asUrl}/_ref/dataset/summary`);
+      const body = await resp.json();
+      assert.equal(body.record_count, 1, 'soft-deleted rows must not count');
+      assert.equal(
+        body.latest_record_time,
+        '2024-01-01T00:00:00.000Z',
+        'tombstoned row must not shift latest_record_time',
+      );
+    });
+  });
+
+  await t.test('streams without consent_time_field do not contribute to record-time bounds', async () => {
+    await withHarness(async ({ asUrl, spotifyManifest }) => {
+      const spotifyId = spotifyManifest.connector_id;
+      // `tracks` is NOT a spotify manifest stream. Records seeded into it have
+      // no manifest-declared consent_time_field, so they MUST NOT contribute
+      // to earliest/latest_record_time even if data contains a timestamp-ish
+      // property.
+      await ingestRecord(spotifyId, {
+        stream: 'tracks',
+        key: 'track_unmanifested',
+        data: { id: 'track_unmanifested', saved_at: '1999-01-01T00:00:00.000Z' },
+        emitted_at: '2026-04-20T00:00:00.000Z',
+      });
+
+      const resp = await fetch(`${asUrl}/_ref/dataset/summary`);
+      const body = await resp.json();
+      assert.equal(body.record_count, 1);
+      assert.equal(
+        body.earliest_record_time,
+        null,
+        'unmanifested stream data MUST NOT be mined for record-time bounds',
+      );
+      assert.equal(body.latest_record_time, null);
+      assert.equal(
+        body.earliest_ingested_at,
+        '2026-04-20T00:00:00.000Z',
+        'ingestion bounds are still reported for unmanifested streams',
+      );
+    });
+  });
+
+  await t.test('record history is counted separately from live payload and folded into total_retained_bytes', async () => {
+    await withHarness(async ({ asUrl, spotifyManifest }) => {
+      const spotifyId = spotifyManifest.connector_id;
+      // Three versions of the same record — one live row, two prior versions
+      // in record_changes. The live payload counts once under
+      // record_json_bytes; every version (including the live one) is mirrored
+      // into record_changes and counts under record_changes_json_bytes.
+      await ingestRecord(spotifyId, {
+        stream: 'tracks',
+        key: 'track_versioned',
+        data: { id: 'track_versioned', name: 'v1', extra: 'x'.repeat(100) },
+        emitted_at: '2024-01-01T00:00:00.000Z',
+      });
+      await ingestRecord(spotifyId, {
+        stream: 'tracks',
+        key: 'track_versioned',
+        data: { id: 'track_versioned', name: 'v2', extra: 'x'.repeat(100) },
+        emitted_at: '2024-01-02T00:00:00.000Z',
+      });
+      await ingestRecord(spotifyId, {
+        stream: 'tracks',
+        key: 'track_versioned',
+        data: { id: 'track_versioned', name: 'v3', extra: 'x'.repeat(100) },
+        emitted_at: '2024-01-03T00:00:00.000Z',
+      });
+
+      const resp = await fetch(`${asUrl}/_ref/dataset/summary`);
+      const body = await resp.json();
+      assert.equal(body.record_count, 1, 'still one live record after three versions');
+      assert.ok(
+        body.record_changes_json_bytes > body.record_json_bytes,
+        'three retained versions must exceed one live-payload size',
+      );
+      assert.equal(
+        body.total_retained_bytes,
+        body.record_json_bytes + body.record_changes_json_bytes + body.blob_bytes,
+        'total_retained_bytes must sum the three labeled concepts',
+      );
+    });
+  });
+
+  await t.test('response carries Request-Id correlation header for log cross-reference', async () => {
+    await withHarness(async ({ asUrl }) => {
+      const resp = await fetch(`${asUrl}/_ref/dataset/summary`);
+      assert.equal(resp.status, 200);
+      const requestId = resp.headers.get('request-id');
+      assert.ok(requestId, 'Request-Id header must be present on _ref responses');
     });
   });
 });

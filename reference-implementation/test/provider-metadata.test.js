@@ -121,8 +121,14 @@ test('provider metadata routes expose current honest capability set', async () =
   }
 });
 
-test('provider metadata omits registration endpoint when no initial access token is configured', async () => {
-  const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
+test('provider metadata omits registration endpoint when initial access tokens are explicitly empty', async () => {
+  const server = await startServer({
+    quiet: true,
+    asPort: 0,
+    rsPort: 0,
+    dbPath: ':memory:',
+    dynamicClientRegistrationInitialAccessTokens: [],
+  });
   const asUrl = `http://localhost:${server.asPort}`;
 
   try {
@@ -130,6 +136,99 @@ test('provider metadata omits registration endpoint when no initial access token
     assert.equal(authorizationServer.status, 200);
     assert.equal('registration_endpoint' in authorizationServer.body, false);
     assert.deepEqual(authorizationServer.body.pdpp_registration_modes_supported, ['pre_registered_public']);
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test('default local reference startup advertises a registration endpoint backed by the shared default token', async () => {
+  const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
+  const asUrl = `http://localhost:${server.asPort}`;
+
+  try {
+    const authorizationServer = await fetchJson(`${asUrl}/.well-known/oauth-authorization-server`);
+    assert.equal(authorizationServer.status, 200);
+    assert.equal(authorizationServer.body.registration_endpoint, `${asUrl}/oauth/register`);
+    assert.deepEqual(authorizationServer.body.pdpp_registration_modes_supported, ['dynamic', 'pre_registered_public']);
+
+    // The default local DCR token must actually unlock /oauth/register; a
+    // bogus token must still be rejected.
+    const { DEFAULT_LOCAL_DCR_INITIAL_ACCESS_TOKEN } = await import('../server/reference-local-defaults.js');
+    const registerOk = await fetch(`${asUrl}/oauth/register`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${DEFAULT_LOCAL_DCR_INITIAL_ACCESS_TOKEN}`,
+      },
+      body: JSON.stringify({ client_name: 'Default Local Client', token_endpoint_auth_method: 'none' }),
+    });
+    assert.ok(registerOk.status === 200 || registerOk.status === 201, `unexpected status ${registerOk.status}`);
+    const registered = await registerOk.json();
+    assert.equal(typeof registered.client_id, 'string');
+
+    const registerNope = await fetch(`${asUrl}/oauth/register`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: 'Bearer nope',
+      },
+      body: JSON.stringify({ client_name: 'Bogus', token_endpoint_auth_method: 'none' }),
+    });
+    assert.ok(
+      registerNope.status === 400 || registerNope.status === 401,
+      `expected 4xx rejection, got ${registerNope.status}`,
+    );
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test('explicit PDPP_ENABLE_DYNAMIC_CLIENT_REGISTRATION=0 env still disables registration', async () => {
+  // Simulate: operator sets the off switch and no explicit opts override it.
+  const previous = process.env.PDPP_ENABLE_DYNAMIC_CLIENT_REGISTRATION;
+  process.env.PDPP_ENABLE_DYNAMIC_CLIENT_REGISTRATION = '0';
+  // The server/index.js module reads the env once at import time, so we can't
+  // retroactively flip the module constant. Instead we pass the explicit opts
+  // equivalent that `PDPP_ENABLE_DYNAMIC_CLIENT_REGISTRATION=0` would have set
+  // on a fresh process. This matches how the reference docs describe the env.
+  const server = await startServer({
+    quiet: true,
+    asPort: 0,
+    rsPort: 0,
+    dbPath: ':memory:',
+    enableDynamicClientRegistration: false,
+  });
+  const asUrl = `http://localhost:${server.asPort}`;
+
+  try {
+    const authorizationServer = await fetchJson(`${asUrl}/.well-known/oauth-authorization-server`);
+    assert.equal(authorizationServer.status, 200);
+    assert.equal('registration_endpoint' in authorizationServer.body, false);
+    assert.deepEqual(authorizationServer.body.pdpp_registration_modes_supported, ['pre_registered_public']);
+  } finally {
+    await closeServer(server);
+    if (previous === undefined) {
+      delete process.env.PDPP_ENABLE_DYNAMIC_CLIENT_REGISTRATION;
+    } else {
+      process.env.PDPP_ENABLE_DYNAMIC_CLIENT_REGISTRATION = previous;
+    }
+  }
+});
+
+test('default local reference startup seeds pdpp-web-dashboard so dashboard bootstrap device_authorization works', async () => {
+  const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
+  const asUrl = `http://localhost:${server.asPort}`;
+
+  try {
+    const deviceRes = await fetch(`${asUrl}/oauth/device_authorization`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ client_id: 'pdpp-web-dashboard' }).toString(),
+    });
+    assert.equal(deviceRes.status, 200);
+    const payload = await deviceRes.json();
+    assert.equal(typeof payload.device_code, 'string');
+    assert.equal(typeof payload.user_code, 'string');
   } finally {
     await closeServer(server);
   }

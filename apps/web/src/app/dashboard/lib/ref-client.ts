@@ -212,6 +212,35 @@ export async function listRuns(opts: ListQuery = {}): Promise<ListResponse<RunSu
   return (await refFetch('/_ref/runs', opts as Record<string, string | number | undefined>)) as ListResponse<RunSummary>;
 }
 
+export type DatasetConnectorSummary = {
+  object: 'dataset_connector_summary';
+  connector_id: string;
+  record_count: number;
+};
+
+export type DatasetSummary = {
+  object: 'dataset_summary';
+  connector_count: number;
+  stream_count: number;
+  record_count: number;
+  record_json_bytes: number;
+  record_changes_json_bytes: number;
+  blob_bytes: number;
+  total_retained_bytes: number;
+  /** Real-world earliest timestamp pulled from record data via each stream's manifest-declared `consent_time_field`. */
+  earliest_record_time: string | null;
+  /** Real-world latest timestamp pulled the same way. */
+  latest_record_time: string | null;
+  /** Substrate ingestion bounds (when the runtime wrote the row). Not the real age of the data. */
+  earliest_ingested_at: string | null;
+  latest_ingested_at: string | null;
+  top_connectors: DatasetConnectorSummary[];
+};
+
+export async function getDatasetSummary(): Promise<DatasetSummary> {
+  return (await refFetch('/_ref/dataset/summary')) as DatasetSummary;
+}
+
 export async function refSearch(query: string): Promise<{
   object: 'search_result';
   traces: TraceSummary[];

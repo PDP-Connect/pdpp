@@ -2096,50 +2096,6 @@
                 }
               }
             }
-          },
-          "410": {
-            "description": "Cursor expired",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$id": "pdpp/common/PdppError",
-                  "type": "object",
-                  "additionalProperties": false,
-                  "properties": {
-                    "error": {
-                      "type": "object",
-                      "additionalProperties": false,
-                      "properties": {
-                        "type": {
-                          "type": "string"
-                        },
-                        "code": {
-                          "type": "string"
-                        },
-                        "message": {
-                          "type": "string"
-                        },
-                        "param": {
-                          "type": "string"
-                        },
-                        "request_id": {
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "type",
-                        "code",
-                        "message",
-                        "request_id"
-                      ]
-                    }
-                  },
-                  "required": [
-                    "error"
-                  ]
-                }
-              }
-            }
           }
         }
       }
@@ -2405,50 +2361,6 @@
           },
           "404": {
             "description": "Stream or record not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$id": "pdpp/common/PdppError",
-                  "type": "object",
-                  "additionalProperties": false,
-                  "properties": {
-                    "error": {
-                      "type": "object",
-                      "additionalProperties": false,
-                      "properties": {
-                        "type": {
-                          "type": "string"
-                        },
-                        "code": {
-                          "type": "string"
-                        },
-                        "message": {
-                          "type": "string"
-                        },
-                        "param": {
-                          "type": "string"
-                        },
-                        "request_id": {
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "type",
-                        "code",
-                        "message",
-                        "request_id"
-                      ]
-                    }
-                  },
-                  "required": [
-                    "error"
-                  ]
-                }
-              }
-            }
-          },
-          "410": {
-            "description": "Cursor expired",
             "content": {
               "application/json": {
                 "schema": {
@@ -2945,7 +2857,7 @@
         "tags": [
           "records"
         ],
-        "summary": "Fetch a single record by primary key under grant enforcement.",
+        "summary": "Fetch a single record by primary key under grant enforcement, with optional declared expansion.",
         "parameters": [
           {
             "in": "path",
@@ -3221,50 +3133,6 @@
                 }
               }
             }
-          },
-          "410": {
-            "description": "Cursor expired",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$id": "pdpp/common/PdppError",
-                  "type": "object",
-                  "additionalProperties": false,
-                  "properties": {
-                    "error": {
-                      "type": "object",
-                      "additionalProperties": false,
-                      "properties": {
-                        "type": {
-                          "type": "string"
-                        },
-                        "code": {
-                          "type": "string"
-                        },
-                        "message": {
-                          "type": "string"
-                        },
-                        "param": {
-                          "type": "string"
-                        },
-                        "request_id": {
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "type",
-                        "code",
-                        "message",
-                        "request_id"
-                      ]
-                    }
-                  },
-                  "required": [
-                    "error"
-                  ]
-                }
-              }
-            }
           }
         }
       }
@@ -3293,9 +3161,6 @@
             "content": {
               "application/octet-stream": {}
             }
-          },
-          "302": {
-            "description": "Redirect to signed URL"
           },
           "400": {
             "description": "Invalid request",
@@ -3431,50 +3296,6 @@
           },
           "404": {
             "description": "Stream or record not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$id": "pdpp/common/PdppError",
-                  "type": "object",
-                  "additionalProperties": false,
-                  "properties": {
-                    "error": {
-                      "type": "object",
-                      "additionalProperties": false,
-                      "properties": {
-                        "type": {
-                          "type": "string"
-                        },
-                        "code": {
-                          "type": "string"
-                        },
-                        "message": {
-                          "type": "string"
-                        },
-                        "param": {
-                          "type": "string"
-                        },
-                        "request_id": {
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "type",
-                        "code",
-                        "message",
-                        "request_id"
-                      ]
-                    }
-                  },
-                  "required": [
-                    "error"
-                  ]
-                }
-              }
-            }
-          },
-          "410": {
-            "description": "Cursor expired",
             "content": {
               "application/json": {
                 "schema": {
@@ -3835,94 +3656,6 @@
               }
             }
           },
-          "401": {
-            "description": "Missing or invalid owner/operator auth",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$id": "pdpp/common/PdppError",
-                  "type": "object",
-                  "additionalProperties": false,
-                  "properties": {
-                    "error": {
-                      "type": "object",
-                      "additionalProperties": false,
-                      "properties": {
-                        "type": {
-                          "type": "string"
-                        },
-                        "code": {
-                          "type": "string"
-                        },
-                        "message": {
-                          "type": "string"
-                        },
-                        "param": {
-                          "type": "string"
-                        },
-                        "request_id": {
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "type",
-                        "code",
-                        "message",
-                        "request_id"
-                      ]
-                    }
-                  },
-                  "required": [
-                    "error"
-                  ]
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Not permitted",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$id": "pdpp/common/PdppError",
-                  "type": "object",
-                  "additionalProperties": false,
-                  "properties": {
-                    "error": {
-                      "type": "object",
-                      "additionalProperties": false,
-                      "properties": {
-                        "type": {
-                          "type": "string"
-                        },
-                        "code": {
-                          "type": "string"
-                        },
-                        "message": {
-                          "type": "string"
-                        },
-                        "param": {
-                          "type": "string"
-                        },
-                        "request_id": {
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "type",
-                        "code",
-                        "message",
-                        "request_id"
-                      ]
-                    }
-                  },
-                  "required": [
-                    "error"
-                  ]
-                }
-              }
-            }
-          },
           "404": {
             "description": "Not found",
             "content": {
@@ -4148,94 +3881,6 @@
           },
           "400": {
             "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$id": "pdpp/common/PdppError",
-                  "type": "object",
-                  "additionalProperties": false,
-                  "properties": {
-                    "error": {
-                      "type": "object",
-                      "additionalProperties": false,
-                      "properties": {
-                        "type": {
-                          "type": "string"
-                        },
-                        "code": {
-                          "type": "string"
-                        },
-                        "message": {
-                          "type": "string"
-                        },
-                        "param": {
-                          "type": "string"
-                        },
-                        "request_id": {
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "type",
-                        "code",
-                        "message",
-                        "request_id"
-                      ]
-                    }
-                  },
-                  "required": [
-                    "error"
-                  ]
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Missing or invalid owner/operator auth",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$id": "pdpp/common/PdppError",
-                  "type": "object",
-                  "additionalProperties": false,
-                  "properties": {
-                    "error": {
-                      "type": "object",
-                      "additionalProperties": false,
-                      "properties": {
-                        "type": {
-                          "type": "string"
-                        },
-                        "code": {
-                          "type": "string"
-                        },
-                        "message": {
-                          "type": "string"
-                        },
-                        "param": {
-                          "type": "string"
-                        },
-                        "request_id": {
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "type",
-                        "code",
-                        "message",
-                        "request_id"
-                      ]
-                    }
-                  },
-                  "required": [
-                    "error"
-                  ]
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Not permitted",
             "content": {
               "application/json": {
                 "schema": {
@@ -4539,94 +4184,6 @@
               }
             }
           },
-          "401": {
-            "description": "Missing or invalid owner/operator auth",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$id": "pdpp/common/PdppError",
-                  "type": "object",
-                  "additionalProperties": false,
-                  "properties": {
-                    "error": {
-                      "type": "object",
-                      "additionalProperties": false,
-                      "properties": {
-                        "type": {
-                          "type": "string"
-                        },
-                        "code": {
-                          "type": "string"
-                        },
-                        "message": {
-                          "type": "string"
-                        },
-                        "param": {
-                          "type": "string"
-                        },
-                        "request_id": {
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "type",
-                        "code",
-                        "message",
-                        "request_id"
-                      ]
-                    }
-                  },
-                  "required": [
-                    "error"
-                  ]
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Not permitted",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$id": "pdpp/common/PdppError",
-                  "type": "object",
-                  "additionalProperties": false,
-                  "properties": {
-                    "error": {
-                      "type": "object",
-                      "additionalProperties": false,
-                      "properties": {
-                        "type": {
-                          "type": "string"
-                        },
-                        "code": {
-                          "type": "string"
-                        },
-                        "message": {
-                          "type": "string"
-                        },
-                        "param": {
-                          "type": "string"
-                        },
-                        "request_id": {
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "type",
-                        "code",
-                        "message",
-                        "request_id"
-                      ]
-                    }
-                  },
-                  "required": [
-                    "error"
-                  ]
-                }
-              }
-            }
-          },
           "404": {
             "description": "Not found",
             "content": {
@@ -4831,94 +4388,6 @@
               }
             }
           },
-          "401": {
-            "description": "Missing or invalid owner/operator auth",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$id": "pdpp/common/PdppError",
-                  "type": "object",
-                  "additionalProperties": false,
-                  "properties": {
-                    "error": {
-                      "type": "object",
-                      "additionalProperties": false,
-                      "properties": {
-                        "type": {
-                          "type": "string"
-                        },
-                        "code": {
-                          "type": "string"
-                        },
-                        "message": {
-                          "type": "string"
-                        },
-                        "param": {
-                          "type": "string"
-                        },
-                        "request_id": {
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "type",
-                        "code",
-                        "message",
-                        "request_id"
-                      ]
-                    }
-                  },
-                  "required": [
-                    "error"
-                  ]
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Not permitted",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$id": "pdpp/common/PdppError",
-                  "type": "object",
-                  "additionalProperties": false,
-                  "properties": {
-                    "error": {
-                      "type": "object",
-                      "additionalProperties": false,
-                      "properties": {
-                        "type": {
-                          "type": "string"
-                        },
-                        "code": {
-                          "type": "string"
-                        },
-                        "message": {
-                          "type": "string"
-                        },
-                        "param": {
-                          "type": "string"
-                        },
-                        "request_id": {
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "type",
-                        "code",
-                        "message",
-                        "request_id"
-                      ]
-                    }
-                  },
-                  "required": [
-                    "error"
-                  ]
-                }
-              }
-            }
-          },
           "404": {
             "description": "Not found",
             "content": {
@@ -5025,94 +4494,6 @@
           },
           "400": {
             "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$id": "pdpp/common/PdppError",
-                  "type": "object",
-                  "additionalProperties": false,
-                  "properties": {
-                    "error": {
-                      "type": "object",
-                      "additionalProperties": false,
-                      "properties": {
-                        "type": {
-                          "type": "string"
-                        },
-                        "code": {
-                          "type": "string"
-                        },
-                        "message": {
-                          "type": "string"
-                        },
-                        "param": {
-                          "type": "string"
-                        },
-                        "request_id": {
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "type",
-                        "code",
-                        "message",
-                        "request_id"
-                      ]
-                    }
-                  },
-                  "required": [
-                    "error"
-                  ]
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Missing or invalid owner/operator auth",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$id": "pdpp/common/PdppError",
-                  "type": "object",
-                  "additionalProperties": false,
-                  "properties": {
-                    "error": {
-                      "type": "object",
-                      "additionalProperties": false,
-                      "properties": {
-                        "type": {
-                          "type": "string"
-                        },
-                        "code": {
-                          "type": "string"
-                        },
-                        "message": {
-                          "type": "string"
-                        },
-                        "param": {
-                          "type": "string"
-                        },
-                        "request_id": {
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "type",
-                        "code",
-                        "message",
-                        "request_id"
-                      ]
-                    }
-                  },
-                  "required": [
-                    "error"
-                  ]
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Not permitted",
             "content": {
               "application/json": {
                 "schema": {
@@ -5332,94 +4713,6 @@
               }
             }
           },
-          "401": {
-            "description": "Missing or invalid owner/operator auth",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$id": "pdpp/common/PdppError",
-                  "type": "object",
-                  "additionalProperties": false,
-                  "properties": {
-                    "error": {
-                      "type": "object",
-                      "additionalProperties": false,
-                      "properties": {
-                        "type": {
-                          "type": "string"
-                        },
-                        "code": {
-                          "type": "string"
-                        },
-                        "message": {
-                          "type": "string"
-                        },
-                        "param": {
-                          "type": "string"
-                        },
-                        "request_id": {
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "type",
-                        "code",
-                        "message",
-                        "request_id"
-                      ]
-                    }
-                  },
-                  "required": [
-                    "error"
-                  ]
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Not permitted",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$id": "pdpp/common/PdppError",
-                  "type": "object",
-                  "additionalProperties": false,
-                  "properties": {
-                    "error": {
-                      "type": "object",
-                      "additionalProperties": false,
-                      "properties": {
-                        "type": {
-                          "type": "string"
-                        },
-                        "code": {
-                          "type": "string"
-                        },
-                        "message": {
-                          "type": "string"
-                        },
-                        "param": {
-                          "type": "string"
-                        },
-                        "request_id": {
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "type",
-                        "code",
-                        "message",
-                        "request_id"
-                      ]
-                    }
-                  },
-                  "required": [
-                    "error"
-                  ]
-                }
-              }
-            }
-          },
           "404": {
             "description": "Not found",
             "content": {
@@ -5536,94 +4829,6 @@
           },
           "400": {
             "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$id": "pdpp/common/PdppError",
-                  "type": "object",
-                  "additionalProperties": false,
-                  "properties": {
-                    "error": {
-                      "type": "object",
-                      "additionalProperties": false,
-                      "properties": {
-                        "type": {
-                          "type": "string"
-                        },
-                        "code": {
-                          "type": "string"
-                        },
-                        "message": {
-                          "type": "string"
-                        },
-                        "param": {
-                          "type": "string"
-                        },
-                        "request_id": {
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "type",
-                        "code",
-                        "message",
-                        "request_id"
-                      ]
-                    }
-                  },
-                  "required": [
-                    "error"
-                  ]
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Missing or invalid owner/operator auth",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$id": "pdpp/common/PdppError",
-                  "type": "object",
-                  "additionalProperties": false,
-                  "properties": {
-                    "error": {
-                      "type": "object",
-                      "additionalProperties": false,
-                      "properties": {
-                        "type": {
-                          "type": "string"
-                        },
-                        "code": {
-                          "type": "string"
-                        },
-                        "message": {
-                          "type": "string"
-                        },
-                        "param": {
-                          "type": "string"
-                        },
-                        "request_id": {
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "type",
-                        "code",
-                        "message",
-                        "request_id"
-                      ]
-                    }
-                  },
-                  "required": [
-                    "error"
-                  ]
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Not permitted",
             "content": {
               "application/json": {
                 "schema": {
@@ -5849,94 +5054,6 @@
               }
             }
           },
-          "401": {
-            "description": "Missing or invalid owner/operator auth",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$id": "pdpp/common/PdppError",
-                  "type": "object",
-                  "additionalProperties": false,
-                  "properties": {
-                    "error": {
-                      "type": "object",
-                      "additionalProperties": false,
-                      "properties": {
-                        "type": {
-                          "type": "string"
-                        },
-                        "code": {
-                          "type": "string"
-                        },
-                        "message": {
-                          "type": "string"
-                        },
-                        "param": {
-                          "type": "string"
-                        },
-                        "request_id": {
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "type",
-                        "code",
-                        "message",
-                        "request_id"
-                      ]
-                    }
-                  },
-                  "required": [
-                    "error"
-                  ]
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Not permitted",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$id": "pdpp/common/PdppError",
-                  "type": "object",
-                  "additionalProperties": false,
-                  "properties": {
-                    "error": {
-                      "type": "object",
-                      "additionalProperties": false,
-                      "properties": {
-                        "type": {
-                          "type": "string"
-                        },
-                        "code": {
-                          "type": "string"
-                        },
-                        "message": {
-                          "type": "string"
-                        },
-                        "param": {
-                          "type": "string"
-                        },
-                        "request_id": {
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "type",
-                        "code",
-                        "message",
-                        "request_id"
-                      ]
-                    }
-                  },
-                  "required": [
-                    "error"
-                  ]
-                }
-              }
-            }
-          },
           "404": {
             "description": "Not found",
             "content": {
@@ -6095,94 +5212,6 @@
               }
             }
           },
-          "401": {
-            "description": "Missing or invalid owner/operator auth",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$id": "pdpp/common/PdppError",
-                  "type": "object",
-                  "additionalProperties": false,
-                  "properties": {
-                    "error": {
-                      "type": "object",
-                      "additionalProperties": false,
-                      "properties": {
-                        "type": {
-                          "type": "string"
-                        },
-                        "code": {
-                          "type": "string"
-                        },
-                        "message": {
-                          "type": "string"
-                        },
-                        "param": {
-                          "type": "string"
-                        },
-                        "request_id": {
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "type",
-                        "code",
-                        "message",
-                        "request_id"
-                      ]
-                    }
-                  },
-                  "required": [
-                    "error"
-                  ]
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Not permitted",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$id": "pdpp/common/PdppError",
-                  "type": "object",
-                  "additionalProperties": false,
-                  "properties": {
-                    "error": {
-                      "type": "object",
-                      "additionalProperties": false,
-                      "properties": {
-                        "type": {
-                          "type": "string"
-                        },
-                        "code": {
-                          "type": "string"
-                        },
-                        "message": {
-                          "type": "string"
-                        },
-                        "param": {
-                          "type": "string"
-                        },
-                        "request_id": {
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "type",
-                        "code",
-                        "message",
-                        "request_id"
-                      ]
-                    }
-                  },
-                  "required": [
-                    "error"
-                  ]
-                }
-              }
-            }
-          },
           "404": {
             "description": "Not found",
             "content": {
@@ -6299,94 +5328,6 @@
           },
           "400": {
             "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$id": "pdpp/common/PdppError",
-                  "type": "object",
-                  "additionalProperties": false,
-                  "properties": {
-                    "error": {
-                      "type": "object",
-                      "additionalProperties": false,
-                      "properties": {
-                        "type": {
-                          "type": "string"
-                        },
-                        "code": {
-                          "type": "string"
-                        },
-                        "message": {
-                          "type": "string"
-                        },
-                        "param": {
-                          "type": "string"
-                        },
-                        "request_id": {
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "type",
-                        "code",
-                        "message",
-                        "request_id"
-                      ]
-                    }
-                  },
-                  "required": [
-                    "error"
-                  ]
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Missing or invalid owner/operator auth",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$id": "pdpp/common/PdppError",
-                  "type": "object",
-                  "additionalProperties": false,
-                  "properties": {
-                    "error": {
-                      "type": "object",
-                      "additionalProperties": false,
-                      "properties": {
-                        "type": {
-                          "type": "string"
-                        },
-                        "code": {
-                          "type": "string"
-                        },
-                        "message": {
-                          "type": "string"
-                        },
-                        "param": {
-                          "type": "string"
-                        },
-                        "request_id": {
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "type",
-                        "code",
-                        "message",
-                        "request_id"
-                      ]
-                    }
-                  },
-                  "required": [
-                    "error"
-                  ]
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Not permitted",
             "content": {
               "application/json": {
                 "schema": {
@@ -6591,7 +5532,7 @@
               "type": "string",
               "enum": [
                 "native",
-                "emitted"
+                "ingest"
               ]
             }
           }
@@ -6695,7 +5636,7 @@
                           "type": "string",
                           "enum": [
                             "native",
-                            "emitted"
+                            "ingest"
                           ]
                         },
                         "filters": {
@@ -6797,8 +5738,8 @@
               }
             }
           },
-          "401": {
-            "description": "Missing or invalid owner/operator auth",
+          "404": {
+            "description": "Not found",
             "content": {
               "application/json": {
                 "schema": {
@@ -6841,8 +5782,172 @@
               }
             }
           },
-          "403": {
-            "description": "Not permitted",
+          "409": {
+            "description": "Conflict (e.g. run_already_active)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$id": "pdpp/common/PdppError",
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "type": {
+                          "type": "string"
+                        },
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "param": {
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "code",
+                        "message",
+                        "request_id"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/_ref/dataset/summary": {
+      "get": {
+        "operationId": "refDatasetSummary",
+        "tags": [
+          "reference",
+          "dataset"
+        ],
+        "summary": "Aggregate dataset summary: live record counts, retained-history bytes, timespan bounds, and top connectors.",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "object": {
+                      "const": "dataset_summary"
+                    },
+                    "connector_count": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "stream_count": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "record_count": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "record_json_bytes": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "record_changes_json_bytes": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "blob_bytes": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "total_retained_bytes": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "earliest_record_time": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "latest_record_time": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "earliest_ingested_at": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "latest_ingested_at": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "top_connectors": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                          "object": {
+                            "const": "dataset_connector_summary"
+                          },
+                          "connector_id": {
+                            "type": "string"
+                          },
+                          "record_count": {
+                            "type": "integer",
+                            "minimum": 0
+                          }
+                        },
+                        "required": [
+                          "object",
+                          "connector_id",
+                          "record_count"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "object",
+                    "connector_count",
+                    "stream_count",
+                    "record_count",
+                    "record_json_bytes",
+                    "record_changes_json_bytes",
+                    "blob_bytes",
+                    "total_retained_bytes",
+                    "earliest_record_time",
+                    "latest_record_time",
+                    "earliest_ingested_at",
+                    "latest_ingested_at",
+                    "top_connectors"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
             "content": {
               "application/json": {
                 "schema": {

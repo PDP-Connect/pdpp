@@ -2084,50 +2084,6 @@
                 }
               }
             }
-          },
-          "410": {
-            "description": "Cursor expired",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$id": "pdpp/common/PdppError",
-                  "type": "object",
-                  "additionalProperties": false,
-                  "properties": {
-                    "error": {
-                      "type": "object",
-                      "additionalProperties": false,
-                      "properties": {
-                        "type": {
-                          "type": "string"
-                        },
-                        "code": {
-                          "type": "string"
-                        },
-                        "message": {
-                          "type": "string"
-                        },
-                        "param": {
-                          "type": "string"
-                        },
-                        "request_id": {
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "type",
-                        "code",
-                        "message",
-                        "request_id"
-                      ]
-                    }
-                  },
-                  "required": [
-                    "error"
-                  ]
-                }
-              }
-            }
           }
         }
       }
@@ -2393,50 +2349,6 @@
           },
           "404": {
             "description": "Stream or record not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$id": "pdpp/common/PdppError",
-                  "type": "object",
-                  "additionalProperties": false,
-                  "properties": {
-                    "error": {
-                      "type": "object",
-                      "additionalProperties": false,
-                      "properties": {
-                        "type": {
-                          "type": "string"
-                        },
-                        "code": {
-                          "type": "string"
-                        },
-                        "message": {
-                          "type": "string"
-                        },
-                        "param": {
-                          "type": "string"
-                        },
-                        "request_id": {
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "type",
-                        "code",
-                        "message",
-                        "request_id"
-                      ]
-                    }
-                  },
-                  "required": [
-                    "error"
-                  ]
-                }
-              }
-            }
-          },
-          "410": {
-            "description": "Cursor expired",
             "content": {
               "application/json": {
                 "schema": {
@@ -2933,7 +2845,7 @@
         "tags": [
           "records"
         ],
-        "summary": "Fetch a single record by primary key under grant enforcement.",
+        "summary": "Fetch a single record by primary key under grant enforcement, with optional declared expansion.",
         "parameters": [
           {
             "in": "path",
@@ -3209,50 +3121,6 @@
                 }
               }
             }
-          },
-          "410": {
-            "description": "Cursor expired",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$id": "pdpp/common/PdppError",
-                  "type": "object",
-                  "additionalProperties": false,
-                  "properties": {
-                    "error": {
-                      "type": "object",
-                      "additionalProperties": false,
-                      "properties": {
-                        "type": {
-                          "type": "string"
-                        },
-                        "code": {
-                          "type": "string"
-                        },
-                        "message": {
-                          "type": "string"
-                        },
-                        "param": {
-                          "type": "string"
-                        },
-                        "request_id": {
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "type",
-                        "code",
-                        "message",
-                        "request_id"
-                      ]
-                    }
-                  },
-                  "required": [
-                    "error"
-                  ]
-                }
-              }
-            }
           }
         }
       }
@@ -3281,9 +3149,6 @@
             "content": {
               "application/octet-stream": {}
             }
-          },
-          "302": {
-            "description": "Redirect to signed URL"
           },
           "400": {
             "description": "Invalid request",
@@ -3419,50 +3284,6 @@
           },
           "404": {
             "description": "Stream or record not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$id": "pdpp/common/PdppError",
-                  "type": "object",
-                  "additionalProperties": false,
-                  "properties": {
-                    "error": {
-                      "type": "object",
-                      "additionalProperties": false,
-                      "properties": {
-                        "type": {
-                          "type": "string"
-                        },
-                        "code": {
-                          "type": "string"
-                        },
-                        "message": {
-                          "type": "string"
-                        },
-                        "param": {
-                          "type": "string"
-                        },
-                        "request_id": {
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "type",
-                        "code",
-                        "message",
-                        "request_id"
-                      ]
-                    }
-                  },
-                  "required": [
-                    "error"
-                  ]
-                }
-              }
-            }
-          },
-          "410": {
-            "description": "Cursor expired",
             "content": {
               "application/json": {
                 "schema": {

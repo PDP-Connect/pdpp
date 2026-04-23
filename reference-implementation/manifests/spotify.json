@@ -33,6 +33,11 @@
       "cursor_field": "source_updated_at",
       "consent_time_field": "source_updated_at",
       "selection": { "fields": true, "resources": true },
+      "query": {
+        "range_filters": {
+          "source_updated_at": ["gte", "gt", "lte", "lt"]
+        }
+      },
       "views": [
         {
           "id": "basic",
@@ -62,7 +67,18 @@
           "duration_ms": { "type": "integer" },
           "popularity": { "type": "integer" },
           "saved_at": { "type": "string", "format": "date-time" },
-          "source_created_at": { "type": "string", "format": "date-time" }
+          "source_created_at": { "type": "string", "format": "date-time" },
+          "blob_ref": {
+            "type": "object",
+            "properties": {
+              "blob_id": { "type": "string" },
+              "mime_type": { "type": "string" },
+              "size_bytes": { "type": "integer" },
+              "sha256": { "type": "string" }
+            },
+            "required": ["blob_id"],
+            "additionalProperties": true
+          }
         },
         "required": ["id", "name"]
       },
@@ -70,6 +86,27 @@
       "cursor_field": "saved_at",
       "consent_time_field": "saved_at",
       "selection": { "fields": true, "resources": true },
+      "relationships": [
+        {
+          "name": "recently_played",
+          "stream": "recently_played",
+          "foreign_key": "track_id",
+          "cardinality": "has_many"
+        }
+      ],
+      "query": {
+        "range_filters": {
+          "saved_at": ["gte", "gt", "lte", "lt"],
+          "source_created_at": ["gte", "gt", "lte", "lt"]
+        },
+        "expand": [
+          {
+            "name": "recently_played",
+            "default_limit": 10,
+            "max_limit": 50
+          }
+        ]
+      },
       "views": [
         {
           "id": "basic",

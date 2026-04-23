@@ -68,6 +68,30 @@ The current reference is centered on one architectural claim:
 
 - `POST /oauth/register`
 
+Dynamic client registration is enabled **by default** for local reference use.
+When neither `PDPP_DCR_INITIAL_ACCESS_TOKENS` nor `startServer()`'s
+`dynamicClientRegistrationInitialAccessTokens` opt is set, the reference AS
+falls back to a shared reference-local default token exported from
+[`server/reference-local-defaults.js`](server/reference-local-defaults.js).
+This keeps the forkable reference usable out of the box without silently
+widening the protocol contract.
+
+Overrides:
+
+- `PDPP_DCR_INITIAL_ACCESS_TOKENS=token1,token2` — comma-separated initial
+  access tokens. When set, the reference server only accepts these tokens.
+- `PDPP_ENABLE_DYNAMIC_CLIENT_REGISTRATION=0` — explicitly disables DCR. The
+  AS metadata then omits `registration_endpoint` and advertises only
+  `pdpp_registration_modes_supported: ["pre_registered_public"]`.
+
+Default pre-registered public clients seeded at startup include the real
+first-party demo clients (`longview`, `longview_planning_v1`, `cli_longview`,
+`concert_recommendation_app`) plus the dashboard/bootstrap clients
+`pdpp-web-dashboard` and `pdpp-polyfill-owner-bootstrap` so owner device
+bootstrap from the dashboard and the polyfill orchestrator works out of the
+box. The pre-registered set is reference-local convenience; production
+deployments should supply their own `preRegisteredPublicClients` option.
+
 ### Consent and grant issuance
 
 - `GET /consent?request_uri=...`
@@ -98,8 +122,60 @@ That pair lets a caller correlate a live query response to `GET /_ref/traces/:tr
 - `GET /_ref/traces/:traceId`
 - `GET /_ref/grants/:grantId/timeline`
 - `GET /_ref/runs/:runId/timeline`
+- `GET /_ref/dataset/summary`
 
 These `_ref` endpoints are intentionally reference-only artifacts, not core PDPP protocol requirements.
+
+`GET /_ref/dataset/summary` returns a live aggregate description of what the
+substrate is holding: connector count, stream count, live record count, and
+three separately-labeled byte totals (`record_json_bytes` for live payloads,
+`record_changes_json_bytes` for retained change history, `blob_bytes` for
+blobs), summed into `total_retained_bytes`. Counts exclude soft-deleted
+records. The response also carries two pairs of temporal bounds:
+`earliest_record_time` / `latest_record_time` are real-world timestamps
+mined from record payloads via each stream's manifest-declared
+`consent_time_field`, and `earliest_ingested_at` / `latest_ingested_at` are
+the substrate's own `emitted_at` bounds (when the runtime wrote each row).
+Plus a top-3 `top_connectors` list. Used by the operator-console hero band;
+see `openspec/changes/reference-implementation-program/design-notes/dashboard-hero-plan-2026-04-22.md`
+for the design rationale.
+
+### Reference-only owner-auth placeholder
+
+The reference ships a minimal local-only owner-auth placeholder for the approval surfaces. It is **not** part of the PDPP protocol and is **not** a finished owner-auth product. See
+[`openspec/changes/reference-implementation-program/design-notes/owner-auth-placeholder-open-question-2026-04-22.md`](../openspec/changes/reference-implementation-program/design-notes/owner-auth-placeholder-open-question-2026-04-22.md)
+for scope and rationale.
+
+Environment variables:
+
+- `PDPP_OWNER_PASSWORD` — if set, the approval surfaces below require a valid owner session. If unset, the server keeps its current open local-dev behavior.
+- `PDPP_OWNER_SUBJECT_ID` — optional. Defaults to `owner_local`. When placeholder auth is enabled, this value is the owner subject id used for every approved grant and device authorization; any `subject_id` submitted from a form or JSON body is ignored.
+
+Routes gated by the placeholder (when enabled):
+
+- `GET /consent`, `POST /consent/approve`, `POST /consent/deny`
+- `GET /device`, `POST /device/approve`, `POST /device/deny`
+
+Routes added by the placeholder:
+
+- `GET /owner/login` — HTML login page (supports a safe same-origin `return_to` query parameter)
+- `POST /owner/login` — submits the owner password; on success sets a signed HTTP-only session cookie (`pdpp_owner_session`, 12 hour lifetime, `SameSite=Lax`, `Secure` when served over HTTPS) and redirects to `return_to`
+- `POST /owner/logout` — clears the session cookie
+
+Unauthenticated HTML requests to the protected routes redirect to `/owner/login?return_to=...`; non-HTML callers receive an honest `401` with error code `owner_session_required`.
+
+The placeholder is intentionally narrow:
+
+- no user table, no external IdP, no multi-user auth
+- stateless HMAC-signed session cookie — rotating `PDPP_OWNER_PASSWORD` invalidates existing sessions
+- public protocol surfaces (`/oauth/par`, `/oauth/register`, `/oauth/token`, `/v1/*`, `/.well-known/*`) are **not** gated
+- `/dashboard` is **not** gated in this tranche and remains an open follow-up when a more durable owner-auth story is chosen
+
+### Reference-only hosted-UI layer
+
+Server-rendered HTML pages (`GET /consent`, `GET /device` and its result pages, `POST /consent/approve`/`deny` result pages, and `GET /owner/login` when the placeholder is enabled) all go through a small shared hosted-UI module, [`server/hosted-ui.js`](server/hosted-ui.js). That module renders the PDPP brand mark and typography, reuses the `data-surface="human"` / `data-surface="protocol"` language from `packages/pdpp-brand/base.css`, and serves a single shared stylesheet at `GET /__pdpp/hosted-ui.css`.
+
+This hosted-UI layer is **reference-only** implementation support. It is **not** a PDPP protocol surface; clients and providers never need to fetch `/__pdpp/hosted-ui.css` or consume any of the `hosted-ui-*` class names. The React/Next website in `apps/web/` remains the canonical design-system surface.
 
 ## How to use it
 
@@ -126,6 +202,34 @@ Verify the generated contract artifacts are current:
 ```bash
 pnpm reference-contract:check-generated
 ```
+
+### Example third-party client app
+
+A minimal example app illustrates the **current** thin reference
+provider-connect flow end to end (register &rarr; PAR &rarr; owner approval
+&rarr; token &rarr; RS query). It lives at
+[`examples/third-party-app/`](examples/third-party-app/) and runs on its own
+port (default `7674`) separate from the AS/RS:
+
+```bash
+pnpm --dir reference-implementation example-client
+```
+
+Defaults: `PORT=7674`, `AS_URL=http://localhost:7662`, `RS_URL=http://localhost:7663`.
+
+The example supports both approval modes honestly:
+
+- when the reference server runs without `PDPP_OWNER_PASSWORD`, the example
+  uses the reference-local JSON shortcut at `POST /consent/approve` and
+  captures the token inline
+- when `PDPP_OWNER_PASSWORD` is set, the inline shortcut is refused by the
+  reference server. The example surfaces that honestly, links out to the
+  hosted `/consent` page, and lets you paste the issued token back
+
+The example is a third-party client illustration — it is **not** a full
+generic OAuth authorization-code redirect client. It has no PKCE, no
+`/callback`, and no code exchange. It only exercises the endpoints the
+reference currently advertises.
 
 ## Published generated artifacts
 
