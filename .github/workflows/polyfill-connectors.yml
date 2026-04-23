@@ -1,0 +1,67 @@
+name: polyfill-connectors
+
+# Path-scoped CI for packages/polyfill-connectors/**. Initially non-blocking
+# per the owner response memo (Tranche B Item #11) — "do not treat it as a
+# required merge gate until it has been stable for a short proving period."
+# Promote to required in repo settings once this workflow has a clean record.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "packages/polyfill-connectors/**"
+      - ".github/workflows/polyfill-connectors.yml"
+      - "pnpm-lock.yaml"
+  pull_request:
+    paths:
+      - "packages/polyfill-connectors/**"
+      - ".github/workflows/polyfill-connectors.yml"
+      - "pnpm-lock.yaml"
+  workflow_dispatch: {}
+
+concurrency:
+  group: polyfill-connectors-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: verify + test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        # Reads packageManager from the repo-root package.json (pnpm@10.33.0).
+        uses: pnpm/action-setup@v4
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          # Node 22 LTS. Matches the node:test + --test-timeout features
+          # the package relies on and keeps CI on a supported LTS.
+          node-version: "22"
+          cache: "pnpm"
+
+      - name: Install dependencies
+        # Monorepo root install so pnpm workspace resolves @pdpp/* packages.
+        # --frozen-lockfile catches drift between pnpm-lock.yaml and
+        # package.json without letting CI silently upgrade deps.
+        # PATCHRIGHT_SKIP_BROWSER_DOWNLOAD: verify + test don't spin up a
+        # browser, and patchright's postinstall (which downloads ~150MB of
+        # Chromium) would otherwise add ~60s to every run.
+        env:
+          PATCHRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify (typecheck + biome check)
+        run: pnpm --dir packages/polyfill-connectors run verify
+
+      - name: Test
+        # --test-timeout is baked into the package's test script, but CI's
+        # cold-start tsx compilation is slower than local — the 30s per-test
+        # budget is deliberately wide.
+        run: pnpm --dir packages/polyfill-connectors run test
