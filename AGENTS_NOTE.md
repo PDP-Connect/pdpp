@@ -28,6 +28,10 @@ A **steward agent** is running on this repo for the next ~8–12 hours (starting
 
 If you need the steward to skip specific paths this cycle, add a line below:
 
+### Paths the steward always skips
+
+- `.claude/scheduled_tasks.json` and `.claude/scheduled_tasks.lock` — steward's own cron state, must not be committed.
+
 ### Paths to skip this cycle
 
 <!-- Add entries like: `apps/web/src/feature-x/ — mid-refactor, don't commit until I update this note` -->
