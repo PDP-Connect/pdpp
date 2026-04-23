@@ -2,7 +2,7 @@
 
 Legend: `[x]` done, `[~]` in progress, `[ ]` pending, `[!]` blocked on user, `[?]` needs the owner's review on return.
 
-Last revised: 2026-04-21.
+Last revised: 2026-04-23.
 
 ## Status at a glance (2026-04-21)
 
@@ -119,6 +119,45 @@ See `design-notes/spec-conformance-upgrade-2026-04-19.md` for the full retrofit 
 - [x] `design-notes/usaa-extra-streams.md`
 - [ ] New `design-notes/claude-code-codex-connectors.md` — rationale + schema decisions for the two local-file connectors (following)
 - [ ] Move OpenAI/Anthropic token data from "scaffolded" to "implemented" once selectors wired
+
+## Post-refactor quality follow-up (owner-approved 2026-04-23)
+
+This section captures the durable outcome of the A++ follow-up review. It is
+the canonical execution list; the temporary response memo can be deleted once
+these tasks are tracked here.
+
+### Tranche A — establish truth first
+
+- [ ] Compare every decomposed connector against the last pre-decomposition commit before changing behavior.
+  Output must be a short matrix: connector, last pre-decomp commit, material differences, intentional vs regression, required action.
+- [ ] Replace hand-rolled integration `emitRecord` mocks with a helper that runs the real shape validator and records both emitted and skipped records.
+- [ ] Audit the remaining `@ts-expect-error` directives inside `page.evaluate()` and remove them unless they are still genuinely required.
+- [ ] Investigate the `apple_health` parser timeout hypothesis and record whether it was warmup-only or a real pathological test.
+
+### Tranche B — remove accidental complexity
+
+- [ ] Replace the current `collect-helpers.ts` workaround with a small explicit entrypoint helper (`isMainModule()` / `runConnectorIfMain()` or equivalent) without overloading `runConnector()` with process-launch semantics.
+- [ ] Add package-scoped CI for `packages/polyfill-connectors/**` running `verify` and `test`.
+  Start non-blocking first; only promote to required after a proving period.
+
+### Tranche C — behavior correction, only after Tranche A
+
+- [ ] Standardize connector emit ordering on `parent-first`, but only after the pre-decomposition audit confirms whether current gmail/chatgpt child-first behavior is drift or intentional.
+- [ ] If parent-first is confirmed as the invariant, update `packages/polyfill-connectors/docs/authoring-guide.md` so connector authors can rely on it explicitly.
+
+### Tranche D — narrow protocol proof
+
+- [ ] Build a subprocess-level protocol harness as a narrow Phase 1 only.
+  Success criteria: one non-browser connector test, one browser connector test, and evidence that the harness catches something helper-level tests do not.
+- [ ] Decide on wider rollout of protocol subprocess tests only after Phase 1 proves stable and worth the maintenance cost.
+
+### Explicitly deferred unless evidence changes
+
+- [ ] Do not spend effort balancing parser-vs-integration test counts for aesthetic reasons.
+  Reassess only if real blind spots remain after the protocol-harness phase.
+- [ ] Do not rewrite history for commit-aesthetics cleanup.
+- [ ] Do not add clever staged/unstaged merge machinery to lefthook unless a concrete reproducible data-loss case is demonstrated.
+  If hook behavior becomes a real problem, prefer the simpler guard: refuse auto-format on partially staged same-file changes.
 
 ## Deferred / open
 
