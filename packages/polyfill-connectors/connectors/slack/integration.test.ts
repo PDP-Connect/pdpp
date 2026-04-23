@@ -36,13 +36,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { StreamScope } from "../../src/connector-runtime.ts";
+import { type EmittedRecord, makeRecordingEmit } from "../../src/test-harness.ts";
 import { emitMessagesPass, type MessagesPassDeps } from "./collect-helpers.ts";
 import type { MessageRow, SlackDataBlob } from "./types.ts";
-
-interface EmittedRecord {
-  data: Record<string, unknown>;
-  stream: string;
-}
 
 interface RecordingHarness {
   deps: MessagesPassDeps;
@@ -52,7 +48,9 @@ interface RecordingHarness {
 
 /** Build a MessagesPassDeps that records every emitRecord() + progress()
  *  call. `requested` is a Map<stream,StreamScope> — match the runtime
- *  shape exactly so we aren't hiding a coercion. */
+ *  shape exactly so we aren't hiding a coercion. slack does not ship a
+ *  validateRecord today, so makeRecordingEmit runs in pass-through
+ *  mode; this matches runtime semantics. */
 function makeHarness({
   requested = ["messages", "reactions", "message_attachments"],
   emittedAt = "2026-04-22T12:00:00.000Z",
@@ -60,14 +58,11 @@ function makeHarness({
   emittedAt?: string;
   requested?: readonly string[];
 } = {}): RecordingHarness {
-  const emitted: EmittedRecord[] = [];
+  const harness = makeRecordingEmit();
   const progressCalls: { extra: { stream?: string } | undefined; message: string }[] = [];
   const requestedMap = new Map<string, StreamScope>(requested.map((name) => [name, { name }]));
   const deps: MessagesPassDeps = {
-    emitRecord: (stream: string, data: Record<string, unknown>): Promise<void> => {
-      emitted.push({ stream, data });
-      return Promise.resolve();
-    },
+    emitRecord: harness.emitRecord,
     emittedAt,
     progress: (message: string, extra?: { stream?: string }): Promise<void> => {
       progressCalls.push({ message, extra });
@@ -75,7 +70,7 @@ function makeHarness({
     },
     requested: requestedMap,
   };
-  return { deps, emitted, progressCalls };
+  return { deps, emitted: harness.emitted, progressCalls };
 }
 
 /** Encode a SlackDataBlob → Uint8Array the same way slackdump's sqlite
