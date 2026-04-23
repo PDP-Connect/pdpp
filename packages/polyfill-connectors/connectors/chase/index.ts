@@ -450,6 +450,356 @@ async function parseQfxFile(path: string): Promise<unknown> {
   return parser.parse(content);
 }
 
+// ─── collect() helpers ────────────────────────────────────────────────────
+// collect()'s cognitive complexity was 85 in the pre-decomposition layout
+// (measured 2026-04-22 via biome lint/complexity/noExcessiveCognitiveComplexity,
+// with the connector-scoped override flipped to "warn"). The per-account
+// download+parse+emit loop, the statement row loop, and the no-accounts
+// diagnostic branch were the three hotspots. We split each into a named
+// helper that takes a stable EmitDeps bag (mirrors the amazon pattern
+// from commit e62c368) so collect() becomes pure orchestration.
+
+type EmitFn = BrowserCollectContext["emit"];
+type EmitRecordFn = BrowserCollectContext["emitRecord"];
+type ProgressFn = BrowserCollectContext["progress"];
+type CaptureDep = BrowserCollectContext["capture"];
+type RequestedScopes = BrowserCollectContext["requested"];
+
+interface EmitDeps {
+  capture: CaptureDep;
+  emit: EmitFn;
+  emitRecord: EmitRecordFn;
+  emittedAt: string;
+  maxSeenByAccount: Record<string, TransactionCursor>;
+  progress: ProgressFn;
+  requested: RequestedScopes;
+  resFilters: Map<string, ReadonlySet<string> | null>;
+  tmpDir: string;
+  txState: TransactionsStateShape;
+  wantsAccounts: boolean;
+  wantsBalances: boolean;
+  wantsStatements: boolean;
+  wantsTransactions: boolean;
+}
+
+async function emitNoAccountsDiagnostic(page: Page, emit: EmitFn): Promise<void> {
+  const diag = await page
+    .evaluate((): DashboardDiagnostics => {
+      const WS = /\s+/g;
+      return {
+        url: location.href,
+        title: document.title,
+        body_preview: (document.body?.innerText || "").replace(WS, " ").slice(0, 500),
+      };
+    })
+    .catch((): DashboardDiagnostics | null => null);
+  await emit({
+    type: "SKIP_RESULT",
+    stream: "accounts",
+    reason: "selectors_pending",
+    message: "No accounts discovered from dashboard. Selectors need calibration against live DOM.",
+    diagnostics: diag,
+  });
+}
+
+function filterAccountsByScope(
+  accounts: ChaseAccount[],
+  resFilters: Map<string, ReadonlySet<string> | null>
+): { accountsResFilter: ReadonlySet<string> | null; filteredAccounts: ChaseAccount[] } {
+  const accountsResFilter =
+    resFilters.get("accounts") ?? resFilters.get("transactions") ?? resFilters.get("balances") ?? null;
+  const filteredAccounts: ChaseAccount[] = accountsResFilter?.size
+    ? accounts.filter((a) => accountsResFilter.has(a.internal_id))
+    : accounts;
+  return { accountsResFilter, filteredAccounts };
+}
+
+async function emitAccountsStream(deps: EmitDeps, filteredAccounts: readonly ChaseAccount[]): Promise<void> {
+  for (const a of filteredAccounts) {
+    await deps.emitRecord("accounts", {
+      id: a.internal_id,
+      name: a.name,
+      type: a.type,
+      last_four: a.last_four,
+      balance_cents: null, // populated from QFX LEDGERBAL when downloads run
+      available_balance_cents: null,
+      credit_limit_cents: null,
+      available_credit_cents: null,
+      statement_balance_cents: null,
+      status: null,
+      balance_as_of: null,
+      fetched_at: deps.emittedAt,
+    });
+  }
+}
+
+async function emitTransactionsForAccount(
+  deps: EmitDeps,
+  account: ChaseAccount,
+  activity: ActivityKind,
+  transactions: ReturnType<typeof extractFromQfx>["transactions"]
+): Promise<void> {
+  const prior = deps.maxSeenByAccount[account.internal_id];
+  let maxDate: string | null = prior?.max_seen_date ?? null;
+  for (const t of transactions) {
+    if (!t.date) {
+      continue;
+    }
+    await deps.emitRecord("transactions", {
+      id: `${account.internal_id}|${t.fitid}`,
+      account_id: account.internal_id,
+      account_name: account.name,
+      fitid: t.fitid,
+      date: t.date,
+      amount: t.amount_cents,
+      currency: t.currency,
+      type: t.type,
+      name: t.name,
+      memo: t.memo,
+      check_number: t.check_number,
+      reference_number: t.reference_number,
+      source: `qfx_download_${activity}_${t.date}`,
+      fetched_at: deps.emittedAt,
+    });
+    if (!maxDate || t.date > maxDate) {
+      maxDate = t.date;
+    }
+  }
+  if (maxDate) {
+    deps.maxSeenByAccount[account.internal_id] = {
+      ...(prior ?? {}),
+      max_seen_date: maxDate,
+      last_activity: activity,
+      last_fetched_at: deps.emittedAt,
+    };
+  }
+}
+
+async function processAccountDownload(deps: EmitDeps, page: Page, account: ChaseAccount): Promise<void> {
+  const activityChoice = chooseActivity(
+    deps.requested,
+    deps.txState,
+    deps.wantsTransactions ? "transactions" : "balances",
+    account.internal_id
+  );
+  await deps.emit({
+    type: "PROGRESS",
+    stream: "transactions",
+    message: `${account.name}: downloading QFX (activity=${activityChoice.activity})`,
+  });
+
+  const downloadOpts: DownloadOptions = activityChoice.dateRange
+    ? { activity: activityChoice.activity, dateRange: activityChoice.dateRange }
+    : { activity: activityChoice.activity };
+  const result = await downloadQfx(page, account, deps.tmpDir, downloadOpts);
+  if (!result.downloaded) {
+    await deps.emit({
+      type: "SKIP_RESULT",
+      stream: "transactions",
+      reason: "qfx_download_failed",
+      message: `${account.name}: ${result.error}`,
+    });
+    return;
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = await parseQfxFile(result.qfxPath);
+  } catch (err) {
+    await deps.emit({
+      type: "SKIP_RESULT",
+      stream: "transactions",
+      reason: "qfx_parse_failed",
+      message: `${account.name}: ${truncate(errMessage(err), ERROR_MESSAGE_SLICE_LONG)}`,
+    });
+    return;
+  }
+
+  const { transactions, balance } = extractFromQfx(parsed);
+
+  if (deps.wantsTransactions) {
+    await emitTransactionsForAccount(deps, account, activityChoice.activity, transactions);
+  }
+
+  if (deps.wantsBalances && balance) {
+    await deps.emitRecord("balances", {
+      id: `${account.internal_id}|${balance.as_of}`,
+      account_id: account.internal_id,
+      as_of: balance.as_of,
+      ledger_balance_cents: balance.ledger_cents,
+      available_balance_cents: balance.available_cents,
+      fetched_at: deps.emittedAt,
+    });
+  }
+
+  await deps.emit({
+    type: "PROGRESS",
+    stream: "transactions",
+    message: `${account.name}: emitted ${transactions.length} transactions`,
+  });
+}
+
+async function runTransactionsAndBalances(
+  deps: EmitDeps,
+  page: Page,
+  filteredAccounts: readonly ChaseAccount[]
+): Promise<void> {
+  for (const a of filteredAccounts) {
+    await processAccountDownload(deps, page, a);
+  }
+}
+
+function statementRowOutsideTimeRange(deps: EmitDeps, dateIso: string | null): boolean {
+  const stmtScope = deps.requested.get("statements");
+  if (stmtScope?.time_range?.since && dateIso && dateIso < stmtScope.time_range.since.slice(0, 10)) {
+    return true;
+  }
+  if (stmtScope?.time_range?.until && dateIso && dateIso >= stmtScope.time_range.until.slice(0, 10)) {
+    return true;
+  }
+  return false;
+}
+
+async function emitStatementIndexOnly(
+  deps: EmitDeps,
+  id: string,
+  row: StatementRow,
+  accountId: string | null,
+  dateIso: string | null
+): Promise<void> {
+  await deps.emitRecord("statements", {
+    id,
+    account_id: accountId,
+    title: row.title,
+    date_delivered: dateIso,
+    account_reference: row.account_reference,
+    document_url: null,
+    pdf_path: null,
+    pdf_sha256: null,
+    fetched_at: deps.emittedAt,
+  });
+}
+
+async function processStatementRow(
+  deps: EmitDeps,
+  page: Page,
+  row: StatementRow,
+  filteredAccounts: readonly ChaseAccount[],
+  accounts: readonly ChaseAccount[],
+  accountsResFilter: ReadonlySet<string> | null
+): Promise<void> {
+  try {
+    const dateIso = parseDateDelivered(row.date_delivered_raw);
+    const accountId = resolveAccountIdForRow(row, filteredAccounts) ?? resolveAccountIdForRow(row, accounts);
+
+    // Apply resources filter: if the accounts res filter excludes this
+    // statement's account, skip it. (emitRecord will also skip, but doing
+    // it here saves the PDF download.)
+    if (accountsResFilter?.size && accountId && !accountsResFilter.has(accountId)) {
+      return;
+    }
+    if (statementRowOutsideTimeRange(deps, dateIso)) {
+      return;
+    }
+
+    const id = shortHash(`${row.account_reference ?? ""}|${dateIso ?? row.date_delivered_raw}|${row.title}`);
+    await deps.emit({
+      type: "PROGRESS",
+      stream: "statements",
+      message: `Downloading ${row.title}`,
+    });
+
+    const dlResult = await downloadStatementPdf(page, row, accountId);
+    if (!dlResult.ok) {
+      await deps.emit({
+        type: "SKIP_RESULT",
+        stream: "statements",
+        reason: "pdf_download_failed",
+        message: `${row.title}: ${dlResult.error}`,
+      });
+      // Still emit the index row so the owner has a record the statement
+      // exists, just without hydrated bytes.
+      await emitStatementIndexOnly(deps, id, row, accountId, dateIso);
+      return;
+    }
+
+    await deps.emitRecord("statements", {
+      id,
+      account_id: accountId,
+      title: row.title,
+      date_delivered: dateIso,
+      account_reference: row.account_reference,
+      document_url: fileUrl(dlResult.pdfPath),
+      pdf_path: dlResult.pdfPath,
+      pdf_sha256: dlResult.pdfSha256,
+      fetched_at: deps.emittedAt,
+    });
+  } catch (rowErr) {
+    await deps.emit({
+      type: "SKIP_RESULT",
+      stream: "statements",
+      reason: "row_exception",
+      message: `${row.title}: ${truncate(errMessage(rowErr), ERROR_MESSAGE_SLICE_LONG)}`,
+    });
+  }
+}
+
+async function runStatements(
+  deps: EmitDeps,
+  page: Page,
+  filteredAccounts: readonly ChaseAccount[],
+  accounts: readonly ChaseAccount[],
+  accountsResFilter: ReadonlySet<string> | null
+): Promise<void> {
+  try {
+    await deps.emit({
+      type: "PROGRESS",
+      stream: "statements",
+      message: "Navigating to Statements & Documents",
+    });
+    await navigateToStatementsPage(page);
+    if (deps.capture) {
+      await deps.capture.captureDom(page, "statements-list");
+    }
+    const rows = await enumerateStatementRows(page);
+    await deps.emit({
+      type: "PROGRESS",
+      stream: "statements",
+      message: `Found ${rows.length} statement row(s)`,
+    });
+
+    for (const row of rows) {
+      await processStatementRow(deps, page, row, filteredAccounts, accounts, accountsResFilter);
+    }
+
+    const stateMsg: Extract<EmittedMessage, { type: "STATE" }> = {
+      type: "STATE",
+      stream: "statements",
+      cursor: { fetched_at: deps.emittedAt },
+    };
+    await deps.emit(stateMsg);
+  } catch (err) {
+    await deps.emit({
+      type: "SKIP_RESULT",
+      stream: "statements",
+      reason: "statements_scrape_failed",
+      message: truncate(errMessage(err), ERROR_MESSAGE_SLICE_MAX),
+    });
+  }
+}
+
+async function emitTransactionsStateIfAny(deps: EmitDeps): Promise<void> {
+  if (!(deps.wantsTransactions && Object.keys(deps.maxSeenByAccount).length > 0)) {
+    return;
+  }
+  const stateMsg: Extract<EmittedMessage, { type: "STATE" }> = {
+    type: "STATE",
+    stream: "transactions",
+    cursor: { per_account: deps.maxSeenByAccount },
+  };
+  await deps.emit(stateMsg);
+}
+
 // ─── Main ─────────────────────────────────────────────────────────────────
 
 runConnector({
@@ -469,10 +819,6 @@ runConnector({
   },
   async collect(ctx: BrowserCollectContext): Promise<void> {
     const { state: startState, requested, page, emit, emitRecord, progress, capture, emittedAt } = ctx;
-    const wantsAccounts = requested.has("accounts");
-    const wantsTransactions = requested.has("transactions");
-    const wantsBalances = requested.has("balances");
-    const wantsStatements = requested.has("statements");
 
     // State is keyed by stream name at the runtime layer:
     //   { transactions: { per_account: {<id>: {max_seen_date, ...}} } }
@@ -497,286 +843,56 @@ runConnector({
 
     const tmpDir = await mkdtemp(join(tmpdir(), "pdpp-chase-"));
 
+    const deps: EmitDeps = {
+      capture,
+      emit,
+      emitRecord,
+      emittedAt,
+      maxSeenByAccount,
+      progress,
+      requested,
+      resFilters,
+      tmpDir,
+      txState,
+      wantsAccounts: requested.has("accounts"),
+      wantsBalances: requested.has("balances"),
+      wantsStatements: requested.has("statements"),
+      wantsTransactions: requested.has("transactions"),
+    };
+
     try {
       await progress("Chase session verified; enumerating accounts");
 
       const accounts = await discoverAccounts(page);
-      // Fixture capture: dashboard account-list DOM.
       if (capture) {
         await capture.captureDom(page, "dashboard-accounts");
       }
       if (accounts.length === 0) {
-        const diag = await page
-          .evaluate((): DashboardDiagnostics => {
-            const WS = /\s+/g;
-            return {
-              url: location.href,
-              title: document.title,
-              body_preview: (document.body?.innerText || "").replace(WS, " ").slice(0, 500),
-            };
-          })
-          .catch((): DashboardDiagnostics | null => null);
-        await emit({
-          type: "SKIP_RESULT",
-          stream: "accounts",
-          reason: "selectors_pending",
-          message: "No accounts discovered from dashboard. Selectors need calibration against live DOM.",
-          diagnostics: diag,
-        });
+        await emitNoAccountsDiagnostic(page, emit);
         return; // runtime emits DONE succeeded
       }
 
       await progress(`Found ${accounts.length} account(s)`);
 
-      // Apply the `accounts` stream's resources filter to the per-account
-      // loop so we don't hit Chase's download page for accounts the client
-      // didn't ask for.
-      const accountsResFilter =
-        resFilters.get("accounts") ?? resFilters.get("transactions") ?? resFilters.get("balances") ?? null;
-      const filteredAccounts: ChaseAccount[] = accountsResFilter?.size
-        ? accounts.filter((a) => accountsResFilter.has(a.internal_id))
-        : accounts;
+      const { accountsResFilter, filteredAccounts } = filterAccountsByScope(accounts, resFilters);
 
       // Emit accounts stream. Our record.id is Chase's internal account id
       // directly — stable, no hashing needed. Keeps transactions.account_id
       // aligned with the download URL param.
-      if (wantsAccounts) {
-        for (const a of filteredAccounts) {
-          await emitRecord("accounts", {
-            id: a.internal_id,
-            name: a.name,
-            type: a.type,
-            last_four: a.last_four,
-            balance_cents: null, // populated from QFX LEDGERBAL when downloads run
-            available_balance_cents: null,
-            credit_limit_cents: null,
-            available_credit_cents: null,
-            statement_balance_cents: null,
-            status: null,
-            balance_as_of: null,
-            fetched_at: emittedAt,
-          });
-        }
+      if (deps.wantsAccounts) {
+        await emitAccountsStream(deps, filteredAccounts);
       }
 
       // Transactions + balances: download QFX per account, parse, emit.
-      if (wantsTransactions || wantsBalances) {
-        for (const a of filteredAccounts) {
-          const activityChoice = chooseActivity(
-            requested,
-            txState,
-            wantsTransactions ? "transactions" : "balances",
-            a.internal_id
-          );
-          await emit({
-            type: "PROGRESS",
-            stream: "transactions",
-            message: `${a.name}: downloading QFX (activity=${activityChoice.activity})`,
-          });
-
-          const result = await downloadQfx(
-            page,
-            a,
-            tmpDir,
-            activityChoice.dateRange
-              ? {
-                  activity: activityChoice.activity,
-                  dateRange: activityChoice.dateRange,
-                }
-              : { activity: activityChoice.activity }
-          );
-          if (!result.downloaded) {
-            await emit({
-              type: "SKIP_RESULT",
-              stream: "transactions",
-              reason: "qfx_download_failed",
-              message: `${a.name}: ${result.error}`,
-            });
-            continue;
-          }
-
-          let parsed: unknown;
-          try {
-            parsed = await parseQfxFile(result.qfxPath);
-          } catch (err) {
-            await emit({
-              type: "SKIP_RESULT",
-              stream: "transactions",
-              reason: "qfx_parse_failed",
-              message: `${a.name}: ${truncate(errMessage(err), ERROR_MESSAGE_SLICE_LONG)}`,
-            });
-            continue;
-          }
-
-          const { transactions, balance } = extractFromQfx(parsed);
-
-          if (wantsTransactions) {
-            const prior = maxSeenByAccount[a.internal_id];
-            let maxDate: string | null = prior?.max_seen_date ?? null;
-            for (const t of transactions) {
-              if (!t.date) {
-                continue;
-              }
-              await emitRecord("transactions", {
-                id: `${a.internal_id}|${t.fitid}`,
-                account_id: a.internal_id,
-                account_name: a.name,
-                fitid: t.fitid,
-                date: t.date,
-                amount: t.amount_cents,
-                currency: t.currency,
-                type: t.type,
-                name: t.name,
-                memo: t.memo,
-                check_number: t.check_number,
-                reference_number: t.reference_number,
-                source: `qfx_download_${activityChoice.activity}_${t.date}`,
-                fetched_at: emittedAt,
-              });
-              if (!maxDate || t.date > maxDate) {
-                maxDate = t.date;
-              }
-            }
-            if (maxDate) {
-              maxSeenByAccount[a.internal_id] = {
-                ...(prior ?? {}),
-                max_seen_date: maxDate,
-                last_activity: activityChoice.activity,
-                last_fetched_at: emittedAt,
-              };
-            }
-          }
-
-          if (wantsBalances && balance) {
-            await emitRecord("balances", {
-              id: `${a.internal_id}|${balance.as_of}`,
-              account_id: a.internal_id,
-              as_of: balance.as_of,
-              ledger_balance_cents: balance.ledger_cents,
-              available_balance_cents: balance.available_cents,
-              fetched_at: emittedAt,
-            });
-          }
-
-          await emit({
-            type: "PROGRESS",
-            stream: "transactions",
-            message: `${a.name}: emitted ${transactions.length} transactions`,
-          });
-        }
+      if (deps.wantsTransactions || deps.wantsBalances) {
+        await runTransactionsAndBalances(deps, page, filteredAccounts);
       }
 
       // Statements: navigate to Statements & Documents, enumerate rows,
       // download each PDF, emit one record per statement with
       // content-addressed path.
-      if (wantsStatements) {
-        try {
-          await emit({
-            type: "PROGRESS",
-            stream: "statements",
-            message: "Navigating to Statements & Documents",
-          });
-          await navigateToStatementsPage(page);
-          // Fixture capture: statements list page DOM.
-          if (capture) {
-            await capture.captureDom(page, "statements-list");
-          }
-          const rows = await enumerateStatementRows(page);
-          await emit({
-            type: "PROGRESS",
-            stream: "statements",
-            message: `Found ${rows.length} statement row(s)`,
-          });
-
-          for (const row of rows) {
-            try {
-              const dateIso = parseDateDelivered(row.date_delivered_raw);
-              const accountId = resolveAccountIdForRow(row, filteredAccounts) ?? resolveAccountIdForRow(row, accounts);
-
-              // Apply resources filter: if the accounts res filter excludes
-              // this statement's account, skip it. (emitRecord will also
-              // skip, but doing it here saves the PDF download.)
-              if (accountsResFilter?.size && accountId && !accountsResFilter.has(accountId)) {
-                continue;
-              }
-
-              // Apply time_range filter: if client asked for statements.since
-              // and this row predates it, skip the download.
-              const stmtScope = requested.get("statements");
-              if (stmtScope?.time_range?.since && dateIso && dateIso < stmtScope.time_range.since.slice(0, 10)) {
-                continue;
-              }
-              if (stmtScope?.time_range?.until && dateIso && dateIso >= stmtScope.time_range.until.slice(0, 10)) {
-                continue;
-              }
-
-              const id = shortHash(`${row.account_reference ?? ""}|${dateIso ?? row.date_delivered_raw}|${row.title}`);
-
-              await emit({
-                type: "PROGRESS",
-                stream: "statements",
-                message: `Downloading ${row.title}`,
-              });
-
-              const dlResult = await downloadStatementPdf(page, row, accountId);
-              if (!dlResult.ok) {
-                await emit({
-                  type: "SKIP_RESULT",
-                  stream: "statements",
-                  reason: "pdf_download_failed",
-                  message: `${row.title}: ${dlResult.error}`,
-                });
-                // Still emit the index row so the owner has a record the
-                // statement exists, just without hydrated bytes.
-                await emitRecord("statements", {
-                  id,
-                  account_id: accountId,
-                  title: row.title,
-                  date_delivered: dateIso,
-                  account_reference: row.account_reference,
-                  document_url: null,
-                  pdf_path: null,
-                  pdf_sha256: null,
-                  fetched_at: emittedAt,
-                });
-                continue;
-              }
-
-              await emitRecord("statements", {
-                id,
-                account_id: accountId,
-                title: row.title,
-                date_delivered: dateIso,
-                account_reference: row.account_reference,
-                document_url: fileUrl(dlResult.pdfPath),
-                pdf_path: dlResult.pdfPath,
-                pdf_sha256: dlResult.pdfSha256,
-                fetched_at: emittedAt,
-              });
-            } catch (rowErr) {
-              await emit({
-                type: "SKIP_RESULT",
-                stream: "statements",
-                reason: "row_exception",
-                message: `${row.title}: ${truncate(errMessage(rowErr), ERROR_MESSAGE_SLICE_LONG)}`,
-              });
-            }
-          }
-
-          const stateMsg: Extract<EmittedMessage, { type: "STATE" }> = {
-            type: "STATE",
-            stream: "statements",
-            cursor: { fetched_at: emittedAt },
-          };
-          await emit(stateMsg);
-        } catch (err) {
-          await emit({
-            type: "SKIP_RESULT",
-            stream: "statements",
-            reason: "statements_scrape_failed",
-            message: truncate(errMessage(err), ERROR_MESSAGE_SLICE_MAX),
-          });
-        }
+      if (deps.wantsStatements) {
+        await runStatements(deps, page, filteredAccounts, accounts, accountsResFilter);
       }
     } finally {
       await rm(tmpDir, { recursive: true, force: true }).catch((): undefined => undefined);
@@ -785,13 +901,6 @@ runConnector({
     // Emit STATE for incremental resumption. The per_account cursor drives
     // the next run's chooseActivity() — when max_seen_date is present we'll
     // use "since_last_statement" instead of re-downloading all transactions.
-    if (wantsTransactions && Object.keys(maxSeenByAccount).length > 0) {
-      const stateMsg: Extract<EmittedMessage, { type: "STATE" }> = {
-        type: "STATE",
-        stream: "transactions",
-        cursor: { per_account: maxSeenByAccount },
-      };
-      await emit(stateMsg);
-    }
+    await emitTransactionsStateIfAny(deps);
   },
 });
