@@ -32,24 +32,22 @@ import {
 } from "imapflow";
 import { stringifyForJsonl } from "../../src/safe-emit.ts";
 import { requireCredentialsOrAsk, resourceSet } from "../../src/scope-filters.ts";
+import { emitMessagesPass, type FetchBodiesFn, type FetchedBodies, type PerMessageDeps } from "./collect-helpers.ts";
 import {
   bigintToCursor,
   bigintToNumber,
   buildDeltaMessageRecord,
-  buildMessageBodyRecord,
-  buildMessageRecord,
   buildThreadRecord,
   canonicalLabelName,
   decodeBodyPart,
   decodeBodystructureForAttachments,
   envelopeParticipants,
   isGmailSystemLabel,
-  isInTimeRange,
   labelParentName,
   makeSnippet,
   SNIPPET_MAX_CHARS,
   sanitizeForJsonl,
-  selectBodyParts,
+  type selectBodyParts,
   toFlagsArray,
   toLabelsArray,
   updateThreadAggregate,
@@ -73,7 +71,6 @@ const RETRYABLE_ERROR_RE = /ECONN|ETIMEDOUT|fetch failed|EPIPE|timeout/i;
 // ─── Constants ──────────────────────────────────────────────────────────
 
 const FETCH_HEADER_BATCH_PROGRESS = 1000;
-const FETCH_MSG_PROGRESS = 500;
 const SNIPPET_FETCH_MAX_BYTES = 4096;
 const ERROR_MSG_TAIL = 400;
 const FLUSH_HARD_TIMEOUT_MS = 3000;
@@ -366,12 +363,6 @@ async function collectMetadata(client: ImapFlow, fetchRange: string): Promise<Fe
 
 // ─── Phase B: per-message body fetch + emit ────────────────────────────
 
-interface FetchedBodies {
-  bodyHtmlFull: string | null;
-  bodyTextFull: string | null;
-  snippet: string | null;
-}
-
 type BodyPartRequest =
   | string
   | {
@@ -457,121 +448,6 @@ async function fetchBodies(
   } catch {
     // Best-effort: body fetch failures shouldn't block message emit.
     return empty;
-  }
-}
-
-interface PerMessageDeps {
-  client: ImapFlow;
-  emitRecord: EmitRecordFn;
-  requested: Map<string, StreamRequest>;
-  timeRange: { since?: string; until?: string } | undefined;
-  wantBodies: boolean;
-  wantMessages: boolean;
-}
-
-/**
- * Emit the per-stream records for one message. Returns true when the
- * message was processed; false when it was skipped by early filters
- * (missing X-GM-MSGID, time_range) so the caller can skip its progress
- * accounting.
- */
-async function processMessage(deps: PerMessageDeps, msg: FetchMessageObject): Promise<boolean> {
-  // Gmail-specific IDs via imapflow: msg.emailId = X-GM-MSGID; msg.threadId = X-GM-THRID
-  const gmMsgid = String(msg.emailId ?? "");
-  const gmThrid = String(msg.threadId ?? "");
-  if (!gmMsgid) {
-    return false; // without X-GM-MSGID we can't key
-  }
-
-  const env = msg.envelope ?? {};
-  const receivedAt = internalDateToIso(msg.internalDate);
-  if (!isInTimeRange(receivedAt, deps.timeRange)) {
-    return false;
-  }
-  const dateHeader = env.date ? new Date(env.date).toISOString() : null;
-  const flagsArr = toFlagsArray(msg.flags);
-  const labels = toLabelsArray(msg.labels);
-  const attachments = decodeBodystructureForAttachments(msg.bodyStructure, gmMsgid, receivedAt);
-
-  // Body fetching — scope-driven.
-  // - If `messages` is requested (and not `message_bodies`): fetch the
-  //   first 4096 bytes of text/plain only, for the snippet.
-  // - If `message_bodies` is requested: fetch the full text/plain AND
-  //   text/html parts (if present) in a single round-trip, and reuse
-  //   the text/plain buffer for the snippet when messages is also in
-  //   scope. We never fetch image/attachment parts — metadata for those
-  //   lives in the `attachments` stream.
-  const selection = selectBodyParts(msg.bodyStructure, deps.wantBodies);
-  const { bodyHtmlFull, bodyTextFull, snippet } = await fetchBodies(
-    deps.client,
-    msg,
-    selection,
-    deps.wantBodies,
-    deps.wantMessages
-  );
-
-  if (deps.wantBodies) {
-    await deps.emitRecord(
-      "message_bodies",
-      buildMessageBodyRecord({
-        bodyHtmlFull,
-        bodyTextFull,
-        gmMsgid,
-        htmlCharset: selection.htmlCharset,
-        textCharset: selection.plainCharset,
-      })
-    );
-  }
-
-  if (deps.wantMessages) {
-    await deps.emitRecord(
-      "messages",
-      buildMessageRecord({
-        attachmentsCount: attachments.length,
-        dateHeader,
-        envelope: env,
-        flagsArr,
-        gmMsgid,
-        gmThrid,
-        labels,
-        rawHeaders: msg.headers,
-        receivedAt,
-        sizeBytes: typeof msg.size === "number" ? msg.size : null,
-        snippet,
-      })
-    );
-  }
-
-  if (deps.requested.has("attachments") && attachments.length) {
-    for (const a of attachments) {
-      await deps.emitRecord("attachments", { ...a });
-    }
-  }
-  return true;
-}
-
-/** Phase B driver: iterate metas, emit records, report progress. */
-async function emitMessagesPass(deps: PerMessageDeps, metas: readonly FetchMessageObject[]): Promise<void> {
-  let count = 0;
-  for (const msg of metas) {
-    try {
-      const processed = await processMessage(deps, msg);
-      if (!processed) {
-        continue;
-      }
-      count += 1;
-      if (count % FETCH_MSG_PROGRESS === 0) {
-        await emit({
-          type: "PROGRESS",
-          stream: "messages",
-          message: `Fetched ${count} messages`,
-        });
-      }
-    } catch (perMsgErr) {
-      const emsg = perMsgErr instanceof Error ? (perMsgErr.stack ?? perMsgErr.message) : String(perMsgErr);
-      process.stderr.write(`[gmail] per-message error at UID ${String(msg.uid)}: ${emsg}\n`);
-      // Continue with next message; don't let one bad record halt the whole run.
-    }
   }
 }
 
@@ -732,17 +608,19 @@ async function runAllMailPasses(
     message: `Collected ${metas.length} headers; beginning body pass`,
   });
 
-  await emitMessagesPass(
-    {
-      client,
-      emitRecord: deps.emitRecord,
-      requested: deps.requested,
-      timeRange,
-      wantBodies: deps.requested.has("message_bodies"),
-      wantMessages: deps.requested.has("messages"),
-    },
-    metas
-  );
+  const fetchBodiesBound: FetchBodiesFn = (msg, selection, wantBodies, wantMessages) =>
+    fetchBodies(client, msg, selection, wantBodies, wantMessages);
+  const perMessageDeps: PerMessageDeps = {
+    emitProgress: (m) => emit(m),
+    emitRecord: deps.emitRecord,
+    fetchBodies: fetchBodiesBound,
+    nowIso,
+    requested: deps.requested,
+    timeRange,
+    wantBodies: deps.requested.has("message_bodies"),
+    wantMessages: deps.requested.has("messages"),
+  };
+  await emitMessagesPass(perMessageDeps, metas);
 
   // Pass 2: detect flag/label changes on already-seen messages (incremental only)
   await runDeltaPass(client, session, deps.requested, deps.emitRecord, deps.emittedAt);
