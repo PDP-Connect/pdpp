@@ -1,7 +1,12 @@
 # Fixture capture: raw/ contains unscrubbed PII from live runs.
-# Never commit. Run `node bin/scrub-fixtures.mjs <connector>` to produce
-# sanitized files under scrubbed/, which ARE committable.
+# Never commit. The scrubber (`bin/scrub-fixtures.ts`) produces
+# `scrubbed/` — currently regex-only (emails/phones/SSNs/cards), which
+# is INSUFFICIENT for real captures (addresses, names, order contents
+# survive). Until the LLM-based scrubber lands (see OpenSpec:
+# add-polyfill-connector-system/tasks.md "Fixture pipeline"), both
+# raw/ and scrubbed/ stay local-only.
 fixtures/*/raw/
+fixtures/*/scrubbed/
 
 # Local data + cache
 .pdpp-data/

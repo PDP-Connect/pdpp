@@ -178,6 +178,10 @@ P0 stream additions identified by the Layer 2 audits (`design-notes/layer-2-cove
 - [ ] Reactions, message_attachments, etc. — already in v0.2.0 schema, ingesting now; audit v0.3.0 coverage after completion
 - [ ] P1: canvases content, stars/saved items, user groups, reminders
 
+### Fixture pipeline (test-harness prerequisite)
+- [ ] LLM-based PII scrubber for captured fixtures. Default regex scrubber (`bin/scrub-fixtures.ts`) only handles emails/phones/SSNs/cards; real captures contain addresses, personal names, merchant payloads, and free-form order content that need semantic redaction. Plan: pipe each captured DOM/JSONL through Gemini 3.1 Flash or Flash-Lite with a structured redaction prompt (names → "First Last", addresses → "123 Main St, City, ST 00000", keep structural content like selectors/classes). Until this exists, `fixtures/*/raw/` and `fixtures/*/scrubbed/` are gitignored and parser tests run against synthetic minimal fixtures only. Unblocks: committing real golden fixtures for parser-extraction regression tests (amazon/chase/gmail/usaa).
+- [ ] Connector-specific scrub-rule files (`connectors/<name>/scrub-rules.ts`) for patterns that beat the LLM on precision (order IDs, account numbers, known field shapes).
+
 ## Review checklist for the owner
 
 - [?] Every `(autonomous 2026-04-19)` decision in design notes

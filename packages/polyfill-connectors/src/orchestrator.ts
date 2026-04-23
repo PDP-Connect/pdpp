@@ -29,7 +29,7 @@ export interface ConnectorPaths {
 
 function c(name: string): ConnectorPaths {
   return {
-    connectorPath: join(CONNECTORS_DIR, name, "index.js"),
+    connectorPath: join(CONNECTORS_DIR, name, "index.ts"),
     manifestPath: join(MANIFEST_DIR, `${name}.json`),
   };
 }
@@ -56,11 +56,11 @@ const KNOWN_CONNECTORS: Record<string, ConnectorPaths> = {
   slack: c("slack"),
   pocket: c("pocket"),
   google_takeout: {
-    connectorPath: join(CONNECTORS_DIR, "google_takeout", "index.js"),
+    connectorPath: join(CONNECTORS_DIR, "google_takeout", "index.ts"),
     manifestPath: join(MANIFEST_DIR, "google_takeout.json"),
   },
   twitter_archive: {
-    connectorPath: join(CONNECTORS_DIR, "twitter_archive", "index.js"),
+    connectorPath: join(CONNECTORS_DIR, "twitter_archive", "index.ts"),
     manifestPath: join(MANIFEST_DIR, "twitter_archive.json"),
   },
   imessage: c("imessage"),
@@ -68,12 +68,12 @@ const KNOWN_CONNECTORS: Record<string, ConnectorPaths> = {
   notion: c("notion"),
   reddit: c("reddit"),
   claude_code: {
-    connectorPath: join(CONNECTORS_DIR, "claude_code", "index.js"),
+    connectorPath: join(CONNECTORS_DIR, "claude_code", "index.ts"),
     manifestPath: join(MANIFEST_DIR, "claude_code.json"),
   },
   codex: c("codex"),
   apple_health: {
-    connectorPath: join(CONNECTORS_DIR, "apple_health", "index.js"),
+    connectorPath: join(CONNECTORS_DIR, "apple_health", "index.ts"),
     manifestPath: join(MANIFEST_DIR, "apple_health.json"),
   },
   ical: c("ical"),
