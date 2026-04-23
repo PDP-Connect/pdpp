@@ -72,6 +72,59 @@ These are non-negotiable; Biome and lefthook fail the commit otherwise.
   code, except `useTopLevelRegex` and `noExcessiveCognitiveComplexity`
   are relaxed (tests often do both).
 
+## Protocol conventions
+
+These are not auto-enforced but ARE enforced by code review + pinned
+by `integration.test.ts` in every connector with parent-child record
+streams.
+
+### Parent-first emit order
+
+When a connector emits streams that relate to each other (orders +
+order_items, accounts + transactions, sessions + messages,
+conversations + messages, threads + messages) the **parent record
+emits before any of its children**. Downstream consumers doing
+streaming upserts rely on this for referential integrity.
+
+Concretely:
+- `emitOrderAndItems` in amazon emits `orders` before `order_items`.
+- `processConversationDetail` in chatgpt emits `conversations` before
+  `messages`.
+- `runAllMailPasses` in gmail emits `threads` before `messages`.
+- `scanProjectDirs` in claude_code uses a two-pass structure:
+  scan-for-accumulators → emit `sessions` → scan-for-messages.
+
+When the parent is an aggregate built by observing children (gmail
+threads, claude_code sessions), use one of:
+- A self-contained fetch that enumerates the parent independently
+  (gmail's `runThreadsPass` fetches `1:*` with `threadId` + `envelope`
+  and aggregates in-memory without reading the message bodies the
+  per-message pass needs).
+- A two-pass buildOnly/emit split (claude_code's `buildOnly: true`
+  flag threads through `processJsonlLine` to suppress emits while
+  still updating the accumulator).
+
+Integration tests MUST assert parent-index < first-child-index in the
+emit sequence. See `connectors/chatgpt/integration.test.ts` for the
+pattern.
+
+### `isMainModule` guard for `runConnector`
+
+Every connector's `index.ts` guards its bootstrap:
+
+```ts
+import { isMainModule } from "../../src/is-main-module.ts";
+
+if (isMainModule(import.meta.url)) {
+  runConnector({ ... });
+}
+```
+
+This lets tests import `index.ts` without the runtime kicking in and
+blocking the event loop on stdin. CLI execution
+(`tsx connectors/<name>/index.ts`) still works — that's what
+`isMainModule` returns true for.
+
 ## Decomposition pattern
 
 When `collect()` grows beyond 20 complexity:
