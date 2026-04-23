@@ -44,6 +44,25 @@ import {
 } from "../../src/connector-runtime.ts";
 import { resourceSet } from "../../src/scope-filters.ts";
 import { validateRecord as validateRecordRaw } from "./schemas.ts";
+import type {
+  ActivityChoice,
+  ActivityKind,
+  ChaseAccount,
+  ChaseAccountType,
+  DashboardDiagnostics,
+  DateFillResult,
+  DownloadOptions,
+  DownloadResult,
+  OfxRecord,
+  OfxValue,
+  QfxBalance,
+  QfxExtracted,
+  QfxTransaction,
+  StatementDownloadResult,
+  StatementRow,
+  TransactionCursor,
+  TransactionsStateShape,
+} from "./types.ts";
 
 const validateRecord = validateRecordRaw as ValidateRecord;
 
@@ -64,125 +83,6 @@ const ERROR_MESSAGE_SLICE_MAX = 200;
 const HASH_SHORT_LEN = 16;
 const HASH_SLUG_LEN = 32;
 const CENTS_MULTIPLIER = 100;
-
-// ─── Parsed shapes ────────────────────────────────────────────────────────
-
-type ChaseAccountType = "credit_card" | "checking" | "savings" | "unknown";
-
-interface ChaseAccount {
-  internal_id: string;
-  last_four: string | null;
-  name: string;
-  type: ChaseAccountType;
-}
-
-type ActivityKind = "all" | "since_last_statement" | "year_to_date" | "last_year" | "current" | "date_range";
-
-interface DateRange {
-  from?: string | undefined;
-  to?: string | undefined;
-}
-
-interface DownloadOptions {
-  activity?: ActivityKind;
-  dateRange?: DateRange;
-}
-
-interface DownloadSuccess {
-  activity: ActivityKind;
-  downloaded: true;
-  qfxPath: string;
-}
-
-interface DownloadFailure {
-  downloaded: false;
-  error: string;
-}
-
-type DownloadResult = DownloadSuccess | DownloadFailure;
-
-interface DateFillOk {
-  ok: true;
-}
-
-interface DateFillErr {
-  error: string;
-  ok: false;
-}
-
-type DateFillResult = DateFillOk | DateFillErr;
-
-interface StatementRow {
-  account_reference: string | null;
-  date_delivered_raw: string;
-  doc_kind: string;
-  rowAnchorId: string;
-  rowIdx: string | undefined;
-  tableIdx: string | undefined;
-  title: string;
-}
-
-interface StatementDownloadOk {
-  ok: true;
-  pdfPath: string;
-  pdfSha256: string;
-}
-
-interface StatementDownloadErr {
-  error: string;
-  ok: false;
-}
-
-type StatementDownloadResult = StatementDownloadOk | StatementDownloadErr;
-
-interface QfxTransaction {
-  amount_cents: number;
-  check_number: string | null;
-  currency: string;
-  date: string | null;
-  fitid: string;
-  memo: string | null;
-  name: string | null;
-  reference_number: string | null;
-  type: string | null;
-}
-
-interface QfxBalance {
-  as_of: string;
-  available_cents: number | null;
-  ledger_cents: number | null;
-}
-
-interface QfxExtracted {
-  balance: QfxBalance | null;
-  transactions: QfxTransaction[];
-}
-
-interface DashboardDiagnostics {
-  body_preview: string;
-  title: string;
-  url: string;
-}
-
-interface TransactionCursor {
-  last_activity?: string;
-  last_fetched_at?: string;
-  max_seen_date?: string | null;
-}
-
-interface TransactionsStateShape {
-  per_account?: Record<string, TransactionCursor | undefined>;
-}
-
-interface ActivityChoice {
-  activity: ActivityKind;
-  dateRange?: DateRange;
-}
-
-// OFX parser output is deeply nested, loosely typed, and varies by ofx-js
-// version. We model only what we read as nested `unknown`-backed objects.
-type OfxValue = unknown;
-type OfxRecord = Record<string, OfxValue>;
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
 
