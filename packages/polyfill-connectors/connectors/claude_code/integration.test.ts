@@ -12,10 +12,9 @@
  * order within a session, and the sessions pass emits one record per
  * accumulator only when the sessions stream is requested.
  *
- * Imports from ./collect-helpers.ts (not ./index.ts) because index.ts runs
- * `runConnector({...})` at module load — opening stdin and waiting for the
- * runtime START message. Importing it from tests would keep the event loop
- * alive forever.
+ * Imports directly from ./index.ts — `runConnector({...})` is guarded by
+ * `isMainModule(import.meta.url)` so it only fires when index.ts is the
+ * process entry point, not when a test imports it.
  *
  * Why bother: parsers.test.ts proves each record *shape* is correct from an
  * individual payload. These integration tests prove the cross-stream +
@@ -38,7 +37,7 @@ import {
   makeJsonlObservations,
   observeJsonlFields,
   processJsonlLine,
-} from "./collect-helpers.ts";
+} from "./index.ts";
 import { makeEmptySessionAccumulator } from "./parsers.ts";
 import type { JsonlObject, SessionAccumulator } from "./types.ts";
 
