@@ -26,14 +26,8 @@ import {
   runConnector,
   type ValidateRecord,
 } from "../../src/connector-runtime.ts";
-import {
-  buildOrderItemRecord,
-  buildOrderRecord,
-  mergeOrderItems,
-  parseOrderDate,
-  parseOrderDetailDom,
-  parseOrdersListDom,
-} from "./parsers.ts";
+import { type CaptureDep, type EmitDeps, type EmitFn, emitOrderAndItems, type RunFlags } from "./collect-helpers.ts";
+import { parseOrderDate, parseOrderDetailDom, parseOrdersListDom } from "./parsers.ts";
 import { listPageOrderShape, validateRecord as validateRecordRaw } from "./schemas.ts";
 import type { ListPageDiagnostics, ListPageOrder, OrderDetail } from "./types.ts";
 
@@ -212,28 +206,9 @@ async function extractOrdersOnPage(page: Page): Promise<ListPageOrder[]> {
 }
 
 // ─── collect() helpers ───────────────────────────────────────────────────
-
-type EmitFn = BrowserCollectContext["emit"];
-type EmitRecordFn = BrowserCollectContext["emitRecord"];
-type CaptureDep = BrowserCollectContext["capture"];
-
-/** Ephemeral per-run flags that cross year boundaries. */
-interface RunFlags {
-  detailCaptured: boolean;
-}
-
-/** Per-run dependencies threaded through processListOrder → emitOrderAndItems.
- * Exported for integration testing (see parsers.test.ts).
- */
-export interface EmitDeps {
-  capture: CaptureDep;
-  emit: EmitFn;
-  emitRecord: EmitRecordFn;
-  emittedAt: string;
-  skipDetail: boolean;
-  wantsItems: boolean;
-  wantsOrders: boolean;
-}
+// EmitDeps, RunFlags, and emitOrderAndItems live in ./collect-helpers.ts
+// so tests can import them without loading this file (which fires
+// runConnector at module scope and would keep the event loop alive).
 
 /**
  * Run list-page extraction through the zod shape-check. Orders that fail
@@ -299,34 +274,6 @@ async function reportEmptyPageDiagnostics(page: Page, year: number, startIndex: 
       message: `Year ${year} startIndex=${startIndex}: order containers visible on page but .order-card/.js-order-card selector matched 0. Screenshot=${shotPath}`,
       diagnostics: diag,
     });
-  }
-}
-
-/** Emit the order record + per-item records for a single list-page order.
- *
- * Exported for integration testing. The invariant this enforces is:
- *   1. The order record emits BEFORE its item records (so downstream
- *      readers see the parent-child relationship in order).
- *   2. Items emit in mergeOrderItems() order — list-page items first,
- *      detail-only items appended — which is the dedup + enrichment
- *      order consumers depend on.
- *   3. Streams disabled via scope (wantsOrders/wantsItems) emit nothing;
- *      the other stream still flows.
- * Regressing any of these is a real bug; parsers.test.ts covers them.
- */
-export async function emitOrderAndItems(
-  deps: EmitDeps,
-  listOrder: ListPageOrder,
-  detail: OrderDetail | null,
-  orderDate: string
-): Promise<void> {
-  if (deps.wantsOrders) {
-    await deps.emitRecord("orders", buildOrderRecord(listOrder, detail, orderDate, deps.emittedAt));
-  }
-  if (deps.wantsItems) {
-    for (const merged of mergeOrderItems(listOrder, detail)) {
-      await deps.emitRecord("order_items", buildOrderItemRecord(listOrder.orderId, orderDate, merged));
-    }
   }
 }
 

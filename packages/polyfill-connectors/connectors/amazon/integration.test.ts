@@ -7,6 +7,10 @@
  * then assert on the sequence: order emitted before items, items in
  * dedup+merge order, stream-scope respected, cursor timing preserved.
  *
+ * Imports from ./collect-helpers.ts (not ./index.ts) so that
+ * `runConnector({...})` doesn't fire at module load and keep the test
+ * runner's event loop alive.
+ *
  * Why bother: unit tests on pure parsers prove record *shapes* are
  * correct. Integration tests on emitOrderAndItems prove the invariants
  * that consumers actually observe: "emit parent record before children",
@@ -18,7 +22,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { type EmitDeps, emitOrderAndItems } from "./index.ts";
+import { type EmitDeps, emitOrderAndItems } from "./collect-helpers.ts";
 import type { DetailItem, ListPageOrder, OrderDetail } from "./types.ts";
 
 interface EmittedRecord {
@@ -32,15 +36,14 @@ interface RecordingDeps {
 }
 
 /** Build an EmitDeps that records every emitRecord() call. emit() is a
- *  no-op (the amazon connector only calls emit() for diagnostics, which
- *  emitOrderAndItems doesn't do). capture is null since fixture capture
- *  is orthogonal to the emit ordering we're testing. */
+ *  no-op (emitOrderAndItems doesn't call emit() — only diagnostic paths do).
+ *  capture is null since fixture capture is orthogonal to emit ordering. */
 function makeRecordingDeps(overrides: Partial<EmitDeps> = {}): RecordingDeps {
   const emitted: EmittedRecord[] = [];
   const deps: EmitDeps = {
     capture: null,
     emit: (): Promise<void> => Promise.resolve(),
-    emitRecord: (stream, data): Promise<void> => {
+    emitRecord: (stream: string, data: Record<string, unknown>): Promise<void> => {
       emitted.push({ stream, data });
       return Promise.resolve();
     },
