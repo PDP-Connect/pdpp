@@ -1,4 +1,4 @@
-import { getDb, sql } from './db.js';
+import { getDb } from './db.js';
 import {
   buildPendingConsentRequestUri,
   getConnectorManifest,
@@ -51,17 +51,16 @@ async function getLatestRunSummary(connectorId) {
 }
 
 async function getConnectorRecordProjection(connectorId) {
-  const db = getDb();
-  const rows = await db.query(sql`
+  const rows = getDb().prepare(`
     SELECT
       stream,
       COUNT(*) AS record_count,
       MAX(emitted_at) AS last_updated
     FROM records
-    WHERE connector_id = ${connectorId}
+    WHERE connector_id = ?
       AND deleted = 0
     GROUP BY stream
-  `);
+  `).all(connectorId);
   const byStream = new Map();
   let latest = null;
   for (const row of rows) {
@@ -105,17 +104,16 @@ function buildStreamSummary(stream, live = null) {
   };
 }
 
-async function listRegisteredConnectorRows() {
-  const db = getDb();
-  return db.query(sql`
+function listRegisteredConnectorRows() {
+  return getDb().prepare(`
     SELECT connector_id, manifest
     FROM connectors
     ORDER BY connector_id ASC
-  `);
+  `).all();
 }
 
 export async function listConnectorSummaries(controller) {
-  const rows = await listRegisteredConnectorRows();
+  const rows = listRegisteredConnectorRows();
   return Promise.all(rows.map(async (row) => {
     const manifest = parseManifest(row.manifest, row.connector_id);
     const live = await getConnectorRecordProjection(row.connector_id);
@@ -194,20 +192,21 @@ function buildOwnerDeviceApproval(row) {
 
 export async function listPendingApprovals() {
   const db = getDb();
-  const pendingConsents = await db.query(sql`
+  const now = new Date().toISOString();
+  const pendingConsents = db.prepare(`
     SELECT device_code, user_code, params_json, created_at
     FROM pending_consents
     WHERE status = 'pending'
-      AND expires_at > ${new Date().toISOString()}
+      AND expires_at > ?
     ORDER BY created_at DESC
-  `);
-  const pendingDevices = await db.query(sql`
+  `).all(now);
+  const pendingDevices = db.prepare(`
     SELECT device_code, user_code, client_id, created_at
     FROM owner_device_auth
     WHERE status = 'pending'
-      AND expires_at > ${new Date().toISOString()}
+      AND expires_at > ?
     ORDER BY created_at DESC
-  `);
+  `).all(now);
   const approvals = [
     ...pendingConsents.map(buildConsentApproval),
     ...pendingDevices.map(buildOwnerDeviceApproval),
@@ -225,20 +224,24 @@ export async function listRecordsTimeline({
   order = 'desc',
   timestampMode = 'native',
 } = {}) {
-  const db = getDb();
-  let filters = sql`WHERE deleted = 0`;
+  // Build the WHERE clause dynamically. Values are always bound, never
+  // interpolated; the only thing that varies is which clauses are present.
+  const where = ['deleted = 0'];
+  const binds = [];
   if (connectorId) {
-    filters = sql`${filters} AND connector_id = ${connectorId}`;
+    where.push('connector_id = ?');
+    binds.push(connectorId);
   }
   if (stream) {
-    filters = sql`${filters} AND stream = ${stream}`;
+    where.push('stream = ?');
+    binds.push(stream);
   }
 
-  const rows = await db.query(sql`
+  const rows = getDb().prepare(`
     SELECT connector_id, stream, record_key, record_json, emitted_at, version
     FROM records
-    ${filters}
-  `);
+    WHERE ${where.join(' AND ')}
+  `).all(...binds);
 
   const manifestCache = new Map();
   const data = [];

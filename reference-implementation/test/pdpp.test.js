@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 
 import { startServer } from '../server/index.js';
 import { parsePendingConsentRequestUri } from '../server/auth.js';
-import { getDb, sql } from '../server/db.js';
+import { getDb } from '../server/db.js';
 import { ingestRecord } from '../server/records.js';
 import { runConnector, loadSyncState } from '../runtime/index.js';
 
@@ -155,103 +155,87 @@ async function mutatePendingConsentRequest(requestUri, mutate) {
   const deviceCode = parsePendingConsentRequestUri(requestUri);
   assert.ok(deviceCode, 'request_uri should decode to a pending device code');
 
-  const rows = await getDb().query(sql`
-    SELECT params_json
-    FROM pending_consents
-    WHERE device_code = ${deviceCode}
-  `);
-  assert.equal(rows.length, 1);
+  const row = getDb().prepare(
+    'SELECT params_json FROM pending_consents WHERE device_code = ?'
+  ).get(deviceCode);
+  assert.ok(row, 'pending consent row exists');
 
-  const request = JSON.parse(rows[0].params_json);
+  const request = JSON.parse(row.params_json);
   mutate(request);
 
-  await getDb().query(sql`
-    UPDATE pending_consents
-    SET params_json = ${JSON.stringify(request)}
-    WHERE device_code = ${deviceCode}
-  `);
+  getDb().prepare(
+    'UPDATE pending_consents SET params_json = ? WHERE device_code = ?'
+  ).run(JSON.stringify(request), deviceCode);
+}
+
+// Build a UPDATE SET clause dynamically from an `updates` object restricted to
+// an allowlist of column names. Returns `{ setText, binds }` — the caller
+// concatenates `setText` into a fixed UPDATE SQL string and passes the binds
+// to `.run()` along with any trailing WHERE binds.
+function buildDynamicSet(updates, allowedKeys) {
+  const parts = [];
+  const binds = [];
+  for (const key of allowedKeys) {
+    if (Object.hasOwn(updates, key)) {
+      parts.push(`${key} = ?`);
+      binds.push(updates[key]);
+    }
+  }
+  return { setText: parts.join(', '), binds };
 }
 
 async function updatePendingConsentRow(requestUri, updates) {
   const deviceCode = parsePendingConsentRequestUri(requestUri);
   assert.ok(deviceCode, 'request_uri should decode to a pending device code');
 
-  const setClauses = [];
-  if (Object.hasOwn(updates, 'params_json')) {
-    setClauses.push(sql`params_json = ${updates.params_json}`);
-  }
-  if (Object.hasOwn(updates, 'request_id')) {
-    setClauses.push(sql`request_id = ${updates.request_id}`);
-  }
-  if (Object.hasOwn(updates, 'trace_id')) {
-    setClauses.push(sql`trace_id = ${updates.trace_id}`);
-  }
-  if (Object.hasOwn(updates, 'scenario_id')) {
-    setClauses.push(sql`scenario_id = ${updates.scenario_id}`);
-  }
-  assert.ok(setClauses.length, 'expected pending consent row updates');
+  const { setText, binds } = buildDynamicSet(updates, [
+    'params_json', 'request_id', 'trace_id', 'scenario_id',
+  ]);
+  assert.ok(binds.length, 'expected pending consent row updates');
 
-  await getDb().query(sql`
-    UPDATE pending_consents
-    SET ${sql.join(setClauses, sql`, `)}
-    WHERE device_code = ${deviceCode}
-  `);
+  getDb().prepare(
+    `UPDATE pending_consents SET ${setText} WHERE device_code = ?`
+  ).run(...binds, deviceCode);
 }
 
 async function readPendingConsentTraceContext(requestUri) {
   const deviceCode = parsePendingConsentRequestUri(requestUri);
   assert.ok(deviceCode, 'request_uri should decode to a pending device code');
 
-  const rows = await getDb().query(sql`
-    SELECT request_id, trace_id, scenario_id
-    FROM pending_consents
-    WHERE device_code = ${deviceCode}
-  `);
-  assert.equal(rows.length, 1);
-  return rows[0];
+  const row = getDb().prepare(
+    'SELECT request_id, trace_id, scenario_id FROM pending_consents WHERE device_code = ?'
+  ).get(deviceCode);
+  assert.ok(row, 'pending consent row exists');
+  return row;
 }
 
 async function mutateRegisteredClient(clientId, mutate) {
-  const rows = await getDb().query(sql`
-    SELECT metadata_json
-    FROM oauth_clients
-    WHERE client_id = ${clientId}
-  `);
-  assert.equal(rows.length, 1, 'expected exactly one registered client row');
+  const row = getDb().prepare(
+    'SELECT metadata_json FROM oauth_clients WHERE client_id = ?'
+  ).get(clientId);
+  assert.ok(row, 'expected exactly one registered client row');
 
-  const metadata = JSON.parse(rows[0].metadata_json);
+  const metadata = JSON.parse(row.metadata_json);
   mutate(metadata);
 
-  await getDb().query(sql`
-    UPDATE oauth_clients
-    SET metadata_json = ${JSON.stringify(metadata)}
-    WHERE client_id = ${clientId}
-  `);
+  getDb().prepare(
+    'UPDATE oauth_clients SET metadata_json = ? WHERE client_id = ?'
+  ).run(JSON.stringify(metadata), clientId);
 }
 
 async function updateRegisteredClientRow(clientId, updates) {
-  const setClauses = [];
-  if (Object.hasOwn(updates, 'metadata_json')) {
-    setClauses.push(sql`metadata_json = ${updates.metadata_json}`);
-  }
-  if (Object.hasOwn(updates, 'token_endpoint_auth_method')) {
-    setClauses.push(sql`token_endpoint_auth_method = ${updates.token_endpoint_auth_method}`);
-  }
-  assert.ok(setClauses.length, 'expected registered client row updates');
+  const { setText, binds } = buildDynamicSet(updates, [
+    'metadata_json', 'token_endpoint_auth_method',
+  ]);
+  assert.ok(binds.length, 'expected registered client row updates');
 
-  const query = sql`
-    UPDATE oauth_clients
-    SET ${sql.join(setClauses, sql`, `)}
-    WHERE client_id = ${clientId}
-  `;
-  await getDb().query(query);
+  getDb().prepare(
+    `UPDATE oauth_clients SET ${setText} WHERE client_id = ?`
+  ).run(...binds, clientId);
 }
 
 async function deleteRegisteredClient(clientId) {
-  await getDb().query(sql`
-    DELETE FROM oauth_clients
-    WHERE client_id = ${clientId}
-  `);
+  getDb().prepare('DELETE FROM oauth_clients WHERE client_id = ?').run(clientId);
 }
 
 async function issueOwnerToken(asUrl, subjectId = 'owner_local') {
@@ -375,37 +359,29 @@ async function approveGrant(asUrl, subjectId, params) {
 }
 
 async function mutateGrantSource(grantId, mutate) {
-  const rows = await getDb().query(sql`
-    SELECT grant_json
-    FROM grants
-    WHERE grant_id = ${grantId}
-  `);
-  assert.equal(rows.length, 1, 'expected exactly one persisted grant row');
+  const row = getDb().prepare(
+    'SELECT grant_json FROM grants WHERE grant_id = ?'
+  ).get(grantId);
+  assert.ok(row, 'expected exactly one persisted grant row');
 
-  const grant = JSON.parse(rows[0].grant_json);
+  const grant = JSON.parse(row.grant_json);
   grant.source = mutate(grant.source);
 
-  await getDb().query(sql`
-    UPDATE grants
-    SET grant_json = ${JSON.stringify(grant)}
-    WHERE grant_id = ${grantId}
-  `);
+  getDb().prepare(
+    'UPDATE grants SET grant_json = ? WHERE grant_id = ?'
+  ).run(JSON.stringify(grant), grantId);
 }
 
 async function mutateGrantStorageBinding(grantId, mutate) {
-  const rows = await getDb().query(sql`
-    SELECT storage_binding_json
-    FROM grants
-    WHERE grant_id = ${grantId}
-  `);
-  assert.equal(rows.length, 1, 'expected exactly one persisted grant row');
+  const row = getDb().prepare(
+    'SELECT storage_binding_json FROM grants WHERE grant_id = ?'
+  ).get(grantId);
+  assert.ok(row, 'expected exactly one persisted grant row');
 
-  const storageBinding = JSON.parse(rows[0].storage_binding_json);
-  await getDb().query(sql`
-    UPDATE grants
-    SET storage_binding_json = ${JSON.stringify(mutate(storageBinding))}
-    WHERE grant_id = ${grantId}
-  `);
+  const storageBinding = JSON.parse(row.storage_binding_json);
+  getDb().prepare(
+    'UPDATE grants SET storage_binding_json = ? WHERE grant_id = ?'
+  ).run(JSON.stringify(mutate(storageBinding)), grantId);
 }
 
 function assertNormalizedGrantSource(source, expected, label) {
@@ -482,11 +458,11 @@ test('PDPP reference implementation integration', async (t) => {
       });
 
       const deviceCode = parsePendingConsentRequestUri(initiate.request_uri);
-      await getDb().query(sql`
+      getDb().prepare(`
         UPDATE pending_consents
-        SET expires_at = ${new Date(Date.now() - 1000).toISOString()}
-        WHERE device_code = ${deviceCode}
-      `);
+        SET expires_at = ?
+        WHERE device_code = ?
+      `).run(new Date(Date.now() - 1000).toISOString(), deviceCode);
 
       const consentResp = await fetch(`${asUrl}/consent?request_uri=${encodeURIComponent(initiate.request_uri)}`);
       assert.equal(consentResp.status, 404);
@@ -558,11 +534,11 @@ test('PDPP reference implementation integration', async (t) => {
       assert.equal(approved.grant.streams[0].view, 'basic');
       assert.ok(approved.token);
 
-      const grantRows = await getDb().query(sql`
+      const grantRows = getDb().prepare(`
         SELECT storage_binding_json
         FROM grants
-        WHERE grant_id = ${approved.grant.grant_id}
-      `);
+        WHERE grant_id = ?
+      `).all(approved.grant.grant_id);
       assert.equal(grantRows.length, 1);
       assert.deepEqual(JSON.parse(grantRows[0].storage_binding_json), { connector_id: spotifyManifest.connector_id });
     });
@@ -1325,11 +1301,11 @@ test('PDPP reference implementation integration', async (t) => {
       const deviceCode = parsePendingConsentRequestUri(initiate.body.request_uri);
       assert.ok(deviceCode);
 
-      const pendingRows = await getDb().query(sql`
+      const pendingRows = getDb().prepare(`
         SELECT params_json
         FROM pending_consents
-        WHERE device_code = ${deviceCode}
-      `);
+        WHERE device_code = ?
+      `).all(deviceCode);
       assert.equal(pendingRows.length, 1);
       const driftedRequest = JSON.parse(pendingRows[0].params_json);
       driftedRequest.trace_context = {
@@ -2798,11 +2774,11 @@ test('PDPP reference implementation integration', async (t) => {
       assert.equal(approved.grant.source?.binding_kind, 'provider_native');
       assert.equal(approved.grant.source?.provider_id, nativeManifest.provider_id);
 
-      const grantRows = await getDb().query(sql`
+      const grantRows = getDb().prepare(`
         SELECT storage_binding_json
         FROM grants
-        WHERE grant_id = ${approved.grant.grant_id}
-      `);
+        WHERE grant_id = ?
+      `).all(approved.grant.grant_id);
       assert.equal(grantRows.length, 1);
       assert.deepEqual(JSON.parse(grantRows[0].storage_binding_json), {
         connector_id: nativeManifest.storage_binding.connector_id,
@@ -3097,11 +3073,11 @@ test('PDPP reference implementation integration', async (t) => {
         streams: [{ name: 'pay_statements' }, { name: 'equity_grants', view: 'summary' }],
       });
 
-      await getDb().query(sql`
+      getDb().prepare(`
         UPDATE grants
-        SET storage_binding_json = ${JSON.stringify({ connector_id: 'missing_native_storage_connector' })}
-        WHERE grant_id = ${approved.grant.grant_id}
-      `);
+        SET storage_binding_json = ?
+        WHERE grant_id = ?
+      `).run(JSON.stringify({ connector_id: 'missing_native_storage_connector' }), approved.grant.grant_id);
 
       await closeServer(server);
       server = await startServer({
@@ -3167,11 +3143,11 @@ test('PDPP reference implementation integration', async (t) => {
         streams: [{ name: 'pay_statements' }, { name: 'equity_grants', view: 'summary' }],
       });
 
-      await getDb().query(sql`
+      getDb().prepare(`
         UPDATE grants
         SET storage_binding_json = NULL
-        WHERE grant_id = ${approved.grant.grant_id}
-      `);
+        WHERE grant_id = ?
+      `).run(approved.grant.grant_id);
 
       await closeServer(server);
       server = await startServer({
@@ -3260,12 +3236,12 @@ test('PDPP reference implementation integration', async (t) => {
         connector_id: missingConnectorId,
       };
 
-      await getDb().query(sql`
+      getDb().prepare(`
         UPDATE grants
-        SET grant_json = ${JSON.stringify(remappedGrant)},
-            storage_binding_json = ${JSON.stringify({ connector_id: missingConnectorId })}
-        WHERE grant_id = ${approved.grant.grant_id}
-      `);
+        SET grant_json = ?,
+            storage_binding_json = ?
+        WHERE grant_id = ?
+      `).run(JSON.stringify(remappedGrant), JSON.stringify({ connector_id: missingConnectorId }), approved.grant.grant_id);
 
       await closeServer(server);
       server = await startServer({
@@ -3385,11 +3361,11 @@ test('PDPP reference implementation integration', async (t) => {
       const malformedGrant = JSON.parse(JSON.stringify(approved.grant));
       delete malformedGrant.source;
 
-      await getDb().query(sql`
+      getDb().prepare(`
         UPDATE grants
-        SET grant_json = ${JSON.stringify(malformedGrant)}
-        WHERE grant_id = ${approved.grant.grant_id}
-      `);
+        SET grant_json = ?
+        WHERE grant_id = ?
+      `).run(JSON.stringify(malformedGrant), approved.grant.grant_id);
 
       await closeServer(server);
       server = await startServer({
@@ -3474,11 +3450,11 @@ test('PDPP reference implementation integration', async (t) => {
       const malformedGrant = JSON.parse(JSON.stringify(approved.grant));
       delete malformedGrant.source;
 
-      await getDb().query(sql`
+      getDb().prepare(`
         UPDATE grants
-        SET grant_json = ${JSON.stringify(malformedGrant)}
-        WHERE grant_id = ${approved.grant.grant_id}
-      `);
+        SET grant_json = ?
+        WHERE grant_id = ?
+      `).run(JSON.stringify(malformedGrant), approved.grant.grant_id);
 
       await closeServer(server);
       server = await startServer({
@@ -3570,11 +3546,11 @@ test('PDPP reference implementation integration', async (t) => {
       const malformedGrant = JSON.parse(JSON.stringify(approved.grant));
       malformedGrant.streams = [{ name: 'missing_stream' }];
 
-      await getDb().query(sql`
+      getDb().prepare(`
         UPDATE grants
-        SET grant_json = ${JSON.stringify(malformedGrant)}
-        WHERE grant_id = ${approved.grant.grant_id}
-      `);
+        SET grant_json = ?
+        WHERE grant_id = ?
+      `).run(JSON.stringify(malformedGrant), approved.grant.grant_id);
 
       const introspectResp = await fetchJson(`${asUrl}/introspect`, {
         method: 'POST',
@@ -3656,11 +3632,11 @@ test('PDPP reference implementation integration', async (t) => {
       const malformedGrant = JSON.parse(JSON.stringify(approved.grant));
       malformedGrant.manifest_version = '999.0.0';
 
-      await getDb().query(sql`
+      getDb().prepare(`
         UPDATE grants
-        SET grant_json = ${JSON.stringify(malformedGrant)}
-        WHERE grant_id = ${approved.grant.grant_id}
-      `);
+        SET grant_json = ?
+        WHERE grant_id = ?
+      `).run(JSON.stringify(malformedGrant), approved.grant.grant_id);
 
       const introspectResp = await fetchJson(`${asUrl}/introspect`, {
         method: 'POST',
@@ -3723,11 +3699,11 @@ test('PDPP reference implementation integration', async (t) => {
       const malformedGrant = JSON.parse(JSON.stringify(approved.grant));
       malformedGrant.streams = [{ name: 'missing_stream' }];
 
-      await getDb().query(sql`
+      getDb().prepare(`
         UPDATE grants
-        SET grant_json = ${JSON.stringify(malformedGrant)}
-        WHERE grant_id = ${approved.grant.grant_id}
-      `);
+        SET grant_json = ?
+        WHERE grant_id = ?
+      `).run(JSON.stringify(malformedGrant), approved.grant.grant_id);
 
       const introspectResp = await fetchJson(`${asUrl}/introspect`, {
         method: 'POST',
@@ -3787,11 +3763,11 @@ test('PDPP reference implementation integration', async (t) => {
       const malformedGrant = JSON.parse(JSON.stringify(approved.grant));
       malformedGrant.manifest_version = '999.0.0';
 
-      await getDb().query(sql`
+      getDb().prepare(`
         UPDATE grants
-        SET grant_json = ${JSON.stringify(malformedGrant)}
-        WHERE grant_id = ${approved.grant.grant_id}
-      `);
+        SET grant_json = ?
+        WHERE grant_id = ?
+      `).run(JSON.stringify(malformedGrant), approved.grant.grant_id);
 
       const introspectResp = await fetchJson(`${asUrl}/introspect`, {
         method: 'POST',
@@ -3899,21 +3875,21 @@ test('PDPP reference implementation integration', async (t) => {
       const deviceCode = parsePendingConsentRequestUri(initiate.body.request_uri);
       assert.ok(deviceCode, 'request_uri should decode to a pending device code');
 
-      const rows = await getDb().query(sql`
+      const rows = getDb().prepare(`
         SELECT params_json
         FROM pending_consents
-        WHERE device_code = ${deviceCode}
-      `);
+        WHERE device_code = ?
+      `).all(deviceCode);
       assert.equal(rows.length, 1);
 
       const malformedRequest = JSON.parse(rows[0].params_json);
       delete malformedRequest.source_binding;
 
-      await getDb().query(sql`
+      getDb().prepare(`
         UPDATE pending_consents
-        SET params_json = ${JSON.stringify(malformedRequest)}
-        WHERE device_code = ${deviceCode}
-      `);
+        SET params_json = ?
+        WHERE device_code = ?
+      `).run(JSON.stringify(malformedRequest), deviceCode);
 
       const consentResp = await fetchJson(
         `${asUrl}/consent?request_uri=${encodeURIComponent(initiate.body.request_uri)}`,
@@ -3944,22 +3920,22 @@ test('PDPP reference implementation integration', async (t) => {
       const deviceCode = parsePendingConsentRequestUri(initiate.body.request_uri);
       assert.ok(deviceCode, 'request_uri should decode to a pending device code');
 
-      const rows = await getDb().query(sql`
+      const rows = getDb().prepare(`
         SELECT params_json
         FROM pending_consents
-        WHERE device_code = ${deviceCode}
-      `);
+        WHERE device_code = ?
+      `).all(deviceCode);
       assert.equal(rows.length, 1);
 
       const malformedRequest = JSON.parse(rows[0].params_json);
       malformedRequest.source_binding.debug_context = 'should_not_escape';
       malformedRequest.storage_binding.debug_context = 'should_not_escape';
 
-      await getDb().query(sql`
+      getDb().prepare(`
         UPDATE pending_consents
-        SET params_json = ${JSON.stringify(malformedRequest)}
-        WHERE device_code = ${deviceCode}
-      `);
+        SET params_json = ?
+        WHERE device_code = ?
+      `).run(JSON.stringify(malformedRequest), deviceCode);
 
       const consentResp = await fetchJson(
         `${asUrl}/consent?request_uri=${encodeURIComponent(initiate.body.request_uri)}`,
@@ -3990,21 +3966,21 @@ test('PDPP reference implementation integration', async (t) => {
       const deviceCode = parsePendingConsentRequestUri(initiate.body.request_uri);
       assert.ok(deviceCode, 'request_uri should decode to a pending device code');
 
-      const rows = await getDb().query(sql`
+      const rows = getDb().prepare(`
         SELECT params_json
         FROM pending_consents
-        WHERE device_code = ${deviceCode}
-      `);
+        WHERE device_code = ?
+      `).all(deviceCode);
       assert.equal(rows.length, 1);
 
       const malformedRequest = JSON.parse(rows[0].params_json);
       malformedRequest.source_binding.connector_id = 'other_connector';
 
-      await getDb().query(sql`
+      getDb().prepare(`
         UPDATE pending_consents
-        SET params_json = ${JSON.stringify(malformedRequest)}
-        WHERE device_code = ${deviceCode}
-      `);
+        SET params_json = ?
+        WHERE device_code = ?
+      `).run(JSON.stringify(malformedRequest), deviceCode);
 
       const consentResp = await fetchJson(
         `${asUrl}/consent?request_uri=${encodeURIComponent(initiate.body.request_uri)}`,
@@ -4330,11 +4306,11 @@ test('PDPP reference implementation integration', async (t) => {
       const visibleRecord = ownerRecordListResp.body.data?.[0];
       assert.ok(visibleRecord, 'expected an owner-visible top_artists record before corrupting the manifest');
 
-      await getDb().query(sql`
+      getDb().prepare(`
         UPDATE connectors
-        SET manifest = ${'{"connector_id":"https://registry.pdpp.org/connectors/spotify","streams":[{"name":"top_artists","primary_key":["missing_id"]}]}'}
-        WHERE connector_id = ${spotifyManifest.connector_id}
-      `);
+        SET manifest = ?
+        WHERE connector_id = ?
+      `).run('{"connector_id":"https://registry.pdpp.org/connectors/spotify","streams":[{"name":"top_artists","primary_key":["missing_id"]}]}', spotifyManifest.connector_id);
 
       const connectorLookupResp = await fetchJson(
         `${asUrl}/connectors/${encodeURIComponent(spotifyManifest.connector_id)}`,
@@ -4483,11 +4459,11 @@ test('PDPP reference implementation integration', async (t) => {
         new RegExp(`Stream 'not_a_stream' not found for connector ${spotifyManifest.connector_id}`),
       );
 
-      const stateRows = await getDb().query(sql`
+      const stateRows = getDb().prepare(`
         SELECT connector_id, stream, state_json
         FROM connector_state
-        WHERE connector_id IN (${missingConnectorId}, ${spotifyManifest.connector_id})
-      `);
+        WHERE connector_id IN (?, ?)
+      `).all(missingConnectorId, spotifyManifest.connector_id);
       assert.equal(stateRows.length, 0, 'rejected state writes should not create connector_state rows');
     });
   });
@@ -4496,11 +4472,11 @@ test('PDPP reference implementation integration', async (t) => {
     await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
       const ownerToken = await issueOwnerToken(asUrl, 'u1');
 
-      await getDb().query(sql`
+      getDb().prepare(`
         UPDATE connectors
-        SET manifest = ${'{"connector_id":"https://registry.pdpp.org/connectors/spotify","streams":[{"name":"top_artists","primary_key":["missing_id"]}]}'}
-        WHERE connector_id = ${spotifyManifest.connector_id}
-      `);
+        SET manifest = ?
+        WHERE connector_id = ?
+      `).run('{"connector_id":"https://registry.pdpp.org/connectors/spotify","streams":[{"name":"top_artists","primary_key":["missing_id"]}]}', spotifyManifest.connector_id);
 
       const malformedGetResp = await fetchJson(
         `${rsUrl}/v1/state/${encodeURIComponent(spotifyManifest.connector_id)}`,
@@ -4531,11 +4507,11 @@ test('PDPP reference implementation integration', async (t) => {
         new RegExp(`Connector manifest for ${spotifyManifest.connector_id} is malformed or no longer valid`),
       );
 
-      const stateRows = await getDb().query(sql`
+      const stateRows = getDb().prepare(`
         SELECT connector_id, stream, state_json
         FROM connector_state
-        WHERE connector_id = ${spotifyManifest.connector_id}
-      `);
+        WHERE connector_id = ?
+      `).all(spotifyManifest.connector_id);
       assert.equal(stateRows.length, 0, 'malformed-manifest state writes should not create connector_state rows');
     });
   });
@@ -4614,11 +4590,11 @@ test('PDPP reference implementation integration', async (t) => {
         new RegExp(`Grant '${approved.grant.grant_id}' is not scoped to connector ${githubManifest.connector_id}`),
       );
 
-      const grantStateRows = await getDb().query(sql`
+      const grantStateRows = getDb().prepare(`
         SELECT grant_id, connector_id, stream, state_json
         FROM grant_connector_state
-        WHERE grant_id IN (${unknownGrantId}, ${approved.grant.grant_id})
-      `);
+        WHERE grant_id IN (?, ?)
+      `).all(unknownGrantId, approved.grant.grant_id);
       assert.equal(grantStateRows.length, 0, 'rejected grant-scoped state writes should not create grant_connector_state rows');
     });
   });
@@ -4636,11 +4612,9 @@ test('PDPP reference implementation integration', async (t) => {
         streams: [{ name: 'top_artists' }],
       });
 
-      await getDb().query(sql`
-        UPDATE grants
-        SET storage_binding_json = ${'{"connector_id":'}
-        WHERE grant_id = ${approved.grant.grant_id}
-      `);
+      getDb().prepare(
+        'UPDATE grants SET storage_binding_json = ? WHERE grant_id = ?'
+      ).run('{"connector_id":', approved.grant.grant_id);
 
       const malformedGrantGetResp = await fetchJson(
         `${rsUrl}/v1/state/${encodeURIComponent(spotifyManifest.connector_id)}?grant_id=${encodeURIComponent(approved.grant.grant_id)}`,
@@ -4692,11 +4666,9 @@ test('PDPP reference implementation integration', async (t) => {
       assert.equal(malformedGrantPutResp.body.error.code, 'grant_invalid');
       assert.match(malformedGrantPutResp.body.error.message, /Grant is malformed or no longer valid/);
 
-      const grantStateRows = await getDb().query(sql`
-        SELECT grant_id, connector_id, stream, state_json
-        FROM grant_connector_state
-        WHERE grant_id = ${approved.grant.grant_id}
-      `);
+      const grantStateRows = getDb().prepare(
+        'SELECT grant_id, connector_id, stream, state_json FROM grant_connector_state WHERE grant_id = ?'
+      ).all(approved.grant.grant_id);
       assert.equal(grantStateRows.length, 0, 'malformed grant-scoped state writes should not create grant_connector_state rows');
     });
   });
@@ -4714,12 +4686,12 @@ test('PDPP reference implementation integration', async (t) => {
         streams: [{ name: 'top_artists' }],
       });
 
-      await getDb().query(sql`
+      const insertGrantState = getDb().prepare(`
         INSERT INTO grant_connector_state(grant_id, connector_id, stream, state_json, updated_at)
-        VALUES
-          (${approved.grant.grant_id}, ${spotifyManifest.connector_id}, ${'top_artists'}, ${JSON.stringify({ cursor: 'granted_cursor' })}, ${'2026-04-18T10:00:00.000Z'}),
-          (${approved.grant.grant_id}, ${spotifyManifest.connector_id}, ${'recently_played'}, ${JSON.stringify({ cursor: 'hidden_cursor' })}, ${'2026-04-18T11:00:00.000Z'})
+        VALUES(?, ?, ?, ?, ?)
       `);
+      insertGrantState.run(approved.grant.grant_id, spotifyManifest.connector_id, 'top_artists', JSON.stringify({ cursor: 'granted_cursor' }), '2026-04-18T10:00:00.000Z');
+      insertGrantState.run(approved.grant.grant_id, spotifyManifest.connector_id, 'recently_played', JSON.stringify({ cursor: 'hidden_cursor' }), '2026-04-18T11:00:00.000Z');
 
       const getResp = await fetchJson(
         `${rsUrl}/v1/state/${encodeURIComponent(spotifyManifest.connector_id)}?grant_id=${encodeURIComponent(approved.grant.grant_id)}`,
@@ -4822,11 +4794,11 @@ test('PDPP reference implementation integration', async (t) => {
       assert.equal(rejectedEvent.data.error?.code, 'invalid_request');
       assert.match(rejectedEvent.data.error?.message || '', /is not scoped to stream recently_played/);
 
-      const grantStateRows = await getDb().query(sql`
+      const grantStateRows = getDb().prepare(`
         SELECT grant_id, connector_id, stream, state_json
         FROM grant_connector_state
-        WHERE grant_id = ${approved.grant.grant_id}
-      `);
+        WHERE grant_id = ?
+      `).all(approved.grant.grant_id);
       assert.equal(grantStateRows.length, 2, 'rejected writes should not create new grant-scoped state rows');
       assert.equal(
         JSON.parse(grantStateRows.find((row) => row.stream === 'top_artists').state_json).cursor,
@@ -4857,11 +4829,11 @@ test('PDPP reference implementation integration', async (t) => {
       const malformedGrant = JSON.parse(JSON.stringify(approved.grant));
       delete malformedGrant.streams;
 
-      await getDb().query(sql`
+      getDb().prepare(`
         UPDATE grants
-        SET grant_json = ${JSON.stringify(malformedGrant)}
-        WHERE grant_id = ${approved.grant.grant_id}
-      `);
+        SET grant_json = ?
+        WHERE grant_id = ?
+      `).run(JSON.stringify(malformedGrant), approved.grant.grant_id);
 
       const malformedGetResp = await fetchJson(
         `${rsUrl}/v1/state/${encodeURIComponent(spotifyManifest.connector_id)}?grant_id=${encodeURIComponent(approved.grant.grant_id)}`,
@@ -4904,11 +4876,11 @@ test('PDPP reference implementation integration', async (t) => {
       const malformedGrant = JSON.parse(JSON.stringify(approved.grant));
       malformedGrant.streams = [{ name: 'not_in_manifest' }];
 
-      await getDb().query(sql`
+      getDb().prepare(`
         UPDATE grants
-        SET grant_json = ${JSON.stringify(malformedGrant)}
-        WHERE grant_id = ${approved.grant.grant_id}
-      `);
+        SET grant_json = ?
+        WHERE grant_id = ?
+      `).run(JSON.stringify(malformedGrant), approved.grant.grant_id);
 
       const malformedGetResp = await fetchJson(
         `${rsUrl}/v1/state/${encodeURIComponent(spotifyManifest.connector_id)}?grant_id=${encodeURIComponent(approved.grant.grant_id)}`,
@@ -4977,11 +4949,11 @@ test('PDPP reference implementation integration', async (t) => {
         new RegExp(`Grant '${approved.grant.grant_id}' does not support grant-scoped state because access_mode is single_use`),
       );
 
-      const grantStateRows = await getDb().query(sql`
+      const grantStateRows = getDb().prepare(`
         SELECT grant_id, connector_id, stream, state_json
         FROM grant_connector_state
-        WHERE grant_id = ${approved.grant.grant_id}
-      `);
+        WHERE grant_id = ?
+      `).all(approved.grant.grant_id);
       assert.equal(grantStateRows.length, 0, 'single_use grants should not create grant-scoped state rows');
     });
   });
@@ -5240,11 +5212,11 @@ test('PDPP reference implementation integration', async (t) => {
       const ownerToken = await issueOwnerToken(asUrl, 'u1');
       await seedSpotify(rsUrl, spotifyManifest, ownerToken);
 
-      await getDb().query(sql`
+      getDb().prepare(`
         UPDATE connectors
-        SET manifest = ${'{"connector_id":"https://registry.pdpp.org/connectors/spotify","streams":[{"name":"top_artists","primary_key":["missing_id"]}]}'}
-        WHERE connector_id = ${spotifyManifest.connector_id}
-      `);
+        SET manifest = ?
+        WHERE connector_id = ?
+      `).run('{"connector_id":"https://registry.pdpp.org/connectors/spotify","streams":[{"name":"top_artists","primary_key":["missing_id"]}]}', spotifyManifest.connector_id);
 
       const rejectedResp = await fetchJson(
         `${rsUrl}/v1/ingest/top_artists?connector_id=${encodeURIComponent(spotifyManifest.connector_id)}`,
@@ -5316,11 +5288,11 @@ test('PDPP reference implementation integration', async (t) => {
       assert.ok(beforeRecords.length > 0, 'expected seeded top_artists records before exercising malformed-manifest delete routes');
       const protectedRecordId = beforeRecords[0].id;
 
-      await getDb().query(sql`
+      getDb().prepare(`
         UPDATE connectors
-        SET manifest = ${'{"connector_id":"https://registry.pdpp.org/connectors/spotify","streams":[{"name":"top_artists","primary_key":["missing_id"]}]}'}
-        WHERE connector_id = ${spotifyManifest.connector_id}
-      `);
+        SET manifest = ?
+        WHERE connector_id = ?
+      `).run('{"connector_id":"https://registry.pdpp.org/connectors/spotify","streams":[{"name":"top_artists","primary_key":["missing_id"]}]}', spotifyManifest.connector_id);
 
       const deleteAllResp = await fetchJson(
         `${rsUrl}/v1/streams/top_artists/records?connector_id=${encodeURIComponent(spotifyManifest.connector_id)}`,
@@ -6777,11 +6749,11 @@ test('PDPP reference implementation integration', async (t) => {
         `${asUrl}/_ref/grants/${encodeURIComponent(approved.grant.grant_id)}/timeline`,
       );
 
-      await getDb().query(sql`
+      getDb().prepare(`
         UPDATE tokens
-        SET expires_at = ${new Date(Date.now() - 60_000).toISOString()}
-        WHERE token_id = ${approved.token}
-      `);
+        SET expires_at = ?
+        WHERE token_id = ?
+      `).run(new Date(Date.now() - 60_000).toISOString(), approved.token);
 
       const expired = await fetchJson(`${rsUrl}/v1/streams/pay_statements/records?limit=1`, {
         headers: { Authorization: `Bearer ${approved.token}` },
@@ -6802,11 +6774,11 @@ test('PDPP reference implementation integration', async (t) => {
         {
           inactiveReason: 'grant_invalid',
           mutate: async (approved) => {
-            await getDb().query(sql`
+            getDb().prepare(`
               UPDATE grants
               SET storage_binding_json = NULL
-              WHERE grant_id = ${approved.grant.grant_id}
-            `);
+              WHERE grant_id = ?
+            `).run(approved.grant.grant_id);
           },
         },
         {
@@ -6821,11 +6793,11 @@ test('PDPP reference implementation integration', async (t) => {
         {
           inactiveReason: 'grant_expired',
           mutate: async (approved) => {
-            await getDb().query(sql`
+            getDb().prepare(`
               UPDATE tokens
-              SET expires_at = ${new Date(Date.now() - 60_000).toISOString()}
-              WHERE token_id = ${approved.token}
-            `);
+              SET expires_at = ?
+              WHERE token_id = ?
+            `).run(new Date(Date.now() - 60_000).toISOString(), approved.token);
           },
         },
       ]) {
@@ -6880,11 +6852,11 @@ test('PDPP reference implementation integration', async (t) => {
         streams: [{ name: 'pay_statements' }],
       });
 
-      await getDb().query(sql`
+      getDb().prepare(`
         UPDATE grants
         SET storage_binding_json = NULL
-        WHERE grant_id = ${approved.grant.grant_id}
-      `);
+        WHERE grant_id = ?
+      `).run(approved.grant.grant_id);
 
       const changesSince = Buffer.from(JSON.stringify({ kind: 'changes_since', version: 0 })).toString('base64');
 

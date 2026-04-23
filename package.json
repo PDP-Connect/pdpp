@@ -25,6 +25,7 @@
   "devDependencies": {
     "@biomejs/biome": "^2.4.12",
     "@pdpp/brand": "workspace:*",
+    "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^25.6.0",
     "lefthook": "^2.1.6",
     "tsx": "^4.21.0",
@@ -33,8 +34,8 @@
   },
   "pnpm": {
     "onlyBuiltDependencies": [
-      "esbuild",
-      "sqlite3"
+      "better-sqlite3",
+      "esbuild"
     ]
   }
 }

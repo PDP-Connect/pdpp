@@ -21,7 +21,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 import { startServer } from '../server/index.js';
-import { getDb, sql } from '../server/db.js';
+import { getDb } from '../server/db.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, '..');
@@ -544,19 +544,19 @@ test('blob fetch injects fetch_url and requires blob_ref visibility under the gr
         },
       },
     ]);
-    await getDb().query(sql`
+    getDb().prepare(`
       INSERT INTO blobs(blob_id, connector_id, stream, record_key, mime_type, size_bytes, sha256, data)
-      VALUES(
-        ${'blob_track_art'},
-        ${connectorId},
-        ${'saved_tracks'},
-        ${'track_blob'},
-        ${'text/plain'},
-        ${11},
-        ${'sha256_blob_track_art'},
-        ${Buffer.from('hello world')}
-      )
-    `);
+      VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      'blob_track_art',
+      connectorId,
+      'saved_tracks',
+      'track_blob',
+      'text/plain',
+      11,
+      'sha256_blob_track_art',
+      Buffer.from('hello world'),
+    );
 
     const visibleGrant = await approveGrant(asUrl, 'blob_owner', {
       client_id: 'longview',

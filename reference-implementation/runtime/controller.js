@@ -24,7 +24,7 @@ import {
   getConnectorManifest,
   initiateOwnerDeviceAuthorization,
 } from '../server/auth.js';
-import { getDb, sql } from '../server/db.js';
+import { getDb } from '../server/db.js';
 import { getSyncState } from '../server/records.js';
 import { runConnector } from './index.js';
 
@@ -179,13 +179,12 @@ export function createController(opts = {}) {
   void opts.runtime;
   void opts.scheduler;
 
-  async function getScheduleRow(connectorId) {
-    const rows = await db.query(sql`
+  function getScheduleRow(connectorId) {
+    return db.prepare(`
       SELECT connector_id, interval_seconds, jitter_seconds, enabled, created_at, updated_at
       FROM connector_schedules
-      WHERE connector_id = ${connectorId}
-    `);
-    return rows[0] || null;
+      WHERE connector_id = ?
+    `).get(connectorId) || null;
   }
 
   function currentRsUrl(override = null) {
@@ -207,70 +206,65 @@ export function createController(opts = {}) {
 
   return {
     async listSchedules() {
-      const rows = await db.query(sql`
+      const rows = db.prepare(`
         SELECT connector_id, interval_seconds, jitter_seconds, enabled, created_at, updated_at
         FROM connector_schedules
         ORDER BY connector_id ASC
-      `);
+      `).all();
       return rows.map((row) => scheduleRowToApi(row, getRuntimeProjection(row.connector_id)));
     },
 
     async getSchedule(connectorId) {
-      const row = await getScheduleRow(connectorId);
+      const row = getScheduleRow(connectorId);
       return row ? scheduleRowToApi(row, getRuntimeProjection(connectorId)) : null;
     },
 
     async upsertSchedule(connectorId, input) {
       const now = nowIso();
       const validated = validateScheduleInput(input);
-      const existing = await getScheduleRow(connectorId);
+      const existing = getScheduleRow(connectorId);
       if (existing) {
-        await db.query(sql`
+        db.prepare(`
           UPDATE connector_schedules
-          SET interval_seconds = ${validated.interval_seconds},
-              jitter_seconds = ${validated.jitter_seconds},
-              enabled = ${validated.enabled ? 1 : 0},
-              updated_at = ${now}
-          WHERE connector_id = ${connectorId}
-        `);
+          SET interval_seconds = ?, jitter_seconds = ?, enabled = ?, updated_at = ?
+          WHERE connector_id = ?
+        `).run(validated.interval_seconds, validated.jitter_seconds, validated.enabled ? 1 : 0, now, connectorId);
       } else {
-        await db.query(sql`
+        db.prepare(`
           INSERT INTO connector_schedules(connector_id, interval_seconds, jitter_seconds, enabled, created_at, updated_at)
-          VALUES(
-            ${connectorId},
-            ${validated.interval_seconds},
-            ${validated.jitter_seconds},
-            ${validated.enabled ? 1 : 0},
-            ${now},
-            ${now}
-          )
-        `);
+          VALUES(?, ?, ?, ?, ?, ?)
+        `).run(
+          connectorId,
+          validated.interval_seconds,
+          validated.jitter_seconds,
+          validated.enabled ? 1 : 0,
+          now,
+          now,
+        );
       }
-      const row = await getScheduleRow(connectorId);
+      const row = getScheduleRow(connectorId);
       return scheduleRowToApi(row, getRuntimeProjection(connectorId));
     },
 
     async setScheduleEnabled(connectorId, enabled) {
-      const existing = await getScheduleRow(connectorId);
+      const existing = getScheduleRow(connectorId);
       if (!existing) {
         const err = new Error(`Schedule not found for connector: ${connectorId}`);
         err.code = 'not_found';
         throw err;
       }
-      await db.query(sql`
+      db.prepare(`
         UPDATE connector_schedules
-        SET enabled = ${enabled ? 1 : 0}, updated_at = ${nowIso()}
-        WHERE connector_id = ${connectorId}
-      `);
-      return scheduleRowToApi(await getScheduleRow(connectorId), getRuntimeProjection(connectorId));
+        SET enabled = ?, updated_at = ?
+        WHERE connector_id = ?
+      `).run(enabled ? 1 : 0, nowIso(), connectorId);
+      return scheduleRowToApi(getScheduleRow(connectorId), getRuntimeProjection(connectorId));
     },
 
     async deleteSchedule(connectorId) {
-      const existing = await getScheduleRow(connectorId);
+      const existing = getScheduleRow(connectorId);
       if (!existing) return false;
-      await db.query(sql`
-        DELETE FROM connector_schedules WHERE connector_id = ${connectorId}
-      `);
+      db.prepare('DELETE FROM connector_schedules WHERE connector_id = ?').run(connectorId);
       return true;
     },
 

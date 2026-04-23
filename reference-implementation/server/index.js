@@ -4,7 +4,7 @@
  * Combined AS + RS implementing PDPP v0.1.0 core spec.
  * Starts on port 7662 (AS/introspection) and 7663 (RS query API).
  */
-import { getDb, initDb, sql } from './db.js';
+import { getDb, initDb } from './db.js';
 import {
   buildAuthorizationServerMetadata,
   buildProtectedResourceMetadata,
@@ -25,7 +25,7 @@ import {
 } from './records.js';
 import { createOwnerAuthPlaceholder, OWNER_AUTH_DEFAULT_SUBJECT_ID } from './owner-auth.js';
 import { createController } from '../runtime/controller.js';
-import { createApp } from './transport.js';
+import { createApp, buildLogger } from './transport.js';
 import {
   HOSTED_UI_CSS,
   HOSTED_UI_CSS_PATH,
@@ -749,11 +749,11 @@ function buildGrantInvalidError() {
 }
 
 async function resolveGrantScopedStateGrant(connectorId, grantId) {
-  const rows = await getDb().query(sql`
+  const rows = getDb().prepare(`
     SELECT grant_json, storage_binding_json, trace_id, scenario_id
     FROM grants
-    WHERE grant_id = ${grantId}
-  `);
+    WHERE grant_id = ?
+  `).all(grantId);
   if (!rows.length) {
     const err = new Error(`Unknown grant: ${grantId}`);
     err.code = 'not_found';
@@ -864,12 +864,12 @@ async function getVisibleStreamFreshness({ tokenInfo, storageBinding, stream, ma
 }
 
 async function resolveAuthorizedBlob(req, blobId, opts = {}) {
-  const rows = await getDb().query(sql`
+  const rows = getDb().prepare(`
     SELECT blob_id, connector_id, stream, record_key, mime_type, size_bytes, sha256, data
     FROM blobs
-    WHERE blob_id = ${blobId}
+    WHERE blob_id = ?
     LIMIT 1
-  `);
+  `).all(blobId);
   if (!rows.length) {
     const err = new Error('Blob not found');
     err.code = 'blob_not_found';
@@ -929,7 +929,7 @@ async function resolveAuthorizedBlob(req, blobId, opts = {}) {
 // ─── AS App ─────────────────────────────────────────────────────────────────
 
 function buildAsApp(opts = {}) {
-  const app = createApp();
+  const app = createApp({ logger: opts.logger });
   const nativeMode = !!resolveNativeManifest(opts);
   const providerName = resolveProviderName(opts);
   const controller = opts.controller || null;
@@ -1827,7 +1827,7 @@ function buildAsApp(opts = {}) {
 // ─── RS App ─────────────────────────────────────────────────────────────────
 
 function buildRsApp(opts = {}) {
-  const app = createApp();
+  const app = createApp({ logger: opts.logger });
   const nativeMode = !!resolveNativeManifest(opts);
   const providerName = resolveProviderName(opts);
 
@@ -2503,11 +2503,11 @@ function buildRsApp(opts = {}) {
 // ─── Main ────────────────────────────────────────────────────────────────────
 
 export async function startServer(opts = {}) {
-  const log = opts.quiet ? () => {} : console.error;
+  const logger = opts.logger ?? buildLogger({ quiet: !!opts.quiet });
   const nativeConfig = validateNativeConfiguration(opts);
   await initDb(opts.dbPath || DB_PATH);
   await seedPreRegisteredClients(resolvePreRegisteredPublicClients(opts));
-  log('[PDPP] Database initialized');
+  logger.info('database initialized');
 
   configureNativeManifest(nativeConfig?.nativeManifest || null);
   const providerName =
@@ -2560,6 +2560,7 @@ export async function startServer(opts = {}) {
     ignoreAmbientPublicUrls,
     ownerAuthPassword: opts.ownerAuthPassword,
     ownerAuthSubjectId: opts.ownerAuthSubjectId,
+    logger,
   });
 
   // opts.bindHost — restrict listening interface (e.g. '127.0.0.1'). Default
@@ -2570,7 +2571,7 @@ export async function startServer(opts = {}) {
   const asServer = await asApp.listen(requestedAsPort, bindHost);
   const asPort = asServer.address().port;
   const asPublicUrl = configuredAsPublicUrl || configuredAsIssuer || `http://localhost:${asPort}`;
-  log(`[PDPP AS] Authorization server on http://localhost:${asPort}`);
+  logger.info({ port: asPort, url: `http://localhost:${asPort}` }, 'authorization server listening');
 
   const rsApp = buildRsApp({
     asPort,
@@ -2580,18 +2581,60 @@ export async function startServer(opts = {}) {
     asIssuer: configuredAsIssuer || asPublicUrl,
     rsPublicUrl: configuredRsPublicUrl,
     ignoreAmbientPublicUrls,
+    logger,
   });
   const rsServer = await rsApp.listen(requestedRsPort, bindHost);
   const rsPort = rsServer.address().port;
   runtimeContext.rsUrl = configuredRsPublicUrl || `http://localhost:${rsPort}`;
-  log(`[PDPP RS] Resource server on http://localhost:${rsPort}`);
-  return { asServer, rsServer, asPort, rsPort };
+  logger.info({ port: rsPort, url: `http://localhost:${rsPort}` }, 'resource server listening');
+  return { asServer, rsServer, asPort, rsPort, logger };
 }
 
-// Run directly
+// ─── CLI entrypoint ──────────────────────────────────────────────────────────
+//
+// Process-level handlers (uncaughtException, unhandledRejection, SIGTERM,
+// SIGINT) live HERE, inside the CLI entrypoint block, not inside startServer.
+// startServer is imported and called many times per process from the test
+// harness (test/pdpp.test.js, test/provider-metadata.test.js); adding global
+// listeners from the library surface would accumulate on every call and
+// cross-contaminate tests. These handlers fire only when server/index.js is
+// run directly as `node server/index.js`.
 if (process.argv[1] && process.argv[1].endsWith('server/index.js')) {
-  startServer().catch(err => {
-    console.error(err);
-    process.exit(1);
+  const cliLogger = buildLogger();
+  let shuttingDown = false;
+
+  const exitOnFatal = (reason) => (err) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    cliLogger.fatal({ err }, reason);
+    // Flush stdout before exit so the fatal line reaches the terminal.
+    process.nextTick(() => process.exit(1));
+  };
+  process.on('uncaughtException', exitOnFatal('uncaughtException'));
+  process.on('unhandledRejection', exitOnFatal('unhandledRejection'));
+
+  const server = { asServer: null, rsServer: null };
+  const exitOnSignal = (signal) => async () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    cliLogger.info({ signal }, 'shutdown signal received');
+    const closeTimeout = (srv) => new Promise((resolve) => {
+      if (!srv) { resolve(); return; }
+      const t = setTimeout(resolve, 2000);
+      try { srv.closeAllConnections?.(); } catch {}
+      srv.close(() => { clearTimeout(t); resolve(); });
+    });
+    await Promise.allSettled([closeTimeout(server.asServer), closeTimeout(server.rsServer)]);
+    process.exit(0);
+  };
+  process.on('SIGTERM', exitOnSignal('SIGTERM'));
+  process.on('SIGINT', exitOnSignal('SIGINT'));
+
+  startServer({ logger: cliLogger }).then((result) => {
+    server.asServer = result.asServer;
+    server.rsServer = result.rsServer;
+  }).catch(err => {
+    cliLogger.fatal({ err }, 'startup failed');
+    process.nextTick(() => process.exit(1));
   });
 }

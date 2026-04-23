@@ -25,9 +25,53 @@
 
 import Fastify from 'fastify';
 import fastifyFormbody from '@fastify/formbody';
+import pino from 'pino';
 import qs from 'qs';
 
 import { publicManifests, referenceManifests } from '@pdpp/reference-contract';
+
+// Header name the reference sets on responses to expose the protocol trace
+// ID (handler-set via setReferenceTraceId in server/index.js).
+const PDPP_TRACE_ID_HEADER = 'PDPP-Reference-Trace-Id';
+
+// Log field set that every record shares. Path names match the OTel log data
+// model where they overlap (`trace_id`, `req_id`) so a later OTLP adapter can
+// forward records without renaming.
+const REDACT_PATHS = [
+  'access_token',
+  'refresh_token',
+  'device_code',
+  'user_code',
+  'interaction_response',
+  'INTERACTION_RESPONSE',
+  'req.headers.authorization',
+  '*.access_token',
+  '*.refresh_token',
+];
+
+/**
+ * Build the Pino logger this transport hands to Fastify. Callers pass the
+ * `quiet` flag from startServer() so test harnesses that want no stdout
+ * chatter get `level: 'silent'` regardless of NODE_ENV.
+ */
+export function buildLogger({ quiet = false } = {}) {
+  if (quiet) {
+    return pino({ level: 'silent' });
+  }
+  const isProd = process.env.NODE_ENV === 'production';
+  const options = {
+    level: process.env.LOG_LEVEL ?? 'info',
+    timestamp: pino.stdTimeFunctions.isoTime,
+    redact: { paths: REDACT_PATHS, censor: '<redacted>' },
+  };
+  if (!isProd) {
+    options.transport = {
+      target: 'pino-pretty',
+      options: { colorize: true, translateTime: 'SYS:HH:MM:ss.l' },
+    };
+  }
+  return pino(options);
+}
 
 // Index route manifests by operation id so route registration can pick them
 // up by name and attach the JSON-Schema directly onto the Fastify route.
@@ -88,11 +132,33 @@ const PASSTHROUGH_CONTENT_TYPES = ['application/x-ndjson', 'text/plain'];
 
 /**
  * Build a fresh Fastify instance wired up the way PDPP wants it.
+ *
+ * The caller supplies a pre-built Pino logger (see `buildLogger`). We pass it
+ * as `loggerInstance` rather than letting Fastify build its own, because the
+ * server wants test-time `quiet` to mean truly silent.
+ *
+ * `disableRequestLogging: true` turns off Fastify's built-in request-start and
+ * request-completion log lines. We emit our own completion record in an
+ * `onResponse` hook so it can carry PDPP's `trace_id` alongside `req_id`.
  */
-function buildFastify() {
+function buildFastify({ loggerInstance }) {
   const fastify = Fastify({
-    logger: false,
+    loggerInstance,
+    disableRequestLogging: true,
+    // Keep-alive can leave pooled client sockets stale after a server restart
+    // on the same port (tests exercise this pattern; `closeServer()` +
+    // `startServer()` on the same port). We respond with `Connection: close`
+    // on every reply below via an `onSend` hook so clients never pool our
+    // sockets. The `keepAliveTimeout` is also set short as belt-and-braces.
+    keepAliveTimeout: 1,
     bodyLimit: 200 * 1024 * 1024, // match previous express.text() limit
+    // Use an inbound Request-Id header if present, otherwise let Fastify
+    // generate one. Matches the existing `ensureRequestId()` behavior.
+    genReqId: (req) => {
+      const header = req.headers?.['request-id'];
+      if (typeof header === 'string' && header.trim()) return header.trim();
+      return undefined; // Fastify generates one
+    },
     // Fastify auto-registers HEAD shadow routes for every GET by default.
     // PDPP registers explicit HEAD routes (e.g. /v1/blobs/:blob_id) so we
     // disable the shadow to avoid "Method 'HEAD' already declared" errors.
@@ -107,6 +173,33 @@ function buildFastify() {
       // that Express 5's default `simple` parser was tightening.
       querystringParser: (str) => qs.parse(str, { depth: 8, arrayLimit: 64 }),
     },
+  });
+
+  // Force `Connection: close` on every response. See the note above the
+  // Fastify config block. An `onRequest` hook sets it before handlers run so
+  // there's no race with streaming replies.
+  fastify.addHook('onRequest', (request, reply, done) => {
+    reply.header('connection', 'close');
+    done();
+  });
+
+  // Emit one structured completion record per request carrying req_id, method,
+  // path, statusCode, responseTime, and — when the handler set it via
+  // setReferenceTraceId() — trace_id. Kept at `info`; this is the baseline
+  // record the spec promises, not a per-status-code shape.
+  fastify.addHook('onResponse', async (request, reply) => {
+    const traceId = reply.getHeader?.(PDPP_TRACE_ID_HEADER) || request.__pdppTraceId;
+    request.log.info(
+      {
+        req_id: request.id,
+        method: request.method,
+        url: request.url,
+        statusCode: reply.statusCode,
+        responseTime: Math.round(reply.elapsedTime ?? 0),
+        ...(traceId ? { trace_id: traceId } : {}),
+      },
+      'request completed',
+    );
   });
 
   // application/x-ndjson + text/plain come in as raw strings. Handlers that
@@ -357,8 +450,9 @@ function wrapHandler(middleware, handler) {
  * Express API — only what PDPP uses. See the header comment for the
  * exact surface.
  */
-export function createApp() {
-  const fastify = buildFastify();
+export function createApp({ logger } = {}) {
+  const loggerInstance = logger ?? buildLogger();
+  const fastify = buildFastify({ loggerInstance });
   const settings = new Map();
   const globalMiddleware = [];
   let formbodyRegistered = false;

@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 import { startServer } from '../server/index.js';
-import { getDb, sql } from '../server/db.js';
+import { getDb } from '../server/db.js';
 import { ingestRecord } from '../server/records.js';
 import { runConnector } from '../runtime/index.js';
 
@@ -812,11 +812,7 @@ test('event spine', async (t) => {
       const issuedEvent = (grantTimelineBefore.data || []).find((event) => event.event_type === 'grant.issued');
       assert.ok(issuedEvent, 'expected grant.issued event');
 
-      await getDb().query(sql`
-        UPDATE grants
-        SET storage_binding_json = NULL
-        WHERE grant_id = ${approval.grant.grant_id}
-      `);
+      getDb().prepare('UPDATE grants SET storage_binding_json = NULL WHERE grant_id = ?').run(approval.grant.grant_id);
 
       const rejectedResp = await fetch(`${rsUrl}/v1/streams`, {
         headers: { Authorization: `Bearer ${approval.token}` },

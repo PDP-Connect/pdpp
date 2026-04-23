@@ -10,7 +10,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 
 import { startServer } from '../server/index.js';
 import { parsePendingConsentRequestUri } from '../server/auth.js';
-import { getDb, sql } from '../server/db.js';
+import { getDb } from '../server/db.js';
 import { ingestRecord } from '../server/records.js';
 import { runConnector } from '../runtime/index.js';
 
@@ -190,53 +190,51 @@ async function issueOwnerToken(asUrl, subjectId = 'owner_local') {
 }
 
 async function updateRegisteredClientRow(clientId, updates) {
-  const setClauses = [];
-  if (Object.hasOwn(updates, 'metadata_json')) {
-    setClauses.push(sql`metadata_json = ${updates.metadata_json}`);
+  const setParts = [];
+  const binds = [];
+  for (const key of ['metadata_json', 'token_endpoint_auth_method']) {
+    if (Object.hasOwn(updates, key)) {
+      setParts.push(`${key} = ?`);
+      binds.push(updates[key]);
+    }
   }
-  if (Object.hasOwn(updates, 'token_endpoint_auth_method')) {
-    setClauses.push(sql`token_endpoint_auth_method = ${updates.token_endpoint_auth_method}`);
-  }
-  assert.ok(setClauses.length, 'expected registered client row updates');
+  assert.ok(binds.length, 'expected registered client row updates');
 
-  const query = sql`
-    UPDATE oauth_clients
-    SET ${sql.join(setClauses, sql`, `)}
-    WHERE client_id = ${clientId}
-  `;
-  await getDb().query(query);
+  getDb().prepare(
+    `UPDATE oauth_clients SET ${setParts.join(', ')} WHERE client_id = ?`
+  ).run(...binds, clientId);
 }
 
 async function mutatePendingConsentRequest(requestUri, mutate) {
   const deviceCode = parsePendingConsentRequestUri(requestUri);
   assert.ok(deviceCode, 'request_uri should decode to a pending device code');
 
-  const rows = await getDb().query(sql`
+  const rows = getDb().prepare(`
     SELECT params_json
     FROM pending_consents
-    WHERE device_code = ${deviceCode}
-  `);
+    WHERE device_code = ?
+  `).all(deviceCode);
   assert.equal(rows.length, 1);
 
   const request = JSON.parse(rows[0].params_json);
   mutate(request);
 
-  await getDb().query(sql`
+  getDb().prepare(`
     UPDATE pending_consents
-    SET params_json = ${JSON.stringify(request)}
-    WHERE device_code = ${deviceCode}
-  `);
+    SET params_json = ?
+    WHERE device_code = ?
+  `).run(JSON.stringify(request), deviceCode);
 }
 
 async function readPendingConsentTraceContext(requestUri) {
   const deviceCode = parsePendingConsentRequestUri(requestUri);
   assert.ok(deviceCode, 'request_uri should decode to a pending device code');
 
-  const rows = await getDb().query(sql`
+  const rows = getDb().prepare(`
     SELECT request_id, trace_id, scenario_id
     FROM pending_consents
-    WHERE device_code = ${deviceCode}
-  `);
+    WHERE device_code = ?
+  `).all(deviceCode);
   assert.equal(rows.length, 1);
   return rows[0];
 }
@@ -376,12 +374,12 @@ async function withMalformedPolyfillClientGrant(fn) {
       connector_id: missingConnectorId,
     };
 
-    await getDb().query(sql`
+    getDb().prepare(`
       UPDATE grants
-      SET grant_json = ${JSON.stringify(remappedGrant)},
-          storage_binding_json = ${JSON.stringify({ connector_id: missingConnectorId })}
-      WHERE grant_id = ${approved.grant.grant_id}
-    `);
+      SET grant_json = ?,
+          storage_binding_json = ?
+      WHERE grant_id = ?
+    `).run(JSON.stringify(remappedGrant), JSON.stringify({ connector_id: missingConnectorId }), approved.grant.grant_id);
 
     await closeServer(server);
     server = await startServer({
@@ -571,11 +569,11 @@ test('PDPP CLI smoke', async (t) => {
       await seedNorthstar(nativeManifest);
       const approved = await issueNorthstarClientGrant(asUrl, nativeManifest);
 
-      await getDb().query(sql`
+      getDb().prepare(`
         UPDATE grants
         SET storage_binding_json = NULL
-        WHERE grant_id = ${approved.grant.grant_id}
-      `);
+        WHERE grant_id = ?
+      `).run(approved.grant.grant_id);
 
       await closeServer(server);
       server = await startServer({
@@ -634,11 +632,11 @@ test('PDPP CLI smoke', async (t) => {
       await seedNorthstar(nativeManifest);
       const approved = await issueNorthstarClientGrant(asUrl, nativeManifest);
 
-      await getDb().query(sql`
+      getDb().prepare(`
         UPDATE tokens
-        SET expires_at = ${new Date(Date.now() - 60_000).toISOString()}
-        WHERE token_id = ${approved.token}
-      `);
+        SET expires_at = ?
+        WHERE token_id = ?
+      `).run(new Date(Date.now() - 60_000).toISOString(), approved.token);
 
       const result = await runCli(
         ['auth', 'introspect', '--rs-url', rsUrl, '--token', approved.token, '--format', 'json'],
@@ -1717,7 +1715,7 @@ test('PDPP CLI smoke', async (t) => {
       });
       assert.equal(initiate.status, 201);
 
-      await getDb().query(sql`DELETE FROM oauth_clients WHERE client_id = ${registration.json.client_id}`);
+      getDb().prepare(`DELETE FROM oauth_clients WHERE client_id = ?`).run(registration.json.client_id);
 
       const consentResp = await fetch(
         `${asUrl}/consent?request_uri=${encodeURIComponent(initiate.body.request_uri)}`,
@@ -2316,15 +2314,15 @@ test('PDPP CLI smoke', async (t) => {
         debug_context: 'should_not_escape',
       };
 
-      await getDb().query(sql`
+      getDb().prepare(`
         UPDATE grants
-        SET grant_json = ${JSON.stringify(malformedGrant)},
-            storage_binding_json = ${JSON.stringify({
+        SET grant_json = ?,
+            storage_binding_json = ?
+        WHERE grant_id = ?
+      `).run(JSON.stringify(malformedGrant), JSON.stringify({
               connector_id: spotifyManifest.connector_id,
               debug_context: 'should_not_escape',
-            })}
-        WHERE grant_id = ${approved.grant.grant_id}
-      `);
+            }), approved.grant.grant_id);
 
       const result = await runCliExpectFailure(
         ['grant', 'revoke', approved.grant.grant_id, '--as-url', asUrl, '--format', 'json'],
@@ -2687,14 +2685,14 @@ test('PDPP CLI smoke', async (t) => {
     await withNativeHarness(async ({ asUrl, nativeManifest }) => {
       const approved = await issueNorthstarClientGrant(asUrl, nativeManifest, 'cli_owner');
 
-      await getDb().query(sql`
+      getDb().prepare(`
         UPDATE grants
-        SET storage_binding_json = ${JSON.stringify({
+        SET storage_binding_json = ?
+        WHERE grant_id = ?
+      `).run(JSON.stringify({
           connector_id: nativeManifest.storage_binding.connector_id,
           debug_context: 'should_not_escape',
-        })}
-        WHERE grant_id = ${approved.grant.grant_id}
-      `);
+        }), approved.grant.grant_id);
 
       const result = await runCliExpectFailure(
         ['grant', 'revoke', approved.grant.grant_id, '--as-url', asUrl, '--format', 'json'],
@@ -5640,11 +5638,11 @@ rl.on('line', (line) => {
       const ownerToken = await issueOwnerToken(asUrl, 'cli_owner');
       await seedSpotify(rsUrl, spotifyManifest, ownerToken);
 
-      await getDb().query(sql`
+      getDb().prepare(`
         UPDATE connectors
-        SET manifest = ${'{"connector_id":"https://registry.pdpp.org/connectors/spotify","streams":[{"name":"top_artists","primary_key":["missing_id"]}]}'}
-        WHERE connector_id = ${spotifyManifest.connector_id}
-      `);
+        SET manifest = ?
+        WHERE connector_id = ?
+      `).run('{"connector_id":"https://registry.pdpp.org/connectors/spotify","streams":[{"name":"top_artists","primary_key":["missing_id"]}]}', spotifyManifest.connector_id);
 
       const rejectedResp = await fetch(
         `${rsUrl}/v1/streams/top_artists/records?connector_id=${encodeURIComponent(spotifyManifest.connector_id)}`,
@@ -5738,11 +5736,11 @@ rl.on('line', (line) => {
     await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
       const ownerToken = await issueOwnerToken(asUrl, 'cli_owner');
 
-      await getDb().query(sql`
+      getDb().prepare(`
         UPDATE connectors
-        SET manifest = ${'{"connector_id":"https://registry.pdpp.org/connectors/spotify","streams":[{"name":"top_artists","primary_key":["missing_id"]}]}'}
-        WHERE connector_id = ${spotifyManifest.connector_id}
-      `);
+        SET manifest = ?
+        WHERE connector_id = ?
+      `).run('{"connector_id":"https://registry.pdpp.org/connectors/spotify","streams":[{"name":"top_artists","primary_key":["missing_id"]}]}', spotifyManifest.connector_id);
 
       const rejectedResp = await fetch(
         `${rsUrl}/v1/state/${encodeURIComponent(spotifyManifest.connector_id)}`,
@@ -6020,11 +6018,11 @@ rl.on('line', (line) => {
         streams: [{ name: 'pay_statements' }],
       });
 
-      await getDb().query(sql`
+      getDb().prepare(`
         UPDATE grants
         SET storage_binding_json = NULL
-        WHERE grant_id = ${approved.grant.grant_id}
-      `);
+        WHERE grant_id = ?
+      `).run(approved.grant.grant_id);
 
       await closeServer(server);
       server = await startServer({
@@ -6093,11 +6091,11 @@ rl.on('line', (line) => {
         streams: [{ name: 'pay_statements' }],
       });
 
-      await getDb().query(sql`
+      getDb().prepare(`
         UPDATE tokens
-        SET expires_at = ${new Date(Date.now() - 60_000).toISOString()}
-        WHERE token_id = ${approved.token}
-      `);
+        SET expires_at = ?
+        WHERE token_id = ?
+      `).run(new Date(Date.now() - 60_000).toISOString(), approved.token);
 
       const result = await runCliExpectFailure(
         ['query', 'streams', '--rs-url', rsUrl],
@@ -6117,11 +6115,11 @@ rl.on('line', (line) => {
         name: 'grant_invalid',
         expectedMessage: /Grant is malformed or no longer valid/,
         prepare: async ({ approved, server, dbPath, nativeManifest }) => {
-          await getDb().query(sql`
+          getDb().prepare(`
             UPDATE grants
             SET storage_binding_json = NULL
-            WHERE grant_id = ${approved.grant.grant_id}
-          `);
+            WHERE grant_id = ?
+          `).run(approved.grant.grant_id);
 
           await closeServer(server);
           return startServer({
@@ -6148,11 +6146,11 @@ rl.on('line', (line) => {
         name: 'grant_expired',
         expectedMessage: /Grant has expired/,
         prepare: async ({ approved, server }) => {
-          await getDb().query(sql`
+          getDb().prepare(`
             UPDATE tokens
-            SET expires_at = ${new Date(Date.now() - 60_000).toISOString()}
-            WHERE token_id = ${approved.token}
-          `);
+            SET expires_at = ?
+            WHERE token_id = ?
+          `).run(new Date(Date.now() - 60_000).toISOString(), approved.token);
           return server;
         },
       },
@@ -6221,11 +6219,11 @@ rl.on('line', (line) => {
         name: 'grant_invalid',
         expectedMessage: /Grant is malformed or no longer valid/,
         prepare: async ({ approved, server, dbPath, nativeManifest }) => {
-          await getDb().query(sql`
+          getDb().prepare(`
             UPDATE grants
             SET storage_binding_json = NULL
-            WHERE grant_id = ${approved.grant.grant_id}
-          `);
+            WHERE grant_id = ?
+          `).run(approved.grant.grant_id);
 
           await closeServer(server);
           return startServer({
@@ -6252,11 +6250,11 @@ rl.on('line', (line) => {
         name: 'grant_expired',
         expectedMessage: /Grant has expired/,
         prepare: async ({ approved, server }) => {
-          await getDb().query(sql`
+          getDb().prepare(`
             UPDATE tokens
-            SET expires_at = ${new Date(Date.now() - 60_000).toISOString()}
-            WHERE token_id = ${approved.token}
-          `);
+            SET expires_at = ?
+            WHERE token_id = ?
+          `).run(new Date(Date.now() - 60_000).toISOString(), approved.token);
           return server;
         },
       },
@@ -6371,11 +6369,11 @@ rl.on('line', (line) => {
       await seedNorthstar(nativeManifest);
       const approved = await issueNorthstarClientGrant(asUrl, nativeManifest);
 
-      await getDb().query(sql`
+      getDb().prepare(`
         UPDATE grants
         SET storage_binding_json = NULL
-        WHERE grant_id = ${approved.grant.grant_id}
-      `);
+        WHERE grant_id = ?
+      `).run(approved.grant.grant_id);
 
       await closeServer(server);
       server = await startServer({
@@ -6546,11 +6544,11 @@ rl.on('line', (line) => {
       const ownerToken = await issueOwnerToken(asUrl, 'cli_owner');
       await seedSpotify(rsUrl, spotifyManifest, ownerToken);
 
-      await getDb().query(sql`
+      getDb().prepare(`
         UPDATE connectors
-        SET manifest = ${'{"connector_id":"https://registry.pdpp.org/connectors/spotify","streams":[{"name":"top_artists","primary_key":["missing_id"]}]}'}
-        WHERE connector_id = ${spotifyManifest.connector_id}
-      `);
+        SET manifest = ?
+        WHERE connector_id = ?
+      `).run('{"connector_id":"https://registry.pdpp.org/connectors/spotify","streams":[{"name":"top_artists","primary_key":["missing_id"]}]}', spotifyManifest.connector_id);
 
       const result = await runCliExpectFailure(
         ['owner', 'streams', '--connector-id', spotifyManifest.connector_id, '--rs-url', rsUrl, '--format', 'json'],
@@ -6608,11 +6606,11 @@ rl.on('line', (line) => {
       const protectedRecordId = beforeResp.body.data?.[0]?.id;
       assert.ok(protectedRecordId, 'expected a seeded record before corrupting the connector manifest');
 
-      await getDb().query(sql`
+      getDb().prepare(`
         UPDATE connectors
-        SET manifest = ${'{"connector_id":"https://registry.pdpp.org/connectors/spotify","streams":[{"name":"top_artists","primary_key":["missing_id"]}]}'}
-        WHERE connector_id = ${spotifyManifest.connector_id}
-      `);
+        SET manifest = ?
+        WHERE connector_id = ?
+      `).run('{"connector_id":"https://registry.pdpp.org/connectors/spotify","streams":[{"name":"top_artists","primary_key":["missing_id"]}]}', spotifyManifest.connector_id);
 
       const result = await runCliExpectFailure(
         ['owner', 'get', 'top_artists', protectedRecordId, '--connector-id', spotifyManifest.connector_id, '--rs-url', rsUrl],
@@ -6665,11 +6663,11 @@ rl.on('line', (line) => {
       const ownerToken = await issueOwnerToken(asUrl, 'cli_owner');
       await seedSpotify(rsUrl, spotifyManifest, ownerToken);
 
-      await getDb().query(sql`
+      getDb().prepare(`
         UPDATE connectors
-        SET manifest = ${'{"connector_id":"https://registry.pdpp.org/connectors/spotify","streams":[{"name":"top_artists","primary_key":["missing_id"]}]}'}
-        WHERE connector_id = ${spotifyManifest.connector_id}
-      `);
+        SET manifest = ?
+        WHERE connector_id = ?
+      `).run('{"connector_id":"https://registry.pdpp.org/connectors/spotify","streams":[{"name":"top_artists","primary_key":["missing_id"]}]}', spotifyManifest.connector_id);
 
       const result = await runCliExpectFailure(
         ['owner', 'export', 'top_artists', '--connector-id', spotifyManifest.connector_id, '--rs-url', rsUrl],

@@ -8,7 +8,7 @@
  * - Implements RFC 7662-style introspection with PDPP extensions
  */
 import { randomBytes } from 'crypto';
-import { getDb, sql } from './db.js';
+import { getDb } from './db.js';
 import { createTraceContext, emitSpineEvent } from '../lib/spine.js';
 
 function generateToken() {
@@ -922,82 +922,70 @@ export async function requireResolvedPersistedGrantState(row = {}, opts = {}) {
 }
 
 async function getPendingConsentRow(deviceCode) {
-  const db = getDb();
-  const rows = await db.query(sql`
-    SELECT * FROM pending_consents WHERE device_code = ${deviceCode}
-  `);
-  return rows[0] || null;
+  return getDb().prepare(
+    'SELECT * FROM pending_consents WHERE device_code = ?'
+  ).get(deviceCode) || null;
 }
 
 async function createPendingConsent(deviceCode, userCode, params, expiresAt) {
-  const db = getDb();
   const createdAt = nowIso();
   const traceContext = getRequestTraceContext(params);
-  await db.query(sql`
-    INSERT INTO pending_consents(device_code, user_code, params_json, status, request_id, trace_id, scenario_id, created_at, expires_at)
-    VALUES(
-      ${deviceCode},
-      ${userCode},
-      ${JSON.stringify(params)},
-      'pending',
-      ${traceContext.request_id},
-      ${traceContext.trace_id},
-      ${traceContext.scenario_id || null},
-      ${createdAt},
-      ${expiresAt}
-    )
-  `);
+  getDb().prepare(`
+    INSERT INTO pending_consents(
+      device_code, user_code, params_json, status,
+      request_id, trace_id, scenario_id, created_at, expires_at
+    ) VALUES(?, ?, ?, 'pending', ?, ?, ?, ?, ?)
+  `).run(
+    deviceCode,
+    userCode,
+    JSON.stringify(params),
+    traceContext.request_id,
+    traceContext.trace_id,
+    traceContext.scenario_id || null,
+    createdAt,
+    expiresAt,
+  );
 }
 
 async function markPendingConsentApproved(deviceCode, { subjectId, grantId, tokenId, aiTrainingConsented }) {
-  const db = getDb();
-  await db.query(sql`
+  getDb().prepare(`
     UPDATE pending_consents
     SET status = 'approved',
-        subject_id = ${subjectId},
-        grant_id = ${grantId},
-        token_id = ${tokenId},
-        ai_training_consented = ${aiTrainingConsented ? 1 : null},
-        approved_at = ${nowIso()}
-    WHERE device_code = ${deviceCode}
-  `);
+        subject_id = ?,
+        grant_id = ?,
+        token_id = ?,
+        ai_training_consented = ?,
+        approved_at = ?
+    WHERE device_code = ?
+  `).run(subjectId, grantId, tokenId, aiTrainingConsented ? 1 : null, nowIso(), deviceCode);
 }
 
 async function markPendingConsentDenied(deviceCode) {
-  const db = getDb();
-  await db.query(sql`
+  getDb().prepare(`
     UPDATE pending_consents
-    SET status = 'denied',
-        denied_at = ${nowIso()}
-    WHERE device_code = ${deviceCode}
-      AND status = 'pending'
-  `);
+    SET status = 'denied', denied_at = ?
+    WHERE device_code = ? AND status = 'pending'
+  `).run(nowIso(), deviceCode);
 }
 
 async function markPendingConsentExpired(deviceCode) {
-  const db = getDb();
-  await db.query(sql`
+  getDb().prepare(`
     UPDATE pending_consents
     SET status = 'expired'
-    WHERE device_code = ${deviceCode}
-      AND status = 'pending'
-  `);
+    WHERE device_code = ? AND status = 'pending'
+  `).run(deviceCode);
 }
 
 async function getOwnerDeviceAuthRow(deviceCode) {
-  const db = getDb();
-  const rows = await db.query(sql`
-    SELECT * FROM owner_device_auth WHERE device_code = ${deviceCode}
-  `);
-  return rows[0] || null;
+  return getDb().prepare(
+    'SELECT * FROM owner_device_auth WHERE device_code = ?'
+  ).get(deviceCode) || null;
 }
 
 async function getOwnerDeviceAuthRowByUserCode(userCode) {
-  const db = getDb();
-  const rows = await db.query(sql`
-    SELECT * FROM owner_device_auth WHERE user_code = ${userCode}
-  `);
-  return rows[0] || null;
+  return getDb().prepare(
+    'SELECT * FROM owner_device_auth WHERE user_code = ?'
+  ).get(userCode) || null;
 }
 
 async function createOwnerDeviceAuth({
@@ -1010,53 +998,47 @@ async function createOwnerDeviceAuth({
   traceId = null,
   scenarioId = null,
 }) {
-  const db = getDb();
-  await db.query(sql`
-    INSERT INTO owner_device_auth(device_code, user_code, client_id, status, interval_seconds, created_at, expires_at, request_id, trace_id, scenario_id)
-    VALUES(${deviceCode}, ${userCode}, ${clientId}, 'pending', ${intervalSeconds}, ${nowIso()}, ${expiresAt}, ${requestId}, ${traceId}, ${scenarioId})
-  `);
+  getDb().prepare(`
+    INSERT INTO owner_device_auth(
+      device_code, user_code, client_id, status, interval_seconds,
+      created_at, expires_at, request_id, trace_id, scenario_id
+    ) VALUES(?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?)
+  `).run(deviceCode, userCode, clientId, intervalSeconds, nowIso(), expiresAt, requestId, traceId, scenarioId);
 }
 
 async function markOwnerDeviceAuthApproved(deviceCode, { subjectId, tokenId }) {
-  const db = getDb();
-  await db.query(sql`
+  getDb().prepare(`
     UPDATE owner_device_auth
     SET status = 'approved',
-        subject_id = ${subjectId},
-        token_id = ${tokenId},
-        approved_at = ${nowIso()}
-    WHERE device_code = ${deviceCode}
-  `);
+        subject_id = ?,
+        token_id = ?,
+        approved_at = ?
+    WHERE device_code = ?
+  `).run(subjectId, tokenId, nowIso(), deviceCode);
 }
 
 async function markOwnerDeviceAuthDenied(deviceCode) {
-  const db = getDb();
-  await db.query(sql`
+  getDb().prepare(`
     UPDATE owner_device_auth
-    SET status = 'denied',
-        denied_at = ${nowIso()}
-    WHERE device_code = ${deviceCode}
-      AND status = 'pending'
-  `);
+    SET status = 'denied', denied_at = ?
+    WHERE device_code = ? AND status = 'pending'
+  `).run(nowIso(), deviceCode);
 }
 
 async function markOwnerDeviceAuthExpired(deviceCode) {
-  const db = getDb();
-  await db.query(sql`
+  getDb().prepare(`
     UPDATE owner_device_auth
     SET status = 'expired'
-    WHERE device_code = ${deviceCode}
-      AND status = 'pending'
-  `);
+    WHERE device_code = ? AND status = 'pending'
+  `).run(deviceCode);
 }
 
 async function updateOwnerDeviceAuthLastPolled(deviceCode) {
-  const db = getDb();
-  await db.query(sql`
+  getDb().prepare(`
     UPDATE owner_device_auth
-    SET last_polled_at = ${nowIso()}
-    WHERE device_code = ${deviceCode}
-  `);
+    SET last_polled_at = ?
+    WHERE device_code = ?
+  `).run(nowIso(), deviceCode);
 }
 
 function buildInvalidRegisteredClientError(clientId) {
@@ -1114,26 +1096,27 @@ async function upsertRegisteredClient({
   }
 
   const normalizedMetadata = normalizeClientRegistrationMetadata(metadata);
-  const db = getDb();
   const timestamp = nowIso();
-  await db.query(sql`
-    INSERT INTO oauth_clients(client_id, registration_mode, token_endpoint_auth_method, client_secret, metadata_json, created_at, updated_at)
-    VALUES(
-      ${clientId},
-      ${registrationMode},
-      ${normalizedMetadata.token_endpoint_auth_method},
-      ${clientSecret},
-      ${JSON.stringify(normalizedMetadata)},
-      ${timestamp},
-      ${timestamp}
-    )
+  getDb().prepare(`
+    INSERT INTO oauth_clients(
+      client_id, registration_mode, token_endpoint_auth_method,
+      client_secret, metadata_json, created_at, updated_at
+    ) VALUES(?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(client_id) DO UPDATE SET
       registration_mode = excluded.registration_mode,
       token_endpoint_auth_method = excluded.token_endpoint_auth_method,
       client_secret = excluded.client_secret,
       metadata_json = excluded.metadata_json,
       updated_at = excluded.updated_at
-  `);
+  `).run(
+    clientId,
+    registrationMode,
+    normalizedMetadata.token_endpoint_auth_method,
+    clientSecret,
+    JSON.stringify(normalizedMetadata),
+    timestamp,
+    timestamp,
+  );
 }
 
 export async function seedPreRegisteredClients(clients = []) {
@@ -1153,13 +1136,12 @@ export async function seedPreRegisteredClients(clients = []) {
 
 export async function getRegisteredClient(clientId) {
   if (!clientId) return null;
-  const db = getDb();
-  const rows = await db.query(sql`
+  const row = getDb().prepare(`
     SELECT client_id, registration_mode, token_endpoint_auth_method, client_secret, metadata_json, created_at, updated_at
     FROM oauth_clients
-    WHERE client_id = ${clientId}
-  `);
-  return mapRegisteredClientRow(rows[0] || null);
+    WHERE client_id = ?
+  `).get(clientId);
+  return mapRegisteredClientRow(row || null);
 }
 
 export async function registerDynamicClient(input = {}) {
@@ -1265,12 +1247,11 @@ function validateConnectorManifest(manifest = {}, code = 'invalid_request') {
  */
 export async function registerConnector(manifest) {
   validateConnectorManifest(manifest);
-  const db = getDb();
-  await db.query(sql`
+  getDb().prepare(`
     INSERT INTO connectors(connector_id, manifest)
-    VALUES(${manifest.connector_id}, ${JSON.stringify(manifest)})
+    VALUES(?, ?)
     ON CONFLICT(connector_id) DO UPDATE SET manifest = excluded.manifest
-  `);
+  `).run(manifest.connector_id, JSON.stringify(manifest));
   return manifest.connector_id;
 }
 
@@ -1280,13 +1261,12 @@ export async function registerConnector(manifest) {
 export async function getConnectorManifest(connectorId) {
   if (!connectorId) return null;
 
-  const db = getDb();
-  const rows = await db.query(sql`
-    SELECT manifest FROM connectors WHERE connector_id = ${connectorId}
-  `);
-  if (!rows.length) return null;
+  const row = getDb().prepare(
+    'SELECT manifest FROM connectors WHERE connector_id = ?'
+  ).get(connectorId);
+  if (!row) return null;
   try {
-    const manifest = JSON.parse(rows[0].manifest);
+    const manifest = JSON.parse(row.manifest);
     validateConnectorManifest(manifest, 'connector_invalid');
     return manifest;
   } catch {
@@ -1512,32 +1492,23 @@ export async function approveGrant(deviceCode, subjectId = 'owner_local', opts =
     expires_at: expiresAt,
   };
 
-  await db.query(sql`
+  db.prepare(`
     INSERT INTO grants(
-      grant_id,
-      subject_id,
-      client_id,
-      storage_binding_json,
-      grant_json,
-      access_mode,
-      issued_at,
-      expires_at,
-      trace_id,
-      scenario_id
-    )
-    VALUES(
-      ${grantId},
-      ${subjectId},
-      ${registeredClient.client_id},
-      ${serializeStorageBinding(persistedStorageBinding)},
-      ${JSON.stringify(grant)},
-      ${selection.access_mode},
-      ${issuedAt},
-      ${expiresAt},
-      ${traceContext.trace_id},
-      ${traceContext.scenario_id}
-    )
-  `);
+      grant_id, subject_id, client_id, storage_binding_json, grant_json,
+      access_mode, issued_at, expires_at, trace_id, scenario_id
+    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    grantId,
+    subjectId,
+    registeredClient.client_id,
+    serializeStorageBinding(persistedStorageBinding),
+    JSON.stringify(grant),
+    selection.access_mode,
+    issuedAt,
+    expiresAt,
+    traceContext.trace_id,
+    traceContext.scenario_id,
+  );
 
   await emitSpineEvent({
     event_type: 'consent.approved',
@@ -1980,20 +1951,22 @@ export async function exchangeOwnerDeviceCode({ clientId, deviceCode }) {
  */
 export async function issueToken(grantId, subjectId, clientId, expiresAt, meta = {}) {
   const db = getDb();
-  return db.tx(async (tx) => {
-    const grantRows = await tx.query(sql`
+  // better-sqlite3 transactions must be synchronous. We prepare the body as a
+  // synchronous function and wrap it; the public export stays `async` because
+  // external callers `await issueToken(...)`.
+  const issue = db.transaction(() => {
+    const grantRow = db.prepare(`
       SELECT access_mode, consumed, status, trace_id, scenario_id, grant_json, storage_binding_json
       FROM grants
-      WHERE grant_id = ${grantId}
-    `);
+      WHERE grant_id = ?
+    `).get(grantId);
 
-    if (!grantRows.length) {
+    if (!grantRow) {
       const err = new Error(`Unknown grant: ${grantId}`);
       err.code = 'grant_invalid';
       throw err;
     }
 
-    const grantRow = grantRows[0];
     if (grantRow.status !== 'active') {
       const err = new Error(
         grantRow.status === 'revoked'
@@ -2010,24 +1983,19 @@ export async function issueToken(grantId, subjectId, clientId, expiresAt, meta =
         err.code = 'grant_consumed';
         throw err;
       }
-      await tx.query(sql`
-        UPDATE grants
-        SET consumed = 1
-        WHERE grant_id = ${grantId}
-      `);
+      db.prepare('UPDATE grants SET consumed = 1 WHERE grant_id = ?').run(grantId);
     }
 
     const tokenId = generateToken();
-    await tx.query(sql`
+    db.prepare(`
       INSERT INTO tokens(token_id, grant_id, subject_id, client_id, token_kind, expires_at)
-      VALUES(${tokenId}, ${grantId}, ${subjectId}, ${clientId}, 'client', ${expiresAt})
-    `);
+      VALUES(?, ?, ?, ?, 'client', ?)
+    `).run(tokenId, grantId, subjectId, clientId, expiresAt);
 
-    const {
-      grant: persistedGrant,
-      storageBinding: grantStorageBinding,
-    } = requirePersistedGrantState(grantRow);
-    await emitSpineEvent({
+    const { grant: persistedGrant } = requirePersistedGrantState(grantRow);
+    // emitSpineEvent is sync internally; calling without await is fine
+    // because the INSERT it triggers has completed before this returns.
+    emitSpineEvent({
       event_type: 'token.issued',
       trace_id: meta.traceContext?.trace_id || grantRow.trace_id || undefined,
       scenario_id: meta.traceContext?.scenario_id || grantRow.scenario_id || undefined,
@@ -2047,19 +2015,19 @@ export async function issueToken(grantId, subjectId, clientId, expiresAt, meta =
         issuance_path: meta.source || 'grant',
         source: describeGrantSource(persistedGrant),
       },
-    }, tx);
+    });
 
     return tokenId;
   });
+  return issue();
 }
 async function issueOwnerTokenRecord(subjectId, meta = {}) {
-  const db = getDb();
   const tokenId = generateToken();
   const expiresAt = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString();
-  await db.query(sql`
+  getDb().prepare(`
     INSERT INTO tokens(token_id, grant_id, subject_id, client_id, token_kind, expires_at)
-    VALUES(${tokenId}, NULL, ${subjectId}, NULL, 'owner', ${expiresAt})
-  `);
+    VALUES(?, NULL, ?, NULL, 'owner', ?)
+  `).run(tokenId, subjectId, expiresAt);
   await emitSpineEvent({
     event_type: 'token.issued',
     trace_id: meta.traceContext?.trace_id || undefined,
@@ -2096,19 +2064,16 @@ export async function issueOwnerToken(subjectId, meta = {}) {
  * RFC 7662-style introspection with PDPP extensions
  */
 export async function introspect(token) {
-  const db = getDb();
-  const rows = await db.query(sql`
+  const row = getDb().prepare(`
     SELECT t.token_id, t.grant_id, t.subject_id, t.client_id, t.token_kind, t.expires_at, t.revoked,
            g.status as grant_status, g.grant_json, g.trace_id, g.scenario_id,
            g.storage_binding_json
     FROM tokens t
     LEFT JOIN grants g ON t.grant_id = g.grant_id
-    WHERE t.token_id = ${token}
-  `);
+    WHERE t.token_id = ?
+  `).get(token);
 
-  if (!rows.length) return { active: false };
-
-  const row = rows[0];
+  if (!row) return { active: false };
 
   if (row.revoked) {
     return {
@@ -2214,19 +2179,19 @@ export async function introspect(token) {
  */
 export async function revokeGrant(grantId, context = {}) {
   const db = getDb();
-  const rows = await db.query(sql`
+  const row0 = db.prepare(`
     SELECT client_id, subject_id, trace_id, scenario_id, grant_json, storage_binding_json
     FROM grants
-    WHERE grant_id = ${grantId}
-  `);
+    WHERE grant_id = ?
+  `).get(grantId);
 
   let parsedGrant = null;
-  if (rows.length) {
+  if (row0) {
     try {
       const {
         grant,
         storageBinding,
-      } = requirePersistedGrantState(rows[0]);
+      } = requirePersistedGrantState(row0);
       const manifest = await getManifestForStorageBinding(storageBinding);
       if (manifest) {
         requireGrantContractAgainstManifest(grant, manifest);
@@ -2234,7 +2199,7 @@ export async function revokeGrant(grantId, context = {}) {
       parsedGrant = grant;
     } catch (err) {
       if (err?.code === 'grant_invalid') {
-        const row = rows[0];
+        const row = row0;
         const sourceDescriptor = describePersistedGrantSource(row);
         await emitSpineEvent({
           event_type: 'grant.revoke_rejected',
@@ -2267,12 +2232,12 @@ export async function revokeGrant(grantId, context = {}) {
     }
   }
 
-  await db.query(sql`UPDATE grants SET status = 'revoked' WHERE grant_id = ${grantId}`);
+  db.prepare("UPDATE grants SET status = 'revoked' WHERE grant_id = ?").run(grantId);
   // Also revoke all tokens for this grant
-  await db.query(sql`UPDATE tokens SET revoked = 1 WHERE grant_id = ${grantId}`);
+  db.prepare('UPDATE tokens SET revoked = 1 WHERE grant_id = ?').run(grantId);
 
-  if (rows.length && parsedGrant) {
-    const row = rows[0];
+  if (row0 && parsedGrant) {
+    const row = row0;
     await emitSpineEvent({
       event_type: 'grant.revoked',
       trace_id: row.trace_id || undefined,
@@ -2295,6 +2260,6 @@ export async function revokeGrant(grantId, context = {}) {
 
   return {
     request_id: context.request_id || null,
-    trace_id: rows[0]?.trace_id || null,
+    trace_id: row0?.trace_id || null,
   };
 }

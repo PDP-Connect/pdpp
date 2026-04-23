@@ -1,7 +1,7 @@
 /**
  * PDPP Resource Server — record storage and grant-enforced query
  */
-import { getDb, sql } from './db.js';
+import { getDb } from './db.js';
 
 function nowIso() {
   return new Date().toISOString();
@@ -65,12 +65,11 @@ export async function ingestRecord(storageTarget, record) {
     throw err;
   }
 
-  const currentRows = await db.query(sql`
+  const current = db.prepare(`
     SELECT record_json, deleted
     FROM records
-    WHERE connector_id = ${connectorId} AND stream = ${stream} AND record_key = ${recordKey}
-  `);
-  const current = currentRows[0] || null;
+    WHERE connector_id = ? AND stream = ? AND record_key = ?
+  `).get(connectorId, stream, recordKey) || null;
 
   if (op === 'delete' && (!current || current.deleted)) {
     return { accepted: true, changed: false };
@@ -81,71 +80,55 @@ export async function ingestRecord(storageTarget, record) {
   }
 
   // Get next version
-  const vcRows = await db.query(sql`
-    SELECT max_version FROM version_counter WHERE connector_id = ${connectorId} AND stream = ${stream}
-  `);
-  const nextVersion = vcRows.length ? vcRows[0].max_version + 1 : 1;
+  const vcRow = db.prepare(
+    'SELECT max_version FROM version_counter WHERE connector_id = ? AND stream = ?'
+  ).get(connectorId, stream);
+  const nextVersion = vcRow ? vcRow.max_version + 1 : 1;
+
+  const effectiveEmittedAt = emitted_at || nowIso();
 
   if (op === 'delete') {
-    await db.query(sql`
+    db.prepare(`
       UPDATE records
-      SET deleted = 1, deleted_at = ${emitted_at || nowIso()}, version = ${nextVersion}
-      WHERE connector_id = ${connectorId} AND stream = ${stream} AND record_key = ${recordKey}
-    `);
-    await db.query(sql`
+      SET deleted = 1, deleted_at = ?, version = ?
+      WHERE connector_id = ? AND stream = ? AND record_key = ?
+    `).run(effectiveEmittedAt, nextVersion, connectorId, stream, recordKey);
+    db.prepare(`
       INSERT INTO record_changes(connector_id, stream, record_key, version, record_json, emitted_at, deleted, deleted_at)
-      VALUES(
-        ${connectorId},
-        ${stream},
-        ${recordKey},
-        ${nextVersion},
-        ${current.record_json},
-        ${emitted_at || nowIso()},
-        1,
-        ${emitted_at || nowIso()}
-      )
-    `);
+      VALUES(?, ?, ?, ?, ?, ?, 1, ?)
+    `).run(connectorId, stream, recordKey, nextVersion, current.record_json, effectiveEmittedAt, effectiveEmittedAt);
   } else {
-    await db.query(sql`
+    db.prepare(`
       INSERT INTO records(connector_id, stream, record_key, record_json, emitted_at, version)
-      VALUES(${connectorId}, ${stream}, ${recordKey}, ${recordJson}, ${emitted_at || nowIso()}, ${nextVersion})
+      VALUES(?, ?, ?, ?, ?, ?)
       ON CONFLICT(connector_id, stream, record_key) DO UPDATE SET
         record_json = excluded.record_json,
         emitted_at = excluded.emitted_at,
         version = excluded.version,
         deleted = 0,
         deleted_at = NULL
-    `);
-    await db.query(sql`
+    `).run(connectorId, stream, recordKey, recordJson, effectiveEmittedAt, nextVersion);
+    db.prepare(`
       INSERT INTO record_changes(connector_id, stream, record_key, version, record_json, emitted_at, deleted, deleted_at)
-      VALUES(
-        ${connectorId},
-        ${stream},
-        ${recordKey},
-        ${nextVersion},
-        ${recordJson},
-        ${emitted_at || nowIso()},
-        0,
-        NULL
-      )
-    `);
+      VALUES(?, ?, ?, ?, ?, ?, 0, NULL)
+    `).run(connectorId, stream, recordKey, nextVersion, recordJson, effectiveEmittedAt);
   }
 
   // Advance version counter
-  await db.query(sql`
+  db.prepare(`
     INSERT INTO version_counter(connector_id, stream, max_version)
-    VALUES(${connectorId}, ${stream}, ${nextVersion})
+    VALUES(?, ?, ?)
     ON CONFLICT(connector_id, stream) DO UPDATE SET max_version = excluded.max_version
-  `);
+  `).run(connectorId, stream, nextVersion);
 
   const changeHistoryLimit = getChangeHistoryLimit();
   if (changeHistoryLimit > 0) {
-    await db.query(sql`
+    db.prepare(`
       DELETE FROM record_changes
-      WHERE connector_id = ${connectorId}
-        AND stream = ${stream}
-        AND version <= ${nextVersion - changeHistoryLimit}
-    `);
+      WHERE connector_id = ?
+        AND stream = ?
+        AND version <= ?
+    `).run(connectorId, stream, nextVersion - changeHistoryLimit);
   }
 
   return { accepted: true, changed: true };
@@ -557,13 +540,13 @@ function passesGrantVisibility(rawData, recordKey, effective, consentTimeField) 
 }
 
 async function fetchVisibleRecordRows(db, connectorId, stream, effective, manifestStream, compiledFilters = []) {
-  const rows = await db.query(sql`
+  const rows = db.prepare(`
     SELECT record_key, record_json, emitted_at
     FROM records
-    WHERE connector_id = ${connectorId}
-      AND stream = ${stream}
+    WHERE connector_id = ?
+      AND stream = ?
       AND deleted = 0
-  `);
+  `).all(connectorId, stream);
 
   const consentTimeField = manifestStream?.consent_time_field;
   const visibleRows = [];
@@ -697,20 +680,19 @@ function encodeChangesSinceCursor(version) {
 
 async function getSnapshotAtVersion(db, connectorId, stream, recordKey, version) {
   if (!Number.isInteger(version) || version < 0) return null;
-  const rows = await db.query(sql`
+  const row = db.prepare(`
     SELECT record_json, emitted_at, deleted, deleted_at, version
     FROM record_changes
-    WHERE connector_id = ${connectorId}
-      AND stream = ${stream}
-      AND record_key = ${recordKey}
-      AND version <= ${version}
+    WHERE connector_id = ?
+      AND stream = ?
+      AND record_key = ?
+      AND version <= ?
     ORDER BY version DESC
     LIMIT 1
-  `);
+  `).get(connectorId, stream, recordKey, version);
 
-  if (!rows.length) return null;
+  if (!row) return null;
 
-  const row = rows[0];
   return {
     record_key: recordKey,
     version: row.version,
@@ -806,19 +788,16 @@ export async function queryRecords(storageTarget, stream, grant, requestParams =
       throw err;
     }
 
-    const vcRows = await db.query(sql`
-      SELECT max_version FROM version_counter
-      WHERE connector_id = ${connectorId} AND stream = ${stream}
-    `);
-    const currentMaxVersion = vcRows.length ? vcRows[0].max_version : 0;
+    const vcRow = db.prepare(
+      'SELECT max_version FROM version_counter WHERE connector_id = ? AND stream = ?'
+    ).get(connectorId, stream);
+    const currentMaxVersion = vcRow ? vcRow.max_version : 0;
     const effectiveSessionMaxVersion = changesSince ? currentMaxVersion : sessionMaxVersion;
 
-    const minChangeRows = await db.query(sql`
-      SELECT MIN(version) as min_version
-      FROM record_changes
-      WHERE connector_id = ${connectorId} AND stream = ${stream}
-    `);
-    const minVersion = minChangeRows[0]?.min_version ?? null;
+    const minChangeRow = db.prepare(
+      'SELECT MIN(version) as min_version FROM record_changes WHERE connector_id = ? AND stream = ?'
+    ).get(connectorId, stream);
+    const minVersion = minChangeRow?.min_version ?? null;
     if (minVersion !== null && sinceVersion < (minVersion - 1)) {
       const err = new Error('changes_since cursor is too old; full re-sync required');
       err.code = 'cursor_expired';
@@ -830,17 +809,17 @@ export async function queryRecords(storageTarget, stream, grant, requestParams =
     const batchSize = limit + 1;
 
     while (visibleChanges.length <= limit) {
-      const changeGroups = await db.query(sql`
+      const changeGroups = db.prepare(`
         SELECT record_key, MAX(version) as latest_version
         FROM record_changes
-        WHERE connector_id = ${connectorId}
-          AND stream = ${stream}
-          AND version > ${pageAfterVersion}
-          AND version <= ${effectiveSessionMaxVersion}
+        WHERE connector_id = ?
+          AND stream = ?
+          AND version > ?
+          AND version <= ?
         GROUP BY record_key
         ORDER BY latest_version ASC
-        LIMIT ${batchSize}
-      `);
+        LIMIT ?
+      `).all(connectorId, stream, pageAfterVersion, effectiveSessionMaxVersion, batchSize);
 
       if (!changeGroups.length) break;
 
@@ -983,22 +962,21 @@ export async function getRecord(storageTarget, stream, recordId, grant, manifest
     throw err;
   }
 
-  const rows = await db.query(sql`
+  const row = db.prepare(`
     SELECT record_key, record_json, emitted_at
     FROM records
-    WHERE connector_id = ${connectorId}
-      AND stream = ${stream}
-      AND record_key = ${recordId}
+    WHERE connector_id = ?
+      AND stream = ?
+      AND record_key = ?
       AND deleted = 0
-  `);
+  `).get(connectorId, stream, recordId);
 
-  if (!rows.length) {
+  if (!row) {
     const err = new Error('Record not found');
     err.code = 'not_found';
     throw err;
   }
 
-  const row = rows[0];
   const rawData = JSON.parse(row.record_json);
   const mStream = manifest?.streams?.find(s => s.name === stream);
   const consentTimeField = mStream?.consent_time_field;
@@ -1054,53 +1032,43 @@ export async function deleteRecord(storageTarget, stream, recordId) {
   const connectorId = resolveStorageConnectorId(storageTarget);
   const db = getDb();
   const now = nowIso();
-  const currentRows = await db.query(sql`
+  const current = db.prepare(`
     SELECT record_json, deleted
     FROM records
-    WHERE connector_id = ${connectorId} AND stream = ${stream} AND record_key = ${recordId}
-  `);
-  const current = currentRows[0] || null;
+    WHERE connector_id = ? AND stream = ? AND record_key = ?
+  `).get(connectorId, stream, recordId);
   if (!current || current.deleted) return 0;
 
-  const vcRows = await db.query(sql`
-    SELECT max_version FROM version_counter WHERE connector_id = ${connectorId} AND stream = ${stream}
-  `);
-  const nextVersion = vcRows.length ? vcRows[0].max_version + 1 : 1;
+  const vcRow = db.prepare(
+    'SELECT max_version FROM version_counter WHERE connector_id = ? AND stream = ?'
+  ).get(connectorId, stream);
+  const nextVersion = vcRow ? vcRow.max_version + 1 : 1;
 
-  await db.query(sql`
+  db.prepare(`
     UPDATE records
-    SET deleted = 1, deleted_at = ${now}, version = ${nextVersion}
-    WHERE connector_id = ${connectorId} AND stream = ${stream} AND record_key = ${recordId}
-  `);
+    SET deleted = 1, deleted_at = ?, version = ?
+    WHERE connector_id = ? AND stream = ? AND record_key = ?
+  `).run(now, nextVersion, connectorId, stream, recordId);
 
-  await db.query(sql`
+  db.prepare(`
     INSERT INTO record_changes(connector_id, stream, record_key, version, record_json, emitted_at, deleted, deleted_at)
-    VALUES(
-      ${connectorId},
-      ${stream},
-      ${recordId},
-      ${nextVersion},
-      ${current.record_json},
-      ${now},
-      1,
-      ${now}
-    )
-  `);
+    VALUES(?, ?, ?, ?, ?, ?, 1, ?)
+  `).run(connectorId, stream, recordId, nextVersion, current.record_json, now, now);
 
-  await db.query(sql`
+  db.prepare(`
     INSERT INTO version_counter(connector_id, stream, max_version)
-    VALUES(${connectorId}, ${stream}, ${nextVersion})
+    VALUES(?, ?, ?)
     ON CONFLICT(connector_id, stream) DO UPDATE SET max_version = excluded.max_version
-  `);
+  `).run(connectorId, stream, nextVersion);
 
   const changeHistoryLimit = getChangeHistoryLimit();
   if (changeHistoryLimit > 0) {
-    await db.query(sql`
+    db.prepare(`
       DELETE FROM record_changes
-      WHERE connector_id = ${connectorId}
-        AND stream = ${stream}
-        AND version <= ${nextVersion - changeHistoryLimit}
-    `);
+      WHERE connector_id = ?
+        AND stream = ?
+        AND version <= ?
+    `).run(connectorId, stream, nextVersion - changeHistoryLimit);
   }
 
   return 1;
@@ -1108,14 +1076,13 @@ export async function deleteRecord(storageTarget, stream, recordId) {
 
 export async function listAllStreams(storageTarget) {
   const connectorId = resolveStorageConnectorId(storageTarget);
-  const db = getDb();
-  const rows = await db.query(sql`
+  const rows = getDb().prepare(`
     SELECT stream, COUNT(*) as count, MAX(emitted_at) as last_updated
     FROM records
-    WHERE connector_id = ${connectorId} AND deleted = 0
+    WHERE connector_id = ? AND deleted = 0
     GROUP BY stream
     ORDER BY stream ASC
-  `);
+  `).all(connectorId);
 
   return rows.map((row) => ({
     object: 'stream',
@@ -1131,24 +1098,15 @@ export async function listAllStreams(storageTarget) {
 export async function deleteAllRecords(storageTarget, stream) {
   const connectorId = resolveStorageConnectorId(storageTarget);
   const db = getDb();
-  const countRows = await db.query(sql`
+  const countRow = db.prepare(`
     SELECT COUNT(*) AS count
     FROM records
-    WHERE connector_id = ${connectorId} AND stream = ${stream}
-  `);
-  const deletedRecordCount = countRows[0]?.count || 0;
-  await db.query(sql`
-    DELETE FROM records
-    WHERE connector_id = ${connectorId} AND stream = ${stream}
-  `);
-  await db.query(sql`
-    DELETE FROM record_changes
-    WHERE connector_id = ${connectorId} AND stream = ${stream}
-  `);
-  await db.query(sql`
-    DELETE FROM version_counter
-    WHERE connector_id = ${connectorId} AND stream = ${stream}
-  `);
+    WHERE connector_id = ? AND stream = ?
+  `).get(connectorId, stream);
+  const deletedRecordCount = countRow?.count || 0;
+  db.prepare('DELETE FROM records WHERE connector_id = ? AND stream = ?').run(connectorId, stream);
+  db.prepare('DELETE FROM record_changes WHERE connector_id = ? AND stream = ?').run(connectorId, stream);
+  db.prepare('DELETE FROM version_counter WHERE connector_id = ? AND stream = ?').run(connectorId, stream);
   return deletedRecordCount;
 }
 
@@ -1161,11 +1119,11 @@ export async function listStreams(storageTarget, grant, manifest = null) {
   const result = [];
 
   for (const sg of grant.streams) {
-    const rows = await db.query(sql`
+    const rows = db.prepare(`
       SELECT record_key, record_json, emitted_at
       FROM records
-      WHERE connector_id = ${connectorId} AND stream = ${sg.name} AND deleted = 0
-    `);
+      WHERE connector_id = ? AND stream = ? AND deleted = 0
+    `).all(connectorId, sg.name);
     const effective = buildEffectiveFilter(sg, {});
     const manifestStream = manifest?.streams?.find((stream) => stream.name === sg.name);
     const consentTimeField = manifestStream?.consent_time_field || null;
@@ -1206,16 +1164,12 @@ export async function getSyncState(storageTarget, opts = {}) {
     ? allowedStreams
     : (Array.isArray(allowedStreams) ? new Set(allowedStreams) : null);
   const rows = grantId
-    ? await db.query(sql`
-      SELECT stream, state_json, updated_at
-      FROM grant_connector_state
-      WHERE connector_id = ${connectorId} AND grant_id = ${grantId}
-    `)
-    : await db.query(sql`
-      SELECT stream, state_json, updated_at
-      FROM connector_state
-      WHERE connector_id = ${connectorId}
-    `);
+    ? db.prepare(
+        'SELECT stream, state_json, updated_at FROM grant_connector_state WHERE connector_id = ? AND grant_id = ?'
+      ).all(connectorId, grantId)
+    : db.prepare(
+        'SELECT stream, state_json, updated_at FROM connector_state WHERE connector_id = ?'
+      ).all(connectorId);
   const state = {};
   let updatedAt = null;
   for (const row of rows) {
@@ -1239,23 +1193,23 @@ export async function putSyncState(storageTarget, stateMap, opts = {}) {
   const now = nowIso();
   for (const [stream, cursor] of Object.entries(stateMap)) {
     if (grantId) {
-      await db.query(sql`
+      db.prepare(`
         INSERT INTO grant_connector_state(grant_id, connector_id, stream, state_json, updated_at)
-        VALUES(${grantId}, ${connectorId}, ${stream}, ${JSON.stringify(cursor)}, ${now})
+        VALUES(?, ?, ?, ?, ?)
         ON CONFLICT(grant_id, connector_id, stream) DO UPDATE SET
           state_json = excluded.state_json,
           updated_at = excluded.updated_at
-      `);
+      `).run(grantId, connectorId, stream, JSON.stringify(cursor), now);
       continue;
     }
 
-    await db.query(sql`
+    db.prepare(`
       INSERT INTO connector_state(connector_id, stream, state_json, updated_at)
-      VALUES(${connectorId}, ${stream}, ${JSON.stringify(cursor)}, ${now})
+      VALUES(?, ?, ?, ?)
       ON CONFLICT(connector_id, stream) DO UPDATE SET
         state_json = excluded.state_json,
         updated_at = excluded.updated_at
-    `);
+    `).run(connectorId, stream, JSON.stringify(cursor), now);
   }
   return getSyncState(connectorId, { grantId, allowedStreams });
 }
@@ -1293,7 +1247,7 @@ export async function putSyncState(storageTarget, stateMap, opts = {}) {
 export async function getDatasetSummary() {
   const db = getDb();
 
-  const [recordAgg] = await db.query(sql`
+  const recordAgg = db.prepare(`
     SELECT
       COUNT(*)                                         AS record_count,
       COALESCE(SUM(LENGTH(CAST(record_json AS BLOB))), 0) AS record_json_bytes,
@@ -1303,18 +1257,17 @@ export async function getDatasetSummary() {
       COUNT(DISTINCT connector_id || char(10) || stream) AS stream_count
     FROM records
     WHERE deleted = 0
-  `);
+  `).get();
 
-  const [changeAgg] = await db.query(sql`
+  const changeAgg = db.prepare(`
     SELECT COALESCE(SUM(LENGTH(CAST(record_json AS BLOB))), 0) AS record_changes_json_bytes
     FROM record_changes
     WHERE record_json IS NOT NULL
-  `);
+  `).get();
 
-  const [blobAgg] = await db.query(sql`
-    SELECT COALESCE(SUM(size_bytes), 0) AS blob_bytes
-    FROM blobs
-  `);
+  const blobAgg = db.prepare(
+    'SELECT COALESCE(SUM(size_bytes), 0) AS blob_bytes FROM blobs'
+  ).get();
 
   const recordCount = Number(recordAgg?.record_count || 0);
   const connectorCount = Number(recordAgg?.connector_count || 0);
@@ -1358,7 +1311,7 @@ export async function getDatasetSummary() {
 async function getRealWorldTimeBounds() {
   const db = getDb();
 
-  const connectors = await db.query(sql`SELECT connector_id, manifest FROM connectors`);
+  const connectors = db.prepare('SELECT connector_id, manifest FROM connectors').all();
 
   let earliest = null;
   let latest = null;
@@ -1379,22 +1332,21 @@ async function getRealWorldTimeBounds() {
 
       // `json_extract` path is `$.<field>`. The field name is a manifest-declared
       // JSON property name, which in practice is a safe identifier. We still
-      // interpolate literally because @databases/sqlite's parameter binding is
-      // for values, not for the JSON path. Reject anything that could break
-      // out of the `$.<field>` form.
+      // interpolate literally because SQLite parameter binding is for values,
+      // not for the JSON path. Reject anything that could break out of the
+      // `$.<field>` form.
       if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(field)) continue;
 
       const jsonPath = `$.${field}`;
-      const rows = await db.query(sql`
+      const result = db.prepare(`
         SELECT
-          MIN(json_extract(record_json, ${jsonPath})) AS min_time,
-          MAX(json_extract(record_json, ${jsonPath})) AS max_time
+          MIN(json_extract(record_json, ?)) AS min_time,
+          MAX(json_extract(record_json, ?)) AS max_time
         FROM records
-        WHERE connector_id = ${row.connector_id}
-          AND stream = ${streamName}
+        WHERE connector_id = ?
+          AND stream = ?
           AND deleted = 0
-      `);
-      const result = rows?.[0];
+      `).get(jsonPath, jsonPath, row.connector_id, streamName);
       if (!result) continue;
       const minTime = typeof result.min_time === 'string' ? result.min_time : null;
       const maxTime = typeof result.max_time === 'string' ? result.max_time : null;
@@ -1412,15 +1364,14 @@ async function getRealWorldTimeBounds() {
  * record_count descending. Excludes soft-deleted rows.
  */
 async function getTopConnectorsByRecordCount(limit) {
-  const db = getDb();
-  const rows = await db.query(sql`
+  const rows = getDb().prepare(`
     SELECT connector_id, COUNT(*) AS record_count
     FROM records
     WHERE deleted = 0
     GROUP BY connector_id
     ORDER BY record_count DESC, connector_id ASC
-    LIMIT ${limit}
-  `);
+    LIMIT ?
+  `).all(limit);
   return rows.map((row) => ({
     object: 'dataset_connector_summary',
     connector_id: row.connector_id,

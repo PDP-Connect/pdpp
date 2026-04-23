@@ -9,7 +9,7 @@ import {
   initiateOwnerDeviceAuthorization,
   getOwnerDeviceAuthorizationByUserCode,
 } from '../server/auth.js';
-import { getDb, sql } from '../server/db.js';
+import { getDb } from '../server/db.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, '..');
@@ -285,9 +285,9 @@ test('owner-auth placeholder: authenticated /consent/approve issues a grant and 
     const body = await approveResp.json();
     assert.ok(body.grant_id, 'grant issued');
     assert.ok(body.token, 'owner/app token issued');
-    const tokenRows = await getDb().query(sql`
-      SELECT subject_id FROM tokens WHERE grant_id = ${body.grant_id}
-    `);
+    const tokenRows = getDb().prepare(
+      'SELECT subject_id FROM tokens WHERE grant_id = ?'
+    ).all(body.grant_id);
     assert.ok(tokenRows.length >= 1);
     assert.equal(tokenRows[0].subject_id, 'owner_local', 'default subject used');
   });
@@ -350,9 +350,9 @@ test('owner-auth placeholder: enabled — submitted subject_id is ignored on app
       });
       assert.equal(resp.status, 200);
       const body = await resp.json();
-      const tokenRows = await getDb().query(sql`
-        SELECT subject_id FROM tokens WHERE grant_id = ${body.grant_id}
-      `);
+      const tokenRows = getDb().prepare(
+        'SELECT subject_id FROM tokens WHERE grant_id = ?'
+      ).all(body.grant_id);
       assert.ok(tokenRows.length >= 1);
       assert.equal(
         tokenRows[0].subject_id,
@@ -384,11 +384,11 @@ test('owner-auth placeholder: enabled — submitted subject_id is ignored on app
       });
       assert.equal(approveDeviceResp.status, 200);
 
-      const rows = await getDb().query(sql`
+      const rows = getDb().prepare(`
         SELECT subject_id FROM tokens
         WHERE token_kind = 'owner'
         ORDER BY created_at DESC
-      `);
+      `).all();
       assert.ok(rows.length >= 1, 'owner token row exists');
       assert.equal(rows[0].subject_id, CUSTOM_SUBJECT_ID);
     },

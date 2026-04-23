@@ -1,5 +1,5 @@
 import { randomBytes } from 'crypto';
-import { getDb, sql } from '../server/db.js';
+import { getDb } from '../server/db.js';
 
 export const DEFAULT_SCENARIO_ID = 'scn_reference_default';
 const SPINE_VERSION = 'reference.spine.v1';
@@ -57,63 +57,34 @@ function normalizeEvent(input = {}) {
   };
 }
 
+const INSERT_SPINE_EVENT_SQL = `
+  INSERT INTO spine_events(
+    event_id, event_type, occurred_at, recorded_at, scenario_id, trace_id,
+    actor_type, actor_id, subject_type, subject_id, object_type, object_id,
+    status, request_id, grant_id, run_id, provider_id, client_id, stream_id,
+    token_id, interaction_id, data_json, version
+  ) VALUES (
+    @event_id, @event_type, @occurred_at, @recorded_at, @scenario_id, @trace_id,
+    @actor_type, @actor_id, @subject_type, @subject_id, @object_type, @object_id,
+    @status, @request_id, @grant_id, @run_id, @provider_id, @client_id, @stream_id,
+    @token_id, @interaction_id, @data_json, @version
+  )
+`;
+
+/**
+ * Emit a spine event synchronously. Declared `async` for backwards-compatible
+ * return shape (callers already `await` it); internally the `better-sqlite3`
+ * INSERT is synchronous, so the returned Promise resolves on the next tick
+ * with no I/O wait. That means callers inside a `db.transaction(fn)` block
+ * can either call this without `await` or use the synchronous insert path
+ * directly — the DB write has already happened when the call returns.
+ */
 export async function emitSpineEvent(input = {}, dbHandle = null) {
   const db = dbHandle || getDb();
   if (!db) return null;
   const event = normalizeEvent(input);
 
-  await db.query(sql`
-    INSERT INTO spine_events(
-      event_id,
-      event_type,
-      occurred_at,
-      recorded_at,
-      scenario_id,
-      trace_id,
-      actor_type,
-      actor_id,
-      subject_type,
-      subject_id,
-      object_type,
-      object_id,
-      status,
-      request_id,
-      grant_id,
-      run_id,
-      provider_id,
-      client_id,
-      stream_id,
-      token_id,
-      interaction_id,
-      data_json,
-      version
-    )
-    VALUES(
-      ${event.event_id},
-      ${event.event_type},
-      ${event.occurred_at},
-      ${event.recorded_at},
-      ${event.scenario_id},
-      ${event.trace_id},
-      ${event.actor_type},
-      ${event.actor_id},
-      ${event.subject_type},
-      ${event.subject_id},
-      ${event.object_type},
-      ${event.object_id},
-      ${event.status},
-      ${event.request_id},
-      ${event.grant_id},
-      ${event.run_id},
-      ${event.provider_id},
-      ${event.client_id},
-      ${event.stream_id},
-      ${event.token_id},
-      ${event.interaction_id},
-      ${event.data_json},
-      ${event.version}
-    )
-  `);
+  db.prepare(INSERT_SPINE_EVENT_SQL).run(event);
 
   return {
     ...event,
@@ -155,15 +126,15 @@ export async function listSpineEvents(filters = {}) {
 
   let rows;
   if (filters.traceId) {
-    rows = await db.query(sql`SELECT * FROM spine_events WHERE trace_id = ${filters.traceId} ORDER BY rowid`);
+    rows = db.prepare('SELECT * FROM spine_events WHERE trace_id = ? ORDER BY rowid').all(filters.traceId);
   } else if (filters.grantId) {
-    rows = await db.query(sql`SELECT * FROM spine_events WHERE grant_id = ${filters.grantId} ORDER BY rowid`);
+    rows = db.prepare('SELECT * FROM spine_events WHERE grant_id = ? ORDER BY rowid').all(filters.grantId);
   } else if (filters.runId) {
-    rows = await db.query(sql`SELECT * FROM spine_events WHERE run_id = ${filters.runId} ORDER BY rowid`);
+    rows = db.prepare('SELECT * FROM spine_events WHERE run_id = ? ORDER BY rowid').all(filters.runId);
   } else if (filters.eventType) {
-    rows = await db.query(sql`SELECT * FROM spine_events WHERE event_type = ${filters.eventType} ORDER BY rowid`);
+    rows = db.prepare('SELECT * FROM spine_events WHERE event_type = ? ORDER BY rowid').all(filters.eventType);
   } else {
-    rows = await db.query(sql`SELECT * FROM spine_events ORDER BY rowid`);
+    rows = db.prepare('SELECT * FROM spine_events ORDER BY rowid').all();
   }
 
   return hydrateRows(rows);
@@ -272,7 +243,7 @@ function deriveGrantLifecycleStatus(events) {
 export async function listSpineCorrelations(key, filters = {}) {
   const db = getDb();
   if (!db) return { summaries: [], hasMore: false, nextCursor: null };
-  const rows = await db.query(sql`SELECT * FROM spine_events ORDER BY rowid`);
+  const rows = db.prepare('SELECT * FROM spine_events ORDER BY rowid').all();
   const events = hydrateRows(rows);
   const column =
     key === 'trace'
@@ -330,7 +301,7 @@ export async function searchSpine(query) {
   const q = String(query || '').trim();
   if (!q) return { exact: null, traces: [], grants: [], runs: [] };
 
-  const rows = await db.query(sql`SELECT * FROM spine_events ORDER BY rowid`);
+  const rows = db.prepare('SELECT * FROM spine_events ORDER BY rowid').all();
   const events = hydrateRows(rows);
 
   const exactMatch = (() => {

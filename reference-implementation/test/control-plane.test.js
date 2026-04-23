@@ -17,7 +17,7 @@ import { fileURLToPath } from 'node:url';
 
 import { startServer } from '../server/index.js';
 import { ingestRecord } from '../server/records.js';
-import { getDb, sql } from '../server/db.js';
+import { getDb } from '../server/db.js';
 import { runConnector } from '../runtime/index.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -331,11 +331,10 @@ test('_ref dataset summary', async (t) => {
       });
 
       // Seed a blob directly so blob_bytes is exercised.
-      const db = getDb();
-      await db.query(sql`
+      getDb().prepare(`
         INSERT INTO blobs(blob_id, connector_id, stream, record_key, mime_type, size_bytes, sha256, data)
-        VALUES ('blob_test_1', ${spotifyId}, 'covers', 'cover_1', 'image/png', 2048, 'deadbeef', NULL)
-      `);
+        VALUES ('blob_test_1', ?, 'covers', 'cover_1', 'image/png', 2048, 'deadbeef', NULL)
+      `).run(spotifyId);
 
       const resp = await fetch(`${asUrl}/_ref/dataset/summary`);
       const body = await resp.json();
