@@ -1,0 +1,18 @@
+{
+  "name_normalized": "engineering",
+  "is_channel": true,
+  "is_private": false,
+  "is_archived": false,
+  "is_general": true,
+  "is_member": true,
+  "creator": "U123",
+  "created": 1700000000,
+  "topic": { "value": "deploys on green", "creator": "U123", "last_set": 1700000001 },
+  "purpose": { "value": "eng chatter", "creator": "U123", "last_set": 1700000002 },
+  "num_members": 42,
+  "properties": {
+    "canvas": { "file_id": "Fcanvas1", "is_empty": false, "quip_thread_id": "Qthread123" },
+    "posting_restricted_to": { "type": "admin" }
+  },
+  "shared_team_ids": ["T456"]
+}

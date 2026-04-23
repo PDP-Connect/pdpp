@@ -1,0 +1,22 @@
+{
+  "user": "U123",
+  "team": "T456",
+  "client_msg_id": "abc-def",
+  "text": "hello world",
+  "reply_count": 2,
+  "reply_users": ["U789", "UAAA"],
+  "latest_reply": "1713999999.000100",
+  "files": [{ "id": "F1" }],
+  "attachments": [
+    { "fallback": "fb1", "title": "t1", "service_name": "SN", "from_url": "https://ex/1" },
+    { "fallback": "fb2", "title": "t2" }
+  ],
+  "blocks": [{ "type": "section" }],
+  "reactions": [
+    { "name": "tada", "users": ["U1", "U2"], "count": 2 },
+    { "name": "eyes", "users": ["U3"] }
+  ],
+  "pinned_to": ["C1"],
+  "edited": { "ts": "1713999991.000000", "user": "U123" },
+  "metadata": { "event_type": "app_posted" }
+}

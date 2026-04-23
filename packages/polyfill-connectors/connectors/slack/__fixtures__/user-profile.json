@@ -1,0 +1,29 @@
+{
+  "team_id": "T456",
+  "name": "alice",
+  "real_name": "Alice Example",
+  "profile": {
+    "real_name_normalized": "Alice Example",
+    "display_name": "alice",
+    "display_name_normalized": "alice",
+    "first_name": "Alice",
+    "last_name": "Example",
+    "email": "alice@example.com",
+    "title": "Engineer",
+    "status_text": "focusing",
+    "status_emoji": ":dart:",
+    "image_192": "https://cdn/192.png"
+  },
+  "tz": "America/New_York",
+  "tz_label": "Eastern Standard Time",
+  "tz_offset": -18000,
+  "is_bot": false,
+  "is_admin": true,
+  "is_owner": false,
+  "is_primary_owner": false,
+  "deleted": false,
+  "has_2fa": true,
+  "two_factor_type": "app",
+  "enterprise_user": { "enterprise_id": "E789" },
+  "updated": 1700000100
+}
