@@ -535,7 +535,7 @@ const CONVO_BATCH_PAUSE_MS = 200;
  * For each listed conversation, fetch detail in small concurrent batches
  * and emit messages + detail-augmented conversation records.
  */
-async function runMessagesAndConversationsWithDetail(
+export async function runMessagesAndConversationsWithDetail(
   deps: StreamDeps,
   convosToSync: ConversationListItem[],
   emitConversation: (c: ConversationListItem, detail: ConversationDetail | null) => Promise<void>
@@ -560,7 +560,10 @@ async function runMessagesAndConversationsWithDetail(
   }
 }
 
-async function runConversationsAndMessagesStreams(deps: StreamDeps, state: CollectContext["state"]): Promise<void> {
+export async function runConversationsAndMessagesStreams(
+  deps: StreamDeps,
+  state: CollectContext["state"]
+): Promise<void> {
   const conversationsCursor = state.conversations as { last_update_time?: string | null } | undefined;
   const priorCursor = conversationsCursor?.last_update_time || null;
   const convosToSync = await listConversationsSinceCursor(deps, priorCursor);
