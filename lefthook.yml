@@ -10,13 +10,23 @@
 pre-commit:
   parallel: true
   jobs:
-    # Lint .ts + config files. Legacy .js is exempt during the JS→TS
-    # migration; Biome's scope in packages/polyfill-connectors/biome.jsonc
-    # already excludes them. Once all sources are .ts, flip that scope.
+    # Auto-format + fix safe lints on staged .ts / config files. Anything
+    # Biome can repair (quote style, whitespace, sort imports, useLiteralKeys,
+    # etc.) is repaired in-place. stage_fixed=true writes the fixes back
+    # into the index so the commit picks them up. Changes that aren't
+    # auto-fixable fall through to the :lint job below and fail the commit.
+    - name: polyfill-connectors:format
+      glob: "packages/polyfill-connectors/**/*.{ts,jsonc,json}"
+      root: "packages/polyfill-connectors"
+      run: pnpm exec biome check --write --no-errors-on-unmatched {staged_files}
+      stage_fixed: true
+
+    # Lint .ts + config files (no-write; the format job already applied
+    # safe fixes). Reports anything still violating rules after auto-fix.
     - name: polyfill-connectors:lint
       glob: "packages/polyfill-connectors/**/*.{ts,jsonc,json}"
       root: "packages/polyfill-connectors"
-      run: pnpm exec biome check {staged_files}
+      run: pnpm exec biome check --no-errors-on-unmatched {staged_files}
 
     # Type-check runs on the whole package, not just staged files, because
     # a change in one file can break types in another.
