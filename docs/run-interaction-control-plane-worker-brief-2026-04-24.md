@@ -26,6 +26,12 @@ Implement all tasks in the OpenSpec change:
 3. dashboard run-detail response UI
 4. tests and docs
 
+Also fix the adjacent controller-managed restart hole:
+
+- if the reference server restarts while a controller-managed run is active or waiting on interaction, the run must not remain a ghost `started` artifact forever
+- preserve or implement durable active-run tracking plus startup reconciliation to a terminal `run.failed`
+- use a machine-readable reason such as `controller_restarted`
+
 ## Hard boundaries
 
 - Do **not** add a public `/v1/...` route.
@@ -33,7 +39,7 @@ Implement all tasks in the OpenSpec change:
 - Do **not** persist submitted OTP/credentials to `.env.local`, SQLite config/state, or timeline payloads.
 - Do **not** weaken owner-only authz on `_ref` control surfaces.
 - Do **not** add SSE/WebSocket/streaming in this tranche.
-- Do **not** fold abandoned-run-after-restart recovery into this worker unless you hit a direct blocker. That is adjacent but separate owner work.
+- Do **not** widen this into generic replay/resume/checkpoint resurrection.
 
 ## Required implementation shape
 
@@ -53,6 +59,19 @@ The broker should support:
 - runtime-owned `timeout`
 
 The dashboard submission path should resolve only the currently pending interaction with a matching `interaction_id`.
+
+### 1.5 Restart truthfulness for controller-managed runs
+
+Do not leave controller-managed runs as permanently `started` after process death/restart.
+
+Expected shape:
+
+- persist enough controller-managed active-run identity to survive process restart
+- on startup, reconcile leftover active controller rows into a terminal run artifact
+- append a truthful `run.failed` event with a machine-readable reason like `controller_restarted`
+- clear the stale active-run marker so a new run can start
+
+This is specifically about controller-managed/dashboard-started runs, not a generic claim about every possible external CLI run.
 
 ### 2. Reference control-plane route
 
@@ -134,6 +153,7 @@ Add coverage for at least:
 5. unknown or finished run is rejected
 6. submitted secrets do not appear in the run timeline
 7. dashboard build/types still pass
+8. controller-managed run abandoned by restart is reconciled to terminal failed state instead of remaining ghost `started`
 
 Use existing control-plane and event-spine tests as prior art.
 
