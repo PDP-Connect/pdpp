@@ -30,6 +30,8 @@ reference-implementation/report.*.json
 # (carry session ids, PIDs, absolute paths). Not portable.
 .claude/scheduled_tasks.json
 .claude/scheduled_tasks.lock
+# Agent scratch worktrees — local-only, not portable
+.claude/worktrees/
 .playwright-mcp/
 .impeccable.md
 skills-lock.json
