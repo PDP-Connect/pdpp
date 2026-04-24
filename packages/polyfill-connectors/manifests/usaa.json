@@ -254,6 +254,27 @@
             "lte",
             "lt"
           ]
+        },
+        "aggregations": {
+          "count": true,
+          "sum": [
+            "amount",
+            "balance_after_cents"
+          ],
+          "min": [
+            "date",
+            "amount",
+            "balance_after_cents"
+          ],
+          "max": [
+            "date",
+            "amount",
+            "balance_after_cents"
+          ],
+          "group_by": [
+            "currency",
+            "category"
+          ]
         }
       }
     },

@@ -244,6 +244,29 @@
             "lt"
           ]
         },
+        "aggregations": {
+          "count": true,
+          "sum": [
+            "size_bytes"
+          ],
+          "min": [
+            "received_at",
+            "date",
+            "size_bytes"
+          ],
+          "max": [
+            "received_at",
+            "date",
+            "size_bytes"
+          ],
+          "group_by": [
+            "has_attachments",
+            "is_seen",
+            "is_flagged",
+            "is_answered",
+            "is_draft"
+          ]
+        },
         "expand": [
           {
             "name": "message_bodies"

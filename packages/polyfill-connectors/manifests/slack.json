@@ -918,6 +918,35 @@
             "lte",
             "lt"
           ]
+        },
+        "aggregations": {
+          "count": true,
+          "sum": [
+            "reply_count",
+            "file_count",
+            "attachment_count",
+            "reaction_count"
+          ],
+          "min": [
+            "sent_at",
+            "reply_count",
+            "file_count",
+            "attachment_count",
+            "reaction_count"
+          ],
+          "max": [
+            "sent_at",
+            "reply_count",
+            "file_count",
+            "attachment_count",
+            "reaction_count"
+          ],
+          "group_by": [
+            "has_attachments",
+            "has_files",
+            "is_thread_parent",
+            "is_tombstone"
+          ]
         }
       }
     },

@@ -70,6 +70,21 @@ const ListRecordsQuerySchema = {
   },
 };
 
+const AggregateQuerySchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    metric: { type: "string", enum: ["count", "sum", "min", "max"] },
+    field: { type: "string" },
+    group_by: { type: "string" },
+    limit: { type: "integer", minimum: 1, maximum: 100 },
+    filter: { type: "object" },
+    connector_id: { type: "string" },
+    subject_id: { type: "string" },
+  },
+  required: ["metric"],
+};
+
 const UploadBlobQuerySchema = {
   type: "object",
   additionalProperties: false,
@@ -577,6 +592,34 @@ const RecordsListResponseSchema = {
   required: ["object", "data", "has_more"],
 };
 
+const AggregationResponseSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    object: { const: "aggregation" },
+    stream: { type: "string" },
+    metric: { type: "string", enum: ["count", "sum", "min", "max"] },
+    field: { type: ["string", "null"] },
+    group_by: { type: ["string", "null"] },
+    value: { type: ["number", "integer", "string", "null"] },
+    filtered_record_count: { type: "integer", minimum: 0 },
+    limit: { type: "integer", minimum: 1, maximum: 100 },
+    groups: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          key: { type: ["string", "number", "integer", "boolean", "null"] },
+          count: { type: "integer", minimum: 0 },
+        },
+        required: ["key", "count"],
+      },
+    },
+  },
+  required: ["object", "stream", "metric", "filtered_record_count"],
+};
+
 const StreamListResponseSchema = {
   type: "object",
   additionalProperties: true,
@@ -659,6 +702,17 @@ const StreamMetadataResponseSchema = {
       properties: {
         range_filters: { type: "object" },
         expand: { type: "array" },
+        aggregations: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            count: { const: true },
+            sum: { type: "array", items: { type: "string" } },
+            min: { type: "array", items: { type: "string" } },
+            max: { type: "array", items: { type: "string" } },
+            group_by: { type: "array", items: { type: "string" } },
+          },
+        },
       },
     },
     freshness: FreshnessSchema,
@@ -935,6 +989,24 @@ export const publicManifests = [
     responses: {
       200: { schema: RecordsListResponseSchema },
       ...ListRecordErrors,
+    },
+  },
+  {
+    id: "aggregateStream",
+    method: "GET",
+    path: "/v1/streams/{stream}/aggregate",
+    surface: "public",
+    tags: ["records"],
+    summary:
+      "Compute a single-stream grant-safe aggregation. Supports count, numeric sum, numeric/date min/max, grouped counts, and existing exact/range filters over declared fields.",
+    request: {
+      headers: AuthHeaderSchema,
+      params: StreamNamePathSchema,
+      query: AggregateQuerySchema,
+    },
+    responses: {
+      200: { schema: AggregationResponseSchema },
+      ...ProtectedReadErrors,
     },
   },
   {

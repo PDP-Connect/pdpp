@@ -83,6 +83,17 @@ async function withHarness(fn) {
   const spotifyManifest = JSON.parse(
     readFileSync(join(REFERENCE_IMPL_DIR, 'manifests/spotify.json'), 'utf8'),
   );
+  const topArtists = spotifyManifest.streams.find((stream) => stream.name === 'top_artists');
+  topArtists.query = {
+    ...(topArtists.query || {}),
+    aggregations: {
+      count: true,
+      sum: ['popularity', 'followers'],
+      min: ['popularity', 'followers', 'source_updated_at'],
+      max: ['popularity', 'followers', 'source_updated_at'],
+      group_by: ['name'],
+    },
+  };
   try {
     const registerResp = await fetch(`${asUrl}/connectors`, {
       method: 'POST',
@@ -390,6 +401,138 @@ test('stream metadata publishes query.range_filters for declared fields', async 
     assert.equal(body.object, 'stream_metadata');
     assert.ok(body.query, 'query metadata should be present');
     assert.deepEqual(body.query.range_filters.source_updated_at, ['gte', 'gt', 'lte', 'lt']);
+  });
+});
+
+test('stream metadata publishes query.aggregations for declared aggregate fields', async () => {
+  await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
+    const ownerToken = await issueOwnerToken(asUrl);
+    const connectorId = spotifyManifest.connector_id;
+    const { status, body } = await fetchJson(
+      `${rsUrl}/v1/streams/top_artists?connector_id=${encodeURIComponent(connectorId)}`,
+      { headers: { 'Authorization': `Bearer ${ownerToken}` } },
+    );
+    assert.equal(status, 200);
+    assert.equal(body.query.aggregations.count, true);
+    assert.deepEqual(body.query.aggregations.sum, ['popularity', 'followers']);
+    assert.deepEqual(body.query.aggregations.group_by, ['name']);
+  });
+});
+
+test('stream aggregate computes count, sum, min/max, grouped counts, and declared filters', async () => {
+  await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
+    const ownerToken = await issueOwnerToken(asUrl);
+    const connectorId = spotifyManifest.connector_id;
+    await seedSpotifyTopArtists(rsUrl, ownerToken, connectorId, [
+      { id: 'agg_a', name: 'Alpha', popularity: 10, followers: 100, source_updated_at: '2026-01-01T00:00:00Z' },
+      { id: 'agg_b', name: 'Beta', popularity: 40, followers: 300, source_updated_at: '2026-02-01T00:00:00Z' },
+      { id: 'agg_c', name: 'Beta', popularity: 70, followers: 500, source_updated_at: '2026-03-01T00:00:00Z' },
+    ]);
+
+    const base = `${rsUrl}/v1/streams/top_artists/aggregate?connector_id=${encodeURIComponent(connectorId)}`;
+    const headers = { 'Authorization': `Bearer ${ownerToken}` };
+
+    const count = await fetchJson(`${base}&metric=count&filter[source_updated_at][gte]=2026-02-01T00:00:00Z`, { headers });
+    assert.equal(count.status, 200);
+    assert.deepEqual(count.body, {
+      object: 'aggregation',
+      stream: 'top_artists',
+      metric: 'count',
+      field: null,
+      group_by: null,
+      filtered_record_count: 2,
+      value: 2,
+    });
+
+    const sum = await fetchJson(`${base}&metric=sum&field=popularity`, { headers });
+    assert.equal(sum.status, 200);
+    assert.equal(sum.body.value, 120);
+
+    const min = await fetchJson(`${base}&metric=min&field=source_updated_at`, { headers });
+    assert.equal(min.status, 200);
+    assert.equal(min.body.value, '2026-01-01T00:00:00Z');
+
+    const max = await fetchJson(`${base}&metric=max&field=followers`, { headers });
+    assert.equal(max.status, 200);
+    assert.equal(max.body.value, 500);
+
+    const grouped = await fetchJson(`${base}&metric=count&group_by=name&limit=2`, { headers });
+    assert.equal(grouped.status, 200);
+    assert.deepEqual(grouped.body.groups, [
+      { key: 'Beta', count: 2 },
+      { key: 'Alpha', count: 1 },
+    ]);
+  });
+});
+
+test('stream aggregate enforces grants and declared aggregate fields', async () => {
+  await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
+    const ownerToken = await issueOwnerToken(asUrl);
+    const connectorId = spotifyManifest.connector_id;
+    await seedSpotifyTopArtists(rsUrl, ownerToken, connectorId, [
+      { id: 'grant_a', name: 'Alpha', popularity: 10, followers: 100, source_updated_at: '2026-01-01T00:00:00Z' },
+    ]);
+    const approved = await approveGrant(asUrl, 'aggregation_grant_owner', {
+      client_id: 'longview',
+      connector_id: connectorId,
+      purpose_code: 'https://pdpp.org/purpose/analytics',
+      purpose_description: 'aggregation grant safety test',
+      access_mode: 'continuous',
+      streams: [{ name: 'top_artists', fields: ['id', 'name', 'source_updated_at'] }],
+    });
+    assert.ok(approved.token);
+
+    const base = `${rsUrl}/v1/streams/top_artists/aggregate`;
+    const headers = { 'Authorization': `Bearer ${approved.token}` };
+
+    const count = await fetchJson(`${base}?metric=count`, { headers });
+    assert.equal(count.status, 200);
+    assert.equal(count.body.value, 1);
+
+    const unauthorizedField = await fetchJson(`${base}?metric=sum&field=popularity`, { headers });
+    assert.equal(unauthorizedField.status, 403);
+    assert.equal(unauthorizedField.body.error.code, 'field_not_granted');
+
+    const undeclaredGroup = await fetchJson(`${base}?metric=count&group_by=source_updated_at`, { headers });
+    assert.equal(undeclaredGroup.status, 400);
+    assert.equal(undeclaredGroup.body.error.code, 'invalid_request');
+  });
+});
+
+test('stream aggregate honors grant resources, time ranges, and request filters together', async () => {
+  await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
+    const ownerToken = await issueOwnerToken(asUrl);
+    const connectorId = spotifyManifest.connector_id;
+    await seedSpotifyTopArtists(rsUrl, ownerToken, connectorId, [
+      { id: 'scoped_old', name: 'Alpha', popularity: 10, followers: 100, source_updated_at: '2026-01-01T00:00:00Z' },
+      { id: 'scoped_hit', name: 'Beta', popularity: 40, followers: 300, source_updated_at: '2026-02-01T00:00:00Z' },
+      { id: 'scoped_resource_hidden', name: 'Beta', popularity: 70, followers: 500, source_updated_at: '2026-03-01T00:00:00Z' },
+    ]);
+    const approved = await approveGrant(asUrl, 'aggregation_scope_owner', {
+      client_id: 'longview',
+      connector_id: connectorId,
+      purpose_code: 'https://pdpp.org/purpose/analytics',
+      purpose_description: 'aggregation resource and time-range safety test',
+      access_mode: 'continuous',
+      streams: [
+        {
+          name: 'top_artists',
+          fields: ['id', 'name', 'popularity', 'source_updated_at'],
+          resources: ['scoped_old', 'scoped_hit'],
+          time_range: { since: '2026-01-15T00:00:00Z' },
+        },
+      ],
+    });
+    assert.ok(approved.token);
+
+    const url = `${rsUrl}/v1/streams/top_artists/aggregate`
+      + '?metric=sum&field=popularity&filter[source_updated_at][lte]=2026-02-15T00:00:00Z';
+    const { status, body } = await fetchJson(url, {
+      headers: { 'Authorization': `Bearer ${approved.token}` },
+    });
+    assert.equal(status, 200);
+    assert.equal(body.filtered_record_count, 1);
+    assert.equal(body.value, 40);
   });
 });
 

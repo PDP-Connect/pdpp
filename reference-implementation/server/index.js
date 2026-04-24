@@ -25,7 +25,7 @@ import {
   parsePendingConsentRequestUri, registerDynamicClient, requireGrantContractAgainstManifest, requireResolvedPersistedGrantState, seedPreRegisteredClients,
 } from './auth.js';
 import {
-  ingestRecord, queryRecords, getRecord, deleteRecord, deleteAllRecords,
+  ingestRecord, queryRecords, aggregateRecords, getRecord, deleteRecord, deleteAllRecords,
   listStreams, listAllStreams, getSyncState, putSyncState, getDatasetSummary,
 } from './records.js';
 import { getLexicalIndexBackfillProgress, lexicalIndexBackfillForManifest, runLexicalSearch } from './search.js';
@@ -334,6 +334,15 @@ function inferAuthGateQueryContext(req, tokenInfo = {}) {
   }
   if (segments.length === 3) {
     return { queryShape: 'stream_metadata', streamId: segments[2] };
+  }
+  if (segments.length === 4 && segments[3] === 'aggregate') {
+    return {
+      queryShape: 'stream_aggregate',
+      streamId: segments[2],
+      metric: typeof req.query?.metric === 'string' ? req.query.metric : null,
+      field: typeof req.query?.field === 'string' ? req.query.field : null,
+      groupBy: typeof req.query?.group_by === 'string' ? req.query.group_by : null,
+    };
   }
   if (segments.length === 4 && segments[3] === 'records') {
     return {
@@ -940,12 +949,18 @@ function buildStreamDiscoveryCapabilities({ connectorId = null, stream }) {
   const encodedStream = encodeURIComponent(stream.name);
   const rangeFilters = stream.query?.range_filters;
   const expand = stream.query?.expand;
+  const aggregations = stream.query?.aggregations;
+  const hasAggregations = hasObjectEntries(aggregations);
 
   return {
     stream_metadata: true,
     metadata_url: buildDiscoveryUrl(`/v1/streams/${encodedStream}`, connectorId),
     records: true,
     records_url: buildDiscoveryUrl(`/v1/streams/${encodedStream}/records`, connectorId),
+    aggregate: hasAggregations,
+    aggregate_url: hasAggregations
+      ? buildDiscoveryUrl(`/v1/streams/${encodedStream}/aggregate`, connectorId)
+      : null,
     exact_filters: true,
     range_filters: hasObjectEntries(rangeFilters),
     expand: Array.isArray(expand) && expand.length > 0,
@@ -2537,6 +2552,105 @@ function buildRsApp(opts = {}) {
       });
 
       res.json(metadataBody);
+    } catch (err) {
+      if (queryContext) {
+        await emitQueryReceived(queryContext, req);
+        return await rejectQuery(res, req, queryContext, err);
+      }
+      handleError(res, err);
+    }
+  });
+
+  // GET /v1/streams/:stream/aggregate
+  app.get('/v1/streams/:stream/aggregate', { contract: 'aggregateStream' }, requireToken, async (req, res) => {
+    let queryContext = null;
+    try {
+      const { tokenInfo } = req;
+      const queryId = ensureRequestId(res);
+      const { actorType, actorId, traceId, scenarioId } = buildQueryActorContext(tokenInfo);
+      setReferenceTraceId(res, traceId);
+
+      let grant = tokenInfo.grant;
+      let sourceDescriptor = tokenInfo.pdpp_token_kind === 'owner'
+        ? null
+        : buildSourceDescriptor(grant?.source);
+      let storageBinding = null;
+      let manifest;
+      const requestParams = { ...req.query };
+      const queryEventData = {
+        query_shape: 'stream_aggregate',
+        metric: typeof requestParams.metric === 'string' ? requestParams.metric : null,
+        field: typeof requestParams.field === 'string' ? requestParams.field : null,
+        group_by: typeof requestParams.group_by === 'string' ? requestParams.group_by : null,
+        limit: requestParams.limit ? Number(requestParams.limit) : null,
+      };
+      queryContext = {
+        tokenInfo,
+        queryId,
+        actorType,
+        actorId,
+        traceId,
+        scenarioId,
+        sourceDescriptor,
+        streamId: req.params.stream,
+        queryData: { ...queryEventData },
+      };
+
+      if (tokenInfo.pdpp_token_kind === 'owner') {
+        const ownerScope = resolveOwnerReadScope(req, opts);
+        sourceDescriptor = buildSourceDescriptor(ownerScope.source);
+        queryContext.sourceDescriptor = sourceDescriptor;
+        const ownerResolved = await resolveOwnerManifestFromScope(ownerScope, opts);
+        storageBinding = ownerResolved.storageBinding;
+        manifest = ownerResolved.manifest;
+        if (!manifest.streams.find((stream) => stream.name === req.params.stream)) {
+          const err = new Error(`Stream '${req.params.stream}' not found`);
+          err.code = 'not_found';
+          return await rejectQuery(res, req, queryContext, err);
+        }
+        grant = buildOwnerReadGrant(req.params.stream);
+      } else {
+        const grantResolved = await resolveGrantManifest(tokenInfo, opts);
+        storageBinding = grantResolved.storageBinding;
+        sourceDescriptor = grantResolved.source;
+        manifest = grantResolved.manifest;
+        queryContext.sourceDescriptor = sourceDescriptor;
+      }
+
+      await emitQueryReceived(queryContext, req);
+
+      const mStream = manifest?.streams?.find((stream) => stream.name === req.params.stream);
+      validateRequestedQueryFieldParams(requestParams, mStream);
+
+      const result = await aggregateRecords(storageBinding, req.params.stream, grant, requestParams, manifest);
+
+      await emitSpineEvent({
+        event_type: 'disclosure.served',
+        trace_id: traceId,
+        scenario_id: scenarioId,
+        actor_type: actorType,
+        actor_id: actorId,
+        subject_type: 'subject',
+        subject_id: tokenInfo.subject_id || null,
+        object_type: 'query',
+        object_id: queryId,
+        status: 'succeeded',
+        grant_id: tokenInfo.grant_id || null,
+        client_id: tokenInfo.client_id || null,
+        stream_id: req.params.stream,
+        token_id: req.headers.authorization?.slice(7) || null,
+        data: {
+          source: sourceDescriptor,
+          query_shape: 'stream_aggregate',
+          metric: result.metric,
+          field: result.field,
+          group_by: result.group_by,
+          filtered_record_count: result.filtered_record_count,
+          group_count: Array.isArray(result.groups) ? result.groups.length : null,
+        },
+      });
+
+      res.json(result);
     } catch (err) {
       if (queryContext) {
         await emitQueryReceived(queryContext, req);
