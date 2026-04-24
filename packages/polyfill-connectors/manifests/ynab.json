@@ -211,7 +211,8 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "format": "date-time"
           },
           "note": {
             "type": [
@@ -482,7 +483,8 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "format": "date-time"
           },
           "goal_percentage_complete": {
             "type": [
@@ -518,7 +520,8 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "format": "date-time"
           },
           "deleted": {
             "type": "boolean"
@@ -1155,7 +1158,7 @@
     },
     {
       "name": "month_categories",
-      "description": "Per-month snapshot of every category's budgeted/activity/balance and goal progress. This is the real budget history matrix — historical months are frozen in YNAB, the current month mutates. Amounts in YNAB milliunits (1000 milliunits = 1 currency unit).",
+      "description": "Per-month snapshot of every category's budgeted/activity/balance and goal progress. This is the real budget history matrix \u2014 historical months are frozen in YNAB, the current month mutates. Amounts in YNAB milliunits (1000 milliunits = 1 currency unit).",
       "display": {
         "label": "Monthly category history",
         "detail": "For each (budget, month, category): how much was assigned (budgeted), how much was spent (activity), leftover balance, and goal progress (type, target, percent complete, underfunding) as it stood in that month. Useful for budget trend analysis and answering 'what did I budget for groceries last March?'."

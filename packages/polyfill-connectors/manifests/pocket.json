@@ -3,37 +3,114 @@
   "connector_id": "https://registry.pdpp.org/connectors/pocket",
   "version": "0.1.0",
   "display_name": "Pocket",
-  "runtime_requirements": { "bindings": { "network": { "required": true } } },
-  "capabilities": { "human_interaction": [] },
+  "runtime_requirements": {
+    "bindings": {
+      "network": {
+        "required": true
+      }
+    }
+  },
+  "capabilities": {
+    "human_interaction": []
+  },
   "streams": [
     {
       "name": "items",
       "description": "Saved articles/links in Pocket.",
-      "display": { "label": "Your Pocket saves", "detail": "Titles, URLs, tags, time added, archive status, favorite flag, reading time estimate." },
+      "display": {
+        "label": "Your Pocket saves",
+        "detail": "Titles, URLs, tags, time added, archive status, favorite flag, reading time estimate."
+      },
       "semantics": "mutable_state",
       "schema": {
         "type": "object",
         "properties": {
-          "id": { "type": "string" },
-          "url": { "type": "string" },
-          "title": { "type": ["string", "null"] },
-          "author": { "type": ["string", "null"] },
-          "time_added": { "type": ["string", "null"] },
-          "time_updated": { "type": ["string", "null"] },
-          "time_read": { "type": ["string", "null"] },
-          "time_favorited": { "type": ["string", "null"] },
-          "tags": { "type": "array" },
-          "archived": { "type": ["boolean", "null"] },
-          "favorite": { "type": ["boolean", "null"] },
-          "word_count": { "type": ["integer", "null"] },
-          "reading_time_minutes": { "type": ["integer", "null"] }
+          "id": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "author": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "time_added": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "time_updated": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "time_read": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "time_favorited": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tags": {
+            "type": "array"
+          },
+          "archived": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "favorite": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "word_count": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "reading_time_minutes": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
         },
-        "required": ["id", "url"]
+        "required": [
+          "id",
+          "url"
+        ]
       },
-      "primary_key": ["id"],
+      "primary_key": [
+        "id"
+      ],
       "cursor_field": "time_updated",
       "consent_time_field": "time_added",
-      "selection": { "fields": true, "resources": true },
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
       "incremental": true
     }
   ]

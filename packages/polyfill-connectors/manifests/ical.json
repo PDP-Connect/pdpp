@@ -3,37 +3,108 @@
   "connector_id": "https://registry.pdpp.org/connectors/ical",
   "version": "0.1.0",
   "display_name": "Calendar (iCal)",
-  "runtime_requirements": { "bindings": { "filesystem": { "required": true } } },
-  "capabilities": { "human_interaction": [] },
+  "runtime_requirements": {
+    "bindings": {
+      "filesystem": {
+        "required": true
+      }
+    }
+  },
+  "capabilities": {
+    "human_interaction": []
+  },
   "streams": [
     {
       "name": "events",
       "description": "Calendar events from .ics files.",
-      "display": { "label": "Your calendar events", "detail": "Event title, start/end time, location, attendees, organizer, description." },
+      "display": {
+        "label": "Your calendar events",
+        "detail": "Event title, start/end time, location, attendees, organizer, description."
+      },
       "semantics": "mutable_state",
       "schema": {
         "type": "object",
         "properties": {
-          "id": { "type": "string" },
-          "calendar_name": { "type": ["string", "null"] },
-          "summary": { "type": ["string", "null"] },
-          "description": { "type": ["string", "null"] },
-          "location": { "type": ["string", "null"] },
-          "start": { "type": "string" },
-          "end": { "type": ["string", "null"] },
-          "all_day": { "type": "boolean" },
-          "organizer_email": { "type": ["string", "null"] },
-          "attendees": { "type": "array" },
-          "status": { "type": ["string", "null"] },
-          "rrule": { "type": ["string", "null"] },
-          "uid": { "type": "string" }
+          "id": {
+            "type": "string"
+          },
+          "calendar_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "summary": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "location": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "start": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "end": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "all_day": {
+            "type": "boolean"
+          },
+          "organizer_email": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "attendees": {
+            "type": "array"
+          },
+          "status": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "rrule": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "uid": {
+            "type": "string"
+          }
         },
-        "required": ["id", "uid", "start"]
+        "required": [
+          "id",
+          "uid",
+          "start"
+        ]
       },
-      "primary_key": ["id"],
+      "primary_key": [
+        "id"
+      ],
       "cursor_field": "start",
       "consent_time_field": "start",
-      "selection": { "fields": true, "resources": true },
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
       "incremental": true
     }
   ]

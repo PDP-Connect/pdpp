@@ -101,13 +101,15 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "format": "date-time"
           },
           "updated_at": {
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "format": "date-time"
           },
           "avatar_url": {
             "type": [
@@ -256,19 +258,22 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "format": "date-time"
           },
           "updated_at": {
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "format": "date-time"
           },
           "pushed_at": {
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "format": "date-time"
           }
         },
         "required": [
@@ -346,7 +351,8 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "format": "date-time"
           }
         },
         "required": [
@@ -482,19 +488,22 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "format": "date-time"
           },
           "updated_at": {
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "format": "date-time"
           },
           "closed_at": {
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "format": "date-time"
           },
           "is_pull_request": {
             "type": "boolean"
@@ -541,7 +550,7 @@
     },
     {
       "name": "pull_requests",
-      "description": "Pull requests authored by the user, with PR-specific detail (merge state, diff stats, base/head refs, reviewers). Sourced via the GitHub search API (type:pr author:<you>); PRs the user only reviewed are NOT included — that requires a follow-up reviewer: query.",
+      "description": "Pull requests authored by the user, with PR-specific detail (merge state, diff stats, base/head refs, reviewers). Sourced via the GitHub search API (type:pr author:<you>); PRs the user only reviewed are NOT included \u2014 that requires a follow-up reviewer: query.",
       "display": {
         "label": "Your pull requests",
         "detail": "PRs you authored, including merge timestamp and committer, additions/deletions, changed files count, base and head refs, requested reviewers, and review-comment counts."
@@ -647,19 +656,22 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "format": "date-time"
           },
           "updated_at": {
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "format": "date-time"
           },
           "closed_at": {
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "format": "date-time"
           },
           "draft": {
             "type": [
@@ -671,7 +683,8 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "format": "date-time"
           },
           "merged_by_login": {
             "type": [
@@ -838,13 +851,15 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "format": "date-time"
           },
           "updated_at": {
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "format": "date-time"
           }
         },
         "required": [

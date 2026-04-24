@@ -3,8 +3,16 @@
   "connector_id": "https://registry.pdpp.org/connectors/apple-health",
   "version": "0.1.0",
   "display_name": "Apple Health",
-  "runtime_requirements": { "bindings": { "filesystem": { "required": true } } },
-  "capabilities": { "human_interaction": [] },
+  "runtime_requirements": {
+    "bindings": {
+      "filesystem": {
+        "required": true
+      }
+    }
+  },
+  "capabilities": {
+    "human_interaction": []
+  },
   "streams": [
     {
       "name": "records",
@@ -17,47 +25,141 @@
       "schema": {
         "type": "object",
         "properties": {
-          "id": { "type": "string" },
-          "type": { "type": "string" },
-          "source_name": { "type": ["string", "null"] },
-          "source_version": { "type": ["string", "null"] },
-          "unit": { "type": ["string", "null"] },
-          "value": { "type": ["number", "null"] },
-          "value_raw": { "type": ["string", "null"] },
-          "start_date": { "type": "string" },
-          "end_date": { "type": ["string", "null"] }
+          "id": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "source_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source_version": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "unit": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "value": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "value_raw": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "start_date": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "end_date": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          }
         },
-        "required": ["id", "type", "start_date"]
+        "required": [
+          "id",
+          "type",
+          "start_date"
+        ]
       },
-      "primary_key": ["id"],
+      "primary_key": [
+        "id"
+      ],
       "cursor_field": "start_date",
       "consent_time_field": "start_date",
-      "selection": { "fields": true, "resources": true },
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
       "incremental": true
     },
     {
       "name": "workouts",
       "description": "Apple Health workouts.",
-      "display": { "label": "Your workouts", "detail": "Workout type, duration, energy burned, distance, start/end dates." },
+      "display": {
+        "label": "Your workouts",
+        "detail": "Workout type, duration, energy burned, distance, start/end dates."
+      },
       "semantics": "append_only",
       "schema": {
         "type": "object",
         "properties": {
-          "id": { "type": "string" },
-          "workout_activity_type": { "type": ["string", "null"] },
-          "duration_minutes": { "type": ["number", "null"] },
-          "total_energy_burned_kcal": { "type": ["number", "null"] },
-          "total_distance_km": { "type": ["number", "null"] },
-          "source_name": { "type": ["string", "null"] },
-          "start_date": { "type": "string" },
-          "end_date": { "type": ["string", "null"] }
+          "id": {
+            "type": "string"
+          },
+          "workout_activity_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "duration_minutes": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "total_energy_burned_kcal": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "total_distance_km": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "source_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "start_date": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "end_date": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          }
         },
-        "required": ["id", "start_date"]
+        "required": [
+          "id",
+          "start_date"
+        ]
       },
-      "primary_key": ["id"],
+      "primary_key": [
+        "id"
+      ],
       "cursor_field": "start_date",
       "consent_time_field": "start_date",
-      "selection": { "fields": true, "resources": true },
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
       "incremental": true
     }
   ]

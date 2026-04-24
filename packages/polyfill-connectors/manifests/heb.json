@@ -3,57 +3,158 @@
   "connector_id": "https://registry.pdpp.org/connectors/heb",
   "version": "0.1.0",
   "display_name": "H-E-B",
-  "runtime_requirements": { "bindings": { "network": { "required": true } } },
-  "capabilities": { "human_interaction": ["manual_action"] },
+  "runtime_requirements": {
+    "bindings": {
+      "network": {
+        "required": true
+      }
+    }
+  },
+  "capabilities": {
+    "human_interaction": [
+      "manual_action"
+    ]
+  },
   "streams": [
     {
       "name": "orders",
       "description": "H-E-B curbside/delivery orders (in-store purchases not included).",
-      "display": { "label": "Your H-E-B orders", "detail": "Order date, total, store, delivery vs curbside, item count." },
+      "display": {
+        "label": "Your H-E-B orders",
+        "detail": "Order date, total, store, delivery vs curbside, item count."
+      },
       "semantics": "mutable_state",
       "schema": {
         "type": "object",
         "properties": {
-          "id": { "type": "string" },
-          "order_date": { "type": ["string", "null"] },
-          "store": { "type": ["string", "null"] },
-          "status": { "type": ["string", "null"] },
-          "method": { "type": ["string", "null"] },
-          "total_cents": { "type": ["integer", "null"] },
-          "item_count": { "type": ["integer", "null"] }
+          "id": {
+            "type": "string"
+          },
+          "order_date": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "store": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "method": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "total_cents": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "item_count": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
         },
-        "required": ["id"]
+        "required": [
+          "id"
+        ]
       },
-      "primary_key": ["id"],
+      "primary_key": [
+        "id"
+      ],
       "cursor_field": "order_date",
       "consent_time_field": "order_date",
-      "selection": { "fields": true, "resources": true },
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
       "incremental": true
     },
     {
       "name": "order_items",
       "description": "Items within H-E-B orders, with nutrition when available.",
-      "display": { "label": "Your H-E-B items", "detail": "Product name, UPC, quantity, price, nutrition facts from USDA if matched." },
+      "display": {
+        "label": "Your H-E-B items",
+        "detail": "Product name, UPC, quantity, price, nutrition facts from USDA if matched."
+      },
       "semantics": "mutable_state",
       "schema": {
         "type": "object",
         "properties": {
-          "id": { "type": "string" },
-          "order_id": { "type": "string" },
-          "name": { "type": "string" },
-          "upc": { "type": ["string", "null"] },
-          "quantity": { "type": ["number", "null"] },
-          "unit_price_cents": { "type": ["integer", "null"] },
-          "department": { "type": ["string", "null"] },
-          "nutrition": { "type": ["object", "null"] }
+          "id": {
+            "type": "string"
+          },
+          "order_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "upc": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "quantity": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "unit_price_cents": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "department": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "nutrition": {
+            "type": [
+              "object",
+              "null"
+            ]
+          }
         },
-        "required": ["id", "order_id", "name"]
+        "required": [
+          "id",
+          "order_id",
+          "name"
+        ]
       },
-      "primary_key": ["id"],
-      "selection": { "fields": true, "resources": true },
+      "primary_key": [
+        "id"
+      ],
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
       "incremental": true,
       "relationships": [
-        { "name": "order", "stream": "orders", "foreign_key": "order_id", "cardinality": "has_one" }
+        {
+          "name": "order",
+          "stream": "orders",
+          "foreign_key": "order_id",
+          "cardinality": "has_one"
+        }
       ]
     }
   ]

@@ -40,13 +40,15 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "format": "date-time"
           },
           "update_time": {
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "format": "date-time"
           },
           "is_archived": {
             "type": [
@@ -161,7 +163,8 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "format": "date-time"
           },
           "finish_reason": {
             "type": [
@@ -221,7 +224,7 @@
       "description": "Saved memories ChatGPT has about the user.",
       "display": {
         "label": "ChatGPT memories",
-        "detail": "Saved facts ChatGPT remembers about you, with created/updated timestamps. Deletions detected via diff — API does not emit tombstones."
+        "detail": "Saved facts ChatGPT remembers about you, with created/updated timestamps. Deletions detected via diff \u2014 API does not emit tombstones."
       },
       "semantics": "mutable_state",
       "schema": {
@@ -237,13 +240,15 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "format": "date-time"
           },
           "updated_at": {
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "format": "date-time"
           }
         },
         "required": [
@@ -320,13 +325,15 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "format": "date-time"
           },
           "updated_at": {
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "format": "date-time"
           },
           "author_id": {
             "type": [
@@ -388,7 +395,7 @@
       "description": "The user's custom instructions (the 'What would you like ChatGPT to know about you' and 'How would you like ChatGPT to respond' fields).",
       "display": {
         "label": "Your custom instructions",
-        "detail": "The two free-text fields from Settings → Personalization → Custom Instructions: 'about you' context and preferred response style, plus whether they're currently enabled. Singleton — only one set per user."
+        "detail": "The two free-text fields from Settings \u2192 Personalization \u2192 Custom Instructions: 'about you' context and preferred response style, plus whether they're currently enabled. Singleton \u2014 only one set per user."
       },
       "semantics": "mutable_state",
       "schema": {
@@ -419,7 +426,8 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "format": "date-time"
           }
         },
         "required": [
@@ -481,7 +489,8 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "format": "date-time"
           },
           "anonymous": {
             "type": [

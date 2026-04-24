@@ -74,13 +74,15 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "format": "date-time"
           },
           "last_event_at": {
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "format": "date-time"
           },
           "message_count": {
             "type": [
@@ -205,7 +207,8 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "format": "date-time"
           }
         },
         "required": [
@@ -286,7 +289,8 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "format": "date-time"
           }
         },
         "required": [
@@ -324,7 +328,7 @@
     },
     {
       "name": "rules",
-      "description": "Personal trust-registry rules recorded in ~/.codex/rules/*.rules — the de-facto log of approval decisions. One record per rule line.",
+      "description": "Personal trust-registry rules recorded in ~/.codex/rules/*.rules \u2014 the de-facto log of approval decisions. One record per rule line.",
       "display": {
         "label": "Your Codex approval rules",
         "detail": "Each rule line (e.g. prefix_rule / decision=allow) from your .rules files, with ruleset and position."

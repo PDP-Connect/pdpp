@@ -94,7 +94,8 @@
             ]
           },
           "fetched_at": {
-            "type": "string"
+            "type": "string",
+            "format": "date-time"
           }
         },
         "required": [
@@ -235,7 +236,8 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "format": "date-time"
           },
           "topic": {
             "type": [
@@ -360,7 +362,7 @@
     },
     {
       "name": "channel_memberships",
-      "description": "Channel ↔ user edges where slackdump could enumerate members.",
+      "description": "Channel \u2194 user edges where slackdump could enumerate members.",
       "display": {
         "label": "Channel memberships",
         "detail": "For each channel we could see the membership of, one row per user. Includes DMs (channel member is the DM counterpart)."
@@ -379,7 +381,8 @@
             "type": "string"
           },
           "fetched_at": {
-            "type": "string"
+            "type": "string",
+            "format": "date-time"
           }
         },
         "required": [
@@ -695,7 +698,8 @@
             "type": "string"
           },
           "sent_at": {
-            "type": "string"
+            "type": "string",
+            "format": "date-time"
           },
           "thread_ts": {
             "type": [
@@ -833,7 +837,7 @@
       "primary_key": [
         "id"
       ],
-      "cursor_field": "ts",
+      "cursor_field": "sent_at",
       "consent_time_field": "sent_at",
       "selection": {
         "fields": true,
@@ -1113,7 +1117,8 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "format": "date-time"
           },
           "uploader_id": {
             "type": [
@@ -1298,7 +1303,8 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "format": "date-time"
           },
           "updated": {
             "type": [
@@ -1310,7 +1316,8 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "format": "date-time"
           },
           "permalink": {
             "type": [
@@ -1417,7 +1424,8 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "format": "date-time"
           }
         },
         "required": [
@@ -1512,7 +1520,8 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "format": "date-time"
           },
           "updated": {
             "type": [
@@ -1598,7 +1607,8 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "format": "date-time"
           },
           "complete_ts": {
             "type": [
@@ -1610,7 +1620,8 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "format": "date-time"
           }
         },
         "required": [
@@ -1655,13 +1666,15 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "format": "date-time"
           },
           "last_read_at": {
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "format": "date-time"
           },
           "unread_count": {
             "type": [
@@ -1676,7 +1689,8 @@
             ]
           },
           "fetched_at": {
-            "type": "string"
+            "type": "string",
+            "format": "date-time"
           }
         },
         "required": [

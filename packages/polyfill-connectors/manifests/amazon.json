@@ -87,7 +87,8 @@
             "type": "integer"
           },
           "fetched_at": {
-            "type": "string"
+            "type": "string",
+            "format": "date-time"
           }
         },
         "required": [

@@ -100,7 +100,8 @@
             "format": "date-time"
           },
           "fetched_at": {
-            "type": "string"
+            "type": "string",
+            "format": "date-time"
           }
         },
         "required": [
@@ -127,10 +128,10 @@
     },
     {
       "name": "transactions",
-      "description": "Chase transactions per account, parsed from QFX (Quicken Web Connect) downloads. QFX is Chase's canonical transaction-export format: per-request date window is ~90 days, so the connector walks backward in 90-day chunks until QFX returns empty. Primary key is (account_id, fitid) — Chase's QFX FITID is a stable unique transaction identifier, so dedup across overlapping date windows collapses naturally. Amounts are in cents (integer, signed).",
+      "description": "Chase transactions per account, parsed from QFX (Quicken Web Connect) downloads. QFX is Chase's canonical transaction-export format: per-request date window is ~90 days, so the connector walks backward in 90-day chunks until QFX returns empty. Primary key is (account_id, fitid) \u2014 Chase's QFX FITID is a stable unique transaction identifier, so dedup across overlapping date windows collapses naturally. Amounts are in cents (integer, signed).",
       "display": {
         "label": "Your Chase transactions",
-        "detail": "Date, signed amount in cents, cleaned payee name, original memo, Chase-assigned transaction type (DEBIT/CREDIT/CHECK/XFER/PAYMENT/FEE/etc.), check number, and FITID (Chase's stable transaction identifier). Pending transactions are not included — QFX delivers posted transactions only."
+        "detail": "Date, signed amount in cents, cleaned payee name, original memo, Chase-assigned transaction type (DEBIT/CREDIT/CHECK/XFER/PAYMENT/FEE/etc.), check number, and FITID (Chase's stable transaction identifier). Pending transactions are not included \u2014 QFX delivers posted transactions only."
       },
       "semantics": "append_only",
       "schema": {
@@ -206,7 +207,8 @@
             "description": "Always 'qfx_download_<YYYY-MM-DD>_to_<YYYY-MM-DD>'. Provenance for audit and re-extraction."
           },
           "fetched_at": {
-            "type": "string"
+            "type": "string",
+            "format": "date-time"
           }
         },
         "required": [
@@ -267,7 +269,7 @@
     },
     {
       "name": "statements",
-      "description": "Monthly statement PDFs per account from Chase's Statements & Documents page. Each record carries the document's title, delivery date, account reference, and — when the PDF is hydrated on-device — a content-addressed path + sha256. PDFs themselves live on the owner's disk under ~/.pdpp/chase-statements/<account>/<YYYY-MM>-<sha8>.pdf rather than in the RS, keeping blob storage out of SQLite per `design-notes/blob-hydration-open-question.md`.",
+      "description": "Monthly statement PDFs per account from Chase's Statements & Documents page. Each record carries the document's title, delivery date, account reference, and \u2014 when the PDF is hydrated on-device \u2014 a content-addressed path + sha256. PDFs themselves live on the owner's disk under ~/.pdpp/chase-statements/<account>/<YYYY-MM>-<sha8>.pdf rather than in the RS, keeping blob storage out of SQLite per `design-notes/blob-hydration-open-question.md`.",
       "display": {
         "label": "Your Chase statements",
         "detail": "PDF monthly statements across all Chase accounts. Metadata is always captured (title, delivery date, account reference); PDF bytes are downloaded and stored locally with a content hash when blob hydration runs. The same hash reappears across runs so downloads are idempotent."
@@ -326,7 +328,8 @@
             "description": "SHA-256 of the downloaded PDF bytes."
           },
           "fetched_at": {
-            "type": "string"
+            "type": "string",
+            "format": "date-time"
           }
         },
         "required": [
@@ -382,7 +385,7 @@
           "as_of": {
             "type": "string",
             "format": "date-time",
-            "description": "QFX DTASOF — when Chase measured the balance."
+            "description": "QFX DTASOF \u2014 when Chase measured the balance."
           },
           "ledger_balance_cents": {
             "type": [
@@ -399,7 +402,8 @@
             "description": "QFX AVAILBAL."
           },
           "fetched_at": {
-            "type": "string"
+            "type": "string",
+            "format": "date-time"
           }
         },
         "required": [

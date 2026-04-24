@@ -139,7 +139,8 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "format": "date-time"
           },
           "isrc": {
             "type": [
@@ -260,7 +261,8 @@
             ]
           },
           "played_at": {
-            "type": "string"
+            "type": "string",
+            "format": "date-time"
           },
           "context_type": {
             "type": [

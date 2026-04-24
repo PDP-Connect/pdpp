@@ -3,51 +3,133 @@
   "connector_id": "https://registry.pdpp.org/connectors/wholefoods",
   "version": "0.1.0",
   "display_name": "Whole Foods",
-  "runtime_requirements": { "bindings": { "network": { "required": true } } },
-  "capabilities": { "human_interaction": ["manual_action", "otp"] },
+  "runtime_requirements": {
+    "bindings": {
+      "network": {
+        "required": true
+      }
+    }
+  },
+  "capabilities": {
+    "human_interaction": [
+      "manual_action",
+      "otp"
+    ]
+  },
   "streams": [
     {
       "name": "orders",
       "description": "Whole Foods orders via Amazon.",
-      "display": { "label": "Your Whole Foods orders", "detail": "Order date, store, total, delivery status. Uses your Amazon login." },
+      "display": {
+        "label": "Your Whole Foods orders",
+        "detail": "Order date, store, total, delivery status. Uses your Amazon login."
+      },
       "semantics": "mutable_state",
       "schema": {
         "type": "object",
         "properties": {
-          "id": { "type": "string" },
-          "order_date": { "type": ["string", "null"] },
-          "store": { "type": ["string", "null"] },
-          "method": { "type": ["string", "null"] },
-          "total_cents": { "type": ["integer", "null"] },
-          "item_count": { "type": ["integer", "null"] }
+          "id": {
+            "type": "string"
+          },
+          "order_date": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "store": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "method": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "total_cents": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "item_count": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
         },
-        "required": ["id"]
+        "required": [
+          "id"
+        ]
       },
-      "primary_key": ["id"],
+      "primary_key": [
+        "id"
+      ],
       "cursor_field": "order_date",
       "consent_time_field": "order_date",
-      "selection": { "fields": true, "resources": true },
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
       "incremental": true
     },
     {
       "name": "order_items",
       "description": "Items within Whole Foods orders, with nutrition when available.",
-      "display": { "label": "Your Whole Foods items", "detail": "Product name, quantity, price, nutrition info (USDA/API-sourced)." },
+      "display": {
+        "label": "Your Whole Foods items",
+        "detail": "Product name, quantity, price, nutrition info (USDA/API-sourced)."
+      },
       "semantics": "mutable_state",
       "schema": {
         "type": "object",
         "properties": {
-          "id": { "type": "string" },
-          "order_id": { "type": "string" },
-          "name": { "type": "string" },
-          "quantity": { "type": ["number", "null"] },
-          "unit_price_cents": { "type": ["integer", "null"] },
-          "nutrition": { "type": ["object", "null"] }
+          "id": {
+            "type": "string"
+          },
+          "order_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "quantity": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "unit_price_cents": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "nutrition": {
+            "type": [
+              "object",
+              "null"
+            ]
+          }
         },
-        "required": ["id", "order_id", "name"]
+        "required": [
+          "id",
+          "order_id",
+          "name"
+        ]
       },
-      "primary_key": ["id"],
-      "selection": { "fields": true, "resources": true },
+      "primary_key": [
+        "id"
+      ],
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
       "incremental": true
     }
   ]

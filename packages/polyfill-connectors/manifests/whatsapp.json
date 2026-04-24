@@ -3,56 +3,134 @@
   "connector_id": "https://registry.pdpp.org/connectors/whatsapp",
   "version": "0.1.0",
   "display_name": "WhatsApp (chat export)",
-  "runtime_requirements": { "bindings": { "network": { "required": false }, "filesystem": { "required": true } } },
-  "capabilities": { "human_interaction": [] },
+  "runtime_requirements": {
+    "bindings": {
+      "network": {
+        "required": false
+      },
+      "filesystem": {
+        "required": true
+      }
+    }
+  },
+  "capabilities": {
+    "human_interaction": []
+  },
   "streams": [
     {
       "name": "chats",
       "description": "Imported WhatsApp chats (one per .txt export).",
-      "display": { "label": "Your WhatsApp chats", "detail": "Chat title (derived from export filename), participant list, message count, date range." },
+      "display": {
+        "label": "Your WhatsApp chats",
+        "detail": "Chat title (derived from export filename), participant list, message count, date range."
+      },
       "semantics": "mutable_state",
       "schema": {
         "type": "object",
         "properties": {
-          "id": { "type": "string" },
-          "title": { "type": "string" },
-          "participants": { "type": "array" },
-          "message_count": { "type": "integer" },
-          "first_message_date": { "type": ["string", "null"] },
-          "last_message_date": { "type": ["string", "null"] }
+          "id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "participants": {
+            "type": "array"
+          },
+          "message_count": {
+            "type": "integer"
+          },
+          "first_message_date": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "last_message_date": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          }
         },
-        "required": ["id", "title"]
+        "required": [
+          "id",
+          "title"
+        ]
       },
-      "primary_key": ["id"],
+      "primary_key": [
+        "id"
+      ],
       "cursor_field": "last_message_date",
       "consent_time_field": "first_message_date",
-      "selection": { "fields": true, "resources": true },
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
       "incremental": false
     },
     {
       "name": "messages",
       "description": "Messages from WhatsApp chat exports.",
-      "display": { "label": "Your WhatsApp messages", "detail": "Author, timestamp, text content per message. Media attachments flagged but not stored." },
+      "display": {
+        "label": "Your WhatsApp messages",
+        "detail": "Author, timestamp, text content per message. Media attachments flagged but not stored."
+      },
       "semantics": "append_only",
       "schema": {
         "type": "object",
         "properties": {
-          "id": { "type": "string" },
-          "chat_id": { "type": "string" },
-          "author": { "type": ["string", "null"] },
-          "content": { "type": ["string", "null"] },
-          "has_attachment": { "type": "boolean" },
-          "sent_at": { "type": "string" }
+          "id": {
+            "type": "string"
+          },
+          "chat_id": {
+            "type": "string"
+          },
+          "author": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "content": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "has_attachment": {
+            "type": "boolean"
+          },
+          "sent_at": {
+            "type": "string",
+            "format": "date-time"
+          }
         },
-        "required": ["id", "chat_id", "sent_at"]
+        "required": [
+          "id",
+          "chat_id",
+          "sent_at"
+        ]
       },
-      "primary_key": ["id"],
+      "primary_key": [
+        "id"
+      ],
       "cursor_field": "sent_at",
       "consent_time_field": "sent_at",
-      "selection": { "fields": true, "resources": true },
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
       "incremental": true,
       "relationships": [
-        { "name": "chat", "stream": "chats", "foreign_key": "chat_id", "cardinality": "has_one" }
+        {
+          "name": "chat",
+          "stream": "chats",
+          "foreign_key": "chat_id",
+          "cardinality": "has_one"
+        }
       ]
     }
   ]

@@ -3,95 +3,265 @@
   "connector_id": "https://registry.pdpp.org/connectors/linkedin",
   "version": "0.1.0",
   "display_name": "LinkedIn",
-  "runtime_requirements": { "bindings": { "network": { "required": true } } },
-  "capabilities": { "human_interaction": ["manual_action"] },
+  "runtime_requirements": {
+    "bindings": {
+      "network": {
+        "required": true
+      }
+    }
+  },
+  "capabilities": {
+    "human_interaction": [
+      "manual_action"
+    ]
+  },
   "streams": [
     {
       "name": "profile",
       "description": "The user's LinkedIn profile.",
-      "display": { "label": "Your LinkedIn profile", "detail": "Name, headline, summary, location, industry, current position, URL." },
+      "display": {
+        "label": "Your LinkedIn profile",
+        "detail": "Name, headline, summary, location, industry, current position, URL."
+      },
       "semantics": "mutable_state",
       "schema": {
         "type": "object",
         "properties": {
-          "id": { "type": "string" },
-          "full_name": { "type": ["string", "null"] },
-          "headline": { "type": ["string", "null"] },
-          "summary": { "type": ["string", "null"] },
-          "location": { "type": ["string", "null"] },
-          "industry": { "type": ["string", "null"] },
-          "public_url": { "type": ["string", "null"] },
-          "current_position_title": { "type": ["string", "null"] },
-          "current_company": { "type": ["string", "null"] }
+          "id": {
+            "type": "string"
+          },
+          "full_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "headline": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "summary": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "location": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "industry": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "public_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "current_position_title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "current_company": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
         },
-        "required": ["id"]
+        "required": [
+          "id"
+        ]
       },
-      "primary_key": ["id"],
-      "selection": { "fields": true, "resources": true },
+      "primary_key": [
+        "id"
+      ],
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
       "incremental": false
     },
     {
       "name": "experience",
       "description": "Work experience entries.",
-      "display": { "label": "Your work experience", "detail": "Title, company, start/end dates, location, description per role." },
+      "display": {
+        "label": "Your work experience",
+        "detail": "Title, company, start/end dates, location, description per role."
+      },
       "semantics": "mutable_state",
       "schema": {
         "type": "object",
         "properties": {
-          "id": { "type": "string" },
-          "title": { "type": ["string", "null"] },
-          "company": { "type": ["string", "null"] },
-          "employment_type": { "type": ["string", "null"] },
-          "start_date": { "type": ["string", "null"] },
-          "end_date": { "type": ["string", "null"] },
-          "location": { "type": ["string", "null"] },
-          "description": { "type": ["string", "null"] }
+          "id": {
+            "type": "string"
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "company": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "employment_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "start_date": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "end_date": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "location": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
         },
-        "required": ["id"]
+        "required": [
+          "id"
+        ]
       },
-      "primary_key": ["id"],
+      "primary_key": [
+        "id"
+      ],
       "cursor_field": "start_date",
       "consent_time_field": "start_date",
-      "selection": { "fields": true, "resources": true },
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
       "incremental": true
     },
     {
       "name": "education",
       "description": "Education entries.",
-      "display": { "label": "Your education", "detail": "School, degree, field of study, start/end dates." },
+      "display": {
+        "label": "Your education",
+        "detail": "School, degree, field of study, start/end dates."
+      },
       "semantics": "mutable_state",
       "schema": {
         "type": "object",
         "properties": {
-          "id": { "type": "string" },
-          "school": { "type": ["string", "null"] },
-          "degree": { "type": ["string", "null"] },
-          "field_of_study": { "type": ["string", "null"] },
-          "start_date": { "type": ["string", "null"] },
-          "end_date": { "type": ["string", "null"] }
+          "id": {
+            "type": "string"
+          },
+          "school": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "degree": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "field_of_study": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "start_date": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "end_date": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          }
         },
-        "required": ["id"]
+        "required": [
+          "id"
+        ]
       },
-      "primary_key": ["id"],
-      "selection": { "fields": true, "resources": true },
+      "primary_key": [
+        "id"
+      ],
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
       "incremental": false
     },
     {
       "name": "skills",
       "description": "Skills listed on the profile.",
-      "display": { "label": "Your skills", "detail": "Skill names plus endorsement counts if visible." },
+      "display": {
+        "label": "Your skills",
+        "detail": "Skill names plus endorsement counts if visible."
+      },
       "semantics": "mutable_state",
       "schema": {
         "type": "object",
         "properties": {
-          "id": { "type": "string" },
-          "name": { "type": "string" },
-          "endorsement_count": { "type": ["integer", "null"] }
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "endorsement_count": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
         },
-        "required": ["id", "name"]
+        "required": [
+          "id",
+          "name"
+        ]
       },
-      "primary_key": ["id"],
-      "selection": { "fields": true, "resources": true },
+      "primary_key": [
+        "id"
+      ],
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
       "incremental": false
     }
   ]

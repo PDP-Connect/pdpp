@@ -67,10 +67,12 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "format": "date-time"
           },
           "received_at": {
-            "type": "string"
+            "type": "string",
+            "format": "date-time"
           },
           "message_id": {
             "type": [
@@ -236,13 +238,15 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "format": "date-time"
           },
           "last_message_date": {
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "format": "date-time"
           },
           "labels": {
             "type": "array"
@@ -340,7 +344,7 @@
       "description": "Full text and/or HTML body of each message, keyed 1:1 with messages. Kept in a separate stream so body content (sensitive, large) is independently grantable from headers/metadata.",
       "display": {
         "label": "The text of your emails",
-        "detail": "This is the stream that carries the actual written content of each email — the plain-text body and, when present, the HTML body. It is separate from 'Your messages' (which holds only headers like sender, subject, and date). Granting this stream gives a client access to what your emails say, not just who they're from."
+        "detail": "This is the stream that carries the actual written content of each email \u2014 the plain-text body and, when present, the HTML body. It is separate from 'Your messages' (which holds only headers like sender, subject, and date). Granting this stream gives a client access to what your emails say, not just who they're from."
       },
       "semantics": "append_only",
       "schema": {
@@ -407,7 +411,6 @@
       "primary_key": [
         "id"
       ],
-      "cursor_field": "message_id",
       "selection": {
         "fields": true,
         "resources": true
@@ -483,7 +486,8 @@
             "type": "string"
           },
           "message_received_at": {
-            "type": "string"
+            "type": "string",
+            "format": "date-time"
           }
         },
         "required": [

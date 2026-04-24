@@ -83,7 +83,8 @@
             ]
           },
           "created_utc": {
-            "type": "string"
+            "type": "string",
+            "format": "date-time"
           }
         },
         "required": [
@@ -162,7 +163,8 @@
             ]
           },
           "created_utc": {
-            "type": "string"
+            "type": "string",
+            "format": "date-time"
           }
         },
         "required": [
@@ -240,7 +242,8 @@
             ]
           },
           "created_utc": {
-            "type": "string"
+            "type": "string",
+            "format": "date-time"
           }
         },
         "required": [

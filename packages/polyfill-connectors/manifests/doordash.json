@@ -3,8 +3,18 @@
   "connector_id": "https://registry.pdpp.org/connectors/doordash",
   "version": "0.1.0",
   "display_name": "DoorDash",
-  "runtime_requirements": { "bindings": { "network": { "required": true } } },
-  "capabilities": { "human_interaction": ["manual_action"] },
+  "runtime_requirements": {
+    "bindings": {
+      "network": {
+        "required": true
+      }
+    }
+  },
+  "capabilities": {
+    "human_interaction": [
+      "manual_action"
+    ]
+  },
   "streams": [
     {
       "name": "orders",
@@ -17,26 +27,96 @@
       "schema": {
         "type": "object",
         "properties": {
-          "id": { "type": "string" },
-          "order_date": { "type": ["string", "null"] },
-          "restaurant_name": { "type": ["string", "null"] },
-          "status": { "type": ["string", "null"] },
-          "subtotal_cents": { "type": ["integer", "null"] },
-          "tax_cents": { "type": ["integer", "null"] },
-          "tip_cents": { "type": ["integer", "null"] },
-          "delivery_fee_cents": { "type": ["integer", "null"] },
-          "service_fee_cents": { "type": ["integer", "null"] },
-          "total_cents": { "type": ["integer", "null"] },
-          "delivery_address": { "type": ["string", "null"] },
-          "payment_method_summary": { "type": ["string", "null"] },
-          "item_count": { "type": ["integer", "null"] }
+          "id": {
+            "type": "string"
+          },
+          "order_date": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "restaurant_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "subtotal_cents": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "tax_cents": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "tip_cents": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "delivery_fee_cents": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "service_fee_cents": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "total_cents": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "delivery_address": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "payment_method_summary": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "item_count": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
         },
-        "required": ["id"]
+        "required": [
+          "id"
+        ]
       },
-      "primary_key": ["id"],
+      "primary_key": [
+        "id"
+      ],
       "cursor_field": "order_date",
       "consent_time_field": "order_date",
-      "selection": { "fields": true, "resources": true },
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
       "incremental": true
     },
     {
@@ -50,20 +130,49 @@
       "schema": {
         "type": "object",
         "properties": {
-          "id": { "type": "string" },
-          "order_id": { "type": "string" },
-          "name": { "type": "string" },
-          "quantity": { "type": "integer" },
-          "unit_price_cents": { "type": ["integer", "null"] },
-          "customizations": { "type": "array" }
+          "id": {
+            "type": "string"
+          },
+          "order_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "quantity": {
+            "type": "integer"
+          },
+          "unit_price_cents": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "customizations": {
+            "type": "array"
+          }
         },
-        "required": ["id", "order_id", "name"]
+        "required": [
+          "id",
+          "order_id",
+          "name"
+        ]
       },
-      "primary_key": ["id"],
-      "selection": { "fields": true, "resources": true },
+      "primary_key": [
+        "id"
+      ],
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
       "incremental": true,
       "relationships": [
-        { "name": "order", "stream": "orders", "foreign_key": "order_id", "cardinality": "has_one" }
+        {
+          "name": "order",
+          "stream": "orders",
+          "foreign_key": "order_id",
+          "cardinality": "has_one"
+        }
       ]
     }
   ]
