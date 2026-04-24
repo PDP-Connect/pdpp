@@ -22,7 +22,11 @@
 
 set -u
 
-ROOT="$(cd "$(dirname "$0")" && pwd)"
+if [ -n "${PDPP_ROOT:-}" ]; then
+  ROOT="$PDPP_ROOT"
+else
+  ROOT="$(cd "$(dirname "$0")" && pwd)"
+fi
 SNAPSHOT="$HOME/pdpp-repro-db/polyfill.sqlite.snapshot"
 WORKING_DB="$ROOT/packages/polyfill-connectors/.pdpp-data/polyfill.sqlite"
 EXPECTED_SHA="001afdcc3de0caf2543c0a401779e998fe16afeaec00e01dd1fa698a98a14805"
@@ -66,6 +70,26 @@ fi
 # Writes "SURVIVED", "CRASHED", or "SETUP_FAILED" to $RESULT_FILE. All other
 # output goes straight to stdout so progress is visible during the run.
 RESULT_FILE="/tmp/repro-crash.result"
+
+wait_for_http_ready() {
+  local url="$1"
+  local label="$2"
+  local timeout_seconds="${3:-120}"
+  local started_at
+  started_at="$(date +%s)"
+  while true; do
+    if curl -fsS -o /dev/null --max-time 5 "$url"; then
+      echo "[repro] $label ready: $url"
+      return 0
+    fi
+    if [ $(( $(date +%s) - started_at )) -ge "$timeout_seconds" ]; then
+      echo "[repro] ERROR: timed out waiting for $label at $url" >&2
+      return 1
+    fi
+    sleep 1
+  done
+}
+
 run_once() {
   : > "$RESULT_FILE"
   echo "[repro] Killing any running dev processes…"
@@ -88,14 +112,28 @@ run_once() {
   DEV_PID=$!
   echo "[repro] pnpm dev PID: $DEV_PID"
 
-  echo "[repro] Waiting for servers to be ready…"
-  for i in $(seq 1 30); do
-    sleep 1
-    if grep -q 'authorization server' "$LOG" 2>/dev/null && grep -q 'Ready in' "$LOG" 2>/dev/null; then
-      echo "[repro] Ready after ${i}s."
-      break
-    fi
-  done
+  echo "[repro] Waiting for AS/RS + dashboard to be ready…"
+  if ! wait_for_http_ready "http://localhost:7662/_ref/connectors" "authorization server" 120; then
+    echo "[repro] ERROR: authorization server never became ready. Log tail:" >&2
+    tail -40 "$LOG" >&2
+    pkill -P "$DEV_PID" 2>/dev/null
+    echo SETUP_FAILED > "$RESULT_FILE"
+    return
+  fi
+  if ! wait_for_http_ready "http://localhost:7663/.well-known/oauth-protected-resource" "resource server" 120; then
+    echo "[repro] ERROR: resource server never became ready. Log tail:" >&2
+    tail -40 "$LOG" >&2
+    pkill -P "$DEV_PID" 2>/dev/null
+    echo SETUP_FAILED > "$RESULT_FILE"
+    return
+  fi
+  if ! wait_for_http_ready "http://localhost:3000/dashboard/records" "dashboard" 120; then
+    echo "[repro] ERROR: dashboard never became ready. Log tail:" >&2
+    tail -40 "$LOG" >&2
+    pkill -P "$DEV_PID" 2>/dev/null
+    echo SETUP_FAILED > "$RESULT_FILE"
+    return
+  fi
 
   REFPID=$(ss -ltnp 'sport = :7662' 2>/dev/null | grep -oP 'pid=\K[0-9]+' | head -1 || true)
   if [ -z "${REFPID:-}" ]; then
@@ -112,7 +150,7 @@ run_once() {
   for round in $(seq 1 10); do
     (
       curl -s -o /dev/null -w "R$round records %{http_code}/%{time_total}s\n" --max-time 120 http://localhost:3000/dashboard/records &
-      curl -s -o /dev/null -w "R$round search  %{http_code}/%{time_total}s\n" --max-time 120 'http://localhost:3000/dashboard/search?q=personal+server&scope=messages' &
+      curl -s -o /dev/null -w "R$round search  %{http_code}/%{time_total}s\n" --max-time 120 'http://localhost:3000/dashboard/search?q=personal+server' &
       curl -s -o /dev/null -w "R$round changes %{http_code}/%{time_total}s\n" --max-time 120 http://localhost:3000/planning/changes &
       wait
     )
