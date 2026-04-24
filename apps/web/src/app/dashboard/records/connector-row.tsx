@@ -8,10 +8,6 @@ import { Timestamp } from '@/components/ui/timestamp';
 import type { ConnectorOverview, ConnectorRunRef } from '../lib/rs-client';
 import { runConnectorNowAction, type RunNowResult } from './actions';
 
-// Polling cadence while a run is in-flight. Light enough (every ~3s) to
-// feel responsive without hammering the server. Uses router.refresh() to
-// re-run the server component so the next render shows fresh run data.
-const RUNNING_POLL_MS = 3_000;
 // Elapsed-time tick for the in-progress label. Separate from the poll
 // cadence: the counter should feel alive even between polls.
 const ELAPSED_TICK_MS = 1_000;
@@ -38,13 +34,6 @@ export function ConnectorRow({ overview, runsHref }: RowProps) {
   const [optimisticRunning, setOptimisticRunning] = React.useState(false);
   const [toast, setToast] = React.useState<ToastState>({ kind: 'none' });
   const running = isRunning || optimisticRunning;
-
-  // Poll while running so the row reflects completion without a refresh.
-  React.useEffect(() => {
-    if (!running) return;
-    const id = setInterval(() => router.refresh(), RUNNING_POLL_MS);
-    return () => clearInterval(id);
-  }, [running, router]);
 
   // Clear the optimistic flag once server-side state agrees the run
   // started (isRunning from props) or terminated (a new lastRun with

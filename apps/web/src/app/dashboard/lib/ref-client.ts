@@ -127,6 +127,29 @@ export type RunSummary = {
   kinds: string[];
 };
 
+export type RefConnectorRunSummary = {
+  run_id: string;
+  status: string;
+  started_at: string;
+  finished_at: string | null;
+  first_at: string;
+  last_at: string;
+  event_count: number;
+  failure_reason: string | null;
+};
+
+export type RefConnectorSummary = {
+  connector_id: string;
+  display_name: string;
+  manifest_version: string | null;
+  streams: string[];
+  total_records: number;
+  freshness: Record<string, unknown>;
+  schedule: Record<string, unknown> | null;
+  last_run: RefConnectorRunSummary | null;
+  last_successful_run: RefConnectorRunSummary | null;
+};
+
 class RefNotFoundError extends Error {
   readonly status = 404;
 }
@@ -214,6 +237,10 @@ export async function listGrants(opts: ListQuery = {}): Promise<ListResponse<Gra
 
 export async function listRuns(opts: ListQuery = {}): Promise<ListResponse<RunSummary>> {
   return (await refFetch('/_ref/runs', opts as Record<string, string | number | undefined>)) as ListResponse<RunSummary>;
+}
+
+export async function listConnectorSummaries(): Promise<ListResponse<RefConnectorSummary>> {
+  return (await refFetch('/_ref/connectors')) as ListResponse<RefConnectorSummary>;
 }
 
 export type DatasetConnectorSummary = {

@@ -3,8 +3,14 @@ import { DashboardShell, EmptyState, ServerUnreachable } from '../components/she
 import { buttonVariants } from '@/components/ui/button';
 import { DataList, PageHeader, Section } from '../components/primitives';
 import { ReferenceServerUnreachableError } from '../lib/owner-token';
-import { getConnectorOverview, listConnectorManifests, type ConnectorOverview } from '../lib/rs-client';
+import {
+  listConnectorSummaries,
+  type RefConnectorRunSummary,
+  type RefConnectorSummary,
+} from '../lib/ref-client';
+import { type ConnectorOverview } from '../lib/rs-client';
 import { ConnectorRow } from './connector-row';
+import { RecordsPagePoller } from './records-page-poller';
 
 export const dynamic = 'force-dynamic';
 
@@ -23,11 +29,46 @@ function connectorSortKey(o: ConnectorOverview): [number, number, string] {
   return [3, lastTs, o.connector.connector_id];
 }
 
+function toConnectorRunRef(summary: RefConnectorRunSummary | null) {
+  if (!summary) return null;
+  return {
+    run_id: summary.run_id,
+    first_at: summary.first_at,
+    last_at: summary.last_at,
+    event_count: summary.event_count,
+    status: summary.status,
+    failure_reason: summary.failure_reason,
+  };
+}
+
+function toConnectorOverview(summary: RefConnectorSummary): ConnectorOverview {
+  const lastRun = toConnectorRunRef(summary.last_run);
+  const lastSuccessfulRun = toConnectorRunRef(summary.last_successful_run);
+  return {
+    connector: {
+      connector_id: summary.connector_id,
+      display_name: summary.display_name,
+      name: summary.display_name,
+      streams: summary.streams.map((name) => ({ name })),
+    },
+    streams: summary.streams.map((name) => ({
+      object: 'stream',
+      name,
+      record_count: 0,
+      last_updated: null,
+    })),
+    totalRecords: summary.total_records,
+    lastRun,
+    lastSuccessfulRun,
+    isRunning: lastRun != null && new Set(['started', 'in_progress']).has(lastRun.status),
+  };
+}
+
 export default async function RecordsIndexPage() {
   let overviews: ConnectorOverview[];
   try {
-    const manifests = await listConnectorManifests();
-    overviews = await Promise.all(manifests.map((m) => getConnectorOverview(m)));
+    const response = await listConnectorSummaries();
+    overviews = response.data.map(toConnectorOverview);
   } catch (err) {
     if (err instanceof ReferenceServerUnreachableError) {
       return (
@@ -70,6 +111,7 @@ export default async function RecordsIndexPage() {
 
   return (
     <DashboardShell active="records">
+      <RecordsPagePoller enabled={runningCount > 0} />
       <PageHeader
         title="Records"
         description="Owner control plane for your connectors. Click Sync now to pull fresh data; drill in to browse streams and records."

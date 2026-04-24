@@ -4591,6 +4591,9 @@
                               "type": "string"
                             }
                           },
+                          "total_records": {
+                            "type": "integer"
+                          },
                           "freshness": {
                             "$id": "pdpp/common/Freshness",
                             "type": "object",
@@ -4659,6 +4662,60 @@
                                 "type": "string"
                               },
                               "finished_at": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "first_at": {
+                                "type": "string"
+                              },
+                              "last_at": {
+                                "type": "string"
+                              },
+                              "event_count": {
+                                "type": "integer"
+                              },
+                              "failure_reason": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              }
+                            }
+                          },
+                          "last_successful_run": {
+                            "type": [
+                              "object",
+                              "null"
+                            ],
+                            "additionalProperties": true,
+                            "properties": {
+                              "run_id": {
+                                "type": "string"
+                              },
+                              "status": {
+                                "type": "string"
+                              },
+                              "started_at": {
+                                "type": "string"
+                              },
+                              "finished_at": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "first_at": {
+                                "type": "string"
+                              },
+                              "last_at": {
+                                "type": "string"
+                              },
+                              "event_count": {
+                                "type": "integer"
+                              },
+                              "failure_reason": {
                                 "type": [
                                   "string",
                                   "null"
@@ -4859,6 +4916,9 @@
                         "type": "string"
                       }
                     },
+                    "total_records": {
+                      "type": "integer"
+                    },
                     "freshness": {
                       "$id": "pdpp/common/Freshness",
                       "type": "object",
@@ -4927,6 +4987,60 @@
                           "type": "string"
                         },
                         "finished_at": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "first_at": {
+                          "type": "string"
+                        },
+                        "last_at": {
+                          "type": "string"
+                        },
+                        "event_count": {
+                          "type": "integer"
+                        },
+                        "failure_reason": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      }
+                    },
+                    "last_successful_run": {
+                      "type": [
+                        "object",
+                        "null"
+                      ],
+                      "additionalProperties": true,
+                      "properties": {
+                        "run_id": {
+                          "type": "string"
+                        },
+                        "status": {
+                          "type": "string"
+                        },
+                        "started_at": {
+                          "type": "string"
+                        },
+                        "finished_at": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "first_at": {
+                          "type": "string"
+                        },
+                        "last_at": {
+                          "type": "string"
+                        },
+                        "event_count": {
+                          "type": "integer"
+                        },
+                        "failure_reason": {
                           "type": [
                             "string",
                             "null"

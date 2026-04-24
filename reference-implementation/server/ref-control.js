@@ -32,22 +32,27 @@ function buildFreshness(lastUpdated = null) {
   };
 }
 
-function toLastRun(summary) {
+function toConnectorRunSummary(summary) {
   if (!summary) return null;
   return {
     run_id: summary.id,
     status: summary.status,
     started_at: summary.first_at,
     finished_at: summary.status === 'pending' ? null : summary.last_at,
+    first_at: summary.first_at,
+    last_at: summary.last_at,
+    event_count: summary.event_count,
+    failure_reason: summary.failure?.reason || null,
   };
 }
 
-async function getLatestRunSummary(connectorId) {
+async function getLatestRunSummary(connectorId, status = null) {
   const { summaries } = await listSpineCorrelations('run', {
     connectorId,
+    status,
     limit: 1,
   });
-  return toLastRun(summaries[0] || null);
+  return toConnectorRunSummary(summaries[0] || null);
 }
 
 async function getConnectorRecordProjection(connectorId) {
@@ -78,6 +83,7 @@ async function getConnectorRecordProjection(connectorId) {
   return {
     byStream,
     freshness: buildFreshness(latest),
+    totalRecords: rows.reduce((sum, row) => sum + Number(row.record_count || 0), 0),
   };
 }
 
@@ -117,16 +123,21 @@ export async function listConnectorSummaries(controller) {
   return Promise.all(rows.map(async (row) => {
     const manifest = parseManifest(row.manifest, row.connector_id);
     const live = await getConnectorRecordProjection(row.connector_id);
-    const schedule = controller ? await controller.getSchedule(row.connector_id) : null;
-    const lastRun = await getLatestRunSummary(row.connector_id);
+    const [schedule, lastRun, lastSuccessfulRun] = await Promise.all([
+      controller ? controller.getSchedule(row.connector_id) : Promise.resolve(null),
+      getLatestRunSummary(row.connector_id),
+      getLatestRunSummary(row.connector_id, 'succeeded'),
+    ]);
     return {
       connector_id: row.connector_id,
       display_name: manifest.display_name || row.connector_id,
       manifest_version: manifest.version || null,
       streams: (manifest.streams || []).map((stream) => stream.name),
+      total_records: live.totalRecords,
       freshness: live.freshness,
       schedule,
       last_run: lastRun,
+      last_successful_run: lastSuccessfulRun,
     };
   }));
 }
@@ -139,16 +150,21 @@ export async function getConnectorDetail(connectorId, controller) {
     throw err;
   }
   const live = await getConnectorRecordProjection(connectorId);
-  const schedule = controller ? await controller.getSchedule(connectorId) : null;
-  const lastRun = await getLatestRunSummary(connectorId);
+  const [schedule, lastRun, lastSuccessfulRun] = await Promise.all([
+    controller ? controller.getSchedule(connectorId) : Promise.resolve(null),
+    getLatestRunSummary(connectorId),
+    getLatestRunSummary(connectorId, 'succeeded'),
+  ]);
   return {
     object: 'ref_connector_detail',
     connector_id: connectorId,
     display_name: manifest.display_name || connectorId,
     manifest_version: manifest.version || null,
+    total_records: live.totalRecords,
     freshness: live.freshness,
     schedule,
     last_run: lastRun,
+    last_successful_run: lastSuccessfulRun,
     recent_runs: lastRun ? [lastRun] : [],
     manifest_excerpt: buildManifestExcerpt(manifest),
     streams: (manifest.streams || []).map((stream) =>

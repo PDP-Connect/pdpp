@@ -95,10 +95,12 @@ test('GET /_ref/connectors lists registered connectors with stream names and fre
     assert.ok(entry, 'spotify connector should be listed');
     assert.equal(entry.display_name, 'Spotify');
     assert.ok(entry.streams.includes('top_artists'));
+    assert.equal(entry.total_records, 0);
     assert.ok(entry.freshness, 'freshness is always present');
     assert.equal(entry.freshness.status, 'unknown');
     assert.equal(entry.schedule, null);
     assert.equal(entry.last_run, null);
+    assert.equal(entry.last_successful_run, null);
   });
 });
 
@@ -320,6 +322,8 @@ test('POST /_ref/connectors/:connectorId/run starts an async background run and 
     assert.ok(entry, 'connector should still be listed');
     assert.ok(entry.last_run, 'manual run should project onto connector summaries');
     assert.equal(entry.last_run.run_id, started.run_id);
+    assert.ok(entry.last_successful_run, 'successful run should project onto connector summaries');
+    assert.equal(entry.last_successful_run.run_id, started.run_id);
   });
 });
 
