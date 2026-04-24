@@ -36,7 +36,7 @@ import {
   runSemanticSearch,
   semanticIndexBackfillForManifest,
 } from './search-semantic.js';
-import { createOwnerAuthPlaceholder, OWNER_AUTH_DEFAULT_SUBJECT_ID } from './owner-auth.js';
+import { createOwnerAuthPlaceholder, OWNER_AUTH_DEFAULT_SUBJECT_ID } from './owner-auth.ts';
 import { createController } from '../runtime/controller.js';
 import { createApp, buildLogger } from './transport.js';
 import {
