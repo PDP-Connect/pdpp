@@ -1,8 +1,8 @@
 ## 1. Inventory And Classification
 
-- [ ] 1.1 Inventory all `apps/web/src/app` route families and classify each as protocol docs, reference explainer, live dashboard, sandbox, project planning, or legacy/demo.
-- [ ] 1.2 Inventory docs pages under `apps/web/content/docs` and classify pages that are protocol-normative, reference-implementation explanatory, project-history/planning, or mixed.
-- [ ] 1.3 Write a short migration table listing the current route, target category, target route, and whether the page should move, be relabeled, or remain.
+- [x] 1.1 Inventory all `apps/web/src/app` route families and classify each as protocol docs, reference explainer, live dashboard, sandbox, project planning, or legacy/demo. (see `design-notes/route-and-docs-inventory-2026-04-24.md`)
+- [x] 1.2 Inventory docs pages under `apps/web/content/docs` and classify pages that are protocol-normative, reference-implementation explanatory, project-history/planning, or mixed. (see `design-notes/route-and-docs-inventory-2026-04-24.md`)
+- [x] 1.3 Write a short migration table listing the current route, target category, target route, and whether the page should move, be relabeled, or remain. (see `design-notes/route-and-docs-inventory-2026-04-24.md`)
 
 ## 2. Route Topology And Navigation
 
