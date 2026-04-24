@@ -44,8 +44,13 @@ import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 
-import { makeStubBackend, parseSemanticSearchParams, resolveSemanticBackendFromEnv } from '../server/search-semantic.js';
+import {
+  makeStubBackend,
+  parseSemanticSearchParams,
+  resolveSemanticBackendFromEnv,
+} from '../server/search-semantic.js';
 import { startServer } from '../server/index.js';
+import { getDb } from '../server/db.js';
 
 // ─── harness ────────────────────────────────────────────────────────────────
 
@@ -825,6 +830,44 @@ test('semantic enablement does not break /v1/search (lexical surface)', async ()
   });
 });
 
+function makeInterruptingDocumentBackend({ successfulEmbedsBeforeThrow }) {
+  const base = makeStubBackend();
+  let successfulEmbeds = 0;
+  return {
+    ...base,
+    embedDocument: async (text) => {
+      if (successfulEmbeds >= successfulEmbedsBeforeThrow) {
+        throw new Error('simulated semantic backfill interruption');
+      }
+      successfulEmbeds += 1;
+      return base.embedDocument(text);
+    },
+    successfulEmbeds: () => successfulEmbeds,
+  };
+}
+
+function makeDocumentCountingBackend() {
+  const base = makeStubBackend();
+  let documentEmbeds = 0;
+  return {
+    ...base,
+    embedDocument: async (text) => {
+      documentEmbeds += 1;
+      return base.embedDocument(text);
+    },
+    documentEmbeds: () => documentEmbeds,
+  };
+}
+
+function countPersistedSemanticVectors() {
+  const db = getDb();
+  const table = db.vectorIndexKind === 'sqlite-vec'
+    ? 'semantic_search_rowid'
+    : 'semantic_search_blob';
+  const row = db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get();
+  return Number(row?.n || 0);
+}
+
 // ─── 14.33 — restart regression: coverage survives restart ──────────────────
 
 test('restart regression: semantic coverage survives process restart without re-ingest', async () => {
@@ -901,6 +944,127 @@ test('restart regression: semantic coverage survives process restart without re-
         const hitsAfter = body.data.map((h) => h.record_key).sort();
         assert.ok(hitsAfter.includes('p1'),
           'post-restart search must still find p1 without re-ingest');
+      } finally {
+        await closeServer(server);
+      }
+    }
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('interrupted semantic backfill resumes and embeds only missing record-field pairs', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pdpp-semantic-resume-'));
+  const dbPath = path.join(tmpDir, 'pdpp.sqlite');
+  const strippedManifest = stripSemanticFields(MANIFEST_A);
+  const interruptingBackend = makeInterruptingDocumentBackend({ successfulEmbedsBeforeThrow: 500 });
+  const records = Array.from({ length: 501 }, (_, i) => ({
+    id: `resume-${i}`,
+    title: `resumable semantic backfill record ${i}`,
+    selftext: '',
+    source_created_at: '2026-04-01T00:00:00Z',
+  }));
+
+  try {
+    {
+      const server = await startServer({
+        quiet: true,
+        asPort: 0,
+        rsPort: 0,
+        dbPath,
+        dynamicClientRegistrationInitialAccessTokens: [TEST_DCR_INITIAL_ACCESS_TOKEN],
+        semanticRetrievalBackend: interruptingBackend,
+      });
+      try {
+        const asUrl = `http://localhost:${server.asPort}`;
+        const rsUrl = `http://localhost:${server.rsPort}`;
+        const regV1 = await fetch(`${asUrl}/connectors`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(strippedManifest),
+        });
+        assert.equal(regV1.status, 201, 'register manifest without semantic fields');
+
+        const ownerToken = await issueOwnerToken(asUrl);
+        await ingest(rsUrl, ownerToken, MANIFEST_A.connector_id, 'posts', records);
+
+        const regV2 = await fetch(`${asUrl}/connectors`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(MANIFEST_A),
+        });
+        assert.equal(regV2.status, 500, 'simulated interruption aborts semantic backfill');
+        assert.equal(interruptingBackend.successfulEmbeds(), 500);
+
+        const db = getDb();
+        assert.equal(countPersistedSemanticVectors(), 500, 'first persisted page remains durable');
+        assert.equal(
+          db.prepare('SELECT COUNT(*) AS n FROM semantic_search_meta').get().n,
+          0,
+          'completed semantic meta is not written after interruption',
+        );
+        assert.equal(
+          db.prepare('SELECT COUNT(*) AS n FROM semantic_search_backfill_progress').get().n,
+          1,
+          'in-progress semantic backfill identity is persisted',
+        );
+        const { body: metadata } = await fetchJson(`${rsUrl}/.well-known/oauth-protected-resource`);
+        assert.equal(
+          metadata.capabilities?.semantic_retrieval?.index_state,
+          'stale',
+          'incomplete progress without active backfill is advertised as stale',
+        );
+      } finally {
+        await closeServer(server);
+      }
+    }
+
+    {
+      const countingBackend = makeDocumentCountingBackend();
+      const server = await startServer({
+        quiet: true,
+        asPort: 0,
+        rsPort: 0,
+        dbPath,
+        dynamicClientRegistrationInitialAccessTokens: [TEST_DCR_INITIAL_ACCESS_TOKEN],
+        semanticRetrievalBackend: countingBackend,
+      });
+      try {
+        await server.startupBackfillDone;
+        assert.equal(
+          countingBackend.documentEmbeds(),
+          1,
+          'restart backfill should embed only the missing record-field pair',
+        );
+        assert.equal(countPersistedSemanticVectors(), 501, 'resume completes the stream without deleting prior vectors');
+        const db = getDb();
+        assert.equal(
+          db.prepare('SELECT COUNT(*) AS n FROM semantic_search_backfill_progress').get().n,
+          0,
+          'progress row is deleted after completion',
+        );
+        assert.equal(
+          db.prepare(`
+            SELECT COUNT(*) AS n
+            FROM semantic_search_meta
+            WHERE connector_id = ? AND stream = 'posts'
+          `).get(MANIFEST_A.connector_id).n,
+          1,
+          'completed semantic meta is written for the resumed stream',
+        );
+
+        const rsUrl = `http://localhost:${server.rsPort}`;
+        const asUrl = `http://localhost:${server.asPort}`;
+        const ownerToken = await issueOwnerToken(asUrl);
+        const { status, body } = await fetchJson(
+          `${rsUrl}/v1/search/semantic?q=${encodeURIComponent('resumable semantic backfill record 500')}`,
+          { headers: { Authorization: `Bearer ${ownerToken}` } },
+        );
+        assert.equal(status, 200);
+        assert.ok(
+          body.data.some((hit) => hit.record_key === 'resume-500'),
+          'the previously missing record becomes searchable after resume',
+        );
       } finally {
         await closeServer(server);
       }

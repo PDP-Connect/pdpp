@@ -312,6 +312,20 @@ CREATE TABLE IF NOT EXISTS semantic_search_meta (
   PRIMARY KEY(connector_id, stream)
 );
 
+-- Persistent in-progress semantic backfill identity. This lets an
+-- interrupted rebuild resume already-written record-field vectors when the
+-- active field fingerprint and backend storage identity still match.
+CREATE TABLE IF NOT EXISTS semantic_search_backfill_progress (
+  connector_id        TEXT NOT NULL,
+  stream              TEXT NOT NULL,
+  fields_fingerprint  TEXT NOT NULL,
+  model_id            TEXT NOT NULL,
+  dimensions          INTEGER NOT NULL,
+  distance_metric     TEXT NOT NULL,
+  updated_at          TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY(connector_id, stream)
+);
+
 -- Maps logical semantic-index identity (connector_id, scope_key, record_key)
 -- to the vec0 rowid (sqlite-vec path only). vec0 requires an integer rowid
 -- and does not support composite text PKs; this sidecar lets us upsert by

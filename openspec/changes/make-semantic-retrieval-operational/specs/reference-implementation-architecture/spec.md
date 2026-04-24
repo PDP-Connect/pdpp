@@ -92,3 +92,10 @@ The reference implementation SHALL reconcile first-party manifest semantic-field
 - **WHEN** the configured embedding profile changes for an existing local database
 - **THEN** semantic index metadata SHALL mark affected coverage stale
 - **AND** rebuild SHALL derive replacement embeddings from stored records rather than from connector re-ingest
+
+#### Scenario: Semantic backfill is interrupted
+- **WHEN** a semantic stream rebuild is interrupted after persisting some record-field vectors but before completion metadata is written
+- **AND** the next rebuild sees matching semantic fields and backend storage identity
+- **THEN** the reference SHALL resume without deleting matching partial vectors
+- **AND** the rebuild SHALL embed only missing record-field pairs before writing completed index metadata
+- **AND** incomplete progress without an active backfill SHALL NOT advertise the semantic index as built

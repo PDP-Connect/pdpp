@@ -43,6 +43,14 @@ export function encodeScopeKey(stream, field) {
   return JSON.stringify([stream, field]);
 }
 
+function encodeVectorPairKey(scopeKey, recordKey) {
+  return JSON.stringify([scopeKey, recordKey]);
+}
+
+function scopeKeyPrefixForStream(stream) {
+  return `${JSON.stringify([stream]).slice(0, -1)},`;
+}
+
 // ─── Stream-level declaration lookup ───────────────────────────────────────
 
 async function getStreamSemanticFields(connectorId, stream) {
@@ -422,7 +430,7 @@ function makeBlobFlatIndex({ db, dimensions, distanceMetric }) {
       // a LIKE match anchored on the opening characters of scope_key's
       // JSON encoding to narrow before comparing the stream name exactly
       // against the decoded scope_key.
-      const streamPrefix = `${JSON.stringify([stream]).slice(0, -1)},`; // e.g. '["posts",'
+      const streamPrefix = scopeKeyPrefixForStream(stream); // e.g. '["posts",'
       db.prepare(`
         DELETE FROM semantic_search_blob
         WHERE connector_id = ?
@@ -431,7 +439,7 @@ function makeBlobFlatIndex({ db, dimensions, distanceMetric }) {
       `).run(connectorId, recordKey, `${streamPrefix}%`);
     },
     async deleteByConnectorStream({ connectorId, stream }) {
-      const streamPrefix = `${JSON.stringify([stream]).slice(0, -1)},`;
+      const streamPrefix = scopeKeyPrefixForStream(stream);
       db.prepare(`
         DELETE FROM semantic_search_blob
         WHERE connector_id = ?
@@ -488,6 +496,16 @@ function makeBlobFlatIndex({ db, dimensions, distanceMetric }) {
       `).get(connectorId, scopeKey);
       return Number(row?.n || 0);
     },
+    async listExistingKeys({ connectorId, stream }) {
+      const streamPrefix = scopeKeyPrefixForStream(stream);
+      const rows = db.prepare(`
+        SELECT scope_key, record_key
+        FROM semantic_search_blob
+        WHERE connector_id = ?
+          AND scope_key LIKE ?
+      `).all(connectorId, `${streamPrefix}%`);
+      return new Set(rows.map((row) => encodeVectorPairKey(row.scope_key, row.record_key)));
+    },
   };
 }
 
@@ -521,6 +539,7 @@ function makeSqliteVecIndex({ db, dimensions, distanceMetric }) {
       db.prepare('DROP TABLE semantic_search_vec').run();
       db.prepare('DELETE FROM semantic_search_rowid').run();
       db.prepare('DELETE FROM semantic_search_meta').run();
+      db.prepare('DELETE FROM semantic_search_backfill_progress').run();
       db.prepare('DELETE FROM semantic_search_snapshots').run();
     }
     db.prepare(`
@@ -578,7 +597,7 @@ function makeSqliteVecIndex({ db, dimensions, distanceMetric }) {
     },
     async deleteRecord({ connectorId, stream, recordKey }) {
       // Any scope_key whose first array element is stream.
-      const streamPrefix = `${JSON.stringify([stream]).slice(0, -1)},`;
+      const streamPrefix = scopeKeyPrefixForStream(stream);
       const rows = db.prepare(`
         SELECT rowid, scope_key FROM semantic_search_rowid
         WHERE connector_id = ? AND record_key = ? AND scope_key LIKE ?
@@ -592,7 +611,7 @@ function makeSqliteVecIndex({ db, dimensions, distanceMetric }) {
       }
     },
     async deleteByConnectorStream({ connectorId, stream }) {
-      const streamPrefix = `${JSON.stringify([stream]).slice(0, -1)},`;
+      const streamPrefix = scopeKeyPrefixForStream(stream);
       const rows = db.prepare(`
         SELECT rowid FROM semantic_search_rowid
         WHERE connector_id = ? AND scope_key LIKE ?
@@ -660,6 +679,16 @@ function makeSqliteVecIndex({ db, dimensions, distanceMetric }) {
         WHERE connector_id = ? AND scope_key = ?
       `).get(connectorId, scopeKey);
       return Number(row?.n || 0);
+    },
+    async listExistingKeys({ connectorId, stream }) {
+      const streamPrefix = scopeKeyPrefixForStream(stream);
+      const rows = db.prepare(`
+        SELECT scope_key, record_key
+        FROM semantic_search_rowid
+        WHERE connector_id = ?
+          AND scope_key LIKE ?
+      `).all(connectorId, `${streamPrefix}%`);
+      return new Set(rows.map((row) => encodeVectorPairKey(row.scope_key, row.record_key)));
     },
   };
 }
@@ -764,6 +793,14 @@ function fingerprintSemanticFields(declaredFields) {
   return JSON.stringify(unique);
 }
 
+function semanticIdentityMatches(row, { fieldsFingerprint, modelId, dimensions, distanceMetric }) {
+  return !!row
+    && row.fields_fingerprint === fieldsFingerprint
+    && row.model_id === modelId
+    && Number(row.dimensions) === dimensions
+    && row.distance_metric === distanceMetric;
+}
+
 function backendStorageIdentity(b) {
   const parts = [
     `model=${b.model()}`,
@@ -779,10 +816,16 @@ function backendStorageIdentity(b) {
   return parts.join(';');
 }
 
-async function rebuildSemanticIndexForStream({ connectorId, stream, declaredFields, recordsToScan = null, progressJob = null }) {
+async function rebuildSemanticIndexForStream({
+  connectorId,
+  stream,
+  declaredFields,
+  recordsToScan = null,
+  progressJob = null,
+  existingKeys = null,
+}) {
   const index = ensureVectorIndex();
   if (!index || !backend) return 0;
-  await index.deleteByConnectorStream({ connectorId, stream });
 
   const db = getDb();
   const PAGE = 500;
@@ -813,10 +856,14 @@ async function rebuildSemanticIndexForStream({ connectorId, stream, declaredFiel
       for (const field of declaredFields) {
         const value = data?.[field];
         if (typeof value !== 'string' || value.length === 0) continue;
+        const scopeKey = encodeScopeKey(stream, field);
+        if (existingKeys?.has(encodeVectorPairKey(scopeKey, row.record_key))) {
+          continue;
+        }
         const vector = await backend.embedDocument(value);
         entries.push({
           connectorId,
-          scopeKey: encodeScopeKey(stream, field),
+          scopeKey,
           recordKey: row.record_key,
           vector,
         });
@@ -842,6 +889,26 @@ async function rebuildSemanticIndexForStream({ connectorId, stream, declaredFiel
     if (rows.length < PAGE) break;
   }
   return indexed;
+}
+
+function upsertBackfillProgress(db, { connectorId, stream, fieldsFingerprint, modelId, dimensions, distanceMetric }) {
+  db.prepare(`
+    INSERT INTO semantic_search_backfill_progress(connector_id, stream, fields_fingerprint, model_id, dimensions, distance_metric, updated_at)
+    VALUES(?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(connector_id, stream) DO UPDATE SET
+      fields_fingerprint = excluded.fields_fingerprint,
+      model_id           = excluded.model_id,
+      dimensions         = excluded.dimensions,
+      distance_metric    = excluded.distance_metric,
+      updated_at         = excluded.updated_at
+  `).run(connectorId, stream, fieldsFingerprint, modelId, dimensions, distanceMetric, new Date().toISOString());
+}
+
+function deleteBackfillProgress(db, { connectorId, stream }) {
+  db.prepare(`
+    DELETE FROM semantic_search_backfill_progress
+    WHERE connector_id = ? AND stream = ?
+  `).run(connectorId, stream);
 }
 
 /**
@@ -906,18 +973,22 @@ export async function semanticIndexBackfillForManifest({ manifest, log = () => {
     const isParticipating = Array.isArray(declaredFields) && declaredFields.length > 0;
 
     if (!isParticipating) {
-      const metaRows = db.prepare(`
-        SELECT 1 FROM semantic_search_meta
+      const staleRows = db.prepare(`
+        SELECT stream FROM semantic_search_meta
         WHERE connector_id = ? AND stream = ?
-      `).all(connectorId, stream);
-      if (metaRows.length > 0) {
+        UNION
+        SELECT stream FROM semantic_search_backfill_progress
+        WHERE connector_id = ? AND stream = ?
+      `).all(connectorId, stream, connectorId, stream);
+      if (staleRows.length > 0) {
         log(`[PDPP] Semantic index: stream='${stream}' connector='${connectorId}' ` +
-            `no longer declares semantic_fields — dropping stale index + meta`);
+            `no longer declares semantic_fields — dropping stale index + meta/progress`);
         await index.deleteByConnectorStream({ connectorId, stream });
         db.prepare(`
           DELETE FROM semantic_search_meta
           WHERE connector_id = ? AND stream = ?
         `).run(connectorId, stream);
+        deleteBackfillProgress(db, { connectorId, stream });
       }
       continue;
     }
@@ -936,6 +1007,18 @@ export async function semanticIndexBackfillForManifest({ manifest, log = () => {
       FROM semantic_search_meta
       WHERE connector_id = ? AND stream = ?
     `).get(connectorId, stream);
+    const progressRow = db.prepare(`
+      SELECT fields_fingerprint, model_id, dimensions, distance_metric
+      FROM semantic_search_backfill_progress
+      WHERE connector_id = ? AND stream = ?
+    `).get(connectorId, stream);
+    const currentIdentity = {
+      fieldsFingerprint: newFingerprint,
+      modelId: currentModel,
+      dimensions: currentDims,
+      distanceMetric: currentMetric,
+    };
+    const progressMatches = semanticIdentityMatches(progressRow, currentIdentity);
 
     const fingerprintChanged = !metaRow || metaRow.fields_fingerprint !== newFingerprint;
     const backendChanged = !metaRow
@@ -944,6 +1027,7 @@ export async function semanticIndexBackfillForManifest({ manifest, log = () => {
       || metaRow.distance_metric !== currentMetric;
 
     let needsRebuild = fingerprintChanged || backendChanged;
+    let canResume = needsRebuild && progressMatches;
 
     if (!needsRebuild) {
       // Row-count band check.
@@ -966,9 +1050,15 @@ export async function semanticIndexBackfillForManifest({ manifest, log = () => {
           : indexCount > 0 && indexCount <= upperBound;
       needsRebuild = !inSync;
       if (needsRebuild) {
+        canResume = false;
         log(`[PDPP] Semantic index drift for ${connectorId} stream='${stream}' ` +
             `(records=${recordCount}, index=${indexCount}, expected ≤ ${upperBound}) — rebuilding`);
+      } else if (progressRow) {
+        deleteBackfillProgress(db, { connectorId, stream });
       }
+    } else if (canResume) {
+      log(`[PDPP] Semantic index resume for ${connectorId} stream='${stream}' ` +
+          `(fields=${newFingerprint}, model=${currentModel}, dims=${currentDims}, metric=${currentMetric})`);
     } else if (fingerprintChanged) {
       log(`[PDPP] Semantic index field-set change for ${connectorId} stream='${stream}' ` +
           `(was=${metaRow?.fields_fingerprint ?? 'null'}, now=${newFingerprint}) — rebuilding`);
@@ -980,6 +1070,14 @@ export async function semanticIndexBackfillForManifest({ manifest, log = () => {
     }
 
     if (!needsRebuild) continue;
+
+    upsertBackfillProgress(db, { connectorId, stream, ...currentIdentity });
+    let existingKeys = null;
+    if (canResume && typeof index.listExistingKeys === 'function') {
+      existingKeys = await index.listExistingKeys({ connectorId, stream });
+    } else {
+      await index.deleteByConnectorStream({ connectorId, stream });
+    }
 
     const recordCountRow = db.prepare(`
       SELECT COUNT(*) AS n
@@ -995,13 +1093,14 @@ export async function semanticIndexBackfillForManifest({ manifest, log = () => {
       indexedVectors: 0,
     });
     log(`[PDPP] Semantic index rebuild starting for ${connectorId} stream='${stream}' ` +
-        `(records=${recordsToScan}, fields=${declaredFields.length})`);
+        `(records=${recordsToScan}, fields=${declaredFields.length}, mode=${canResume ? 'resume' : 'fresh'})`);
     const indexed = await rebuildSemanticIndexForStream({
       connectorId,
       stream,
       declaredFields,
       recordsToScan,
       progressJob,
+      existingKeys,
     });
     log(`[PDPP] Semantic index rebuild completed for ${connectorId} stream='${stream}' ` +
         `(records=${recordsToScan}, indexed=${indexed})`);
@@ -1016,6 +1115,7 @@ export async function semanticIndexBackfillForManifest({ manifest, log = () => {
         distance_metric    = excluded.distance_metric,
         updated_at         = excluded.updated_at
     `).run(connectorId, stream, newFingerprint, currentModel, currentDims, currentMetric, new Date().toISOString());
+    deleteBackfillProgress(db, { connectorId, stream });
   }
   progressJob = updateBackfillJob(progressJob, {
     stream: null,
@@ -1025,20 +1125,23 @@ export async function semanticIndexBackfillForManifest({ manifest, log = () => {
     indexedVectors: 0,
   });
 
-  // Orphan meta rows: streams that previously had meta but are gone from the
-  // manifest entirely.
+  // Orphan rows: streams that previously had complete meta or in-progress
+  // progress but are gone from the manifest entirely.
   const orphanRows = db.prepare(`
     SELECT stream FROM semantic_search_meta WHERE connector_id = ?
-  `).all(connectorId);
+    UNION
+    SELECT stream FROM semantic_search_backfill_progress WHERE connector_id = ?
+  `).all(connectorId, connectorId);
   for (const row of orphanRows) {
     if (visitedStreams.has(row.stream)) continue;
     log(`[PDPP] Semantic index: stream='${row.stream}' connector='${connectorId}' ` +
-        `no longer in manifest — dropping stale index + meta`);
+        `no longer in manifest — dropping stale index + meta/progress`);
     await index.deleteByConnectorStream({ connectorId, stream: row.stream });
     db.prepare(`
       DELETE FROM semantic_search_meta
       WHERE connector_id = ? AND stream = ?
     `).run(connectorId, row.stream);
+    deleteBackfillProgress(db, { connectorId, stream: row.stream });
   }
   } finally {
     activeBackfillCount = Math.max(0, activeBackfillCount - 1);
@@ -1058,6 +1161,12 @@ export function computeIndexState() {
   if (!backend) return 'stale';
   if (isSemanticIndexBackfillActive()) return 'building';
   const db = getDb();
+  const progressRow = db.prepare(`
+    SELECT 1 AS n
+    FROM semantic_search_backfill_progress
+    LIMIT 1
+  `).get();
+  if (progressRow) return 'stale';
   const rows = db.prepare(`
     SELECT model_id, dimensions, distance_metric
     FROM semantic_search_meta
