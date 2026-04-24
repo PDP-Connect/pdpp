@@ -1,11 +1,9 @@
 import type { Metadata } from "next";
-import { OpenSpecArtifactCard } from "@/components/openspec/open-spec-artifact-card.tsx";
-import { OpenSpecBreadcrumbs } from "@/components/openspec/open-spec-breadcrumbs.tsx";
-import { OpenSpecEmptyState } from "@/components/openspec/open-spec-empty-state.tsx";
-import { OpenSpecProgressPill } from "@/components/openspec/open-spec-progress-pill.tsx";
-import { OpenSpecShell } from "@/components/openspec/open-spec-shell.tsx";
-import { OpenSpecStatusPill } from "@/components/openspec/open-spec-status-pill.tsx";
-import { buildOpenSpecSidebarSections } from "@/components/openspec/sidebar-sections.ts";
+import { ARTIFACT_LIFECYCLE_VOCABULARY, PageHeader, StatusBadge } from "@/app/dashboard/components/primitives.tsx";
+import { ArtifactLink } from "@/components/docs/artifact-link.tsx";
+import { DocsLayout } from "@/components/docs/docs-layout.tsx";
+import { buildPlanningSidebarSections } from "@/components/planning/sidebar-sections.ts";
+import { Timestamp } from "@/components/ui/timestamp.tsx";
 import { listOpenSpecChanges } from "@/lib/openspec/index.ts";
 import { PLANNING_LABEL, planningPath } from "@/lib/openspec/public.ts";
 
@@ -14,68 +12,64 @@ export const metadata: Metadata = {
   description: "All discovered official change entries for the PDPP reference implementation.",
 };
 
-function formatLastModified(iso: string | null): string | null {
-  if (!iso) {
-    return null;
-  }
-  return new Date(iso).toISOString().slice(0, 10);
-}
-
 export default async function OpenSpecChangesPage() {
   const changes = await listOpenSpecChanges();
   // Use the overview scope and force the Changes item active — there's no specific change
   // selected on the index page, so the per-change subnav doesn't apply yet.
-  const sections = buildOpenSpecSidebarSections({ kind: "overview" }).map((section) => ({
+  const sections = buildPlanningSidebarSections({ kind: "overview" }).map((section) => ({
     ...section,
     items: section.items.map((item) => (item.href === planningPath("/changes") ? { ...item, active: true } : item)),
   }));
 
   return (
-    <OpenSpecShell sections={sections}>
-      <div className="flex flex-col gap-6">
-        <OpenSpecBreadcrumbs crumbs={[{ label: PLANNING_LABEL, href: planningPath() }, { label: "Changes" }]} />
-        <header className="flex flex-col gap-2">
-          <h1 className="font-semibold text-[clamp(1.6rem,2.8vw,2.05rem)] leading-tight tracking-tight">Changes</h1>
-          <p className="pdpp-body max-w-3xl text-muted-foreground">
+    <DocsLayout sections={sections}>
+      <PageHeader
+        breadcrumbs={[{ href: planningPath(), label: PLANNING_LABEL }, { label: "Changes" }]}
+        description={
+          <>
             All discovered entries under <code className="font-mono text-xs">openspec/changes/</code>. Sorted by status,
             then by most recently modified.
-          </p>
-        </header>
+          </>
+        }
+        title="Changes"
+      />
 
-        {changes.length === 0 ? (
-          <OpenSpecEmptyState
-            description="There are currently no entries under openspec/changes/."
-            title="No changes found"
-          />
-        ) : (
-          <div className="flex flex-col divide-y divide-border/60">
-            {changes.map((c) => {
-              const last = formatLastModified(c.lastModified);
-              return (
-                <OpenSpecArtifactCard
-                  excerpt={c.excerpt}
-                  eyebrow={c.name}
-                  footer={
-                    <>
-                      <OpenSpecProgressPill completed={c.completedTasks} total={c.totalTasks} />
-                      {c.affectedCapabilities.length > 0 && (
-                        <span>
-                          affects: <span className="font-mono">{c.affectedCapabilities.join(", ")}</span>
-                        </span>
-                      )}
-                      {last && <span>updated {last}</span>}
-                    </>
-                  }
-                  href={planningPath(`/changes/${c.name}`)}
-                  key={c.name}
-                  meta={<OpenSpecStatusPill status={c.status} />}
-                  title={c.title}
-                />
-              );
-            })}
-          </div>
-        )}
-      </div>
-    </OpenSpecShell>
+      {changes.length === 0 ? (
+        <div className="flex flex-col items-start gap-1.5 py-2">
+          <div className="font-medium text-foreground/80">No changes found</div>
+          <div className="pdpp-body text-muted-foreground">There are currently no entries under openspec/changes/.</div>
+        </div>
+      ) : (
+        <div className="flex flex-col divide-y divide-border/60">
+          {changes.map((c) => (
+            <ArtifactLink
+              excerpt={c.excerpt}
+              eyebrow={c.name}
+              footer={
+                <>
+                  <span className="font-mono">
+                    {c.totalTasks > 0 ? `${c.completedTasks}/${c.totalTasks} tasks` : "no tasks"}
+                  </span>
+                  {c.affectedCapabilities.length > 0 && (
+                    <span>
+                      affects: <span className="font-mono">{c.affectedCapabilities.join(", ")}</span>
+                    </span>
+                  )}
+                  {c.lastModified && (
+                    <span className="inline-flex items-baseline gap-1">
+                      updated <Timestamp precision="date" value={c.lastModified} />
+                    </span>
+                  )}
+                </>
+              }
+              href={planningPath(`/changes/${c.name}`)}
+              key={c.name}
+              meta={<StatusBadge status={c.status} vocabulary={ARTIFACT_LIFECYCLE_VOCABULARY} />}
+              title={c.title}
+            />
+          ))}
+        </div>
+      )}
+    </DocsLayout>
   );
 }

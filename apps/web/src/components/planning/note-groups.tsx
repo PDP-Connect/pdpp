@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { ArtifactLink } from "@/components/docs/artifact-link.tsx";
 import { Timestamp } from "@/components/ui/timestamp.tsx";
 import type {
   OpenSpecDesignNoteGroup,
@@ -6,7 +7,6 @@ import type {
   OpenSpecDesignNoteSummary,
 } from "@/lib/openspec/index.ts";
 import { planningPath } from "@/lib/openspec/public.ts";
-import { OpenSpecArtifactCard } from "./open-spec-artifact-card.tsx";
 
 const NOTE_KIND_LABELS: Record<OpenSpecDesignNoteKind, string> = {
   "open-question": "Open questions",
@@ -112,7 +112,7 @@ function GroupBody({ group }: { group: OpenSpecDesignNoteGroup }) {
           <div className="pdpp-caption text-muted-foreground">{section.label}</div>
           <div className="flex flex-col divide-y divide-border/60">
             {section.notes.map((note) => (
-              <OpenSpecArtifactCard
+              <ArtifactLink
                 excerpt={note.excerpt}
                 footer={noteDates(note)}
                 href={planningPath(`/notes/${note.changeName}/${note.noteSlug}`)}
@@ -127,7 +127,7 @@ function GroupBody({ group }: { group: OpenSpecDesignNoteGroup }) {
   );
 }
 
-export function OpenSpecNoteGroups({
+export function NoteGroups({
   groups,
   collapsible = false,
   defaultOpenCount = 0,

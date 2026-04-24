@@ -1,18 +1,18 @@
 import Link from "next/link";
 import { cn } from "@/lib/utils.ts";
 
-export interface OpenSpecSidebarItem {
+export interface DocsSidebarItem {
   active?: boolean;
   href: string;
   label: string;
 }
 
-export interface OpenSpecSidebarSection {
+export interface DocsSidebarSection {
   heading: string;
-  items: OpenSpecSidebarItem[];
+  items: DocsSidebarItem[];
 }
 
-export function OpenSpecSidebar({ sections }: { sections: OpenSpecSidebarSection[] }) {
+export function DocsSidebar({ sections }: { sections: DocsSidebarSection[] }) {
   return (
     <aside className="hidden xl:sticky xl:top-[4.5rem] xl:block xl:self-start">
       <nav className="flex flex-col gap-5">

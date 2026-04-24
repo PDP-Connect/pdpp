@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState } from "react";
 import {
+  ARTIFACT_LIFECYCLE_VOCABULARY,
   Callout,
   Section as DashboardSectionPrimitive,
   DataList,
@@ -13,6 +14,9 @@ import {
   StatusBadge,
   Toolbar,
 } from "@/app/dashboard/components/primitives.tsx";
+import { ArtifactLink } from "@/components/docs/artifact-link.tsx";
+import { ProsePage } from "@/components/docs/prose-page.tsx";
+import { SourceLink } from "@/components/docs/source-link.tsx";
 import { Hero } from "@/components/hero.tsx";
 import type { ConnectorCardProps } from "@/components/pdpp/connector-card.tsx";
 import { ConnectorCard } from "@/components/pdpp/connector-card.tsx";
@@ -2247,26 +2251,44 @@ function DashboardPrimitivesSection() {
         <div>
           <SubLabel>StatusBadge + MetaPill — tones</SubLabel>
           <p className="pdpp-caption mb-4 max-w-[52ch] text-muted-foreground">
-            StatusBadge maps a string status to a tone (success / warning / danger / neutral). MetaPill is a small
-            inline key/value chip with optional tone. Use MetaPill on PageHeader `meta`; StatusBadge per row.
+            StatusBadge is one primitive with many vocabularies — one per domain. Don't conflate run lifecycle (
+            <code className="font-mono">started</code>) with artifact authoring states (
+            <code className="font-mono">in-progress</code>); give each domain its own vocabulary map. MetaPill is a
+            small inline key/value chip. Use MetaPill on PageHeader `meta`; StatusBadge per row.
           </p>
-          <div className="rounded-lg border border-border/80 bg-background p-6">
-            <div className="mb-4 flex flex-wrap items-center gap-2">
-              <StatusBadge status="succeeded" />
-              <StatusBadge status="issued" />
-              <StatusBadge status="pending" />
-              <StatusBadge status="started" />
-              <StatusBadge status="failed" />
-              <StatusBadge status="revoked" />
-              <StatusBadge status="cancelled" />
-              <StatusBadge status="token_issued" />
+          <div className="flex flex-col gap-4 rounded-lg border border-border/80 bg-background p-6">
+            <div>
+              <div className="pdpp-eyebrow mb-2 text-muted-foreground">Run/grant lifecycle (default)</div>
+              <div className="flex flex-wrap items-center gap-2">
+                <StatusBadge status="succeeded" />
+                <StatusBadge status="issued" />
+                <StatusBadge status="pending" />
+                <StatusBadge status="started" />
+                <StatusBadge status="failed" />
+                <StatusBadge status="revoked" />
+                <StatusBadge status="cancelled" />
+                <StatusBadge status="token_issued" />
+              </div>
             </div>
-            <div className="flex flex-wrap items-center gap-2">
-              <MetaPill label="workspace" tone="human" value="active" />
-              <MetaPill label="client" tone="protocol" value="registered" />
-              <MetaPill label="status" tone="success" value="issued" />
-              <MetaPill label="attempts" value={3} />
-              <MetaPill label="error" tone="danger" value="timeout" />
+            <div>
+              <div className="pdpp-eyebrow mb-2 text-muted-foreground">
+                Artifact authoring (vocabulary={"{ARTIFACT_LIFECYCLE_VOCABULARY}"})
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <StatusBadge status="in-progress" vocabulary={ARTIFACT_LIFECYCLE_VOCABULARY} />
+                <StatusBadge status="complete" vocabulary={ARTIFACT_LIFECYCLE_VOCABULARY} />
+                <StatusBadge status="unknown" vocabulary={ARTIFACT_LIFECYCLE_VOCABULARY} />
+              </div>
+            </div>
+            <div>
+              <div className="pdpp-eyebrow mb-2 text-muted-foreground">MetaPill</div>
+              <div className="flex flex-wrap items-center gap-2">
+                <MetaPill label="workspace" tone="human" value="active" />
+                <MetaPill label="client" tone="protocol" value="registered" />
+                <MetaPill label="status" tone="success" value="issued" />
+                <MetaPill label="attempts" value={3} />
+                <MetaPill label="error" tone="danger" value="timeout" />
+              </div>
             </div>
           </div>
         </div>
@@ -3492,6 +3514,67 @@ function DocsSection() {
               PDPP separates authorization from collection. The grant is the portable consent primitive; collection is
               one mechanism for making data available.
             </blockquote>
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-12">
+        <SubLabel>Planning / docs primitives — DocsLayout, ArtifactLink, ProsePage, SourceLink</SubLabel>
+        <p className="pdpp-caption mb-4 max-w-[64ch] text-muted-foreground">
+          Composite primitives used by <code className="font-mono">/planning</code> and intended for any future
+          repo-as-docs surface. <code className="font-mono">DocsLayout</code> provides the 13rem sidebar + main grid.{" "}
+          <code className="font-mono">ArtifactLink</code> is the canonical linked-row for markdown-backed indexes.{" "}
+          <code className="font-mono">ProsePage</code> wraps raw markdown in a tinted reading surface using the{" "}
+          <code className="font-mono">.docs-prose</code> class. <code className="font-mono">SourceLink</code> surfaces
+          repo path + created/updated timestamps + a GitHub link for any artifact.
+        </p>
+        <div className="flex flex-col gap-6">
+          <div className="rounded-lg border border-border/80 bg-background p-4">
+            <div className="pdpp-eyebrow mb-3 text-muted-foreground">ArtifactLink — with StatusBadge meta</div>
+            <div className="flex flex-col divide-y divide-border/60">
+              <ArtifactLink
+                excerpt="Establish a vocabulary for authorization metadata so clients can declare intent and owners can recognize it."
+                eyebrow="add-authorization-metadata"
+                footer={
+                  <>
+                    <span className="font-mono">3/5 tasks</span>
+                    <span>
+                      affects: <span className="font-mono">grants, queries</span>
+                    </span>
+                  </>
+                }
+                href="#"
+                meta={<StatusBadge status="in-progress" vocabulary={ARTIFACT_LIFECYCLE_VOCABULARY} />}
+                title="Add authorization metadata"
+              />
+              <ArtifactLink
+                excerpt="Generalize the status primitive so run lifecycle and artifact authoring can coexist without a category error."
+                eyebrow="generalize-status-badge"
+                footer={<span className="font-mono">3/3 tasks</span>}
+                href="#"
+                meta={<StatusBadge status="complete" vocabulary={ARTIFACT_LIFECYCLE_VOCABULARY} />}
+                title="Generalize StatusBadge vocabulary"
+              />
+            </div>
+          </div>
+
+          <div className="rounded-lg border border-border/80 bg-background p-4">
+            <div className="pdpp-eyebrow mb-3 text-muted-foreground">SourceLink — repo path + timestamps</div>
+            <SourceLink
+              createdAt="2026-03-10T00:00:00Z"
+              lastModified="2026-04-22T00:00:00Z"
+              repoRelativePath="openspec/changes/generalize-status-badge/proposal.md"
+            />
+          </div>
+
+          <div>
+            <div className="pdpp-eyebrow mb-3 text-muted-foreground">ProsePage — tinted reading surface</div>
+            <ProsePage
+              markdown={
+                "## Why\n\nTwo lifecycle languages were colliding in one primitive: run states (`started → succeeded`) and artifact states (`in-progress → complete`). Mashing them together is a category error.\n\n- **Run lifecycle** — event states of transient operations.\n- **Artifact lifecycle** — maturity states of durable documents.\n\nOne primitive (the chip), many vocabularies."
+              }
+              trimDocumentTitle={false}
+            />
           </div>
         </div>
       </div>

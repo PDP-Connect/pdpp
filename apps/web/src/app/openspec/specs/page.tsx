@@ -1,9 +1,8 @@
 import type { Metadata } from "next";
-import { OpenSpecArtifactCard } from "@/components/openspec/open-spec-artifact-card.tsx";
-import { OpenSpecBreadcrumbs } from "@/components/openspec/open-spec-breadcrumbs.tsx";
-import { OpenSpecEmptyState } from "@/components/openspec/open-spec-empty-state.tsx";
-import { OpenSpecShell } from "@/components/openspec/open-spec-shell.tsx";
-import { buildOpenSpecSidebarSections } from "@/components/openspec/sidebar-sections.ts";
+import { PageHeader } from "@/app/dashboard/components/primitives.tsx";
+import { ArtifactLink } from "@/components/docs/artifact-link.tsx";
+import { DocsLayout } from "@/components/docs/docs-layout.tsx";
+import { buildPlanningSidebarSections } from "@/components/planning/sidebar-sections.ts";
 import { listOpenSpecSpecs } from "@/lib/openspec/index.ts";
 import { PLANNING_LABEL, planningPath } from "@/lib/openspec/public.ts";
 
@@ -14,49 +13,47 @@ export const metadata: Metadata = {
 
 export default async function OpenSpecSpecsPage() {
   const specs = await listOpenSpecSpecs();
-  const sections = buildOpenSpecSidebarSections({ kind: "specs" });
+  const sections = buildPlanningSidebarSections({ kind: "specs" });
 
   return (
-    <OpenSpecShell sections={sections}>
-      <div className="flex flex-col gap-6">
-        <OpenSpecBreadcrumbs crumbs={[{ label: PLANNING_LABEL, href: planningPath() }, { label: "Specs" }]} />
-        <header className="flex flex-col gap-2">
-          <h1 className="font-semibold text-[clamp(1.6rem,2.8vw,2.05rem)] leading-tight tracking-tight">
-            Capability specs
-          </h1>
-          <p className="pdpp-body max-w-3xl text-muted-foreground">
+    <DocsLayout sections={sections}>
+      <PageHeader
+        breadcrumbs={[{ href: planningPath(), label: PLANNING_LABEL }, { label: "Specs" }]}
+        description={
+          <>
             Durable capability specifications under <code className="font-mono text-xs">openspec/specs/</code>.
-          </p>
-        </header>
+          </>
+        }
+        title="Capability specs"
+      />
 
-        {specs.length === 0 ? (
-          <OpenSpecEmptyState
-            description="There are currently no entries under openspec/specs/."
-            title="No specs found"
-          />
-        ) : (
-          <div className="flex flex-col divide-y divide-border/60">
-            {specs.map((s) => (
-              <OpenSpecArtifactCard
-                excerpt={s.excerpt}
-                eyebrow={s.capability}
-                footer={
-                  s.relatedChanges.length > 0 ? (
-                    <span>
-                      active in: <span className="font-mono">{s.relatedChanges.join(", ")}</span>
-                    </span>
-                  ) : (
-                    <span className="opacity-70">no active changes</span>
-                  )
-                }
-                href={planningPath(`/specs/${s.capability}`)}
-                key={s.capability}
-                title={s.title}
-              />
-            ))}
-          </div>
-        )}
-      </div>
-    </OpenSpecShell>
+      {specs.length === 0 ? (
+        <div className="flex flex-col items-start gap-1.5 py-2">
+          <div className="font-medium text-foreground/80">No specs found</div>
+          <div className="pdpp-body text-muted-foreground">There are currently no entries under openspec/specs/.</div>
+        </div>
+      ) : (
+        <div className="flex flex-col divide-y divide-border/60">
+          {specs.map((s) => (
+            <ArtifactLink
+              excerpt={s.excerpt}
+              eyebrow={s.capability}
+              footer={
+                s.relatedChanges.length > 0 ? (
+                  <span>
+                    active in: <span className="font-mono">{s.relatedChanges.join(", ")}</span>
+                  </span>
+                ) : (
+                  <span className="opacity-70">no active changes</span>
+                )
+              }
+              href={planningPath(`/specs/${s.capability}`)}
+              key={s.capability}
+              title={s.title}
+            />
+          ))}
+        </div>
+      )}
+    </DocsLayout>
   );
 }

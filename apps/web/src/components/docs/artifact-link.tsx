@@ -1,7 +1,7 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
 
-export function OpenSpecArtifactCard({
+export function ArtifactLink({
   href,
   eyebrow,
   title,

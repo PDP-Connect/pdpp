@@ -1,10 +1,10 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
-import { OpenSpecBreadcrumbs } from "@/components/openspec/open-spec-breadcrumbs.tsx";
-import { OpenSpecMarkdownPage } from "@/components/openspec/open-spec-markdown-page.tsx";
-import { OpenSpecShell } from "@/components/openspec/open-spec-shell.tsx";
-import { OpenSpecSourceLink } from "@/components/openspec/open-spec-source-link.tsx";
-import { buildOpenSpecSidebarSections } from "@/components/openspec/sidebar-sections.ts";
+import { PageHeader } from "@/app/dashboard/components/primitives.tsx";
+import { DocsLayout } from "@/components/docs/docs-layout.tsx";
+import { ProsePage } from "@/components/docs/prose-page.tsx";
+import { SourceLink } from "@/components/docs/source-link.tsx";
+import { buildPlanningSidebarSections } from "@/components/planning/sidebar-sections.ts";
 import { getOpenSpecDesignNote, listOpenSpecDesignNotes } from "@/lib/openspec/index.ts";
 import { PLANNING_LABEL, planningPath } from "@/lib/openspec/public.ts";
 
@@ -36,46 +36,46 @@ export default async function OpenSpecDesignNotePage({ params }: PageProps) {
     notFound();
   }
 
-  const sections = buildOpenSpecSidebarSections({
+  const sections = buildPlanningSidebarSections({
     kind: "notes",
     changeName: change,
     noteSlug: note,
   });
 
   return (
-    <OpenSpecShell sections={sections}>
+    <DocsLayout sections={sections}>
       <article className="flex flex-col gap-6">
-        <OpenSpecBreadcrumbs
-          crumbs={[
-            { label: PLANNING_LABEL, href: planningPath() },
-            { label: "Project notes", href: planningPath("/notes") },
-            { label: change, href: planningPath(`/changes/${change}`) },
+        <PageHeader
+          breadcrumbs={[
+            { href: planningPath(), label: PLANNING_LABEL },
+            { href: planningPath("/notes"), label: "Project notes" },
+            { href: planningPath(`/changes/${change}`), label: change },
             { label: designNote.title },
           ]}
+          meta={
+            <>
+              <div className="pdpp-caption flex flex-wrap items-center gap-2 text-muted-foreground">
+                <span className="font-mono">{change}</span>
+                <span aria-hidden="true" className="text-muted-foreground/50">
+                  ·
+                </span>
+                <span>Project note</span>
+                <span aria-hidden="true" className="text-muted-foreground/50">
+                  ·
+                </span>
+                <span>{designNote.noteKindLabel}</span>
+              </div>
+              <SourceLink
+                createdAt={designNote.createdAt}
+                lastModified={designNote.lastModified}
+                repoRelativePath={designNote.repoRelativePath}
+              />
+            </>
+          }
+          title={designNote.title}
         />
-        <header className="flex flex-col gap-3">
-          <h1 className="font-semibold text-[clamp(1.6rem,2.8vw,2.05rem)] leading-tight tracking-tight">
-            {designNote.title}
-          </h1>
-          <div className="pdpp-caption flex flex-wrap items-center gap-2 text-muted-foreground">
-            <span className="font-mono">{change}</span>
-            <span aria-hidden="true" className="text-muted-foreground/50">
-              ·
-            </span>
-            <span>Project note</span>
-            <span aria-hidden="true" className="text-muted-foreground/50">
-              ·
-            </span>
-            <span>{designNote.noteKindLabel}</span>
-          </div>
-          <OpenSpecSourceLink
-            createdAt={designNote.createdAt}
-            lastModified={designNote.lastModified}
-            repoRelativePath={designNote.repoRelativePath}
-          />
-        </header>
-        <OpenSpecMarkdownPage markdown={designNote.markdown} />
+        <ProsePage markdown={designNote.markdown} />
       </article>
-    </OpenSpecShell>
+    </DocsLayout>
   );
 }

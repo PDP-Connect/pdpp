@@ -1,11 +1,10 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
-import { OpenSpecBreadcrumbs } from "@/components/openspec/open-spec-breadcrumbs.tsx";
-import { OpenSpecMarkdownPage } from "@/components/openspec/open-spec-markdown-page.tsx";
-import { OpenSpecProgressPill } from "@/components/openspec/open-spec-progress-pill.tsx";
-import { OpenSpecShell } from "@/components/openspec/open-spec-shell.tsx";
-import { OpenSpecSourceLink } from "@/components/openspec/open-spec-source-link.tsx";
-import { buildOpenSpecSidebarSections } from "@/components/openspec/sidebar-sections.ts";
+import { MetaPill, PageHeader } from "@/app/dashboard/components/primitives.tsx";
+import { DocsLayout } from "@/components/docs/docs-layout.tsx";
+import { ProsePage } from "@/components/docs/prose-page.tsx";
+import { SourceLink } from "@/components/docs/source-link.tsx";
+import { buildPlanningSidebarSections } from "@/components/planning/sidebar-sections.ts";
 import { getOpenSpecChange, getOpenSpecChangeArtifact, listOpenSpecChanges } from "@/lib/openspec/index.ts";
 import { PLANNING_LABEL, planningPath } from "@/lib/openspec/public.ts";
 
@@ -30,47 +29,43 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
 }
 
 export default async function ChangeTasksPage({ params }: PageProps) {
-  const { change } = await params;
+  const { change: changeName } = await params;
   const [artifact, summary] = await Promise.all([
-    getOpenSpecChangeArtifact(change, "tasks"),
-    getOpenSpecChange(change),
+    getOpenSpecChangeArtifact(changeName, "tasks"),
+    getOpenSpecChange(changeName),
   ]);
   if (!(artifact && summary)) {
     notFound();
   }
 
-  const sections = buildOpenSpecSidebarSections({
+  const sections = buildPlanningSidebarSections({
     kind: "change",
-    changeName: change,
+    changeName,
     artifact: "tasks",
   });
 
   return (
-    <OpenSpecShell sections={sections}>
-      <article className="flex flex-col gap-6">
-        <OpenSpecBreadcrumbs
-          crumbs={[
-            { label: PLANNING_LABEL, href: planningPath() },
-            { label: "Changes", href: planningPath("/changes") },
-            { label: change, href: planningPath(`/changes/${change}`) },
-            { label: "Tasks" },
-          ]}
-        />
-        <header className="flex flex-col gap-3">
-          <div className="flex flex-wrap items-center gap-3">
-            <h1 className="font-semibold text-[clamp(1.6rem,2.8vw,2.05rem)] leading-tight tracking-tight">
-              {artifact.title}
-            </h1>
-            <OpenSpecProgressPill completed={summary.completedTasks} total={summary.totalTasks} />
-          </div>
-          <OpenSpecSourceLink
-            createdAt={artifact.createdAt}
-            lastModified={artifact.lastModified}
-            repoRelativePath={artifact.repoRelativePath}
-          />
-        </header>
-        <OpenSpecMarkdownPage markdown={artifact.markdown} />
-      </article>
-    </OpenSpecShell>
+    <DocsLayout sections={sections}>
+      <PageHeader
+        breadcrumbs={[
+          { href: planningPath(), label: PLANNING_LABEL },
+          { href: planningPath("/changes"), label: "Changes" },
+          { href: planningPath(`/changes/${changeName}`), label: summary.title },
+          { label: "Tasks" },
+        ]}
+        meta={
+          <>
+            <MetaPill label="tasks" value={`${summary.completedTasks}/${summary.totalTasks}`} />
+            <SourceLink
+              createdAt={artifact.createdAt}
+              lastModified={artifact.lastModified}
+              repoRelativePath={artifact.repoRelativePath}
+            />
+          </>
+        }
+        title={artifact.title}
+      />
+      <ProsePage markdown={artifact.markdown} />
+    </DocsLayout>
   );
 }

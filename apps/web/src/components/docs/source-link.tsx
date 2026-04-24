@@ -4,13 +4,13 @@ const GITHUB_BLOB_BASE = "https://github.com/vana-com/pdpp/blob/main";
 const GITHUB_TREE_BASE = "https://github.com/vana-com/pdpp/tree/main";
 const TRAILING_SLASH_RE = /\/+$/;
 
-export function openSpecGithubUrl(repoRelativePath: string): string {
+export function repoGithubUrl(repoRelativePath: string): string {
   const normalizedPath = repoRelativePath.replace(TRAILING_SLASH_RE, "");
   const base = repoRelativePath.endsWith("/") ? GITHUB_TREE_BASE : GITHUB_BLOB_BASE;
   return `${base}/${normalizedPath}`;
 }
 
-export function OpenSpecSourceLink({
+export function SourceLink({
   repoRelativePath,
   createdAt,
   lastModified,
@@ -51,7 +51,7 @@ export function OpenSpecSourceLink({
       </span>
       <a
         className="transition-colors hover:text-foreground"
-        href={openSpecGithubUrl(repoRelativePath)}
+        href={repoGithubUrl(repoRelativePath)}
         rel="noreferrer"
         target="_blank"
       >

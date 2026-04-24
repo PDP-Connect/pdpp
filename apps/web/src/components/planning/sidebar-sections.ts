@@ -1,7 +1,7 @@
+import type { DocsSidebarSection } from "@/components/docs/docs-sidebar.tsx";
 import { PLANNING_LABEL, planningPath } from "@/lib/openspec/public.ts";
-import type { OpenSpecSidebarSection } from "./open-spec-sidebar.tsx";
 
-export type OpenSpecActiveScope =
+export type PlanningSidebarScope =
   | { kind: "overview" }
   | { kind: "specs"; capability?: string }
   | { kind: "notes"; changeName?: string; noteSlug?: string }
@@ -11,8 +11,8 @@ export type OpenSpecActiveScope =
       artifact?: "overview" | "proposal" | "design" | "tasks" | "spec-deltas";
     };
 
-export function buildOpenSpecSidebarSections(scope: OpenSpecActiveScope): OpenSpecSidebarSection[] {
-  const top: OpenSpecSidebarSection = {
+export function buildPlanningSidebarSections(scope: PlanningSidebarScope): DocsSidebarSection[] {
+  const top: DocsSidebarSection = {
     heading: PLANNING_LABEL,
     items: [
       { href: planningPath(), label: "Overview", active: scope.kind === "overview" },
@@ -27,7 +27,7 @@ export function buildOpenSpecSidebarSections(scope: OpenSpecActiveScope): OpenSp
   }
 
   const base = planningPath(`/changes/${scope.changeName}`);
-  const changeSection: OpenSpecSidebarSection = {
+  const changeSection: DocsSidebarSection = {
     heading: scope.changeName,
     items: [
       { href: base, label: "Overview", active: scope.artifact === "overview" },

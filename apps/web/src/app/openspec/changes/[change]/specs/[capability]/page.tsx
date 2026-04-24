@@ -1,11 +1,16 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
-import { OpenSpecBreadcrumbs } from "@/components/openspec/open-spec-breadcrumbs.tsx";
-import { OpenSpecMarkdownPage } from "@/components/openspec/open-spec-markdown-page.tsx";
-import { OpenSpecShell } from "@/components/openspec/open-spec-shell.tsx";
-import { OpenSpecSourceLink } from "@/components/openspec/open-spec-source-link.tsx";
-import { buildOpenSpecSidebarSections } from "@/components/openspec/sidebar-sections.ts";
-import { getOpenSpecChangeSpecDelta, listOpenSpecChangeSpecDeltas, listOpenSpecChanges } from "@/lib/openspec/index.ts";
+import { PageHeader } from "@/app/dashboard/components/primitives.tsx";
+import { DocsLayout } from "@/components/docs/docs-layout.tsx";
+import { ProsePage } from "@/components/docs/prose-page.tsx";
+import { SourceLink } from "@/components/docs/source-link.tsx";
+import { buildPlanningSidebarSections } from "@/components/planning/sidebar-sections.ts";
+import {
+  getOpenSpecChange,
+  getOpenSpecChangeSpecDelta,
+  listOpenSpecChangeSpecDeltas,
+  listOpenSpecChanges,
+} from "@/lib/openspec/index.ts";
 import { PLANNING_LABEL, planningPath } from "@/lib/openspec/public.ts";
 
 interface PageProps {
@@ -39,42 +44,41 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
 }
 
 export default async function ChangeSpecDeltaPage({ params }: PageProps) {
-  const { change, capability } = await params;
-  const artifact = await getOpenSpecChangeSpecDelta(change, capability);
-  if (!artifact) {
+  const { change: changeName, capability } = await params;
+  const [artifact, change] = await Promise.all([
+    getOpenSpecChangeSpecDelta(changeName, capability),
+    getOpenSpecChange(changeName),
+  ]);
+  if (!(artifact && change)) {
     notFound();
   }
 
-  const sections = buildOpenSpecSidebarSections({
+  const sections = buildPlanningSidebarSections({
     kind: "change",
-    changeName: change,
+    changeName,
     artifact: "spec-deltas",
   });
 
   return (
-    <OpenSpecShell sections={sections}>
-      <article className="flex flex-col gap-6">
-        <OpenSpecBreadcrumbs
-          crumbs={[
-            { label: PLANNING_LABEL, href: planningPath() },
-            { label: "Changes", href: planningPath("/changes") },
-            { label: change, href: planningPath(`/changes/${change}`) },
-            { label: "Spec Deltas", href: planningPath(`/changes/${change}/specs`) },
-            { label: capability },
-          ]}
-        />
-        <header className="flex flex-col gap-2">
-          <h1 className="font-semibold text-[clamp(1.6rem,2.8vw,2.05rem)] leading-tight tracking-tight">
-            {artifact.title}
-          </h1>
-          <OpenSpecSourceLink
+    <DocsLayout sections={sections}>
+      <PageHeader
+        breadcrumbs={[
+          { href: planningPath(), label: PLANNING_LABEL },
+          { href: planningPath("/changes"), label: "Changes" },
+          { href: planningPath(`/changes/${changeName}`), label: change.title },
+          { href: planningPath(`/changes/${changeName}/specs`), label: "Spec Deltas" },
+          { label: capability },
+        ]}
+        meta={
+          <SourceLink
             createdAt={artifact.createdAt}
             lastModified={artifact.lastModified}
             repoRelativePath={artifact.repoRelativePath}
           />
-        </header>
-        <OpenSpecMarkdownPage markdown={artifact.markdown} />
-      </article>
-    </OpenSpecShell>
+        }
+        title={artifact.title}
+      />
+      <ProsePage markdown={artifact.markdown} />
+    </DocsLayout>
   );
 }

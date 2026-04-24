@@ -229,38 +229,68 @@ export function MetaPill({ label, value, tone = "neutral" }: { label: string; va
 }
 
 // ─── Status badge ──────────────────────────────────────────────────────────
-// Consolidates scattered status-chip styles across grants, runs, traces.
+// One primitive (the chip), many vocabularies (one per domain).
+// Vocabularies are domain-bound — don't conflate run lifecycle ("started")
+// with artifact authoring states ("in-progress").
 
-const STATUS_BADGE_TONE_CLASSES: Record<"success" | "danger" | "warning" | "neutral", string> = {
+export type StatusTone = "success" | "danger" | "warning" | "neutral";
+
+interface StatusVocabularyEntry {
+  label: string;
+  tone: StatusTone;
+}
+
+export type StatusVocabulary = Record<string, StatusVocabularyEntry>;
+
+const STATUS_BADGE_TONE_CLASSES: Record<StatusTone, string> = {
   danger: "bg-destructive/10 text-destructive",
   success: "bg-[color:var(--success-wash)] text-[color:var(--success)]",
   warning: "bg-[color:var(--warning-wash)] text-[color:var(--warning)]",
   neutral: "bg-muted text-muted-foreground",
 };
 
-export function StatusBadge({ status, inline = false }: { status: string; inline?: boolean }) {
-  const tone = statusTone(status);
-  const toneClass = STATUS_BADGE_TONE_CLASSES[tone];
+// Run/grant lifecycle: event states of transient operations.
+export const RUN_LIFECYCLE_VOCABULARY: StatusVocabulary = {
+  failed: { label: "failed", tone: "danger" },
+  rejected: { label: "rejected", tone: "danger" },
+  denied: { label: "denied", tone: "danger" },
+  revoked: { label: "revoked", tone: "danger" },
+  cancelled: { label: "cancelled", tone: "danger" },
+  succeeded: { label: "succeeded", tone: "success" },
+  issued: { label: "issued", tone: "success" },
+  token_issued: { label: "token issued", tone: "success" },
+  approved: { label: "approved", tone: "success" },
+  started: { label: "started", tone: "warning" },
+  pending: { label: "pending", tone: "warning" },
+  staged: { label: "staged", tone: "warning" },
+  verification_pending: { label: "verification pending", tone: "warning" },
+};
+
+// Change/spec authoring lifecycle: maturity states of durable artifacts.
+export const ARTIFACT_LIFECYCLE_VOCABULARY: StatusVocabulary = {
+  "in-progress": { label: "in progress", tone: "warning" },
+  complete: { label: "complete", tone: "success" },
+  unknown: { label: "no tasks", tone: "neutral" },
+};
+
+export function StatusBadge({
+  status,
+  vocabulary = RUN_LIFECYCLE_VOCABULARY,
+  inline = false,
+}: {
+  status: string;
+  vocabulary?: StatusVocabulary;
+  inline?: boolean;
+}) {
+  const entry = vocabulary[status] ?? { label: status.replace(/_/g, " "), tone: "neutral" as const };
+  const toneClass = STATUS_BADGE_TONE_CLASSES[entry.tone];
   return (
     <span
       className={`pdpp-eyebrow ${inline ? "" : "inline-flex"} rounded-[3px] px-1.5 py-0.5 font-medium tabular-nums ${toneClass}`}
     >
-      {status.replace(/_/g, " ")}
+      {entry.label}
     </span>
   );
-}
-
-function statusTone(status: string): "success" | "danger" | "warning" | "neutral" {
-  if (["failed", "rejected", "denied", "revoked", "cancelled"].includes(status)) {
-    return "danger";
-  }
-  if (["succeeded", "issued", "token_issued", "approved"].includes(status)) {
-    return "success";
-  }
-  if (["started", "pending", "staged", "verification_pending"].includes(status)) {
-    return "warning";
-  }
-  return "neutral";
 }
 
 // ─── Callout: the one card pattern ─────────────────────────────────────────
