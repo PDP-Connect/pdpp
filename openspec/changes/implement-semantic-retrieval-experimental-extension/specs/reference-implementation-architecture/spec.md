@@ -154,6 +154,58 @@ The reference SHALL persist per-(connector_id, stream) metadata describing the d
 - **WHEN** no drift signal is active and no rebuild is in progress
 - **THEN** the reference SHALL report `index_state: "built"` in the advertisement
 
+### Requirement: The reference's default semantic index SHALL persist across process restarts
+
+The reference's default vector index SHALL store embeddings persistently in the same SQLite database used by the rest of the reference, so that semantic coverage survives process restart. The reference SHALL prefer `sqlite-vec` as the default persistent backend when its SQLite extension can be loaded, and SHALL fall back to a persistent SQLite-BLOB flat backend (same database, `BLOB`-columned table, distance computed in JavaScript) when `sqlite-vec` cannot be loaded. Both backends SHALL implement the same `VectorIndex` interface. Neither backend SHALL require ephemeral in-process state for `capabilities.semantic_retrieval.supported: true`.
+
+#### Scenario: `sqlite-vec` loads successfully at init
+- **WHEN** the reference opens its `better-sqlite3` database at startup and `sqliteVec.load(db)` succeeds
+- **THEN** the reference SHALL use the `sqlite-vec`-backed `VectorIndex` implementation (a `vec0` virtual table in the same database)
+- **AND** the reference SHALL log a startup line identifying the chosen backend as `sqlite-vec`
+- **AND** subsequent `upsert`, `delete`, and `query` calls SHALL operate against the `vec0` virtual table
+
+#### Scenario: `sqlite-vec` fails to load at init
+- **WHEN** the reference opens its `better-sqlite3` database at startup and `sqliteVec.load(db)` throws (platform has no published binary, the environment forbids loading SQLite extensions, or any other load error)
+- **THEN** the reference SHALL NOT crash at startup
+- **AND** the reference SHALL log a warning identifying `sqlite-vec` as unavailable and the fallback backend as active
+- **AND** the reference SHALL use the persistent SQLite-BLOB flat `VectorIndex` implementation (rows in a standard SQLite table, distance computed in JavaScript)
+- **AND** the BLOB-flat backend SHALL expose the same interface and the same persistence semantics as the `sqlite-vec` backend
+
+#### Scenario: Vectors persist across process restart (`sqlite-vec` path)
+- **WHEN** the reference ingests records for a participating `(connector_id, stream)` with declared `semantic_fields`, then the process is stopped and a fresh process is started against the same `PDPP_DB_PATH`
+- **THEN** the advertisement SHALL report `capabilities.semantic_retrieval.supported: true` with `index_state: "built"` immediately, without running a rebuild
+- **AND** `GET /v1/search/semantic` SHALL return hits for previously-ingested records
+- **AND** the reference SHALL NOT require re-ingest from the connector to make those records searchable again
+
+#### Scenario: Vectors persist across process restart (BLOB-flat path)
+- **WHEN** the reference is forced onto the BLOB-flat fallback and the same stop/start sequence as above is performed
+- **THEN** the same end-to-end behavior SHALL hold: `index_state: "built"`, hits return, no re-ingest
+
+#### Scenario: `supported: true` does not depend on ephemeral in-process state
+- **WHEN** the reference advertises `capabilities.semantic_retrieval.supported: true`
+- **THEN** the advertisement SHALL be backed by a persistent store on disk
+- **AND** a clean restart SHALL NOT cause `supported: true` to become `supported: false` absent some other failure
+
+### Requirement: The reference SHALL backfill the semantic index from records on startup without requiring re-ingest
+
+Records are the source of truth for semantic retrieval in the reference. The reference SHALL provide a startup backfill path that detects drift per `(connector_id, stream)` and rebuilds the vector index from records already stored in the `better-sqlite3` database. The backfill SHALL NOT call back into any connector and SHALL NOT require re-ingest of raw data.
+
+#### Scenario: Startup with no drift
+- **WHEN** the reference starts and the persisted `semantic_search_meta` fingerprint, `model_id`, `dimensions`, and `distance_metric` all match the currently configured backend, and the row-count band check is satisfied
+- **THEN** the reference SHALL advertise `index_state: "built"` immediately
+- **AND** the reference SHALL NOT run a rebuild
+
+#### Scenario: Startup after a drift signal
+- **WHEN** the reference starts and any drift signal (fingerprint change, backend identity change, or row-count band divergence) is active
+- **THEN** the reference SHALL advertise `index_state: "stale"` initially and `index_state: "building"` while the rebuild runs, and SHALL advertise `index_state: "built"` once the rebuild completes
+- **AND** the rebuild SHALL read records from the records table and re-embed their declared `semantic_fields` using the currently configured backend
+- **AND** the rebuild SHALL NOT call back into the originating connector, re-ingest raw data, or require any network traffic beyond calls to the configured embedding backend for re-embedding
+
+#### Scenario: Historical records become searchable again after restart
+- **WHEN** the reference is restarted on a database that already contains records for a participating stream
+- **THEN** those historical records SHALL be searchable via `GET /v1/search/semantic` either immediately (no-drift case) or after the startup backfill completes (drift case)
+- **AND** the reference SHALL NOT require a connector re-sync to make historical records searchable
+
 ### Requirement: The reference SHALL NOT substitute a non-semantic fallback behind `GET /v1/search/semantic`
 
 The reference SHALL NOT produce results on `GET /v1/search/semantic` by invoking lexical retrieval (or any other non-semantic matching path) while emitting `retrieval_mode: "semantic"` or `retrieval_mode: "hybrid"` on those results. When the vector index reports `index_state: "building"` or `"stale"`, or when the embedding backend is otherwise unable to produce honest semantic results, the reference SHALL return zero or partial results rather than substituting a non-semantic fallback. The module `reference-implementation/server/search-semantic.js` SHALL NOT import the lexical retrieval helper.

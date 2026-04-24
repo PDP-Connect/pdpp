@@ -31,7 +31,14 @@
 - [ ] 4.1 Define `EmbeddingBackend` in `reference-implementation/server/search-semantic.js` with `model()`, `dimensions()`, `distanceMetric()`, `embedQuery(text)`, `embedDocument(text)`, `available()`, `languageBias?()`.
 - [ ] 4.2 Implement the default backend `makeStubBackend({ dimensions = 64 } = {})` with:
   - `model()` returning a self-identifying string (e.g., `"pdpp-reference-stub-embed-v0"`) — the string must NOT impersonate a real provider model name
-  - deterministic hash-based embedding (same input → same vector; different inputs → different vectors)
+  - deterministic hash-based embedding with these explicit promises:
+    - **Determinism**: `embedQuery(t)` and `embedDocument(t)` return byte-equal `Float32Array` across invocations
+    - **Distinctness**: distinct inputs produce distinct vectors (hash collision on the test corpus is negligible)
+    - **Reflexive exact-match hits**: `embedQuery(t) === embedDocument(t)` exactly, so a query whose text is identical to a stored field value ranks that record at distance 0
+  - explicit NON-promises (tests MUST NOT assume these):
+    - NOT a production semantic embedding
+    - NO paraphrase, synonymy, multilingual, or conceptual-similarity recall
+    - NO ordering promise beyond "exact-match ranks first"
   - `distanceMetric()` returning `"cosine"`
   - `available()` returning `true`
   - `languageBias()` returning `null`
@@ -42,18 +49,28 @@
   - NOT register `GET /v1/search/semantic`
   - leave all existing lexical/record surfaces unchanged
 
-## 5. Vector index interface (pluggable; default in-memory flat)
+## 5. Vector index interface (pluggable; default persistent `sqlite-vec`; documented BLOB-flat fallback)
 
 - [ ] 5.1 Define `VectorIndex` in `reference-implementation/server/search-semantic.js` with `upsert()`, `delete()`, `delete_by_stream()`, `query()`, `state()`, `clear()`.
-- [ ] 5.2 Implement `makeInMemoryFlatIndex({ distanceMetric = "cosine" } = {})` with:
-  - in-process `Map` keyed by `(connector_id, stream, record_key, field)`
-  - flat-scan `query()` that respects the plan's allowed `(connector_id, stream, field)` tuples
-  - `state()` returning `"built"` in steady state; transitions to `"building"` during rebuild and `"stale"` on drift detection
-- [ ] 5.3 The `upsert()` path is called ONLY for `(stream, record_key, field, connector_id, vector)` tuples where `field ∈ stream.manifest.query.search.semantic_fields`. The caller enforces this invariant.
-- [ ] 5.4 Do NOT add `sqlite-vec` or an external vector DB as a dependency in this tranche. A persistent backend is a drop-in for the same interface and a separate change.
-- [ ] 5.5 `query()` SHALL NOT expose a distance or score value to callers. Ordering only.
+- [ ] 5.2 Add `sqlite-vec` as a runtime dependency in `reference-implementation/package.json`. Rely on the published platform binaries (`sqlite-vec-linux-x64`, `sqlite-vec-darwin-arm64`, etc.) distributed as `optionalDependencies` of the main package.
+- [ ] 5.3 In `reference-implementation/server/db.js` init path, attempt `sqliteVec.load(db)` after opening the `better-sqlite3` database. On success, record `db.vectorIndexKind = 'sqlite-vec'`. On failure (platform with no binary, locked-down environment, or any other load error), log a warning and record `db.vectorIndexKind = 'blob-flat'`. Do not throw on load failure — the reference gracefully degrades.
+- [ ] 5.4 Implement `makeSqliteVecIndex({ db, dimensions, distanceMetric })`:
+  - create a `vec0` virtual table `semantic_search_vec` with columns `connector_id TEXT PARTITION KEY`, `stream TEXT`, `record_key TEXT`, `field TEXT`, `embedding FLOAT[${dimensions}]` with the configured `distance_metric`
+  - `upsert`, `delete`, `delete_by_stream` via normal prepared statements against the virtual table
+  - `query` uses the `MATCH` operator + `ORDER BY distance LIMIT ?` to get KNN; WHERE clause filters to `(connector_id, stream, field) IN (…)` built from the grant-gated plan
+  - persistent across restarts (data lives in the `better-sqlite3` database file)
+  - `state()` returns `"built"` in steady state; `"building"` during rebuild; `"stale"` on drift
+- [ ] 5.5 Implement `makeBlobFlatIndex({ db, dimensions, distanceMetric })` as the documented fallback:
+  - schema: `semantic_search_blob(connector_id, stream, record_key, field, embedding BLOB, PRIMARY KEY(...))` + an index on `(connector_id, stream, field)` for plan-scoped scans
+  - `query` reads plan-scoped rows, materializes each `BLOB` as a `Float32Array`, computes distance in JS, sorts, paginates
+  - persistent across restarts (data lives in the same SQLite database)
+  - same interface, same `state()` contract, same persistence semantics — slower throughput at large N
+- [ ] 5.6 Selection at semantic-index construction: read `db.vectorIndexKind`; instantiate the matching backend; log a startup line naming the chosen backend so operators see it.
+- [ ] 5.7 The `upsert()` path is called ONLY for `(stream, record_key, field, connector_id, vector)` tuples where `field ∈ stream.manifest.query.search.semantic_fields`. The caller enforces this invariant. Both backends honor it by construction.
+- [ ] 5.8 `query()` SHALL NOT expose a distance or score value to callers on either backend. Ordering only.
+- [ ] 5.9 Grant scoping happens pre-query via the plan's `(connector_id, stream, field)` tuples in the WHERE clause. No embedding is ever computed for, nor read from, an unauthorized or undeclared field.
 
-## 6. Drift metadata and rebuild
+## 6. Drift metadata, startup backfill, and rebuild
 
 - [ ] 6.1 Add a `semantic_search_meta` table to `reference-implementation/server/db.js` with columns `connector_id`, `stream`, `fields_fingerprint`, `model_id`, `dimensions`, `distance_metric`. Additive; no change to existing tables; no triggers.
 - [ ] 6.2 Compute `fields_fingerprint` as a sorted JSON hash of the stream's declared `semantic_fields` at registration time and persist.
@@ -61,9 +78,13 @@
   - any change to `fields_fingerprint` for any `(connector_id, stream)`
   - any change to the configured backend's `model_id`, `dimensions`, or `distance_metric` vs. what is persisted in `semantic_search_meta`
   - row-count band divergence as a secondary signal
-- [ ] 6.4 Drift detection runs on startup and on every connector registration/update. Rebuild is JS-maintained at record write/update/delete call sites (same pattern as lexical). No SQLite triggers.
-- [ ] 6.5 While rebuilding, advertise `index_state: "building"`. On completion, advertise `index_state: "built"`. On failure or detected drift, advertise `index_state: "stale"`.
-- [ ] 6.6 Streams that lose their `semantic_fields` declaration get their stale index rows + meta dropped.
+  - (sqlite-vec path) a `dimensions` or `distance_metric` change additionally invalidates the `vec0` virtual table schema; the rebuild recreates the table
+- [ ] 6.4 Drift detection runs on startup AND on every connector registration/update. Rebuild is JS-maintained at record write/update/delete call sites (same pattern as lexical). No SQLite triggers.
+- [ ] 6.5 Implement `semanticIndexBackfillForManifest(connectorId, stream, declaredFields)` in `search-semantic.js`, parallel to the lexical tranche's `lexicalIndexBackfillForManifest`. Called from `startServer` (native mode) and from `registerConnector` (polyfill mode). Idempotent.
+- [ ] 6.6 Backfill reads records from the records table (the source of truth), embeds `declaredFields` using the configured backend, and upserts into the `VectorIndex`. It SHALL NOT call back into any connector — no re-ingest of raw data is required.
+- [ ] 6.7 While rebuilding, advertise `index_state: "building"`. On completion, advertise `index_state: "built"`. On detected drift without rebuild complete, advertise `index_state: "stale"`.
+- [ ] 6.8 Streams that lose their `semantic_fields` declaration get their stale index rows + meta dropped.
+- [ ] 6.9 **Restart survival**: on a clean restart where no drift signals fire, the advertisement SHALL report `index_state: "built"` immediately without running a rebuild, and `GET /v1/search/semantic` SHALL serve the previously-indexed corpus. Tests MUST prove this (see 14.33–14.35).
 
 ## 7. `GET /v1/search/semantic` route — thin handler, all logic in `search-semantic.js`
 
@@ -91,7 +112,7 @@
 - [ ] 8.3 Snippet generation MUST NOT paraphrase, summarize, translate, or synthesize text.
 - [ ] 8.4 Snippet is omitted when the matched field cannot yield a useful verbatim excerpt. Do NOT fabricate.
 - [ ] 8.5 Snippet's `field` MUST be a member of `matched_fields`; both MUST be members of (declared `semantic_fields`) ∩ (grant projection).
-- [ ] 8.6 Regression test: stored content `"hello world"` with a paraphrase-shaped query returns the hit (because the stub embed treats them as nearby) but the snippet text appears verbatim in `"hello world"`.
+- [ ] 8.6 Regression test (property-style, not paraphrase-assuming): seed a corpus with distinct strings; issue queries that exactly match stored field values; assert the expected record is in `data[]`; for every returned `search_result` with a `snippet`, assert `record[snippet.field].includes(snippet.text)` byte-for-byte. The stub backend guarantees exact-match reflexivity and determinism; it does NOT guarantee paraphrase-shaped hits, so the test does not rely on paraphrase behavior.
 
 ## 9. No silent non-semantic fallback
 
@@ -156,7 +177,7 @@ Create `reference-implementation/test/semantic-retrieval.test.js` covering:
 - [ ] 14.17 Manifest validator accepts: `semantic_fields` only, `lexical_fields` only, both with different contents, both with overlapping contents.
 - [ ] 14.18 Snippet hydration: snippet text is a verbatim contiguous substring of the matched field's stored value.
 - [ ] 14.19 Snippet hydration: grant-safe — no snippet text drawn from fields outside the grant projection or outside `semantic_fields`.
-- [ ] 14.20 Snippet hydration: paraphrase-shaped query still returns verbatim snippet text drawn from stored content.
+- [ ] 14.20 Snippet hydration: for every hit the stub backend produces over the seeded test corpus, assert `snippet.text` appears byte-identically as a contiguous substring of `record[snippet.field]`. (Property test; does not assume paraphrase-shaped hits — the stub is hash-based and does not promise them.)
 - [ ] 14.21 No-fallback: with `vectorIndex.state()` forced to `"stale"`, a query that would match lexically returns zero results, and `index_state` reports `stale`.
 - [ ] 14.22 No-fallback: mock `search.js` (lexical) to throw if invoked; assert `GET /v1/search/semantic` never invokes it.
 - [ ] 14.23 `index_state` transitions: on backend `model_id` change → `stale` until rebuild; on `fields_fingerprint` change → `stale` until rebuild; on successful rebuild → `built`.
@@ -169,6 +190,11 @@ Create `reference-implementation/test/semantic-retrieval.test.js` covering:
 - [ ] 14.30 Pagination: cursor from `/v1/search` passed to `/v1/search/semantic` → `invalid_cursor`.
 - [ ] 14.31 Independence from lexical: `capabilities.lexical_retrieval`, `GET /v1/search`, `/_ref/search` all behave identically to the implement-lexical-retrieval-extension baseline.
 - [ ] 14.32 `semantic_search_meta` contents match the currently configured backend; on backend change without rebuild, `index_state === "stale"`.
+- [ ] 14.33 **Restart regression — `sqlite-vec` path**: start the reference; ingest records for a seed connector with declared `semantic_fields`; issue an exact-match query against `/v1/search/semantic` and capture the hit set; STOP the reference (fully close the DB); START a fresh reference instance pointed at the same `PDPP_DB_PATH`; hit the advertisement — `capabilities.semantic_retrieval.supported: true` with `index_state: "built"` (no rebuild was needed); issue the same query; assert the same hit set returns. Historical records MUST be searchable without re-ingest.
+- [ ] 14.34 **Restart regression — BLOB-flat fallback**: same scenario as 14.33, but force the BLOB-flat path by stubbing `sqliteVec.load` to throw at init. Same end-to-end behavior: `index_state: "built"` after restart, same hits, no re-ingest.
+- [ ] 14.35 **Restart + drift**: after restart, force a drift signal (e.g., bump the backend's declared `model_id` to a different value by swapping in a second stub backend with `"pdpp-reference-stub-embed-v0-variant"`); hit the advertisement — `index_state: "stale"`; run the backfill; hit again — `index_state: "built"`. The rebuild MUST complete from records alone (the source-of-truth invariant).
+- [ ] 14.36 **`sqlite-vec` load failure is graceful**: with `sqliteVec.load` stubbed to throw, startup does NOT crash; a warning is logged; the BLOB-flat backend is used; semantic retrieval still works end-to-end.
+- [ ] 14.37 **Backend-agnostic conformance**: run the full test file twice — once with the `sqlite-vec` backend forced, once with the BLOB-flat backend forced. Every test except the backend-selection tests themselves SHALL pass identically under both paths.
 
 ## 15. Validation
 
