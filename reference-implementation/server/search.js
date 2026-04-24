@@ -22,6 +22,56 @@ import { setImmediate as yieldImmediate } from 'node:timers/promises';
 import { getConnectorManifest } from './auth.js';
 import { getDb } from './db.js';
 
+let activeLexicalBackfillCount = 0;
+let nextLexicalBackfillJobId = 1;
+const lexicalBackfillJobs = new Map();
+
+function publicLexicalBackfillJob(job) {
+  return {
+    id: job.id,
+    connector_id: job.connectorId,
+    stream: job.stream,
+    phase: job.phase,
+    active_jobs: activeLexicalBackfillCount,
+    manifest_streams_checked: job.manifestStreamsChecked,
+    manifest_streams_total: job.manifestStreamsTotal,
+    records_scanned: job.recordsScanned,
+    records_total: job.recordsTotal,
+    indexed_rows: job.indexedRows,
+    started_at: job.startedAt,
+    updated_at: job.updatedAt,
+  };
+}
+
+function latestLexicalBackfillJob() {
+  let latest = null;
+  for (const job of lexicalBackfillJobs.values()) {
+    if (!latest || job.updatedAt > latest.updatedAt) {
+      latest = job;
+    }
+  }
+  return latest;
+}
+
+function updateLexicalBackfillJob(job, patch) {
+  const updated = {
+    ...job,
+    ...patch,
+    updatedAt: new Date().toISOString(),
+  };
+  lexicalBackfillJobs.set(updated.id, updated);
+  return updated;
+}
+
+export function isLexicalIndexBackfillActive() {
+  return activeLexicalBackfillCount > 0;
+}
+
+export function getLexicalIndexBackfillProgress() {
+  const job = latestLexicalBackfillJob();
+  return job ? publicLexicalBackfillJob(job) : null;
+}
+
 // ─── Stream-level declaration lookup ───────────────────────────────────────
 
 /**
@@ -104,7 +154,7 @@ export async function lexicalIndexDeleteByConnectorStream({ connectorId, stream 
  * which handles the per-stream loop, the manifest lookup of declared fields,
  * and the drift check that decides whether a rebuild is needed at all.
  */
-async function rebuildLexicalIndexForStream({ connectorId, stream, declaredFields }) {
+async function rebuildLexicalIndexForStream({ connectorId, stream, declaredFields, recordsToScan = null, progressJob = null }) {
   const db = getDb();
   db.prepare(`
     DELETE FROM lexical_search_index
@@ -125,6 +175,8 @@ async function rebuildLexicalIndexForStream({ connectorId, stream, declaredField
   // memory on big stores.
   const PAGE = 500;
   let lastId = 0;
+  let scanned = 0;
+  let indexed = 0;
   for (;;) {
     const rows = db.prepare(`
       SELECT id, record_key, record_json
@@ -140,6 +192,7 @@ async function rebuildLexicalIndexForStream({ connectorId, stream, declaredField
     const entries = [];
     for (const row of rows) {
       lastId = Number(row.id);
+      scanned += 1;
       let data;
       try {
         data = row.record_json ? JSON.parse(row.record_json) : null;
@@ -156,10 +209,19 @@ async function rebuildLexicalIndexForStream({ connectorId, stream, declaredField
     }
     if (entries.length > 0) {
       insertRows(entries);
+      indexed += entries.length;
+    }
+    if (progressJob) {
+      progressJob = updateLexicalBackfillJob(progressJob, {
+        recordsScanned: scanned,
+        recordsTotal: recordsToScan,
+        indexedRows: indexed,
+      });
     }
     await yieldImmediate();
     if (rows.length < PAGE) break;
   }
+  return indexed;
 }
 
 /**
@@ -220,6 +282,26 @@ function fingerprintLexicalFields(declaredFields) {
  */
 export async function lexicalIndexBackfillForManifest({ manifest, log = () => {} } = {}) {
   if (!manifest?.connector_id || !Array.isArray(manifest?.streams)) return;
+  activeLexicalBackfillCount += 1;
+  const participatingStreams = manifest.streams.filter((mStream) => {
+    const declaredFields = mStream?.query?.search?.lexical_fields;
+    return Array.isArray(declaredFields) && declaredFields.length > 0;
+  }).length;
+  let progressJob = {
+    id: `lexical_backfill_${nextLexicalBackfillJobId++}`,
+    connectorId: manifest.connector_id,
+    stream: null,
+    phase: 'planning',
+    manifestStreamsChecked: 0,
+    manifestStreamsTotal: participatingStreams,
+    recordsScanned: 0,
+    recordsTotal: null,
+    indexedRows: 0,
+    startedAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+  lexicalBackfillJobs.set(progressJob.id, progressJob);
+  try {
   const connectorId = manifest.connector_id;
   const db = getDb();
 
@@ -259,6 +341,14 @@ export async function lexicalIndexBackfillForManifest({ manifest, log = () => {}
       }
       continue;
     }
+    progressJob = updateLexicalBackfillJob(progressJob, {
+      stream,
+      phase: 'checking',
+      manifestStreamsChecked: Math.min(progressJob.manifestStreamsChecked + 1, progressJob.manifestStreamsTotal),
+      recordsScanned: 0,
+      recordsTotal: null,
+      indexedRows: 0,
+    });
 
     const newFingerprint = fingerprintLexicalFields(declaredFields);
 
@@ -275,16 +365,20 @@ export async function lexicalIndexBackfillForManifest({ manifest, log = () => {}
     let indexCount = 0;
     let upperBound = 0;
 
+    const countRecords = () => {
+      const row = db.prepare(`
+        SELECT COUNT(*) AS n
+        FROM records
+        WHERE connector_id = ? AND stream = ? AND deleted = 0
+      `).get(connectorId, stream);
+      return Number(row?.n || 0);
+    };
+
     if (!needsRebuild) {
       // Fingerprint matches — fall back to the row-count band check for
       // degenerate cases. This is cheap and catches "index rows missing
       // for a stream that has records" without re-reading the records.
-      const recordCountRows = db.prepare(`
-        SELECT COUNT(*) AS n
-        FROM records
-        WHERE connector_id = ? AND stream = ? AND deleted = 0
-      `).all(connectorId, stream);
-      recordCount = Number(recordCountRows[0]?.n || 0);
+      recordCount = countRecords();
 
       const indexCountRows = db.prepare(`
         SELECT COUNT(*) AS n
@@ -302,6 +396,16 @@ export async function lexicalIndexBackfillForManifest({ manifest, log = () => {}
     }
 
     if (!needsRebuild) continue;
+    if (recordCount === 0) {
+      recordCount = countRecords();
+    }
+    progressJob = updateLexicalBackfillJob(progressJob, {
+      stream,
+      phase: 'rebuilding',
+      recordsScanned: 0,
+      recordsTotal: recordCount,
+      indexedRows: 0,
+    });
 
     if (fingerprintChanged) {
       log(`[PDPP] Lexical index field-set change for ${connectorId} stream='${stream}' ` +
@@ -311,7 +415,15 @@ export async function lexicalIndexBackfillForManifest({ manifest, log = () => {}
           `(records=${recordCount}, index=${indexCount}, expected ≤ ${upperBound}) — rebuilding`);
     }
 
-    await rebuildLexicalIndexForStream({ connectorId, stream, declaredFields });
+    const indexedRows = await rebuildLexicalIndexForStream({
+      connectorId,
+      stream,
+      declaredFields,
+      recordsToScan: recordCount,
+      progressJob,
+    });
+    log(`[PDPP] Lexical index rebuild completed for ${connectorId} stream='${stream}' ` +
+        `(records=${recordCount}, indexed_rows=${indexedRows})`);
 
     // Persist the new fingerprint so subsequent backfill calls can skip.
     db.prepare(`
@@ -322,6 +434,13 @@ export async function lexicalIndexBackfillForManifest({ manifest, log = () => {}
         updated_at = excluded.updated_at
     `).run(connectorId, stream, newFingerprint, new Date().toISOString());
   }
+  progressJob = updateLexicalBackfillJob(progressJob, {
+    stream: null,
+    phase: 'cleanup',
+    recordsScanned: 0,
+    recordsTotal: null,
+    indexedRows: 0,
+  });
 
   // Streams that previously had a meta row but are no longer in the
   // manifest at all (entire stream removed). Same cleanup as the
@@ -343,6 +462,10 @@ export async function lexicalIndexBackfillForManifest({ manifest, log = () => {}
       DELETE FROM lexical_search_meta
       WHERE connector_id = ? AND stream = ?
     `).run(connectorId, row.stream);
+  }
+  } finally {
+    activeLexicalBackfillCount = Math.max(0, activeLexicalBackfillCount - 1);
+    lexicalBackfillJobs.delete(progressJob.id);
   }
 }
 

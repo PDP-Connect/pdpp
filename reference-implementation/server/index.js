@@ -26,7 +26,7 @@ import {
   ingestRecord, queryRecords, getRecord, deleteRecord, deleteAllRecords,
   listStreams, listAllStreams, getSyncState, putSyncState, getDatasetSummary,
 } from './records.js';
-import { lexicalIndexBackfillForManifest, runLexicalSearch } from './search.js';
+import { getLexicalIndexBackfillProgress, lexicalIndexBackfillForManifest, runLexicalSearch } from './search.js';
 import { reconcilePolyfillManifests } from './polyfill-manifest-reconcile.ts';
 import {
   computeIndexState as computeSemanticIndexState,
@@ -82,12 +82,12 @@ const PDPP_REFERENCE_TRACE_ID_HEADER = 'PDPP-Reference-Trace-Id';
 // Heuristic: is this DB path a canonical polyfill-connectors deployment DB?
 // Used to decide whether to auto-reconcile persisted manifests on startup.
 // The dev script's default
-// (`../packages/polyfill-connectors/.pdpp-data/polyfill.sqlite`) is the
+// (`../packages/polyfill-connectors/.pdpp-data/pdpp.sqlite`) is the
 // authoritative sentinel; overrides use the explicit opts/env knob.
 function looksLikePolyfillDeploymentDbPath(dbPath) {
   if (!dbPath || typeof dbPath !== 'string') return false;
   if (dbPath === ':memory:') return false;
-  return dbPath.includes('/polyfill-connectors/') && dbPath.endsWith('polyfill.sqlite');
+  return dbPath.includes('/polyfill-connectors/') && dbPath.endsWith('pdpp.sqlite');
 }
 
 async function collectRetrievalStartupBackfillManifests({ nativeManifest, logger }) {
@@ -1762,6 +1762,7 @@ function buildAsApp(opts = {}) {
           getDb: () => getDb(),
           computeIndexState: () => computeSemanticIndexState(),
           getBackfillProgress: () => getSemanticIndexBackfillProgress(),
+          getLexicalBackfillProgress: () => getLexicalIndexBackfillProgress(),
           getConfiguredNativeManifest: () => getConfiguredNativeManifest(),
           listRegisteredConnectorIds: () => listRegisteredConnectorIds(),
           getConnectorManifest: (connectorId) => getConnectorManifest(connectorId),

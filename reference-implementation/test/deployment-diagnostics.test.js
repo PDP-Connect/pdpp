@@ -70,6 +70,7 @@ function manifestWithoutSemantic() {
 test('buildEnvironmentReport redacts explicitly-secret allowlist entries', () => {
   const report = buildEnvironmentReport({
     PDPP_DCR_INITIAL_ACCESS_TOKENS: 'real-token-value-should-never-appear',
+    PDPP_OWNER_PASSWORD: 'owner-password-should-never-appear',
     NODE_ENV: 'production',
   });
   const tokenEntry = report.find((e) => e.name === 'PDPP_DCR_INITIAL_ACCESS_TOKENS');
@@ -77,6 +78,12 @@ test('buildEnvironmentReport redacts explicitly-secret allowlist entries', () =>
   assert.equal(tokenEntry.provenance, 'redacted');
   assert.equal(tokenEntry.value, null, 'redacted entries MUST NOT carry the raw value');
   assert.equal(tokenEntry.secret, true);
+
+  const ownerPasswordEntry = report.find((e) => e.name === 'PDPP_OWNER_PASSWORD');
+  assert.ok(ownerPasswordEntry, 'owner password entry is present');
+  assert.equal(ownerPasswordEntry.provenance, 'redacted');
+  assert.equal(ownerPasswordEntry.value, null, 'owner password MUST NOT reach the dashboard');
+  assert.equal(ownerPasswordEntry.secret, true);
 
   // Non-secret allowlist entries surface the actual value.
   const nodeEnv = report.find((e) => e.name === 'NODE_ENV');
@@ -174,6 +181,37 @@ test('no zero participation warning when at least one field participates', () =>
   assert.equal(report.semantic.participation.connector_count, 1);
   assert.equal(report.semantic.participation.stream_count, 2);
   assert.equal(report.semantic.participation.field_count, 3);
+});
+
+test('lexical backfill progress is surfaced as a distinct warning', () => {
+  const report = buildDeploymentDiagnostics({
+    backend: fakeBackend(),
+    db: { vectorIndexKind: 'sqlite-vec' },
+    dbPath: '/tmp/test.sqlite',
+    manifests: [{ manifest: manifestWithSemantic(), provenance: 'polyfill-registered' }],
+    indexState: 'built',
+    lexicalBackfillProgress: {
+      id: 'lexical_backfill_1',
+      connector_id: 'https://test.pdpp.org/connectors/a',
+      stream: 'posts',
+      phase: 'rebuilding',
+      active_jobs: 1,
+      manifest_streams_checked: 1,
+      manifest_streams_total: 2,
+      records_scanned: 500,
+      records_total: 1000,
+      indexed_rows: 750,
+      started_at: '2026-04-24T20:00:00.000Z',
+      updated_at: '2026-04-24T20:00:05.000Z',
+    },
+    env: {},
+  });
+
+  assert.equal(report.lexical.index.state, 'building');
+  assert.equal(report.lexical.index.backfill_progress?.records_scanned, 500);
+  assert.equal(report.lexical.index.backfill_progress?.indexed_rows, 750);
+  assert.ok(report.warnings.some((w) => w.code === 'lexical_building_index'));
+  assert.equal(report.semantic.index.state, 'built');
 });
 
 test('backend unavailability is reported even with zero participation', () => {

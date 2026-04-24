@@ -70,6 +70,21 @@ export interface SemanticBackfillProgress {
   readonly updated_at: string;
 }
 
+export interface LexicalBackfillProgress {
+  readonly active_jobs: number;
+  readonly connector_id: string;
+  readonly id: string;
+  readonly indexed_rows: number;
+  readonly manifest_streams_checked: number;
+  readonly manifest_streams_total: number;
+  readonly phase: "planning" | "checking" | "rebuilding" | "cleanup";
+  readonly records_scanned: number;
+  readonly records_total: number | null;
+  readonly started_at: string;
+  readonly stream: string | null;
+  readonly updated_at: string;
+}
+
 // Minimal DB shape used by diagnostics: vectorIndexKind is stamped by
 // initDb() in db.js. dbPath is the resolved path passed to initDb().
 export interface DiagnosticsDb {
@@ -87,6 +102,7 @@ export interface DeploymentDiagnosticsInput {
   readonly dbPath: string;
   readonly env: DiagnosticsEnv;
   readonly indexState: SemanticIndexState | null;
+  readonly lexicalBackfillProgress?: LexicalBackfillProgress | null;
   readonly manifests: readonly DiagnosticsManifestEntry[];
 }
 
@@ -106,6 +122,7 @@ export interface ParticipationSummary {
 
 export type DiagnosticsWarningCode =
   | "zero_participation"
+  | "lexical_building_index"
   | "building_index"
   | "stale_index"
   | "backend_unavailable"
@@ -138,6 +155,12 @@ export interface DeploymentDiagnosticsReport {
     readonly provenance: "native" | "polyfill-registered";
     readonly semantic_stream_count: number;
   }>;
+  readonly lexical: {
+    readonly index: {
+      readonly state: "built" | "building";
+      readonly backfill_progress: LexicalBackfillProgress | null;
+    };
+  };
   readonly semantic: {
     readonly backend: {
       readonly configured: boolean;
@@ -185,6 +208,7 @@ const ENV_ALLOWLIST: ReadonlyArray<{ readonly name: string; readonly secret?: bo
   { name: "PDPP_REFERENCE_OPERATIONAL_DEFAULTS" },
   { name: "PDPP_ENABLE_DYNAMIC_CLIENT_REGISTRATION" },
   { name: "PDPP_RECONCILE_POLYFILL_MANIFESTS" },
+  { name: "PDPP_OWNER_PASSWORD", secret: true },
   { name: "PDPP_SEMANTIC_EMBEDDING_BACKEND" },
   { name: "PDPP_EMBEDDING_PROFILE_ID" },
   { name: "PDPP_EMBEDDING_MODEL_ID" },
@@ -321,6 +345,14 @@ function buildWarnings(
     });
   }
 
+  if (input.lexicalBackfillProgress) {
+    warnings.push({
+      code: "lexical_building_index",
+      message:
+        "Lexical index rebuild is running in the background. Text search remains available, but results may be partial until indexing completes.",
+    });
+  }
+
   if (input.indexState === "building") {
     warnings.push({
       code: "building_index",
@@ -424,6 +456,7 @@ export interface DeploymentDiagnosticsRuntimeDeps {
   readonly computeIndexState: () => SemanticIndexState;
   readonly getBackend: () => DiagnosticsBackend | null;
   readonly getBackfillProgress?: () => SemanticBackfillProgress | null;
+  readonly getLexicalBackfillProgress?: () => LexicalBackfillProgress | null;
   readonly getConfiguredNativeManifest: () => DiagnosticsManifest | null;
   readonly getConnectorManifest: (connectorId: string) => Promise<DiagnosticsManifest | null>;
   readonly getDb: () => DiagnosticsDb | null;
@@ -466,6 +499,7 @@ export async function collectDeploymentDiagnostics(
     db,
     dbPath: opts.dbPath,
     backfillProgress: deps.getBackfillProgress ? deps.getBackfillProgress() : null,
+    lexicalBackfillProgress: deps.getLexicalBackfillProgress ? deps.getLexicalBackfillProgress() : null,
     manifests,
     indexState,
     env,
@@ -481,6 +515,12 @@ export function buildDeploymentDiagnostics(input: DeploymentDiagnosticsInput): D
   const warnings = buildWarnings(input, participation, backendAvailable);
 
   return {
+    lexical: {
+      index: {
+        state: input.lexicalBackfillProgress ? "building" : "built",
+        backfill_progress: input.lexicalBackfillProgress ?? null,
+      },
+    },
     semantic: {
       backend: {
         configured: input.backend !== null,
