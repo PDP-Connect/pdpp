@@ -1,9 +1,11 @@
 ---
-title: "Overview"
+title: "Reference Topology"
 description: "How the current PDPP reference components relate — native provider, polyfill path, runtime, CLI, and client flows."
 ---
 
-This page describes the **current reference topology** used in `reference-implementation/`, not a single mandatory deployment shape for all PDPP implementations.
+This is a **reference implementation note**, not normative protocol text. It describes the current topology used in
+`reference-implementation/` so readers can evaluate, fork, or operate this repo's implementation without mistaking its
+deployment choices for PDPP requirements.
 
 The important architectural split in the live reference is:
 

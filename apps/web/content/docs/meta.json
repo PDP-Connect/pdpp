@@ -4,7 +4,6 @@
   "pages": [
     "index",
     "---Core Protocol---",
-    "spec-architecture",
     "spec-core",
     "spec-data-query-api",
     "spec-lexical-retrieval-extension",
@@ -14,10 +13,11 @@
     "spec-deferred",
     "---Collection Profile---",
     "spec-collection-profile",
-    "spec-connector-ecosystem",
     "---Adjacent Ecosystems---",
     "spec-dti-alignment",
     "---Reference Notes (non-protocol)---",
+    "spec-architecture",
+    "spec-connector-ecosystem",
     "reference-implementation",
     "reference-implementation-examples"
   ]

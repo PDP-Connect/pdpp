@@ -44,11 +44,15 @@ The canonical site lives in `apps/web/`.
 
 It renders:
 
-- `/docs` for the spec and reference docs
-- `/` for the illustrated landing/reference story
-- `/design` for the design workbench
+- `/docs` for protocol docs plus clearly labeled reference notes
+- `/reference` for the public reference-implementation explainer and coverage matrix
+- `/sandbox` for the mock-backed sandbox placeholder
+- `/planning` for OpenSpec project planning artifacts
+- `/dashboard` for a running local or self-hosted reference instance
+- `/design` and `/palette` for local contributor workbench surfaces
 
-The website is a downstream consumer of the reference implementation, not the implementation boundary itself.
+The website is a downstream consumer of the reference implementation, not the implementation boundary itself. Hosted or
+public docs should treat `/dashboard` as a live-instance operator surface, not protocol documentation.
 
 ## Quick start
 

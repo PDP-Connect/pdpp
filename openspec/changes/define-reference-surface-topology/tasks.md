@@ -32,8 +32,8 @@
 
 ## 6. Documentation And Validation
 
-- [ ] 6.1 Update README and website copy to describe the route topology and self-hosted/live-dashboard posture.
-- [ ] 6.2 Update any pages that currently conflate protocol, reference implementation, and live dashboard language.
+- [x] 6.1 Update README and website copy to describe the route topology and self-hosted/live-dashboard posture.
+- [x] 6.2 Update any pages that currently conflate protocol, reference implementation, and live dashboard language.
 - [x] 6.3 Run `openspec validate define-reference-surface-topology --strict`.
 - [x] 6.4 Run `openspec validate --all --strict`.
 - [x] 6.5 Run relevant web checks after implementation, including typecheck, lint/check, and build.
