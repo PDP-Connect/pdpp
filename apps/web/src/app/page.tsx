@@ -1,9 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import { Hero } from "@/components/Hero.tsx";
-import { ReferenceApp } from "@/components/ReferenceApp.tsx";
-import { ReferenceHeroProof } from "@/components/ReferenceHeroProof.tsx";
+import { Hero } from "@/components/hero.tsx";
+import { ReferenceApp } from "@/components/reference-app.tsx";
+import { ReferenceHeroProof } from "@/components/reference-hero-proof.tsx";
 import { buttonVariants } from "@/components/ui/button.tsx";
 
 export default function Home() {

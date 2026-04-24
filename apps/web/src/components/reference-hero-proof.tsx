@@ -1,4 +1,4 @@
-import { LongviewWordmark } from "@/components/LongviewWordmark.tsx";
+import { LongviewWordmark } from "@/components/longview-wordmark.tsx";
 import { LONGVIEW_PURPOSE_DESCRIPTION } from "@/lib/longview-world.ts";
 
 export function ReferenceHeroProof() {

@@ -1,6 +1,6 @@
 import { DocsLayout } from "fumadocs-ui/layouts/docs";
 import type { ReactNode } from "react";
-import { SiteHeader } from "@/components/SiteHeader.tsx";
+import { SiteHeader } from "@/components/site-header.tsx";
 import { baseOptions } from "@/lib/docs-shared.tsx";
 import { source } from "@/lib/docs-source.ts";
 

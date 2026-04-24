@@ -6,7 +6,7 @@ import type {
   OpenSpecDesignNoteSummary,
 } from "@/lib/openspec/index.ts";
 import { planningPath } from "@/lib/openspec/public.ts";
-import { OpenSpecArtifactCard } from "./OpenSpecArtifactCard.tsx";
+import { OpenSpecArtifactCard } from "./open-spec-artifact-card.tsx";
 
 const NOTE_KIND_LABELS: Record<OpenSpecDesignNoteKind, string> = {
   "open-question": "Open questions",

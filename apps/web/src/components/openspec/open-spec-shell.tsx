@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { OpenSpecSidebar, type OpenSpecSidebarSection } from "./OpenSpecSidebar.tsx";
+import { OpenSpecSidebar, type OpenSpecSidebarSection } from "./open-spec-sidebar.tsx";
 
 export function OpenSpecShell({ sections, children }: { sections: OpenSpecSidebarSection[]; children: ReactNode }) {
   return (

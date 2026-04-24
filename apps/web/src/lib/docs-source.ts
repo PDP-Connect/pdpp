@@ -1,4 +1,4 @@
-import { docs } from "collections/server.ts";
+import { docs } from "../../.source/server.ts";
 import { type InferPageType, loader } from "fumadocs-core/source";
 import { lucideIconsPlugin } from "fumadocs-core/source/lucide-icons";
 

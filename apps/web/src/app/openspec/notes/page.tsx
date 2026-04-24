@@ -1,9 +1,9 @@
 import type { Metadata } from "next";
 import { buildOpenSpecSidebarSections } from "@/components/openspec/sidebar-sections.ts";
-import { OpenSpecBreadcrumbs } from "@/components/openspec/OpenSpecBreadcrumbs.tsx";
-import { OpenSpecEmptyState } from "@/components/openspec/OpenSpecEmptyState.tsx";
-import { OpenSpecNoteGroups } from "@/components/openspec/OpenSpecNoteGroups.tsx";
-import { OpenSpecShell } from "@/components/openspec/OpenSpecShell.tsx";
+import { OpenSpecBreadcrumbs } from "@/components/openspec/open-spec-breadcrumbs.tsx";
+import { OpenSpecEmptyState } from "@/components/openspec/open-spec-empty-state.tsx";
+import { OpenSpecNoteGroups } from "@/components/openspec/open-spec-note-groups.tsx";
+import { OpenSpecShell } from "@/components/openspec/open-spec-shell.tsx";
 import { Timestamp } from "@/components/ui/timestamp.tsx";
 import { listOpenSpecDesignNoteGroups, listOpenSpecDesignNotes } from "@/lib/openspec/index.ts";
 import { OPENSPEC_IMPLEMENTATION_LABEL, PLANNING_LABEL, planningPath } from "@/lib/openspec/public.ts";

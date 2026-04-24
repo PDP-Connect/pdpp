@@ -1,5 +1,5 @@
 import { PLANNING_LABEL, planningPath } from "@/lib/openspec/public.ts";
-import type { OpenSpecSidebarSection } from "./OpenSpecSidebar.tsx";
+import type { OpenSpecSidebarSection } from "./open-spec-sidebar.tsx";
 
 export type OpenSpecActiveScope =
   | { kind: "overview" }

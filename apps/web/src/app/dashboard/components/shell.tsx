@@ -1,6 +1,6 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
-import { PdppLogo } from "@/components/PdppLogo.tsx";
+import { PdppLogo } from "@/components/pdpp-logo.tsx";
 import { getAsInternalUrl, getOwnerLoginPath, getRsInternalUrl } from "../lib/owner-token.ts";
 import { CommandPalette, CommandPaletteTrigger } from "./command-palette.tsx";
 import { MobileDrawer, MobileDrawerTrigger } from "./mobile-drawer.tsx";

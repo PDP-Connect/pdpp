@@ -1,6 +1,6 @@
 import type { OpenSpecChangeDetail } from "@/lib/openspec/types.ts";
-import { OpenSpecProgressPill } from "./OpenSpecProgressPill.tsx";
-import { OpenSpecStatusPill } from "./OpenSpecStatusPill.tsx";
+import { OpenSpecProgressPill } from "./open-spec-progress-pill.tsx";
+import { OpenSpecStatusPill } from "./open-spec-status-pill.tsx";
 
 export function OpenSpecChangeHeader({ change }: { change: OpenSpecChangeDetail }) {
   return (

@@ -13,8 +13,8 @@ import {
   StatusBadge,
   Toolbar,
 } from "@/app/dashboard/components/primitives.tsx";
-import { Hero } from "@/components/Hero.tsx";
-import { PdppLogo } from "@/components/PdppLogo.tsx";
+import { Hero } from "@/components/hero.tsx";
+import { PdppLogo } from "@/components/pdpp-logo.tsx";
 import type { ConnectorCardProps } from "@/components/pdpp/connector-card.tsx";
 import type { ConsentCardProps } from "@/components/pdpp/consent-card.tsx";
 import type { GrantInspectorProps } from "@/components/pdpp/grant-inspector.tsx";
@@ -25,7 +25,7 @@ import { ConsentCard } from "@/components/pdpp/consent-card.tsx";
 import { GrantInspector } from "@/components/pdpp/grant-inspector.tsx";
 import { SpecCitationGroup } from "@/components/pdpp/spec-citation.tsx";
 import { StreamInventory } from "@/components/pdpp/stream-inventory.tsx";
-import { SiteHeader } from "@/components/SiteHeader.tsx";
+import { SiteHeader } from "@/components/site-header.tsx";
 import { Badge } from "@/components/ui/badge.tsx";
 import { Button } from "@/components/ui/button.tsx";
 import { Card, CardContent, CardFooter, CardHeader } from "@/components/ui/card.tsx";

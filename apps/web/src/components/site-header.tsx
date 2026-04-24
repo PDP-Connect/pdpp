@@ -3,7 +3,7 @@
 import { siteNav } from "@pdpp/brand/chrome";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { PdppLogo } from "@/components/PdppLogo.tsx";
+import { PdppLogo } from "@/components/pdpp-logo.tsx";
 
 export function SiteHeader({ currentLabel }: { currentLabel: string }) {
   const pathname = usePathname();

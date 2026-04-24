@@ -1,10 +1,10 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { buildOpenSpecSidebarSections } from "@/components/openspec/sidebar-sections.ts";
-import { OpenSpecBreadcrumbs } from "@/components/openspec/OpenSpecBreadcrumbs.tsx";
-import { OpenSpecMarkdownPage } from "@/components/openspec/OpenSpecMarkdownPage.tsx";
-import { OpenSpecShell } from "@/components/openspec/OpenSpecShell.tsx";
-import { OpenSpecSourceLink } from "@/components/openspec/OpenSpecSourceLink.tsx";
+import { OpenSpecBreadcrumbs } from "@/components/openspec/open-spec-breadcrumbs.tsx";
+import { OpenSpecMarkdownPage } from "@/components/openspec/open-spec-markdown-page.tsx";
+import { OpenSpecShell } from "@/components/openspec/open-spec-shell.tsx";
+import { OpenSpecSourceLink } from "@/components/openspec/open-spec-source-link.tsx";
 import { getOpenSpecDesignNote, listOpenSpecDesignNotes } from "@/lib/openspec/index.ts";
 import { PLANNING_LABEL, planningPath } from "@/lib/openspec/public.ts";
 
