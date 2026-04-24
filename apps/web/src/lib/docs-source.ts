@@ -1,9 +1,9 @@
-import { docs } from 'collections/server';
-import { loader, type InferPageType } from 'fumadocs-core/source';
-import { lucideIconsPlugin } from 'fumadocs-core/source/lucide-icons';
+import { docs } from "collections/server.ts";
+import { type InferPageType, loader } from "fumadocs-core/source";
+import { lucideIconsPlugin } from "fumadocs-core/source/lucide-icons";
 
-export const docsRoute = '/docs';
-export const docsImageRoute = '/og/docs';
+export const docsRoute = "/docs";
+export const docsImageRoute = "/og/docs";
 
 export const source = loader({
   baseUrl: docsRoute,
@@ -12,11 +12,11 @@ export const source = loader({
 });
 
 export function getPageImage(page: InferPageType<typeof source>) {
-  const segments = [...page.slugs, 'image.png'];
+  const segments = [...page.slugs, "image.png"];
 
   return {
     segments,
-    url: `${docsImageRoute}/${segments.join('/')}`,
+    url: `${docsImageRoute}/${segments.join("/")}`,
   };
 }
 

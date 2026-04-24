@@ -15,9 +15,7 @@
  * Can be swapped for a real server connection via the same interface.
  */
 
-import {
-  LONGVIEW_PAY_STATEMENT_ALL_FIELDS,
-} from './longview-world';
+import { LONGVIEW_PAY_STATEMENT_ALL_FIELDS } from "./longview-world.ts";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -29,7 +27,7 @@ export type Record = {
 
 export type Stream = {
   name: string;
-  semantics: 'append_only' | 'mutable_state';
+  semantics: "append_only" | "mutable_state";
   records: Record[];
   schema_fields: string[]; // all fields the stream has
 };
@@ -37,13 +35,13 @@ export type Stream = {
 export type Grant = {
   grant_id: string;
   issued_at: string;
-  status: 'active' | 'revoked' | 'expired';
+  status: "active" | "revoked" | "expired";
   client_id: string;
   purpose_code: string;
   purpose_description: string;
-  access_mode: 'continuous' | 'single_use';
+  access_mode: "continuous" | "single_use";
   expires_at: string | null;
-  retention: { max_duration: string; on_expiry: 'delete' | 'anonymize' } | null;
+  retention: { max_duration: string; on_expiry: "delete" | "anonymize" } | null;
   streams: GrantStream[];
 };
 
@@ -78,15 +76,17 @@ export class MockPDPPServer {
 
   addRecord(streamName: string, record: Record) {
     const stream = this.streams.get(streamName);
-    if (!stream) throw new Error(`Unknown stream: ${streamName}`);
+    if (!stream) {
+      throw new Error(`Unknown stream: ${streamName}`);
+    }
     stream.records.push(record);
     this.version++;
   }
 
   // ── Grant management ──
 
-  issueGrant(grant: Omit<Grant, 'status'>): Grant {
-    const issued: Grant = { ...grant, status: 'active' };
+  issueGrant(grant: Omit<Grant, "status">): Grant {
+    const issued: Grant = { ...grant, status: "active" };
     this.grants.set(grant.grant_id, issued);
     // Initialize sync cursor at 0 (full sync on first query)
     this.syncCursors.set(grant.grant_id, 0);
@@ -95,8 +95,10 @@ export class MockPDPPServer {
 
   revokeGrant(grantId: string): boolean {
     const grant = this.grants.get(grantId);
-    if (!grant || grant.status !== 'active') return false;
-    grant.status = 'revoked';
+    if (!grant || grant.status !== "active") {
+      return false;
+    }
+    grant.status = "revoked";
     return true;
   }
 
@@ -108,19 +110,29 @@ export class MockPDPPServer {
 
   query(grantId: string, streamName: string): QueryResult {
     const grant = this.grants.get(grantId);
-    if (!grant) return { status: 403, error: 'grant_invalid', records: [], has_more: false };
-    if (grant.status === 'revoked') return { status: 403, error: 'grant_revoked', records: [], has_more: false };
-    if (grant.status === 'expired') return { status: 403, error: 'grant_expired', records: [], has_more: false };
+    if (!grant) {
+      return { status: 403, error: "grant_invalid", records: [], has_more: false };
+    }
+    if (grant.status === "revoked") {
+      return { status: 403, error: "grant_revoked", records: [], has_more: false };
+    }
+    if (grant.status === "expired") {
+      return { status: 403, error: "grant_expired", records: [], has_more: false };
+    }
 
     // Check stream is in grant
-    const grantStream = grant.streams.find(s => s.name === streamName);
-    if (!grantStream) return { status: 403, error: 'insufficient_scope', records: [], has_more: false };
+    const grantStream = grant.streams.find((s) => s.name === streamName);
+    if (!grantStream) {
+      return { status: 403, error: "insufficient_scope", records: [], has_more: false };
+    }
 
     const stream = this.streams.get(streamName);
-    if (!stream) return { status: 404, error: 'stream_not_found', records: [], has_more: false };
+    if (!stream) {
+      return { status: 404, error: "stream_not_found", records: [], has_more: false };
+    }
 
     // Apply field projection
-    const records = stream.records.map(r => this.projectRecord(r, grantStream.fields, stream.schema_fields));
+    const records = stream.records.map((r) => this.projectRecord(r, grantStream.fields, stream.schema_fields));
 
     return { status: 200, records, has_more: false };
   }
@@ -129,21 +141,31 @@ export class MockPDPPServer {
 
   queryChangesSince(grantId: string, streamName: string, cursor?: string): QueryResult {
     const grant = this.grants.get(grantId);
-    if (!grant) return { status: 403, error: 'grant_invalid', records: [], has_more: false };
-    if (grant.status === 'revoked') return { status: 403, error: 'grant_revoked', records: [], has_more: false };
+    if (!grant) {
+      return { status: 403, error: "grant_invalid", records: [], has_more: false };
+    }
+    if (grant.status === "revoked") {
+      return { status: 403, error: "grant_revoked", records: [], has_more: false };
+    }
 
-    const grantStream = grant.streams.find(s => s.name === streamName);
-    if (!grantStream) return { status: 403, error: 'insufficient_scope', records: [], has_more: false };
+    const grantStream = grant.streams.find((s) => s.name === streamName);
+    if (!grantStream) {
+      return { status: 403, error: "insufficient_scope", records: [], has_more: false };
+    }
 
     const stream = this.streams.get(streamName);
-    if (!stream) return { status: 404, error: 'stream_not_found', records: [], has_more: false };
+    if (!stream) {
+      return { status: 404, error: "stream_not_found", records: [], has_more: false };
+    }
 
     // Parse cursor (index into records array)
-    const startIdx = cursor ? parseInt(cursor, 10) : 0;
-    if (isNaN(startIdx)) return { status: 410, error: 'cursor_expired', records: [], has_more: false };
+    const startIdx = cursor ? Number.parseInt(cursor, 10) : 0;
+    if (isNaN(startIdx)) {
+      return { status: 410, error: "cursor_expired", records: [], has_more: false };
+    }
 
     const newRecords = stream.records.slice(startIdx);
-    const projected = newRecords.map(r => this.projectRecord(r, grantStream.fields, stream.schema_fields));
+    const projected = newRecords.map((r) => this.projectRecord(r, grantStream.fields, stream.schema_fields));
 
     return {
       status: 200,
@@ -157,7 +179,9 @@ export class MockPDPPServer {
 
   selfExport(streamName: string): QueryResult {
     const stream = this.streams.get(streamName);
-    if (!stream) return { status: 404, error: 'stream_not_found', records: [], has_more: false };
+    if (!stream) {
+      return { status: 404, error: "stream_not_found", records: [], has_more: false };
+    }
 
     // Owner sees all fields, no projection
     return { status: 200, records: [...stream.records], has_more: false };
@@ -166,7 +190,9 @@ export class MockPDPPServer {
   // ── Field projection ──
 
   private projectRecord(record: Record, allowedFields: string[] | null, _allFields: string[]): Record {
-    if (!allowedFields) return record; // null = all fields authorized
+    if (!allowedFields) {
+      return record; // null = all fields authorized
+    }
 
     const projected: { [field: string]: unknown } = {};
     for (const field of allowedFields) {
@@ -186,14 +212,16 @@ export class MockPDPPServer {
 
   introspect(grantId: string): { active: boolean; grant: Grant | null } {
     const grant = this.grants.get(grantId);
-    if (!grant) return { active: false, grant: null };
-    return { active: grant.status === 'active', grant };
+    if (!grant) {
+      return { active: false, grant: null };
+    }
+    return { active: grant.status === "active", grant };
   }
 
   // ── Stats ──
 
   getStreamStats(): { name: string; recordCount: number; fields: string[] }[] {
-    return Array.from(this.streams.values()).map(s => ({
+    return Array.from(this.streams.values()).map((s) => ({
       name: s.name,
       recordCount: s.records.length,
       fields: s.schema_fields,
@@ -208,25 +236,25 @@ export function createSeededServer(): MockPDPPServer {
 
   const payStatementFields = [...LONGVIEW_PAY_STATEMENT_ALL_FIELDS];
   const equityGrantFields = [
-    'grant_type',
-    'quantity',
-    'vesting_start',
-    'vesting_schedule',
-    'brokerage_account_last4',
-    'beneficiary_name',
+    "grant_type",
+    "quantity",
+    "vesting_start",
+    "vesting_schedule",
+    "brokerage_account_last4",
+    "beneficiary_name",
   ];
   const benefitsFields = [
-    'plan_name',
-    'coverage_tier',
-    'employer_contribution',
-    'effective_date',
-    'dependent_count',
-    'claims_vendor',
+    "plan_name",
+    "coverage_tier",
+    "employer_contribution",
+    "effective_date",
+    "dependent_count",
+    "claims_vendor",
   ];
 
   server.addStream({
-    name: 'pay_statements',
-    semantics: 'append_only',
+    name: "pay_statements",
+    semantics: "append_only",
     schema_fields: payStatementFields,
     records: Array.from({ length: 24 }, (_, i) => {
       const payDate = new Date(Date.UTC(2025, 0, 15 + i * 14));
@@ -236,14 +264,14 @@ export function createSeededServer(): MockPDPPServer {
       return {
         key: `pay_${i}`,
         data: {
-          employer: 'Northstar Labs',
+          employer: "Northstar Labs",
           pay_period: payDate.toISOString().slice(0, 10),
           gross_pay: grossPay,
           net_pay: netPay,
-          employee_id: `emp_${String(4100 + i).padStart(4, '0')}`,
-          home_address: '1207 W Maple Ave, Chicago, IL',
-          bank_account_last4: '4821',
-          tax_id_fragment: '2487',
+          employee_id: `emp_${String(4100 + i).padStart(4, "0")}`,
+          home_address: "1207 W Maple Ave, Chicago, IL",
+          bank_account_last4: "4821",
+          tax_id_fragment: "2487",
         },
         emitted_at: payDate.toISOString(),
       };
@@ -251,38 +279,38 @@ export function createSeededServer(): MockPDPPServer {
   });
 
   server.addStream({
-    name: 'equity_grants',
-    semantics: 'mutable_state',
+    name: "equity_grants",
+    semantics: "mutable_state",
     schema_fields: equityGrantFields,
     records: Array.from({ length: 3 }, (_, i) => ({
       key: `grant_${i}`,
       data: {
-        grant_type: i === 0 ? 'ISO' : i === 1 ? 'RSU' : 'NSO',
+        grant_type: i === 0 ? "ISO" : i === 1 ? "RSU" : "NSO",
         quantity: i === 0 ? 8000 : i === 1 ? 2400 : 1200,
         vesting_start: `202${i + 4}-05-01`,
-        vesting_schedule: i === 1 ? '4y monthly after 1y cliff' : '4y quarterly after 1y cliff',
+        vesting_schedule: i === 1 ? "4y monthly after 1y cliff" : "4y quarterly after 1y cliff",
         brokerage_account_last4: `71${i}4`,
-        beneficiary_name: 'Primary beneficiary',
+        beneficiary_name: "Primary beneficiary",
       },
-      emitted_at: '2026-04-15T12:00:00Z',
+      emitted_at: "2026-04-15T12:00:00Z",
     })),
   });
 
   server.addStream({
-    name: 'benefits_enrollments',
-    semantics: 'mutable_state',
+    name: "benefits_enrollments",
+    semantics: "mutable_state",
     schema_fields: benefitsFields,
     records: Array.from({ length: 1 }, () => ({
-      key: 'benefits_0',
+      key: "benefits_0",
       data: {
-        plan_name: 'Blue Horizon PPO',
-        coverage_tier: 'Employee + spouse',
+        plan_name: "Blue Horizon PPO",
+        coverage_tier: "Employee + spouse",
         employer_contribution: 840,
-        effective_date: '2026-01-01',
+        effective_date: "2026-01-01",
         dependent_count: 1,
-        claims_vendor: 'Northstar Health Services',
+        claims_vendor: "Northstar Health Services",
       },
-      emitted_at: '2026-01-01T12:00:00Z',
+      emitted_at: "2026-01-01T12:00:00Z",
     })),
   });
 

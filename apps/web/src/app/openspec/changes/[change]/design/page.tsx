@@ -1,18 +1,14 @@
-import type { Metadata } from 'next';
-import { notFound } from 'next/navigation';
+import type { Metadata } from "next";
+import { notFound } from "next/navigation";
 import {
+  buildOpenSpecSidebarSections,
   OpenSpecBreadcrumbs,
   OpenSpecMarkdownPage,
   OpenSpecShell,
   OpenSpecSourceLink,
-  buildOpenSpecSidebarSections,
-} from '@/components/openspec';
-import {
-  getOpenSpecChange,
-  getOpenSpecChangeArtifact,
-  listOpenSpecChanges,
-} from '@/lib/openspec';
-import { PLANNING_LABEL, planningPath } from '@/lib/openspec/public';
+} from "@/components/openspec/index.ts";
+import { getOpenSpecChange, getOpenSpecChangeArtifact, listOpenSpecChanges } from "@/lib/openspec/index.ts";
+import { PLANNING_LABEL, planningPath } from "@/lib/openspec/public.ts";
 
 type PageProps = { params: Promise<{ change: string }> };
 
@@ -24,7 +20,9 @@ export async function generateStaticParams() {
 export async function generateMetadata({ params }: PageProps): Promise<Metadata> {
   const { change } = await params;
   const summary = await getOpenSpecChange(change);
-  if (!summary) return { title: `Design not found — ${PLANNING_LABEL} — PDPP` };
+  if (!summary) {
+    return { title: `Design not found — ${PLANNING_LABEL} — PDPP` };
+  }
   return {
     title: `${summary.title} — Design — ${PLANNING_LABEL} — PDPP`,
     description: summary.designExcerpt ?? summary.excerpt ?? undefined,
@@ -33,12 +31,14 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
 
 export default async function ChangeDesignPage({ params }: PageProps) {
   const { change } = await params;
-  const artifact = await getOpenSpecChangeArtifact(change, 'design');
-  if (!artifact) notFound();
+  const artifact = await getOpenSpecChangeArtifact(change, "design");
+  if (!artifact) {
+    notFound();
+  }
   const sections = buildOpenSpecSidebarSections({
-    kind: 'change',
+    kind: "change",
     changeName: change,
-    artifact: 'design',
+    artifact: "design",
   });
 
   return (
@@ -47,13 +47,13 @@ export default async function ChangeDesignPage({ params }: PageProps) {
         <OpenSpecBreadcrumbs
           crumbs={[
             { label: PLANNING_LABEL, href: planningPath() },
-            { label: 'Changes', href: planningPath('/changes') },
+            { label: "Changes", href: planningPath("/changes") },
             { label: change, href: planningPath(`/changes/${change}`) },
-            { label: 'Design' },
+            { label: "Design" },
           ]}
         />
         <header className="flex flex-col gap-3">
-          <h1 className="text-[clamp(1.6rem,2.8vw,2.05rem)] font-semibold tracking-tight leading-tight">
+          <h1 className="font-semibold text-[clamp(1.6rem,2.8vw,2.05rem)] leading-tight tracking-tight">
             {artifact.title}
           </h1>
           <OpenSpecSourceLink

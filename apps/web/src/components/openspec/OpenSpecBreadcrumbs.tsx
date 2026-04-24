@@ -1,5 +1,5 @@
-import Link from 'next/link';
-import { Fragment } from 'react';
+import Link from "next/link";
+import { Fragment } from "react";
 
 export type OpenSpecCrumb = {
   label: string;
@@ -16,14 +16,11 @@ export function OpenSpecBreadcrumbs({ crumbs }: { crumbs: OpenSpecCrumb[] }) {
             <Fragment key={`${crumb.label}-${i}`}>
               <li>
                 {crumb.href && !isLast ? (
-                  <Link
-                    href={crumb.href}
-                    className="transition-colors hover:text-foreground"
-                  >
+                  <Link href={crumb.href} className="transition-colors hover:text-foreground">
                     {crumb.label}
                   </Link>
                 ) : (
-                  <span aria-current={isLast ? 'page' : undefined} className="text-foreground">
+                  <span aria-current={isLast ? "page" : undefined} className="text-foreground">
                     {crumb.label}
                   </span>
                 )}

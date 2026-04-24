@@ -6,11 +6,7 @@
  *
  * Server-only: do not import from client components.
  */
-import {
-  ReferenceServerUnreachableError,
-  getAsInternalUrl,
-  withOwnerSessionCookie,
-} from './owner-token';
+import { getAsInternalUrl, ReferenceServerUnreachableError, withOwnerSessionCookie } from "./owner-token.ts";
 
 export type SpineEvent = {
   event_id: string;
@@ -62,15 +58,15 @@ function normalizeTimeline(raw: unknown): TimelineEnvelope {
   };
   const events = Array.isArray(r.events) ? r.events : Array.isArray(r.data) ? r.data : [];
   return {
-    object: r.object ?? 'timeline',
+    object: r.object ?? "timeline",
     trace_id: r.trace_id ?? null,
-    event_count: typeof r.event_count === 'number' ? r.event_count : events.length,
+    event_count: typeof r.event_count === "number" ? r.event_count : events.length,
     events,
   };
 }
 
 export type ListResponse<T> = {
-  object: 'list';
+  object: "list";
   data: T[];
   has_more: boolean;
   next_cursor?: string;
@@ -82,7 +78,7 @@ export type FailureInfo = {
 };
 
 export type TraceSummary = {
-  object: 'trace_summary';
+  object: "trace_summary";
   trace_id: string;
   first_at: string;
   last_at: string;
@@ -100,7 +96,7 @@ export type TraceSummary = {
 };
 
 export type GrantSummary = {
-  object: 'grant_summary';
+  object: "grant_summary";
   grant_id: string;
   first_at: string;
   last_at: string;
@@ -114,7 +110,7 @@ export type GrantSummary = {
 };
 
 export type RunSummary = {
-  object: 'run_summary';
+  object: "run_summary";
   run_id: string;
   first_at: string;
   last_at: string;
@@ -158,22 +154,20 @@ async function refFetch(path: string, params?: Record<string, string | number | 
   const url = new URL(`${getAsInternalUrl()}${path}`);
   if (params) {
     for (const [k, v] of Object.entries(params)) {
-      if (v !== undefined && v !== null && v !== '') url.searchParams.set(k, String(v));
+      if (v !== undefined && v !== null && v !== "") {
+        url.searchParams.set(k, String(v));
+      }
     }
   }
   let res: Response;
   try {
-    res = await fetch(
-      url.toString(),
-      await withOwnerSessionCookie({ cache: 'no-store' }),
-    );
+    res = await fetch(url.toString(), await withOwnerSessionCookie({ cache: "no-store" }));
   } catch (err) {
-    throw new ReferenceServerUnreachableError(
-      `Cannot reach authorization server at ${getAsInternalUrl()}`,
-      err,
-    );
+    throw new ReferenceServerUnreachableError(`Cannot reach authorization server at ${getAsInternalUrl()}`, err);
   }
-  if (res.status === 404) throw new RefNotFoundError(`not found: ${path}`);
+  if (res.status === 404) {
+    throw new RefNotFoundError(`not found: ${path}`);
+  }
   if (!res.ok) {
     const body = await res.text();
     throw new Error(`_ref ${path} failed (${res.status}): ${body}`);
@@ -187,29 +181,31 @@ export async function getTraceTimeline(traceId: string): Promise<TimelineEnvelop
   try {
     return normalizeTimeline(await refFetch(`/_ref/traces/${encodeURIComponent(traceId)}`));
   } catch (err) {
-    if (err instanceof RefNotFoundError) return null;
+    if (err instanceof RefNotFoundError) {
+      return null;
+    }
     throw err;
   }
 }
 
 export async function getGrantTimeline(grantId: string): Promise<TimelineEnvelope | null> {
   try {
-    return normalizeTimeline(
-      await refFetch(`/_ref/grants/${encodeURIComponent(grantId)}/timeline`),
-    );
+    return normalizeTimeline(await refFetch(`/_ref/grants/${encodeURIComponent(grantId)}/timeline`));
   } catch (err) {
-    if (err instanceof RefNotFoundError) return null;
+    if (err instanceof RefNotFoundError) {
+      return null;
+    }
     throw err;
   }
 }
 
 export async function getRunTimeline(runId: string): Promise<TimelineEnvelope | null> {
   try {
-    return normalizeTimeline(
-      await refFetch(`/_ref/runs/${encodeURIComponent(runId)}/timeline`),
-    );
+    return normalizeTimeline(await refFetch(`/_ref/runs/${encodeURIComponent(runId)}/timeline`));
   } catch (err) {
-    if (err instanceof RefNotFoundError) return null;
+    if (err instanceof RefNotFoundError) {
+      return null;
+    }
     throw err;
   }
 }
@@ -228,29 +224,38 @@ export type ListQuery = {
 };
 
 export async function listTraces(opts: ListQuery = {}): Promise<ListResponse<TraceSummary>> {
-  return (await refFetch('/_ref/traces', opts as Record<string, string | number | undefined>)) as ListResponse<TraceSummary>;
+  return (await refFetch(
+    "/_ref/traces",
+    opts as Record<string, string | number | undefined>
+  )) as ListResponse<TraceSummary>;
 }
 
 export async function listGrants(opts: ListQuery = {}): Promise<ListResponse<GrantSummary>> {
-  return (await refFetch('/_ref/grants', opts as Record<string, string | number | undefined>)) as ListResponse<GrantSummary>;
+  return (await refFetch(
+    "/_ref/grants",
+    opts as Record<string, string | number | undefined>
+  )) as ListResponse<GrantSummary>;
 }
 
 export async function listRuns(opts: ListQuery = {}): Promise<ListResponse<RunSummary>> {
-  return (await refFetch('/_ref/runs', opts as Record<string, string | number | undefined>)) as ListResponse<RunSummary>;
+  return (await refFetch(
+    "/_ref/runs",
+    opts as Record<string, string | number | undefined>
+  )) as ListResponse<RunSummary>;
 }
 
 export async function listConnectorSummaries(): Promise<ListResponse<RefConnectorSummary>> {
-  return (await refFetch('/_ref/connectors')) as ListResponse<RefConnectorSummary>;
+  return (await refFetch("/_ref/connectors")) as ListResponse<RefConnectorSummary>;
 }
 
 export type DatasetConnectorSummary = {
-  object: 'dataset_connector_summary';
+  object: "dataset_connector_summary";
   connector_id: string;
   record_count: number;
 };
 
 export type DatasetSummary = {
-  object: 'dataset_summary';
+  object: "dataset_summary";
   connector_count: number;
   stream_count: number;
   record_count: number;
@@ -269,28 +274,28 @@ export type DatasetSummary = {
 };
 
 export async function getDatasetSummary(): Promise<DatasetSummary> {
-  return (await refFetch('/_ref/dataset/summary')) as DatasetSummary;
+  return (await refFetch("/_ref/dataset/summary")) as DatasetSummary;
 }
 
 export async function refSearch(query: string): Promise<{
-  object: 'search_result';
+  object: "search_result";
   traces: TraceSummary[];
   grants: GrantSummary[];
   runs: RunSummary[];
-  exact: { kind: 'trace' | 'grant' | 'run'; id: string } | null;
+  exact: { kind: "trace" | "grant" | "run"; id: string } | null;
 }> {
-  return (await refFetch('/_ref/search', { q: query })) as {
-    object: 'search_result';
+  return (await refFetch("/_ref/search", { q: query })) as {
+    object: "search_result";
     traces: TraceSummary[];
     grants: GrantSummary[];
     runs: RunSummary[];
-    exact: { kind: 'trace' | 'grant' | 'run'; id: string } | null;
+    exact: { kind: "trace" | "grant" | "run"; id: string } | null;
   };
 }
 
 export type PendingApproval = {
-  object: 'approval';
-  kind: 'consent' | 'owner_device';
+  object: "approval";
+  kind: "consent" | "owner_device";
   approval_id: string;
   client_id?: string | null;
   user_code?: string | null;
@@ -303,5 +308,5 @@ export type PendingApproval = {
 };
 
 export async function listPendingApprovals(): Promise<ListResponse<PendingApproval>> {
-  return (await refFetch('/_ref/approvals')) as ListResponse<PendingApproval>;
+  return (await refFetch("/_ref/approvals")) as ListResponse<PendingApproval>;
 }

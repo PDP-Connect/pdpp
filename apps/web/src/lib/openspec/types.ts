@@ -1,4 +1,4 @@
-export type OpenSpecArtifactKind = 'proposal' | 'design' | 'tasks' | 'spec';
+export type OpenSpecArtifactKind = "proposal" | "design" | "tasks" | "spec";
 
 export type OpenSpecArtifact = {
   kind: OpenSpecArtifactKind;
@@ -31,7 +31,7 @@ export type OpenSpecChangeArtifactSummary = {
   repoRelativePath: string | null;
 };
 
-export type OpenSpecChangeStatus = 'in-progress' | 'complete' | 'unknown';
+export type OpenSpecChangeStatus = "in-progress" | "complete" | "unknown";
 
 export type OpenSpecChangeSummary = {
   name: string;
@@ -56,13 +56,13 @@ export type OpenSpecChangeDetail = OpenSpecChangeSummary & {
 };
 
 export type OpenSpecDesignNoteKind =
-  | 'open-question'
-  | 'plan'
-  | 'audit'
-  | 'research'
-  | 'strategy'
-  | 'connector-note'
-  | 'working-note';
+  | "open-question"
+  | "plan"
+  | "audit"
+  | "research"
+  | "strategy"
+  | "connector-note"
+  | "working-note";
 
 export type OpenSpecDesignNoteSummary = {
   changeName: string;

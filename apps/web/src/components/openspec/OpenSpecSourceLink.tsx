@@ -1,11 +1,11 @@
-import { Timestamp } from '@/components/ui/timestamp';
+import { Timestamp } from "@/components/ui/timestamp.tsx";
 
-const GITHUB_BLOB_BASE = 'https://github.com/vana-com/pdpp/blob/main';
-const GITHUB_TREE_BASE = 'https://github.com/vana-com/pdpp/tree/main';
+const GITHUB_BLOB_BASE = "https://github.com/vana-com/pdpp/blob/main";
+const GITHUB_TREE_BASE = "https://github.com/vana-com/pdpp/tree/main";
 
 export function openSpecGithubUrl(repoRelativePath: string): string {
-  const normalizedPath = repoRelativePath.replace(/\/+$/, '');
-  const base = repoRelativePath.endsWith('/') ? GITHUB_TREE_BASE : GITHUB_BLOB_BASE;
+  const normalizedPath = repoRelativePath.replace(/\/+$/, "");
+  const base = repoRelativePath.endsWith("/") ? GITHUB_TREE_BASE : GITHUB_BLOB_BASE;
   return `${base}/${normalizedPath}`;
 }
 
@@ -19,7 +19,7 @@ export function OpenSpecSourceLink({
   lastModified?: string | null;
 }) {
   const showUpdated = Boolean(
-    lastModified && createdAt && new Date(lastModified).getTime() !== new Date(createdAt).getTime(),
+    lastModified && createdAt && new Date(lastModified).getTime() !== new Date(createdAt).getTime()
   );
 
   return (
@@ -44,7 +44,7 @@ export function OpenSpecSourceLink({
           </span>
         </>
       )}
-      <span className="font-mono break-all">{repoRelativePath}</span>
+      <span className="break-all font-mono">{repoRelativePath}</span>
       <span aria-hidden="true" className="opacity-40">
         ·
       </span>

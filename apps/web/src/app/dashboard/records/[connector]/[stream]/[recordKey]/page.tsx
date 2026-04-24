@@ -1,11 +1,11 @@
-import { notFound } from 'next/navigation';
-import { DashboardShell, OwnerTokenRequired, ServerUnreachable } from '../../../../components/shell';
-import { PageHeader, Section } from '../../../../components/primitives';
-import { getRecord, type StreamRecord } from '../../../../lib/rs-client';
-import { ReferenceServerUnreachableError } from '../../../../lib/owner-token';
-import { Timestamp } from '@/components/ui/timestamp';
+import { notFound } from "next/navigation";
+import { Timestamp } from "@/components/ui/timestamp.tsx";
+import { PageHeader, Section } from "../../../../components/primitives.tsx";
+import { DashboardShell, ServerUnreachable } from "../../../../components/shell.tsx";
+import { ReferenceServerUnreachableError } from "../../../../lib/owner-token.ts";
+import { getRecord, type StreamRecord } from "../../../../lib/rs-client.ts";
 
-export const dynamic = 'force-dynamic';
+export const dynamic = "force-dynamic";
 
 export default async function RecordDetailPage({
   params,
@@ -30,7 +30,9 @@ export default async function RecordDetailPage({
       );
     }
     const msg = err instanceof Error ? err.message : String(err);
-    if (/\(404\)/.test(msg)) notFound();
+    if (/\(404\)/.test(msg)) {
+      notFound();
+    }
     throw err;
   }
 
@@ -48,9 +50,9 @@ export default async function RecordDetailPage({
   return (
     <DashboardShell active="records">
       <PageHeader
-        title={<code className="font-mono break-all">{recordId}</code>}
+        title={<code className="break-all font-mono">{recordId}</code>}
         breadcrumbs={[
-          { label: 'Records', href: '/dashboard/records' },
+          { label: "Records", href: "/dashboard/records" },
           { label: connectorId, href: connectorHref },
           { label: streamName, href: streamHref },
           { label: recordId },
@@ -63,7 +65,7 @@ export default async function RecordDetailPage({
       />
 
       <Section title="Record">
-        <pre className="pdpp-caption border-border/80 bg-muted/30 overflow-x-auto rounded-md border p-4 font-mono whitespace-pre-wrap break-words">
+        <pre className="pdpp-caption overflow-x-auto whitespace-pre-wrap break-words rounded-md border border-border/80 bg-muted/30 p-4 font-mono">
           {pretty}
         </pre>
       </Section>

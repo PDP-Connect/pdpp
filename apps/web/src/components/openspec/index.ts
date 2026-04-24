@@ -1,22 +1,20 @@
-export { OpenSpecArtifactCard } from './OpenSpecArtifactCard';
-export { OpenSpecBreadcrumbs, type OpenSpecCrumb } from './OpenSpecBreadcrumbs';
-export { OpenSpecChangeHeader } from './OpenSpecChangeHeader';
-export { OpenSpecEmptyState } from './OpenSpecEmptyState';
-export { OpenSpecMarkdownPage } from './OpenSpecMarkdownPage';
-export { OpenSpecNoteGroups } from './OpenSpecNoteGroups';
-export { OpenSpecProgressPill } from './OpenSpecProgressPill';
-export { OpenSpecSectionCard } from './OpenSpecSectionCard';
-export {
-  OpenSpecShell,
-} from './OpenSpecShell';
+export { OpenSpecArtifactCard } from "./OpenSpecArtifactCard.tsx";
+export { OpenSpecBreadcrumbs, type OpenSpecCrumb } from "./OpenSpecBreadcrumbs.tsx";
+export { OpenSpecChangeHeader } from "./OpenSpecChangeHeader.tsx";
+export { OpenSpecEmptyState } from "./OpenSpecEmptyState.tsx";
+export { OpenSpecMarkdownPage } from "./OpenSpecMarkdownPage.tsx";
+export { OpenSpecNoteGroups } from "./OpenSpecNoteGroups.tsx";
+export { OpenSpecProgressPill } from "./OpenSpecProgressPill.tsx";
+export { OpenSpecSectionCard } from "./OpenSpecSectionCard.tsx";
+export { OpenSpecShell } from "./OpenSpecShell.tsx";
 export {
   OpenSpecSidebar,
   type OpenSpecSidebarItem,
   type OpenSpecSidebarSection,
-} from './OpenSpecSidebar';
-export { OpenSpecSourceLink, openSpecGithubUrl } from './OpenSpecSourceLink';
-export { OpenSpecStatusPill } from './OpenSpecStatusPill';
+} from "./OpenSpecSidebar.tsx";
+export { OpenSpecSourceLink, openSpecGithubUrl } from "./OpenSpecSourceLink.tsx";
+export { OpenSpecStatusPill } from "./OpenSpecStatusPill.tsx";
 export {
   buildOpenSpecSidebarSections,
   type OpenSpecActiveScope,
-} from './sidebar-sections';
+} from "./sidebar-sections.ts";

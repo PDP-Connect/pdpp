@@ -1,25 +1,20 @@
-import Link from 'next/link';
-import { redirect } from 'next/navigation';
-import { DashboardShell, ServerUnreachable } from '../components/shell';
-import { ReferenceServerUnreachableError } from '../lib/owner-token';
-import {
-  refSearch,
-  type GrantSummary,
-  type RunSummary,
-  type TraceSummary,
-} from '../lib/ref-client';
+import Link from "next/link";
+import { redirect } from "next/navigation";
+import { DashboardShell, ServerUnreachable } from "../components/shell.tsx";
+import { ReferenceServerUnreachableError } from "../lib/owner-token.ts";
+import { type GrantSummary, type RunSummary, refSearch, type TraceSummary } from "../lib/ref-client.ts";
 import {
   getRecord,
   isSemanticRetrievalAdvertised,
-  searchRecordsLexical,
-  searchRecordsSemantic,
   type SearchResultHit,
   type SearchResultPage,
-} from '../lib/rs-client';
-import { summarize } from '../lib/timeline-summaries';
-import { shortConnectorName } from '../lib/timeline';
+  searchRecordsLexical,
+  searchRecordsSemantic,
+} from "../lib/rs-client.ts";
+import { shortConnectorName } from "../lib/timeline.ts";
+import { summarize } from "../lib/timeline-summaries.ts";
 
-export const dynamic = 'force-dynamic';
+export const dynamic = "force-dynamic";
 
 // Page-level per-page size for lexical retrieval — the primary, stable
 // retrieval surface that paginates. Not a hard cap; has_more/next_cursor
@@ -56,7 +51,7 @@ type RecordPage = {
 };
 
 type SearchResult = {
-  exact: { kind: 'trace' | 'grant' | 'run'; id: string } | null;
+  exact: { kind: "trace" | "grant" | "run"; id: string } | null;
   traces: TraceSummary[];
   grants: GrantSummary[];
   runs: RunSummary[];
@@ -119,12 +114,8 @@ async function hitToRecordHit(hit: SearchResultHit): Promise<RecordHit> {
  *     Dashboards should never surface backend configuration errors the
  *     user cannot act on.
  */
-async function searchRecords(
-  query: string,
-  cursor: string | null,
-  prevStack: string[],
-): Promise<RecordPage> {
-  const wantSemantic = cursor === null && await isSemanticRetrievalAdvertised();
+async function searchRecords(query: string, cursor: string | null, prevStack: string[]): Promise<RecordPage> {
+  const wantSemantic = cursor === null && (await isSemanticRetrievalAdvertised());
 
   const [lexicalPage, semanticPage] = await Promise.all([
     searchRecordsLexical(query, {
@@ -134,7 +125,7 @@ async function searchRecords(
     wantSemantic
       ? searchRecordsSemantic(query, { limit: SEMANTIC_UPLIFT_LIMIT }).catch(
           // Fail-closed on any runtime error too (not just capability probe).
-          () => null as SearchResultPage | null,
+          () => null as SearchResultPage | null
         )
       : Promise.resolve(null),
   ]);
@@ -144,17 +135,15 @@ async function searchRecords(
   // Only uplift if semantic ran AND returned hits.
   let upliftHits: RecordHit[] = [];
   if (semanticPage?.data?.length) {
-    const dedupKeys = new Set(
-      lexicalHits.map((h) => `${h.connectorId}::${h.stream}::${h.recordId}`),
-    );
+    const dedupKeys = new Set(lexicalHits.map((h) => `${h.connectorId}::${h.stream}::${h.recordId}`));
     const semanticOnly: SearchResultHit[] = semanticPage.data.filter(
-      (h: SearchResultHit) => !dedupKeys.has(`${h.connector_id}::${h.stream}::${h.record_key}`),
+      (h: SearchResultHit) => !dedupKeys.has(`${h.connector_id}::${h.stream}::${h.record_key}`)
     );
     upliftHits = await Promise.all(
       semanticOnly.map(async (h: SearchResultHit) => {
         const base = await hitToRecordHit(h);
         return { ...base, semanticOnly: true };
-      }),
+      })
     );
   }
 
@@ -169,12 +158,14 @@ async function searchRecords(
 }
 
 function parsePrevStack(raw: string | undefined): string[] {
-  if (typeof raw !== 'string' || raw.length === 0) return [];
-  return raw.split(',').filter((s) => s.length > 0);
+  if (typeof raw !== "string" || raw.length === 0) {
+    return [];
+  }
+  return raw.split(",").filter((s) => s.length > 0);
 }
 
 function encodePrevStack(stack: string[]): string {
-  return stack.join(',');
+  return stack.join(",");
 }
 
 export default async function SearchPage({
@@ -183,8 +174,8 @@ export default async function SearchPage({
   searchParams: Promise<{ q?: string; cursor?: string; prev?: string; jump?: string }>;
 }) {
   const { q: qParam, cursor: cursorParam, prev: prevParam, jump } = await searchParams;
-  const query = (qParam ?? '').trim();
-  const cursor = typeof cursorParam === 'string' && cursorParam ? cursorParam : null;
+  const query = (qParam ?? "").trim();
+  const cursor = typeof cursorParam === "string" && cursorParam ? cursorParam : null;
   const prevStack = parsePrevStack(prevParam);
 
   let result: SearchResult | null = null;
@@ -196,14 +187,14 @@ export default async function SearchPage({
 
       // Deep-link on exact id match. jump=0 opts out. Only on the first page;
       // deep-links from deeper cursor pages would be confusing.
-      if (spineResult.exact && jump !== '0' && !cursor) {
+      if (spineResult.exact && jump !== "0" && !cursor) {
         const { kind, id } = spineResult.exact;
         const target =
-          kind === 'trace'
+          kind === "trace"
             ? `/dashboard/traces/${encodeURIComponent(id)}`
-            : kind === 'grant'
-            ? `/dashboard/grants/${encodeURIComponent(id)}`
-            : `/dashboard/runs/${encodeURIComponent(id)}`;
+            : kind === "grant"
+              ? `/dashboard/grants/${encodeURIComponent(id)}`
+              : `/dashboard/runs/${encodeURIComponent(id)}`;
         redirect(target);
       }
 
@@ -235,10 +226,11 @@ export default async function SearchPage({
   return (
     <DashboardShell active="search">
       <header className="mb-4 flex items-baseline justify-between gap-4">
-        <h1 className="text-lg font-semibold">Search</h1>
+        <h1 className="font-semibold text-lg">Search</h1>
         {result && (
           <span className="text-muted-foreground text-xs">
-            {result.traces.length + result.grants.length + result.runs.length} artifacts · {result.records.hits.length} records{result.records.hasMore ? '+' : ''}
+            {result.traces.length + result.grants.length + result.runs.length} artifacts · {result.records.hits.length}{" "}
+            records{result.records.hasMore ? "+" : ""}
           </span>
         )}
       </header>
@@ -249,64 +241,100 @@ export default async function SearchPage({
           name="q"
           defaultValue={query}
           placeholder="trace id, grant id, run id, or text…"
-          className="border-border bg-background w-full rounded border px-3 py-2 sm:max-w-md"
+          className="w-full rounded border border-border bg-background px-3 py-2 sm:max-w-md"
           autoFocus
         />
-        <button type="submit" className="border-border hover:bg-muted/50 self-start rounded border px-3 py-2 sm:self-auto">
+        <button
+          type="submit"
+          className="self-start rounded border border-border px-3 py-2 hover:bg-muted/50 sm:self-auto"
+        >
           search
         </button>
       </form>
 
-      {!query ? (
-        <p className="text-muted-foreground text-xs">
-          Paste a request/trace/grant/run id for a direct jump, or enter text to search records
-          across every owner-visible stream that declares searchable fields.
-        </p>
-      ) : !result ? null : (
-        <>
-          <ArtifactSection title="traces" href="/dashboard/traces" items={result.traces} renderItem={(t) => (
-            <Link href={`/dashboard/traces/${encodeURIComponent(t.trace_id)}`} className="hover:bg-muted/50 block px-2 py-2 text-xs">
-              <code className="break-all font-medium">{t.trace_id}</code>
-              <div className="text-muted-foreground text-[11px]">{t.status} · {t.event_count} events · {t.kinds.slice(0, 3).join(', ')}</div>
-            </Link>
-          )} />
-          <ArtifactSection title="grants" href="/dashboard/grants" items={result.grants} renderItem={(g) => (
-            <Link href={`/dashboard/grants/${encodeURIComponent(g.grant_id)}`} className="hover:bg-muted/50 block px-2 py-2 text-xs">
-              <code className="break-all font-medium">{g.grant_id}</code>
-              <div className="text-muted-foreground text-[11px]">{g.status} · client {g.client_id ?? '—'}</div>
-            </Link>
-          )} />
-          <ArtifactSection title="runs" href="/dashboard/runs" items={result.runs} renderItem={(r) => (
-            <Link href={`/dashboard/runs/${encodeURIComponent(r.run_id)}`} className="hover:bg-muted/50 block px-2 py-2 text-xs">
-              <code className="break-all font-medium">{r.run_id}</code>
-              <div className="text-muted-foreground text-[11px]">{r.status} · {r.connector_id ?? '—'}</div>
-            </Link>
-          )} />
-
-          <section className="mb-6">
-            <h2 className="text-muted-foreground mb-2 text-xs uppercase tracking-wide">
-              records ({result.records.hits.length}{result.records.hasMore ? '+' : ''})
-            </h2>
-            {result.records.hits.length === 0 ? (
-              <p className="text-muted-foreground text-xs">No record-content hits.</p>
-            ) : (
-              <ul className="divide-border divide-y border-y">
-                {result.records.hits.map((h) => (
-                  <li key={`${h.connectorId}::${h.stream}::${h.recordId}`}>
-                    <RecordRow hit={h} query={query} />
-                  </li>
-                ))}
-              </ul>
-            )}
-            <PaginationBar
-              query={query}
-              cursor={cursor}
-              prevStack={prevStack}
-              hasMore={result.records.hasMore}
-              nextCursor={result.records.nextCursor}
+      {query ? (
+        result ? (
+          <>
+            <ArtifactSection
+              title="traces"
+              href="/dashboard/traces"
+              items={result.traces}
+              renderItem={(t) => (
+                <Link
+                  href={`/dashboard/traces/${encodeURIComponent(t.trace_id)}`}
+                  className="block px-2 py-2 text-xs hover:bg-muted/50"
+                >
+                  <code className="break-all font-medium">{t.trace_id}</code>
+                  <div className="text-[11px] text-muted-foreground">
+                    {t.status} · {t.event_count} events · {t.kinds.slice(0, 3).join(", ")}
+                  </div>
+                </Link>
+              )}
             />
-          </section>
-        </>
+            <ArtifactSection
+              title="grants"
+              href="/dashboard/grants"
+              items={result.grants}
+              renderItem={(g) => (
+                <Link
+                  href={`/dashboard/grants/${encodeURIComponent(g.grant_id)}`}
+                  className="block px-2 py-2 text-xs hover:bg-muted/50"
+                >
+                  <code className="break-all font-medium">{g.grant_id}</code>
+                  <div className="text-[11px] text-muted-foreground">
+                    {g.status} · client {g.client_id ?? "—"}
+                  </div>
+                </Link>
+              )}
+            />
+            <ArtifactSection
+              title="runs"
+              href="/dashboard/runs"
+              items={result.runs}
+              renderItem={(r) => (
+                <Link
+                  href={`/dashboard/runs/${encodeURIComponent(r.run_id)}`}
+                  className="block px-2 py-2 text-xs hover:bg-muted/50"
+                >
+                  <code className="break-all font-medium">{r.run_id}</code>
+                  <div className="text-[11px] text-muted-foreground">
+                    {r.status} · {r.connector_id ?? "—"}
+                  </div>
+                </Link>
+              )}
+            />
+
+            <section className="mb-6">
+              <h2 className="mb-2 text-muted-foreground text-xs uppercase tracking-wide">
+                records ({result.records.hits.length}
+                {result.records.hasMore ? "+" : ""})
+              </h2>
+              {result.records.hits.length === 0 ? (
+                <p className="text-muted-foreground text-xs">No record-content hits.</p>
+              ) : (
+                <ul className="divide-y divide-border border-y">
+                  {result.records.hits.map((h) => (
+                    <li key={`${h.connectorId}::${h.stream}::${h.recordId}`}>
+                      <RecordRow hit={h} query={query} />
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <PaginationBar
+                query={query}
+                cursor={cursor}
+                prevStack={prevStack}
+                hasMore={result.records.hasMore}
+                nextCursor={result.records.nextCursor}
+              />
+            </section>
+          </>
+        ) : null
+      ) : (
+        <p className="text-muted-foreground text-xs">
+          Paste a request/trace/grant/run id for a direct jump, or enter text to search records across every
+          owner-visible stream that declares searchable fields.
+        </p>
       )}
     </DashboardShell>
   );
@@ -323,18 +351,20 @@ function ArtifactSection<T>({
   items: T[];
   renderItem: (item: T) => React.ReactNode;
 }) {
-  if (items.length === 0) return null;
+  if (items.length === 0) {
+    return null;
+  }
   return (
     <section className="mb-6">
-      <h2 className="text-muted-foreground mb-2 flex items-baseline justify-between text-xs uppercase tracking-wide">
+      <h2 className="mb-2 flex items-baseline justify-between text-muted-foreground text-xs uppercase tracking-wide">
         <span>
           {title} ({items.length})
         </span>
-        <Link href={href} className="hover:text-foreground normal-case tracking-normal">
+        <Link href={href} className="normal-case tracking-normal hover:text-foreground">
           all →
         </Link>
       </h2>
-      <ul className="divide-border divide-y border-y">
+      <ul className="divide-y divide-border border-y">
         {items.map((item, i) => (
           <li key={i}>{renderItem(item)}</li>
         ))}
@@ -357,7 +387,9 @@ function PaginationBar({
   nextCursor: string | null;
 }) {
   // Nothing to navigate to: no previous pages AND no next page.
-  if (prevStack.length === 0 && !hasMore) return null;
+  if (prevStack.length === 0 && !hasMore) {
+    return null;
+  }
 
   // Previous: pop the top of prevStack and use it as the new cursor.
   // The popped remainder becomes the next request's prev stack.
@@ -367,10 +399,14 @@ function PaginationBar({
     // the 'first' sentinel so the subsequent cursor branch type-narrows
     // without a non-null assertion.
     const newStack = prevStack.slice(0, -1);
-    const newCursor = prevStack[prevStack.length - 1] ?? 'first';
+    const newCursor = prevStack[prevStack.length - 1] ?? "first";
     const params = new URLSearchParams({ q: query });
-    if (newCursor !== 'first') params.set('cursor', newCursor);
-    if (newStack.length > 0) params.set('prev', encodePrevStack(newStack));
+    if (newCursor !== "first") {
+      params.set("cursor", newCursor);
+    }
+    if (newStack.length > 0) {
+      params.set("prev", encodePrevStack(newStack));
+    }
     prevHref = `/dashboard/search?${params.toString()}`;
   }
 
@@ -379,7 +415,7 @@ function PaginationBar({
   // 'first' so the prev-chain back is unambiguous.
   let nextHref: string | null = null;
   if (hasMore && nextCursor) {
-    const newStack = [...prevStack, cursor ?? 'first'];
+    const newStack = [...prevStack, cursor ?? "first"];
     const params = new URLSearchParams({ q: query, cursor: nextCursor, prev: encodePrevStack(newStack) });
     nextHref = `/dashboard/search?${params.toString()}`;
   }
@@ -387,18 +423,18 @@ function PaginationBar({
   return (
     <nav className="mt-3 flex items-center gap-3 text-xs" aria-label="record pagination">
       {prevHref ? (
-        <Link href={prevHref} className="border-border hover:bg-muted/50 rounded border px-3 py-1">
+        <Link href={prevHref} className="rounded border border-border px-3 py-1 hover:bg-muted/50">
           ← Previous
         </Link>
       ) : (
-        <span className="text-muted-foreground px-3 py-1 opacity-50">← Previous</span>
+        <span className="px-3 py-1 text-muted-foreground opacity-50">← Previous</span>
       )}
       {nextHref ? (
-        <Link href={nextHref} className="border-border hover:bg-muted/50 rounded border px-3 py-1">
+        <Link href={nextHref} className="rounded border border-border px-3 py-1 hover:bg-muted/50">
           Next →
         </Link>
       ) : (
-        <span className="text-muted-foreground px-3 py-1 opacity-50">Next →</span>
+        <span className="px-3 py-1 text-muted-foreground opacity-50">Next →</span>
       )}
     </nav>
   );
@@ -407,17 +443,20 @@ function PaginationBar({
 function RecordRow({ hit, query }: { hit: RecordHit; query: string }) {
   const href = `/dashboard/records/${encodeURIComponent(hit.connectorId)}/${encodeURIComponent(hit.stream)}/${encodeURIComponent(hit.recordId)}`;
   return (
-    <Link href={href} className="hover:bg-muted/50 grid gap-1 px-2 py-2 text-xs sm:grid-cols-[10rem_9rem_1fr] sm:items-baseline sm:gap-4">
-      <span className="text-muted-foreground whitespace-nowrap tabular-nums">{hit.emittedAt}</span>
+    <Link
+      href={href}
+      className="grid gap-1 px-2 py-2 text-xs hover:bg-muted/50 sm:grid-cols-[10rem_9rem_1fr] sm:items-baseline sm:gap-4"
+    >
+      <span className="whitespace-nowrap text-muted-foreground tabular-nums">{hit.emittedAt}</span>
       <span className="flex items-baseline gap-2 whitespace-nowrap">
         <span className="truncate font-medium">{shortConnectorName(hit.connectorId)}</span>
-        <span className="text-muted-foreground truncate">{hit.stream}</span>
+        <span className="truncate text-muted-foreground">{hit.stream}</span>
       </span>
       <span className="break-words">
         <Highlight text={hit.snippet} query={query} />
         {hit.semanticOnly ? (
           <span
-            className="border-border text-muted-foreground ml-2 inline-flex items-baseline gap-1 rounded border px-1.5 py-0.5 align-baseline text-[10px] uppercase tracking-wide"
+            className="ml-2 inline-flex items-baseline gap-1 rounded border border-border px-1.5 py-0.5 align-baseline text-[10px] text-muted-foreground uppercase tracking-wide"
             title="This record did not match the text lexically. Found by semantic retrieval, which is an experimental feature and may change."
           >
             semantic · experimental
@@ -429,9 +468,13 @@ function RecordRow({ hit, query }: { hit: RecordHit; query: string }) {
 }
 
 function Highlight({ text, query }: { text: string; query: string }) {
-  if (!query) return <>{text}</>;
+  if (!query) {
+    return <>{text}</>;
+  }
   const idx = text.toLowerCase().indexOf(query.toLowerCase());
-  if (idx === -1) return <>{text}</>;
+  if (idx === -1) {
+    return <>{text}</>;
+  }
   return (
     <>
       {text.slice(0, idx)}

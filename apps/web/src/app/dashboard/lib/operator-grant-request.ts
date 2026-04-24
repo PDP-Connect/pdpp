@@ -2,21 +2,19 @@
  * Server-only helpers for a dashboard-managed client registration + PAR
  * staging workspace. Uses only the real public registration and PAR routes.
  */
+
+import { DEFAULT_LOCAL_DCR_INITIAL_ACCESS_TOKEN } from "pdpp-reference-implementation/reference-local-defaults";
+import { approveConsentRequest, denyConsentRequest } from "./operator-approvals.ts";
 import {
-  ReferenceServerUnreachableError,
   getAsInternalUrl,
   getReferencePublicOrigin,
+  ReferenceServerUnreachableError,
   withOwnerSessionCookie,
-} from './owner-token';
-import {
-  approveConsentRequest,
-  denyConsentRequest,
-} from './operator-approvals';
-import { DEFAULT_LOCAL_DCR_INITIAL_ACCESS_TOKEN } from 'pdpp-reference-implementation/reference-local-defaults';
+} from "./owner-token.ts";
 
 export const DEFAULT_DCR_INITIAL_ACCESS_TOKEN =
-  (process.env.PDPP_DCR_INITIAL_ACCESS_TOKENS || '')
-    .split(',')
+  (process.env.PDPP_DCR_INITIAL_ACCESS_TOKENS || "")
+    .split(",")
     .map((value) => value.trim())
     .find(Boolean) || DEFAULT_LOCAL_DCR_INITIAL_ACCESS_TOKEN;
 
@@ -66,33 +64,33 @@ function nowIso(): string {
 
 function normalizeFields(value: string): string[] | undefined {
   const fields = value
-    .split(',')
+    .split(",")
     .map((entry) => entry.trim())
     .filter(Boolean);
   return fields.length ? fields : undefined;
 }
 
 function trim(value: string | undefined): string {
-  return (value ?? '').trim();
+  return (value ?? "").trim();
 }
 
 export function createDefaultGrantRequestDraft(): GrantRequestDraft {
   return {
     initialAccessToken: DEFAULT_DCR_INITIAL_ACCESS_TOKEN,
-    clientId: '',
-    clientName: 'Longview',
-    clientUri: '',
-    redirectUri: '',
-    connectorId: '',
-    providerId: '',
-    purposeCode: 'https://pdpp.org/purpose/financial_planning',
-    purposeDescription: 'Compare personal data across providers.',
-    accessMode: 'single_use',
-    retention: 'P30D',
-    streamName: '',
-    fields: '',
-    view: '',
-    subjectId: 'owner_local',
+    clientId: "",
+    clientName: "Longview",
+    clientUri: "",
+    redirectUri: "",
+    connectorId: "",
+    providerId: "",
+    purposeCode: "https://pdpp.org/purpose/financial_planning",
+    purposeDescription: "Compare personal data across providers.",
+    accessMode: "single_use",
+    retention: "P30D",
+    streamName: "",
+    fields: "",
+    view: "",
+    subjectId: "owner_local",
   };
 }
 
@@ -118,17 +116,17 @@ function sanitizeDraft(input: Partial<GrantRequestDraft> = {}): GrantRequestDraf
 }
 
 function requireSingleSourceBinding(draft: GrantRequestDraft) {
-  if (!draft.connectorId && !draft.providerId) {
-    throw new Error('connector_id or provider_id is required');
+  if (!(draft.connectorId || draft.providerId)) {
+    throw new Error("connector_id or provider_id is required");
   }
   if (draft.connectorId && draft.providerId) {
-    throw new Error('Specify connector_id or provider_id, not both');
+    throw new Error("Specify connector_id or provider_id, not both");
   }
 }
 
 function requireStreamSelection(draft: GrantRequestDraft) {
   if (!draft.streamName) {
-    throw new Error('stream name is required');
+    throw new Error("stream name is required");
   }
 }
 
@@ -149,10 +147,7 @@ function saveWorkspace(workspace: GrantRequestWorkspace): GrantRequestWorkspace 
   return workspace;
 }
 
-function upsertWorkspace(
-  workspaceId: string | undefined,
-  input: Partial<GrantRequestDraft>,
-): GrantRequestWorkspace {
+function upsertWorkspace(workspaceId: string | undefined, input: Partial<GrantRequestDraft>): GrantRequestWorkspace {
   const existing = workspaceId ? workspaceOrNull(workspaceId) : null;
   const draft = sanitizeDraft({
     ...(existing?.draft ?? {}),
@@ -172,35 +167,35 @@ function upsertWorkspace(
 }
 
 async function readBody(res: Response): Promise<unknown> {
-  const contentType = res.headers.get('content-type') ?? '';
-  if (contentType.includes('application/json')) {
+  const contentType = res.headers.get("content-type") ?? "";
+  if (contentType.includes("application/json")) {
     return res.json();
   }
   return res.text();
 }
 
 function describeError(body: unknown, fallback: string): string {
-  if (body && typeof body === 'object') {
+  if (body && typeof body === "object") {
     const oauth = body as {
       error?: string | { message?: string };
       error_description?: string;
     };
-    if (typeof oauth.error_description === 'string' && oauth.error_description) {
+    if (typeof oauth.error_description === "string" && oauth.error_description) {
       return oauth.error_description;
     }
-    if (typeof oauth.error === 'string' && oauth.error) {
+    if (typeof oauth.error === "string" && oauth.error) {
       return oauth.error;
     }
     if (
       oauth.error &&
-      typeof oauth.error === 'object' &&
-      typeof oauth.error.message === 'string' &&
+      typeof oauth.error === "object" &&
+      typeof oauth.error.message === "string" &&
       oauth.error.message
     ) {
       return oauth.error.message;
     }
   }
-  if (typeof body === 'string' && body.trim()) {
+  if (typeof body === "string" && body.trim()) {
     return body.trim();
   }
   return fallback;
@@ -211,30 +206,24 @@ async function fetchAs(path: string, init: RequestInit): Promise<Response> {
     return await fetch(
       `${getAsInternalUrl()}${path}`,
       await withOwnerSessionCookie({
-        cache: 'no-store',
+        cache: "no-store",
         ...init,
-      }),
+      })
     );
   } catch (err) {
-    throw new ReferenceServerUnreachableError(
-      `Cannot reach authorization server at ${getAsInternalUrl()}`,
-      err,
-    );
+    throw new ReferenceServerUnreachableError(`Cannot reach authorization server at ${getAsInternalUrl()}`, err);
   }
 }
 
-export function getGrantRequestWorkspace(
-  workspaceId: string,
-): GrantRequestWorkspace | null {
+export function getGrantRequestWorkspace(workspaceId: string): GrantRequestWorkspace | null {
   return workspaceOrNull(workspaceId);
 }
 
-export function setGrantRequestWorkspaceError(
-  workspaceId: string,
-  message: string,
-): GrantRequestWorkspace | null {
+export function setGrantRequestWorkspaceError(workspaceId: string, message: string): GrantRequestWorkspace | null {
   const workspace = workspaceOrNull(workspaceId);
-  if (!workspace) return null;
+  if (!workspace) {
+    return null;
+  }
   return saveWorkspace({
     ...workspace,
     updatedAt: nowIso(),
@@ -244,35 +233,33 @@ export function setGrantRequestWorkspaceError(
 
 export function updateGrantRequestWorkspaceDraft(
   workspaceId: string | undefined,
-  input: Partial<GrantRequestDraft>,
+  input: Partial<GrantRequestDraft>
 ): GrantRequestWorkspace {
   return upsertWorkspace(workspaceId, input);
 }
 
 export async function registerGrantRequestClient(
   workspaceId: string | undefined,
-  input: Partial<GrantRequestDraft>,
+  input: Partial<GrantRequestDraft>
 ): Promise<GrantRequestWorkspace> {
   const workspace = upsertWorkspace(workspaceId, input);
   const metadata = {
     client_name: workspace.draft.clientName,
     ...(workspace.draft.clientUri ? { client_uri: workspace.draft.clientUri } : {}),
-    ...(workspace.draft.redirectUri
-      ? { redirect_uris: [workspace.draft.redirectUri] }
-      : {}),
-    token_endpoint_auth_method: 'none',
+    ...(workspace.draft.redirectUri ? { redirect_uris: [workspace.draft.redirectUri] } : {}),
+    token_endpoint_auth_method: "none",
   };
 
-  const response = await fetchAs('/oauth/register', {
-    method: 'POST',
+  const response = await fetchAs("/oauth/register", {
+    method: "POST",
     headers: {
-      'Content-Type': 'application/json',
+      "Content-Type": "application/json",
       Authorization: `Bearer ${workspace.draft.initialAccessToken}`,
     },
     body: JSON.stringify(metadata),
   });
   const body = await readBody(response);
-  if (!response.ok || !body || typeof body !== 'object') {
+  if (!(response.ok && body) || typeof body !== "object") {
     throw new Error(describeError(body, `client registration failed (${response.status})`));
   }
 
@@ -282,10 +269,7 @@ export async function registerGrantRequestClient(
     updatedAt: nowIso(),
     draft: {
       ...workspace.draft,
-      clientId:
-        typeof registeredClient.client_id === 'string'
-          ? registeredClient.client_id
-          : workspace.draft.clientId,
+      clientId: typeof registeredClient.client_id === "string" ? registeredClient.client_id : workspace.draft.clientId,
     },
     registeredClient,
     lastError: null,
@@ -294,7 +278,7 @@ export async function registerGrantRequestClient(
 
 export async function stageGrantRequest(
   workspaceId: string | undefined,
-  input: Partial<GrantRequestDraft>,
+  input: Partial<GrantRequestDraft>
 ): Promise<GrantRequestWorkspace> {
   const workspace = upsertWorkspace(workspaceId, input);
   requireSingleSourceBinding(workspace.draft);
@@ -302,27 +286,19 @@ export async function stageGrantRequest(
 
   const clientId =
     workspace.draft.clientId ||
-    (typeof workspace.registeredClient?.client_id === 'string'
-      ? workspace.registeredClient.client_id
-      : '');
+    (typeof workspace.registeredClient?.client_id === "string" ? workspace.registeredClient.client_id : "");
   if (!clientId) {
-    throw new Error('client_id is required; register a client first or enter one manually');
+    throw new Error("client_id is required; register a client first or enter one manually");
   }
 
   const request = {
     client_id: clientId,
-    client_display: workspace.draft.clientName
-      ? { name: workspace.draft.clientName }
-      : undefined,
+    client_display: workspace.draft.clientName ? { name: workspace.draft.clientName } : undefined,
     authorization_details: [
       {
-        type: 'https://pdpp.org/data-access',
-        ...(workspace.draft.connectorId
-          ? { connector_id: workspace.draft.connectorId }
-          : {}),
-        ...(workspace.draft.providerId
-          ? { provider_id: workspace.draft.providerId }
-          : {}),
+        type: "https://pdpp.org/data-access",
+        ...(workspace.draft.connectorId ? { connector_id: workspace.draft.connectorId } : {}),
+        ...(workspace.draft.providerId ? { provider_id: workspace.draft.providerId } : {}),
         purpose_code: workspace.draft.purposeCode,
         purpose_description: workspace.draft.purposeDescription,
         access_mode: workspace.draft.accessMode,
@@ -330,9 +306,7 @@ export async function stageGrantRequest(
         streams: [
           {
             name: workspace.draft.streamName,
-            ...(normalizeFields(workspace.draft.fields)
-              ? { fields: normalizeFields(workspace.draft.fields) }
-              : {}),
+            ...(normalizeFields(workspace.draft.fields) ? { fields: normalizeFields(workspace.draft.fields) } : {}),
             ...(workspace.draft.view ? { view: workspace.draft.view } : {}),
           },
         ],
@@ -340,13 +314,13 @@ export async function stageGrantRequest(
     ],
   };
 
-  const response = await fetchAs('/oauth/par', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+  const response = await fetchAs("/oauth/par", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(request),
   });
   const body = await readBody(response);
-  if (!response.ok || !body || typeof body !== 'object') {
+  if (!(response.ok && body) || typeof body !== "object") {
     throw new Error(describeError(body, `PAR staging failed (${response.status})`));
   }
 
@@ -362,16 +336,12 @@ export async function stageGrantRequest(
   });
 }
 
-export async function approveGrantRequestWorkspace(
-  workspaceId: string,
-): Promise<GrantRequestWorkspace> {
+export async function approveGrantRequestWorkspace(workspaceId: string): Promise<GrantRequestWorkspace> {
   const workspace = requireWorkspace(workspaceId);
   const requestUri =
-    typeof workspace.stagedRequest?.request_uri === 'string'
-      ? workspace.stagedRequest.request_uri
-      : '';
+    typeof workspace.stagedRequest?.request_uri === "string" ? workspace.stagedRequest.request_uri : "";
   if (!requestUri) {
-    throw new Error('No staged request is available yet');
+    throw new Error("No staged request is available yet");
   }
   await approveConsentRequest(requestUri, workspace.draft.subjectId);
   return saveWorkspace({
@@ -381,16 +351,12 @@ export async function approveGrantRequestWorkspace(
   });
 }
 
-export async function denyGrantRequestWorkspace(
-  workspaceId: string,
-): Promise<GrantRequestWorkspace> {
+export async function denyGrantRequestWorkspace(workspaceId: string): Promise<GrantRequestWorkspace> {
   const workspace = requireWorkspace(workspaceId);
   const requestUri =
-    typeof workspace.stagedRequest?.request_uri === 'string'
-      ? workspace.stagedRequest.request_uri
-      : '';
+    typeof workspace.stagedRequest?.request_uri === "string" ? workspace.stagedRequest.request_uri : "";
   if (!requestUri) {
-    throw new Error('No staged request is available yet');
+    throw new Error("No staged request is available yet");
   }
   await denyConsentRequest(requestUri);
   return saveWorkspace({
@@ -403,30 +369,22 @@ export async function denyGrantRequestWorkspace(
 export async function buildGrantRequestExamples(workspace: GrantRequestWorkspace) {
   const asUrl = await getReferencePublicOrigin();
   const streamSelection = {
-    name: workspace.draft.streamName || '<stream>',
-    ...(normalizeFields(workspace.draft.fields)
-      ? { fields: normalizeFields(workspace.draft.fields) }
-      : {}),
+    name: workspace.draft.streamName || "<stream>",
+    ...(normalizeFields(workspace.draft.fields) ? { fields: normalizeFields(workspace.draft.fields) } : {}),
     ...(workspace.draft.view ? { view: workspace.draft.view } : {}),
   };
   const request = {
     client_id:
       workspace.draft.clientId ||
-      (typeof workspace.registeredClient?.client_id === 'string'
+      (typeof workspace.registeredClient?.client_id === "string"
         ? workspace.registeredClient.client_id
-        : '<client_id>'),
-    client_display: workspace.draft.clientName
-      ? { name: workspace.draft.clientName }
-      : undefined,
+        : "<client_id>"),
+    client_display: workspace.draft.clientName ? { name: workspace.draft.clientName } : undefined,
     authorization_details: [
       {
-        type: 'https://pdpp.org/data-access',
-        ...(workspace.draft.connectorId
-          ? { connector_id: workspace.draft.connectorId }
-          : {}),
-        ...(workspace.draft.providerId
-          ? { provider_id: workspace.draft.providerId }
-          : {}),
+        type: "https://pdpp.org/data-access",
+        ...(workspace.draft.connectorId ? { connector_id: workspace.draft.connectorId } : {}),
+        ...(workspace.draft.providerId ? { provider_id: workspace.draft.providerId } : {}),
         purpose_code: workspace.draft.purposeCode,
         purpose_description: workspace.draft.purposeDescription,
         access_mode: workspace.draft.accessMode,
@@ -437,14 +395,14 @@ export async function buildGrantRequestExamples(workspace: GrantRequestWorkspace
   };
 
   return {
-    registerCurl: `curl -sS -X POST '${asUrl}/oauth/register' \\\n  -H 'Content-Type: application/json' \\\n  -H 'Authorization: Bearer ${workspace.draft.initialAccessToken || '<initial-access-token>'}' \\\n  --data '${JSON.stringify({
-      client_name: workspace.draft.clientName || 'Longview',
-      ...(workspace.draft.clientUri ? { client_uri: workspace.draft.clientUri } : {}),
-      ...(workspace.draft.redirectUri
-        ? { redirect_uris: [workspace.draft.redirectUri] }
-        : {}),
-      token_endpoint_auth_method: 'none',
-    })}'`,
+    registerCurl: `curl -sS -X POST '${asUrl}/oauth/register' \\\n  -H 'Content-Type: application/json' \\\n  -H 'Authorization: Bearer ${workspace.draft.initialAccessToken || "<initial-access-token>"}' \\\n  --data '${JSON.stringify(
+      {
+        client_name: workspace.draft.clientName || "Longview",
+        ...(workspace.draft.clientUri ? { client_uri: workspace.draft.clientUri } : {}),
+        ...(workspace.draft.redirectUri ? { redirect_uris: [workspace.draft.redirectUri] } : {}),
+        token_endpoint_auth_method: "none",
+      }
+    )}'`,
     stageCurl: `curl -sS -X POST '${asUrl}/oauth/par' \\\n  -H 'Content-Type: application/json' \\\n  --data '${JSON.stringify(request)}'`,
   };
 }

@@ -1,6 +1,6 @@
-'use client';
+"use client";
 
-import React from 'react';
+import React from "react";
 
 // ─── Spec Citation ───────────────────────────────────────────────────────────
 
@@ -8,20 +8,25 @@ import React from 'react';
 // Renders as a mono link with the § prefix.
 
 export type SpecCitationProps = {
-  section: string;           // e.g. "4.2" or "6.1"
-  label: string;             // e.g. "Selection Request"
-  href?: string;             // optional link to spec page
+  section: string; // e.g. "4.2" or "6.1"
+  label: string; // e.g. "Selection Request"
+  href?: string; // optional link to spec page
 };
 
 export function SpecCitation({ section, label, href }: SpecCitationProps) {
   const content = (
-    <span className="font-mono text-xs" style={{ color: 'var(--edu-fg)' }}>
-      {"§"}{section} {label}
+    <span className="font-mono text-xs" style={{ color: "var(--edu-fg)" }}>
+      {"§"}
+      {section} {label}
     </span>
   );
 
   if (href) {
-    return <a href={href} className="transition-opacity hover:opacity-70">{content}</a>;
+    return (
+      <a href={href} className="transition-opacity hover:opacity-70">
+        {content}
+      </a>
+    );
   }
   return content;
 }
@@ -30,12 +35,16 @@ export function SpecCitation({ section, label, href }: SpecCitationProps) {
 export function SpecCitationGroup({ citations }: { citations: SpecCitationProps[] }) {
   return (
     <span
-      className="inline-flex items-baseline gap-2 flex-wrap px-2.5 py-1.5 rounded-md"
-      style={{ border: '1px solid var(--border)', backgroundColor: 'var(--card)' }}
+      className="inline-flex flex-wrap items-baseline gap-2 rounded-md px-2.5 py-1.5"
+      style={{ border: "1px solid var(--border)", backgroundColor: "var(--card)" }}
     >
       {citations.map((c, i) => (
         <React.Fragment key={c.section}>
-          {i > 0 && <span className="font-mono text-xs" style={{ color: 'var(--muted-foreground)' }}>&middot;</span>}
+          {i > 0 && (
+            <span className="font-mono text-xs" style={{ color: "var(--muted-foreground)" }}>
+              &middot;
+            </span>
+          )}
           <SpecCitation {...c} />
         </React.Fragment>
       ))}

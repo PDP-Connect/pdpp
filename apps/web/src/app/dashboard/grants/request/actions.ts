@@ -1,7 +1,7 @@
-'use server';
+"use server";
 
-import { redirect } from 'next/navigation';
-import { requireDashboardAccess } from '../../lib/dashboard-access';
+import { redirect } from "next/navigation";
+import { requireDashboardAccess } from "../../lib/dashboard-access.ts";
 import {
   approveGrantRequestWorkspace,
   denyGrantRequestWorkspace,
@@ -9,29 +9,29 @@ import {
   setGrantRequestWorkspaceError,
   stageGrantRequest,
   updateGrantRequestWorkspaceDraft,
-} from '../../lib/operator-grant-request';
+} from "../../lib/operator-grant-request.ts";
 
 function asString(value: FormDataEntryValue | null): string {
-  return typeof value === 'string' ? value.trim() : '';
+  return typeof value === "string" ? value.trim() : "";
 }
 
 function readDraft(formData: FormData) {
   return {
-    initialAccessToken: asString(formData.get('initial_access_token')),
-    clientId: asString(formData.get('client_id')),
-    clientName: asString(formData.get('client_name')),
-    clientUri: asString(formData.get('client_uri')),
-    redirectUri: asString(formData.get('redirect_uri')),
-    connectorId: asString(formData.get('connector_id')),
-    providerId: asString(formData.get('provider_id')),
-    purposeCode: asString(formData.get('purpose_code')),
-    purposeDescription: asString(formData.get('purpose_description')),
-    accessMode: asString(formData.get('access_mode')),
-    retention: asString(formData.get('retention')),
-    streamName: asString(formData.get('stream_name')),
-    fields: asString(formData.get('fields')),
-    view: asString(formData.get('view')),
-    subjectId: asString(formData.get('subject_id')),
+    initialAccessToken: asString(formData.get("initial_access_token")),
+    clientId: asString(formData.get("client_id")),
+    clientName: asString(formData.get("client_name")),
+    clientUri: asString(formData.get("client_uri")),
+    redirectUri: asString(formData.get("redirect_uri")),
+    connectorId: asString(formData.get("connector_id")),
+    providerId: asString(formData.get("provider_id")),
+    purposeCode: asString(formData.get("purpose_code")),
+    purposeDescription: asString(formData.get("purpose_description")),
+    accessMode: asString(formData.get("access_mode")),
+    retention: asString(formData.get("retention")),
+    streamName: asString(formData.get("stream_name")),
+    fields: asString(formData.get("fields")),
+    view: asString(formData.get("view")),
+    subjectId: asString(formData.get("subject_id")),
   };
 }
 
@@ -40,22 +40,22 @@ function workspaceHref(workspaceId: string): string {
 }
 
 function workspaceReturnTo(workspaceId: string | undefined): string {
-  return workspaceId ? workspaceHref(workspaceId) : '/dashboard/grants/request';
+  return workspaceId ? workspaceHref(workspaceId) : "/dashboard/grants/request";
 }
 
 function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : 'Unexpected grant-request action failure';
+  return err instanceof Error ? err.message : "Unexpected grant-request action failure";
 }
 
 export async function saveGrantRequestDraftAction(formData: FormData) {
-  const workspaceId = asString(formData.get('workspace_id')) || undefined;
+  const workspaceId = asString(formData.get("workspace_id")) || undefined;
   await requireDashboardAccess(workspaceReturnTo(workspaceId));
   const workspace = updateGrantRequestWorkspaceDraft(workspaceId, readDraft(formData));
   redirect(workspaceHref(workspace.workspaceId));
 }
 
 export async function registerGrantRequestClientAction(formData: FormData) {
-  const workspaceId = asString(formData.get('workspace_id')) || undefined;
+  const workspaceId = asString(formData.get("workspace_id")) || undefined;
   await requireDashboardAccess(workspaceReturnTo(workspaceId));
   const draft = readDraft(formData);
   let target: string;
@@ -71,7 +71,7 @@ export async function registerGrantRequestClientAction(formData: FormData) {
 }
 
 export async function stageGrantRequestAction(formData: FormData) {
-  const workspaceId = asString(formData.get('workspace_id')) || undefined;
+  const workspaceId = asString(formData.get("workspace_id")) || undefined;
   await requireDashboardAccess(workspaceReturnTo(workspaceId));
   const draft = readDraft(formData);
   let target: string;
@@ -87,7 +87,7 @@ export async function stageGrantRequestAction(formData: FormData) {
 }
 
 export async function approveGrantRequestAction(formData: FormData) {
-  const workspaceId = asString(formData.get('workspace_id'));
+  const workspaceId = asString(formData.get("workspace_id"));
   await requireDashboardAccess(workspaceReturnTo(workspaceId));
   try {
     await approveGrantRequestWorkspace(workspaceId);
@@ -98,7 +98,7 @@ export async function approveGrantRequestAction(formData: FormData) {
 }
 
 export async function denyGrantRequestAction(formData: FormData) {
-  const workspaceId = asString(formData.get('workspace_id'));
+  const workspaceId = asString(formData.get("workspace_id"));
   await requireDashboardAccess(workspaceReturnTo(workspaceId));
   try {
     await denyGrantRequestWorkspace(workspaceId);

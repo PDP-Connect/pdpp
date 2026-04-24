@@ -1,18 +1,14 @@
-import Link from 'next/link';
-import { DashboardShell, EmptyState, ServerUnreachable } from '../components/shell';
-import { buttonVariants } from '@/components/ui/button';
-import { DataList, PageHeader, Section } from '../components/primitives';
-import { ReferenceServerUnreachableError } from '../lib/owner-token';
-import {
-  listConnectorSummaries,
-  type RefConnectorRunSummary,
-  type RefConnectorSummary,
-} from '../lib/ref-client';
-import { type ConnectorOverview } from '../lib/rs-client';
-import { ConnectorRow } from './connector-row';
-import { RecordsPagePoller } from './records-page-poller';
+import Link from "next/link";
+import { buttonVariants } from "@/components/ui/button.tsx";
+import { DataList, PageHeader, Section } from "../components/primitives.tsx";
+import { DashboardShell, EmptyState, ServerUnreachable } from "../components/shell.tsx";
+import { ReferenceServerUnreachableError } from "../lib/owner-token.ts";
+import { listConnectorSummaries, type RefConnectorRunSummary, type RefConnectorSummary } from "../lib/ref-client.ts";
+import type { ConnectorOverview } from "../lib/rs-client.ts";
+import { ConnectorRow } from "./connector-row.tsx";
+import { RecordsPagePoller } from "./records-page-poller.tsx";
 
-export const dynamic = 'force-dynamic';
+export const dynamic = "force-dynamic";
 
 const STALE_MS = 7 * 24 * 60 * 60 * 1000;
 const RECENT_MS = 24 * 60 * 60 * 1000;
@@ -22,15 +18,23 @@ function connectorSortKey(o: ConnectorOverview): [number, number, string] {
   // (never-run ranks as infinitely stale), then fresh.
   // Secondary sort: oldest last-sync first within each band, so
   // attention flows toward the thing most overdue.
-  if (o.lastRun?.status === 'failed') return [0, 0, o.connector.connector_id];
-  if (o.isRunning) return [1, 0, o.connector.connector_id];
+  if (o.lastRun?.status === "failed") {
+    return [0, 0, o.connector.connector_id];
+  }
+  if (o.isRunning) {
+    return [1, 0, o.connector.connector_id];
+  }
   const lastTs = o.lastSuccessfulRun ? Date.parse(o.lastSuccessfulRun.last_at) : 0;
-  if (!lastTs) return [2, 0, o.connector.connector_id]; // never run
+  if (!lastTs) {
+    return [2, 0, o.connector.connector_id]; // never run
+  }
   return [3, lastTs, o.connector.connector_id];
 }
 
 function toConnectorRunRef(summary: RefConnectorRunSummary | null) {
-  if (!summary) return null;
+  if (!summary) {
+    return null;
+  }
   return {
     run_id: summary.run_id,
     first_at: summary.first_at,
@@ -52,7 +56,7 @@ function toConnectorOverview(summary: RefConnectorSummary): ConnectorOverview {
       streams: summary.streams.map((name) => ({ name })),
     },
     streams: summary.streams.map((name) => ({
-      object: 'stream',
+      object: "stream",
       name,
       record_count: 0,
       last_updated: null,
@@ -60,7 +64,7 @@ function toConnectorOverview(summary: RefConnectorSummary): ConnectorOverview {
     totalRecords: summary.total_records,
     lastRun,
     lastSuccessfulRun,
-    isRunning: lastRun != null && new Set(['started', 'in_progress']).has(lastRun.status),
+    isRunning: lastRun != null && new Set(["started", "in_progress"]).has(lastRun.status),
   };
 }
 
@@ -88,8 +92,12 @@ export default async function RecordsIndexPage() {
   const sorted = [...withData].sort((a, b) => {
     const [ak, at, an] = connectorSortKey(a);
     const [bk, bt, bn] = connectorSortKey(b);
-    if (ak !== bk) return ak - bk;
-    if (at !== bt) return at - bt;
+    if (ak !== bk) {
+      return ak - bk;
+    }
+    if (at !== bt) {
+      return at - bt;
+    }
     return an.localeCompare(bn);
   });
 
@@ -98,7 +106,7 @@ export default async function RecordsIndexPage() {
 
   const now = Date.now();
   const runningCount = withData.filter((o) => o.isRunning).length;
-  const failedCount = withData.filter((o) => o.lastRun?.status === 'failed').length;
+  const failedCount = withData.filter((o) => o.lastRun?.status === "failed").length;
   const syncedRecently = withData.filter((o) => {
     const ts = o.lastSuccessfulRun ? Date.parse(o.lastSuccessfulRun.last_at) : 0;
     return ts && now - ts < RECENT_MS;
@@ -117,7 +125,7 @@ export default async function RecordsIndexPage() {
         description="Owner control plane for your connectors. Click Sync now to pull fresh data; drill in to browse streams and records."
         count={`${totalRecords.toLocaleString()} records · ${totalStreams} streams · ${withData.length} connectors`}
         actions={
-          <Link href="/dashboard/records/timeline" className={buttonVariants({ variant: 'outline', size: 'sm' })}>
+          <Link href="/dashboard/records/timeline" className={buttonVariants({ variant: "outline", size: "sm" })}>
             Activity timeline →
           </Link>
         }
@@ -129,17 +137,17 @@ export default async function RecordsIndexPage() {
         <HealthStat
           label="Synced last 24h"
           value={syncedRecently.toLocaleString()}
-          tone={syncedRecently > 0 ? 'success' : 'neutral'}
+          tone={syncedRecently > 0 ? "success" : "neutral"}
         />
         <HealthStat
-          label={staleCount > 0 ? 'Stale >7d' : neverRun > 0 ? 'Never run' : 'All fresh'}
+          label={staleCount > 0 ? "Stale >7d" : neverRun > 0 ? "Never run" : "All fresh"}
           value={(staleCount || neverRun || 0).toLocaleString()}
-          tone={staleCount > 0 || neverRun > 0 ? 'warning' : 'neutral'}
+          tone={staleCount > 0 || neverRun > 0 ? "warning" : "neutral"}
         />
         <HealthStat
-          label={failedCount > 0 ? 'Failing' : runningCount > 0 ? 'Running' : 'Idle'}
+          label={failedCount > 0 ? "Failing" : runningCount > 0 ? "Running" : "Idle"}
           value={(failedCount || runningCount || 0).toLocaleString()}
-          tone={failedCount > 0 ? 'danger' : runningCount > 0 ? 'active' : 'neutral'}
+          tone={failedCount > 0 ? "danger" : runningCount > 0 ? "active" : "neutral"}
         />
       </section>
 
@@ -152,11 +160,7 @@ export default async function RecordsIndexPage() {
         ) : (
           <DataList>
             {sorted.map((o) => (
-              <ConnectorRow
-                key={o.connector.connector_id}
-                overview={o}
-                runsHref="/dashboard/runs"
-              />
+              <ConnectorRow key={o.connector.connector_id} overview={o} runsHref="/dashboard/runs" />
             ))}
           </DataList>
         )}
@@ -169,11 +173,7 @@ export default async function RecordsIndexPage() {
         >
           <DataList>
             {empty.map((o) => (
-              <ConnectorRow
-                key={o.connector.connector_id}
-                overview={o}
-                runsHref="/dashboard/runs"
-              />
+              <ConnectorRow key={o.connector.connector_id} overview={o} runsHref="/dashboard/runs" />
             ))}
           </DataList>
         </Section>
@@ -189,20 +189,20 @@ function HealthStat({
 }: {
   label: string;
   value: string;
-  tone: 'neutral' | 'success' | 'warning' | 'danger' | 'active';
+  tone: "neutral" | "success" | "warning" | "danger" | "active";
 }) {
   const toneClass =
-    tone === 'success'
-      ? 'text-emerald-600'
-      : tone === 'warning'
-        ? 'text-amber-600'
-        : tone === 'danger'
-          ? 'text-destructive'
-          : tone === 'active'
-            ? 'text-blue-600'
-            : 'text-foreground';
+    tone === "success"
+      ? "text-emerald-600"
+      : tone === "warning"
+        ? "text-amber-600"
+        : tone === "danger"
+          ? "text-destructive"
+          : tone === "active"
+            ? "text-blue-600"
+            : "text-foreground";
   return (
-    <div className="border-border/60 flex flex-col gap-1 border-l-2 pl-3">
+    <div className="flex flex-col gap-1 border-border/60 border-l-2 pl-3">
       <span className="pdpp-caption text-muted-foreground">{label}</span>
       <span className={`pdpp-heading tabular-nums ${toneClass}`}>{value}</span>
     </div>

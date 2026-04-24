@@ -1,6 +1,7 @@
-import type { Metadata } from 'next';
-import Link from 'next/link';
+import type { Metadata } from "next";
+import Link from "next/link";
 import {
+  buildOpenSpecSidebarSections,
   OpenSpecArtifactCard,
   OpenSpecEmptyState,
   OpenSpecNoteGroups,
@@ -8,16 +9,14 @@ import {
   OpenSpecSectionCard,
   OpenSpecShell,
   OpenSpecStatusPill,
-  buildOpenSpecSidebarSections,
-} from '@/components/openspec';
-import { getOpenSpecLandingSummary, listOpenSpecDesignNoteGroups } from '@/lib/openspec';
-import { Timestamp } from '@/components/ui/timestamp';
-import { OPENSPEC_IMPLEMENTATION_LABEL, PLANNING_LABEL, planningPath } from '@/lib/openspec/public';
+} from "@/components/openspec/index.ts";
+import { Timestamp } from "@/components/ui/timestamp.tsx";
+import { getOpenSpecLandingSummary, listOpenSpecDesignNoteGroups } from "@/lib/openspec/index.ts";
+import { OPENSPEC_IMPLEMENTATION_LABEL, PLANNING_LABEL, planningPath } from "@/lib/openspec/public.ts";
 
 export const metadata: Metadata = {
   title: `${PLANNING_LABEL} — PDPP`,
-  description:
-    'Project planning, official change artifacts, and working notes for the PDPP reference implementation.',
+  description: "Project planning, official change artifacts, and working notes for the PDPP reference implementation.",
 };
 
 export default async function OpenSpecLandingPage() {
@@ -25,25 +24,24 @@ export default async function OpenSpecLandingPage() {
     getOpenSpecLandingSummary(),
     listOpenSpecDesignNoteGroups(),
   ]);
-  const sections = buildOpenSpecSidebarSections({ kind: 'overview' });
+  const sections = buildOpenSpecSidebarSections({ kind: "overview" });
   const latestChange = changes[0]?.lastModified ?? null;
   const latestNote = designNotes[0]?.lastModified ?? null;
-  const lastTouched = latestChange && latestNote ? (latestChange > latestNote ? latestChange : latestNote) : latestChange ?? latestNote;
-  const openQuestionCount = designNotes.filter(
-    (note) => note.noteKind === 'open-question',
-  ).length;
+  const lastTouched =
+    latestChange && latestNote ? (latestChange > latestNote ? latestChange : latestNote) : (latestChange ?? latestNote);
+  const openQuestionCount = designNotes.filter((note) => note.noteKind === "open-question").length;
 
   return (
     <OpenSpecShell sections={sections}>
       <div className="flex flex-col gap-8">
         <header className="flex flex-col gap-3">
-          <h1 className="text-[clamp(1.7rem,3vw,2.2rem)] font-semibold tracking-tight leading-tight">
+          <h1 className="font-semibold text-[clamp(1.7rem,3vw,2.2rem)] leading-tight tracking-tight">
             Reference implementation planning
           </h1>
           <p className="pdpp-body max-w-3xl text-muted-foreground">
-            {PLANNING_LABEL} is the internal project view for the PDPP reference implementation:
-            official change artifacts, durable capability specs, and change-local working notes,
-            rendered directly from the repository. The underlying structure comes from{' '}
+            {PLANNING_LABEL} is the internal project view for the PDPP reference implementation: official change
+            artifacts, durable capability specs, and change-local working notes, rendered directly from the repository.
+            The underlying structure comes from{" "}
             <code className="font-mono text-xs">{OPENSPEC_IMPLEMENTATION_LABEL.toLowerCase()}/</code>.
           </p>
         </header>
@@ -63,13 +61,9 @@ export default async function OpenSpecLandingPage() {
               <span className="font-semibold text-foreground">{openQuestionCount}</span> open questions
             </span>
             {lastTouched && (
-              <span className="pdpp-body text-muted-foreground inline-flex items-baseline gap-1">
-                last updated{' '}
-                <Timestamp
-                  value={lastTouched}
-                  precision="date"
-                  className="font-semibold text-foreground"
-                />
+              <span className="pdpp-body inline-flex items-baseline gap-1 text-muted-foreground">
+                last updated{" "}
+                <Timestamp value={lastTouched} precision="date" className="font-semibold text-foreground" />
               </span>
             )}
           </div>
@@ -78,24 +72,21 @@ export default async function OpenSpecLandingPage() {
         <OpenSpecSectionCard title="How to read this surface">
           <ul className="grid gap-3 md:grid-cols-3">
             <li className="pdpp-body text-muted-foreground">
-              <span className="font-medium text-foreground">Root specs</span> define protocol
-              semantics such as grants, queries, and authorization metadata.
+              <span className="font-medium text-foreground">Root specs</span> define protocol semantics such as grants,
+              queries, and authorization metadata.
             </li>
             <li className="pdpp-body text-muted-foreground">
-              <span className="font-medium text-foreground">Code and tests</span> define what the
-              reference implementation actually does today.
+              <span className="font-medium text-foreground">Code and tests</span> define what the reference
+              implementation actually does today.
             </li>
             <li className="pdpp-body text-muted-foreground">
-              <span className="font-medium text-foreground">{PLANNING_LABEL}</span> captures active
-              change planning, reference boundaries, and the work around unresolved questions.
+              <span className="font-medium text-foreground">{PLANNING_LABEL}</span> captures active change planning,
+              reference boundaries, and the work around unresolved questions.
             </li>
           </ul>
         </OpenSpecSectionCard>
 
-        <OpenSpecSectionCard
-          title="Active changes"
-          description="Sorted by status, then most recently modified."
-        >
+        <OpenSpecSectionCard title="Active changes" description="Sorted by status, then most recently modified.">
           {changes.length === 0 ? (
             <OpenSpecEmptyState
               title="No changes found"
@@ -113,16 +104,10 @@ export default async function OpenSpecLandingPage() {
                   meta={<OpenSpecStatusPill status={c.status} />}
                   footer={
                     <>
-                      <OpenSpecProgressPill
-                        completed={c.completedTasks}
-                        total={c.totalTasks}
-                      />
+                      <OpenSpecProgressPill completed={c.completedTasks} total={c.totalTasks} />
                       {c.affectedCapabilities.length > 0 && (
                         <span>
-                          affects:{' '}
-                          <span className="font-mono">
-                            {c.affectedCapabilities.join(', ')}
-                          </span>
+                          affects: <span className="font-mono">{c.affectedCapabilities.join(", ")}</span>
                         </span>
                       )}
                       {c.lastModified && (
@@ -138,10 +123,7 @@ export default async function OpenSpecLandingPage() {
           )}
         </OpenSpecSectionCard>
 
-        <OpenSpecSectionCard
-          title="Capability specs"
-          description="Durable specifications under openspec/specs/."
-        >
+        <OpenSpecSectionCard title="Capability specs" description="Durable specifications under openspec/specs/.">
           {specs.length === 0 ? (
             <OpenSpecEmptyState
               title="No specs found"
@@ -159,10 +141,9 @@ export default async function OpenSpecLandingPage() {
                   footer={
                     <>
                       {s.relatedChanges.length > 0 && (
-                      <span>
-                        related changes:{' '}
-                        <span className="font-mono">{s.relatedChanges.join(', ')}</span>
-                      </span>
+                        <span>
+                          related changes: <span className="font-mono">{s.relatedChanges.join(", ")}</span>
+                        </span>
                       )}
                       {s.lastModified && (
                         <span className="inline-flex items-baseline gap-1">
@@ -182,7 +163,7 @@ export default async function OpenSpecLandingPage() {
           description="All change-local notes, grouped by workstream. Use this for open questions, implementation plans, audits, and working research that have not been promoted into canonical change artifacts."
           action={
             <Link
-              href={planningPath('/notes')}
+              href={planningPath("/notes")}
               className="pdpp-caption text-muted-foreground transition-colors hover:text-foreground"
             >
               Open full notes index
@@ -195,11 +176,7 @@ export default async function OpenSpecLandingPage() {
               description="There are currently no markdown files under openspec/changes/*/design-notes/."
             />
           ) : (
-            <OpenSpecNoteGroups
-              groups={noteGroups}
-              collapsible
-              defaultOpenCount={1}
-            />
+            <OpenSpecNoteGroups groups={noteGroups} collapsible defaultOpenCount={1} />
           )}
         </OpenSpecSectionCard>
       </div>

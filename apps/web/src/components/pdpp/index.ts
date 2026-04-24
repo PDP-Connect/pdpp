@@ -1,14 +1,10 @@
-export { ConsentCard } from './consent-card';
-export type { ConsentCardStream, ConsentCardOptional, ConsentCardProps } from './consent-card';
-
-export { GrantInspector } from './grant-inspector';
-export type { GrantStream, GrantInspectorProps } from './grant-inspector';
-
-export { StreamInventory } from './stream-inventory';
-export type { InventoryStream, StreamInventoryProps } from './stream-inventory';
-
-export { ConnectorCard } from './connector-card';
-export type { ConnectorStream, ConnectorProfile, ConnectorCardProps } from './connector-card';
-
-export { SpecCitation, SpecCitationGroup } from './spec-citation';
-export type { SpecCitationProps } from './spec-citation';
+export type { ConnectorCardProps, ConnectorProfile, ConnectorStream } from "./connector-card.tsx";
+export { ConnectorCard } from "./connector-card.tsx";
+export type { ConsentCardOptional, ConsentCardProps, ConsentCardStream } from "./consent-card.tsx";
+export { ConsentCard } from "./consent-card.tsx";
+export type { GrantInspectorProps, GrantStream } from "./grant-inspector.tsx";
+export { GrantInspector } from "./grant-inspector.tsx";
+export type { SpecCitationProps } from "./spec-citation.tsx";
+export { SpecCitation, SpecCitationGroup } from "./spec-citation.tsx";
+export type { InventoryStream, StreamInventoryProps } from "./stream-inventory.tsx";
+export { StreamInventory } from "./stream-inventory.tsx";

@@ -1,30 +1,26 @@
-import Link from 'next/link';
-import { notFound } from 'next/navigation';
-import { DashboardShell, ServerUnreachable } from '../../components/shell';
-import { buttonVariants } from '@/components/ui/button';
-import { DataList, PageHeader, Section, StatusBadge } from '../../components/primitives';
+import Link from "next/link";
+import { notFound } from "next/navigation";
+import { buttonVariants } from "@/components/ui/button.tsx";
+import { Timestamp } from "@/components/ui/timestamp.tsx";
+import { DataList, PageHeader, Section, StatusBadge } from "../../components/primitives.tsx";
+import { DashboardShell, ServerUnreachable } from "../../components/shell.tsx";
+import { ReferenceServerUnreachableError } from "../../lib/owner-token.ts";
+import { listRuns, type RunSummary } from "../../lib/ref-client.ts";
 import {
+  type ConnectorManifest,
+  type ConnectorOverview,
   getConnectorOverview,
   listConnectorManifests,
   listStreams,
-  type ConnectorManifest,
-  type ConnectorOverview,
   type StreamSummary,
-} from '../../lib/rs-client';
-import { Timestamp } from '@/components/ui/timestamp';
-import { ReferenceServerUnreachableError } from '../../lib/owner-token';
-import { listRuns, type RunSummary } from '../../lib/ref-client';
-import { SyncNowButton } from './sync-now-button';
+} from "../../lib/rs-client.ts";
+import { SyncNowButton } from "./sync-now-button.tsx";
 
-export const dynamic = 'force-dynamic';
+export const dynamic = "force-dynamic";
 
 const RECENT_RUNS_LIMIT = 10;
 
-export default async function ConnectorPage({
-  params,
-}: {
-  params: Promise<{ connector: string }>;
-}) {
+export default async function ConnectorPage({ params }: { params: Promise<{ connector: string }> }) {
   const { connector } = await params;
   const connectorId = decodeURIComponent(connector);
 
@@ -35,7 +31,9 @@ export default async function ConnectorPage({
   try {
     const manifests = await listConnectorManifests();
     manifest = manifests.find((m) => m.connector_id === connectorId);
-    if (!manifest) notFound();
+    if (!manifest) {
+      notFound();
+    }
     streams = await listStreams(connectorId);
     overview = await getConnectorOverview(manifest);
     const runsResp = await listRuns({ connector_id: connectorId, limit: RECENT_RUNS_LIMIT });
@@ -65,19 +63,19 @@ export default async function ConnectorPage({
             <code className="font-mono text-xs">{connectorId}</code>
             {manifest.provider_id ? (
               <>
-                {' · '}
+                {" · "}
                 <span>Provider: {manifest.provider_id}</span>
               </>
             ) : null}
           </>
         }
-        breadcrumbs={[{ label: 'Records', href: '/dashboard/records' }, { label: displayName }]}
-        count={`${totalRecords.toLocaleString()} records · ${streams.length} stream${streams.length === 1 ? '' : 's'}`}
+        breadcrumbs={[{ label: "Records", href: "/dashboard/records" }, { label: displayName }]}
+        count={`${totalRecords.toLocaleString()} records · ${streams.length} stream${streams.length === 1 ? "" : "s"}`}
         actions={
           <>
             <Link
               href={`/dashboard/runs?connector_id=${encodeURIComponent(connectorId)}`}
-              className={buttonVariants({ variant: 'outline', size: 'sm' })}
+              className={buttonVariants({ variant: "outline", size: "sm" })}
             >
               All runs →
             </Link>
@@ -97,10 +95,10 @@ export default async function ConnectorPage({
               <li key={s.name}>
                 <Link
                   href={`/dashboard/records/${encodeURIComponent(connectorId)}/${encodeURIComponent(s.name)}`}
-                  className="hover:bg-muted/40 flex flex-col gap-1 px-3 py-3 transition-colors sm:flex-row sm:items-center sm:justify-between sm:gap-4"
+                  className="flex flex-col gap-1 px-3 py-3 transition-colors hover:bg-muted/40 sm:flex-row sm:items-center sm:justify-between sm:gap-4"
                 >
-                  <span className="pdpp-body break-all font-mono font-medium">{s.name}</span>
-                  <span className="pdpp-caption text-muted-foreground tabular-nums inline-flex flex-wrap items-baseline gap-x-1">
+                  <span className="pdpp-body break-all font-medium font-mono">{s.name}</span>
+                  <span className="pdpp-caption inline-flex flex-wrap items-baseline gap-x-1 text-muted-foreground tabular-nums">
                     <span>{s.record_count.toLocaleString()} records</span>
                     {s.last_updated ? (
                       <>
@@ -121,28 +119,26 @@ export default async function ConnectorPage({
         description="Each run is an artifact you can inspect. Click through for the full trace."
       >
         {recentRuns.length === 0 ? (
-          <p className="pdpp-caption text-muted-foreground italic">
-            No runs yet for this connector.
-          </p>
+          <p className="pdpp-caption text-muted-foreground italic">No runs yet for this connector.</p>
         ) : (
           <DataList>
             {recentRuns.map((r) => (
               <li key={r.run_id}>
                 <Link
                   href={`/dashboard/runs/${encodeURIComponent(r.run_id)}`}
-                  className="hover:bg-muted/40 flex flex-col gap-1 px-3 py-3 transition-colors sm:flex-row sm:items-center sm:justify-between sm:gap-4"
+                  className="flex flex-col gap-1 px-3 py-3 transition-colors hover:bg-muted/40 sm:flex-row sm:items-center sm:justify-between sm:gap-4"
                 >
                   <span className="pdpp-caption flex items-center gap-2">
                     <StatusBadge status={r.status} />
-                    <span className="font-mono text-xs text-muted-foreground">{r.run_id}</span>
+                    <span className="font-mono text-muted-foreground text-xs">{r.run_id}</span>
                   </span>
-                  <span className="pdpp-caption text-muted-foreground tabular-nums inline-flex flex-wrap items-baseline gap-x-1">
+                  <span className="pdpp-caption inline-flex flex-wrap items-baseline gap-x-1 text-muted-foreground tabular-nums">
                     <Timestamp value={r.first_at} />
                     <span aria-hidden>·</span>
                     <span>{durationLabel(r.first_at, r.last_at)}</span>
                     <span aria-hidden>·</span>
                     <span>
-                      {r.event_count.toLocaleString()} event{r.event_count === 1 ? '' : 's'}
+                      {r.event_count.toLocaleString()} event{r.event_count === 1 ? "" : "s"}
                     </span>
                     {r.failure_reason ? (
                       <>
@@ -164,11 +160,17 @@ export default async function ConnectorPage({
 function durationLabel(firstAt: string, lastAt: string): string {
   const a = Date.parse(firstAt);
   const b = Date.parse(lastAt);
-  if (!Number.isFinite(a) || !Number.isFinite(b) || b < a) return '—';
+  if (!(Number.isFinite(a) && Number.isFinite(b)) || b < a) {
+    return "—";
+  }
   const ms = b - a;
-  if (ms < 1_000) return `${ms}ms`;
+  if (ms < 1000) {
+    return `${ms}ms`;
+  }
   const secs = Math.round(ms / 100) / 10;
-  if (secs < 60) return `${secs}s`;
+  if (secs < 60) {
+    return `${secs}s`;
+  }
   const m = Math.floor(secs / 60);
   const s = Math.round(secs % 60);
   return `${m}m ${s}s`;

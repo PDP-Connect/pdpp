@@ -10,23 +10,19 @@
  *
  * Server-only: do not import from client components.
  */
-import { readdir, readFile } from 'node:fs/promises';
-import { join } from 'node:path';
-import {
-  ReferenceServerUnreachableError,
-  getOwnerToken,
-  getRsInternalUrl,
-} from './owner-token';
+import { readdir, readFile } from "node:fs/promises";
+import { join } from "node:path";
+import { getOwnerToken, getRsInternalUrl, ReferenceServerUnreachableError } from "./owner-token.ts";
 
 export type StreamSummary = {
-  object: 'stream';
+  object: "stream";
   name: string;
   record_count: number;
   last_updated: string | null;
 };
 
 export type StreamRecord = {
-  object: 'record';
+  object: "record";
   id: string;
   stream: string;
   data: Record<string, unknown>;
@@ -34,7 +30,7 @@ export type StreamRecord = {
 };
 
 export type RecordsPage = {
-  object: 'list';
+  object: "list";
   data: StreamRecord[];
   has_more: boolean;
   next_cursor?: string;
@@ -48,34 +44,26 @@ export type ConnectorManifest = {
   streams?: Array<{ name: string; [k: string]: unknown }>;
 };
 
-const MANIFESTS_DIR = join(
-  process.cwd(),
-  '..',
-  '..',
-  'packages',
-  'polyfill-connectors',
-  'manifests',
-);
+const MANIFESTS_DIR = join(process.cwd(), "..", "..", "packages", "polyfill-connectors", "manifests");
 
 async function authedFetch(path: string, params?: Record<string, string | number | undefined>) {
   const token = await getOwnerToken();
   const url = new URL(`${getRsInternalUrl()}${path}`);
   if (params) {
     for (const [k, v] of Object.entries(params)) {
-      if (v !== undefined && v !== null && v !== '') url.searchParams.set(k, String(v));
+      if (v !== undefined && v !== null && v !== "") {
+        url.searchParams.set(k, String(v));
+      }
     }
   }
   let res: Response;
   try {
     res = await fetch(url.toString(), {
       headers: { Authorization: `Bearer ${token}` },
-      cache: 'no-store',
+      cache: "no-store",
     });
   } catch (err) {
-    throw new ReferenceServerUnreachableError(
-      `Cannot reach resource server at ${getRsInternalUrl()}`,
-      err,
-    );
+    throw new ReferenceServerUnreachableError(`Cannot reach resource server at ${getRsInternalUrl()}`, err);
   }
   if (!res.ok) {
     const body = await res.text();
@@ -85,16 +73,13 @@ async function authedFetch(path: string, params?: Record<string, string | number
 }
 
 export async function listStreams(connectorId: string): Promise<StreamSummary[]> {
-  const body = (await authedFetch('/v1/streams', { connector_id: connectorId })) as {
+  const body = (await authedFetch("/v1/streams", { connector_id: connectorId })) as {
     data: StreamSummary[];
   };
   return body.data ?? [];
 }
 
-export async function getStreamMetadata(
-  connectorId: string,
-  stream: string,
-): Promise<Record<string, unknown>> {
+export async function getStreamMetadata(connectorId: string, stream: string): Promise<Record<string, unknown>> {
   return (await authedFetch(`/v1/streams/${encodeURIComponent(stream)}`, {
     connector_id: connectorId,
   })) as Record<string, unknown>;
@@ -103,7 +88,7 @@ export async function getStreamMetadata(
 export async function queryRecords(
   connectorId: string,
   stream: string,
-  opts: { limit?: number; cursor?: string; order?: 'asc' | 'desc' } = {},
+  opts: { limit?: number; cursor?: string; order?: "asc" | "desc" } = {}
 ): Promise<RecordsPage> {
   return (await authedFetch(`/v1/streams/${encodeURIComponent(stream)}/records`, {
     connector_id: connectorId,
@@ -122,15 +107,10 @@ export async function queryRecords(
  * to *payload* fields, not the envelope id, so we use the path-parameter form
  * rather than trying to filter the list.
  */
-export async function getRecord(
-  connectorId: string,
-  stream: string,
-  recordId: string,
-): Promise<StreamRecord> {
-  return (await authedFetch(
-    `/v1/streams/${encodeURIComponent(stream)}/records/${encodeURIComponent(recordId)}`,
-    { connector_id: connectorId },
-  )) as StreamRecord;
+export async function getRecord(connectorId: string, stream: string, recordId: string): Promise<StreamRecord> {
+  return (await authedFetch(`/v1/streams/${encodeURIComponent(stream)}/records/${encodeURIComponent(recordId)}`, {
+    connector_id: connectorId,
+  })) as StreamRecord;
 }
 
 /**
@@ -143,7 +123,7 @@ export async function getRecord(
  * optional; the page must render correctly when they are absent.
  */
 export type SearchResultHit = {
-  object: 'search_result';
+  object: "search_result";
   stream: string;
   record_key: string;
   connector_id: string;
@@ -154,11 +134,11 @@ export type SearchResultHit = {
   // Present only on semantic-retrieval hits. Required on every /v1/search/semantic
   // result per the approved spec; absent on lexical hits. "hybrid" is reserved
   // for a future tranche (v1 lexical_blending is always false).
-  retrieval_mode?: 'semantic' | 'hybrid';
+  retrieval_mode?: "semantic" | "hybrid";
 };
 
 export type SearchResultPage = {
-  object: 'list';
+  object: "list";
   url?: string;
   has_more: boolean;
   next_cursor?: string;
@@ -176,28 +156,31 @@ export type SearchResultPage = {
  */
 export async function searchRecordsLexical(
   query: string,
-  opts: { streams?: string[]; limit?: number; cursor?: string } = {},
+  opts: { streams?: string[]; limit?: number; cursor?: string } = {}
 ): Promise<SearchResultPage> {
   const token = await getOwnerToken();
   const url = new URL(`${getRsInternalUrl()}/v1/search`);
-  url.searchParams.set('q', query);
-  if (typeof opts.limit === 'number') url.searchParams.set('limit', String(opts.limit));
-  if (typeof opts.cursor === 'string' && opts.cursor) url.searchParams.set('cursor', opts.cursor);
+  url.searchParams.set("q", query);
+  if (typeof opts.limit === "number") {
+    url.searchParams.set("limit", String(opts.limit));
+  }
+  if (typeof opts.cursor === "string" && opts.cursor) {
+    url.searchParams.set("cursor", opts.cursor);
+  }
   // Repeated `streams=` entries — server normalizes to an array.
   for (const s of opts.streams ?? []) {
-    if (typeof s === 'string' && s.length > 0) url.searchParams.append('streams', s);
+    if (typeof s === "string" && s.length > 0) {
+      url.searchParams.append("streams", s);
+    }
   }
   let res: Response;
   try {
     res = await fetch(url.toString(), {
       headers: { Authorization: `Bearer ${token}` },
-      cache: 'no-store',
+      cache: "no-store",
     });
   } catch (err) {
-    throw new ReferenceServerUnreachableError(
-      `Cannot reach resource server at ${getRsInternalUrl()}`,
-      err,
-    );
+    throw new ReferenceServerUnreachableError(`Cannot reach resource server at ${getRsInternalUrl()}`, err);
   }
   if (!res.ok) {
     const body = await res.text();
@@ -231,27 +214,30 @@ export async function searchRecordsLexical(
  */
 export async function searchRecordsSemantic(
   query: string,
-  opts: { streams?: string[]; limit?: number; cursor?: string } = {},
+  opts: { streams?: string[]; limit?: number; cursor?: string } = {}
 ): Promise<SearchResultPage> {
   const token = await getOwnerToken();
   const url = new URL(`${getRsInternalUrl()}/v1/search/semantic`);
-  url.searchParams.set('q', query);
-  if (typeof opts.limit === 'number') url.searchParams.set('limit', String(opts.limit));
-  if (typeof opts.cursor === 'string' && opts.cursor) url.searchParams.set('cursor', opts.cursor);
+  url.searchParams.set("q", query);
+  if (typeof opts.limit === "number") {
+    url.searchParams.set("limit", String(opts.limit));
+  }
+  if (typeof opts.cursor === "string" && opts.cursor) {
+    url.searchParams.set("cursor", opts.cursor);
+  }
   for (const s of opts.streams ?? []) {
-    if (typeof s === 'string' && s.length > 0) url.searchParams.append('streams', s);
+    if (typeof s === "string" && s.length > 0) {
+      url.searchParams.append("streams", s);
+    }
   }
   let res: Response;
   try {
     res = await fetch(url.toString(), {
       headers: { Authorization: `Bearer ${token}` },
-      cache: 'no-store',
+      cache: "no-store",
     });
   } catch (err) {
-    throw new ReferenceServerUnreachableError(
-      `Cannot reach resource server at ${getRsInternalUrl()}`,
-      err,
-    );
+    throw new ReferenceServerUnreachableError(`Cannot reach resource server at ${getRsInternalUrl()}`, err);
   }
   if (!res.ok) {
     const body = await res.text();
@@ -271,9 +257,11 @@ export async function searchRecordsSemantic(
 export async function isSemanticRetrievalAdvertised(): Promise<boolean> {
   try {
     const res = await fetch(`${getRsInternalUrl()}/.well-known/oauth-protected-resource`, {
-      cache: 'no-store',
+      cache: "no-store",
     });
-    if (!res.ok) return false;
+    if (!res.ok) {
+      return false;
+    }
     const body = (await res.json()) as { capabilities?: { semantic_retrieval?: { supported?: boolean } } };
     return body.capabilities?.semantic_retrieval?.supported === true;
   } catch {
@@ -285,11 +273,15 @@ export async function listConnectorManifests(): Promise<ConnectorManifest[]> {
   const files = await readdir(MANIFESTS_DIR);
   const manifests: ConnectorManifest[] = [];
   for (const file of files) {
-    if (!file.endsWith('.json')) continue;
+    if (!file.endsWith(".json")) {
+      continue;
+    }
     try {
-      const raw = await readFile(join(MANIFESTS_DIR, file), 'utf8');
+      const raw = await readFile(join(MANIFESTS_DIR, file), "utf8");
       const m = JSON.parse(raw) as ConnectorManifest;
-      if (m.connector_id) manifests.push(m);
+      if (m.connector_id) {
+        manifests.push(m);
+      }
     } catch {
       // skip malformed
     }
@@ -329,11 +321,15 @@ export type ConnectorRunRef = {
  * Used as the "All columns" superset the user can customize against.
  */
 export function deriveAllColumns(records: StreamRecord[]): string[] {
-  if (!records.length) return [];
+  if (!records.length) {
+    return [];
+  }
   const keys = new Set<string>();
   for (const r of records) {
-    if (r.data && typeof r.data === 'object') {
-      for (const k of Object.keys(r.data)) keys.add(k);
+    if (r.data && typeof r.data === "object") {
+      for (const k of Object.keys(r.data)) {
+        keys.add(k);
+      }
     }
   }
   return Array.from(keys);
@@ -348,16 +344,16 @@ export function deriveColumns(records: StreamRecord[], max = 10): string[] {
 }
 
 const PRIORITY_KEYS = [
-  'id',
-  'name',
-  'title',
-  'subject',
-  'label',
-  'status',
-  'state',
-  'created_at',
-  'updated_at',
-  'emitted_at',
+  "id",
+  "name",
+  "title",
+  "subject",
+  "label",
+  "status",
+  "state",
+  "created_at",
+  "updated_at",
+  "emitted_at",
 ];
 
 /**
@@ -371,15 +367,19 @@ const PRIORITY_KEYS = [
 export function computeDefaultColumns(
   records: StreamRecord[],
   streamManifest?: StreamManifest | null,
-  limit = 6,
+  limit = 6
 ): string[] {
   const all = deriveAllColumns(records);
-  if (all.length === 0) return [];
+  if (all.length === 0) {
+    return [];
+  }
 
   const declared = Array.isArray(streamManifest?.preview_fields)
     ? streamManifest!.preview_fields!.filter((f) => all.includes(f))
     : [];
-  if (declared.length > 0) return declared;
+  if (declared.length > 0) {
+    return declared;
+  }
 
   const keep = all.filter((key) => {
     let nonNullCount = 0;
@@ -388,25 +388,44 @@ export function computeDefaultColumns(
     let allLong = true;
     for (const r of records) {
       const v = r.data?.[key];
-      if (v === null || v === undefined) continue;
+      if (v === null || v === undefined) {
+        continue;
+      }
       nonNullCount += 1;
       const s = stringifyCell(v);
-      if (firstValue === null) firstValue = s;
-      else if (s !== firstValue) allSameValue = false;
-      if (s.length <= 120) allLong = false;
+      if (firstValue === null) {
+        firstValue = s;
+      } else if (s !== firstValue) {
+        allSameValue = false;
+      }
+      if (s.length <= 120) {
+        allLong = false;
+      }
     }
-    if (nonNullCount === 0) return false; // all-null in this page
-    if (nonNullCount >= 2 && allSameValue) return false; // constant column
-    if (nonNullCount >= 2 && allLong) return false; // blob column
+    if (nonNullCount === 0) {
+      return false; // all-null in this page
+    }
+    if (nonNullCount >= 2 && allSameValue) {
+      return false; // constant column
+    }
+    if (nonNullCount >= 2 && allLong) {
+      return false; // blob column
+    }
     return true;
   });
 
   keep.sort((a, b) => {
     const ai = PRIORITY_KEYS.indexOf(a);
     const bi = PRIORITY_KEYS.indexOf(b);
-    if (ai !== -1 && bi !== -1) return ai - bi;
-    if (ai !== -1) return -1;
-    if (bi !== -1) return 1;
+    if (ai !== -1 && bi !== -1) {
+      return ai - bi;
+    }
+    if (ai !== -1) {
+      return -1;
+    }
+    if (bi !== -1) {
+      return 1;
+    }
     return a.localeCompare(b);
   });
 
@@ -422,14 +441,23 @@ export function computeDefaultColumns(
 export function resolveSelectedColumns(
   param: string | undefined,
   allColumns: string[],
-  defaults: string[],
-): { columns: string[]; mode: 'default' | 'custom' | 'all' } {
-  if (!param || param === '') return { columns: defaults, mode: 'default' };
-  if (param === '*') return { columns: allColumns, mode: 'all' };
-  const requested = param.split(',').map((s) => s.trim()).filter(Boolean);
+  defaults: string[]
+): { columns: string[]; mode: "default" | "custom" | "all" } {
+  if (!param || param === "") {
+    return { columns: defaults, mode: "default" };
+  }
+  if (param === "*") {
+    return { columns: allColumns, mode: "all" };
+  }
+  const requested = param
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
   const valid = requested.filter((c) => allColumns.includes(c));
-  if (valid.length === 0) return { columns: defaults, mode: 'default' };
-  return { columns: valid, mode: 'custom' };
+  if (valid.length === 0) {
+    return { columns: defaults, mode: "default" };
+  }
+  return { columns: valid, mode: "custom" };
 }
 
 export type StreamManifest = {
@@ -439,9 +467,15 @@ export type StreamManifest = {
 };
 
 export function stringifyCell(v: unknown): string {
-  if (v === null || v === undefined) return '';
-  if (typeof v === 'string') return v;
-  if (typeof v === 'number' || typeof v === 'boolean') return String(v);
+  if (v === null || v === undefined) {
+    return "";
+  }
+  if (typeof v === "string") {
+    return v;
+  }
+  if (typeof v === "number" || typeof v === "boolean") {
+    return String(v);
+  }
   try {
     return JSON.stringify(v);
   } catch {
@@ -450,13 +484,18 @@ export function stringifyCell(v: unknown): string {
 }
 
 export function truncate(s: string, n: number): string {
-  return s.length > n ? s.slice(0, n - 1) + '\u2026' : s;
+  return s.length > n ? s.slice(0, n - 1) + "\u2026" : s;
 }
 
 export function formatTimestamp(iso: string | null | undefined): string {
-  if (!iso) return '';
+  if (!iso) {
+    return "";
+  }
   try {
-    return new Date(iso).toISOString().replace('T', ' ').replace(/\.\d+Z$/, 'Z');
+    return new Date(iso)
+      .toISOString()
+      .replace("T", " ")
+      .replace(/\.\d+Z$/, "Z");
   } catch {
     return iso;
   }
@@ -505,52 +544,64 @@ export type StreamHealth = {
 const DISTINCT_CAP = 50;
 
 function isEmpty(v: unknown): boolean {
-  if (v === null || v === undefined) return true;
-  if (typeof v === 'string' && v.length === 0) return true;
-  if (Array.isArray(v) && v.length === 0) return true;
+  if (v === null || v === undefined) {
+    return true;
+  }
+  if (typeof v === "string" && v.length === 0) {
+    return true;
+  }
+  if (Array.isArray(v) && v.length === 0) {
+    return true;
+  }
   return false;
 }
 
 function sampleRepr(v: unknown): string {
-  if (v === null || v === undefined) return '';
-  const s = typeof v === 'string' ? v : stringifyCell(v);
+  if (v === null || v === undefined) {
+    return "";
+  }
+  const s = typeof v === "string" ? v : stringifyCell(v);
   return truncate(s, 80);
 }
 
 function distinctKey(v: unknown): string {
-  if (v === null || v === undefined) return '\u0000null';
-  if (typeof v === 'string') return 's:' + v;
-  if (typeof v === 'number') return 'n:' + String(v);
-  if (typeof v === 'boolean') return 'b:' + String(v);
+  if (v === null || v === undefined) {
+    return "\u0000null";
+  }
+  if (typeof v === "string") {
+    return "s:" + v;
+  }
+  if (typeof v === "number") {
+    return "n:" + String(v);
+  }
+  if (typeof v === "boolean") {
+    return "b:" + String(v);
+  }
   try {
-    return 'j:' + JSON.stringify(v);
+    return "j:" + JSON.stringify(v);
   } catch {
-    return 'x:' + String(v);
+    return "x:" + String(v);
   }
 }
 
 export async function streamHealth(
   connectorId: string,
   streamName: string,
-  opts: { sampleSize?: number; pageSize?: number } = {},
+  opts: { sampleSize?: number; pageSize?: number } = {}
 ): Promise<StreamHealth> {
-  const sampleLimit = Math.max(1, Math.min(opts.sampleSize ?? 2000, 20000));
+  const sampleLimit = Math.max(1, Math.min(opts.sampleSize ?? 2000, 20_000));
   const pageSize = Math.max(1, Math.min(opts.pageSize ?? 500, 1000));
 
   // Manifest lookup (schema.properties + cursor_field)
   const manifests = await listConnectorManifests();
   const manifest = manifests.find((m) => m.connector_id === connectorId);
-  const streamDef = (manifest?.streams ?? []).find(
-    (s) => s.name === streamName,
-  ) as
+  const streamDef = (manifest?.streams ?? []).find((s) => s.name === streamName) as
     | {
         schema?: { properties?: Record<string, unknown> };
         cursor_field?: string;
       }
     | undefined;
-  const declaredProps = streamDef?.schema?.properties
-    ? Object.keys(streamDef.schema.properties)
-    : [];
+  const declaredProps = streamDef?.schema?.properties ? Object.keys(streamDef.schema.properties) : [];
   const cursorField = streamDef?.cursor_field ?? null;
 
   // Stream metadata (record_count)
@@ -559,7 +610,9 @@ export async function streamHealth(
     const meta = (await getStreamMetadata(connectorId, streamName)) as {
       record_count?: number;
     };
-    if (typeof meta.record_count === 'number') totalRecords = meta.record_count;
+    if (typeof meta.record_count === "number") {
+      totalRecords = meta.record_count;
+    }
   } catch {
     // soft: health still works, just unknown total
   }
@@ -574,16 +627,22 @@ export async function streamHealth(
       cursor,
     });
     records.push(...page.data);
-    if (!page.has_more || !page.next_cursor) break;
+    if (!(page.has_more && page.next_cursor)) {
+      break;
+    }
     cursor = page.next_cursor;
-    if (page.data.length === 0) break;
+    if (page.data.length === 0) {
+      break;
+    }
   }
 
   // Aggregate
   const fieldNames = new Set<string>(declaredProps);
   for (const r of records) {
-    if (r.data && typeof r.data === 'object') {
-      for (const k of Object.keys(r.data)) fieldNames.add(k);
+    if (r.data && typeof r.data === "object") {
+      for (const k of Object.keys(r.data)) {
+        fieldNames.add(k);
+      }
     }
   }
 
@@ -615,34 +674,52 @@ export async function streamHealth(
 
   for (const r of records) {
     if (r.emitted_at) {
-      if (minEmitted === null || r.emitted_at < minEmitted) minEmitted = r.emitted_at;
-      if (maxEmitted === null || r.emitted_at > maxEmitted) maxEmitted = r.emitted_at;
+      if (minEmitted === null || r.emitted_at < minEmitted) {
+        minEmitted = r.emitted_at;
+      }
+      if (maxEmitted === null || r.emitted_at > maxEmitted) {
+        maxEmitted = r.emitted_at;
+      }
     }
     const data = (r.data ?? {}) as Record<string, unknown>;
     if (cursorField) {
       const cv = data[cursorField];
-      if (typeof cv === 'string' && cv) {
-        if (minCursor === null || cv < minCursor) minCursor = cv;
-        if (maxCursor === null || cv > maxCursor) maxCursor = cv;
-      } else if (typeof cv === 'number') {
+      if (typeof cv === "string" && cv) {
+        if (minCursor === null || cv < minCursor) {
+          minCursor = cv;
+        }
+        if (maxCursor === null || cv > maxCursor) {
+          maxCursor = cv;
+        }
+      } else if (typeof cv === "number") {
         const s = String(cv);
-        if (minCursor === null || s < minCursor) minCursor = s;
-        if (maxCursor === null || s > maxCursor) maxCursor = s;
+        if (minCursor === null || s < minCursor) {
+          minCursor = s;
+        }
+        if (maxCursor === null || s > maxCursor) {
+          maxCursor = s;
+        }
       }
     }
     for (const f of fieldNames) {
       const a = agg.get(f)!;
-      const hasKey = Object.prototype.hasOwnProperty.call(data, f);
-      if (hasKey) a.present = true;
+      const hasKey = Object.hasOwn(data, f);
+      if (hasKey) {
+        a.present = true;
+      }
       const v = hasKey ? data[f] : undefined;
       if (isEmpty(v)) {
         a.nullCount += 1;
       } else {
         a.nonNullCount += 1;
-        if (!a.sampleValue) a.sampleValue = sampleRepr(v);
+        if (!a.sampleValue) {
+          a.sampleValue = sampleRepr(v);
+        }
         if (!a.distinctCapped) {
           a.distinct.add(distinctKey(v));
-          if (a.distinct.size > DISTINCT_CAP) a.distinctCapped = true;
+          if (a.distinct.size > DISTINCT_CAP) {
+            a.distinctCapped = true;
+          }
         }
       }
     }
@@ -665,7 +742,9 @@ export async function streamHealth(
     })
     .sort((x, y) => {
       // declared-first, then by name, for stable display
-      if (x.declared !== y.declared) return x.declared ? -1 : 1;
+      if (x.declared !== y.declared) {
+        return x.declared ? -1 : 1;
+      }
       return x.name.localeCompare(y.name);
     });
 
@@ -673,8 +752,7 @@ export async function streamHealth(
     declared: fields.filter((f) => f.declared).length,
     present: fields.filter((f) => f.present).length,
     entirelyNull: fields.filter((f) => f.present && f.nonNullCount === 0).length,
-    constValued: fields.filter((f) => f.nonNullCount > 0 && f.distinctValues === 1)
-      .length,
+    constValued: fields.filter((f) => f.nonNullCount > 0 && f.distinctValues === 1).length,
     declaredButAbsent: fields.filter((f) => f.declared && !f.present).length,
     undeclaredPresent: fields.filter((f) => !f.declared && f.present).length,
   };
@@ -694,17 +772,23 @@ export async function streamHealth(
   };
 }
 
-const RUNNING_STATUSES = new Set(['started', 'in_progress']);
+const RUNNING_STATUSES = new Set(["started", "in_progress"]);
 
-function projectRun(summary: {
-  run_id: string;
-  first_at: string;
-  last_at: string;
-  event_count: number;
-  status: string;
-  failure_reason: string | null;
-} | undefined): ConnectorRunRef | null {
-  if (!summary) return null;
+function projectRun(
+  summary:
+    | {
+        run_id: string;
+        first_at: string;
+        last_at: string;
+        event_count: number;
+        status: string;
+        failure_reason: string | null;
+      }
+    | undefined
+): ConnectorRunRef | null {
+  if (!summary) {
+    return null;
+  }
   return {
     run_id: summary.run_id,
     first_at: summary.first_at,
@@ -715,9 +799,7 @@ function projectRun(summary: {
   };
 }
 
-export async function getConnectorOverview(
-  connector: ConnectorManifest,
-): Promise<ConnectorOverview> {
+export async function getConnectorOverview(connector: ConnectorManifest): Promise<ConnectorOverview> {
   try {
     const streams = await listStreams(connector.connector_id);
     const totalRecords = streams.reduce((sum, s) => sum + (s.record_count ?? 0), 0);
@@ -725,10 +807,10 @@ export async function getConnectorOverview(
     // Run data: most-recent run (any status) + most-recent succeeded.
     // Kept lazy-import to avoid a cycle: ref-client imports from owner-token
     // which imports from here in some flows. Deferred require pattern.
-    const { listRuns } = await import('./ref-client');
+    const { listRuns } = await import("./ref-client.ts");
     const [latestResp, successResp] = await Promise.all([
       listRuns({ connector_id: connector.connector_id, limit: 1 }),
-      listRuns({ connector_id: connector.connector_id, status: 'succeeded', limit: 1 }),
+      listRuns({ connector_id: connector.connector_id, status: "succeeded", limit: 1 }),
     ]);
     const lastRun = projectRun(latestResp.data?.[0]);
     const lastSuccessfulRun = projectRun(successResp.data?.[0]);
@@ -743,7 +825,9 @@ export async function getConnectorOverview(
       isRunning,
     };
   } catch (err) {
-    if (err instanceof ReferenceServerUnreachableError) throw err;
+    if (err instanceof ReferenceServerUnreachableError) {
+      throw err;
+    }
     return {
       connector,
       streams: [],

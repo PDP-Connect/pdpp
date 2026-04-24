@@ -1,40 +1,31 @@
-import Link from 'next/link';
-import { Button, buttonVariants } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
+import Link from "next/link";
+import { Button, buttonVariants } from "@/components/ui/button.tsx";
+import { Input } from "@/components/ui/input.tsx";
+import { Timestamp } from "@/components/ui/timestamp.tsx";
+import { MetaPill, PageHeader, Section, StatusBadge } from "../../components/primitives.tsx";
+import { DashboardShell } from "../../components/shell.tsx";
 import {
-  MetaPill,
-  PageHeader,
-  Section,
-  StatusBadge,
-} from '../../components/primitives';
-import { DashboardShell } from '../../components/shell';
-import {
-  DASHBOARD_BOOTSTRAP_CLIENT_ID,
   buildOwnerBootstrapExamples,
+  DASHBOARD_BOOTSTRAP_CLIENT_ID,
   getOwnerBootstrapFlow,
-} from '../../lib/operator-bootstrap';
-import { getOwnerLoginPath } from '../../lib/owner-token';
+} from "../../lib/operator-bootstrap.ts";
+import { getOwnerLoginPath } from "../../lib/owner-token.ts";
 import {
   approveOwnerTokenFlowAction,
   denyOwnerTokenFlowAction,
   exchangeOwnerTokenFlowAction,
   introspectOwnerTokenFlowAction,
   startOwnerTokenFlowAction,
-} from './actions';
-import { Timestamp } from '@/components/ui/timestamp';
+} from "./actions.ts";
 
-export const dynamic = 'force-dynamic';
+export const dynamic = "force-dynamic";
 
 type Params = {
   flow?: string;
   error?: string;
 };
 
-export default async function OwnerTokenBootstrapPage({
-  searchParams,
-}: {
-  searchParams: Promise<Params>;
-}) {
+export default async function OwnerTokenBootstrapPage({ searchParams }: { searchParams: Promise<Params> }) {
   const params = await searchParams;
   const flow = params.flow ? getOwnerBootstrapFlow(params.flow) : null;
   const examples = flow ? await buildOwnerBootstrapExamples(flow) : null;
@@ -46,31 +37,22 @@ export default async function OwnerTokenBootstrapPage({
       <PageHeader
         title="Owner device flow"
         description="Use the real public device flow to mint an owner self-export token, then introspect or reuse it against the normal `/v1/streams` read surface."
-        breadcrumbs={[
-          { label: 'Grants', href: '/dashboard/grants' },
-          { label: 'Owner device flow' },
-        ]}
+        breadcrumbs={[{ label: "Grants", href: "/dashboard/grants" }, { label: "Owner device flow" }]}
         actions={
           <>
             <Link
               href="/dashboard/grants#pending-approvals"
-              className={buttonVariants({ variant: 'outline', size: 'sm' })}
+              className={buttonVariants({ variant: "outline", size: "sm" })}
             >
               Pending approvals
             </Link>
-            <Link
-              href="/dashboard/grants/request"
-              className={buttonVariants({ variant: 'outline', size: 'sm' })}
-            >
+            <Link href="/dashboard/grants/request" className={buttonVariants({ variant: "outline", size: "sm" })}>
               Grant request
             </Link>
-            <a href={ownerLoginUrl} className={buttonVariants({ variant: 'outline', size: 'sm' })}>
+            <a href={ownerLoginUrl} className={buttonVariants({ variant: "outline", size: "sm" })}>
               Owner access
             </a>
-            <Link
-              href="/dashboard/records"
-              className={buttonVariants({ variant: 'outline', size: 'sm' })}
-            >
+            <Link href="/dashboard/records" className={buttonVariants({ variant: "outline", size: "sm" })}>
               Records workbench
             </Link>
           </>
@@ -79,23 +61,22 @@ export default async function OwnerTokenBootstrapPage({
           <>
             <MetaPill
               label="flow"
-              value={flow ? flow.status.replace(/_/g, ' ') : 'not started'}
-              tone={flow ? 'human' : 'neutral'}
+              value={flow ? flow.status.replace(/_/g, " ") : "not started"}
+              tone={flow ? "human" : "neutral"}
             />
             <MetaPill label="client" value={flow?.clientId ?? DASHBOARD_BOOTSTRAP_CLIENT_ID} />
             <MetaPill
               label="token"
-              value={flow?.token ? 'issued' : 'not issued'}
-              tone={flow?.token ? 'protocol' : 'neutral'}
+              value={flow?.token ? "issued" : "not issued"}
+              tone={flow?.token ? "protocol" : "neutral"}
             />
           </>
         }
       />
 
       {error ? (
-        <div className="pdpp-caption border-destructive/30 bg-destructive/5 mb-6 rounded-md border-l-4 border-l-destructive/60 border px-4 py-2.5">
-          <span className="text-destructive font-medium">Device-flow error:</span>{' '}
-          <span>{error}</span>
+        <div className="pdpp-caption mb-6 rounded-md border border-destructive/30 border-l-4 border-l-destructive/60 bg-destructive/5 px-4 py-2.5">
+          <span className="font-medium text-destructive">Device-flow error:</span> <span>{error}</span>
         </div>
       ) : null}
 
@@ -103,29 +84,22 @@ export default async function OwnerTokenBootstrapPage({
         title="1. Start a device flow"
         description="This starts `POST /oauth/device_authorization` with a registered public client id, then keeps the resulting device and user codes in ephemeral dashboard memory."
       >
-        <form
-          action={startOwnerTokenFlowAction}
-          className="flex flex-col gap-3 sm:flex-row sm:items-end"
-        >
+        <form action={startOwnerTokenFlowAction} className="flex flex-col gap-3 sm:flex-row sm:items-end">
           <label className="flex min-w-0 flex-1 flex-col gap-1">
             <span className="pdpp-eyebrow">Client id</span>
-            <Input
-              type="text"
-              name="client_id"
-              defaultValue={flow?.clientId ?? DASHBOARD_BOOTSTRAP_CLIENT_ID}
-            />
+            <Input type="text" name="client_id" defaultValue={flow?.clientId ?? DASHBOARD_BOOTSTRAP_CLIENT_ID} />
           </label>
           <Button type="submit" size="sm">
-            {flow ? 'Start new flow' : 'Start device flow'}
+            {flow ? "Start new flow" : "Start device flow"}
           </Button>
         </form>
-        <p className="pdpp-caption text-muted-foreground mt-3">
-          Leave <code className="font-mono">{DASHBOARD_BOOTSTRAP_CLIENT_ID}</code> unless you
-          registered another public client. Unknown client ids fail here because this page uses
-          the real authorization-server device endpoint. Use the{' '}
+        <p className="pdpp-caption mt-3 text-muted-foreground">
+          Leave <code className="font-mono">{DASHBOARD_BOOTSTRAP_CLIENT_ID}</code> unless you registered another public
+          client. Unknown client ids fail here because this page uses the real authorization-server device endpoint. Use
+          the{" "}
           <Link href="/dashboard/grants/request" className="underline-offset-2 hover:underline">
             grant request workspace
-          </Link>{' '}
+          </Link>{" "}
           to register more.
         </p>
       </Section>
@@ -133,9 +107,8 @@ export default async function OwnerTokenBootstrapPage({
       {flow ? (
         <>
           {flow.lastError ? (
-            <div className="pdpp-caption border-destructive/30 bg-destructive/5 mb-6 rounded-md border-l-4 border-l-destructive/60 border px-4 py-2.5">
-              <span className="text-destructive font-medium">Last action error:</span>{' '}
-              <span>{flow.lastError}</span>
+            <div className="pdpp-caption mb-6 rounded-md border border-destructive/30 border-l-4 border-l-destructive/60 bg-destructive/5 px-4 py-2.5">
+              <span className="font-medium text-destructive">Last action error:</span> <span>{flow.lastError}</span>
             </div>
           ) : null}
 
@@ -145,9 +118,9 @@ export default async function OwnerTokenBootstrapPage({
                 <DetailRow label="id" value={<code className="break-all">{flow.flowId}</code>} />
                 <DetailRow label="status" value={<StatusBadge status={flow.status} />} />
                 <DetailRow label="client" value={<code className="break-all">{flow.clientId}</code>} />
-                <DetailRow label="subject" value={flow.subjectId ?? '—'} />
+                <DetailRow label="subject" value={flow.subjectId ?? "—"} />
                 <DetailRow label="started" value={<Timestamp value={flow.startedAt} />} />
-                <DetailRow label="expires" value={flow.expiresAt ? <Timestamp value={flow.expiresAt} /> : '—'} />
+                <DetailRow label="expires" value={flow.expiresAt ? <Timestamp value={flow.expiresAt} /> : "—"} />
               </DetailCard>
               <DetailCard title="Device authorization">
                 <DetailRow
@@ -168,7 +141,7 @@ export default async function OwnerTokenBootstrapPage({
                         {flow.verificationUri}
                       </a>
                     ) : (
-                      '—'
+                      "—"
                     )
                   }
                 />
@@ -178,34 +151,23 @@ export default async function OwnerTokenBootstrapPage({
                   <input type="hidden" name="flow_id" value={flow.flowId} />
                   <label className="flex flex-col gap-1">
                     <span className="pdpp-eyebrow">Subject id</span>
-                    <Input
-                      type="text"
-                      name="subject_id"
-                      defaultValue={flow.subjectId ?? 'owner_local'}
-                    />
+                    <Input type="text" name="subject_id" defaultValue={flow.subjectId ?? "owner_local"} />
                   </label>
                   <div className="flex flex-wrap gap-2">
-                    <Button
-                      formAction={approveOwnerTokenFlowAction}
-                      type="submit"
-                      size="sm"
-                    >
+                    <Button formAction={approveOwnerTokenFlowAction} type="submit" size="sm">
                       <span className="font-mono">POST /device/approve</span>
                     </Button>
-                    <Button
-                      formAction={denyOwnerTokenFlowAction}
-                      type="submit"
-                      size="sm"
-                      variant="destructive"
-                    >
+                    <Button formAction={denyOwnerTokenFlowAction} type="submit" size="sm" variant="destructive">
                       <span className="font-mono">POST /device/deny</span>
                     </Button>
                   </div>
                 </form>
-                <p className="pdpp-caption text-muted-foreground mt-2 inline-flex flex-wrap items-baseline gap-1">
+                <p className="pdpp-caption mt-2 inline-flex flex-wrap items-baseline gap-1 text-muted-foreground">
                   State: <StatusBadge status={flow.status} inline />
                   {flow.approvalUpdatedAt ? (
-                    <>· updated <Timestamp value={flow.approvalUpdatedAt} /></>
+                    <>
+                      · updated <Timestamp value={flow.approvalUpdatedAt} />
+                    </>
                   ) : null}
                 </p>
               </DetailCard>
@@ -223,13 +185,13 @@ export default async function OwnerTokenBootstrapPage({
                 </form>
                 {flow.token ? (
                   <div className="mt-3">
-                    <div className="pdpp-caption text-muted-foreground mb-1 inline-flex items-baseline gap-1">
-                      issued {flow.tokenIssuedAt ? <Timestamp value={flow.tokenIssuedAt} /> : 'just now'}
+                    <div className="pdpp-caption mb-1 inline-flex items-baseline gap-1 text-muted-foreground">
+                      issued {flow.tokenIssuedAt ? <Timestamp value={flow.tokenIssuedAt} /> : "just now"}
                     </div>
                     <CodeBlock>{flow.token}</CodeBlock>
                   </div>
                 ) : (
-                  <p className="pdpp-caption text-muted-foreground mt-3 italic">
+                  <p className="pdpp-caption mt-3 text-muted-foreground italic">
                     Exchange stays pending until the device flow is approved.
                   </p>
                 )}
@@ -243,13 +205,13 @@ export default async function OwnerTokenBootstrapPage({
                 </form>
                 {flow.introspection ? (
                   <div className="mt-3">
-                    <div className="pdpp-caption text-muted-foreground mb-1 inline-flex items-baseline gap-1">
-                      refreshed {flow.introspectedAt ? <Timestamp value={flow.introspectedAt} /> : 'just now'}
+                    <div className="pdpp-caption mb-1 inline-flex items-baseline gap-1 text-muted-foreground">
+                      refreshed {flow.introspectedAt ? <Timestamp value={flow.introspectedAt} /> : "just now"}
                     </div>
                     <CodeBlock>{JSON.stringify(flow.introspection, null, 2)}</CodeBlock>
                   </div>
                 ) : (
-                  <p className="pdpp-caption text-muted-foreground mt-3 italic">
+                  <p className="pdpp-caption mt-3 text-muted-foreground italic">
                     Introspection is available after the token is issued.
                   </p>
                 )}
@@ -291,7 +253,7 @@ export default async function OwnerTokenBootstrapPage({
         </>
       ) : (
         <Section title="How to use this page">
-          <ul className="pdpp-body text-muted-foreground max-w-prose list-disc space-y-1.5 pl-5">
+          <ul className="pdpp-body max-w-prose list-disc space-y-1.5 pl-5 text-muted-foreground">
             <li>The dashboard uses the real public device flow — no hidden token mint endpoint.</li>
             <li>Approval state is explicit and operator-visible.</li>
             <li>The issued token is introspected through the public RFC 7662-style route.</li>
@@ -333,9 +295,8 @@ function Labeled({ label, children }: { label: string; children: React.ReactNode
 
 function CodeBlock({ children }: { children: string }) {
   return (
-    <pre className="pdpp-caption border-border/80 bg-muted/30 overflow-x-auto rounded-md border p-3 font-mono whitespace-pre-wrap break-words">
+    <pre className="pdpp-caption overflow-x-auto whitespace-pre-wrap break-words rounded-md border border-border/80 bg-muted/30 p-3 font-mono">
       <code>{children}</code>
     </pre>
   );
 }
-

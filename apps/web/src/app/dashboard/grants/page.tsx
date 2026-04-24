@@ -1,9 +1,9 @@
-import Link from 'next/link';
-import { DashboardShell, EmptyState, ServerUnreachable } from '../components/shell';
-import { PeekEmpty, PeekPane, PeekTimeline, pivotsFromEnvelope } from '../components/peek';
-import { Button, buttonVariants } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Select } from '@/components/ui/select';
+import Link from "next/link";
+import { Button, buttonVariants } from "@/components/ui/button.tsx";
+import { Input } from "@/components/ui/input.tsx";
+import { Select } from "@/components/ui/select.tsx";
+import { Timestamp } from "@/components/ui/timestamp.tsx";
+import { PeekEmpty, PeekPane, PeekTimeline, pivotsFromEnvelope } from "../components/peek.tsx";
 import {
   DataList,
   FilterSummary,
@@ -13,24 +13,21 @@ import {
   SplitLayout,
   StatusBadge,
   Toolbar,
-} from '../components/primitives';
-import { getOwnerLoginPath, ReferenceServerUnreachableError } from '../lib/owner-token';
+} from "../components/primitives.tsx";
+import { DashboardShell, EmptyState, ServerUnreachable } from "../components/shell.tsx";
+import { getOwnerLoginPath, ReferenceServerUnreachableError } from "../lib/owner-token.ts";
 import {
+  type GrantSummary,
   getGrantTimeline,
+  type ListResponse,
   listGrants,
   listPendingApprovals,
-  type GrantSummary,
-  type ListResponse,
   type PendingApproval,
   type TimelineEnvelope,
-} from '../lib/ref-client';
-import {
-  approvePendingApprovalAction,
-  denyPendingApprovalAction,
-} from './pending-actions';
-import { Timestamp } from '@/components/ui/timestamp';
+} from "../lib/ref-client.ts";
+import { approvePendingApprovalAction, denyPendingApprovalAction } from "./pending-actions.ts";
 
-export const dynamic = 'force-dynamic';
+export const dynamic = "force-dynamic";
 
 type Params = {
   cursor?: string;
@@ -45,17 +42,13 @@ type Params = {
 function listHref(params: Params, overrides: Partial<Params> = {}): string {
   const merged = { ...params, ...overrides };
   const qs = Object.entries(merged)
-    .filter(([, v]) => v !== undefined && v !== '')
+    .filter(([, v]) => v !== undefined && v !== "")
     .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`)
-    .join('&');
-  return qs ? `/dashboard/grants?${qs}` : '/dashboard/grants';
+    .join("&");
+  return qs ? `/dashboard/grants?${qs}` : "/dashboard/grants";
 }
 
-export default async function GrantsPage({
-  searchParams,
-}: {
-  searchParams: Promise<Params>;
-}) {
+export default async function GrantsPage({ searchParams }: { searchParams: Promise<Params> }) {
   const params = await searchParams;
   const filters = {
     cursor: params.cursor,
@@ -70,10 +63,7 @@ export default async function GrantsPage({
   let approvals: ListResponse<PendingApproval>;
   let peekEnvelope: TimelineEnvelope | null = null;
   try {
-    [result, approvals] = await Promise.all([
-      listGrants(filters),
-      listPendingApprovals(),
-    ]);
+    [result, approvals] = await Promise.all([listGrants(filters), listPendingApprovals()]);
     if (params.peek) {
       peekEnvelope = await getGrantTimeline(params.peek);
     }
@@ -90,13 +80,11 @@ export default async function GrantsPage({
   }
 
   const closePeekHref = listHref(params, { peek: undefined });
-  const openPeekFullHref = params.peek
-    ? `/dashboard/grants/${encodeURIComponent(params.peek)}`
-    : '';
+  const openPeekFullHref = params.peek ? `/dashboard/grants/${encodeURIComponent(params.peek)}` : "";
   const ownerLoginUrl = getOwnerLoginPath();
   const activeFilters = [
-    params.status ? { label: 'state', value: params.status } : null,
-    params.q ? { label: 'query', value: params.q } : null,
+    params.status ? { label: "state", value: params.status } : null,
+    params.q ? { label: "query", value: params.q } : null,
   ].filter((item): item is { label: string; value: string } => Boolean(item));
 
   return (
@@ -104,13 +92,13 @@ export default async function GrantsPage({
       <PageHeader
         title="Grants"
         description="Issued authorizations and lifecycle decisions for client access to owner data."
-        count={`${result.data.length}${result.has_more ? '+' : ''}`}
+        count={`${result.data.length}${result.has_more ? "+" : ""}`}
         actions={
           <>
-            <Link href="/dashboard/grants/request" className={buttonVariants({ variant: 'outline', size: 'sm' })}>
+            <Link href="/dashboard/grants/request" className={buttonVariants({ variant: "outline", size: "sm" })}>
               Grant request workspace
             </Link>
-            <Link href="/dashboard/grants/bootstrap" className={buttonVariants({ variant: 'outline', size: 'sm' })}>
+            <Link href="/dashboard/grants/bootstrap" className={buttonVariants({ variant: "outline", size: "sm" })}>
               Owner device flow
             </Link>
           </>
@@ -118,20 +106,15 @@ export default async function GrantsPage({
       />
 
       {params.approval_error ? (
-        <div className="pdpp-caption border-destructive/30 bg-destructive/5 mb-6 rounded-md border-l-4 border-l-destructive/60 border px-4 py-2.5">
-          <span className="text-destructive font-medium">Approval error:</span>{' '}
-          <span>{params.approval_error}</span>
+        <div className="pdpp-caption mb-6 rounded-md border border-destructive/30 border-l-4 border-l-destructive/60 bg-destructive/5 px-4 py-2.5">
+          <span className="font-medium text-destructive">Approval error:</span> <span>{params.approval_error}</span>
         </div>
       ) : null}
 
       <Section
         id="pending-approvals"
         title={`Pending approvals (${approvals.data.length})`}
-        description={
-          approvals.data.length > 0
-            ? `Device-flow and consent requests waiting for the owner.`
-            : undefined
-        }
+        description={approvals.data.length > 0 ? "Device-flow and consent requests waiting for the owner." : undefined}
       >
         {approvals.data.length === 0 ? (
           <EmptyState
@@ -147,12 +130,12 @@ export default async function GrantsPage({
                 </li>
               ))}
             </DataList>
-            <p className="pdpp-caption text-muted-foreground mt-2">
-              These dashboard shortcut buttons work in open local-dev mode. If placeholder owner
-              auth is enabled, sign in at{' '}
+            <p className="pdpp-caption mt-2 text-muted-foreground">
+              These dashboard shortcut buttons work in open local-dev mode. If placeholder owner auth is enabled, sign
+              in at{" "}
               <a href={ownerLoginUrl} className="underline-offset-2 hover:underline">
                 owner access
-              </a>{' '}
+              </a>{" "}
               and approve there instead.
             </p>
           </>
@@ -167,14 +150,14 @@ export default async function GrantsPage({
               <Input
                 type="search"
                 name="q"
-                defaultValue={params.q ?? ''}
+                defaultValue={params.q ?? ""}
                 placeholder="id contains…"
                 className="w-64 font-mono"
               />
             </label>
             <label className="flex min-w-0 flex-col gap-1">
               <span className="pdpp-eyebrow">State</span>
-              <Select name="status" defaultValue={params.status ?? ''}>
+              <Select name="status" defaultValue={params.status ?? ""}>
                 <option value="">Any state</option>
                 <option value="issued">issued</option>
                 <option value="revoked">revoked</option>
@@ -223,17 +206,11 @@ export default async function GrantsPage({
                   cliCommand={`pdpp grant timeline ${params.peek}`}
                 >
                   <Pivots envelope={peekEnvelope} currentKind="grant" />
-                  <div className="pdpp-caption text-muted-foreground mb-2">
-                    {peekEnvelope.events.length} events
-                  </div>
+                  <div className="pdpp-caption mb-2 text-muted-foreground">{peekEnvelope.events.length} events</div>
                   <PeekTimeline events={peekEnvelope.events} />
                 </PeekPane>
               ) : (
-                <PeekPane
-                  title={`grant ${params.peek}`}
-                  closeHref={closePeekHref}
-                  openHref={openPeekFullHref}
-                >
+                <PeekPane title={`grant ${params.peek}`} closeHref={closePeekHref} openHref={openPeekFullHref}>
                   <p className="text-muted-foreground">Grant not found.</p>
                 </PeekPane>
               )
@@ -250,7 +227,7 @@ export default async function GrantsPage({
 function PendingApprovalRow({ approval }: { approval: PendingApproval }) {
   const previewStreams = Array.isArray(approval.grant_preview?.streams)
     ? approval.grant_preview.streams
-        .map((stream) => (typeof stream === 'string' ? stream : stream?.name || ''))
+        .map((stream) => (typeof stream === "string" ? stream : stream?.name || ""))
         .filter(Boolean)
     : [];
 
@@ -258,19 +235,17 @@ function PendingApprovalRow({ approval }: { approval: PendingApproval }) {
     <div className="grid gap-3 px-3 py-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
       <div className="min-w-0">
         <div className="flex flex-wrap items-baseline gap-2">
-          <code className="pdpp-caption text-foreground break-all font-mono font-medium">
-            {approval.approval_id}
-          </code>
+          <code className="pdpp-caption break-all font-medium font-mono text-foreground">{approval.approval_id}</code>
           <span className="pdpp-caption text-muted-foreground">
             <Timestamp value={approval.created_at} />
           </span>
           <StatusBadge status={approval.kind} />
         </div>
-        <div className="pdpp-caption text-muted-foreground mt-1 break-words">
-          client {approval.client_id ?? '—'}
-          {approval.grant_preview?.connector_id ? ` · connector ${approval.grant_preview.connector_id}` : ''}
-          {approval.grant_preview?.provider_id ? ` · provider ${approval.grant_preview.provider_id}` : ''}
-          {previewStreams.length ? ` · streams ${previewStreams.join(', ')}` : ''}
+        <div className="pdpp-caption mt-1 break-words text-muted-foreground">
+          client {approval.client_id ?? "—"}
+          {approval.grant_preview?.connector_id ? ` · connector ${approval.grant_preview.connector_id}` : ""}
+          {approval.grant_preview?.provider_id ? ` · provider ${approval.grant_preview.provider_id}` : ""}
+          {previewStreams.length ? ` · streams ${previewStreams.join(", ")}` : ""}
         </div>
       </div>
       <form className="flex flex-wrap gap-2">
@@ -280,12 +255,7 @@ function PendingApprovalRow({ approval }: { approval: PendingApproval }) {
         <Button formAction={approvePendingApprovalAction} type="submit" size="sm">
           Approve
         </Button>
-        <Button
-          formAction={denyPendingApprovalAction}
-          type="submit"
-          size="sm"
-          variant="destructive"
-        >
+        <Button formAction={denyPendingApprovalAction} type="submit" size="sm" variant="destructive">
           Deny
         </Button>
       </form>
@@ -299,44 +269,40 @@ function GrantRow({ grant, params }: { grant: GrantSummary; params: Params }) {
     <Link
       href={listHref(params, { peek: grant.grant_id })}
       scroll={false}
-      aria-current={peeked ? 'true' : undefined}
-      className={`block px-3 py-2.5 transition-colors ${peeked ? 'bg-muted' : 'hover:bg-muted/40'}`}
+      aria-current={peeked ? "true" : undefined}
+      className={`block px-3 py-2.5 transition-colors ${peeked ? "bg-muted" : "hover:bg-muted/40"}`}
     >
       <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <code className="pdpp-caption text-foreground break-all font-mono font-medium">
-          {grant.grant_id}
-        </code>
+        <code className="pdpp-caption break-all font-medium font-mono text-foreground">{grant.grant_id}</code>
         <div className="flex items-center gap-2">
           <StatusBadge status={grant.status} />
-          <span className="pdpp-caption text-muted-foreground"><Timestamp value={grant.last_at} /></span>
+          <span className="pdpp-caption text-muted-foreground">
+            <Timestamp value={grant.last_at} />
+          </span>
         </div>
       </div>
-      <div className="pdpp-caption text-muted-foreground mt-1">
+      <div className="pdpp-caption mt-1 text-muted-foreground">
         {grant.event_count} events
-        {grant.client_id ? ` · client ${grant.client_id}` : ''}
-        {grant.provider_id ? ` · provider ${grant.provider_id}` : ''}
-        {grant.connector_id ? ` · ${grant.connector_id}` : ''}
+        {grant.client_id ? ` · client ${grant.client_id}` : ""}
+        {grant.provider_id ? ` · provider ${grant.provider_id}` : ""}
+        {grant.connector_id ? ` · ${grant.connector_id}` : ""}
       </div>
     </Link>
   );
 }
 
-function Pivots({
-  envelope,
-  currentKind,
-}: {
-  envelope: TimelineEnvelope;
-  currentKind: 'trace' | 'grant' | 'run';
-}) {
+function Pivots({ envelope, currentKind }: { envelope: TimelineEnvelope; currentKind: "trace" | "grant" | "run" }) {
   const pivots = pivotsFromEnvelope(envelope).filter((p) => p.kind !== currentKind);
-  if (pivots.length === 0) return null;
+  if (pivots.length === 0) {
+    return null;
+  }
   return (
     <div className="mb-3 flex flex-wrap gap-1">
       {pivots.map((p) => (
         <Link
           key={`${p.kind}:${p.id}`}
           href={`/dashboard/${p.kind}s?peek=${encodeURIComponent(p.id)}`}
-          className="pdpp-eyebrow border-border hover:bg-muted/60 rounded border px-2 py-0.5"
+          className="pdpp-eyebrow rounded border border-border px-2 py-0.5 hover:bg-muted/60"
         >
           {p.kind} {p.id} →
         </Link>

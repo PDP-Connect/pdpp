@@ -1,4 +1,4 @@
-import type { CSSProperties } from 'react';
+import type { CSSProperties } from "react";
 
 /**
  * PDPP logo — the split-P.
@@ -14,44 +14,44 @@ import type { CSSProperties } from 'react';
  * one warm, one cool. See plate IV in the study.
  */
 
-const HUMAN = 'oklch(0.52 0.11 45)';
-const PROTOCOL = 'oklch(0.58 0.18 253)';
-const HUMAN_NIGHT = 'oklch(0.72 0.12 45)';
-const PROTOCOL_NIGHT = 'oklch(0.74 0.16 253)';
-const COUNTER_LIGHT = 'oklch(0.985 0.005 85)';
-const COUNTER_NIGHT = 'oklch(0.16 0.01 60)';
+const HUMAN = "oklch(0.52 0.11 45)";
+const PROTOCOL = "oklch(0.58 0.18 253)";
+const HUMAN_NIGHT = "oklch(0.72 0.12 45)";
+const PROTOCOL_NIGHT = "oklch(0.74 0.16 253)";
+const COUNTER_LIGHT = "oklch(0.985 0.005 85)";
+const COUNTER_NIGHT = "oklch(0.16 0.01 60)";
 
-type Variant = 'mark' | 'favicon';
-type Surface = 'light' | 'dark';
+type Variant = "mark" | "favicon";
+type Surface = "light" | "dark";
 
 interface PdppLogoProps {
-  /** mark = full split-P, favicon = simplified two-rect */
-  variant?: Variant;
-  /** Pixel size of the mark. Mark auto-downgrades to favicon below `simplifyAt`. */
-  size?: number;
+  className?: string;
   /** Threshold below which the full mark collapses to the favicon form (px). */
   simplifyAt?: number;
+  /** Pixel size of the mark. Mark auto-downgrades to favicon below `simplifyAt`. */
+  size?: number;
+  style?: CSSProperties;
   /** Light surface uses standard hues; dark uses the elevated "night" pair. */
   surface?: Surface;
   /** Label the logo for AT. Pass "" to mark as decorative. */
   title?: string;
-  className?: string;
-  style?: CSSProperties;
+  /** mark = full split-P, favicon = simplified two-rect */
+  variant?: Variant;
 }
 
 export function PdppLogo({
-  variant = 'mark',
+  variant = "mark",
   size = 24,
   simplifyAt = 20,
-  surface = 'light',
-  title = 'PDPP',
+  surface = "light",
+  title = "PDPP",
   className,
   style,
 }: PdppLogoProps) {
   // Auto-downgrade the full mark to the favicon form at small sizes.
-  const effective: Variant = variant === 'mark' && size <= simplifyAt ? 'favicon' : variant;
+  const effective: Variant = variant === "mark" && size <= simplifyAt ? "favicon" : variant;
 
-  if (effective === 'favicon') {
+  if (effective === "favicon") {
     return <FaviconMark size={size} surface={surface} title={title} className={className} style={style} />;
   }
 
@@ -61,17 +61,17 @@ export function PdppLogo({
 // ─── The full split-P (plate I.1 / I.2) ───────────────────────────────────────
 
 interface MarkProps {
+  className?: string;
   size: number;
+  style?: CSSProperties;
   surface: Surface;
   title: string;
-  className?: string;
-  style?: CSSProperties;
 }
 
 function Mark({ size, surface, title, className, style }: MarkProps) {
-  const warm = surface === 'dark' ? HUMAN_NIGHT : HUMAN;
-  const cool = surface === 'dark' ? PROTOCOL_NIGHT : PROTOCOL;
-  const counter = surface === 'dark' ? COUNTER_NIGHT : COUNTER_LIGHT;
+  const warm = surface === "dark" ? HUMAN_NIGHT : HUMAN;
+  const cool = surface === "dark" ? PROTOCOL_NIGHT : PROTOCOL;
+  const counter = surface === "dark" ? COUNTER_NIGHT : COUNTER_LIGHT;
   const labelled = title.length > 0;
 
   return (
@@ -79,17 +79,14 @@ function Mark({ size, surface, title, className, style }: MarkProps) {
       viewBox="0 0 200 200"
       width={size}
       height={size}
-      role={labelled ? 'img' : 'presentation'}
+      role={labelled ? "img" : "presentation"}
       aria-label={labelled ? title : undefined}
       aria-hidden={labelled ? undefined : true}
       className={className}
       style={style}
     >
       {/* Left half — warm (human/holder) */}
-      <path
-        d="M 40 30 L 40 170 L 60 170 L 60 116 L 100 116 Q 105 116 105 110 L 105 30 Z"
-        fill={warm}
-      />
+      <path d="M 40 30 L 40 170 L 60 170 L 60 116 L 100 116 Q 105 116 105 110 L 105 30 Z" fill={warm} />
       {/* Right half — cool (protocol/issuer) */}
       <path
         d="M 105 30 L 105 110 Q 105 116 100 116 L 60 116 L 60 170 L 80 170 L 80 136 L 125 136 Q 155 136 155 103 Q 155 30 105 30 Z"
@@ -104,8 +101,8 @@ function Mark({ size, surface, title, className, style }: MarkProps) {
 // ─── Irreducible two-rect form (plate IV, ≤20px) ──────────────────────────────
 
 function FaviconMark({ size, surface, title, className, style }: MarkProps) {
-  const warm = surface === 'dark' ? HUMAN_NIGHT : HUMAN;
-  const cool = surface === 'dark' ? PROTOCOL_NIGHT : PROTOCOL;
+  const warm = surface === "dark" ? HUMAN_NIGHT : HUMAN;
+  const cool = surface === "dark" ? PROTOCOL_NIGHT : PROTOCOL;
   const labelled = title.length > 0;
 
   return (
@@ -113,7 +110,7 @@ function FaviconMark({ size, surface, title, className, style }: MarkProps) {
       viewBox="0 0 32 32"
       width={size}
       height={size}
-      role={labelled ? 'img' : 'presentation'}
+      role={labelled ? "img" : "presentation"}
       aria-label={labelled ? title : undefined}
       aria-hidden={labelled ? undefined : true}
       className={className}
@@ -124,4 +121,3 @@ function FaviconMark({ size, surface, title, className, style }: MarkProps) {
     </svg>
   );
 }
-

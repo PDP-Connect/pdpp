@@ -13,13 +13,13 @@
  * record fetches.
  */
 import {
+  type ConnectorManifest,
   listConnectorManifests,
   listStreams,
   queryRecords,
-  type ConnectorManifest,
   type StreamRecord,
-} from './rs-client';
-import { summarize } from './timeline-summaries';
+} from "./rs-client.ts";
+import { summarize } from "./timeline-summaries.ts";
 
 export type TimelineEntry = {
   connectorId: string;
@@ -52,7 +52,7 @@ export async function findTimeAnchoredStreams(): Promise<TimeAnchoredStream[]> {
   for (const m of manifests) {
     for (const s of m.streams ?? []) {
       const ctf = (s as { consent_time_field?: string }).consent_time_field;
-      if (ctf && typeof ctf === 'string') {
+      if (ctf && typeof ctf === "string") {
         anchored.push({
           connectorId: m.connector_id,
           streamName: s.name,
@@ -69,34 +69,36 @@ export async function findTimeAnchoredStreams(): Promise<TimeAnchoredStream[]> {
  * Called separately so callers can display "sources" hints without
  * re-querying.
  */
-export async function connectorsWithData(
-  manifests: ConnectorManifest[],
-): Promise<Map<string, Set<string>>> {
+export async function connectorsWithData(manifests: ConnectorManifest[]): Promise<Map<string, Set<string>>> {
   const result = new Map<string, Set<string>>();
   await Promise.all(
     manifests.map(async (m) => {
       try {
         const streams = await listStreams(m.connector_id);
-        const withData = new Set(
-          streams.filter((s) => s.record_count > 0).map((s) => s.name),
-        );
-        if (withData.size) result.set(m.connector_id, withData);
+        const withData = new Set(streams.filter((s) => s.record_count > 0).map((s) => s.name));
+        if (withData.size) {
+          result.set(m.connector_id, withData);
+        }
       } catch {
         // Skip connector on error.
       }
-    }),
+    })
   );
   return result;
 }
 
 function parseTimestamp(raw: unknown): number | null {
-  if (raw === null || raw === undefined) return null;
-  if (typeof raw === 'number') {
+  if (raw === null || raw === undefined) {
+    return null;
+  }
+  if (typeof raw === "number") {
     // Epoch seconds vs ms heuristic.
     const ms = raw > 1e12 ? raw : raw * 1000;
     return Number.isFinite(ms) ? ms : null;
   }
-  if (typeof raw !== 'string') return null;
+  if (typeof raw !== "string") {
+    return null;
+  }
   const t = Date.parse(raw);
   return Number.isNaN(t) ? null : t;
 }
@@ -106,7 +108,7 @@ function isoFromMs(ms: number): string {
 }
 
 export async function loadTimeline(
-  opts: TimelineOptions = {},
+  opts: TimelineOptions = {}
 ): Promise<{ entries: TimelineEntry[]; scanned: number; sources: number }> {
   const perStreamLimit = opts.perStreamLimit ?? DEFAULT_PER_STREAM_LIMIT;
   const totalLimit = opts.totalLimit ?? DEFAULT_TOTAL_LIMIT;
@@ -119,9 +121,7 @@ export async function loadTimeline(
 
   // Only scan streams that (a) are time-anchored per manifest and
   // (b) have at least one record loaded in the RS.
-  const target = anchored.filter(
-    (a) => withData.get(a.connectorId)?.has(a.streamName),
-  );
+  const target = anchored.filter((a) => withData.get(a.connectorId)?.has(a.streamName));
 
   const pages = await Promise.all(
     target.map(async (t) => {
@@ -132,13 +132,13 @@ export async function loadTimeline(
         // usefully bound the fetch.
         const page = await queryRecords(t.connectorId, t.streamName, {
           limit: perStreamLimit,
-          order: 'desc',
+          order: "desc",
         });
         return { t, records: page.data };
       } catch {
         return { t, records: [] as StreamRecord[] };
       }
-    }),
+    })
   );
 
   let scanned = 0;
@@ -149,9 +149,15 @@ export async function loadTimeline(
     for (const r of records) {
       const raw = (r.data as Record<string, unknown>)?.[t.consentTimeField];
       const ms = parseTimestamp(raw);
-      if (ms === null) continue;
-      if (sinceMs !== null && ms < sinceMs) continue;
-      if (untilMs !== null && ms >= untilMs) continue;
+      if (ms === null) {
+        continue;
+      }
+      if (sinceMs !== null && ms < sinceMs) {
+        continue;
+      }
+      if (untilMs !== null && ms >= untilMs) {
+        continue;
+      }
       entries.push({
         connectorId: t.connectorId,
         stream: t.streamName,

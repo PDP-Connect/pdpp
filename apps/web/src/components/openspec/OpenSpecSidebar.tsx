@@ -1,5 +1,5 @@
-import Link from 'next/link';
-import { cn } from '@/lib/utils';
+import Link from "next/link";
+import { cn } from "@/lib/utils.ts";
 
 export type OpenSpecSidebarItem = {
   href: string;
@@ -18,18 +18,16 @@ export function OpenSpecSidebar({ sections }: { sections: OpenSpecSidebarSection
       <nav className="flex flex-col gap-5">
         {sections.map((section) => (
           <div key={section.heading} className="flex flex-col gap-2">
-            <div className="text-xs font-medium text-muted-foreground">{section.heading}</div>
+            <div className="font-medium text-muted-foreground text-xs">{section.heading}</div>
             <ul className="flex flex-col gap-1">
               {section.items.map((item) => (
                 <li key={`${section.heading}-${item.href}`}>
                   <Link
                     href={item.href}
-                    aria-current={item.active ? 'page' : undefined}
+                    aria-current={item.active ? "page" : undefined}
                     className={cn(
-                      'pdpp-label block py-1 transition-colors',
-                      item.active
-                        ? 'text-foreground'
-                        : 'text-muted-foreground hover:text-foreground',
+                      "pdpp-label block py-1 transition-colors",
+                      item.active ? "text-foreground" : "text-muted-foreground hover:text-foreground"
                     )}
                   >
                     {item.label}

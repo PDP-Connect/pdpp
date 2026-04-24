@@ -1,7 +1,7 @@
-'use client';
+"use client";
 
-import Link from 'next/link';
-import { useEffect, useMemo, useState } from 'react';
+import Link from "next/link";
+import { useEffect, useMemo, useState } from "react";
 
 type ConnectorOption = {
   value: string;
@@ -27,24 +27,18 @@ export function SearchFiltersForm({
 
   const streamOptions = useMemo(() => {
     if (!selectedConnector) {
-      return Array.from(
-        new Set(connectorOptions.flatMap((option) => option.streams)),
-      ).sort();
+      return Array.from(new Set(connectorOptions.flatMap((option) => option.streams))).sort();
     }
-    return (
-      connectorOptions.find((option) => option.value === selectedConnector)?.streams ?? []
-    ).slice().sort();
+    return (connectorOptions.find((option) => option.value === selectedConnector)?.streams ?? []).slice().sort();
   }, [connectorOptions, selectedConnector]);
 
   useEffect(() => {
     if (selectedStream && !streamOptions.includes(selectedStream)) {
-      setSelectedStream('');
+      setSelectedStream("");
     }
   }, [selectedStream, streamOptions]);
 
-  const hasActiveFilters = Boolean(
-    query.trim() || selectedConnector || selectedStream || sortOrder !== 'native:desc',
-  );
+  const hasActiveFilters = Boolean(query.trim() || selectedConnector || selectedStream || sortOrder !== "native:desc");
 
   return (
     <form
@@ -58,7 +52,7 @@ export function SearchFiltersForm({
           name="q"
           defaultValue={query}
           placeholder="trace id, connector, stream, or record text…"
-          className="border-border bg-background w-full rounded border px-3 py-2"
+          className="w-full rounded border border-border bg-background px-3 py-2"
           autoFocus
         />
       </label>
@@ -68,7 +62,7 @@ export function SearchFiltersForm({
           name="connector_id"
           value={selectedConnector}
           onChange={(event) => setSelectedConnector(event.target.value)}
-          className="border-border bg-background rounded border px-3 py-2"
+          className="rounded border border-border bg-background px-3 py-2"
         >
           <option value="">all connectors</option>
           {connectorOptions.map((option) => (
@@ -84,7 +78,7 @@ export function SearchFiltersForm({
           name="stream"
           value={selectedStream}
           onChange={(event) => setSelectedStream(event.target.value)}
-          className="border-border bg-background rounded border px-3 py-2"
+          className="rounded border border-border bg-background px-3 py-2"
         >
           <option value="">all streams</option>
           {streamOptions.map((streamName) => (
@@ -99,7 +93,7 @@ export function SearchFiltersForm({
         <select
           name="sort_order"
           defaultValue={sortOrder}
-          className="border-border bg-background rounded border px-3 py-2"
+          className="rounded border border-border bg-background px-3 py-2"
         >
           <option value="native:desc">newest native date first</option>
           <option value="native:asc">oldest native date first</option>
@@ -109,14 +103,14 @@ export function SearchFiltersForm({
       </label>
       <button
         type="submit"
-        className="border-border hover:bg-muted/50 self-start rounded border px-3 py-2 md:self-auto"
+        className="self-start rounded border border-border px-3 py-2 hover:bg-muted/50 md:self-auto"
       >
         apply
       </button>
       {hasActiveFilters ? (
         <Link
           href="/dashboard/search"
-          className="text-muted-foreground self-start px-1 py-2 text-xs underline-offset-2 hover:underline md:self-auto"
+          className="self-start px-1 py-2 text-muted-foreground text-xs underline-offset-2 hover:underline md:self-auto"
         >
           reset
         </Link>

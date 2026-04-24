@@ -1,14 +1,14 @@
-import type { Metadata } from 'next';
-import { notFound } from 'next/navigation';
+import type { Metadata } from "next";
+import { notFound } from "next/navigation";
 import {
+  buildOpenSpecSidebarSections,
   OpenSpecBreadcrumbs,
   OpenSpecMarkdownPage,
   OpenSpecShell,
   OpenSpecSourceLink,
-  buildOpenSpecSidebarSections,
-} from '@/components/openspec';
-import { getOpenSpecDesignNote, listOpenSpecDesignNotes } from '@/lib/openspec';
-import { PLANNING_LABEL, planningPath } from '@/lib/openspec/public';
+} from "@/components/openspec/index.ts";
+import { getOpenSpecDesignNote, listOpenSpecDesignNotes } from "@/lib/openspec/index.ts";
+import { PLANNING_LABEL, planningPath } from "@/lib/openspec/public.ts";
 
 type PageProps = {
   params: Promise<{ change: string; note: string }>;
@@ -22,7 +22,9 @@ export async function generateStaticParams() {
 export async function generateMetadata({ params }: PageProps): Promise<Metadata> {
   const { change, note } = await params;
   const designNote = await getOpenSpecDesignNote(change, note);
-  if (!designNote) return { title: `Project note not found — ${PLANNING_LABEL} — PDPP` };
+  if (!designNote) {
+    return { title: `Project note not found — ${PLANNING_LABEL} — PDPP` };
+  }
   return {
     title: `${designNote.title} — Project note — ${PLANNING_LABEL} — PDPP`,
     description: designNote.excerpt ?? undefined,
@@ -32,10 +34,12 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
 export default async function OpenSpecDesignNotePage({ params }: PageProps) {
   const { change, note } = await params;
   const designNote = await getOpenSpecDesignNote(change, note);
-  if (!designNote) notFound();
+  if (!designNote) {
+    notFound();
+  }
 
   const sections = buildOpenSpecSidebarSections({
-    kind: 'notes',
+    kind: "notes",
     changeName: change,
     noteSlug: note,
   });
@@ -46,20 +50,24 @@ export default async function OpenSpecDesignNotePage({ params }: PageProps) {
         <OpenSpecBreadcrumbs
           crumbs={[
             { label: PLANNING_LABEL, href: planningPath() },
-            { label: 'Project notes', href: planningPath('/notes') },
+            { label: "Project notes", href: planningPath("/notes") },
             { label: change, href: planningPath(`/changes/${change}`) },
             { label: designNote.title },
           ]}
         />
         <header className="flex flex-col gap-3">
-          <h1 className="text-[clamp(1.6rem,2.8vw,2.05rem)] font-semibold tracking-tight leading-tight">
+          <h1 className="font-semibold text-[clamp(1.6rem,2.8vw,2.05rem)] leading-tight tracking-tight">
             {designNote.title}
           </h1>
           <div className="pdpp-caption flex flex-wrap items-center gap-2 text-muted-foreground">
             <span className="font-mono">{change}</span>
-            <span aria-hidden="true" className="text-muted-foreground/50">·</span>
+            <span aria-hidden="true" className="text-muted-foreground/50">
+              ·
+            </span>
             <span>Project note</span>
-            <span aria-hidden="true" className="text-muted-foreground/50">·</span>
+            <span aria-hidden="true" className="text-muted-foreground/50">
+              ·
+            </span>
             <span>{designNote.noteKindLabel}</span>
           </div>
           <OpenSpecSourceLink

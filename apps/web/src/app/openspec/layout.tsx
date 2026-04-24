@@ -1,6 +1,6 @@
-import type { ReactNode } from 'react';
-import { SiteHeader } from '@/components/SiteHeader';
-import { PLANNING_LABEL } from '@/lib/openspec/public';
+import type { ReactNode } from "react";
+import { SiteHeader } from "@/components/SiteHeader.tsx";
+import { PLANNING_LABEL } from "@/lib/openspec/public.ts";
 
 export default function OpenSpecLayout({ children }: { children: ReactNode }) {
   return (
@@ -8,9 +8,9 @@ export default function OpenSpecLayout({ children }: { children: ReactNode }) {
       <header
         className="sticky top-0 z-40 flex h-12 items-center px-5 md:px-6"
         style={{
-          backgroundColor: 'var(--background)',
-          backdropFilter: 'blur(8px)',
-          borderBottom: '1px solid var(--border)',
+          backgroundColor: "var(--background)",
+          backdropFilter: "blur(8px)",
+          borderBottom: "1px solid var(--border)",
         }}
       >
         <SiteHeader currentLabel={PLANNING_LABEL} />

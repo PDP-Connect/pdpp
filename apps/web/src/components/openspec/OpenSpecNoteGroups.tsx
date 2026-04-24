@@ -1,75 +1,89 @@
-import Link from 'next/link';
+import Link from "next/link";
+import { Timestamp } from "@/components/ui/timestamp.tsx";
 import type {
   OpenSpecDesignNoteGroup,
   OpenSpecDesignNoteKind,
   OpenSpecDesignNoteSummary,
-} from '@/lib/openspec';
-import { planningPath } from '@/lib/openspec/public';
-import { OpenSpecArtifactCard } from './OpenSpecArtifactCard';
-import { Timestamp } from '@/components/ui/timestamp';
+} from "@/lib/openspec/index.ts";
+import { planningPath } from "@/lib/openspec/public.ts";
+import { OpenSpecArtifactCard } from "./OpenSpecArtifactCard.tsx";
 
 const NOTE_KIND_LABELS: Record<OpenSpecDesignNoteKind, string> = {
-  'open-question': 'Open questions',
-  plan: 'Plans',
-  strategy: 'Strategy & framing',
-  audit: 'Audits & reviews',
-  research: 'Research',
-  'connector-note': 'Connector notes',
-  'working-note': 'Working notes',
+  "open-question": "Open questions",
+  plan: "Plans",
+  strategy: "Strategy & framing",
+  audit: "Audits & reviews",
+  research: "Research",
+  "connector-note": "Connector notes",
+  "working-note": "Working notes",
 };
 
-const NOTE_KIND_SUMMARY_LABELS: Record<
-  OpenSpecDesignNoteKind,
-  { singular: string; plural: string }
-> = {
-  'open-question': { singular: 'open question', plural: 'open questions' },
-  plan: { singular: 'plan', plural: 'plans' },
-  strategy: { singular: 'strategy note', plural: 'strategy notes' },
-  audit: { singular: 'audit', plural: 'audits' },
-  research: { singular: 'research note', plural: 'research notes' },
-  'connector-note': { singular: 'connector note', plural: 'connector notes' },
-  'working-note': { singular: 'working note', plural: 'working notes' },
+const NOTE_KIND_SUMMARY_LABELS: Record<OpenSpecDesignNoteKind, { singular: string; plural: string }> = {
+  "open-question": { singular: "open question", plural: "open questions" },
+  plan: { singular: "plan", plural: "plans" },
+  strategy: { singular: "strategy note", plural: "strategy notes" },
+  audit: { singular: "audit", plural: "audits" },
+  research: { singular: "research note", plural: "research notes" },
+  "connector-note": { singular: "connector note", plural: "connector notes" },
+  "working-note": { singular: "working note", plural: "working notes" },
 };
 
 const NOTE_KIND_ORDER: OpenSpecDesignNoteKind[] = [
-  'open-question',
-  'plan',
-  'strategy',
-  'audit',
-  'research',
-  'connector-note',
-  'working-note',
+  "open-question",
+  "plan",
+  "strategy",
+  "audit",
+  "research",
+  "connector-note",
+  "working-note",
 ];
 
 function noteDates(note: OpenSpecDesignNoteSummary) {
   const created = note.createdAt;
   const updated = note.lastModified;
-  const differ =
-    created && updated && new Date(created).getTime() !== new Date(updated).getTime();
+  const differ = created && updated && new Date(created).getTime() !== new Date(updated).getTime();
 
   if (differ) {
     return (
       <>
-        <span className="inline-flex items-baseline gap-1">created <Timestamp value={created} precision="date" /></span>
-        <span className="inline-flex items-baseline gap-1">updated <Timestamp value={updated} precision="date" /></span>
+        <span className="inline-flex items-baseline gap-1">
+          created <Timestamp value={created} precision="date" />
+        </span>
+        <span className="inline-flex items-baseline gap-1">
+          updated <Timestamp value={updated} precision="date" />
+        </span>
       </>
     );
   }
 
-  if (created) return <span className="inline-flex items-baseline gap-1">created <Timestamp value={created} precision="date" /></span>;
-  if (updated) return <span className="inline-flex items-baseline gap-1">updated <Timestamp value={updated} precision="date" /></span>;
+  if (created) {
+    return (
+      <span className="inline-flex items-baseline gap-1">
+        created <Timestamp value={created} precision="date" />
+      </span>
+    );
+  }
+  if (updated) {
+    return (
+      <span className="inline-flex items-baseline gap-1">
+        updated <Timestamp value={updated} precision="date" />
+      </span>
+    );
+  }
   return null;
 }
 
 function describeGroup(group: OpenSpecDesignNoteGroup): string {
   const parts = NOTE_KIND_ORDER.flatMap((noteKind) => {
     const count = group.countsByKind[noteKind];
-    if (!count) return [];
+    if (!count) {
+      return [];
+    }
     const labels = NOTE_KIND_SUMMARY_LABELS[noteKind];
     return [`${count} ${count === 1 ? labels.singular : labels.plural}`];
   });
 
-  return parts.join(' · ');
+  return parts.join(" · ");
 }
 
 function groupNotesByKind(notes: OpenSpecDesignNoteSummary[]) {
@@ -131,19 +145,18 @@ export function OpenSpecNoteGroups({
 
         if (collapsible) {
           return (
-            <details
-              key={group.changeName}
-              className="border-t border-border/60 pt-4"
-              open={index < defaultOpenCount}
-            >
+            <details key={group.changeName} className="border-border/60 border-t pt-4" open={index < defaultOpenCount}>
               <summary className="flex cursor-pointer list-none items-start gap-4 [&::-webkit-details-marker]:hidden">
                 <div className="flex min-w-0 flex-col gap-1">
                   <div className="pdpp-title text-foreground">{group.changeTitle}</div>
                   <div className="pdpp-body text-muted-foreground">
                     {group.noteCount} notes
-                    {summary ? ` · ${summary}` : ''}
+                    {summary ? ` · ${summary}` : ""}
                     {group.lastModified ? (
-                      <> · updated <Timestamp value={group.lastModified} precision="date" /></>
+                      <>
+                        {" "}
+                        · updated <Timestamp value={group.lastModified} precision="date" />
+                      </>
                     ) : null}
                   </div>
                 </div>
@@ -156,15 +169,18 @@ export function OpenSpecNoteGroups({
         }
 
         return (
-          <section key={group.changeName} className="flex flex-col gap-5 border-t border-border/60 pt-5">
+          <section key={group.changeName} className="flex flex-col gap-5 border-border/60 border-t pt-5">
             <header className="flex items-start gap-4">
               <div className="flex min-w-0 flex-col gap-1.5">
                 <h2 className="pdpp-title text-foreground">{group.changeTitle}</h2>
                 <p className="pdpp-body text-muted-foreground">
                   {group.noteCount} notes
-                  {summary ? ` · ${summary}` : ''}
+                  {summary ? ` · ${summary}` : ""}
                   {group.lastModified ? (
-                    <> · updated <Timestamp value={group.lastModified} precision="date" /></>
+                    <>
+                      {" "}
+                      · updated <Timestamp value={group.lastModified} precision="date" />
+                    </>
                   ) : null}
                 </p>
               </div>

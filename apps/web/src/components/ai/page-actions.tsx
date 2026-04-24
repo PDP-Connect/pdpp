@@ -1,9 +1,9 @@
-'use client';
+"use client";
 
 import {
   MarkdownCopyButton as FumadocsMarkdownCopyButton,
   ViewOptionsPopover as FumadocsViewOptionsPopover,
-} from 'fumadocs-ui/layouts/docs/page';
+} from "fumadocs-ui/layouts/docs/page";
 
 type LLMCopyButtonProps = {
   markdownUrl: string;

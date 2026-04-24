@@ -1,16 +1,16 @@
-import type { Metadata } from 'next';
-import Link from 'next/link';
-import { notFound } from 'next/navigation';
-import { Fragment } from 'react';
+import type { Metadata } from "next";
+import Link from "next/link";
+import { notFound } from "next/navigation";
+import { Fragment } from "react";
 import {
+  buildOpenSpecSidebarSections,
   OpenSpecBreadcrumbs,
   OpenSpecMarkdownPage,
   OpenSpecShell,
   OpenSpecSourceLink,
-  buildOpenSpecSidebarSections,
-} from '@/components/openspec';
-import { getOpenSpecSpec, listOpenSpecSpecs } from '@/lib/openspec';
-import { PLANNING_LABEL, planningPath } from '@/lib/openspec/public';
+} from "@/components/openspec/index.ts";
+import { getOpenSpecSpec, listOpenSpecSpecs } from "@/lib/openspec/index.ts";
+import { PLANNING_LABEL, planningPath } from "@/lib/openspec/public.ts";
 
 type PageProps = { params: Promise<{ capability: string }> };
 
@@ -22,7 +22,9 @@ export async function generateStaticParams() {
 export async function generateMetadata({ params }: PageProps): Promise<Metadata> {
   const { capability } = await params;
   const spec = await getOpenSpecSpec(capability);
-  if (!spec) return { title: `Spec not found — ${PLANNING_LABEL} — PDPP` };
+  if (!spec) {
+    return { title: `Spec not found — ${PLANNING_LABEL} — PDPP` };
+  }
   return {
     title: `${spec.title} — ${PLANNING_LABEL} — PDPP`,
     description: spec.excerpt ?? undefined,
@@ -32,9 +34,11 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
 export default async function CapabilitySpecPage({ params }: PageProps) {
   const { capability } = await params;
   const spec = await getOpenSpecSpec(capability);
-  if (!spec) notFound();
+  if (!spec) {
+    notFound();
+  }
 
-  const sections = buildOpenSpecSidebarSections({ kind: 'specs', capability });
+  const sections = buildOpenSpecSidebarSections({ kind: "specs", capability });
 
   return (
     <OpenSpecShell sections={sections}>
@@ -42,12 +46,12 @@ export default async function CapabilitySpecPage({ params }: PageProps) {
         <OpenSpecBreadcrumbs
           crumbs={[
             { label: PLANNING_LABEL, href: planningPath() },
-            { label: 'Specs', href: planningPath('/specs') },
+            { label: "Specs", href: planningPath("/specs") },
             { label: spec.capability },
           ]}
         />
         <header className="flex flex-col gap-3">
-          <h1 className="text-[clamp(1.6rem,2.8vw,2.05rem)] font-semibold tracking-tight leading-tight">
+          <h1 className="font-semibold text-[clamp(1.6rem,2.8vw,2.05rem)] leading-tight tracking-tight">
             {spec.title}
           </h1>
           <OpenSpecSourceLink
@@ -60,7 +64,11 @@ export default async function CapabilitySpecPage({ params }: PageProps) {
               <span>Related changes:</span>
               {spec.relatedChanges.map((name, index) => (
                 <Fragment key={name}>
-                  {index > 0 && <span aria-hidden="true" className="opacity-40">,</span>}
+                  {index > 0 && (
+                    <span aria-hidden="true" className="opacity-40">
+                      ,
+                    </span>
+                  )}
                   <Link
                     href={planningPath(`/changes/${name}`)}
                     className="font-mono transition-colors hover:text-foreground"

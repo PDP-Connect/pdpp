@@ -1,16 +1,16 @@
-import { Fragment } from 'react';
-import { DashboardShell, OwnerTokenRequired, ServerUnreachable } from '../../../../components/shell';
-import { PageHeader, Section } from '../../../../components/primitives';
-import { streamHealth, type FieldHealth, type StreamHealth } from '../../../../lib/rs-client';
-import { ReferenceServerUnreachableError } from '../../../../lib/owner-token';
+import { Fragment } from "react";
+import { PageHeader, Section } from "../../../../components/primitives.tsx";
+import { DashboardShell, ServerUnreachable } from "../../../../components/shell.tsx";
+import { ReferenceServerUnreachableError } from "../../../../lib/owner-token.ts";
+import { type FieldHealth, type StreamHealth, streamHealth } from "../../../../lib/rs-client.ts";
 
-export const dynamic = 'force-dynamic';
+export const dynamic = "force-dynamic";
 
 const DEFAULT_SAMPLE = 2000;
-const MAX_SAMPLE = 20000;
+const MAX_SAMPLE = 20_000;
 
-const TH = 'pdpp-eyebrow border-border/70 border-b px-3 py-2 text-left text-muted-foreground';
-const TD = 'pdpp-caption border-border/70 border-b px-3 py-2 align-top';
+const TH = "pdpp-eyebrow border-border/70 border-b px-3 py-2 text-left text-muted-foreground";
+const TD = "pdpp-caption border-border/70 border-b px-3 py-2 align-top";
 
 export default async function StreamHealthPage({
   params,
@@ -24,10 +24,9 @@ export default async function StreamHealthPage({
   const connectorId = decodeURIComponent(connector);
   const streamName = decodeURIComponent(stream);
 
-  const parsedSample = Number.parseInt(sample ?? '', 10);
-  const sampleSize = Number.isFinite(parsedSample) && parsedSample > 0
-    ? Math.min(parsedSample, MAX_SAMPLE)
-    : DEFAULT_SAMPLE;
+  const parsedSample = Number.parseInt(sample ?? "", 10);
+  const sampleSize =
+    Number.isFinite(parsedSample) && parsedSample > 0 ? Math.min(parsedSample, MAX_SAMPLE) : DEFAULT_SAMPLE;
 
   let health: StreamHealth;
   try {
@@ -52,20 +51,20 @@ export default async function StreamHealthPage({
       <PageHeader
         title={
           <>
-            <code className="font-mono">{streamName}</code>{' '}
-            <span className="text-muted-foreground font-normal">· health</span>
+            <code className="font-mono">{streamName}</code>{" "}
+            <span className="font-normal text-muted-foreground">· health</span>
           </>
         }
         breadcrumbs={[
-          { label: 'Records', href: '/dashboard/records' },
+          { label: "Records", href: "/dashboard/records" },
           { label: connectorId, href: `/dashboard/records/${encodeURIComponent(connectorId)}` },
           { label: streamName, href: streamPath },
-          { label: 'health' },
+          { label: "health" },
         ]}
         count={
           <>
             sample {health.sampled.toLocaleString()} / {health.totalRecords.toLocaleString()}
-            {health.limited ? ' · sample-based' : ''}
+            {health.limited ? " · sample-based" : ""}
           </>
         }
       />
@@ -76,25 +75,20 @@ export default async function StreamHealthPage({
           <Stat n={summary.present} label="present" />
           <Stat n={summary.entirelyNull} label="entirely null" warn={summary.entirelyNull > 0} />
           <Stat n={summary.constValued} label="const-valued" />
-          {summary.declaredButAbsent > 0 && (
-            <Stat n={summary.declaredButAbsent} label="declared-but-absent" warn />
-          )}
-          {summary.undeclaredPresent > 0 && (
-            <Stat n={summary.undeclaredPresent} label="undeclared-but-present" warn />
-          )}
+          {summary.declaredButAbsent > 0 && <Stat n={summary.declaredButAbsent} label="declared-but-absent" warn />}
+          {summary.undeclaredPresent > 0 && <Stat n={summary.undeclaredPresent} label="undeclared-but-present" warn />}
         </p>
         {health.limited && (
-          <p className="pdpp-caption text-muted-foreground mt-2">
-            Sample limited to {health.sampleLimit.toLocaleString()} records; results are not
-            authoritative for the full {health.totalRecords.toLocaleString()}-record stream. Raise
-            via <code className="bg-muted rounded px-1 font-mono">?sample=N</code> (max{' '}
-            {MAX_SAMPLE.toLocaleString()}).
+          <p className="pdpp-caption mt-2 text-muted-foreground">
+            Sample limited to {health.sampleLimit.toLocaleString()} records; results are not authoritative for the full{" "}
+            {health.totalRecords.toLocaleString()}-record stream. Raise via{" "}
+            <code className="rounded bg-muted px-1 font-mono">?sample=N</code> (max {MAX_SAMPLE.toLocaleString()}).
           </p>
         )}
       </Section>
 
       <Section title="Freshness">
-        <div className="border-border/70 overflow-x-auto rounded-md border">
+        <div className="overflow-x-auto rounded-md border border-border/70">
           <table className="min-w-full">
             <thead className="bg-muted/40">
               <tr>
@@ -122,7 +116,7 @@ export default async function StreamHealthPage({
           </table>
         </div>
         {!cursorField && (
-          <p className="pdpp-caption text-muted-foreground mt-2 italic">
+          <p className="pdpp-caption mt-2 text-muted-foreground italic">
             Manifest declares no cursor_field for this stream.
           </p>
         )}
@@ -134,7 +128,7 @@ export default async function StreamHealthPage({
         ) : (
           <>
             {/* Mobile */}
-            <ul className="divide-border/70 divide-y border-y border-border/70 sm:hidden">
+            <ul className="divide-y divide-border/70 border-border/70 border-y sm:hidden">
               {fields.map((f) => (
                 <li key={f.name} className={`px-3 py-3 ${rowBg(f)}`}>
                   <FieldCard field={f} sampled={health.sampled} />
@@ -143,7 +137,7 @@ export default async function StreamHealthPage({
             </ul>
 
             {/* Desktop */}
-            <div className="border-border/70 hidden overflow-x-auto rounded-md border sm:block">
+            <div className="hidden overflow-x-auto rounded-md border border-border/70 sm:block">
               <table className="min-w-full">
                 <thead className="bg-muted/40">
                   <tr>
@@ -159,24 +153,24 @@ export default async function StreamHealthPage({
                   {fields.map((f) => (
                     <tr key={f.name} className={rowBg(f)}>
                       <td className={`${TD} whitespace-nowrap font-mono`}>
-                        <span className="font-medium break-all">{f.name}</span>
+                        <span className="break-all font-medium">{f.name}</span>
                         {flagLabels(f).map((lbl) => (
                           <Fragment key={lbl}>
-                            {' '}
+                            {" "}
                             <span className="text-[color:var(--warning)]">{lbl}</span>
                           </Fragment>
                         ))}
                       </td>
-                      <td className={TD}>{f.declared ? 'yes' : <span className="text-muted-foreground">no</span>}</td>
-                      <td className={TD}>{f.present ? 'yes' : <span className="text-muted-foreground">no</span>}</td>
-                      <td className={`${TD} tabular-nums whitespace-nowrap`}>{nullPct(f, health.sampled)}</td>
-                      <td className={`${TD} tabular-nums whitespace-nowrap`}>
+                      <td className={TD}>{f.declared ? "yes" : <span className="text-muted-foreground">no</span>}</td>
+                      <td className={TD}>{f.present ? "yes" : <span className="text-muted-foreground">no</span>}</td>
+                      <td className={`${TD} whitespace-nowrap tabular-nums`}>{nullPct(f, health.sampled)}</td>
+                      <td className={`${TD} whitespace-nowrap tabular-nums`}>
                         {f.distinctValues}
-                        {f.distinctCapped ? '+' : ''}
+                        {f.distinctCapped ? "+" : ""}
                       </td>
                       <td className={`${TD} text-muted-foreground`}>
-                        <span className="block max-w-[24rem] truncate" title={f.sampleValue ?? ''}>
-                          {f.sampleValue ?? ''}
+                        <span className="block max-w-[24rem] truncate" title={f.sampleValue ?? ""}>
+                          {f.sampleValue ?? ""}
                         </span>
                       </td>
                     </tr>
@@ -194,11 +188,9 @@ export default async function StreamHealthPage({
 function Stat({ n, label, warn = false }: { n: number; label: string; warn?: boolean }) {
   return (
     <>
-      <span className={`tabular-nums font-medium ${warn && n > 0 ? 'text-[color:var(--warning)]' : ''}`}>
-        {n}
-      </span>{' '}
+      <span className={`font-medium tabular-nums ${warn && n > 0 ? "text-[color:var(--warning)]" : ""}`}>{n}</span>{" "}
       <span className="text-muted-foreground">{label}</span>
-      {' · '}
+      {" · "}
     </>
   );
 }
@@ -208,19 +200,31 @@ function Dash() {
 }
 
 function nullPct(f: FieldHealth, sampled: number): string {
-  if (sampled === 0) return '—';
+  if (sampled === 0) {
+    return "—";
+  }
   const total = f.nullCount + f.nonNullCount;
-  if (total === 0) return '—';
+  if (total === 0) {
+    return "—";
+  }
   const pct = (f.nullCount / total) * 100;
   return `${pct.toFixed(pct === 100 || pct === 0 ? 0 : 1)}%`;
 }
 
 function flagLabels(f: FieldHealth): string[] {
   const flags: string[] = [];
-  if (f.declared && !f.present) flags.push('[absent]');
-  if (!f.declared && f.present) flags.push('[undeclared]');
-  if (f.present && f.nonNullCount === 0) flags.push('[all-null]');
-  if (f.nonNullCount > 0 && f.distinctValues === 1) flags.push('[const]');
+  if (f.declared && !f.present) {
+    flags.push("[absent]");
+  }
+  if (!f.declared && f.present) {
+    flags.push("[undeclared]");
+  }
+  if (f.present && f.nonNullCount === 0) {
+    flags.push("[all-null]");
+  }
+  if (f.nonNullCount > 0 && f.distinctValues === 1) {
+    flags.push("[const]");
+  }
   return flags;
 }
 
@@ -230,7 +234,7 @@ function rowBg(f: FieldHealth): string {
     (!f.declared && f.present) ||
     (f.present && f.nonNullCount === 0) ||
     (f.nonNullCount > 0 && f.distinctValues === 1);
-  return flagged ? 'bg-[color:var(--warning-wash)]' : '';
+  return flagged ? "bg-[color:var(--warning-wash)]" : "";
 }
 
 function FieldCard({ field: f, sampled }: { field: FieldHealth; sampled: number }) {
@@ -241,26 +245,26 @@ function FieldCard({ field: f, sampled }: { field: FieldHealth; sampled: number 
         <span className="font-medium">{f.name}</span>
         {flagLabels(f).map((lbl) => (
           <Fragment key={lbl}>
-            {' '}
+            {" "}
             <span className="text-[color:var(--warning)]">{lbl}</span>
           </Fragment>
         ))}
       </dd>
       <dt className="text-muted-foreground">declared</dt>
-      <dd>{f.declared ? 'yes' : 'no'}</dd>
+      <dd>{f.declared ? "yes" : "no"}</dd>
       <dt className="text-muted-foreground">present</dt>
-      <dd>{f.present ? 'yes' : 'no'}</dd>
+      <dd>{f.present ? "yes" : "no"}</dd>
       <dt className="text-muted-foreground">null %</dt>
       <dd className="tabular-nums">{nullPct(f, sampled)}</dd>
       <dt className="text-muted-foreground">distinct</dt>
       <dd className="tabular-nums">
         {f.distinctValues}
-        {f.distinctCapped ? '+' : ''}
+        {f.distinctCapped ? "+" : ""}
       </dd>
       {f.sampleValue && (
         <>
           <dt className="text-muted-foreground">example</dt>
-          <dd className="text-muted-foreground break-words">{f.sampleValue}</dd>
+          <dd className="break-words text-muted-foreground">{f.sampleValue}</dd>
         </>
       )}
     </dl>

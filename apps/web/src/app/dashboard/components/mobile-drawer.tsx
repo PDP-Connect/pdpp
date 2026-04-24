@@ -1,14 +1,9 @@
-'use client';
+"use client";
 
-import { useEffect, useState } from 'react';
-import type { ReactNode } from 'react';
-import { Button } from '@/components/ui/button';
-import {
-  Dialog,
-  DialogBackdrop,
-  DialogPortal,
-  DialogPopup,
-} from '@/components/ui/dialog';
+import type { ReactNode } from "react";
+import { useEffect, useState } from "react";
+import { Button } from "@/components/ui/button.tsx";
+import { Dialog, DialogBackdrop, DialogPopup, DialogPortal } from "@/components/ui/dialog.tsx";
 
 // Shared open/close handle so the trigger button (in the topbar) and the drawer
 // itself can live in different subtrees of the server-rendered shell without
@@ -53,13 +48,17 @@ export function MobileDrawer({ children }: { children: ReactNode }) {
 
   // Auto-close once we cross back above the `md` breakpoint.
   useEffect(() => {
-    const mql = window.matchMedia('(min-width: 768px)');
-    if (mql.matches) setOpen(false);
-    function onChange(event: MediaQueryListEvent) {
-      if (event.matches) setOpen(false);
+    const mql = window.matchMedia("(min-width: 768px)");
+    if (mql.matches) {
+      setOpen(false);
     }
-    mql.addEventListener('change', onChange);
-    return () => mql.removeEventListener('change', onChange);
+    function onChange(event: MediaQueryListEvent) {
+      if (event.matches) {
+        setOpen(false);
+      }
+    }
+    mql.addEventListener("change", onChange);
+    return () => mql.removeEventListener("change", onChange);
   }, []);
 
   return (
@@ -67,10 +66,10 @@ export function MobileDrawer({ children }: { children: ReactNode }) {
       <DialogPortal>
         <DialogBackdrop />
         <DialogPopup
-          className="border-border/80 bg-background fixed inset-y-0 left-0 top-0 m-0 flex h-full w-72 max-w-[85%] -translate-x-0 -translate-y-0 flex-col gap-0 rounded-none rounded-r-lg border-r border-l-0 p-0 shadow-2xl data-[starting-style]:-translate-x-full data-[ending-style]:-translate-x-full data-[starting-style]:scale-100 data-[ending-style]:scale-100"
+          className="fixed inset-y-0 top-0 left-0 m-0 flex h-full w-72 max-w-[85%] -translate-x-0 -translate-y-0 flex-col gap-0 rounded-none rounded-r-lg border-border/80 border-r border-l-0 bg-background p-0 shadow-2xl data-[ending-style]:-translate-x-full data-[starting-style]:-translate-x-full data-[ending-style]:scale-100 data-[starting-style]:scale-100"
           aria-label="Navigation"
         >
-          <div className="flex items-center justify-between border-b border-border/70 px-5 py-3">
+          <div className="flex items-center justify-between border-border/70 border-b px-5 py-3">
             <span className="pdpp-eyebrow">Navigation</span>
             <Button
               type="button"
@@ -86,7 +85,9 @@ export function MobileDrawer({ children }: { children: ReactNode }) {
             className="flex-1 overflow-y-auto overscroll-contain px-5 py-5"
             onClick={(event) => {
               const target = event.target as HTMLElement | null;
-              if (target?.closest('a')) setOpen(false);
+              if (target?.closest("a")) {
+                setOpen(false);
+              }
             }}
           >
             {children}

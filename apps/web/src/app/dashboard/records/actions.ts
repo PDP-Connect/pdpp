@@ -1,12 +1,12 @@
-'use server';
+"use server";
 
-import { revalidatePath } from 'next/cache';
-import { runConnectorNow } from '../lib/operator-runs';
+import { revalidatePath } from "next/cache";
+import { runConnectorNow } from "../lib/operator-runs.ts";
 
 export type RunNowResult =
   | { ok: true; run_id: string; trace_id: string }
-  | { ok: false; reason: 'already_running'; run_id?: string; message: string }
-  | { ok: false; reason: 'error'; message: string };
+  | { ok: false; reason: "already_running"; run_id?: string; message: string }
+  | { ok: false; reason: "error"; message: string };
 
 /** Server action: start a connector run. Designed to never throw — the UI
  *  uses the discriminated-union return to render a toast/badge. */
@@ -16,12 +16,12 @@ export async function runConnectorNowAction(connectorId: string): Promise<RunNow
       run_id?: string;
       trace_id?: string;
     };
-    revalidatePath('/dashboard/records');
+    revalidatePath("/dashboard/records");
     revalidatePath(`/dashboard/records/${encodeURIComponent(connectorId)}`);
     return {
       ok: true,
-      run_id: body.run_id ?? '',
-      trace_id: body.trace_id ?? body.run_id ?? '',
+      run_id: body.run_id ?? "",
+      trace_id: body.trace_id ?? body.run_id ?? "",
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -31,11 +31,11 @@ export async function runConnectorNowAction(connectorId: string): Promise<RunNow
       const match = message.match(/run[_:]?([A-Za-z0-9]+)/);
       return {
         ok: false,
-        reason: 'already_running',
+        reason: "already_running",
         run_id: match?.[1],
-        message: 'Sync already in progress.',
+        message: "Sync already in progress.",
       };
     }
-    return { ok: false, reason: 'error', message };
+    return { ok: false, reason: "error", message };
   }
 }
