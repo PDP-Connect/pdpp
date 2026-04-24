@@ -63,10 +63,9 @@ export interface QueryResult {
 // ─── Mock Server ────────────────────────────────────────────────────────────
 
 export class MockPDPPServer {
-  private streams: Map<string, Stream> = new Map();
-  private grants: Map<string, Grant> = new Map();
-  private syncCursors: Map<string, number> = new Map(); // grant_id -> record index
-  private version = 0;
+  private readonly streams: Map<string, Stream> = new Map();
+  private readonly grants: Map<string, Grant> = new Map();
+  private readonly syncCursors: Map<string, number> = new Map(); // grant_id -> record index
 
   // ── Data seeding ──
 
@@ -80,7 +79,6 @@ export class MockPDPPServer {
       throw new Error(`Unknown stream: ${streamName}`);
     }
     stream.records.push(record);
-    this.version++;
   }
 
   // ── Grant management ──

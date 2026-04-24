@@ -201,12 +201,12 @@ export async function requireDashboardOwnerSession(explicitReturnTo?: string) {
 }
 
 export class ReferenceServerUnreachableError extends Error {
-  constructor(
-    message: string,
-    public readonly cause: unknown
-  ) {
+  readonly cause: unknown;
+
+  constructor(message: string, cause: unknown) {
     super(message);
     this.name = "ReferenceServerUnreachableError";
+    this.cause = cause;
   }
 }
 
