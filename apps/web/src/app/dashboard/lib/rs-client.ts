@@ -357,6 +357,50 @@ const PRIORITY_KEYS = [
   "emitted_at",
 ];
 
+interface ColumnStats {
+  nonNullCount: number;
+  allSameValue: boolean;
+  allLong: boolean;
+}
+
+function computeColumnStats(key: string, records: StreamRecord[]): ColumnStats {
+  let nonNullCount = 0;
+  let firstValue: string | null = null;
+  let allSameValue = true;
+  let allLong = true;
+  for (const r of records) {
+    const v = r.data?.[key];
+    if (v === null || v === undefined) {
+      continue;
+    }
+    nonNullCount += 1;
+    const s = stringifyCell(v);
+    if (firstValue === null) {
+      firstValue = s;
+    } else if (s !== firstValue) {
+      allSameValue = false;
+    }
+    if (s.length <= 120) {
+      allLong = false;
+    }
+  }
+  return { nonNullCount, allSameValue, allLong };
+}
+
+function shouldKeepColumn(key: string, records: StreamRecord[]): boolean {
+  const { nonNullCount, allSameValue, allLong } = computeColumnStats(key, records);
+  if (nonNullCount === 0) {
+    return false; // all-null in this page
+  }
+  if (nonNullCount >= 2 && allSameValue) {
+    return false; // constant column
+  }
+  if (nonNullCount >= 2 && allLong) {
+    return false; // blob column
+  }
+  return true;
+}
+
 /**
  * Progressive disclosure default column set. SLVP convention:
  *   1. If the stream's manifest declares `preview_fields: string[]`, use it
@@ -381,38 +425,7 @@ export function computeDefaultColumns(
     return declared;
   }
 
-  const keep = all.filter((key) => {
-    let nonNullCount = 0;
-    let firstValue: string | null = null;
-    let allSameValue = true;
-    let allLong = true;
-    for (const r of records) {
-      const v = r.data?.[key];
-      if (v === null || v === undefined) {
-        continue;
-      }
-      nonNullCount += 1;
-      const s = stringifyCell(v);
-      if (firstValue === null) {
-        firstValue = s;
-      } else if (s !== firstValue) {
-        allSameValue = false;
-      }
-      if (s.length <= 120) {
-        allLong = false;
-      }
-    }
-    if (nonNullCount === 0) {
-      return false; // all-null in this page
-    }
-    if (nonNullCount >= 2 && allSameValue) {
-      return false; // constant column
-    }
-    if (nonNullCount >= 2 && allLong) {
-      return false; // blob column
-    }
-    return true;
-  });
+  const keep = all.filter((key) => shouldKeepColumn(key, records));
 
   keep.sort((a, b) => {
     const ai = PRIORITY_KEYS.indexOf(a);
@@ -584,40 +597,39 @@ function distinctKey(v: unknown): string {
   }
 }
 
-export async function streamHealth(
-  connectorId: string,
-  streamName: string,
-  opts: { sampleSize?: number; pageSize?: number } = {}
-): Promise<StreamHealth> {
-  const sampleLimit = Math.max(1, Math.min(opts.sampleSize ?? 2000, 20_000));
-  const pageSize = Math.max(1, Math.min(opts.pageSize ?? 500, 1000));
+interface StreamDef {
+  cursor_field?: string;
+  schema?: { properties?: Record<string, unknown> };
+}
 
-  // Manifest lookup (schema.properties + cursor_field)
+async function resolveStreamDef(
+  connectorId: string,
+  streamName: string
+): Promise<{ cursorField: string | null; declaredProps: string[] }> {
   const manifests = await listConnectorManifests();
   const manifest = manifests.find((m) => m.connector_id === connectorId);
-  const streamDef = (manifest?.streams ?? []).find((s) => s.name === streamName) as
-    | {
-        schema?: { properties?: Record<string, unknown> };
-        cursor_field?: string;
-      }
-    | undefined;
+  const streamDef = (manifest?.streams ?? []).find((s) => s.name === streamName) as StreamDef | undefined;
   const declaredProps = streamDef?.schema?.properties ? Object.keys(streamDef.schema.properties) : [];
   const cursorField = streamDef?.cursor_field ?? null;
+  return { cursorField, declaredProps };
+}
 
-  // Stream metadata (record_count)
-  let totalRecords = 0;
+async function resolveTotalRecords(connectorId: string, streamName: string): Promise<number> {
   try {
-    const meta = (await getStreamMetadata(connectorId, streamName)) as {
-      record_count?: number;
-    };
-    if (typeof meta.record_count === "number") {
-      totalRecords = meta.record_count;
-    }
+    const meta = (await getStreamMetadata(connectorId, streamName)) as { record_count?: number };
+    return typeof meta.record_count === "number" ? meta.record_count : 0;
   } catch {
     // soft: health still works, just unknown total
+    return 0;
   }
+}
 
-  // Paginate the standard records endpoint, capped at sampleLimit.
+async function paginateSampleRecords(
+  connectorId: string,
+  streamName: string,
+  sampleLimit: number,
+  pageSize: number
+): Promise<StreamRecord[]> {
   const records: StreamRecord[] = [];
   let cursor: string | undefined;
   while (records.length < sampleLimit) {
@@ -635,8 +647,10 @@ export async function streamHealth(
       break;
     }
   }
+  return records;
+}
 
-  // Aggregate
+function collectFieldNames(declaredProps: string[], records: StreamRecord[]): Set<string> {
   const fieldNames = new Set<string>(declaredProps);
   for (const r of records) {
     if (r.data && typeof r.data === "object") {
@@ -645,17 +659,20 @@ export async function streamHealth(
       }
     }
   }
+  return fieldNames;
+}
 
-  interface Agg {
-    distinct: Set<string>;
-    distinctCapped: boolean;
-    nonNullCount: number;
-    nullCount: number;
-    present: boolean;
-    sampleValue: string | null;
-  }
+interface FieldAgg {
+  distinct: Set<string>;
+  distinctCapped: boolean;
+  nonNullCount: number;
+  nullCount: number;
+  present: boolean;
+  sampleValue: string | null;
+}
 
-  const agg = new Map<string, Agg>();
+function initAggMap(fieldNames: Set<string>): Map<string, FieldAgg> {
+  const agg = new Map<string, FieldAgg>();
   for (const f of fieldNames) {
     agg.set(f, {
       present: false,
@@ -666,66 +683,88 @@ export async function streamHealth(
       sampleValue: null,
     });
   }
+  return agg;
+}
 
-  let minEmitted: string | null = null;
-  let maxEmitted: string | null = null;
-  let minCursor: string | null = null;
-  let maxCursor: string | null = null;
+function updateFieldAgg(a: FieldAgg, hasKey: boolean, v: unknown): void {
+  if (hasKey) {
+    a.present = true;
+  }
+  if (isEmpty(v)) {
+    a.nullCount += 1;
+    return;
+  }
+  a.nonNullCount += 1;
+  if (!a.sampleValue) {
+    a.sampleValue = sampleRepr(v);
+  }
+  if (!a.distinctCapped) {
+    a.distinct.add(distinctKey(v));
+    if (a.distinct.size > DISTINCT_CAP) {
+      a.distinctCapped = true;
+    }
+  }
+}
+
+interface RangeTracker {
+  max: string | null;
+  min: string | null;
+}
+
+function extendRange(range: RangeTracker, value: string): void {
+  if (range.min === null || value < range.min) {
+    range.min = value;
+  }
+  if (range.max === null || value > range.max) {
+    range.max = value;
+  }
+}
+
+function extractCursorValue(data: Record<string, unknown>, cursorField: string): string | null {
+  const cv = data[cursorField];
+  if (typeof cv === "string" && cv) {
+    return cv;
+  }
+  if (typeof cv === "number") {
+    return String(cv);
+  }
+  return null;
+}
+
+interface ScanResult {
+  agg: Map<string, FieldAgg>;
+  cursorRange: RangeTracker;
+  emittedRange: RangeTracker;
+}
+
+function scanRecords(records: StreamRecord[], fieldNames: Set<string>, cursorField: string | null): ScanResult {
+  const agg = initAggMap(fieldNames);
+  const emittedRange: RangeTracker = { min: null, max: null };
+  const cursorRange: RangeTracker = { min: null, max: null };
 
   for (const r of records) {
     if (r.emitted_at) {
-      if (minEmitted === null || r.emitted_at < minEmitted) {
-        minEmitted = r.emitted_at;
-      }
-      if (maxEmitted === null || r.emitted_at > maxEmitted) {
-        maxEmitted = r.emitted_at;
-      }
+      extendRange(emittedRange, r.emitted_at);
     }
     const data = (r.data ?? {}) as Record<string, unknown>;
     if (cursorField) {
-      const cv = data[cursorField];
-      if (typeof cv === "string" && cv) {
-        if (minCursor === null || cv < minCursor) {
-          minCursor = cv;
-        }
-        if (maxCursor === null || cv > maxCursor) {
-          maxCursor = cv;
-        }
-      } else if (typeof cv === "number") {
-        const s = String(cv);
-        if (minCursor === null || s < minCursor) {
-          minCursor = s;
-        }
-        if (maxCursor === null || s > maxCursor) {
-          maxCursor = s;
-        }
+      const cv = extractCursorValue(data, cursorField);
+      if (cv !== null) {
+        extendRange(cursorRange, cv);
       }
     }
     for (const [f, a] of agg) {
       const hasKey = Object.hasOwn(data, f);
-      if (hasKey) {
-        a.present = true;
-      }
-      const v = hasKey ? data[f] : undefined;
-      if (isEmpty(v)) {
-        a.nullCount += 1;
-      } else {
-        a.nonNullCount += 1;
-        if (!a.sampleValue) {
-          a.sampleValue = sampleRepr(v);
-        }
-        if (!a.distinctCapped) {
-          a.distinct.add(distinctKey(v));
-          if (a.distinct.size > DISTINCT_CAP) {
-            a.distinctCapped = true;
-          }
-        }
-      }
+      updateFieldAgg(a, hasKey, hasKey ? data[f] : undefined);
     }
   }
 
+  return { agg, emittedRange, cursorRange };
+}
+
+function projectFields(agg: Map<string, FieldAgg>, declaredProps: string[]): FieldHealth[] {
   const declaredSet = new Set(declaredProps);
-  const fields: FieldHealth[] = Array.from(agg, ([name, a]) => ({
+  return Array.from(agg, ([name, a]) => ({
     name,
     declared: declaredSet.has(name),
     present: a.present,
@@ -734,16 +773,17 @@ export async function streamHealth(
     distinctValues: a.distinct.size,
     distinctCapped: a.distinctCapped,
     sampleValue: a.sampleValue,
-  }))
-    .sort((x, y) => {
-      // declared-first, then by name, for stable display
-      if (x.declared !== y.declared) {
-        return x.declared ? -1 : 1;
-      }
-      return x.name.localeCompare(y.name);
-    });
+  })).sort((x, y) => {
+    // declared-first, then by name, for stable display
+    if (x.declared !== y.declared) {
+      return x.declared ? -1 : 1;
+    }
+    return x.name.localeCompare(y.name);
+  });
+}
 
-  const summary = {
+function computeFieldSummary(fields: FieldHealth[]) {
+  return {
     declared: fields.filter((f) => f.declared).length,
     present: fields.filter((f) => f.present).length,
     entirelyNull: fields.filter((f) => f.present && f.nonNullCount === 0).length,
@@ -751,6 +791,25 @@ export async function streamHealth(
     declaredButAbsent: fields.filter((f) => f.declared && !f.present).length,
     undeclaredPresent: fields.filter((f) => !f.declared && f.present).length,
   };
+}
+
+export async function streamHealth(
+  connectorId: string,
+  streamName: string,
+  opts: { sampleSize?: number; pageSize?: number } = {}
+): Promise<StreamHealth> {
+  const sampleLimit = Math.max(1, Math.min(opts.sampleSize ?? 2000, 20_000));
+  const pageSize = Math.max(1, Math.min(opts.pageSize ?? 500, 1000));
+
+  const { cursorField, declaredProps } = await resolveStreamDef(connectorId, streamName);
+  const totalRecords = await resolveTotalRecords(connectorId, streamName);
+
+  const records = await paginateSampleRecords(connectorId, streamName, sampleLimit, pageSize);
+  const fieldNames = collectFieldNames(declaredProps, records);
+  const { agg, emittedRange, cursorRange } = scanRecords(records, fieldNames, cursorField);
+
+  const fields = projectFields(agg, declaredProps);
+  const summary = computeFieldSummary(fields);
 
   return {
     connectorId,
@@ -759,9 +818,9 @@ export async function streamHealth(
     sampled: records.length,
     sampleLimit,
     limited: totalRecords > records.length,
-    emittedAt: { min: minEmitted, max: maxEmitted },
+    emittedAt: { min: emittedRange.min, max: emittedRange.max },
     cursorField,
-    cursorRange: cursorField ? { min: minCursor, max: maxCursor } : null,
+    cursorRange: cursorField ? { min: cursorRange.min, max: cursorRange.max } : null,
     fields,
     summary,
   };
