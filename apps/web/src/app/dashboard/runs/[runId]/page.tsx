@@ -83,6 +83,7 @@ export default async function RunDetailPage({ params }: { params: Promise<{ runI
         interactions={interactions}
         progress={progress}
       />
+      <ViolationDiagnosis failure={failure} />
       <Section title="Timeline">
         <TimelineView events={events} />
       </Section>
@@ -282,6 +283,120 @@ function StatsGrid({
       <Stat rows={interactions} title="Interactions" />
       <Stat emphasis={Boolean(failure)} rows={failureRows} title="Failure" />
     </div>
+  );
+}
+
+/**
+ * Runtime-authored structured diagnosis of a protocol violation.
+ * Additive: when run.failed carries a `data.violation`, render a structured
+ * panel. When absent, render nothing — the existing opaque Failure stat
+ * block already shows the top-level reason unchanged.
+ *
+ * Vertical slice: today only `progress_for_undeclared_stream` populates
+ * the full field set. Other subtypes (see tmp/opaque-violation-diagnosis-memo.md)
+ * will render with the common header + last-valid-event block only.
+ */
+interface ViolationShape {
+  expected?: unknown;
+  last_valid_event_id?: unknown;
+  last_valid_event_type?: unknown;
+  message_type?: unknown;
+  received?: unknown;
+  stream?: unknown;
+  subtype: string;
+  truncated?: unknown;
+}
+
+function extractViolation(failure: SpineEvent | undefined): ViolationShape | null {
+  const raw = (failure?.data as { violation?: unknown } | undefined)?.violation;
+  if (!raw || typeof raw !== "object") {
+    return null;
+  }
+  const subtype = (raw as { subtype?: unknown }).subtype;
+  if (typeof subtype !== "string" || subtype.length === 0) {
+    return null;
+  }
+  return raw as ViolationShape;
+}
+
+function violationStringField(v: unknown): string | null {
+  return typeof v === "string" && v.length > 0 ? v : null;
+}
+
+function violationStringListField(v: unknown): string[] | null {
+  if (!Array.isArray(v)) return null;
+  const items = v.filter((x): x is string => typeof x === "string" && x.length > 0);
+  return items.length > 0 ? items : null;
+}
+
+function ViolationDiagnosis({ failure }: { failure: SpineEvent | undefined }) {
+  const violation = extractViolation(failure);
+  if (!violation) {
+    return null;
+  }
+  const messageType = violationStringField(violation.message_type);
+  const stream = violationStringField(violation.stream);
+  const received = violationStringField(violation.received);
+  const expected = violationStringListField(violation.expected);
+  const lastValidEventId = violationStringField(violation.last_valid_event_id);
+  const lastValidEventType = violationStringField(violation.last_valid_event_type);
+  const truncated = violation.truncated === true;
+
+  return (
+    <section className="mb-8 rounded-md border border-destructive/30 border-l-4 border-l-destructive/60 bg-destructive/5 px-4 py-3">
+      <header className="mb-2 flex items-baseline justify-between gap-4">
+        <h3 className="pdpp-eyebrow">Failure diagnosis</h3>
+        <span className="pdpp-caption text-muted-foreground">runtime-authored</span>
+      </header>
+      <dl className="pdpp-caption grid grid-cols-[8rem_1fr] gap-x-3 gap-y-1">
+        <dt className="text-muted-foreground">subtype</dt>
+        <dd className="break-all font-mono">{violation.subtype}</dd>
+        {messageType ? (
+          <>
+            <dt className="text-muted-foreground">message</dt>
+            <dd className="break-all font-mono">{messageType}</dd>
+          </>
+        ) : null}
+        {stream ? (
+          <>
+            <dt className="text-muted-foreground">stream</dt>
+            <dd className="break-all">
+              <span className="font-mono">{stream}</span>
+              {received && received !== stream ? null : (
+                <span className="ml-2 text-muted-foreground">(not in scope)</span>
+              )}
+            </dd>
+          </>
+        ) : null}
+        {expected ? (
+          <>
+            <dt className="text-muted-foreground">expected</dt>
+            <dd className="break-all font-mono">
+              {expected.join(" · ")}
+              {truncated ? <span className="ml-2 text-muted-foreground">(truncated)</span> : null}
+            </dd>
+          </>
+        ) : null}
+        {lastValidEventId ? (
+          <>
+            <dt className="text-muted-foreground">after</dt>
+            <dd className="break-all">
+              {lastValidEventType ? (
+                <span className="font-mono">{lastValidEventType}</span>
+              ) : (
+                <span className="text-muted-foreground">event</span>
+              )}
+              <a
+                className="ml-2 text-primary underline-offset-2 hover:underline"
+                href={`#${lastValidEventId}`}
+              >
+                {lastValidEventId} →
+              </a>
+            </dd>
+          </>
+        ) : null}
+      </dl>
+    </section>
   );
 }
 

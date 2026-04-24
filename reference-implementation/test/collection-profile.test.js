@@ -2398,6 +2398,32 @@ rl.on('line', (line) => {
       assert.equal(failedEvent.data.records_flushed, 0);
       assert.equal(failedEvent.data.buffered_records_dropped, 0);
       assert.equal(failedEvent.data.checkpoint_commit_status, 'not_committed');
+
+      // Structured violation shape (vertical slice: progress_for_undeclared_stream).
+      // These assertions make the "what exactly violated" answer machine-readable
+      // and persisted in the timeline artifact, not just an opaque reason.
+      const violation = failedEvent.data.violation;
+      assert.ok(violation, 'run.failed should carry a structured data.violation');
+      assert.equal(violation.subtype, 'progress_for_undeclared_stream');
+      assert.equal(violation.message_type, 'PROGRESS');
+      assert.equal(violation.stream, 'undeclared_items');
+      assert.equal(violation.received, 'undeclared_items');
+      assert.ok(Array.isArray(violation.expected), 'violation.expected should be a list');
+      assert.ok(
+        violation.expected.includes('items'),
+        `violation.expected should list declared streams; got ${JSON.stringify(violation.expected)}`,
+      );
+      assert.ok(
+        !violation.expected.includes('undeclared_items'),
+        'violation.expected must not include the offending stream',
+      );
+      // Anchor: the violation happened immediately after run.started (no other
+      // events preceded it in this fixture).
+      assert.equal(violation.last_valid_event_type, 'run.started');
+      assert.ok(
+        typeof violation.last_valid_event_id === 'string' && violation.last_valid_event_id.startsWith('evt_'),
+        `violation.last_valid_event_id should be a spine event id; got ${violation.last_valid_event_id}`,
+      );
     } finally {
       cleanup();
       await closeServer(server);

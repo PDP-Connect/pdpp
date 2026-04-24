@@ -87,6 +87,78 @@ function buildHttpFailure(message, status, bodyText) {
   return err;
 }
 
+/**
+ * Runtime-authored structured diagnosis for a protocol violation.
+ *
+ * Scope (vertical slice): only `progress_for_undeclared_stream` is emitted
+ * today. Remaining subtypes — listed in tmp/opaque-violation-diagnosis-memo.md —
+ * are deferred until the shape proves out on a real case. If/when the full
+ * enumeration lands, it should land via a dedicated OpenSpec change first.
+ *
+ * Invariants (must hold for every subtype ever added):
+ *   - Runtime-authored only. A connector cannot construct or author this
+ *     object — the runtime instantiates it at validator sites.
+ *   - Field/stream NAMES are safe; record PAYLOAD and user-supplied VALUES
+ *     are NEVER placed in a public field. (`received` is a stream/type name,
+ *     not a record body.)
+ *   - All fields are size-bounded by `toPublicShape()`.
+ *   - Purely additive to the `run.failed` event shape — legacy consumers
+ *     that don't know about `data.violation` keep working unchanged.
+ */
+const VIOLATION_STRING_MAX = 200;
+const VIOLATION_LIST_MAX = 20;
+
+function boundString(value) {
+  if (typeof value !== 'string') return null;
+  if (value.length <= VIOLATION_STRING_MAX) return value;
+  return value.slice(0, VIOLATION_STRING_MAX - 1) + '…';
+}
+
+function boundStringList(values) {
+  if (!Array.isArray(values)) return null;
+  const safe = values.filter((v) => typeof v === 'string' && v.length > 0);
+  if (safe.length <= VIOLATION_LIST_MAX) {
+    return safe.map((v) => boundString(v));
+  }
+  return safe.slice(0, VIOLATION_LIST_MAX).map((v) => boundString(v));
+}
+
+class ProtocolViolation extends Error {
+  constructor({ subtype, message, ...extras }) {
+    super(message);
+    this.name = 'ProtocolViolation';
+    this.subtype = subtype;
+    this.extras = extras;
+  }
+
+  /**
+   * Bound, sanitized, timeline-safe projection. Returning a plain object
+   * here (rather than the raw `extras`) is load-bearing: this is what
+   * lands in persisted spine events + gets rendered in the dashboard.
+   */
+  toPublicShape({ lastValidSpineEvent = null } = {}) {
+    const out = { subtype: this.subtype };
+    if (this.subtype === 'progress_for_undeclared_stream') {
+      const { message_type, stream, expected, received } = this.extras;
+      out.message_type = boundString(message_type);
+      out.stream = boundString(stream);
+      const boundedExpected = boundStringList(expected);
+      if (boundedExpected) out.expected = boundedExpected;
+      out.received = boundString(received);
+      if (Array.isArray(expected) && expected.length > VIOLATION_LIST_MAX) {
+        out.truncated = true;
+      }
+    }
+    if (lastValidSpineEvent?.event_id) {
+      out.last_valid_event_id = lastValidSpineEvent.event_id;
+      if (lastValidSpineEvent.event_type) {
+        out.last_valid_event_type = lastValidSpineEvent.event_type;
+      }
+    }
+    return out;
+  }
+}
+
 function classifyRuntimeFailure(err) {
   if (typeof err?.failure_reason === 'string' && err.failure_reason.trim()) {
     return err.failure_reason;
@@ -297,7 +369,23 @@ function requireOptionalNonEmptyString(value, fieldName) {
 function validateOptionalScopedStream(stream, envelopeType, scopeByStream) {
   if (stream == null) return;
   if (!scopeByStream.has(stream)) {
-    throw new Error(`Connector emitted ${envelopeType} for undeclared stream: ${stream}`);
+    // String form preserved for back-compat with classifyRuntimeFailure's
+    // pattern match (still yields top-level reason: connector_protocol_violation).
+    // For PROGRESS specifically we also carry a machine-readable ProtocolViolation;
+    // other envelope types keep the legacy plain Error for now (tracked in
+    // tmp/opaque-violation-diagnosis-memo.md).
+    const message = `Connector emitted ${envelopeType} for undeclared stream: ${stream}`;
+    if (envelopeType === 'PROGRESS') {
+      throw new ProtocolViolation({
+        subtype: 'progress_for_undeclared_stream',
+        message,
+        message_type: 'PROGRESS',
+        stream,
+        expected: Array.from(scopeByStream.keys()),
+        received: stream,
+      });
+    }
+    throw new Error(message);
   }
 }
 
@@ -499,7 +587,20 @@ export async function runConnector(opts) {
   };
   proc.stdin.write(JSON.stringify(startMsg) + '\n');
 
-  await emitSpineEvent({
+  // Last spine event the runtime successfully persisted for this run.
+  // Used by ProtocolViolation.toPublicShape() to give the dashboard an
+  // anchor: "the violation happened immediately after this event."
+  // Declared before the first emitSpineEventTracked call to avoid TDZ.
+  let lastValidSpineEvent = null;
+  async function emitSpineEventTracked(input) {
+    const record = await emitSpineEvent(input);
+    if (record?.event_id) {
+      lastValidSpineEvent = { event_id: record.event_id, event_type: record.event_type };
+    }
+    return record;
+  }
+
+  await emitSpineEventTracked({
     event_type: 'run.started',
     trace_id: traceContext.trace_id,
     scenario_id: traceContext.scenario_id,
@@ -564,6 +665,7 @@ export async function runConnector(opts) {
     exitCode = null,
     reportedRecordsEmitted = null,
     connectorError = null,
+    violation = null,
   } = {}) {
     const stateStreamsStaged = countStagedStateStreams();
     const stateStreamsCommitted = committedStateStreams.size;
@@ -587,6 +689,9 @@ export async function runConnector(opts) {
       ...(connectorError?.retryable === null || connectorError?.retryable === undefined
         ? {}
         : { connector_error_retryable: connectorError.retryable }),
+      ...(violation instanceof ProtocolViolation
+        ? { violation: violation.toPublicShape({ lastValidSpineEvent }) }
+        : {}),
     };
   }
 
@@ -622,7 +727,7 @@ export async function runConnector(opts) {
     }
     const result = await resp.json();
     totalFlushed += batch.length;
-    await emitSpineEvent({
+    await emitSpineEventTracked({
       event_type: 'run.batch_ingested',
       trace_id: traceContext.trace_id,
       scenario_id: traceContext.scenario_id,
@@ -673,7 +778,7 @@ export async function runConnector(opts) {
       }
       committedStateStreams.add(stream);
 
-      await emitSpineEvent({
+      await emitSpineEventTracked({
         event_type: 'run.state_advanced',
         trace_id: traceContext.trace_id,
         scenario_id: traceContext.scenario_id,
@@ -818,6 +923,7 @@ export async function runConnector(opts) {
                 recordsEmitted: totalEmitted,
                 reason: failureReason,
                 connectorError: null,
+                violation: err instanceof ProtocolViolation ? err : null,
               }),
             });
             terminalEventRecorded = true;
@@ -898,7 +1004,7 @@ export async function runConnector(opts) {
           // Flush records for this stream before persisting state
           await flushBatch(msg.stream);
           newState[msg.stream] = msg.cursor;
-          await emitSpineEvent({
+          await emitSpineEventTracked({
             event_type: 'run.state_staged',
             trace_id: traceContext.trace_id,
             scenario_id: traceContext.scenario_id,
@@ -937,7 +1043,7 @@ export async function runConnector(opts) {
           });
           pendingInteractionViolation.catch(() => {});
 
-          await emitSpineEvent({
+          await emitSpineEventTracked({
             event_type: 'run.interaction_required',
             trace_id: traceContext.trace_id,
             scenario_id: traceContext.scenario_id,
@@ -993,7 +1099,7 @@ export async function runConnector(opts) {
             throw new Error(`Invalid INTERACTION_RESPONSE status: ${responseStatus}`);
           }
 
-          await emitSpineEvent({
+          await emitSpineEventTracked({
             event_type: 'run.interaction_completed',
             trace_id: traceContext.trace_id,
             scenario_id: traceContext.scenario_id,
@@ -1020,7 +1126,7 @@ export async function runConnector(opts) {
 
         case 'SKIP_RESULT':
           validateSkipResultMessage(msg, scopeByStream);
-          await emitSpineEvent({
+          await emitSpineEventTracked({
             event_type: 'run.stream_skipped',
             trace_id: traceContext.trace_id,
             scenario_id: traceContext.scenario_id,
@@ -1043,7 +1149,7 @@ export async function runConnector(opts) {
 
         case 'PROGRESS':
           validateProgressMessage(msg, scopeByStream);
-          await emitSpineEvent({
+          await emitSpineEventTracked({
             event_type: 'run.progress_reported',
             trace_id: traceContext.trace_id,
             scenario_id: traceContext.scenario_id,
