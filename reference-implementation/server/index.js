@@ -56,7 +56,7 @@ import {
   listConnectorSummaries,
   listPendingApprovals,
   listRecordsTimeline,
-} from './ref-control.js';
+} from './ref-control.ts';
 import {
   DEFAULT_LOCAL_DCR_INITIAL_ACCESS_TOKEN,
   DEFAULT_PRE_REGISTERED_PUBLIC_CLIENTS,
