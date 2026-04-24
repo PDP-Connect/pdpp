@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import React from "react";
 import { Button } from "@/components/ui/button.tsx";
 
@@ -146,7 +147,15 @@ export function ConsentCard({
               }
             >
               {requester.logoSrc ? (
-                <img src={requester.logoSrc} alt="" aria-hidden="true" className="h-5 w-5 object-contain" />
+                <Image
+                  src={requester.logoSrc}
+                  alt=""
+                  aria-hidden="true"
+                  width={20}
+                  height={20}
+                  className="h-5 w-5 object-contain"
+                  unoptimized
+                />
               ) : (
                 <span className="font-bold font-mono text-xs">{requester.monogram}</span>
               )}
