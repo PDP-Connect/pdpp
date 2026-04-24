@@ -66,14 +66,15 @@ function parseDurationInput(value: string, label: string): number {
     );
   }
 
-  const amount = Number.parseInt(match[1], 10);
+  const amount = Number.parseInt(match[1] ?? '0', 10);
   const unit = (match[2] || 's').toLowerCase();
-  const multiplier = {
+  const multipliers: Record<string, number> = {
     s: 1,
     m: 60,
     h: 60 * 60,
     d: 24 * 60 * 60,
-  }[unit];
+  };
+  const multiplier = multipliers[unit] ?? 1;
   return amount * multiplier;
 }
 
