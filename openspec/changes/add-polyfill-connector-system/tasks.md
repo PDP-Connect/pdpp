@@ -9,6 +9,7 @@ Last revised: 2026-04-24.
 - **31 manifests total** (30 + Chase added 2026-04-21). All validate against the reference AS.
 - **951,313 real records** across 8 active connectors in a unified 2.8 GB DB (`polyfill.sqlite`):
   - slack 349,139 · claude-code 235,757 · codex 74,033 · gmail 50,407 · ynab 21,513 · chatgpt 11,341 · github 8,608 · usaa 924
+- **Data provenance caveat:** any local Spotify or Reddit rows currently visible in the reference DB are not trusted as the owner-account data. Treat them as seed/demo/fake population until they are purged and replaced by a verified real-account ingest.
 - **All 8 connectors' most recent run committed state successfully.**
 - **Browser daemon** (`src/browser-daemon.js`, `bin/browser-daemon-worker.js`) — long-lived Chromium preserves session cookies across connector runs; fixed USAA's session-token-expiry-on-process-exit problem.
 - **Fleet-wide JSONL correctness fixes**: U+2028/U+2029 escape + BigInt coercion + stdout backpressure drain in `src/safe-emit.js`; Gmail 887-record crash and Slack 1,716-record truncation both traced to these.
@@ -36,10 +37,10 @@ Last revised: 2026-04-24.
 | chase | ✅ v0.1 working | 16 (1 account, 14 txns, 1 balance) | NEW 2026-04-21. End-to-end: auto-login via `src/auto-login/chase.js` (mds-* shadow DOM, text/role locators per Playwright best practices), discover accounts via `#accounts-name-link-button-<id>-label` pattern, QFX download via `mds-select#downloadFileTypeOption` + `mds-button#download`, parse via `ofx-js`. Only credit card so far (account-param `CARD,BAC`); checking/savings param shapes are placeholders. v0.2: date-range support (currently "Current display" ~30 days), statement PDFs. |
 | github | ✅ (fixed 2026-04-24) | 8,608 | PAT auto-created via `bin/bootstrap-github-pat.js` (headless login → INTERACTION for 2FA → PAT form → token written to `.env.local`). Earlier `progress_for_undeclared_stream` failure was controller path-resolution colliding on `connector_id`; see GitHub section below. |
 | oura | 🟡 ready | 0 | Awaits `OURA_PERSONAL_ACCESS_TOKEN`. |
-| spotify | 🚫 blocked upstream | 0 | Spotify froze new developer app creation in Feb 2026; OAuth-only anyway. Keep manifest, revisit when Spotify re-opens. |
+| spotify | 🚫 blocked upstream + data cleanup | 0 trusted | Spotify froze new developer app creation in Feb 2026; OAuth-only anyway. Any local Spotify records are seed/demo/fake population, not the owner account data. Purge those rows or mark them non-trusted before using dashboard/API counts as evidence. Keep manifest, revisit real-account ingest when Spotify re-opens. |
 | strava | 🟡 ready | 0 | Awaits `STRAVA_ACCESS_TOKEN`. |
 | notion | 🟡 ready | 0 | Awaits `NOTION_API_TOKEN`. |
-| reddit | 🟡 ready | 0 | Awaits Reddit credentials; cursor fix landed. |
+| reddit | 🟡 ready + data cleanup | 0 trusted | Awaits Reddit credentials; cursor fix landed. Any local Reddit records are seed/demo/fake population, not the owner account data. Purge those rows and re-ingest from the owner's Reddit credentials before using dashboard/API counts as evidence. |
 | pocket | 🚫 deprecated | 0 | Mozilla shut Pocket down 2025-07-08; all user data deleted 2025-10-08. Excluded from register-all. Connector retained as historical reference only. |
 | slack | ✅ done | 349,139 | slackdump subprocess, 24 GB archive, 196k messages, 73k reactions, 57k attachments, 17k files, 973 channels, 292 users, 0 missing thread parents. Retry-budget config + backpressure drain landed 2026-04-20. |
 | anthropic | 🟡 scaffolded | 0 | Selectors TBD; needs live DOM walk. |
@@ -177,6 +178,7 @@ these tasks are tracked here.
 - **Identity graph.** Open question — should cross-connector followers/friends/orgs be promoted to a standard `identity_graph` profile? See `design-notes/identity-graph-open-question.md`.
 - **Settings/preferences stream convention.** Open question — normalized `settings` stream shape across connectors. Every connector has user-authored settings; today most omit them. See `design-notes/settings-stream-convention-open-question.md`.
 - **SillyTavern re-ingest.** the owner confirmed he wants it included. Re-run after current pass finishes (no EXCLUDE).
+- **Spotify/Reddit fake-data cleanup.** Local rows for Spotify and Reddit must be treated as seed/demo/fake population until proven otherwise. Before internal demo or assistant evaluation, purge those rows from the reference DB and either re-ingest from the owner-owned credentials (Reddit) or keep the connector visibly blocked/untrusted until real-account access exists (Spotify).
 
 ## Layer 2 implementation follow-up (raised 2026-04-19)
 
