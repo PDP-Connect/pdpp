@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 import { startServer } from '../server/index.js';
-import { createScheduler } from '../runtime/scheduler.js';
+import { createScheduler } from '../runtime/scheduler.ts';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, '..');
