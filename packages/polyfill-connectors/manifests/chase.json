@@ -263,6 +263,9 @@
             "memo",
             "source",
             "reference_number"
+          ],
+          "semantic_fields": [
+            "memo"
           ]
         }
       }

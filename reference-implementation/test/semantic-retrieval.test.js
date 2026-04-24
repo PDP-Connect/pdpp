@@ -966,6 +966,190 @@ test('backend identity change flips index_state to stale until rebuild restores'
 
 // ─── parseSemanticSearchParams pure helper — guards the allowlist directly ──
 
+// ─── Operational coverage: real polyfill manifest contributes semantic hits ──
+//
+// Regression for the operational gap described in
+// openspec/changes/make-semantic-retrieval-operational: the semantic
+// extension was advertised "built" while zero shipped polyfill manifests
+// declared query.search.semantic_fields, so /v1/search/semantic could be
+// wired up end-to-end and still return zero hits on real data.
+//
+// This test uses the real shipped gmail manifest (not an inline fixture) so
+// any future regression that drops semantic_fields from the first-party set
+// will fail here. It also walks the exact "existing DB + re-registration"
+// path reconcilePolyfillManifests takes on boot, proving the declared
+// coverage reaches existing records without connector re-ingest.
+
+function loadShippedManifest(name) {
+  const p = path.resolve(TEST_DIR, '..', '..', 'packages', 'polyfill-connectors', 'manifests', name);
+  return JSON.parse(fs.readFileSync(p, 'utf8'));
+}
+
+function stripSemanticFields(manifest) {
+  const copy = JSON.parse(JSON.stringify(manifest));
+  for (const stream of copy.streams || []) {
+    const search = stream.query?.search;
+    if (search && 'semantic_fields' in search) {
+      delete search.semantic_fields;
+    }
+  }
+  return copy;
+}
+
+test('shipped gmail manifest contributes semantic coverage after reconcile without record re-ingest', async () => {
+  const shipped = loadShippedManifest('gmail.json');
+  assert.ok(Array.isArray(shipped.streams) && shipped.streams.length > 0);
+
+  // Baseline truth-check: at least one stream declares semantic_fields in the
+  // shipped manifest. If this fails, the operational semantic gap has
+  // regressed: no first-party polyfill contributes to the index.
+  const participating = shipped.streams.filter(
+    (s) => Array.isArray(s.query?.search?.semantic_fields) && s.query.search.semantic_fields.length > 0,
+  );
+  assert.ok(
+    participating.length > 0,
+    'shipped gmail manifest must declare query.search.semantic_fields on at least one stream',
+  );
+  // `messages` carries the highest-signal natural-language fields (subject,
+  // snippet). Pin it explicitly so a future reshuffle that demotes messages
+  // out of the semantic set is a visible failure rather than a silent one.
+  const messagesStream = participating.find((s) => s.name === 'messages');
+  assert.ok(messagesStream, 'gmail messages stream should participate in semantic retrieval');
+  const declared = messagesStream.query.search.semantic_fields;
+  for (const field of declared) {
+    assert.ok(
+      messagesStream.schema?.properties?.[field],
+      `gmail messages.semantic_fields entry '${field}' must exist in schema.properties`,
+    );
+  }
+
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pdpp-semantic-gmail-'));
+  const dbPath = path.join(tmpDir, 'pdpp.sqlite');
+
+  try {
+    const server = await startServer({
+      quiet: true,
+      asPort: 0,
+      rsPort: 0,
+      dbPath,
+      dynamicClientRegistrationInitialAccessTokens: [TEST_DCR_INITIAL_ACCESS_TOKEN],
+    });
+    try {
+      const asUrl = `http://localhost:${server.asPort}`;
+      const rsUrl = `http://localhost:${server.rsPort}`;
+      const connectorId = shipped.connector_id;
+
+      // (1) Register the gmail manifest WITHOUT semantic_fields. Represents
+      // the pre-operational-semantic world where a real DB was populated
+      // while no semantic coverage was declared.
+      const strippedManifest = stripSemanticFields(shipped);
+      const regV1 = await fetch(`${asUrl}/connectors`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(strippedManifest),
+      });
+      assert.equal(regV1.status, 201, 'register stripped gmail manifest');
+
+      // (2) Ingest realistic gmail messages BEFORE semantic_fields exist.
+      // The semantic index write-path maintenance never runs for these.
+      const ownerToken = await issueOwnerToken(asUrl);
+      await ingest(rsUrl, ownerToken, connectorId, 'messages', [
+        {
+          id: 'm1',
+          thread_id: 't1',
+          received_at: '2026-04-02T10:00:00Z',
+          subject: 'Budget forecast for Q3 capacity planning',
+          from_name: 'Taylor Finance',
+          from_email: 'taylor@example.com',
+          snippet: 'Heads-up on the quarterly budget forecast and capacity planning ahead of Q3 kickoff.',
+          source_created_at: '2026-04-02T10:00:00Z',
+          emitted_at: '2026-04-02T10:00:00Z',
+        },
+        {
+          id: 'm2',
+          thread_id: 't2',
+          received_at: '2026-04-05T14:00:00Z',
+          subject: 'Lunch Friday?',
+          from_name: 'Jordan',
+          from_email: 'jordan@example.com',
+          snippet: 'Want to grab lunch Friday at the new place on Main?',
+          source_created_at: '2026-04-05T14:00:00Z',
+          emitted_at: '2026-04-05T14:00:00Z',
+        },
+        {
+          id: 'm3',
+          thread_id: 't3',
+          received_at: '2026-04-10T09:00:00Z',
+          subject: 'Flight itinerary — SFO to AMS',
+          from_name: 'Airline',
+          from_email: 'noreply@airline.example.com',
+          snippet: 'Your flight itinerary from San Francisco to Amsterdam is confirmed.',
+          source_created_at: '2026-04-10T09:00:00Z',
+          emitted_at: '2026-04-10T09:00:00Z',
+        },
+      ]);
+
+      // (3) Baseline: semantic search MUST return zero gmail hits because
+      // the registered manifest has no semantic_fields. The deterministic
+      // stub backend is exact-match reflexive, so we use the exact subject
+      // as the query to rule out "search is broken for unrelated reasons".
+      const exactQuery = 'Budget forecast for Q3 capacity planning';
+      const { body: baselineBody } = await fetchJson(
+        `${rsUrl}/v1/search/semantic?q=${encodeURIComponent(exactQuery)}`,
+        { headers: { Authorization: `Bearer ${ownerToken}` } },
+      );
+      const baselineGmailHits = (baselineBody.data || []).filter(
+        (h) => h.connector_id === connectorId,
+      );
+      assert.deepEqual(
+        baselineGmailHits.map((h) => h.record_key),
+        [],
+        'before semantic_fields are declared, gmail contributes zero semantic hits',
+      );
+
+      // (4) Re-register with the shipped manifest. This is what
+      // reconcilePolyfillManifests does on boot after a reference ships
+      // updated semantic_fields — without touching the records table.
+      const regV2 = await fetch(`${asUrl}/connectors`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(shipped),
+      });
+      assert.equal(regV2.status, 201, 'register shipped gmail manifest');
+
+      // (5) The same exact-match query must now return the historical
+      // record. Exact-match reflexivity is the stub backend's load-bearing
+      // promise; if the backfill path did not run, hits stay empty.
+      const { body: afterBody } = await fetchJson(
+        `${rsUrl}/v1/search/semantic?q=${encodeURIComponent(exactQuery)}`,
+        { headers: { Authorization: `Bearer ${ownerToken}` } },
+      );
+      const afterGmailHits = (afterBody.data || []).filter(
+        (h) => h.connector_id === connectorId,
+      );
+      assert.ok(
+        afterGmailHits.some((h) => h.record_key === 'm1'),
+        'after declaring semantic_fields, the historical gmail record becomes semantically searchable with no re-ingest',
+      );
+      // matched_fields is an intersection of (declared semantic_fields ∩
+      // grant projection). For owner-mode the grant projection is
+      // effectively full, so matched_fields must be a subset of what the
+      // shipped manifest declares.
+      const hit = afterGmailHits.find((h) => h.record_key === 'm1');
+      for (const field of hit.matched_fields || []) {
+        assert.ok(
+          declared.includes(field),
+          `matched_field '${field}' must be present in declared semantic_fields ${JSON.stringify(declared)}`,
+        );
+      }
+    } finally {
+      await closeServer(server);
+    }
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
 test('parseSemanticSearchParams accepts the v1 allowlist, rejects everything else', () => {
   const ok = parseSemanticSearchParams({ q: 'x' });
   assert.equal(ok.q, 'x');

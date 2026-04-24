@@ -1318,9 +1318,11 @@ function validateConnectorManifest(manifest = {}, code = 'invalid_request', opts
     // extension's stream-level declaration. Independent from lexical_fields:
     // either, both, or neither MAY be declared on a stream, and a field listed
     // in one is NOT automatically listed in the other. Same v1 shape constraints
-    // as lexical_fields: top-level scalar string fields in schema.properties;
+    // as lexical_fields: top-level scalar text fields declared in schema.properties
+    // (`type: "string"` or the common nullable form `type: ["string", "null"]`);
     // nested paths, arrays, blobs, non-string scalars, and unknown fields are
-    // rejected. See:
+    // rejected. Records whose field value is actually null are skipped at index
+    // time (see server/search-semantic.js::rebuildSemanticIndexForStream). See:
     //   openspec/changes/add-semantic-retrieval-experimental-extension/specs/semantic-retrieval/spec.md
     if (stream.query?.search?.semantic_fields !== undefined) {
       const declared = stream.query.search.semantic_fields;
@@ -1335,8 +1337,8 @@ function validateConnectorManifest(manifest = {}, code = 'invalid_request', opts
           throw invalidConnectorManifest(`Stream '${stream.name}' query.search.semantic_fields references unknown field '${fieldName}'`, code);
         }
         const fieldSchema = schemaProperties[fieldName];
-        if (fieldSchema?.type !== 'string') {
-          throw invalidConnectorManifest(`Stream '${stream.name}' query.search.semantic_fields entry '${fieldName}' must be a top-level string field; v1 does not support nested paths, arrays, or non-string types`, code);
+        if (!isTopLevelSearchableStringField(fieldSchema)) {
+          throw invalidConnectorManifest(`Stream '${stream.name}' query.search.semantic_fields entry '${fieldName}' must be a top-level string or nullable-string field; v1 does not support nested paths, arrays, blobs, or non-string scalar types`, code);
         }
       }
     }

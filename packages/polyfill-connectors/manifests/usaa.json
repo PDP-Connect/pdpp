@@ -215,6 +215,10 @@
             "original_description",
             "category",
             "source"
+          ],
+          "semantic_fields": [
+            "description",
+            "original_description"
           ]
         }
       }
@@ -378,6 +382,10 @@
             "subject",
             "preview",
             "status"
+          ],
+          "semantic_fields": [
+            "subject",
+            "preview"
           ]
         }
       }

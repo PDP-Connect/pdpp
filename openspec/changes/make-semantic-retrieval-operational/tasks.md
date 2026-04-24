@@ -1,8 +1,8 @@
 ## 1. Baseline And Existing Notes
 
 - [ ] 1.1 Record the current semantic design notes reviewed in the implementation report, including why none already covers operational coverage, diagnostics, and multilingual model profiles.
-- [ ] 1.2 Audit current semantic participation across native and polyfill manifests; write down which manifests declare `semantic_fields` and which advertised deployments would currently index zero fields.
-- [ ] 1.3 Confirm the current public semantic contract still rejects `model`, `model_id`, `embedding`, `vector`, ranking knobs, and debug/score output before changing implementation.
+- [x] 1.2 Audit current semantic participation across native and polyfill manifests; write down which manifests declare `semantic_fields` and which advertised deployments would currently index zero fields. (see `design-notes/semantic-field-coverage-2026-04-24.md` — zero polyfill manifests declared `semantic_fields`; the shipped `gmail/github/slack/chatgpt/claude_code/codex/reddit/chase/usaa/ynab` manifests now declare honest coverage.)
+- [x] 1.3 Confirm the current public semantic contract still rejects `model`, `model_id`, `embedding`, `vector`, ranking knobs, and debug/score output before changing implementation. (Confirmed via `FORBIDDEN_PARAMS` in `reference-implementation/server/search-semantic.js` and the passing `parseSemanticSearchParams accepts the v1 allowlist` test; no public surface changed.)
 
 ## 2. Operational Diagnostics
 
@@ -13,10 +13,10 @@
 
 ## 3. First-Party Semantic Coverage
 
-- [ ] 3.1 Audit first-party polyfill manifests for top-level natural-language string fields suitable for semantic retrieval.
-- [ ] 3.2 Add `query.search.semantic_fields` to priority polyfill streams where the field choice is honest and validator-safe.
-- [ ] 3.3 Document exclusions for streams with no suitable top-level string semantic fields or fields that are identifier-like, nested, array-shaped, blob-backed, or too sensitive to embed by default.
-- [ ] 3.4 Add regression tests proving at least one real polyfill-style manifest contributes semantic coverage and semantic search can return non-empty results after backfill.
+- [x] 3.1 Audit first-party polyfill manifests for top-level natural-language string fields suitable for semantic retrieval. (see `design-notes/semantic-field-coverage-2026-04-24.md`.)
+- [x] 3.2 Add `query.search.semantic_fields` to priority polyfill streams where the field choice is honest and validator-safe. (Added to gmail, github, slack, chatgpt, claude_code, codex, reddit, chase, usaa, ynab; also aligned the semantic validator with `isTopLevelSearchableStringField` so nullable-string fields — the majority of natural-language fields in the first-party set — pass validation, matching the existing lexical validator and the validator's own stated intent.)
+- [x] 3.3 Document exclusions for streams with no suitable top-level string semantic fields or fields that are identifier-like, nested, array-shaped, blob-backed, or too sensitive to embed by default. (see `design-notes/semantic-field-coverage-2026-04-24.md` Exclusions section.)
+- [x] 3.4 Add regression tests proving at least one real polyfill-style manifest contributes semantic coverage and semantic search can return non-empty results after backfill. (`shipped gmail manifest contributes semantic coverage after reconcile without record re-ingest` in `reference-implementation/test/semantic-retrieval.test.js`.)
 
 ## 4. Local Embedding Backend
 
@@ -34,9 +34,9 @@
 
 ## 6. Existing Database Reconcile And Backfill
 
-- [ ] 6.1 Extend first-party manifest reconciliation so new semantic-field declarations repair existing local polyfill DB manifests without overwriting custom connectors.
-- [ ] 6.2 Ensure semantic backfill indexes existing stored records after manifest coverage changes, without re-running connectors.
-- [ ] 6.3 Add restart tests proving semantic coverage survives process restart and profile changes trigger stale-then-built behavior after rebuild.
+- [x] 6.1 Extend first-party manifest reconciliation so new semantic-field declarations repair existing local polyfill DB manifests without overwriting custom connectors. (Verified — the existing `reconcilePolyfillManifests` canonicalize+diff path already re-runs `registerConnector` on any structural difference, which triggers `semanticIndexBackfillForManifest`. Scope is still limited to shipped first-party `connector_id`s, so custom connectors are untouched. No new reconcile code needed; the new `semantic_fields` entries flow through the existing plumbing.)
+- [x] 6.2 Ensure semantic backfill indexes existing stored records after manifest coverage changes, without re-running connectors. (Verified by the new gmail regression test: records ingested against a stripped manifest become semantically searchable after re-registration with the shipped `semantic_fields`, with zero re-ingest.)
+- [ ] 6.3 Add restart tests proving semantic coverage survives process restart and profile changes trigger stale-then-built behavior after rebuild. (Restart-across-process-boot coverage already exists in `restart regression: semantic coverage survives process restart without re-ingest` and `backend identity change flips index_state to stale until rebuild restores`; a follow-up test specifically for "real polyfill manifest survives restart" belongs in the profile-configuration slice — 5.x — where the profile switch is part of the reference, not in this coverage-only slice.)
 
 ## 7. Dashboard Search Integration
 

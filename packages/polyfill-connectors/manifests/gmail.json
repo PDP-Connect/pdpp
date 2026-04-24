@@ -204,6 +204,10 @@
             "from_name",
             "from_email",
             "snippet"
+          ],
+          "semantic_fields": [
+            "subject",
+            "snippet"
           ]
         }
       }
@@ -279,6 +283,9 @@
       "query": {
         "search": {
           "lexical_fields": [
+            "subject"
+          ],
+          "semantic_fields": [
             "subject"
           ]
         }
@@ -427,6 +434,9 @@
       "query": {
         "search": {
           "lexical_fields": [
+            "body_text"
+          ],
+          "semantic_fields": [
             "body_text"
           ]
         }

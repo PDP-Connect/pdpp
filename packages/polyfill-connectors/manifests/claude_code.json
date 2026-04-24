@@ -210,6 +210,9 @@
             "content",
             "user_type",
             "agent_id"
+          ],
+          "semantic_fields": [
+            "content"
           ]
         }
       }
@@ -304,6 +307,9 @@
             "event_type",
             "hook_name",
             "content_preview"
+          ],
+          "semantic_fields": [
+            "content_preview"
           ]
         }
       }
@@ -385,6 +391,10 @@
             "description",
             "source",
             "content"
+          ],
+          "semantic_fields": [
+            "description",
+            "content"
           ]
         }
       }
@@ -457,6 +467,10 @@
         "search": {
           "lexical_fields": [
             "name",
+            "description",
+            "content"
+          ],
+          "semantic_fields": [
             "description",
             "content"
           ]

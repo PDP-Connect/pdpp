@@ -330,6 +330,9 @@
             "name",
             "type",
             "note"
+          ],
+          "semantic_fields": [
+            "note"
           ]
         }
       }
@@ -385,6 +388,9 @@
         "search": {
           "lexical_fields": [
             "name",
+            "note"
+          ],
+          "semantic_fields": [
             "note"
           ]
         }
@@ -556,6 +562,9 @@
             "name",
             "note",
             "goal_type"
+          ],
+          "semantic_fields": [
+            "note"
           ]
         }
       }
@@ -942,6 +951,9 @@
             "import_payee_name",
             "import_payee_name_original",
             "debt_transaction_type"
+          ],
+          "semantic_fields": [
+            "memo"
           ]
         }
       }
@@ -1079,6 +1091,9 @@
             "flag_color",
             "flag_name",
             "frequency"
+          ],
+          "semantic_fields": [
+            "memo"
           ]
         }
       }
@@ -1151,6 +1166,9 @@
       "query": {
         "search": {
           "lexical_fields": [
+            "note"
+          ],
+          "semantic_fields": [
             "note"
           ]
         }
@@ -1381,6 +1399,9 @@
             "category_name",
             "category_group_name",
             "goal_type",
+            "note"
+          ],
+          "semantic_fields": [
             "note"
           ]
         }

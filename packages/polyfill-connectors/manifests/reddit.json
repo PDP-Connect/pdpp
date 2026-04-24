@@ -108,6 +108,10 @@
             "subreddit",
             "title",
             "selftext"
+          ],
+          "semantic_fields": [
+            "title",
+            "selftext"
           ]
         }
       }
@@ -187,6 +191,9 @@
           "lexical_fields": [
             "subreddit",
             "body"
+          ],
+          "semantic_fields": [
+            "body"
           ]
         }
       }
@@ -265,6 +272,10 @@
         "search": {
           "lexical_fields": [
             "subreddit",
+            "title",
+            "body"
+          ],
+          "semantic_fields": [
             "title",
             "body"
           ]

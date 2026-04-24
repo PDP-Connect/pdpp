@@ -143,6 +143,9 @@
             "location",
             "blog",
             "twitter_username"
+          ],
+          "semantic_fields": [
+            "bio"
           ]
         }
       }
@@ -302,6 +305,9 @@
             "language",
             "license_key",
             "homepage"
+          ],
+          "semantic_fields": [
+            "description"
           ]
         }
       }
@@ -376,6 +382,9 @@
             "full_name",
             "description",
             "language"
+          ],
+          "semantic_fields": [
+            "description"
           ]
         }
       }
@@ -544,6 +553,10 @@
             "user_login",
             "milestone_title",
             "repository_full_name"
+          ],
+          "semantic_fields": [
+            "title",
+            "body"
           ]
         }
       }
@@ -767,6 +780,10 @@
             "base_ref",
             "head_ref",
             "merged_by_login"
+          ],
+          "semantic_fields": [
+            "title",
+            "body"
           ]
         }
       }
@@ -879,6 +896,9 @@
       "query": {
         "search": {
           "lexical_fields": [
+            "description"
+          ],
+          "semantic_fields": [
             "description"
           ]
         }

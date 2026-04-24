@@ -164,6 +164,10 @@
             "first_user_message",
             "sandbox_policy",
             "approval_mode"
+          ],
+          "semantic_fields": [
+            "title",
+            "first_user_message"
           ]
         }
       }
@@ -239,6 +243,9 @@
           "lexical_fields": [
             "role",
             "type",
+            "content"
+          ],
+          "semantic_fields": [
             "content"
           ]
         }
@@ -384,6 +391,9 @@
             "ruleset",
             "rule_text",
             "path"
+          ],
+          "semantic_fields": [
+            "rule_text"
           ]
         }
       }
@@ -451,6 +461,10 @@
             "description",
             "content",
             "path"
+          ],
+          "semantic_fields": [
+            "description",
+            "content"
           ]
         }
       }

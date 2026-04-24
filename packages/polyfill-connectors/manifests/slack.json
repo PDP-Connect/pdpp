@@ -356,6 +356,10 @@
             "name_normalized",
             "topic",
             "purpose"
+          ],
+          "semantic_fields": [
+            "topic",
+            "purpose"
           ]
         }
       }
@@ -864,6 +868,9 @@
             "text",
             "subtype",
             "metadata_event_type"
+          ],
+          "semantic_fields": [
+            "text"
           ]
         }
       }
@@ -995,6 +1002,11 @@
             "title",
             "text",
             "author_name"
+          ],
+          "semantic_fields": [
+            "title",
+            "text",
+            "fallback"
           ]
         }
       }
@@ -1366,6 +1378,10 @@
             "title",
             "name",
             "content_markdown"
+          ],
+          "semantic_fields": [
+            "title",
+            "content_markdown"
           ]
         }
       }
@@ -1555,6 +1571,9 @@
             "handle",
             "name",
             "description"
+          ],
+          "semantic_fields": [
+            "description"
           ]
         }
       }
@@ -1640,6 +1659,9 @@
       "query": {
         "search": {
           "lexical_fields": [
+            "text"
+          ],
+          "semantic_fields": [
             "text"
           ]
         }
