@@ -4,6 +4,8 @@
  * Combined AS + RS implementing PDPP v0.1.0 core spec.
  * Starts on port 7662 (AS/introspection) and 7663 (RS query API).
  */
+import { createHash } from 'node:crypto';
+
 import { getDb, initDb } from './db.js';
 import {
   buildAuthorizationServerMetadata,
@@ -1025,6 +1027,82 @@ function decorateRecordBlobRefs(record) {
   return next;
 }
 
+function resolveSingleNonEmptyQueryValue(rawValue, name) {
+  if (typeof rawValue !== 'string' || !rawValue.trim()) {
+    const err = new Error(`${name} must be a single non-empty string`);
+    err.code = 'invalid_request';
+    throw err;
+  }
+  return rawValue.trim();
+}
+
+function normalizeUploadContentType(rawContentType) {
+  if (typeof rawContentType !== 'string') {
+    const err = new Error('Content-Type header is required');
+    err.code = 'invalid_request';
+    throw err;
+  }
+  const mediaType = rawContentType.split(';')[0].trim().toLowerCase();
+  if (!mediaType || !/^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/i.test(mediaType)) {
+    const err = new Error('Content-Type header must be a valid media type');
+    err.code = 'invalid_request';
+    throw err;
+  }
+  return mediaType;
+}
+
+function coerceUploadBodyToBuffer(body) {
+  if (Buffer.isBuffer(body)) return body;
+  if (typeof body === 'string') return Buffer.from(body, 'utf8');
+  if (body === undefined || body === null) return Buffer.alloc(0);
+  if (body instanceof ArrayBuffer) return Buffer.from(body);
+  if (ArrayBuffer.isView(body)) {
+    return Buffer.from(body.buffer, body.byteOffset, body.byteLength);
+  }
+  const err = new Error('Blob upload body must be bytes');
+  err.code = 'invalid_request';
+  throw err;
+}
+
+function persistContentAddressedBlob({ connectorId, stream, recordKey, mimeType, data }) {
+  const sha256 = createHash('sha256').update(data).digest('hex');
+  const blobId = `blob_sha256_${sha256}`;
+  const sizeBytes = data.byteLength;
+  const db = getDb();
+  const tx = db.transaction(() => {
+    db.prepare(`
+      INSERT OR IGNORE INTO blobs(blob_id, connector_id, stream, record_key, mime_type, size_bytes, sha256, data)
+      VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(blobId, connectorId, stream, recordKey, mimeType, sizeBytes, sha256, data);
+
+    const stored = db.prepare(`
+      SELECT blob_id, mime_type, size_bytes, sha256
+      FROM blobs
+      WHERE blob_id = ?
+      LIMIT 1
+    `).get(blobId);
+    if (!stored || stored.sha256 !== sha256 || Number(stored.size_bytes) !== sizeBytes) {
+      const err = new Error('Blob storage collision');
+      err.code = 'api_error';
+      throw err;
+    }
+
+    db.prepare(`
+      INSERT OR IGNORE INTO blob_bindings(blob_id, connector_id, stream, record_key)
+      VALUES(?, ?, ?, ?)
+    `).run(blobId, connectorId, stream, recordKey);
+
+    return stored;
+  });
+  const stored = tx();
+  return {
+    blob_id: blobId,
+    sha256,
+    size_bytes: Number(stored.size_bytes),
+    mime_type: stored.mime_type || mimeType,
+  };
+}
+
 async function getVisibleStreamFreshness({ tokenInfo, storageBinding, stream, manifest }) {
   if (tokenInfo?.pdpp_token_kind === 'owner') {
     const summaries = await listAllStreams(storageBinding);
@@ -1059,50 +1137,47 @@ async function resolveAuthorizedBlob(req, blobId, opts = {}) {
   const { tokenInfo } = req;
   let storageBinding;
   let manifest;
-  let visibleRecord;
 
   if (tokenInfo.pdpp_token_kind === 'owner') {
     const ownerScope = resolveOwnerReadScope(req, opts);
     const ownerResolved = await resolveOwnerManifestFromScope(ownerScope, opts);
     storageBinding = ownerResolved.storageBinding;
     manifest = ownerResolved.manifest;
-    if (storageBinding?.connector_id !== blob.connector_id) {
-      const err = new Error('Blob not found');
-      err.code = 'blob_not_found';
-      throw err;
-    }
-    try {
-      visibleRecord = await getRecord(storageBinding, blob.stream, blob.record_key, buildOwnerReadGrant(blob.stream), manifest);
-    } catch {
-      const err = new Error('Blob not found');
-      err.code = 'blob_not_found';
-      throw err;
-    }
   } else {
     const grantResolved = await resolveGrantManifest(tokenInfo, opts);
     storageBinding = grantResolved.storageBinding;
     manifest = grantResolved.manifest;
-    if (storageBinding?.connector_id !== blob.connector_id) {
-      const err = new Error('Blob not found');
-      err.code = 'blob_not_found';
-      throw err;
-    }
+  }
+
+  const bindings = getDb().prepare(`
+    SELECT connector_id, stream, record_key
+    FROM blob_bindings
+    WHERE blob_id = ?
+    UNION
+    SELECT connector_id, stream, record_key
+    FROM blobs
+    WHERE blob_id = ?
+  `).all(blobId, blobId);
+
+  for (const binding of bindings) {
+    if (storageBinding?.connector_id !== binding.connector_id) continue;
     try {
-      visibleRecord = await getRecord(storageBinding, blob.stream, blob.record_key, tokenInfo.grant, manifest);
+      const grant = tokenInfo.pdpp_token_kind === 'owner'
+        ? buildOwnerReadGrant(binding.stream)
+        : tokenInfo.grant;
+      const visibleRecord = await getRecord(storageBinding, binding.stream, binding.record_key, grant, manifest);
+      if (visibleRecord?.data?.blob_ref?.blob_id === blobId) {
+        return blob;
+      }
     } catch {
-      const err = new Error('Blob not found');
-      err.code = 'blob_not_found';
-      throw err;
+      // Try the next binding; callers only learn whether any visible record
+      // exposes the requested blob reference.
     }
   }
 
-  if (visibleRecord?.data?.blob_ref?.blob_id !== blobId) {
-    const err = new Error('Blob not found');
-    err.code = 'blob_not_found';
-    throw err;
-  }
-
-  return blob;
+  const err = new Error('Blob not found');
+  err.code = 'blob_not_found';
+  throw err;
 }
 
 // ─── AS App ─────────────────────────────────────────────────────────────────
@@ -2871,6 +2946,36 @@ function buildRsApp(opts = {}) {
       }
     });
   }
+
+  app.post('/v1/blobs', { contract: 'uploadBlob' }, requireToken, requireOwner, async (req, res) => {
+    try {
+      const connectorId = resolveSingleNonEmptyQueryValue(req.query.connector_id, 'connector_id');
+      const stream = resolveSingleNonEmptyQueryValue(req.query.stream, 'stream');
+      const recordKey = resolveSingleNonEmptyQueryValue(req.query.record_key, 'record_key');
+      const mimeType = normalizeUploadContentType(req.headers['content-type']);
+      const manifest = await resolveRegisteredConnectorManifest(connectorId);
+      const manifestStream = (manifest.streams || []).find((candidate) => candidate.name === stream);
+      if (!manifestStream) {
+        const err = new Error(`Stream '${stream}' not found for connector ${connectorId}`);
+        err.code = 'not_found';
+        throw err;
+      }
+      const body = coerceUploadBodyToBuffer(req.body);
+      const result = persistContentAddressedBlob({
+        connectorId,
+        stream,
+        recordKey,
+        mimeType,
+        data: body,
+      });
+      res.json({
+        object: 'blob',
+        ...result,
+      });
+    } catch (err) {
+      handleError(res, err);
+    }
+  });
 
   app.get('/v1/blobs/:blob_id', { contract: 'getBlob' }, requireToken, async (req, res) => {
     try {

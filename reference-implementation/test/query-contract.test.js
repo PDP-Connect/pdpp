@@ -16,6 +16,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -165,6 +166,22 @@ async function seedSpotifyStream(rsUrl, ownerToken, connectorId, stream, records
     body: lines,
   });
   assert.equal(resp.status, 200, `ingest ${stream} ok`);
+}
+
+async function uploadBlob(rsUrl, ownerToken, params, body, contentType = 'application/octet-stream') {
+  const query = new URLSearchParams({
+    connector_id: params.connector_id,
+    stream: params.stream,
+    record_key: params.record_key,
+  });
+  return fetchJson(`${rsUrl}/v1/blobs?${query.toString()}`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${ownerToken}`,
+      'Content-Type': contentType,
+    },
+    body,
+  });
 }
 
 async function seedSpotifyTopArtists(rsUrl, ownerToken, connectorId, records) {
@@ -989,6 +1006,138 @@ test('connector manifest validation rejects unsafe query.expand declarations', a
     const invalidLimitsResp = await registerConnectorManifest(asUrl, invalidLimits);
     assert.equal(invalidLimitsResp.status, 400);
     assert.match(invalidLimitsResp.body.error.message, /default_limit must be less than or equal to max_limit/);
+  });
+});
+
+test('blob upload requires owner authority and validates binding inputs', async () => {
+  await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
+    const ownerToken = await issueOwnerToken(asUrl, 'blob_upload_validation_owner');
+    const connectorId = spotifyManifest.connector_id;
+    const grant = await approveGrant(asUrl, 'blob_upload_validation_owner', {
+      client_id: 'longview',
+      connector_id: connectorId,
+      purpose_code: 'https://pdpp.org/purpose/personalization',
+      purpose_description: 'Read saved tracks only',
+      access_mode: 'continuous',
+      streams: [{ name: 'saved_tracks', fields: ['id', 'name', 'saved_at'] }],
+    });
+
+    const clientUpload = await uploadBlob(
+      rsUrl,
+      grant.token,
+      { connector_id: connectorId, stream: 'saved_tracks', record_key: 'track_blob_upload' },
+      Buffer.from('client cannot upload'),
+      'text/plain',
+    );
+    assert.equal(clientUpload.status, 403);
+    assert.equal(clientUpload.body.error.code, 'permission_error');
+
+    const missingConnector = await fetchJson(`${rsUrl}/v1/blobs?stream=saved_tracks&record_key=track_blob_upload`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${ownerToken}`,
+        'Content-Type': 'text/plain',
+      },
+      body: 'missing connector',
+    });
+    assert.equal(missingConnector.status, 400);
+    assert.equal(missingConnector.body.error.code, 'invalid_request');
+
+    const unknownStream = await uploadBlob(
+      rsUrl,
+      ownerToken,
+      { connector_id: connectorId, stream: 'missing_stream', record_key: 'track_blob_upload' },
+      Buffer.from('unknown stream'),
+      'text/plain',
+    );
+    assert.equal(unknownStream.status, 404);
+    assert.equal(unknownStream.body.error.code, 'not_found');
+  });
+});
+
+test('blob upload is content-addressed, idempotent, and fetch-safe through visible blob_ref', async () => {
+  await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
+    const ownerToken = await issueOwnerToken(asUrl, 'blob_upload_owner');
+    const connectorId = spotifyManifest.connector_id;
+    const bytes = Buffer.from([0x25, 0x50, 0x44, 0x46, 0x0a, 0xff]);
+    const expectedSha = createHash('sha256').update(bytes).digest('hex');
+
+    const first = await uploadBlob(
+      rsUrl,
+      ownerToken,
+      { connector_id: connectorId, stream: 'saved_tracks', record_key: 'track_blob_upload' },
+      bytes,
+      'application/pdf',
+    );
+    assert.equal(first.status, 200);
+    assert.equal(first.body.object, 'blob');
+    assert.equal(first.body.sha256, expectedSha);
+    assert.equal(first.body.blob_id, `blob_sha256_${expectedSha}`);
+    assert.equal(first.body.size_bytes, bytes.length);
+    assert.equal(first.body.mime_type, 'application/pdf');
+
+    const duplicate = await uploadBlob(
+      rsUrl,
+      ownerToken,
+      { connector_id: connectorId, stream: 'saved_tracks', record_key: 'track_blob_upload' },
+      bytes,
+      'application/pdf',
+    );
+    assert.equal(duplicate.status, 200);
+    assert.deepEqual(duplicate.body, first.body);
+
+    const secondBinding = await uploadBlob(
+      rsUrl,
+      ownerToken,
+      { connector_id: connectorId, stream: 'saved_tracks', record_key: 'track_blob_upload_copy' },
+      bytes,
+      'application/pdf',
+    );
+    assert.equal(secondBinding.status, 200);
+    assert.equal(secondBinding.body.blob_id, first.body.blob_id);
+
+    const blobCount = getDb().prepare('SELECT COUNT(*) AS n FROM blobs WHERE sha256 = ?').get(expectedSha);
+    assert.equal(blobCount.n, 1, 'duplicate uploads should not duplicate stored bytes');
+    const bindingCount = getDb().prepare('SELECT COUNT(*) AS n FROM blob_bindings WHERE blob_id = ?').get(first.body.blob_id);
+    assert.equal(bindingCount.n, 2, 'same content can be bound idempotently to multiple records');
+
+    await seedSpotifyStream(rsUrl, ownerToken, connectorId, 'saved_tracks', [
+      {
+        id: 'track_blob_upload',
+        name: 'Track Blob Upload',
+        saved_at: '2026-02-01T00:00:00Z',
+        source_created_at: '2026-02-01T00:00:00Z',
+        blob_ref: {
+          blob_id: first.body.blob_id,
+          mime_type: first.body.mime_type,
+          size_bytes: first.body.size_bytes,
+          sha256: first.body.sha256,
+        },
+      },
+    ]);
+
+    const visibleGrant = await approveGrant(asUrl, 'blob_upload_owner', {
+      client_id: 'longview',
+      connector_id: connectorId,
+      purpose_code: 'https://pdpp.org/purpose/personalization',
+      purpose_description: 'Read saved tracks with uploaded blob access',
+      access_mode: 'continuous',
+      streams: [{ name: 'saved_tracks', fields: ['id', 'name', 'saved_at', 'blob_ref'] }],
+    });
+
+    const recordResp = await fetchJson(`${rsUrl}/v1/streams/saved_tracks/records`, {
+      headers: { Authorization: `Bearer ${visibleGrant.token}` },
+    });
+    assert.equal(recordResp.status, 200);
+    assert.equal(recordResp.body.data?.[0]?.data?.blob_ref?.fetch_url, `/v1/blobs/${first.body.blob_id}`);
+
+    const blobResp = await fetch(`${rsUrl}/v1/blobs/${first.body.blob_id}`, {
+      headers: { Authorization: `Bearer ${visibleGrant.token}` },
+    });
+    assert.equal(blobResp.status, 200);
+    assert.equal(blobResp.headers.get('content-type'), 'application/pdf');
+    assert.equal(blobResp.headers.get('content-length'), String(bytes.length));
+    assert.deepEqual(Buffer.from(await blobResp.arrayBuffer()), bytes);
   });
 });
 

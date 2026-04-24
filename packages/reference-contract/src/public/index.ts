@@ -70,6 +70,33 @@ const ListRecordsQuerySchema = {
   },
 };
 
+const UploadBlobQuerySchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    connector_id: NonEmptyStringSchema,
+    stream: NonEmptyStringSchema,
+    record_key: NonEmptyStringSchema,
+  },
+  required: ["connector_id", "stream", "record_key"],
+};
+
+const BlobObjectSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    object: { const: "blob" },
+    blob_id: NonEmptyStringSchema,
+    sha256: {
+      type: "string",
+      pattern: "^[a-f0-9]{64}$",
+    },
+    size_bytes: { type: "integer", minimum: 0 },
+    mime_type: NonEmptyStringSchema,
+  },
+  required: ["object", "blob_id", "sha256", "size_bytes", "mime_type"],
+};
+
 const ClientDisplaySchema = {
   type: "object",
   additionalProperties: false,
@@ -835,7 +862,8 @@ export const publicManifests = [
     path: "/v1/connectors",
     surface: "public",
     tags: ["records"],
-    summary: "List connector or source boundaries visible under the bearer token, with stream summaries and coarse capability hints.",
+    summary:
+      "List connector or source boundaries visible under the bearer token, with stream summaries and coarse capability hints.",
     request: {
       headers: AuthHeaderSchema,
     },
@@ -1115,6 +1143,32 @@ export const publicManifests = [
       401: { schema: ErrorObjectSchema, description: "Missing or invalid access token" },
       403: { schema: ErrorObjectSchema, description: "Grant does not permit a named stream (client tokens only)" },
       410: { schema: ErrorObjectSchema, description: "Cursor expired or refers to an unknown snapshot" },
+    },
+  },
+  {
+    id: "uploadBlob",
+    method: "POST",
+    path: "/v1/blobs",
+    surface: "public",
+    tags: ["records"],
+    summary: "Upload connector/runtime-owned blob bytes for a bound record.",
+    request: {
+      headers: AuthHeaderSchema,
+      query: UploadBlobQuerySchema,
+      body: {
+        contentType: "application/octet-stream",
+        schema: { type: "string", format: "binary" },
+      },
+    },
+    responses: {
+      200: {
+        schema: BlobObjectSchema,
+        description: "Canonical content-addressed blob identity for the uploaded bytes",
+      },
+      400: { schema: ErrorObjectSchema, description: "Invalid upload request" },
+      401: { schema: ErrorObjectSchema, description: "Missing or invalid access token" },
+      403: { schema: ErrorObjectSchema, description: "Owner/runtime authority required" },
+      404: { schema: ErrorObjectSchema, description: "Unknown connector or stream" },
     },
   },
   {

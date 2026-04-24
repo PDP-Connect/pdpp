@@ -190,6 +190,18 @@ CREATE TABLE IF NOT EXISTS blobs (
   data          BLOB
 );
 
+CREATE TABLE IF NOT EXISTS blob_bindings (
+  blob_id       TEXT NOT NULL,
+  connector_id  TEXT NOT NULL,
+  stream        TEXT NOT NULL,
+  record_key    TEXT NOT NULL,
+  PRIMARY KEY(blob_id, connector_id, stream, record_key),
+  FOREIGN KEY(blob_id) REFERENCES blobs(blob_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_blob_bindings_record
+  ON blob_bindings(connector_id, stream, record_key);
+
 CREATE TABLE IF NOT EXISTS connector_state (
   connector_id  TEXT NOT NULL,
   stream        TEXT NOT NULL,

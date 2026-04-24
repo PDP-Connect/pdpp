@@ -16,6 +16,7 @@
 //   - application/json                — Fastify's JSON parser (empty bodies ⇒ {})
 //   - application/x-www-form-urlencoded — @fastify/formbody with qs depth 8
 //   - application/x-ndjson             — raw string, parsed by the handler
+//   - other content types              — raw Buffer for binary upload routes
 //
 // Query parsing:
 //   - qs-backed nested parser so `filter[field][gte]=…` decodes into
@@ -209,6 +210,13 @@ function buildFastify({ loggerInstance }) {
       done(null, body);
     });
   }
+
+  // Binary upload surfaces (currently `POST /v1/blobs`) need exact bytes.
+  // The wildcard parser is a fallback: exact parsers above and JSON below
+  // still own their content types.
+  fastify.addContentTypeParser('*', { parseAs: 'buffer' }, (req, body, done) => {
+    done(null, body);
+  });
 
   // Express tolerates empty request bodies on `Content-Type: application/json`
   // (treats `req.body` as `{}`). Fastify's default JSON parser returns

@@ -4252,6 +4252,272 @@
         }
       }
     },
+    "/v1/blobs": {
+      "post": {
+        "operationId": "uploadBlob",
+        "tags": [
+          "records"
+        ],
+        "summary": "Upload connector/runtime-owned blob bytes for a bound record.",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "connector_id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          {
+            "in": "query",
+            "name": "stream",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          {
+            "in": "query",
+            "name": "record_key",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Canonical content-addressed blob identity for the uploaded bytes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "object": {
+                      "const": "blob"
+                    },
+                    "blob_id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "sha256": {
+                      "type": "string",
+                      "pattern": "^[a-f0-9]{64}$"
+                    },
+                    "size_bytes": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "mime_type": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "required": [
+                    "object",
+                    "blob_id",
+                    "sha256",
+                    "size_bytes",
+                    "mime_type"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid upload request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$id": "pdpp/common/PdppError",
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "type": {
+                          "type": "string"
+                        },
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "param": {
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "code",
+                        "message",
+                        "request_id"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid access token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$id": "pdpp/common/PdppError",
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "type": {
+                          "type": "string"
+                        },
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "param": {
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "code",
+                        "message",
+                        "request_id"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Owner/runtime authority required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$id": "pdpp/common/PdppError",
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "type": {
+                          "type": "string"
+                        },
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "param": {
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "code",
+                        "message",
+                        "request_id"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown connector or stream",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$id": "pdpp/common/PdppError",
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "type": {
+                          "type": "string"
+                        },
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "param": {
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "code",
+                        "message",
+                        "request_id"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/blobs/{blob_id}": {
       "get": {
         "operationId": "getBlob",

@@ -20,6 +20,7 @@ Generated from `packages/reference-contract/src/public/`. Do not edit by hand.
 | **GET** | `/v1/streams/{stream}/records/{id}` | `getRecord` | Fetch a single record by primary key under grant enforcement, with optional declared expansion. |
 | **GET** | `/v1/search` | `searchRecordsLexical` | Optional lexical retrieval extension: search records across authorized streams by text. See the lexical-retrieval capability spec. |
 | **GET** | `/v1/search/semantic` | `searchRecordsSemantic` | Experimental optional extension: semantic retrieval across authorized streams by text. See the semantic-retrieval capability spec. Unstable in v1. |
+| **POST** | `/v1/blobs` | `uploadBlob` | Upload connector/runtime-owned blob bytes for a bound record. |
 | **GET** | `/v1/blobs/{blob_id}` | `getBlob` | Fetch blob bytes authorized by the caller having discovered the referencing record under grant. |
 
 ## getAuthorizationServerMetadata
@@ -333,6 +334,30 @@ Experimental optional extension: semantic retrieval across authorized streams by
 - `401` — Missing or invalid access token
 - `403` — Grant does not permit a named stream (client tokens only)
 - `410` — Cursor expired or refers to an unknown snapshot
+
+## uploadBlob
+
+`POST /v1/blobs`
+
+Upload connector/runtime-owned blob bytes for a bound record.
+
+### Query parameters
+
+- `connector_id` — string
+- `stream` — string
+- `record_key` — string
+
+### Request body
+
+`application/octet-stream`
+
+### Responses
+
+- `200` — Canonical content-addressed blob identity for the uploaded bytes
+- `400` — Invalid upload request
+- `401` — Missing or invalid access token
+- `403` — Owner/runtime authority required
+- `404` — Unknown connector or stream
 
 ## getBlob
 
