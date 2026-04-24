@@ -39,3 +39,26 @@ OpenSpec corpus cleanup SHALL not silently implement runtime behavior, change pr
 #### Scenario: A cleanup task removes or archives a note
 - **WHEN** cleanup archives, supersedes, or moves a design note
 - **THEN** important decisions or links from that note SHALL remain discoverable through an index, canonical spec, archived change, or replacement design note
+
+## MODIFIED Requirements
+
+### Requirement: Design notes are disciplined requirements-discovery artifacts
+Design notes SHALL be used only for discovery, research, options, unresolved questions, and decision records that are not yet ready to become official OpenSpec deltas or root PDPP spec changes. Design notes SHALL remain non-canonical supplemental artifacts.
+
+#### Scenario: A question is discovered during implementation
+- **WHEN** a contributor discovers a potentially important design question that should not interrupt the current implementation
+- **THEN** they MAY capture it in a design note with status, owner, question, context, stakes, current leaning, promotion trigger, and decision log
+- **AND** they SHALL NOT treat that note as permission to implement a durable behavior before the question is promoted or decided
+
+#### Scenario: A design question controls durable behavior
+- **WHEN** a design note's answer would change a protocol surface, reference contract, architecture boundary, security posture, storage model, user-facing behavior, or multi-step implementation tranche
+- **THEN** the question SHALL be promoted into an OpenSpec change or root PDPP spec change before implementation proceeds
+
+#### Scenario: A design note becomes stale
+- **WHEN** code, tests, canonical OpenSpec specs, or root PDPP specs resolve or contradict a design note
+- **THEN** contributors SHALL treat the note as stale context and update its status or link to the artifact that supersedes it
+
+#### Scenario: A design note is created or next touched
+- **WHEN** a contributor creates a design note or materially edits an existing active-intake design note
+- **THEN** the note SHALL use the canonical header shape defined by `design-notes/README.md`
+- **AND** legacy ad-hoc headers SHALL be normalized at next touch when the note remains active intake

@@ -23,8 +23,8 @@
 
 - [x] 4.1 Compare canonical `openspec/specs/*` against shipped docs/routes/tests for reference architecture, retrieval, control plane, logging, and polyfill runtime behavior.
 - [x] 4.2 Write `reports/spec-gap-audit.md` listing missing coverage and whether each gap should be fixed in this change or a follow-up.
-- [ ] 4.3 Add governance-only missing requirements in this change if found.
-- [ ] 4.4 Create follow-up OpenSpec change stubs for non-governance missing spec coverage if needed.
+- [x] 4.3 Add governance-only missing requirements in this change if found.
+- [x] 4.4 Create follow-up OpenSpec change stubs for non-governance missing spec coverage if needed.
 
 ## 5. Program Decomposition
 
@@ -42,7 +42,7 @@
 
 ## 7. Final Validation
 
-- [ ] 7.1 Run `openspec validate clean-up-openspec-corpus --strict`.
-- [ ] 7.2 Run `openspec validate --all --strict`.
+- [x] 7.1 Run `openspec validate clean-up-openspec-corpus --strict`.
+- [x] 7.2 Run `openspec validate --all --strict`.
 - [ ] 7.3 Confirm `openspec list` contains only genuinely active changes with clear next action.
-- [ ] 7.4 Commit the cleanup and report remaining follow-up changes.
+- [x] 7.4 Commit the cleanup and report remaining follow-up changes.

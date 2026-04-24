@@ -24,6 +24,7 @@ This change turns that broad cleanup into an explicit, delegable OpenSpec progra
 
 ### Modified Capabilities
 
+- `reference-implementation-architecture`: backfills the shipped `GET /_ref/dataset/summary` reference-only read route into the bounded `_ref` surface.
 - `reference-implementation-governance`: adds corpus-hygiene requirements for periodic audit, active-change inventory, design-note triage, and missing-spec backfill.
 
 ## Impact
