@@ -3,7 +3,6 @@ import {
   getAsInternalUrl,
   withOwnerSessionCookie,
 } from './owner-token';
-import { formatDurationCompact } from './duration';
 
 function asJson(body: unknown) {
   return JSON.stringify(body);

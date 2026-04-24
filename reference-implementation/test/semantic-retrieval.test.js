@@ -42,6 +42,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { fileURLToPath } from 'node:url';
 
 import { parseSemanticSearchParams } from '../server/search-semantic.js';
 import { startServer } from '../server/index.js';
@@ -49,6 +50,7 @@ import { startServer } from '../server/index.js';
 // ─── harness ────────────────────────────────────────────────────────────────
 
 const TEST_DCR_INITIAL_ACCESS_TOKEN = 'pdpp-reference-test-initial-access-token';
+const TEST_DIR = path.dirname(fileURLToPath(import.meta.url));
 
 async function fetchJson(url, opts = {}) {
   const resp = await fetch(url, opts);
@@ -640,7 +642,7 @@ test('snippet text is a verbatim contiguous substring of the matched field (prop
 // ─── 14.21/14.22 — no-fallback invariant visible in source ──────────────────
 
 test('search-semantic.js has zero imports from search.js (no silent lexical fallback)', () => {
-  const filePath = path.join(process.cwd(), 'server', 'search-semantic.js');
+  const filePath = path.join(TEST_DIR, '..', 'server', 'search-semantic.js');
   const src = fs.readFileSync(filePath, 'utf8');
   // The invariant: no `from './search.js'` or `require('./search.js')`.
   assert.ok(!/from\s+['"]\.\/search\.js['"]/.test(src), 'search-semantic.js must not import from search.js');
