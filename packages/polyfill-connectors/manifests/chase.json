@@ -5,11 +5,16 @@
   "display_name": "Chase",
   "runtime_requirements": {
     "bindings": {
-      "network": { "required": true }
+      "network": {
+        "required": true
+      }
     }
   },
   "capabilities": {
-    "human_interaction": ["otp", "manual_action"]
+    "human_interaction": [
+      "otp",
+      "manual_action"
+    ]
   },
   "streams": [
     {
@@ -23,24 +28,102 @@
       "schema": {
         "type": "object",
         "properties": {
-          "id": { "type": "string", "description": "Stable connector-scoped identifier. Currently a hash of (account_type, account_number); will stabilize on Chase's internal account id once we scrape it from the dashboard DOM." },
-          "name": { "type": ["string", "null"] },
-          "type": { "type": ["string", "null"], "description": "checking | savings | credit_card | money_market | other" },
-          "last_four": { "type": ["string", "null"] },
-          "balance_cents": { "type": ["integer", "null"], "description": "Ledger balance as of statement_as_of_date (QFX LEDGERBAL)." },
-          "available_balance_cents": { "type": ["integer", "null"], "description": "Available balance if reported (QFX AVAILBAL)." },
-          "credit_limit_cents": { "type": ["integer", "null"], "description": "Credit cards only. Null for checking/savings." },
-          "available_credit_cents": { "type": ["integer", "null"], "description": "Credit cards only. Null for checking/savings." },
-          "statement_balance_cents": { "type": ["integer", "null"], "description": "Credit cards only. Balance on most recent statement; null for checking/savings." },
-          "status": { "type": ["string", "null"] },
-          "balance_as_of": { "type": ["string", "null"], "format": "date-time" },
-          "fetched_at": { "type": "string" }
+          "id": {
+            "type": "string",
+            "description": "Stable connector-scoped identifier. Currently a hash of (account_type, account_number); will stabilize on Chase's internal account id once we scrape it from the dashboard DOM."
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "type": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "checking | savings | credit_card | money_market | other"
+          },
+          "last_four": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "balance_cents": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "Ledger balance as of statement_as_of_date (QFX LEDGERBAL)."
+          },
+          "available_balance_cents": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "Available balance if reported (QFX AVAILBAL)."
+          },
+          "credit_limit_cents": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "Credit cards only. Null for checking/savings."
+          },
+          "available_credit_cents": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "Credit cards only. Null for checking/savings."
+          },
+          "statement_balance_cents": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "Credit cards only. Balance on most recent statement; null for checking/savings."
+          },
+          "status": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "balance_as_of": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "fetched_at": {
+            "type": "string"
+          }
         },
-        "required": ["id"]
+        "required": [
+          "id"
+        ]
       },
-      "primary_key": ["id"],
-      "selection": { "fields": true, "resources": true },
-      "incremental": false
+      "primary_key": [
+        "id"
+      ],
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": false,
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "name",
+            "type",
+            "status"
+          ]
+        }
+      }
     },
     {
       "name": "transactions",
@@ -53,34 +136,134 @@
       "schema": {
         "type": "object",
         "properties": {
-          "id": { "type": "string", "description": "${account_id}|${fitid}. Chase's FITID is stable across re-exports." },
-          "account_id": { "type": "string" },
-          "account_name": { "type": ["string", "null"] },
-          "fitid": { "type": "string", "description": "Chase's internal Financial Institution Transaction ID. Verbatim from QFX STMTTRN." },
-          "date": { "type": "string", "format": "date", "description": "Posted date. QFX DTPOSTED." },
-          "amount": { "type": "integer", "description": "Signed amount in cents. Negative for debits, positive for credits." },
-          "currency": { "type": "string", "description": "Always 'USD' for Chase retail accounts. QFX CURDEF." },
-          "type": { "type": ["string", "null"], "description": "QFX TRNTYPE: CREDIT | DEBIT | CHECK | XFER | PAYMENT | DEP | DIRECTDEP | DIRECTDEBIT | ATM | POS | FEE | SRVCHG | INT | DIV | CASH | OTHER." },
-          "name": { "type": ["string", "null"], "description": "Payee or merchant name. QFX NAME." },
-          "memo": { "type": ["string", "null"], "description": "QFX MEMO. Often contains merchant city for CC transactions, or the raw bank descriptor for checking." },
-          "check_number": { "type": ["string", "null"], "description": "QFX CHECKNUM, when present." },
-          "reference_number": { "type": ["string", "null"], "description": "QFX REFNUM. Chase uses this for Zelle and wire transfers." },
-          "source": { "type": "string", "description": "Always 'qfx_download_<YYYY-MM-DD>_to_<YYYY-MM-DD>'. Provenance for audit and re-extraction." },
-          "fetched_at": { "type": "string" }
+          "id": {
+            "type": "string",
+            "description": "${account_id}|${fitid}. Chase's FITID is stable across re-exports."
+          },
+          "account_id": {
+            "type": "string"
+          },
+          "account_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "fitid": {
+            "type": "string",
+            "description": "Chase's internal Financial Institution Transaction ID. Verbatim from QFX STMTTRN."
+          },
+          "date": {
+            "type": "string",
+            "format": "date",
+            "description": "Posted date. QFX DTPOSTED."
+          },
+          "amount": {
+            "type": "integer",
+            "description": "Signed amount in cents. Negative for debits, positive for credits."
+          },
+          "currency": {
+            "type": "string",
+            "description": "Always 'USD' for Chase retail accounts. QFX CURDEF."
+          },
+          "type": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "QFX TRNTYPE: CREDIT | DEBIT | CHECK | XFER | PAYMENT | DEP | DIRECTDEP | DIRECTDEBIT | ATM | POS | FEE | SRVCHG | INT | DIV | CASH | OTHER."
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Payee or merchant name. QFX NAME."
+          },
+          "memo": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "QFX MEMO. Often contains merchant city for CC transactions, or the raw bank descriptor for checking."
+          },
+          "check_number": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "QFX CHECKNUM, when present."
+          },
+          "reference_number": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "QFX REFNUM. Chase uses this for Zelle and wire transfers."
+          },
+          "source": {
+            "type": "string",
+            "description": "Always 'qfx_download_<YYYY-MM-DD>_to_<YYYY-MM-DD>'. Provenance for audit and re-extraction."
+          },
+          "fetched_at": {
+            "type": "string"
+          }
         },
-        "required": ["id", "account_id", "fitid", "date", "amount", "currency"]
+        "required": [
+          "id",
+          "account_id",
+          "fitid",
+          "date",
+          "amount",
+          "currency"
+        ]
       },
-      "primary_key": ["id"],
+      "primary_key": [
+        "id"
+      ],
       "cursor_field": "date",
       "consent_time_field": "date",
-      "selection": { "fields": true, "resources": true },
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
       "incremental": true,
       "relationships": [
-        { "name": "account", "stream": "accounts", "foreign_key": "account_id", "cardinality": "has_one" }
+        {
+          "name": "account",
+          "stream": "accounts",
+          "foreign_key": "account_id",
+          "cardinality": "has_one"
+        }
       ],
       "views": [
-        { "id": "reconciliation", "label": "Fields for matching to YNAB/Amazon", "fields": ["id", "account_id", "account_name", "date", "amount", "name", "memo", "check_number", "reference_number"] }
-      ]
+        {
+          "id": "reconciliation",
+          "label": "Fields for matching to YNAB/Amazon",
+          "fields": [
+            "id",
+            "account_id",
+            "account_name",
+            "date",
+            "amount",
+            "name",
+            "memo",
+            "check_number",
+            "reference_number"
+          ]
+        }
+      ],
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "account_name",
+            "name",
+            "memo",
+            "source",
+            "reference_number"
+          ]
+        }
+      }
     },
     {
       "name": "statements",
@@ -93,26 +276,90 @@
       "schema": {
         "type": "object",
         "properties": {
-          "id": { "type": "string", "description": "SHA-256(account_reference|date_delivered|title), 32 hex chars." },
-          "account_id": { "type": ["string", "null"], "description": "FK to accounts.id. Resolved by matching the statement row's account_reference back to the accounts stream. Null when neither last-four nor name substring match succeed." },
-          "title": { "type": "string", "description": "Row title from the Statements & Documents table, e.g. `Sapphire Preferred (...9241)`." },
-          "date_delivered": { "type": ["string", "null"], "format": "date" },
-          "account_reference": { "type": ["string", "null"] },
-          "document_url": { "type": ["string", "null"], "description": "file:// URI for the stored PDF on disk. Populated only after blob hydration; null on index-only scrapes." },
-          "pdf_path": { "type": ["string", "null"], "description": "Absolute filesystem path of the downloaded PDF under ~/.pdpp/chase-statements/. Null until hydrated." },
-          "pdf_sha256": { "type": ["string", "null"], "description": "SHA-256 of the downloaded PDF bytes." },
-          "fetched_at": { "type": "string" }
+          "id": {
+            "type": "string",
+            "description": "SHA-256(account_reference|date_delivered|title), 32 hex chars."
+          },
+          "account_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "FK to accounts.id. Resolved by matching the statement row's account_reference back to the accounts stream. Null when neither last-four nor name substring match succeed."
+          },
+          "title": {
+            "type": "string",
+            "description": "Row title from the Statements & Documents table, e.g. `Sapphire Preferred (...9241)`."
+          },
+          "date_delivered": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date"
+          },
+          "account_reference": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "document_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "file:// URI for the stored PDF on disk. Populated only after blob hydration; null on index-only scrapes."
+          },
+          "pdf_path": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Absolute filesystem path of the downloaded PDF under ~/.pdpp/chase-statements/. Null until hydrated."
+          },
+          "pdf_sha256": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "SHA-256 of the downloaded PDF bytes."
+          },
+          "fetched_at": {
+            "type": "string"
+          }
         },
-        "required": ["id", "title"]
+        "required": [
+          "id",
+          "title"
+        ]
       },
-      "primary_key": ["id"],
+      "primary_key": [
+        "id"
+      ],
       "cursor_field": "date_delivered",
       "consent_time_field": "date_delivered",
-      "selection": { "fields": true, "resources": true },
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
       "incremental": true,
       "relationships": [
-        { "name": "account", "stream": "accounts", "foreign_key": "account_id", "cardinality": "has_one" }
-      ]
+        {
+          "name": "account",
+          "stream": "accounts",
+          "foreign_key": "account_id",
+          "cardinality": "has_one"
+        }
+      ],
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "title",
+            "account_reference"
+          ]
+        }
+      }
     },
     {
       "name": "balances",
@@ -125,22 +372,59 @@
       "schema": {
         "type": "object",
         "properties": {
-          "id": { "type": "string", "description": "${account_id}|${as_of_iso}" },
-          "account_id": { "type": "string" },
-          "as_of": { "type": "string", "format": "date-time", "description": "QFX DTASOF — when Chase measured the balance." },
-          "ledger_balance_cents": { "type": ["integer", "null"], "description": "QFX LEDGERBAL." },
-          "available_balance_cents": { "type": ["integer", "null"], "description": "QFX AVAILBAL." },
-          "fetched_at": { "type": "string" }
+          "id": {
+            "type": "string",
+            "description": "${account_id}|${as_of_iso}"
+          },
+          "account_id": {
+            "type": "string"
+          },
+          "as_of": {
+            "type": "string",
+            "format": "date-time",
+            "description": "QFX DTASOF — when Chase measured the balance."
+          },
+          "ledger_balance_cents": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "QFX LEDGERBAL."
+          },
+          "available_balance_cents": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "QFX AVAILBAL."
+          },
+          "fetched_at": {
+            "type": "string"
+          }
         },
-        "required": ["id", "account_id", "as_of"]
+        "required": [
+          "id",
+          "account_id",
+          "as_of"
+        ]
       },
-      "primary_key": ["id"],
+      "primary_key": [
+        "id"
+      ],
       "cursor_field": "as_of",
       "consent_time_field": "as_of",
-      "selection": { "fields": true, "resources": true },
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
       "incremental": true,
       "relationships": [
-        { "name": "account", "stream": "accounts", "foreign_key": "account_id", "cardinality": "has_one" }
+        {
+          "name": "account",
+          "stream": "accounts",
+          "foreign_key": "account_id",
+          "cardinality": "has_one"
+        }
       ]
     }
   ]

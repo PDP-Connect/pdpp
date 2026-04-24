@@ -5,11 +5,15 @@
   "display_name": "ChatGPT",
   "runtime_requirements": {
     "bindings": {
-      "network": { "required": true }
+      "network": {
+        "required": true
+      }
     }
   },
   "capabilities": {
-    "human_interaction": ["manual_action"]
+    "human_interaction": [
+      "manual_action"
+    ]
   },
   "streams": [
     {
@@ -23,24 +27,85 @@
       "schema": {
         "type": "object",
         "properties": {
-          "id": { "type": "string" },
-          "title": { "type": ["string", "null"] },
-          "create_time": { "type": ["string", "null"] },
-          "update_time": { "type": ["string", "null"] },
-          "is_archived": { "type": ["boolean", "null"] },
-          "is_starred": { "type": ["boolean", "null"] },
-          "workspace_id": { "type": ["string", "null"] },
-          "current_node": { "type": ["string", "null"] },
-          "message_count_on_current_branch": { "type": ["integer", "null"] },
-          "gizmo_id": { "type": ["string", "null"] }
+          "id": {
+            "type": "string"
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "create_time": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "update_time": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "is_archived": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "is_starred": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "workspace_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "current_node": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "message_count_on_current_branch": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "gizmo_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
         },
-        "required": ["id"]
+        "required": [
+          "id"
+        ]
       },
-      "primary_key": ["id"],
+      "primary_key": [
+        "id"
+      ],
       "cursor_field": "update_time",
       "consent_time_field": "create_time",
-      "selection": { "fields": true, "resources": true },
-      "incremental": true
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": true,
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "title"
+          ]
+        }
+      }
     },
     {
       "name": "messages",
@@ -53,31 +118,103 @@
       "schema": {
         "type": "object",
         "properties": {
-          "id": { "type": "string" },
-          "conversation_id": { "type": "string" },
-          "parent_id": { "type": ["string", "null"] },
-          "children_ids": { "type": "array" },
-          "role": { "type": ["string", "null"] },
-          "content": { "type": ["string", "null"] },
-          "content_type": { "type": ["string", "null"] },
-          "model_slug": { "type": ["string", "null"] },
-          "create_time": { "type": ["string", "null"] },
-          "finish_reason": { "type": ["string", "null"] },
-          "citations": { "type": "array" },
-          "tool_calls": { "type": "array" },
-          "attachment_ids": { "type": "array" },
-          "on_current_branch": { "type": "boolean" }
+          "id": {
+            "type": "string"
+          },
+          "conversation_id": {
+            "type": "string"
+          },
+          "parent_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "children_ids": {
+            "type": "array"
+          },
+          "role": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "content": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "content_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "model_slug": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "create_time": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "finish_reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "citations": {
+            "type": "array"
+          },
+          "tool_calls": {
+            "type": "array"
+          },
+          "attachment_ids": {
+            "type": "array"
+          },
+          "on_current_branch": {
+            "type": "boolean"
+          }
         },
-        "required": ["id", "conversation_id"]
+        "required": [
+          "id",
+          "conversation_id"
+        ]
       },
-      "primary_key": ["id"],
+      "primary_key": [
+        "id"
+      ],
       "cursor_field": "create_time",
       "consent_time_field": "create_time",
-      "selection": { "fields": true, "resources": true },
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
       "incremental": true,
       "relationships": [
-        { "name": "conversation", "stream": "conversations", "foreign_key": "conversation_id", "cardinality": "has_one" }
-      ]
+        {
+          "name": "conversation",
+          "stream": "conversations",
+          "foreign_key": "conversation_id",
+          "cardinality": "has_one"
+        }
+      ],
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "role",
+            "content",
+            "model_slug",
+            "finish_reason"
+          ]
+        }
+      }
     },
     {
       "name": "memories",
@@ -90,18 +227,47 @@
       "schema": {
         "type": "object",
         "properties": {
-          "id": { "type": "string" },
-          "content": { "type": "string" },
-          "created_at": { "type": ["string", "null"] },
-          "updated_at": { "type": ["string", "null"] }
+          "id": {
+            "type": "string"
+          },
+          "content": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "updated_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
         },
-        "required": ["id", "content"]
+        "required": [
+          "id",
+          "content"
+        ]
       },
-      "primary_key": ["id"],
+      "primary_key": [
+        "id"
+      ],
       "cursor_field": "updated_at",
       "consent_time_field": "created_at",
-      "selection": { "fields": true, "resources": true },
-      "incremental": true
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": true,
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "content"
+          ]
+        }
+      }
     },
     {
       "name": "custom_gpts",
@@ -114,28 +280,108 @@
       "schema": {
         "type": "object",
         "properties": {
-          "id": { "type": "string" },
-          "short_url": { "type": ["string", "null"] },
-          "display_name": { "type": ["string", "null"] },
-          "display_description": { "type": ["string", "null"] },
-          "display_welcome_message": { "type": ["string", "null"] },
-          "instructions": { "type": ["string", "null"] },
-          "tools": { "type": "array" },
-          "created_at": { "type": ["string", "null"] },
-          "updated_at": { "type": ["string", "null"] },
-          "author_id": { "type": ["string", "null"] },
-          "author_name": { "type": ["string", "null"] },
-          "is_public": { "type": ["boolean", "null"] },
-          "category": { "type": ["string", "null"] },
-          "tags": { "type": "array" }
+          "id": {
+            "type": "string"
+          },
+          "short_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "display_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "display_description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "display_welcome_message": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "instructions": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tools": {
+            "type": "array"
+          },
+          "created_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "updated_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "author_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "author_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "is_public": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "category": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tags": {
+            "type": "array"
+          }
         },
-        "required": ["id"]
+        "required": [
+          "id"
+        ]
       },
-      "primary_key": ["id"],
+      "primary_key": [
+        "id"
+      ],
       "cursor_field": "updated_at",
       "consent_time_field": "created_at",
-      "selection": { "fields": true, "resources": true },
-      "incremental": true
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": true,
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "display_name",
+            "display_description",
+            "display_welcome_message",
+            "instructions",
+            "author_name",
+            "category"
+          ]
+        }
+      }
     },
     {
       "name": "custom_instructions",
@@ -148,19 +394,56 @@
       "schema": {
         "type": "object",
         "properties": {
-          "id": { "type": "string" },
-          "about_user": { "type": ["string", "null"] },
-          "response_style": { "type": ["string", "null"] },
-          "enabled": { "type": ["boolean", "null"] },
-          "updated_at": { "type": ["string", "null"] }
+          "id": {
+            "type": "string"
+          },
+          "about_user": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "response_style": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "enabled": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "updated_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
         },
-        "required": ["id"]
+        "required": [
+          "id"
+        ]
       },
-      "primary_key": ["id"],
+      "primary_key": [
+        "id"
+      ],
       "cursor_field": "updated_at",
       "consent_time_field": "updated_at",
-      "selection": { "fields": true, "resources": true },
-      "incremental": true
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": true,
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "about_user",
+            "response_style"
+          ]
+        }
+      }
     },
     {
       "name": "shared_conversations",
@@ -173,25 +456,82 @@
       "schema": {
         "type": "object",
         "properties": {
-          "id": { "type": "string" },
-          "conversation_id": { "type": ["string", "null"] },
-          "share_url": { "type": ["string", "null"] },
-          "title": { "type": ["string", "null"] },
-          "created_at": { "type": ["string", "null"] },
-          "anonymous": { "type": ["boolean", "null"] },
-          "is_public": { "type": ["boolean", "null"] },
-          "highlighted_text": { "type": ["string", "null"] }
+          "id": {
+            "type": "string"
+          },
+          "conversation_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "share_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "created_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "anonymous": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "is_public": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "highlighted_text": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
         },
-        "required": ["id"]
+        "required": [
+          "id"
+        ]
       },
-      "primary_key": ["id"],
+      "primary_key": [
+        "id"
+      ],
       "cursor_field": "created_at",
       "consent_time_field": "created_at",
-      "selection": { "fields": true, "resources": true },
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
       "incremental": true,
       "relationships": [
-        { "name": "conversation", "stream": "conversations", "foreign_key": "conversation_id", "cardinality": "has_one" }
-      ]
+        {
+          "name": "conversation",
+          "stream": "conversations",
+          "foreign_key": "conversation_id",
+          "cardinality": "has_one"
+        }
+      ],
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "title",
+            "highlighted_text"
+          ]
+        }
+      }
     }
   ],
   "profiles": [
@@ -199,37 +539,63 @@
       "id": "chats",
       "label": "Your conversation history",
       "streams": [
-        { "name": "conversations" },
-        { "name": "messages" },
-        { "name": "shared_conversations" }
+        {
+          "name": "conversations"
+        },
+        {
+          "name": "messages"
+        },
+        {
+          "name": "shared_conversations"
+        }
       ]
     },
     {
       "id": "authored",
       "label": "Things you authored in ChatGPT",
       "streams": [
-        { "name": "custom_gpts" },
-        { "name": "custom_instructions" }
+        {
+          "name": "custom_gpts"
+        },
+        {
+          "name": "custom_instructions"
+        }
       ]
     },
     {
       "id": "memories_only",
       "label": "Memories and custom instructions",
       "streams": [
-        { "name": "memories" },
-        { "name": "custom_instructions" }
+        {
+          "name": "memories"
+        },
+        {
+          "name": "custom_instructions"
+        }
       ]
     },
     {
       "id": "full",
       "label": "Everything: chats, memories, custom GPTs, custom instructions, shares",
       "streams": [
-        { "name": "conversations" },
-        { "name": "messages" },
-        { "name": "memories" },
-        { "name": "custom_gpts" },
-        { "name": "custom_instructions" },
-        { "name": "shared_conversations" }
+        {
+          "name": "conversations"
+        },
+        {
+          "name": "messages"
+        },
+        {
+          "name": "memories"
+        },
+        {
+          "name": "custom_gpts"
+        },
+        {
+          "name": "custom_instructions"
+        },
+        {
+          "name": "shared_conversations"
+        }
       ]
     }
   ]

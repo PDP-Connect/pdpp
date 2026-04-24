@@ -5,11 +5,15 @@
   "display_name": "USAA",
   "runtime_requirements": {
     "bindings": {
-      "network": { "required": true }
+      "network": {
+        "required": true
+      }
     }
   },
   "capabilities": {
-    "human_interaction": ["manual_action"]
+    "human_interaction": [
+      "manual_action"
+    ]
   },
   "streams": [
     {
@@ -23,20 +27,70 @@
       "schema": {
         "type": "object",
         "properties": {
-          "id": { "type": "string" },
-          "name": { "type": ["string", "null"] },
-          "type": { "type": ["string", "null"] },
-          "last_four": { "type": ["string", "null"] },
-          "balance_cents": { "type": ["integer", "null"] },
-          "available_balance_cents": { "type": ["integer", "null"] },
-          "status": { "type": ["string", "null"] },
-          "fetched_at": { "type": "string" }
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "last_four": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "balance_cents": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "available_balance_cents": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "status": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "fetched_at": {
+            "type": "string"
+          }
         },
-        "required": ["id"]
+        "required": [
+          "id"
+        ]
       },
-      "primary_key": ["id"],
-      "selection": { "fields": true, "resources": true },
-      "incremental": false
+      "primary_key": [
+        "id"
+      ],
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": false,
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "name",
+            "type",
+            "status"
+          ]
+        }
+      }
     },
     {
       "name": "transactions",
@@ -49,33 +103,119 @@
       "schema": {
         "type": "object",
         "properties": {
-          "id": { "type": "string" },
-          "account_id": { "type": "string" },
-          "account_name": { "type": ["string", "null"] },
-          "date": { "type": "string", "format": "date" },
-          "amount": { "type": "integer" },
-          "currency": { "type": "string" },
-          "description": { "type": ["string", "null"] },
-          "original_description": { "type": ["string", "null"] },
-          "category": { "type": ["string", "null"] },
-          "check_number": { "type": ["string", "null"] },
-          "balance_after_cents": { "type": ["integer", "null"] },
-          "source": { "type": "string" },
-          "fetched_at": { "type": "string" }
+          "id": {
+            "type": "string"
+          },
+          "account_id": {
+            "type": "string"
+          },
+          "account_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "date": {
+            "type": "string",
+            "format": "date"
+          },
+          "amount": {
+            "type": "integer"
+          },
+          "currency": {
+            "type": "string"
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "original_description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "category": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "check_number": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "balance_after_cents": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "source": {
+            "type": "string"
+          },
+          "fetched_at": {
+            "type": "string"
+          }
         },
-        "required": ["id", "account_id", "date", "amount", "currency"]
+        "required": [
+          "id",
+          "account_id",
+          "date",
+          "amount",
+          "currency"
+        ]
       },
-      "primary_key": ["id"],
+      "primary_key": [
+        "id"
+      ],
       "cursor_field": "date",
       "consent_time_field": "date",
-      "selection": { "fields": true, "resources": true },
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
       "incremental": true,
       "relationships": [
-        { "name": "account", "stream": "accounts", "foreign_key": "account_id", "cardinality": "has_one" }
+        {
+          "name": "account",
+          "stream": "accounts",
+          "foreign_key": "account_id",
+          "cardinality": "has_one"
+        }
       ],
       "views": [
-        { "id": "reconciliation", "label": "Fields for matching to YNAB/Amazon", "fields": ["id", "account_id", "account_name", "date", "amount", "description", "original_description", "category", "check_number"] }
-      ]
+        {
+          "id": "reconciliation",
+          "label": "Fields for matching to YNAB/Amazon",
+          "fields": [
+            "id",
+            "account_id",
+            "account_name",
+            "date",
+            "amount",
+            "description",
+            "original_description",
+            "category",
+            "check_number"
+          ]
+        }
+      ],
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "account_name",
+            "description",
+            "original_description",
+            "category",
+            "source"
+          ]
+        }
+      }
     },
     {
       "name": "statements",
@@ -88,38 +228,88 @@
       "schema": {
         "type": "object",
         "properties": {
-          "id": { "type": "string" },
+          "id": {
+            "type": "string"
+          },
           "account_id": {
-            "type": ["string", "null"],
+            "type": [
+              "string",
+              "null"
+            ],
             "description": "FK to accounts.id. Resolved by matching the document row's account column (last-four first, then account name) back to the accounts stream. Null when neither match succeeds."
           },
-          "title": { "type": "string" },
-          "date_delivered": { "type": ["string", "null"], "format": "date" },
-          "account_reference": { "type": ["string", "null"] },
+          "title": {
+            "type": "string"
+          },
+          "date_delivered": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date"
+          },
+          "account_reference": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "document_url": {
-            "type": ["string", "null"],
+            "type": [
+              "string",
+              "null"
+            ],
             "description": "file:// URI for the stored PDF on disk. Populated only after blob hydration; null on index-only scrapes."
           },
           "pdf_path": {
-            "type": ["string", "null"],
+            "type": [
+              "string",
+              "null"
+            ],
             "description": "Absolute filesystem path of the downloaded PDF under ~/.pdpp/usaa-statements/. Null until hydrated."
           },
           "pdf_sha256": {
-            "type": ["string", "null"],
+            "type": [
+              "string",
+              "null"
+            ],
             "description": "SHA-256 of the downloaded PDF bytes. Populated only after blob hydration; null on index-only scrapes."
           },
-          "fetched_at": { "type": "string" }
+          "fetched_at": {
+            "type": "string"
+          }
         },
-        "required": ["id", "title"]
+        "required": [
+          "id",
+          "title"
+        ]
       },
-      "primary_key": ["id"],
+      "primary_key": [
+        "id"
+      ],
       "cursor_field": "date_delivered",
       "consent_time_field": "date_delivered",
-      "selection": { "fields": true, "resources": true },
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
       "incremental": true,
       "relationships": [
-        { "name": "account", "stream": "accounts", "foreign_key": "account_id", "cardinality": "has_one" }
-      ]
+        {
+          "name": "account",
+          "stream": "accounts",
+          "foreign_key": "account_id",
+          "cardinality": "has_one"
+        }
+      ],
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "title",
+            "account_reference"
+          ]
+        }
+      }
     },
     {
       "name": "inbox_messages",
@@ -132,20 +322,61 @@
       "schema": {
         "type": "object",
         "properties": {
-          "id": { "type": "string" },
-          "date_received": { "type": ["string", "null"], "format": "date" },
-          "status": { "type": ["string", "null"] },
-          "subject": { "type": ["string", "null"] },
-          "preview": { "type": ["string", "null"] },
-          "fetched_at": { "type": "string" }
+          "id": {
+            "type": "string"
+          },
+          "date_received": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date"
+          },
+          "status": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "subject": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "preview": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "fetched_at": {
+            "type": "string"
+          }
         },
-        "required": ["id"]
+        "required": [
+          "id"
+        ]
       },
-      "primary_key": ["id"],
+      "primary_key": [
+        "id"
+      ],
       "cursor_field": "date_received",
       "consent_time_field": "date_received",
-      "selection": { "fields": true, "resources": true },
-      "incremental": true
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": true,
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "subject",
+            "preview",
+            "status"
+          ]
+        }
+      }
     },
     {
       "name": "credit_card_billing",
@@ -158,28 +389,107 @@
       "schema": {
         "type": "object",
         "properties": {
-          "id": { "type": "string" },
-          "account_id": { "type": ["string", "null"] },
-          "account_nickname": { "type": ["string", "null"] },
-          "current_balance_cents": { "type": ["integer", "null"] },
-          "available_credit_cents": { "type": ["integer", "null"] },
-          "credit_limit_cents": { "type": ["integer", "null"] },
-          "annual_percent_rate": { "type": ["string", "null"] },
-          "cash_advance_apr": { "type": ["string", "null"] },
-          "cash_rewards_cents": { "type": ["integer", "null"] },
-          "billing_status": { "type": ["string", "null"] },
-          "minimum_payment_met": { "type": ["boolean", "null"] },
-          "card_holders": { "type": ["string", "null"] },
-          "fetched_at": { "type": "string" }
+          "id": {
+            "type": "string"
+          },
+          "account_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "account_nickname": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "current_balance_cents": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "available_credit_cents": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "credit_limit_cents": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "annual_percent_rate": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "cash_advance_apr": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "cash_rewards_cents": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "billing_status": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "minimum_payment_met": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "card_holders": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "fetched_at": {
+            "type": "string"
+          }
         },
-        "required": ["id"]
+        "required": [
+          "id"
+        ]
       },
-      "primary_key": ["id"],
-      "selection": { "fields": true, "resources": true },
+      "primary_key": [
+        "id"
+      ],
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
       "incremental": false,
       "relationships": [
-        { "name": "account", "stream": "accounts", "foreign_key": "account_id", "cardinality": "has_one" }
-      ]
+        {
+          "name": "account",
+          "stream": "accounts",
+          "foreign_key": "account_id",
+          "cardinality": "has_one"
+        }
+      ],
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "account_nickname",
+            "billing_status"
+          ]
+        }
+      }
     }
   ],
   "profiles": [
@@ -187,8 +497,13 @@
       "id": "reconciliation",
       "label": "Accounts + transactions for YNAB reconciliation",
       "streams": [
-        { "name": "accounts" },
-        { "name": "transactions", "view": "reconciliation" }
+        {
+          "name": "accounts"
+        },
+        {
+          "name": "transactions",
+          "view": "reconciliation"
+        }
       ]
     }
   ]

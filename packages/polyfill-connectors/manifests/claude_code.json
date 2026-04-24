@@ -5,10 +5,14 @@
   "display_name": "Claude Code",
   "runtime_requirements": {
     "bindings": {
-      "filesystem": { "required": true }
+      "filesystem": {
+        "required": true
+      }
     }
   },
-  "capabilities": { "human_interaction": [] },
+  "capabilities": {
+    "human_interaction": []
+  },
   "streams": [
     {
       "name": "sessions",
@@ -21,24 +25,90 @@
       "schema": {
         "type": "object",
         "properties": {
-          "id": { "type": "string" },
-          "project_path": { "type": ["string", "null"] },
-          "cwd": { "type": ["string", "null"] },
-          "git_branch": { "type": ["string", "null"] },
-          "version": { "type": ["string", "null"] },
-          "started_at": { "type": ["string", "null"] },
-          "last_event_at": { "type": ["string", "null"] },
-          "message_count": { "type": ["integer", "null"] },
-          "user_type": { "type": ["string", "null"] },
-          "entrypoint": { "type": ["string", "null"] }
+          "id": {
+            "type": "string"
+          },
+          "project_path": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "cwd": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "git_branch": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "version": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "started_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "last_event_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "message_count": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "user_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "entrypoint": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
         },
-        "required": ["id"]
+        "required": [
+          "id"
+        ]
       },
-      "primary_key": ["id"],
+      "primary_key": [
+        "id"
+      ],
       "cursor_field": "last_event_at",
       "consent_time_field": "started_at",
-      "selection": { "fields": true, "resources": true },
-      "incremental": true
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": true,
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "project_path",
+            "cwd",
+            "git_branch",
+            "version",
+            "user_type",
+            "entrypoint"
+          ]
+        }
+      }
     },
     {
       "name": "messages",
@@ -51,27 +121,95 @@
       "schema": {
         "type": "object",
         "properties": {
-          "id": { "type": "string" },
-          "session_id": { "type": "string" },
-          "parent_uuid": { "type": ["string", "null"] },
-          "role": { "type": ["string", "null"] },
-          "type": { "type": ["string", "null"] },
-          "content": { "type": ["string", "null"] },
-          "timestamp": { "type": ["string", "null"] },
-          "is_sidechain": { "type": ["boolean", "null"] },
-          "user_type": { "type": ["string", "null"] },
-          "agent_id": { "type": ["string", "null"] }
+          "id": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "parent_uuid": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "role": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "content": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "timestamp": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "is_sidechain": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "user_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "agent_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
         },
-        "required": ["id", "session_id"]
+        "required": [
+          "id",
+          "session_id"
+        ]
       },
-      "primary_key": ["id"],
+      "primary_key": [
+        "id"
+      ],
       "cursor_field": "timestamp",
       "consent_time_field": "timestamp",
-      "selection": { "fields": true, "resources": true },
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
       "incremental": true,
       "relationships": [
-        { "name": "session", "stream": "sessions", "foreign_key": "session_id", "cardinality": "has_one" }
-      ]
+        {
+          "name": "session",
+          "stream": "sessions",
+          "foreign_key": "session_id",
+          "cardinality": "has_one"
+        }
+      ],
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "role",
+            "type",
+            "content",
+            "user_type",
+            "agent_id"
+          ]
+        }
+      }
     },
     {
       "name": "attachments",
@@ -84,26 +222,87 @@
       "schema": {
         "type": "object",
         "properties": {
-          "id": { "type": "string" },
-          "session_id": { "type": "string" },
-          "parent_uuid": { "type": ["string", "null"] },
-          "event_type": { "type": ["string", "null"] },
-          "hook_name": { "type": ["string", "null"] },
-          "tool_use_id": { "type": ["string", "null"] },
-          "content_preview": { "type": ["string", "null"] },
-          "content_bytes": { "type": ["integer", "null"] },
-          "timestamp": { "type": ["string", "null"] }
+          "id": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "parent_uuid": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "event_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "hook_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tool_use_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "content_preview": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "content_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "timestamp": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
         },
-        "required": ["id", "session_id"]
+        "required": [
+          "id",
+          "session_id"
+        ]
       },
-      "primary_key": ["id"],
+      "primary_key": [
+        "id"
+      ],
       "cursor_field": "timestamp",
       "consent_time_field": "timestamp",
-      "selection": { "fields": true, "resources": true },
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
       "incremental": true,
       "relationships": [
-        { "name": "session", "stream": "sessions", "foreign_key": "session_id", "cardinality": "has_one" }
-      ]
+        {
+          "name": "session",
+          "stream": "sessions",
+          "foreign_key": "session_id",
+          "cardinality": "has_one"
+        }
+      ],
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "event_type",
+            "hook_name",
+            "content_preview"
+          ]
+        }
+      }
     },
     {
       "name": "skills",
@@ -116,21 +315,75 @@
       "schema": {
         "type": "object",
         "properties": {
-          "id": { "type": "string" },
-          "name": { "type": ["string", "null"] },
-          "description": { "type": ["string", "null"] },
-          "source": { "type": ["string", "null"] },
-          "path": { "type": ["string", "null"] },
-          "content": { "type": ["string", "null"] },
-          "frontmatter": { "type": ["object", "null"] },
-          "mtime_epoch": { "type": ["integer", "null"] }
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "path": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "content": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "frontmatter": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "mtime_epoch": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
         },
-        "required": ["id"]
+        "required": [
+          "id"
+        ]
       },
-      "primary_key": ["id"],
+      "primary_key": [
+        "id"
+      ],
       "cursor_field": "mtime_epoch",
-      "selection": { "fields": true, "resources": true },
-      "incremental": false
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": false,
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "name",
+            "description",
+            "source",
+            "content"
+          ]
+        }
+      }
     },
     {
       "name": "slash_commands",
@@ -143,20 +396,68 @@
       "schema": {
         "type": "object",
         "properties": {
-          "id": { "type": "string" },
-          "name": { "type": ["string", "null"] },
-          "description": { "type": ["string", "null"] },
-          "path": { "type": ["string", "null"] },
-          "content": { "type": ["string", "null"] },
-          "frontmatter": { "type": ["object", "null"] },
-          "mtime_epoch": { "type": ["integer", "null"] }
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "path": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "content": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "frontmatter": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "mtime_epoch": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
         },
-        "required": ["id"]
+        "required": [
+          "id"
+        ]
       },
-      "primary_key": ["id"],
+      "primary_key": [
+        "id"
+      ],
       "cursor_field": "mtime_epoch",
-      "selection": { "fields": true, "resources": true },
-      "incremental": false
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": false,
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "name",
+            "description",
+            "content"
+          ]
+        }
+      }
     }
   ],
   "profiles": [
@@ -164,27 +465,45 @@
       "id": "full",
       "label": "Your full Claude Code history",
       "streams": [
-        { "name": "sessions" },
-        { "name": "messages" },
-        { "name": "attachments" },
-        { "name": "skills" },
-        { "name": "slash_commands" }
+        {
+          "name": "sessions"
+        },
+        {
+          "name": "messages"
+        },
+        {
+          "name": "attachments"
+        },
+        {
+          "name": "skills"
+        },
+        {
+          "name": "slash_commands"
+        }
       ]
     },
     {
       "id": "messages_only",
       "label": "Just prompts and responses",
       "streams": [
-        { "name": "sessions" },
-        { "name": "messages" }
+        {
+          "name": "sessions"
+        },
+        {
+          "name": "messages"
+        }
       ]
     },
     {
       "id": "customizations",
       "label": "Your skills and slash commands",
       "streams": [
-        { "name": "skills" },
-        { "name": "slash_commands" }
+        {
+          "name": "skills"
+        },
+        {
+          "name": "slash_commands"
+        }
       ]
     }
   ]

@@ -5,11 +5,15 @@
   "display_name": "Gmail",
   "runtime_requirements": {
     "bindings": {
-      "network": { "required": true }
+      "network": {
+        "required": true
+      }
     }
   },
   "capabilities": {
-    "human_interaction": ["credentials"]
+    "human_interaction": [
+      "credentials"
+    ]
   },
   "streams": [
     {
@@ -23,41 +27,184 @@
       "schema": {
         "type": "object",
         "properties": {
-          "id": { "type": "string" },
-          "thread_id": { "type": "string" },
-          "subject": { "type": ["string", "null"] },
-          "from_name": { "type": ["string", "null"] },
-          "from_email": { "type": ["string", "null"] },
-          "to": { "type": "array" },
-          "cc": { "type": "array" },
-          "bcc": { "type": "array" },
-          "reply_to": { "type": "array" },
-          "date": { "type": ["string", "null"] },
-          "received_at": { "type": "string" },
-          "message_id": { "type": ["string", "null"] },
-          "in_reply_to": { "type": ["string", "null"] },
-          "references": { "type": "array" },
-          "size_bytes": { "type": ["integer", "null"] },
-          "labels": { "type": "array" },
-          "is_draft": { "type": "boolean" },
-          "is_flagged": { "type": "boolean" },
-          "is_seen": { "type": "boolean" },
-          "is_answered": { "type": "boolean" },
-          "has_attachments": { "type": "boolean" },
-          "snippet": { "type": ["string", "null"] }
+          "id": {
+            "type": "string"
+          },
+          "thread_id": {
+            "type": "string"
+          },
+          "subject": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "from_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "from_email": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "to": {
+            "type": "array"
+          },
+          "cc": {
+            "type": "array"
+          },
+          "bcc": {
+            "type": "array"
+          },
+          "reply_to": {
+            "type": "array"
+          },
+          "date": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "received_at": {
+            "type": "string"
+          },
+          "message_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "in_reply_to": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "references": {
+            "type": "array"
+          },
+          "size_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "labels": {
+            "type": "array"
+          },
+          "is_draft": {
+            "type": "boolean"
+          },
+          "is_flagged": {
+            "type": "boolean"
+          },
+          "is_seen": {
+            "type": "boolean"
+          },
+          "is_answered": {
+            "type": "boolean"
+          },
+          "has_attachments": {
+            "type": "boolean"
+          },
+          "snippet": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
         },
-        "required": ["id", "thread_id", "received_at"]
+        "required": [
+          "id",
+          "thread_id",
+          "received_at"
+        ]
       },
-      "primary_key": ["id"],
+      "primary_key": [
+        "id"
+      ],
       "cursor_field": "received_at",
       "consent_time_field": "received_at",
-      "selection": { "fields": true, "resources": true },
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
       "incremental": true,
       "views": [
-        { "id": "envelope", "label": "Envelope only (no snippet)", "fields": ["id", "thread_id", "subject", "from_name", "from_email", "to", "cc", "date", "received_at", "labels"] },
-        { "id": "reconciliation", "label": "Fields for matching emails to transactions", "fields": ["id", "thread_id", "subject", "from_name", "from_email", "date", "received_at", "labels", "snippet"] },
-        { "id": "full", "label": "All envelope + flag fields", "fields": ["id", "thread_id", "subject", "from_name", "from_email", "to", "cc", "bcc", "reply_to", "date", "received_at", "message_id", "in_reply_to", "references", "size_bytes", "labels", "is_draft", "is_flagged", "is_seen", "is_answered", "has_attachments", "snippet"] }
-      ]
+        {
+          "id": "envelope",
+          "label": "Envelope only (no snippet)",
+          "fields": [
+            "id",
+            "thread_id",
+            "subject",
+            "from_name",
+            "from_email",
+            "to",
+            "cc",
+            "date",
+            "received_at",
+            "labels"
+          ]
+        },
+        {
+          "id": "reconciliation",
+          "label": "Fields for matching emails to transactions",
+          "fields": [
+            "id",
+            "thread_id",
+            "subject",
+            "from_name",
+            "from_email",
+            "date",
+            "received_at",
+            "labels",
+            "snippet"
+          ]
+        },
+        {
+          "id": "full",
+          "label": "All envelope + flag fields",
+          "fields": [
+            "id",
+            "thread_id",
+            "subject",
+            "from_name",
+            "from_email",
+            "to",
+            "cc",
+            "bcc",
+            "reply_to",
+            "date",
+            "received_at",
+            "message_id",
+            "in_reply_to",
+            "references",
+            "size_bytes",
+            "labels",
+            "is_draft",
+            "is_flagged",
+            "is_seen",
+            "is_answered",
+            "has_attachments",
+            "snippet"
+          ]
+        }
+      ],
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "subject",
+            "from_name",
+            "from_email",
+            "snippet"
+          ]
+        }
+      }
     },
     {
       "name": "threads",
@@ -70,24 +217,68 @@
       "schema": {
         "type": "object",
         "properties": {
-          "id": { "type": "string" },
-          "subject": { "type": ["string", "null"] },
-          "participant_emails": { "type": "array" },
-          "message_count": { "type": "integer" },
-          "first_message_date": { "type": ["string", "null"] },
-          "last_message_date": { "type": ["string", "null"] },
-          "labels": { "type": "array" },
-          "unread_count": { "type": "integer" },
-          "flagged_count": { "type": "integer" },
-          "has_attachments": { "type": "boolean" }
+          "id": {
+            "type": "string"
+          },
+          "subject": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "participant_emails": {
+            "type": "array"
+          },
+          "message_count": {
+            "type": "integer"
+          },
+          "first_message_date": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "last_message_date": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "labels": {
+            "type": "array"
+          },
+          "unread_count": {
+            "type": "integer"
+          },
+          "flagged_count": {
+            "type": "integer"
+          },
+          "has_attachments": {
+            "type": "boolean"
+          }
         },
-        "required": ["id", "message_count"]
+        "required": [
+          "id",
+          "message_count"
+        ]
       },
-      "primary_key": ["id"],
+      "primary_key": [
+        "id"
+      ],
       "cursor_field": "last_message_date",
       "consent_time_field": "first_message_date",
-      "selection": { "fields": true, "resources": true },
-      "incremental": true
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": true,
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "subject"
+          ]
+        }
+      }
     },
     {
       "name": "labels",
@@ -100,17 +291,49 @@
       "schema": {
         "type": "object",
         "properties": {
-          "name": { "type": "string" },
-          "canonical_name": { "type": "string" },
-          "is_system": { "type": "boolean" },
-          "parent_name": { "type": ["string", "null"] },
-          "message_count": { "type": ["integer", "null"] }
+          "name": {
+            "type": "string"
+          },
+          "canonical_name": {
+            "type": "string"
+          },
+          "is_system": {
+            "type": "boolean"
+          },
+          "parent_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "message_count": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
         },
-        "required": ["name"]
+        "required": [
+          "name"
+        ]
       },
-      "primary_key": ["name"],
-      "selection": { "fields": true, "resources": true },
-      "incremental": false
+      "primary_key": [
+        "name"
+      ],
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": false,
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "name",
+            "canonical_name",
+            "parent_name"
+          ]
+        }
+      }
     },
     {
       "name": "message_bodies",
@@ -123,25 +346,88 @@
       "schema": {
         "type": "object",
         "properties": {
-          "id": { "type": "string" },
-          "message_id": { "type": "string" },
-          "body_text": { "type": ["string", "null"] },
-          "body_html": { "type": ["string", "null"] },
-          "body_text_bytes": { "type": ["integer", "null"] },
-          "body_html_bytes": { "type": ["integer", "null"] },
-          "body_source": { "type": "string", "enum": ["text_plain", "text_html", "html_stripped", "empty"] },
-          "content_languages": { "type": ["array", "null"] },
-          "charset": { "type": ["string", "null"] }
+          "id": {
+            "type": "string"
+          },
+          "message_id": {
+            "type": "string"
+          },
+          "body_text": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "body_html": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "body_text_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "body_html_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "body_source": {
+            "type": "string",
+            "enum": [
+              "text_plain",
+              "text_html",
+              "html_stripped",
+              "empty"
+            ]
+          },
+          "content_languages": {
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "charset": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
         },
-        "required": ["id", "message_id", "body_source"]
+        "required": [
+          "id",
+          "message_id",
+          "body_source"
+        ]
       },
-      "primary_key": ["id"],
+      "primary_key": [
+        "id"
+      ],
       "cursor_field": "message_id",
-      "selection": { "fields": true, "resources": true },
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
       "incremental": true,
       "relationships": [
-        { "name": "message", "stream": "messages", "foreign_key": "message_id", "cardinality": "has_one" }
-      ]
+        {
+          "name": "message",
+          "stream": "messages",
+          "foreign_key": "message_id",
+          "cardinality": "has_one"
+        }
+      ],
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "body_text"
+          ]
+        }
+      }
     },
     {
       "name": "attachments",
@@ -154,27 +440,86 @@
       "schema": {
         "type": "object",
         "properties": {
-          "id": { "type": "string" },
-          "message_id": { "type": "string" },
-          "filename": { "type": ["string", "null"] },
-          "content_type": { "type": ["string", "null"] },
-          "size_bytes": { "type": ["integer", "null"] },
-          "content_id": { "type": ["string", "null"] },
-          "is_inline": { "type": "boolean" },
-          "encoding": { "type": ["string", "null"] },
-          "part_index": { "type": "string" },
-          "message_received_at": { "type": "string" }
+          "id": {
+            "type": "string"
+          },
+          "message_id": {
+            "type": "string"
+          },
+          "filename": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "content_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "size_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "content_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "is_inline": {
+            "type": "boolean"
+          },
+          "encoding": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "part_index": {
+            "type": "string"
+          },
+          "message_received_at": {
+            "type": "string"
+          }
         },
-        "required": ["id", "message_id", "part_index", "message_received_at"]
+        "required": [
+          "id",
+          "message_id",
+          "part_index",
+          "message_received_at"
+        ]
       },
-      "primary_key": ["id"],
+      "primary_key": [
+        "id"
+      ],
       "cursor_field": "message_received_at",
       "consent_time_field": "message_received_at",
-      "selection": { "fields": true, "resources": true },
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
       "incremental": true,
       "relationships": [
-        { "name": "message", "stream": "messages", "foreign_key": "message_id", "cardinality": "has_one" }
-      ]
+        {
+          "name": "message",
+          "stream": "messages",
+          "foreign_key": "message_id",
+          "cardinality": "has_one"
+        }
+      ],
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "filename",
+            "content_type",
+            "content_id"
+          ]
+        }
+      }
     }
   ],
   "profiles": [
@@ -182,20 +527,38 @@
       "id": "reconciliation",
       "label": "Email for transaction reconciliation",
       "streams": [
-        { "name": "labels" },
-        { "name": "messages", "view": "reconciliation" },
-        { "name": "attachments" }
+        {
+          "name": "labels"
+        },
+        {
+          "name": "messages",
+          "view": "reconciliation"
+        },
+        {
+          "name": "attachments"
+        }
       ]
     },
     {
       "id": "full_archive",
       "label": "Full Gmail envelope archive",
       "streams": [
-        { "name": "labels" },
-        { "name": "messages", "view": "full" },
-        { "name": "threads" },
-        { "name": "attachments" },
-        { "name": "message_bodies" }
+        {
+          "name": "labels"
+        },
+        {
+          "name": "messages",
+          "view": "full"
+        },
+        {
+          "name": "threads"
+        },
+        {
+          "name": "attachments"
+        },
+        {
+          "name": "message_bodies"
+        }
       ]
     }
   ]

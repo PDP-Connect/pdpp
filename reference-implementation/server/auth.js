@@ -109,6 +109,13 @@ function isNonEmptyString(value) {
   return typeof value === 'string' && value.trim().length > 0;
 }
 
+function isTopLevelSearchableStringField(fieldSchema) {
+  const type = fieldSchema?.type;
+  if (type === 'string') return true;
+  if (!Array.isArray(type) || !type.includes('string')) return false;
+  return type.every((entry) => entry === 'string' || entry === 'null');
+}
+
 function resolveConfiguredNativeStorageBinding(opts = {}) {
   const nativeManifest = resolveConfiguredNativeManifest(opts);
   const connectorId = nativeManifest?.storage_binding?.connector_id;
@@ -1241,9 +1248,10 @@ function validateConnectorManifest(manifest = {}, code = 'invalid_request') {
     }
 
     // query.search.lexical_fields — the public lexical-retrieval extension's
-    // stream-level declaration. v1 accepts only top-level scalar string fields
-    // declared in schema.properties. Nested paths, arrays, blobs, and unknown
-    // fields are rejected. See:
+    // stream-level declaration. v1 accepts only top-level scalar text fields
+    // declared in schema.properties: `type: "string"` and the common nullable
+    // form `type: ["string", "null"]`. Nested paths, arrays, blobs, unknown
+    // fields, and non-string scalar types are rejected. See:
     //   openspec/changes/add-lexical-retrieval-extension/specs/lexical-retrieval/spec.md
     if (stream.query?.search?.lexical_fields !== undefined) {
       const declared = stream.query.search.lexical_fields;
@@ -1258,8 +1266,8 @@ function validateConnectorManifest(manifest = {}, code = 'invalid_request') {
           throw invalidConnectorManifest(`Stream '${stream.name}' query.search.lexical_fields references unknown field '${fieldName}'`, code);
         }
         const fieldSchema = schemaProperties[fieldName];
-        if (fieldSchema?.type !== 'string') {
-          throw invalidConnectorManifest(`Stream '${stream.name}' query.search.lexical_fields entry '${fieldName}' must be a top-level string field; v1 does not support nested paths, arrays, or non-string types`, code);
+        if (!isTopLevelSearchableStringField(fieldSchema)) {
+          throw invalidConnectorManifest(`Stream '${stream.name}' query.search.lexical_fields entry '${fieldName}' must be a top-level string or nullable-string field; v1 does not support nested paths, arrays, blobs, or non-string scalar types`, code);
         }
       }
     }
