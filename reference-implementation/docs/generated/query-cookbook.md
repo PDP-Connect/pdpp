@@ -28,7 +28,7 @@ GET /v1/search?q=invoice&streams=messages&filter[received_at][gte]=2026-04-01T00
 Authorization: Bearer pdq_token_abc123
 ```
 
-Cross-stream filtered search, public score/reranking output, and caller-controlled hybrid ranking remain deferred.
+Retrieval responses may include typed implementation-relative scores when advertised. Portable score calibration, score-driven server-side reranking controls, and caller-controlled hybrid ranking remain deferred.
 
 ## Sparse fieldset
 

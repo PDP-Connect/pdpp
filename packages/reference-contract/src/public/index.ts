@@ -28,6 +28,17 @@ const NonEmptyStringSchema = {
   minLength: 1,
 };
 
+const RetrievalScoreSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    kind: { type: "string", enum: ["bm25", "semantic_distance"] },
+    value: { type: "number" },
+    order: { type: "string", enum: ["higher_is_better", "lower_is_better"] },
+  },
+  required: ["kind", "value", "order"],
+};
+
 const StreamNamePathSchema = {
   type: "object",
   additionalProperties: false,
@@ -294,6 +305,17 @@ const ServerCapabilitiesSchema = {
         snippets: { type: "boolean" },
         default_limit: { type: "integer", minimum: 1 },
         max_limit: { type: "integer", minimum: 1 },
+        score: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            supported: { const: true },
+            kind: { const: "bm25" },
+            order: { const: "lower_is_better" },
+            value_semantics: { const: "implementation_relative" },
+          },
+          required: ["supported", "kind", "order", "value_semantics"],
+        },
       },
       required: ["supported"],
     },
@@ -314,6 +336,30 @@ const ServerCapabilitiesSchema = {
         default_limit: { type: "integer", minimum: 1 },
         max_limit: { type: "integer", minimum: 1 },
         index_state: { type: "string", enum: ["built", "building", "stale"] },
+        score: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            supported: { const: true },
+            kind: { const: "semantic_distance" },
+            order: { const: "lower_is_better" },
+            value_semantics: { const: "distance" },
+            comparable_with: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                backend_identity: NonEmptyStringSchema,
+                model: NonEmptyStringSchema,
+                dimensions: { type: "integer", minimum: 1 },
+                distance_metric: NonEmptyStringSchema,
+                profile_id: NonEmptyStringSchema,
+                dtype: NonEmptyStringSchema,
+              },
+              required: ["backend_identity", "model", "dimensions", "distance_metric"],
+            },
+          },
+          required: ["supported", "kind", "order", "value_semantics", "comparable_with"],
+        },
         language_bias: {
           type: "object",
           additionalProperties: false,
@@ -1018,6 +1064,7 @@ export const publicManifests = [
                   connector_id: NonEmptyStringSchema,
                   record_url: { type: "string" },
                   emitted_at: NonEmptyStringSchema,
+                  score: RetrievalScoreSchema,
                   matched_fields: {
                     type: "array",
                     minItems: 1,
@@ -1103,6 +1150,7 @@ export const publicManifests = [
                   connector_id: NonEmptyStringSchema,
                   record_url: { type: "string" },
                   emitted_at: NonEmptyStringSchema,
+                  score: RetrievalScoreSchema,
                   matched_fields: {
                     type: "array",
                     items: NonEmptyStringSchema,

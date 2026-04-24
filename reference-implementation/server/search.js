@@ -634,8 +634,10 @@ export async function runLexicalSearch({
     ? encodeSearchCursor({ snap: snapshotId, off: offset + limit })
     : null;
 
-  // 6. Shape into search_result objects
-  const data = slice.map((hit) => buildSearchResult({ hit, isOwner }));
+  // 6. Shape into search_result objects. Scores are public only when the
+  // metadata advertisement says this server emits them.
+  const emitScore = advertisesScore(advertisement);
+  const data = slice.map((hit) => buildSearchResult({ hit, isOwner, emitScore }));
 
   return {
     envelope: {
@@ -830,7 +832,23 @@ function resolveLexicalRetrievalAdvertisement(opts) {
     snippets: true,
     default_limit: 25,
     max_limit: 100,
+    score: {
+      supported: true,
+      kind: 'bm25',
+      order: 'lower_is_better',
+      value_semantics: 'implementation_relative',
+    },
   };
+}
+
+function advertisesScore(advertisement) {
+  return !!(
+    advertisement
+    && advertisement.supported !== false
+    && advertisement.score?.supported === true
+    && advertisement.score.kind === 'bm25'
+    && advertisement.score.order === 'lower_is_better'
+  );
 }
 
 // ─── Snapshot building (FTS5 query + ranking) ──────────────────────────────
@@ -892,8 +910,8 @@ async function runFtsQueryForConnector({ connectorId, planEntries, q, allowsSnip
     if (Array.isArray(entry.candidateRecordKeys) && entry.candidateRecordKeys.length === 0) continue;
     for (const field of entry.searchableFields) {
       // bm25(lexical_search_index) returns smaller values for better matches
-      // (negative-leaning); we sort ascending and offer it as the relevance
-      // ordering — but never expose it to the client.
+      // (negative-leaning). The public score exposes that implementation-
+      // relative ordering honestly rather than normalizing it.
       const snippetExpr = allowsSnippets
         ? `snippet(lexical_search_index, 4, '', '', '…', 16)`
         : `NULL`;
@@ -944,7 +962,7 @@ async function runFtsQueryForConnector({ connectorId, planEntries, q, allowsSnip
             ...(allowsSnippets && row.snippet_text
               ? { snippet: { field, text: row.snippet_text } }
               : {}),
-            score: row.score,
+            score: Number(row.score),
           });
         }
       }
@@ -953,8 +971,7 @@ async function runFtsQueryForConnector({ connectorId, planEntries, q, allowsSnip
 
   // Intra-connector relevance order
   const hits = Array.from(collapsed.values()).sort((a, b) => a.score - b.score);
-  // Strip score before merge — never exposed to the client
-  return hits.map(({ score: _score, ...rest }) => rest);
+  return hits;
 }
 
 function buildFtsUserTextQuery(q) {
@@ -985,7 +1002,7 @@ function roundRobinMerge(perConnectorHits) {
 
 // ─── search_result shaping ─────────────────────────────────────────────────
 
-function buildSearchResult({ hit, isOwner }) {
+function buildSearchResult({ hit, isOwner, emitScore }) {
   const recordPath = `/v1/streams/${encodeURIComponent(hit.stream)}/records/${encodeURIComponent(hit.recordKey)}`;
   const recordUrl = isOwner
     ? `${recordPath}?connector_id=${encodeURIComponent(hit.connectorId)}`
@@ -999,6 +1016,13 @@ function buildSearchResult({ hit, isOwner }) {
     emitted_at: hit.emittedAt,
     matched_fields: hit.matchedFields,
   };
+  if (emitScore && Number.isFinite(hit.score)) {
+    result.score = {
+      kind: 'bm25',
+      value: hit.score,
+      order: 'lower_is_better',
+    };
+  }
   if (hit.snippet) result.snippet = hit.snippet;
   return result;
 }

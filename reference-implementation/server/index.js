@@ -2239,6 +2239,8 @@ function buildRsApp(opts = {}) {
           dimensions: semBackend.dimensions(),
           distanceMetric: semBackend.distanceMetric(),
           indexState: computeSemanticIndexState(),
+          profileId: semBackend.profileId ? semBackend.profileId() : null,
+          dtype: semBackend.dtype ? semBackend.dtype() : null,
           languageBias: semBackend.languageBias ? semBackend.languageBias() : null,
         });
         if (semCap) capabilities.semantic_retrieval = semCap;

@@ -1399,12 +1399,47 @@ function resolveSemanticRetrievalAdvertisement(opts) {
   if (opts?.semanticRetrievalCapability) return opts.semanticRetrievalCapability;
   if (opts?.semanticRetrievalSupported === false) return null;
   if (!backend) return null;
+  const profileId = typeof backend.profileId === 'function' ? backend.profileId() : null;
+  const dtype = typeof backend.dtype === 'function' ? backend.dtype() : null;
+  const model = backend.model();
+  const dimensions = backend.dimensions();
+  const distanceMetric = backend.distanceMetric();
   return {
     supported: true,
     cross_stream: true,
     default_limit: 25,
     max_limit: 100,
+    score: {
+      supported: true,
+      kind: 'semantic_distance',
+      order: 'lower_is_better',
+      value_semantics: 'distance',
+      comparable_with: {
+        backend_identity: [
+          profileId ? `profile=${profileId}` : null,
+          `model=${model}`,
+          dtype ? `dtype=${dtype}` : null,
+          `dimensions=${dimensions}`,
+          `metric=${distanceMetric}`,
+        ].filter(Boolean).join(';'),
+        model,
+        dimensions,
+        distance_metric: distanceMetric,
+        ...(profileId ? { profile_id: profileId } : {}),
+        ...(dtype ? { dtype } : {}),
+      },
+    },
   };
+}
+
+function advertisesSemanticScore(advertisement) {
+  return !!(
+    advertisement
+    && advertisement.supported !== false
+    && advertisement.score?.supported === true
+    && advertisement.score.kind === 'semantic_distance'
+    && advertisement.score.order === 'lower_is_better'
+  );
 }
 
 /**
@@ -1557,9 +1592,10 @@ export async function runSemanticSearch({
     : null;
 
   // Hydrate verbatim grant-safe snippets and build search_result objects.
+  const emitScore = advertisesSemanticScore(advertisement);
   const data = [];
   for (const hit of slice) {
-    data.push(await buildSemanticSearchResult({ hit, isOwner }));
+    data.push(await buildSemanticSearchResult({ hit, isOwner, emitScore }));
   }
 
   return {
@@ -1672,7 +1708,7 @@ async function buildSemanticSnapshot({ q, perConnectorPlans, isOwner }) {
 
 // ─── search_result shaping + grant-safe snippets ───────────────────────────
 
-async function buildSemanticSearchResult({ hit, isOwner }) {
+async function buildSemanticSearchResult({ hit, isOwner, emitScore }) {
   const recordPath = `/v1/streams/${encodeURIComponent(hit.stream)}/records/${encodeURIComponent(hit.recordKey)}`;
   const recordUrl = isOwner
     ? `${recordPath}?connector_id=${encodeURIComponent(hit.connectorId)}`
@@ -1711,6 +1747,13 @@ async function buildSemanticSearchResult({ hit, isOwner }) {
     matched_fields: hit.matchedFields,
     retrieval_mode: 'semantic', // v1: lexical_blending is false
   };
+  if (emitScore && Number.isFinite(hit.distance)) {
+    result.score = {
+      kind: 'semantic_distance',
+      value: hit.distance,
+      order: 'lower_is_better',
+    };
+  }
   if (snippet) result.snippet = snippet;
   return result;
 }

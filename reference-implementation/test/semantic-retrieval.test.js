@@ -15,7 +15,7 @@
  *   14.4  — advertisement reachable without bearer token
  *   14.5  — independent from capabilities.lexical_retrieval
  *   14.6  — /v1/search/semantic returns list envelope
- *   14.7  — each result has required keys; no score/cosine/bm25/blend/_debug
+ *   14.7  — each result has required keys; typed semantic distance score; no debug fields
  *   14.8  — retrieval_mode === "semantic" on every hit in v1
  *   14.9  — missing q → invalid_request
  *   14.10 — each rejected parameter returns invalid_request with `param`
@@ -310,6 +310,15 @@ test('RS metadata advertises capabilities.semantic_retrieval with all required k
     assert.equal(cap.default_limit, 25);
     assert.equal(cap.max_limit, 100);
     assert.ok(['built', 'building', 'stale'].includes(cap.index_state));
+    assert.equal(cap.score?.supported, true);
+    assert.equal(cap.score.kind, 'semantic_distance');
+    assert.equal(cap.score.order, 'lower_is_better');
+    assert.equal(cap.score.value_semantics, 'distance');
+    assert.equal(cap.score.comparable_with.model, cap.model);
+    assert.equal(cap.score.comparable_with.dimensions, cap.dimensions);
+    assert.equal(cap.score.comparable_with.distance_metric, cap.distance_metric);
+    assert.equal(cap.score.comparable_with.profile_id, 'stub');
+    assert.match(cap.score.comparable_with.backend_identity, /model=pdpp-reference-stub-embed-v0/);
     // Advertisement is fetched without a bearer token (the unauthenticated
     // RS metadata route already allows that for lexical; confirming parity).
   });
@@ -419,13 +428,52 @@ test('happy-path semantic search returns list envelope with retrieval_mode:"sema
     assert.equal(hit.connector_id, connectorA);
     assert.equal(hit.retrieval_mode, 'semantic', 'v1: every hit emits retrieval_mode:"semantic"');
     assert.ok(Array.isArray(hit.matched_fields));
-    // No portable numeric score, no debug fields
-    for (const forbidden of ['score', 'cosine', 'bm25', 'blend', '_debug', '_explain', '_vector_distance']) {
+    assert.equal(hit.score.kind, 'semantic_distance');
+    assert.equal(hit.score.order, 'lower_is_better');
+    assert.ok(Math.abs(hit.score.value) < 1e-6, `exact-match semantic distance should be near zero, got ${hit.score.value}`);
+    // No raw vector/debug/alternate score fields
+    for (const forbidden of ['cosine', 'bm25', 'blend', '_debug', '_explain', '_vector_distance']) {
       assert.equal(hit[forbidden], undefined, `${forbidden} must not appear on a result`);
     }
     // Owner-mode record_url MUST include ?connector_id=
     assert.ok(hit.record_url.startsWith('/v1/streams/posts/records/p1?connector_id='));
     assert.ok(hit.record_url.includes(encodeURIComponent(connectorA)));
+  });
+});
+
+test('semantic search omits score when capability metadata does not advertise score support', async () => {
+  await withHarness({
+    semanticRetrievalCapability: {
+      supported: true,
+      stability: 'experimental',
+      endpoint: '/v1/search/semantic',
+      cross_stream: true,
+      query_input: 'text',
+      snippets: true,
+      lexical_blending: false,
+      model: 'pdpp-reference-stub-embed-v0',
+      dimensions: 64,
+      distance_metric: 'cosine',
+      default_limit: 25,
+      max_limit: 100,
+      index_state: 'built',
+    },
+  }, async ({ asUrl, rsUrl }) => {
+    const ownerToken = await issueOwnerToken(asUrl);
+    const connectorA = MANIFEST_A.connector_id;
+    await ingest(rsUrl, ownerToken, connectorA, 'posts', [
+      { id: 'p1', title: 'overdraft surprise', selftext: 'unexpected fee', source_created_at: '2026-04-01T00:00:00Z' },
+    ]);
+
+    const { body: metadata } = await fetchJson(`${rsUrl}/.well-known/oauth-protected-resource`);
+    assert.equal(metadata.capabilities?.semantic_retrieval?.score, undefined);
+
+    const { status, body } = await fetchJson(
+      `${rsUrl}/v1/search/semantic?q=${encodeURIComponent('overdraft surprise')}`,
+      { headers: { 'Authorization': `Bearer ${ownerToken}` } },
+    );
+    assert.equal(status, 200);
+    assert.equal(body.data[0]?.score, undefined);
   });
 });
 
@@ -660,6 +708,9 @@ test('client grant authorizing only one of two declared semantic_fields restrict
       for (const f of hit.matched_fields) {
         assert.equal(f, 'title', 'matched_fields may only include granted+declared fields');
       }
+      assert.equal(hit.score.kind, 'semantic_distance');
+      assert.equal(hit.score.order, 'lower_is_better');
+      assert.ok(Number.isFinite(hit.score.value));
       if (hit.snippet) {
         // Grant-safe: snippet text must NOT come from selftext (which was ungranted).
         assert.ok(

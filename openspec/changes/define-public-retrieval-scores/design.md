@@ -34,11 +34,73 @@ Prefer a shape like:
 }
 ```
 
-Lexical can use `kind: "bm25"` with `higher_is_better`; semantic can use `semantic_distance` or `semantic_similarity` depending on the backend. Typed objects avoid pretending all scores share one scale.
+Lexical uses the reference implementation's existing SQLite FTS5 BM25 value:
+
+```json
+{
+  "score": {
+    "kind": "bm25",
+    "value": -0.42,
+    "order": "lower_is_better"
+  }
+}
+```
+
+Semantic uses the reference implementation's existing vector distance value:
+
+```json
+{
+  "score": {
+    "kind": "semantic_distance",
+    "value": 0.182,
+    "order": "lower_is_better"
+  }
+}
+```
+
+Typed objects avoid pretending all scores share one scale. The score object carries only `kind`, `value`, and `order`; scale, stability, and comparability limits are advertised in endpoint capability metadata.
 
 ### Advertise score semantics
 
-Capabilities should say whether scores are present and which `kind`/`order` values a server emits. For semantic search, score metadata must be tied to the active model/profile because a model change invalidates score comparability.
+Capabilities should say whether scores are present and which `kind`/`order` values a server emits. Lexical advertises implementation-relative BM25:
+
+```json
+{
+  "score": {
+    "supported": true,
+    "kind": "bm25",
+    "order": "lower_is_better",
+    "value_semantics": "implementation_relative"
+  }
+}
+```
+
+Semantic advertises distance semantics and the identity boundary for comparing values:
+
+```json
+{
+  "score": {
+    "supported": true,
+    "kind": "semantic_distance",
+    "order": "lower_is_better",
+    "value_semantics": "distance",
+    "comparable_with": {
+      "profile_id": "minilm",
+      "model": "Xenova/all-MiniLM-L6-v2",
+      "dtype": "q4",
+      "dimensions": 384,
+      "distance_metric": "cosine",
+      "backend_identity": "profile=minilm;model=Xenova/all-MiniLM-L6-v2;dtype=q4;dimensions=384;metric=cosine"
+    }
+  }
+}
+```
+
+For semantic search, score metadata must be tied to the active model/profile/backend identity because a model, dtype, dimensions, or distance-metric change invalidates score comparability.
+
+### Emit by default when advertised
+
+The reference implementation has no separate useful score feature gate: both retrieval routes already compute the ranking signal needed to order results. Default-on emission is correct because the metadata advertisement and result shape stay consistent, and the score is computed after grant field narrowing. Tests still cover the fork/server-fixture case where capability metadata omits `score`; in that case results omit `score` too.
 
 ### Keep scores post-grant
 
