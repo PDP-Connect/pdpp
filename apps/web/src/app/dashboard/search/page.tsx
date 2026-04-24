@@ -168,6 +168,56 @@ function encodePrevStack(stack: string[]): string {
   return stack.join(",");
 }
 
+function exactMatchRedirectTarget(exact: { id: string; kind: "trace" | "grant" | "run" }): string {
+  const { kind, id } = exact;
+  if (kind === "trace") {
+    return `/dashboard/traces/${encodeURIComponent(id)}`;
+  }
+  if (kind === "grant") {
+    return `/dashboard/grants/${encodeURIComponent(id)}`;
+  }
+  return `/dashboard/runs/${encodeURIComponent(id)}`;
+}
+
+interface LoadSearchOutput {
+  result: SearchResult | null;
+  unreachable: boolean;
+}
+
+async function loadSearchResult(
+  query: string,
+  cursor: string | null,
+  prevStack: string[],
+  jump: string | undefined
+): Promise<LoadSearchOutput> {
+  try {
+    const spineResult = await refSearch(query);
+
+    // Deep-link on exact id match. jump=0 opts out. Only on the first page;
+    // deep-links from deeper cursor pages would be confusing.
+    if (spineResult.exact && jump !== "0" && !cursor) {
+      redirect(exactMatchRedirectTarget(spineResult.exact));
+    }
+
+    const records = await searchRecords(query, cursor, prevStack);
+    return {
+      result: {
+        exact: spineResult.exact,
+        traces: spineResult.traces,
+        grants: spineResult.grants,
+        runs: spineResult.runs,
+        records,
+      },
+      unreachable: false,
+    };
+  } catch (err) {
+    if (err instanceof ReferenceServerUnreachableError) {
+      return { result: null, unreachable: true };
+    }
+    throw err;
+  }
+}
+
 export default async function SearchPage({
   searchParams,
 }: {
@@ -178,42 +228,9 @@ export default async function SearchPage({
   const cursor = typeof cursorParam === "string" && cursorParam ? cursorParam : null;
   const prevStack = parsePrevStack(prevParam);
 
-  let result: SearchResult | null = null;
-  let unreachable = false;
-
-  if (query) {
-    try {
-      const spineResult = await refSearch(query);
-
-      // Deep-link on exact id match. jump=0 opts out. Only on the first page;
-      // deep-links from deeper cursor pages would be confusing.
-      if (spineResult.exact && jump !== "0" && !cursor) {
-        const { kind, id } = spineResult.exact;
-        let target = `/dashboard/runs/${encodeURIComponent(id)}`;
-        if (kind === "trace") {
-          target = `/dashboard/traces/${encodeURIComponent(id)}`;
-        } else if (kind === "grant") {
-          target = `/dashboard/grants/${encodeURIComponent(id)}`;
-        }
-        redirect(target);
-      }
-
-      const records = await searchRecords(query, cursor, prevStack);
-      result = {
-        exact: spineResult.exact,
-        traces: spineResult.traces,
-        grants: spineResult.grants,
-        runs: spineResult.runs,
-        records,
-      };
-    } catch (err) {
-      if (err instanceof ReferenceServerUnreachableError) {
-        unreachable = true;
-      } else {
-        throw err;
-      }
-    }
-  }
+  const { result, unreachable } = query
+    ? await loadSearchResult(query, cursor, prevStack, jump)
+    : { result: null, unreachable: false };
 
   if (unreachable) {
     return (
