@@ -42,11 +42,13 @@ export interface DiagnosticsBackend {
   dimensions: () => number;
   distanceMetric: () => string;
   downloadAllowed?: () => boolean;
+  dtype?: () => string;
   languageBias?: () => { primary: string; note?: string } | null;
   model: () => string;
   // Operational backends may optionally report model-cache state.
   modelCachePath?: () => string | null;
   modelCachePresent?: () => boolean;
+  profileId?: () => string;
 }
 
 export type SemanticIndexState = "built" | "building" | "stale";
@@ -88,6 +90,7 @@ export interface ParticipationSummary {
 
 export type DiagnosticsWarningCode =
   | "zero_participation"
+  | "building_index"
   | "stale_index"
   | "backend_unavailable"
   | "missing_model_cache"
@@ -123,7 +126,9 @@ export interface DeploymentDiagnosticsReport {
     readonly backend: {
       readonly configured: boolean;
       readonly available: boolean;
+      readonly profile_id: string | null;
       readonly model: string | null;
+      readonly dtype: string | null;
       readonly dimensions: number | null;
       readonly distance_metric: string | null;
       readonly language_bias: { primary: string; note?: string } | null;
@@ -160,10 +165,15 @@ const ENV_ALLOWLIST: ReadonlyArray<{ readonly name: string; readonly secret?: bo
   { name: "PDPP_PROVIDER_CONNECT_VERSION" },
   { name: "PDPP_REFERENCE_MODE" },
   { name: "PDPP_REFERENCE_ORIGIN" },
+  { name: "PDPP_REFERENCE_OPERATIONAL_DEFAULTS" },
   { name: "PDPP_ENABLE_DYNAMIC_CLIENT_REGISTRATION" },
   { name: "PDPP_RECONCILE_POLYFILL_MANIFESTS" },
+  { name: "PDPP_SEMANTIC_EMBEDDING_BACKEND" },
   { name: "PDPP_EMBEDDING_PROFILE_ID" },
   { name: "PDPP_EMBEDDING_MODEL_ID" },
+  { name: "PDPP_EMBEDDING_DTYPE" },
+  { name: "PDPP_EMBEDDING_DIMENSIONS" },
+  { name: "PDPP_EMBEDDING_DISTANCE_METRIC" },
   { name: "PDPP_EMBEDDING_CACHE_DIR" },
   { name: "PDPP_EMBEDDING_DOWNLOAD_ALLOWED" },
   { name: "PDPP_DCR_INITIAL_ACCESS_TOKENS", secret: true },
@@ -291,6 +301,14 @@ function buildWarnings(
       code: "zero_participation",
       message:
         "No loaded stream declares query.search.semantic_fields. Semantic backend and index may be ready, but the corpus has zero semantic coverage.",
+    });
+  }
+
+  if (input.indexState === "building") {
+    warnings.push({
+      code: "building_index",
+      message:
+        "Semantic index rebuild is running in the background. Semantic search remains available, but results may be partial until indexing completes.",
     });
   }
 
@@ -448,7 +466,9 @@ export function buildDeploymentDiagnostics(input: DeploymentDiagnosticsInput): D
       backend: {
         configured: input.backend !== null,
         available: backendAvailable,
+        profile_id: input.backend?.profileId ? input.backend.profileId() : null,
         model: input.backend ? input.backend.model() : null,
+        dtype: input.backend?.dtype ? input.backend.dtype() : null,
         dimensions: input.backend ? input.backend.dimensions() : null,
         distance_metric: input.backend ? input.backend.distanceMetric() : null,
         language_bias: input.backend?.languageBias ? input.backend.languageBias() : null,

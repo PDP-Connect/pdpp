@@ -83,6 +83,22 @@ Owner login is a separate device flow:
 
 That flow yields an **owner bearer token** for self-export and direct owner queries.
 
+### Semantic retrieval diagnostics
+
+The reference implements experimental semantic retrieval as a reference feature,
+not as core PDPP. Local development uses a server-owned embedding profile; the
+default operational profile is `minilm`, backed by `Xenova/all-MiniLM-L6-v2`
+through Transformers.js. Operators can switch to `multilingual-minilm` for
+Italian or mixed-language data without adding public `model=` or `embedding=`
+request parameters.
+
+The operator surface at `/dashboard/deployment` shows the active semantic
+backend, model, dimensions, distance metric, language bias, vector-index kind,
+index state, model-cache state, and every participating
+`(connector, stream, field)` tuple. It is the first place to check when semantic
+search returns no hits: zero participation, disabled downloads, stale indexes,
+and background rebuilds are visible there without reading logs.
+
 ### Resource server queries
 
 Clients and owners both query the resource server through `/v1`.

@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { shouldAttemptSemanticUplift } from "pdpp-reference-implementation/deployment-diagnostics";
+import { Timestamp } from "@/components/ui/timestamp.tsx";
 import { DashboardShell, ServerUnreachable } from "../components/shell.tsx";
 import { ReferenceServerUnreachableError } from "../lib/owner-token.ts";
 import {
@@ -51,10 +52,12 @@ interface RecordHit {
 }
 
 interface RecordPage {
+  debug?: RetrievalDebug;
   hasMore: boolean;
   hits: RecordHit[];
   nextCursor: string | null;
   prevStack: string[];
+  retrievalNotice: RetrievalNotice | null;
 }
 
 interface SearchResult {
@@ -63,6 +66,12 @@ interface SearchResult {
   records: RecordPage;
   runs: RunSummary[];
   traces: TraceSummary[];
+}
+
+interface RetrievalNotice {
+  href: string;
+  message: string;
+  title: string;
 }
 
 /**
@@ -131,40 +140,54 @@ async function searchRecords(query: string, cursor: string | null, prevStack: st
   // found nothing. The operator-facing reason is surfaced on
   // /dashboard/deployment; here we degrade silently.
   let wantSemantic = false;
+  let advertised = false;
+  let participationFieldCount = 0;
+  let semanticIndexState: "built" | "building" | "stale" | null = null;
   if (cursor === null) {
-    const [advertised, participationFieldCount] = await Promise.all([
+    const [advertisedResult, diagnostics] = await Promise.all([
       isSemanticRetrievalAdvertised(),
       getDeploymentDiagnostics()
-        .then((d) => d.semantic.participation.field_count)
+        .then((d) => ({
+          participationFieldCount: d.semantic.participation.field_count,
+          semanticIndexState: d.semantic.index.state,
+        }))
         // Diagnostics fetch is best-effort; if it fails, treat as zero
         // participation so the gate stays closed.
-        .catch(() => 0),
+        .catch(() => ({ participationFieldCount: 0, semanticIndexState: null })),
     ]);
+    advertised = advertisedResult;
+    participationFieldCount = diagnostics.participationFieldCount;
+    semanticIndexState = diagnostics.semanticIndexState;
     wantSemantic = shouldAttemptSemanticUplift({ advertised, participationFieldCount });
   }
 
-  const [lexicalPage, semanticPage] = await Promise.all([
+  const [lexicalPage, semanticResult] = await Promise.all([
     searchRecordsLexical(query, {
       limit: PAGE_LIMIT,
       ...(cursor ? { cursor } : {}),
     }),
     wantSemantic
-      ? searchRecordsSemantic(query, { limit: SEMANTIC_UPLIFT_LIMIT }).catch(
-          // Fail-closed on any runtime error too (not just capability probe).
-          () => null as SearchResultPage | null
-        )
-      : Promise.resolve(null),
+      ? searchRecordsSemantic(query, { limit: SEMANTIC_UPLIFT_LIMIT })
+          .then((p) => ({ page: p, error: null as string | null }))
+          .catch((err: unknown) => ({
+            page: null as SearchResultPage | null,
+            error: err instanceof Error ? err.message : String(err),
+          }))
+      : Promise.resolve({ page: null as SearchResultPage | null, error: null as string | null }),
   ]);
+
+  const semanticPage = semanticResult.page;
 
   const lexicalHits = await Promise.all(lexicalPage.data.map((h) => hitToRecordHit(h)));
 
-  // Only uplift if semantic ran AND returned hits.
   let upliftHits: RecordHit[] = [];
+  let dedupedOutCount = 0;
   if (semanticPage?.data?.length) {
     const dedupKeys = new Set(lexicalHits.map((h) => `${h.connectorId}::${h.stream}::${h.recordId}`));
     const semanticOnly: SearchResultHit[] = semanticPage.data.filter(
       (h: SearchResultHit) => !dedupKeys.has(`${h.connector_id}::${h.stream}::${h.record_key}`)
     );
+    dedupedOutCount = semanticPage.data.length - semanticOnly.length;
     upliftHits = await Promise.all(
       semanticOnly.map(async (h: SearchResultHit) => {
         const base = await hitToRecordHit(h);
@@ -173,14 +196,63 @@ async function searchRecords(query: string, cursor: string | null, prevStack: st
     );
   }
 
+  const debug: RetrievalDebug = {
+    isFirstPage: cursor === null,
+    capabilityAdvertised: advertised,
+    participationFieldCount,
+    semanticIndexState,
+    semanticAttempted: wantSemantic,
+    semanticError: semanticResult.error,
+    lexicalCount: lexicalPage.data.length,
+    semanticCount: semanticPage?.data?.length ?? 0,
+    upliftCount: upliftHits.length,
+    dedupedOutCount,
+    semanticHitKeys:
+      semanticPage?.data?.map((h: SearchResultHit) => `${h.connector_id}::${h.stream}::${h.record_key}`) ?? [],
+  };
+
   return {
     hits: [...lexicalHits, ...upliftHits],
-    // Pagination follows lexical only. has_more / next_cursor describe the
-    // lexical stream; the semantic uplift is first-page-only.
     hasMore: lexicalPage.has_more,
     nextCursor: lexicalPage.next_cursor ?? null,
     prevStack,
+    retrievalNotice: buildRetrievalNotice(semanticIndexState),
+    debug,
   };
+}
+
+interface RetrievalDebug {
+  capabilityAdvertised: boolean;
+  dedupedOutCount: number;
+  isFirstPage: boolean;
+  lexicalCount: number;
+  participationFieldCount: number;
+  semanticAttempted: boolean;
+  semanticCount: number;
+  semanticError: string | null;
+  semanticHitKeys: string[];
+  semanticIndexState: "built" | "building" | "stale" | null;
+  upliftCount: number;
+}
+
+function buildRetrievalNotice(indexState: "built" | "building" | "stale" | null): RetrievalNotice | null {
+  if (indexState === "building") {
+    return {
+      href: "/dashboard/deployment",
+      title: "Semantic indexing is still running",
+      message:
+        "Search is using the records already indexed. Results may be partial until the background semantic rebuild finishes.",
+    };
+  }
+  if (indexState === "stale") {
+    return {
+      href: "/dashboard/deployment",
+      title: "Semantic index needs a rebuild",
+      message:
+        "The active embedding profile or declared semantic fields changed. Lexical search still works; semantic uplift may be stale or absent.",
+    };
+  }
+  return null;
 }
 
 function parsePrevStack(raw: string | undefined): string[] {
@@ -247,9 +319,10 @@ async function loadSearchResult(
 export default async function SearchPage({
   searchParams,
 }: {
-  searchParams: Promise<{ q?: string; cursor?: string; prev?: string; jump?: string }>;
+  searchParams: Promise<{ q?: string; cursor?: string; prev?: string; jump?: string; debug?: string }>;
 }) {
-  const { q: qParam, cursor: cursorParam, prev: prevParam, jump } = await searchParams;
+  const { q: qParam, cursor: cursorParam, prev: prevParam, jump, debug: debugParam } = await searchParams;
+  const debugMode = debugParam === "1";
   const query = (qParam ?? "").trim();
   const cursor = typeof cursorParam === "string" && cursorParam ? cursorParam : null;
   const prevStack = parsePrevStack(prevParam);
@@ -294,6 +367,12 @@ export default async function SearchPage({
           search
         </button>
       </form>
+
+      {debugMode && result?.records.debug ? (
+        <pre className="mb-4 overflow-auto rounded border border-amber-500/50 bg-amber-50/50 p-3 text-[11px] dark:bg-amber-950/30">
+          {JSON.stringify(result.records.debug, null, 2)}
+        </pre>
+      ) : null}
 
       {query ? (
         result && (
@@ -349,6 +428,8 @@ export default async function SearchPage({
               )}
               title="runs"
             />
+
+            <RetrievalNoticeCallout notice={result.records.retrievalNotice} />
 
             <section className="mb-6">
               <h2 className="mb-2 text-muted-foreground text-xs uppercase tracking-wide">
@@ -488,6 +569,24 @@ function PaginationBar({
   );
 }
 
+function RetrievalNoticeCallout({ notice }: { notice: RetrievalNotice | null }) {
+  if (!notice) {
+    return null;
+  }
+  return (
+    <div className="mb-4 rounded border border-amber-400/50 bg-amber-50/70 px-3 py-2 text-xs dark:bg-amber-950/30">
+      <div className="font-medium">{notice.title}</div>
+      <p className="mt-1 text-muted-foreground">
+        {notice.message}{" "}
+        <Link className="underline underline-offset-2 hover:text-foreground" href={notice.href}>
+          View deployment diagnostics
+        </Link>
+        .
+      </p>
+    </div>
+  );
+}
+
 function RecordRow({ hit, query }: { hit: RecordHit; query: string }) {
   const href = `/dashboard/records/${encodeURIComponent(hit.connectorId)}/${encodeURIComponent(hit.stream)}/${encodeURIComponent(hit.recordId)}`;
   return (
@@ -495,7 +594,7 @@ function RecordRow({ hit, query }: { hit: RecordHit; query: string }) {
       className="grid gap-1 px-2 py-2 text-xs hover:bg-muted/50 sm:grid-cols-[10rem_9rem_1fr] sm:items-baseline sm:gap-4"
       href={href}
     >
-      <span className="whitespace-nowrap text-muted-foreground tabular-nums">{hit.emittedAt}</span>
+      <Timestamp className="whitespace-nowrap text-muted-foreground" value={hit.emittedAt} />
       <span className="flex items-baseline gap-2 whitespace-nowrap">
         <span className="truncate font-medium">{shortConnectorName(hit.connectorId)}</span>
         <span className="truncate text-muted-foreground">{hit.stream}</span>

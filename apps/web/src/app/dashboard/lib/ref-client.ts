@@ -304,7 +304,9 @@ export interface DeploymentDiagnostics {
     backend: {
       configured: boolean;
       available: boolean;
+      profile_id: string | null;
       model: string | null;
+      dtype: string | null;
       dimensions: number | null;
       distance_metric: string | null;
       language_bias: { primary: string; note?: string } | null;
@@ -331,6 +333,7 @@ export interface DeploymentDiagnostics {
   warnings: ReadonlyArray<{
     code:
       | "zero_participation"
+      | "building_index"
       | "stale_index"
       | "backend_unavailable"
       | "missing_model_cache"

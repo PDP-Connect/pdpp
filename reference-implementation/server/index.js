@@ -32,7 +32,7 @@ import {
   computeIndexState as computeSemanticIndexState,
   configureSemanticBackend,
   getSemanticBackend,
-  makeStubBackend,
+  resolveSemanticBackendFromEnv,
   runSemanticSearch,
   semanticIndexBackfillForManifest,
 } from './search-semantic.js';
@@ -128,7 +128,8 @@ async function runRetrievalStartupBackfill({ manifests, logger }) {
         manifest,
         log: (msg) => logger.info(msg),
       });
-      if (getSemanticBackend()) {
+      const semanticBackend = getSemanticBackend();
+      if (semanticBackend?.available()) {
         await semanticIndexBackfillForManifest({
           manifest,
           log: (msg) => logger.info(msg),
@@ -2617,7 +2618,11 @@ function buildRsApp(opts = {}) {
   // 404 — which is what the spec scenario "A client encounters a server
   // that does not advertise the extension" expects.
   const semanticBackendAtRegistration = getSemanticBackend();
-  if (semanticBackendAtRegistration && opts.semanticRetrievalSupported !== false) {
+  if (
+    semanticBackendAtRegistration
+    && semanticBackendAtRegistration.available()
+    && opts.semanticRetrievalSupported !== false
+  ) {
     app.get('/v1/search/semantic', { contract: 'searchRecordsSemantic' }, requireToken, async (req, res) => {
       let queryContext = null;
       try {
@@ -2969,9 +2974,9 @@ export async function startServer(opts = {}) {
   //   - opts.semanticRetrievalBackend: explicit backend object (e.g. a
   //     hosted-provider adapter in future tranches, or a custom stub for
   //     tests). Installed verbatim.
-  //   - default: the deterministic local stub backend from search-semantic.js,
-  //     which runs offline with no external dependency and declares itself
-  //     honestly as `pdpp-reference-stub-embed-v0` in the advertisement.
+  //   - default: resolveSemanticBackendFromEnv(). Programmatic tests keep the
+  //     deterministic stub; the dev script opts into the local Transformers.js
+  //     backend through PDPP_REFERENCE_OPERATIONAL_DEFAULTS=1.
   // See:
   //   openspec/changes/add-semantic-retrieval-experimental-extension/specs/semantic-retrieval/spec.md
   //   openspec/changes/implement-semantic-retrieval-experimental-extension/specs/reference-implementation-architecture/spec.md
@@ -2980,7 +2985,7 @@ export async function startServer(opts = {}) {
   } else if (opts.semanticRetrievalBackend !== undefined) {
     configureSemanticBackend(opts.semanticRetrievalBackend);
   } else {
-    configureSemanticBackend(makeStubBackend());
+    configureSemanticBackend(resolveSemanticBackendFromEnv());
   }
 
   // Startup retrieval backfill. Existing data should become searchable after

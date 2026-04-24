@@ -119,6 +119,42 @@ It behaves as a small reference-only owner access hub:
 - `/v1/streams/...`
 - owner and client queries under the current reference contract
 
+### Semantic retrieval
+
+`GET /v1/search/semantic` is an experimental optional extension. In normal
+local operation (`pnpm run dev` or this package's `dev`/`server` scripts), the
+reference uses a local Transformers.js embedding backend by default:
+
+- backend mode: `PDPP_SEMANTIC_EMBEDDING_BACKEND=local`
+- default profile: `PDPP_EMBEDDING_PROFILE_ID=minilm`
+- default model: `Xenova/all-MiniLM-L6-v2`
+- dimensions / metric: `384` / `cosine`
+- default dtype: `PDPP_EMBEDDING_DTYPE=q4`
+- default cache: `reference-implementation/.cache/transformers`
+
+The first semantic backfill downloads model files unless
+`PDPP_EMBEDDING_DOWNLOAD_ALLOWED=0` is set. Tests and programmatic `startServer`
+calls keep the deterministic stub backend unless they opt into operational
+defaults with `PDPP_REFERENCE_OPERATIONAL_DEFAULTS=1`; the stub is only for
+deterministic exact-match assertions and does not claim paraphrase or
+multilingual behavior.
+
+Operators can switch profiles without changing the public API:
+
+- `PDPP_EMBEDDING_PROFILE_ID=minilm` — compact English-biased default.
+- `PDPP_EMBEDDING_PROFILE_ID=multilingual-minilm` — multilingual MiniLM profile
+  suitable for Italian-language data.
+- `PDPP_EMBEDDING_MODEL_ID=...` — override the Hugging Face model ID.
+- `PDPP_EMBEDDING_CACHE_DIR=...` — override the local model cache.
+- `PDPP_SEMANTIC_EMBEDDING_BACKEND=stub|local|disabled` — force a backend mode.
+
+Changing the profile/model/dtype/dimensions/metric invalidates existing
+semantic vectors. The reference reports `index_state: "stale"` or `"building"`
+and rebuilds from stored records; it does not require connector re-ingest.
+Use `/dashboard/deployment` or `GET /_ref/deployment` to inspect backend
+availability, cache state, active language bias, participating semantic fields,
+and warnings such as zero participation or a rebuilding index.
+
 For reference inspection, successful and route-level rejected `/v1/streams`, `/v1/streams/:stream`, `/v1/streams/:stream/records`, and `/v1/streams/:stream/records/:id` responses also expose:
 
 - `Request-Id`

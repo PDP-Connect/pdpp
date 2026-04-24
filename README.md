@@ -58,6 +58,12 @@ Run the docs/site:
 pnpm dev
 ```
 
+The default dev stack starts the dashboard plus the reference AS/RS. Semantic
+retrieval uses a local Transformers.js embedding model by default; the first
+semantic backfill may download model files into
+`reference-implementation/.cache/transformers` while the servers are already
+listening.
+
 Run the reference implementation server:
 
 ```bash

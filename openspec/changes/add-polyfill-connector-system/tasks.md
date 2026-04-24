@@ -2,7 +2,7 @@
 
 Legend: `[x]` done, `[~]` in progress, `[ ]` pending, `[!]` blocked on user, `[?]` needs the owner's review on return.
 
-Last revised: 2026-04-23.
+Last revised: 2026-04-24.
 
 ## Status at a glance (2026-04-21)
 
@@ -29,12 +29,12 @@ Last revised: 2026-04-23.
 | ynab | ✅ done | 21,513 | Tombstones via `op=delete`. server_knowledge cursor is gap-free by construction. |
 | gmail | ✅ done | 50,407 | IMAP + app password. BigInt crash fixed 2026-04-20 (shared `stringifyForJsonl` coerces BigInt; was dropping 887 records + state per run). |
 | chatgpt | ✅ done | 11,341 | Browser fetch, tree-walk, bearer from `#client-bootstrap`. 4,188 durably-logged http_429 skips await the gap-recovery mechanism (see `chatgpt.md`). |
-| usaa | ✅ done (5 streams) | 924 | accounts, transactions, statements, inbox_messages, credit_card_billing. Credit-card CSV export fixed 2026-04-20 (`.as_credit__export` selector, `startDate` input name). PDF parser: trailing-minus, T&C filter, Dec-on-Jan-statement year fix. 0 future-dated txns. |
-| claude_code | ✅ done | 235,757 | 2.8 GB DB. state_streams_committed: 4/4 (413 fix landed, no more partial commits). |
+| usaa | 🟡 regression | 924 | accounts, transactions, statements, inbox_messages, credit_card_billing. Credit-card CSV export fixed 2026-04-20 (`.as_credit__export` selector, `startDate` input name). 2026-04-24 live run failed before browser interaction with `net::ERR_HTTP2_PROTOCOL_ERROR` on `https://www.usaa.com/my/logon`; investigate Playwright/network/session setup before calling USAA done again. |
+| claude_code | 🟡 regression | 235,757 | 2.8 GB DB. state_streams_committed: 4/4 historically after the 413 fix. 2026-04-24 live run showed >1k `IN_PROGRESS` rows then failed `/ingest/sessions` with `500 Internal Server Error`; needs ingestion-pressure/runtime regression triage. |
 | codex | ✅ done | 74,033 | 0 nulls, 0 drops across function_calls + messages + sessions. |
 | amazon | 🟡 v0.1 in progress | 0 | 2FA-on-wife's-phone blocker resolved 2026-04-21 (new account). Auto-login verified end-to-end (`#ap_email_login` + `#ap_password` selectors, OTP via INTERACTION). `fetchOrderDetail` intentionally stubbed pending live DOM probe. Manifest overclaims ~11 fields (see `amazon.md`). |
 | chase | ✅ v0.1 working | 16 (1 account, 14 txns, 1 balance) | NEW 2026-04-21. End-to-end: auto-login via `src/auto-login/chase.js` (mds-* shadow DOM, text/role locators per Playwright best practices), discover accounts via `#accounts-name-link-button-<id>-label` pattern, QFX download via `mds-select#downloadFileTypeOption` + `mds-button#download`, parse via `ofx-js`. Only credit card so far (account-param `CARD,BAC`); checking/savings param shapes are placeholders. v0.2: date-range support (currently "Current display" ~30 days), statement PDFs. |
-| github | ✅ done | 8,608 | PAT auto-created via `bin/bootstrap-github-pat.js` (headless login → INTERACTION for 2FA → PAT form → token written to `.env.local`). |
+| github | 🟡 regression | 8,608 | PAT auto-created via `bin/bootstrap-github-pat.js` (headless login → INTERACTION for 2FA → PAT form → token written to `.env.local`). 2026-04-24: run fails with `progress_for_undeclared_stream` because the connector reports `PROGRESS` for `commits` while the manifest scope omits a `commits` stream. |
 | oura | 🟡 ready | 0 | Awaits `OURA_PERSONAL_ACCESS_TOKEN`. |
 | spotify | 🚫 blocked upstream | 0 | Spotify froze new developer app creation in Feb 2026; OAuth-only anyway. Keep manifest, revisit when Spotify re-opens. |
 | strava | 🟡 ready | 0 | Awaits `STRAVA_ACCESS_TOKEN`. |
@@ -79,6 +79,7 @@ Last revised: 2026-04-23.
 - [x] `ntfy` bridge module — exists at `src/ntfy.js`, used by scheduler-runner and the new CLI interaction handler
 - [x] Orchestrator CLI now wires `onInteraction` — file-drop response + ntfy + TTY prompt. Runs that need creds/OTP no longer fail silently.
 - [ ] Pause/resume INTERACTION handling — runtime supports parking, scheduler doesn't read the state yet
+- [ ] First-party connector progress reporting pass — audit core connectors and emit `PROGRESS { count, total }` wherever the upstream exposes a bounded unit of work (pages, files, accounts, budgets, repositories, archive entries). Connectors that cannot know a total should still report phase/count honestly. Do not invent percentages.
 - [ ] **Nightly status summary via ntfy** — today still fires manually
 - [ ] **Partial-run honesty mechanism** (SKIP_RESULT taxonomy + known_gaps in STATE + recovery execution contract) — documented as three linked open questions. Decision required across all three together. See the three `*-open-question.md` notes.
 
@@ -187,6 +188,7 @@ P0 stream additions identified by the Layer 2 audits (`design-notes/layer-2-cove
 - [ ] Re-run after ChatGPT extractor fix lands in next scheduled run
 
 ### Claude Code
+- [ ] Fix live `sessions` ingest regression: current run can emit >1k `IN_PROGRESS` events then fail `/ingest/sessions` with `500 Internal Server Error`. Capture the failing payload/server stack, add a regression test around the ingest boundary, and decide whether progress events need compaction or dashboard summarization.
 - [ ] Recursive session traversal: `projects/<p>/<session>/subagents/*.jsonl` + `/tool-results/*.txt` (currently missed — main jsonl only has sidechain stubs + ~500-char previews)
 - [ ] Add `memory_notes` stream (from `projects/<p>/memory/*.md` — direct analog to ChatGPT `memories`)
 - [ ] Add `skills` stream (from `~/.claude/skills/<name>/SKILL.md`)
@@ -199,6 +201,7 @@ P0 stream additions identified by the Layer 2 audits (`design-notes/layer-2-cove
 - [ ] Add `approval_rules` stream (from `~/.codex/rules/default.rules`)
 
 ### GitHub
+- [ ] Fix `progress_for_undeclared_stream` regression: either add an honest `commits` stream to the GitHub manifest/scope or stop emitting `PROGRESS` for `commits`. Current runtime behavior is correct to reject progress for undeclared streams.
 - [ ] Add `issues` stream (authored, assigned, mentioned, commented — via `/search/issues`)
 - [ ] Add `pull_requests` stream (authored, reviewed, review-requested, merged — via `/search/issues`)
 - [ ] Add `gists` stream (owned + starred; full content bytes cheap)
@@ -208,6 +211,7 @@ P0 stream additions identified by the Layer 2 audits (`design-notes/layer-2-cove
 - [ ] Add `month_categories` matrix stream (per-month-per-category budgeted/activity/balance, keyed on `(budget_id, month, category_id)`)
 
 ### USAA
+- [ ] Fix live login navigation regression: current run fails immediately with `connector_reported_failed` / `usaa_session_failed: page.goto: net::ERR_HTTP2_PROTOCOL_ERROR` at `https://www.usaa.com/my/logon` and never surfaces a browser interaction. Reproduce with browser-daemon logs enabled, compare headed vs headless, and preserve an interaction path if the site blocks automated navigation.
 - [ ] Wire already-designed streams (`transfers`, `bill_payments`, `scheduled_transactions`, `external_accounts`) per `design-notes/usaa-extra-streams.md`
 - [ ] Statements: implement PDF download + `pdf_sha256` once live browser session is available
 

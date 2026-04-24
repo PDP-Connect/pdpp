@@ -155,12 +155,12 @@ When a server exposes this extension, its RFC 9728 protected-resource metadata d
       "snippets": true,
       "lexical_blending": false,
       "model": "<server-declared-model-id>",
-      "dimensions": 768,
+      "dimensions": 384,
       "distance_metric": "cosine",
       "default_limit": 25,
       "max_limit": 100,
       "index_state": "built",
-      "language_bias": { "primary": "en", "note": "Model has reduced recall for CJK scripts" }
+      "language_bias": { "primary": "en", "note": "Server-selected embedding profile; reduced recall outside the configured model's language coverage" }
     }
   }
 }
@@ -171,6 +171,14 @@ Required keys when `supported: true`:
 - `supported`, `stability`, `endpoint`, `cross_stream`, `query_input`, `snippets`, `lexical_blending`, `model`, `dimensions`, `distance_metric`, `default_limit`, `max_limit`, `index_state`.
 
 `stability` is `"experimental"` in v1. `query_input` is `"text"` in v1. `lexical_blending` governs whether `retrieval_mode: "hybrid"` may appear on results.
+
+Model choice is server/operator controlled. The public request surface does
+not accept `model=`, `model_id=`, `embedding=`, `vector=`, reranking knobs, or
+caller-supplied embeddings. Servers that want Italian or mixed-language
+coverage select an appropriate embedding profile internally and advertise that
+choice through `model`, `dimensions`, `distance_metric`, and `language_bias`.
+Changing the active model/profile can invalidate existing cursors and index
+coverage.
 
 `index_state` is one of:
 

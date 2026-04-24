@@ -25,7 +25,10 @@
  */
 
 import { randomBytes, createHash } from 'crypto';
+import fs from 'node:fs';
+import path from 'node:path';
 import { setImmediate as yieldImmediate } from 'node:timers/promises';
+import { fileURLToPath } from 'node:url';
 import { getConnectorManifest } from './auth.js';
 import { getDb } from './db.js';
 
@@ -91,14 +94,196 @@ export function makeStubBackend({ dimensions = 64 } = {}) {
     return vec;
   }
   return {
+    profileId: () => 'stub',
     model: () => 'pdpp-reference-stub-embed-v0',
     dimensions: () => dimensions,
     distanceMetric: () => 'cosine',
+    identity: () => `stub:${dimensions}:cosine`,
     embedQuery: async (t) => hashEmbed(t),
     embedDocument: async (t) => hashEmbed(t),
     available: () => true,
     languageBias: () => null,
   };
+}
+
+const LOCAL_EMBEDDING_PROFILES = {
+  minilm: {
+    profileId: 'minilm',
+    modelId: 'Xenova/all-MiniLM-L6-v2',
+    dimensions: 384,
+    distanceMetric: 'cosine',
+    dtype: 'q4',
+    languageBias: {
+      primary: 'en',
+      note: 'Compact English-biased MiniLM profile. Use multilingual-minilm for Italian or mixed-language corpora.',
+    },
+  },
+  'multilingual-minilm': {
+    profileId: 'multilingual-minilm',
+    modelId: 'Xenova/paraphrase-multilingual-MiniLM-L12-v2',
+    dimensions: 384,
+    distanceMetric: 'cosine',
+    dtype: 'q4',
+    languageBias: {
+      primary: 'multi',
+      note: 'Multilingual MiniLM profile suitable for Italian and other supported sentence-transformer languages.',
+    },
+  },
+};
+
+const DISTANCE_METRICS = new Set(['cosine', 'dot', 'l2']);
+const EMBEDDING_BACKEND_ENV = 'PDPP_SEMANTIC_EMBEDDING_BACKEND';
+const DEFAULT_TRANSFORMERS_CACHE_DIR = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  '..',
+  '.cache',
+  'transformers',
+);
+
+function parsePositiveInteger(raw, fallback, name) {
+  if (raw === undefined || raw === null || raw === '') return fallback;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n <= 0) {
+    throw new Error(`${name} must be a positive integer`);
+  }
+  return n;
+}
+
+function normalizeDownloadAllowed(raw) {
+  if (raw === undefined || raw === null || raw === '') return true;
+  return !['0', 'false', 'no', 'off'].includes(String(raw).toLowerCase());
+}
+
+function resolveLocalEmbeddingProfile(env = process.env) {
+  const requestedProfile = (env.PDPP_EMBEDDING_PROFILE_ID || 'minilm').trim();
+  const profile = LOCAL_EMBEDDING_PROFILES[requestedProfile];
+  if (!profile) {
+    throw new Error(`PDPP_EMBEDDING_PROFILE_ID must be one of: ${Object.keys(LOCAL_EMBEDDING_PROFILES).join(', ')}`);
+  }
+  const modelId = (env.PDPP_EMBEDDING_MODEL_ID || profile.modelId).trim();
+  const dimensions = parsePositiveInteger(env.PDPP_EMBEDDING_DIMENSIONS, profile.dimensions, 'PDPP_EMBEDDING_DIMENSIONS');
+  const distanceMetric = (env.PDPP_EMBEDDING_DISTANCE_METRIC || profile.distanceMetric).trim();
+  if (!DISTANCE_METRICS.has(distanceMetric)) {
+    throw new Error(`PDPP_EMBEDDING_DISTANCE_METRIC must be one of: ${Array.from(DISTANCE_METRICS).join(', ')}`);
+  }
+  const dtype = (env.PDPP_EMBEDDING_DTYPE || profile.dtype).trim();
+  const cacheDir = path.resolve(env.PDPP_EMBEDDING_CACHE_DIR || env.TRANSFORMERS_CACHE || DEFAULT_TRANSFORMERS_CACHE_DIR);
+  return {
+    ...profile,
+    profileId: requestedProfile,
+    modelId,
+    dimensions,
+    distanceMetric,
+    dtype,
+    cacheDir,
+    downloadAllowed: normalizeDownloadAllowed(env.PDPP_EMBEDDING_DOWNLOAD_ALLOWED),
+  };
+}
+
+function dtypeModelFile(dtype) {
+  const suffixes = {
+    fp32: '',
+    fp16: '_fp16',
+    q8: '_quantized',
+    int8: '_int8',
+    uint8: '_uint8',
+    q4: '_q4',
+    q4f16: '_q4f16',
+    q2: '_q2',
+    q2f16: '_q2f16',
+    q1: '_q1',
+    q1f16: '_q1f16',
+    bnb4: '_bnb4',
+  };
+  const suffix = suffixes[dtype] ?? `_${dtype}`;
+  return `model${suffix}.onnx`;
+}
+
+function modelCachePresent({ cacheDir, modelId, dtype }) {
+  const required = [
+    path.join(cacheDir, modelId, 'config.json'),
+    path.join(cacheDir, modelId, 'onnx', dtypeModelFile(dtype)),
+  ];
+  return required.every((file) => fs.existsSync(file));
+}
+
+function normalizeEmbeddingVector(output, expectedDimensions) {
+  const raw = output?.data ?? output;
+  const arr = ArrayBuffer.isView(raw) ? raw : Array.isArray(raw) ? raw : null;
+  if (!arr) {
+    throw new Error('embedding backend returned an unsupported output shape');
+  }
+  const vec = Float32Array.from(arr);
+  if (vec.length !== expectedDimensions) {
+    throw new Error(`embedding backend returned ${vec.length} dimensions; expected ${expectedDimensions}`);
+  }
+  return vec;
+}
+
+/**
+ * Local Transformers.js embedding backend used by the operational reference.
+ * It runs entirely in-process, requires no hosted API key, and lazily loads
+ * the selected ONNX model on first semantic index/query work.
+ */
+export function makeLocalTransformerBackend(config = resolveLocalEmbeddingProfile()) {
+  let extractorPromise = null;
+  let lastLoadError = null;
+
+  async function getExtractor() {
+    if (extractorPromise) return extractorPromise;
+    extractorPromise = import('@huggingface/transformers')
+      .then(async ({ env, LogLevel, pipeline }) => {
+        env.allowLocalModels = true;
+        env.allowRemoteModels = config.downloadAllowed;
+        env.cacheDir = config.cacheDir;
+        if (LogLevel?.ERROR !== undefined) {
+          env.logLevel = LogLevel.ERROR;
+        }
+        return pipeline('feature-extraction', config.modelId, { dtype: config.dtype });
+      })
+      .catch((err) => {
+        lastLoadError = err;
+        extractorPromise = null;
+        throw err;
+      });
+    return extractorPromise;
+  }
+
+  async function embed(text) {
+    const extractor = await getExtractor();
+    const output = await extractor(String(text || ''), { pooling: 'mean', normalize: true });
+    return normalizeEmbeddingVector(output, config.dimensions);
+  }
+
+  return {
+    profileId: () => config.profileId,
+    model: () => config.modelId,
+    dimensions: () => config.dimensions,
+    distanceMetric: () => config.distanceMetric,
+    dtype: () => config.dtype,
+    identity: () => `${config.profileId}:${config.modelId}:${config.dtype}:${config.dimensions}:${config.distanceMetric}`,
+    embedQuery: embed,
+    embedDocument: embed,
+    available: () => {
+      if (lastLoadError) return false;
+      return config.downloadAllowed || modelCachePresent(config);
+    },
+    languageBias: () => config.languageBias,
+    modelCachePath: () => config.cacheDir,
+    modelCachePresent: () => modelCachePresent(config),
+    downloadAllowed: () => config.downloadAllowed,
+  };
+}
+
+export function resolveSemanticBackendFromEnv(env = process.env) {
+  const defaultMode = env.PDPP_REFERENCE_OPERATIONAL_DEFAULTS === '1' ? 'local' : 'stub';
+  const mode = (env[EMBEDDING_BACKEND_ENV] || defaultMode).trim().toLowerCase();
+  if (['0', 'false', 'off', 'none', 'disabled'].includes(mode)) return null;
+  if (['local', 'transformers', 'transformers-js'].includes(mode)) {
+    return makeLocalTransformerBackend(resolveLocalEmbeddingProfile(env));
+  }
+  if (mode === 'stub') return makeStubBackend();
+  throw new Error(`${EMBEDDING_BACKEND_ENV} must be one of: local, stub, disabled`);
 }
 
 // Module-scoped backend, configured by configureSemanticBackend() or left
@@ -275,15 +460,25 @@ function makeBlobFlatIndex({ db, dimensions, distanceMetric }) {
  */
 function makeSqliteVecIndex({ db, dimensions, distanceMetric }) {
   // Bootstrap the vec0 virtual table lazily on first use. Dimensions and
-  // distance_metric are baked into the schema; a change in either is a
-  // drift signal that forces a full rebuild (see
-  // ensureVecSchemaMatchesBackend below).
+  // distance_metric are baked into the schema. If either changes, recreate
+  // the virtual table and let manifest backfill rebuild from stored records.
   function ensureTable() {
     const existing = db.prepare(`
       SELECT sql FROM sqlite_master
       WHERE type = 'table' AND name = 'semantic_search_vec'
     `).get();
-    if (existing) return;
+    if (existing) {
+      const sql = String(existing.sql || '');
+      const expectedDims = `FLOAT[${dimensions}]`;
+      const expectedMetric = `distance_metric=${distanceMetric}`;
+      if (sql.includes(expectedDims) && sql.includes(expectedMetric)) {
+        return;
+      }
+      db.prepare('DROP TABLE semantic_search_vec').run();
+      db.prepare('DELETE FROM semantic_search_rowid').run();
+      db.prepare('DELETE FROM semantic_search_meta').run();
+      db.prepare('DELETE FROM semantic_search_snapshots').run();
+    }
     db.prepare(`
       CREATE VIRTUAL TABLE semantic_search_vec USING vec0(
         connector_id TEXT PARTITION KEY,
@@ -525,6 +720,21 @@ function fingerprintSemanticFields(declaredFields) {
   return JSON.stringify(unique);
 }
 
+function backendStorageIdentity(b) {
+  const parts = [
+    `model=${b.model()}`,
+    `dimensions=${b.dimensions()}`,
+    `metric=${b.distanceMetric()}`,
+  ];
+  if (typeof b.profileId === 'function') {
+    parts.push(`profile=${b.profileId()}`);
+  }
+  if (typeof b.dtype === 'function') {
+    parts.push(`dtype=${b.dtype()}`);
+  }
+  return parts.join(';');
+}
+
 async function rebuildSemanticIndexForStream({ connectorId, stream, declaredFields }) {
   const index = ensureVectorIndex();
   if (!index || !backend) return 0;
@@ -610,7 +820,7 @@ export async function semanticIndexBackfillForManifest({ manifest, log = () => {
   const index = ensureVectorIndex();
   if (!index) return;
 
-  const currentModel = backend.model();
+  const currentModel = backendStorageIdentity(backend);
   const currentDims = backend.dimensions();
   const currentMetric = backend.distanceMetric();
 
@@ -742,9 +952,7 @@ export async function semanticIndexBackfillForManifest({ manifest, log = () => {
  * persisted (model_id, dimensions, distance_metric) against the currently
  * configured backend. Any mismatch ⇒ stale.
  *
- * Returns 'built' | 'building' | 'stale'. In v1 we never report 'building'
- * asynchronously (backfill is synchronous in the boot path and blocks
- * startup); that value is reserved for a future concurrent-rebuild path.
+ * Returns 'built' | 'building' | 'stale'.
  */
 export function computeIndexState() {
   if (!backend) return 'stale';
@@ -761,12 +969,12 @@ export function computeIndexState() {
   // semanticIndexBackfillForManifest before advertising, so "built" is the
   // right steady-state answer when meta is empty.
   if (rows.length === 0) return 'built';
-  const currentModel = backend.model();
+  const currentStorageIdentity = backendStorageIdentity(backend);
   const currentDims = backend.dimensions();
   const currentMetric = backend.distanceMetric();
   for (const row of rows) {
     if (
-      row.model_id !== currentModel
+      row.model_id !== currentStorageIdentity
       || Number(row.dimensions) !== currentDims
       || row.distance_metric !== currentMetric
     ) {
@@ -906,7 +1114,7 @@ export async function runSemanticSearch({
   buildOwnerReadGrantForManifest,
   resolveGrantManifest,
 }) {
-  if (!backend) {
+  if (!backend || !backend.available()) {
     // Route registration should prevent reaching this helper when no backend
     // is configured, but defend in depth.
     const err = new Error('semantic retrieval is not configured');
@@ -1221,9 +1429,7 @@ function hashSemanticPlan({ perConnectorPlans, isOwner }) {
 
 function hashBackendIdentity(b) {
   return JSON.stringify({
-    m: b.model(),
-    d: b.dimensions(),
-    x: b.distanceMetric(),
+    identity: backendStorageIdentity(b),
   });
 }
 

@@ -55,6 +55,7 @@ export default async function DeploymentPage() {
 
 const WARNING_TITLES: Record<DeploymentDiagnostics["warnings"][number]["code"], string> = {
   zero_participation: "Zero semantic participation",
+  building_index: "Semantic index is rebuilding",
   stale_index: "Semantic index is stale",
   backend_unavailable: "Embedding backend unavailable",
   missing_model_cache: "Embedding model cache missing",
@@ -95,7 +96,9 @@ function SemanticSection({ report }: { report: DeploymentDiagnostics }) {
       <dl className="grid grid-cols-1 gap-x-6 gap-y-2 sm:grid-cols-2">
         <Field label="Configured" value={yesNo(backend.configured)} />
         <Field label="Available" value={yesNo(backend.available)} />
+        <Field label="Profile" value={backend.profile_id ?? "—"} />
         <Field label="Model" value={backend.model ?? "—"} />
+        <Field label="Dtype" value={backend.dtype ?? "—"} />
         <Field label="Dimensions" value={backend.dimensions === null ? "—" : String(backend.dimensions)} />
         <Field label="Distance metric" value={backend.distance_metric ?? "—"} />
         <Field label="Language bias" value={formatLanguageBias(backend.language_bias)} />

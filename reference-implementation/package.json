@@ -14,9 +14,9 @@
   },
   "scripts": {
     "//dev": "Default dev is quiet again. Use `pnpm dev:trace-gc` only when investigating native/V8 crash behavior under load.",
-    "dev": "sh -c 'PDPP_REFERENCE_MODE=${PDPP_REFERENCE_MODE:-composed} PDPP_REFERENCE_ORIGIN=${PDPP_REFERENCE_ORIGIN:-http://localhost:3000} PDPP_DB_PATH=${PDPP_DB_PATH:-../packages/polyfill-connectors/.pdpp-data/polyfill.sqlite} node --env-file-if-exists=../.env.local server/index.js'",
-    "dev:trace-gc": "sh -c 'PDPP_REFERENCE_MODE=${PDPP_REFERENCE_MODE:-composed} PDPP_REFERENCE_ORIGIN=${PDPP_REFERENCE_ORIGIN:-http://localhost:3000} PDPP_DB_PATH=${PDPP_DB_PATH:-../packages/polyfill-connectors/.pdpp-data/polyfill.sqlite} node --env-file-if-exists=../.env.local --trace-gc --trace-gc-verbose server/index.js'",
-    "server": "node --env-file-if-exists=../.env.local server/index.js",
+    "dev": "sh -c 'PDPP_REFERENCE_MODE=${PDPP_REFERENCE_MODE:-composed} PDPP_REFERENCE_ORIGIN=${PDPP_REFERENCE_ORIGIN:-http://localhost:3000} PDPP_DB_PATH=${PDPP_DB_PATH:-../packages/polyfill-connectors/.pdpp-data/polyfill.sqlite} PDPP_REFERENCE_OPERATIONAL_DEFAULTS=${PDPP_REFERENCE_OPERATIONAL_DEFAULTS:-1} node --env-file-if-exists=../.env.local server/index.js'",
+    "dev:trace-gc": "sh -c 'PDPP_REFERENCE_MODE=${PDPP_REFERENCE_MODE:-composed} PDPP_REFERENCE_ORIGIN=${PDPP_REFERENCE_ORIGIN:-http://localhost:3000} PDPP_DB_PATH=${PDPP_DB_PATH:-../packages/polyfill-connectors/.pdpp-data/polyfill.sqlite} PDPP_REFERENCE_OPERATIONAL_DEFAULTS=${PDPP_REFERENCE_OPERATIONAL_DEFAULTS:-1} node --env-file-if-exists=../.env.local --trace-gc --trace-gc-verbose server/index.js'",
+    "server": "sh -c 'PDPP_REFERENCE_OPERATIONAL_DEFAULTS=${PDPP_REFERENCE_OPERATIONAL_DEFAULTS:-1} node --env-file-if-exists=../.env.local server/index.js'",
     "cli": "node cli/index.js",
     "example-client": "node examples/third-party-app/server.js",
     "test": "node scripts/run-tests.js",
@@ -27,6 +27,7 @@
   },
   "dependencies": {
     "@fastify/formbody": "^8.0.2",
+    "@huggingface/transformers": "^4.2.0",
     "@pdpp/reference-contract": "workspace:*",
     "better-sqlite3": "^12.9.0",
     "express": "^4.18.3",

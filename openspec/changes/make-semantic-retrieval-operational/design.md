@@ -64,7 +64,7 @@ The deterministic stub is valuable for contract tests because it is fast, determ
 
 The reference should add a local transformer embedding backend that can run without a hosted API key. The implementation should evaluate `@huggingface/transformers` because it is the current Transformers.js package, supports local model execution, and works with Hugging Face model IDs tagged for Transformers.js. The final implementation should pin the dependency and model behavior through tests and startup diagnostics rather than relying on prose.
 
-The default profile should be chosen after a small evaluation of install size, first-run cache behavior, query latency, and English/non-English quality. If the default remains English-biased for speed, the multilingual profile must be one env/config switch away and documented. If the performance cost is acceptable, prefer a multilingual default because the reference is meant to be internationally legible.
+As implemented, the default operational profile is `minilm`, backed by `Xenova/all-MiniLM-L6-v2` with `dtype=q4`, `384` dimensions, and cosine distance. This is the right default for a forkable low-compute reference because it is small, fast, and has explicit Transformers.js/ONNX support. The multilingual profile remains one env switch away (`PDPP_EMBEDDING_PROFILE_ID=multilingual-minilm`) because its ONNX weights are substantially larger; it is the right choice for Italian or mixed-language corpora, not the cheapest default for every local demo.
 
 ### 4. Model selection is server/operator configuration
 

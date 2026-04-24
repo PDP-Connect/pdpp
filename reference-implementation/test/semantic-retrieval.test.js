@@ -44,7 +44,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 
-import { parseSemanticSearchParams } from '../server/search-semantic.js';
+import { makeStubBackend, parseSemanticSearchParams, resolveSemanticBackendFromEnv } from '../server/search-semantic.js';
 import { startServer } from '../server/index.js';
 
 // ─── harness ────────────────────────────────────────────────────────────────
@@ -311,6 +311,21 @@ test('RS metadata omits capabilities.semantic_retrieval when extension is disabl
     // Route is also absent — request returns 404.
     const { status: sStatus } = await fetchJson(`${rsUrl}/v1/search/semantic?q=x`);
     assert.equal(sStatus, 404);
+  });
+});
+
+test('RS metadata omits semantic retrieval and route 404s when backend is unavailable', async () => {
+  const unavailableBackend = {
+    ...makeStubBackend(),
+    available: () => false,
+  };
+  await withHarness({ semanticRetrievalBackend: unavailableBackend }, async ({ rsUrl }) => {
+    const { body } = await fetchJson(`${rsUrl}/.well-known/oauth-protected-resource`);
+    assert.equal(body.capabilities?.semantic_retrieval, undefined);
+    const resp = await fetch(`${rsUrl}/v1/search/semantic?q=test`, {
+      headers: { Authorization: 'Bearer bad-token' },
+    });
+    assert.equal(resp.status, 404);
   });
 });
 
@@ -1171,4 +1186,44 @@ test('parseSemanticSearchParams accepts the v1 allowlist, rejects everything els
     () => parseSemanticSearchParams({}),
     (err) => err.code === 'invalid_request' && err.param === 'q',
   );
+});
+
+test('semantic backend env resolver defaults to deterministic stub outside operational dev mode', () => {
+  const backend = resolveSemanticBackendFromEnv({});
+  assert.ok(backend);
+  assert.equal(backend.model(), 'pdpp-reference-stub-embed-v0');
+  assert.equal(backend.dimensions(), 64);
+  assert.equal(backend.distanceMetric(), 'cosine');
+  assert.equal(backend.available(), true);
+});
+
+test('semantic backend env resolver can disable semantic retrieval entirely', () => {
+  assert.equal(resolveSemanticBackendFromEnv({ PDPP_SEMANTIC_EMBEDDING_BACKEND: 'disabled' }), null);
+});
+
+test('semantic backend env resolver rejects unknown local profile IDs', () => {
+  assert.throws(
+    () => resolveSemanticBackendFromEnv({
+      PDPP_REFERENCE_OPERATIONAL_DEFAULTS: '1',
+      PDPP_EMBEDDING_PROFILE_ID: 'unknown-profile',
+    }),
+    /PDPP_EMBEDDING_PROFILE_ID must be one of:/,
+  );
+});
+
+test('semantic backend env resolver exposes local multilingual profile metadata without loading a model', () => {
+  const backend = resolveSemanticBackendFromEnv({
+    PDPP_REFERENCE_OPERATIONAL_DEFAULTS: '1',
+    PDPP_EMBEDDING_PROFILE_ID: 'multilingual-minilm',
+    PDPP_EMBEDDING_DOWNLOAD_ALLOWED: '0',
+    PDPP_EMBEDDING_CACHE_DIR: path.join(os.tmpdir(), 'pdpp-missing-transformers-cache'),
+  });
+  assert.ok(backend);
+  assert.equal(backend.model(), 'Xenova/paraphrase-multilingual-MiniLM-L12-v2');
+  assert.equal(backend.dimensions(), 384);
+  assert.equal(backend.distanceMetric(), 'cosine');
+  assert.equal(backend.languageBias()?.primary, 'multi');
+  assert.equal(backend.downloadAllowed(), false);
+  assert.equal(backend.modelCachePresent(), false);
+  assert.equal(backend.available(), false);
 });

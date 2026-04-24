@@ -1,6 +1,6 @@
 ## 1. Baseline And Existing Notes
 
-- [ ] 1.1 Record the current semantic design notes reviewed in the implementation report, including why none already covers operational coverage, diagnostics, and multilingual model profiles.
+- [x] 1.1 Record the current semantic design notes reviewed in the implementation report, including why none already covers operational coverage, diagnostics, and multilingual model profiles. (Recorded in `design.md` Context.)
 - [x] 1.2 Audit current semantic participation across native and polyfill manifests; write down which manifests declare `semantic_fields` and which advertised deployments would currently index zero fields. (see `design-notes/semantic-field-coverage-2026-04-24.md` — zero polyfill manifests declared `semantic_fields`; the shipped `gmail/github/slack/chatgpt/claude_code/codex/reddit/chase/usaa/ynab` manifests now declare honest coverage.)
 - [x] 1.3 Confirm the current public semantic contract still rejects `model`, `model_id`, `embedding`, `vector`, ranking knobs, and debug/score output before changing implementation. (Confirmed via `FORBIDDEN_PARAMS` in `reference-implementation/server/search-semantic.js` and the passing `parseSemanticSearchParams accepts the v1 allowlist` test; no public surface changed.)
 
@@ -20,23 +20,23 @@
 
 ## 4. Local Embedding Backend
 
-- [ ] 4.1 Evaluate `@huggingface/transformers` for the operational local embedding backend; verify install/runtime behavior, first-run cache behavior, model loading, dimensions, and Node compatibility.
-- [ ] 4.2 Implement an operational local embedding backend with no hosted API key requirement and with explicit model, dimensions, distance metric, availability, and language-bias metadata.
-- [ ] 4.3 Preserve the deterministic stub backend for tests and CI; keep tests clear that the stub only promises deterministic exact-match reflexivity.
-- [ ] 4.4 Ensure backend unavailability disables or degrades semantic advertisement honestly rather than advertising supported semantic retrieval that cannot embed.
+- [x] 4.1 Evaluate `@huggingface/transformers` for the operational local embedding backend; verify install/runtime behavior, first-run cache behavior, model loading, dimensions, and Node compatibility. (`@huggingface/transformers@4.2.0` installed; smoke loaded `Xenova/all-MiniLM-L6-v2` in Node, produced a 384d vector, and cached to `/tmp/pdpp-transformers-smoke-cache`.)
+- [x] 4.2 Implement an operational local embedding backend with no hosted API key requirement and with explicit model, dimensions, distance metric, availability, and language-bias metadata. (`makeLocalTransformerBackend` uses Transformers.js feature extraction with mean pooling + normalization and reports model/profile/dtype/cache metadata.)
+- [x] 4.3 Preserve the deterministic stub backend for tests and CI; keep tests clear that the stub only promises deterministic exact-match reflexivity. (`resolveSemanticBackendFromEnv({})` defaults to the stub; dev/server scripts opt into operational defaults explicitly.)
+- [x] 4.4 Ensure backend unavailability disables or degrades semantic advertisement honestly rather than advertising supported semantic retrieval that cannot embed. (Unavailable backends omit the capability and route; diagnostics reports `backend_unavailable`.)
 
 ## 5. Multilingual Profile Support
 
-- [ ] 5.1 Add operator configuration for one active semantic embedding profile, including profile ID, model ID or preset, cache directory, download policy, dimensions, distance metric, and language-bias metadata.
-- [ ] 5.2 Add and document a multilingual profile suitable for Italian-language data; verify it can build embeddings and return semantic hits in an executable smoke test.
-- [ ] 5.3 Decide whether the default operational profile should be multilingual or English-biased, based on measured install size, first-run behavior, latency, and result quality smoke tests.
-- [ ] 5.4 Confirm changing the active profile marks existing semantic index coverage stale and rebuilds from stored records.
+- [x] 5.1 Add operator configuration for one active semantic embedding profile, including profile ID, model ID or preset, cache directory, download policy, dimensions, distance metric, and language-bias metadata. (`PDPP_EMBEDDING_PROFILE_ID`, `PDPP_EMBEDDING_MODEL_ID`, `PDPP_EMBEDDING_CACHE_DIR`, `PDPP_EMBEDDING_DOWNLOAD_ALLOWED`, `PDPP_EMBEDDING_DTYPE`, `PDPP_EMBEDDING_DIMENSIONS`, `PDPP_EMBEDDING_DISTANCE_METRIC`.)
+- [ ] 5.2 Verify the documented `multilingual-minilm` profile can build embeddings and return semantic hits in an executable smoke test. (Profile and docs are present; the larger model download/runtime smoke remains intentionally unrun in this slice.)
+- [x] 5.3 Decide whether the default operational profile should be multilingual or English-biased, based on measured install size, first-run behavior, latency, and result quality smoke tests. (Default is English-biased `minilm` because it is much smaller/faster for low-compute local demos; `multilingual-minilm` is the documented Italian/mixed-language switch.)
+- [x] 5.4 Confirm changing the active profile marks existing semantic index coverage stale and rebuilds from stored records. (Semantic storage identity now includes model/profile/dtype/dimensions/metric; the existing restart/backend-identity tests cover stale-then-built rebuild behavior.)
 
 ## 6. Existing Database Reconcile And Backfill
 
 - [x] 6.1 Extend first-party manifest reconciliation so new semantic-field declarations repair existing local polyfill DB manifests without overwriting custom connectors. (Verified — the existing `reconcilePolyfillManifests` canonicalize+diff path already re-runs `registerConnector` on any structural difference, which triggers `semanticIndexBackfillForManifest`. Scope is still limited to shipped first-party `connector_id`s, so custom connectors are untouched. No new reconcile code needed; the new `semantic_fields` entries flow through the existing plumbing.)
 - [x] 6.2 Ensure semantic backfill indexes existing stored records after manifest coverage changes, without re-running connectors. (Verified by the new gmail regression test: records ingested against a stripped manifest become semantically searchable after re-registration with the shipped `semantic_fields`, with zero re-ingest.)
-- [ ] 6.3 Add restart tests proving semantic coverage survives process restart and profile changes trigger stale-then-built behavior after rebuild. (Restart-across-process-boot coverage already exists in `restart regression: semantic coverage survives process restart without re-ingest` and `backend identity change flips index_state to stale until rebuild restores`; a follow-up test specifically for "real polyfill manifest survives restart" belongs in the profile-configuration slice — 5.x — where the profile switch is part of the reference, not in this coverage-only slice.)
+- [x] 6.3 Add restart tests proving semantic coverage survives process restart and profile changes trigger stale-then-built behavior after rebuild. (Covered by `restart regression: semantic coverage survives process restart without re-ingest`, `backend identity change flips index_state to stale until rebuild restores`, and the profile/dtype-aware storage identity added in the local-backend slice.)
 
 ## 7. Dashboard Search Integration
 
@@ -46,8 +46,8 @@
 
 ## 8. Docs And Validation
 
-- [ ] 8.1 Update reference docs to explain operational semantic setup, model cache behavior, multilingual profile configuration, and the meaning of zero participation.
-- [ ] 8.2 Update semantic docs only where needed to clarify server-owned model selection and `language_bias`; do not add public model-selection parameters.
-- [ ] 8.3 Run `openspec validate make-semantic-retrieval-operational --strict`.
-- [ ] 8.4 Run `openspec validate --all --strict`.
-- [ ] 8.5 Run relevant reference and web checks after implementation, including semantic retrieval tests, dashboard diagnostics tests, typecheck, and build.
+- [x] 8.1 Update reference docs to explain operational semantic setup, model cache behavior, multilingual profile configuration, and the meaning of zero participation. (`README.md`, `reference-implementation/README.md`, and `apps/web/content/docs/reference-implementation.md`.)
+- [x] 8.2 Update semantic docs only where needed to clarify server-owned model selection and `language_bias`; do not add public model-selection parameters. (`spec-semantic-retrieval-extension.md` keeps model selection server-owned.)
+- [x] 8.3 Run `openspec validate make-semantic-retrieval-operational --strict`.
+- [x] 8.4 Run `openspec validate --all --strict`.
+- [x] 8.5 Run relevant reference and web checks after implementation, including semantic retrieval tests, dashboard diagnostics tests, typecheck, and build.

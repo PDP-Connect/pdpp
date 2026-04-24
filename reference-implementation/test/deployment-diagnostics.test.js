@@ -215,6 +215,22 @@ test('stale index warning fires when indexState is "stale"', () => {
   assert.ok(!codes.includes('zero_participation'));
 });
 
+test('building index warning fires when indexState is "building"', () => {
+  const report = buildDeploymentDiagnostics({
+    backend: fakeBackend(),
+    db: { vectorIndexKind: 'sqlite-vec' },
+    dbPath: '/tmp/test.sqlite',
+    manifests: [
+      { manifest: manifestWithSemantic(), provenance: 'polyfill-registered' },
+    ],
+    indexState: 'building',
+    env: {},
+  });
+  const codes = report.warnings.map((w) => w.code);
+  assert.ok(codes.includes('building_index'));
+  assert.ok(!codes.includes('zero_participation'));
+});
+
 test('backend reports unavailable when available() returns false', () => {
   const report = buildDeploymentDiagnostics({
     backend: fakeBackend({ available: () => false }),
