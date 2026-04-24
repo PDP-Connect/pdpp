@@ -13,5 +13,5 @@
 export * from './common/index.js';
 export * from './public/index.js';
 export * from './reference/index.js';
-export * from './builders/index.js';
+export * from './builders/index.ts';
 export { validateRequest, listOperations } from './validate.js';

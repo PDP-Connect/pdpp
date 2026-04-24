@@ -6,7 +6,7 @@ import {
   buildOwnerDeviceAuthorizationRequest,
   buildParRequest,
   buildRecordsQuery,
-} from '../src/builders/index.js';
+} from '../src/builders/index.ts';
 
 test('buildExpandParams normalizes repeated relation names and expand limits', () => {
   assert.deepEqual(

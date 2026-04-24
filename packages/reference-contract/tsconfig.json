@@ -1,17 +1,49 @@
 {
   "compilerOptions": {
-    "target": "ES2022",
-    "module": "ES2022",
-    "moduleResolution": "bundler",
+    // Language + module (Node ESM, matches polyfill-connectors exemplar).
+    "target": "ES2023",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "moduleDetection": "force",
+    "lib": ["ES2023"],
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+    "erasableSyntaxOnly": true,
+    "forceConsistentCasingInFileNames": true,
+
+    // Strictness: 2026 "strict-plus" baseline, matching the bar established
+    // in packages/polyfill-connectors. Every flag catches a bug class that
+    // plain `strict: true` does not.
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitReturns": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "allowUnreachableCode": false,
+    "allowUnusedLabels": false,
+    "useUnknownInCatchVariables": true,
+
+    // Source-only TS: .ts files run directly under Node 23+ (native
+    // type-stripping). tsc type-checks, it never emits. Same shape as the
+    // polyfill-connectors exemplar.
+    "noEmit": true,
+    "skipLibCheck": true,
+    "types": ["node"],
+
+    // The JS modules that have not yet been migrated (reference, public,
+    // openapi, validate, docs, common) are still shipped as .js and are
+    // loaded through package exports without type-checking. allowJs lets
+    // them participate in the module graph; checkJs stays off until each
+    // file's own migration slice upgrades it to .ts.
     "allowJs": true,
     "checkJs": false,
-    "strict": true,
-    "noEmit": true,
-    "resolveJsonModule": true,
-    "skipLibCheck": true,
-    "esModuleInterop": true,
-    "isolatedModules": true
+    "allowImportingTsExtensions": true
   },
-  "include": ["src/**/*.js"],
+  "include": ["src/**/*.ts", "src/**/*.js", "test/**/*.ts", "test/**/*.js"],
   "exclude": ["node_modules"]
 }

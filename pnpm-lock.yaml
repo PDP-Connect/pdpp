@@ -187,6 +187,13 @@ importers:
       ajv-formats:
         specifier: ^3.0.1
         version: 3.0.1(ajv@8.18.0)
+    devDependencies:
+      '@biomejs/biome':
+        specifier: 2.4.12
+        version: 2.4.12
+      ultracite:
+        specifier: 7.6.0
+        version: 7.6.0
 
   reference-implementation:
     dependencies:

@@ -10,7 +10,7 @@
     "./common": "./src/common/index.js",
     "./public": "./src/public/index.js",
     "./reference": "./src/reference/index.js",
-    "./builders": "./src/builders/index.js",
+    "./builders": "./src/builders/index.ts",
     "./openapi": "./src/openapi/index.js",
     "./validate": "./src/validate.js"
   },
@@ -19,10 +19,18 @@
     "generate:docs": "node ./src/docs/generate.js",
     "generate:all": "node ./src/openapi/generate.js && node ./src/docs/generate.js",
     "check:generated": "pnpm run generate:all && node ./scripts/check-generated.js",
-    "test": "node --test --test-force-exit test/*.test.js"
+    "test": "node --test --test-force-exit test/*.test.js",
+    "typecheck": "tsc --noEmit",
+    "check": "ultracite check",
+    "fix": "ultracite fix",
+    "verify": "pnpm typecheck && pnpm check && pnpm test"
   },
   "dependencies": {
     "ajv": "^8.17.1",
     "ajv-formats": "^3.0.1"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.4.12",
+    "ultracite": "7.6.0"
   }
 }
