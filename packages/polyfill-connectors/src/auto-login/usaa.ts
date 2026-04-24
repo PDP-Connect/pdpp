@@ -13,9 +13,13 @@
 import type { BrowserContext, Page } from "playwright";
 import type { InteractionRequest, InteractionResponse } from "../connector-runtime.ts";
 
+const DASHBOARD_URL = "https://www.usaa.com/my/usaa";
+const LOGIN_URL = "https://www.usaa.com/my/logon";
 const LOGGED_IN_TEXT = /Log Off|Good (Morning|Afternoon|Evening)/i;
 const LOG_OFF_TEXT = /Log Off/i;
+const SESSION_COOKIE = /^(LtpaToken2|AST|MemberGlobalSession)$/;
 const TEXT_CODE_PROMPT = /Text security code/i;
+const LOGIN_NAVIGATION_INTERVENTION_ERROR = /page\.goto: net::ERR_(HTTP2_PROTOCOL_ERROR|CONNECTION_RESET|FAILED)\b/i;
 
 interface EnsureUsaaSessionArgs {
   context: BrowserContext;
@@ -29,28 +33,69 @@ interface InputProbe {
   type: string;
 }
 
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+function firstLine(message: string): string {
+  return message.split("\n")[0]?.trim() || message.trim();
+}
+
+function isLoggedInCookie(cookie: { name: string; value?: string }): boolean {
+  if (cookie.name === "UsaaMbWebMemberLoggedIn") {
+    return Boolean(cookie.value) && cookie.value !== "false";
+  }
+  return SESSION_COOKIE.test(cookie.name);
+}
+
+async function verifyLoggedIn(context: BrowserContext, page: Page): Promise<boolean> {
+  const cookies = await context.cookies("https://www.usaa.com/");
+  if (!cookies.some(isLoggedInCookie)) {
+    return false;
+  }
+
+  // Verify by hitting a cheap authenticated page.
+  await page
+    .goto(DASHBOARD_URL, {
+      waitUntil: "domcontentloaded",
+      timeout: 25_000,
+    })
+    .catch((): undefined => undefined);
+  await page.waitForTimeout(3000);
+  const bodyText = (
+    await page
+      .locator("body")
+      .innerText()
+      .catch((): string => "")
+  ).slice(0, 500);
+  return LOGGED_IN_TEXT.test(bodyText);
+}
+
+async function requestManualLoginAfterNavigationFailure({
+  context,
+  page,
+  reason,
+  sendInteraction,
+}: EnsureUsaaSessionArgs & { reason: string }): Promise<boolean> {
+  const response = await sendInteraction({
+    kind: "manual_action",
+    message:
+      `USAA login page failed to load automatically (${reason}). ` +
+      "This often means USAA is rejecting the current automated browser mode. " +
+      "If this run opened a visible browser, complete USAA login there and respond success. " +
+      "If it is headless, cancel this interaction and rerun USAA headed (for example with PDPP_USAA_HEADLESS=0 on a desktop or under xvfb-run).",
+    timeout_seconds: 1800,
+  });
+  if (response.status !== "success") {
+    throw new Error(`USAA login navigation needs manual browser action; interaction status=${response.status}`);
+  }
+  return verifyLoggedIn(context, page);
+}
+
 export async function ensureUsaaSession({ context, page, sendInteraction }: EnsureUsaaSessionArgs): Promise<boolean> {
   // Probe first — no need to re-login if session is alive.
-  const cookies = await context.cookies("https://www.usaa.com/");
-  const loggedIn = cookies.find((c): boolean => c.name === "UsaaMbWebMemberLoggedIn");
-  if (loggedIn?.value && loggedIn.value !== "false") {
-    // Verify by hitting a cheap authenticated page
-    await page
-      .goto("https://www.usaa.com/my/usaa", {
-        waitUntil: "domcontentloaded",
-        timeout: 25_000,
-      })
-      .catch((): undefined => undefined);
-    await page.waitForTimeout(3000);
-    const bodyText = (
-      await page
-        .locator("body")
-        .innerText()
-        .catch((): string => "")
-    ).slice(0, 500);
-    if (LOGGED_IN_TEXT.test(bodyText)) {
-      return true;
-    }
+  if (await verifyLoggedIn(context, page)) {
+    return true;
   }
 
   // Session is dead or suspect — drive login.
@@ -60,10 +105,22 @@ export async function ensureUsaaSession({ context, page, sendInteraction }: Ensu
     throw new Error("USAA_USERNAME/PASSWORD not set; cannot auto-login");
   }
 
-  await page.goto("https://www.usaa.com/my/logon", {
-    waitUntil: "domcontentloaded",
-    timeout: 30_000,
-  });
+  try {
+    await page.goto(LOGIN_URL, {
+      waitUntil: "domcontentloaded",
+      timeout: 30_000,
+    });
+  } catch (err) {
+    const message = errorMessage(err);
+    if (LOGIN_NAVIGATION_INTERVENTION_ERROR.test(message)) {
+      const reason = firstLine(message);
+      if (await requestManualLoginAfterNavigationFailure({ context, page, reason, sendInteraction })) {
+        return true;
+      }
+      throw new Error(`USAA login page navigation failed (${reason}); manual action did not establish a session`);
+    }
+    throw err;
+  }
   // Give React a beat to initialize the form. USAA's SPA renders the
   // memberId input immediately but hasn't bound React event handlers yet —
   // filling in that <1s window produces a value that React discards.

@@ -1235,7 +1235,10 @@ if (isMainModule(import.meta.url)) {
   runConnector({
     name: "usaa",
     validateRecord,
-    browser: { profileName: "usaa" },
+    // USAA rejects headless Chromium before the login form loads
+    // (`net::ERR_HTTP2_PROTOCOL_ERROR`), while headed Chrome loads it.
+    // Allow explicit headless probes with PDPP_USAA_HEADLESS=1.
+    browser: { profileName: "usaa", headless: process.env.PDPP_USAA_HEADLESS === "1" },
     async ensureSession({
       context,
       page,

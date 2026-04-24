@@ -222,7 +222,7 @@ These are the highest-leverage gaps surfaced by live assistant use of the refere
 - [ ] Add `month_categories` matrix stream (per-month-per-category budgeted/activity/balance, keyed on `(budget_id, month, category_id)`)
 
 ### USAA
-- [ ] Fix live login navigation regression: current run fails immediately with `connector_reported_failed` / `usaa_session_failed: page.goto: net::ERR_HTTP2_PROTOCOL_ERROR` at `https://www.usaa.com/my/logon` and never surfaces a browser interaction. Reproduce with browser-daemon logs enabled, compare headed vs headless, and preserve an interaction path if the site blocks automated navigation.
+- [x] Fix live login navigation regression: current run fails immediately with `connector_reported_failed` / `usaa_session_failed: page.goto: net::ERR_HTTP2_PROTOCOL_ERROR` at `https://www.usaa.com/my/logon` and never surfaces a browser interaction. Reproduce with browser-daemon logs enabled, compare headed vs headless, and preserve an interaction path if the site blocks automated navigation.
 - [ ] Wire already-designed streams (`transfers`, `bill_payments`, `scheduled_transactions`, `external_accounts`) per `design-notes/usaa-extra-streams.md`
 - [ ] Statements: implement PDF download + `pdf_sha256` once live browser session is available
 
