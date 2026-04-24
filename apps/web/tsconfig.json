@@ -21,6 +21,10 @@
     "isolatedModules": true,
     "jsx": "react-jsx",
     "incremental": true,
+    // Ultracite's useImportExtensions rule requires explicit extensions
+    // on local imports; Next.js / tsx strip them at load time. Same
+    // pattern as packages/polyfill-connectors/tsconfig.json.
+    "allowImportingTsExtensions": true,
     "plugins": [
       {
         "name": "next"

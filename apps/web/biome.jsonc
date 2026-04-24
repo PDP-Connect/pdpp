@@ -1,0 +1,31 @@
+{
+  "$schema": "../../node_modules/@biomejs/biome/configuration_schema.json",
+  "extends": ["ultracite/biome/core", "ultracite/biome/type-aware"],
+  "formatter": {
+    "lineWidth": 120
+  },
+  "files": {
+    "ignoreUnknown": true,
+    // Stock Ultracite + lineWidth 120 — no rule overrides (per doctrine:
+    // "for apps/web let's use stock biome as much as possible"). The
+    // includes pattern scopes Biome to real source code: .ts + .tsx under
+    // src/ plus JSON config. Build outputs (.next/, .source/), generated
+    // types (next-env.d.ts), static assets (public/), authored Markdown
+    // (content/, not linted by Biome), and the .mjs build script are
+    // excluded. If a rule legitimately cannot be satisfied, stop and
+    // report with evidence — do not relax it here.
+    "includes": [
+      "src/**/*.ts",
+      "src/**/*.tsx",
+      "*.jsonc",
+      "*.json",
+      "!node_modules",
+      "!.next",
+      "!.source",
+      "!next-env.d.ts",
+      "!public",
+      "!content",
+      "!scripts"
+    ]
+  }
+}

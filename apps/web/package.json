@@ -8,7 +8,10 @@
     "dev": "pnpm openspec:git-metadata && next dev --webpack",
     "build": "pnpm openspec:git-metadata && next build",
     "start": "next start",
-    "types:check": "fumadocs-mdx && next typegen && tsc --noEmit"
+    "types:check": "fumadocs-mdx && next typegen && tsc --noEmit",
+    "check": "ultracite check",
+    "fix": "ultracite fix",
+    "verify": "pnpm types:check && pnpm check && pnpm build"
   },
   "dependencies": {
     "@base-ui/react": "^1.3.0",
