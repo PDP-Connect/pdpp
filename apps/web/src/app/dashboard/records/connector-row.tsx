@@ -180,7 +180,7 @@ function RunStatus({
   runsHref: string;
 }) {
   if (running) {
-    return <RunningBadge startedAt={runStart} />;
+    return <RunningBadge startedAt={runStart} href={lastRun ? `${runsHref}/${encodeURIComponent(lastRun.run_id)}` : undefined} />;
   }
   if (!lastRun) {
     return (
@@ -228,7 +228,7 @@ function RunStatus({
   );
 }
 
-function RunningBadge({ startedAt }: { startedAt: string | undefined }) {
+function RunningBadge({ startedAt, href }: { startedAt: string | undefined; href?: string }) {
   // Elapsed-time ticker. Only active while this component is mounted —
   // mount happens only when the row is in a running state, so the
   // interval is cheap.
@@ -243,7 +243,7 @@ function RunningBadge({ startedAt }: { startedAt: string | undefined }) {
     return () => clearInterval(id);
   }, []);
   const secs = Math.max(0, Math.floor((now - startedMs) / 1000));
-  return (
+  const content = (
     <span
       className="pdpp-caption text-foreground inline-flex items-center gap-1"
       aria-live="polite"
@@ -252,6 +252,12 @@ function RunningBadge({ startedAt }: { startedAt: string | undefined }) {
       <StatusDot tone="running" />
       Running · {formatElapsed(secs)}
     </span>
+  );
+  if (!href) return content;
+  return (
+    <Link href={href} className="hover:text-foreground/80 underline-offset-2 hover:underline">
+      {content}
+    </Link>
   );
 }
 

@@ -75,6 +75,14 @@ export default async function ConnectorPage({
         count={`${totalRecords.toLocaleString()} records · ${streams.length} stream${streams.length === 1 ? '' : 's'}`}
         actions={
           <>
+            {running && overview?.lastRun ? (
+              <Link
+                href={`/dashboard/runs/${encodeURIComponent(overview.lastRun.run_id)}`}
+                className={buttonVariants({ variant: 'outline', size: 'sm' })}
+              >
+                Active run →
+              </Link>
+            ) : null}
             <Link
               href={`/dashboard/runs?connector_id=${encodeURIComponent(connectorId)}`}
               className={buttonVariants({ variant: 'outline', size: 'sm' })}

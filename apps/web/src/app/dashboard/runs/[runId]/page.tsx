@@ -2,10 +2,11 @@ import { Fragment } from 'react';
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { DashboardShell, ServerUnreachable } from '../../components/shell';
-import { PageHeader, Section } from '../../components/primitives';
+import { Callout, MetaPill, PageHeader, Section, StatusBadge } from '../../components/primitives';
 import { ReferenceServerUnreachableError, getAsInternalUrl } from '../../lib/owner-token';
 import { getRunTimeline, type SpineEvent, type TimelineEnvelope } from '../../lib/ref-client';
 import { TimelineView } from '../../components/timeline-view';
+import { RunDetailPoller } from './run-detail-poller';
 
 export const dynamic = 'force-dynamic';
 
@@ -42,10 +43,15 @@ export default async function RunDetailPage({
   const checkpoints = summarizeCheckpoints(events);
   const progress = summarizeProgress(events);
   const interactions = summarizeInteractions(events);
+  const terminalStatus = getTerminalRunStatus(events);
+  const active = terminalStatus == null;
+  const pendingInteraction = getPendingInteraction(events);
+  const latestProgress = getLatestProgress(events);
   const failure = events.find((e) => e.event_type === 'run.failed');
 
   return (
     <DashboardShell active="runs">
+      <RunDetailPoller enabled={active} />
       <PageHeader
         title={<code className="font-mono">{runId}</code>}
         breadcrumbs={[{ label: 'Runs', href: '/dashboard/runs' }, { label: 'Run' }]}
@@ -60,7 +66,104 @@ export default async function RunDetailPage({
             {events.length} events
           </>
         }
+        meta={
+          <>
+            <MetaPill
+              label="state"
+              value={active ? (pendingInteraction ? 'awaiting input' : 'running') : terminalStatus}
+              tone={pendingInteraction ? 'human' : active ? 'protocol' : terminalStatus === 'failed' ? 'danger' : 'success'}
+            />
+            {latestProgress?.count != null && latestProgress?.total != null && latestProgress.total > 0 ? (
+              <MetaPill
+                label="progress"
+                value={`${Math.max(0, Math.min(100, Math.round((latestProgress.count / latestProgress.total) * 100)))}%`}
+                tone="protocol"
+              />
+            ) : null}
+          </>
+        }
       />
+
+      {pendingInteraction ? (
+        <Callout
+          title="Waiting for your input"
+          description="This run is alive, but it cannot continue until the requested interaction is satisfied."
+          surface="human"
+          className="mb-6"
+          action={<StatusBadge status="pending" inline />}
+        >
+          <dl className="pdpp-caption grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
+            <dt className="text-muted-foreground">kind</dt>
+            <dd>{pendingInteraction.kind}</dd>
+            <dt className="text-muted-foreground">message</dt>
+            <dd>{pendingInteraction.message}</dd>
+            {pendingInteraction.timeoutLabel ? (
+              <>
+                <dt className="text-muted-foreground">timeout</dt>
+                <dd>{pendingInteraction.timeoutLabel}</dd>
+              </>
+            ) : null}
+            {pendingInteraction.fields.length > 0 ? (
+              <>
+                <dt className="text-muted-foreground">fields</dt>
+                <dd className="flex flex-wrap gap-1.5">
+                  {pendingInteraction.fields.map((field) => (
+                    <code
+                      key={field}
+                      className="bg-background border-border/80 rounded border px-1.5 py-0.5 font-mono"
+                    >
+                      {field}
+                    </code>
+                  ))}
+                </dd>
+              </>
+            ) : null}
+          </dl>
+          <p className="pdpp-caption text-muted-foreground mt-3">
+            The dashboard can inspect this interaction, but it cannot answer it yet. For now, respond in the
+            reference-server terminal or satisfy the needed env var and rerun.
+          </p>
+        </Callout>
+      ) : null}
+
+      {latestProgress ? (
+        <Callout
+          title="Latest progress"
+          description="Most connectors only report phases; percent appears only when a connector emits both count and total."
+          surface="protocol"
+          className="mb-6"
+          action={<StatusBadge status={active ? 'started' : terminalStatus ?? 'started'} inline />}
+        >
+          <dl className="pdpp-caption grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
+            <dt className="text-muted-foreground">message</dt>
+            <dd>{latestProgress.message}</dd>
+            {latestProgress.stream ? (
+              <>
+                <dt className="text-muted-foreground">stream</dt>
+                <dd>{latestProgress.stream}</dd>
+              </>
+            ) : null}
+            {latestProgress.count != null ? (
+              <>
+                <dt className="text-muted-foreground">count</dt>
+                <dd>{String(latestProgress.count)}</dd>
+              </>
+            ) : null}
+            {latestProgress.total != null ? (
+              <>
+                <dt className="text-muted-foreground">total</dt>
+                <dd>{String(latestProgress.total)}</dd>
+              </>
+            ) : null}
+            {latestProgress.percentLabel ? (
+              <>
+                <dt className="text-muted-foreground">completion</dt>
+                <dd>{latestProgress.percentLabel}</dd>
+              </>
+            ) : null}
+          </dl>
+        </Callout>
+      ) : null}
 
       {traceIds.length > 0 || grantIds.length > 0 ? (
         <div className="mb-6 flex flex-wrap gap-2">
@@ -166,6 +269,7 @@ function summarizeProgress(events: SpineEvent[]): Array<[string, string]> {
   const last = progressEvents[progressEvents.length - 1];
   return [
     ['reports', String(progressEvents.length)],
+    ['last_message', String(last?.data?.message ?? '—')],
     ['last_count', String(last?.data?.count ?? '—')],
     ['last_total', String(last?.data?.total ?? '—')],
     ['skipped', String(skipped)],
@@ -179,4 +283,94 @@ function summarizeInteractions(events: SpineEvent[]): Array<[string, string]> {
     ['required', String(required)],
     ['completed', String(completed)],
   ];
+}
+
+function getTerminalRunStatus(events: SpineEvent[]): 'succeeded' | 'failed' | 'cancelled' | null {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (event.event_type === 'run.failed') {
+      const reason = String(event.data?.reason ?? event.data?.failure_reason ?? '').toLowerCase();
+      return reason === 'cancelled' ? 'cancelled' : 'failed';
+    }
+    if (event.event_type === 'run.completed') {
+      return event.status === 'cancelled' ? 'cancelled' : 'succeeded';
+    }
+  }
+  return null;
+}
+
+function getLatestProgress(events: SpineEvent[]): {
+  message: string;
+  stream: string | null;
+  count: number | null;
+  total: number | null;
+  percentLabel: string | null;
+} | null {
+  const latest = [...events].reverse().find((event) => event.event_type === 'run.progress_reported');
+  if (!latest) return null;
+
+  const count = typeof latest.data?.count === 'number' ? latest.data.count : null;
+  const total = typeof latest.data?.total === 'number' ? latest.data.total : null;
+  const percentLabel =
+    count != null && total != null && total > 0
+      ? `${Math.max(0, Math.min(100, Math.round((count / total) * 100)))}%`
+      : null;
+
+  return {
+    message: String(latest.data?.message ?? '—'),
+    stream: typeof latest.stream_id === 'string' && latest.stream_id ? latest.stream_id : null,
+    count,
+    total,
+    percentLabel,
+  };
+}
+
+function getPendingInteraction(events: SpineEvent[]): {
+  kind: string;
+  message: string;
+  fields: string[];
+  timeoutLabel: string | null;
+} | null {
+  const completed = new Set(
+    events
+      .filter((event) => event.event_type === 'run.interaction_completed')
+      .map((event) => event.interaction_id)
+      .filter((value): value is string => typeof value === 'string' && value.length > 0),
+  );
+
+  const pending = [...events].reverse().find(
+    (event) =>
+      event.event_type === 'run.interaction_required' &&
+      typeof event.interaction_id === 'string' &&
+      !completed.has(event.interaction_id),
+  );
+  if (!pending) return null;
+
+  const schema = pending.data?.schema;
+  const properties =
+    schema && typeof schema === 'object' && !Array.isArray(schema) && 'properties' in schema
+      ? schema.properties
+      : null;
+  const fields =
+    properties && typeof properties === 'object' && !Array.isArray(properties)
+      ? Object.keys(properties as Record<string, unknown>).sort((left, right) => left.localeCompare(right))
+      : [];
+  const timeoutSeconds =
+    typeof pending.data?.timeout_seconds === 'number' && pending.data.timeout_seconds > 0
+      ? pending.data.timeout_seconds
+      : null;
+
+  return {
+    kind: String(pending.data?.kind ?? 'interaction'),
+    message: String(pending.data?.message ?? 'Awaiting operator response.'),
+    fields,
+    timeoutLabel: timeoutSeconds == null ? null : formatTimeout(timeoutSeconds),
+  };
+}
+
+function formatTimeout(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const remainder = seconds % 60;
+  return remainder === 0 ? `${minutes}m` : `${minutes}m ${remainder}s`;
 }
