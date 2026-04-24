@@ -25,5 +25,5 @@
 
 - [x] Run targeted reference tests for the records/query contract.
 - [x] Re-read touched files and grep affected old patterns before reporting complete.
-- [ ] Commit the work in the `define-initial-changes-bookmark` worktree.
-- [ ] Add `.git/workstreams/merge-queue/define-initial-changes-bookmark.md`.
+- [x] Commit the work in the `define-initial-changes-bookmark` worktree.
+- [x] Add `.git/workstreams/merge-queue/define-initial-changes-bookmark.md`.
