@@ -301,6 +301,87 @@ test('bare since query parameter is rejected loudly', async () => {
   });
 });
 
+test('changes_since=beginning starts incremental sync and returns a bookmark', async () => {
+  await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
+    const ownerToken = await issueOwnerToken(asUrl);
+    const connectorId = spotifyManifest.connector_id;
+    await seedSpotifyTopArtists(rsUrl, ownerToken, connectorId, [
+      { id: 'boot_a', name: 'Bootstrap A', source_updated_at: '2026-01-01T00:00:00Z' },
+      { id: 'boot_b', name: 'Bootstrap B', source_updated_at: '2026-01-02T00:00:00Z' },
+    ]);
+    const url = `${rsUrl}/v1/streams/top_artists/records`
+      + `?connector_id=${encodeURIComponent(connectorId)}`
+      + '&changes_since=beginning';
+    const { status, body } = await fetchJson(url, {
+      headers: { 'Authorization': `Bearer ${ownerToken}` },
+    });
+    assert.equal(status, 200);
+    assert.equal(body.object, 'list');
+    assert.equal(body.has_more, false);
+    assert.deepEqual(body.data.map((r) => r.id).sort(), ['boot_a', 'boot_b']);
+    assert.ok(typeof body.next_changes_since === 'string' && body.next_changes_since.length > 0);
+    assert.ok(!body.next_cursor, 'terminal changes page should not expose a page cursor');
+  });
+});
+
+test('changes_since=beginning paginates with next_cursor and still returns next_changes_since', async () => {
+  await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
+    const ownerToken = await issueOwnerToken(asUrl);
+    const connectorId = spotifyManifest.connector_id;
+    await seedSpotifyTopArtists(rsUrl, ownerToken, connectorId, [
+      { id: 'page_a', name: 'Page A', source_updated_at: '2026-01-01T00:00:00Z' },
+      { id: 'page_b', name: 'Page B', source_updated_at: '2026-01-02T00:00:00Z' },
+      { id: 'page_c', name: 'Page C', source_updated_at: '2026-01-03T00:00:00Z' },
+    ]);
+    const firstUrl = `${rsUrl}/v1/streams/top_artists/records`
+      + `?connector_id=${encodeURIComponent(connectorId)}`
+      + '&changes_since=beginning&limit=2';
+    const first = await fetchJson(firstUrl, {
+      headers: { 'Authorization': `Bearer ${ownerToken}` },
+    });
+    assert.equal(first.status, 200);
+    assert.equal(first.body.has_more, true);
+    assert.deepEqual(first.body.data.map((r) => r.id), ['page_a', 'page_b']);
+    assert.ok(typeof first.body.next_cursor === 'string' && first.body.next_cursor.length > 0);
+    assert.ok(typeof first.body.next_changes_since === 'string' && first.body.next_changes_since.length > 0);
+
+    const pageCursor = JSON.parse(Buffer.from(first.body.next_cursor, 'base64').toString('utf8'));
+    assert.equal(pageCursor.kind, 'page');
+    assert.equal(pageCursor.session, 'changes');
+
+    const second = await fetchJson(
+      `${rsUrl}/v1/streams/top_artists/records`
+        + `?connector_id=${encodeURIComponent(connectorId)}`
+        + `&cursor=${encodeURIComponent(first.body.next_cursor)}`,
+      { headers: { 'Authorization': `Bearer ${ownerToken}` } },
+    );
+    assert.equal(second.status, 200);
+    assert.equal(second.body.has_more, false);
+    assert.deepEqual(second.body.data.map((r) => r.id), ['page_c']);
+    assert.ok(typeof second.body.next_changes_since === 'string' && second.body.next_changes_since.length > 0);
+    assert.equal(second.body.next_changes_since, first.body.next_changes_since);
+    assert.ok(!second.body.next_cursor);
+  });
+});
+
+test('raw timestamp changes_since value is rejected as an invalid cursor', async () => {
+  await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
+    const ownerToken = await issueOwnerToken(asUrl);
+    const connectorId = spotifyManifest.connector_id;
+    await seedSpotifyTopArtists(rsUrl, ownerToken, connectorId, [
+      { id: 'time_a', name: 'Timestamp A', source_updated_at: '2026-01-01T00:00:00Z' },
+    ]);
+    const url = `${rsUrl}/v1/streams/top_artists/records`
+      + `?connector_id=${encodeURIComponent(connectorId)}`
+      + `&changes_since=${encodeURIComponent('2026-04-24T00:00:00Z')}`;
+    const { status, body } = await fetchJson(url, {
+      headers: { 'Authorization': `Bearer ${ownerToken}` },
+    });
+    assert.equal(status, 400);
+    assert.equal(body.error.code, 'invalid_cursor');
+  });
+});
+
 test('unknown query parameter is rejected (not silently ignored)', async () => {
   await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
     const ownerToken = await issueOwnerToken(asUrl);

@@ -227,7 +227,7 @@ List records in a stream under grant enforcement. Supports logical-cursor pagina
 - `limit` — integer · min: 1 · max: 100
 - `cursor` — string · Opaque logical pagination cursor. Encodes (cursor_field, primary_key) position.
 - `order` — enum `asc | desc`
-- `changes_since` — string · Opaque changes-since token. Distinct from list-page cursors.
+- `changes_since` — string · `beginning` for initial sync, or an opaque changes-since token from next_changes_since. Distinct from list-page cursors.
 - `fields` — string
 - `view` — string
 - `filter` — object

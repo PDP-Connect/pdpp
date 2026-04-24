@@ -56,10 +56,12 @@ GET /v1/streams/top_artists/records?order=asc&limit=50&cursor=<next_cursor>
 
 ## Incremental sync (changes_since)
 
-`changes_since` returns records whose authorized projection changed since the previous sync. Use `next_changes_since` from the terminal page to seed the next session.
+`changes_since` returns records whose authorized projection changed since the previous sync. Use `changes_since=beginning` for the initial sync, then use `next_changes_since` from the terminal page to seed the next session. Do not pass list-page `next_cursor` values as `changes_since`.
 
 ```http
-GET /v1/streams/top_artists/records?changes_since=<token>
+GET /v1/streams/top_artists/records?changes_since=beginning
+... later ...
+GET /v1/streams/top_artists/records?changes_since=<next_changes_since>
 ```
 
 ## Expansion

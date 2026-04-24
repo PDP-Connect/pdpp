@@ -36,7 +36,16 @@ GET /v1/streams/profile/records?changes_since=<cursor>
 Authorization: Bearer <access_token>
 ```
 
-The `changes_since` cursor is an opaque token from a previous response's `next_cursor`. It carries the client's last sync position and the grant's field projection context. Clients MUST treat cursors as opaque.
+To start from the beginning, pass the documented sentinel:
+
+```
+GET /v1/streams/profile/records?changes_since=beginning
+Authorization: Bearer <access_token>
+```
+
+The `changes_since` cursor is either the literal sentinel `beginning` for the initial sync or an opaque token from a previous changes response's `next_changes_since`. It carries the client's last sync position and the grant's field projection context. Clients MUST treat returned cursors as opaque and MUST NOT construct internal version cursors.
+
+If a changes response is paginated, use `next_cursor` only with the `cursor` parameter to continue that response. Store `next_changes_since` as the bookmark for the next sync session.
 
 ### Tombstones
 

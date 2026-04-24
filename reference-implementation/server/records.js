@@ -1202,6 +1202,7 @@ function isVisibleSnapshot(snapshot, effective, consentTimeField) {
 }
 
 function parseChangesSinceCursor(str) {
+  if (str === 'beginning') return { version: 0 };
   const decoded = decodeCursor(str);
   if (!decoded) return null;
   if (!decoded.kind) {

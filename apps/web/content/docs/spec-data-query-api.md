@@ -110,6 +110,7 @@ Returns records from a stream, filtered by grant constraints and request paramet
 | `limit` | integer | Records per page. Default 25, max 100. |
 | `cursor` | string | Opaque pagination token from a previous response's `next_cursor` or `prev_cursor`. The server generates these tokens; clients pass them back verbatim. |
 | `order` | enum | `desc` (default) or `asc` |
+| `changes_since` | string | `beginning` for an initial incremental sync, or an opaque changes bookmark from a previous response's `next_changes_since`. Distinct from page cursors. |
 | `filter[{field}]` | string | Exact match filter |
 | `filter[{field}][gte]` | string | Greater than or equal (ISO 8601 for dates) |
 | `filter[{field}][gt]` | string | Greater than |
@@ -176,6 +177,8 @@ PDPP-Version: 2026-03-28
 ```
 
 **Pagination:** Pass `next_cursor` from the response as the `cursor` parameter to get the next page. Cursor tokens are opaque — clients must not parse or construct them. This allows the server to handle compound primary keys and arbitrary sort orders internally.
+
+**Incremental sync:** Pass `changes_since=beginning` to start a changes session from the beginning, then store `next_changes_since` from the response for the next sync session. Do not pass a normal list `next_cursor` as `changes_since`; `next_cursor` is only for page continuation through the `cursor` parameter.
 
 ### Get a single record
 

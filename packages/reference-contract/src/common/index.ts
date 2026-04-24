@@ -91,7 +91,7 @@ export const CursorSchema: JsonSchema = {
 export const ChangesSinceSchema: JsonSchema = {
   $id: "pdpp/common/ChangesSince",
   type: "string",
-  description: "Opaque changes-since token. Distinct from list-page cursors.",
+  description: "`beginning` for initial sync, or an opaque changes-since token from next_changes_since. Distinct from list-page cursors.",
 };
 
 export const OrderSchema: JsonSchema = {
