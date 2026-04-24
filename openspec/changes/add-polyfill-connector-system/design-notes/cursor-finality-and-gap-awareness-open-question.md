@@ -1,5 +1,11 @@
 # Open question: cursor finality & gap-awareness — what does a connector mean when it says "I have up to X"?
 
+Status: sprint-needed
+Owner: project owner
+Created: 2026-04-20
+Updated: 2026-04-24
+Related: `openspec/changes/add-polyfill-connector-system/design-notes/partial-run-semantics-open-question.md`, `openspec/changes/add-polyfill-connector-system/design-notes/gap-recovery-execution-open-question.md`, `pdpp-trust-model-framing.md`
+
 **Status:** open
 **Raised:** 2026-04-20
 **Framing:** Cursor semantics look different when the cursor is for the owner's own agent vs. a third-party client auditing completeness. See `pdpp-trust-model-framing.md`.

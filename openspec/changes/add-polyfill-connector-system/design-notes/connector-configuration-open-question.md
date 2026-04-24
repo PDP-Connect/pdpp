@@ -1,5 +1,11 @@
 # Open question: connector configuration surface
 
+Status: sprint-needed
+Owner: project owner
+Created: 2026-04-19
+Updated: 2026-04-24
+Related: `design-notes/source-instances-and-multi-account-configurations-2026-04-24.md` (repo root)
+
 **Status:** open
 **Raised:** 2026-04-19
 **Context:** while building the Claude Code connector we discovered several knobs we'd want user-configurable (content preview cap, project-dir include/exclude, stream selection). Today those land as ad-hoc env vars. The fleet is going to grow more of these quickly (Gmail label filters, Amazon year floor, Reddit subreddit allowlist, USAA account allowlist, Slack channel scopes…). We need a principled answer before adding another.

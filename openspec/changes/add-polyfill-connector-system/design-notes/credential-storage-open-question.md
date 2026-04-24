@@ -1,5 +1,11 @@
 # Open question: where do connector credentials belong?
 
+Status: sprint-needed
+Owner: project owner
+Created: 2026-04-19
+Updated: 2026-04-24
+Related: `openspec/changes/add-polyfill-connector-system/design-notes/credential-bootstrap-automation-open-question.md`, `pdpp-trust-model-framing.md`
+
 **Status:** open
 **Raised:** 2026-04-19
 **Context:** today the GitHub PAT bootstrap (`bin/bootstrap-github-pat.js`) drives a real browser login, generates a PAT, and stores it by appending to `.env.local` with 0600 perms. Every API-based connector reads its credentials from the same file at startup. This works for single-user dev on a trusted laptop. Nothing about it is appropriate for the spec's threat model.

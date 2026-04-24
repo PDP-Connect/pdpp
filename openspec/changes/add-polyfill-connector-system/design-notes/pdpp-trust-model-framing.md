@@ -1,5 +1,11 @@
 # Framing: PDPP's trust model, for decisions that look different across parties
 
+Status: captured
+Owner: project owner
+Created: 2026-04-20
+Updated: 2026-04-24
+Related: `openspec/changes/add-polyfill-connector-system/design-notes/partial-run-semantics-open-question.md`, `openspec/changes/add-polyfill-connector-system/design-notes/cursor-finality-and-gap-awareness-open-question.md`, `openspec/changes/add-polyfill-connector-system/design-notes/gap-recovery-execution-open-question.md`, `openspec/changes/add-polyfill-connector-system/design-notes/blob-hydration-open-question.md`, `openspec/changes/add-polyfill-connector-system/design-notes/credential-storage-open-question.md`
+
 **Status:** reference framing (not an open question)
 **Raised:** 2026-04-20
 **Purpose:** Many of the open-question notes in this directory have answers that depend on which PDPP party the decision is optimized for. This framing note is the canonical place to spell that out, so each individual note can reference it once instead of re-litigating the framing internally.

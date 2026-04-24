@@ -1,5 +1,11 @@
 # Open question: gap-recovery execution — who runs the retries, and what does the connector owe them?
 
+Status: sprint-needed
+Owner: project owner
+Created: 2026-04-20
+Updated: 2026-04-24
+Related: `openspec/changes/add-polyfill-connector-system/design-notes/partial-run-semantics-open-question.md`, `openspec/changes/add-polyfill-connector-system/design-notes/cursor-finality-and-gap-awareness-open-question.md`, `pdpp-trust-model-framing.md`
+
 **Status:** open
 **Raised:** 2026-04-20
 **Framing:** Who owns retry execution (owner's scheduler? third-party client? runtime?) depends on the client-party frame. See `pdpp-trust-model-framing.md`.

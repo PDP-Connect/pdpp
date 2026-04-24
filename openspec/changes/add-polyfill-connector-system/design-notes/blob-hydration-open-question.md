@@ -1,5 +1,11 @@
 # Open question: blob-hydration as a protocol primitive
 
+Status: sprint-needed
+Owner: project owner
+Created: 2026-04-19
+Updated: 2026-04-24
+Related: `openspec/changes/add-polyfill-connector-system/tasks.md` (Gmail attachment blob collection), `openspec/changes/add-polyfill-connector-system/design-notes/layer-2-coverage-gmail-ynab-usaa-github.md`, `pdpp-trust-model-framing.md`
+
 **Status:** open
 **Raised:** 2026-04-19
 **Framing (added 2026-04-20):** How blobs are addressed and whether self-export includes bytes both depend on whether the primary consumer is the owner or a third-party client. See `pdpp-trust-model-framing.md`.

@@ -1,5 +1,11 @@
 # Open question: partial-run semantics — what does it mean for a run to "succeed" when not every record made it?
 
+Status: sprint-needed
+Owner: project owner
+Created: 2026-04-20
+Updated: 2026-04-24
+Related: `openspec/changes/add-polyfill-connector-system/design-notes/cursor-finality-and-gap-awareness-open-question.md`, `openspec/changes/add-polyfill-connector-system/design-notes/gap-recovery-execution-open-question.md`, `pdpp-trust-model-framing.md`
+
 **Status:** open
 **Raised:** 2026-04-20
 **Trigger:** A single session surfaced five independent variants of the same shape: "the connector produced some records but not all, and there is no protocol-level way to express that." Each variant forced a workaround. Listing them together makes the pattern legible.
