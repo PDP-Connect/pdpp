@@ -235,6 +235,12 @@ Implementations that expose this extension SHALL publish the advertisement as a 
 - **AND** the implementation SHALL report `"stale"` when the configured `model` has changed or when `semantic_fields` have changed in a way that invalidates existing index coverage, until a rebuild restores coverage
 - **AND** the implementation SHALL NOT report `"built"` while the advertised `model` disagrees with the content of the operational index
 
+#### Scenario: The semantic surface SHALL NOT silently substitute a non-semantic fallback
+- **WHEN** `index_state` is `"building"` or `"stale"`, or when the server is otherwise unable to produce semantic results honoring the declared `model`
+- **THEN** the server MAY return an empty or partial result set
+- **AND** the server SHALL NOT substitute lexical-only matching (or any other non-semantic fallback) behind `GET /v1/search/semantic` while continuing to emit `retrieval_mode: "semantic"` or `retrieval_mode: "hybrid"` on results
+- **AND** a server that cannot honestly produce semantic or hybrid results SHALL either return zero results or SHALL NOT advertise `capabilities.semantic_retrieval.supported: true`
+
 #### Scenario: `lexical_blending` governs whether hybrid results are permitted
 - **WHEN** an advertisement reports `lexical_blending: false`
 - **THEN** every result on `GET /v1/search/semantic` SHALL carry `retrieval_mode: "semantic"`

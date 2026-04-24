@@ -291,8 +291,8 @@ No new top-level document. No AS-metadata layering. No new discovery protocol.
       "query_input": "text",
       "snippets": true,
       "lexical_blending": false,
-      "model": "text-embedding-3-large",
-      "dimensions": 3072,
+      "model": "<server-declared-model-id>",
+      "dimensions": 1024,
       "distance_metric": "cosine",
       "default_limit": 25,
       "max_limit": 100,
@@ -329,7 +329,7 @@ Optional keys:
 
 - `built` — the semantic index over the declared `semantic_fields` is up to date within the server's rebuild cadence.
 - `building` — the server is currently (re)building the index; the endpoint MAY return partial or empty results.
-- `stale` — the server's declared model or declared `semantic_fields` have changed in a way that invalidates existing index coverage; the endpoint MAY operate in a degraded mode (for example, by falling back to lexical-only internally while still honoring the grant-safety rules). Clients that depend on semantic recall SHOULD treat `stale` as "this extension is best-effort right now."
+- `stale` — the server's declared model or declared `semantic_fields` have changed in a way that invalidates existing index coverage; the extension is best-effort while `stale` is reported, and the server MAY return empty or partial results. The server MUST NOT substitute lexical-only matching (or any other non-semantic fallback) behind the semantic surface while continuing to advertise `retrieval_mode: "semantic"` or `"hybrid"` on results — doing so would make the public result-shape contract dishonest. Clients that depend on semantic recall SHOULD treat `stale` as "this extension is best-effort right now" and MAY fall back to the lexical retrieval surface themselves.
 
 This is an intentionally small vocabulary. It does **not** promise rebuild semantics, per-record revision stamps, or deterministic "re-embed on next write" behavior. It only tells clients whether the advertised contract is currently honest.
 
