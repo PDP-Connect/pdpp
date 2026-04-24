@@ -931,6 +931,107 @@ function hasObjectEntries(value) {
   return value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length > 0;
 }
 
+function getNonNullSchemaTypes(schema) {
+  const rawType = schema?.type;
+  if (!rawType) return new Set();
+  const types = Array.isArray(rawType) ? rawType : [rawType];
+  return new Set(types.filter((type) => type !== 'null'));
+}
+
+function isExactFilterableSchema(schema) {
+  const types = getNonNullSchemaTypes(schema);
+  if (types.size !== 1) return false;
+  const [type] = types;
+  return ['boolean', 'integer', 'number', 'string'].includes(type);
+}
+
+function buildFieldCapabilityFlag({ declared, granted, operators = null }) {
+  const flag = {
+    declared,
+    usable: declared && granted,
+  };
+  if (operators) {
+    flag.operators = operators;
+  }
+  if (declared && !granted) {
+    flag.reason = 'field_not_granted';
+  }
+  return flag;
+}
+
+function buildFieldCapabilities(manifestStream, streamGrant = null) {
+  const properties = manifestStream?.schema?.properties || {};
+  const grantedFields = Array.isArray(streamGrant?.fields) && streamGrant.fields.length > 0
+    ? new Set(streamGrant.fields)
+    : null;
+  const rangeFilters = manifestStream?.query?.range_filters || {};
+  const lexicalFields = new Set(manifestStream?.query?.search?.lexical_fields || []);
+  const semanticFields = new Set(manifestStream?.query?.search?.semantic_fields || []);
+
+  return Object.fromEntries(
+    Object.entries(properties).map(([field, schema]) => {
+      const granted = !grantedFields || grantedFields.has(field);
+      const rangeOperators = Array.isArray(rangeFilters[field]) ? rangeFilters[field] : null;
+      return [field, {
+        schema,
+        granted,
+        exact_filter: buildFieldCapabilityFlag({
+          declared: isExactFilterableSchema(schema),
+          granted,
+        }),
+        range_filter: buildFieldCapabilityFlag({
+          declared: Boolean(rangeOperators),
+          granted,
+          operators: rangeOperators || undefined,
+        }),
+        lexical_search: buildFieldCapabilityFlag({
+          declared: lexicalFields.has(field),
+          granted,
+        }),
+        semantic_search: buildFieldCapabilityFlag({
+          declared: semanticFields.has(field),
+          granted,
+        }),
+      }];
+    }),
+  );
+}
+
+function buildExpandCapabilities(manifestStream, streamGrant = null) {
+  const relationships = new Map((manifestStream?.relationships || []).map((relationship) => [relationship.name, relationship]));
+  const grantedStreams = Array.isArray(streamGrant?.grantStreams)
+    ? new Set(streamGrant.grantStreams.map((stream) => stream.name))
+    : null;
+
+  return (manifestStream?.query?.expand || [])
+    .map((capability) => {
+      const relationship = relationships.get(capability.name);
+      if (!relationship) return null;
+      const granted = !grantedStreams || grantedStreams.has(relationship.stream);
+      const entry = {
+        name: capability.name,
+        stream: relationship.stream,
+        cardinality: relationship.cardinality,
+        granted,
+        usable: granted,
+      };
+      if (relationship.foreign_key) {
+        entry.foreign_key = relationship.foreign_key;
+      }
+      if (capability.default_limit !== undefined) {
+        entry.default_limit = capability.default_limit;
+      }
+      if (capability.max_limit !== undefined) {
+        entry.max_limit = capability.max_limit;
+      }
+      if (!granted) {
+        entry.reason = 'related_stream_not_granted';
+      }
+      return entry;
+    })
+    .filter(Boolean);
+}
+
 function buildDiscoveryUrl(path, connectorId = null) {
   const connectorQuery = connectorId ? `?connector_id=${encodeURIComponent(connectorId)}` : '';
   return `${path}${connectorQuery}`;
@@ -2481,8 +2582,10 @@ function buildRsApp(opts = {}) {
         err.code = 'not_found';
         return await rejectQuery(res, req, queryContext, err);
       }
+      const streamGrant = tokenInfo.pdpp_token_kind === 'client'
+        ? tokenInfo.grant?.streams?.find((stream) => stream.name === req.params.stream)
+        : null;
       if (tokenInfo.pdpp_token_kind === 'client') {
-        const streamGrant = tokenInfo.grant?.streams?.find((stream) => stream.name === req.params.stream);
         if (!streamGrant) {
           const err = new Error(`Stream '${req.params.stream}' not in grant`);
           err.code = 'grant_stream_not_allowed';
@@ -2502,6 +2605,10 @@ function buildRsApp(opts = {}) {
         views: mStream.views || [],
         relationships: mStream.relationships || [],
         query: mStream.query || {},
+        field_capabilities: buildFieldCapabilities(mStream, streamGrant),
+        expand_capabilities: buildExpandCapabilities(mStream, streamGrant
+          ? { ...streamGrant, grantStreams: tokenInfo.grant?.streams || [] }
+          : null),
         freshness: await getVisibleStreamFreshness({
           tokenInfo,
           storageBinding:

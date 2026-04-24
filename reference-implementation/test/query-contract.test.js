@@ -378,7 +378,7 @@ test('connector discovery scopes client tokens to the granted source and streams
   });
 });
 
-test('stream metadata publishes query.range_filters for declared fields', async () => {
+test('stream metadata publishes normalized field capabilities for owner tokens', async () => {
   await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
     const ownerToken = await issueOwnerToken(asUrl);
     const connectorId = spotifyManifest.connector_id;
@@ -388,8 +388,166 @@ test('stream metadata publishes query.range_filters for declared fields', async 
     );
     assert.equal(status, 200);
     assert.equal(body.object, 'stream_metadata');
+    assert.ok(body.schema?.properties, 'schema metadata should remain present');
     assert.ok(body.query, 'query metadata should be present');
+    assert.ok(Array.isArray(body.relationships), 'relationships metadata should remain present');
     assert.deepEqual(body.query.range_filters.source_updated_at, ['gte', 'gt', 'lte', 'lt']);
+    assert.deepEqual(body.field_capabilities.source_updated_at.range_filter, {
+      declared: true,
+      usable: true,
+      operators: ['gte', 'gt', 'lte', 'lt'],
+    });
+    assert.deepEqual(body.field_capabilities.popularity.exact_filter, {
+      declared: true,
+      usable: true,
+    });
+    assert.equal(body.field_capabilities.genres.exact_filter.declared, false);
+    assert.deepEqual(body.expand_capabilities, []);
+  });
+});
+
+test('stream metadata advertises lexical, semantic, and expansion capabilities for owner tokens', async () => {
+  await withHarness(async ({ asUrl, rsUrl }) => {
+    const gmailManifest = readGmailManifest();
+    const registerResp = await registerConnectorManifest(asUrl, gmailManifest);
+    assert.equal(registerResp.status, 201);
+    const ownerToken = await issueOwnerToken(asUrl, 'gmail_capability_owner');
+    const { status, body } = await fetchJson(
+      `${rsUrl}/v1/streams/messages?connector_id=${encodeURIComponent(gmailManifest.connector_id)}`,
+      { headers: { 'Authorization': `Bearer ${ownerToken}` } },
+    );
+
+    assert.equal(status, 200);
+    assert.equal(body.field_capabilities.subject.lexical_search.usable, true);
+    assert.equal(body.field_capabilities.subject.semantic_search.usable, true);
+    assert.equal(body.field_capabilities.from_email.lexical_search.usable, true);
+    assert.equal(body.field_capabilities.from_email.semantic_search.declared, false);
+    assert.deepEqual(body.field_capabilities.received_at.range_filter, {
+      declared: true,
+      usable: true,
+      operators: ['gte', 'gt', 'lte', 'lt'],
+    });
+    assert.deepEqual(
+      body.expand_capabilities.map((entry) => ({
+        name: entry.name,
+        stream: entry.stream,
+        cardinality: entry.cardinality,
+        default_limit: entry.default_limit,
+        max_limit: entry.max_limit,
+        usable: entry.usable,
+      })),
+      [
+        {
+          name: 'message_bodies',
+          stream: 'message_bodies',
+          cardinality: 'has_one',
+          default_limit: undefined,
+          max_limit: undefined,
+          usable: true,
+        },
+        {
+          name: 'attachments',
+          stream: 'attachments',
+          cardinality: 'has_many',
+          default_limit: 10,
+          max_limit: 50,
+          usable: true,
+        },
+      ],
+    );
+  });
+});
+
+test('stream metadata marks grant-limited field capabilities unusable for client tokens', async () => {
+  await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
+    const approved = await approveGrant(asUrl, 'capability_limited_spotify_owner', {
+      client_id: 'longview',
+      connector_id: spotifyManifest.connector_id,
+      purpose_code: 'https://pdpp.org/purpose/analytics',
+      purpose_description: 'schema discovery test',
+      access_mode: 'continuous',
+      streams: [{ name: 'top_artists', fields: ['id', 'name', 'source_updated_at'] }],
+    });
+    assert.ok(approved.token, `expected issued grant token, got ${JSON.stringify(approved)}`);
+
+    const { status, body } = await fetchJson(`${rsUrl}/v1/streams/top_artists`, {
+      headers: { 'Authorization': `Bearer ${approved.token}` },
+    });
+
+    assert.equal(status, 200);
+    assert.equal(body.object, 'stream_metadata');
+    assert.ok(body.schema?.properties?.source_updated_at, 'existing schema metadata should remain full source-level metadata');
+    assert.deepEqual(body.query.range_filters.source_updated_at, ['gte', 'gt', 'lte', 'lt']);
+    assert.equal(body.field_capabilities.name.granted, true);
+    assert.deepEqual(body.field_capabilities.name.exact_filter, {
+      declared: true,
+      usable: true,
+    });
+    assert.equal(body.field_capabilities.source_updated_at.granted, true);
+    assert.deepEqual(body.field_capabilities.source_updated_at.range_filter, {
+      declared: true,
+      usable: true,
+      operators: ['gte', 'gt', 'lte', 'lt'],
+    });
+    assert.deepEqual(body.field_capabilities.popularity.exact_filter, {
+      declared: true,
+      usable: false,
+      reason: 'field_not_granted',
+    });
+
+    const gmailManifest = readGmailManifest();
+    const registerResp = await registerConnectorManifest(asUrl, gmailManifest);
+    assert.equal(registerResp.status, 201);
+    const gmailGrant = await approveGrant(asUrl, 'capability_limited_gmail_owner', {
+      client_id: 'longview',
+      connector_id: gmailManifest.connector_id,
+      purpose_code: 'https://pdpp.org/purpose/analytics',
+      purpose_description: 'Plan message queries using a narrowed field set',
+      access_mode: 'continuous',
+      streams: [{ name: 'messages', fields: ['id', 'thread_id', 'received_at', 'subject'] }],
+    });
+    assert.ok(gmailGrant.token, `expected issued grant token, got ${JSON.stringify(gmailGrant)}`);
+
+    const gmailMetadata = await fetchJson(`${rsUrl}/v1/streams/messages`, {
+      headers: { 'Authorization': `Bearer ${gmailGrant.token}` },
+    });
+
+    assert.equal(gmailMetadata.status, 200);
+    assert.deepEqual(gmailMetadata.body.field_capabilities.date.range_filter, {
+      declared: true,
+      usable: false,
+      operators: ['gte', 'gt', 'lte', 'lt'],
+      reason: 'field_not_granted',
+    });
+    assert.deepEqual(gmailMetadata.body.field_capabilities.from_email.lexical_search, {
+      declared: true,
+      usable: false,
+      reason: 'field_not_granted',
+    });
+    assert.deepEqual(gmailMetadata.body.field_capabilities.snippet.semantic_search, {
+      declared: true,
+      usable: false,
+      reason: 'field_not_granted',
+    });
+    assert.deepEqual(
+      gmailMetadata.body.expand_capabilities.map((entry) => ({
+        name: entry.name,
+        usable: entry.usable,
+        reason: entry.reason,
+      })),
+      [
+        {
+          name: 'message_bodies',
+          usable: false,
+          reason: 'related_stream_not_granted',
+        },
+        {
+          name: 'attachments',
+          usable: false,
+          reason: 'related_stream_not_granted',
+        },
+      ],
+    );
   });
 });
 
