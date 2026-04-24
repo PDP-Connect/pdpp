@@ -57,13 +57,13 @@ The CLI and executable tests SHALL consume the real public or reference-designat
 - **THEN** those tests SHALL prefer black-box interaction with the running reference surfaces unless a narrower white-box test is intentionally justified for implementation internals
 
 ### Requirement: Reference-only surfaces are explicit
-Debugging, replay, and trace surfaces that are useful for the reference implementation but are not part of core PDPP SHALL be explicitly marked as reference-only.
+Debugging, replay, trace, and operator-control surfaces that are useful for the reference implementation but are not part of core PDPP SHALL be explicitly marked as reference-only.
 
 #### Scenario: A trace or timeline endpoint is exposed
 - **WHEN** the implementation exposes trace, timeline, or similar introspection surfaces
 - **THEN** those surfaces SHALL be clearly described as reference-only artifacts rather than as core PDPP protocol requirements
 
-#### Scenario: The current `_ref` surface is treated as stable substrate
+#### Scenario: The current `_ref` read surface is treated as stable substrate
 - **WHEN** the implementation exposes the current reference-designated event-spine readers
 - **THEN** the durable `_ref` read surface SHALL stay limited to:
   - `GET /_ref/traces/:traceId`
@@ -73,7 +73,13 @@ Debugging, replay, and trace surfaces that are useful for the reference implemen
   - `GET /_ref/grants` (list, filter, paginate)
   - `GET /_ref/runs` (list, filter, paginate)
   - `GET /_ref/search?q=…` (id-aware read-only jump helper)
-- **AND** the reference SHALL NOT add mutation/control `_ref` endpoints until a later control-plane phase explicitly widens that boundary
+
+#### Scenario: A later control-plane phase widens `_ref` mutation narrowly
+- **WHEN** a later control-plane phase needs a truthful operator mutation surface for a live bounded collection run
+- **THEN** the reference MAY add an owner-only `_ref` mutation endpoint limited to:
+  - `POST /_ref/runs/:runId/interaction`
+- **AND** that route SHALL be documented as reference-only control-plane behavior rather than as a public PDPP API
+- **AND** the reference SHALL NOT widen `_ref` into broader mutation/control endpoints in the same tranche without a further explicit OpenSpec change
 
 #### Scenario: Run timelines expose checkpoint staging separately from checkpoint commit
 - **WHEN** the reference runtime receives `STATE` during a bounded collection run
@@ -86,6 +92,28 @@ Debugging, replay, and trace surfaces that are useful for the reference implemen
 #### Scenario: A future control plane is introduced
 - **WHEN** a control plane, dashboard, or replay surface is built on top of the reference implementation
 - **THEN** it SHALL consume the same public or reference-designated surfaces rather than becoming a hidden control path that the CLI or other consumers cannot use
+
+### Requirement: Run interaction control is owner-only and ephemeral
+The reference implementation SHALL treat dashboard-submitted responses to live run interactions as owner-only, reference-only control-plane actions for the current active run. Submitted values SHALL satisfy the current pending interaction only and SHALL NOT become durable credential storage.
+
+#### Scenario: A pending interaction is answered successfully
+- **WHEN** an owner submits `POST /_ref/runs/:runId/interaction` for the current pending interaction with `status: "success"` and any required `data`
+- **THEN** the reference SHALL deliver a matching `INTERACTION_RESPONSE` back to the live run
+- **AND** the run timeline SHALL continue to expose only the existing safe `run.interaction_completed` metadata rather than the submitted secret values
+
+#### Scenario: A pending interaction is cancelled
+- **WHEN** an owner submits `POST /_ref/runs/:runId/interaction` for the current pending interaction with `status: "cancelled"`
+- **THEN** the reference SHALL deliver a matching cancelled `INTERACTION_RESPONSE` back to the live run
+- **AND** the runtime SHALL remain the authority for any resulting run failure or completion behavior
+
+#### Scenario: A stale or non-current interaction response is submitted
+- **WHEN** a caller submits an interaction response for an unknown run, a non-active run, a run with no current pending interaction, or an `interaction_id` that no longer matches the current pending interaction
+- **THEN** the reference SHALL reject the request honestly instead of fabricating an interaction completion
+
+#### Scenario: A dashboard-submitted credential is processed
+- **WHEN** an owner submits credentials or OTP data through the run interaction control endpoint
+- **THEN** the reference SHALL use those values only to satisfy the current pending interaction
+- **AND** it SHALL NOT write those values to `.env.local`, durable SQLite state, or other long-lived reference configuration as part of this control-plane action
 
 ### Requirement: The Collection boundary stays explicit
 The reference implementation SHALL keep the Collection boundary explicit across core semantics, Collection Profile semantics, and runtime-only behavior.
@@ -248,4 +276,3 @@ This Requirement applies to the read paths enumerated above. Other read paths (i
 - **AND** the RS SHALL NOT scan and JSON-parse rows outside the window
 
 Note — deferred standing defenses: additional runtime defenses (per-route in-flight concurrency cap with coupled dashboard 503 retry + partial-failure coordination, response-size budget hook, process-supervisor mandate) were considered and deferred because the read-path rewrite above resolved the measured crash pathology on its own (5/5 repro runs survived post-fix; old-space peak dropped from 600–730 MB to ~14 MB). They remain open follow-ups, to be taken up only when a measured remaining problem justifies the scope. See `openspec/changes/archive/2026-04-24-fix-rs-query-memory-pressure/` (`proposal.md` §Follow-ups and `tasks.md` §6) for the full rationale, intended shapes, and implementation notes.
-
