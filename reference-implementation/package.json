@@ -12,8 +12,9 @@
     "./owner-session": "./server/owner-session.ts"
   },
   "scripts": {
-    "//dev": "Investigation in progress: reference server crashes under concurrent dashboard load with SIGSEGV inside V8's scavenger during native-addon TEXT marshaling. Reproducible with sqlite3@5.1.7 AND better-sqlite3@12.9. --no-parallel-scavenge masks it in short tests but not confirmed as the root cause. --watch is off because its SIGTERM cycle masked the diagnosis. --trace-gc --trace-gc-verbose are on to capture the pre-crash GC pattern next time; remove once the root cause is in hand.",
-    "dev": "sh -c 'PDPP_REFERENCE_MODE=${PDPP_REFERENCE_MODE:-composed} PDPP_REFERENCE_ORIGIN=${PDPP_REFERENCE_ORIGIN:-http://localhost:3000} PDPP_DB_PATH=${PDPP_DB_PATH:-../packages/polyfill-connectors/.pdpp-data/polyfill.sqlite} node --trace-gc --trace-gc-verbose server/index.js'",
+    "//dev": "Default dev is quiet again. Use `pnpm dev:trace-gc` only when investigating native/V8 crash behavior under load.",
+    "dev": "sh -c 'PDPP_REFERENCE_MODE=${PDPP_REFERENCE_MODE:-composed} PDPP_REFERENCE_ORIGIN=${PDPP_REFERENCE_ORIGIN:-http://localhost:3000} PDPP_DB_PATH=${PDPP_DB_PATH:-../packages/polyfill-connectors/.pdpp-data/polyfill.sqlite} node server/index.js'",
+    "dev:trace-gc": "sh -c 'PDPP_REFERENCE_MODE=${PDPP_REFERENCE_MODE:-composed} PDPP_REFERENCE_ORIGIN=${PDPP_REFERENCE_ORIGIN:-http://localhost:3000} PDPP_DB_PATH=${PDPP_DB_PATH:-../packages/polyfill-connectors/.pdpp-data/polyfill.sqlite} node --trace-gc --trace-gc-verbose server/index.js'",
     "server": "node server/index.js",
     "cli": "node cli/index.js",
     "example-client": "node examples/third-party-app/server.js",
