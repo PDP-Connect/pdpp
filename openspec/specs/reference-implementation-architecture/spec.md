@@ -793,3 +793,648 @@ The reference SHALL NOT alias `GET /v1/search/semantic` to `GET /v1/search`, SHA
 - **THEN** the response SHALL be the existing reference-only spine artifact-and-id-jump shape
 - **AND** the response SHALL NOT match the public `search_result` list envelope returned by either `/v1/search` or `/v1/search/semantic`
 
+### Requirement: Public aggregations SHALL be single-stream and grant-safe
+The reference implementation SHALL expose public aggregation only for one stream at a time. Aggregation input fields, grouping fields, and filters SHALL be authorized under the caller's grant or owner scope before evaluation.
+
+#### Scenario: Client counts granted records
+- **WHEN** a client token authorized for `<stream>` requests a count aggregation for `<stream>`
+- **THEN** the response SHALL count only records visible under that grant
+- **AND** fields outside the grant SHALL NOT influence the result
+
+#### Scenario: Cross-stream aggregation is requested
+- **WHEN** a client requests an aggregation across multiple streams
+- **THEN** the reference SHALL reject the request unless a later accepted change defines cross-stream semantics
+
+### Requirement: Public aggregations SHALL be manifest-declared
+The reference implementation SHALL evaluate only aggregation operations and fields declared by the stream manifest. Undeclared fields, non-scalar fields, arrays, objects, blobs, and high-cardinality fields that are not explicitly declared SHALL be rejected.
+
+#### Scenario: Declared numeric sum is accepted
+- **WHEN** a stream declares a numeric field as summable
+- **AND** the caller is authorized for that field
+- **THEN** the client MAY request a sum aggregation over that field
+
+#### Scenario: Undeclared field is rejected
+- **WHEN** a client requests an aggregation over a field absent from the stream's aggregation declaration
+- **THEN** the reference SHALL reject the request with a clear query error
+
+### Requirement: Public aggregations SHALL reuse record-list filter semantics
+Aggregation requests SHALL use the same exact and declared range filter validation as record-list requests. Unsupported, unauthorized, or malformed filters SHALL fail with the same error class as record-list filtering.
+
+#### Scenario: Date-windowed aggregation
+- **WHEN** a client requests an aggregation with `filter[date][gte]=...`
+- **AND** the field and operator are declared under `query.range_filters`
+- **THEN** the aggregation SHALL apply the same coercion and comparison semantics as record-list filtering
+
+### Requirement: Grouped aggregation results SHALL be bounded and deterministic
+Grouped aggregation responses SHALL enforce a maximum bucket limit and deterministic ordering. If the request exceeds the allowed limit or requests grouping by an unsupported field, the reference SHALL reject it.
+
+#### Scenario: Grouped count with limit
+- **WHEN** a client requests `group_by=<field>&limit=N`
+- **AND** `<field>` is declared groupable
+- **THEN** the response SHALL contain at most `N` group buckets
+- **AND** the ordering SHALL be documented and deterministic
+
+### Requirement: The reference SHALL hydrate Gmail attachments as content-addressed blobs
+
+When the Gmail `attachments` stream is requested, the reference Gmail connector SHALL fetch each attachment's MIME part bytes from IMAP, compute a SHA-256 content hash over the exact bytes to be served, upload the bytes through the reference blob upload surface, and emit the attachment record with a visible `blob_ref` that resolves through `GET /v1/blobs/{blob_id}`. Successful hydrated attachment records SHALL include `content_sha256` matching the blob hash, byte size, MIME type, and `hydration_status: "hydrated"`.
+
+The connector SHALL NOT inline attachment bytes into the attachment record or the `message_bodies` stream. Attachment primary keys SHALL remain stable across hydration backfills.
+
+#### Scenario: A requested Gmail attachment is hydrated
+- **WHEN** the Gmail connector processes a message with an attachment and the `attachments` stream is requested
+- **THEN** it SHALL download the attachment MIME part bytes
+- **AND** it SHALL compute `content_sha256` over those bytes
+- **AND** it SHALL upload the bytes as a content-addressed blob
+- **AND** it SHALL emit an `attachments` record whose visible `blob_ref.blob_id` resolves to those bytes
+
+#### Scenario: A Gmail attachment cannot be hydrated
+- **WHEN** the Gmail connector can emit attachment metadata but cannot download or upload the attachment bytes for a bounded per-attachment reason
+- **THEN** it MAY emit the attachment metadata with `hydration_status` set to `"failed"` or `"deferred"`
+- **AND** it SHALL NOT emit a fake `blob_id`, fake `content_sha256`, or fetchable `blob_ref`
+- **AND** it SHALL continue processing other attachments and messages when doing so is safe
+
+#### Scenario: Message bodies are queried separately
+- **WHEN** a caller requests Gmail `message_bodies`
+- **THEN** the response SHALL expose email body text/HTML according to the `message_bodies` stream contract
+- **AND** it SHALL NOT include Gmail attachment bytes
+- **AND** attachment byte retrieval SHALL require the caller to read the relevant `attachments` record and its visible `blob_ref`
+
+### Requirement: The reference SHALL expose connector-facing blob upload without weakening blob fetch authorization
+
+The reference SHALL provide a connector-facing blob upload path that allows authorized connector/runtime code to upload bytes for a specific `connector_id`, `stream`, and `record_key`. The upload path SHALL return the canonical `blob_id`, `sha256`, `size_bytes`, and `mime_type` that records can expose through `blob_ref`. Uploading the same bytes for the same record binding SHALL be idempotent.
+
+The reference SHALL continue to authorize `GET /v1/blobs/{blob_id}` by resolving the blob's bound record and requiring that record to be visible under the caller's grant with a matching visible `data.blob_ref.blob_id`. A caller SHALL NOT gain blob access by guessing a `blob_id`, by reading attachment metadata without `blob_ref`, or by holding access to a different record that does not reference the blob.
+
+#### Scenario: A connector uploads the same attachment twice
+- **WHEN** connector/runtime code uploads identical attachment bytes for the same Gmail attachment record more than once
+- **THEN** the reference SHALL return the same canonical blob identity
+- **AND** it SHALL NOT create duplicate logical blobs for that record binding
+
+#### Scenario: A caller can see the attachment blob reference
+- **WHEN** a caller is authorized to read a Gmail `attachments` record including its `blob_ref` field
+- **AND** that `blob_ref.blob_id` points at an uploaded blob
+- **THEN** record-list and record-detail responses SHALL decorate the visible `blob_ref` with a fetch URL for `/v1/blobs/{blob_id}`
+- **AND** `GET /v1/blobs/{blob_id}` SHALL return the blob bytes with truthful content metadata
+
+#### Scenario: A caller cannot see the attachment blob reference
+- **WHEN** a caller is authorized to read Gmail attachment metadata but is not authorized to read the `blob_ref` field
+- **THEN** the caller SHALL NOT receive a blob fetch URL in record-list, record-detail, or expanded-record responses
+- **AND** `GET /v1/blobs/{blob_id}` for that blob SHALL fail as `blob_not_found`
+
+### Requirement: The reference SHALL backfill Gmail attachment blob linkage idempotently
+
+The Gmail connector SHALL treat metadata ingestion and byte hydration as separate completion facts. A message or attachment that has already been seen in an incremental run SHALL still be eligible for hydration if its attachment record lacks a hydrated `blob_ref`. Backfill runs SHALL re-emit the same attachment primary key with blob linkage once bytes are available.
+
+#### Scenario: Existing metadata-only attachments are backfilled
+- **WHEN** the reference contains Gmail `attachments` records emitted before blob hydration existed
+- **AND** a later Gmail connector run can download and upload the attachment bytes
+- **THEN** the connector SHALL emit updated records with the same primary keys
+- **AND** those records SHALL gain hydrated `blob_ref` and `content_sha256` fields
+
+#### Scenario: Already-hydrated attachments are seen again
+- **WHEN** an incremental Gmail run encounters an attachment whose bytes were already uploaded
+- **THEN** the connector SHALL preserve the attachment primary key
+- **AND** the blob upload/read path SHALL behave idempotently
+- **AND** the run SHALL NOT create duplicate attachment records or duplicate logical blob identities
+
+### Requirement: Stream metadata SHALL expose normalized field-level query capabilities
+The reference implementation SHALL expose a `field_capabilities` object on stream metadata. Each entry SHALL be keyed by a top-level schema field name and SHALL describe the field schema, grant usability, exact-filter support, range-filter operators, lexical-search participation, and semantic-search participation derived from the stream manifest and active bearer context.
+
+#### Scenario: Owner discovers queryable fields
+- **WHEN** an owner token requests `GET /v1/streams/<stream>`
+- **THEN** the response SHALL include `field_capabilities`
+- **AND** fields declared under `query.range_filters` SHALL list their supported range operators
+- **AND** fields declared under `query.search.lexical_fields` or `query.search.semantic_fields` SHALL identify their retrieval participation
+
+#### Scenario: Client grant limits usable fields
+- **WHEN** a client token requests `GET /v1/streams/<stream>`
+- **AND** the stream manifest declares a query capability on a field outside the client's grant projection
+- **THEN** the field capability entry SHALL NOT mark that capability as usable under the current token
+- **AND** the response SHALL preserve enough reason information for the client to avoid issuing a doomed query
+
+### Requirement: Stream metadata SHALL expose normalized expansion capabilities
+The reference implementation SHALL expose an `expand_capabilities` list on stream metadata derived from `query.expand[]` and matching `relationships[]`. Each expansion entry SHALL include relation name, related stream, cardinality, and declared limit metadata when present.
+
+#### Scenario: Expandable relation is discoverable
+- **WHEN** a stream declares a relation in both `relationships[]` and `query.expand[]`
+- **THEN** stream metadata SHALL include that relation in `expand_capabilities`
+- **AND** the entry SHALL identify the related stream and whether the relation is `has_one` or `has_many`
+
+#### Scenario: Descriptive relationship is not public expansion
+- **WHEN** a stream has a `relationships[]` entry that is absent from `query.expand[]`
+- **THEN** the relation MAY remain visible as descriptive metadata
+- **AND** it SHALL NOT be listed as an enabled expansion capability
+
+### Requirement: Public record expansion SHALL be declaration-gated and one-hop
+The reference implementation SHALL expose `expand[]` only for relations that the parent stream declares in both `relationships[]` and `query.expand[]`. Expansion SHALL support only one relation hop in this change. Unknown relation names, undeclared relation names, nested relation paths, malformed `expand` values, and `expand_limit` entries without a matching requested relation SHALL fail with `invalid_expand`.
+
+#### Scenario: Declared relation is accepted
+- **WHEN** a client queries `GET /v1/streams/<parent>/records?expand=<relation>` and `<parent>` declares `<relation>` in both `relationships[]` and `query.expand[]`
+- **THEN** the reference SHALL attempt to hydrate `<relation>` using the declared related stream and foreign key
+
+#### Scenario: Unknown or undeclared relation is rejected
+- **WHEN** a client queries `GET /v1/streams/<parent>/records?expand=<relation>` and `<relation>` is absent from either `relationships[]` or `query.expand[]` on `<parent>`
+- **THEN** the reference SHALL reject the request with `invalid_expand`
+
+#### Scenario: Nested expansion is rejected
+- **WHEN** a client queries `GET /v1/streams/<parent>/records?expand=child.grandchild`
+- **THEN** the reference SHALL reject the request with `invalid_expand`
+
+### Requirement: Public record expansion SHALL be grant-safe
+The reference implementation SHALL authorize and project expanded records using the related stream's grant entry. If the caller can read the parent stream but lacks grant access to the related stream, the request SHALL fail with `insufficient_scope`. Expanded child records SHALL expose only fields visible under the child stream grant.
+
+#### Scenario: Related stream is outside the grant
+- **WHEN** a client queries a granted parent stream with `expand=<relation>`
+- **AND** `<relation>` points to a related stream that is not present in the caller's grant
+- **THEN** the reference SHALL reject the request with `insufficient_scope`
+
+#### Scenario: Child projection is narrower than child schema
+- **WHEN** a client queries a granted parent stream with `expand=<relation>`
+- **AND** the caller's grant for the related stream includes only a subset of child fields
+- **THEN** each expanded child record SHALL include only the granted child fields plus the record envelope fields required by the record response shape
+
+### Requirement: Public record expansion SHALL have list and detail parity
+The reference implementation SHALL apply the same declared expansion semantics to record-list and record-detail reads. A relation that is expandable on `GET /v1/streams/<stream>/records` SHALL also be expandable on `GET /v1/streams/<stream>/records/<id>` with the same grant, projection, missing-child, and limit behavior.
+
+#### Scenario: List read expands a declared relation
+- **WHEN** a client queries `GET /v1/streams/<stream>/records?expand=<relation>`
+- **THEN** each returned parent record SHALL include the expanded relation under `expanded.<relation>` when the request is otherwise valid
+
+#### Scenario: Detail read expands a declared relation
+- **WHEN** a client queries `GET /v1/streams/<stream>/records/<id>?expand=<relation>`
+- **THEN** the returned parent record SHALL include the expanded relation under `expanded.<relation>` when the request is otherwise valid
+
+### Requirement: Public record expansion SHALL bound has-many children with expand_limit
+For a `has_many` relation, the reference implementation SHALL apply the relation's declared `default_limit` when the caller omits `expand_limit[<relation>]`, SHALL reject non-positive or over-maximum limits with `invalid_expand`, and SHALL return a list object containing `data` and `has_more`. `expand_limit` SHALL NOT apply to non-`has_many` relations.
+
+#### Scenario: Default limit applies
+- **WHEN** a client expands a `has_many` relation without `expand_limit[<relation>]`
+- **THEN** the reference SHALL use the relation's declared `default_limit`
+
+#### Scenario: Caller requests a valid lower limit
+- **WHEN** a client expands a `has_many` relation with `expand_limit[<relation>]=N`
+- **AND** `N` is positive and does not exceed the relation's declared `max_limit`
+- **THEN** the expanded relation SHALL contain at most `N` child records
+- **AND** `has_more` SHALL indicate whether additional matching child records exist beyond `N`
+
+#### Scenario: Caller requests an invalid limit
+- **WHEN** a client expands a relation with a non-positive limit, an over-maximum limit, or a limit on a non-`has_many` relation
+- **THEN** the reference SHALL reject the request with `invalid_expand`
+
+### Requirement: Public record expansion SHALL represent missing children without failing
+The reference implementation SHALL treat missing related records as data absence, not as a query error. For `has_one` relations, a parent with no matching child SHALL expose `expanded.<relation>` as `null`. For `has_many` relations, a parent with no matching children SHALL expose an empty list object with `has_more: false`.
+
+#### Scenario: Missing has-one child
+- **WHEN** a parent record is returned for a valid `has_one` expansion
+- **AND** no related child record matches the parent key
+- **THEN** the parent record SHALL include `expanded.<relation>: null`
+
+#### Scenario: Missing has-many children
+- **WHEN** a parent record is returned for a valid `has_many` expansion
+- **AND** no related child records match the parent key
+- **THEN** the parent record SHALL include `expanded.<relation>` as a list object with an empty `data` array and `has_more: false`
+
+### Requirement: Manifest validation SHALL reject unsafe query.expand declarations
+The reference implementation SHALL reject or fail validation for manifests that declare `query.expand[]` entries that cannot be safely served by the reference expansion engine. Each enabled expansion SHALL match a `relationships[]` entry on the same parent stream, reference an existing child stream, use a top-level child schema property as the declared `foreign_key`, and declare positive integer limits with `default_limit <= max_limit` when limits are present.
+
+#### Scenario: query.expand does not match a relationship
+- **WHEN** a manifest stream declares `query.expand: [{ "name": "attachments" }]`
+- **AND** the same stream has no `relationships[]` entry named `attachments`
+- **THEN** manifest validation SHALL fail
+
+#### Scenario: Foreign key is absent from the child stream
+- **WHEN** a manifest stream enables expansion for a relationship whose declared related stream lacks the relationship's `foreign_key` in its top-level schema properties
+- **THEN** manifest validation SHALL fail
+
+#### Scenario: Expansion limits are invalid
+- **WHEN** a manifest stream enables expansion with a non-positive `default_limit`, a non-positive `max_limit`, or a `default_limit` greater than `max_limit`
+- **THEN** manifest validation SHALL fail
+
+### Requirement: Gmail parent-child expansions SHALL cover message body and attachment metadata
+The first-party Gmail manifest SHALL enable safe parent-to-child expansion from `messages` to `message_bodies` and from `messages` to `attachments` when the related streams are granted. Gmail attachment expansion under this change SHALL expose attachment metadata records only and SHALL NOT imply attachment byte hydration, `blob_ref` availability, extracted text, or blob fetch authorization.
+
+#### Scenario: Message expands body content when granted
+- **WHEN** a client with grants for Gmail `messages` and `message_bodies` queries `GET /v1/streams/messages/records?expand=message_bodies`
+- **THEN** each returned message record SHALL include its granted message body record under `expanded.message_bodies` when present
+- **AND** the expanded body record SHALL be projected according to the `message_bodies` grant
+
+#### Scenario: Message expands attachment metadata when granted
+- **WHEN** a client with grants for Gmail `messages` and `attachments` queries `GET /v1/streams/messages/records?expand=attachments`
+- **THEN** each returned message record SHALL include granted attachment metadata records under `expanded.attachments`
+- **AND** the response SHALL NOT include attachment bytes unless a separate blob-hydration change later defines and grants them
+
+#### Scenario: Message-to-thread reverse expansion remains out of scope
+- **WHEN** a client queries Gmail `messages` with `expand=thread`
+- **THEN** the reference SHALL reject the request with `invalid_expand` unless a later accepted change defines reverse or belongs-to expansion semantics
+
+#### Scenario: Thread expands messages in the safe direction
+- **WHEN** the Gmail manifest declares a parent-to-child `threads` relation to `messages` using `messages.thread_id` as the child foreign key
+- **AND** a client with grants for Gmail `threads` and `messages` queries `GET /v1/streams/threads/records?expand=messages`
+- **THEN** each returned thread record SHALL include granted message records under `expanded.messages`
+
+### Requirement: Reference semantic retrieval readiness SHALL distinguish backend readiness from corpus participation
+
+The reference implementation SHALL treat semantic backend/index readiness and semantic corpus participation as separate operational facts. A ready embedding backend and built vector index SHALL NOT by themselves imply that the first-party corpus has any searchable semantic coverage.
+
+#### Scenario: Backend is ready but no stream participates
+- **WHEN** the reference has an available semantic embedding backend and a built vector index
+- **AND** zero loaded first-party streams declare usable `query.search.semantic_fields`
+- **THEN** reference diagnostics SHALL report zero semantic participation explicitly
+- **AND** the dashboard SHALL surface that as a warning rather than presenting semantic retrieval as a useful corpus feature
+
+#### Scenario: Streams participate
+- **WHEN** loaded manifests declare usable semantic fields
+- **THEN** reference diagnostics SHALL report participating connectors, streams, and fields
+- **AND** the reported participation SHALL be derived from loaded manifests and validator-accepted top-level string fields
+
+### Requirement: First-party polyfill manifests SHALL provide honest semantic field coverage where natural-language fields exist
+
+The reference implementation SHALL declare `query.search.semantic_fields` in first-party polyfill manifests for top-level string fields that are suitable for semantic retrieval. The declaration SHALL remain independent from lexical fields and SHALL NOT include nested paths, arrays, blobs, non-string scalars, or fields absent from the stream schema.
+
+#### Scenario: A natural-language top-level string field exists
+- **WHEN** a first-party polyfill stream contains a top-level string field whose value is natural-language record content
+- **THEN** the implementation SHALL either declare that field in `query.search.semantic_fields` or document why the field is intentionally excluded
+
+#### Scenario: A field is not safe for semantic embedding
+- **WHEN** a stream field is nested, array-shaped, blob-backed, non-string, identifier-like, or otherwise unsuitable for semantic matching
+- **THEN** the implementation SHALL NOT declare that field in `query.search.semantic_fields`
+
+### Requirement: Reference semantic retrieval SHALL offer an operational local embedding backend and a deterministic test backend
+
+The reference implementation SHALL support a production-like local embedding backend for operational semantic retrieval while preserving the deterministic stub backend for tests, CI, and exact-match contract checks. The operational backend SHALL require no hosted API key by default.
+
+#### Scenario: Operational semantic retrieval is enabled
+- **WHEN** the reference is configured to use the operational local embedding backend
+- **THEN** the semantic capability metadata and deployment diagnostics SHALL identify the configured model, dimensions, distance metric, and language bias
+- **AND** semantic index drift SHALL be detected when any of those backend identity fields change
+
+#### Scenario: Tests use the deterministic stub
+- **WHEN** tests or CI configure the deterministic stub backend
+- **THEN** the reference SHALL preserve deterministic exact-match behavior for stable assertions
+- **AND** tests SHALL NOT rely on paraphrase, synonym, multilingual, or conceptual-similarity behavior from the stub
+
+### Requirement: Reference semantic retrieval SHALL support operator-configured multilingual embedding profiles
+
+The reference implementation SHALL allow an operator to configure one active semantic embedding profile, including a documented multilingual profile suitable for Italian-language data. The public semantic retrieval API SHALL remain server-configured and SHALL NOT expose caller-selected model parameters.
+
+#### Scenario: Operator configures a multilingual profile
+- **WHEN** an operator configures a multilingual embedding profile
+- **THEN** semantic capability metadata and deployment diagnostics SHALL identify the active profile and its language bias
+- **AND** existing semantic index coverage SHALL be marked stale until rebuilt with that profile
+
+#### Scenario: Caller requests a model directly
+- **WHEN** a caller passes a model selector to `GET /v1/search/semantic`
+- **THEN** the public endpoint SHALL continue rejecting the request according to the semantic retrieval contract
+- **AND** the configured model SHALL remain an operator/server decision
+
+#### Scenario: Multiple simultaneous profiles are desired
+- **WHEN** an operator wants concurrent indexes for multiple embedding profiles
+- **THEN** this reference change SHALL NOT claim support for query-time model fan-out
+- **AND** that requirement SHALL be handled by a future OpenSpec change because it affects index identity, cursor validity, and ranking/merge semantics
+
+### Requirement: Reference deployment diagnostics SHALL expose semantic retrieval health without leaking secrets
+
+The reference dashboard SHALL provide a read-only deployment diagnostics surface that makes semantic retrieval readiness inspectable by an operator. The diagnostics SHALL include semantic backend status, vector index status, active semantic backfill progress when present, model/profile identity, language bias, participating semantic fields, manifest provenance, database/index topology, and relevant environment configuration with secret values redacted.
+
+#### Scenario: Operator opens deployment diagnostics
+- **WHEN** an operator opens the deployment diagnostics page
+- **THEN** the page SHALL show whether semantic retrieval is enabled, which backend/index are active, the current index state, and which connectors/streams/fields participate
+- **AND** the page SHALL show warnings for zero participation, stale index, unavailable backend, missing model cache, disabled model download, and vector-index fallback when applicable
+
+#### Scenario: Semantic backfill is active
+- **WHEN** the reference is rebuilding the semantic index in the background
+- **THEN** deployment diagnostics SHALL report the active connector and stream when known
+- **AND** the dashboard SHALL show bounded progress such as records scanned, total records for the current stream when known, indexed vectors, stream-check counts, and last update time
+
+#### Scenario: Diagnostics include environment configuration
+- **WHEN** diagnostics display environment-derived configuration
+- **THEN** secret values SHALL be redacted
+- **AND** the page SHALL distinguish present, absent, defaulted, and redacted values where that provenance is known
+
+### Requirement: Existing first-party local databases SHALL reconcile semantic coverage changes
+
+The reference implementation SHALL reconcile first-party manifest semantic-field changes into existing local polyfill databases and SHALL rebuild semantic index coverage from stored records without requiring connector re-ingest.
+
+#### Scenario: A first-party manifest gains semantic fields
+- **WHEN** an existing local database starts with a first-party manifest that now declares additional `semantic_fields`
+- **THEN** the reference SHALL update the persisted first-party manifest according to the existing reconcile rules
+- **AND** semantic backfill SHALL index existing stored records for the new declared fields
+
+#### Scenario: The embedding profile changes
+- **WHEN** the configured embedding profile changes for an existing local database
+- **THEN** semantic index metadata SHALL mark affected coverage stale
+- **AND** rebuild SHALL derive replacement embeddings from stored records rather than from connector re-ingest
+
+#### Scenario: Semantic backfill is interrupted
+- **WHEN** a semantic stream rebuild is interrupted after persisting some record-field vectors but before completion metadata is written
+- **AND** the next rebuild sees matching semantic fields and backend storage identity
+- **THEN** the reference SHALL resume without deleting matching partial vectors
+- **AND** the rebuild SHALL embed only missing record-field pairs before writing completed index metadata
+- **AND** incomplete progress without an active backfill SHALL NOT advertise the semantic index as built
+
+### Requirement: The public query surface SHALL expose a minimal connector discovery floor
+
+The reference Resource Server SHALL expose `GET /v1/connectors` as a bearer-authenticated public query endpoint for discovering connector or source boundaries visible under the caller's token. The endpoint SHALL return a list envelope whose items identify visible connector-backed sources by `connector_id` and include stream summaries plus coarse capability hints. The endpoint SHALL NOT inline full stream schemas; callers SHALL use `GET /v1/streams/{stream}` for full source-level stream metadata.
+
+#### Scenario: Owner discovers polyfill connectors
+
+- **WHEN** an owner-token caller in polyfill mode requests `GET /v1/connectors`
+- **THEN** the response SHALL include connector-backed sources visible to that owner token without requiring a `connector_id` query parameter
+- **AND** each connector-backed item SHALL include its `connector_id`
+- **AND** declared streams with no stored records SHALL remain discoverable with zero record count and unknown freshness
+
+#### Scenario: Client discovers its granted connector
+
+- **WHEN** a client-token caller requests `GET /v1/connectors`
+- **THEN** the response SHALL include only the source bound to that active grant
+- **AND** the response SHALL include only grant-authorized stream names for that source
+- **AND** the response SHALL NOT expose unrelated registered connectors or streams outside the grant
+
+#### Scenario: Discovery does not leak grant internals
+
+- **WHEN** a client-token caller's grant narrows fields, resources, or time range
+- **THEN** `GET /v1/connectors` SHALL NOT expose the grant's field list, resource list, time range, client claims, or grant identifier in the response body
+- **AND** record counts and freshness SHALL remain computed under existing grant enforcement rules
+
+#### Scenario: Discovery points to existing metadata authority
+
+- **WHEN** a caller needs a stream schema, primary key, cursor field, relationships, views, or field-level query declarations
+- **THEN** `GET /v1/connectors` SHALL provide enough stream identity and capability hints for the caller to request existing per-stream metadata
+- **AND** the full metadata authority SHALL remain `GET /v1/streams/{stream}` rather than the connector discovery response
+
+### Requirement: The reference record-list query SHALL expose an initial changes bookmark sentinel
+
+The reference implementation SHALL accept `changes_since=beginning` on `GET /v1/streams/{stream}/records` as a public initial changes bookmark sentinel. The sentinel SHALL behave like an opaque changes cursor positioned at the beginning of retained history and SHALL return the normal changes response shape, including `next_changes_since`.
+
+Clients SHALL NOT need to construct internal version-0 cursor payloads to start incremental sync.
+
+#### Scenario: A client starts incremental sync from the beginning
+
+- **WHEN** a client queries `/v1/streams/<s>/records?changes_since=beginning`
+- **THEN** the reference SHALL return records whose grant-authorized projections changed since the beginning of retained history
+- **AND** the response SHALL include `next_changes_since` when the request succeeds
+- **AND** the response SHALL NOT expose or require construction of the internal version-0 cursor representation
+
+#### Scenario: The initial changes response is paginated
+
+- **WHEN** a client queries `/v1/streams/<s>/records?changes_since=beginning&limit=N` and additional visible changes remain
+- **THEN** the reference SHALL include `next_cursor` only as a page-continuation cursor for the same changes session
+- **AND** the response SHALL include `next_changes_since` as the opaque bookmark for a future changes session
+
+#### Scenario: A client sends a raw timestamp
+
+- **WHEN** a client queries `/v1/streams/<s>/records?changes_since=2026-04-24T00:00:00Z`
+- **THEN** the reference SHALL reject the request as an invalid changes cursor
+- **AND** timestamp-based changes semantics SHALL remain unsupported unless a separate change defines them
+
+### Requirement: Changes bookmark documentation SHALL distinguish page cursors from changes cursors
+
+The public documentation for `GET /v1/streams/{stream}/records` SHALL distinguish record-list page cursors from changes bookmarks. Documentation SHALL tell clients to use `next_cursor` only with the `cursor` query parameter and `next_changes_since` only with the `changes_since` query parameter.
+
+#### Scenario: A client reads change-tracking guidance
+
+- **WHEN** documentation explains how to continue a paginated record or changes response
+- **THEN** it SHALL identify `next_cursor` as a page-continuation token for the `cursor` parameter
+- **AND** it SHALL NOT tell clients to use `next_cursor` as `changes_since`
+
+#### Scenario: A client reads incremental sync guidance
+
+- **WHEN** documentation explains how to continue a later incremental sync session
+- **THEN** it SHALL identify `next_changes_since` as the opaque token to pass as `changes_since`
+
+### Requirement: The reference implementation SHALL implement filtered retrieval through the public search surfaces
+
+The reference implementation SHALL implement stream-scoped filters on `GET /v1/search` and `GET /v1/search/semantic` through the public endpoints, reusing the same filter validation semantics as record listing. Filtered retrieval SHALL remain grant-safe and SHALL NOT introduce a second filter grammar.
+
+#### Scenario: Lexical retrieval applies a declared range filter
+- **WHEN** a caller invokes `GET /v1/search` with `q`, exactly one `streams[]` value, and a declared `filter[field][gte|gt|lte|lt]`
+- **THEN** the reference SHALL validate the filter against the stream metadata and caller authorization
+- **AND** every returned result SHALL hydrate to a visible record satisfying that filter
+
+#### Scenario: Semantic retrieval applies a declared range filter
+- **WHEN** a caller invokes `GET /v1/search/semantic` with `q`, exactly one `streams[]` value, and a declared `filter[field][gte|gt|lte|lt]`
+- **THEN** the reference SHALL validate the filter against the stream metadata and caller authorization
+- **AND** every returned result SHALL hydrate to a visible record satisfying that filter
+
+#### Scenario: Filter validation fails
+- **WHEN** a search request contains a filter without exactly one `streams[]` value, an unauthorized field, an undeclared range field, an unsupported range operator, or a malformed filter value
+- **THEN** the reference SHALL reject the request before returning retrieval results
+- **AND** the reference SHALL NOT return partial results from streams or connectors where the filter happened to be valid
+
+#### Scenario: Forbidden retrieval controls remain rejected
+- **WHEN** a caller passes expansion, sort, ranking knobs, connector-specific query parameters, model selectors, raw vectors, score/debug parameters, or DSL-shaped parameters to a retrieval endpoint
+- **THEN** the reference SHALL reject those parameters according to the relevant retrieval contract
+- **AND** filtered retrieval SHALL NOT be used as a backdoor to widen the public query surface
+
+### Requirement: Docker support SHALL provide an opt-in development hot-reload mode
+The reference Docker support SHALL provide an opt-in Compose development mode
+that supports iterative source edits without rebuilding production images for
+each change.
+
+#### Scenario: Docker dev mode starts
+- **WHEN** an operator starts the Docker development override
+- **THEN** the web service SHALL run a development server with source hot reload
+- **AND** the reference service SHALL restart or reload when server source files
+  change
+- **AND** the composed public/internal URL topology SHALL remain the same as the
+  default Docker stack
+
+#### Scenario: Docker dev mode is accessed through another host
+- **WHEN** an operator accesses Docker development mode through a LAN IP,
+  hostname, or reverse proxy
+- **THEN** the web service SHALL provide a documented configuration knob for
+  additional Next development origins
+- **AND** Docker development documentation SHALL state that reverse proxies must
+  forward WebSocket upgrade traffic for Next HMR
+
+#### Scenario: Docker dev mode runs connector flows
+- **WHEN** the reference service runs inside the Docker development override
+- **THEN** it SHALL load the repo-root local development env file when present
+- **AND** connector credentials from that file SHALL be available to
+  controller-managed connector runs without requiring production images to load
+  `.env.local`
+
+#### Scenario: Docker smoke mode remains reproducible
+- **WHEN** an operator runs the default Docker smoke validation
+- **THEN** it SHALL continue to build and run the production-style Docker stack
+- **AND** it SHALL NOT require the development override
+
+### Requirement: Public Docker images SHALL be built and published from CI
+The reference implementation SHALL provide a CI workflow that builds public
+Docker images for the supported Docker runtime targets and publishes them only
+from trusted refs.
+
+#### Scenario: A pull request changes Docker-relevant files
+- **WHEN** CI runs for a pull request that changes Docker-relevant files
+- **THEN** CI SHALL build the supported Docker image targets
+- **AND** CI SHALL NOT push images to a public registry from the pull request
+
+#### Scenario: A trusted ref is built
+- **WHEN** CI runs for a trusted publishing ref such as the default branch or a
+  version tag
+- **THEN** CI SHALL build the supported Docker image targets
+- **AND** CI SHALL push the resulting images to the configured public registry
+
+#### Scenario: Image publication runs
+- **WHEN** CI publishes Docker images
+- **THEN** the workflow SHALL use runtime CI credentials or the platform token
+- **AND** it SHALL NOT require committed registry credentials
+- **AND** it SHALL NOT bake owner passwords, connector credentials, SQLite data,
+  embedding cache contents, or browser profile state into the image layers
+
+### Requirement: Public Docker images SHALL carry useful tags and metadata
+Published reference Docker images SHALL include documented tags and metadata
+that support both convenient testing and reproducible operation.
+
+#### Scenario: An operator chooses an image tag
+- **WHEN** an operator reads the Docker documentation
+- **THEN** the documentation SHALL explain which tags are moving tags
+- **AND** it SHALL explain which tags or digests are appropriate for
+  reproducible self-hosting
+
+#### Scenario: CI publishes image metadata
+- **WHEN** CI pushes a Docker image
+- **THEN** the image SHALL include OCI metadata that identifies the source
+  repository and image role
+- **AND** the workflow SHALL request SBOM or provenance metadata when the
+  registry and builder support it
+
+### Requirement: Docker documentation SHALL support pull-based self-hosting
+The reference documentation SHALL describe how to run the reference stack from
+public images without requiring a local source build.
+
+#### Scenario: An operator starts from public images
+- **WHEN** an operator follows the Docker documentation for public images
+- **THEN** they SHALL be told how to prepare runtime environment configuration
+- **AND** they SHALL be told how to pull images and start the Compose stack
+- **AND** they SHALL be told where the browser-facing origin is expected to be
+
+#### Scenario: An operator persists state
+- **WHEN** an operator follows the Docker documentation for public images
+- **THEN** the documentation SHALL identify the persisted SQLite database,
+  embedding cache, and browser connector/session state locations
+- **AND** it SHALL distinguish persisted runtime state from image contents
+
+#### Scenario: An operator upgrades images
+- **WHEN** an operator updates a public-image deployment
+- **THEN** the documentation SHALL describe how to pull newer images and restart
+  the Compose stack without deleting persisted runtime volumes
+
+#### Scenario: A contributor develops with Docker
+- **WHEN** a contributor reads the Docker documentation
+- **THEN** the documentation SHALL distinguish public-image operation from local
+  image builds, smoke validation, and opt-in Docker hot reload
+
+### Requirement: Deployment diagnostics SHALL surface lexical backfill progress
+The reference deployment diagnostics surface SHALL report active lexical index
+backfill progress when the reference server is rebuilding lexical search
+indexes.
+
+#### Scenario: Lexical backfill is active
+- **WHEN** a lexical index backfill is actively scanning or rebuilding records
+- **THEN** `/_ref/deployment` SHALL include the current lexical backfill job
+- **AND** the report SHALL include enough progress data for the dashboard to
+  show the connector, stream, phase, scanned records, total records when known,
+  written index rows, and updated timestamp
+- **AND** the report SHALL include a warning that lexical search results may be
+  partial while the rebuild is active
+
+#### Scenario: Lexical backfill is inactive
+- **WHEN** no lexical index backfill is active
+- **THEN** `/_ref/deployment` SHALL report no active lexical backfill progress
+- **AND** it SHALL NOT emit a lexical rebuilding warning
+
+#### Scenario: Dashboard renders lexical progress
+- **WHEN** `/dashboard/deployment` receives lexical backfill progress
+- **THEN** it SHALL render browser-visible progress without requiring operators
+  to inspect container logs
+
+### Requirement: Docker assembly SHALL preserve reference architecture boundaries
+The reference implementation SHALL provide a Docker or Docker Compose path that assembles the live reference stack without redefining PDPP protocol behavior, hiding control-plane behavior, or making the website the implementation boundary.
+
+#### Scenario: Docker starts the live reference stack
+- **WHEN** an operator starts the supported Docker assembly
+- **THEN** the assembly SHALL run the reference AS/RS process and the browser-facing web app as the current reference architecture defines them
+- **AND** the AS SHALL listen on port `7662`
+- **AND** the RS SHALL listen on port `7663`
+- **AND** the web app SHALL listen on port `3000`
+
+#### Scenario: Docker is used as assembly
+- **WHEN** a reviewer evaluates Docker artifacts for the reference implementation
+- **THEN** those artifacts SHALL be documented as deployment assembly for the reference stack
+- **AND** they SHALL NOT be described as PDPP protocol requirements or as an alternate control-plane contract
+
+### Requirement: Docker builds SHALL use the monorepo toolchain
+Docker builds for the supported reference stack SHALL use the repo-root pnpm workspace through Corepack and SHALL use a Debian/Ubuntu-based Node image compatible with the reference's native dependencies.
+
+#### Scenario: Dependencies are installed in Docker
+- **WHEN** a Docker image installs JavaScript dependencies
+- **THEN** it SHALL install from the repository root using the checked-in pnpm workspace and lockfile
+- **AND** it SHALL NOT run package-local `npm install` commands that create a dependency graph different from local development
+
+#### Scenario: Native dependencies are built in Docker
+- **WHEN** a Docker image builds or loads native dependencies such as SQLite or browser-automation dependencies
+- **THEN** the base image SHALL be Debian/Ubuntu-based Node rather than Alpine
+- **AND** the Node version SHALL be compatible with the repo's runtime floor for `node:sqlite`
+
+### Requirement: Docker topology SHALL distinguish public and internal URLs
+The Docker assembly SHALL keep browser-facing reference origin configuration separate from container-internal AS/RS service URLs.
+
+#### Scenario: Composed mode is configured in Docker
+- **WHEN** the Docker stack runs in composed mode
+- **THEN** `PDPP_REFERENCE_ORIGIN` SHALL identify the external browser-facing origin
+- **AND** `PDPP_AS_URL` SHALL identify the container-internal AS URL
+- **AND** `PDPP_RS_URL` SHALL identify the container-internal RS URL
+
+#### Scenario: Services call each other inside Docker
+- **WHEN** one container calls the AS or RS container
+- **THEN** it SHALL use Docker service DNS or another explicit internal URL
+- **AND** it SHALL NOT rely on `localhost` to mean another container
+
+#### Scenario: Browser-facing metadata is emitted
+- **WHEN** the AS or RS emits public metadata, device verification URLs, or pending-consent authorization URLs in composed Docker mode
+- **THEN** those URLs SHALL use `PDPP_REFERENCE_ORIGIN`
+- **AND** they SHALL NOT leak internal Docker service names as browser-facing URLs
+
+### Requirement: Docker runtime state SHALL be persistent and explicit
+The Docker assembly SHALL document and provide persistence for the state required by real reference operation.
+
+#### Scenario: Reference data is written
+- **WHEN** the Docker stack writes reference records, grants, runs, or semantic vectors
+- **THEN** the configured SQLite database path SHALL be backed by a persisted volume or documented host bind mount
+
+#### Scenario: Semantic embeddings are used
+- **WHEN** the Docker stack uses the local semantic embedding backend
+- **THEN** the embedding model cache path SHALL be persisted or documented as intentionally ephemeral
+- **AND** first-boot model download behavior SHALL be documented
+
+#### Scenario: Browser connectors are used
+- **WHEN** browser-based polyfill connectors run inside or alongside the Docker stack
+- **THEN** browser profiles, daemon files, and connector session state SHALL have a persisted volume or documented host bind mount
+- **AND** the documentation SHALL state that browser connectors depend on persistent profiles and upstream anti-bot behavior
+
+### Requirement: Docker secrets SHALL be runtime-provided
+The Docker assembly SHALL keep owner passwords, connector credentials, tokens, cookies, and other secrets out of built image layers.
+
+#### Scenario: A secret is needed by the Docker stack
+- **WHEN** the Docker stack needs `PDPP_OWNER_PASSWORD`, connector credentials, tokens, cookies, or dynamic-client-registration secrets
+- **THEN** those values SHALL be supplied at runtime through environment variables, env files, or Docker secrets
+- **AND** they SHALL NOT be baked into Dockerfiles, image layers, committed Compose defaults, or generated static assets
+
+#### Scenario: Deployment diagnostics render Docker env
+- **WHEN** the dashboard deployment diagnostics render secret-bearing Docker environment variables
+- **THEN** secret values SHALL be redacted before reaching the dashboard
+
+### Requirement: Docker support SHALL include a smoke validation path
+The supported Docker path SHALL include a reproducible smoke validation that does not require real third-party connector credentials.
+
+#### Scenario: Docker smoke validation runs
+- **WHEN** an operator or CI job runs the Docker smoke validation
+- **THEN** it SHALL verify that the browser-facing web origin responds
+- **AND** it SHALL verify that AS and RS metadata are reachable through the composed origin
+- **AND** it SHALL verify that browser-facing metadata does not expose internal Docker service URLs
+
+#### Scenario: Owner auth is configured during Docker smoke validation
+- **WHEN** `PDPP_OWNER_PASSWORD` is configured for the Docker smoke validation
+- **THEN** dashboard access SHALL either redirect unauthenticated requests to `/owner/login` or pass after a valid owner session is established
+

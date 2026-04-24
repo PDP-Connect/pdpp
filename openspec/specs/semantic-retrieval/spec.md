@@ -32,16 +32,41 @@ PDPP SHALL define a named optional extension `semantic-retrieval` that implement
 
 ### Requirement: The extension SHALL expose `GET /v1/search/semantic` with a text-query-only constrained surface
 
-When advertised, the extension SHALL be reachable as `GET /v1/search/semantic`. The endpoint SHALL accept a required `q` parameter (a text query string) and the optional parameters `limit`, `cursor`, and repeated `streams[]`. It SHALL NOT accept raw vector input, client-supplied embeddings, model-selector parameters, ranking-knob parameters, connector-specific parameters, filter parameters, field-projection parameters, expansion parameters, sort parameters, or any DSL-shaped parameter in v1.
+When advertised, the extension SHALL be reachable as `GET /v1/search/semantic`. The endpoint SHALL accept a required `q` parameter (a text query string) and the optional parameters `limit`, `cursor`, repeated `streams[]`, and stream-scoped `filter[...]` parameters. In this tranche, any request that includes `filter[...]` SHALL include exactly one `streams[]` value. It SHALL NOT accept raw vector input, client-supplied embeddings, model-selector parameters, ranking-knob parameters, connector-specific parameters, field-projection parameters, expansion parameters, sort parameters, generic predicate DSL parameters, or arbitrary field filters outside the stream-scoped filter rules below.
+
+`filter[field]=value` SHALL use the same exact-filter semantics as record listing for the named stream: the field SHALL be an authorized top-level scalar schema field for the caller and stream. `filter[field][gte|gt|lte|lt]=value` SHALL use the same declared range-filter semantics as record listing: the field and operator SHALL be declared in the stream metadata's `query.range_filters`. Filters SHALL constrain the candidate records that may contribute semantic matches, lexical blending, ranking, matched fields, and snippets.
 
 #### Scenario: A request omits `q`
 - **WHEN** a client calls `GET /v1/search/semantic` without `q`
 - **THEN** the server SHALL return an `invalid_request_error`
 - **AND** the response SHALL NOT include any candidate results
 
-#### Scenario: A request includes only allowed parameters
+#### Scenario: A request includes only allowed unfiltered parameters
 - **WHEN** a client calls `GET /v1/search/semantic?q=bank%20fees&limit=10&streams[]=messages`
 - **THEN** the server SHALL accept the request
+
+#### Scenario: A request includes an allowed single-stream filter
+- **WHEN** a client calls `GET /v1/search/semantic?q=invoice&streams[]=messages&filter[received_at][gte]=2026-04-01T00:00:00Z`
+- **AND** stream `messages` declares `query.range_filters.received_at` with operator `gte`
+- **AND** the caller is authorized to read `received_at`
+- **THEN** the server SHALL accept the request
+- **AND** every returned result SHALL identify a record whose visible `received_at` satisfies the filter
+
+#### Scenario: A filtered request omits streams
+- **WHEN** a client calls `GET /v1/search/semantic?q=invoice&filter[received_at][gte]=2026-04-01T00:00:00Z`
+- **THEN** the server SHALL return an `invalid_request_error`
+- **AND** the server SHALL NOT search every stream and apply the filter opportunistically
+
+#### Scenario: A filtered request names multiple streams
+- **WHEN** a client calls `GET /v1/search/semantic?q=invoice&streams[]=messages&streams[]=attachments&filter[received_at][gte]=2026-04-01T00:00:00Z`
+- **THEN** the server SHALL return an `invalid_request_error`
+- **AND** the server SHALL NOT silently apply the filter to only one of the streams
+
+#### Scenario: A request includes an undeclared range filter
+- **WHEN** a client calls `GET /v1/search/semantic?q=invoice&streams[]=messages&filter[size_bytes][gte]=1000`
+- **AND** stream `messages` does not declare `query.range_filters.size_bytes.gte`
+- **THEN** the server SHALL return an `invalid_request_error` or `permission_error` consistent with record-list filter validation
+- **AND** the response SHALL NOT include partial results
 
 #### Scenario: A request includes a raw vector or client-supplied embedding
 - **WHEN** a client calls `GET /v1/search/semantic?q=foo&vector=...` or `GET /v1/search/semantic?q=foo&embedding=...`
@@ -59,13 +84,8 @@ When advertised, the extension SHALL be reachable as `GET /v1/search/semantic`. 
 - **THEN** the server SHALL return an `invalid_request_error`
 - **AND** the server SHALL NOT silently honor the rejected parameter
 
-#### Scenario: A request includes a record-listing parameter
-- **WHEN** a client calls `GET /v1/search/semantic?q=foo` with `filter[...]`, `fields`, `expand[]`, `expand_limit[...]`, or `order=`
-- **THEN** the server SHALL return an `invalid_request_error`
-- **AND** the error SHALL identify the rejected parameter
-
 #### Scenario: A request includes a connector-specific parameter
-- **WHEN** a client passes any parameter whose meaning branches on connector identity (for example, a vendor-specific search operator name) to `GET /v1/search/semantic`
+- **WHEN** a client passes any parameter whose meaning branches on connector identity to `GET /v1/search/semantic`
 - **THEN** the server SHALL return an `invalid_request_error`
 - **AND** the public semantic retrieval surface SHALL NOT branch its behavior on connector identity
 
@@ -337,3 +357,24 @@ The extension SHALL NOT imply that embeddings are part of canonical owner self-e
 - **WHEN** a client receives results from two servers both advertising `capabilities.semantic_retrieval.supported: true`
 - **THEN** the client SHALL NOT assume the results are directly comparable
 - **AND** the client SHALL treat differences in declared `model`, `dimensions`, `distance_metric`, and corpus as reasons results are not cross-server comparable
+
+### Requirement: Semantic retrieval SHALL advertise score support before emitting scores
+If the reference implementation emits semantic retrieval scores, it SHALL advertise score support in `capabilities.semantic_retrieval` before clients query `/v1/search/semantic`. The advertisement SHALL identify the score kind, ordering direction, model identity, and whether values are distances or similarities.
+
+#### Scenario: Server emits semantic scores
+- **WHEN** semantic retrieval capability metadata advertises score support
+- **AND** a client queries `/v1/search/semantic`
+- **THEN** each semantic hit SHALL include a typed score object
+- **AND** the score object SHALL identify the score kind and ordering direction
+
+#### Scenario: Model changes
+- **WHEN** the active semantic model, dimensions, dtype, or distance metric changes
+- **THEN** clients SHALL NOT treat scores from the old and new identity as comparable
+
+### Requirement: Semantic scores SHALL be grant-safe and avoid vector leakage
+Semantic scores SHALL be computed only from fields visible under the active grant. Semantic responses SHALL NOT expose embeddings, raw vector distances beyond the typed score, candidate pool sizes, or hidden matched fields.
+
+#### Scenario: Hidden semantic field exists
+- **WHEN** a stream declares semantic fields that are outside the caller's grant projection
+- **THEN** those hidden fields SHALL NOT contribute to the returned score
+- **AND** the response SHALL NOT disclose hidden-field matches or snippets
