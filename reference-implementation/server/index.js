@@ -12,7 +12,7 @@ import {
   buildSemanticRetrievalCapability,
   resolvePublicUrl,
   stripTrailingSlash,
-} from './metadata.js';
+} from './metadata.ts';
 import { createTraceContext, emitSpineEvent, generateSpineId, listSpineCorrelations, listSpineEvents, searchSpine } from '../lib/spine.js';
 import {
   registerConnector, getConnectorManifest, getManifestForStorageBinding, initiateGrant, getPendingConsent,
