@@ -2855,6 +2855,11 @@ function SpecimenSwitcher<T>({
   render: (data: T) => React.ReactNode;
 }) {
   const [active, setActive] = React.useState(0);
+  // The active index is always driven by clicks on rendered buttons, so
+  // `current` is guaranteed to exist at runtime. We narrow through an
+  // explicit guard so `noUncheckedIndexedAccess` is satisfied without `!`.
+  const current = specimens[active];
+  if (!current) return null;
   return (
     <div>
       <div className="flex flex-wrap gap-1.5 mb-4">
@@ -2873,9 +2878,9 @@ function SpecimenSwitcher<T>({
         ))}
       </div>
       <div className="text-xs mb-4 font-mono" style={{ color: 'var(--muted-foreground)', opacity: 0.6 }}>
-        Axes: {specimens[active].axes}
+        Axes: {current.axes}
       </div>
-      {render(specimens[active].data)}
+      {render(current.data)}
     </div>
   );
 }
