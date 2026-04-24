@@ -10,8 +10,10 @@
 //   - CLI / dashboard query builders
 //   - tests
 
-export * from './common/index.ts';
-export * from './public/index.ts';
-export * from './reference/index.ts';
-export * from './builders/index.ts';
-export { validateRequest, listOperations } from './validate.ts';
+// biome-ignore-all lint/performance/noBarrelFile: this IS the package's public entry point — consumers import named members here by design. Individual subpath exports are available under "./common", "./public", etc. for call sites that want a narrower import.
+
+export * from "./builders/index.ts";
+export * from "./common/index.ts";
+export * from "./public/index.ts";
+export * from "./reference/index.ts";
+export { listOperations, validateRequest } from "./validate.ts";

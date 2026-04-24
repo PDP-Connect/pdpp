@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { listOperations, validateRequest } from '../src/index.js';
+import { listOperations, validateRequest } from '../src/index.ts';
 import { generateDocs } from '../src/docs/generate.js';
 import { generateOpenApi } from '../src/openapi/index.js';
 import { publicManifests } from '../src/public/index.ts';
