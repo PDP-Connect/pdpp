@@ -1,8 +1,9 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { PdppLogo } from "@/components/pdpp-logo.tsx";
-import { getAsInternalUrl, getOwnerLoginPath, getRsInternalUrl } from "../lib/owner-token.ts";
+import { getAsInternalUrl, getOwnerLoginPath, getReferencePublicOrigin, getRsInternalUrl } from "../lib/owner-token.ts";
 import { CommandPalette, CommandPaletteTrigger } from "./command-palette.tsx";
+import { CopyButton } from "./copy-button.tsx";
 import { MobileDrawer, MobileDrawerTrigger } from "./mobile-drawer.tsx";
 
 interface NavItem {
@@ -128,24 +129,90 @@ function SidebarSubnav({ label, items }: { label: string; items: Array<{ href: s
   );
 }
 
-function EnvFooter() {
-  const as = getAsInternalUrl();
-  const rs = getRsInternalUrl();
+async function EnvFooter() {
+  const asInternal = getAsInternalUrl();
+  const rsInternal = getRsInternalUrl();
+  const [asOnline, rsOnline, publicOrigin] = await Promise.all([
+    probeAs(asInternal),
+    probeRs(rsInternal),
+    getReferencePublicOrigin(),
+  ]);
   return (
     <div className="pt-6">
       <div className="pdpp-eyebrow mb-2">Endpoints</div>
-      <dl className="pdpp-caption grid grid-cols-[2.5rem_minmax(0,1fr)] gap-y-1">
-        <dt className="text-muted-foreground">AS</dt>
-        <dd className="truncate font-mono text-foreground/80" title={as}>
-          {stripScheme(as)}
-        </dd>
-        <dt className="text-muted-foreground">RS</dt>
-        <dd className="truncate font-mono text-foreground/80" title={rs}>
-          {stripScheme(rs)}
-        </dd>
-      </dl>
+      <ul className="pdpp-caption flex flex-col gap-1">
+        <EndpointRow label="AS" online={asOnline} url={publicOrigin} />
+        <EndpointRow label="RS" online={rsOnline} url={publicOrigin} />
+      </ul>
     </div>
   );
+}
+
+function EndpointRow({ label, url, online }: { label: string; url: string; online: boolean }) {
+  return (
+    <li className="flex items-center gap-2">
+      <span className="flex w-8 shrink-0 items-center gap-1.5 text-muted-foreground">
+        <StatusDot label={label} online={online} />
+        {label}
+      </span>
+      <span className="inline-flex min-w-0 items-center gap-1">
+        <span className="min-w-0 truncate font-mono text-foreground/80" title={url}>
+          {stripScheme(url)}
+        </span>
+        <CopyButton ariaLabel={`Copy ${label} URL`} value={url} />
+      </span>
+    </li>
+  );
+}
+
+function StatusDot({ online, label }: { online: boolean; label: string }) {
+  const state = online ? "online" : "offline";
+  return (
+    <span
+      aria-label={`${label} ${state}`}
+      className={`inline-block h-2 w-2 rounded-full ${online ? "bg-success" : "bg-destructive"}`}
+      role="img"
+      title={`${label} ${state}`}
+    />
+  );
+}
+
+const PROBE_TIMEOUT_MS = 900;
+
+async function probeJson(url: string): Promise<Record<string, unknown> | null> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS);
+  try {
+    const res = await fetch(url, {
+      cache: "no-store",
+      headers: { accept: "application/json" },
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      return null;
+    }
+    const body = (await res.json()) as unknown;
+    return body && typeof body === "object" ? (body as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function probeAs(baseUrl: string): Promise<boolean> {
+  const body = await probeJson(`${baseUrl}/.well-known/oauth-authorization-server`);
+  return typeof body?.issuer === "string" && body.issuer.length > 0;
+}
+
+async function probeRs(baseUrl: string): Promise<boolean> {
+  const body = await probeJson(`${baseUrl}/.well-known/oauth-protected-resource`);
+  if (!body) {
+    return false;
+  }
+  const hasResource = typeof body.resource === "string" && body.resource.length > 0;
+  const hasAuthServers = Array.isArray(body.authorization_servers) && body.authorization_servers.length > 0;
+  return hasResource || hasAuthServers;
 }
 
 function stripScheme(url: string): string {
@@ -181,7 +248,7 @@ export function ServerUnreachable() {
         <code className="pdpp-caption font-mono text-foreground">{getRsInternalUrl()}</code>. Start it with:
       </p>
       <pre className="pdpp-caption mt-3 overflow-x-auto rounded bg-muted p-3 font-mono">
-        PDPP_DB_PATH=packages/polyfill-connectors/.pdpp-data/polyfill.sqlite{"\n"}
+        PDPP_DB_PATH=packages/polyfill-connectors/.pdpp-data/pdpp.sqlite{"\n"}
         node reference-implementation/server/index.js
       </pre>
     </div>

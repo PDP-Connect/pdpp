@@ -300,6 +300,25 @@ export interface DeploymentDiagnostics {
     provenance: "native" | "polyfill-registered";
     semantic_stream_count: number;
   }>;
+  lexical: {
+    index: {
+      state: "built" | "building";
+      backfill_progress: {
+        active_jobs: number;
+        connector_id: string;
+        id: string;
+        indexed_rows: number;
+        manifest_streams_checked: number;
+        manifest_streams_total: number;
+        phase: "planning" | "checking" | "rebuilding" | "cleanup";
+        records_scanned: number;
+        records_total: number | null;
+        started_at: string;
+        stream: string | null;
+        updated_at: string;
+      } | null;
+    };
+  };
   semantic: {
     backend: {
       configured: boolean;
@@ -347,6 +366,7 @@ export interface DeploymentDiagnostics {
   warnings: ReadonlyArray<{
     code:
       | "zero_participation"
+      | "lexical_building_index"
       | "building_index"
       | "stale_index"
       | "backend_unavailable"

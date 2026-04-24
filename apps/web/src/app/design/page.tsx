@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
+import { CopyButton } from "@/app/dashboard/components/copy-button.tsx";
 import {
   ARTIFACT_LIFECYCLE_VOCABULARY,
   Callout,
@@ -2289,6 +2290,36 @@ function DashboardPrimitivesSection() {
                 <MetaPill label="attempts" value={3} />
                 <MetaPill label="error" tone="danger" value="timeout" />
               </div>
+            </div>
+          </div>
+        </div>
+
+        {/* CopyButton */}
+        <div>
+          <SubLabel>CopyButton — one gesture for inspectable values</SubLabel>
+          <p className="pdpp-caption mb-4 max-w-[52ch] text-muted-foreground">
+            The dashboard's URLs, IDs, tokens, and JSON fragments are protocol artifacts — meant to be pasted into curl,
+            a test, or a doc. Pair <code className="font-mono">&lt;CopyButton&gt;</code> with any monospace value that
+            an engineer or reviewer would want to grab. No tooltip text beyond the aria label; a brief check icon
+            confirms the copy. Fails silent if the clipboard is unavailable; the visible text remains selectable.
+          </p>
+          <div className="flex flex-col gap-3 rounded-lg border border-border/80 bg-background p-6">
+            <div className="pdpp-caption flex items-center gap-2">
+              <span className="w-8 shrink-0 text-muted-foreground">URL</span>
+              <span className="min-w-0 flex-1 truncate font-mono text-foreground/80">http://localhost:7662</span>
+              <CopyButton ariaLabel="Copy AS URL" value="http://localhost:7662" />
+            </div>
+            <div className="pdpp-caption flex items-center gap-2">
+              <span className="w-16 shrink-0 text-muted-foreground">client_id</span>
+              <code className="min-w-0 flex-1 truncate font-mono text-foreground/80">
+                pdpp-polyfill-owner-bootstrap
+              </code>
+              <CopyButton ariaLabel="Copy client_id" value="pdpp-polyfill-owner-bootstrap" />
+            </div>
+            <div className="pdpp-caption flex items-center gap-2">
+              <span className="w-16 shrink-0 text-muted-foreground">trace_id</span>
+              <code className="min-w-0 flex-1 truncate font-mono text-foreground/80">trc_qry_0bb58c8f4bcc4c3f</code>
+              <CopyButton ariaLabel="Copy trace_id" value="trc_qry_0bb58c8f4bcc4c3f" />
             </div>
           </div>
         </div>

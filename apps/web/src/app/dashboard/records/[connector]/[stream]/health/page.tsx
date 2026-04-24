@@ -1,4 +1,5 @@
 import { Fragment } from "react";
+import { Timestamp } from "@/components/ui/timestamp.tsx";
 import { PageHeader, Section } from "../../../../components/primitives.tsx";
 import { DashboardShell, ServerUnreachable } from "../../../../components/shell.tsx";
 import { ReferenceServerUnreachableError } from "../../../../lib/owner-token.ts";
@@ -100,8 +101,12 @@ export default async function StreamHealthPage({
             <tbody>
               <tr>
                 <td className={`${TD} font-mono`}>emitted_at</td>
-                <td className={`${TD} whitespace-nowrap tabular-nums`}>{emittedAt.min ?? <Dash />}</td>
-                <td className={`${TD} whitespace-nowrap tabular-nums`}>{emittedAt.max ?? <Dash />}</td>
+                <td className={`${TD} whitespace-nowrap tabular-nums`}>
+                  {emittedAt.min ? <Timestamp value={emittedAt.min} /> : <Dash />}
+                </td>
+                <td className={`${TD} whitespace-nowrap tabular-nums`}>
+                  {emittedAt.max ? <Timestamp value={emittedAt.max} /> : <Dash />}
+                </td>
               </tr>
               {cursorField && (
                 <tr>
