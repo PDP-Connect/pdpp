@@ -72,8 +72,11 @@ function loadPolyfillConnectorPaths() {
   for (const file of readdirSync(POLYFILL_MANIFESTS_DIR)) {
     if (!file.endsWith('.json')) continue;
     const connectorName = file.replace(/\.json$/, '');
-    const connectorPath = join(POLYFILL_CONNECTORS_DIR, connectorName, 'index.js');
-    if (!existsSync(connectorPath)) continue;
+    const connectorPath = [
+      join(POLYFILL_CONNECTORS_DIR, connectorName, 'index.ts'),
+      join(POLYFILL_CONNECTORS_DIR, connectorName, 'index.js'),
+    ].find((candidatePath) => existsSync(candidatePath));
+    if (!connectorPath) continue;
     try {
       const manifest = JSON.parse(readFileSync(join(POLYFILL_MANIFESTS_DIR, file), 'utf8'));
       if (typeof manifest?.connector_id === 'string' && manifest.connector_id.trim()) {
@@ -87,7 +90,7 @@ function loadPolyfillConnectorPaths() {
   return paths;
 }
 
-function resolveDefaultConnectorPath(connectorId) {
+export function resolveDefaultConnectorPath(connectorId) {
   if (loadReferenceFixtureConnectorIds().has(connectorId)) {
     return SEED_CONNECTOR_PATH;
   }

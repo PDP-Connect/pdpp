@@ -19,10 +19,12 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { startServer } from '../server/index.js';
+import { resolveDefaultConnectorPath } from '../runtime/controller.js';
 import { validateRequest, listOperations } from '@pdpp/reference-contract';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, '..');
+const POLYFILL_MANIFESTS_DIR = join(REFERENCE_IMPL_DIR, '..', 'packages', 'polyfill-connectors', 'manifests');
 
 async function closeServer(server) {
   server.asServer.closeAllConnections();
@@ -319,6 +321,15 @@ test('POST /_ref/connectors/:connectorId/run starts an async background run and 
     assert.ok(entry.last_run, 'manual run should project onto connector summaries');
     assert.equal(entry.last_run.run_id, started.run_id);
   });
+});
+
+test('runtime controller resolves shipped polyfill connectors from TypeScript entrypoints', () => {
+  const ynabManifest = JSON.parse(
+    readFileSync(join(POLYFILL_MANIFESTS_DIR, 'ynab.json'), 'utf8'),
+  );
+  const connectorPath = resolveDefaultConnectorPath(ynabManifest.connector_id);
+  assert.ok(connectorPath, 'ynab should resolve to a runnable local connector path');
+  assert.match(connectorPath, /packages\/polyfill-connectors\/connectors\/ynab\/index\.ts$/);
 });
 
 test('POST /_ref/connectors/:connectorId/run returns 409 when the connector already has an active run', async () => {
