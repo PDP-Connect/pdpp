@@ -26,7 +26,7 @@
 
 - [x] 5.1 Run targeted query-contract tests.
 - [x] 5.2 Run `pnpm --dir reference-implementation run verify`.
-- [ ] 5.3 Run `pnpm --filter @pdpp/reference-contract run check:generated`.
+- [x] 5.3 Run `pnpm --filter @pdpp/reference-contract run check:generated`.
 - [x] 5.4 Run `openspec validate define-field-level-query-capability-schema --strict`.
 - [x] 5.5 Run `openspec validate --all --strict`.
 - [x] 5.6 Run `git diff --check`.
