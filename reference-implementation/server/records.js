@@ -210,14 +210,40 @@ function getFieldSchema(manifestStream, field) {
   return manifestStream?.schema?.properties?.[field] || null;
 }
 
+/**
+ * JSON Schema allows `type` to be either a string (`"string"`) or an array
+ * (`["string", "null"]`). For cursor-field parity checks and filter
+ * validation/coercion we care about the underlying non-null type(s).
+ * Returns a Set of type names with `"null"` stripped out. An empty set means
+ * "type not declared". A size-1 set represents a cleanly-typed scalar
+ * (possibly nullable); callers that need a single type should bail otherwise.
+ */
+function nonNullSchemaTypes(schema) {
+  const raw = schema?.type;
+  if (raw == null) return new Set();
+  const list = Array.isArray(raw) ? raw : [raw];
+  return new Set(list.filter((t) => t !== 'null'));
+}
+
+// Scalar for the purpose of top-level exact/range filtering. Nullable
+// variants (`["string", "null"]` etc.) normalize to the same set.
+const SCALAR_SCHEMA_TYPES = new Set(['boolean', 'integer', 'number', 'string']);
+
 function isScalarFieldSchema(fieldSchema) {
-  return ['boolean', 'integer', 'number', 'string'].includes(fieldSchema?.type);
+  const types = nonNullSchemaTypes(fieldSchema);
+  if (types.size !== 1) return false;
+  const [only] = types;
+  return SCALAR_SCHEMA_TYPES.has(only);
 }
 
 function isRangeQueryableSchema(fieldSchema) {
-  return fieldSchema?.type === 'integer'
-    || fieldSchema?.type === 'number'
-    || (fieldSchema?.type === 'string' && ['date', 'date-time'].includes(fieldSchema?.format));
+  const types = nonNullSchemaTypes(fieldSchema);
+  if (types.size !== 1) return false;
+  if (types.has('integer') || types.has('number')) return true;
+  if (types.has('string')) {
+    return fieldSchema?.format === 'date' || fieldSchema?.format === 'date-time';
+  }
+  return false;
 }
 
 function parseIntegerValue(value) {
@@ -242,25 +268,33 @@ function parseDateValue(value) {
 function coerceComparableValue(value, fieldSchema, { strict = false } = {}) {
   if (value == null) return null;
 
-  if (fieldSchema?.type === 'integer') {
+  // Branch on the non-null component of the declared type so that nullable
+  // scalar schemas (`["integer", "null"]` etc.) coerce the same way as their
+  // bare counterparts. An ambiguous `type` (e.g. `["string","integer"]`)
+  // falls through to string coercion — that matches pre-nullable behavior
+  // for any schema we wouldn't have accepted as range-queryable anyway.
+  const types = nonNullSchemaTypes(fieldSchema);
+  const only = types.size === 1 ? [...types][0] : null;
+
+  if (only === 'integer') {
     const parsed = parseIntegerValue(value);
     if (parsed == null && strict) throw invalidQueryError(`Invalid integer value for '${String(value)}'`);
     return parsed;
   }
 
-  if (fieldSchema?.type === 'number') {
+  if (only === 'number') {
     const parsed = parseNumberValue(value);
     if (parsed == null && strict) throw invalidQueryError(`Invalid number value for '${String(value)}'`);
     return parsed;
   }
 
-  if (fieldSchema?.type === 'string' && ['date', 'date-time'].includes(fieldSchema?.format)) {
+  if (only === 'string' && ['date', 'date-time'].includes(fieldSchema?.format)) {
     const parsed = parseDateValue(value);
     if (parsed == null && strict) throw invalidQueryError(`Invalid date value for '${String(value)}'`);
     return parsed;
   }
 
-  return value == null ? null : String(value);
+  return String(value);
 }
 
 function normalizeExactFilterValue(value, field) {
@@ -524,13 +558,18 @@ function jsonExtractExpr(field) {
  *   (integer/number schemas) or `localeCompare` (strings). SQLite's ORDER BY
  *   on `json_extract(...)` uses numeric ordering for SQLite's INTEGER/REAL
  *   affinity values and BINARY collation for TEXT. For our corpus every
- *   declared `cursor_field` is typed as `string` with `format: date-time`
- *   (ISO-8601), where lexical BINARY order equals temporal order — semantic
- *   parity holds.
- * - For any cursor_field whose schema is not numeric and not date/date-time
- *   we bail out rather than silently accept BINARY-vs-localeCompare drift.
- *   That leaves slice-2 handlers free to narrow the scope later without
- *   anyone relying on accidental parity today.
+ *   declared `cursor_field` is typed as integer/number or as a string with
+ *   `format: date` / `format: date-time` (ISO-8601), where lexical BINARY
+ *   order equals temporal order — semantic parity holds.
+ * - Nullable variants like `["string", "null"]` or `["integer", "null"]` are
+ *   semantically the same sort basis with additional null rows; those null
+ *   rows fall into the `__cursor_missing` bucket which ORDER BY already
+ *   places after present values in ASC (before in DESC). No parity break.
+ * - For any cursor_field whose non-null type is not numeric and not ISO
+ *   date/date-time (e.g. a plain `"string"` or `["string", "null"]` with no
+ *   date/date-time format), we bail out rather than silently accept
+ *   BINARY-vs-localeCompare drift. That leaves slice-2 handlers free to
+ *   narrow the scope later without anyone relying on accidental parity today.
  * - `primary_key` parts fall through to the same rules. Every stream in
  *   our corpus uses `["id"]` primary keys — always strings of ASCII hex /
  *   UUID / etc. BINARY == localeCompare on ASCII.
@@ -542,13 +581,22 @@ function assertCursorFieldParityOrThrow(manifestStream) {
   if (!schema) {
     throw new Error(`[records] cursor_field '${field}' not in schema.properties`);
   }
-  const numeric = schema.type === 'integer' || schema.type === 'number';
-  const isoDate = schema.type === 'string' && (schema.format === 'date' || schema.format === 'date-time');
+  // Accept both bare (`type: "string"`) and nullable (`type: ["string", "null"]`)
+  // schemas. A nullable cursor just adds more rows to the "missing" bucket,
+  // which the existing `__cursor_missing` ORDER BY keyway already handles.
+  const types = nonNullSchemaTypes(schema);
+  const numeric = types.size === 1 && (types.has('integer') || types.has('number'));
+  const isoDate =
+    types.size === 1
+    && types.has('string')
+    && (schema.format === 'date' || schema.format === 'date-time');
   if (!numeric && !isoDate) {
     // Deliberate bail — see exact-parity note above.
+    const typeLabel = JSON.stringify(schema.type);
     const err = new Error(
-      `cursor_field '${field}' has schema type '${schema.type}'${schema.format ? ` format '${schema.format}'` : ''}; ` +
-      'SQL-layer sort is only supported for numeric or ISO date/date-time cursor_fields. ' +
+      `cursor_field '${field}' has schema type ${typeLabel}${schema.format ? ` format '${schema.format}'` : ''}; ` +
+      'SQL-layer sort is only supported for numeric or ISO date/date-time cursor_fields ' +
+      '(nullable variants allowed). ' +
       'Widen support in records.js::fetchVisibleRecordRowsPaginated before using.',
     );
     err.code = 'not_supported';
