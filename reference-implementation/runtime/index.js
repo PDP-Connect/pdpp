@@ -87,6 +87,100 @@ function buildHttpFailure(message, status, bodyText) {
   return err;
 }
 
+function responseBodyBytes(bodyText) {
+  return Buffer.byteLength(String(bodyText || ''), 'utf8');
+}
+
+function buildIngestFailureDetails({
+  batchSize,
+  bodyText,
+  contentType,
+  phase,
+  status,
+  stream,
+}) {
+  return {
+    stream,
+    batch_size: batchSize,
+    http_status: status,
+    phase,
+    response_content_type: contentType || null,
+    response_body_bytes: responseBodyBytes(bodyText),
+  };
+}
+
+function buildIngestHttpFailure(message, stream, batchSize, status, bodyText, contentType) {
+  const err = buildHttpFailure(message, status, bodyText);
+  if (!err.failure_reason) {
+    err.failure_reason = 'ingest_http_error';
+  }
+  err.ingest_failure = buildIngestFailureDetails({
+    batchSize,
+    bodyText,
+    contentType,
+    phase: 'http_response',
+    status,
+    stream,
+  });
+  return err;
+}
+
+function buildInvalidIngestResponseFailure({ batchSize, bodyText, cause, contentType, phase, status, stream }) {
+  const err = new Error(`Ingest response for ${stream} was invalid after HTTP ${status}: ${cause}`);
+  err.failure_reason = 'ingest_response_invalid';
+  err.response_status = status;
+  err.ingest_failure = buildIngestFailureDetails({
+    batchSize,
+    bodyText,
+    contentType,
+    phase,
+    status,
+    stream,
+  });
+  return err;
+}
+
+async function readIngestResponse(resp, stream, batchSize) {
+  const contentType = resp.headers.get('content-type');
+  const bodyText = await resp.text();
+  if (!resp.ok) {
+    throw buildIngestHttpFailure(`Ingest failed for ${stream}`, stream, batchSize, resp.status, bodyText, contentType);
+  }
+
+  let result;
+  try {
+    result = JSON.parse(bodyText);
+  } catch (err) {
+    throw buildInvalidIngestResponseFailure({
+      batchSize,
+      bodyText,
+      cause: err instanceof Error ? err.message : String(err),
+      contentType,
+      phase: 'parse_response',
+      status: resp.status,
+      stream,
+    });
+  }
+
+  if (
+    !result
+    || !Number.isFinite(result.records_accepted)
+    || !Number.isFinite(result.records_rejected)
+  ) {
+    throw buildInvalidIngestResponseFailure({
+      batchSize,
+      bodyText,
+      cause: 'expected numeric records_accepted and records_rejected',
+      contentType,
+      phase: 'validate_response',
+      status: resp.status,
+      stream,
+    });
+  }
+
+  return result;
+}
+
 /**
  * Runtime-authored structured diagnosis for a protocol violation.
  *
@@ -121,6 +215,21 @@ function boundStringList(values) {
     return safe.map((v) => boundString(v));
   }
   return safe.slice(0, VIOLATION_LIST_MAX).map((v) => boundString(v));
+}
+
+function toPublicIngestFailure(value) {
+  if (!value || typeof value !== 'object') return null;
+  const out = {};
+  const stream = boundString(value.stream);
+  const phase = boundString(value.phase);
+  const contentType = boundString(value.response_content_type);
+  if (stream) out.stream = stream;
+  if (Number.isFinite(value.batch_size)) out.batch_size = value.batch_size;
+  if (Number.isFinite(value.http_status)) out.http_status = value.http_status;
+  if (phase) out.phase = phase;
+  if (contentType) out.response_content_type = contentType;
+  if (Number.isFinite(value.response_body_bytes)) out.response_body_bytes = value.response_body_bytes;
+  return Object.keys(out).length ? out : null;
 }
 
 class ProtocolViolation extends Error {
@@ -665,10 +774,12 @@ export async function runConnector(opts) {
     exitCode = null,
     reportedRecordsEmitted = null,
     connectorError = null,
+    ingestFailure = null,
     violation = null,
   } = {}) {
     const stateStreamsStaged = countStagedStateStreams();
     const stateStreamsCommitted = committedStateStreams.size;
+    const publicIngestFailure = toPublicIngestFailure(ingestFailure);
     return {
       source: runSource,
       grant_id: grantId,
@@ -689,6 +800,7 @@ export async function runConnector(opts) {
       ...(connectorError?.retryable === null || connectorError?.retryable === undefined
         ? {}
         : { connector_error_retryable: connectorError.retryable }),
+      ...(publicIngestFailure ? { ingest_failure: publicIngestFailure } : {}),
       ...(violation instanceof ProtocolViolation
         ? { violation: violation.toPublicShape({ lastValidSpineEvent }) }
         : {}),
@@ -721,11 +833,7 @@ export async function runConnector(opts) {
       },
       body: ndjson,
     });
-    if (!resp.ok) {
-      const body = await resp.text();
-      throw buildHttpFailure(`Ingest failed for ${stream}`, resp.status, body);
-    }
-    const result = await resp.json();
+    const result = await readIngestResponse(resp, stream, batch.length);
     totalFlushed += batch.length;
     await emitSpineEventTracked({
       event_type: 'run.batch_ingested',
@@ -923,6 +1031,7 @@ export async function runConnector(opts) {
                 recordsEmitted: totalEmitted,
                 reason: failureReason,
                 connectorError: null,
+                ingestFailure: err.ingest_failure || null,
                 violation: err instanceof ProtocolViolation ? err : null,
               }),
             });
@@ -1416,6 +1525,7 @@ export async function runConnector(opts) {
                 reason: failureReason,
                 exitCode: code,
                 connectorError: doneMessage?.error || null,
+                ingestFailure: err.ingest_failure || null,
               }),
             });
             terminalEventRecorded = true;

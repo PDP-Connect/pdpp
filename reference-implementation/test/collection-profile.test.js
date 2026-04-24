@@ -5595,6 +5595,148 @@ rl.on('line', (line) => {
     }
   });
 
+  await t.test('invalid ingest response at STATE fails specifically and preserves dropped-tail accounting', async () => {
+    const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
+    const { asPort } = server;
+    const asUrl = `http://localhost:${asPort}`;
+    const connectorId = 'https://registry.pdpp.org/connectors/invalid-ingest-response';
+    const manifest = {
+      ...MINIMAL_MANIFEST,
+      connector_id: connectorId,
+      streams: [
+        ...MINIMAL_MANIFEST.streams,
+        {
+          name: 'bodies',
+          semantics: 'append_only',
+          schema: {
+            type: 'object',
+            properties: {
+              id: { type: 'string' },
+              value: { type: 'string' },
+            },
+            required: ['id'],
+          },
+          primary_key: ['id'],
+        },
+      ],
+    };
+    const previousBatchSize = process.env.PDPP_RUNTIME_BATCH_SIZE;
+    process.env.PDPP_RUNTIME_BATCH_SIZE = '3';
+    const itemBatchSizes = [];
+    let bodiesFlushAttempted = false;
+
+    const rsServer = http.createServer(async (req, res) => {
+      const url = new URL(req.url, 'http://localhost');
+      const chunks = [];
+      for await (const chunk of req) chunks.push(chunk);
+      const lines = Buffer.concat(chunks).toString('utf8').split('\n').filter((line) => line.trim());
+
+      if (req.method === 'POST' && url.pathname === '/v1/ingest/items') {
+        itemBatchSizes.push(lines.length);
+        if (itemBatchSizes.length === 1) {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ records_accepted: lines.length, records_rejected: 0 }));
+          return;
+        }
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end('accepted but not json');
+        return;
+      }
+
+      if (req.method === 'POST' && url.pathname === '/v1/ingest/bodies') {
+        bodiesFlushAttempted = true;
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'bodies_should_remain_buffered' }));
+        return;
+      }
+
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+    });
+
+    const { connectorPath, cleanup } = createTestConnector([
+      { type: 'RECORD', stream: 'items', key: 'item_1', data: { id: 'item_1', value: 'one' }, emitted_at: new Date().toISOString() },
+      { type: 'RECORD', stream: 'items', key: 'item_2', data: { id: 'item_2', value: 'two' }, emitted_at: new Date().toISOString() },
+      { type: 'RECORD', stream: 'items', key: 'item_3', data: { id: 'item_3', value: 'three' }, emitted_at: new Date().toISOString() },
+      { type: 'RECORD', stream: 'bodies', key: 'body_1', data: { id: 'body_1', value: 'body one' }, emitted_at: new Date().toISOString() },
+      { type: 'RECORD', stream: 'bodies', key: 'body_2', data: { id: 'body_2', value: 'body two' }, emitted_at: new Date().toISOString() },
+      { type: 'RECORD', stream: 'items', key: 'item_4', data: { id: 'item_4', value: 'four' }, emitted_at: new Date().toISOString() },
+      { type: 'RECORD', stream: 'items', key: 'item_5', data: { id: 'item_5', value: 'five' }, emitted_at: new Date().toISOString() },
+      { type: 'STATE', stream: 'items', cursor: { cursor: 'after_item_5' } },
+      { type: 'DONE', status: 'succeeded', records_emitted: 7 },
+    ]);
+
+    try {
+      await new Promise((resolve) => rsServer.listen(0, resolve));
+      const rsPort = rsServer.address().port;
+
+      const registerResp = await fetchJson(`${asUrl}/connectors`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(manifest),
+      });
+      assert.equal(registerResp.status, 201);
+      const ownerToken = await issueOwnerToken(asUrl, 'invalid_ingest_response_user');
+
+      let rejected = null;
+      await assert.rejects(
+        async () => {
+          await runConnector({
+            connectorPath,
+            connectorId,
+            ownerToken,
+            manifest,
+            state: null,
+            collectionMode: 'incremental',
+            persistState: true,
+            rsUrl: `http://localhost:${rsPort}`,
+            onInteraction: async () => ({}),
+          });
+        },
+        (err) => {
+          rejected = err;
+          assert.equal(err.failure_reason, 'ingest_response_invalid');
+          assert.equal(err.terminal_reason, 'ingest_response_invalid');
+          assert.equal(err.checkpoint_summary.records_flushed, 3);
+          assert.equal(err.checkpoint_summary.buffered_records_dropped, 4);
+          assert.equal(err.checkpoint_summary.state_streams_staged, 0);
+          assert.equal(err.checkpoint_summary.state_streams_committed, 0);
+          assert.match(err.message, /Ingest response for items was invalid after HTTP 200/);
+          return true;
+        },
+      );
+
+      assert.deepEqual(itemBatchSizes, [3, 2]);
+      assert.equal(bodiesFlushAttempted, false, 'sibling buffered streams should not be flushed after the ingest response failure');
+
+      const { body: runTimeline } = await fetchJson(`${asUrl}/_ref/runs/${encodeURIComponent(rejected.run_id)}/timeline`);
+      const failedEvent = (runTimeline.data || []).find((event) => event.event_type === 'run.failed');
+      assert.ok(failedEvent);
+      assert.equal(failedEvent.data.reason, 'ingest_response_invalid');
+      assert.equal(failedEvent.data.records_emitted, 7);
+      assert.equal(failedEvent.data.records_flushed, 3);
+      assert.equal(failedEvent.data.buffered_records_dropped, 4);
+      assert.deepEqual(failedEvent.data.ingest_failure, {
+        stream: 'items',
+        batch_size: 2,
+        http_status: 200,
+        phase: 'parse_response',
+        response_content_type: 'application/json',
+        response_body_bytes: 21,
+      });
+    } finally {
+      if (previousBatchSize == null) {
+        delete process.env.PDPP_RUNTIME_BATCH_SIZE;
+      } else {
+        process.env.PDPP_RUNTIME_BATCH_SIZE = previousBatchSize;
+      }
+      cleanup();
+      await closeHttpServer(rsServer);
+      await closeServer(server);
+    }
+  });
+
   await t.test('unexpected connector exit after a batch flush preserves flushed records but drops the remaining buffered tail', async () => {
     const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
     const { asPort, rsPort } = server;
