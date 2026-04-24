@@ -375,9 +375,8 @@ export function computeDefaultColumns(
     return [];
   }
 
-  const declared = Array.isArray(streamManifest?.preview_fields)
-    ? streamManifest!.preview_fields!.filter((f) => all.includes(f))
-    : [];
+  const previewFields = streamManifest?.preview_fields;
+  const declared = Array.isArray(previewFields) ? previewFields.filter((f) => all.includes(f)) : [];
   if (declared.length > 0) {
     return declared;
   }
@@ -702,8 +701,7 @@ export async function streamHealth(
         }
       }
     }
-    for (const f of fieldNames) {
-      const a = agg.get(f)!;
+    for (const [f, a] of agg) {
       const hasKey = Object.hasOwn(data, f);
       if (hasKey) {
         a.present = true;
@@ -727,20 +725,16 @@ export async function streamHealth(
   }
 
   const declaredSet = new Set(declaredProps);
-  const fields: FieldHealth[] = Array.from(fieldNames)
-    .map((name) => {
-      const a = agg.get(name)!;
-      return {
-        name,
-        declared: declaredSet.has(name),
-        present: a.present,
-        nullCount: a.nullCount,
-        nonNullCount: a.nonNullCount,
-        distinctValues: a.distinct.size,
-        distinctCapped: a.distinctCapped,
-        sampleValue: a.sampleValue,
-      };
-    })
+  const fields: FieldHealth[] = Array.from(agg, ([name, a]) => ({
+    name,
+    declared: declaredSet.has(name),
+    present: a.present,
+    nullCount: a.nullCount,
+    nonNullCount: a.nonNullCount,
+    distinctValues: a.distinct.size,
+    distinctCapped: a.distinctCapped,
+    sampleValue: a.sampleValue,
+  }))
     .sort((x, y) => {
       // declared-first, then by name, for stable display
       if (x.declared !== y.declared) {

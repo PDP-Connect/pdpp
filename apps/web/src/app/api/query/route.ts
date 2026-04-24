@@ -10,8 +10,14 @@ import { getRsInternalUrl } from "../../dashboard/lib/owner-token.ts";
 
 export async function GET(req: Request) {
   const url = new URL(req.url);
-  const stream = url.searchParams.get("stream")!;
-  const token = url.searchParams.get("token")!;
+  const stream = url.searchParams.get("stream");
+  const token = url.searchParams.get("token");
+  if (!stream) {
+    return NextResponse.json({ error: "Missing required query parameter: stream" }, { status: 400 });
+  }
+  if (!token) {
+    return NextResponse.json({ error: "Missing required query parameter: token" }, { status: 400 });
+  }
   const connectorId = url.searchParams.get("connectorId");
   if (url.searchParams.has("providerId")) {
     return NextResponse.json(
