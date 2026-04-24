@@ -55,7 +55,7 @@ export default async function Page({ params }: DocsPageProps) {
   );
 }
 
-export async function generateStaticParams() {
+export function generateStaticParams() {
   return source.generateParams();
 }
 

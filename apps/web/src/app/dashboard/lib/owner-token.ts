@@ -256,9 +256,9 @@ async function mintOwnerToken(): Promise<string> {
   return access_token;
 }
 
-export async function getOwnerToken(force = false): Promise<string> {
+export function getOwnerToken(force = false): Promise<string> {
   if (!force && cachedToken) {
-    return cachedToken;
+    return Promise.resolve(cachedToken);
   }
   if (!force && inFlight) {
     return inFlight;

@@ -109,7 +109,7 @@ function openSpecGitMetadataPath(repoRoot: string): string {
   return path.join(repoRoot, "apps/web/.generated/openspec-git-metadata.json");
 }
 
-async function loadOpenSpecGitMetadataManifest(repoRoot: string): Promise<OpenSpecGitMetadataManifest | null> {
+function loadOpenSpecGitMetadataManifest(repoRoot: string): Promise<OpenSpecGitMetadataManifest | null> {
   if (!cachedGitMetadataManifest) {
     cachedGitMetadataManifest = fs
       .readFile(openSpecGitMetadataPath(repoRoot), "utf8")
@@ -156,7 +156,7 @@ export async function readArtifactIfExists(repoRoot: string, repoRelativePath: s
   }
 }
 
-export async function fileExistsAt(repoRoot: string, repoRelativePath: string): Promise<boolean> {
+export function fileExistsAt(repoRoot: string, repoRelativePath: string): Promise<boolean> {
   return fileExists(path.join(repoRoot, repoRelativePath));
 }
 
@@ -184,18 +184,18 @@ export function changeDesignNotePath(changeName: string, noteFilename: string): 
   return path.posix.join(changeDesignNotesDir(changeName), noteFilename);
 }
 
-export async function listChangeNames(repoRoot: string): Promise<string[]> {
+export function listChangeNames(repoRoot: string): Promise<string[]> {
   return listSubdirectories(path.join(repoRoot, "openspec/changes"));
 }
 
-export async function listSpecCapabilities(repoRoot: string): Promise<string[]> {
+export function listSpecCapabilities(repoRoot: string): Promise<string[]> {
   return listSubdirectories(path.join(repoRoot, "openspec/specs"));
 }
 
-export async function listChangeSpecCapabilities(repoRoot: string, changeName: string): Promise<string[]> {
+export function listChangeSpecCapabilities(repoRoot: string, changeName: string): Promise<string[]> {
   return listSubdirectories(path.join(repoRoot, "openspec/changes", changeName, "specs"));
 }
 
-export async function listChangeDesignNoteFiles(repoRoot: string, changeName: string): Promise<string[]> {
+export function listChangeDesignNoteFiles(repoRoot: string, changeName: string): Promise<string[]> {
   return listMarkdownFiles(path.join(repoRoot, "openspec/changes", changeName, "design-notes"));
 }

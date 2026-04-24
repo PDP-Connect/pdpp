@@ -6,7 +6,7 @@ function asJson(body: unknown) {
   return JSON.stringify(body);
 }
 
-async function readBody(res: Response): Promise<unknown> {
+function readBody(res: Response): Promise<unknown> {
   const contentType = res.headers.get("content-type") ?? "";
   if (contentType.includes("application/json")) {
     return res.json();
