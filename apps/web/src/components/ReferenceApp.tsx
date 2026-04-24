@@ -100,7 +100,10 @@ type SectionConfig = {
   surface: 'human' | 'protocol' | 'neutral';
 };
 
-const SECTION_CONTENT: SectionConfig[] = [
+// Using a tuple-literal (`satisfies [...]`) rather than `SectionConfig[]`
+// so positional reads like `SECTION_CONTENT[0]` keep a non-optional type
+// under `noUncheckedIndexedAccess`.
+const SECTION_CONTENT = [
   {
     id: 'ingest',
     headline: 'Native where possible, connector-backed where needed',
@@ -167,7 +170,7 @@ const SECTION_CONTENT: SectionConfig[] = [
     narrative: 'Every component on this page implements a section of the PDPP specification. Published, versioned, and open for review.',
     surface: 'neutral',
   },
-];
+] as const satisfies readonly SectionConfig[];
 
 // ─── Stepper navigation ─────────────────────────────────────────────────────
 
@@ -240,8 +243,8 @@ function FieldProjection({ grantedFields, allFields }: { grantedFields: string[]
     const el = ref.current;
     if (!el) return;
     const obs = new IntersectionObserver(
-      ([entry]) => {
-        if (entry.isIntersecting) {
+      (entries) => {
+        if (entries[0]?.isIntersecting) {
           setPhase('show');
           setTimeout(() => setPhase('filter'), 500);
           setTimeout(() => setPhase('result'), 950);
@@ -391,8 +394,8 @@ function IncrementalSync() {
     const el = ref.current;
     if (!el) return;
     const obs = new IntersectionObserver(
-      ([entry]) => {
-        if (entry.isIntersecting) {
+      (entries) => {
+        if (entries[0]?.isIntersecting) {
           setPhase('first');
           setTimeout(() => setPhase('delta'), 650);
           obs.disconnect();
@@ -571,7 +574,7 @@ function Reveal({ children, delay = 0 }: { children: React.ReactNode; delay?: nu
     const el = ref.current;
     if (!el) return;
     const obs = new IntersectionObserver(
-      ([entry]) => { if (entry.isIntersecting) { setVisible(true); obs.disconnect(); } },
+      (entries) => { if (entries[0]?.isIntersecting) { setVisible(true); obs.disconnect(); } },
       { threshold: 0.15 }
     );
     obs.observe(el);
@@ -612,7 +615,7 @@ function CollectionConvergence() {
     const el = ref.current;
     if (!el) return;
     const obs = new IntersectionObserver(
-      ([entry]) => { if (entry.isIntersecting) { setVisible(true); obs.disconnect(); } },
+      (entries) => { if (entries[0]?.isIntersecting) { setVisible(true); obs.disconnect(); } },
       { threshold: 0.3 }
     );
     obs.observe(el);
@@ -950,11 +953,13 @@ export function ReferenceApp({ hero, currentLabel = 'Reference' }: ReferenceAppP
       if (e.key === 'ArrowDown' || e.key === 'ArrowRight' || e.key === ' ') {
         e.preventDefault();
         const idx = SECTIONS.findIndex(s => s.id === activeSection);
-        if (idx < SECTIONS.length - 1) navigateTo(SECTIONS[idx + 1].id);
+        const next = idx >= 0 ? SECTIONS[idx + 1] : undefined;
+        if (next) navigateTo(next.id);
       } else if (e.key === 'ArrowUp' || e.key === 'ArrowLeft') {
         e.preventDefault();
         const idx = SECTIONS.findIndex(s => s.id === activeSection);
-        if (idx > 0) navigateTo(SECTIONS[idx - 1].id);
+        const prev = idx > 0 ? SECTIONS[idx - 1] : undefined;
+        if (prev) navigateTo(prev.id);
       }
     };
     window.addEventListener('keydown', handleKey);
@@ -1655,7 +1660,10 @@ Authorization: Bearer <owner_token>
           </div>
 
           {/* Show export result */}
-          {protocol.exportResult && protocol.exportResult.records && protocol.exportResult.records.length > 0 && (
+          {(() => {
+            const firstExportRecord = protocol.exportResult?.records?.[0];
+            if (!firstExportRecord || !protocol.exportResult?.records?.length) return null;
+            return (
             <div
               data-surface="protocol"
               className="rounded-xl overflow-hidden px-5 py-4 w-full"
@@ -1664,13 +1672,14 @@ Authorization: Bearer <owner_token>
                 Exported {protocol.exportResult.records.length} records (all fields)
               </div>
               <div className="font-mono text-xs overflow-x-auto" style={{ color: 'var(--muted-foreground)', maxHeight: '120px', overflowY: 'auto' }}>
-                {JSON.stringify(protocol.exportResult.records[0].data, null, 2)}
+                {JSON.stringify(firstExportRecord.data, null, 2)}
               </div>
               <div className="text-xs mt-2" style={{ color: 'var(--muted-foreground)', opacity: 0.7 }}>
                 Showing first record. Compare to the grant-projected response in the Enforce section.
               </div>
             </div>
-          )}
+            );
+          })()}
         </div>
       </Section>
 
@@ -1697,7 +1706,7 @@ Authorization: Bearer <owner_token>
               </button>
             ))}
           </div>
-          <ConnectorCard {...MULTI_CONNECTORS[multiIdx]} />
+          <ConnectorCard {...(MULTI_CONNECTORS[multiIdx] ?? CONNECTOR_SPECIMEN)} />
         </div>
       </Section>
 
