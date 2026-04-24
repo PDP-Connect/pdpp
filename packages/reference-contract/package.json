@@ -8,8 +8,8 @@
   "exports": {
     ".": "./src/index.js",
     "./common": "./src/common/index.ts",
-    "./public": "./src/public/index.js",
-    "./reference": "./src/reference/index.js",
+    "./public": "./src/public/index.ts",
+    "./reference": "./src/reference/index.ts",
     "./builders": "./src/builders/index.ts",
     "./openapi": "./src/openapi/index.js",
     "./validate": "./src/validate.ts"

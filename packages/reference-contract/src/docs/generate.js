@@ -9,8 +9,8 @@
 //   - reference-implementation/docs/generated/reference-routes.md
 //   - reference-implementation/docs/generated/query-cookbook.md
 
-import { publicManifests } from '../public/index.js';
-import { referenceManifests } from '../reference/index.js';
+import { publicManifests } from '../public/index.ts';
+import { referenceManifests } from '../reference/index.ts';
 
 function methodBadge(method) {
   return `**${method}**`;

@@ -29,8 +29,8 @@ import type { JsonSchema, RouteManifest } from "./common/index.ts";
 // match RouteManifest[] and Node type-stripping loads them as untyped
 // bindings. We cast once at import and rely on runtime tests (see
 // test/surface.test.js) to catch drift until those modules migrate.
-import { publicManifests as publicManifestsRaw } from "./public/index.js";
-import { referenceManifests as referenceManifestsRaw } from "./reference/index.js";
+import { publicManifests as publicManifestsRaw } from "./public/index.ts";
+import { referenceManifests as referenceManifestsRaw } from "./reference/index.ts";
 
 const requireCjs = createRequire(import.meta.url);
 // The CJS .d.ts entry points expose ESM defaults that aren't callable

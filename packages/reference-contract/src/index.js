@@ -11,7 +11,7 @@
 //   - tests
 
 export * from './common/index.ts';
-export * from './public/index.js';
-export * from './reference/index.js';
+export * from './public/index.ts';
+export * from './reference/index.ts';
 export * from './builders/index.ts';
 export { validateRequest, listOperations } from './validate.ts';

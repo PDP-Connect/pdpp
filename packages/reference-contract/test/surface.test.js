@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { listOperations, validateRequest } from '../src/index.js';
 import { generateDocs } from '../src/docs/generate.js';
 import { generateOpenApi } from '../src/openapi/index.js';
-import { publicManifests } from '../src/public/index.js';
+import { publicManifests } from '../src/public/index.ts';
 
 test('public manifests cover metadata, auth, grant, and record surfaces', () => {
   const ids = new Set(publicManifests.map((manifest) => manifest.id));

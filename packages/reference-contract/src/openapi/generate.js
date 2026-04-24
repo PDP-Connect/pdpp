@@ -5,8 +5,8 @@
 //   - reference-public.openapi.json  (public routes only)
 //   - reference-full.openapi.json    (public + /_ref routes)
 
-import { publicManifests } from '../public/index.js';
-import { referenceManifests } from '../reference/index.js';
+import { publicManifests } from '../public/index.ts';
+import { referenceManifests } from '../reference/index.ts';
 
 function pathToOpenApi(path) {
   // our manifests already use {param} style braces
