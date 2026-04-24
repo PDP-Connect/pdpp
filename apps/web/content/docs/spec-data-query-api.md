@@ -338,6 +338,8 @@ Public lexical retrieval lives in the optional **lexical retrieval extension** a
 
 A future `POST /v1/search` body-DSL is reserved for richer queries (boolean predicates, etc.) but is **not** specified yet. Don't rely on it.
 
+A **separate** experimental extension, [Semantic Retrieval](./spec-semantic-retrieval-extension), adds a sibling surface at `GET /v1/search/semantic` for meaning-based matches (paraphrase / synonymy recall). It is **experimental and unstable** in v1 and is not interchangeable with `/v1/search`. Lexical retrieval remains the stable public retrieval floor.
+
 
 ## Design Attribution
 

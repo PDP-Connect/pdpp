@@ -7,6 +7,11 @@ import {
   lexicalIndexDeleteByConnectorStream,
   lexicalIndexUpsert,
 } from './search.js';
+import {
+  semanticIndexDelete,
+  semanticIndexDeleteByConnectorStream,
+  semanticIndexUpsert,
+} from './search-semantic.js';
 
 function nowIso() {
   return new Date().toISOString();
@@ -103,6 +108,7 @@ export async function ingestRecord(storageTarget, record) {
       VALUES(?, ?, ?, ?, ?, ?, 1, ?)
     `).run(connectorId, stream, recordKey, nextVersion, current.record_json, effectiveEmittedAt, effectiveEmittedAt);
     await lexicalIndexDelete({ connectorId, stream, recordKey });
+    await semanticIndexDelete({ connectorId, stream, recordKey });
   } else {
     db.prepare(`
       INSERT INTO records(connector_id, stream, record_key, record_json, emitted_at, version)
@@ -119,6 +125,7 @@ export async function ingestRecord(storageTarget, record) {
       VALUES(?, ?, ?, ?, ?, ?, 0, NULL)
     `).run(connectorId, stream, recordKey, nextVersion, recordJson, effectiveEmittedAt);
     await lexicalIndexUpsert({ connectorId, stream, recordKey, data });
+    await semanticIndexUpsert({ connectorId, stream, recordKey, data });
   }
 
   // Advance version counter
@@ -1723,6 +1730,7 @@ export async function deleteRecord(storageTarget, stream, recordId) {
   `).run(connectorId, stream, nextVersion);
 
   await lexicalIndexDelete({ connectorId, stream, recordKey: recordId });
+  await semanticIndexDelete({ connectorId, stream, recordKey: recordId });
 
   const changeHistoryLimit = getChangeHistoryLimit();
   if (changeHistoryLimit > 0) {
@@ -1771,6 +1779,7 @@ export async function deleteAllRecords(storageTarget, stream) {
   db.prepare('DELETE FROM record_changes WHERE connector_id = ? AND stream = ?').run(connectorId, stream);
   db.prepare('DELETE FROM version_counter WHERE connector_id = ? AND stream = ?').run(connectorId, stream);
   await lexicalIndexDeleteByConnectorStream({ connectorId, stream });
+  await semanticIndexDeleteByConnectorStream({ connectorId, stream });
   return deletedRecordCount;
 }
 

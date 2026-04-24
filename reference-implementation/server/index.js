@@ -9,6 +9,7 @@ import {
   buildAuthorizationServerMetadata,
   buildLexicalRetrievalCapability,
   buildProtectedResourceMetadata,
+  buildSemanticRetrievalCapability,
   resolvePublicUrl,
   stripTrailingSlash,
 } from './metadata.js';
@@ -27,6 +28,14 @@ import {
 } from './records.js';
 import { lexicalIndexBackfillForManifest, runLexicalSearch } from './search.js';
 import { reconcilePolyfillManifests } from './polyfill-manifest-reconcile.js';
+import {
+  computeIndexState as computeSemanticIndexState,
+  configureSemanticBackend,
+  getSemanticBackend,
+  makeStubBackend,
+  runSemanticSearch,
+  semanticIndexBackfillForManifest,
+} from './search-semantic.js';
 import { createOwnerAuthPlaceholder, OWNER_AUTH_DEFAULT_SUBJECT_ID } from './owner-auth.js';
 import { createController } from '../runtime/controller.js';
 import { createApp, buildLogger } from './transport.js';
@@ -1884,6 +1893,33 @@ function buildRsApp(opts = {}) {
       capabilities.lexical_retrieval = buildLexicalRetrievalCapability();
     }
 
+    // Semantic retrieval experimental extension advertisement. Truthfulness
+    // rules (enforced by buildSemanticRetrievalCapability + this call site):
+    //   - Only published when a real embedding backend is configured and
+    //     available. opts.semanticRetrievalSupported === false suppresses it
+    //     explicitly; opts.semanticRetrievalCapability overrides the shape.
+    //   - model / dimensions / distance_metric come from the live backend.
+    //   - index_state is read from computeSemanticIndexState at request time;
+    //     backend-identity drift flips it to "stale" honestly.
+    //   - stability is hardcoded "experimental" in v1; query_input is "text";
+    //     lexical_blending is false. See:
+    //   openspec/changes/add-semantic-retrieval-experimental-extension/specs/semantic-retrieval/spec.md
+    if (opts.semanticRetrievalCapability) {
+      capabilities.semantic_retrieval = opts.semanticRetrievalCapability;
+    } else if (opts.semanticRetrievalSupported !== false) {
+      const semBackend = getSemanticBackend();
+      if (semBackend && semBackend.available()) {
+        const semCap = buildSemanticRetrievalCapability({
+          model: semBackend.model(),
+          dimensions: semBackend.dimensions(),
+          distanceMetric: semBackend.distanceMetric(),
+          indexState: computeSemanticIndexState(),
+          languageBias: semBackend.languageBias ? semBackend.languageBias() : null,
+        });
+        if (semCap) capabilities.semantic_retrieval = semCap;
+      }
+    }
+
     res.json(
       buildProtectedResourceMetadata({
         resource,
@@ -2401,6 +2437,92 @@ function buildRsApp(opts = {}) {
     }
   });
 
+  // Experimental — public semantic retrieval. Unstable.
+  // See capabilities.semantic_retrieval.stability and
+  //   openspec/changes/add-semantic-retrieval-experimental-extension/specs/semantic-retrieval/spec.md
+  //
+  // Only registered when a real embedding backend is configured. When no
+  // backend is configured, the advertisement is also omitted (see the RS
+  // metadata route handler above), and requests fall through to the default
+  // 404 — which is what the spec scenario "A client encounters a server
+  // that does not advertise the extension" expects.
+  const semanticBackendAtRegistration = getSemanticBackend();
+  if (semanticBackendAtRegistration && opts.semanticRetrievalSupported !== false) {
+    app.get('/v1/search/semantic', { contract: 'searchRecordsSemantic' }, requireToken, async (req, res) => {
+      let queryContext = null;
+      try {
+        const { tokenInfo } = req;
+        const queryId = ensureRequestId(res);
+        const { actorType, actorId, traceId, scenarioId } = buildQueryActorContext(tokenInfo);
+        setReferenceTraceId(res, traceId);
+
+        const isOwner = tokenInfo.pdpp_token_kind === 'owner';
+        queryContext = {
+          tokenInfo,
+          queryId,
+          actorType,
+          actorId,
+          traceId,
+          scenarioId,
+          sourceDescriptor: isOwner ? null : buildSourceDescriptor(tokenInfo.grant?.source),
+          streamId: null,
+          queryData: { query_shape: 'search_semantic' },
+        };
+        await emitQueryReceived(queryContext, req);
+
+        const { envelope, disclosureData } = await runSemanticSearch({
+          req,
+          opts,
+          tokenInfo,
+          // Owner-mode helpers mirror the lexical route's wiring.
+          resolveOwnerVisibleConnectorIds: async () => {
+            const native = resolveNativeManifest(opts);
+            if (native?.storage_binding?.connector_id) {
+              return [native.storage_binding.connector_id];
+            }
+            return await listRegisteredConnectorIds();
+          },
+          resolveOwnerScopeForConnector: (connectorId) => ({
+            public_scope: 'polyfill',
+            source: { binding_kind: 'connector', connector_id: connectorId },
+            storage_binding: { connector_id: connectorId },
+          }),
+          resolveOwnerManifestFromScope: (ownerScope) =>
+            resolveOwnerManifestFromScope(ownerScope, opts),
+          buildOwnerReadGrantForManifest: (manifest) => ({
+            streams: (manifest?.streams || []).map((s) => ({ name: s.name })),
+          }),
+          resolveGrantManifest: (info) => resolveGrantManifest(info, opts),
+        });
+
+        await emitSpineEvent({
+          event_type: 'disclosure.served',
+          trace_id: traceId,
+          scenario_id: scenarioId,
+          actor_type: actorType,
+          actor_id: actorId,
+          subject_type: 'subject',
+          subject_id: tokenInfo.subject_id || null,
+          object_type: 'query',
+          object_id: queryId,
+          status: 'succeeded',
+          grant_id: tokenInfo.grant_id || null,
+          client_id: tokenInfo.client_id || null,
+          stream_id: null,
+          token_id: req.headers.authorization?.slice(7) || null,
+          data: disclosureData,
+        });
+
+        res.json(envelope);
+      } catch (err) {
+        if (queryContext) {
+          return await rejectQuery(res, req, queryContext, err);
+        }
+        handleError(res, err);
+      }
+    });
+  }
+
   app.get('/v1/blobs/:blob_id', { contract: 'getBlob' }, requireToken, async (req, res) => {
     try {
       const blobId = decodeURIComponent(req.params.blob_id);
@@ -2670,21 +2792,55 @@ export async function startServer(opts = {}) {
     }
   }
 
-  // Lexical retrieval index startup drift-detect + backfill.
+  // Semantic retrieval experimental extension — configure the embedding
+  // backend BEFORE route registration. Truthfulness rules:
+  //   - opts.semanticRetrievalSupported === false: extension disabled.
+  //     No backend configured, no route registered, no advertisement.
+  //   - opts.semanticRetrievalBackend: explicit backend object (e.g. a
+  //     hosted-provider adapter in future tranches, or a custom stub for
+  //     tests). Installed verbatim.
+  //   - default: the deterministic local stub backend from search-semantic.js,
+  //     which runs offline with no external dependency and declares itself
+  //     honestly as `pdpp-reference-stub-embed-v0` in the advertisement.
+  // See:
+  //   openspec/changes/add-semantic-retrieval-experimental-extension/specs/semantic-retrieval/spec.md
+  //   openspec/changes/implement-semantic-retrieval-experimental-extension/specs/reference-implementation-architecture/spec.md
+  if (opts.semanticRetrievalSupported === false) {
+    configureSemanticBackend(null);
+  } else if (opts.semanticRetrievalBackend !== undefined) {
+    configureSemanticBackend(opts.semanticRetrievalBackend);
+  } else {
+    configureSemanticBackend(makeStubBackend());
+  }
+
+  // Startup retrieval backfill. Existing data should become searchable after
+  // restart without requiring re-ingest.
   //
-  // Native mode: the configured native manifest is the only known connector
-  // at startup, so backfill it directly here.
+  // Native mode: the configured native manifest is the only known connector,
+  // so backfill it directly here.
   //
   // Polyfill mode: the DB may already contain registered connectors from a
   // previous run. Those manifests need the same startup pass, otherwise an
-  // existing DB upgraded onto a lexical-search-aware server can keep an empty
-  // FTS table forever unless each connector is re-registered manually. New
-  // registrations still backfill inside registerConnector.
+  // upgraded DB can keep empty lexical / semantic indexes until each
+  // connector is re-registered manually. New registrations still backfill
+  // inside registerConnector.
   if (nativeConfig?.nativeManifest) {
     await lexicalIndexBackfillForManifest({
       manifest: nativeConfig.nativeManifest,
       log: (msg) => logger.info(msg),
     });
+    // Semantic retrieval index startup backfill parallels the lexical one.
+    // No-op when no backend is configured (semanticRetrievalSupported === false)
+    // or when no participating stream declares semantic_fields. Restart
+    // survival: the backfill sees the persisted semantic_search_meta row and
+    // skips rebuild when fingerprint/model/dimensions/distance_metric all
+    // match the live backend.
+    if (getSemanticBackend()) {
+      await semanticIndexBackfillForManifest({
+        manifest: nativeConfig.nativeManifest,
+        log: (msg) => logger.info(msg),
+      });
+    }
   } else {
     const connectorIds = await listRegisteredConnectorIds();
     for (const connectorId of connectorIds) {
@@ -2695,10 +2851,16 @@ export async function startServer(opts = {}) {
           manifest,
           log: (msg) => logger.info(msg),
         });
+        if (getSemanticBackend()) {
+          await semanticIndexBackfillForManifest({
+            manifest,
+            log: (msg) => logger.info(msg),
+          });
+        }
       } catch (err) {
         logger.warn(
           { err, connectorId },
-          'skipping lexical retrieval startup backfill for connector with invalid manifest',
+          'skipping retrieval startup backfill for connector with invalid manifest',
         );
       }
     }
@@ -2779,6 +2941,12 @@ export async function startServer(opts = {}) {
     // Lexical retrieval extension knobs — see search.js + the metadata route.
     lexicalRetrievalSupported: opts.lexicalRetrievalSupported,
     lexicalRetrievalCapability: opts.lexicalRetrievalCapability,
+    // Semantic retrieval experimental extension knobs — see search-semantic.js
+    // + the metadata route. Forwarded verbatim so test harnesses and operator
+    // configs reach both the route registration gate and the advertisement
+    // builder.
+    semanticRetrievalSupported: opts.semanticRetrievalSupported,
+    semanticRetrievalCapability: opts.semanticRetrievalCapability,
   });
   const rsServer = await rsApp.listen(requestedRsPort, bindHost);
   const rsPort = rsServer.address().port;

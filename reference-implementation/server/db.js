@@ -17,6 +17,7 @@
  */
 
 import Database from 'better-sqlite3';
+import * as sqliteVec from 'sqlite-vec';
 
 let db;
 
@@ -279,6 +280,69 @@ CREATE TABLE IF NOT EXISTS lexical_search_meta (
   updated_at          TEXT NOT NULL DEFAULT (datetime('now')),
   PRIMARY KEY(connector_id, stream)
 );
+
+-- Semantic retrieval experimental extension — drift tracking.
+-- Per-(connector, stream) fingerprint of the last-rebuilt declared
+-- semantic_fields set AND the backend identity (model_id + dimensions +
+-- distance_metric) at index time. The backfill drift detector in
+-- search-semantic.js compares these against the live backend on startup and
+-- on every connector register/update; any disagreement flips
+-- capabilities.semantic_retrieval.index_state to "stale" until a rebuild
+-- restores coverage.
+-- Spec: openspec/changes/add-semantic-retrieval-experimental-extension/specs/semantic-retrieval/spec.md
+CREATE TABLE IF NOT EXISTS semantic_search_meta (
+  connector_id        TEXT NOT NULL,
+  stream              TEXT NOT NULL,
+  fields_fingerprint  TEXT NOT NULL,
+  model_id            TEXT NOT NULL,
+  dimensions          INTEGER NOT NULL,
+  distance_metric     TEXT NOT NULL,
+  updated_at          TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY(connector_id, stream)
+);
+
+-- Maps logical semantic-index identity (connector_id, scope_key, record_key)
+-- to the vec0 rowid (sqlite-vec path only). vec0 requires an integer rowid
+-- and does not support composite text PKs; this sidecar lets us upsert by
+-- logical identity. Unused on the BLOB-flat fallback.
+-- scope_key encodes (stream, field) as JSON.stringify([stream, field]);
+-- see search-semantic.js for the helper.
+CREATE TABLE IF NOT EXISTS semantic_search_rowid (
+  connector_id  TEXT NOT NULL,
+  scope_key     TEXT NOT NULL,
+  record_key    TEXT NOT NULL,
+  rowid         INTEGER NOT NULL,
+  PRIMARY KEY(connector_id, scope_key, record_key)
+);
+
+-- BLOB-flat fallback table (used only when sqlite-vec cannot be loaded).
+-- Stores embeddings as Float32Array byte BLOBs; distance is computed in JS
+-- after the plan-scoped SELECT narrows to the authorized (connector_id,
+-- scope_key) tuples. Same grant-safety invariants as the sqlite-vec path:
+-- no unauthorized row is ever read, because the caller constructs the
+-- WHERE clause from a grant-gated plan.
+CREATE TABLE IF NOT EXISTS semantic_search_blob (
+  connector_id  TEXT NOT NULL,
+  scope_key     TEXT NOT NULL,
+  record_key    TEXT NOT NULL,
+  embedding     BLOB NOT NULL,
+  PRIMARY KEY(connector_id, scope_key, record_key)
+);
+CREATE INDEX IF NOT EXISTS idx_semantic_search_blob_plan
+  ON semantic_search_blob(connector_id, scope_key);
+
+-- Opaque-cursor snapshots for /v1/search/semantic, parallel to
+-- lexical_search_snapshots. One row per active paged search session.
+-- Stale cursors (plan change, model change, rebuild) are detected in
+-- search-semantic.js and return invalid_cursor; the row may persist
+-- until TTL eviction.
+CREATE TABLE IF NOT EXISTS semantic_search_snapshots (
+  snapshot_id   TEXT PRIMARY KEY,
+  query         TEXT NOT NULL,
+  plan_hash     TEXT NOT NULL,
+  results_json  TEXT NOT NULL,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
 `;
 
 /**
@@ -309,6 +373,39 @@ function withCachedPrepare(raw) {
   });
 }
 
+/**
+ * Try to load the `sqlite-vec` extension into `raw`. Returns:
+ *   - 'sqlite-vec' if the extension loaded and vec_version() responds
+ *   - 'blob-flat'  if loading failed for any reason (platform binary
+ *                  missing, locked-down environment, etc.)
+ *
+ * The returned kind is stamped onto the wrapped db as `db.vectorIndexKind`
+ * so `search-semantic.js` can select the matching `VectorIndex` backend
+ * without re-probing. Both backends are persistent and expose the same
+ * interface; the sqlite-vec path is strongly preferred (native SIMD,
+ * in-index scope_key filtering), and the blob-flat fallback exists so
+ * the reference still ships the extension on environments where the
+ * sqlite-vec binary can't load.
+ *
+ * Spec: openspec/changes/implement-semantic-retrieval-experimental-extension/
+ *       specs/reference-implementation-architecture/spec.md
+ *       ("The reference's default semantic index SHALL persist across
+ *        process restarts")
+ */
+function loadVectorExtension(raw) {
+  try {
+    sqliteVec.load(raw);
+    // Confirm the extension is actually usable — load() can succeed but
+    // vec_version() can still fail if the binary mismatches. Fail-closed:
+    // any error here degrades to blob-flat rather than advertising
+    // sqlite-vec and then crashing on first MATCH.
+    raw.prepare('SELECT vec_version() AS v').get();
+    return 'sqlite-vec';
+  } catch {
+    return 'blob-flat';
+  }
+}
+
 export function initDb(path = ':memory:') {
   closeDb();
   const raw = new Database(path);
@@ -324,7 +421,19 @@ export function initDb(path = ':memory:') {
     raw.pragma('cache_size = -65536');
   }
 
+  const vectorIndexKind = loadVectorExtension(raw);
+
   raw.exec(SCHEMA);
   db = withCachedPrepare(raw);
+  // Stamp the chosen vector-index backend onto the wrapped db so
+  // search-semantic.js can select without re-probing. The Proxy's
+  // get-handler falls through to Reflect for non-`prepare` properties,
+  // so direct property reads like `db.vectorIndexKind` work.
+  Object.defineProperty(raw, 'vectorIndexKind', {
+    value: vectorIndexKind,
+    writable: false,
+    enumerable: true,
+    configurable: false,
+  });
   return db;
 }

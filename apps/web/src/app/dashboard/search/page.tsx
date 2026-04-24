@@ -10,17 +10,28 @@ import {
 } from '../lib/ref-client';
 import {
   getRecord,
-  listConnectorManifests,
-  listStreams,
+  isSemanticRetrievalAdvertised,
   searchRecordsLexical,
+  searchRecordsSemantic,
   type SearchResultHit,
+  type SearchResultPage,
 } from '../lib/rs-client';
 import { summarize } from '../lib/timeline-summaries';
 import { shortConnectorName } from '../lib/timeline';
 
 export const dynamic = 'force-dynamic';
 
-const DEFAULT_MAX_RESULTS = 50;
+// Page-level per-page size for lexical retrieval — the primary, stable
+// retrieval surface that paginates. Not a hard cap; has_more/next_cursor
+// advances to subsequent pages.
+const PAGE_LIMIT = 25;
+
+// Top-N cap for the semantic-retrieval uplift. Stripe/Linear-style:
+// semantic is blended into the first page only, as a quality boost, and
+// is NOT paginated independently. This keeps the UX honest about semantic
+// being additive rather than a separate infinite-scroll surface, and
+// matches the approved design's "experimental, revisable" framing.
+const SEMANTIC_UPLIFT_LIMIT = 10;
 
 type RecordHit = {
   connectorId: string;
@@ -28,6 +39,20 @@ type RecordHit = {
   recordId: string;
   emittedAt: string;
   snippet: string;
+  // True when this row was brought in by the semantic-retrieval uplift
+  // AND did not also appear in the lexical result set. Drives the
+  // per-row "also found by semantic match (experimental)" badge. Rows
+  // that lexical retrieval found stay unbadged — the Stripe/Linear
+  // pattern of surfacing the retrieval source only when it would
+  // otherwise leave the user wondering "how did this match?".
+  semanticOnly?: boolean;
+};
+
+type RecordPage = {
+  hits: RecordHit[];
+  hasMore: boolean;
+  nextCursor: string | null;
+  prevStack: string[];
 };
 
 type SearchResult = {
@@ -35,52 +60,8 @@ type SearchResult = {
   traces: TraceSummary[];
   grants: GrantSummary[];
   runs: RunSummary[];
-  records: RecordHit[];
+  records: RecordPage;
 };
-
-function looksLikeMessagesStream(name: string): boolean {
-  const n = name.toLowerCase();
-  return (
-    n.includes('message') ||
-    n.includes('chat') ||
-    n.includes('conversation') ||
-    n.includes('thread') ||
-    n.includes('post') ||
-    n.includes('comment') ||
-    n.includes('note') ||
-    n.includes('memo')
-  );
-}
-
-/**
- * Build the streams[] filter for `scope=messages` from the owner-visible
- * stream list. The reference's RS scopes owner reads per connector, so we
- * enumerate connectors locally to discover stream names. The /v1/search
- * helper then sends the unique set as `streams[]=...&streams[]=...` and
- * the server fans out across every owner-visible connector that exposes
- * one of those names AND declares lexical_fields on it.
- *
- * Empty result here means "no owner-visible messages-like stream exists".
- * Per the owner spec, `messages` scope MUST NOT silently widen to `all`
- * in that case — the page returns zero record hits instead.
- */
-async function discoverMessagesLikeStreamNames(): Promise<string[]> {
-  const manifests = await listConnectorManifests();
-  const perConnector = await Promise.all(
-    manifests.map(async (m) => {
-      try {
-        const streams = await listStreams(m.connector_id);
-        return streams
-          .filter((s) => s.record_count > 0)
-          .filter((s) => looksLikeMessagesStream(s.name))
-          .map((s) => s.name);
-      } catch {
-        return [];
-      }
-    }),
-  );
-  return Array.from(new Set(perConnector.flat()));
-}
 
 /**
  * Map a public search_result hit into the dashboard's RecordHit shape. The
@@ -112,24 +93,99 @@ async function hitToRecordHit(hit: SearchResultHit): Promise<RecordHit> {
   };
 }
 
-async function searchRecords(query: string, scope: 'messages' | 'all'): Promise<RecordHit[]> {
-  const streams = scope === 'messages' ? await discoverMessagesLikeStreamNames() : undefined;
-  // Owner explicit: do NOT widen `messages` to `all` when the stream set is
-  // empty. Return zero record hits instead.
-  if (scope === 'messages' && (!streams || streams.length === 0)) return [];
+/**
+ * Dashboard record search. Runs the public lexical retrieval extension
+ * (the stable retrieval floor) across every owner-visible stream that
+ * declares lexical_fields. When the RS also advertises
+ * `capabilities.semantic_retrieval`, runs semantic retrieval in parallel
+ * and blends its hits in as a first-page quality uplift — Stripe/Linear
+ * style: one query box, best-effort blended retrieval, never ask the
+ * user which surface they want.
+ *
+ * Blend rules:
+ *   - Lexical is primary. Its ordering is preserved; its pagination drives
+ *     the URL's ?cursor= stack.
+ *   - Semantic is additive. Hits that the lexical set already contains
+ *     are discarded (dedup by connector/stream/record). Hits that are
+ *     semantic-only get appended after the lexical list, each tagged with
+ *     `semanticOnly: true` so the row renders with an "experimental"
+ *     badge.
+ *   - Semantic runs ONLY on the first page (cursor === null). Subsequent
+ *     pages advance lexical only; semantic is a first-impression boost,
+ *     not a second retrieval surface paginating alongside. This matches
+ *     how Linear's blended search actually behaves.
+ *   - Capability probe is fail-closed: if the RS doesn't advertise
+ *     semantic retrieval, or the probe errors, we skip semantic silently.
+ *     Dashboards should never surface backend configuration errors the
+ *     user cannot act on.
+ */
+async function searchRecords(
+  query: string,
+  cursor: string | null,
+  prevStack: string[],
+): Promise<RecordPage> {
+  const wantSemantic = cursor === null && await isSemanticRetrievalAdvertised();
 
-  const page = await searchRecordsLexical(query, { streams, limit: DEFAULT_MAX_RESULTS });
-  return Promise.all(page.data.map(hitToRecordHit));
+  const [lexicalPage, semanticPage] = await Promise.all([
+    searchRecordsLexical(query, {
+      limit: PAGE_LIMIT,
+      ...(cursor ? { cursor } : {}),
+    }),
+    wantSemantic
+      ? searchRecordsSemantic(query, { limit: SEMANTIC_UPLIFT_LIMIT }).catch(
+          // Fail-closed on any runtime error too (not just capability probe).
+          () => null as SearchResultPage | null,
+        )
+      : Promise.resolve(null),
+  ]);
+
+  const lexicalHits = await Promise.all(lexicalPage.data.map((h) => hitToRecordHit(h)));
+
+  // Only uplift if semantic ran AND returned hits.
+  let upliftHits: RecordHit[] = [];
+  if (semanticPage?.data?.length) {
+    const dedupKeys = new Set(
+      lexicalHits.map((h) => `${h.connectorId}::${h.stream}::${h.recordId}`),
+    );
+    const semanticOnly: SearchResultHit[] = semanticPage.data.filter(
+      (h: SearchResultHit) => !dedupKeys.has(`${h.connector_id}::${h.stream}::${h.record_key}`),
+    );
+    upliftHits = await Promise.all(
+      semanticOnly.map(async (h: SearchResultHit) => {
+        const base = await hitToRecordHit(h);
+        return { ...base, semanticOnly: true };
+      }),
+    );
+  }
+
+  return {
+    hits: [...lexicalHits, ...upliftHits],
+    // Pagination follows lexical only. has_more / next_cursor describe the
+    // lexical stream; the semantic uplift is first-page-only.
+    hasMore: lexicalPage.has_more,
+    nextCursor: lexicalPage.next_cursor ?? null,
+    prevStack,
+  };
+}
+
+function parsePrevStack(raw: string | undefined): string[] {
+  if (typeof raw !== 'string' || raw.length === 0) return [];
+  return raw.split(',').filter((s) => s.length > 0);
+}
+
+function encodePrevStack(stack: string[]): string {
+  return stack.join(',');
 }
 
 export default async function SearchPage({
   searchParams,
 }: {
-  searchParams: Promise<{ q?: string; scope?: string; jump?: string }>;
+  searchParams: Promise<{ q?: string; cursor?: string; prev?: string; jump?: string }>;
 }) {
-  const { q: qParam, scope: scopeParam, jump } = await searchParams;
+  const { q: qParam, cursor: cursorParam, prev: prevParam, jump } = await searchParams;
   const query = (qParam ?? '').trim();
-  const scope = scopeParam === 'all' ? 'all' : 'messages';
+  const cursor = typeof cursorParam === 'string' && cursorParam ? cursorParam : null;
+  const prevStack = parsePrevStack(prevParam);
 
   let result: SearchResult | null = null;
   let unreachable = false;
@@ -138,8 +194,9 @@ export default async function SearchPage({
     try {
       const spineResult = await refSearch(query);
 
-      // Deep-link on exact id match. jump=0 opts out.
-      if (spineResult.exact && jump !== '0') {
+      // Deep-link on exact id match. jump=0 opts out. Only on the first page;
+      // deep-links from deeper cursor pages would be confusing.
+      if (spineResult.exact && jump !== '0' && !cursor) {
         const { kind, id } = spineResult.exact;
         const target =
           kind === 'trace'
@@ -150,7 +207,7 @@ export default async function SearchPage({
         redirect(target);
       }
 
-      const records = await searchRecords(query, scope);
+      const records = await searchRecords(query, cursor, prevStack);
       result = {
         exact: spineResult.exact,
         traces: spineResult.traces,
@@ -181,7 +238,7 @@ export default async function SearchPage({
         <h1 className="text-lg font-semibold">Search</h1>
         {result && (
           <span className="text-muted-foreground text-xs">
-            {result.traces.length + result.grants.length + result.runs.length} artifacts · {result.records.length} records
+            {result.traces.length + result.grants.length + result.runs.length} artifacts · {result.records.hits.length} records{result.records.hasMore ? '+' : ''}
           </span>
         )}
       </header>
@@ -195,17 +252,6 @@ export default async function SearchPage({
           className="border-border bg-background w-full rounded border px-3 py-2 sm:max-w-md"
           autoFocus
         />
-        <label className="text-muted-foreground flex items-center gap-2 whitespace-nowrap text-xs">
-          record scope
-          <select
-            name="scope"
-            defaultValue={scope}
-            className="border-border bg-background rounded border px-2 py-1"
-          >
-            <option value="messages">messages-like</option>
-            <option value="all">all streams</option>
-          </select>
-        </label>
         <button type="submit" className="border-border hover:bg-muted/50 self-start rounded border px-3 py-2 sm:self-auto">
           search
         </button>
@@ -213,8 +259,8 @@ export default async function SearchPage({
 
       {!query ? (
         <p className="text-muted-foreground text-xs">
-          Paste a request/trace/grant/run id for a direct jump, or enter text to lexically search
-          records across streams that declare searchable fields.
+          Paste a request/trace/grant/run id for a direct jump, or enter text to search records
+          across every owner-visible stream that declares searchable fields.
         </p>
       ) : !result ? null : (
         <>
@@ -239,19 +285,26 @@ export default async function SearchPage({
 
           <section className="mb-6">
             <h2 className="text-muted-foreground mb-2 text-xs uppercase tracking-wide">
-              records ({result.records.length})
+              records ({result.records.hits.length}{result.records.hasMore ? '+' : ''})
             </h2>
-            {result.records.length === 0 ? (
+            {result.records.hits.length === 0 ? (
               <p className="text-muted-foreground text-xs">No record-content hits.</p>
             ) : (
               <ul className="divide-border divide-y border-y">
-                {result.records.map((h) => (
+                {result.records.hits.map((h) => (
                   <li key={`${h.connectorId}::${h.stream}::${h.recordId}`}>
                     <RecordRow hit={h} query={query} />
                   </li>
                 ))}
               </ul>
             )}
+            <PaginationBar
+              query={query}
+              cursor={cursor}
+              prevStack={prevStack}
+              hasMore={result.records.hasMore}
+              nextCursor={result.records.nextCursor}
+            />
           </section>
         </>
       )}
@@ -290,6 +343,64 @@ function ArtifactSection<T>({
   );
 }
 
+function PaginationBar({
+  query,
+  cursor,
+  prevStack,
+  hasMore,
+  nextCursor,
+}: {
+  query: string;
+  cursor: string | null;
+  prevStack: string[];
+  hasMore: boolean;
+  nextCursor: string | null;
+}) {
+  // Nothing to navigate to: no previous pages AND no next page.
+  if (prevStack.length === 0 && !hasMore) return null;
+
+  // Previous: pop the top of prevStack and use it as the new cursor.
+  // The popped remainder becomes the next request's prev stack.
+  let prevHref: string | null = null;
+  if (prevStack.length > 0) {
+    const newStack = prevStack.slice(0, -1);
+    const newCursor = prevStack[prevStack.length - 1];
+    const params = new URLSearchParams({ q: query });
+    if (newCursor !== 'first') params.set('cursor', newCursor);
+    if (newStack.length > 0) params.set('prev', encodePrevStack(newStack));
+    prevHref = `/dashboard/search?${params.toString()}`;
+  }
+
+  // Next: push the current cursor onto prevStack and use next_cursor as the
+  // new cursor. For the first page (cursor === null) we push a sentinel
+  // 'first' so the prev-chain back is unambiguous.
+  let nextHref: string | null = null;
+  if (hasMore && nextCursor) {
+    const newStack = [...prevStack, cursor ?? 'first'];
+    const params = new URLSearchParams({ q: query, cursor: nextCursor, prev: encodePrevStack(newStack) });
+    nextHref = `/dashboard/search?${params.toString()}`;
+  }
+
+  return (
+    <nav className="mt-3 flex items-center gap-3 text-xs" aria-label="record pagination">
+      {prevHref ? (
+        <Link href={prevHref} className="border-border hover:bg-muted/50 rounded border px-3 py-1">
+          ← Previous
+        </Link>
+      ) : (
+        <span className="text-muted-foreground px-3 py-1 opacity-50">← Previous</span>
+      )}
+      {nextHref ? (
+        <Link href={nextHref} className="border-border hover:bg-muted/50 rounded border px-3 py-1">
+          Next →
+        </Link>
+      ) : (
+        <span className="text-muted-foreground px-3 py-1 opacity-50">Next →</span>
+      )}
+    </nav>
+  );
+}
+
 function RecordRow({ hit, query }: { hit: RecordHit; query: string }) {
   const href = `/dashboard/records/${encodeURIComponent(hit.connectorId)}/${encodeURIComponent(hit.stream)}/${encodeURIComponent(hit.recordId)}`;
   return (
@@ -301,6 +412,14 @@ function RecordRow({ hit, query }: { hit: RecordHit; query: string }) {
       </span>
       <span className="break-words">
         <Highlight text={hit.snippet} query={query} />
+        {hit.semanticOnly ? (
+          <span
+            className="border-border text-muted-foreground ml-2 inline-flex items-baseline gap-1 rounded border px-1.5 py-0.5 align-baseline text-[10px] uppercase tracking-wide"
+            title="This record did not match the text lexically. Found by semantic retrieval, which is an experimental feature and may change."
+          >
+            semantic · experimental
+          </span>
+        ) : null}
       </span>
     </Link>
   );

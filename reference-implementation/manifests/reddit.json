@@ -50,7 +50,8 @@
       ],
       "query": {
         "search": {
-          "lexical_fields": ["title", "selftext"]
+          "lexical_fields": ["title", "selftext"],
+          "semantic_fields": ["title", "selftext"]
         }
       },
       "incremental": true
@@ -90,7 +91,8 @@
       ],
       "query": {
         "search": {
-          "lexical_fields": ["body", "post_title"]
+          "lexical_fields": ["body", "post_title"],
+          "semantic_fields": ["body"]
         }
       },
       "incremental": true

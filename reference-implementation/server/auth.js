@@ -120,7 +120,7 @@ function isTopLevelSearchableStringField(fieldSchema) {
  * Mirror of the records-path cursor-field compatibility check. Kept small and
  * colocated with the validator so authoring mistakes are caught at registration
  * rather than at first read. Must stay in sync with
- * reference-implementation/server/records.js::assertCursorFieldParityOrThrow.
+ * reference-implementation/server/records.js::classifyCursorFieldSqlSupport.
  */
 function isReferenceCompatibleCursorSchema(fieldSchema) {
   if (!fieldSchema || typeof fieldSchema !== 'object') return false;
@@ -1313,6 +1313,33 @@ function validateConnectorManifest(manifest = {}, code = 'invalid_request', opts
         }
       }
     }
+
+    // query.search.semantic_fields — the public semantic-retrieval experimental
+    // extension's stream-level declaration. Independent from lexical_fields:
+    // either, both, or neither MAY be declared on a stream, and a field listed
+    // in one is NOT automatically listed in the other. Same v1 shape constraints
+    // as lexical_fields: top-level scalar string fields in schema.properties;
+    // nested paths, arrays, blobs, non-string scalars, and unknown fields are
+    // rejected. See:
+    //   openspec/changes/add-semantic-retrieval-experimental-extension/specs/semantic-retrieval/spec.md
+    if (stream.query?.search?.semantic_fields !== undefined) {
+      const declared = stream.query.search.semantic_fields;
+      if (!Array.isArray(declared) || declared.length === 0) {
+        throw invalidConnectorManifest(`Stream '${stream.name}' query.search.semantic_fields must be a non-empty array of strings`, code);
+      }
+      if (declared.some((field) => !isNonEmptyString(field))) {
+        throw invalidConnectorManifest(`Stream '${stream.name}' query.search.semantic_fields entries must be non-empty strings`, code);
+      }
+      for (const fieldName of declared) {
+        if (!schemaFieldNames.has(fieldName)) {
+          throw invalidConnectorManifest(`Stream '${stream.name}' query.search.semantic_fields references unknown field '${fieldName}'`, code);
+        }
+        const fieldSchema = schemaProperties[fieldName];
+        if (fieldSchema?.type !== 'string') {
+          throw invalidConnectorManifest(`Stream '${stream.name}' query.search.semantic_fields entry '${fieldName}' must be a top-level string field; v1 does not support nested paths, arrays, or non-string types`, code);
+        }
+      }
+    }
   }
 }
 
@@ -1339,6 +1366,16 @@ export async function registerConnector(manifest) {
   // Lazy import keeps the records ↔ search ↔ auth cycle clean.
   const { lexicalIndexBackfillForManifest } = await import('./search.js');
   await lexicalIndexBackfillForManifest({ manifest });
+
+  // Semantic retrieval index drift-detect + backfill. Parallel to lexical;
+  // handles the same three cases for semantic_fields, plus the backend-
+  // identity change case (model_id/dimensions/distance_metric drift).
+  // No-op when no embedding backend is configured (semanticRetrievalSupported
+  // === false at startServer time) or when no stream declares semantic_fields.
+  const { semanticIndexBackfillForManifest, getSemanticBackend } = await import('./search-semantic.js');
+  if (getSemanticBackend()) {
+    await semanticIndexBackfillForManifest({ manifest });
+  }
   return manifest.connector_id;
 }
 

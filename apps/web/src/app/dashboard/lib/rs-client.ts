@@ -151,6 +151,10 @@ export type SearchResultHit = {
   emitted_at: string;
   matched_fields: string[];
   snippet?: { field: string; text: string };
+  // Present only on semantic-retrieval hits. Required on every /v1/search/semantic
+  // result per the approved spec; absent on lexical hits. "hybrid" is reserved
+  // for a future tranche (v1 lexical_blending is always false).
+  retrieval_mode?: 'semantic' | 'hybrid';
 };
 
 export type SearchResultPage = {
@@ -200,6 +204,81 @@ export async function searchRecordsLexical(
     throw new Error(`RS /v1/search failed (${res.status}): ${body}`);
   }
   return (await res.json()) as SearchResultPage;
+}
+
+/**
+ * Call the public semantic retrieval experimental extension at
+ * GET /v1/search/semantic with the dashboard's owner-bound bearer token.
+ * Shape mirrors searchRecordsLexical exactly — same opts, same
+ * SearchResultPage envelope — so dashboard pagination code is identical
+ * for the two retrieval surfaces.
+ *
+ * The extension is EXPERIMENTAL and UNSTABLE in v1. When the RS advertises
+ * capabilities.semantic_retrieval with stability: "experimental", callers
+ * MUST accept that breaking revisions are acceptable while that marker
+ * remains.
+ *
+ * Servers that do not configure an embedding backend return 404 here; the
+ * caller should treat that as "semantic retrieval is unavailable on this
+ * server" and fall back to searchRecordsLexical if desired. This extension
+ * is NOT a replacement for lexical retrieval (lexical remains the stable
+ * retrieval floor).
+ *
+ * `streams` narrows the cross-connector scope. Empty/undefined means
+ * "every owner-visible stream that declares semantic_fields".
+ *
+ * See: openspec/changes/add-semantic-retrieval-experimental-extension/specs/semantic-retrieval/spec.md
+ */
+export async function searchRecordsSemantic(
+  query: string,
+  opts: { streams?: string[]; limit?: number; cursor?: string } = {},
+): Promise<SearchResultPage> {
+  const token = await getOwnerToken();
+  const url = new URL(`${getRsInternalUrl()}/v1/search/semantic`);
+  url.searchParams.set('q', query);
+  if (typeof opts.limit === 'number') url.searchParams.set('limit', String(opts.limit));
+  if (typeof opts.cursor === 'string' && opts.cursor) url.searchParams.set('cursor', opts.cursor);
+  for (const s of opts.streams ?? []) {
+    if (typeof s === 'string' && s.length > 0) url.searchParams.append('streams', s);
+  }
+  let res: Response;
+  try {
+    res = await fetch(url.toString(), {
+      headers: { Authorization: `Bearer ${token}` },
+      cache: 'no-store',
+    });
+  } catch (err) {
+    throw new ReferenceServerUnreachableError(
+      `Cannot reach resource server at ${getRsInternalUrl()}`,
+      err,
+    );
+  }
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`RS /v1/search/semantic failed (${res.status}): ${body}`);
+  }
+  return (await res.json()) as SearchResultPage;
+}
+
+/**
+ * Fail-closed probe for `capabilities.semantic_retrieval.supported: true` on
+ * the RS's protected-resource metadata document. Returns false on any
+ * error (network, parse, unsupported). Stripe/Linear-style — dashboards
+ * should never surface backend configuration errors the user cannot act on.
+ *
+ * The metadata document is unauthenticated, so no token is required.
+ */
+export async function isSemanticRetrievalAdvertised(): Promise<boolean> {
+  try {
+    const res = await fetch(`${getRsInternalUrl()}/.well-known/oauth-protected-resource`, {
+      cache: 'no-store',
+    });
+    if (!res.ok) return false;
+    const body = (await res.json()) as { capabilities?: { semantic_retrieval?: { supported?: boolean } } };
+    return body.capabilities?.semantic_retrieval?.supported === true;
+  } catch {
+    return false;
+  }
 }
 
 export async function listConnectorManifests(): Promise<ConnectorManifest[]> {

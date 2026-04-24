@@ -1,0 +1,1234 @@
+/**
+ * Semantic Retrieval Experimental Extension — implementation helper.
+ *
+ * Realizes the public `semantic-retrieval` capability defined in:
+ *   openspec/changes/add-semantic-retrieval-experimental-extension/specs/semantic-retrieval/spec.md
+ *
+ * Parallel to server/search.js (lexical retrieval). The approved implementation
+ * tranche requires:
+ *   - dedicated route GET /v1/search/semantic (no mutation of /v1/search)
+ *   - text-query only (no raw vectors, no client-supplied embeddings)
+ *   - persistent default index (sqlite-vec preferred, SQLite-BLOB flat fallback)
+ *   - grant-safe snippets (verbatim substrings, never model-generated)
+ *   - capabilities.semantic_retrieval with stability: "experimental"
+ *   - retrieval_mode: "semantic" (lexical_blending: false in v1)
+ *   - restart persistence and startup backfill without re-ingest
+ *   - no silent substitution of a non-semantic fallback
+ *
+ * This module does NOT import from server/search.js. The absence of that
+ * import is the load-bearing "no silent lexical fallback" invariant — a
+ * reader can verify it with a static grep, and any future contributor who
+ * tries to add the import would be visibly crossing a module boundary.
+ *
+ * Spec: openspec/changes/implement-semantic-retrieval-experimental-extension/
+ *       specs/reference-implementation-architecture/spec.md
+ */
+
+import { randomBytes, createHash } from 'crypto';
+import { getConnectorManifest } from './auth.js';
+import { getDb } from './db.js';
+
+// ─── scope_key encoding ────────────────────────────────────────────────────
+
+/**
+ * Canonical unambiguous encoding of a (stream, field) pair. Owner directive:
+ * use JSON.stringify so a stream or field containing '|' cannot collide with
+ * a different (stream, field) pair.
+ */
+export function encodeScopeKey(stream, field) {
+  return JSON.stringify([stream, field]);
+}
+
+// ─── Stream-level declaration lookup ───────────────────────────────────────
+
+async function getStreamSemanticFields(connectorId, stream) {
+  const manifest = await getConnectorManifest(connectorId);
+  if (!manifest) return null;
+  const mStream = (manifest.streams || []).find((s) => s.name === stream);
+  const declared = mStream?.query?.search?.semantic_fields;
+  if (!Array.isArray(declared) || declared.length === 0) return null;
+  return declared;
+}
+
+// ─── Embedding backend (pluggable; default deterministic stub) ─────────────
+
+/**
+ * Deterministic hash-based embedding stub. Explicit promises:
+ *   - Determinism: embedQuery(t) byte-equal across invocations
+ *   - Distinctness: distinct inputs produce distinct vectors (collision
+ *     negligible for test corpora)
+ *   - Reflexive exact-match: embedQuery(t) === embedDocument(t) exactly, so
+ *     a query whose text is identical to a stored field value ranks that
+ *     record at distance 0 (the top hit)
+ *
+ * Explicit NON-promises (tests MUST NOT assume these):
+ *   - paraphrase / synonymy / multilingual / conceptual similarity
+ *   - any ordering beyond "exact-match ranks first"
+ *
+ * Model identifier `pdpp-reference-stub-embed-v0` deliberately names itself
+ * as a stub and does NOT impersonate any hosted provider.
+ */
+export function makeStubBackend({ dimensions = 64 } = {}) {
+  function hashEmbed(text) {
+    // FNV-1a-style mix over sha256 digest slices → Float32Array[dimensions].
+    // Deterministic and reflexive: embedQuery and embedDocument use the same
+    // function, so the query "hello" and the document "hello" produce the
+    // exact same vector (distance 0 under cosine).
+    const vec = new Float32Array(dimensions);
+    if (typeof text !== 'string' || text.length === 0) return vec;
+    const digest = createHash('sha512').update(text, 'utf8').digest();
+    for (let i = 0; i < dimensions; i++) {
+      const byte = digest[i % digest.length];
+      // Map each byte to [-1, 1] range; normalize at the end.
+      vec[i] = (byte / 127.5) - 1.0;
+    }
+    // Normalize so cosine distance works cleanly.
+    let norm = 0;
+    for (let i = 0; i < dimensions; i++) norm += vec[i] * vec[i];
+    norm = Math.sqrt(norm) || 1;
+    for (let i = 0; i < dimensions; i++) vec[i] /= norm;
+    return vec;
+  }
+  return {
+    model: () => 'pdpp-reference-stub-embed-v0',
+    dimensions: () => dimensions,
+    distanceMetric: () => 'cosine',
+    embedQuery: async (t) => hashEmbed(t),
+    embedDocument: async (t) => hashEmbed(t),
+    available: () => true,
+    languageBias: () => null,
+  };
+}
+
+// Module-scoped backend, configured by configureSemanticBackend() or left
+// null (extension is not advertised).
+let backend = null;
+
+/**
+ * Configure or clear the module-scoped embedding backend. Pass null to
+ * disable the extension. The default is the deterministic local stub; a
+ * hosted provider adapter can be installed by passing an object that
+ * implements the EmbeddingBackend interface.
+ *
+ * When no backend is configured:
+ *   - capabilities.semantic_retrieval is NOT advertised with supported: true
+ *   - GET /v1/search/semantic is not registered
+ *   - the vector index is never populated
+ */
+export function configureSemanticBackend(b) {
+  backend = b;
+}
+
+export function getSemanticBackend() {
+  return backend;
+}
+
+// ─── Vector index interface + backends ─────────────────────────────────────
+
+/**
+ * Persistent SQLite-backed flat vector store for environments where
+ * sqlite-vec cannot be loaded. Stores embeddings as BLOBs in a regular
+ * SQLite table; distance is computed in JavaScript after the WHERE clause
+ * narrows to the plan-scoped (connector_id, scope_key) tuples.
+ *
+ * Same interface surface and same persistence guarantees as the sqlite-vec
+ * backend. Slower throughput at large N, but correct and grant-safe.
+ */
+function makeBlobFlatIndex({ db, dimensions, distanceMetric }) {
+  const byteLen = dimensions * 4;
+  function distance(a, b) {
+    if (distanceMetric === 'cosine') {
+      // Vectors are pre-normalized by the stub; for hosted backends we
+      // still fall back to a dot-product equivalent which is fine because
+      // both stored and query vectors go through the same backend.
+      let dot = 0;
+      for (let i = 0; i < dimensions; i++) dot += a[i] * b[i];
+      return 1 - dot;
+    }
+    if (distanceMetric === 'dot') {
+      let dot = 0;
+      for (let i = 0; i < dimensions; i++) dot += a[i] * b[i];
+      return -dot;
+    }
+    // l2
+    let sum = 0;
+    for (let i = 0; i < dimensions; i++) {
+      const d = a[i] - b[i];
+      sum += d * d;
+    }
+    return Math.sqrt(sum);
+  }
+
+  return {
+    kind: 'blob-flat',
+    async upsert({ connectorId, scopeKey, recordKey, vector }) {
+      const buf = Buffer.from(vector.buffer, vector.byteOffset, vector.byteLength);
+      db.prepare(`
+        INSERT INTO semantic_search_blob(connector_id, scope_key, record_key, embedding)
+        VALUES(?, ?, ?, ?)
+        ON CONFLICT(connector_id, scope_key, record_key) DO UPDATE SET
+          embedding = excluded.embedding
+      `).run(connectorId, scopeKey, recordKey, buf);
+    },
+    async deleteRecord({ connectorId, stream, recordKey }) {
+      // scope_key contains stream as the first JSON array element. Use
+      // a LIKE match anchored on the opening characters of scope_key's
+      // JSON encoding to narrow before comparing the stream name exactly
+      // against the decoded scope_key.
+      const streamPrefix = `${JSON.stringify([stream]).slice(0, -1)},`; // e.g. '["posts",'
+      db.prepare(`
+        DELETE FROM semantic_search_blob
+        WHERE connector_id = ?
+          AND record_key = ?
+          AND scope_key LIKE ?
+      `).run(connectorId, recordKey, `${streamPrefix}%`);
+    },
+    async deleteByConnectorStream({ connectorId, stream }) {
+      const streamPrefix = `${JSON.stringify([stream]).slice(0, -1)},`;
+      db.prepare(`
+        DELETE FROM semantic_search_blob
+        WHERE connector_id = ?
+          AND scope_key LIKE ?
+      `).run(connectorId, `${streamPrefix}%`);
+    },
+    async deleteByConnectorScope({ connectorId, scopeKey }) {
+      db.prepare(`
+        DELETE FROM semantic_search_blob
+        WHERE connector_id = ? AND scope_key = ?
+      `).run(connectorId, scopeKey);
+    },
+    async deleteByConnector({ connectorId }) {
+      db.prepare(`
+        DELETE FROM semantic_search_blob
+        WHERE connector_id = ?
+      `).run(connectorId);
+    },
+    async queryPerConnector({ connectorId, scopeKeys, queryVector, limit }) {
+      if (!Array.isArray(scopeKeys) || scopeKeys.length === 0) return [];
+      const placeholders = scopeKeys.map(() => '?').join(',');
+      const rows = db.prepare(`
+        SELECT scope_key, record_key, embedding
+        FROM semantic_search_blob
+        WHERE connector_id = ?
+          AND scope_key IN (${placeholders})
+      `).all(connectorId, ...scopeKeys);
+      const scored = [];
+      for (const row of rows) {
+        if (!row.embedding || row.embedding.length !== byteLen) continue;
+        const buf = Buffer.isBuffer(row.embedding)
+          ? row.embedding
+          : Buffer.from(row.embedding);
+        const storedVec = new Float32Array(buf.buffer, buf.byteOffset, dimensions);
+        const d = distance(queryVector, storedVec);
+        scored.push({
+          connectorId,
+          scopeKey: row.scope_key,
+          recordKey: row.record_key,
+          distance: d,
+        });
+      }
+      scored.sort(compareHits);
+      return scored.slice(0, limit);
+    },
+    countAll() {
+      const row = db.prepare('SELECT COUNT(*) AS n FROM semantic_search_blob').get();
+      return Number(row?.n || 0);
+    },
+    countByConnectorScope(connectorId, scopeKey) {
+      const row = db.prepare(`
+        SELECT COUNT(*) AS n FROM semantic_search_blob
+        WHERE connector_id = ? AND scope_key = ?
+      `).get(connectorId, scopeKey);
+      return Number(row?.n || 0);
+    },
+  };
+}
+
+/**
+ * sqlite-vec-backed persistent vector index. Preferred when the extension
+ * can be loaded (see db.js loadVectorExtension). Stores vectors in a vec0
+ * virtual table; scope_key is a metadata column filtered INSIDE the KNN
+ * query (not post-filtered). connector_id is a PARTITION KEY, so owner
+ * fan-out is one query per authorized connector, merged in JS.
+ *
+ * vec0 uses an integer rowid; we maintain semantic_search_rowid as a
+ * sidecar mapping (connector_id, scope_key, record_key) → rowid so we can
+ * upsert by logical identity.
+ */
+function makeSqliteVecIndex({ db, dimensions, distanceMetric }) {
+  // Bootstrap the vec0 virtual table lazily on first use. Dimensions and
+  // distance_metric are baked into the schema; a change in either is a
+  // drift signal that forces a full rebuild (see
+  // ensureVecSchemaMatchesBackend below).
+  function ensureTable() {
+    const existing = db.prepare(`
+      SELECT sql FROM sqlite_master
+      WHERE type = 'table' AND name = 'semantic_search_vec'
+    `).get();
+    if (existing) return;
+    db.prepare(`
+      CREATE VIRTUAL TABLE semantic_search_vec USING vec0(
+        connector_id TEXT PARTITION KEY,
+        scope_key    TEXT,
+        +record_key  TEXT,
+        embedding    FLOAT[${dimensions}] distance_metric=${distanceMetric}
+      )
+    `).run();
+  }
+  ensureTable();
+
+  return {
+    kind: 'sqlite-vec',
+    async upsert({ connectorId, scopeKey, recordKey, vector }) {
+      const buf = Buffer.from(vector.buffer, vector.byteOffset, vector.byteLength);
+      const existing = db.prepare(`
+        SELECT rowid FROM semantic_search_rowid
+        WHERE connector_id = ? AND scope_key = ? AND record_key = ?
+      `).get(connectorId, scopeKey, recordKey);
+      if (existing) {
+        db.prepare(`
+          UPDATE semantic_search_vec SET embedding = ? WHERE rowid = ?
+        `).run(buf, existing.rowid);
+        return;
+      }
+      const info = db.prepare(`
+        INSERT INTO semantic_search_vec(connector_id, scope_key, record_key, embedding)
+        VALUES(?, ?, ?, ?)
+      `).run(connectorId, scopeKey, recordKey, buf);
+      db.prepare(`
+        INSERT INTO semantic_search_rowid(connector_id, scope_key, record_key, rowid)
+        VALUES(?, ?, ?, ?)
+      `).run(connectorId, scopeKey, recordKey, Number(info.lastInsertRowid));
+    },
+    async deleteRecord({ connectorId, stream, recordKey }) {
+      // Any scope_key whose first array element is stream.
+      const streamPrefix = `${JSON.stringify([stream]).slice(0, -1)},`;
+      const rows = db.prepare(`
+        SELECT rowid, scope_key FROM semantic_search_rowid
+        WHERE connector_id = ? AND record_key = ? AND scope_key LIKE ?
+      `).all(connectorId, recordKey, `${streamPrefix}%`);
+      for (const row of rows) {
+        db.prepare('DELETE FROM semantic_search_vec WHERE rowid = ?').run(row.rowid);
+        db.prepare(`
+          DELETE FROM semantic_search_rowid
+          WHERE connector_id = ? AND scope_key = ? AND record_key = ?
+        `).run(connectorId, row.scope_key, recordKey);
+      }
+    },
+    async deleteByConnectorStream({ connectorId, stream }) {
+      const streamPrefix = `${JSON.stringify([stream]).slice(0, -1)},`;
+      const rows = db.prepare(`
+        SELECT rowid FROM semantic_search_rowid
+        WHERE connector_id = ? AND scope_key LIKE ?
+      `).all(connectorId, `${streamPrefix}%`);
+      for (const row of rows) {
+        db.prepare('DELETE FROM semantic_search_vec WHERE rowid = ?').run(row.rowid);
+      }
+      db.prepare(`
+        DELETE FROM semantic_search_rowid
+        WHERE connector_id = ? AND scope_key LIKE ?
+      `).run(connectorId, `${streamPrefix}%`);
+    },
+    async deleteByConnectorScope({ connectorId, scopeKey }) {
+      const rows = db.prepare(`
+        SELECT rowid FROM semantic_search_rowid
+        WHERE connector_id = ? AND scope_key = ?
+      `).all(connectorId, scopeKey);
+      for (const row of rows) {
+        db.prepare('DELETE FROM semantic_search_vec WHERE rowid = ?').run(row.rowid);
+      }
+      db.prepare(`
+        DELETE FROM semantic_search_rowid
+        WHERE connector_id = ? AND scope_key = ?
+      `).run(connectorId, scopeKey);
+    },
+    async deleteByConnector({ connectorId }) {
+      const rows = db.prepare(`
+        SELECT rowid FROM semantic_search_rowid WHERE connector_id = ?
+      `).all(connectorId);
+      for (const row of rows) {
+        db.prepare('DELETE FROM semantic_search_vec WHERE rowid = ?').run(row.rowid);
+      }
+      db.prepare('DELETE FROM semantic_search_rowid WHERE connector_id = ?').run(connectorId);
+    },
+    async queryPerConnector({ connectorId, scopeKeys, queryVector, limit }) {
+      if (!Array.isArray(scopeKeys) || scopeKeys.length === 0) return [];
+      const placeholders = scopeKeys.map(() => '?').join(',');
+      const buf = Buffer.from(queryVector.buffer, queryVector.byteOffset, queryVector.byteLength);
+      const rows = db.prepare(`
+        SELECT connector_id, scope_key, record_key, distance
+        FROM semantic_search_vec
+        WHERE embedding MATCH ?
+          AND connector_id = ?
+          AND scope_key IN (${placeholders})
+        ORDER BY distance LIMIT ?
+      `).all(buf, connectorId, ...scopeKeys, limit);
+      const hits = rows.map((r) => ({
+        connectorId: r.connector_id,
+        scopeKey: r.scope_key,
+        recordKey: r.record_key,
+        distance: r.distance,
+      }));
+      // vec0 orders by distance already; apply the secondary total-order
+      // tie-breakers here so merge-in-app is deterministic.
+      hits.sort(compareHits);
+      return hits;
+    },
+    countAll() {
+      const row = db.prepare('SELECT COUNT(*) AS n FROM semantic_search_rowid').get();
+      return Number(row?.n || 0);
+    },
+    countByConnectorScope(connectorId, scopeKey) {
+      const row = db.prepare(`
+        SELECT COUNT(*) AS n FROM semantic_search_rowid
+        WHERE connector_id = ? AND scope_key = ?
+      `).get(connectorId, scopeKey);
+      return Number(row?.n || 0);
+    },
+  };
+}
+
+/**
+ * Total order for merged hits. Owner directive: sort by distance, then
+ * connector_id, then scope_key, then record_key. Drives page slicing,
+ * has_more, and cursor round-trips.
+ */
+function compareHits(a, b) {
+  if (a.distance !== b.distance) return a.distance - b.distance;
+  if (a.connectorId !== b.connectorId) return a.connectorId < b.connectorId ? -1 : 1;
+  if (a.scopeKey !== b.scopeKey) return a.scopeKey < b.scopeKey ? -1 : 1;
+  if (a.recordKey !== b.recordKey) return a.recordKey < b.recordKey ? -1 : 1;
+  return 0;
+}
+
+// Cached vector index handle keyed on the current db instance. getDb()
+// returns a fresh Proxy wrapper after every initDb(), so when tests call
+// closeDb()+initDb() between cases the cache naturally invalidates (the
+// old handle's `db` reference is no longer current). This replaces an
+// earlier module-scoped `let vectorIndex = null` that survived across
+// DB reopens and triggered "database connection is not open" crashes.
+let cachedIndex = null;
+let cachedIndexDb = null;
+
+function ensureVectorIndex() {
+  if (!backend) return null;
+  const db = getDb();
+  if (!db) return null;
+  if (cachedIndex && cachedIndexDb === db) return cachedIndex;
+  const kind = db.vectorIndexKind || 'blob-flat';
+  const dimensions = backend.dimensions();
+  const distanceMetric = backend.distanceMetric();
+  if (kind === 'sqlite-vec') {
+    cachedIndex = makeSqliteVecIndex({ db, dimensions, distanceMetric });
+  } else {
+    cachedIndex = makeBlobFlatIndex({ db, dimensions, distanceMetric });
+  }
+  cachedIndexDb = db;
+  return cachedIndex;
+}
+
+/**
+ * Clear the module-scoped vector index handle. Kept as a named test helper
+ * even though the db-identity check above handles normal test lifecycles —
+ * callers that swap the backend without touching the db (model_id change in
+ * place) still need a way to force reconstruction.
+ */
+export function resetVectorIndexForTests() {
+  cachedIndex = null;
+  cachedIndexDb = null;
+}
+
+// ─── Index maintenance (called from records.js) ────────────────────────────
+
+export async function semanticIndexUpsert({ connectorId, stream, recordKey, data }) {
+  if (!backend) return;
+  const declared = await getStreamSemanticFields(connectorId, stream);
+  if (!declared) return;
+  const index = ensureVectorIndex();
+  if (!index) return;
+  for (const field of declared) {
+    const value = data?.[field];
+    if (typeof value !== 'string' || value.length === 0) {
+      // Remove any stale embedding for this field if the new value is empty.
+      await index.deleteByConnectorScope({
+        connectorId,
+        scopeKey: encodeScopeKey(stream, field),
+      });
+      continue;
+    }
+    const vector = await backend.embedDocument(value);
+    await index.upsert({
+      connectorId,
+      scopeKey: encodeScopeKey(stream, field),
+      recordKey,
+      vector,
+    });
+  }
+}
+
+export async function semanticIndexDelete({ connectorId, stream, recordKey }) {
+  if (!backend) return;
+  const index = ensureVectorIndex();
+  if (!index) return;
+  await index.deleteRecord({ connectorId, stream, recordKey });
+}
+
+export async function semanticIndexDeleteByConnectorStream({ connectorId, stream }) {
+  if (!backend) return;
+  const index = ensureVectorIndex();
+  if (!index) return;
+  await index.deleteByConnectorStream({ connectorId, stream });
+}
+
+// ─── Drift-detect + backfill ───────────────────────────────────────────────
+
+function fingerprintSemanticFields(declaredFields) {
+  const unique = Array.from(new Set(declaredFields));
+  unique.sort();
+  return JSON.stringify(unique);
+}
+
+async function rebuildSemanticIndexForStream({ connectorId, stream, declaredFields }) {
+  const index = ensureVectorIndex();
+  if (!index || !backend) return;
+  await index.deleteByConnectorStream({ connectorId, stream });
+
+  const db = getDb();
+  const PAGE = 500;
+  let offset = 0;
+  for (;;) {
+    const rows = db.prepare(`
+      SELECT record_key, record_json
+      FROM records
+      WHERE connector_id = ?
+        AND stream = ?
+        AND deleted = 0
+      ORDER BY id ASC
+      LIMIT ? OFFSET ?
+    `).all(connectorId, stream, PAGE, offset);
+    if (rows.length === 0) break;
+    for (const row of rows) {
+      let data;
+      try {
+        data = row.record_json ? JSON.parse(row.record_json) : null;
+      } catch {
+        continue;
+      }
+      for (const field of declaredFields) {
+        const value = data?.[field];
+        if (typeof value !== 'string' || value.length === 0) continue;
+        const vector = await backend.embedDocument(value);
+        await index.upsert({
+          connectorId,
+          scopeKey: encodeScopeKey(stream, field),
+          recordKey: row.record_key,
+          vector,
+        });
+      }
+    }
+    if (rows.length < PAGE) break;
+    offset += rows.length;
+  }
+}
+
+/**
+ * Drift-detect + rebuild the semantic index for every participating stream
+ * of a manifest. Parallel to lexicalIndexBackfillForManifest.
+ *
+ * Drift signals:
+ *   1. fields_fingerprint mismatch (authoritative). Catches same-cardinality
+ *      swaps like ['title'] → ['selftext'].
+ *   2. model_id / dimensions / distance_metric mismatch (backend identity).
+ *      Any change invalidates every row — the stored vectors were produced
+ *      by a different model.
+ *   3. Row-count band for streams whose fingerprint already matches.
+ *
+ * Streams that previously participated but no longer declare semantic_fields
+ * have their stale index rows + meta dropped. Same pattern as lexical.
+ *
+ * Called from:
+ *   - startServer (native mode)
+ *   - registerConnector (polyfill mode)
+ */
+export async function semanticIndexBackfillForManifest({ manifest, log = () => {} } = {}) {
+  if (!manifest?.connector_id || !Array.isArray(manifest?.streams)) return;
+  if (!backend) return;
+  const connectorId = manifest.connector_id;
+  const db = getDb();
+  const index = ensureVectorIndex();
+  if (!index) return;
+
+  const currentModel = backend.model();
+  const currentDims = backend.dimensions();
+  const currentMetric = backend.distanceMetric();
+
+  const visitedStreams = new Set();
+
+  for (const mStream of manifest.streams) {
+    const stream = mStream?.name;
+    if (typeof stream !== 'string' || stream.length === 0) continue;
+    visitedStreams.add(stream);
+
+    const declaredFields = mStream?.query?.search?.semantic_fields;
+    const isParticipating = Array.isArray(declaredFields) && declaredFields.length > 0;
+
+    if (!isParticipating) {
+      const metaRows = db.prepare(`
+        SELECT 1 FROM semantic_search_meta
+        WHERE connector_id = ? AND stream = ?
+      `).all(connectorId, stream);
+      if (metaRows.length > 0) {
+        log(`[PDPP] Semantic index: stream='${stream}' connector='${connectorId}' ` +
+            `no longer declares semantic_fields — dropping stale index + meta`);
+        await index.deleteByConnectorStream({ connectorId, stream });
+        db.prepare(`
+          DELETE FROM semantic_search_meta
+          WHERE connector_id = ? AND stream = ?
+        `).run(connectorId, stream);
+      }
+      continue;
+    }
+
+    const newFingerprint = fingerprintSemanticFields(declaredFields);
+    const metaRow = db.prepare(`
+      SELECT fields_fingerprint, model_id, dimensions, distance_metric
+      FROM semantic_search_meta
+      WHERE connector_id = ? AND stream = ?
+    `).get(connectorId, stream);
+
+    const fingerprintChanged = !metaRow || metaRow.fields_fingerprint !== newFingerprint;
+    const backendChanged = !metaRow
+      || metaRow.model_id !== currentModel
+      || Number(metaRow.dimensions) !== currentDims
+      || metaRow.distance_metric !== currentMetric;
+
+    let needsRebuild = fingerprintChanged || backendChanged;
+
+    if (!needsRebuild) {
+      // Row-count band check.
+      const recordCountRow = db.prepare(`
+        SELECT COUNT(*) AS n
+        FROM records
+        WHERE connector_id = ? AND stream = ? AND deleted = 0
+      `).get(connectorId, stream);
+      const recordCount = Number(recordCountRow?.n || 0);
+
+      // Index count across all declared (stream, field) scope_keys.
+      let indexCount = 0;
+      for (const field of declaredFields) {
+        indexCount += index.countByConnectorScope(connectorId, encodeScopeKey(stream, field));
+      }
+      const upperBound = recordCount * declaredFields.length;
+      const inSync =
+        recordCount === 0
+          ? indexCount === 0
+          : indexCount > 0 && indexCount <= upperBound;
+      needsRebuild = !inSync;
+      if (needsRebuild) {
+        log(`[PDPP] Semantic index drift for ${connectorId} stream='${stream}' ` +
+            `(records=${recordCount}, index=${indexCount}, expected ≤ ${upperBound}) — rebuilding`);
+      }
+    } else if (fingerprintChanged) {
+      log(`[PDPP] Semantic index field-set change for ${connectorId} stream='${stream}' ` +
+          `(was=${metaRow?.fields_fingerprint ?? 'null'}, now=${newFingerprint}) — rebuilding`);
+    } else if (backendChanged) {
+      log(`[PDPP] Semantic index backend identity changed for ${connectorId} stream='${stream}' ` +
+          `(model=${metaRow?.model_id ?? 'null'}→${currentModel}, ` +
+          `dims=${metaRow?.dimensions ?? 'null'}→${currentDims}, ` +
+          `metric=${metaRow?.distance_metric ?? 'null'}→${currentMetric}) — rebuilding`);
+    }
+
+    if (!needsRebuild) continue;
+
+    await rebuildSemanticIndexForStream({ connectorId, stream, declaredFields });
+
+    db.prepare(`
+      INSERT INTO semantic_search_meta(connector_id, stream, fields_fingerprint, model_id, dimensions, distance_metric, updated_at)
+      VALUES(?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(connector_id, stream) DO UPDATE SET
+        fields_fingerprint = excluded.fields_fingerprint,
+        model_id           = excluded.model_id,
+        dimensions         = excluded.dimensions,
+        distance_metric    = excluded.distance_metric,
+        updated_at         = excluded.updated_at
+    `).run(connectorId, stream, newFingerprint, currentModel, currentDims, currentMetric, new Date().toISOString());
+  }
+
+  // Orphan meta rows: streams that previously had meta but are gone from the
+  // manifest entirely.
+  const orphanRows = db.prepare(`
+    SELECT stream FROM semantic_search_meta WHERE connector_id = ?
+  `).all(connectorId);
+  for (const row of orphanRows) {
+    if (visitedStreams.has(row.stream)) continue;
+    log(`[PDPP] Semantic index: stream='${row.stream}' connector='${connectorId}' ` +
+        `no longer in manifest — dropping stale index + meta`);
+    await index.deleteByConnectorStream({ connectorId, stream: row.stream });
+    db.prepare(`
+      DELETE FROM semantic_search_meta
+      WHERE connector_id = ? AND stream = ?
+    `).run(connectorId, row.stream);
+  }
+}
+
+/**
+ * Compute the honest index_state for the advertisement. Walks
+ * semantic_search_meta for the configured connectors and compares the
+ * persisted (model_id, dimensions, distance_metric) against the currently
+ * configured backend. Any mismatch ⇒ stale.
+ *
+ * Returns 'built' | 'building' | 'stale'. In v1 we never report 'building'
+ * asynchronously (backfill is synchronous in the boot path and blocks
+ * startup); that value is reserved for a future concurrent-rebuild path.
+ */
+export function computeIndexState() {
+  if (!backend) return 'stale';
+  const db = getDb();
+  const rows = db.prepare(`
+    SELECT model_id, dimensions, distance_metric
+    FROM semantic_search_meta
+  `).all();
+  // No meta rows means nothing has been backfilled yet. If any participating
+  // manifest exists, backfill hasn't run → stale. If no manifests declare
+  // semantic_fields at all, there's nothing to index and "built" is honest.
+  // We can't cheaply tell these apart here, but the boot path always calls
+  // semanticIndexBackfillForManifest before advertising, so "built" is the
+  // right steady-state answer when meta is empty.
+  if (rows.length === 0) return 'built';
+  const currentModel = backend.model();
+  const currentDims = backend.dimensions();
+  const currentMetric = backend.distanceMetric();
+  for (const row of rows) {
+    if (
+      row.model_id !== currentModel
+      || Number(row.dimensions) !== currentDims
+      || row.distance_metric !== currentMetric
+    ) {
+      return 'stale';
+    }
+  }
+  return 'built';
+}
+
+// ─── Public-route entry point ──────────────────────────────────────────────
+
+const ALLOWED_PARAMS = new Set(['q', 'limit', 'cursor', 'streams', 'streams[]']);
+
+// Parameters that MUST be rejected explicitly (not silently ignored). Some
+// of these overlap with "anything not in ALLOWED_PARAMS" — the explicit list
+// makes the rejection intentional and visible in source.
+const FORBIDDEN_PARAMS = new Set([
+  'vector', 'embedding', 'embed',
+  'model', 'model_id', 'model_family',
+  'rank', 'boost', 'weights', 'blend',
+  'connector_id',
+  'fields', 'expand', 'expand[]', 'expand_limit', 'expand_limit[]',
+  'order', 'sort', 'mode',
+]);
+
+export function parseSemanticSearchParams(query) {
+  for (const key of Object.keys(query)) {
+    // Anything filter[...]-shaped is a record-listing concept and is rejected.
+    if (key.startsWith('filter[') || key.startsWith('filter.')) {
+      const err = new Error(`Unsupported query parameter: ${key}`);
+      err.code = 'invalid_request';
+      err.param = key;
+      throw err;
+    }
+    if (FORBIDDEN_PARAMS.has(key)) {
+      const err = new Error(`Unsupported query parameter: ${key}`);
+      err.code = 'invalid_request';
+      err.param = key;
+      throw err;
+    }
+    if (!ALLOWED_PARAMS.has(key)) {
+      const err = new Error(`Unsupported query parameter: ${key}`);
+      err.code = 'invalid_request';
+      err.param = key;
+      throw err;
+    }
+  }
+  const q = typeof query.q === 'string' ? query.q : '';
+  if (!q) {
+    const err = new Error('q is required');
+    err.code = 'invalid_request';
+    err.param = 'q';
+    throw err;
+  }
+  const limit = clampLimit(query.limit);
+  const cursor = typeof query.cursor === 'string' && query.cursor ? query.cursor : null;
+  const streams = normalizeStreamsParam(query.streams ?? query['streams[]']);
+  return { q, limit, cursor, streams };
+}
+
+function clampLimit(raw) {
+  if (raw === undefined || raw === null || raw === '') return 25;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 1) return 25;
+  return Math.min(Math.floor(n), 100);
+}
+
+function normalizeStreamsParam(raw) {
+  if (raw === undefined || raw === null) return null;
+  const arr = Array.isArray(raw) ? raw : [raw];
+  const cleaned = arr
+    .map((v) => (typeof v === 'string' ? v.trim() : ''))
+    .filter((v) => v.length > 0);
+  return cleaned.length === 0 ? null : cleaned;
+}
+
+/**
+ * Build a per-connector plan: for each participating stream in the manifest
+ * that is in the grant and has at least one (declared semantic_fields ∩
+ * grant projection) field, include an entry with the scope_keys.
+ *
+ * Field gating happens HERE — before any embedding or index call. There is
+ * no code path that asks the index about an unauthorized or undeclared
+ * field. This is the structural realization of the spec's "no embed
+ * everything, filter later" rule.
+ */
+export function buildSemanticSearchPlanForGrant({ manifest, grant, streamsFilter }) {
+  if (!manifest?.streams || !grant?.streams) return [];
+  const plan = [];
+  for (const mStream of manifest.streams) {
+    const declared = mStream?.query?.search?.semantic_fields;
+    if (!Array.isArray(declared) || declared.length === 0) continue;
+    if (streamsFilter && !streamsFilter.includes(mStream.name)) continue;
+
+    const streamGrant = grant.streams.find((s) => s.name === mStream.name);
+    if (!streamGrant) continue;
+
+    const grantedFields = Array.isArray(streamGrant.fields) && streamGrant.fields.length > 0
+      ? new Set(streamGrant.fields)
+      : null;
+    const searchable = grantedFields
+      ? declared.filter((f) => grantedFields.has(f))
+      : declared.slice();
+    if (searchable.length === 0) continue;
+
+    plan.push({
+      streamName: mStream.name,
+      searchableFields: searchable,
+      scopeKeys: searchable.map((f) => encodeScopeKey(mStream.name, f)),
+    });
+  }
+  return plan;
+}
+
+function resolveSemanticRetrievalAdvertisement(opts) {
+  if (opts?.semanticRetrievalCapability) return opts.semanticRetrievalCapability;
+  if (opts?.semanticRetrievalSupported === false) return null;
+  if (!backend) return null;
+  return {
+    supported: true,
+    cross_stream: true,
+    default_limit: 25,
+    max_limit: 100,
+  };
+}
+
+/**
+ * The single helper the GET /v1/search/semantic route delegates to.
+ */
+export async function runSemanticSearch({
+  req,
+  opts,
+  tokenInfo,
+  resolveOwnerVisibleConnectorIds,
+  resolveOwnerScopeForConnector,
+  resolveOwnerManifestFromScope,
+  buildOwnerReadGrantForManifest,
+  resolveGrantManifest,
+}) {
+  if (!backend) {
+    // Route registration should prevent reaching this helper when no backend
+    // is configured, but defend in depth.
+    const err = new Error('semantic retrieval is not configured');
+    err.code = 'not_found';
+    throw err;
+  }
+
+  const params = parseSemanticSearchParams(req.query);
+
+  const advertisement = resolveSemanticRetrievalAdvertisement(opts);
+  if (
+    advertisement
+    && advertisement.cross_stream === false
+    && (!params.streams || params.streams.length === 0)
+  ) {
+    const err = new Error('streams[] is required when cross_stream search is disabled');
+    err.code = 'invalid_request';
+    err.param = 'streams';
+    throw err;
+  }
+
+  const isOwner = tokenInfo.pdpp_token_kind === 'owner';
+
+  // Per-mode planning (mirrors runLexicalSearch).
+  let perConnectorPlans;
+  if (isOwner) {
+    const connectorIds = await resolveOwnerVisibleConnectorIds();
+    perConnectorPlans = [];
+    for (const connectorId of connectorIds) {
+      let manifest;
+      try {
+        const ownerScope = resolveOwnerScopeForConnector(connectorId);
+        const resolved = await resolveOwnerManifestFromScope(ownerScope);
+        manifest = resolved.manifest;
+      } catch {
+        continue;
+      }
+      const grant = buildOwnerReadGrantForManifest(manifest);
+      const planEntries = buildSemanticSearchPlanForGrant({
+        manifest,
+        grant,
+        streamsFilter: params.streams,
+      });
+      if (planEntries.length === 0) continue;
+      perConnectorPlans.push({ connectorId, manifest, grant, planEntries });
+    }
+  } else {
+    const grantResolved = await resolveGrantManifest(tokenInfo);
+    const manifest = grantResolved.manifest;
+    const grant = tokenInfo.grant;
+    const connectorId = grant?.source?.connector_id ?? null;
+
+    if (params.streams) {
+      for (const s of params.streams) {
+        const inGrant = (grant?.streams || []).some((g) => g.name === s);
+        if (!inGrant) {
+          const err = new Error(`Stream '${s}' not in grant`);
+          err.code = 'grant_stream_not_allowed';
+          throw err;
+        }
+      }
+    }
+
+    const planEntries = buildSemanticSearchPlanForGrant({
+      manifest,
+      grant,
+      streamsFilter: params.streams,
+    });
+    perConnectorPlans = planEntries.length === 0
+      ? []
+      : [{ connectorId, manifest, grant, planEntries }];
+  }
+
+  // Resolve cursor → snapshot.
+  let snapshotId;
+  let snapshot;
+  if (params.cursor) {
+    const decoded = decodeSemanticSearchCursor(params.cursor);
+    if (!decoded) {
+      const err = new Error('Cursor is malformed');
+      err.code = 'invalid_cursor';
+      throw err;
+    }
+    snapshotId = decoded.snap;
+    snapshot = await loadSemanticSnapshot(snapshotId);
+    if (!snapshot) {
+      const err = new Error('Cursor refers to an expired or unknown snapshot');
+      err.code = 'invalid_cursor';
+      throw err;
+    }
+    // Stale-cursor check: backend identity on the snapshot must match the
+    // current backend. Any divergence ⇒ invalid_cursor (the spec permits
+    // this, and recomputing under a different model would be dishonest).
+    const currentBackendHash = hashBackendIdentity(backend);
+    if (snapshot.backend_hash !== currentBackendHash) {
+      const err = new Error('Cursor predates a backend identity change');
+      err.code = 'invalid_cursor';
+      throw err;
+    }
+  } else {
+    snapshot = await buildSemanticSnapshot({
+      q: params.q,
+      perConnectorPlans,
+      isOwner,
+    });
+    snapshotId = snapshot.snapshot_id;
+    await persistSemanticSnapshot(snapshot);
+  }
+
+  const offset = params.cursor
+    ? (decodeSemanticSearchCursor(params.cursor)?.off ?? 0)
+    : 0;
+  const limit = params.limit;
+  const allHits = snapshot.results;
+  const slice = allHits.slice(offset, offset + limit);
+  const hasMore = offset + limit < allHits.length;
+  const nextCursor = hasMore
+    ? encodeSemanticSearchCursor({ snap: snapshotId, off: offset + limit })
+    : null;
+
+  // Hydrate verbatim grant-safe snippets and build search_result objects.
+  const data = [];
+  for (const hit of slice) {
+    data.push(await buildSemanticSearchResult({ hit, isOwner }));
+  }
+
+  return {
+    envelope: {
+      object: 'list',
+      url: '/v1/search/semantic',
+      has_more: hasMore,
+      ...(nextCursor ? { next_cursor: nextCursor } : {}),
+      data,
+    },
+    disclosureData: {
+      query_shape: 'search_semantic',
+      record_count: data.length,
+      has_more: hasMore,
+      mode: isOwner ? 'owner' : 'client',
+      connector_count: perConnectorPlans.length,
+    },
+  };
+}
+
+// ─── Snapshot building ─────────────────────────────────────────────────────
+
+/**
+ * Build a snapshot of the full ranked result set. Per-connector KNN is
+ * issued in parallel; each connector's hits are merged under the total
+ * order (distance, connector_id, scope_key, record_key). The snapshot
+ * stores enough to page without re-embedding or re-querying.
+ *
+ * Honest index_state check is implicit: a 'stale' backfill state would be
+ * surfaced in the advertisement, but the route runs regardless — the hits
+ * are honestly computed semantic hits from the records we have, and no
+ * non-semantic fallback is substituted. This realizes the spec scenario
+ * "SHALL NOT silently substitute a non-semantic fallback": if the index
+ * rows don't exist, hits are absent (empty data) but retrieval_mode still
+ * says semantic on any hits that do come back.
+ */
+async function buildSemanticSnapshot({ q, perConnectorPlans, isOwner }) {
+  const queryVector = await backend.embedQuery(q);
+  const index = ensureVectorIndex();
+
+  // Configurable KNN overscan — we fetch more per connector than the final
+  // page needs so the merged top-N is accurate. Matches the lexical
+  // snapshot's approach of caching a reasonable upper bound.
+  const PER_CONNECTOR_LIMIT = 200;
+
+  const perConnectorHits = await Promise.all(
+    perConnectorPlans.map(async ({ connectorId, planEntries }) => {
+      const scopeKeys = planEntries.flatMap((entry) => entry.scopeKeys);
+      if (scopeKeys.length === 0) return [];
+      return index.queryPerConnector({
+        connectorId,
+        scopeKeys,
+        queryVector,
+        limit: PER_CONNECTOR_LIMIT,
+      });
+    }),
+  );
+
+  // Merge under total order.
+  const merged = perConnectorHits.flat().sort(compareHits);
+
+  // Collapse per-record hits: a record can match multiple fields (multiple
+  // scope_keys), so one (connector, stream, record_key) maps to multiple
+  // raw hits. Preserve the best (smallest) distance and union the matched
+  // fields. The collapsed list is re-sorted under the same total order so
+  // ties resolve deterministically.
+  const collapsed = new Map();
+  for (const hit of merged) {
+    const [stream, field] = JSON.parse(hit.scopeKey);
+    // Use an explicit escaped separator so the source file stays plain text
+    // while the composite key remains unambiguous.
+    const collapseKey = `${hit.connectorId}\u0000${stream}\u0000${hit.recordKey}`;
+    const existing = collapsed.get(collapseKey);
+    if (existing) {
+      if (!existing.matchedFields.includes(field)) {
+        existing.matchedFields.push(field);
+      }
+      if (hit.distance < existing.distance) {
+        existing.distance = hit.distance;
+        existing.topField = field;
+      }
+    } else {
+      collapsed.set(collapseKey, {
+        connectorId: hit.connectorId,
+        stream,
+        recordKey: hit.recordKey,
+        matchedFields: [field],
+        distance: hit.distance,
+        topField: field,
+        // scope_key of the current best field — used for the total-order
+        // comparison at collapse time.
+        scopeKey: hit.scopeKey,
+      });
+    }
+  }
+  const collapsedArr = Array.from(collapsed.values()).sort(compareHits);
+
+  return {
+    snapshot_id: generateSnapshotId(),
+    query: q,
+    plan_hash: hashSemanticPlan({ perConnectorPlans, isOwner }),
+    backend_hash: hashBackendIdentity(backend),
+    results: collapsedArr,
+  };
+}
+
+// ─── search_result shaping + grant-safe snippets ───────────────────────────
+
+async function buildSemanticSearchResult({ hit, isOwner }) {
+  const recordPath = `/v1/streams/${encodeURIComponent(hit.stream)}/records/${encodeURIComponent(hit.recordKey)}`;
+  const recordUrl = isOwner
+    ? `${recordPath}?connector_id=${encodeURIComponent(hit.connectorId)}`
+    : recordPath;
+
+  // Hydrate the emitted_at + snippet source text from the records table.
+  // Snippet is a verbatim contiguous substring of the matched field's stored
+  // value. NEVER a paraphrase, summary, or model-generated text.
+  const db = getDb();
+  const recordRow = db.prepare(`
+    SELECT emitted_at, record_json FROM records
+    WHERE connector_id = ? AND stream = ? AND record_key = ? AND deleted = 0
+  `).get(hit.connectorId, hit.stream, hit.recordKey);
+
+  const emittedAt = recordRow?.emitted_at ?? null;
+  let snippet;
+  if (recordRow?.record_json) {
+    try {
+      const data = JSON.parse(recordRow.record_json);
+      const value = data?.[hit.topField];
+      if (typeof value === 'string' && value.length > 0) {
+        snippet = { field: hit.topField, text: pickVerbatimExcerpt(value) };
+      }
+    } catch {
+      // Corrupt record_json — skip snippet rather than fabricate.
+    }
+  }
+
+  const result = {
+    object: 'search_result',
+    stream: hit.stream,
+    record_key: hit.recordKey,
+    connector_id: hit.connectorId,
+    record_url: recordUrl,
+    emitted_at: emittedAt,
+    matched_fields: hit.matchedFields,
+    retrieval_mode: 'semantic', // v1: lexical_blending is false
+  };
+  if (snippet) result.snippet = snippet;
+  return result;
+}
+
+/**
+ * Pick a verbatim excerpt from `text`. Contract: the returned string MUST
+ * be a contiguous substring of `text`. No paraphrase, no summary, no model
+ * generation.
+ *
+ * v1 heuristic: return up to the first ~160 characters, trimmed to a word
+ * boundary when possible. Simple and honest. Future tranches may replace
+ * this with query-aware extraction — still verbatim.
+ */
+function pickVerbatimExcerpt(text) {
+  const MAX = 160;
+  if (text.length <= MAX) return text;
+  const head = text.slice(0, MAX);
+  const lastSpace = head.lastIndexOf(' ');
+  if (lastSpace > 40) return head.slice(0, lastSpace) + '…';
+  return head + '…';
+}
+
+// ─── Snapshot persistence + cursor encoding ────────────────────────────────
+
+const SNAPSHOT_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+function generateSnapshotId() {
+  return `snap_${randomBytes(8).toString('hex')}`;
+}
+
+function hashSemanticPlan({ perConnectorPlans, isOwner }) {
+  const summary = perConnectorPlans.map((p) => ({
+    c: p.connectorId,
+    e: p.planEntries.map((pe) => ({
+      s: pe.streamName,
+      f: pe.searchableFields.slice().sort(),
+    })),
+  }));
+  return JSON.stringify({ isOwner, summary });
+}
+
+function hashBackendIdentity(b) {
+  return JSON.stringify({
+    m: b.model(),
+    d: b.dimensions(),
+    x: b.distanceMetric(),
+  });
+}
+
+async function persistSemanticSnapshot(snapshot) {
+  const db = getDb();
+  db.prepare(`
+    INSERT INTO semantic_search_snapshots(snapshot_id, query, plan_hash, results_json)
+    VALUES(?, ?, ?, ?)
+  `).run(
+    snapshot.snapshot_id,
+    snapshot.query,
+    // Store backend_hash alongside plan_hash so stale-cursor detection is
+    // deterministic across restarts — the snapshot row is the source of
+    // truth about what backend produced the cached distances.
+    JSON.stringify({ plan: snapshot.plan_hash, backend: snapshot.backend_hash }),
+    JSON.stringify(snapshot.results),
+  );
+}
+
+async function loadSemanticSnapshot(snapshotId) {
+  const db = getDb();
+  const rows = db.prepare(`
+    SELECT snapshot_id, query, plan_hash, results_json, created_at
+    FROM semantic_search_snapshots
+    WHERE snapshot_id = ?
+  `).all(snapshotId);
+  if (rows.length === 0) return null;
+  const row = rows[0];
+  const createdAt = new Date(row.created_at + 'Z').getTime();
+  if (Number.isFinite(createdAt) && Date.now() - createdAt > SNAPSHOT_TTL_MS) {
+    return null;
+  }
+  let planEnvelope;
+  try {
+    planEnvelope = JSON.parse(row.plan_hash);
+  } catch {
+    return null;
+  }
+  return {
+    snapshot_id: row.snapshot_id,
+    query: row.query,
+    plan_hash: planEnvelope.plan,
+    backend_hash: planEnvelope.backend,
+    results: JSON.parse(row.results_json),
+  };
+}
+
+/**
+ * Semantic cursors are prefixed to distinguish them from lexical cursors
+ * on the wire. The prefix is checked in decode; a cursor without the
+ * prefix is rejected as invalid_cursor. This realizes the spec scenario
+ * "cursor from /v1/search passed to /v1/search/semantic → invalid_cursor".
+ */
+const SEMANTIC_CURSOR_PREFIX = 'sem1.';
+
+function encodeSemanticSearchCursor({ snap, off }) {
+  const json = JSON.stringify({ snap, off });
+  return SEMANTIC_CURSOR_PREFIX + Buffer.from(json, 'utf8').toString('base64url');
+}
+
+function decodeSemanticSearchCursor(cursor) {
+  if (typeof cursor !== 'string' || !cursor.startsWith(SEMANTIC_CURSOR_PREFIX)) {
+    return null;
+  }
+  try {
+    const body = cursor.slice(SEMANTIC_CURSOR_PREFIX.length);
+    const json = Buffer.from(body, 'base64url').toString('utf8');
+    const parsed = JSON.parse(json);
+    if (typeof parsed.snap !== 'string' || typeof parsed.off !== 'number') return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}

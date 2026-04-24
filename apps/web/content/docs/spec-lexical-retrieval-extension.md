@@ -205,5 +205,6 @@ Out of scope for v1; future extensions or revisions may address them separately:
 ## See also
 
 - [Data Query API](./spec-data-query-api) — the core record-read contract this extension complements.
+- [Semantic Retrieval Extension (Experimental)](./spec-semantic-retrieval-extension) — a sibling experimental extension at `GET /v1/search/semantic`. Unstable; use lexical retrieval when stability matters.
 - Approved spec: `openspec/changes/add-lexical-retrieval-extension/specs/lexical-retrieval/spec.md`.
 - Implementation tranche: `openspec/changes/implement-lexical-retrieval-extension/`.
