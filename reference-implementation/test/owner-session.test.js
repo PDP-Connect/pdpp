@@ -12,7 +12,7 @@ import {
   OWNER_SESSION_DEFAULT_TTL_SECONDS,
   parseCookieHeader,
   readOwnerSessionFromCookieHeader,
-} from '../server/owner-session.js';
+} from '../server/owner-session.ts';
 
 test('owner-session primitives round-trip signed sessions through cookie headers', () => {
   const nowSeconds = Math.floor(Date.now() / 1000);

@@ -15,10 +15,7 @@
       "types": "./server/reference-topology.d.ts",
       "default": "./server/reference-topology.js"
     },
-    "./owner-session": {
-      "types": "./server/owner-session.d.ts",
-      "default": "./server/owner-session.js"
-    }
+    "./owner-session": "./server/owner-session.ts"
   },
   "scripts": {
     "//dev": "Investigation in progress: reference server crashes under concurrent dashboard load with SIGSEGV inside V8's scavenger during native-addon TEXT marshaling. Reproducible with sqlite3@5.1.7 AND better-sqlite3@12.9. --no-parallel-scavenge masks it in short tests but not confirmed as the root cause. --watch is off because its SIGTERM cycle masked the diagnosis. --trace-gc --trace-gc-verbose are on to capture the pre-crash GC pattern next time; remove once the root cause is in hand.",

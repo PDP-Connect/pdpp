@@ -30,7 +30,7 @@ import {
   OWNER_SESSION_COOKIE_NAME,
   OWNER_SESSION_DEFAULT_SUBJECT_ID,
   OWNER_SESSION_DEFAULT_TTL_SECONDS,
-} from './owner-session.js';
+} from './owner-session.ts';
 
 const DEFAULT_RETURN_TO = '/owner/login';
 
