@@ -1,3 +1,4 @@
+import { LivePoller } from "../components/live-poller.tsx";
 import { Callout, PageHeader, Section } from "../components/primitives.tsx";
 import { DashboardShell, EmptyState, ServerUnreachable } from "../components/shell.tsx";
 import { ReferenceServerUnreachableError } from "../lib/owner-token.ts";
@@ -35,6 +36,7 @@ export default async function DeploymentPage() {
 
   return (
     <DashboardShell active="deployment">
+      <LivePoller enabled={isDeploymentIndexing(report)} />
       <PageHeader
         breadcrumbs={[{ href: "/dashboard", label: "Dashboard" }, { label: "Deployment" }]}
         description="Operator diagnostics for the reference retrieval surfaces. Read-only. Secret environment values are redacted before reaching this page."
@@ -49,6 +51,14 @@ export default async function DeploymentPage() {
       <DatabaseSection database={report.database} indexKind={report.semantic.index.kind} />
       <EnvironmentSection environment={report.environment} />
     </DashboardShell>
+  );
+}
+
+function isDeploymentIndexing(report: DeploymentDiagnostics): boolean {
+  return Boolean(
+    report.lexical.index.backfill_progress ||
+      report.semantic.index.backfill_progress ||
+      report.semantic.index.state === "building"
   );
 }
 
@@ -113,13 +123,7 @@ function SemanticSection({ report }: { report: DeploymentDiagnostics }) {
   const { backend, index } = report.semantic;
   return (
     <Section title="Semantic backend">
-      {index.backfill_progress ? (
-        <BackfillProgress
-          indexedCount={index.backfill_progress.indexed_vectors}
-          indexedLabel="vectors indexed"
-          progress={index.backfill_progress}
-        />
-      ) : null}
+      {renderSemanticBackfillProgress(index)}
       <dl className="grid grid-cols-1 gap-x-6 gap-y-2 sm:grid-cols-2">
         <Field label="Configured" value={yesNo(backend.configured)} />
         <Field label="Available" value={yesNo(backend.available)} />
@@ -142,6 +146,34 @@ function SemanticSection({ report }: { report: DeploymentDiagnostics }) {
         <Field label="Index state" value={index.state ?? "—"} />
       </dl>
     </Section>
+  );
+}
+
+function renderSemanticBackfillProgress(index: DeploymentDiagnostics["semantic"]["index"]) {
+  if (index.backfill_progress) {
+    return (
+      <BackfillProgress
+        indexedCount={index.backfill_progress.indexed_vectors}
+        indexedLabel="vectors indexed"
+        progress={index.backfill_progress}
+      />
+    );
+  }
+  if (index.state === "building") {
+    return <IndexingWithoutProgress />;
+  }
+  return null;
+}
+
+function IndexingWithoutProgress() {
+  return (
+    <div className="mb-4 rounded border border-amber-400/50 bg-amber-50/70 px-3 py-3 text-sm dark:bg-amber-950/30">
+      <div className="font-medium">Backfill progress unavailable</div>
+      <p className="mt-1 text-muted-foreground text-xs">
+        The semantic index is marked as building, but the active worker has not published a progress snapshot yet. This
+        page refreshes automatically while indexing is active.
+      </p>
+    </div>
   );
 }
 
