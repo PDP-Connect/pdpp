@@ -86,7 +86,7 @@ node packages/polyfill-connectors/bin/bootstrap-github-pat.js
 node packages/polyfill-connectors/bin/register-all.js --embedded
 
 # Query results
-sqlite3 packages/polyfill-connectors/.pdpp-data/polyfill.sqlite \
+sqlite3 packages/polyfill-connectors/.pdpp-data/pdpp.sqlite \
   "SELECT connector_id, stream, COUNT(*) FROM records GROUP BY 1,2"
 ```
 

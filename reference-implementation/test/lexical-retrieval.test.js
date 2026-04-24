@@ -1109,7 +1109,7 @@ test('manifest update that swaps lexical_fields (same cardinality) rebuilds the 
  */
 test('startup backfills existing polyfill connectors without re-registration', async () => {
   const tempDir = await mkdtemp(join(tmpdir(), 'pdpp-lexical-restart-'));
-  const dbPath = join(tempDir, 'polyfill.sqlite');
+  const dbPath = join(tempDir, 'pdpp.sqlite');
 
   const bootServer = () => startServer({
     quiet: true,

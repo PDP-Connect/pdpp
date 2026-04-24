@@ -147,7 +147,7 @@ async function ensureReachable(asUrl) {
     if (err instanceof PdppCliError) throw err;
     throw new PdppCliError(
       `Reference server unreachable at ${asUrl}. Start it with:\n` +
-        `  PDPP_DB_PATH=packages/polyfill-connectors/.pdpp-data/polyfill.sqlite \\\n` +
+        `  PDPP_DB_PATH=packages/polyfill-connectors/.pdpp-data/pdpp.sqlite \\\n` +
         `    node reference-implementation/server/index.js`,
     );
   }

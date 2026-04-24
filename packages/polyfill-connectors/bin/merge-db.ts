@@ -2,14 +2,14 @@
 
 /**
  * Merge records + spine_events + state rows from a source sqlite file into
- * the main polyfill sqlite. Used after running a parallel orchestrator with
+ * the main PDPP sqlite. Used after running a parallel orchestrator with
  * PDPP_DB_PATH against its own DB (e.g. Codex) to bring those records into
  * the unified store.
  *
  * Usage:
  *   node bin/merge-db.js <source.sqlite> [--into <target.sqlite>] [--dry-run] [--delete-source]
  *
- * Default target: packages/polyfill-connectors/.pdpp-data/polyfill.sqlite
+ * Default target: packages/polyfill-connectors/.pdpp-data/pdpp.sqlite
  *
  * Strategy: ATTACH the source DB, INSERT OR IGNORE everything row-shaped
  * (records, spine_events, state_rows, etc.). Conflicts on records are
@@ -25,7 +25,7 @@ import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, "..", "..", "..");
-const DEFAULT_TARGET = join(REPO_ROOT, "packages/polyfill-connectors/.pdpp-data/polyfill.sqlite");
+const DEFAULT_TARGET = join(REPO_ROOT, "packages/polyfill-connectors/.pdpp-data/pdpp.sqlite");
 
 interface Args {
   deleteSource: boolean;

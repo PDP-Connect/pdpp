@@ -182,7 +182,7 @@ export interface StartEmbeddedServerOptions {
 }
 
 export async function startEmbeddedServer({
-  dbPath = join(PACKAGE_ROOT, ".pdpp-data/polyfill.sqlite"),
+  dbPath = join(PACKAGE_ROOT, ".pdpp-data/pdpp.sqlite"),
 }: StartEmbeddedServerOptions = {}): Promise<unknown> {
   const { startServer } = (await import(join(REFERENCE_IMPL_DIR, "server/index.js"))) as {
     startServer: (opts: Record<string, unknown>) => Promise<unknown>;

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Post-run verification: reads the persistent polyfill.sqlite and prints
+ * Post-run verification: reads the persistent pdpp.sqlite and prints
  * record counts per (connector, stream). Also checks DB spine for completed
  * runs.
  */
@@ -22,7 +22,7 @@ interface RunRow {
 }
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const DB_PATH = join(__dirname, "..", ".pdpp-data", "polyfill.sqlite");
+const DB_PATH = join(__dirname, "..", ".pdpp-data", "pdpp.sqlite");
 const CONNECTOR_REGISTRY_PREFIX = /^https:\/\/registry\.pdpp\.org\/connectors\//;
 
 function main(): void {

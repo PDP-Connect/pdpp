@@ -85,7 +85,7 @@ async function cmdRun(name: string): Promise<{ ok: boolean; result: RunResult }>
   const streams = (manifest.streams ?? []) as StreamManifest[];
   const { connectorPath } = getConnectorPaths(name);
 
-  const dbPath = process.env.PDPP_DB_PATH || join(REPO_ROOT, "packages/polyfill-connectors/.pdpp-data/polyfill.sqlite");
+  const dbPath = process.env.PDPP_DB_PATH || join(REPO_ROOT, "packages/polyfill-connectors/.pdpp-data/pdpp.sqlite");
 
   console.error(`[orchestrate] starting embedded server (db=${dbPath})...`);
   const server = (await startEmbeddedServer({ dbPath })) as EmbeddedServer;

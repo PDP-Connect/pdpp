@@ -15,7 +15,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 const DB_PATH =
-  process.env.PDPP_DB_PATH || join(homedir(), "code/pdpp/packages/polyfill-connectors/.pdpp-data/polyfill.sqlite");
+  process.env.PDPP_DB_PATH || join(homedir(), "code/pdpp/packages/polyfill-connectors/.pdpp-data/pdpp.sqlite");
 
 interface ValidateResult {
   data: Record<string, unknown>;
