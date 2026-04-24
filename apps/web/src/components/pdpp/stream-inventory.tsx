@@ -13,20 +13,20 @@ import React from "react";
 // FROM resource server (runtime state):
 //   streams[].recordCount, streams[].lastSynced
 
-export type InventoryStream = {
+export interface InventoryStream {
   name: string;
   label: string; // manifest display.label
   detail?: string; // manifest display.detail
   semantics: "append_only" | "mutable_state";
   recordCount: number;
   lastSynced?: string; // human-readable date, absent if never synced
-};
+}
 
-export type StreamInventoryProps = {
+export interface StreamInventoryProps {
   connectorName: string;
   connectorVersion: string;
   streams: InventoryStream[];
-};
+}
 
 export function StreamInventory({ connectorName, connectorVersion, streams }: StreamInventoryProps) {
   const [expanded, setExpanded] = React.useState<Record<string, boolean>>({});

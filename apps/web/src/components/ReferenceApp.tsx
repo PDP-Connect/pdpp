@@ -104,12 +104,12 @@ const MULTI_CONNECTORS: ConnectorCardProps[] = [
 
 // ─── Section content ────────────────────────────────────────────────────────
 
-type SectionConfig = {
+interface SectionConfig {
   id: SectionId;
   headline: string;
   narrative: string;
   surface: "human" | "protocol" | "neutral";
-};
+}
 
 // Using a tuple-literal (`satisfies [...]`) rather than `SectionConfig[]`
 // so positional reads like `SECTION_CONTENT[0]` keep a non-optional type
@@ -953,13 +953,13 @@ function DefaultReferenceHero() {
 
 // ─── Page ───────────────────────────────────────────────────────────────────
 
-type ReferenceAppProps = {
+interface ReferenceAppProps {
   /** Rendered above the first protocol section. If omitted, the default
       hero (v0.1.0 badge + title + flow stepper) is used. */
   hero?: React.ReactNode;
   /** Label shown in the SiteHeader breadcrumb. Defaults to "Reference". */
   currentLabel?: string;
-};
+}
 
 export function ReferenceApp({ hero, currentLabel = "Reference" }: ReferenceAppProps = {}) {
   const [activeSection, setActiveSection] = useState<SectionId>(SECTIONS[0].id);

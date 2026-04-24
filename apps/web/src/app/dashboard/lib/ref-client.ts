@@ -8,7 +8,7 @@
  */
 import { getAsInternalUrl, ReferenceServerUnreachableError, withOwnerSessionCookie } from "./owner-token.ts";
 
-export type SpineEvent = {
+export interface SpineEvent {
   event_id: string;
   event_type: string;
   occurred_at: string;
@@ -32,14 +32,14 @@ export type SpineEvent = {
   interaction_id: string | null;
   data: Record<string, unknown>;
   version: string;
-};
+}
 
-export type TimelineEnvelope = {
+export interface TimelineEnvelope {
   object: string;
   trace_id: string | null;
   event_count: number;
   events: SpineEvent[];
-};
+}
 
 /**
  * The reference server returns timeline envelopes as
@@ -65,19 +65,19 @@ function normalizeTimeline(raw: unknown): TimelineEnvelope {
   };
 }
 
-export type ListResponse<T> = {
+export interface ListResponse<T> {
   object: "list";
   data: T[];
   has_more: boolean;
   next_cursor?: string;
-};
+}
 
-export type FailureInfo = {
+export interface FailureInfo {
   event_type: string;
   reason: string | null;
-};
+}
 
-export type TraceSummary = {
+export interface TraceSummary {
   object: "trace_summary";
   trace_id: string;
   first_at: string;
@@ -93,9 +93,9 @@ export type TraceSummary = {
   actor_type: string | null;
   actor_id: string | null;
   failure: FailureInfo | null;
-};
+}
 
-export type GrantSummary = {
+export interface GrantSummary {
   object: "grant_summary";
   grant_id: string;
   first_at: string;
@@ -107,9 +107,9 @@ export type GrantSummary = {
   connector_id: string | null;
   kinds: string[];
   failure: FailureInfo | null;
-};
+}
 
-export type RunSummary = {
+export interface RunSummary {
   object: "run_summary";
   run_id: string;
   first_at: string;
@@ -121,9 +121,9 @@ export type RunSummary = {
   grant_id: string | null;
   failure_reason: string | null;
   kinds: string[];
-};
+}
 
-export type RefConnectorRunSummary = {
+export interface RefConnectorRunSummary {
   run_id: string;
   status: string;
   started_at: string;
@@ -132,9 +132,9 @@ export type RefConnectorRunSummary = {
   last_at: string;
   event_count: number;
   failure_reason: string | null;
-};
+}
 
-export type RefConnectorSummary = {
+export interface RefConnectorSummary {
   connector_id: string;
   display_name: string;
   manifest_version: string | null;
@@ -144,7 +144,7 @@ export type RefConnectorSummary = {
   schedule: Record<string, unknown> | null;
   last_run: RefConnectorRunSummary | null;
   last_successful_run: RefConnectorRunSummary | null;
-};
+}
 
 class RefNotFoundError extends Error {
   readonly status = 404;
@@ -210,7 +210,7 @@ export async function getRunTimeline(runId: string): Promise<TimelineEnvelope | 
   }
 }
 
-export type ListQuery = {
+export interface ListQuery {
   limit?: number;
   cursor?: string;
   since?: string;
@@ -221,7 +221,7 @@ export type ListQuery = {
   connector_id?: string;
   grant_id?: string;
   q?: string;
-};
+}
 
 export async function listTraces(opts: ListQuery = {}): Promise<ListResponse<TraceSummary>> {
   return (await refFetch(
@@ -248,13 +248,13 @@ export async function listConnectorSummaries(): Promise<ListResponse<RefConnecto
   return (await refFetch("/_ref/connectors")) as ListResponse<RefConnectorSummary>;
 }
 
-export type DatasetConnectorSummary = {
+export interface DatasetConnectorSummary {
   object: "dataset_connector_summary";
   connector_id: string;
   record_count: number;
-};
+}
 
-export type DatasetSummary = {
+export interface DatasetSummary {
   object: "dataset_summary";
   connector_count: number;
   stream_count: number;
@@ -271,7 +271,7 @@ export type DatasetSummary = {
   earliest_ingested_at: string | null;
   latest_ingested_at: string | null;
   top_connectors: DatasetConnectorSummary[];
-};
+}
 
 export async function getDatasetSummary(): Promise<DatasetSummary> {
   return (await refFetch("/_ref/dataset/summary")) as DatasetSummary;
@@ -293,7 +293,7 @@ export async function refSearch(query: string): Promise<{
   };
 }
 
-export type PendingApproval = {
+export interface PendingApproval {
   object: "approval";
   kind: "consent" | "owner_device";
   approval_id: string;
@@ -305,7 +305,7 @@ export type PendingApproval = {
     provider_id?: string | null;
     streams?: Array<{ name?: string } | string>;
   } | null;
-};
+}
 
 export async function listPendingApprovals(): Promise<ListResponse<PendingApproval>> {
   return (await refFetch("/_ref/approvals")) as ListResponse<PendingApproval>;

@@ -2,11 +2,11 @@ import { notFound } from "next/navigation";
 import { source } from "@/lib/docs-source.ts";
 import { getLLMText } from "@/lib/get-llm-text.ts";
 
-type RouteContext = {
+interface RouteContext {
   params: Promise<{
     slug?: string[];
   }>;
-};
+}
 
 export const revalidate = false;
 

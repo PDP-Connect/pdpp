@@ -4,19 +4,19 @@ import path from "node:path";
 let cachedRepoRoot: string | null = null;
 let cachedGitMetadataManifest: Promise<OpenSpecGitMetadataManifest | null> | null = null;
 
-type OpenSpecGitMetadataEntry = {
+interface OpenSpecGitMetadataEntry {
   createdAt: string | null;
   updatedAt: string | null;
   tracked: boolean;
   source: "git" | "filesystem";
-};
+}
 
-type OpenSpecGitMetadataManifest = {
+interface OpenSpecGitMetadataManifest {
   generatedAt: string;
   repoRoot: string;
   shallow: boolean;
   files: Record<string, OpenSpecGitMetadataEntry>;
-};
+}
 
 export async function resolveRepoRoot(): Promise<string> {
   if (cachedRepoRoot) {
@@ -97,13 +97,13 @@ export async function listMarkdownFiles(absDir: string): Promise<string[]> {
   }
 }
 
-export type RawArtifact = {
+export interface RawArtifact {
   markdown: string;
   absolutePath: string;
   repoRelativePath: string;
   createdAt: string | null;
   lastModified: string | null;
-};
+}
 
 function openSpecGitMetadataPath(repoRoot: string): string {
   return path.join(repoRoot, "apps/web/.generated/openspec-git-metadata.json");

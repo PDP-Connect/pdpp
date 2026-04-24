@@ -1,13 +1,13 @@
-type HeadingNode = {
+interface HeadingNode {
   type: "heading";
   children?: Array<{ type?: string; value?: string }>;
   data?: {
     id?: string;
     hProperties?: Record<string, unknown>;
   };
-};
+}
 
-type TreeNode = {
+interface TreeNode {
   type?: string;
   children?: TreeNode[];
   data?: {
@@ -15,7 +15,7 @@ type TreeNode = {
     hProperties?: Record<string, unknown>;
   };
   value?: string;
-};
+}
 
 const LEGACY_ID_PATTERN = /\s*\{#([A-Za-z0-9_-]+)\}\s*$/;
 

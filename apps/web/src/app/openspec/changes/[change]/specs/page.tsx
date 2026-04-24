@@ -10,7 +10,9 @@ import {
 import { getOpenSpecChange, listOpenSpecChangeSpecDeltas, listOpenSpecChanges } from "@/lib/openspec/index.ts";
 import { PLANNING_LABEL, planningPath } from "@/lib/openspec/public.ts";
 
-type PageProps = { params: Promise<{ change: string }> };
+interface PageProps {
+  params: Promise<{ change: string }>;
+}
 
 export async function generateStaticParams() {
   const changes = await listOpenSpecChanges();

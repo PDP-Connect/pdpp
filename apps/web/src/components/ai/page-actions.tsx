@@ -5,16 +5,16 @@ import {
   ViewOptionsPopover as FumadocsViewOptionsPopover,
 } from "fumadocs-ui/layouts/docs/page";
 
-type LLMCopyButtonProps = {
+interface LLMCopyButtonProps {
   markdownUrl: string;
   className?: string;
-};
+}
 
-type ViewOptionsProps = {
+interface ViewOptionsProps {
   markdownUrl: string;
   githubUrl?: string;
   className?: string;
-};
+}
 
 export function LLMCopyButton(props: LLMCopyButtonProps) {
   return <FumadocsMarkdownCopyButton {...props} />;

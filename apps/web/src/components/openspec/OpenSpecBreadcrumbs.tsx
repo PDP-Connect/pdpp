@@ -1,10 +1,10 @@
 import Link from "next/link";
 import { Fragment } from "react";
 
-export type OpenSpecCrumb = {
+export interface OpenSpecCrumb {
   label: string;
   href?: string;
-};
+}
 
 export function OpenSpecBreadcrumbs({ crumbs }: { crumbs: OpenSpecCrumb[] }) {
   return (

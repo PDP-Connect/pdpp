@@ -12,11 +12,11 @@ import { type RunNowResult, runConnectorNowAction } from "./actions.ts";
 // cadence: the counter should feel alive even between polls.
 const ELAPSED_TICK_MS = 1000;
 
-type RowProps = {
+interface RowProps {
   overview: ConnectorOverview;
   /** Relative href to the runs page, used for failure drill-in. */
   runsHref: string;
-};
+}
 
 type ToastState = { kind: "none" } | { kind: "already_running" } | { kind: "error"; message: string };
 

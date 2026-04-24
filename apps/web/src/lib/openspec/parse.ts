@@ -109,7 +109,10 @@ export function stripLeadingDocumentTitle(markdown: string): string {
   return markdown;
 }
 
-export type TaskCounts = { completed: number; total: number };
+export interface TaskCounts {
+  completed: number;
+  total: number;
+}
 
 export function countTasks(markdown: string): TaskCounts {
   let completed = 0;

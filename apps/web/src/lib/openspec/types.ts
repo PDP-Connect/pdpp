@@ -1,6 +1,6 @@
 export type OpenSpecArtifactKind = "proposal" | "design" | "tasks" | "spec";
 
-export type OpenSpecArtifact = {
+export interface OpenSpecArtifact {
   kind: OpenSpecArtifactKind;
   title: string;
   markdown: string;
@@ -9,9 +9,9 @@ export type OpenSpecArtifact = {
   absolutePath: string;
   createdAt: string | null;
   lastModified: string | null;
-};
+}
 
-export type OpenSpecSpecSummary = {
+export interface OpenSpecSpecSummary {
   capability: string;
   title: string;
   excerpt: string | null;
@@ -19,21 +19,21 @@ export type OpenSpecSpecSummary = {
   createdAt: string | null;
   lastModified: string | null;
   relatedChanges: string[];
-};
+}
 
 export type OpenSpecSpecDetail = OpenSpecSpecSummary & {
   markdown: string;
 };
 
-export type OpenSpecChangeArtifactSummary = {
+export interface OpenSpecChangeArtifactSummary {
   kind: OpenSpecArtifactKind;
   present: boolean;
   repoRelativePath: string | null;
-};
+}
 
 export type OpenSpecChangeStatus = "in-progress" | "complete" | "unknown";
 
-export type OpenSpecChangeSummary = {
+export interface OpenSpecChangeSummary {
   name: string;
   title: string;
   status: OpenSpecChangeStatus;
@@ -48,7 +48,7 @@ export type OpenSpecChangeSummary = {
   hasDesign: boolean;
   hasTasks: boolean;
   hasSpecDeltas: boolean;
-};
+}
 
 export type OpenSpecChangeDetail = OpenSpecChangeSummary & {
   proposalExcerpt: string | null;
@@ -64,7 +64,7 @@ export type OpenSpecDesignNoteKind =
   | "connector-note"
   | "working-note";
 
-export type OpenSpecDesignNoteSummary = {
+export interface OpenSpecDesignNoteSummary {
   changeName: string;
   noteSlug: string;
   noteKind: OpenSpecDesignNoteKind;
@@ -74,13 +74,13 @@ export type OpenSpecDesignNoteSummary = {
   repoRelativePath: string;
   createdAt: string | null;
   lastModified: string | null;
-};
+}
 
 export type OpenSpecDesignNoteDetail = OpenSpecDesignNoteSummary & {
   markdown: string;
 };
 
-export type OpenSpecDesignNoteGroup = {
+export interface OpenSpecDesignNoteGroup {
   changeName: string;
   changeTitle: string;
   noteCount: number;
@@ -88,10 +88,10 @@ export type OpenSpecDesignNoteGroup = {
   lastModified: string | null;
   countsByKind: Partial<Record<OpenSpecDesignNoteKind, number>>;
   notes: OpenSpecDesignNoteSummary[];
-};
+}
 
-export type OpenSpecLandingSummary = {
+export interface OpenSpecLandingSummary {
   changes: OpenSpecChangeSummary[];
   specs: OpenSpecSpecSummary[];
   designNotes: OpenSpecDesignNoteSummary[];
-};
+}

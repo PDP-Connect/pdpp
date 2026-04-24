@@ -14,7 +14,7 @@ import {
 
 export const DASHBOARD_BOOTSTRAP_CLIENT_ID = "pdpp-web-dashboard";
 
-export type OwnerBootstrapFlow = {
+export interface OwnerBootstrapFlow {
   flowId: string;
   clientId: string;
   subjectId: string | null;
@@ -33,7 +33,7 @@ export type OwnerBootstrapFlow = {
   introspection: Record<string, unknown> | null;
   introspectedAt: string | null;
   lastError: string | null;
-};
+}
 
 type OwnerBootstrapStore = Map<string, OwnerBootstrapFlow>;
 

@@ -7,11 +7,11 @@ import React from "react";
 // A reusable inline spec reference. Uses --edu-fg for the protocol education layer.
 // Renders as a mono link with the § prefix.
 
-export type SpecCitationProps = {
+export interface SpecCitationProps {
   section: string; // e.g. "4.2" or "6.1"
   label: string; // e.g. "Selection Request"
   href?: string; // optional link to spec page
-};
+}
 
 export function SpecCitation({ section, label, href }: SpecCitationProps) {
   const content = (

@@ -7,11 +7,11 @@ import { type RunNowResult, runConnectorNowAction } from "../actions.ts";
 
 const RUNNING_POLL_MS = 3000;
 
-type Props = {
+interface Props {
   connectorId: string;
   displayName: string;
   initialRunning: boolean;
-};
+}
 
 export function SyncNowButton({ connectorId, displayName, initialRunning }: Props) {
   const router = useRouter();

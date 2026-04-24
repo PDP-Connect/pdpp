@@ -1,16 +1,16 @@
 import Link from "next/link";
 import { cn } from "@/lib/utils.ts";
 
-export type OpenSpecSidebarItem = {
+export interface OpenSpecSidebarItem {
   href: string;
   label: string;
   active?: boolean;
-};
+}
 
-export type OpenSpecSidebarSection = {
+export interface OpenSpecSidebarSection {
   heading: string;
   items: OpenSpecSidebarItem[];
-};
+}
 
 export function OpenSpecSidebar({ sections }: { sections: OpenSpecSidebarSection[] }) {
   return (

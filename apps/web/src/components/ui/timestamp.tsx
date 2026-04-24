@@ -7,12 +7,12 @@ import { cn } from "@/lib/utils.ts";
 export type TimestampMode = "auto" | "relative" | "absolute";
 export type TimestampPrecision = "datetime" | "date";
 
-export type TimestampProps = {
+export interface TimestampProps {
   value: string | number | Date | null | undefined;
   mode?: TimestampMode;
   precision?: TimestampPrecision;
   className?: string;
-};
+}
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;

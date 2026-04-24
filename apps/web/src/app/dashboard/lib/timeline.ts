@@ -21,26 +21,26 @@ import {
 } from "./rs-client.ts";
 import { summarize } from "./timeline-summaries.ts";
 
-export type TimelineEntry = {
+export interface TimelineEntry {
   connectorId: string;
   stream: string;
   recordId: string;
   timestamp: string; // ISO
   summary: string;
-};
+}
 
-export type TimelineOptions = {
+export interface TimelineOptions {
   since?: string; // ISO date or datetime
   until?: string;
   perStreamLimit?: number; // fetch budget per stream
   totalLimit?: number; // final trim after merge
-};
+}
 
-type TimeAnchoredStream = {
+interface TimeAnchoredStream {
   connectorId: string;
   streamName: string;
   consentTimeField: string;
-};
+}
 
 // Defaults chosen so a 20-stream world comes in comfortably under a second.
 const DEFAULT_PER_STREAM_LIMIT = 50;

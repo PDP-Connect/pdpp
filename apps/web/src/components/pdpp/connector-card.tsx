@@ -9,7 +9,7 @@ import React from "react";
 // FROM manifest (server-trusted):
 //   connectorId, displayName, version, streams[], profiles[]
 
-export type ConnectorStream = {
+export interface ConnectorStream {
   name: string;
   label?: string; // display.label, may be absent
   semantics: "append_only" | "mutable_state";
@@ -17,21 +17,21 @@ export type ConnectorStream = {
   supportsResources: boolean; // selection.resources
   supportsTimeRange: boolean; // consent_time_field present
   viewCount: number; // number of views defined
-};
+}
 
-export type ConnectorProfile = {
+export interface ConnectorProfile {
   id: string;
   label: string;
   streamCount: number;
-};
+}
 
-export type ConnectorCardProps = {
+export interface ConnectorCardProps {
   connectorId: string;
   displayName: string;
   version: string;
   streams: ConnectorStream[];
   profiles?: ConnectorProfile[];
-};
+}
 
 export function ConnectorCard({ connectorId, displayName, version, streams, profiles }: ConnectorCardProps) {
   const [expanded, setExpanded] = React.useState<Record<string, boolean>>({});

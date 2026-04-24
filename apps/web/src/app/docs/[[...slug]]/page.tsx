@@ -6,11 +6,11 @@ import { LLMCopyButton, ViewOptions } from "@/components/ai/page-actions.tsx";
 import { getMDXComponents } from "@/components/mdx.tsx";
 import { getPageImage, getPageMarkdownUrl, source } from "@/lib/docs-source.ts";
 
-type DocsPageProps = {
+interface DocsPageProps {
   params: Promise<{
     slug?: string[];
   }>;
-};
+}
 
 export default async function Page({ params }: DocsPageProps) {
   const resolved = await params;

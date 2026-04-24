@@ -3,11 +3,11 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 
-type ConnectorOption = {
+interface ConnectorOption {
   value: string;
   label: string;
   streams: string[];
-};
+}
 
 export function SearchFiltersForm({
   query,

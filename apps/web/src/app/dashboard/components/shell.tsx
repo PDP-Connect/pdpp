@@ -5,11 +5,11 @@ import { getAsInternalUrl, getOwnerLoginPath, getRsInternalUrl } from "../lib/ow
 import { CommandPalette, CommandPaletteTrigger } from "./command-palette.tsx";
 import { MobileDrawer, MobileDrawerTrigger } from "./mobile-drawer.tsx";
 
-type NavItem = {
+interface NavItem {
   href: string;
   label: string;
   match: (active: DashboardSection) => boolean;
-};
+}
 
 export type DashboardSection = "overview" | "search" | "traces" | "grants" | "runs" | "records";
 

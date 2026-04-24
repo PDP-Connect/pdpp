@@ -25,13 +25,13 @@ import {
 
 export const dynamic = "force-dynamic";
 
-type Params = {
+interface Params {
   cursor?: string;
   status?: string;
   connector_id?: string;
   q?: string;
   peek?: string;
-};
+}
 
 function listHref(params: Params, overrides: Partial<Params> = {}): string {
   const merged = { ...params, ...overrides };

@@ -14,35 +14,35 @@ import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { getOwnerToken, getRsInternalUrl, ReferenceServerUnreachableError } from "./owner-token.ts";
 
-export type StreamSummary = {
+export interface StreamSummary {
   object: "stream";
   name: string;
   record_count: number;
   last_updated: string | null;
-};
+}
 
-export type StreamRecord = {
+export interface StreamRecord {
   object: "record";
   id: string;
   stream: string;
   data: Record<string, unknown>;
   emitted_at: string;
-};
+}
 
-export type RecordsPage = {
+export interface RecordsPage {
   object: "list";
   data: StreamRecord[];
   has_more: boolean;
   next_cursor?: string;
-};
+}
 
-export type ConnectorManifest = {
+export interface ConnectorManifest {
   connector_id: string;
   provider_id?: string;
   display_name?: string;
   name?: string;
   streams?: Array<{ name: string; [k: string]: unknown }>;
-};
+}
 
 const MANIFESTS_DIR = join(process.cwd(), "..", "..", "packages", "polyfill-connectors", "manifests");
 
@@ -122,7 +122,7 @@ export async function getRecord(connectorId: string, stream: string, recordId: s
  * which per-connector scope to read under. `record_url` and `snippet` are
  * optional; the page must render correctly when they are absent.
  */
-export type SearchResultHit = {
+export interface SearchResultHit {
   object: "search_result";
   stream: string;
   record_key: string;
@@ -135,15 +135,15 @@ export type SearchResultHit = {
   // result per the approved spec; absent on lexical hits. "hybrid" is reserved
   // for a future tranche (v1 lexical_blending is always false).
   retrieval_mode?: "semantic" | "hybrid";
-};
+}
 
-export type SearchResultPage = {
+export interface SearchResultPage {
   object: "list";
   url?: string;
   has_more: boolean;
   next_cursor?: string;
   data: SearchResultHit[];
-};
+}
 
 /**
  * Call the public lexical retrieval extension at GET /v1/search with the
@@ -290,7 +290,7 @@ export async function listConnectorManifests(): Promise<ConnectorManifest[]> {
   return manifests;
 }
 
-export type ConnectorOverview = {
+export interface ConnectorOverview {
   connector: ConnectorManifest;
   streams: StreamSummary[];
   totalRecords: number;
@@ -301,18 +301,18 @@ export type ConnectorOverview = {
   /** Shortcut: true iff lastRun.status ∈ {started, in_progress}. */
   isRunning: boolean;
   error?: string;
-};
+}
 
 /** Thin projection of RunSummary fields the dashboard index needs.
  *  Keeps this module decoupled from ref-client (which is AS-scoped). */
-export type ConnectorRunRef = {
+export interface ConnectorRunRef {
   run_id: string;
   first_at: string;
   last_at: string;
   event_count: number;
   status: string;
   failure_reason: string | null;
-};
+}
 
 // ─── Display helpers (colocated to keep page files small) ────────────────
 
@@ -460,11 +460,11 @@ export function resolveSelectedColumns(
   return { columns: valid, mode: "custom" };
 }
 
-export type StreamManifest = {
+export interface StreamManifest {
   name: string;
   preview_fields?: string[];
   [k: string]: unknown;
-};
+}
 
 export function stringifyCell(v: unknown): string {
   if (v === null || v === undefined) {
@@ -509,7 +509,7 @@ export function formatTimestamp(iso: string | null | undefined): string {
 // max of the manifest-declared `cursor_field` if any). Field set is the union
 // of manifest-declared `schema.properties` and keys observed in the sample.
 
-export type FieldHealth = {
+export interface FieldHealth {
   name: string;
   declared: boolean;
   present: boolean; // appeared in at least one sampled record (non-missing key)
@@ -518,9 +518,9 @@ export type FieldHealth = {
   distinctValues: number; // capped; see DISTINCT_CAP
   distinctCapped: boolean;
   sampleValue: string | null; // a short example non-null value, for context
-};
+}
 
-export type StreamHealth = {
+export interface StreamHealth {
   connectorId: string;
   streamName: string;
   totalRecords: number; // from RS metadata (not the sample)
@@ -539,7 +539,7 @@ export type StreamHealth = {
     declaredButAbsent: number; // manifest has it, data never emits it
     undeclaredPresent: number; // data has it, manifest doesn't declare it
   };
-};
+}
 
 const DISTINCT_CAP = 50;
 
@@ -646,14 +646,14 @@ export async function streamHealth(
     }
   }
 
-  type Agg = {
+  interface Agg {
     present: boolean;
     nullCount: number;
     nonNullCount: number;
     distinct: Set<string>;
     distinctCapped: boolean;
     sampleValue: string | null;
-  };
+  }
 
   const agg = new Map<string, Agg>();
   for (const f of fieldNames) {

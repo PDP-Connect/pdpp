@@ -3,10 +3,10 @@ import type { ReactNode } from "react";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
-export type Breadcrumb = {
+export interface Breadcrumb {
   label: string;
   href?: string;
-};
+}
 
 export type MetaPillTone = "neutral" | "protocol" | "human" | "success" | "danger";
 

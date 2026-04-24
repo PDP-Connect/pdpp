@@ -10,9 +10,9 @@ import {
 import { getOpenSpecDesignNote, listOpenSpecDesignNotes } from "@/lib/openspec/index.ts";
 import { PLANNING_LABEL, planningPath } from "@/lib/openspec/public.ts";
 
-type PageProps = {
+interface PageProps {
   params: Promise<{ change: string; note: string }>;
-};
+}
 
 export async function generateStaticParams() {
   const notes = await listOpenSpecDesignNotes();

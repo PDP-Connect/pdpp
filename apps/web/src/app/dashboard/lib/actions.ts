@@ -1,4 +1,4 @@
-export type DashboardCommand = {
+export interface DashboardCommand {
   id: string;
   title: string;
   description: string;
@@ -6,7 +6,7 @@ export type DashboardCommand = {
   keywords: string[];
   kind: "jump" | "action";
   section: "Navigate" | "Quick action" | "Search";
-};
+}
 
 const NAVIGATION_COMMANDS: DashboardCommand[] = [
   {

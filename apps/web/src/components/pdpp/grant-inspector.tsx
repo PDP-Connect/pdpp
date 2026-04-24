@@ -39,16 +39,16 @@ function DateLike({ value }: { value: string | null | undefined }) {
 // FROM server policy:
 //   status (active/expired/revoked) — tracked by AS, not in grant
 
-export type GrantStream = {
+export interface GrantStream {
   name: string;
   label: string; // manifest display.label
   detail?: string; // manifest display.detail
   fields?: string[]; // granted field allowlist, absent = all
   view?: string; // informational — which view was selected
   timeRange?: { since?: string; until?: string };
-};
+}
 
-export type GrantInspectorProps = {
+export interface GrantInspectorProps {
   grantId: string;
   issuedAt: string; // human-readable date
   status: "active" | "expired" | "revoked";
@@ -66,7 +66,7 @@ export type GrantInspectorProps = {
   };
   streams: GrantStream[];
   onRevoke?: () => void;
-};
+}
 
 export function GrantInspector({
   grantId,

@@ -20,10 +20,10 @@ import {
 
 export const dynamic = "force-dynamic";
 
-type Params = {
+interface Params {
   flow?: string;
   error?: string;
-};
+}
 
 export default async function OwnerTokenBootstrapPage({ searchParams }: { searchParams: Promise<Params> }) {
   const params = await searchParams;

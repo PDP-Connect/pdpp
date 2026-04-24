@@ -31,21 +31,21 @@ import { Button } from "@/components/ui/button.tsx";
 // Server-generated generic copy (v0.1):
 //   optional.consequenceOn/Off
 
-export type ConsentCardStream = {
+export interface ConsentCardStream {
   key: string;
   label: string; // manifest display.label — server-trusted
   detail: string; // manifest display.detail — server-trusted
-};
+}
 
-export type ConsentCardOptional = {
+export interface ConsentCardOptional {
   key: string;
   label: string; // manifest display.label — server-trusted
   detail: string; // manifest display.detail — server-trusted
   consequenceOn: string; // server-generated generic copy in v0.1
   consequenceOff: string; // server-generated generic copy in v0.1
-};
+}
 
-export type ConsentCardProps = {
+export interface ConsentCardProps {
   requester: {
     name: string; // resolved display name
     monogram: string; // server-derived fallback from resolved name
@@ -67,7 +67,7 @@ export type ConsentCardProps = {
   };
   onAllow?: () => void;
   onDeny?: () => void;
-};
+}
 
 export function ConsentCard({
   requester,

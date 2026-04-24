@@ -28,7 +28,7 @@ const PAGE_LIMIT = 25;
 // matches the approved design's "experimental, revisable" framing.
 const SEMANTIC_UPLIFT_LIMIT = 10;
 
-type RecordHit = {
+interface RecordHit {
   connectorId: string;
   stream: string;
   recordId: string;
@@ -41,22 +41,22 @@ type RecordHit = {
   // pattern of surfacing the retrieval source only when it would
   // otherwise leave the user wondering "how did this match?".
   semanticOnly?: boolean;
-};
+}
 
-type RecordPage = {
+interface RecordPage {
   hits: RecordHit[];
   hasMore: boolean;
   nextCursor: string | null;
   prevStack: string[];
-};
+}
 
-type SearchResult = {
+interface SearchResult {
   exact: { kind: "trace" | "grant" | "run"; id: string } | null;
   traces: TraceSummary[];
   grants: GrantSummary[];
   runs: RunSummary[];
   records: RecordPage;
-};
+}
 
 /**
  * Map a public search_result hit into the dashboard's RecordHit shape. The

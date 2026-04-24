@@ -12,7 +12,9 @@ import {
 import { getOpenSpecSpec, listOpenSpecSpecs } from "@/lib/openspec/index.ts";
 import { PLANNING_LABEL, planningPath } from "@/lib/openspec/public.ts";
 
-type PageProps = { params: Promise<{ capability: string }> };
+interface PageProps {
+  params: Promise<{ capability: string }>;
+}
 
 export async function generateStaticParams() {
   const specs = await listOpenSpecSpecs();

@@ -17,14 +17,14 @@ import {
 
 export const dynamic = "force-dynamic";
 
-type OverviewData = {
+interface OverviewData {
   summary: DatasetSummary;
   failedTraces: TraceSummary[];
   failedRuns: RunSummary[];
   recentDecisions: GrantSummary[];
   recentRuns: RunSummary[];
   actionNeeded: number;
-};
+}
 
 async function loadOverview(): Promise<OverviewData> {
   // Scale first. Then the things that need attention: failed traces/runs

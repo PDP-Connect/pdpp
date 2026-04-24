@@ -2297,7 +2297,7 @@ function DashboardPrimitivesSection() {
   );
 }
 
-type CanonicalExampleWorld = {
+interface CanonicalExampleWorld {
   name: string;
   monogram: string;
   descriptor: string;
@@ -2328,7 +2328,7 @@ type CanonicalExampleWorld = {
     granted: string[];
     withheld: string[];
   };
-};
+}
 
 const COMPENSATION_STREAM_DETAILS = {
   payStatements:
@@ -2497,14 +2497,14 @@ const CANONICAL_EXAMPLE_WORLD: CanonicalExampleWorld = createCompensationWorld({
 
 type LongviewLogoVariant = "aperture_span" | "horizon_tile" | "frame_lane";
 
-type LongviewLogoCandidate = {
+interface LongviewLogoCandidate {
   id: LongviewLogoVariant;
   name: string;
   verdict: "recommended" | "alternative" | "discard";
   summary: string;
   strength: string;
   risk: string;
-};
+}
 
 const LONGVIEW_LOGO_CANDIDATES: LongviewLogoCandidate[] = [
   {

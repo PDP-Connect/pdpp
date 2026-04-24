@@ -24,7 +24,7 @@ type HeroLayout = "cross" | "bleeding";
 type HeroGradient = "warm" | "cool" | "dual";
 type HeroSize = "compact" | "splash";
 
-type HeroProps = {
+interface HeroProps {
   layout?: HeroLayout;
   gradient?: HeroGradient;
   /** `compact` (default): page-header scale, tight vertical padding.
@@ -34,7 +34,7 @@ type HeroProps = {
   title: ReactNode;
   description?: ReactNode;
   actions?: ReactNode;
-};
+}
 
 const warmWash = "linear-gradient(to right, var(--human-wash), transparent 60%)";
 const coolWash = "linear-gradient(to left, var(--primary-wash), transparent 60%)";
