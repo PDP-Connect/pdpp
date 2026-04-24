@@ -699,6 +699,12 @@ export async function listSpineCorrelations(
     whereParts.push("grant_id = ?");
     whereBinds.push(filters.grantId);
   }
+  if (filters.connectorId && key === "run") {
+    whereParts.push(
+      "run_id IN (SELECT run_id FROM spine_events WHERE run_id IS NOT NULL AND actor_type = 'runtime' AND actor_id = ?)"
+    );
+    whereBinds.push(filters.connectorId);
+  }
 
   // q narrowing on the indexed correlation column. Secondary-field LIKE stays
   // in the page-scope pass below.
@@ -710,9 +716,9 @@ export async function listSpineCorrelations(
   // Cursor seek: pages are ordered by (last_at DESC, id DESC) for stability.
   const { lastAt: cursorLastAt, id: cursorId } = parseCursor(decodeCursor(filters.cursor));
 
-  // Over-fetch by a generous multiplier so the page-scope JS filters (status,
-  // connectorId, fuzzy q on secondary fields) have room to reject without
-  // under-filling the response.
+  // Over-fetch by a generous multiplier so the remaining page-scope JS filters
+  // (status, connectorId for non-run correlations, fuzzy q on secondary fields)
+  // have room to reject without under-filling the response.
   const sqlLimit = limit * 4;
 
   if (cursorLastAt && cursorId) {

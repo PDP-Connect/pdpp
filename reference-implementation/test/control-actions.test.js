@@ -96,6 +96,55 @@ async function registerConnector(asUrl, manifest) {
   assert.equal(registerResp.status, 201, 'register connector');
 }
 
+async function emitSyntheticRun({ connectorId, runId, status, occurredAt }) {
+  const trace = createTraceContext({ scenarioId: `scn_${runId}` });
+  await emitSpineEvent({
+    event_type: 'run.started',
+    occurred_at: occurredAt,
+    trace_id: trace.trace_id,
+    scenario_id: trace.scenario_id,
+    actor_type: 'runtime',
+    actor_id: connectorId,
+    object_type: 'run',
+    object_id: runId,
+    status: 'started',
+    run_id: runId,
+    data: {
+      source: { binding_kind: 'connector', connector_id: connectorId },
+      collection_mode: 'incremental',
+      persist_state: true,
+      state_commit_intent: 'commit_on_success',
+      bindings: { network: {}, filesystem: {}, interactive: {} },
+      scope: { streams: [{ name: 'top_artists' }] },
+      scope_streams: ['top_artists'],
+    },
+  });
+  await emitSpineEvent({
+    event_type: status === 'succeeded' ? 'run.completed' : 'run.failed',
+    occurred_at: occurredAt,
+    trace_id: trace.trace_id,
+    scenario_id: trace.scenario_id,
+    actor_type: 'runtime',
+    actor_id: connectorId,
+    object_type: 'run',
+    object_id: runId,
+    status,
+    run_id: runId,
+    data: {
+      source: { binding_kind: 'connector', connector_id: connectorId },
+      records_emitted: 0,
+      records_flushed: 0,
+      buffered_records_dropped: 0,
+      persist_state: true,
+      checkpoint_mode: 'checkpointed_streaming',
+      checkpoint_commit_status: 'not_committed',
+      state_streams_staged: 0,
+      state_streams_committed: 0,
+      ...(status === 'failed' ? { reason: 'synthetic_failure' } : {}),
+    },
+  });
+}
+
 test('GET /_ref/connectors lists registered connectors with stream names and freshness', async () => {
   await withHarness(async ({ asUrl, spotifyManifest }) => {
     const { status, body } = await fetchJson(`${asUrl}/_ref/connectors`);
@@ -112,6 +161,34 @@ test('GET /_ref/connectors lists registered connectors with stream names and fre
     assert.equal(entry.schedule, null);
     assert.equal(entry.last_run, null);
     assert.equal(entry.last_successful_run, null);
+  });
+});
+
+test('GET /_ref/connectors finds connector runs that are older than newer runs from other connectors', async () => {
+  await withHarness(async ({ asUrl, spotifyManifest }) => {
+    const connectorId = spotifyManifest.connector_id;
+    await emitSyntheticRun({
+      connectorId,
+      runId: 'run_spotify_older_success',
+      status: 'succeeded',
+      occurredAt: '2026-04-24T10:00:00.000Z',
+    });
+    for (let i = 0; i < 8; i += 1) {
+      await emitSyntheticRun({
+        connectorId: `https://registry.pdpp.org/connectors/noisy-${i}`,
+        runId: `run_noisy_${i}`,
+        status: 'failed',
+        occurredAt: `2026-04-24T10:0${i + 1}:00.000Z`,
+      });
+    }
+
+    const { status, body } = await fetchJson(`${asUrl}/_ref/connectors`);
+    assert.equal(status, 200);
+    const entry = body.data.find((row) => row.connector_id === connectorId);
+    assert.ok(entry, 'spotify connector should be listed');
+    assert.equal(entry.last_run?.run_id, 'run_spotify_older_success');
+    assert.equal(entry.last_run?.status, 'succeeded');
+    assert.equal(entry.last_successful_run?.run_id, 'run_spotify_older_success');
   });
 });
 
