@@ -27,7 +27,7 @@ import {
   listStreams, listAllStreams, getSyncState, putSyncState, getDatasetSummary,
 } from './records.js';
 import { lexicalIndexBackfillForManifest, runLexicalSearch } from './search.js';
-import { reconcilePolyfillManifests } from './polyfill-manifest-reconcile.js';
+import { reconcilePolyfillManifests } from './polyfill-manifest-reconcile.ts';
 import {
   computeIndexState as computeSemanticIndexState,
   configureSemanticBackend,
