@@ -26,7 +26,7 @@ import {
   LONGVIEW_PURPOSE_DESCRIPTION,
   LONGVIEW_TOS_URI,
 } from "@/lib/longview-world.ts";
-import { useProtocol } from "@/lib/use-protocol.ts";
+import { type ProtocolPhase, useProtocol } from "@/lib/use-protocol.ts";
 
 // ─── Config ─────────────────────────────────────────────────────────────────
 
@@ -983,11 +983,249 @@ interface ReferenceAppProps {
   hero?: React.ReactNode;
 }
 
+const INPUT_LIKE_TAGS = new Set(["INPUT", "TEXTAREA", "SELECT", "BUTTON"]);
+const NAV_FORWARD_KEYS = new Set(["ArrowDown", "ArrowRight", " "]);
+const NAV_BACKWARD_KEYS = new Set(["ArrowUp", "ArrowLeft"]);
+
+function neighborSection(activeSection: SectionId, direction: 1 | -1): SectionId | null {
+  const idx = SECTIONS.findIndex((s) => s.id === activeSection);
+  if (idx < 0) {
+    return null;
+  }
+  const target = SECTIONS[idx + direction];
+  return target ? target.id : null;
+}
+
+function buildKeyNavHandler(activeSection: SectionId, navigateTo: (id: SectionId) => void) {
+  return (e: KeyboardEvent) => {
+    const tag = (e.target as HTMLElement)?.tagName;
+    if (tag && INPUT_LIKE_TAGS.has(tag)) {
+      return;
+    }
+    let direction: 1 | -1 | 0 = 0;
+    if (NAV_FORWARD_KEYS.has(e.key)) {
+      direction = 1;
+    } else if (NAV_BACKWARD_KEYS.has(e.key)) {
+      direction = -1;
+    }
+    if (direction === 0) {
+      return;
+    }
+    e.preventDefault();
+    const next = neighborSection(activeSection, direction);
+    if (next) {
+      navigateTo(next);
+    }
+  };
+}
+
+function resolveGrantIndicator(
+  phase: ProtocolPhase
+): { dotColor: string; grantLabel: string } {
+  if (phase === "granted") {
+    return { dotColor: "var(--success)", grantLabel: "active" };
+  }
+  if (phase === "revoked") {
+    return { dotColor: "var(--destructive)", grantLabel: "revoked" };
+  }
+  return { dotColor: "var(--border)", grantLabel: "idle" };
+}
+
+const PROTOCOL_INDICATOR_SECTIONS: SectionId[] = ["consent", "grant", "enforce", "sync", "revoke"];
+
+function buildSectionIntersectionObserver(onActive: (id: SectionId) => void): IntersectionObserver {
+  return new IntersectionObserver(
+    (entries) => {
+      for (const entry of entries) {
+        if (entry.isIntersecting && entry.intersectionRatio > 0.3) {
+          onActive(entry.target.id as SectionId);
+        }
+      }
+    },
+    { threshold: 0.3 }
+  );
+}
+
+function observeSectionsWith(observer: IntersectionObserver): void {
+  for (const { id } of SECTIONS) {
+    const el = document.getElementById(id);
+    if (el) {
+      observer.observe(el);
+    }
+  }
+}
+
+function deriveGrantInspectorProps(protocolGrant: NonNullable<ReturnType<typeof useProtocol>["grant"]>): GrantInspectorProps {
+  return {
+    grantId: protocolGrant.grant_id,
+    issuedAt: protocolGrant.issued_at,
+    status: protocolGrant.status,
+    client: { clientId: protocolGrant.client_id, name: LONGVIEW_CLIENT_NAME },
+    purposeCode: protocolGrant.purpose_code,
+    purposeDescription: protocolGrant.purpose_description,
+    accessMode: protocolGrant.access_mode,
+    expiresAt: protocolGrant.expires_at ?? null,
+    retention: protocolGrant.retention
+      ? { duration: "90 days", onExpiry: protocolGrant.retention.on_expiry }
+      : undefined,
+    streams: protocolGrant.streams.map((s) => ({
+      name: s.name,
+      label: INVENTORY_SPECIMEN.streams.find((stream) => stream.name === s.name)?.label || s.name,
+      detail: INVENTORY_SPECIMEN.streams.find((stream) => stream.name === s.name)?.detail,
+      fields: s.fields || undefined,
+      view: s.view || undefined,
+      timeRange: s.time_range || undefined,
+    })),
+  };
+}
+
+function StickyHeader({
+  activeSection,
+  currentLabel,
+  navigateTo,
+}: {
+  activeSection: SectionId;
+  currentLabel: string;
+  navigateTo: (id: SectionId) => void;
+}) {
+  return (
+    <header
+      className="sticky top-0 z-40 flex h-12 items-center gap-2 px-4 md:gap-3 md:px-6"
+      style={{
+        backgroundColor: "var(--background)",
+        backdropFilter: "blur(8px)",
+        borderBottom: "1px solid var(--border)",
+      }}
+    >
+      <SiteHeader currentLabel={currentLabel} />
+      <span
+        className="font-mono text-xs uppercase tracking-wide md:hidden"
+        style={{ color: "var(--muted-foreground)" }}
+      >
+        {SECTIONS.find((s) => s.id === activeSection)?.label}
+      </span>
+      <div className="flex-1" />
+      <nav aria-label="Protocol sections" className="hidden items-center gap-0.5 overflow-x-auto md:flex lg:hidden">
+        {SECTIONS.map(({ id, label }) => (
+          <button
+            key={id}
+            onClick={() => navigateTo(id)}
+            className="shrink-0 rounded px-2 py-1.5 text-xs transition-colors"
+            style={{
+              backgroundColor: activeSection === id ? "var(--foreground)" : "transparent",
+              color: activeSection === id ? "var(--background)" : "var(--muted-foreground)",
+            }}
+          >
+            {label}
+          </button>
+        ))}
+      </nav>
+      <span className="hidden font-mono text-xs md:inline" style={{ color: "var(--muted-foreground)", opacity: 0.65 }}>
+        v0.1.0
+      </span>
+    </header>
+  );
+}
+
+type AccessMode = "continuous" | "single_use";
+const ACCESS_MODES: readonly AccessMode[] = ["continuous", "single_use"] as const;
+
+function AccessModeSelector({
+  accessMode,
+  setAccessMode,
+}: {
+  accessMode: AccessMode;
+  setAccessMode: (mode: AccessMode) => void;
+}) {
+  return (
+    <div className="flex items-center gap-2">
+      <span className="text-xs" style={{ color: "var(--muted-foreground)" }}>
+        Access mode:
+      </span>
+      {ACCESS_MODES.map((mode) => (
+        <button
+          key={mode}
+          onClick={() => setAccessMode(mode)}
+          className="rounded px-2 py-1 font-mono text-xs transition-colors"
+          style={{
+            backgroundColor: accessMode === mode ? "var(--foreground)" : "var(--muted)",
+            color: accessMode === mode ? "var(--background)" : "var(--muted-foreground)",
+          }}
+        >
+          {mode}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function ConsentOutcomeCard({ onReset, phase }: { onReset: () => void; phase: ProtocolPhase }) {
+  const granted = phase === "granted";
+  return (
+    <OutcomeCard
+      variant={granted ? "granted" : "revoked"}
+      message={
+        granted
+          ? `${LONGVIEW_CLIENT_NAME} may now query the resource server. Scroll down to see enforcement in action.`
+          : `The grant has been revoked. ${LONGVIEW_CLIENT_NAME} can no longer query under it.`
+      }
+      onReset={onReset}
+    />
+  );
+}
+
+function ConsentStageBody({
+  accessMode,
+  handleAllow,
+  handleDeny,
+  handleReset,
+  phase,
+  setAccessMode,
+}: {
+  accessMode: AccessMode;
+  handleAllow: () => void;
+  handleDeny: () => void;
+  handleReset: () => void;
+  phase: ProtocolPhase;
+  setAccessMode: (mode: AccessMode) => void;
+}) {
+  if (phase === "idle") {
+    return (
+      <div className="flex w-full flex-col items-center gap-4">
+        <AccessModeSelector accessMode={accessMode} setAccessMode={setAccessMode} />
+        <ConsentCard {...CONSENT_SPECIMEN} accessMode={accessMode} onAllow={handleAllow} onDeny={handleDeny} />
+      </div>
+    );
+  }
+  return <ConsentOutcomeCard onReset={handleReset} phase={phase} />;
+}
+
+function GrantIndicator({ activeSection, phase }: { activeSection: SectionId; phase: ProtocolPhase }) {
+  if (!PROTOCOL_INDICATOR_SECTIONS.includes(activeSection)) {
+    return null;
+  }
+  const { dotColor, grantLabel } = resolveGrantIndicator(phase);
+  return (
+    <div
+      className="fixed bottom-6 left-1/2 z-30 flex -translate-x-1/2 items-center gap-2 rounded-full px-3 py-1.5 text-xs"
+      style={{
+        backgroundColor: "var(--card)",
+        border: "1px solid var(--border)",
+        boxShadow: "0 4px 6px rgba(0,0,0,0.04), 0 10px 15px rgba(0,0,0,0.08)",
+        opacity: 0.9,
+      }}
+    >
+      <div className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: dotColor }} />
+      <span style={{ color: "var(--muted-foreground)" }}>Grant: {grantLabel}</span>
+    </div>
+  );
+}
+
 export function ReferenceApp({ hero, currentLabel = "Reference" }: ReferenceAppProps = {}) {
   const [activeSection, setActiveSection] = useState<SectionId>(SECTIONS[0].id);
   const observerRef = useRef<IntersectionObserver | null>(null);
   const [multiIdx, setMultiIdx] = useState(0);
-  const [accessMode, setAccessMode] = useState<"continuous" | "single_use">("continuous");
+  const [accessMode, setAccessMode] = useState<AccessMode>("continuous");
 
   // Protocol state from mock server
   const protocol = useProtocol();
@@ -1000,24 +1238,8 @@ export function ReferenceApp({ hero, currentLabel = "Reference" }: ReferenceAppP
 
   // Track active section via IntersectionObserver
   useEffect(() => {
-    observerRef.current = new IntersectionObserver(
-      (entries) => {
-        for (const entry of entries) {
-          if (entry.isIntersecting && entry.intersectionRatio > 0.3) {
-            setActiveSection(entry.target.id as SectionId);
-          }
-        }
-      },
-      { threshold: 0.3 }
-    );
-
-    for (const { id } of SECTIONS) {
-      const el = document.getElementById(id);
-      if (el) {
-        observerRef.current.observe(el);
-      }
-    }
-
+    observerRef.current = buildSectionIntersectionObserver(setActiveSection);
+    observeSectionsWith(observerRef.current);
     return () => observerRef.current?.disconnect();
   }, []);
 
@@ -1027,141 +1249,27 @@ export function ReferenceApp({ hero, currentLabel = "Reference" }: ReferenceAppP
 
   // Keyboard navigation — only when no interactive element is focused
   useEffect(() => {
-    const handleKey = (e: KeyboardEvent) => {
-      const tag = (e.target as HTMLElement)?.tagName;
-      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || tag === "BUTTON") {
-        return;
-      }
-      if (e.key === "ArrowDown" || e.key === "ArrowRight" || e.key === " ") {
-        e.preventDefault();
-        const idx = SECTIONS.findIndex((s) => s.id === activeSection);
-        const next = idx >= 0 ? SECTIONS[idx + 1] : undefined;
-        if (next) {
-          navigateTo(next.id);
-        }
-      } else if (e.key === "ArrowUp" || e.key === "ArrowLeft") {
-        e.preventDefault();
-        const idx = SECTIONS.findIndex((s) => s.id === activeSection);
-        const prev = idx > 0 ? SECTIONS[idx - 1] : undefined;
-        if (prev) {
-          navigateTo(prev.id);
-        }
-      }
-    };
+    const handleKey = buildKeyNavHandler(activeSection, navigateTo);
     window.addEventListener("keydown", handleKey);
     return () => window.removeEventListener("keydown", handleKey);
   }, [activeSection, navigateTo]);
 
   // Derive grant inspector props from protocol state
-  const grantProps: GrantInspectorProps = protocol.grant
-    ? {
-        grantId: protocol.grant.grant_id,
-        issuedAt: protocol.grant.issued_at,
-        status: protocol.grant.status,
-        client: { clientId: protocol.grant.client_id, name: LONGVIEW_CLIENT_NAME },
-        purposeCode: protocol.grant.purpose_code,
-        purposeDescription: protocol.grant.purpose_description,
-        accessMode: protocol.grant.access_mode,
-        expiresAt: protocol.grant.expires_at ?? null,
-        retention: protocol.grant.retention
-          ? { duration: "90 days", onExpiry: protocol.grant.retention.on_expiry }
-          : undefined,
-        streams: protocol.grant.streams.map((s) => ({
-          name: s.name,
-          label: INVENTORY_SPECIMEN.streams.find((stream) => stream.name === s.name)?.label || s.name,
-          detail: INVENTORY_SPECIMEN.streams.find((stream) => stream.name === s.name)?.detail,
-          fields: s.fields || undefined,
-          view: s.view || undefined,
-          timeRange: s.time_range || undefined,
-        })),
-      }
-    : GRANT_SPECIMEN;
+  const grantProps: GrantInspectorProps = protocol.grant ? deriveGrantInspectorProps(protocol.grant) : GRANT_SPECIMEN;
 
   const grantedPayStatementFields =
     protocol.grant?.streams.find((stream) => stream.name === "pay_statements")?.fields || GRANTED_PAY_STATEMENT_FIELDS;
 
   return (
     <div className="min-h-screen" style={{ backgroundColor: "var(--background)", color: "var(--foreground)" }}>
-      {/* Sticky header */}
-      <header
-        className="sticky top-0 z-40 flex h-12 items-center gap-2 px-4 md:gap-3 md:px-6"
-        style={{
-          backgroundColor: "var(--background)",
-          backdropFilter: "blur(8px)",
-          borderBottom: "1px solid var(--border)",
-        }}
-      >
-        <SiteHeader currentLabel={currentLabel} />
-
-        {/* Mobile: current section indicator */}
-        <span
-          className="font-mono text-xs uppercase tracking-wide md:hidden"
-          style={{ color: "var(--muted-foreground)" }}
-        >
-          {SECTIONS.find((s) => s.id === activeSection)?.label}
-        </span>
-
-        <div className="flex-1" />
-
-        {/* Inline stepper for medium screens */}
-        <nav aria-label="Protocol sections" className="hidden items-center gap-0.5 overflow-x-auto md:flex lg:hidden">
-          {SECTIONS.map(({ id, label }) => (
-            <button
-              key={id}
-              onClick={() => navigateTo(id)}
-              className="shrink-0 rounded px-2 py-1.5 text-xs transition-colors"
-              style={{
-                backgroundColor: activeSection === id ? "var(--foreground)" : "transparent",
-                color: activeSection === id ? "var(--background)" : "var(--muted-foreground)",
-              }}
-            >
-              {label}
-            </button>
-          ))}
-        </nav>
-        <span
-          className="hidden font-mono text-xs md:inline"
-          style={{ color: "var(--muted-foreground)", opacity: 0.65 }}
-        >
-          v0.1.0
-        </span>
-      </header>
+      <StickyHeader activeSection={activeSection} currentLabel={currentLabel} navigateTo={navigateTo} />
 
       {/* Right-side stepper (large screens) */}
       <Stepper activeId={activeSection} onNavigate={navigateTo} />
 
       {/* Protocol state indicator — visible during sections 4-8 */}
-      {(() => {
-        if (!["consent", "grant", "enforce", "sync", "revoke"].includes(activeSection)) {
-          return null;
-        }
-        let dotColor = "var(--border)";
-        if (protocol.phase === "granted") {
-          dotColor = "var(--success)";
-        } else if (protocol.phase === "revoked") {
-          dotColor = "var(--destructive)";
-        }
-        let grantLabel = "idle";
-        if (protocol.phase === "granted") {
-          grantLabel = "active";
-        } else if (protocol.phase === "revoked") {
-          grantLabel = "revoked";
-        }
-        return (
-          <div
-            className="fixed bottom-6 left-1/2 z-30 flex -translate-x-1/2 items-center gap-2 rounded-full px-3 py-1.5 text-xs"
-            style={{
-              backgroundColor: "var(--card)",
-              border: "1px solid var(--border)",
-              boxShadow: "0 4px 6px rgba(0,0,0,0.04), 0 10px 15px rgba(0,0,0,0.08)",
-              opacity: 0.9,
-            }}
-          >
-            <div className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: dotColor }} />
-            <span style={{ color: "var(--muted-foreground)" }}>Grant: {grantLabel}</span>
-          </div>
-        );
-      })()}
+      <GrantIndicator activeSection={activeSection} phase={protocol.phase} />
+
 
       {hero ?? <DefaultReferenceHero />}
 
@@ -1601,39 +1709,14 @@ Content-Type: application/json
             </DetailPanel>
           }
         >
-          {protocol.phase === "idle" ? (
-            <div className="flex w-full flex-col items-center gap-4">
-              <div className="flex items-center gap-2">
-                <span className="text-xs" style={{ color: "var(--muted-foreground)" }}>
-                  Access mode:
-                </span>
-                {(["continuous", "single_use"] as const).map((mode) => (
-                  <button
-                    key={mode}
-                    onClick={() => setAccessMode(mode)}
-                    className="rounded px-2 py-1 font-mono text-xs transition-colors"
-                    style={{
-                      backgroundColor: accessMode === mode ? "var(--foreground)" : "var(--muted)",
-                      color: accessMode === mode ? "var(--background)" : "var(--muted-foreground)",
-                    }}
-                  >
-                    {mode}
-                  </button>
-                ))}
-              </div>
-              <ConsentCard {...CONSENT_SPECIMEN} accessMode={accessMode} onAllow={handleAllow} onDeny={handleDeny} />
-            </div>
-          ) : (
-            <OutcomeCard
-              variant={protocol.phase === "granted" ? "granted" : "revoked"}
-              message={
-                protocol.phase === "granted"
-                  ? `${LONGVIEW_CLIENT_NAME} may now query the resource server. Scroll down to see enforcement in action.`
-                  : `The grant has been revoked. ${LONGVIEW_CLIENT_NAME} can no longer query under it.`
-              }
-              onReset={handleReset}
-            />
-          )}
+          <ConsentStageBody
+            accessMode={accessMode}
+            handleAllow={handleAllow}
+            handleDeny={handleDeny}
+            handleReset={handleReset}
+            phase={protocol.phase}
+            setAccessMode={setAccessMode}
+          />
         </FeaturedSection>
 
         {/* Grant — wide layout */}
