@@ -183,7 +183,7 @@ export function buildSemanticRetrievalCapability({
   indexState = null,
   languageBias = null,
 }: SemanticRetrievalCapabilityInput = {}): SemanticRetrievalCapability | null {
-  if (!model || !dimensions || !distanceMetric || !indexState) {
+  if (!(model && dimensions && distanceMetric && indexState)) {
     return null;
   }
 

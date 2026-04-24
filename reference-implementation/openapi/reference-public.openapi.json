@@ -187,6 +187,133 @@
                     "pdpp_core_query_base": {
                       "type": "string",
                       "format": "uri"
+                    },
+                    "capabilities": {
+                      "type": "object",
+                      "additionalProperties": true,
+                      "properties": {
+                        "lexical_retrieval": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "properties": {
+                            "supported": {
+                              "type": "boolean"
+                            },
+                            "endpoint": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "cross_stream": {
+                              "type": "boolean"
+                            },
+                            "snippets": {
+                              "type": "boolean"
+                            },
+                            "default_limit": {
+                              "type": "integer",
+                              "minimum": 1
+                            },
+                            "max_limit": {
+                              "type": "integer",
+                              "minimum": 1
+                            }
+                          },
+                          "required": [
+                            "supported"
+                          ]
+                        },
+                        "semantic_retrieval": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "properties": {
+                            "supported": {
+                              "type": "boolean"
+                            },
+                            "stability": {
+                              "type": "string",
+                              "enum": [
+                                "experimental"
+                              ]
+                            },
+                            "endpoint": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "cross_stream": {
+                              "type": "boolean"
+                            },
+                            "query_input": {
+                              "const": "text"
+                            },
+                            "snippets": {
+                              "type": "boolean"
+                            },
+                            "lexical_blending": {
+                              "type": "boolean"
+                            },
+                            "model": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "dimensions": {
+                              "type": "integer",
+                              "minimum": 1
+                            },
+                            "distance_metric": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "default_limit": {
+                              "type": "integer",
+                              "minimum": 1
+                            },
+                            "max_limit": {
+                              "type": "integer",
+                              "minimum": 1
+                            },
+                            "index_state": {
+                              "type": "string",
+                              "enum": [
+                                "built",
+                                "building",
+                                "stale"
+                              ]
+                            },
+                            "language_bias": {
+                              "type": "object",
+                              "additionalProperties": false,
+                              "properties": {
+                                "primary": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "note": {
+                                  "type": "string",
+                                  "minLength": 1
+                                }
+                              },
+                              "required": [
+                                "primary"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "supported",
+                            "stability",
+                            "endpoint",
+                            "cross_stream",
+                            "query_input",
+                            "snippets",
+                            "lexical_blending",
+                            "model",
+                            "dimensions",
+                            "distance_metric",
+                            "default_limit",
+                            "max_limit",
+                            "index_state"
+                          ]
+                        }
+                      }
                     }
                   },
                   "required": [
@@ -3080,6 +3207,681 @@
           },
           "404": {
             "description": "Stream or record not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$id": "pdpp/common/PdppError",
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "type": {
+                          "type": "string"
+                        },
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "param": {
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "code",
+                        "message",
+                        "request_id"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/search": {
+      "get": {
+        "operationId": "searchRecordsLexical",
+        "tags": [
+          "records",
+          "lexical-retrieval"
+        ],
+        "summary": "Optional lexical retrieval extension: search records across authorized streams by text. See the lexical-retrieval capability spec.",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "q",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "$id": "pdpp/common/Cursor",
+              "type": "string",
+              "description": "Opaque logical pagination cursor. Encodes (cursor_field, primary_key) position."
+            }
+          },
+          {
+            "in": "query",
+            "name": "streams",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "minItems": 1
+                }
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "properties": {
+                    "object": {
+                      "const": "list"
+                    },
+                    "url": {
+                      "type": "string"
+                    },
+                    "has_more": {
+                      "type": "boolean"
+                    },
+                    "next_cursor": {
+                      "type": "string"
+                    },
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "additionalProperties": true,
+                        "properties": {
+                          "object": {
+                            "const": "search_result"
+                          },
+                          "stream": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "record_key": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "connector_id": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "record_url": {
+                            "type": "string"
+                          },
+                          "emitted_at": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "matched_fields": {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": {
+                              "type": "string",
+                              "minLength": 1
+                            }
+                          },
+                          "snippet": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                              "field": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "text": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "field",
+                              "text"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "object",
+                          "stream",
+                          "record_key",
+                          "connector_id",
+                          "emitted_at",
+                          "matched_fields"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "object",
+                    "data",
+                    "has_more"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (e.g. unsupported v1 query parameter, missing q)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$id": "pdpp/common/PdppError",
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "type": {
+                          "type": "string"
+                        },
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "param": {
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "code",
+                        "message",
+                        "request_id"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid access token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$id": "pdpp/common/PdppError",
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "type": {
+                          "type": "string"
+                        },
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "param": {
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "code",
+                        "message",
+                        "request_id"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Grant does not permit a named stream (client tokens only)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$id": "pdpp/common/PdppError",
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "type": {
+                          "type": "string"
+                        },
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "param": {
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "code",
+                        "message",
+                        "request_id"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "Cursor expired or refers to an unknown snapshot",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$id": "pdpp/common/PdppError",
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "type": {
+                          "type": "string"
+                        },
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "param": {
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "code",
+                        "message",
+                        "request_id"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/search/semantic": {
+      "get": {
+        "operationId": "searchRecordsSemantic",
+        "tags": [
+          "records",
+          "semantic-retrieval"
+        ],
+        "summary": "Experimental optional extension: semantic retrieval across authorized streams by text. See the semantic-retrieval capability spec. Unstable in v1.",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "q",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "$id": "pdpp/common/Cursor",
+              "type": "string",
+              "description": "Opaque logical pagination cursor. Encodes (cursor_field, primary_key) position."
+            }
+          },
+          {
+            "in": "query",
+            "name": "streams",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "minItems": 1
+                }
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "properties": {
+                    "object": {
+                      "const": "list"
+                    },
+                    "url": {
+                      "type": "string"
+                    },
+                    "has_more": {
+                      "type": "boolean"
+                    },
+                    "next_cursor": {
+                      "type": "string"
+                    },
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "additionalProperties": true,
+                        "properties": {
+                          "object": {
+                            "const": "search_result"
+                          },
+                          "stream": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "record_key": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "connector_id": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "record_url": {
+                            "type": "string"
+                          },
+                          "emitted_at": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "matched_fields": {
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "minLength": 1
+                            }
+                          },
+                          "retrieval_mode": {
+                            "type": "string",
+                            "enum": [
+                              "semantic",
+                              "hybrid"
+                            ]
+                          },
+                          "snippet": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                              "field": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "text": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "field",
+                              "text"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "object",
+                          "stream",
+                          "record_key",
+                          "connector_id",
+                          "emitted_at",
+                          "matched_fields",
+                          "retrieval_mode"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "object",
+                    "data",
+                    "has_more"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (e.g. unsupported v1 query parameter, missing q)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$id": "pdpp/common/PdppError",
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "type": {
+                          "type": "string"
+                        },
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "param": {
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "code",
+                        "message",
+                        "request_id"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid access token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$id": "pdpp/common/PdppError",
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "type": {
+                          "type": "string"
+                        },
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "param": {
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "code",
+                        "message",
+                        "request_id"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Grant does not permit a named stream (client tokens only)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$id": "pdpp/common/PdppError",
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "type": {
+                          "type": "string"
+                        },
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "param": {
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "code",
+                        "message",
+                        "request_id"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "Cursor expired or refers to an unknown snapshot",
             "content": {
               "application/json": {
                 "schema": {

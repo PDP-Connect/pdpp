@@ -985,10 +985,7 @@ export const publicManifests = [
           limit: { type: "integer", minimum: 1, maximum: 100 },
           cursor: CursorSchema,
           streams: {
-            anyOf: [
-              NonEmptyStringSchema,
-              { type: "array", items: NonEmptyStringSchema, minItems: 1 },
-            ],
+            anyOf: [NonEmptyStringSchema, { type: "array", items: NonEmptyStringSchema, minItems: 1 }],
           },
         },
         required: ["q"],

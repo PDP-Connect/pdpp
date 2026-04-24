@@ -17,6 +17,8 @@ Generated from `packages/reference-contract/src/public/`. Do not edit by hand.
 | **GET** | `/v1/streams/{stream}` | `getStreamMetadata` | Return stream metadata including declared query capabilities and advisory freshness. |
 | **GET** | `/v1/streams/{stream}/records` | `listRecords` | List records in a stream under grant enforcement. Supports logical-cursor pagination, exact and declared range filters, and changes_since. |
 | **GET** | `/v1/streams/{stream}/records/{id}` | `getRecord` | Fetch a single record by primary key under grant enforcement, with optional declared expansion. |
+| **GET** | `/v1/search` | `searchRecordsLexical` | Optional lexical retrieval extension: search records across authorized streams by text. See the lexical-retrieval capability spec. |
+| **GET** | `/v1/search/semantic` | `searchRecordsSemantic` | Experimental optional extension: semantic retrieval across authorized streams by text. See the semantic-retrieval capability spec. Unstable in v1. |
 | **GET** | `/v1/blobs/{blob_id}` | `getBlob` | Fetch blob bytes authorized by the caller having discovered the referencing record under grant. |
 
 ## getAuthorizationServerMetadata
@@ -272,6 +274,48 @@ Fetch a single record by primary key under grant enforcement, with optional decl
 - `401` — Missing or invalid access token
 - `403` — Grant does not permit this request
 - `404` — Stream or record not found
+
+## searchRecordsLexical
+
+`GET /v1/search`
+
+Optional lexical retrieval extension: search records across authorized streams by text. See the lexical-retrieval capability spec.
+
+### Query parameters
+
+- `q` — string
+- `limit` — integer · min: 1 · max: 100
+- `cursor` — string · Opaque logical pagination cursor. Encodes (cursor_field, primary_key) position.
+- `streams` — any
+
+### Responses
+
+- `200` — JSON body
+- `400` — Invalid request (e.g. unsupported v1 query parameter, missing q)
+- `401` — Missing or invalid access token
+- `403` — Grant does not permit a named stream (client tokens only)
+- `410` — Cursor expired or refers to an unknown snapshot
+
+## searchRecordsSemantic
+
+`GET /v1/search/semantic`
+
+Experimental optional extension: semantic retrieval across authorized streams by text. See the semantic-retrieval capability spec. Unstable in v1.
+
+### Query parameters
+
+- `q` — string
+- `limit` — integer · min: 1 · max: 100
+- `cursor` — string · Opaque logical pagination cursor. Encodes (cursor_field, primary_key) position.
+- `streams` — any
+
+### Responses
+
+- `200` — JSON body
+- `400` — Invalid request (e.g. unsupported v1 query parameter, missing q)
+- `401` — Missing or invalid access token
+- `403` — Grant does not permit a named stream (client tokens only)
+- `410` — Cursor expired or refers to an unknown snapshot
 
 ## getBlob
 
