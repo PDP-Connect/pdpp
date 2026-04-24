@@ -21,6 +21,11 @@ import { randomBytes } from 'crypto';
 import { setImmediate as yieldImmediate } from 'node:timers/promises';
 import { getConnectorManifest } from './auth.js';
 import { getDb } from './db.js';
+import {
+  compileRequestFilters,
+  passesGrantRecordConstraints,
+  passesRequestFilters,
+} from './record-filters.js';
 
 let activeLexicalBackfillCount = 0;
 let nextLexicalBackfillJobId = 1;
@@ -538,10 +543,18 @@ export async function runLexicalSearch({
         continue;
       }
       const grant = buildOwnerReadGrantForManifest(manifest);
+      const compiledFilter = compileSingleStreamSearchFilter({
+        manifest,
+        grant,
+        streamName: params.filteredStream,
+        filter: params.filter,
+      });
       const planEntries = buildSearchPlanForGrant({
         manifest,
         grant,
         streamsFilter: params.streams,
+        compiledFilter,
+        connectorId,
       });
       if (planEntries.length === 0) continue;
       perConnectorPlans.push({ connectorId, manifest, grant, planEntries });
@@ -569,6 +582,13 @@ export async function runLexicalSearch({
       manifest,
       grant,
       streamsFilter: params.streams,
+      compiledFilter: compileSingleStreamSearchFilter({
+        manifest,
+        grant,
+        streamName: params.filteredStream,
+        filter: params.filter,
+      }),
+      connectorId,
     });
     perConnectorPlans = planEntries.length === 0
       ? []
@@ -637,7 +657,7 @@ export async function runLexicalSearch({
 
 // ─── Pure helpers ──────────────────────────────────────────────────────────
 
-const ALLOWED_PARAMS = new Set(['q', 'limit', 'cursor', 'streams', 'streams[]']);
+const ALLOWED_PARAMS = new Set(['q', 'limit', 'cursor', 'streams', 'streams[]', 'filter']);
 
 /**
  * Parse and validate the v1 query-string allowlist.
@@ -663,7 +683,21 @@ export function parseSearchParams(query) {
   const limit = clampLimit(query.limit);
   const cursor = typeof query.cursor === 'string' && query.cursor ? query.cursor : null;
   const streams = normalizeStreamsParam(query.streams ?? query['streams[]']);
-  return { q, limit, cursor, streams };
+  const hasFilter = Object.prototype.hasOwnProperty.call(query, 'filter');
+  if (hasFilter && (!streams || streams.length !== 1)) {
+    const err = new Error('filter[...] requires exactly one streams[] value');
+    err.code = 'invalid_request';
+    err.param = 'streams';
+    throw err;
+  }
+  return {
+    q,
+    limit,
+    cursor,
+    streams,
+    filter: hasFilter ? query.filter : null,
+    filteredStream: hasFilter ? streams[0] : null,
+  };
 }
 
 function clampLimit(raw) {
@@ -695,7 +729,59 @@ function normalizeStreamsParam(raw) {
  *   - undefined / null / array(0) ⇒ "all fields authorized"
  *   - array(>=1) ⇒ explicit allowlist
  */
-export function buildSearchPlanForGrant({ manifest, grant, streamsFilter }) {
+function compileSingleStreamSearchFilter({ manifest, grant, streamName, filter }) {
+  if (!streamName) return null;
+  const manifestStream = (manifest?.streams || []).find((s) => s.name === streamName);
+  if (!manifestStream) return null;
+  const streamGrant = (grant?.streams || []).find((s) => s.name === streamName);
+  if (!streamGrant) return null;
+  return {
+    streamName,
+    filters: compileRequestFilters(filter, streamGrant, manifestStream),
+  };
+}
+
+function hasGrantRecordConstraints(streamGrant) {
+  return !!(
+    streamGrant?.time_range
+    || (Array.isArray(streamGrant?.resources) && streamGrant.resources.length > 0)
+  );
+}
+
+function buildCandidateRecordKeys({ connectorId, streamName, streamGrant, manifestStream, compiledFilters }) {
+  const needsRecordScan = compiledFilters?.length || hasGrantRecordConstraints(streamGrant);
+  if (!needsRecordScan) return null;
+
+  const db = getDb();
+  const where = ['connector_id = ?', 'stream = ?', 'deleted = 0'];
+  const binds = [connectorId, streamName];
+  if (Array.isArray(streamGrant?.resources) && streamGrant.resources.length > 0) {
+    where.push(`record_key IN (${streamGrant.resources.map(() => '?').join(', ')})`);
+    binds.push(...streamGrant.resources);
+  }
+
+  const rows = db.prepare(`
+    SELECT record_key, record_json
+    FROM records
+    WHERE ${where.join(' AND ')}
+  `).all(...binds);
+
+  const allowed = [];
+  for (const row of rows) {
+    let data;
+    try {
+      data = row.record_json ? JSON.parse(row.record_json) : null;
+    } catch {
+      continue;
+    }
+    if (!passesGrantRecordConstraints(data, row.record_key, streamGrant, manifestStream)) continue;
+    if (!passesRequestFilters(data, compiledFilters)) continue;
+    allowed.push(row.record_key);
+  }
+  return allowed;
+}
+
+export function buildSearchPlanForGrant({ manifest, grant, streamsFilter, compiledFilter = null, connectorId = null }) {
   if (!manifest?.streams || !grant?.streams) return [];
   const plan = [];
   for (const mStream of manifest.streams) {
@@ -714,7 +800,22 @@ export function buildSearchPlanForGrant({ manifest, grant, streamsFilter }) {
       : declared.slice();
     if (searchable.length === 0) continue;
 
-    plan.push({ streamName: mStream.name, searchableFields: searchable });
+    const filters = compiledFilter?.streamName === mStream.name ? compiledFilter.filters : [];
+    const candidateRecordKeys = connectorId
+      ? buildCandidateRecordKeys({
+        connectorId,
+        streamName: mStream.name,
+        streamGrant,
+        manifestStream: mStream,
+        compiledFilters: filters,
+      })
+      : null;
+
+    plan.push({
+      streamName: mStream.name,
+      searchableFields: searchable,
+      ...(candidateRecordKeys ? { candidateRecordKeys } : {}),
+    });
   }
   return plan;
 }
@@ -788,6 +889,7 @@ async function runFtsQueryForConnector({ connectorId, planEntries, q, allowsSnip
   const collapsed = new Map(); // recordKey → { connectorId, stream, recordKey, emittedAt, matchedFields, snippet?, score }
 
   for (const entry of planEntries) {
+    if (Array.isArray(entry.candidateRecordKeys) && entry.candidateRecordKeys.length === 0) continue;
     for (const field of entry.searchableFields) {
       // bm25(lexical_search_index) returns smaller values for better matches
       // (negative-leaning); we sort ascending and offer it as the relevance
@@ -795,6 +897,9 @@ async function runFtsQueryForConnector({ connectorId, planEntries, q, allowsSnip
       const snippetExpr = allowsSnippets
         ? `snippet(lexical_search_index, 4, '', '', '…', 16)`
         : `NULL`;
+      const recordKeyConstraint = Array.isArray(entry.candidateRecordKeys)
+        ? `AND r.record_key IN (${entry.candidateRecordKeys.map(() => '?').join(',')})`
+        : '';
       const rows = db.prepare(`
         SELECT
           lsi.record_key                          AS record_key,
@@ -812,9 +917,10 @@ async function runFtsQueryForConnector({ connectorId, planEntries, q, allowsSnip
           AND lsi.field        = ?
           AND lsi.text MATCH   ?
           AND r.deleted = 0
+          ${recordKeyConstraint}
         ORDER BY score ASC
         LIMIT 200
-      `).all(connectorId, entry.streamName, field, ftsQuery);
+      `).all(connectorId, entry.streamName, field, ftsQuery, ...(entry.candidateRecordKeys || []));
       for (const row of rows) {
         const key = `${entry.streamName}:${row.record_key}`;
         const existing = collapsed.get(key);

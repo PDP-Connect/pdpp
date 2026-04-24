@@ -104,6 +104,10 @@ const MANIFEST_A = {
       consent_time_field: 'source_created_at',
       selection: { fields: true, resources: false },
       query: {
+        range_filters: {
+          source_created_at: ['gte', 'gt', 'lte', 'lt'],
+          score: ['gte'],
+        },
         search: {
           lexical_fields: ['title', 'selftext'],
           semantic_fields: ['title', 'selftext'],
@@ -181,7 +185,12 @@ const MANIFEST_B = {
       cursor_field: 'source_created_at',
       consent_time_field: 'source_created_at',
       selection: { fields: true, resources: false },
-      query: { search: { semantic_fields: ['title', 'selftext'] } }, // semantic only
+      query: {
+        range_filters: {
+          source_created_at: ['gte', 'gt', 'lte', 'lt'],
+        },
+        search: { semantic_fields: ['title', 'selftext'] },
+      }, // semantic only
     },
   ],
 };
@@ -462,13 +471,85 @@ test('forbidden parameters are all rejected with invalid_request (integration)',
       assert.equal(status, 400, `${key} should return 400`);
       assert.equal(body.error?.code, 'invalid_request', `${key} code`);
     }
-    // filter[…] also rejected
+    // filter[…] without a single stream is still rejected
     const { status: fStatus, body: fBody } = await fetchJson(
       `${rsUrl}/v1/search/semantic?q=anything&${encodeURIComponent('filter[foo]')}=bar`,
       { headers: { 'Authorization': `Bearer ${ownerToken}` } },
     );
     assert.equal(fStatus, 400);
     assert.equal(fBody.error?.code, 'invalid_request');
+  });
+});
+
+test('filtered semantic search applies declared range and no-match filters before vector lookup', async () => {
+  await withHarness({}, async ({ asUrl, rsUrl }) => {
+    const ownerToken = await issueOwnerToken(asUrl);
+    const connectorA = MANIFEST_A.connector_id;
+    const exactQuery = 'semantic filtered alpha';
+    await ingest(rsUrl, ownerToken, connectorA, 'posts', [
+      { id: 'old-sem', title: exactQuery, selftext: '', score: 1, source_created_at: '2026-03-01T00:00:00Z' },
+      { id: 'new-sem', title: exactQuery, selftext: '', score: 5, source_created_at: '2026-04-10T00:00:00Z' },
+    ]);
+
+    const range = await fetchJson(
+      `${rsUrl}/v1/search/semantic?q=${encodeURIComponent(exactQuery)}&streams=posts&filter[source_created_at][gte]=2026-04-01T00:00:00Z`,
+      { headers: { Authorization: `Bearer ${ownerToken}` } },
+    );
+    assert.equal(range.status, 200);
+    assert.deepEqual(
+      range.body.data.filter((r) => r.connector_id === connectorA).map((r) => r.record_key),
+      ['new-sem'],
+    );
+
+    const noMatch = await fetchJson(
+      `${rsUrl}/v1/search/semantic?q=${encodeURIComponent(exactQuery)}&streams=posts&filter[source_created_at][gte]=2027-01-01T00:00:00Z`,
+      { headers: { Authorization: `Bearer ${ownerToken}` } },
+    );
+    assert.equal(noMatch.status, 200);
+    assert.deepEqual(noMatch.body.data.filter((r) => r.connector_id === connectorA), []);
+  });
+});
+
+test('filtered semantic search rejects invalid filters and still-forbidden parameters', async () => {
+  await withHarness({}, async ({ asUrl, rsUrl }) => {
+    const ownerToken = await issueOwnerToken(asUrl);
+    const connectorA = MANIFEST_A.connector_id;
+    await ingest(rsUrl, ownerToken, connectorA, 'posts', [
+      { id: 'p1', title: 'semantic filtered alpha', selftext: 'secret body', score: 5, source_created_at: '2026-04-10T00:00:00Z' },
+    ]);
+
+    const rejectedOwnerQueries = [
+      'q=semantic&filter[source_created_at][gte]=2026-04-01T00:00:00Z',
+      'q=semantic&streams=posts&streams=comments&filter[source_created_at][gte]=2026-04-01T00:00:00Z',
+      'q=semantic&streams=posts&filter[subreddit][gte]=finance',
+      'q=semantic&streams=posts&filter[source_created_at][between]=2026-04-01T00:00:00Z',
+      'q=semantic&streams=posts&filter[source_created_at][gte]=not-a-date',
+      'q=semantic&streams=posts&filter[source_created_at][gte]=2026-04-01T00:00:00Z&model=client-model',
+      `q=semantic&streams=posts&filter[source_created_at][gte]=2026-04-01T00:00:00Z&connector_id=${encodeURIComponent(connectorA)}`,
+    ];
+    for (const query of rejectedOwnerQueries) {
+      const { status, body } = await fetchJson(
+        `${rsUrl}/v1/search/semantic?${query}`,
+        { headers: { Authorization: `Bearer ${ownerToken}` } },
+      );
+      assert.equal(status, 400, `expected 400 for ${query}`);
+      assert.equal(body.error.code, 'invalid_request');
+    }
+
+    const approved = await approveClientGrant(asUrl, {
+      client_id: 'longview',
+      connector_id: connectorA,
+      purpose_code: 'analytics',
+      purpose_description: 'semantic filtered retrieval test',
+      access_mode: 'continuous',
+      streams: [{ name: 'posts', fields: ['id', 'title', 'source_created_at'] }],
+    });
+    const unauthorized = await fetchJson(
+      `${rsUrl}/v1/search/semantic?q=semantic&streams=posts&filter[selftext]=secret`,
+      { headers: { Authorization: `Bearer ${approved.token}` } },
+    );
+    assert.equal(unauthorized.status, 403);
+    assert.equal(unauthorized.body.error.code, 'field_not_granted');
   });
 });
 
@@ -1337,6 +1418,9 @@ test('parseSemanticSearchParams accepts the v1 allowlist, rejects everything els
   assert.equal(ok.limit, 25);
   assert.equal(ok.cursor, null);
   assert.equal(ok.streams, null);
+  const filtered = parseSemanticSearchParams({ q: 'x', streams: 'posts', filter: { source_created_at: { gte: '2026-04-01T00:00:00Z' } } });
+  assert.deepEqual(filtered.streams, ['posts']);
+  assert.deepEqual(filtered.filter, { source_created_at: { gte: '2026-04-01T00:00:00Z' } });
   // Each rejected key throws with { code: 'invalid_request', param: <key> }.
   for (const key of ['vector', 'embedding', 'model', 'rank', 'connector_id', 'order']) {
     assert.throws(
@@ -1349,6 +1433,10 @@ test('parseSemanticSearchParams accepts the v1 allowlist, rejects everything els
   assert.throws(
     () => parseSemanticSearchParams({}),
     (err) => err.code === 'invalid_request' && err.param === 'q',
+  );
+  assert.throws(
+    () => parseSemanticSearchParams({ q: 'x', filter: { source_created_at: { gte: '2026-04-01T00:00:00Z' } } }),
+    (err) => err.code === 'invalid_request' && err.param === 'streams',
   );
 });
 

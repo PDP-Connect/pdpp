@@ -906,6 +906,10 @@ export const publicManifests = [
           streams: {
             anyOf: [NonEmptyStringSchema, { type: "array", items: NonEmptyStringSchema, minItems: 1 }],
           },
+          filter: {
+            type: "object",
+            additionalProperties: true,
+          },
         },
         required: ["q"],
       },
@@ -986,6 +990,10 @@ export const publicManifests = [
           cursor: CursorSchema,
           streams: {
             anyOf: [NonEmptyStringSchema, { type: "array", items: NonEmptyStringSchema, minItems: 1 }],
+          },
+          filter: {
+            type: "object",
+            additionalProperties: true,
           },
         },
         required: ["q"],

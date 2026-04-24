@@ -3310,6 +3310,15 @@
                 }
               ]
             }
+          },
+          {
+            "in": "query",
+            "name": "filter",
+            "required": false,
+            "schema": {
+              "type": "object",
+              "additionalProperties": true
+            }
           }
         ],
         "responses": {
@@ -3643,6 +3652,15 @@
                   "minItems": 1
                 }
               ]
+            }
+          },
+          {
+            "in": "query",
+            "name": "filter",
+            "required": false,
+            "schema": {
+              "type": "object",
+              "additionalProperties": true
             }
           }
         ],

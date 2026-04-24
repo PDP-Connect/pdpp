@@ -95,7 +95,13 @@ const REDDITISH_MANIFEST_A = {
       cursor_field: 'source_created_at',
       consent_time_field: 'source_created_at',
       selection: { fields: true, resources: false },
-      query: { search: { lexical_fields: ['title', 'selftext'] } },
+      query: {
+        range_filters: {
+          source_created_at: ['gte', 'gt', 'lte', 'lt'],
+          score: ['gte'],
+        },
+        search: { lexical_fields: ['title', 'selftext'] },
+      },
     },
     {
       name: 'comments',
@@ -162,7 +168,12 @@ const REDDITISH_MANIFEST_B = {
       cursor_field: 'source_created_at',
       consent_time_field: 'source_created_at',
       selection: { fields: true, resources: false },
-      query: { search: { lexical_fields: ['title', 'selftext'] } },
+      query: {
+        range_filters: {
+          source_created_at: ['gte', 'gt', 'lte', 'lt'],
+        },
+        search: { lexical_fields: ['title', 'selftext'] },
+      },
     },
   ],
 };
@@ -371,6 +382,116 @@ test('disallowed v1 params are rejected with invalid_request', async () => {
       // rejection from search.js also emits invalid_request. Either is fine.
       assert.equal(body.error.code, 'invalid_request', `expected invalid_request for ${param}`);
     }
+  });
+});
+
+test('filtered lexical search applies declared range, exact, and no-match filters', async () => {
+  await withHarness({}, async ({ asUrl, rsUrl }) => {
+    const ownerToken = await issueOwnerToken(asUrl);
+    const connectorA = REDDITISH_MANIFEST_A.connector_id;
+    await ingest(rsUrl, ownerToken, connectorA, 'posts', [
+      { id: 'old', title: 'invoice alpha', subreddit: 'finance', selftext: '', score: 1, source_created_at: '2026-03-01T00:00:00Z' },
+      { id: 'new', title: 'invoice alpha', subreddit: 'finance', selftext: '', score: 5, source_created_at: '2026-04-10T00:00:00Z' },
+      { id: 'other', title: 'invoice alpha', subreddit: 'cooking', selftext: '', score: 8, source_created_at: '2026-04-11T00:00:00Z' },
+    ]);
+
+    const range = await fetchJson(
+      `${rsUrl}/v1/search?q=invoice&streams=posts&filter[source_created_at][gte]=2026-04-01T00:00:00Z`,
+      { headers: { Authorization: `Bearer ${ownerToken}` } },
+    );
+    assert.equal(range.status, 200);
+    assert.deepEqual(
+      range.body.data.filter((r) => r.connector_id === connectorA).map((r) => r.record_key).sort(),
+      ['new', 'other'],
+    );
+
+    const exact = await fetchJson(
+      `${rsUrl}/v1/search?q=invoice&streams=posts&filter[source_created_at]=2026-04-10T00:00:00Z`,
+      { headers: { Authorization: `Bearer ${ownerToken}` } },
+    );
+    assert.equal(exact.status, 200);
+    assert.deepEqual(
+      exact.body.data.filter((r) => r.connector_id === connectorA).map((r) => r.record_key).sort(),
+      ['new'],
+    );
+
+    const noMatch = await fetchJson(
+      `${rsUrl}/v1/search?q=invoice&streams=posts&filter[source_created_at]=2027-01-01T00:00:00Z`,
+      { headers: { Authorization: `Bearer ${ownerToken}` } },
+    );
+    assert.equal(noMatch.status, 200);
+    assert.deepEqual(noMatch.body.data.filter((r) => r.connector_id === connectorA), []);
+  });
+});
+
+test('filtered lexical search rejects invalid filter shapes and still-forbidden parameters', async () => {
+  await withHarness({}, async ({ asUrl, rsUrl }) => {
+    const ownerToken = await issueOwnerToken(asUrl);
+    const connectorA = REDDITISH_MANIFEST_A.connector_id;
+    await ingest(rsUrl, ownerToken, connectorA, 'posts', [
+      { id: 'p1', title: 'invoice alpha', subreddit: 'finance', selftext: 'secret body', score: 5, source_created_at: '2026-04-10T00:00:00Z' },
+    ]);
+
+    const rejectedOwnerQueries = [
+      'q=invoice&filter[source_created_at][gte]=2026-04-01T00:00:00Z',
+      'q=invoice&streams=posts&streams=comments&filter[source_created_at][gte]=2026-04-01T00:00:00Z',
+      'q=invoice&streams=posts&filter[subreddit][gte]=finance',
+      'q=invoice&streams=posts&filter[source_created_at][between]=2026-04-01T00:00:00Z',
+      'q=invoice&streams=posts&filter[source_created_at][gte]=not-a-date',
+      'q=invoice&streams=posts&filter[source_created_at][gte]=2026-04-01T00:00:00Z&rank=recency',
+      `q=invoice&streams=posts&filter[source_created_at][gte]=2026-04-01T00:00:00Z&connector_id=${encodeURIComponent(connectorA)}`,
+    ];
+    for (const query of rejectedOwnerQueries) {
+      const { status, body } = await fetchJson(
+        `${rsUrl}/v1/search?${query}`,
+        { headers: { Authorization: `Bearer ${ownerToken}` } },
+      );
+      assert.equal(status, 400, `expected 400 for ${query}`);
+      assert.equal(body.error.code, 'invalid_request');
+    }
+
+    const approved = await approveClientGrant(asUrl, {
+      client_id: 'longview',
+      connector_id: connectorA,
+      purpose_code: 'analytics',
+      purpose_description: 'lexical filtered retrieval test',
+      access_mode: 'continuous',
+      streams: [{ name: 'posts', fields: ['id', 'title', 'source_created_at'] }],
+    });
+    const unauthorized = await fetchJson(
+      `${rsUrl}/v1/search?q=invoice&streams=posts&filter[selftext]=secret`,
+      { headers: { Authorization: `Bearer ${approved.token}` } },
+    );
+    assert.equal(unauthorized.status, 403);
+    assert.equal(unauthorized.body.error.code, 'field_not_granted');
+  });
+});
+
+test('owner filtered lexical search fans out by stream across connectors without connector_id input', async () => {
+  await withHarness({}, async ({ asUrl, rsUrl }) => {
+    const ownerToken = await issueOwnerToken(asUrl);
+    await ingest(rsUrl, ownerToken, REDDITISH_MANIFEST_A.connector_id, 'posts', [
+      { id: 'a-filtered', title: 'sharedfilter invoice', selftext: '', score: 5, source_created_at: '2026-04-10T00:00:00Z' },
+    ]);
+    await ingest(rsUrl, ownerToken, REDDITISH_MANIFEST_B.connector_id, 'posts', [
+      { id: 'b-filtered', title: 'sharedfilter invoice', selftext: '', source_created_at: '2026-04-11T00:00:00Z' },
+    ]);
+
+    const { status, body } = await fetchJson(
+      `${rsUrl}/v1/search?q=sharedfilter&streams=posts&filter[source_created_at][gte]=2026-04-01T00:00:00Z`,
+      { headers: { Authorization: `Bearer ${ownerToken}` } },
+    );
+    assert.equal(status, 200);
+    const byConnector = new Map(body.data.map((hit) => [hit.connector_id, hit.record_key]));
+    assert.equal(byConnector.get(REDDITISH_MANIFEST_A.connector_id), 'a-filtered');
+    assert.equal(byConnector.get(REDDITISH_MANIFEST_B.connector_id), 'b-filtered');
+
+    const publicConnectorParam = await fetchJson(
+      `${rsUrl}/v1/search?q=sharedfilter&streams=posts&filter[source_created_at][gte]=2026-04-01T00:00:00Z&connector_id=${encodeURIComponent(REDDITISH_MANIFEST_A.connector_id)}`,
+      { headers: { Authorization: `Bearer ${ownerToken}` } },
+    );
+    assert.equal(publicConnectorParam.status, 400);
+    assert.equal(publicConnectorParam.body.error.code, 'invalid_request');
   });
 });
 
@@ -743,8 +864,11 @@ test('buildSearchPlanForGrant honors declared ∩ authorized; parseSearchParams 
   assert.throws(() => parseSearchParams({}), /q is required/);
   // parseSearchParams: connector_id rejected
   assert.throws(() => parseSearchParams({ q: 'foo', connector_id: 'x' }), /Unsupported query parameter: connector_id/);
-  // parseSearchParams: filter rejected
-  assert.throws(() => parseSearchParams({ q: 'foo', 'filter[recipient]': 'a' }), /Unsupported query parameter/);
+  // parseSearchParams: filter requires exactly one stream and then passes through
+  assert.throws(() => parseSearchParams({ q: 'foo', filter: { title: 'foo' } }), /requires exactly one/);
+  const filtered = parseSearchParams({ q: 'foo', streams: 'posts', filter: { title: 'foo' } });
+  assert.deepEqual(filtered.filter, { title: 'foo' });
+  assert.equal(filtered.filteredStream, 'posts');
   // parseSearchParams: streams[] normalized
   const ok = parseSearchParams({ q: 'foo', streams: 'posts' });
   assert.equal(ok.q, 'foo');

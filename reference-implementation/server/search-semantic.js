@@ -31,6 +31,11 @@ import { setImmediate as yieldImmediate } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { getConnectorManifest } from './auth.js';
 import { getDb } from './db.js';
+import {
+  compileRequestFilters,
+  passesGrantRecordConstraints,
+  passesRequestFilters,
+} from './record-filters.js';
 
 // ─── scope_key encoding ────────────────────────────────────────────────────
 
@@ -458,15 +463,20 @@ function makeBlobFlatIndex({ db, dimensions, distanceMetric }) {
         WHERE connector_id = ?
       `).run(connectorId);
     },
-    async queryPerConnector({ connectorId, scopeKeys, queryVector, limit }) {
+    async queryPerConnector({ connectorId, scopeKeys, queryVector, limit, recordKeys = null }) {
       if (!Array.isArray(scopeKeys) || scopeKeys.length === 0) return [];
+      if (Array.isArray(recordKeys) && recordKeys.length === 0) return [];
       const placeholders = scopeKeys.map(() => '?').join(',');
+      const recordKeyClause = Array.isArray(recordKeys)
+        ? `AND record_key IN (${recordKeys.map(() => '?').join(',')})`
+        : '';
       const rows = db.prepare(`
         SELECT scope_key, record_key, embedding
         FROM semantic_search_blob
         WHERE connector_id = ?
           AND scope_key IN (${placeholders})
-      `).all(connectorId, ...scopeKeys);
+          ${recordKeyClause}
+      `).all(connectorId, ...scopeKeys, ...(recordKeys || []));
       const scored = [];
       for (const row of rows) {
         if (!row.embedding || row.embedding.length !== byteLen) continue;
@@ -646,9 +656,19 @@ function makeSqliteVecIndex({ db, dimensions, distanceMetric }) {
       }
       db.prepare('DELETE FROM semantic_search_rowid WHERE connector_id = ?').run(connectorId);
     },
-    async queryPerConnector({ connectorId, scopeKeys, queryVector, limit }) {
+    async queryPerConnector({ connectorId, scopeKeys, queryVector, limit, recordKeys = null }) {
       if (!Array.isArray(scopeKeys) || scopeKeys.length === 0) return [];
+      if (Array.isArray(recordKeys) && recordKeys.length === 0) return [];
       const placeholders = scopeKeys.map(() => '?').join(',');
+      const recordKeyClause = Array.isArray(recordKeys)
+        ? `AND rowid IN (
+             SELECT rowid
+             FROM semantic_search_rowid
+             WHERE connector_id = ?
+               AND scope_key IN (${placeholders})
+               AND record_key IN (${recordKeys.map(() => '?').join(',')})
+           )`
+        : '';
       const buf = Buffer.from(queryVector.buffer, queryVector.byteOffset, queryVector.byteLength);
       const rows = db.prepare(`
         SELECT connector_id, scope_key, record_key, distance
@@ -656,8 +676,15 @@ function makeSqliteVecIndex({ db, dimensions, distanceMetric }) {
         WHERE embedding MATCH ?
           AND connector_id = ?
           AND scope_key IN (${placeholders})
+          ${recordKeyClause}
         ORDER BY distance LIMIT ?
-      `).all(buf, connectorId, ...scopeKeys, limit);
+      `).all(
+        buf,
+        connectorId,
+        ...scopeKeys,
+        ...(recordKeys ? [connectorId, ...scopeKeys, ...recordKeys] : []),
+        limit,
+      );
       const hits = rows.map((r) => ({
         connectorId: r.connector_id,
         scopeKey: r.scope_key,
@@ -1195,7 +1222,7 @@ export function computeIndexState() {
 
 // ─── Public-route entry point ──────────────────────────────────────────────
 
-const ALLOWED_PARAMS = new Set(['q', 'limit', 'cursor', 'streams', 'streams[]']);
+const ALLOWED_PARAMS = new Set(['q', 'limit', 'cursor', 'streams', 'streams[]', 'filter']);
 
 // Parameters that MUST be rejected explicitly (not silently ignored). Some
 // of these overlap with "anything not in ALLOWED_PARAMS" — the explicit list
@@ -1211,13 +1238,6 @@ const FORBIDDEN_PARAMS = new Set([
 
 export function parseSemanticSearchParams(query) {
   for (const key of Object.keys(query)) {
-    // Anything filter[...]-shaped is a record-listing concept and is rejected.
-    if (key.startsWith('filter[') || key.startsWith('filter.')) {
-      const err = new Error(`Unsupported query parameter: ${key}`);
-      err.code = 'invalid_request';
-      err.param = key;
-      throw err;
-    }
     if (FORBIDDEN_PARAMS.has(key)) {
       const err = new Error(`Unsupported query parameter: ${key}`);
       err.code = 'invalid_request';
@@ -1241,7 +1261,21 @@ export function parseSemanticSearchParams(query) {
   const limit = clampLimit(query.limit);
   const cursor = typeof query.cursor === 'string' && query.cursor ? query.cursor : null;
   const streams = normalizeStreamsParam(query.streams ?? query['streams[]']);
-  return { q, limit, cursor, streams };
+  const hasFilter = Object.prototype.hasOwnProperty.call(query, 'filter');
+  if (hasFilter && (!streams || streams.length !== 1)) {
+    const err = new Error('filter[...] requires exactly one streams[] value');
+    err.code = 'invalid_request';
+    err.param = 'streams';
+    throw err;
+  }
+  return {
+    q,
+    limit,
+    cursor,
+    streams,
+    filter: hasFilter ? query.filter : null,
+    filteredStream: hasFilter ? streams[0] : null,
+  };
 }
 
 function clampLimit(raw) {
@@ -1270,7 +1304,59 @@ function normalizeStreamsParam(raw) {
  * field. This is the structural realization of the spec's "no embed
  * everything, filter later" rule.
  */
-export function buildSemanticSearchPlanForGrant({ manifest, grant, streamsFilter }) {
+function compileSingleStreamSearchFilter({ manifest, grant, streamName, filter }) {
+  if (!streamName) return null;
+  const manifestStream = (manifest?.streams || []).find((s) => s.name === streamName);
+  if (!manifestStream) return null;
+  const streamGrant = (grant?.streams || []).find((s) => s.name === streamName);
+  if (!streamGrant) return null;
+  return {
+    streamName,
+    filters: compileRequestFilters(filter, streamGrant, manifestStream),
+  };
+}
+
+function hasGrantRecordConstraints(streamGrant) {
+  return !!(
+    streamGrant?.time_range
+    || (Array.isArray(streamGrant?.resources) && streamGrant.resources.length > 0)
+  );
+}
+
+function buildCandidateRecordKeys({ connectorId, streamName, streamGrant, manifestStream, compiledFilters }) {
+  const needsRecordScan = compiledFilters?.length || hasGrantRecordConstraints(streamGrant);
+  if (!needsRecordScan) return null;
+
+  const db = getDb();
+  const where = ['connector_id = ?', 'stream = ?', 'deleted = 0'];
+  const binds = [connectorId, streamName];
+  if (Array.isArray(streamGrant?.resources) && streamGrant.resources.length > 0) {
+    where.push(`record_key IN (${streamGrant.resources.map(() => '?').join(', ')})`);
+    binds.push(...streamGrant.resources);
+  }
+
+  const rows = db.prepare(`
+    SELECT record_key, record_json
+    FROM records
+    WHERE ${where.join(' AND ')}
+  `).all(...binds);
+
+  const allowed = [];
+  for (const row of rows) {
+    let data;
+    try {
+      data = row.record_json ? JSON.parse(row.record_json) : null;
+    } catch {
+      continue;
+    }
+    if (!passesGrantRecordConstraints(data, row.record_key, streamGrant, manifestStream)) continue;
+    if (!passesRequestFilters(data, compiledFilters)) continue;
+    allowed.push(row.record_key);
+  }
+  return allowed;
+}
+
+export function buildSemanticSearchPlanForGrant({ manifest, grant, streamsFilter, compiledFilter = null, connectorId = null }) {
   if (!manifest?.streams || !grant?.streams) return [];
   const plan = [];
   for (const mStream of manifest.streams) {
@@ -1288,11 +1374,22 @@ export function buildSemanticSearchPlanForGrant({ manifest, grant, streamsFilter
       ? declared.filter((f) => grantedFields.has(f))
       : declared.slice();
     if (searchable.length === 0) continue;
+    const filters = compiledFilter?.streamName === mStream.name ? compiledFilter.filters : [];
+    const candidateRecordKeys = connectorId
+      ? buildCandidateRecordKeys({
+        connectorId,
+        streamName: mStream.name,
+        streamGrant,
+        manifestStream: mStream,
+        compiledFilters: filters,
+      })
+      : null;
 
     plan.push({
       streamName: mStream.name,
       searchableFields: searchable,
       scopeKeys: searchable.map((f) => encodeScopeKey(mStream.name, f)),
+      ...(candidateRecordKeys ? { candidateRecordKeys } : {}),
     });
   }
   return plan;
@@ -1362,10 +1459,18 @@ export async function runSemanticSearch({
         continue;
       }
       const grant = buildOwnerReadGrantForManifest(manifest);
+      const compiledFilter = compileSingleStreamSearchFilter({
+        manifest,
+        grant,
+        streamName: params.filteredStream,
+        filter: params.filter,
+      });
       const planEntries = buildSemanticSearchPlanForGrant({
         manifest,
         grant,
         streamsFilter: params.streams,
+        compiledFilter,
+        connectorId,
       });
       if (planEntries.length === 0) continue;
       perConnectorPlans.push({ connectorId, manifest, grant, planEntries });
@@ -1391,6 +1496,13 @@ export async function runSemanticSearch({
       manifest,
       grant,
       streamsFilter: params.streams,
+      compiledFilter: compileSingleStreamSearchFilter({
+        manifest,
+        grant,
+        streamName: params.filteredStream,
+        filter: params.filter,
+      }),
+      connectorId,
     });
     perConnectorPlans = planEntries.length === 0
       ? []
@@ -1495,14 +1607,18 @@ async function buildSemanticSnapshot({ q, perConnectorPlans, isOwner }) {
 
   const perConnectorHits = await Promise.all(
     perConnectorPlans.map(async ({ connectorId, planEntries }) => {
-      const scopeKeys = planEntries.flatMap((entry) => entry.scopeKeys);
-      if (scopeKeys.length === 0) return [];
-      return index.queryPerConnector({
-        connectorId,
-        scopeKeys,
-        queryVector,
-        limit: PER_CONNECTOR_LIMIT,
-      });
+      const entryHits = [];
+      for (const entry of planEntries) {
+        if (entry.scopeKeys.length === 0) continue;
+        entryHits.push(...await index.queryPerConnector({
+          connectorId,
+          scopeKeys: entry.scopeKeys,
+          queryVector,
+          limit: PER_CONNECTOR_LIMIT,
+          recordKeys: entry.candidateRecordKeys,
+        }));
+      }
+      return entryHits.sort(compareHits).slice(0, PER_CONNECTOR_LIMIT);
     }),
   );
 

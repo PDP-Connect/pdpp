@@ -287,6 +287,7 @@ Optional lexical retrieval extension: search records across authorized streams b
 - `limit` — integer · min: 1 · max: 100
 - `cursor` — string · Opaque logical pagination cursor. Encodes (cursor_field, primary_key) position.
 - `streams` — any
+- `filter` — object
 
 ### Responses
 
@@ -308,6 +309,7 @@ Experimental optional extension: semantic retrieval across authorized streams by
 - `limit` — integer · min: 1 · max: 100
 - `cursor` — string · Opaque logical pagination cursor. Encodes (cursor_field, primary_key) position.
 - `streams` — any
+- `filter` — object
 
 ### Responses
 

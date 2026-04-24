@@ -119,6 +119,17 @@ It behaves as a small reference-only owner access hub:
 - `/v1/streams/...`
 - owner and client queries under the current reference contract
 
+### Filtered retrieval
+
+`GET /v1/search` and `GET /v1/search/semantic` accept record-list compatible
+`filter[...]` parameters only when the request names exactly one `streams`
+value. Exact filters apply to authorized top-level scalar fields. Range filters
+must be declared by the named stream under `query.range_filters`, so clients
+should inspect stream metadata before sending `filter[field][gte|gt|lte|lt]`.
+
+Cross-stream filtered search, public relevance scores/reranking, and
+caller-controlled hybrid ranking are intentionally deferred.
+
 ### Semantic retrieval
 
 `GET /v1/search/semantic` is an experimental optional extension. In normal
