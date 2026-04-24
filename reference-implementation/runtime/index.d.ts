@@ -10,6 +10,12 @@
 
 export type RuntimeCollectionMode = "full_refresh" | "incremental";
 
+export interface RuntimeTraceContext {
+  readonly request_id: string;
+  readonly scenario_id: string;
+  readonly trace_id: string;
+}
+
 export interface RuntimeRunConnectorOptions {
   collectionMode?: RuntimeCollectionMode;
   connectorId: string;
@@ -18,12 +24,15 @@ export interface RuntimeRunConnectorOptions {
   manifest: Record<string, unknown>;
   onInteraction?: (...args: unknown[]) => unknown;
   onProgress?: (message: unknown) => void;
-  onStarted?: ((info: unknown) => void) | null;
+  onStarted?: ((info: { run_id: string; trace_id: string }) => void) | null;
   ownerToken: string;
   persistState?: boolean;
   rsUrl?: string;
+  runId?: string;
+  scenarioId?: string;
   scope?: Record<string, unknown> | null;
   state?: Record<string, unknown> | null;
+  traceContext?: RuntimeTraceContext;
 }
 
 export interface RuntimeRunConnectorResult {

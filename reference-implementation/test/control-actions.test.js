@@ -19,7 +19,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { startServer } from '../server/index.js';
-import { resolveDefaultConnectorPath } from '../runtime/controller.js';
+import { resolveDefaultConnectorPath } from '../runtime/controller.ts';
 import { validateRequest, listOperations } from '@pdpp/reference-contract';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
