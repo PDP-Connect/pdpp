@@ -2613,6 +2613,165 @@
                         }
                       }
                     },
+                    "field_capabilities": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                          "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                          },
+                          "granted": {
+                            "type": "boolean"
+                          },
+                          "exact_filter": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                              "declared": {
+                                "type": "boolean"
+                              },
+                              "usable": {
+                                "type": "boolean"
+                              },
+                              "reason": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "declared",
+                              "usable"
+                            ]
+                          },
+                          "range_filter": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                              "declared": {
+                                "type": "boolean"
+                              },
+                              "usable": {
+                                "type": "boolean"
+                              },
+                              "operators": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string",
+                                  "minLength": 1
+                                }
+                              },
+                              "reason": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "declared",
+                              "usable"
+                            ]
+                          },
+                          "lexical_search": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                              "declared": {
+                                "type": "boolean"
+                              },
+                              "usable": {
+                                "type": "boolean"
+                              },
+                              "reason": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "declared",
+                              "usable"
+                            ]
+                          },
+                          "semantic_search": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                              "declared": {
+                                "type": "boolean"
+                              },
+                              "usable": {
+                                "type": "boolean"
+                              },
+                              "reason": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "declared",
+                              "usable"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "schema",
+                          "granted",
+                          "exact_filter",
+                          "range_filter",
+                          "lexical_search",
+                          "semantic_search"
+                        ]
+                      }
+                    },
+                    "expand_capabilities": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                          "name": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "stream": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "cardinality": {
+                            "type": "string",
+                            "enum": [
+                              "has_one",
+                              "has_many"
+                            ]
+                          },
+                          "foreign_key": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "default_limit": {
+                            "type": "integer",
+                            "minimum": 1
+                          },
+                          "max_limit": {
+                            "type": "integer",
+                            "minimum": 1
+                          },
+                          "granted": {
+                            "type": "boolean"
+                          },
+                          "usable": {
+                            "type": "boolean"
+                          },
+                          "reason": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "name",
+                          "stream",
+                          "cardinality",
+                          "granted",
+                          "usable"
+                        ]
+                      }
+                    },
                     "freshness": {
                       "$id": "pdpp/common/Freshness",
                       "type": "object",
@@ -2643,7 +2802,9 @@
                   },
                   "required": [
                     "object",
-                    "name"
+                    "name",
+                    "field_capabilities",
+                    "expand_capabilities"
                   ]
                 }
               }
