@@ -4,6 +4,21 @@ Legend: `[x]` done, `[~]` in progress, `[ ]` pending, `[!]` blocked on user, `[?
 
 Last revised: 2026-04-24.
 
+## Split-out follow-ups (2026-04-24)
+
+The running connector-system change remains the home for MVP fleet operation,
+connector-specific live bugs, and near-term infrastructure. Three large backlog
+clusters have been split out so workers can execute them without dragging the
+entire connector program forward at once:
+
+- `add-polyfill-layer-two-stream-coverage` owns high-value stream additions and
+  the Spotify/Reddit fake-data cleanup before those connectors are used as
+  internal-demo evidence.
+- `add-connector-fixture-scrubber-pipeline` owns raw capture, scrubbed fixture
+  generation, and connector-specific redaction rules.
+- `define-partial-run-honesty` owns skipped-stream/gap taxonomy, known-gaps
+  summaries, and recovery hints.
+
 ## Status at a glance (2026-04-21)
 
 - **31 manifests total** (30 + Chase added 2026-04-21). All validate against the reference AS.
@@ -83,7 +98,7 @@ Last revised: 2026-04-24.
 - [~] First-party connector progress reporting pass — audit core connectors and emit `PROGRESS { count, total }` wherever the upstream exposes a bounded unit of work (pages, files, accounts, budgets, repositories, archive entries). Connectors that cannot know a total should still report phase/count honestly. Do not invent percentages.
   - 2026-04-24 worker pass patched bounded counters for ynab, gmail, github PR search, chase, usaa statement hydration, and chatgpt conversation detail batches; compacted duplicate Claude Code line progress. Audit captured in `design-notes/core-connector-progress-audit-2026-04-24.md`.
 - [ ] **Nightly status summary via ntfy** — today still fires manually
-- [ ] **Partial-run honesty mechanism** (SKIP_RESULT taxonomy + known_gaps in STATE + recovery execution contract) — documented as three linked open questions. Decision required across all three together. See the three `*-open-question.md` notes.
+- [x] **Partial-run honesty mechanism** transferred to `define-partial-run-honesty` (SKIP_RESULT taxonomy, known gaps, and recovery contract). The three linked `*-open-question.md` notes remain as source context.
 
 ## Spec-conformance work (delivered today)
 
@@ -106,8 +121,8 @@ See `design-notes/spec-conformance-upgrade-2026-04-19.md` for the full retrofit 
 - [x] Content preview capped at 5 KB (down from 20 KB) — plenty of signal, 4× smaller payloads
 - [x] PROGRESS every 2000 lines so long parses show liveness
 - [x] `CLAUDE_CODE_PROJECT_INCLUDE/EXCLUDE` env vars for optional scoping (trigger for the open-question note)
-- [~] Full Claude Code ingest in progress (SillyTavern excluded for this run; the owner confirmed he wants it included on next)
-- [~] Full Codex ingest in progress (separate DB)
+- [x] Historical live-run note: Claude Code ingest status is no longer tracked as an evergreen in-progress checkbox here. Current Claude Code bugs and Layer 2 gaps are tracked in the dedicated section below and `add-polyfill-layer-two-stream-coverage`.
+- [x] Historical live-run note: Codex ingest status is no longer tracked as an evergreen in-progress checkbox here. Current Codex Layer 2 gaps are tracked in the dedicated section below and `add-polyfill-layer-two-stream-coverage`.
 
 ## OpenSpec hygiene
 
@@ -120,7 +135,7 @@ See `design-notes/spec-conformance-upgrade-2026-04-19.md` for the full retrofit 
 - [x] `design-notes/connector-configuration-open-question.md` — new today
 - [x] `design-notes/settings-stream-convention-open-question.md` — new today (Layer 2 cross-cutting)
 - [x] `design-notes/usaa-extra-streams.md`
-- [ ] New `design-notes/claude-code-codex-connectors.md` — rationale + schema decisions for the two local-file connectors (following)
+- [x] New `design-notes/claude-code-codex-connectors.md` — rationale + schema decisions for the two local-file connectors.
 - [ ] Move OpenAI/Anthropic token data from "scaffolded" to "implemented" once selectors wired
 
 ## Post-refactor quality follow-up (owner-approved 2026-04-23)
@@ -157,10 +172,10 @@ these tasks are tracked here.
 
 ### Explicitly deferred unless evidence changes
 
-- [ ] Do not spend effort balancing parser-vs-integration test counts for aesthetic reasons.
+- Do not spend effort balancing parser-vs-integration test counts for aesthetic reasons.
   Reassess only if real blind spots remain after the protocol-harness phase.
-- [ ] Do not rewrite history for commit-aesthetics cleanup.
-- [ ] Do not add clever staged/unstaged merge machinery to lefthook unless a concrete reproducible data-loss case is demonstrated.
+- Do not rewrite history for commit-aesthetics cleanup.
+- Do not add clever staged/unstaged merge machinery to lefthook unless a concrete reproducible data-loss case is demonstrated.
   If hook behavior becomes a real problem, prefer the simpler guard: refuse auto-format on partially staged same-file changes.
 
 ## Deferred / open
@@ -182,66 +197,66 @@ these tasks are tracked here.
 
 ## Layer 2 implementation follow-up (raised 2026-04-19)
 
-P0 stream additions identified by the Layer 2 audits (`design-notes/layer-2-coverage-chatgpt-claude-codex.md`, `design-notes/layer-2-coverage-gmail-ynab-usaa-github.md`). Implementation is connector code + manifest; spec-question resolution happens in parallel via the open-question notes above.
+P0 stream additions identified by the Layer 2 audits (`design-notes/layer-2-coverage-chatgpt-claude-codex.md`, `design-notes/layer-2-coverage-gmail-ynab-usaa-github.md`) have been transferred to `add-polyfill-layer-two-stream-coverage`. The checklist below is retained as historical source material and intentionally marked transferred rather than implemented.
 
 ## Query/API readiness follow-up (raised 2026-04-24)
 
 These are the highest-leverage gaps surfaced by live assistant use of the reference API. Start with an audit matrix before adding new surface area: field/stream, current manifest declaration, current server behavior, docs/spec claim, tests, and recommended fix.
 
 - [x] Audit first-party stream schemas for useful range-filter declarations. Add every honest date/date-time/numeric `query.range_filters` entry that enables common windows like "last 7 days" or amount windows; document exclusions where field types, cursor semantics, or source data quality make range filtering unsafe. See `design-notes/query-api-readiness-audit-2026-04-24.md`.
-- [ ] Audit schema discoverability for every stream. Decide whether the current `/v1/streams/:stream` metadata is sufficient or whether the reference needs an explicit schema/capability endpoint that lists each field's type, exact-filter support, range-filter support, semantic/lexical participation, cursor role, and expandable relations.
-- [ ] Audit `expand[]` end to end against the public docs/spec and live server behavior. Verify declared relationships, grant safety, list/detail parity, `expand_limit`, missing/unknown relation errors, and high-value joins such as Gmail messages to message_bodies, attachments, and threads.
-- [ ] Audit `changes_since` usability. Confirm whether clients can obtain an initial cursor/documented timestamp, whether raw timestamp input is supported or should be, and whether daily surfacer/incremental-agent workflows can use it without poll-everything-and-diff.
-- [ ] Keep Gmail attachment-content work separate from `message_bodies`: `message_bodies` is done, but attachment byte/blob hydration is still pending until `attachments` records expose content-addressed bytes and, ideally, extracted text affordances for PDFs/docs.
-- [ ] Defer new public surfaces (`/v1/timeline`, `/v1/entities`, aggregations/facets, webhook subscriptions, hybrid lexical+semantic search, semantic score exposure/reranking) until the audit above identifies which behavior is already promised versus which needs a new OpenSpec change.
+- [x] Schema discoverability audit and implementation completed by `define-field-level-query-capability-schema` and archived into canonical specs.
+- [x] `expand[]` audit and implementation completed by `enable-safe-parent-child-expand` and archived into canonical specs.
+- [x] `changes_since` initial-bookmark usability completed by `define-initial-changes-bookmark` and archived into canonical specs.
+- [x] Gmail attachment byte/blob hydration completed by `hydrate-gmail-attachment-blobs` and archived into canonical specs.
+- [x] Public surfaces such as `/v1/timeline`, `/v1/entities`, hybrid search, semantic reranking, webhooks, and broader facets remain deferred until proposed as separate OpenSpec changes.
 
 ### ChatGPT
-- [ ] Add `custom_gpts` stream (from `/backend-api/gizmos/mine`)
-- [ ] Add `custom_instructions` stream (from `/backend-api/user_system_messages`)
-- [ ] Add `shared_conversations` stream (from `/backend-api/shared_conversations`)
-- [ ] Re-run after ChatGPT extractor fix lands in next scheduled run
+- [x] Transferred to `add-polyfill-layer-two-stream-coverage`: add `custom_gpts` stream (from `/backend-api/gizmos/mine`).
+- [x] Transferred to `add-polyfill-layer-two-stream-coverage`: add `custom_instructions` stream (from `/backend-api/user_system_messages`).
+- [x] Transferred to `add-polyfill-layer-two-stream-coverage`: add `shared_conversations` stream (from `/backend-api/shared_conversations`).
+- [x] Transferred to `add-polyfill-layer-two-stream-coverage`: re-run after ChatGPT extractor fix lands in next scheduled run.
 
 ### Claude Code
 - [x] Fix live `sessions` ingest regression: current run can emit >1k `IN_PROGRESS` events then fail `/ingest/sessions` with `500 Internal Server Error`. Captured with a safe synthetic Claude Code sessions fixture: controller-managed composed-mode runs were posting the NDJSON sessions batch to the public browser origin, so proxy/body handling could turn `/v1/ingest/sessions` into a 500. Regression test now traps the public origin and proves Claude Code ingest uses the internal RS URL.
 - [x] Reduce or summarize Claude Code two-pass progress volume. The >1k `IN_PROGRESS` rows were not the 500 root cause, but the connector currently emits per-file parse progress in both build and emit passes; decide whether to compact connector progress or summarize it in the operator UI.
   - 2026-04-24 worker pass keeps build-pass per-file liveness, suppresses duplicate build-pass per-line progress, and labels file progress as indexing vs emitting.
-- [ ] Recursive session traversal: `projects/<p>/<session>/subagents/*.jsonl` + `/tool-results/*.txt` (currently missed — main jsonl only has sidechain stubs + ~500-char previews)
-- [ ] Add `memory_notes` stream (from `projects/<p>/memory/*.md` — direct analog to ChatGPT `memories`)
-- [ ] Add `skills` stream (from `~/.claude/skills/<name>/SKILL.md`)
-- [ ] Add `slash_commands` stream (from `~/.claude/commands/*.md` + per-repo `./.claude/commands/*.md`)
+- [x] Transferred to `add-polyfill-layer-two-stream-coverage`: recursive session traversal for `projects/<p>/<session>/subagents/*.jsonl` + `/tool-results/*.txt`.
+- [x] Transferred to `add-polyfill-layer-two-stream-coverage`: add `memory_notes` stream (from `projects/<p>/memory/*.md`).
+- [x] Transferred to `add-polyfill-layer-two-stream-coverage`: add `skills` stream (from `~/.claude/skills/<name>/SKILL.md`).
+- [x] Transferred to `add-polyfill-layer-two-stream-coverage`: add `slash_commands` stream (from `~/.claude/commands/*.md` + per-repo `./.claude/commands/*.md`).
 
 ### Codex
-- [ ] Switch `sessions` data source from `rollout.jsonl` to `~/.codex/state_5.sqlite#threads` for canonical metadata (`title`, `archived`, `tokens_used`, `first_user_message`, `sandbox_policy`, `approval_mode`, `agent_nickname`, `agent_role`, `memory_mode`, `git_origin_url`)
-- [ ] Add `prompts` stream (from `~/.codex/prompts/*.md`)
-- [ ] Add `skills` stream (from `~/.codex/skills/<name>/SKILL.md`)
-- [ ] Add `approval_rules` stream (from `~/.codex/rules/default.rules`)
+- [x] Transferred to `add-polyfill-layer-two-stream-coverage`: evaluate `~/.codex/state_5.sqlite#threads` for canonical session metadata.
+- [x] Transferred to `add-polyfill-layer-two-stream-coverage`: add `prompts` stream (from `~/.codex/prompts/*.md`).
+- [x] Transferred to `add-polyfill-layer-two-stream-coverage`: add `skills` stream (from `~/.codex/skills/<name>/SKILL.md`).
+- [x] Transferred to `add-polyfill-layer-two-stream-coverage`: add `approval_rules` stream (from `~/.codex/rules/default.rules`).
 
 ### GitHub
 - [x] Fix `progress_for_undeclared_stream` regression. Root cause was controller path resolution, not the GitHub connector: the reference fixture manifest and the polyfill manifest share `connector_id https://registry.pdpp.org/connectors/github`, and `reference-implementation/runtime/controller.ts` matched the reference fixture id first — so polyfill GitHub runs executed the reference seed connector, whose GitHub fixture emits a `commits` PROGRESS stream the polyfill manifest does not declare. The 2026-04-24 worker audit also confirmed the current GitHub polyfill connector emits PROGRESS only for declared streams (`user`, `repositories`, `starred`, `issues`, `pull_requests`, `gists`). Fix: `resolveDefaultConnectorPath` now compares a manifest fingerprint (`version` + sorted stream names) against the on-disk reference and polyfill manifests and prefers the polyfill implementation on collision. Regression covered by `reference-implementation/test/connector-path-resolution.test.js`.
-- [ ] Add `issues` stream (authored, assigned, mentioned, commented — via `/search/issues`)
-- [ ] Add `pull_requests` stream (authored, reviewed, review-requested, merged — via `/search/issues`)
-- [ ] Add `gists` stream (owned + starred; full content bytes cheap)
-- [ ] Add `followers` / `following` streams (precursor to identity-graph profile)
+- [x] Transferred to `add-polyfill-layer-two-stream-coverage`: evaluate `issues` stream (authored, assigned, mentioned, commented).
+- [x] Transferred to `add-polyfill-layer-two-stream-coverage`: evaluate `pull_requests` stream (authored, reviewed, review-requested, merged).
+- [x] Transferred to `add-polyfill-layer-two-stream-coverage`: evaluate `gists` stream.
+- [x] Transferred to `add-polyfill-layer-two-stream-coverage`: evaluate `followers` / `following` streams.
 
 ### YNAB
-- [ ] Add `month_categories` matrix stream (per-month-per-category budgeted/activity/balance, keyed on `(budget_id, month, category_id)`)
+- [x] Transferred to `add-polyfill-layer-two-stream-coverage`: add `month_categories` matrix stream.
 
 ### USAA
 - [x] Fix live login navigation regression: current run fails immediately with `connector_reported_failed` / `usaa_session_failed: page.goto: net::ERR_HTTP2_PROTOCOL_ERROR` at `https://www.usaa.com/my/logon` and never surfaces a browser interaction. Reproduce with browser-daemon logs enabled, compare headed vs headless, and preserve an interaction path if the site blocks automated navigation.
-- [ ] Wire already-designed streams (`transfers`, `bill_payments`, `scheduled_transactions`, `external_accounts`) per `design-notes/usaa-extra-streams.md`
-- [ ] Statements: implement PDF download + `pdf_sha256` once live browser session is available
+- [x] Transferred to `add-polyfill-layer-two-stream-coverage`: wire already-designed streams (`transfers`, `bill_payments`, `scheduled_transactions`, `external_accounts`).
+- [x] Transferred to `add-polyfill-layer-two-stream-coverage`: implement statement PDF download + `pdf_sha256` once live browser session is available.
 
 ### Gmail
 - [x] `message_bodies` stream — implemented 2026-04-19 (Layer 2 exemplar fix: `body_sha256` + text/html parts, deferred blob hydration pattern)
-- [ ] **Attachment blob collection** (requested 2026-04-22). Today the `attachments` stream emits metadata only (filename, mime, size_bytes, partId) per `decodeBodystructureForAttachments` — the actual bytes never leave IMAP. Wire each attachment record to the reference `POST /v1/blobs` path so attachment content is content-addressed and retrievable via `GET /v1/blobs/{blob_id}`. Pattern to mirror: Slack's `message_attachments` stream + the `/v1/blobs/{blob_id}` contract resolved 2026-04-22 (see `design-notes/blob-id-param-naming-2026-04-22.md`). IMAP fetch path: `client.download(uid, partId)` returns a stream; stream → sha256 → upload → replace `partId` with `blob_id` on the emitted record. Add `content_sha256` + `blob_id` fields to the attachments schema alongside existing metadata. Deferred-hydration pattern (same as `message_bodies`'s `body_sha256`): connector can emit `blob_id=null` + `content_sha256` first, and the storage layer uploads bytes asynchronously — but the link must exist so consumers can resolve. Blocked on nothing; fits naturally into the gmail parsers.ts refactor in progress.
+- [x] Transferred to `add-polyfill-layer-two-stream-coverage`: Gmail attachment blob collection and deferred hydration.
 
 ### Slack
-- [ ] Reactions, message_attachments, etc. — already in v0.2.0 schema, ingesting now; audit v0.3.0 coverage after completion
-- [ ] P1: canvases content, stars/saved items, user groups, reminders
+- [x] Transferred to `add-polyfill-layer-two-stream-coverage`: audit Slack v0.3.0 coverage for reactions, message attachments, and related streams.
+- [x] Transferred to `add-polyfill-layer-two-stream-coverage`: evaluate Slack canvases, stars, user groups, and reminders.
 
 ### Fixture pipeline (test-harness prerequisite)
-- [ ] LLM-based PII scrubber for captured fixtures. Default regex scrubber (`bin/scrub-fixtures.ts`) only handles emails/phones/SSNs/cards; real captures contain addresses, personal names, merchant payloads, and free-form order content that need semantic redaction. Plan: pipe each captured DOM/JSONL through Gemini 3.1 Flash or Flash-Lite with a structured redaction prompt (names → "First Last", addresses → "123 Main St, City, ST 00000", keep structural content like selectors/classes). Until this exists, `fixtures/*/raw/` and `fixtures/*/scrubbed/` are gitignored and parser tests run against synthetic minimal fixtures only. Unblocks: committing real golden fixtures for parser-extraction regression tests (amazon/chase/gmail/usaa).
-- [ ] Connector-specific scrub-rule files (`connectors/<name>/scrub-rules.ts`) for patterns that beat the LLM on precision (order IDs, account numbers, known field shapes).
+- [x] Transferred to `add-connector-fixture-scrubber-pipeline`: LLM-based PII scrubber for captured fixtures.
+- [x] Transferred to `add-connector-fixture-scrubber-pipeline`: connector-specific scrub-rule files.
 
 ## Review checklist for the owner
 

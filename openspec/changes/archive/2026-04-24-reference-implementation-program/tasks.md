@@ -310,4 +310,4 @@
   - [x] Source the value from git/package build metadata where available, with an honest fallback for local dirty/unknown builds
   - [x] Emit it consistently from AS, RS, composed proxy-visible routes, and reference-only surfaces
   - [x] Update docs/tests so operators can tell which reference build is running without overloading the protocol `PDPP-Version` header
-- [ ] Deferred follow-up: broad storage abstraction beyond the current explicit seams. Captured in `design-notes/broad-storage-abstraction-2026-04-24.md`; promote only when a concrete second backend or deployment target exists.
+- [x] Deferred follow-up: broad storage abstraction beyond the current explicit seams. Captured in root `design-notes/broad-storage-abstraction-2026-04-24.md`; promote only when a concrete second backend or deployment target exists.

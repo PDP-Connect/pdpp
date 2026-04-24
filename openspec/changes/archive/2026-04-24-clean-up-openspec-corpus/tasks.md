@@ -28,21 +28,21 @@
 
 ## 5. Program Decomposition
 
-- [ ] 5.1 Split or draft follow-up changes for high-value `add-polyfill-connector-system` backlog clusters.
-- [ ] 5.2 Move or relabel stale polyfill tasks so the active change stops mixing implementation backlog with open design questions.
-- [ ] 5.3 Migrate or preserve `reference-implementation-program/design-notes` links so the program can be archived without breaking important references.
-- [ ] 5.4 Decide whether to archive `reference-implementation-program` in this cleanup change.
+- [x] 5.1 Split or draft follow-up changes for high-value `add-polyfill-connector-system` backlog clusters: `add-polyfill-layer-two-stream-coverage`, `add-connector-fixture-scrubber-pipeline`, and `define-partial-run-honesty`.
+- [x] 5.2 Move or relabel stale polyfill tasks so the active change stops mixing implementation backlog with open design questions.
+- [x] 5.3 Preserve `reference-implementation-program/design-notes` links by archiving the completed program with its historical notes intact and keeping the broad-storage deferral in root `design-notes/`.
+- [x] 5.4 Archive `reference-implementation-program` in this cleanup change.
 
 ## 6. Swap SQLite Driver Closeout
 
-- [ ] 6.1 Decide whether query extraction remains part of `swap-sqlite-driver`.
-- [ ] 6.2 If yes, leave it active with accurate tasks and a worker-ready implementation prompt.
-- [ ] 6.3 If no, split query extraction into a separate inspectability change or retire it as deferred.
-- [ ] 6.4 Ensure crash-verification tasks reflect the current better-sqlite3 and memory-pressure reality.
+- [x] 6.1 Decide whether query extraction remains part of `swap-sqlite-driver` (decision: no).
+- [x] 6.2 Remove query-extraction tasks from `swap-sqlite-driver` and keep that change focused on driver/crash closeout.
+- [x] 6.3 Split query extraction into `make-reference-queries-inspectable`.
+- [x] 6.4 Ensure crash-verification tasks reflect the current `better-sqlite3` and memory-pressure reality.
 
 ## 7. Final Validation
 
 - [x] 7.1 Run `openspec validate clean-up-openspec-corpus --strict`.
 - [x] 7.2 Run `openspec validate --all --strict`.
-- [ ] 7.3 Confirm `openspec list` contains only genuinely active changes with clear next action.
+- [x] 7.3 Confirm `openspec list` contains only genuinely active changes with clear next action.
 - [x] 7.4 Commit the cleanup and report remaining follow-up changes.

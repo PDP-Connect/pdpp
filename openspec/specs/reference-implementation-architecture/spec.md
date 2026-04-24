@@ -72,7 +72,13 @@ Debugging, replay, trace, and operator-control surfaces that are useful for the 
   - `GET /_ref/traces` (list, filter, paginate)
   - `GET /_ref/grants` (list, filter, paginate)
   - `GET /_ref/runs` (list, filter, paginate)
-  - `GET /_ref/search?q=…` (id-aware read-only jump helper)
+  - `GET /_ref/search?q=...` (id-aware read-only jump helper)
+  - `GET /_ref/dataset/summary` (dashboard overview dataset summary)
+
+#### Scenario: The dashboard summarizes dataset credibility
+- **WHEN** the reference dashboard renders a dataset summary or credibility overview
+- **THEN** it MAY consume `GET /_ref/dataset/summary`
+- **AND** that route SHALL remain documented as a reference-only read surface rather than as a public PDPP API
 
 #### Scenario: A later control-plane phase widens `_ref` mutation narrowly
 - **WHEN** a later control-plane phase needs a truthful operator mutation surface for a live bounded collection run
@@ -88,10 +94,6 @@ Debugging, replay, trace, and operator-control surfaces that are useful for the 
 #### Scenario: Runtime validation failures remain inspectable in the reference substrate
 - **WHEN** a bounded collection run fails because the runtime rejects connector output or an interaction handler response before `DONE`
 - **THEN** the durable `_ref` run timeline SHALL still record `run.failed` with an explicit machine-readable reason instead of leaving that failure visible only as a thrown local error
-
-#### Scenario: A future control plane is introduced
-- **WHEN** a control plane, dashboard, or replay surface is built on top of the reference implementation
-- **THEN** it SHALL consume the same public or reference-designated surfaces rather than becoming a hidden control path that the CLI or other consumers cannot use
 
 ### Requirement: Reference control-plane mutations require owner session when enabled
 The reference implementation SHALL require the placeholder owner session on reference-only `_ref` mutation routes when owner auth is enabled. When owner auth is disabled, the reference implementation SHALL preserve the current open local-dev behavior for those routes.

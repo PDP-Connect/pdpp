@@ -1,0 +1,25 @@
+## 1. Policy
+
+- [ ] Document raw and scrubbed fixture directory conventions.
+- [ ] Ensure raw fixture directories are ignored.
+- [ ] Define review criteria for committing scrubbed fixtures.
+
+## 2. Scrubber
+
+- [ ] Extend the existing regex scrubber for common emails, phones, cards, account numbers, addresses, and names where deterministic patterns are reliable.
+- [ ] Add connector-specific scrub-rule entry points.
+- [ ] Add an LLM-assisted redaction mode for free-form text, with structured output and conservative failure behavior.
+- [ ] Add tests proving secrets are redacted and structure is preserved on representative fixtures.
+
+## 3. Connector Adoption
+
+- [ ] Pilot on one browser connector and one API/local-file connector.
+- [ ] Convert at least one brittle synthetic parser test to use a scrubbed real-shape fixture.
+- [ ] Document how future workers capture, scrub, review, and commit fixtures.
+
+## 4. Validation
+
+- [ ] Run connector parser tests affected by the pilot fixtures.
+- [ ] Run `pnpm --dir packages/polyfill-connectors run verify`.
+- [ ] Run `openspec validate add-connector-fixture-scrubber-pipeline --strict`.
+- [ ] Run `openspec validate --all --strict`.
