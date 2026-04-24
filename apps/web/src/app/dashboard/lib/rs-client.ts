@@ -45,6 +45,7 @@ export interface ConnectorManifest {
 }
 
 const MANIFESTS_DIR = join(process.cwd(), "..", "..", "packages", "polyfill-connectors", "manifests");
+const FRACTIONAL_SECONDS_RE = /\.\d+Z$/;
 
 async function authedFetch(path: string, params?: Record<string, string | number | undefined>) {
   const token = await getOwnerToken();
@@ -495,7 +496,7 @@ export function formatTimestamp(iso: string | null | undefined): string {
     return new Date(iso)
       .toISOString()
       .replace("T", " ")
-      .replace(/\.\d+Z$/, "Z");
+      .replace(FRACTIONAL_SECONDS_RE, "Z");
   } catch {
     return iso;
   }

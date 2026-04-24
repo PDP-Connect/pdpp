@@ -8,6 +8,10 @@ export type RunNowResult =
   | { ok: false; reason: "already_running"; run_id?: string; message: string }
   | { ok: false; reason: "error"; message: string };
 
+const ALREADY_ACTIVE_RE = /already.*active/i;
+const RUN_ALREADY_ACTIVE_RE = /run_already_active/i;
+const RUN_ID_MATCH_RE = /run[_:]?([A-Za-z0-9]+)/;
+
 /** Server action: start a connector run. Designed to never throw — the UI
  *  uses the discriminated-union return to render a toast/badge. */
 export async function runConnectorNowAction(connectorId: string): Promise<RunNowResult> {
@@ -27,8 +31,8 @@ export async function runConnectorNowAction(connectorId: string): Promise<RunNow
     const message = err instanceof Error ? err.message : String(err);
     // The controller's 409 surfaces as a thrown Error with message like
     // "Connector already has an active run: run_123…".
-    if (/already.*active/i.test(message) || /run_already_active/i.test(message)) {
-      const match = message.match(/run[_:]?([A-Za-z0-9]+)/);
+    if (ALREADY_ACTIVE_RE.test(message) || RUN_ALREADY_ACTIVE_RE.test(message)) {
+      const match = message.match(RUN_ID_MATCH_RE);
       return {
         ok: false,
         reason: "already_running",

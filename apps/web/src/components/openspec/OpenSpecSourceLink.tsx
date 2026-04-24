@@ -2,9 +2,10 @@ import { Timestamp } from "@/components/ui/timestamp.tsx";
 
 const GITHUB_BLOB_BASE = "https://github.com/vana-com/pdpp/blob/main";
 const GITHUB_TREE_BASE = "https://github.com/vana-com/pdpp/tree/main";
+const TRAILING_SLASH_RE = /\/+$/;
 
 export function openSpecGithubUrl(repoRelativePath: string): string {
-  const normalizedPath = repoRelativePath.replace(/\/+$/, "");
+  const normalizedPath = repoRelativePath.replace(TRAILING_SLASH_RE, "");
   const base = repoRelativePath.endsWith("/") ? GITHUB_TREE_BASE : GITHUB_BLOB_BASE;
   return `${base}/${normalizedPath}`;
 }

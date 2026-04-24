@@ -1,8 +1,10 @@
 const METADATA_LINE_RE = /^\*\*[^*]+:\*\*/;
+const SLUG_SEPARATOR_RE = /[-_]/;
+const LIST_ITEM_RE = /^\s*(?:[-*+]|\d+\.)\s+/;
 
 export function humanizeName(slug: string): string {
   return slug
-    .split(/[-_]/)
+    .split(SLUG_SEPARATOR_RE)
     .filter(Boolean)
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
     .join(" ");
@@ -36,7 +38,7 @@ function stripMarkdownInline(text: string): string {
 }
 
 function isListBlock(lines: string[]): boolean {
-  return lines.length > 0 && lines.every((line) => /^\s*(?:[-*+]|\d+\.)\s+/.test(line));
+  return lines.length > 0 && lines.every((line) => LIST_ITEM_RE.test(line));
 }
 
 export function extractExcerpt(markdown: string): string | null {

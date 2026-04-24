@@ -29,6 +29,9 @@ import type {
 } from "./types.ts";
 
 const STATUS_LINE_RE = /^\*\*Status:\*\*\s*(.+?)\s*$/im;
+const MARKDOWN_EXT_RE = /\.md$/i;
+const PLAN_SEGMENT_RE = /(?:^|-)plan(?:-|$)/;
+const LEADING_SEP_RE = /^[\\/]+/;
 
 function deriveStatus(taskCounts: { completed: number; total: number }): OpenSpecChangeStatus {
   if (taskCounts.total === 0) {
@@ -188,7 +191,7 @@ async function loadSpecSummary(
 }
 
 function noteSlugFromFilename(filename: string): string {
-  return filename.replace(/\.md$/i, "");
+  return filename.replace(MARKDOWN_EXT_RE, "");
 }
 
 function classifyDesignNote(noteSlug: string): {
@@ -201,7 +204,7 @@ function classifyDesignNote(noteSlug: string): {
   if (
     noteSlug.includes("execution-plan") ||
     noteSlug.includes("implementation-plan") ||
-    /(?:^|-)plan(?:-|$)/.test(noteSlug)
+    PLAN_SEGMENT_RE.test(noteSlug)
   ) {
     return { noteKind: "plan", noteKindLabel: "Plans" };
   }
@@ -552,7 +555,7 @@ export const REPO_RELATIVE_OPENSPEC_DIR = "openspec";
 export async function repoRelativeFromAbsolute(absolutePath: string): Promise<string> {
   const repoRoot = await resolveRepoRoot();
   const relativePath = absolutePath.startsWith(repoRoot)
-    ? absolutePath.slice(repoRoot.length).replace(/^[\\/]+/, "")
+    ? absolutePath.slice(repoRoot.length).replace(LEADING_SEP_RE, "")
     : absolutePath;
   return toPosix(relativePath);
 }

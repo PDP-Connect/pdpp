@@ -4,6 +4,8 @@ import React from "react";
 import { Button } from "@/components/ui/button.tsx";
 import { Timestamp } from "@/components/ui/timestamp.tsx";
 
+const ISO_DATE_OR_DATETIME_RE = /^\d{4}-\d{2}-\d{2}([T ].+)?$/;
+
 // Render a timestamp-ish string: if it parses as a real Date, use the
 // interactive <Timestamp> component (human-readable + tooltip w/ full
 // detail); otherwise render it verbatim. Lets pre-formatted specimen
@@ -13,7 +15,7 @@ function DateLike({ value }: { value: string | null | undefined }) {
   if (value == null || value === "") {
     return <>Never</>;
   }
-  const looksISO = /^\d{4}-\d{2}-\d{2}([T ].+)?$/.test(value);
+  const looksISO = ISO_DATE_OR_DATETIME_RE.test(value);
   const parsed = looksISO ? new Date(value) : null;
   if (parsed && !Number.isNaN(parsed.getTime())) {
     return <Timestamp value={parsed} precision="date" mode="absolute" />;

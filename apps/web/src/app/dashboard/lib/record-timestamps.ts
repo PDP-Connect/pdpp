@@ -5,12 +5,15 @@ export type SemanticTimestamp = {
   value: string;
 } | null;
 
+const UNDERSCORE_RE = /_/g;
+const ISO_DATE_ONLY_RE = /^\d{4}-\d{2}-\d{2}$/;
+
 export function humanizeFieldName(field: string): string {
-  return field.replace(/_/g, " ");
+  return field.replace(UNDERSCORE_RE, " ");
 }
 
 export function formatSemanticTimestamp(value: string): string {
-  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+  if (ISO_DATE_ONLY_RE.test(value)) {
     return value;
   }
   return formatTimestamp(value);

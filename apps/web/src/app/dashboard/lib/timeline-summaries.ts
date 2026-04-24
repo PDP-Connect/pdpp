@@ -42,8 +42,10 @@ function firstString(data: RecordData, skipKeys: string[] = ["id"]): string {
   return "";
 }
 
+const CONNECTOR_SHORT_NAME_RE = /\/connectors\/([^/]+)$/;
+
 function connectorShortName(connectorId: string): string {
-  const m = connectorId.match(/\/connectors\/([^/]+)$/);
+  const m = connectorId.match(CONNECTOR_SHORT_NAME_RE);
   return m?.[1] ?? connectorId;
 }
 

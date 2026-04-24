@@ -7,6 +7,8 @@ import { getRecord, type StreamRecord } from "../../../../lib/rs-client.ts";
 
 export const dynamic = "force-dynamic";
 
+const NOT_FOUND_ERROR_RE = /\(404\)/;
+
 export default async function RecordDetailPage({
   params,
 }: {
@@ -30,7 +32,7 @@ export default async function RecordDetailPage({
       );
     }
     const msg = err instanceof Error ? err.message : String(err);
-    if (/\(404\)/.test(msg)) {
+    if (NOT_FOUND_ERROR_RE.test(msg)) {
       notFound();
     }
     throw err;
