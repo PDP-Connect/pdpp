@@ -7,10 +7,7 @@
     "pdpp": "./cli/index.js"
   },
   "exports": {
-    "./reference-local-defaults": {
-      "types": "./server/reference-local-defaults.d.ts",
-      "default": "./server/reference-local-defaults.js"
-    },
+    "./reference-local-defaults": "./server/reference-local-defaults.ts",
     "./reference-topology": "./server/reference-topology.ts",
     "./owner-session": "./server/owner-session.ts"
   },

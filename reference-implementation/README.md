@@ -72,7 +72,7 @@ Dynamic client registration is enabled **by default** for local reference use.
 When neither `PDPP_DCR_INITIAL_ACCESS_TOKENS` nor `startServer()`'s
 `dynamicClientRegistrationInitialAccessTokens` opt is set, the reference AS
 falls back to a shared reference-local default token exported from
-[`server/reference-local-defaults.js`](server/reference-local-defaults.js).
+[`server/reference-local-defaults.ts`](server/reference-local-defaults.ts).
 This keeps the forkable reference usable out of the box without silently
 widening the protocol contract.
 

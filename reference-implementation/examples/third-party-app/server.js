@@ -31,7 +31,7 @@ import {
   queryStreams,
   queryStreamRecords,
 } from './lib/flow.js';
-import { DEFAULT_LOCAL_DCR_INITIAL_ACCESS_TOKEN } from '../../server/reference-local-defaults.js';
+import { DEFAULT_LOCAL_DCR_INITIAL_ACCESS_TOKEN } from '../../server/reference-local-defaults.ts';
 
 const PORT = parseInt(process.env.PORT || '7674', 10);
 const AS_URL = stripSlash(process.env.AS_URL || 'http://localhost:7662');

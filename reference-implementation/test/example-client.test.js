@@ -16,7 +16,7 @@ import {
   queryStreamRecords,
 } from '../examples/third-party-app/lib/flow.js';
 import { buildDefaultDraft } from '../examples/third-party-app/server.js';
-import { DEFAULT_LOCAL_DCR_INITIAL_ACCESS_TOKEN } from '../server/reference-local-defaults.js';
+import { DEFAULT_LOCAL_DCR_INITIAL_ACCESS_TOKEN } from '../server/reference-local-defaults.ts';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, '..');

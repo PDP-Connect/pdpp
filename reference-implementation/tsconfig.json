@@ -37,9 +37,9 @@
     // Legacy .js modules (server/, lib/, runtime/, cli/, examples/, test/)
     // are present in the module graph; we let allowJs pull them in but
     // hold checkJs off until each file's own migration slice upgrades it
-    // to .ts. Hand-authored .d.ts shims (owner-session.d.ts,
-    // reference-topology.d.ts, reference-local-defaults.d.ts) supply
-    // types for the public package exports until those files migrate.
+    // to .ts. Public package exports (owner-session, reference-topology,
+    // reference-local-defaults) are native TS modules — apps/web consumes
+    // them via transpilePackages.
     "allowJs": true,
     "checkJs": false,
     "allowImportingTsExtensions": true

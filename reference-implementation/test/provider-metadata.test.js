@@ -300,7 +300,7 @@ test('default local reference startup advertises a registration endpoint backed 
 
     // The default local DCR token must actually unlock /oauth/register; a
     // bogus token must still be rejected.
-    const { DEFAULT_LOCAL_DCR_INITIAL_ACCESS_TOKEN } = await import('../server/reference-local-defaults.js');
+    const { DEFAULT_LOCAL_DCR_INITIAL_ACCESS_TOKEN } = await import('../server/reference-local-defaults.ts');
     const registerOk = await fetch(`${asUrl}/oauth/register`, {
       method: 'POST',
       headers: {
