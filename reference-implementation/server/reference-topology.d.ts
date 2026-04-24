@@ -1,5 +1,5 @@
-export const REFERENCE_MODE_DIRECT: 'direct';
-export const REFERENCE_MODE_COMPOSED: 'composed';
+export const REFERENCE_MODE_DIRECT: "direct";
+export const REFERENCE_MODE_COMPOSED: "composed";
 
 export const DEFAULT_REFERENCE_BROWSER_ORIGIN: string;
 export const DEFAULT_AS_INTERNAL_URL: string;
@@ -7,7 +7,7 @@ export const DEFAULT_RS_INTERNAL_URL: string;
 
 export function stripTrailingSlash(value: string): string;
 
-export type ReferenceMode = 'direct' | 'composed';
+export type ReferenceMode = "direct" | "composed";
 
 export function resolveReferenceMode(opts?: {
   explicitMode?: string | null;

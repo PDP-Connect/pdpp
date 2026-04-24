@@ -8,4 +8,4 @@ export interface DefaultPreRegisteredPublicClient {
   };
 }
 
-export const DEFAULT_PRE_REGISTERED_PUBLIC_CLIENTS: ReadonlyArray<DefaultPreRegisteredPublicClient>;
+export const DEFAULT_PRE_REGISTERED_PUBLIC_CLIENTS: readonly DefaultPreRegisteredPublicClient[];

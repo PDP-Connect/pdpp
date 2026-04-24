@@ -26,7 +26,11 @@
     "server": "node server/index.js",
     "cli": "node cli/index.js",
     "example-client": "node examples/third-party-app/server.js",
-    "test": "node scripts/run-tests.js"
+    "test": "node scripts/run-tests.js",
+    "typecheck": "tsc --noEmit",
+    "check": "ultracite check",
+    "fix": "ultracite fix",
+    "verify": "pnpm typecheck && pnpm check"
   },
   "dependencies": {
     "@fastify/formbody": "^8.0.2",
@@ -39,6 +43,8 @@
     "sqlite-vec": "^0.1.9"
   },
   "devDependencies": {
-    "pino-pretty": "^13.0.0"
+    "@biomejs/biome": "2.4.12",
+    "pino-pretty": "^13.0.0",
+    "ultracite": "7.6.0"
   }
 }
