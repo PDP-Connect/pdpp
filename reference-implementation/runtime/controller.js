@@ -415,6 +415,10 @@ export function createController(opts = {}) {
         trace_id: traceContext.trace_id,
         started_at: startedAt,
       });
+      activeRunInteractions.set(runId, {
+        connector_id: connectorId,
+        pending: null,
+      });
 
       const interactionHandler = (interaction) => brokerInteraction(runId, connectorId, interaction);
 
@@ -441,15 +445,13 @@ export function createController(opts = {}) {
           // this run so the dashboard-submit path doesn't resolve against a
           // stale run that already terminated via runtime timeout.
           const leftover = activeRunInteractions.get(runId);
-          if (leftover) {
-            activeRunInteractions.delete(runId);
-            if (leftover.pending) {
-              leftover.pending.resolve({
-                type: 'INTERACTION_RESPONSE',
-                request_id: leftover.pending.interaction_id,
-                status: 'cancelled',
-              });
-            }
+          activeRunInteractions.delete(runId);
+          if (leftover?.pending) {
+            leftover.pending.resolve({
+              type: 'INTERACTION_RESPONSE',
+              request_id: leftover.pending.interaction_id,
+              status: 'cancelled',
+            });
           }
         });
 

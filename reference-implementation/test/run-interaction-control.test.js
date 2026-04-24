@@ -131,6 +131,45 @@ rl.on('line', (line) => {
   return path;
 }
 
+function buildDelayedInteractionConnectorFixture(tmpDir, delayMs = 200) {
+  const path = join(tmpDir, 'delayed-connector.mjs');
+  writeFileSync(path, `
+import { createInterface } from 'readline';
+const rl = createInterface({ input: process.stdin, terminal: false });
+let started = false;
+rl.on('line', (line) => {
+  let msg;
+  try { msg = JSON.parse(line); } catch { return; }
+  if (msg.type === 'START' && !started) {
+    started = true;
+    setTimeout(() => {
+      process.stdout.write(JSON.stringify({
+        type: 'INTERACTION',
+        request_id: 'int_delayed_1',
+        kind: 'otp',
+        message: 'Need a code.',
+        schema: {
+          type: 'object',
+          properties: {
+            code: { type: 'string' },
+          },
+          required: ['code'],
+        },
+        timeout_seconds: 60,
+      }) + '\\n');
+    }, ${delayMs});
+    return;
+  }
+  if (msg.type === 'INTERACTION_RESPONSE') {
+    process.stdout.write(JSON.stringify({ type: 'DONE', status: 'succeeded', records_emitted: 0 }) + '\\n');
+    rl.close();
+    process.exit(0);
+  }
+});
+`, 'utf8');
+  return path;
+}
+
 async function withHarness(options, fn) {
   const tmpDir = mkdtempSync(join(tmpdir(), 'pdpp-ref-run-interaction-'));
   const connectorPath = buildEchoConnectorFixture(tmpDir, options || {});
@@ -151,6 +190,26 @@ async function withHarness(options, fn) {
   } finally {
     await closeServer(server);
     rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
+
+async function withCustomHarness(connectorPath, fn) {
+  const server = await startServer({
+    quiet: true,
+    asPort: 0,
+    rsPort: 0,
+    dbPath: ':memory:',
+    connectorPathResolver: () => connectorPath,
+  });
+  const asUrl = `http://localhost:${server.asPort}`;
+  const spotifyManifest = JSON.parse(
+    readFileSync(join(REFERENCE_IMPL_DIR, 'manifests/spotify.json'), 'utf8'),
+  );
+  try {
+    await registerConnector(asUrl, spotifyManifest);
+    await fn({ server, asUrl, spotifyManifest });
+  } finally {
+    await closeServer(server);
   }
 }
 
@@ -259,6 +318,43 @@ test('POST /_ref/runs/:runId/interaction: unknown run returns 404', async () => 
     const body = await resp.json();
     assert.equal(body.error.code, 'not_found');
   });
+});
+
+test('POST /_ref/runs/:runId/interaction: active run with no pending interaction returns 409', async () => {
+  const tmpDir = mkdtempSync(join(tmpdir(), 'pdpp-ref-run-no-pending-'));
+  const connectorPath = buildDelayedInteractionConnectorFixture(tmpDir, 250);
+  try {
+    await withCustomHarness(connectorPath, async ({ asUrl, spotifyManifest }) => {
+      const started = await startRun(asUrl, spotifyManifest.connector_id);
+
+      const resp = await fetch(`${asUrl}/_ref/runs/${encodeURIComponent(started.run_id)}/interaction`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          interaction_id: 'int_delayed_1',
+          status: 'success',
+          data: { code: '123456' },
+        }),
+      });
+      assert.equal(resp.status, 409);
+      const body = await resp.json();
+      assert.equal(body.error.code, 'no_pending_interaction');
+
+      const pending = await waitForPendingInteraction(asUrl, started.run_id);
+      await fetch(`${asUrl}/_ref/runs/${encodeURIComponent(started.run_id)}/interaction`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          interaction_id: pending.interaction_id,
+          status: 'success',
+          data: { code: '123456' },
+        }),
+      });
+      await waitForRunTerminal(asUrl, started.run_id);
+    });
+  } finally {
+    rmSync(tmpDir, { recursive: true, force: true });
+  }
 });
 
 test('POST /_ref/runs/:runId/interaction: finished run returns 404', async () => {
