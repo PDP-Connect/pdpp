@@ -6,7 +6,6 @@ The resource-server SHALL NOT execute a query whose result is an unbounded scan 
 
 - `GET /v1/streams/:stream/records` (including `expand=…`)
 - `GET /v1/streams/:stream/records/:id` (including `expand=…`)
-- `GET /v1/streams` (record_count per granted stream)
 - `GET /_ref/runs`, `GET /_ref/grants`, `GET /_ref/traces`, `GET /_ref/search`
 - `GET /_ref/records/timeline`
 
@@ -55,45 +54,6 @@ This Requirement applies to the read paths enumerated above. Other read paths (i
 #### Scenario: Records timeline applies time window in SQL
 
 - **WHEN** a client queries `/_ref/records/timeline?since=A&until=B`
-- **THEN** the SQL query SHALL include `WHERE json_extract(record_json, '$.<consent_time_field>') BETWEEN A AND B` for each (connector, stream) pair it scans
-- **AND** the query SHALL apply the handler's `limit` at the SQL layer
+- **THEN** for each `(connector, stream)` pair it scans, the SQL query SHALL include a predicate against `COALESCE(NULLIF(json_extract(record_json, '$.<semantic_field>'), ''), emitted_at)` (native mode) or `emitted_at` (emitted mode) between the normalized `A`/`B` boundaries
+- **AND** the query SHALL apply a per-pair SQL `LIMIT`
 - **AND** the RS SHALL NOT scan and JSON-parse rows outside the window
-
-### Requirement: The reference implementation SHALL cap per-route in-flight requests with coordinated client backpressure
-
-The reference implementation SHALL enforce a configurable cap on concurrent in-flight requests per route. When the cap is reached, further requests to that route SHALL receive a `503 Service Unavailable` response until one of the in-flight requests completes.
-
-The dashboard client (`apps/web/src/app/dashboard/**`) SHALL coordinate with this cap by (a) bounding its own parallel fan-out below the server cap, (b) retrying 503 responses with exponential backoff up to a bounded retry count, and (c) surfacing per-target failures as explicit partial-failure state rather than silently converting them to empty result sets.
-
-#### Scenario: Dashboard fan-out exceeds the route cap
-
-- **WHEN** more requests are made to a single route than `PDPP_MAX_INFLIGHT_PER_ROUTE` (default 4) while earlier requests are still processing
-- **THEN** the excess requests SHALL receive `503 Service Unavailable` with a structured error envelope
-- **AND** the server SHALL NOT enqueue an unbounded number of in-flight handlers
-
-#### Scenario: Dashboard search receives a 503
-
-- **WHEN** the dashboard search page fans out per-stream queries and one target returns `503`
-- **THEN** the client SHALL retry that target up to twice with bounded backoff before considering it failed
-- **AND** if retries are exhausted the client SHALL surface the failure as explicit partial-failure state (e.g. a `{records, failures}` return shape)
-- **AND** the page SHALL render a visible indicator that some streams could not be queried — **not** treat the failure as "zero matching records"
-
-### Requirement: The reference implementation SHALL enforce a response-size budget
-
-The reference implementation SHALL enforce a configurable maximum response body size for non-blob routes. When a handler assembles a response larger than the configured limit, the RS SHALL emit a structured log record and return an error envelope rather than serialize the oversized body.
-
-#### Scenario: Handler accidentally assembles a huge response
-
-- **WHEN** an RS handler produces a response body whose JSON serialization would exceed `PDPP_MAX_RESPONSE_BYTES` (default 20 MB)
-- **THEN** the RS SHALL emit a `warn`/`error` log record naming the route and estimated size
-- **AND** the RS SHALL return a `500` with `error.code = 'response_too_large'` instead of serializing the body
-
-### Requirement: The reference implementation SHALL be deployed under a supervisor
-
-When the reference implementation runs as a long-lived service, the deployment SHALL wrap the Node process in a supervisor that restarts it on non-zero exit (including uncatchable native-level crashes such as SIGSEGV). A reference systemd unit and a reference PM2 ecosystem file SHALL be provided alongside the reference implementation.
-
-#### Scenario: Native-level crash in production
-
-- **WHEN** the reference implementation process exits non-zero (whether via a clean `process.exit(1)` from a fatal handler or an uncatchable SIGSEGV from a native addon)
-- **THEN** the supervisor SHALL restart the process within seconds
-- **AND** the previous crash's final structured log record SHALL be preserved in the deployment's log sink

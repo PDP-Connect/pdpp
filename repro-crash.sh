@@ -1,19 +1,24 @@
 #!/usr/bin/env bash
 # Frozen repro for the SIGSEGV-in-V8-parallel-scavenger crash under
-# concurrent dashboard load. See openspec/changes/audit-db-query-surface
-# for the investigation context.
+# concurrent dashboard load. See openspec/changes/fix-rs-query-memory-pressure
+# for the investigation context and the fix.
 #
 # Assumes:
-#   - You are on the `repro/scavenger-crash-2026-04-23` branch (or later
-#     descended from commit 121d963 that preserves the crash state).
+#   - You are on a branch descended from commit 121d963 that preserves the
+#     crash state (or on main after the fix-rs-query-memory-pressure change
+#     lands; in that case the expected result is PASS).
 #   - ~/pdpp-repro-db/polyfill.sqlite.snapshot exists, sha256
 #     001afdcc3de0caf2543c0a401779e998fe16afeaec00e01dd1fa698a98a14805.
-#   - Node 25.8.2 is active (see .nvmrc if added).
+#   - Node 25.8.2 is active (see .nvmrc).
 #
 # Run from repo root:
-#   bash repro-crash.sh
+#   bash repro-crash.sh               # single run, 10 rounds
+#   bash repro-crash.sh --runs=5      # five runs; PASS iff all survived
 #
-# Exit 0 = server survived 10 rounds; exit 1 = crashed.
+# Exit codes:
+#   0 = all runs survived 10 rounds
+#   1 = at least one run crashed (or the single-run legacy mode crashed)
+#   2 = setup failure (missing snapshot, checksum mismatch, server never bound)
 
 set -u
 
@@ -22,6 +27,27 @@ SNAPSHOT="$HOME/pdpp-repro-db/polyfill.sqlite.snapshot"
 WORKING_DB="$ROOT/packages/polyfill-connectors/.pdpp-data/polyfill.sqlite"
 EXPECTED_SHA="001afdcc3de0caf2543c0a401779e998fe16afeaec00e01dd1fa698a98a14805"
 LOG="/tmp/repro-crash.log"
+
+RUNS=1
+for arg in "$@"; do
+  case "$arg" in
+    --runs=*)
+      RUNS="${arg#--runs=}"
+      if ! [[ "$RUNS" =~ ^[0-9]+$ ]] || [ "$RUNS" -lt 1 ]; then
+        echo "[repro] ERROR: --runs must be a positive integer." >&2
+        exit 2
+      fi
+      ;;
+    --help|-h)
+      sed -n '2,21p' "$0"
+      exit 0
+      ;;
+    *)
+      echo "[repro] ERROR: unknown argument '$arg' (try --help)." >&2
+      exit 2
+      ;;
+  esac
+done
 
 if [ ! -f "$SNAPSHOT" ]; then
   echo "[repro] ERROR: snapshot not found at $SNAPSHOT" >&2
@@ -36,70 +62,118 @@ if [ "$actual_sha" != "$EXPECTED_SHA" ]; then
   exit 2
 fi
 
-echo "[repro] Killing any running dev processes…"
-pkill -f 'pnpm.*dev' 2>/dev/null
-pkill -f 'next-server' 2>/dev/null
-pkill -f 'server/index.js' 2>/dev/null
-sleep 2
+# Run one 10-round cycle against a fresh DB + fresh dev server.
+# Writes "SURVIVED", "CRASHED", or "SETUP_FAILED" to $RESULT_FILE. All other
+# output goes straight to stdout so progress is visible during the run.
+RESULT_FILE="/tmp/repro-crash.result"
+run_once() {
+  : > "$RESULT_FILE"
+  echo "[repro] Killing any running dev processes…"
+  pkill -f 'pnpm.*dev' 2>/dev/null
+  pkill -f 'next-server' 2>/dev/null
+  pkill -f 'server/index.js' 2>/dev/null
+  sleep 2
 
-echo "[repro] Restoring working DB from snapshot…"
-mkdir -p "$(dirname "$WORKING_DB")"
-# Need writable copy because reference server opens r/w even though we won't
-# mutate under this repro. Remove any stale -wal/-shm files from previous run.
-rm -f "$WORKING_DB" "$WORKING_DB-wal" "$WORKING_DB-shm"
-cp "$SNAPSHOT" "$WORKING_DB"
-chmod u+w "$WORKING_DB"
+  echo "[repro] Restoring working DB from snapshot…"
+  mkdir -p "$(dirname "$WORKING_DB")"
+  # Need writable copy because reference server opens r/w even though we won't
+  # mutate under this repro. Remove any stale -wal/-shm files from previous run.
+  rm -f "$WORKING_DB" "$WORKING_DB-wal" "$WORKING_DB-shm"
+  cp "$SNAPSHOT" "$WORKING_DB"
+  chmod u+w "$WORKING_DB"
 
-echo "[repro] Starting pnpm dev (background, log: $LOG)…"
-cd "$ROOT"
-nohup pnpm dev > "$LOG" 2>&1 &
-DEV_PID=$!
-echo "[repro] pnpm dev PID: $DEV_PID"
+  echo "[repro] Starting pnpm dev (background, log: $LOG)…"
+  cd "$ROOT"
+  nohup pnpm dev > "$LOG" 2>&1 &
+  DEV_PID=$!
+  echo "[repro] pnpm dev PID: $DEV_PID"
 
-echo "[repro] Waiting for servers to be ready…"
-for i in $(seq 1 30); do
-  sleep 1
-  if grep -q 'authorization server' "$LOG" 2>/dev/null && grep -q 'Ready in' "$LOG" 2>/dev/null; then
-    echo "[repro] Ready after ${i}s."
-    break
+  echo "[repro] Waiting for servers to be ready…"
+  for i in $(seq 1 30); do
+    sleep 1
+    if grep -q 'authorization server' "$LOG" 2>/dev/null && grep -q 'Ready in' "$LOG" 2>/dev/null; then
+      echo "[repro] Ready after ${i}s."
+      break
+    fi
+  done
+
+  REFPID=$(ss -ltnp 'sport = :7662' 2>/dev/null | grep -oP 'pid=\K[0-9]+' | head -1 || true)
+  if [ -z "${REFPID:-}" ]; then
+    echo "[repro] ERROR: reference server never bound to :7662. Log tail:" >&2
+    tail -20 "$LOG" >&2
+    pkill -P "$DEV_PID" 2>/dev/null
+    echo SETUP_FAILED > "$RESULT_FILE"
+    return
   fi
+  echo "[repro] Reference server PID: $REFPID"
+
+  echo "[repro] Hammering /dashboard/records + /dashboard/search + /planning/changes for up to 10 rounds…"
+  local status=survived
+  for round in $(seq 1 10); do
+    (
+      curl -s -o /dev/null -w "R$round records %{http_code}/%{time_total}s\n" --max-time 120 http://localhost:3000/dashboard/records &
+      curl -s -o /dev/null -w "R$round search  %{http_code}/%{time_total}s\n" --max-time 120 'http://localhost:3000/dashboard/search?q=personal+server&scope=messages' &
+      curl -s -o /dev/null -w "R$round changes %{http_code}/%{time_total}s\n" --max-time 120 http://localhost:3000/planning/changes &
+      wait
+    )
+    if ! ps -p "$REFPID" > /dev/null 2>&1; then
+      echo "[repro] !!! Reference server DIED after round $round"
+      status=crashed
+      break
+    fi
+  done
+
+  echo "[repro] Cleaning up…"
+  pkill -f 'pnpm.*dev' 2>/dev/null
+  pkill -f 'next-server' 2>/dev/null
+  pkill -f 'server/index.js' 2>/dev/null
+
+  if [ "$status" = "crashed" ]; then
+    echo CRASHED > "$RESULT_FILE"
+  else
+    echo SURVIVED > "$RESULT_FILE"
+  fi
+}
+
+# Main dispatch.
+crash_count=0
+survive_count=0
+declare -a per_run_results=()
+
+for run in $(seq 1 "$RUNS"); do
+  echo ""
+  echo "============================================================"
+  echo "[repro] Run $run of $RUNS"
+  echo "============================================================"
+  run_once
+  final_line=$(cat "$RESULT_FILE" 2>/dev/null || echo UNKNOWN)
+  per_run_results+=("run $run: $final_line")
+  case "$final_line" in
+    CRASHED) crash_count=$((crash_count + 1)) ;;
+    SURVIVED) survive_count=$((survive_count + 1)) ;;
+    SETUP_FAILED)
+      echo "[repro] Setup failed during run $run; aborting."
+      exit 2
+      ;;
+    *)
+      echo "[repro] Unknown result '$final_line' during run $run; aborting." >&2
+      exit 2
+      ;;
+  esac
 done
 
-REFPID=$(ss -ltnp 'sport = :7662' 2>/dev/null | grep -oP 'pid=\K[0-9]+' | head -1 || true)
-if [ -z "${REFPID:-}" ]; then
-  echo "[repro] ERROR: reference server never bound to :7662. Log tail:" >&2
-  tail -20 "$LOG" >&2
-  pkill -P $DEV_PID 2>/dev/null
-  exit 2
-fi
-echo "[repro] Reference server PID: $REFPID"
-
-echo "[repro] Hammering /dashboard/records + /dashboard/search + /planning/changes for up to 10 rounds…"
-status=survived
-for round in $(seq 1 10); do
-  (
-    curl -s -o /dev/null -w "R$round records %{http_code}/%{time_total}s\n" --max-time 120 http://localhost:3000/dashboard/records &
-    curl -s -o /dev/null -w "R$round search  %{http_code}/%{time_total}s\n" --max-time 120 'http://localhost:3000/dashboard/search?q=personal+server&scope=messages' &
-    curl -s -o /dev/null -w "R$round changes %{http_code}/%{time_total}s\n" --max-time 120 http://localhost:3000/planning/changes &
-    wait
-  )
-  if ! ps -p "$REFPID" > /dev/null 2>&1; then
-    echo "[repro] !!! Reference server DIED after round $round"
-    status=crashed
-    break
-  fi
+echo ""
+echo "============================================================"
+echo "[repro] Summary:"
+for r in "${per_run_results[@]}"; do
+  echo "  $r"
 done
+echo "  survived=$survive_count  crashed=$crash_count  total=$RUNS"
+echo "============================================================"
 
-echo "[repro] Cleaning up…"
-pkill -f 'pnpm.*dev' 2>/dev/null
-pkill -f 'next-server' 2>/dev/null
-pkill -f 'server/index.js' 2>/dev/null
-
-if [ "$status" = "crashed" ]; then
-  echo "[repro] RESULT: CRASHED — reproduction succeeded."
+if [ "$crash_count" -gt 0 ]; then
+  echo "[repro] RESULT: FAIL ($crash_count/$RUNS runs crashed)"
   exit 1
-else
-  echo "[repro] RESULT: SURVIVED 10 rounds. Reproduction did not fire this run."
-  echo "[repro] This is non-deterministic; try again a few times before concluding anything."
-  exit 0
 fi
+echo "[repro] RESULT: PASS ($RUNS/$RUNS runs survived 10 rounds)"
+exit 0

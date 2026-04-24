@@ -154,50 +154,25 @@ Target: push the time window into SQL at the smallest layer that knows the `cons
 
 When `connector_id` / `stream` params are supplied by the caller, only one pair runs. When they aren't, the handler unions across all matching pairs and applies the top-level `limit` globally (either via SQL `UNION ALL` + final `ORDER BY` + `LIMIT`, or by draining from a merge-sort heap of per-pair iterators).
 
-## Concurrency cap
+## Deferred: standing defenses
 
-Fastify doesn't ship a built-in per-route concurrency cap. Two reasonable implementations:
+The earlier draft of this change bundled three standing defenses with the read-path rewrite:
 
-1. **Tiny semaphore per route class**: an in-memory counter incremented at `onRequest` and decremented at `onResponse`. Reject with 503 when ≥ N. Simple, 30 lines.
-2. **`@fastify/rate-limit` plugin**: comprehensive but heavier.
+- Per-route concurrency cap (`PDPP_MAX_INFLIGHT_PER_ROUTE=4` + 503 on exceed) with a coupled dashboard `pMapLimit` + 503-retry + partial-failure banner.
+- Response-size budget (`preSerialization` hook + `PDPP_MAX_RESPONSE_BYTES`).
+- Process supervisor mandate (systemd unit or PM2 ecosystem file).
 
-Start with option 1. The cap is per-(method, route-pattern) and the limit is configurable via env. Default: `PDPP_MAX_INFLIGHT_PER_ROUTE=4`.
+After slice 4 landed, the repro-harness crash rate collapsed (3/3 ran clean with old-space peak ~14 MB vs. prior 600–730 MB; response times ~0.4 s vs. prior ~8.7 s). The pathology that motivated the standing defenses is gone. Shipping a per-route cap without a demonstrated need would couple server behavior to dashboard retry semantics we don't need today, and the cap is only safe if it ships together with the dashboard 503-coordination work — a substantial app-layer change.
 
-### Cap + dashboard client: the non-optional coupling
-
-A per-route cap with 503-on-exceed is only safe if the callers handle 503s explicitly. Our current client (`apps/web/src/app/dashboard/lib/rs-client.ts:80`) throws on any non-OK response, and `searchRecords` / `loadTimeline` catch that exception into `return []`. A 503 would land as "this stream had zero records" — silent under-reporting, the opposite of what users see. That would be worse than the crash it's trying to prevent.
-
-So the cap ships with a **coordinated client-side change**:
-
-1. **Bounded parallelism**: a small `pMapLimit(array, fn, {concurrency})` helper. Search + timeline switch from `Promise.all` to `pMapLimit(targets, fn, {concurrency: 3})`. Three is chosen so the client voluntarily stays below the server's cap of four; leaves headroom for other dashboard requests that hit the same route class.
-2. **503 is retried, not swallowed**: `rs-client.ts` distinguishes 503 from other non-OK statuses. On 503 it retries up to 2× with 100 ms and 400 ms delays. A 503 that persists past those retries is surfaced as an error, not silently converted to empty results.
-3. **Partial-failure visibility**: where per-target failures happen, the returned object is `{records, failures: [{target, reason}]}` instead of `[]`. The page renders zero records *and* a visible "N streams couldn't be queried: retry?" banner — not silent truncation.
-
-Implementation scope for #1–#3: `apps/web/src/app/dashboard/lib/rs-client.ts` (add `pMapLimit` helper and 503-aware fetch), `apps/web/src/app/dashboard/search/page.tsx` (use helper, render partial-failure banner), `apps/web/src/app/dashboard/lib/timeline.ts` (same), and a small helper `apps/web/src/lib/p-limit.ts` (or just inline).
-
-## Response-size budget
-
-Hook: `preSerialization`. If the outbound object's JSON size (estimated via `JSON.stringify(body).length`) exceeds `PDPP_MAX_RESPONSE_BYTES` (default 20 MB), the handler returns a 500 with `{error: {code: 'response_too_large', ...}}` and a structured log record.
-
-Caveats:
-- Estimating size by stringifying twice is wasteful. Cheaper: track cumulative size as we assemble. For the streaming handler (`listRecords`), this is natural.
-- For blob responses (binary), the limit doesn't apply — that's already streamed.
-
-## Supervisor
-
-Two paths:
-- **Dev**: leave `pnpm dev` as-is. It uses pnpm's `--parallel --stream` runner, which doesn't auto-restart children. Add a small wrapper (shell loop) only if crashes remain after the code fix.
-- **Prod / reference deployment**: a one-line `ExecStart` systemd unit with `Restart=on-failure` and `RestartSec=1s`. Or PM2 for non-systemd hosts. The important property is: SIGSEGV → auto-restart with structured log of the last crash reason, not manual intervention.
-
-The systemd unit is out of `reference-implementation/`'s repo scope (deployment-local), but the OpenSpec should mandate "the reference implementation, when deployed as a long-running service, MUST be wrapped by a supervisor that restarts on non-zero exit."
+The defenses are tracked as follow-ups (`tasks.md §6`). They become worth building when (and if) a measured remaining problem justifies the scope.
 
 ## Acceptance, precisely
 
-- `repro-crash.sh --runs=5` returns exit 0 (all five runs survived 10 rounds) on the frozen branch + DB snapshot. A 5-run PASS is our proxy for "functional fix." Five is chosen because our background-observed crash rate is ~50% per 10 rounds — P(any crash in 5 runs) at baseline ≈ 97%, so surviving 5/5 post-fix is strong evidence.
-- Response times for the three dashboard URLs, measured on the frozen repro, are at least as fast as current baseline. Expected substantial improvement (today: ~10 s records, ~17 s search; target: < 3 s each).
-- Memory footprint measured via `/proc/<pid>/status RssAnon` during the 5-run test stays below 1 GB peak. Today it climbs to ~2 GB at crash time.
-- No regressions in the existing 596-test suite; pre-existing `composed-origin.test.js` flake excluded.
-- A minimal-reproducer script (`repro-native-only.mjs`) is attempted after the fix: if we can isolate the crash to a ~200-line script that hits only better-sqlite3 + concurrency (no Fastify, no Next), we file it upstream. If we can't isolate it, that's informative too — it means the pathology required the full handler stack, which is consistent with "allocation pressure" being the trigger rather than a driver bug.
+- `repro-crash.sh --runs=5` returns exit 0 (all five runs survived 10 rounds) on the frozen branch + DB snapshot. A 5-run PASS is our proxy for "functional fix." Five is chosen because the background-observed crash rate was ~50% per 10 rounds — P(any crash in 5 runs) at baseline ≈ 97%, so surviving 5/5 post-fix is strong evidence.
+- Response times for the three dashboard URLs, measured on the frozen repro, are substantially better than baseline (measured: ~8.7 s → ~0.4 s for `/dashboard/records` and `/dashboard/search`).
+- Memory footprint measured via `/proc/<pid>/status RssAnon` during the 5-run test stays well below 1 GB peak. (Measured: old-space peak ~14 MB, all-spaces peak ~22 MB.)
+- No regressions in the existing test suite; pre-existing `composed-origin.test.js` failure excluded (fails identically on main without this change).
+- A minimal-reproducer script is attempted after the fix: if we can isolate the crash to a ~200-line script that hits only better-sqlite3 + concurrency (no Fastify, no Next), we file it upstream. If we can't isolate it, that's informative too — it means the pathology required the full handler stack, which is consistent with "allocation pressure" being the trigger rather than a driver bug. Tracked as a follow-up rather than a gate on this change.
 
 ## What this is not
 
