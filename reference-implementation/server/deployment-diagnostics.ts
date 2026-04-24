@@ -149,18 +149,18 @@ export interface DeploymentDiagnosticsReport {
     readonly path: string;
   };
   readonly environment: readonly EnvValueReport[];
-  readonly manifests: ReadonlyArray<{
-    readonly connector_id: string;
-    readonly display_name: string | null;
-    readonly provenance: "native" | "polyfill-registered";
-    readonly semantic_stream_count: number;
-  }>;
   readonly lexical: {
     readonly index: {
       readonly state: "built" | "building";
       readonly backfill_progress: LexicalBackfillProgress | null;
     };
   };
+  readonly manifests: ReadonlyArray<{
+    readonly connector_id: string;
+    readonly display_name: string | null;
+    readonly provenance: "native" | "polyfill-registered";
+    readonly semantic_stream_count: number;
+  }>;
   readonly semantic: {
     readonly backend: {
       readonly configured: boolean;
@@ -456,10 +456,10 @@ export interface DeploymentDiagnosticsRuntimeDeps {
   readonly computeIndexState: () => SemanticIndexState;
   readonly getBackend: () => DiagnosticsBackend | null;
   readonly getBackfillProgress?: () => SemanticBackfillProgress | null;
-  readonly getLexicalBackfillProgress?: () => LexicalBackfillProgress | null;
   readonly getConfiguredNativeManifest: () => DiagnosticsManifest | null;
   readonly getConnectorManifest: (connectorId: string) => Promise<DiagnosticsManifest | null>;
   readonly getDb: () => DiagnosticsDb | null;
+  readonly getLexicalBackfillProgress?: () => LexicalBackfillProgress | null;
   readonly listRegisteredConnectorIds: () => Promise<readonly string[]>;
 }
 

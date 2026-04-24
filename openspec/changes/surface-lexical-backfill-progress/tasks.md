@@ -18,5 +18,5 @@
 ## 4. Acceptance Checks
 
 - [x] 4.1 Add focused unit coverage for lexical progress and warnings.
-- [ ] 4.2 Run `cd reference-implementation && node --test --test-force-exit test/deployment-diagnostics.test.js`.
-- [ ] 4.3 Run `openspec validate surface-lexical-backfill-progress --strict`.
+- [x] 4.2 Run `cd reference-implementation && node --test --test-force-exit test/deployment-diagnostics.test.js`.
+- [x] 4.3 Run `openspec validate surface-lexical-backfill-progress --strict`.

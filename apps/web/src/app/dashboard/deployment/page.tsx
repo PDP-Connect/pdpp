@@ -7,7 +7,7 @@ export const dynamic = "force-dynamic";
 
 // Operator-facing diagnostics for the reference deployment. Not a PDPP
 // protocol surface — this page consumes /_ref/deployment and renders the
-// report the RS already redacted. The goal is "why isn't semantic working"
+// report the RS already redacted. The goal is "why isn't retrieval working"
 // answered in one glance, without the operator reading logs or SSHing in.
 //
 // Spec: openspec/changes/make-semantic-retrieval-operational/
@@ -37,11 +37,12 @@ export default async function DeploymentPage() {
     <DashboardShell active="deployment">
       <PageHeader
         breadcrumbs={[{ href: "/dashboard", label: "Dashboard" }, { label: "Deployment" }]}
-        description="Operator diagnostics for the reference semantic retrieval surface. Read-only. Secret environment values are redacted before reaching this page."
+        description="Operator diagnostics for the reference retrieval surfaces. Read-only. Secret environment values are redacted before reaching this page."
         title="Deployment"
       />
 
       <WarningsSection warnings={report.warnings} />
+      <LexicalSection report={report} />
       <SemanticSection report={report} />
       <ParticipationSection participation={report.semantic.participation} />
       <ManifestsSection manifests={report.manifests} />
@@ -55,6 +56,7 @@ export default async function DeploymentPage() {
 
 const WARNING_TITLES: Record<DeploymentDiagnostics["warnings"][number]["code"], string> = {
   zero_participation: "Zero semantic participation",
+  lexical_building_index: "Lexical index is rebuilding",
   building_index: "Semantic index is rebuilding",
   stale_index: "Semantic index is stale",
   backend_unavailable: "Embedding backend unavailable",
@@ -67,7 +69,7 @@ function WarningsSection({ warnings }: { warnings: DeploymentDiagnostics["warnin
   if (warnings.length === 0) {
     return (
       <Section title="Warnings">
-        <p className="pdpp-body text-muted-foreground">No warnings. Semantic retrieval looks operational.</p>
+        <p className="pdpp-body text-muted-foreground">No warnings. Retrieval looks operational.</p>
       </Section>
     );
   }
@@ -87,13 +89,37 @@ function WarningsSection({ warnings }: { warnings: DeploymentDiagnostics["warnin
   );
 }
 
-// ─── Semantic backend + index ──────────────────────────────────────────────
+// ─── Retrieval indexes ─────────────────────────────────────────────────────
+
+function LexicalSection({ report }: { report: DeploymentDiagnostics }) {
+  const { index } = report.lexical;
+  return (
+    <Section title="Lexical index">
+      {index.backfill_progress ? (
+        <BackfillProgress
+          indexedCount={index.backfill_progress.indexed_rows}
+          indexedLabel="FTS rows written"
+          progress={index.backfill_progress}
+        />
+      ) : null}
+      <dl className="grid grid-cols-1 gap-x-6 gap-y-2 sm:grid-cols-2">
+        <Field label="Index state" value={index.state} />
+      </dl>
+    </Section>
+  );
+}
 
 function SemanticSection({ report }: { report: DeploymentDiagnostics }) {
   const { backend, index } = report.semantic;
   return (
     <Section title="Semantic backend">
-      {index.backfill_progress ? <BackfillProgress progress={index.backfill_progress} /> : null}
+      {index.backfill_progress ? (
+        <BackfillProgress
+          indexedCount={index.backfill_progress.indexed_vectors}
+          indexedLabel="vectors indexed"
+          progress={index.backfill_progress}
+        />
+      ) : null}
       <dl className="grid grid-cols-1 gap-x-6 gap-y-2 sm:grid-cols-2">
         <Field label="Configured" value={yesNo(backend.configured)} />
         <Field label="Available" value={yesNo(backend.available)} />
@@ -120,9 +146,15 @@ function SemanticSection({ report }: { report: DeploymentDiagnostics }) {
 }
 
 function BackfillProgress({
+  indexedCount,
+  indexedLabel,
   progress,
 }: {
-  progress: NonNullable<DeploymentDiagnostics["semantic"]["index"]["backfill_progress"]>;
+  indexedCount: number;
+  indexedLabel: string;
+  progress:
+    | NonNullable<DeploymentDiagnostics["semantic"]["index"]["backfill_progress"]>
+    | NonNullable<DeploymentDiagnostics["lexical"]["index"]["backfill_progress"]>;
 }) {
   const percent =
     progress.records_total && progress.records_total > 0
@@ -163,7 +195,7 @@ function BackfillProgress({
         </div>
       )}
       <p className="mt-1 text-muted-foreground text-xs">
-        {progress.indexed_vectors.toLocaleString()} vectors indexed · updated {formatTime(progress.updated_at)}
+        {indexedCount.toLocaleString()} {indexedLabel} · updated {formatTime(progress.updated_at)}
         {progress.active_jobs > 1 ? ` · ${progress.active_jobs} active jobs` : ""}
       </p>
     </div>
@@ -310,7 +342,9 @@ function Field({ label, value }: { label: string; value: string }) {
 }
 
 function recordsPerSecond(
-  progress: NonNullable<DeploymentDiagnostics["semantic"]["index"]["backfill_progress"]>
+  progress:
+    | NonNullable<DeploymentDiagnostics["semantic"]["index"]["backfill_progress"]>
+    | NonNullable<DeploymentDiagnostics["lexical"]["index"]["backfill_progress"]>
 ): string | null {
   const started = Date.parse(progress.started_at);
   const updated = Date.parse(progress.updated_at);
