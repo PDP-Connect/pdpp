@@ -6,6 +6,11 @@ If you are doing a trivial fix (typo, one-line bug, test tweak, comment), skip O
 
 Read `openspec/README.md` before non-trivial planning work. It is the local rulebook for OpenSpec lifecycle, closeout, and the design-note intake lane.
 
+For multi-agent work, worker handoffs, or parallel implementation lanes, read
+`docs/agent-workstream-playbook.md` before assigning or accepting work. It is
+the local playbook for worktrees, task packets, validation, reporting, and owner
+merge gates.
+
 ## When OpenSpec applies
 
 Write a change proposal when any of these are true:
