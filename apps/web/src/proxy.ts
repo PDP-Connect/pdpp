@@ -59,11 +59,15 @@ export default function proxy(request: NextRequest) {
   if (request.nextUrl.pathname === "/dashboard" || request.nextUrl.pathname.startsWith("/dashboard/")) {
     const requestHeaders = new Headers(request.headers);
     requestHeaders.set("x-pdpp-return-to", `${request.nextUrl.pathname}${request.nextUrl.search}`);
-    return NextResponse.next({
+    // Live operator surface — never indexable, regardless of which layout renders
+    // (owner login redirect, server-unreachable shell, or the dashboard itself).
+    const response = NextResponse.next({
       request: {
         headers: requestHeaders,
       },
     });
+    response.headers.set("X-Robots-Tag", "noindex, nofollow");
+    return response;
   }
 
   const proxyTarget = resolveReferenceProxyTarget(request.nextUrl.pathname);

@@ -139,14 +139,6 @@ const nextConfig = {
         source: '/docs/:path*.mdx',
         destination: '/llms.mdx/docs/:path*',
       },
-      {
-        source: '/planning',
-        destination: '/openspec',
-      },
-      {
-        source: '/planning/:path*',
-        destination: '/openspec/:path*',
-      },
     ];
   },
   webpack(config) {

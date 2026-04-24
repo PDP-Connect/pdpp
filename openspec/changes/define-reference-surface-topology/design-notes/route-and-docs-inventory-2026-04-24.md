@@ -68,7 +68,7 @@ Implementation of sections 2–6 has not started; this note exists to drive that
 
 The route family is `/openspec/**` in the codebase but everything user-facing is already labeled with `PLANNING_LABEL = "Planning"` and the canonical URL prefix is `/planning` (see `lib/openspec/public.ts` and the `siteNav` entry `{ text: "Planning", link: "/planning" }`).
 
-This is a meaningful existing inconsistency: the **route on disk** is `/openspec/**` but **all link targets** in pages and nav use `/planning/**`. There is no rewrite or middleware in this worktree that maps `/planning/*` -> `/openspec/*`, which means in-app `Link` clicks to `/planning` likely 404 unless a `proxy.ts`/`next.config` rewrite exists elsewhere. Worth confirming before we ship anything that depends on the navigation working.
+**Correction (2026-04-24, post-rebase):** an earlier draft of this note said the routes were broken. They were not. `apps/web/next.config.mjs` already redirects `/openspec*` -> `/planning*` (302) and rewrites `/planning/*` -> `/openspec/*` server-side, so the user-facing URL is genuinely `/planning/**` and navigation works. The remaining issue is purely a source-path cleanup: the file directory should match the URL family. Section 2 of this change moves `app/openspec/**` to `app/planning/**` and drops the now-redundant rewrite, keeping the `/openspec` -> `/planning` redirect as a temporary 302 for inbound links.
 
 | Route | Files | Current category | Target category | Recommendation | Notes |
 |---|---|---|---|---|---|
@@ -125,7 +125,7 @@ This is the consolidated checklist that drives sections 2–6. Per-row recommend
    - Add `noindex` metadata (currently no `robots` field on dashboard pages).
    - Confirm `dynamic = "force-dynamic"` on every dashboard page (sampled and confirmed; no audit miss expected, but section 2 should grep).
    - Add a small "this is a live reference instance, not a hosted PDPP service" lockup near the dashboard header (per design.md non-goals).
-4. **`/openspec/**` -> `/planning/**` URL alignment**: this is a real inconsistency in the codebase right now (`siteNav` and `planningPath()` link to `/planning/*`, but the route directory is `app/openspec/**`). **Owner decision needed before Section 2.4 work:** rename routes to `/planning/**` to match the user-facing label, or keep routes at `/openspec/**` and update `siteNav`/`planningPath()` accordingly. Either is fine; the current state is broken navigation. Flagged as a stop-and-report point for Section 2 if a rewrite/proxy is not already handling it.
+4. **`/openspec/**` -> `/planning/**` source-path cleanup**: minor file-system inconsistency. Public URLs are already `/planning/**` (next.config redirects `/openspec*` to `/planning*` and rewrites `/planning/*` back to `/openspec/*` server-side). Not user-facing breakage. Section 2 of this change moves `app/openspec/**` to `app/planning/**`, drops the redundant `/planning -> /openspec` rewrite, and keeps the `/openspec -> /planning` redirect temporarily as a 302 so inbound deep links continue to work.
 5. **`/design` and `/palette`**: relabel as contributor surfaces and restrict on hosted builds (`process.env.VERCEL !== "1"` like the dashboard). Open question: are these allowed at all in production? Default: hide.
 6. **`/` home**: keep as the reference-implementation walkthrough, add a direct `/reference` CTA once that page exists.
 
@@ -165,11 +165,11 @@ The coverage matrix (Section 4) will be **manually seeded first**, with these pr
 
 These are real questions the inventory uncovered, not invented policy. Section 2 implementation will need answers, or will need to stop-and-report:
 
-1. **`/openspec/**` vs `/planning/**` URL family.** Either rename routes or update `siteNav`/`planningPath()`. Today's nav links go to `/planning/*` while routes live at `/openspec/*` — this is broken without a rewrite. (See §1.1, project-planning row.)
-2. **`/design` and `/palette` on hosted builds.** Default recommendation: hide via the same `VERCEL !== "1"` rule as the dashboard. Confirm.
-3. **`spec-architecture.md` posture.** Split into protocol-architecture (stays in `/docs`) plus reference-architecture (moves to `/reference`)? Or relabel and reshelve under the reference group? The clean answer is the split; the cheap answer is the reshelve.
-4. **`spec-connector-ecosystem.md` posture.** Same shape: split out the project-narrative half, or relabel the whole page as planning-flavored?
-5. **Dashboard link on hosted nav.** When `isDashboardEnabled()` is false on a hosted deploy, do we hide the Dashboard nav entry entirely (recommended), show it as disabled, or rely on the route 404? Default: hide.
+1. ~~`/openspec/**` vs `/planning/**` URL family.~~ Resolved: routes stay logically at `/planning/**` (file paths moved by Section 2 to match). Inventory's earlier "broken nav" claim was wrong; existing redirect+rewrite already routed `/planning/**` to the openspec-named directory.
+2. ~~`/design` and `/palette` on hosted builds.~~ Resolved by Section 2: hidden on Vercel via `isContributorSurfaceEnabled()` (mirrors the dashboard's `PDPP_ENABLE_DASHBOARD` pattern with env var `PDPP_ENABLE_CONTRIBUTOR_SURFACES`).
+3. **`spec-architecture.md` posture.** Split into protocol-architecture (stays in `/docs`) plus reference-architecture (moves to `/reference`)? Or relabel and reshelve under the reference group? The clean answer is the split; the cheap answer is the reshelve. *Still open — deferred from Section 2 because it requires owner judgment.*
+4. **`spec-connector-ecosystem.md` posture.** Same shape: split out the project-narrative half, or relabel the whole page as planning-flavored? *Still open — deferred from Section 2 for the same reason.*
+5. **Dashboard link on hosted nav.** When `isDashboardEnabled()` is false on a hosted deploy, do we hide the Dashboard nav entry entirely (recommended), show it as disabled, or rely on the route 404? Default: hide. *Still open — there is currently no Dashboard nav entry in `siteNav` so this is latent until Section 3 considers public nav additions.*
 
 These are not blockers for finishing Section 1. They are the first decisions needed before Section 2 can begin.
 

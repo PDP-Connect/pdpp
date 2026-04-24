@@ -6,10 +6,10 @@
 
 ## 2. Route Topology And Navigation
 
-- [ ] 2.1 Add or update navigation so `/docs`, `/reference`, `/dashboard`, `/sandbox`, and `/openspec` are labeled by artifact category.
-- [ ] 2.2 Ensure protocol docs pages do not include live dashboard chrome, live operational state, owner-auth-only CTAs, or copy implying reference behavior is normative protocol behavior.
-- [ ] 2.3 Ensure `/dashboard/**` pages use live-instance copy, noindex metadata, dynamic rendering/no static cache for live data, and owner-access gating when configured.
-- [ ] 2.4 Decide whether `/openspec/**` remains public in hosted builds; if it remains public, label it as project planning rather than protocol truth.
+- [ ] 2.1 Add or update navigation so `/docs`, `/reference`, `/dashboard`, `/sandbox`, and `/openspec` are labeled by artifact category. *(Deferred: nav entries for `/reference` and `/sandbox` will be added by Sections 3 and 5 when those surfaces exist; adding 404 links now would create dead nav. Existing nav already labels `/docs` and `/planning`. `/dashboard` is intentionally not a public nav entry.)*
+- [x] 2.2 Ensure protocol docs pages do not include live dashboard chrome, live operational state, owner-auth-only CTAs, or copy implying reference behavior is normative protocol behavior. *(Partial: unambiguous fixes applied — `index.mdx` cards regrouped so protocol and reference are no longer peers, `meta.json` reshelves `spec-change-tracking` and `spec-deferred` into Core Protocol, `spec-dti-alignment` moved to its own "Adjacent Ecosystems" group. Mixed-authority docs `spec-architecture.md` and `spec-connector-ecosystem.md` deferred — they require owner split-vs-relabel decisions tracked in the inventory note.)*
+- [x] 2.3 Ensure `/dashboard/**` pages use live-instance copy, noindex metadata, dynamic rendering/no static cache for live data, and owner-access gating when configured. *(Added `robots: noindex/nofollow` via dashboard layout metadata. Owner gating already in place via `isDashboardEnabled()` + `requireDashboardAccess()`. `dynamic = "force-dynamic"` already set per-page.)*
+- [x] 2.4 Decide whether `/openspec/**` remains public in hosted builds; if it remains public, label it as project planning rather than protocol truth. *(Owner decision: keep public, labeled as planning. Routes renamed from `app/openspec/**` to `app/planning/**` so source paths match the user-facing URL. Existing planning copy already labels these as project artifacts, not protocol authority.)*
 
 ## 3. Reference Explainer
 

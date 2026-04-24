@@ -33,10 +33,7 @@ export function SiteHeader({ currentLabel }: { currentLabel: string }) {
       )}
       <nav className="ml-auto flex items-center gap-1 md:ml-0">
         {siteNav.map((item) => {
-          const active =
-            pathname === item.link ||
-            pathname.startsWith(`${item.link}/`) ||
-            (item.link === "/planning" && (pathname === "/openspec" || pathname.startsWith("/openspec/")));
+          const active = pathname === item.link || pathname.startsWith(`${item.link}/`);
 
           return (
             <Link
