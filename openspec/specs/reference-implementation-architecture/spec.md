@@ -247,3 +247,5 @@ This Requirement applies to the read paths enumerated above. Other read paths (i
 - **AND** the query SHALL apply a per-pair SQL `LIMIT`
 - **AND** the RS SHALL NOT scan and JSON-parse rows outside the window
 
+Note — deferred standing defenses: additional runtime defenses (per-route in-flight concurrency cap with coupled dashboard 503 retry + partial-failure coordination, response-size budget hook, process-supervisor mandate) were considered and deferred because the read-path rewrite above resolved the measured crash pathology on its own (5/5 repro runs survived post-fix; old-space peak dropped from 600–730 MB to ~14 MB). They remain open follow-ups, to be taken up only when a measured remaining problem justifies the scope. See `openspec/changes/archive/2026-04-24-fix-rs-query-memory-pressure/` (`proposal.md` §Follow-ups and `tasks.md` §6) for the full rationale, intended shapes, and implementation notes.
+
