@@ -1217,6 +1217,89 @@ function invalidConnectorManifest(message, code = 'invalid_request') {
   return err;
 }
 
+function isPositiveInteger(value) {
+  return Number.isInteger(value) && value > 0;
+}
+
+function validateStreamExpandDeclarations({
+  code,
+  manifestStreamsByName,
+  schemaProperties,
+  stream,
+}) {
+  const declared = stream.query?.expand;
+  if (declared === undefined) return;
+  if (!Array.isArray(declared) || declared.length === 0) {
+    throw invalidConnectorManifest(`Stream '${stream.name}' query.expand must be a non-empty array`, code);
+  }
+
+  const relationships = new Map();
+  for (const relationship of stream.relationships || []) {
+    if (!isNonEmptyString(relationship?.name)) continue;
+    relationships.set(relationship.name, relationship);
+  }
+
+  const seen = new Set();
+  for (const capability of declared) {
+    if (!isNonEmptyString(capability?.name)) {
+      throw invalidConnectorManifest(`Stream '${stream.name}' query.expand entries must include a non-empty name`, code);
+    }
+    if (seen.has(capability.name)) {
+      throw invalidConnectorManifest(`Stream '${stream.name}' query.expand has duplicate entry '${capability.name}'`, code);
+    }
+    seen.add(capability.name);
+
+    const relationship = relationships.get(capability.name);
+    if (!relationship) {
+      throw invalidConnectorManifest(`Stream '${stream.name}' query.expand entry '${capability.name}' must match a same-stream relationships[] entry`, code);
+    }
+    if (!isNonEmptyString(relationship.stream)) {
+      throw invalidConnectorManifest(`Stream '${stream.name}' relationship '${relationship.name}' must include a related stream`, code);
+    }
+    if (!isNonEmptyString(relationship.foreign_key)) {
+      throw invalidConnectorManifest(`Stream '${stream.name}' relationship '${relationship.name}' must include a foreign_key`, code);
+    }
+    if (!['has_one', 'has_many'].includes(relationship.cardinality)) {
+      throw invalidConnectorManifest(`Stream '${stream.name}' relationship '${relationship.name}' must use cardinality has_one or has_many`, code);
+    }
+
+    const relatedStream = manifestStreamsByName.get(relationship.stream);
+    if (!relatedStream) {
+      throw invalidConnectorManifest(`Stream '${stream.name}' query.expand entry '${capability.name}' references unknown related stream '${relationship.stream}'`, code);
+    }
+    const relatedProperties = relatedStream?.schema?.properties;
+    if (!relatedProperties || typeof relatedProperties !== 'object' || Array.isArray(relatedProperties)) {
+      throw invalidConnectorManifest(`Stream '${stream.name}' query.expand entry '${capability.name}' related stream '${relationship.stream}' must include schema.properties`, code);
+    }
+    if (!Object.prototype.hasOwnProperty.call(relatedProperties, relationship.foreign_key)) {
+      throw invalidConnectorManifest(`Stream '${stream.name}' query.expand entry '${capability.name}' foreign_key '${relationship.foreign_key}' must be a top-level property on related stream '${relationship.stream}'`, code);
+    }
+
+    if (capability.default_limit !== undefined && !isPositiveInteger(capability.default_limit)) {
+      throw invalidConnectorManifest(`Stream '${stream.name}' query.expand entry '${capability.name}' default_limit must be a positive integer`, code);
+    }
+    if (capability.max_limit !== undefined && !isPositiveInteger(capability.max_limit)) {
+      throw invalidConnectorManifest(`Stream '${stream.name}' query.expand entry '${capability.name}' max_limit must be a positive integer`, code);
+    }
+    if (
+      capability.default_limit !== undefined
+      && capability.max_limit !== undefined
+      && capability.default_limit > capability.max_limit
+    ) {
+      throw invalidConnectorManifest(`Stream '${stream.name}' query.expand entry '${capability.name}' default_limit must be less than or equal to max_limit`, code);
+    }
+    if (relationship.cardinality === 'has_one' && (capability.default_limit !== undefined || capability.max_limit !== undefined)) {
+      throw invalidConnectorManifest(`Stream '${stream.name}' query.expand entry '${capability.name}' must not declare limits for has_one relationships`, code);
+    }
+
+    // The parent stream's schema was already validated above; this extra check
+    // keeps the validator close to the runtime's parent-record-key join shape.
+    if (!schemaProperties || typeof schemaProperties !== 'object' || Array.isArray(schemaProperties)) {
+      throw invalidConnectorManifest(`Stream '${stream.name}' must include schema.properties`, code);
+    }
+  }
+}
+
 function validateConnectorManifest(manifest = {}, code = 'invalid_request', opts = {}) {
   if (!isNonEmptyString(manifest.connector_id)) {
     throw invalidConnectorManifest('connector_id is required', code);
@@ -1231,6 +1314,11 @@ function validateConnectorManifest(manifest = {}, code = 'invalid_request', opts
     throw invalidConnectorManifest('Connector manifests must include a non-empty streams array', code);
   }
 
+  const manifestStreamsByName = new Map(
+    manifest.streams
+      .filter((stream) => isNonEmptyString(stream?.name))
+      .map((stream) => [stream.name, stream]),
+  );
   const seenStreamNames = new Set();
   for (const stream of manifest.streams) {
     if (!isNonEmptyString(stream?.name)) {
@@ -1376,6 +1464,13 @@ function validateConnectorManifest(manifest = {}, code = 'invalid_request', opts
         }
       }
     }
+
+    validateStreamExpandDeclarations({
+      code,
+      manifestStreamsByName,
+      schemaProperties,
+      stream,
+    });
   }
 }
 

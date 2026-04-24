@@ -25,6 +25,7 @@ import { getDb } from '../server/db.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, '..');
+const POLYFILL_MANIFESTS_DIR = join(REFERENCE_IMPL_DIR, '..', 'packages', 'polyfill-connectors', 'manifests');
 const TEST_DCR_INITIAL_ACCESS_TOKEN = 'pdpp-reference-test-initial-access-token';
 
 async function closeServer(server) {
@@ -128,6 +129,22 @@ async function approveGrant(asUrl, subjectId, params) {
   return approved;
 }
 
+function cloneJson(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+function readGmailManifest() {
+  return JSON.parse(readFileSync(join(POLYFILL_MANIFESTS_DIR, 'gmail.json'), 'utf8'));
+}
+
+async function registerConnectorManifest(asUrl, manifest) {
+  return fetchJson(`${asUrl}/connectors`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(manifest),
+  });
+}
+
 async function seedSpotifyStream(rsUrl, ownerToken, connectorId, stream, records) {
   const lines = records.map((record) => JSON.stringify({
     key: record.id,
@@ -152,6 +169,126 @@ async function seedSpotifyStream(rsUrl, ownerToken, connectorId, stream, records
 
 async function seedSpotifyTopArtists(rsUrl, ownerToken, connectorId, records) {
   await seedSpotifyStream(rsUrl, ownerToken, connectorId, 'top_artists', records);
+}
+
+async function seedGmailStream(rsUrl, ownerToken, connectorId, stream, records) {
+  const lines = records.map((record) => JSON.stringify({
+    key: record.id,
+    data: record,
+    emitted_at:
+      record.emitted_at
+      || record.received_at
+      || record.message_received_at
+      || record.last_message_date
+      || '2026-04-01T00:00:00Z',
+  })).join('\n');
+  const resp = await fetch(`${rsUrl}/v1/ingest/${encodeURIComponent(stream)}?connector_id=${encodeURIComponent(connectorId)}`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${ownerToken}`,
+      'Content-Type': 'application/x-ndjson',
+    },
+    body: lines,
+  });
+  assert.equal(resp.status, 200, `ingest gmail ${stream} ok`);
+}
+
+async function seedGmailExpansionFixture(rsUrl, ownerToken, connectorId) {
+  await seedGmailStream(rsUrl, ownerToken, connectorId, 'messages', [
+    {
+      id: 'msg-1',
+      thread_id: 'thread-1',
+      subject: 'Train receipt',
+      from_name: 'Rail Desk',
+      from_email: 'rail@example.com',
+      to: [],
+      cc: [],
+      bcc: [],
+      reply_to: [],
+      date: '2026-04-01T09:58:00Z',
+      received_at: '2026-04-01T10:00:00Z',
+      message_id: '<msg-1@example.com>',
+      in_reply_to: null,
+      references: [],
+      size_bytes: 4200,
+      labels: ['inbox'],
+      is_draft: false,
+      is_flagged: false,
+      is_seen: true,
+      is_answered: false,
+      has_attachments: true,
+      snippet: 'Your train receipt is attached.',
+    },
+    {
+      id: 'msg-2',
+      thread_id: 'thread-2',
+      subject: 'No body or attachments',
+      received_at: '2026-04-02T10:00:00Z',
+      to: [],
+      cc: [],
+      bcc: [],
+      reply_to: [],
+      references: [],
+      labels: [],
+      is_draft: false,
+      is_flagged: false,
+      is_seen: false,
+      is_answered: false,
+      has_attachments: false,
+      snippet: null,
+    },
+  ]);
+  await seedGmailStream(rsUrl, ownerToken, connectorId, 'message_bodies', [
+    {
+      id: 'body-msg-1',
+      message_id: 'msg-1',
+      body_text: 'Here is your train receipt for Milan.',
+      body_html: '<p>Here is your train receipt for Milan.</p>',
+      body_text_bytes: 38,
+      body_html_bytes: 45,
+      body_source: 'text_plain',
+      content_languages: ['en'],
+      charset: 'utf-8',
+    },
+  ]);
+  await seedGmailStream(rsUrl, ownerToken, connectorId, 'attachments', [
+    {
+      id: 'att-1',
+      message_id: 'msg-1',
+      filename: 'receipt.pdf',
+      content_type: 'application/pdf',
+      size_bytes: 1000,
+      content_id: null,
+      is_inline: false,
+      encoding: 'base64',
+      part_index: '2',
+      message_received_at: '2026-04-01T10:00:00Z',
+    },
+    {
+      id: 'att-2',
+      message_id: 'msg-1',
+      filename: 'map.png',
+      content_type: 'image/png',
+      size_bytes: 2000,
+      content_id: '<map>',
+      is_inline: true,
+      encoding: 'base64',
+      part_index: '3',
+      message_received_at: '2026-04-01T10:00:00Z',
+    },
+    {
+      id: 'att-3',
+      message_id: 'msg-1',
+      filename: 'terms.txt',
+      content_type: 'text/plain',
+      size_bytes: 300,
+      content_id: null,
+      is_inline: false,
+      encoding: '7bit',
+      part_index: '4',
+      message_received_at: '2026-04-01T10:00:00Z',
+    },
+  ]);
 }
 
 test('connector discovery lists owner-visible polyfill connectors without connector_id', async () => {
@@ -674,6 +811,184 @@ test('expand fails with insufficient_scope when the related stream is outside th
     );
     assert.equal(status, 403);
     assert.equal(body.error.code, 'insufficient_scope');
+  });
+});
+
+test('gmail messages expand message_bodies on list and detail reads with child projection', async () => {
+  await withHarness(async ({ asUrl, rsUrl }) => {
+    const ownerToken = await issueOwnerToken(asUrl, 'gmail_expand_body_owner');
+    const gmailManifest = readGmailManifest();
+    const connectorId = gmailManifest.connector_id;
+    const reg = await registerConnectorManifest(asUrl, gmailManifest);
+    assert.equal(reg.status, 201, 'register gmail manifest');
+    await seedGmailExpansionFixture(rsUrl, ownerToken, connectorId);
+
+    const metadata = await fetchJson(
+      `${rsUrl}/v1/streams/messages?connector_id=${encodeURIComponent(connectorId)}`,
+      { headers: { Authorization: `Bearer ${ownerToken}` } },
+    );
+    assert.equal(metadata.status, 200);
+    assert.deepEqual(
+      metadata.body.query.expand.map((entry) => entry.name).sort(),
+      ['attachments', 'message_bodies'],
+    );
+
+    const approved = await approveGrant(asUrl, 'gmail_expand_body_owner', {
+      client_id: 'longview',
+      connector_id: connectorId,
+      purpose_code: 'https://pdpp.org/purpose/personalization',
+      purpose_description: 'Read Gmail messages with body context',
+      access_mode: 'continuous',
+      streams: [
+        { name: 'messages', fields: ['id', 'thread_id', 'subject', 'received_at'] },
+        { name: 'message_bodies', fields: ['id', 'message_id', 'body_text'] },
+      ],
+    });
+
+    const list = await fetchJson(
+      `${rsUrl}/v1/streams/messages/records?connector_id=${encodeURIComponent(connectorId)}&order=asc&expand=message_bodies`,
+      { headers: { Authorization: `Bearer ${approved.token}` } },
+    );
+    assert.equal(list.status, 200);
+    assert.equal(list.body.data.length, 2);
+
+    const messageWithBody = list.body.data.find((record) => record.id === 'msg-1');
+    assert.ok(messageWithBody?.expanded?.message_bodies, 'msg-1 should include body expansion');
+    assert.equal(messageWithBody.expanded.message_bodies.stream, 'message_bodies');
+    assert.deepEqual(
+      Object.keys(messageWithBody.expanded.message_bodies.data || {}).sort(),
+      ['body_source', 'body_text', 'id', 'message_id'],
+    );
+    assert.equal(messageWithBody.expanded.message_bodies.data.body_text, 'Here is your train receipt for Milan.');
+    assert.ok(!('body_html' in messageWithBody.expanded.message_bodies.data));
+
+    const messageWithoutBody = list.body.data.find((record) => record.id === 'msg-2');
+    assert.equal(messageWithoutBody?.expanded?.message_bodies, null);
+
+    const detail = await fetchJson(
+      `${rsUrl}/v1/streams/messages/records/msg-1?connector_id=${encodeURIComponent(connectorId)}&expand=message_bodies`,
+      { headers: { Authorization: `Bearer ${approved.token}` } },
+    );
+    assert.equal(detail.status, 200);
+    assert.equal(detail.body.expanded.message_bodies.id, 'body-msg-1');
+    assert.equal(detail.body.expanded.message_bodies.data.body_text, 'Here is your train receipt for Milan.');
+  });
+});
+
+test('gmail messages expand attachment metadata with limits and missing-child parity', async () => {
+  await withHarness(async ({ asUrl, rsUrl }) => {
+    const ownerToken = await issueOwnerToken(asUrl, 'gmail_expand_attachment_owner');
+    const gmailManifest = readGmailManifest();
+    const connectorId = gmailManifest.connector_id;
+    const reg = await registerConnectorManifest(asUrl, gmailManifest);
+    assert.equal(reg.status, 201, 'register gmail manifest');
+    await seedGmailExpansionFixture(rsUrl, ownerToken, connectorId);
+
+    const approved = await approveGrant(asUrl, 'gmail_expand_attachment_owner', {
+      client_id: 'longview',
+      connector_id: connectorId,
+      purpose_code: 'https://pdpp.org/purpose/personalization',
+      purpose_description: 'Read Gmail messages with attachment metadata',
+      access_mode: 'continuous',
+      streams: [
+        { name: 'messages', fields: ['id', 'thread_id', 'subject', 'received_at', 'has_attachments'] },
+        { name: 'attachments', fields: ['id', 'message_id', 'filename', 'content_type', 'part_index', 'message_received_at'] },
+      ],
+    });
+
+    const { status, body } = await fetchJson(
+      `${rsUrl}/v1/streams/messages/records?connector_id=${encodeURIComponent(connectorId)}&order=asc&expand=attachments&expand_limit[attachments]=2`,
+      { headers: { Authorization: `Bearer ${approved.token}` } },
+    );
+    assert.equal(status, 200);
+
+    const messageWithAttachments = body.data.find((record) => record.id === 'msg-1');
+    assert.ok(messageWithAttachments?.expanded?.attachments, 'msg-1 should include attachment expansion');
+    assert.equal(messageWithAttachments.expanded.attachments.object, 'list');
+    assert.equal(messageWithAttachments.expanded.attachments.has_more, true);
+    assert.deepEqual(
+      messageWithAttachments.expanded.attachments.data.map((record) => record.id),
+      ['att-1', 'att-2'],
+    );
+    assert.deepEqual(
+      Object.keys(messageWithAttachments.expanded.attachments.data[0].data || {}).sort(),
+      ['content_type', 'filename', 'id', 'message_id', 'message_received_at', 'part_index'],
+    );
+    assert.equal(
+      JSON.stringify(messageWithAttachments.expanded.attachments).includes('blob_ref'),
+      false,
+      'attachment expansion remains metadata-only until blob hydration lands',
+    );
+
+    const messageWithoutAttachments = body.data.find((record) => record.id === 'msg-2');
+    assert.equal(messageWithoutAttachments.expanded.attachments.object, 'list');
+    assert.equal(messageWithoutAttachments.expanded.attachments.has_more, false);
+    assert.deepEqual(messageWithoutAttachments.expanded.attachments.data, []);
+  });
+});
+
+test('gmail message expansion rejects missing child grant and reverse thread relation', async () => {
+  await withHarness(async ({ asUrl, rsUrl }) => {
+    const ownerToken = await issueOwnerToken(asUrl, 'gmail_expand_reject_owner');
+    const gmailManifest = readGmailManifest();
+    const connectorId = gmailManifest.connector_id;
+    const reg = await registerConnectorManifest(asUrl, gmailManifest);
+    assert.equal(reg.status, 201, 'register gmail manifest');
+    await seedGmailExpansionFixture(rsUrl, ownerToken, connectorId);
+
+    const approved = await approveGrant(asUrl, 'gmail_expand_reject_owner', {
+      client_id: 'longview',
+      connector_id: connectorId,
+      purpose_code: 'https://pdpp.org/purpose/personalization',
+      purpose_description: 'Read Gmail messages only',
+      access_mode: 'continuous',
+      streams: [{ name: 'messages', fields: ['id', 'thread_id', 'subject', 'received_at'] }],
+    });
+
+    const missingChildGrant = await fetchJson(
+      `${rsUrl}/v1/streams/messages/records?connector_id=${encodeURIComponent(connectorId)}&expand=message_bodies`,
+      { headers: { Authorization: `Bearer ${approved.token}` } },
+    );
+    assert.equal(missingChildGrant.status, 403);
+    assert.equal(missingChildGrant.body.error.code, 'insufficient_scope');
+
+    const reverseThread = await fetchJson(
+      `${rsUrl}/v1/streams/messages/records?connector_id=${encodeURIComponent(connectorId)}&expand=thread`,
+      { headers: { Authorization: `Bearer ${approved.token}` } },
+    );
+    assert.equal(reverseThread.status, 400);
+    assert.equal(reverseThread.body.error.code, 'invalid_expand');
+  });
+});
+
+test('connector manifest validation rejects unsafe query.expand declarations', async () => {
+  await withHarness(async ({ asUrl, spotifyManifest }) => {
+    const missingRelationship = cloneJson(spotifyManifest);
+    missingRelationship.connector_id = `${spotifyManifest.connector_id}#missing-expand-relation`;
+    missingRelationship.streams.find((stream) => stream.name === 'saved_tracks').query.expand = [
+      { name: 'missing_relation', default_limit: 1, max_limit: 2 },
+    ];
+
+    const missingRelationshipResp = await registerConnectorManifest(asUrl, missingRelationship);
+    assert.equal(missingRelationshipResp.status, 400);
+    assert.match(missingRelationshipResp.body.error.message, /query\.expand entry 'missing_relation' must match/);
+
+    const missingForeignKey = cloneJson(spotifyManifest);
+    missingForeignKey.connector_id = `${spotifyManifest.connector_id}#missing-child-foreign-key`;
+    missingForeignKey.streams.find((stream) => stream.name === 'saved_tracks').relationships[0].foreign_key = 'missing_track_id';
+
+    const missingForeignKeyResp = await registerConnectorManifest(asUrl, missingForeignKey);
+    assert.equal(missingForeignKeyResp.status, 400);
+    assert.match(missingForeignKeyResp.body.error.message, /foreign_key 'missing_track_id' must be a top-level property/);
+
+    const invalidLimits = cloneJson(spotifyManifest);
+    invalidLimits.connector_id = `${spotifyManifest.connector_id}#invalid-expand-limit`;
+    invalidLimits.streams.find((stream) => stream.name === 'saved_tracks').query.expand[0].default_limit = 5;
+    invalidLimits.streams.find((stream) => stream.name === 'saved_tracks').query.expand[0].max_limit = 2;
+
+    const invalidLimitsResp = await registerConnectorManifest(asUrl, invalidLimits);
+    assert.equal(invalidLimitsResp.status, 400);
+    assert.match(invalidLimitsResp.body.error.message, /default_limit must be less than or equal to max_limit/);
   });
 });
 

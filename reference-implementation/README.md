@@ -119,6 +119,26 @@ It behaves as a small reference-only owner access hub:
 - `/v1/streams/...`
 - owner and client queries under the current reference contract
 
+### Expandable records
+
+`GET /v1/streams/:stream/records` and
+`GET /v1/streams/:stream/records/:id` support `expand=<relation>` only when
+the stream manifest declares the relation under both `relationships[]` and
+`query.expand[]`. Relationship metadata is descriptive; `query.expand[]` is
+the public allowlist.
+
+Expansion is one hop, grant-safe, and bounded. Expanded child records are
+authorized through the child stream grant and projected to the child fields the
+caller can read. `has_many` children use `expand_limit[relation]`, returning a
+list object with `data[]` and `has_more`. Missing `has_one` children return
+`null`; missing `has_many` children return an empty list.
+
+The first-party Gmail manifest enables `messages -> message_bodies` and
+`messages -> attachments`. Gmail attachment expansion is metadata-only in this
+slice: it does not expose bytes, `blob_ref`, extracted PDF/docx text, or blob
+fetch access. Reverse/belongs-to expansion such as `messages -> thread` remains
+deferred; clients can still query directly by the relevant foreign key.
+
 ### Filtered retrieval
 
 `GET /v1/search` and `GET /v1/search/semantic` accept record-list compatible
