@@ -7,7 +7,7 @@
 import { spawn } from 'child_process';
 import { createInterface } from 'readline';
 import { appendFileSync, mkdirSync } from 'node:fs';
-import { createTraceContext, emitSpineEvent } from '../lib/spine.js';
+import { createTraceContext, emitSpineEvent } from '../lib/spine.ts';
 
 function encodeScopeResourceKey(key) {
   return Array.isArray(key) ? JSON.stringify(key) : String(key);

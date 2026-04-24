@@ -9,7 +9,7 @@ import {
   pickSemanticTimestamp,
   timestampWithinWindow,
 } from './ref-record-utils.ts';
-import { listSpineCorrelations } from '../lib/spine.js';
+import { listSpineCorrelations } from '../lib/spine.ts';
 
 function parseManifest(raw, connectorId) {
   try {

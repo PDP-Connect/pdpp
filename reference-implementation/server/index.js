@@ -13,7 +13,7 @@ import {
   resolvePublicUrl,
   stripTrailingSlash,
 } from './metadata.ts';
-import { createTraceContext, emitSpineEvent, generateSpineId, listSpineCorrelations, listSpineEvents, searchSpine } from '../lib/spine.js';
+import { createTraceContext, emitSpineEvent, generateSpineId, listSpineCorrelations, listSpineEvents, searchSpine } from '../lib/spine.ts';
 import {
   registerConnector, getConnectorManifest, getManifestForStorageBinding, initiateGrant, getPendingConsent,
   approveGrant, introspect, revokeGrant, denyGrant,

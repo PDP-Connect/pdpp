@@ -18,7 +18,7 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { createTraceContext } from '../lib/spine.js';
+import { createTraceContext } from '../lib/spine.ts';
 import {
   approveOwnerDeviceAuthorization,
   getConnectorManifest,

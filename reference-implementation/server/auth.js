@@ -9,7 +9,7 @@
  */
 import { randomBytes } from 'crypto';
 import { getDb } from './db.js';
-import { createTraceContext, emitSpineEvent } from '../lib/spine.js';
+import { createTraceContext, emitSpineEvent } from '../lib/spine.ts';
 
 function generateToken() {
   return randomBytes(32).toString('hex');
