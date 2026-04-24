@@ -13,6 +13,7 @@ Generated from `packages/reference-contract/src/public/`. Do not edit by hand.
 | **POST** | `/oauth/token` | `exchangeOwnerDeviceToken` | Exchange an approved owner device_code for an owner bearer token. |
 | **POST** | `/introspect` | `introspectToken` | Inspect token activity and, for active client tokens, the bound grant projection. |
 | **POST** | `/grants/{grantId}/revoke` | `revokeGrant` | Revoke a grant and all tokens minted from it. |
+| **GET** | `/v1/connectors` | `listConnectors` | List connector or source boundaries visible under the bearer token, with stream summaries and coarse capability hints. |
 | **GET** | `/v1/streams` | `listStreams` | List streams available under the current grant or owner scope. |
 | **GET** | `/v1/streams/{stream}` | `getStreamMetadata` | Return stream metadata including declared query capabilities and advisory freshness. |
 | **GET** | `/v1/streams/{stream}/records` | `listRecords` | List records in a stream under grant enforcement. Supports logical-cursor pagination, exact and declared range filters, and changes_since. |
@@ -173,6 +174,20 @@ Revoke a grant and all tokens minted from it.
 
 - `200` — JSON body
 - `403` — Grant is malformed or no longer valid
+
+## listConnectors
+
+`GET /v1/connectors`
+
+List connector or source boundaries visible under the bearer token, with stream summaries and coarse capability hints.
+
+### Responses
+
+- `200` — JSON body
+- `400` — Invalid request
+- `401` — Missing or invalid access token
+- `403` — Grant does not permit this request
+- `404` — Stream or record not found
 
 ## listStreams
 

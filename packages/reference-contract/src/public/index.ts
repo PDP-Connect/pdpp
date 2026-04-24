@@ -574,6 +574,45 @@ const StreamListResponseSchema = {
   required: ["object", "data"],
 };
 
+const ConnectorListResponseSchema = {
+  type: "object",
+  additionalProperties: true,
+  properties: {
+    object: { const: "list" },
+    data: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: true,
+        properties: {
+          object: { const: "connector" },
+          connector_id: { type: "string" },
+          source: { type: "object", additionalProperties: true },
+          stream_count: { type: "integer" },
+          streams: {
+            type: "array",
+            items: {
+              type: "object",
+              additionalProperties: true,
+              properties: {
+                object: { const: "stream" },
+                name: { type: "string" },
+                record_count: { type: "integer" },
+                last_updated: { type: ["string", "null"] },
+                freshness: FreshnessSchema,
+                capabilities: { type: "object", additionalProperties: true },
+              },
+              required: ["object", "name"],
+            },
+          },
+        },
+        required: ["object", "source", "stream_count", "streams"],
+      },
+    },
+  },
+  required: ["object", "data"],
+};
+
 const StreamMetadataResponseSchema = {
   type: "object",
   additionalProperties: true,
@@ -788,6 +827,21 @@ export const publicManifests = [
     responses: {
       200: { schema: RevokeGrantResponseSchema },
       403: { schema: ErrorObjectSchema, description: "Grant is malformed or no longer valid" },
+    },
+  },
+  {
+    id: "listConnectors",
+    method: "GET",
+    path: "/v1/connectors",
+    surface: "public",
+    tags: ["records"],
+    summary: "List connector or source boundaries visible under the bearer token, with stream summaries and coarse capability hints.",
+    request: {
+      headers: AuthHeaderSchema,
+    },
+    responses: {
+      200: { schema: ConnectorListResponseSchema },
+      ...ProtectedReadErrors,
     },
   },
   {

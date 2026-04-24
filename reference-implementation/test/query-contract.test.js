@@ -154,6 +154,76 @@ async function seedSpotifyTopArtists(rsUrl, ownerToken, connectorId, records) {
   await seedSpotifyStream(rsUrl, ownerToken, connectorId, 'top_artists', records);
 }
 
+test('connector discovery lists owner-visible polyfill connectors without connector_id', async () => {
+  await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
+    const ownerToken = await issueOwnerToken(asUrl);
+    const { status, body } = await fetchJson(`${rsUrl}/v1/connectors`, {
+      headers: { 'Authorization': `Bearer ${ownerToken}` },
+    });
+
+    assert.equal(status, 200);
+    assert.equal(body.object, 'list');
+    assert.equal(body.data.length, 1);
+
+    const connector = body.data[0];
+    assert.equal(connector.object, 'connector');
+    assert.equal(connector.connector_id, spotifyManifest.connector_id);
+    assert.deepEqual(connector.source, {
+      binding_kind: 'connector',
+      connector_id: spotifyManifest.connector_id,
+    });
+    assert.deepEqual(
+      connector.streams.map((stream) => stream.name).sort(),
+      spotifyManifest.streams.map((stream) => stream.name).sort(),
+    );
+
+    const topArtists = connector.streams.find((stream) => stream.name === 'top_artists');
+    assert.ok(topArtists, 'top_artists should be discoverable before records exist');
+    assert.equal(topArtists.record_count, 0);
+    assert.equal(topArtists.freshness.status, 'unknown');
+    assert.equal(topArtists.capabilities.stream_metadata, true);
+    assert.equal(
+      topArtists.capabilities.metadata_url,
+      `/v1/streams/top_artists?connector_id=${encodeURIComponent(spotifyManifest.connector_id)}`,
+    );
+    assert.equal(topArtists.capabilities.range_filters, true);
+  });
+});
+
+test('connector discovery scopes client tokens to the granted source and streams', async () => {
+  await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
+    const approved = await approveGrant(asUrl, 'schema_discovery_owner', {
+      client_id: 'longview',
+      connector_id: spotifyManifest.connector_id,
+      purpose_code: 'https://pdpp.org/purpose/analytics',
+      purpose_description: 'schema discovery test',
+      access_mode: 'continuous',
+      streams: [{ name: 'top_artists', fields: ['id', 'name', 'source_updated_at'] }],
+    });
+    assert.ok(approved.token, `expected issued grant token, got ${JSON.stringify(approved)}`);
+
+    const { status, body } = await fetchJson(`${rsUrl}/v1/connectors`, {
+      headers: { 'Authorization': `Bearer ${approved.token}` },
+    });
+
+    assert.equal(status, 200);
+    assert.equal(body.object, 'list');
+    assert.equal(body.data.length, 1);
+
+    const connector = body.data[0];
+    assert.equal(connector.connector_id, spotifyManifest.connector_id);
+    assert.deepEqual(connector.streams.map((stream) => stream.name), ['top_artists']);
+    assert.equal(connector.stream_count, 1);
+    assert.equal(connector.streams[0].capabilities.records, true);
+
+    const serialized = JSON.stringify(body);
+    assert.equal(serialized.includes('grant_id'), false);
+    assert.equal(serialized.includes('fields'), false);
+    assert.equal(serialized.includes('saved_tracks'), false);
+    assert.equal(serialized.includes('recently_played'), false);
+  });
+});
+
 test('stream metadata publishes query.range_filters for declared fields', async () => {
   await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
     const ownerToken = await issueOwnerToken(asUrl);

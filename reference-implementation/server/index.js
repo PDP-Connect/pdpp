@@ -925,6 +925,74 @@ function buildFreshness(lastUpdated = null) {
   };
 }
 
+function hasObjectEntries(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length > 0;
+}
+
+function buildDiscoveryUrl(path, connectorId = null) {
+  const connectorQuery = connectorId ? `?connector_id=${encodeURIComponent(connectorId)}` : '';
+  return `${path}${connectorQuery}`;
+}
+
+function buildStreamDiscoveryCapabilities({ connectorId = null, stream }) {
+  const encodedStream = encodeURIComponent(stream.name);
+  const rangeFilters = stream.query?.range_filters;
+  const expand = stream.query?.expand;
+
+  return {
+    stream_metadata: true,
+    metadata_url: buildDiscoveryUrl(`/v1/streams/${encodedStream}`, connectorId),
+    records: true,
+    records_url: buildDiscoveryUrl(`/v1/streams/${encodedStream}/records`, connectorId),
+    exact_filters: true,
+    range_filters: hasObjectEntries(rangeFilters),
+    expand: Array.isArray(expand) && expand.length > 0,
+    changes_since: true,
+  };
+}
+
+function buildStreamDiscoverySummary({ connectorId = null, stream, summary = null }) {
+  const lastUpdated = summary?.last_updated || null;
+  return {
+    object: 'stream',
+    name: stream.name,
+    record_count: summary?.record_count || 0,
+    last_updated: lastUpdated,
+    freshness: buildFreshness(lastUpdated),
+    capabilities: buildStreamDiscoveryCapabilities({ connectorId, stream }),
+  };
+}
+
+async function buildConnectorDiscoveryItem({ source, storageBinding, manifest, grant = null }) {
+  const connectorId = source?.binding_kind === 'connector' ? source.connector_id : null;
+  const streamSummaries = grant
+    ? await listStreams(storageBinding, grant, manifest)
+    : await listAllStreams(storageBinding);
+  const summaryByName = new Map(streamSummaries.map((summary) => [summary.name, summary]));
+  const visibleStreams = grant
+    ? grant.streams
+      .map((streamGrant) => manifest.streams.find((stream) => stream.name === streamGrant.name))
+      .filter(Boolean)
+    : manifest.streams || [];
+
+  const item = {
+    object: 'connector',
+    source,
+    stream_count: visibleStreams.length,
+    streams: visibleStreams.map((stream) => buildStreamDiscoverySummary({
+      connectorId,
+      stream,
+      summary: summaryByName.get(stream.name) || null,
+    })),
+  };
+
+  if (connectorId) {
+    item.connector_id = connectorId;
+  }
+
+  return item;
+}
+
 function decorateBlobRefValue(blobRef) {
   if (!blobRef || typeof blobRef !== 'object' || typeof blobRef.blob_id !== 'string' || !blobRef.blob_id) {
     return blobRef;
@@ -2114,6 +2182,101 @@ function buildRsApp(opts = {}) {
         capabilities,
       })
     );
+  });
+
+  // GET /v1/connectors — bearer-scoped connector/source discovery
+  app.get('/v1/connectors', { contract: 'listConnectors' }, requireToken, async (req, res) => {
+    let queryContext = null;
+    try {
+      const { tokenInfo } = req;
+      const queryId = ensureRequestId(res);
+      const { actorType, actorId, traceId, scenarioId } = buildQueryActorContext(tokenInfo);
+      setReferenceTraceId(res, traceId);
+
+      queryContext = {
+        tokenInfo,
+        queryId,
+        actorType,
+        actorId,
+        traceId,
+        scenarioId,
+        sourceDescriptor: null,
+        queryData: { query_shape: 'connector_list' },
+      };
+
+      let connectorItems = [];
+      if (tokenInfo.pdpp_token_kind === 'owner') {
+        const nativeManifest = resolveNativeManifest(opts);
+        const nativeStorageBinding = resolveNativeStorageBinding(opts);
+        if (nativeManifest && nativeStorageBinding) {
+          const source = buildSourceDescriptor({
+            binding_kind: 'provider_native',
+            provider_id: nativeManifest.provider_id,
+          });
+          queryContext.sourceDescriptor = source;
+          connectorItems = [await buildConnectorDiscoveryItem({
+            source,
+            storageBinding: nativeStorageBinding,
+            manifest: nativeManifest,
+          })];
+        } else {
+          const connectorIds = await listRegisteredConnectorIds();
+          connectorItems = await Promise.all(connectorIds.map(async (connectorId) => {
+            const manifest = await resolveRegisteredConnectorManifest(connectorId);
+            return buildConnectorDiscoveryItem({
+              source: { binding_kind: 'connector', connector_id: connectorId },
+              storageBinding: { connector_id: connectorId },
+              manifest,
+            });
+          }));
+        }
+      } else {
+        const grantResolved = await resolveGrantManifest(tokenInfo, opts);
+        const source = grantResolved.source;
+        queryContext.sourceDescriptor = source;
+        connectorItems = [await buildConnectorDiscoveryItem({
+          source,
+          storageBinding: grantResolved.storageBinding,
+          manifest: grantResolved.manifest,
+          grant: tokenInfo.grant,
+        })];
+      }
+
+      await emitQueryReceived(queryContext, req);
+
+      await emitSpineEvent({
+        event_type: 'disclosure.served',
+        trace_id: traceId,
+        scenario_id: scenarioId,
+        actor_type: actorType,
+        actor_id: actorId,
+        subject_type: 'subject',
+        subject_id: tokenInfo.subject_id || null,
+        object_type: 'query',
+        object_id: queryId,
+        status: 'succeeded',
+        grant_id: tokenInfo.grant_id || null,
+        client_id: tokenInfo.client_id || null,
+        token_id: req.headers.authorization?.slice(7) || null,
+        data: {
+          source: queryContext.sourceDescriptor,
+          query_shape: 'connector_list',
+          connector_count: connectorItems.length,
+          stream_count: connectorItems.reduce((sum, item) => sum + item.stream_count, 0),
+        },
+      });
+
+      res.json({
+        object: 'list',
+        data: connectorItems,
+      });
+    } catch (err) {
+      if (queryContext) {
+        await emitQueryReceived(queryContext, req);
+        return await rejectQuery(res, req, queryContext, err);
+      }
+      handleError(res, err);
+    }
   });
 
   // GET /v1/streams — list streams (client or owner)
