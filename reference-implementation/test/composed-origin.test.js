@@ -4,7 +4,8 @@ import http from 'node:http';
 import { spawn } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { access, readFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 
 import { startServer } from '../server/index.js';
 import { ingestRecord } from '../server/records.js';
@@ -16,6 +17,7 @@ const WEB_DIR = join(REPO_ROOT, 'apps/web');
 const WEB_BUILD_ID_PATH = join(WEB_DIR, '.next/BUILD_ID');
 const OWNER_PASSWORD = 'pdpp-owner-dev-password';
 const SPOTIFY_CONNECTOR_ID = 'https://registry.pdpp.org/connectors/spotify';
+const CLAUDE_CODE_CONNECTOR_ID = 'https://registry.pdpp.org/connectors/claude-code';
 
 let webBuildPromise = null;
 
@@ -132,6 +134,29 @@ async function allocatePort() {
   return port;
 }
 
+async function startPublicOriginTrap() {
+  const requests = [];
+  const server = http.createServer((req, res) => {
+    requests.push({ method: req.method, url: req.url || '/' });
+    if ((req.url || '').startsWith('/v1/ingest/')) {
+      res.statusCode = 500;
+      res.end('public origin must not receive server-side runtime ingest');
+      return;
+    }
+    res.statusCode = 204;
+    res.end();
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  const port = typeof address === 'object' && address ? address.port : null;
+  if (!port) throw new Error('Failed to start public origin trap');
+  return {
+    origin: `http://127.0.0.1:${port}`,
+    requests,
+    close: () => new Promise((resolve) => server.close(resolve)),
+  };
+}
+
 async function waitForHttpOk(url, { headers, timeoutMs = 20000 } = {}) {
   const deadline = Date.now() + timeoutMs;
   let lastError = null;
@@ -233,6 +258,119 @@ async function fetchJson(url, opts = {}) {
   const body = await resp.json();
   return { resp, body };
 }
+
+async function waitForRunTerminal(asUrl, runId, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const { resp, body } = await fetchJson(`${asUrl}/_ref/runs/${encodeURIComponent(runId)}/timeline`);
+    if (resp.status === 200 && Array.isArray(body.data)) {
+      const terminal = body.data.find((event) =>
+        event.event_type === 'run.completed' || event.event_type === 'run.failed'
+      );
+      if (terminal) {
+        return body;
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`Timed out waiting for run ${runId} to finish`);
+}
+
+async function makeClaudeCodeFixture() {
+  const root = await mkdtemp(join(tmpdir(), 'pdpp-claude-code-ingest-'));
+  const claudeHome = join(root, '.claude');
+  const projectsDir = join(claudeHome, 'projects');
+  const projectDir = join(projectsDir, '-home-test-safe-project');
+  await mkdir(projectDir, { recursive: true });
+  const sessionId = '00000000-0000-4000-8000-000000000001';
+  const lines = [
+    {
+      type: 'user',
+      uuid: 'msg-safe-1',
+      sessionId,
+      timestamp: '2026-04-24T15:00:00.000Z',
+      cwd: '/home/user/safe-project',
+      gitBranch: 'main',
+      version: '1.0.0',
+      userType: 'external',
+      entrypoint: 'cli',
+      message: { content: [{ type: 'text', text: 'synthetic safe prompt' }] },
+    },
+    {
+      type: 'assistant',
+      uuid: 'msg-safe-2',
+      sessionId,
+      timestamp: '2026-04-24T15:00:01.000Z',
+      message: { content: [{ type: 'text', text: 'synthetic safe response' }] },
+    },
+  ];
+  await writeFile(
+    join(projectDir, `${sessionId}.jsonl`),
+    `${lines.map((line) => JSON.stringify(line)).join('\n')}\n`,
+    'utf8',
+  );
+  return {
+    claudeHome,
+    projectsDir,
+    cleanup: () => rm(root, { recursive: true, force: true }),
+  };
+}
+
+test('composed controller runs ingest against the internal RS, not the public browser origin', async () => {
+  const publicOrigin = await startPublicOriginTrap();
+  const fixture = await makeClaudeCodeFixture();
+  const manifest = JSON.parse(
+    await readFile(join(REPO_ROOT, 'packages/polyfill-connectors/manifests/claude_code.json'), 'utf8'),
+  );
+  const previousEnv = {
+    CLAUDE_CODE_HOME: process.env.CLAUDE_CODE_HOME,
+    CLAUDE_CODE_PROJECTS_DIR: process.env.CLAUDE_CODE_PROJECTS_DIR,
+  };
+  process.env.CLAUDE_CODE_HOME = fixture.claudeHome;
+  process.env.CLAUDE_CODE_PROJECTS_DIR = fixture.projectsDir;
+
+  const server = await startServer({
+    quiet: true,
+    asPort: 0,
+    rsPort: 0,
+    dbPath: ':memory:',
+    referenceMode: 'composed',
+    referenceOrigin: publicOrigin.origin,
+  });
+  const asUrl = `http://localhost:${server.asPort}`;
+
+  try {
+    const registerConnector = await fetch(`${asUrl}/connectors`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(manifest),
+    });
+    assert.equal(registerConnector.status, 201);
+
+    const runResp = await fetch(`${asUrl}/_ref/connectors/${encodeURIComponent(CLAUDE_CODE_CONNECTOR_ID)}/run`, {
+      method: 'POST',
+    });
+    assert.equal(runResp.status, 202);
+    const started = await runResp.json();
+
+    const timeline = await waitForRunTerminal(asUrl, started.run_id);
+    const completed = timeline.data.find((event) => event.event_type === 'run.completed');
+    assert.ok(completed, 'Claude Code run should complete using the internal RS URL');
+    assert.deepEqual(
+      publicOrigin.requests.filter((req) => req.url.startsWith('/v1/ingest/')),
+      [],
+      'server-side runtime ingest must not traverse the public composed origin',
+    );
+  } finally {
+    if (previousEnv.CLAUDE_CODE_HOME === undefined) delete process.env.CLAUDE_CODE_HOME;
+    else process.env.CLAUDE_CODE_HOME = previousEnv.CLAUDE_CODE_HOME;
+    if (previousEnv.CLAUDE_CODE_PROJECTS_DIR === undefined) delete process.env.CLAUDE_CODE_PROJECTS_DIR;
+    else process.env.CLAUDE_CODE_PROJECTS_DIR = previousEnv.CLAUDE_CODE_PROJECTS_DIR;
+    await closeServer(server);
+    await fixture.cleanup();
+    await publicOrigin.close();
+  }
+});
 
 test('composed browser origin carries metadata, owner session, dashboard, device flow, and consent end to end', async () => {
   await ensureWebBuild();

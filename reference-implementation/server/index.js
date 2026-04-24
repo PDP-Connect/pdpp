@@ -3085,7 +3085,10 @@ export async function startServer(opts = {}) {
   });
   const rsServer = await rsApp.listen(requestedRsPort, bindHost);
   const rsPort = rsServer.address().port;
-  runtimeContext.rsUrl = configuredRsPublicUrl || `http://localhost:${rsPort}`;
+  // Controller-managed runs are server-side work. Even in composed mode, they
+  // should post ingest/state traffic directly to the local RS listener rather
+  // than routing large NDJSON payloads through the browser-facing web origin.
+  runtimeContext.rsUrl = `http://localhost:${rsPort}`;
   logger.info({ port: rsPort, url: `http://localhost:${rsPort}` }, 'resource server listening');
   const startupBackfillDone = scheduleRetrievalStartupBackfill({
     manifests: startupBackfillManifests,
