@@ -147,6 +147,45 @@ export async function resumeConnectorSchedule(connectorId: string) {
   return body;
 }
 
+/**
+ * Answer the current pending interaction for a controller-managed run via
+ * the reference-only `POST /_ref/runs/:runId/interaction` control surface.
+ *
+ * `data` satisfies the current run only. The reference server does NOT
+ * persist it to `.env.local`, durable SQLite state, or timeline payloads.
+ * Callers must not echo it back into cookies, logs, or durable state from
+ * the dashboard side either.
+ */
+export async function submitRunInteraction(
+  runId: string,
+  input: {
+    interactionId: string;
+    status: 'success' | 'cancelled';
+    data?: Record<string, unknown>;
+  },
+) {
+  const payload: Record<string, unknown> = {
+    interaction_id: input.interactionId,
+    status: input.status,
+  };
+  if (input.status === 'success' && input.data && Object.keys(input.data).length > 0) {
+    payload.data = input.data;
+  }
+  const response = await fetchAs(
+    `/_ref/runs/${encodeURIComponent(runId)}/interaction`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: asJson(payload),
+    },
+  );
+  const body = await readBody(response);
+  if (!response.ok) {
+    throw new Error(describeError(body, `run interaction failed (${response.status})`));
+  }
+  return body;
+}
+
 export async function deleteConnectorSchedule(connectorId: string) {
   const response = await fetchAs(
     `/_ref/connectors/${encodeURIComponent(connectorId)}/schedule`,

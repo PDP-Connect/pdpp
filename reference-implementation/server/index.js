@@ -127,6 +127,9 @@ const codeToStatus = {
   blob_not_found: 404,
   not_found: 404,
   run_already_active: 409,
+  no_pending_interaction: 409,
+  interaction_id_mismatch: 409,
+  invalid_status: 400,
   cursor_expired: 410,
 };
 
@@ -1548,6 +1551,43 @@ function buildAsApp(opts = {}) {
       const events = await listSpineEvents({ runId });
       if (!events.length) return pdppError(res, 404, 'not_found', 'Run timeline not found');
       res.json(buildTimelineEnvelope('run_timeline', 'run_id', runId, events));
+    } catch (err) {
+      handleError(res, err);
+    }
+  });
+
+  // Reference-only, owner-only control surface: answer the current pending
+  // interaction for a live controller-managed run. The read path remains the
+  // existing run timeline; this route is mutation-only and is not a public
+  // PDPP API. Submitted `data` satisfies the current run only — it is not
+  // written to `.env.local`, SQLite config/state, or spine event payloads.
+  app.post('/_ref/runs/:runId/interaction', { contract: 'refRunInteraction' }, async (req, res) => {
+    try {
+      if (!controller || typeof controller.respondToInteraction !== 'function') {
+        return pdppError(res, 404, 'not_found', 'Controller is not configured on this server');
+      }
+      const runId = decodeURIComponent(req.params.runId);
+      const body = req.body || {};
+      if (typeof body.interaction_id !== 'string' || !body.interaction_id.trim()) {
+        return pdppError(res, 400, 'invalid_request', 'interaction_id is required', 'interaction_id');
+      }
+      if (body.status !== 'success' && body.status !== 'cancelled') {
+        return pdppError(res, 400, 'invalid_status', 'status must be "success" or "cancelled"', 'status');
+      }
+      if (body.data != null && (typeof body.data !== 'object' || Array.isArray(body.data))) {
+        return pdppError(res, 400, 'invalid_request', 'data must be an object if provided', 'data');
+      }
+      const result = controller.respondToInteraction(runId, {
+        interaction_id: body.interaction_id,
+        status: body.status,
+        data: body.data,
+      });
+      res.status(202).json({
+        object: 'run_interaction_ack',
+        run_id: runId,
+        interaction_id: body.interaction_id,
+        status: result.status,
+      });
     } catch (err) {
       handleError(res, err);
     }

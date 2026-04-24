@@ -19,7 +19,9 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { startServer } from '../server/index.js';
+import { closeDb, getDb, initDb } from '../server/db.js';
 import { resolveDefaultConnectorPath } from '../runtime/controller.js';
+import { createTraceContext, emitSpineEvent } from '../lib/spine.ts';
 import { validateRequest, listOperations } from '@pdpp/reference-contract';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -83,6 +85,15 @@ async function waitForRunTerminal(asUrl, runId, timeoutMs = 5000) {
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
   throw new Error(`Timed out waiting for run ${runId} to finish`);
+}
+
+async function registerConnector(asUrl, manifest) {
+  const registerResp = await fetch(`${asUrl}/connectors`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(manifest),
+  });
+  assert.equal(registerResp.status, 201, 'register connector');
 }
 
 test('GET /_ref/connectors lists registered connectors with stream names and freshness', async () => {
@@ -373,6 +384,123 @@ rl.once('line', () => {
     });
   } finally {
     rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('controller startup reconciles abandoned controller-managed runs after restart', async () => {
+  const tempDir = mkdtempSync(join(tmpdir(), 'pdpp-ref-controller-restart-'));
+  const dbPath = join(tempDir, 'reference.sqlite');
+  const spotifyManifest = JSON.parse(
+    readFileSync(join(REFERENCE_IMPL_DIR, 'manifests/spotify.json'), 'utf8'),
+  );
+  const connectorId = spotifyManifest.connector_id;
+  const runId = 'run_controller_restart_orphan';
+  let server = null;
+
+  try {
+    server = await startServer({
+      quiet: true,
+      asPort: 0,
+      rsPort: 0,
+      dbPath,
+    });
+    await registerConnector(`http://localhost:${server.asPort}`, spotifyManifest);
+    await closeServer(server);
+    closeDb();
+
+    await initDb(dbPath);
+    const db = getDb();
+    const trace = createTraceContext({ scenarioId: 'scn_controller_restart_orphan' });
+    const startedAt = '2026-04-24T09:00:00.000Z';
+
+    db.prepare(`
+      INSERT INTO controller_active_runs(connector_id, run_id, trace_id, scenario_id, started_at)
+      VALUES(?, ?, ?, ?, ?)
+    `).run(connectorId, runId, trace.trace_id, trace.scenario_id, startedAt);
+
+    await emitSpineEvent({
+      event_type: 'run.started',
+      trace_id: trace.trace_id,
+      scenario_id: trace.scenario_id,
+      actor_type: 'runtime',
+      actor_id: connectorId,
+      object_type: 'run',
+      object_id: runId,
+      status: 'started',
+      run_id: runId,
+      data: {
+        source: { binding_kind: 'connector', connector_id: connectorId },
+        collection_mode: 'incremental',
+        persist_state: true,
+        state_commit_intent: 'commit_on_success',
+        bindings: { network: {}, filesystem: {}, interactive: {} },
+        scope: { streams: [{ name: 'top_tracks' }] },
+        scope_streams: ['top_tracks'],
+      },
+    }, db);
+    await emitSpineEvent({
+      event_type: 'run.interaction_required',
+      trace_id: trace.trace_id,
+      scenario_id: trace.scenario_id,
+      actor_type: 'runtime',
+      actor_id: connectorId,
+      object_type: 'run',
+      object_id: runId,
+      status: 'started',
+      run_id: runId,
+      interaction_id: 'int_restart_orphan',
+      data: {
+        source: { binding_kind: 'connector', connector_id: connectorId },
+        kind: 'credentials',
+        stream: null,
+        message: 'Need a token',
+        schema: {
+          type: 'object',
+          properties: {
+            api_token: { type: 'string', format: 'password' },
+          },
+          required: ['api_token'],
+        },
+        timeout_seconds: 1800,
+      },
+    }, db);
+    closeDb();
+
+    server = await startServer({
+      quiet: true,
+      asPort: 0,
+      rsPort: 0,
+      dbPath,
+    });
+    const asUrl = `http://localhost:${server.asPort}`;
+
+    const timeline = await waitForRunTerminal(asUrl, runId);
+    const failed = timeline.data.find((event) => event.event_type === 'run.failed');
+    assert.ok(failed, 'startup reconciliation should append run.failed');
+    assert.equal(failed.data?.reason, 'controller_restarted');
+
+    const { body: connectors } = await fetchJson(`${asUrl}/_ref/connectors`);
+    const entry = connectors.data.find((row) => row.connector_id === connectorId);
+    assert.ok(entry, 'connector should still be listed after restart');
+    assert.equal(entry.last_run?.run_id, runId);
+    assert.equal(entry.last_run?.status, 'failed');
+    assert.equal(entry.last_run?.failure_reason, 'controller_restarted');
+
+    const remainingRows = getDb().prepare('SELECT COUNT(*) AS count FROM controller_active_runs').get();
+    assert.equal(remainingRows.count, 0, 'reconciliation should clear stale controller_active_runs rows');
+
+    const rerunResp = await fetch(`${asUrl}/_ref/connectors/${encodeURIComponent(connectorId)}/run`, {
+      method: 'POST',
+    });
+    assert.equal(rerunResp.status, 202, 'reconciled abandoned run should not leave the connector locked active');
+    const rerun = await rerunResp.json();
+    await waitForRunTerminal(asUrl, rerun.run_id);
+  } finally {
+    if (server) {
+      await closeServer(server).catch(() => {});
+    }
+    closeDb();
+    rmSync(tempDir, { recursive: true, force: true });
   }
 });
 

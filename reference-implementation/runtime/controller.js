@@ -18,7 +18,7 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { createTraceContext } from '../lib/spine.ts';
+import { createTraceContext, emitSpineEvent } from '../lib/spine.ts';
 import {
   approveOwnerDeviceAuthorization,
   getConnectorManifest,
@@ -37,8 +37,18 @@ const POLYFILL_MANIFESTS_DIR = join(POLYFILL_ROOT, 'manifests');
 const POLYFILL_CONNECTORS_DIR = join(POLYFILL_ROOT, 'connectors');
 
 const activeRuns = new Map();
+// Keyed by run_id → { connector_id, pending }
+// Pending-interaction state is in-memory only. Dashboard-submitted responses
+// satisfy the current live run; nothing about the submitted payload is
+// persisted to `.env.local`, SQLite, or spine event payloads.
+const activeRunInteractions = new Map();
 let referenceFixtureConnectorIds = null;
 let polyfillConnectorPaths = null;
+const ABANDONED_CONTROLLER_RUN_REASON = 'controller_restarted';
+
+function buildRunSource(connectorId) {
+  return { binding_kind: 'connector', connector_id: connectorId };
+}
 
 function nowIso() {
   return new Date().toISOString();
@@ -182,6 +192,91 @@ export function createController(opts = {}) {
   void opts.runtime;
   void opts.scheduler;
 
+  function listPersistedActiveRuns() {
+    return db.prepare(`
+      SELECT connector_id, run_id, trace_id, scenario_id, started_at
+      FROM controller_active_runs
+      ORDER BY started_at ASC, connector_id ASC
+    `).all();
+  }
+
+  function persistActiveRun(row) {
+    db.prepare(`
+      INSERT INTO controller_active_runs(connector_id, run_id, trace_id, scenario_id, started_at)
+      VALUES(?, ?, ?, ?, ?)
+      ON CONFLICT(connector_id) DO UPDATE SET
+        run_id = excluded.run_id,
+        trace_id = excluded.trace_id,
+        scenario_id = excluded.scenario_id,
+        started_at = excluded.started_at
+    `).run(
+      row.connector_id,
+      row.run_id,
+      row.trace_id,
+      row.scenario_id,
+      row.started_at,
+    );
+  }
+
+  function clearPersistedActiveRun(connectorId, runId) {
+    db.prepare(`
+      DELETE FROM controller_active_runs
+      WHERE connector_id = ?
+        AND run_id = ?
+    `).run(connectorId, runId);
+  }
+
+  function runAlreadyTerminal(runId) {
+    const row = db.prepare(`
+      SELECT 1
+      FROM spine_events
+      WHERE run_id = ?
+        AND event_type IN ('run.completed', 'run.failed')
+      LIMIT 1
+    `).get(runId);
+    return Boolean(row);
+  }
+
+  function reconcileAbandonedControllerRuns() {
+    const rows = listPersistedActiveRuns();
+    if (rows.length === 0) return;
+
+    const tx = db.transaction((staleRows) => {
+      for (const row of staleRows) {
+        if (!runAlreadyTerminal(row.run_id)) {
+          void emitSpineEvent({
+            event_type: 'run.failed',
+            trace_id: row.trace_id,
+            scenario_id: row.scenario_id,
+            actor_type: 'runtime',
+            actor_id: row.connector_id,
+            object_type: 'run',
+            object_id: row.run_id,
+            status: 'failed',
+            run_id: row.run_id,
+            data: {
+              source: buildRunSource(row.connector_id),
+              reason: ABANDONED_CONTROLLER_RUN_REASON,
+              failure_reason: ABANDONED_CONTROLLER_RUN_REASON,
+              message: 'Reference server restarted while a controller-managed run was still active.',
+            },
+          }, db);
+        }
+        clearPersistedActiveRun(row.connector_id, row.run_id);
+      }
+    });
+
+    tx(rows);
+
+    for (const row of rows) {
+      log.warn?.(
+        `[controller] reconciled abandoned controller-managed run ${row.run_id} for ${row.connector_id}`,
+      );
+    }
+  }
+
+  reconcileAbandonedControllerRuns();
+
   function getScheduleRow(connectorId) {
     return db.prepare(`
       SELECT connector_id, interval_seconds, jitter_seconds, enabled, created_at, updated_at
@@ -304,13 +399,24 @@ export function createController(opts = {}) {
       const ownerToken = options.ownerToken || await issueRuntimeOwnerToken();
       const traceContext = options.traceContext || createTraceContext({ scenarioId: options.scenarioId });
       const runId = options.runId || `run_${Date.now()}`;
+      const startedAt = nowIso();
+
+      persistActiveRun({
+        connector_id: connectorId,
+        run_id: runId,
+        trace_id: traceContext.trace_id,
+        scenario_id: traceContext.scenario_id,
+        started_at: startedAt,
+      });
 
       activeRuns.set(connectorId, {
         connector_id: connectorId,
         run_id: runId,
         trace_id: traceContext.trace_id,
-        started_at: nowIso(),
+        started_at: startedAt,
       });
+
+      const interactionHandler = (interaction) => brokerInteraction(runId, connectorId, interaction);
 
       void runConnector({
         connectorPath,
@@ -322,6 +428,7 @@ export function createController(opts = {}) {
         rsUrl: currentRsUrl(options.rsUrl),
         runId,
         traceContext,
+        onInteraction: interactionHandler,
         onProgress: () => {},
       })
         .catch((err) => {
@@ -329,15 +436,142 @@ export function createController(opts = {}) {
         })
         .finally(() => {
           activeRuns.delete(connectorId);
+          clearPersistedActiveRun(connectorId, runId);
+          // Defensive: cancel any lingering pending interaction tracked for
+          // this run so the dashboard-submit path doesn't resolve against a
+          // stale run that already terminated via runtime timeout.
+          const leftover = activeRunInteractions.get(runId);
+          if (leftover) {
+            activeRunInteractions.delete(runId);
+            if (leftover.pending) {
+              leftover.pending.resolve({
+                type: 'INTERACTION_RESPONSE',
+                request_id: leftover.pending.interaction_id,
+                status: 'cancelled',
+              });
+            }
+          }
         });
 
       return { run_id: runId, trace_id: traceContext.trace_id };
+    },
+
+    /**
+     * Answer the current pending interaction for an active controller-managed
+     * run. Invoked from `POST /_ref/runs/:runId/interaction`.
+     *
+     * Failure semantics:
+     *   - not_found — no active run with this id
+     *   - no_pending_interaction — active run but nothing to answer
+     *   - interaction_id_mismatch — the submitted interaction_id no longer
+     *     matches the current pending interaction (stale form)
+     *   - invalid_status — status outside `success` / `cancelled`
+     *
+     * Submitted `data` is forwarded to the runtime via the resolver so the
+     * runtime delivers a single INTERACTION_RESPONSE back to the connector.
+     * It is never persisted here or by the runtime beyond the existing safe
+     * `run.interaction_completed` metadata.
+     */
+    respondToInteraction(runId, { interaction_id, status, data } = {}) {
+      const entry = activeRunInteractions.get(runId);
+      if (!entry) {
+        const err = new Error(`No active run with id: ${runId}`);
+        err.code = 'not_found';
+        throw err;
+      }
+      if (!entry.pending) {
+        const err = new Error(`Active run ${runId} has no pending interaction`);
+        err.code = 'no_pending_interaction';
+        throw err;
+      }
+      if (
+        typeof interaction_id !== 'string'
+        || !interaction_id.trim()
+        || interaction_id !== entry.pending.interaction_id
+      ) {
+        const err = new Error(
+          `Stale interaction_id for run ${runId}: expected ${entry.pending.interaction_id}`,
+        );
+        err.code = 'interaction_id_mismatch';
+        err.expected_interaction_id = entry.pending.interaction_id;
+        throw err;
+      }
+      if (status !== 'success' && status !== 'cancelled') {
+        const err = new Error(`Invalid interaction status: ${status}`);
+        err.code = 'invalid_status';
+        throw err;
+      }
+      const response = {
+        type: 'INTERACTION_RESPONSE',
+        request_id: interaction_id,
+        status,
+      };
+      if (status === 'success' && data && typeof data === 'object' && !Array.isArray(data)) {
+        response.data = data;
+      }
+      const pending = entry.pending;
+      entry.pending = null;
+      pending.resolve(response);
+      return { accepted: true, status };
+    },
+
+    getPendingInteraction(runId) {
+      const entry = activeRunInteractions.get(runId);
+      if (!entry || !entry.pending) return null;
+      return {
+        run_id: runId,
+        connector_id: entry.connector_id,
+        interaction_id: entry.pending.interaction_id,
+        kind: entry.pending.kind,
+        stream: entry.pending.stream || null,
+      };
     },
     // Approval + connector inventory live in `auth.js`
     // (`listPendingApprovals`, `listConnectors`, `getConnectorManifest`).
     // Route handlers call those helpers directly; the controller does not
     // re-export them.
   };
+}
+
+/**
+ * Register a pending interaction for a controller-managed run and return a
+ * promise that resolves to the INTERACTION_RESPONSE the runtime should
+ * deliver. Exported indirectly through the controller's `runNow` handler;
+ * kept at module scope because the pending-interaction state is shared with
+ * the dashboard-submit path.
+ */
+function brokerInteraction(runId, connectorId, interaction) {
+  return new Promise((resolve) => {
+    const entry = activeRunInteractions.get(runId) || { connector_id: connectorId, pending: null };
+    if (entry.pending) {
+      // Protocol violation handled upstream: the runtime prevents a second
+      // INTERACTION while one is pending. Reaching here would be a bug.
+      resolve({
+        type: 'INTERACTION_RESPONSE',
+        request_id: interaction.request_id,
+        status: 'cancelled',
+      });
+      return;
+    }
+    entry.connector_id = connectorId;
+    entry.pending = {
+      interaction_id: interaction.request_id,
+      kind: interaction.kind,
+      stream: interaction.stream || null,
+      resolve,
+    };
+    activeRunInteractions.set(runId, entry);
+  });
+}
+
+/**
+ * Test-only: reset all in-memory broker state. Exposed so test harnesses can
+ * keep state clean across test-file reruns without importing the module's
+ * private `Map`s.
+ */
+export function __resetControllerInteractionStateForTests() {
+  activeRunInteractions.clear();
+  activeRuns.clear();
 }
 
 /**

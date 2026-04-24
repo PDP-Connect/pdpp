@@ -14,6 +14,7 @@ Generated from `packages/reference-contract/src/reference/`. Reference-designate
 | **POST** | `/_ref/connectors/{connectorId}/schedule/pause` | `refPauseConnectorSchedule` | Pause the connector schedule without deleting its config. |
 | **POST** | `/_ref/connectors/{connectorId}/schedule/resume` | `refResumeConnectorSchedule` | Resume a paused connector schedule. |
 | **DELETE** | `/_ref/connectors/{connectorId}/schedule` | `refDeleteConnectorSchedule` | Delete the connector schedule config. |
+| **POST** | `/_ref/runs/{runId}/interaction` | `refRunInteraction` | Owner-only control surface: answer the current pending interaction for an active controller-managed run. Reference-only; not part of the public PDPP API. |
 | **GET** | `/_ref/records/timeline` | `refRecordsTimeline` | Server-backed cross-connector recent-record feed for the Records > Timeline UI. |
 | **GET** | `/_ref/dataset/summary` | `refDatasetSummary` | Aggregate dataset summary: live record counts, retained-history bytes, timespan bounds, and top connectors. |
 
@@ -184,6 +185,30 @@ Delete the connector schedule config.
 ### Responses
 
 - `204` — Deleted
+- `400` — Invalid request
+- `404` — Not found
+- `409` — Conflict (e.g. run_already_active)
+
+## refRunInteraction
+
+`POST /_ref/runs/{runId}/interaction`
+
+Owner-only control surface: answer the current pending interaction for an active controller-managed run. Reference-only; not part of the public PDPP API.
+
+### Path parameters
+
+- `runId` — string
+
+### Request body
+
+`application/json`
+- `interaction_id` (required) — string
+- `status` (required) — enum `success | cancelled`
+- `data` — object
+
+### Responses
+
+- `202` — Accepted
 - `400` — Invalid request
 - `404` — Not found
 - `409` — Conflict (e.g. run_already_active)

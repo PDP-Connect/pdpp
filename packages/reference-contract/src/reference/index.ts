@@ -362,6 +362,56 @@ export const referenceManifests = [
     responses: { 204: { description: "Deleted" }, ...CommonErrors },
   },
   {
+    id: "refRunInteraction",
+    method: "POST",
+    path: "/_ref/runs/{runId}/interaction",
+    surface: "reference",
+    tags: ["reference", "runs"],
+    summary:
+      "Owner-only control surface: answer the current pending interaction for an active controller-managed run. Reference-only; not part of the public PDPP API.",
+    request: {
+      params: {
+        type: "object",
+        additionalProperties: false,
+        properties: { runId: { type: "string", minLength: 1 } },
+        required: ["runId"],
+      },
+      body: {
+        contentType: "application/json",
+        schema: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            interaction_id: { type: "string", minLength: 1 },
+            status: { type: "string", enum: ["success", "cancelled"] },
+            data: {
+              type: "object",
+              additionalProperties: true,
+            },
+          },
+          required: ["interaction_id", "status"],
+        },
+      },
+    },
+    responses: {
+      202: {
+        schema: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            object: { const: "run_interaction_ack" },
+            run_id: { type: "string" },
+            interaction_id: { type: "string" },
+            status: { type: "string", enum: ["success", "cancelled"] },
+          },
+          required: ["object", "run_id", "interaction_id", "status"],
+        },
+        description: "Accepted",
+      },
+      ...CommonErrors,
+    },
+  },
+  {
     id: "refRecordsTimeline",
     method: "GET",
     path: "/_ref/records/timeline",

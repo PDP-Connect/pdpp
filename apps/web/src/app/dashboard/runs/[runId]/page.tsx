@@ -7,6 +7,7 @@ import { ReferenceServerUnreachableError, getAsInternalUrl } from '../../lib/own
 import { getRunTimeline, type SpineEvent, type TimelineEnvelope } from '../../lib/ref-client';
 import { TimelineView } from '../../components/timeline-view';
 import { RunDetailPoller } from './run-detail-poller';
+import { RunInteractionForm } from './interaction-form';
 
 export const dynamic = 'force-dynamic';
 
@@ -95,34 +96,20 @@ export default async function RunDetailPage({
           <dl className="pdpp-caption grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
             <dt className="text-muted-foreground">kind</dt>
             <dd>{pendingInteraction.kind}</dd>
-            <dt className="text-muted-foreground">message</dt>
-            <dd>{pendingInteraction.message}</dd>
             {pendingInteraction.timeoutLabel ? (
               <>
                 <dt className="text-muted-foreground">timeout</dt>
                 <dd>{pendingInteraction.timeoutLabel}</dd>
               </>
             ) : null}
-            {pendingInteraction.fields.length > 0 ? (
-              <>
-                <dt className="text-muted-foreground">fields</dt>
-                <dd className="flex flex-wrap gap-1.5">
-                  {pendingInteraction.fields.map((field) => (
-                    <code
-                      key={field}
-                      className="bg-background border-border/80 rounded border px-1.5 py-0.5 font-mono"
-                    >
-                      {field}
-                    </code>
-                  ))}
-                </dd>
-              </>
-            ) : null}
           </dl>
-          <p className="pdpp-caption text-muted-foreground mt-3">
-            The dashboard can inspect this interaction, but it cannot answer it yet. For now, respond in the
-            reference-server terminal or satisfy the needed env var and rerun.
-          </p>
+          <RunInteractionForm
+            runId={runId}
+            interactionId={pendingInteraction.interactionId}
+            kind={pendingInteraction.kind}
+            message={pendingInteraction.message}
+            fields={pendingInteraction.fields}
+          />
         </Callout>
       ) : null}
 
@@ -325,12 +312,22 @@ function getLatestProgress(events: SpineEvent[]): {
   };
 }
 
-function getPendingInteraction(events: SpineEvent[]): {
+type InteractionField = {
+  name: string;
+  label: string | null;
+  format: 'password' | 'text';
+  required: boolean;
+};
+
+type PendingInteraction = {
+  interactionId: string;
   kind: string;
   message: string;
-  fields: string[];
+  fields: InteractionField[];
   timeoutLabel: string | null;
-} | null {
+};
+
+function getPendingInteraction(events: SpineEvent[]): PendingInteraction | null {
   const completed = new Set(
     events
       .filter((event) => event.event_type === 'run.interaction_completed')
@@ -344,16 +341,33 @@ function getPendingInteraction(events: SpineEvent[]): {
       typeof event.interaction_id === 'string' &&
       !completed.has(event.interaction_id),
   );
-  if (!pending) return null;
+  if (!pending || typeof pending.interaction_id !== 'string') return null;
 
   const schema = pending.data?.schema;
+  const requiredFields = new Set(
+    schema && typeof schema === 'object' && !Array.isArray(schema) && Array.isArray((schema as { required?: unknown }).required)
+      ? ((schema as { required: unknown[] }).required.filter((value) => typeof value === 'string') as string[])
+      : [],
+  );
   const properties =
     schema && typeof schema === 'object' && !Array.isArray(schema) && 'properties' in schema
-      ? schema.properties
+      ? (schema as { properties?: unknown }).properties
       : null;
-  const fields =
+  const fields: InteractionField[] =
     properties && typeof properties === 'object' && !Array.isArray(properties)
-      ? Object.keys(properties as Record<string, unknown>).sort((left, right) => left.localeCompare(right))
+      ? Object.entries(properties as Record<string, unknown>)
+          .map(([name, rawDef]): InteractionField => {
+            const def = rawDef && typeof rawDef === 'object' ? (rawDef as Record<string, unknown>) : {};
+            const format = def.format === 'password' ? 'password' : 'text';
+            const label = typeof def.title === 'string' && def.title ? def.title : null;
+            return {
+              name,
+              label,
+              format,
+              required: requiredFields.has(name),
+            };
+          })
+          .sort((left, right) => left.name.localeCompare(right.name))
       : [];
   const timeoutSeconds =
     typeof pending.data?.timeout_seconds === 'number' && pending.data.timeout_seconds > 0
@@ -361,6 +375,7 @@ function getPendingInteraction(events: SpineEvent[]): {
       : null;
 
   return {
+    interactionId: pending.interaction_id,
     kind: String(pending.data?.kind ?? 'interaction'),
     message: String(pending.data?.message ?? 'Awaiting operator response.'),
     fields,

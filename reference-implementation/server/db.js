@@ -121,6 +121,17 @@ CREATE TABLE IF NOT EXISTS connector_schedules (
   updated_at        TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS controller_active_runs (
+  connector_id  TEXT PRIMARY KEY,
+  run_id        TEXT NOT NULL UNIQUE,
+  trace_id      TEXT NOT NULL,
+  scenario_id   TEXT NOT NULL,
+  started_at    TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_controller_active_runs_run_id
+  ON controller_active_runs(run_id);
+
 CREATE TABLE IF NOT EXISTS oauth_clients (
   client_id                  TEXT PRIMARY KEY,
   registration_mode          TEXT NOT NULL,
