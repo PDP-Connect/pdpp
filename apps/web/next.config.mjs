@@ -10,6 +10,11 @@ const nextConfig = {
   output: 'standalone',
   outputFileTracingRoot: path.join(__dirname, '../..'),
   reactStrictMode: true,
+  // Transpile the reference-implementation workspace package so Next can
+  // consume its TypeScript sources directly once shim pairs (.js + .d.ts)
+  // collapse into single .ts exports. Without this, Next's bundler would
+  // reject .ts entries from a node_modules-resolved workspace package.
+  transpilePackages: ['pdpp-reference-implementation'],
   async redirects() {
     return [
       {
