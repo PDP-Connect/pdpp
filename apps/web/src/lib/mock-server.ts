@@ -160,7 +160,7 @@ export class MockPDPPServer {
 
     // Parse cursor (index into records array)
     const startIdx = cursor ? Number.parseInt(cursor, 10) : 0;
-    if (isNaN(startIdx)) {
+    if (Number.isNaN(startIdx)) {
       return { status: 410, error: "cursor_expired", records: [], has_more: false };
     }
 

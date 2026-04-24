@@ -484,7 +484,7 @@ export function stringifyCell(v: unknown): string {
 }
 
 export function truncate(s: string, n: number): string {
-  return s.length > n ? s.slice(0, n - 1) + "\u2026" : s;
+  return s.length > n ? `${s.slice(0, n - 1)}\u2026` : s;
 }
 
 export function formatTimestamp(iso: string | null | undefined): string {
@@ -569,18 +569,18 @@ function distinctKey(v: unknown): string {
     return "\u0000null";
   }
   if (typeof v === "string") {
-    return "s:" + v;
+    return `s:${v}`;
   }
   if (typeof v === "number") {
-    return "n:" + String(v);
+    return `n:${String(v)}`;
   }
   if (typeof v === "boolean") {
-    return "b:" + String(v);
+    return `b:${String(v)}`;
   }
   try {
-    return "j:" + JSON.stringify(v);
+    return `j:${JSON.stringify(v)}`;
   } catch {
-    return "x:" + String(v);
+    return `x:${String(v)}`;
   }
 }
 

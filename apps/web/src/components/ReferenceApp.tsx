@@ -1851,7 +1851,7 @@ Authorization: Bearer <client_token>
               </button>
 
               {/* Live delta result */}
-              {protocol.syncResult && protocol.syncResult.records && protocol.syncResult.records.length > 24 && (
+              {protocol.syncResult?.records && protocol.syncResult.records.length > 24 && (
                 <div className="w-full" style={{ maxWidth: "520px" }}>
                   <div className="mb-2 font-medium text-xs" style={{ color: "var(--success)" }}>
                     Delta: {protocol.syncResult.records.length - 24} new record

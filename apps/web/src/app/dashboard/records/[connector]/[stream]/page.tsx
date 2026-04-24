@@ -46,7 +46,7 @@ export default async function StreamPage({
     const [pageResult, manifests] = await Promise.all([
       queryRecords(connectorId, streamName, {
         limit: PAGE_SIZE,
-        cursor: trail[trail.length - 1],
+        cursor: trail.at(-1),
       }),
       listConnectorManifests().catch(() => []),
     ]);

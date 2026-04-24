@@ -117,7 +117,7 @@ export default async function RunDetailPage({ params }: { params: Promise<{ runI
   );
 }
 
-function Stat({ title, rows, emphasis }: { title: string; rows: Array<[string, string]>; emphasis?: boolean }) {
+function Stat({ title, rows, emphasis }: { title: string; rows: [string, string][]; emphasis?: boolean }) {
   return (
     <div
       className={
@@ -139,7 +139,7 @@ function Stat({ title, rows, emphasis }: { title: string; rows: Array<[string, s
   );
 }
 
-function summarizeCheckpoints(events: SpineEvent[]): Array<[string, string]> {
+function summarizeCheckpoints(events: SpineEvent[]): [string, string][] {
   const staged = events.filter((e) => e.event_type === "run.state_staged").length;
   const advanced = events.filter((e) => e.event_type === "run.state_advanced").length;
   const commitFailed = events.filter((e) => e.event_type === "run.state_commit_failed").length;
@@ -150,10 +150,10 @@ function summarizeCheckpoints(events: SpineEvent[]): Array<[string, string]> {
   ];
 }
 
-function summarizeProgress(events: SpineEvent[]): Array<[string, string]> {
+function summarizeProgress(events: SpineEvent[]): [string, string][] {
   const progressEvents = events.filter((e) => e.event_type === "run.progress_reported");
   const skipped = events.filter((e) => e.event_type === "run.stream_skipped").length;
-  const last = progressEvents[progressEvents.length - 1];
+  const last = progressEvents.at(-1);
   return [
     ["reports", String(progressEvents.length)],
     ["last_count", String(last?.data?.count ?? "—")],
@@ -162,7 +162,7 @@ function summarizeProgress(events: SpineEvent[]): Array<[string, string]> {
   ];
 }
 
-function summarizeInteractions(events: SpineEvent[]): Array<[string, string]> {
+function summarizeInteractions(events: SpineEvent[]): [string, string][] {
   const required = events.filter((e) => e.event_type === "run.interaction_required").length;
   const completed = events.filter((e) => e.event_type === "run.interaction_completed").length;
   return [

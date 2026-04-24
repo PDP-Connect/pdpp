@@ -399,7 +399,7 @@ function PaginationBar({
     // the 'first' sentinel so the subsequent cursor branch type-narrows
     // without a non-null assertion.
     const newStack = prevStack.slice(0, -1);
-    const newCursor = prevStack[prevStack.length - 1] ?? "first";
+    const newCursor = prevStack.at(-1) ?? "first";
     const params = new URLSearchParams({ q: query });
     if (newCursor !== "first") {
       params.set("cursor", newCursor);

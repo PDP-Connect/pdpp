@@ -140,7 +140,7 @@ function displayConnectorSlug(connectorId: string): string {
   try {
     const url = new URL(connectorId);
     const segments = url.pathname.split("/").filter(Boolean);
-    const last = segments[segments.length - 1];
+    const last = segments.at(-1);
     return last || url.hostname;
   } catch {
     return connectorId;
