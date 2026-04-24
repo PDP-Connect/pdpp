@@ -10,8 +10,6 @@ import {
 } from '../lib/ref-client';
 import {
   getRecord,
-  listConnectorManifests,
-  listStreams,
   searchRecordsLexical,
   type SearchResultHit,
 } from '../lib/rs-client';
@@ -20,7 +18,10 @@ import { shortConnectorName } from '../lib/timeline';
 
 export const dynamic = 'force-dynamic';
 
-const DEFAULT_MAX_RESULTS = 50;
+// Page size for record hits. The public /v1/search surface enforces its own
+// max; we just pass a reasonable default and honor the server's `has_more` +
+// `next_cursor` for subsequent pages.
+const RECORDS_PAGE_SIZE = 50;
 
 type RecordHit = {
   connectorId: string;
@@ -30,57 +31,19 @@ type RecordHit = {
   snippet: string;
 };
 
+type RecordPage = {
+  hits: RecordHit[];
+  nextCursor?: string;
+  hasMore: boolean;
+};
+
 type SearchResult = {
   exact: { kind: 'trace' | 'grant' | 'run'; id: string } | null;
   traces: TraceSummary[];
   grants: GrantSummary[];
   runs: RunSummary[];
-  records: RecordHit[];
+  records: RecordPage;
 };
-
-function looksLikeMessagesStream(name: string): boolean {
-  const n = name.toLowerCase();
-  return (
-    n.includes('message') ||
-    n.includes('chat') ||
-    n.includes('conversation') ||
-    n.includes('thread') ||
-    n.includes('post') ||
-    n.includes('comment') ||
-    n.includes('note') ||
-    n.includes('memo')
-  );
-}
-
-/**
- * Build the streams[] filter for `scope=messages` from the owner-visible
- * stream list. The reference's RS scopes owner reads per connector, so we
- * enumerate connectors locally to discover stream names. The /v1/search
- * helper then sends the unique set as `streams[]=...&streams[]=...` and
- * the server fans out across every owner-visible connector that exposes
- * one of those names AND declares lexical_fields on it.
- *
- * Empty result here means "no owner-visible messages-like stream exists".
- * Per the owner spec, `messages` scope MUST NOT silently widen to `all`
- * in that case — the page returns zero record hits instead.
- */
-async function discoverMessagesLikeStreamNames(): Promise<string[]> {
-  const manifests = await listConnectorManifests();
-  const perConnector = await Promise.all(
-    manifests.map(async (m) => {
-      try {
-        const streams = await listStreams(m.connector_id);
-        return streams
-          .filter((s) => s.record_count > 0)
-          .filter((s) => looksLikeMessagesStream(s.name))
-          .map((s) => s.name);
-      } catch {
-        return [];
-      }
-    }),
-  );
-  return Array.from(new Set(perConnector.flat()));
-}
 
 /**
  * Map a public search_result hit into the dashboard's RecordHit shape. The
@@ -112,24 +75,31 @@ async function hitToRecordHit(hit: SearchResultHit): Promise<RecordHit> {
   };
 }
 
-async function searchRecords(query: string, scope: 'messages' | 'all'): Promise<RecordHit[]> {
-  const streams = scope === 'messages' ? await discoverMessagesLikeStreamNames() : undefined;
-  // Owner explicit: do NOT widen `messages` to `all` when the stream set is
-  // empty. Return zero record hits instead.
-  if (scope === 'messages' && (!streams || streams.length === 0)) return [];
-
-  const page = await searchRecordsLexical(query, { streams, limit: DEFAULT_MAX_RESULTS });
-  return Promise.all(page.data.map(hitToRecordHit));
+/**
+ * Fetch a single record page via the public lexical retrieval surface.
+ * Defaults to all streams — the server fans out across every owner-visible
+ * stream that declares `query.search.lexical_fields`.
+ */
+async function searchRecords(query: string, cursor?: string): Promise<RecordPage> {
+  const page = await searchRecordsLexical(query, {
+    limit: RECORDS_PAGE_SIZE,
+    cursor,
+  });
+  const hits = await Promise.all(page.data.map(hitToRecordHit));
+  return {
+    hits,
+    nextCursor: page.next_cursor,
+    hasMore: Boolean(page.has_more),
+  };
 }
 
 export default async function SearchPage({
   searchParams,
 }: {
-  searchParams: Promise<{ q?: string; scope?: string; jump?: string }>;
+  searchParams: Promise<{ q?: string; cursor?: string; jump?: string }>;
 }) {
-  const { q: qParam, scope: scopeParam, jump } = await searchParams;
+  const { q: qParam, cursor, jump } = await searchParams;
   const query = (qParam ?? '').trim();
-  const scope = scopeParam === 'all' ? 'all' : 'messages';
 
   let result: SearchResult | null = null;
   let unreachable = false;
@@ -138,8 +108,10 @@ export default async function SearchPage({
     try {
       const spineResult = await refSearch(query);
 
-      // Deep-link on exact id match. jump=0 opts out.
-      if (spineResult.exact && jump !== '0') {
+      // Deep-link on exact id match. jump=0 opts out. Only applied on the
+      // first page (no cursor) so paginating doesn't surprise the operator
+      // by jumping away.
+      if (spineResult.exact && jump !== '0' && !cursor) {
         const { kind, id } = spineResult.exact;
         const target =
           kind === 'trace'
@@ -150,7 +122,7 @@ export default async function SearchPage({
         redirect(target);
       }
 
-      const records = await searchRecords(query, scope);
+      const records = await searchRecords(query, cursor);
       result = {
         exact: spineResult.exact,
         traces: spineResult.traces,
@@ -175,13 +147,18 @@ export default async function SearchPage({
     );
   }
 
+  const nextHref =
+    result?.records.hasMore && result.records.nextCursor
+      ? buildNextHref({ query, cursor: result.records.nextCursor })
+      : null;
+
   return (
     <DashboardShell active="search">
       <header className="mb-4 flex items-baseline justify-between gap-4">
         <h1 className="text-lg font-semibold">Search</h1>
         {result && (
           <span className="text-muted-foreground text-xs">
-            {result.traces.length + result.grants.length + result.runs.length} artifacts · {result.records.length} records
+            {result.traces.length + result.grants.length + result.runs.length} artifacts · {result.records.hits.length} records{result.records.hasMore ? '+' : ''}
           </span>
         )}
       </header>
@@ -195,17 +172,6 @@ export default async function SearchPage({
           className="border-border bg-background w-full rounded border px-3 py-2 sm:max-w-md"
           autoFocus
         />
-        <label className="text-muted-foreground flex items-center gap-2 whitespace-nowrap text-xs">
-          record scope
-          <select
-            name="scope"
-            defaultValue={scope}
-            className="border-border bg-background rounded border px-2 py-1"
-          >
-            <option value="messages">messages-like</option>
-            <option value="all">all streams</option>
-          </select>
-        </label>
         <button type="submit" className="border-border hover:bg-muted/50 self-start rounded border px-3 py-2 sm:self-auto">
           search
         </button>
@@ -214,7 +180,7 @@ export default async function SearchPage({
       {!query ? (
         <p className="text-muted-foreground text-xs">
           Paste a request/trace/grant/run id for a direct jump, or enter text to lexically search
-          records across streams that declare searchable fields.
+          records across every stream that declares searchable fields.
         </p>
       ) : !result ? null : (
         <>
@@ -239,24 +205,40 @@ export default async function SearchPage({
 
           <section className="mb-6">
             <h2 className="text-muted-foreground mb-2 text-xs uppercase tracking-wide">
-              records ({result.records.length})
+              records ({result.records.hits.length}{result.records.hasMore ? '+' : ''})
             </h2>
-            {result.records.length === 0 ? (
+            {result.records.hits.length === 0 ? (
               <p className="text-muted-foreground text-xs">No record-content hits.</p>
             ) : (
               <ul className="divide-border divide-y border-y">
-                {result.records.map((h) => (
+                {result.records.hits.map((h) => (
                   <li key={`${h.connectorId}::${h.stream}::${h.recordId}`}>
                     <RecordRow hit={h} query={query} />
                   </li>
                 ))}
               </ul>
             )}
+            {nextHref ? (
+              <div className="mt-3 flex justify-end">
+                <Link href={nextHref} className="border-border hover:bg-muted/50 rounded border px-3 py-1.5 text-xs">
+                  next page →
+                </Link>
+              </div>
+            ) : null}
           </section>
         </>
       )}
     </DashboardShell>
   );
+}
+
+function buildNextHref({ query, cursor }: { query: string; cursor: string }): string {
+  const params = new URLSearchParams();
+  if (query) params.set('q', query);
+  params.set('cursor', cursor);
+  // Suppress the exact-id jump so an operator paginating doesn't redirect.
+  params.set('jump', '0');
+  return `/dashboard/search?${params.toString()}`;
 }
 
 function ArtifactSection<T>({

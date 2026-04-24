@@ -120,7 +120,7 @@ function isTopLevelSearchableStringField(fieldSchema) {
  * Mirror of the records-path cursor-field compatibility check. Kept small and
  * colocated with the validator so authoring mistakes are caught at registration
  * rather than at first read. Must stay in sync with
- * reference-implementation/server/records.js::assertCursorFieldParityOrThrow.
+ * reference-implementation/server/records.js::classifyCursorFieldSqlSupport.
  */
 function isReferenceCompatibleCursorSchema(fieldSchema) {
   if (!fieldSchema || typeof fieldSchema !== 'object') return false;
