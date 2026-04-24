@@ -261,12 +261,13 @@ When the reference includes a `snippet` on a `search_result`, the snippet's `tex
 
 ### Requirement: The reference SHALL treat embedding and vector-index backends as pluggable implementation details behind a fixed internal interface
 
-The reference SHALL expose pluggable interfaces for the embedding backend and vector index inside `reference-implementation/server/search-semantic.js`. The reference's default embedding backend SHALL be a deterministic local stub that runs without external network access and identifies itself honestly in the advertisement's `model` field. The reference's default vector index SHALL be an in-process implementation sufficient to exercise the contract end-to-end. Hosted embedding providers and persistent vector stores SHALL be supportable as drop-in replacements without any change to the public contract, the spec delta, or the handler shape.
+The reference SHALL expose pluggable interfaces for the embedding backend and vector index inside `reference-implementation/server/search-semantic.js`. The reference's default embedding backend SHALL be a deterministic local stub that runs without external network access and identifies itself honestly in the advertisement's `model` field. The reference's default vector index SHALL be persistent across process restarts (see the separate "The reference's default semantic index SHALL persist across process restarts" requirement). Hosted embedding providers and alternate persistent vector backends SHALL be supportable as drop-in replacements without any change to the public contract, the spec delta, or the handler shape.
 
 #### Scenario: The reference runs offline without a configured hosted provider
-- **WHEN** the reference is started with the default stub embedding backend and the default in-process vector index
+- **WHEN** the reference is started with the default stub embedding backend and the default persistent vector index
 - **THEN** the reference SHALL advertise `capabilities.semantic_retrieval.supported: true` with a truthful `model` identifier that names itself as the reference stub
 - **AND** the advertised `model` SHALL NOT impersonate the model identifier of a hosted provider
+- **AND** the reference SHALL NOT require network access beyond the local `better-sqlite3` database to serve `GET /v1/search/semantic`
 
 #### Scenario: A hosted provider is configured
 - **WHEN** an operator configures a hosted embedding backend that implements the `EmbeddingBackend` interface

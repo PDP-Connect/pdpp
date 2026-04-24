@@ -34,7 +34,8 @@ If a future implementer thinks any of those need to move, they MUST reopen the a
 | Vector index | `reference-implementation/server/search-semantic.js` (`VectorIndex`) | Pluggable interface; default persistent `sqlite-vec` (preferred); documented persistent SQLite-BLOB flat fallback when `sqlite-vec` cannot be loaded; external vector DBs remain drop-in replacements via the same interface |
 | Startup backfill | `reference-implementation/server/search-semantic.js` + init path in `index.js` | Drift-detect and rebuild per `(connector_id, stream)` from records; makes historical records searchable after restart without re-ingest |
 | Drift metadata | `reference-implementation/server/db.js` (additive `semantic_search_meta` table) | Tracks declared fields fingerprint, `model`, `dimensions`, `distance_metric` per `(connector_id, stream)` |
-| Dashboard helper | `apps/web/src/app/dashboard/lib/rs-client.ts` | Adds `searchRecordsSemantic()` proxy; no UI change in this tranche |
+| Dashboard helper | `apps/web/src/app/dashboard/lib/rs-client.ts` | Adds `searchRecordsSemantic(query, opts)` that mirrors `searchRecordsLexical` shape and preserves the full page envelope for pagination |
+| Dashboard search UX | `apps/web/src/app/dashboard/search/page.tsx` (+ `search-filters-form.tsx`) | Remove `messages-like` heuristic; all-stream default; URL-driven cursor pagination shared between lexical and semantic |
 | Docs | `apps/web/content/docs/spec-semantic-retrieval-extension.md` (new) + optional `spec-data-query-api.md` pointer | Experimental marker surfaced prominently |
 | Tests | `reference-implementation/test/semantic-retrieval.test.js` (new) | Every spec scenario |
 
@@ -590,22 +591,53 @@ The public request shape is identical for owner and client tokens. `connector_id
 
 ## 11. Dashboard and docs
 
-### 11.1 Dashboard helper (no UI change)
+### 11.1 Dashboard helper
 
 ```ts
 // apps/web/src/app/dashboard/lib/rs-client.ts
 export async function searchRecordsSemantic(
   query: string,
-  scope: Scope
-): Promise<SemanticSearchResult[]> {
+  opts: { streams?: string[]; limit?: number; cursor?: string } = {},
+): Promise<SearchResultPage> {
   // GET /v1/search/semantic with owner token
-  // returns parsed envelope's data[]
+  // returns the full page envelope: { object: 'list', has_more, next_cursor?, data: [...] }
 }
 ```
 
-Wiring the dashboard UI is deferred. We only want the helper available so a follow-up product change consumes the public surface directly rather than minting a bridge.
+The shape deliberately mirrors `searchRecordsLexical(query, opts)`. Both helpers:
 
-### 11.2 Docs page
+- take the same `opts` shape
+- return the same `SearchResultPage` envelope (declared once in `rs-client.ts`)
+- preserve `has_more` and `next_cursor` for pagination rather than flattening to `data[]`
+
+This means the dashboard's pagination code path is identical for the two retrieval surfaces. The result-shape differences that *are* public (`retrieval_mode` on semantic hits, absent on lexical hits) show up as optional properties on `SearchResultHit`.
+
+### 11.2 Dashboard search UX cleanup (shared across lexical and semantic)
+
+Dashboard search today (after the lexical tranche) has three shipped limitations this change removes:
+
+1. **`messages-like` heuristic**: `looksLikeMessagesStream()` hard-codes name-matching (`messages`, `chat`, `dm`, etc.) to pick which streams to search under the `scope=messages` option. This is a weak heuristic that breaks for every new connector schema, and it diverges from the protocol's per-stream `lexical_fields` / `semantic_fields` declarations (the honest answer to "which streams participate in retrieval"). Remove both `looksLikeMessagesStream()` and its consumer `discoverMessagesLikeStreamNames()`.
+2. **`scope` query parameter + selector**: the `scope=messages | all` selector forced the owner to pick between the weak heuristic and searching everything. With the heuristic gone, the selector has no purpose. Remove the `scope` query param, the form selector in `search-filters-form.tsx`, and the `scope === 'messages'` branch in `searchRecords()`.
+3. **Hard one-page cap**: the current page caps results at `DEFAULT_MAX_RESULTS` (50) and silently discards everything beyond. The public surfaces already return `has_more` / `next_cursor`; the dashboard just throws that data away. Wire it through.
+
+**New dashboard search model (applies to both lexical and semantic):**
+
+- Default scope is **all owner-visible streams that declare the relevant searchable fields**. The RS's cross-connector fan-out already handles this — the dashboard just doesn't pass `streams[]`.
+- Pagination is URL-driven: the page reads `?cursor=<opaque>` from `searchParams`, passes it through to the helper, and renders next/previous links using the returned `next_cursor`.
+- Backward nav: since cursors are opaque and not reversible on the server, "previous" is implemented by keeping a thin cursor stack in the URL (`?cursor=<current>&prev=<prev1>,<prev2>,...`) — the standard Next.js App Router server-component pattern. This is dashboard-UI work, not protocol work.
+- When `has_more` is true, render a "Next page" link; when the `prev` stack is non-empty, render a "Previous" link.
+
+**Server component, not client:**
+
+- The page stays a server component. Cursor state lives in the URL, not in client state. This matches the rest of `/dashboard/*` and keeps the page cacheable per URL.
+- This is deliberately not a Turbopack/react-server-components redesign — it's the same server-component pattern the dashboard already uses, just with one extra query parameter.
+
+**Boundary discipline:**
+
+- The public `/v1/search` and `/v1/search/semantic` contracts are untouched. Pagination semantics (opaque cursors, non-reuse across surfaces, no monotonic-timestamp promise) come straight from the approved specs. The dashboard work is purely in `apps/web/*`.
+- The lexical tranche's handler already returns `has_more` / `next_cursor`; the dashboard just didn't consume them. Fixing that here is a UX cleanup, not a lexical spec change, and `implement-lexical-retrieval-extension`'s spec delta is untouched.
+
+### 11.3 Docs page
 
 `apps/web/content/docs/spec-semantic-retrieval-extension.md` surfaces the experimental marker in:
 

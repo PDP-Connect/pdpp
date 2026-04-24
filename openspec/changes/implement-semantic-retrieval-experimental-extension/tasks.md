@@ -139,12 +139,37 @@
 - [ ] 11.4 Cursors from those surfaces SHALL be rejected by `/v1/search/semantic`.
 - [ ] 11.5 Tests cover both directions.
 
-## 12. Dashboard helper (no UI change)
+## 12. Dashboard helper + search UX cleanup (shared across lexical and semantic)
 
-- [ ] 12.1 Add `searchRecordsSemantic(query, scope)` to `apps/web/src/app/dashboard/lib/rs-client.ts` alongside `searchRecordsLexical`. Do NOT introduce a new generic bridge.
-- [ ] 12.2 The helper proxies to `/v1/search/semantic` with the owner-bound bearer token.
-- [ ] 12.3 No UI changes to `apps/web/src/app/dashboard/search/page.tsx` in this tranche.
-- [ ] 12.4 Reference-only `_ref` calls keep living in `apps/web/src/app/dashboard/lib/ref-client.ts` — untouched.
+### 12.a `rs-client.ts` — add semantic helper that mirrors the lexical helper's shape
+
+- [ ] 12.1 Add `searchRecordsSemantic(query, opts)` to `apps/web/src/app/dashboard/lib/rs-client.ts` alongside `searchRecordsLexical`. Do NOT introduce a new generic bridge. Reference-only `_ref` calls keep living in `apps/web/src/app/dashboard/lib/ref-client.ts` — untouched.
+- [ ] 12.2 Signature: `searchRecordsSemantic(query: string, opts?: { streams?: string[]; limit?: number; cursor?: string }) => Promise<SearchResultPage>`. This mirrors the existing `searchRecordsLexical(query, opts)` shape exactly.
+- [ ] 12.3 DO NOT model the helper as `searchRecordsSemantic(query, scope)`. The `scope` argument is removed from the dashboard entirely (see 12.b).
+- [ ] 12.4 The helper proxies to `/v1/search/semantic` with the owner-bound bearer token and returns the full page envelope (`{ object: 'list', has_more, next_cursor?, data: [...] }`), NOT just `data[]`.
+- [ ] 12.5 Reuse the existing `SearchResultPage` and `SearchResultHit` type aliases where possible. If `SearchResultHit` needs a `retrieval_mode?: 'semantic' | 'hybrid'` optional field to cover semantic hits, add it as an optional property; lexical hits leave it undefined.
+
+### 12.b `search/page.tsx` — remove `messages-like` heuristic, default to all streams, paginate
+
+- [ ] 12.6 Delete `looksLikeMessagesStream()` from `apps/web/src/app/dashboard/search/page.tsx`.
+- [ ] 12.7 Delete `discoverMessagesLikeStreamNames()` from the same file.
+- [ ] 12.8 Remove the `scope` query parameter, the `scope` form selector in `apps/web/src/app/dashboard/search/search-filters-form.tsx`, and the `scope === 'messages'` branch in `searchRecords()`. The page SHALL NOT offer a `messages` option.
+- [ ] 12.9 Default to all owner-visible streams: the dashboard's record-search path calls `searchRecordsLexical(query, { limit, cursor })` and/or `searchRecordsSemantic(query, { limit, cursor })` with no `streams[]` narrowing. The RS's cross-connector fan-out handles stream enumeration honestly per the `lexical_fields` / `semantic_fields` declarations.
+- [ ] 12.10 Remove the hard `DEFAULT_MAX_RESULTS` one-page cap. Pass a reasonable `limit` (e.g., 25) to the helper; respect `has_more` and `next_cursor` on the returned envelope rather than truncating.
+- [ ] 12.11 Add URL-driven cursor pagination: the page reads `?cursor=<opaque>` from `searchParams` and passes it through. Render a "Next page" link when `has_more` is true; the link sets `?cursor=<next_cursor>` on the current URL.
+- [ ] 12.12 Add an optional "Previous" affordance by carrying a thin cursor stack in the URL (`?cursor=<current>&prev=<prev1>,<prev2>,...`). Server-component only — no client-side state. This is acceptable because cursors are opaque and the server cannot reverse them.
+- [ ] 12.13 The page stays a server component. Cursor state lives in the URL, not in client state. No new client components are introduced by this work.
+- [ ] 12.14 Keep the existing spine deep-link (`refSearch`) jump UX for trace/artifact/id search unchanged — it consumes `/_ref/search` and is reference-only operator UX, not public retrieval. Untouched.
+
+### 12.c Consistency
+
+- [ ] 12.15 Lexical and semantic dashboard helpers SHALL share the same `SearchResultPage` return type and the same `{ streams?, limit?, cursor? }` opts shape. A future reader MUST be able to swap one for the other without changing pagination or envelope handling.
+- [ ] 12.16 Tests in `apps/web/tests/dashboard-search.test.ts` (new or extended) SHALL cover: (a) search defaults to all streams when no stream filter is set, (b) `?cursor=` round-trips correctly, (c) "Next" link is rendered only when `has_more: true`, (d) there is no `scope=` parameter on the dashboard page URL. (Tests are scoped to `apps/web`; the reference's `semantic-retrieval.test.js` handles protocol-level conformance.)
+
+### 12.d Boundary
+
+- [ ] 12.17 DO NOT mutate the public `/v1/search` or `/v1/search/semantic` contracts to support dashboard pagination. Cursor semantics come straight from the approved specs. This is dashboard-UX work, not protocol work.
+- [ ] 12.18 DO NOT reopen `add-lexical-retrieval-extension` or `implement-lexical-retrieval-extension`. If the lexical tranche's helper already returns `has_more` / `next_cursor` (it does), this tranche just consumes what's already there.
 
 ## 13. Docs
 
