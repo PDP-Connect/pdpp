@@ -55,7 +55,7 @@ export default async function RunDetailPage({ params }: { params: Promise<{ runI
   const interactions = summarizeInteractions(events);
   const terminalStatus = getTerminalRunStatus(events);
   const active = terminalStatus == null;
-  const pendingInteraction = getPendingInteraction(events);
+  const pendingInteraction = active ? getPendingInteraction(events) : null;
   const latestProgress = getLatestProgress(events);
   const failure = events.find((e) => e.event_type === "run.failed");
   const stateTone = getRunStateTone({ active, pendingInteraction: Boolean(pendingInteraction), terminalStatus });
