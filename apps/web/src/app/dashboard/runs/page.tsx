@@ -150,22 +150,24 @@ export default async function RunsPage({ searchParams }: { searchParams: Promise
         }
         peek={
           params.peek ? (
-            peekEnvelope ? (
-              <PeekPane
-                title={`run ${params.peek}`}
-                closeHref={closePeekHref}
-                openHref={openPeekFullHref}
-                cliCommand={`pdpp run timeline ${params.peek}`}
-              >
-                <Pivots envelope={peekEnvelope} currentKind="run" />
-                <div className="pdpp-caption mb-2 text-muted-foreground">{peekEnvelope.events.length} events</div>
-                <PeekTimeline events={peekEnvelope.events} />
-              </PeekPane>
-            ) : (
-              <PeekPane title={`run ${params.peek}`} closeHref={closePeekHref} openHref={openPeekFullHref}>
-                <p className="text-muted-foreground">Run not found.</p>
-              </PeekPane>
-            )
+            <>
+              {peekEnvelope ? (
+                <PeekPane
+                  title={`run ${params.peek}`}
+                  closeHref={closePeekHref}
+                  openHref={openPeekFullHref}
+                  cliCommand={`pdpp run timeline ${params.peek}`}
+                >
+                  <Pivots envelope={peekEnvelope} currentKind="run" />
+                  <div className="pdpp-caption mb-2 text-muted-foreground">{peekEnvelope.events.length} events</div>
+                  <PeekTimeline events={peekEnvelope.events} />
+                </PeekPane>
+              ) : (
+                <PeekPane title={`run ${params.peek}`} closeHref={closePeekHref} openHref={openPeekFullHref}>
+                  <p className="text-muted-foreground">Run not found.</p>
+                </PeekPane>
+              )}
+            </>
           ) : (
             <PeekEmpty />
           )

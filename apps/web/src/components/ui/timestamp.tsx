@@ -135,11 +135,10 @@ export function Timestamp({ value, mode = "auto", precision = "datetime", classN
   const ageMs = Math.abs(Date.now() - date.getTime());
   const useRelative = mode === "relative" || (mode === "auto" && mounted && ageMs < RELATIVE_CUTOFF);
 
-  const label = mounted
-    ? useRelative
-      ? formatRelative(date, now)
-      : formatAbsolute(date, precision)
-    : formatAbsolute(date, precision);
+  let label = formatAbsolute(date, precision);
+  if (mounted && useRelative) {
+    label = formatRelative(date, now);
+  }
 
   return (
     <time dateTime={iso} title={mounted ? tooltipFmt.format(date) : iso} className={cn("tabular-nums", className)}>

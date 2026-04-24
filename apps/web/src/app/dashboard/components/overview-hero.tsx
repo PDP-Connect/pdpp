@@ -162,6 +162,11 @@ function formatBytes(bytes: number): string {
     value /= 1000;
     unitIndex += 1;
   }
-  const rounded = value >= 100 ? Math.round(value) : value >= 10 ? value.toFixed(1) : value.toFixed(2);
+  let rounded: string | number = value.toFixed(2);
+  if (value >= 100) {
+    rounded = Math.round(value);
+  } else if (value >= 10) {
+    rounded = value.toFixed(1);
+  }
   return `${rounded} ${units[unitIndex]}`;
 }

@@ -168,7 +168,15 @@ export async function loadTimeline(
     }
   }
 
-  entries.sort((a, b) => (a.timestamp < b.timestamp ? 1 : a.timestamp > b.timestamp ? -1 : 0));
+  entries.sort((a, b) => {
+    if (a.timestamp < b.timestamp) {
+      return 1;
+    }
+    if (a.timestamp > b.timestamp) {
+      return -1;
+    }
+    return 0;
+  });
   return {
     entries: entries.slice(0, totalLimit),
     scanned,

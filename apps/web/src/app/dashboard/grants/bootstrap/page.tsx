@@ -131,19 +131,23 @@ export default async function OwnerTokenBootstrapPage({ searchParams }: { search
                 <DetailRow label="poll" value={`${flow.intervalSeconds}s`} />
                 <DetailRow
                   label="verification"
-                  value={
-                    flow.verificationUriComplete ? (
-                      <a href={flow.verificationUriComplete} className="underline-offset-2 hover:underline">
-                        {flow.verificationUriComplete}
-                      </a>
-                    ) : flow.verificationUri ? (
-                      <a href={flow.verificationUri} className="underline-offset-2 hover:underline">
-                        {flow.verificationUri}
-                      </a>
-                    ) : (
-                      "—"
-                    )
-                  }
+                  value={(() => {
+                    if (flow.verificationUriComplete) {
+                      return (
+                        <a href={flow.verificationUriComplete} className="underline-offset-2 hover:underline">
+                          {flow.verificationUriComplete}
+                        </a>
+                      );
+                    }
+                    if (flow.verificationUri) {
+                      return (
+                        <a href={flow.verificationUri} className="underline-offset-2 hover:underline">
+                          {flow.verificationUri}
+                        </a>
+                      );
+                    }
+                    return "—";
+                  })()}
                 />
               </DetailCard>
               <DetailCard title="Approval">

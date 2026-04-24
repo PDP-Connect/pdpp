@@ -141,22 +141,24 @@ export default async function TracesPage({ searchParams }: { searchParams: Promi
         }
         peek={
           params.peek ? (
-            peekEnvelope ? (
-              <PeekPane
-                title={`trace ${params.peek}`}
-                closeHref={closePeekHref}
-                openHref={openPeekFullHref}
-                cliCommand={`pdpp trace show ${params.peek}`}
-              >
-                <Pivots envelope={peekEnvelope} currentKind="trace" />
-                <div className="pdpp-caption mb-2 text-muted-foreground">{peekEnvelope.events.length} events</div>
-                <PeekTimeline events={peekEnvelope.events} />
-              </PeekPane>
-            ) : (
-              <PeekPane title={`trace ${params.peek}`} closeHref={closePeekHref} openHref={openPeekFullHref}>
-                <p className="text-muted-foreground">Trace not found.</p>
-              </PeekPane>
-            )
+            <>
+              {peekEnvelope ? (
+                <PeekPane
+                  title={`trace ${params.peek}`}
+                  closeHref={closePeekHref}
+                  openHref={openPeekFullHref}
+                  cliCommand={`pdpp trace show ${params.peek}`}
+                >
+                  <Pivots envelope={peekEnvelope} currentKind="trace" />
+                  <div className="pdpp-caption mb-2 text-muted-foreground">{peekEnvelope.events.length} events</div>
+                  <PeekTimeline events={peekEnvelope.events} />
+                </PeekPane>
+              ) : (
+                <PeekPane title={`trace ${params.peek}`} closeHref={closePeekHref} openHref={openPeekFullHref}>
+                  <p className="text-muted-foreground">Trace not found.</p>
+                </PeekPane>
+              )}
+            </>
           ) : (
             <PeekEmpty />
           )

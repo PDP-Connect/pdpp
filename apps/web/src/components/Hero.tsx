@@ -39,6 +39,13 @@ interface HeroProps {
 const warmWash = "linear-gradient(to right, var(--human-wash), transparent 60%)";
 const coolWash = "linear-gradient(to left, var(--primary-wash), transparent 60%)";
 
+function titleMarginBottom({ description, isSplash }: { description: boolean; isSplash: boolean }): string | number {
+  if (!description) {
+    return 0;
+  }
+  return isSplash ? "1.5rem" : "0.75rem";
+}
+
 function gradientForRightQuadrant(g: HeroGradient): string {
   return g === "cool" ? "transparent" : warmWash;
 }
@@ -135,7 +142,7 @@ function HeroContent({
         className={titleClass}
         style={{
           marginTop: eyebrow && !isSplash ? "0.5rem" : 0,
-          marginBottom: description ? (isSplash ? "1.5rem" : "0.75rem") : 0,
+          marginBottom: titleMarginBottom({ description: Boolean(description), isSplash }),
         }}
       >
         {title}

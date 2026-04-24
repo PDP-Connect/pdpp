@@ -25,8 +25,10 @@ export default async function OpenSpecLandingPage() {
   const sections = buildOpenSpecSidebarSections({ kind: "overview" });
   const latestChange = changes[0]?.lastModified ?? null;
   const latestNote = designNotes[0]?.lastModified ?? null;
-  const lastTouched =
-    latestChange && latestNote ? (latestChange > latestNote ? latestChange : latestNote) : (latestChange ?? latestNote);
+  let lastTouched: string | null = latestChange ?? latestNote;
+  if (latestChange && latestNote) {
+    lastTouched = latestChange > latestNote ? latestChange : latestNote;
+  }
   const openQuestionCount = designNotes.filter((note) => note.noteKind === "open-question").length;
 
   return (

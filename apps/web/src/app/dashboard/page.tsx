@@ -40,7 +40,15 @@ async function loadOverview(): Promise<OverviewData> {
   ]);
 
   const recentDecisions = [...revokedGrants.data, ...deniedGrants.data, ...issuedGrants.data]
-    .sort((a, b) => (a.last_at < b.last_at ? 1 : a.last_at > b.last_at ? -1 : 0))
+    .sort((a, b) => {
+      if (a.last_at < b.last_at) {
+        return 1;
+      }
+      if (a.last_at > b.last_at) {
+        return -1;
+      }
+      return 0;
+    })
     .slice(0, 6);
 
   return {
@@ -180,7 +188,14 @@ export default async function DashboardPage() {
           <EmptyState title="No recent grant decisions" />
         ) : (
           <DataList>
-            {data.recentDecisions.map((g) => (
+            {data.recentDecisions.map((g) => {
+              let providerSuffix = "";
+              if (g.connector_id) {
+                providerSuffix = ` · ${g.connector_id}`;
+              } else if (g.provider_id) {
+                providerSuffix = ` · ${g.provider_id}`;
+              }
+              return (
               <li key={g.grant_id}>
                 <Link
                   href={`/dashboard/grants?peek=${encodeURIComponent(g.grant_id)}`}
@@ -189,7 +204,7 @@ export default async function DashboardPage() {
                   <code className="break-all font-medium font-mono text-foreground">{g.grant_id}</code>
                   <span className="min-w-0 truncate text-muted-foreground">
                     client {g.client_id ?? "—"}
-                    {g.connector_id ? ` · ${g.connector_id}` : g.provider_id ? ` · ${g.provider_id}` : ""}
+                    {providerSuffix}
                   </span>
                   <span className="pdpp-caption flex items-center gap-2 justify-self-end">
                     <StatusBadge status={g.status} />
@@ -199,7 +214,8 @@ export default async function DashboardPage() {
                   </span>
                 </Link>
               </li>
-            ))}
+              );
+            })}
           </DataList>
         )}
       </Section>

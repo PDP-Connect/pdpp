@@ -2168,18 +2168,26 @@ function DashboardPrimitivesSection() {
           </p>
           <div className="rounded-lg border border-border/80 bg-background p-6">
             <DataList>
-              {["run_1776830422766", "run_1776753603111", "run_1776755678518"].map((id, i) => (
+              {["run_1776830422766", "run_1776753603111", "run_1776755678518"].map((id, i) => {
+                let sampleStatus: "succeeded" | "failed" | "cancelled" = "cancelled";
+                if (i === 0) {
+                  sampleStatus = "succeeded";
+                } else if (i === 1) {
+                  sampleStatus = "failed";
+                }
+                return (
                 <li key={id} className="px-3 py-2.5">
                   <div className="flex flex-wrap items-baseline justify-between gap-2">
                     <code className="pdpp-caption font-medium font-mono text-foreground">{id}</code>
                     <div className="flex items-center gap-2">
-                      <StatusBadge status={i === 0 ? "succeeded" : i === 1 ? "failed" : "cancelled"} />
+                      <StatusBadge status={sampleStatus} />
                       <span className="pdpp-caption text-muted-foreground tabular-nums">2026-04-22T04:11:00Z</span>
                     </div>
                   </div>
                   <div className="pdpp-caption mt-1 text-muted-foreground">{i + 1} events · github</div>
                 </li>
-              ))}
+                );
+              })}
             </DataList>
             <Pager prev="#" next="#" countLabel="3 of 50" />
           </div>
@@ -2591,6 +2599,12 @@ function LongviewIdentityLockup({
   );
 }
 
+const APERTURE_MARK_SIZES: Record<number, string> = {
+  16: "h-3 w-6",
+  24: "h-4 w-8",
+  32: "h-5 w-10",
+};
+
 function LongviewLogoMark({
   variant,
   inverse = false,
@@ -2630,28 +2644,29 @@ function LongviewLogoMark({
   );
 }
 
+const LONGVIEW_VERDICT_TONES: Record<LongviewLogoCandidate["verdict"], { color: string; backgroundColor: string; border: string; label: string }> = {
+  recommended: {
+    color: "var(--primary)",
+    backgroundColor: "color-mix(in oklab, var(--primary) 8%, white)",
+    border: "1px solid color-mix(in oklab, var(--primary) 18%, var(--border))",
+    label: "Recommended",
+  },
+  alternative: {
+    color: "var(--foreground)",
+    backgroundColor: "color-mix(in oklab, var(--human-wash) 82%, white)",
+    border: "1px solid color-mix(in oklab, var(--human) 18%, var(--border))",
+    label: "Alternative",
+  },
+  discard: {
+    color: "var(--muted-foreground)",
+    backgroundColor: "var(--muted)",
+    border: "1px solid var(--border)",
+    label: "Discard",
+  },
+};
+
 function LongviewCandidatePreview({ candidate }: { candidate: LongviewLogoCandidate }) {
-  const verdictTone =
-    candidate.verdict === "recommended"
-      ? {
-          color: "var(--primary)",
-          backgroundColor: "color-mix(in oklab, var(--primary) 8%, white)",
-          border: "1px solid color-mix(in oklab, var(--primary) 18%, var(--border))",
-          label: "Recommended",
-        }
-      : candidate.verdict === "alternative"
-        ? {
-            color: "var(--foreground)",
-            backgroundColor: "color-mix(in oklab, var(--human-wash) 82%, white)",
-            border: "1px solid color-mix(in oklab, var(--human) 18%, var(--border))",
-            label: "Alternative",
-          }
-        : {
-            color: "var(--muted-foreground)",
-            backgroundColor: "var(--muted)",
-            border: "1px solid var(--border)",
-            label: "Discard",
-          };
+  const verdictTone = LONGVIEW_VERDICT_TONES[candidate.verdict];
 
   return (
     <div className="border-t pt-4" style={{ borderColor: "var(--border)" }}>
@@ -2785,7 +2800,9 @@ function ExampleWorldsSection() {
                 Recommended symbol sizes
               </div>
               <div className="grid grid-cols-4 gap-2">
-                {[16, 24, 32, 64].map((size) => (
+                {[16, 24, 32, 64].map((size) => {
+                  const markSizeClass = APERTURE_MARK_SIZES[size] ?? "h-7 w-14";
+                  return (
                   <div
                     key={size}
                     className="rounded-[0.85rem] px-2 py-3 text-center"
@@ -2795,18 +2812,14 @@ function ExampleWorldsSection() {
                     }}
                   >
                     <div className="flex h-10 items-center justify-center">
-                      <LongviewLogoMark
-                        variant="aperture_span"
-                        className={
-                          size === 16 ? "h-3 w-6" : size === 24 ? "h-4 w-8" : size === 32 ? "h-5 w-10" : "h-7 w-14"
-                        }
-                      />
+                      <LongviewLogoMark variant="aperture_span" className={markSizeClass} />
                     </div>
                     <div className="mt-2 font-mono text-[10px]" style={{ color: "var(--muted-foreground)" }}>
                       {size}px
                     </div>
                   </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
 

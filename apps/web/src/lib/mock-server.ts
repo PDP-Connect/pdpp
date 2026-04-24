@@ -278,6 +278,8 @@ export function createSeededServer(): MockPDPPServer {
     }),
   });
 
+  const grantTypes = ["ISO", "RSU", "NSO"] as const;
+  const grantQuantities = [8000, 2400, 1200] as const;
   server.addStream({
     name: "equity_grants",
     semantics: "mutable_state",
@@ -285,8 +287,8 @@ export function createSeededServer(): MockPDPPServer {
     records: Array.from({ length: 3 }, (_, i) => ({
       key: `grant_${i}`,
       data: {
-        grant_type: i === 0 ? "ISO" : i === 1 ? "RSU" : "NSO",
-        quantity: i === 0 ? 8000 : i === 1 ? 2400 : 1200,
+        grant_type: grantTypes[i] ?? "NSO",
+        quantity: grantQuantities[i] ?? 1200,
         vesting_start: `202${i + 4}-05-01`,
         vesting_schedule: i === 1 ? "4y monthly after 1y cliff" : "4y quarterly after 1y cliff",
         brokerage_account_last4: `71${i}4`,

@@ -54,8 +54,12 @@ export function ColumnsMenu({
   );
 
   const count = selectedColumns.length;
-  const label =
-    mode === "all" ? `Columns · all ${count}` : mode === "custom" ? `Columns · ${count}` : `Columns · ${count} default`;
+  let label = `Columns · ${count} default`;
+  if (mode === "all") {
+    label = `Columns · all ${count}`;
+  } else if (mode === "custom") {
+    label = `Columns · ${count}`;
+  }
 
   return (
     <Popover open={open} onOpenChange={setOpen}>

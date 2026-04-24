@@ -140,14 +140,14 @@ export default async function RecordsIndexPage() {
           tone={syncedRecently > 0 ? "success" : "neutral"}
         />
         <HealthStat
-          label={staleCount > 0 ? "Stale >7d" : neverRun > 0 ? "Never run" : "All fresh"}
+          label={freshnessLabel(staleCount, neverRun)}
           value={(staleCount || neverRun || 0).toLocaleString()}
           tone={staleCount > 0 || neverRun > 0 ? "warning" : "neutral"}
         />
         <HealthStat
-          label={failedCount > 0 ? "Failing" : runningCount > 0 ? "Running" : "Idle"}
+          label={activityLabel(failedCount, runningCount)}
           value={(failedCount || runningCount || 0).toLocaleString()}
-          tone={failedCount > 0 ? "danger" : runningCount > 0 ? "active" : "neutral"}
+          tone={activityTone(failedCount, runningCount)}
         />
       </section>
 
@@ -182,6 +182,46 @@ export default async function RecordsIndexPage() {
   );
 }
 
+type HealthStatTone = "neutral" | "success" | "warning" | "danger" | "active";
+
+const HEALTH_STAT_TONE_CLASSES: Record<HealthStatTone, string> = {
+  success: "text-emerald-600",
+  warning: "text-amber-600",
+  danger: "text-destructive",
+  active: "text-blue-600",
+  neutral: "text-foreground",
+};
+
+function freshnessLabel(stale: number, never: number): string {
+  if (stale > 0) {
+    return "Stale >7d";
+  }
+  if (never > 0) {
+    return "Never run";
+  }
+  return "All fresh";
+}
+
+function activityLabel(failed: number, running: number): string {
+  if (failed > 0) {
+    return "Failing";
+  }
+  if (running > 0) {
+    return "Running";
+  }
+  return "Idle";
+}
+
+function activityTone(failed: number, running: number): HealthStatTone {
+  if (failed > 0) {
+    return "danger";
+  }
+  if (running > 0) {
+    return "active";
+  }
+  return "neutral";
+}
+
 function HealthStat({
   label,
   value,
@@ -189,18 +229,9 @@ function HealthStat({
 }: {
   label: string;
   value: string;
-  tone: "neutral" | "success" | "warning" | "danger" | "active";
+  tone: HealthStatTone;
 }) {
-  const toneClass =
-    tone === "success"
-      ? "text-emerald-600"
-      : tone === "warning"
-        ? "text-amber-600"
-        : tone === "danger"
-          ? "text-destructive"
-          : tone === "active"
-            ? "text-blue-600"
-            : "text-foreground";
+  const toneClass = HEALTH_STAT_TONE_CLASSES[tone];
   return (
     <div className="flex flex-col gap-1 border-border/60 border-l-2 pl-3">
       <span className="pdpp-caption text-muted-foreground">{label}</span>

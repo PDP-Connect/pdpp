@@ -210,17 +210,16 @@ export function Pager({
 
 // ─── Surface: meta pill (small inline key/value) ───────────────────────────
 
+const META_PILL_TONE_CLASSES: Record<MetaPillTone, string> = {
+  protocol: "border-primary/25 bg-primary/5 text-foreground",
+  human: "border-[color:var(--human)]/25 bg-[color:var(--human-wash)] text-foreground",
+  success: "border-[color:var(--success)]/30 bg-[color:var(--success-wash)] text-foreground",
+  danger: "border-destructive/25 bg-destructive/5 text-destructive",
+  neutral: "border-border/80 bg-background",
+};
+
 export function MetaPill({ label, value, tone = "neutral" }: { label: string; value: ReactNode; tone?: MetaPillTone }) {
-  const toneClass =
-    tone === "protocol"
-      ? "border-primary/25 bg-primary/5 text-foreground"
-      : tone === "human"
-        ? "border-[color:var(--human)]/25 bg-[color:var(--human-wash)] text-foreground"
-        : tone === "success"
-          ? "border-[color:var(--success)]/30 bg-[color:var(--success-wash)] text-foreground"
-          : tone === "danger"
-            ? "border-destructive/25 bg-destructive/5 text-destructive"
-            : "border-border/80 bg-background";
+  const toneClass = META_PILL_TONE_CLASSES[tone];
   return (
     <span className={`pdpp-caption inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 ${toneClass}`}>
       <span className="text-muted-foreground">{label}</span>
@@ -232,16 +231,16 @@ export function MetaPill({ label, value, tone = "neutral" }: { label: string; va
 // ─── Status badge ──────────────────────────────────────────────────────────
 // Consolidates scattered status-chip styles across grants, runs, traces.
 
+const STATUS_BADGE_TONE_CLASSES: Record<"success" | "danger" | "warning" | "neutral", string> = {
+  danger: "bg-destructive/10 text-destructive",
+  success: "bg-[color:var(--success-wash)] text-[color:var(--success)]",
+  warning: "bg-[color:var(--warning-wash)] text-[color:var(--warning)]",
+  neutral: "bg-muted text-muted-foreground",
+};
+
 export function StatusBadge({ status, inline = false }: { status: string; inline?: boolean }) {
   const tone = statusTone(status);
-  const toneClass =
-    tone === "danger"
-      ? "bg-destructive/10 text-destructive"
-      : tone === "success"
-        ? "bg-[color:var(--success-wash)] text-[color:var(--success)]"
-        : tone === "warning"
-          ? "bg-[color:var(--warning-wash)] text-[color:var(--warning)]"
-          : "bg-muted text-muted-foreground";
+  const toneClass = STATUS_BADGE_TONE_CLASSES[tone];
   return (
     <span
       className={`pdpp-eyebrow ${inline ? "" : "inline-flex"} rounded-[3px] px-1.5 py-0.5 font-medium tabular-nums ${toneClass}`}

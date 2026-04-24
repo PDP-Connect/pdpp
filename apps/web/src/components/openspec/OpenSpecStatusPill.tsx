@@ -6,10 +6,15 @@ const LABELS: Record<OpenSpecChangeStatus, string> = {
   unknown: "No tasks",
 };
 
+const TONES: Record<OpenSpecChangeStatus, string> = {
+  complete: "text-foreground",
+  "in-progress": "text-foreground",
+  unknown: "text-muted-foreground",
+};
+
 export function OpenSpecStatusPill({ status }: { status: OpenSpecChangeStatus }) {
   const label = LABELS[status];
-  const tone =
-    status === "complete" ? "text-foreground" : status === "in-progress" ? "text-foreground" : "text-muted-foreground";
+  const tone = TONES[status];
 
   return <span className={`pdpp-caption ${tone}`}>{label}</span>;
 }

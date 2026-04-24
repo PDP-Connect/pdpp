@@ -218,12 +218,12 @@ function Stepper({ activeId, onNavigate }: { activeId: SectionId; onNavigate: (i
       {SECTIONS.map(({ id, label }) => {
         const isActive = id === activeId;
         const temp = SECTION_TEMPERATURE[id];
-        const inactiveColor =
-          temp === "human"
-            ? "oklch(0.52 0.09 45 / 0.7)"
-            : temp === "protocol"
-              ? "oklch(0.580 0.172 253.7 / 0.5)"
-              : "var(--muted-foreground)";
+        let inactiveColor = "var(--muted-foreground)";
+        if (temp === "human") {
+          inactiveColor = "oklch(0.52 0.09 45 / 0.7)";
+        } else if (temp === "protocol") {
+          inactiveColor = "oklch(0.580 0.172 253.7 / 0.5)";
+        }
         return (
           <button
             key={id}
@@ -334,6 +334,19 @@ function FieldProjection({ grantedFields, allFields }: { grantedFields: string[]
             {allFields.map((f, i) => {
               const granted = grantedFields.includes(f);
               const isFiltered = phase === "filter" || phase === "result";
+              const dimmedByFilter = isFiltered && !granted;
+              let opacity = 1;
+              if (phase === "hidden") {
+                opacity = 0;
+              } else if (dimmedByFilter) {
+                opacity = 0.15;
+              }
+              let transform = "translateY(0)";
+              if (phase === "hidden") {
+                transform = "translateY(12px)";
+              } else if (dimmedByFilter) {
+                transform = "translateX(8px) scale(0.95)";
+              }
               return (
                 <span
                   key={f}
@@ -341,15 +354,10 @@ function FieldProjection({ grantedFields, allFields }: { grantedFields: string[]
                   style={{
                     backgroundColor: granted ? "var(--success-wash)" : "var(--muted)",
                     color: granted ? "var(--success)" : "var(--muted-foreground)",
-                    opacity: phase === "hidden" ? 0 : isFiltered && !granted ? 0.15 : 1,
-                    transform:
-                      phase === "hidden"
-                        ? "translateY(12px)"
-                        : isFiltered && !granted
-                          ? "translateX(8px) scale(0.95)"
-                          : "translateY(0)",
+                    opacity,
+                    transform,
                     transition: `opacity 360ms ${easeOut} ${phase === "hidden" ? i * 32 : 120}ms, transform 360ms ${easeOut} ${phase === "hidden" ? i * 32 : 120}ms`,
-                    textDecoration: isFiltered && !granted ? "line-through" : "none",
+                    textDecoration: dimmedByFilter ? "line-through" : "none",
                   }}
                 >
                   {f}
@@ -793,8 +801,12 @@ function Section({
   detail?: React.ReactNode;
   wide?: boolean;
 }) {
-  const borderColor =
-    config.surface === "human" ? "var(--human)" : config.surface === "protocol" ? "var(--primary)" : "var(--border)";
+  let borderColor = "var(--border)";
+  if (config.surface === "human") {
+    borderColor = "var(--human)";
+  } else if (config.surface === "protocol") {
+    borderColor = "var(--primary)";
+  }
 
   return (
     <section
@@ -1113,32 +1125,37 @@ export function ReferenceApp({ hero, currentLabel = "Reference" }: ReferenceAppP
       <Stepper activeId={activeSection} onNavigate={navigateTo} />
 
       {/* Protocol state indicator — visible during sections 4-8 */}
-      {["consent", "grant", "enforce", "sync", "revoke"].includes(activeSection) && (
-        <div
-          className="fixed bottom-6 left-1/2 z-30 flex -translate-x-1/2 items-center gap-2 rounded-full px-3 py-1.5 text-xs"
-          style={{
-            backgroundColor: "var(--card)",
-            border: "1px solid var(--border)",
-            boxShadow: "0 4px 6px rgba(0,0,0,0.04), 0 10px 15px rgba(0,0,0,0.08)",
-            opacity: 0.9,
-          }}
-        >
+      {(() => {
+        if (!["consent", "grant", "enforce", "sync", "revoke"].includes(activeSection)) {
+          return null;
+        }
+        let dotColor = "var(--border)";
+        if (protocol.phase === "granted") {
+          dotColor = "var(--success)";
+        } else if (protocol.phase === "revoked") {
+          dotColor = "var(--destructive)";
+        }
+        let grantLabel = "idle";
+        if (protocol.phase === "granted") {
+          grantLabel = "active";
+        } else if (protocol.phase === "revoked") {
+          grantLabel = "revoked";
+        }
+        return (
           <div
-            className="h-1.5 w-1.5 rounded-full"
+            className="fixed bottom-6 left-1/2 z-30 flex -translate-x-1/2 items-center gap-2 rounded-full px-3 py-1.5 text-xs"
             style={{
-              backgroundColor:
-                protocol.phase === "granted"
-                  ? "var(--success)"
-                  : protocol.phase === "revoked"
-                    ? "var(--destructive)"
-                    : "var(--border)",
+              backgroundColor: "var(--card)",
+              border: "1px solid var(--border)",
+              boxShadow: "0 4px 6px rgba(0,0,0,0.04), 0 10px 15px rgba(0,0,0,0.08)",
+              opacity: 0.9,
             }}
-          />
-          <span style={{ color: "var(--muted-foreground)" }}>
-            Grant: {protocol.phase === "granted" ? "active" : protocol.phase === "revoked" ? "revoked" : "idle"}
-          </span>
-        </div>
-      )}
+          >
+            <div className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: dotColor }} />
+            <span style={{ color: "var(--muted-foreground)" }}>Grant: {grantLabel}</span>
+          </div>
+        );
+      })()}
 
       {hero ?? <DefaultReferenceHero />}
 

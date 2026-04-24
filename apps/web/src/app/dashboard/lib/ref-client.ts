@@ -56,7 +56,12 @@ function normalizeTimeline(raw: unknown): TimelineEnvelope {
     data?: SpineEvent[];
     events?: SpineEvent[];
   };
-  const events = Array.isArray(r.events) ? r.events : Array.isArray(r.data) ? r.data : [];
+  let events: SpineEvent[] = [];
+  if (Array.isArray(r.events)) {
+    events = r.events;
+  } else if (Array.isArray(r.data)) {
+    events = r.data;
+  }
   return {
     object: r.object ?? "timeline",
     trace_id: r.trace_id ?? null,

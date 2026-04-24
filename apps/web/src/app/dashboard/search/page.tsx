@@ -189,12 +189,12 @@ export default async function SearchPage({
       // deep-links from deeper cursor pages would be confusing.
       if (spineResult.exact && jump !== "0" && !cursor) {
         const { kind, id } = spineResult.exact;
-        const target =
-          kind === "trace"
-            ? `/dashboard/traces/${encodeURIComponent(id)}`
-            : kind === "grant"
-              ? `/dashboard/grants/${encodeURIComponent(id)}`
-              : `/dashboard/runs/${encodeURIComponent(id)}`;
+        let target = `/dashboard/runs/${encodeURIComponent(id)}`;
+        if (kind === "trace") {
+          target = `/dashboard/traces/${encodeURIComponent(id)}`;
+        } else if (kind === "grant") {
+          target = `/dashboard/grants/${encodeURIComponent(id)}`;
+        }
         redirect(target);
       }
 
@@ -253,7 +253,7 @@ export default async function SearchPage({
       </form>
 
       {query ? (
-        result ? (
+        result && (
           <>
             <ArtifactSection
               title="traces"
@@ -329,7 +329,7 @@ export default async function SearchPage({
               />
             </section>
           </>
-        ) : null
+        )
       ) : (
         <p className="text-muted-foreground text-xs">
           Paste a request/trace/grant/run id for a direct jump, or enter text to search records across every

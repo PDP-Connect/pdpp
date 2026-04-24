@@ -97,11 +97,12 @@ async function loadChangeSummary(repoRoot: string, changeName: string): Promise<
 
   const taskCounts = tasks ? countTasks(tasks.markdown) : { completed: 0, total: 0 };
   const fallbackTitle = humanizeName(changeName);
-  const title = proposal
-    ? extractTitle(proposal.markdown, fallbackTitle)
-    : design
-      ? extractTitle(design.markdown, fallbackTitle)
-      : fallbackTitle;
+  let title = fallbackTitle;
+  if (proposal) {
+    title = extractTitle(proposal.markdown, fallbackTitle);
+  } else if (design) {
+    title = extractTitle(design.markdown, fallbackTitle);
+  }
   const excerpt = proposal ? extractExcerpt(proposal.markdown) : null;
   const statusLabel = extractStatusLabel(proposal?.markdown ?? null);
   const timestampSources = [proposal, design, tasks, ...deltaArtifacts].filter(Boolean);

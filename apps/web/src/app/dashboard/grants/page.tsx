@@ -198,22 +198,24 @@ export default async function GrantsPage({ searchParams }: { searchParams: Promi
           }
           peek={
             params.peek ? (
-              peekEnvelope ? (
-                <PeekPane
-                  title={`grant ${params.peek}`}
-                  closeHref={closePeekHref}
-                  openHref={openPeekFullHref}
-                  cliCommand={`pdpp grant timeline ${params.peek}`}
-                >
-                  <Pivots envelope={peekEnvelope} currentKind="grant" />
-                  <div className="pdpp-caption mb-2 text-muted-foreground">{peekEnvelope.events.length} events</div>
-                  <PeekTimeline events={peekEnvelope.events} />
-                </PeekPane>
-              ) : (
-                <PeekPane title={`grant ${params.peek}`} closeHref={closePeekHref} openHref={openPeekFullHref}>
-                  <p className="text-muted-foreground">Grant not found.</p>
-                </PeekPane>
-              )
+              <>
+                {peekEnvelope ? (
+                  <PeekPane
+                    title={`grant ${params.peek}`}
+                    closeHref={closePeekHref}
+                    openHref={openPeekFullHref}
+                    cliCommand={`pdpp grant timeline ${params.peek}`}
+                  >
+                    <Pivots envelope={peekEnvelope} currentKind="grant" />
+                    <div className="pdpp-caption mb-2 text-muted-foreground">{peekEnvelope.events.length} events</div>
+                    <PeekTimeline events={peekEnvelope.events} />
+                  </PeekPane>
+                ) : (
+                  <PeekPane title={`grant ${params.peek}`} closeHref={closePeekHref} openHref={openPeekFullHref}>
+                    <p className="text-muted-foreground">Grant not found.</p>
+                  </PeekPane>
+                )}
+              </>
             ) : (
               <PeekEmpty />
             )
