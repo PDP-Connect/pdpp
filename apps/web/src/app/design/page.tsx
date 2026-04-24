@@ -15,20 +15,16 @@ import {
 } from "@/app/dashboard/components/primitives.tsx";
 import { Hero } from "@/components/Hero.tsx";
 import { PdppLogo } from "@/components/PdppLogo.tsx";
-import type {
-  ConnectorCardProps,
-  ConsentCardProps,
-  GrantInspectorProps,
-  SpecCitationProps,
-  StreamInventoryProps,
-} from "@/components/pdpp/index.ts";
-import {
-  ConnectorCard,
-  ConsentCard,
-  GrantInspector,
-  SpecCitationGroup,
-  StreamInventory,
-} from "@/components/pdpp/index.ts";
+import type { ConnectorCardProps } from "@/components/pdpp/connector-card.tsx";
+import type { ConsentCardProps } from "@/components/pdpp/consent-card.tsx";
+import type { GrantInspectorProps } from "@/components/pdpp/grant-inspector.tsx";
+import type { SpecCitationProps } from "@/components/pdpp/spec-citation.tsx";
+import type { StreamInventoryProps } from "@/components/pdpp/stream-inventory.tsx";
+import { ConnectorCard } from "@/components/pdpp/connector-card.tsx";
+import { ConsentCard } from "@/components/pdpp/consent-card.tsx";
+import { GrantInspector } from "@/components/pdpp/grant-inspector.tsx";
+import { SpecCitationGroup } from "@/components/pdpp/spec-citation.tsx";
+import { StreamInventory } from "@/components/pdpp/stream-inventory.tsx";
 import { SiteHeader } from "@/components/SiteHeader.tsx";
 import { Badge } from "@/components/ui/badge.tsx";
 import { Button } from "@/components/ui/button.tsx";
@@ -78,12 +74,12 @@ export default function DesignSystemPage() {
       },
       { rootMargin: "-10% 0px -75% 0px", threshold: 0 }
     );
-    NAV_SECTIONS.forEach(({ id }) => {
+    for (const { id } of NAV_SECTIONS) {
       const el = document.getElementById(id);
       if (el) {
         observer.observe(el);
       }
-    });
+    }
     return () => observer.disconnect();
   }, []);
 

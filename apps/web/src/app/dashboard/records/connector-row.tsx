@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import * as React from "react";
+import { useCallback, useEffect, useMemo, useState, useTransition } from "react";
 import { Button } from "@/components/ui/button.tsx";
 import { Timestamp } from "@/components/ui/timestamp.tsx";
 import type { ConnectorOverview, ConnectorRunRef } from "../lib/rs-client.ts";
@@ -23,18 +23,18 @@ type ToastState = { kind: "none" } | { kind: "already_running" } | { kind: "erro
 export function ConnectorRow({ overview, runsHref }: RowProps) {
   const { connector, totalRecords, streams, lastRun, lastSuccessfulRun, isRunning } = overview;
   const router = useRouter();
-  const [isPending, startTransition] = React.useTransition();
+  const [isPending, startTransition] = useTransition();
   // Optimistic: if the user just clicked, treat as running until the next
   // server refresh tells us otherwise. This avoids the awkward gap between
   // action return and route revalidation.
-  const [optimisticRunning, setOptimisticRunning] = React.useState(false);
-  const [toast, setToast] = React.useState<ToastState>({ kind: "none" });
+  const [optimisticRunning, setOptimisticRunning] = useState(false);
+  const [toast, setToast] = useState<ToastState>({ kind: "none" });
   const running = isRunning || optimisticRunning;
 
   // Clear the optimistic flag once server-side state agrees the run
   // started (isRunning from props) or terminated (a new lastRun with
   // a terminal status newer than the one we had).
-  React.useEffect(() => {
+  useEffect(() => {
     if (!optimisticRunning) {
       return;
     }
@@ -49,11 +49,11 @@ export function ConnectorRow({ overview, runsHref }: RowProps) {
   // the PREVIOUS run). Clamp to "now" for the optimistic window; once
   // the server confirms the real active run, lastRun.first_at is the
   // fresh run's timestamp and we use it.
-  const [optimisticStart] = React.useState(() => Date.now());
+  const [optimisticStart] = useState(() => Date.now());
   const effectiveStartIso = isRunning && lastRun ? lastRun.first_at : new Date(optimisticStart).toISOString();
 
   // Auto-clear non-error toasts after a few seconds.
-  React.useEffect(() => {
+  useEffect(() => {
     if (toast.kind === "none") {
       return;
     }
@@ -61,7 +61,7 @@ export function ConnectorRow({ overview, runsHref }: RowProps) {
     return () => clearTimeout(id);
   }, [toast]);
 
-  const handleSync = React.useCallback(() => {
+  const handleSync = useCallback(() => {
     setToast({ kind: "none" });
     setOptimisticRunning(true);
     startTransition(async () => {
@@ -217,15 +217,15 @@ function RunningBadge({ startedAt }: { startedAt: string | undefined }) {
   // Elapsed-time ticker. Only active while this component is mounted —
   // mount happens only when the row is in a running state, so the
   // interval is cheap.
-  const startedMs = React.useMemo(() => {
+  const startedMs = useMemo(() => {
     if (!startedAt) {
       return Date.now();
     }
     const t = Date.parse(startedAt);
     return Number.isFinite(t) ? t : Date.now();
   }, [startedAt]);
-  const [now, setNow] = React.useState(() => Date.now());
-  React.useEffect(() => {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
     const id = setInterval(() => setNow(Date.now()), ELAPSED_TICK_MS);
     return () => clearInterval(id);
   }, []);

@@ -1,5 +1,5 @@
 import { Dialog as DialogPrimitive } from "@base-ui/react/dialog";
-import * as React from "react";
+import { type ComponentProps, forwardRef } from "react";
 
 import { cn } from "@/lib/utils.ts";
 
@@ -12,7 +12,7 @@ const DialogTrigger = DialogPrimitive.Trigger;
 const DialogPortal = DialogPrimitive.Portal;
 const DialogClose = DialogPrimitive.Close;
 
-const DialogBackdrop = React.forwardRef<HTMLDivElement, React.ComponentProps<typeof DialogPrimitive.Backdrop>>(
+const DialogBackdrop = forwardRef<HTMLDivElement, ComponentProps<typeof DialogPrimitive.Backdrop>>(
   ({ className, ...props }, ref) => (
     <DialogPrimitive.Backdrop
       ref={ref}
@@ -27,7 +27,7 @@ const DialogBackdrop = React.forwardRef<HTMLDivElement, React.ComponentProps<typ
 );
 DialogBackdrop.displayName = "DialogBackdrop";
 
-const DialogPopup = React.forwardRef<HTMLDivElement, React.ComponentProps<typeof DialogPrimitive.Popup>>(
+const DialogPopup = forwardRef<HTMLDivElement, ComponentProps<typeof DialogPrimitive.Popup>>(
   ({ className, ...props }, ref) => (
     <DialogPrimitive.Popup
       ref={ref}
@@ -43,7 +43,7 @@ const DialogPopup = React.forwardRef<HTMLDivElement, React.ComponentProps<typeof
 );
 DialogPopup.displayName = "DialogPopup";
 
-const DialogTitle = React.forwardRef<HTMLHeadingElement, React.ComponentProps<typeof DialogPrimitive.Title>>(
+const DialogTitle = forwardRef<HTMLHeadingElement, ComponentProps<typeof DialogPrimitive.Title>>(
   ({ className, ...props }, ref) => (
     <DialogPrimitive.Title
       ref={ref}
@@ -55,9 +55,9 @@ const DialogTitle = React.forwardRef<HTMLHeadingElement, React.ComponentProps<ty
 );
 DialogTitle.displayName = "DialogTitle";
 
-const DialogDescription = React.forwardRef<
+const DialogDescription = forwardRef<
   HTMLParagraphElement,
-  React.ComponentProps<typeof DialogPrimitive.Description>
+  ComponentProps<typeof DialogPrimitive.Description>
 >(({ className, ...props }, ref) => (
   <DialogPrimitive.Description
     ref={ref}

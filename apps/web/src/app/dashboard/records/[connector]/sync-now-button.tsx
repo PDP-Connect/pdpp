@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import * as React from "react";
+import { useCallback, useEffect, useState, useTransition } from "react";
 import { Button } from "@/components/ui/button.tsx";
 import { type RunNowResult, runConnectorNowAction } from "../actions.ts";
 
@@ -15,15 +15,15 @@ interface Props {
 
 export function SyncNowButton({ connectorId, displayName, initialRunning }: Props) {
   const router = useRouter();
-  const [isPending, startTransition] = React.useTransition();
-  const [optimisticRunning, setOptimisticRunning] = React.useState(false);
-  const [toast, setToast] = React.useState<string | null>(null);
-  const [toastTone, setToastTone] = React.useState<"info" | "error">("info");
+  const [isPending, startTransition] = useTransition();
+  const [optimisticRunning, setOptimisticRunning] = useState(false);
+  const [toast, setToast] = useState<string | null>(null);
+  const [toastTone, setToastTone] = useState<"info" | "error">("info");
   const running = initialRunning || optimisticRunning;
 
   // Poll while running so the detail page auto-updates when the run
   // terminates — matches the index row's behavior.
-  React.useEffect(() => {
+  useEffect(() => {
     if (!running) {
       return;
     }
@@ -31,13 +31,13 @@ export function SyncNowButton({ connectorId, displayName, initialRunning }: Prop
     return () => clearInterval(id);
   }, [running, router]);
 
-  React.useEffect(() => {
+  useEffect(() => {
     if (optimisticRunning && initialRunning) {
       setOptimisticRunning(false);
     }
   }, [initialRunning, optimisticRunning]);
 
-  React.useEffect(() => {
+  useEffect(() => {
     if (!toast) {
       return;
     }
@@ -45,7 +45,7 @@ export function SyncNowButton({ connectorId, displayName, initialRunning }: Prop
     return () => clearTimeout(id);
   }, [toast]);
 
-  const handleClick = React.useCallback(() => {
+  const handleClick = useCallback(() => {
     setToast(null);
     setOptimisticRunning(true);
     startTransition(async () => {

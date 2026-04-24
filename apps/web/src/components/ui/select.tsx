@@ -1,4 +1,4 @@
-import * as React from "react";
+import { type ComponentProps, forwardRef } from "react";
 
 import { cn } from "@/lib/utils.ts";
 
@@ -7,7 +7,7 @@ import { cn } from "@/lib/utils.ts";
 // uncontrolled element is the right shape. Use `@base-ui/react/select`
 // when we need a headless combobox with search or portal-positioned popup.
 
-const Select = React.forwardRef<HTMLSelectElement, React.ComponentProps<"select">>(
+const Select = forwardRef<HTMLSelectElement, ComponentProps<"select">>(
   ({ className, children, ...props }, ref) => (
     <div className="relative inline-flex w-full items-center">
       <select

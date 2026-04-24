@@ -2,13 +2,11 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Fragment } from "react";
-import {
-  buildOpenSpecSidebarSections,
-  OpenSpecBreadcrumbs,
-  OpenSpecMarkdownPage,
-  OpenSpecShell,
-  OpenSpecSourceLink,
-} from "@/components/openspec/index.ts";
+import { buildOpenSpecSidebarSections } from "@/components/openspec/sidebar-sections.ts";
+import { OpenSpecBreadcrumbs } from "@/components/openspec/OpenSpecBreadcrumbs.tsx";
+import { OpenSpecMarkdownPage } from "@/components/openspec/OpenSpecMarkdownPage.tsx";
+import { OpenSpecShell } from "@/components/openspec/OpenSpecShell.tsx";
+import { OpenSpecSourceLink } from "@/components/openspec/OpenSpecSourceLink.tsx";
 import { getOpenSpecSpec, listOpenSpecSpecs } from "@/lib/openspec/index.ts";
 import { PLANNING_LABEL, planningPath } from "@/lib/openspec/public.ts";
 

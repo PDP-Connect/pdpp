@@ -1,16 +1,14 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
-import {
-  buildOpenSpecSidebarSections,
-  OpenSpecArtifactCard,
-  OpenSpecBreadcrumbs,
-  OpenSpecChangeHeader,
-  OpenSpecEmptyState,
-  OpenSpecNoteGroups,
-  OpenSpecSectionCard,
-  OpenSpecShell,
-  OpenSpecSourceLink,
-} from "@/components/openspec/index.ts";
+import { buildOpenSpecSidebarSections } from "@/components/openspec/sidebar-sections.ts";
+import { OpenSpecArtifactCard } from "@/components/openspec/OpenSpecArtifactCard.tsx";
+import { OpenSpecBreadcrumbs } from "@/components/openspec/OpenSpecBreadcrumbs.tsx";
+import { OpenSpecChangeHeader } from "@/components/openspec/OpenSpecChangeHeader.tsx";
+import { OpenSpecEmptyState } from "@/components/openspec/OpenSpecEmptyState.tsx";
+import { OpenSpecNoteGroups } from "@/components/openspec/OpenSpecNoteGroups.tsx";
+import { OpenSpecSectionCard } from "@/components/openspec/OpenSpecSectionCard.tsx";
+import { OpenSpecShell } from "@/components/openspec/OpenSpecShell.tsx";
+import { OpenSpecSourceLink } from "@/components/openspec/OpenSpecSourceLink.tsx";
 import type { OpenSpecDesignNoteGroup } from "@/lib/openspec/index.ts";
 import {
   getOpenSpecChange,

@@ -1,13 +1,11 @@
 import type { Metadata } from "next";
-import {
-  buildOpenSpecSidebarSections,
-  OpenSpecArtifactCard,
-  OpenSpecBreadcrumbs,
-  OpenSpecEmptyState,
-  OpenSpecProgressPill,
-  OpenSpecShell,
-  OpenSpecStatusPill,
-} from "@/components/openspec/index.ts";
+import { buildOpenSpecSidebarSections } from "@/components/openspec/sidebar-sections.ts";
+import { OpenSpecArtifactCard } from "@/components/openspec/OpenSpecArtifactCard.tsx";
+import { OpenSpecBreadcrumbs } from "@/components/openspec/OpenSpecBreadcrumbs.tsx";
+import { OpenSpecEmptyState } from "@/components/openspec/OpenSpecEmptyState.tsx";
+import { OpenSpecProgressPill } from "@/components/openspec/OpenSpecProgressPill.tsx";
+import { OpenSpecShell } from "@/components/openspec/OpenSpecShell.tsx";
+import { OpenSpecStatusPill } from "@/components/openspec/OpenSpecStatusPill.tsx";
 import { listOpenSpecChanges } from "@/lib/openspec/index.ts";
 import { PLANNING_LABEL, planningPath } from "@/lib/openspec/public.ts";
 

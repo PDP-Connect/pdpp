@@ -1,9 +1,7 @@
-import type {
-  ConnectorCardProps,
-  ConsentCardProps,
-  GrantInspectorProps,
-  StreamInventoryProps,
-} from "@/components/pdpp/index.ts";
+import type { ConnectorCardProps } from "@/components/pdpp/connector-card.tsx";
+import type { ConsentCardProps } from "@/components/pdpp/consent-card.tsx";
+import type { GrantInspectorProps } from "@/components/pdpp/grant-inspector.tsx";
+import type { StreamInventoryProps } from "@/components/pdpp/stream-inventory.tsx";
 
 export const LONGVIEW_CLIENT_NAME = "Longview";
 export const LONGVIEW_CLIENT_MONOGRAM = "LV";

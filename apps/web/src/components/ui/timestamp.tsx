@@ -1,6 +1,6 @@
 "use client";
 
-import * as React from "react";
+import { useEffect, useState } from "react";
 
 import { cn } from "@/lib/utils.ts";
 
@@ -81,7 +81,9 @@ function subscribeToTick(cb: () => void): () => void {
   tickSubscribers.add(cb);
   if (tickInterval === null) {
     tickInterval = setInterval(() => {
-      tickSubscribers.forEach((fn) => fn());
+      for (const fn of tickSubscribers) {
+        fn();
+      }
     }, MINUTE);
   }
   return () => {
@@ -94,8 +96,8 @@ function subscribeToTick(cb: () => void): () => void {
 }
 
 function useNowTick(enabled: boolean): number {
-  const [now, setNow] = React.useState(() => Date.now());
-  React.useEffect(() => {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
     if (!enabled) {
       return;
     }
@@ -106,8 +108,8 @@ function useNowTick(enabled: boolean): number {
 }
 
 function useHasMounted(): boolean {
-  const [mounted, setMounted] = React.useState(false);
-  React.useEffect(() => setMounted(true), []);
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
   return mounted;
 }
 

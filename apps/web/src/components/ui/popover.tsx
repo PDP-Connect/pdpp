@@ -1,5 +1,5 @@
 import { Popover as PopoverPrimitive } from "@base-ui/react/popover";
-import * as React from "react";
+import { type ComponentProps, forwardRef } from "react";
 
 import { cn } from "@/lib/utils.ts";
 
@@ -12,12 +12,12 @@ const PopoverTrigger = PopoverPrimitive.Trigger;
 const PopoverPortal = PopoverPrimitive.Portal;
 const PopoverClose = PopoverPrimitive.Close;
 
-const PopoverPositioner = React.forwardRef<HTMLDivElement, React.ComponentProps<typeof PopoverPrimitive.Positioner>>(
+const PopoverPositioner = forwardRef<HTMLDivElement, ComponentProps<typeof PopoverPrimitive.Positioner>>(
   (props, ref) => <PopoverPrimitive.Positioner ref={ref} {...props} />
 );
 PopoverPositioner.displayName = "PopoverPositioner";
 
-const PopoverPopup = React.forwardRef<HTMLDivElement, React.ComponentProps<typeof PopoverPrimitive.Popup>>(
+const PopoverPopup = forwardRef<HTMLDivElement, ComponentProps<typeof PopoverPrimitive.Popup>>(
   ({ className, ...props }, ref) => (
     <PopoverPrimitive.Popup
       ref={ref}
