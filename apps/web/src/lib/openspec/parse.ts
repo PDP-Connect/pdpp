@@ -46,14 +46,15 @@ export function extractExcerpt(markdown: string): string | null {
   const lines = markdown.split('\n');
   let i = 0;
 
-  while (i < lines.length && lines[i].trim() === '') i++;
-  if (i < lines.length && lines[i].trim().startsWith('# ')) {
+  while (i < lines.length && (lines[i] ?? '').trim() === '') i++;
+  if (i < lines.length && (lines[i] ?? '').trim().startsWith('# ')) {
     i++;
-    while (i < lines.length && lines[i].trim() === '') i++;
+    while (i < lines.length && (lines[i] ?? '').trim() === '') i++;
   }
 
   while (i < lines.length) {
-    const trimmed = lines[i].trim();
+    const current = lines[i] ?? '';
+    const trimmed = current.trim();
 
     if (trimmed === '') {
       i++;
@@ -71,8 +72,8 @@ export function extractExcerpt(markdown: string): string | null {
     }
 
     const paragraph: string[] = [];
-    while (i < lines.length && lines[i].trim() !== '') {
-      paragraph.push(lines[i].trim());
+    while (i < lines.length && (lines[i] ?? '').trim() !== '') {
+      paragraph.push((lines[i] ?? '').trim());
       i++;
     }
 
@@ -91,10 +92,10 @@ export function stripLeadingDocumentTitle(markdown: string): string {
   const lines = markdown.split('\n');
   let i = 0;
 
-  while (i < lines.length && lines[i].trim() === '') i++;
-  if (i < lines.length && lines[i].trim().startsWith('# ')) {
+  while (i < lines.length && (lines[i] ?? '').trim() === '') i++;
+  if (i < lines.length && (lines[i] ?? '').trim().startsWith('# ')) {
     i++;
-    while (i < lines.length && lines[i].trim() === '') i++;
+    while (i < lines.length && (lines[i] ?? '').trim() === '') i++;
     return lines.slice(i).join('\n');
   }
 

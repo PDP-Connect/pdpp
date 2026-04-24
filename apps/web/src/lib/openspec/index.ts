@@ -59,7 +59,7 @@ function pickEarliest(...values: Array<string | null>): string | null {
 function extractStatusLabel(markdown: string | null): string | null {
   if (!markdown) return null;
   const match = STATUS_LINE_RE.exec(markdown);
-  return match ? match[1] : null;
+  return match?.[1] ?? null;
 }
 
 async function loadChangeSummary(
