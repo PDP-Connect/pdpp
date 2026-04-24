@@ -25,6 +25,10 @@ interface SessionResponse {
   user?: unknown;
 }
 
+export function interactionResponseCode(resp: InteractionResponse): string | null {
+  return resp.data?.code ?? resp.value ?? null;
+}
+
 async function checkSession(page: Page): Promise<boolean> {
   try {
     const r = await page.evaluate(async (): Promise<SessionResponse | null> => {
@@ -162,12 +166,13 @@ export async function ensureChatGptSession({
     const tfaIn = page.locator('input[name="code"], input[type="tel"], input[inputmode="numeric"]').first();
     if (await tfaIn.count()) {
       const resp = await sendInteraction({
-        kind: "text_input",
+        kind: "otp",
         message: "ChatGPT requires a 2FA verification code. Enter the 6-digit code:",
         timeout_seconds: 300,
       });
-      if (resp?.value) {
-        await tfaIn.fill(resp.value);
+      const code = interactionResponseCode(resp);
+      if (code) {
+        await tfaIn.fill(code);
         await page
           .locator('button[type="submit"]')
           .first()

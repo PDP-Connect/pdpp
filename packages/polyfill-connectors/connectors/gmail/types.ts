@@ -21,7 +21,7 @@ export interface InteractionResponse {
 }
 
 export interface InteractionMessage {
-  kind: "credentials" | "otp" | "text_input" | "manual_action";
+  kind: "credentials" | "otp" | "manual_action";
   message: string;
   request_id: string;
   schema?: Record<string, unknown>;

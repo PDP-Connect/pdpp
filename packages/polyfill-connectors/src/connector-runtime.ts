@@ -77,7 +77,7 @@ export interface InteractionResponse {
   value?: string;
 }
 
-export type InteractionKind = "credentials" | "otp" | "text_input" | "manual_action";
+export type InteractionKind = "credentials" | "otp" | "manual_action";
 
 /** All messages a connector emits over stdout. */
 export type EmittedMessage =
