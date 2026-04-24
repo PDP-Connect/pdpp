@@ -14,7 +14,7 @@
  *  - 9.6  client-token streams[] not in grant → grant_stream_not_allowed;
  *         owner-token streams[] unknown anywhere → empty list (NOT error)
  *  - 9.7  cross_stream:false advertisement + missing streams[] → invalid_request
- *  - 9.8  result shape (required keys, no portable score), per-mode record_url
+ *  - 9.8  result shape (required keys, typed implementation-relative score), per-mode record_url
  *  - 9.9  helper-level: results without record_url/snippet are still valid
  *  - 9.10 matched_fields ⊆ declared lexical_fields ∩ grant projection
  *  - 9.11 grant subsetting + snippet grant safety
@@ -276,7 +276,7 @@ async function withHarness(opts, fn) {
 
 // ─── 9.1 / 9.2 — RS metadata advertisement ──────────────────────────────────
 
-test('RS metadata advertises capabilities.lexical_retrieval with all six required keys when supported', async () => {
+test('RS metadata advertises capabilities.lexical_retrieval with score support when supported', async () => {
   await withHarness({}, async ({ rsUrl }) => {
     // Reachable without a bearer token — onboarding requirement from the spec.
     const { status, body } = await fetchJson(`${rsUrl}/.well-known/oauth-protected-resource`);
@@ -289,6 +289,12 @@ test('RS metadata advertises capabilities.lexical_retrieval with all six require
     assert.equal(cap.snippets, true);
     assert.equal(cap.default_limit, 25);
     assert.equal(cap.max_limit, 100);
+    assert.deepEqual(cap.score, {
+      supported: true,
+      kind: 'bm25',
+      order: 'lower_is_better',
+      value_semantics: 'implementation_relative',
+    });
   });
 });
 
@@ -336,10 +342,41 @@ test('happy-path search returns list envelope with search_result entries (owner 
     for (const f of hit.matched_fields) {
       assert.ok(['title', 'selftext'].includes(f), `matched_fields ⊆ declared: got ${f}`);
     }
-    // No portable numeric score
-    assert.equal(hit.score, undefined);
+    assert.equal(hit.score.kind, 'bm25');
+    assert.equal(hit.score.order, 'lower_is_better');
+    assert.equal(typeof hit.score.value, 'number');
+    assert.ok(Number.isFinite(hit.score.value));
     // 'cooking pasta' must not match
     assert.equal(body.data.find((r) => r.record_key === 'p2'), undefined);
+  });
+});
+
+test('lexical search omits score when capability metadata does not advertise score support', async () => {
+  await withHarness({
+    lexicalRetrievalCapability: {
+      supported: true,
+      endpoint: '/v1/search',
+      cross_stream: true,
+      snippets: true,
+      default_limit: 25,
+      max_limit: 100,
+    },
+  }, async ({ asUrl, rsUrl }) => {
+    const ownerToken = await issueOwnerToken(asUrl);
+    const connectorA = REDDITISH_MANIFEST_A.connector_id;
+    await ingest(rsUrl, ownerToken, connectorA, 'posts', [
+      { id: 'p1', title: 'overdraft surprise', selftext: 'unexpected fee', source_created_at: '2026-04-01T00:00:00Z' },
+    ]);
+
+    const { body: metadata } = await fetchJson(`${rsUrl}/.well-known/oauth-protected-resource`);
+    assert.equal(metadata.capabilities?.lexical_retrieval?.score, undefined);
+
+    const { status, body } = await fetchJson(
+      `${rsUrl}/v1/search?q=overdraft`,
+      { headers: { 'Authorization': `Bearer ${ownerToken}` } },
+    );
+    assert.equal(status, 200);
+    assert.equal(body.data[0]?.score, undefined);
   });
 });
 
@@ -595,6 +632,9 @@ test('client grant authorizing only one of two declared lexical_fields restricts
     const titleHit = body.data.find((r) => r.record_key === 'p_title');
     assert.ok(titleHit, 'p_title should appear');
     assert.deepEqual(titleHit.matched_fields, ['title']);
+    assert.equal(titleHit.score.kind, 'bm25');
+    assert.equal(titleHit.score.order, 'lower_is_better');
+    assert.ok(Number.isFinite(titleHit.score.value));
     if (titleHit.snippet) {
       assert.equal(titleHit.snippet.field, 'title');
       // Snippet must not quote ungranted `selftext` content. p_title's

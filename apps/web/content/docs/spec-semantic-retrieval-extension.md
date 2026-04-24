@@ -11,7 +11,7 @@ The **semantic retrieval experimental extension** defines a dedicated, optional,
 
 It is **not part of core PDPP** and it is **not a replacement for [lexical retrieval](./spec-lexical-retrieval-extension)**. Lexical retrieval remains the stable public retrieval floor; semantic retrieval is additive and revisable. Implementations MAY expose it, and clients MUST NOT assume it exists unless the resource server explicitly advertises it (see [Discovery](#discovery)).
 
-The extension is intentionally **text-query only** in v1. It does not expose raw vector queries, client-supplied embeddings, model-selector parameters, ranking knobs, body-DSL `POST /v1/search/semantic`, portable numeric relevance scores, or connector-specific search semantics — those are explicit non-goals. See [Non-goals](#non-goals).
+The extension is intentionally **text-query only** in v1. It does not expose raw vector queries, client-supplied embeddings, model-selector parameters, ranking knobs, body-DSL `POST /v1/search/semantic`, portable relevance calibration, or connector-specific search semantics — those are explicit non-goals. See [Non-goals](#non-goals).
 
 ## Stability
 
@@ -74,6 +74,7 @@ Every other parameter is rejected with `invalid_request_error` — explicitly in
       "connector_id": "https://registry.pdpp.org/connectors/messaging-app",
       "record_url": "/v1/streams/messages/records/msg_123",
       "emitted_at": "2026-04-23T12:34:56Z",
+      "score": { "kind": "semantic_distance", "value": 0.182, "order": "lower_is_better" },
       "matched_fields": ["text"],
       "snippet": { "field": "text", "text": "...overdraft charges..." },
       "retrieval_mode": "semantic"
@@ -89,6 +90,7 @@ Every other parameter is rejected with `invalid_request_error` — explicitly in
 - `record_key` — which record matched, within that stream.
 - `connector_id` — which connector the record came from. Required on every result for per-connector hydration.
 - `emitted_at` — the record's emission timestamp. NOT a relevance signal.
+- `score` — when advertised, a typed model-relative distance score. The reference emits `{ "kind": "semantic_distance", "order": "lower_is_better" }`.
 - `matched_fields` — the subset of declared `semantic_fields` (∩ the caller's grant projection) that the server attributes the hit to. MAY be empty when the server cannot honestly attribute.
 - `retrieval_mode` — the one publicly experimental field. Values in v1 are `"semantic"` (pure vector match) or `"hybrid"` (semantic blended with lexical signal). The reference currently emits `"semantic"` on every result (`lexical_blending: false`); `"hybrid"` is reserved for a future tranche.
 
@@ -97,9 +99,9 @@ Every other parameter is rejected with `invalid_request_error` — explicitly in
 - `record_url` — a ready-made canonical single-record read URL. For owner-token callers on a per-connector RS, includes the canonical owner-mode `connector_id` query parameter. Clients can always reconstruct this from `stream`, `record_key`, and `connector_id`.
 - `snippet` — a grant-safe **verbatim contiguous substring** of the matched field's stored value. Never a paraphrase, summary, translation, or synthesized variant. See [Grant safety](#grant-safety).
 
-### What is intentionally absent
+### What is intentionally limited
 
-- No portable numeric relevance score (`score`, `cosine`, `bm25`, `blend`). Cross-server comparable scores are not a v1 promise.
+- No portable relevance calibration. Scores are comparable only within the advertised model/profile/dtype/dimensions/distance-metric identity.
 - No debug / trace fields (`_debug`, `_explain`, `_vector_distance`).
 
 ## Grant safety
@@ -160,6 +162,20 @@ When a server exposes this extension, its RFC 9728 protected-resource metadata d
       "default_limit": 25,
       "max_limit": 100,
       "index_state": "built",
+      "score": {
+        "supported": true,
+        "kind": "semantic_distance",
+        "order": "lower_is_better",
+        "value_semantics": "distance",
+        "comparable_with": {
+          "profile_id": "minilm",
+          "model": "<server-declared-model-id>",
+          "dtype": "q4",
+          "dimensions": 384,
+          "distance_metric": "cosine",
+          "backend_identity": "profile=minilm;model=<server-declared-model-id>;dtype=q4;dimensions=384;metric=cosine"
+        }
+      },
       "language_bias": { "primary": "en", "note": "Server-selected embedding profile; reduced recall outside the configured model's language coverage" }
     }
   }
@@ -176,7 +192,8 @@ Model choice is server/operator controlled. The public request surface does
 not accept `model=`, `model_id=`, `embedding=`, `vector=`, reranking knobs, or
 caller-supplied embeddings. Servers that want Italian or mixed-language
 coverage select an appropriate embedding profile internally and advertise that
-choice through `model`, `dimensions`, `distance_metric`, and `language_bias`.
+choice through `model`, `dimensions`, `distance_metric`, `language_bias`, and
+`score.comparable_with`.
 Changing the active model/profile can invalidate existing cursors and index
 coverage.
 
@@ -225,7 +242,7 @@ Opaque cursors, distinct from every other surface:
 
 ## Ranking
 
-Results are returned in relevance-oriented order. Higher-positioned results SHOULD generally be more relevant to `q` than lower-positioned results. The extension does **not** define a portable numeric score (cosine, L2, BM25, blend, or otherwise) in v1, does not define semantic reranking semantics, and does not define recency blending or per-connector custom weighting as portable contract.
+Results are returned in relevance-oriented order. Higher-positioned results SHOULD generally be more relevant to `q` than lower-positioned results. The advertised semantic score is a distance with `order: "lower_is_better"` in the reference and is comparable only within the same advertised `score.comparable_with` identity. The extension does **not** define portable score calibration, semantic reranking semantics, recency blending, or per-connector custom weighting as portable contract.
 
 ## Non-goals
 
@@ -233,7 +250,7 @@ Explicit non-goals for this tranche:
 
 - **Not core.** Clients MUST NOT assume availability on unadvertised servers.
 - **Not cross-server comparable.** Two servers running different models return different results, and the protocol does not pretend otherwise.
-- **No portable numeric score.** No `score`, `cosine`, `bm25`, `blend`, or equivalent field.
+- **No portable score calibration.** A score is useful only under its advertised kind/order/model identity.
 - **No canonical embedding self-export.** Self-export treatment of derived artifacts is governed separately; this extension does not pre-empt it.
 - **No cross-connector entity resolution.** Same-entity-across-connectors is a separate open question.
 - **No generalized vector API.** No raw vector queries, no client-supplied embeddings, no ANN-direct surface.

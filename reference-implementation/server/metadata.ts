@@ -101,8 +101,16 @@ export interface LexicalRetrievalCapabilityInput {
   defaultLimit?: number;
   endpoint?: string;
   maxLimit?: number;
+  score?: LexicalRetrievalScoreCapability | null;
   snippets?: boolean;
   supported?: boolean;
+}
+
+export interface LexicalRetrievalScoreCapability {
+  kind: "bm25";
+  order: "lower_is_better";
+  supported: true;
+  value_semantics: "implementation_relative";
 }
 
 export type LexicalRetrievalCapability =
@@ -114,6 +122,7 @@ export type LexicalRetrievalCapability =
       snippets: boolean;
       default_limit: number;
       max_limit: number;
+      score?: LexicalRetrievalScoreCapability;
     };
 
 export function buildLexicalRetrievalCapability({
@@ -123,11 +132,17 @@ export function buildLexicalRetrievalCapability({
   snippets = true,
   defaultLimit = 25,
   maxLimit = 100,
+  score = {
+    supported: true,
+    kind: "bm25",
+    order: "lower_is_better",
+    value_semantics: "implementation_relative",
+  },
 }: LexicalRetrievalCapabilityInput = {}): LexicalRetrievalCapability {
   if (!supported) {
     return { supported: false };
   }
-  return {
+  const capability: LexicalRetrievalCapability = {
     supported: true,
     endpoint,
     cross_stream: crossStream,
@@ -135,6 +150,10 @@ export function buildLexicalRetrievalCapability({
     default_limit: defaultLimit,
     max_limit: maxLimit,
   };
+  if (score) {
+    capability.score = score;
+  }
+  return capability;
 }
 
 // Builds the semantic-retrieval extension advertisement carried inside the
@@ -146,12 +165,30 @@ export interface SemanticRetrievalCapabilityInput {
   defaultLimit?: number;
   dimensions?: number | null;
   distanceMetric?: string | null;
+  dtype?: string | null;
   endpoint?: string;
   indexState?: "built" | "building" | "stale" | null;
   languageBias?: { primary: string; note?: string } | null;
   maxLimit?: number;
   model?: string | null;
+  profileId?: string | null;
+  score?: SemanticRetrievalScoreCapability | null;
   snippets?: boolean;
+}
+
+export interface SemanticRetrievalScoreCapability {
+  comparable_with: {
+    backend_identity: string;
+    dimensions: number;
+    distance_metric: string;
+    dtype?: string;
+    model: string;
+    profile_id?: string;
+  };
+  kind: "semantic_distance";
+  order: "lower_is_better";
+  supported: true;
+  value_semantics: "distance";
 }
 
 export interface SemanticRetrievalCapability {
@@ -166,6 +203,7 @@ export interface SemanticRetrievalCapability {
   max_limit: number;
   model: string;
   query_input: "text";
+  score?: SemanticRetrievalScoreCapability;
   snippets: boolean;
   stability: "experimental";
   supported: true;
@@ -182,10 +220,30 @@ export function buildSemanticRetrievalCapability({
   distanceMetric = null,
   indexState = null,
   languageBias = null,
+  profileId = null,
+  dtype = null,
+  score,
 }: SemanticRetrievalCapabilityInput = {}): SemanticRetrievalCapability | null {
   if (!(model && dimensions && distanceMetric && indexState)) {
     return null;
   }
+
+  const comparableWith = {
+    backend_identity: [
+      profileId ? `profile=${profileId}` : null,
+      `model=${model}`,
+      dtype ? `dtype=${dtype}` : null,
+      `dimensions=${dimensions}`,
+      `metric=${distanceMetric}`,
+    ]
+      .filter(Boolean)
+      .join(";"),
+    model,
+    dimensions,
+    distance_metric: distanceMetric,
+    ...(profileId ? { profile_id: profileId } : {}),
+    ...(dtype ? { dtype } : {}),
+  };
 
   const capability: SemanticRetrievalCapability = {
     supported: true,
@@ -202,6 +260,16 @@ export function buildSemanticRetrievalCapability({
     max_limit: maxLimit,
     index_state: indexState,
   };
+
+  if (score !== null) {
+    capability.score = score ?? {
+      supported: true,
+      kind: "semantic_distance",
+      order: "lower_is_better",
+      value_semantics: "distance",
+      comparable_with: comparableWith,
+    };
+  }
 
   if (languageBias) {
     capability.language_bias = languageBias;

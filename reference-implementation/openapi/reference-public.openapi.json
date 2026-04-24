@@ -216,6 +216,30 @@
                             "max_limit": {
                               "type": "integer",
                               "minimum": 1
+                            },
+                            "score": {
+                              "type": "object",
+                              "additionalProperties": false,
+                              "properties": {
+                                "supported": {
+                                  "const": true
+                                },
+                                "kind": {
+                                  "const": "bm25"
+                                },
+                                "order": {
+                                  "const": "lower_is_better"
+                                },
+                                "value_semantics": {
+                                  "const": "implementation_relative"
+                                }
+                              },
+                              "required": [
+                                "supported",
+                                "kind",
+                                "order",
+                                "value_semantics"
+                              ]
                             }
                           },
                           "required": [
@@ -277,6 +301,67 @@
                                 "built",
                                 "building",
                                 "stale"
+                              ]
+                            },
+                            "score": {
+                              "type": "object",
+                              "additionalProperties": false,
+                              "properties": {
+                                "supported": {
+                                  "const": true
+                                },
+                                "kind": {
+                                  "const": "semantic_distance"
+                                },
+                                "order": {
+                                  "const": "lower_is_better"
+                                },
+                                "value_semantics": {
+                                  "const": "distance"
+                                },
+                                "comparable_with": {
+                                  "type": "object",
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "backend_identity": {
+                                      "type": "string",
+                                      "minLength": 1
+                                    },
+                                    "model": {
+                                      "type": "string",
+                                      "minLength": 1
+                                    },
+                                    "dimensions": {
+                                      "type": "integer",
+                                      "minimum": 1
+                                    },
+                                    "distance_metric": {
+                                      "type": "string",
+                                      "minLength": 1
+                                    },
+                                    "profile_id": {
+                                      "type": "string",
+                                      "minLength": 1
+                                    },
+                                    "dtype": {
+                                      "type": "string",
+                                      "minLength": 1
+                                    }
+                                  },
+                                  "required": [
+                                    "backend_identity",
+                                    "model",
+                                    "dimensions",
+                                    "distance_metric"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "supported",
+                                "kind",
+                                "order",
+                                "value_semantics",
+                                "comparable_with"
                               ]
                             },
                             "language_bias": {
@@ -3826,6 +3911,34 @@
                             "type": "string",
                             "minLength": 1
                           },
+                          "score": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "enum": [
+                                  "bm25",
+                                  "semantic_distance"
+                                ]
+                              },
+                              "value": {
+                                "type": "number"
+                              },
+                              "order": {
+                                "type": "string",
+                                "enum": [
+                                  "higher_is_better",
+                                  "lower_is_better"
+                                ]
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "value",
+                              "order"
+                            ]
+                          },
                           "matched_fields": {
                             "type": "array",
                             "minItems": 1,
@@ -4168,6 +4281,34 @@
                           "emitted_at": {
                             "type": "string",
                             "minLength": 1
+                          },
+                          "score": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "enum": [
+                                  "bm25",
+                                  "semantic_distance"
+                                ]
+                              },
+                              "value": {
+                                "type": "number"
+                              },
+                              "order": {
+                                "type": "string",
+                                "enum": [
+                                  "higher_is_better",
+                                  "lower_is_better"
+                                ]
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "value",
+                              "order"
+                            ]
                           },
                           "matched_fields": {
                             "type": "array",

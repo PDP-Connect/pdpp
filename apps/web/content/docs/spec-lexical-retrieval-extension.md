@@ -7,7 +7,7 @@ description: "Optional PDPP extension defining the public lexical retrieval surf
 
 The **lexical retrieval extension** defines a small, optional, discoverable, grant-safe public surface that lets applications and agents search records by text across the streams a caller is authorized to read. It is **not part of core PDPP**: implementations MAY expose it, and clients MUST NOT assume it exists unless the resource server explicitly advertises it (see [Discovery](#discovery)).
 
-The extension is intentionally lexical-only in v1. It does not expose semantic / vector retrieval, embeddings, body-DSL `POST /v1/search`, portable numeric relevance scores, or connector-specific search semantics — those are out of scope. See [Non-goals](#non-goals).
+The extension is intentionally lexical-only in v1. It does not expose semantic / vector retrieval, embeddings, body-DSL `POST /v1/search`, portable relevance calibration, or connector-specific search semantics — those are out of scope. See [Non-goals](#non-goals).
 
 For the long-form contract, see the canonical spec at `openspec/changes/add-lexical-retrieval-extension/specs/lexical-retrieval/spec.md` in the repo. This page is the developer-facing companion.
 
@@ -62,6 +62,7 @@ A dedicated cross-stream search endpoint. The reference's `_ref/search` is a sep
       "connector_id": "https://registry.pdpp.org/connectors/messaging-app",
       "record_url": "/v1/streams/messages/records/msg_123",
       "emitted_at": "2026-04-23T12:34:56Z",
+      "score": { "kind": "bm25", "value": -0.42, "order": "lower_is_better" },
       "matched_fields": ["text"],
       "snippet": { "field": "text", "text": "…overdraft fee…" }
     }
@@ -76,6 +77,7 @@ A dedicated cross-stream search endpoint. The reference's `_ref/search` is a sep
 - `record_key`
 - `connector_id` — required because the resource server scopes owner reads per connector. Even client-token callers receive `connector_id` (it mirrors the connector identity already encoded in the grant).
 - `emitted_at`
+- `score` — when advertised, a typed implementation-relative lexical score. The reference emits `{ "kind": "bm25", "order": "lower_is_better" }` using SQLite FTS5 BM25 values.
 - `matched_fields` — a non-empty subset of the stream's declared `query.search.lexical_fields` intersected with the caller's authorized fields.
 
 ### Optional fields
@@ -83,9 +85,9 @@ A dedicated cross-stream search endpoint. The reference's `_ref/search` is a sep
 - `record_url` — when present, resolves to the canonical `GET /v1/streams/{stream}/records/{record_key}` endpoint. For owner-token callers on a per-connector resource server (the reference today), the URL includes `?connector_id=<canonical>`.
 - `snippet` — a `{ field, text }` pair drawn from a `matched_fields` entry. Implementations MAY omit `snippet` per result. **Snippet text never quotes ungranted field content** — see [Grant safety](#grant-safety).
 
-### What is intentionally absent
+### What is intentionally limited
 
-- **No portable numeric relevance score.** Results are returned in relevance-oriented order, but the extension does not freeze a portable scoring formula in v1.
+- **No portable relevance calibration.** Scores are implementation-relative. Clients may use the advertised `kind` and `order`, but MUST NOT compare values across servers or implementation changes unless a later capability advertises stronger calibration.
 - **No hydrated record payload.** The extension returns candidate references; clients use the existing single-record read endpoint (or the `record_url`) to hydrate.
 
 ## Grant safety
@@ -145,13 +147,19 @@ The extension advertises itself in the resource-server metadata document (RFC 97
       "cross_stream": true,
       "snippets": true,
       "default_limit": 25,
-      "max_limit": 100
+      "max_limit": 100,
+      "score": {
+        "supported": true,
+        "kind": "bm25",
+        "order": "lower_is_better",
+        "value_semantics": "implementation_relative"
+      }
     }
   }
 }
 ```
 
-When `supported: true`, all six keys (`supported`, `endpoint`, `cross_stream`, `snippets`, `default_limit`, `max_limit`) are required. The advertisement is reachable without a bearer token.
+When `supported: true`, all six base keys (`supported`, `endpoint`, `cross_stream`, `snippets`, `default_limit`, `max_limit`) are required. When `score.supported: true`, each result includes the typed `score` object. The advertisement is reachable without a bearer token.
 
 A resource server that does not expose the extension SHALL omit `capabilities.lexical_retrieval` entirely or set `supported: false`. Clients MUST NOT assume `/v1/search` is available unless the advertisement says so.
 
@@ -187,7 +195,7 @@ The cursor format is implementation-defined — clients MUST treat it as opaque.
 
 ## Ranking
 
-Results are returned in relevance-oriented order. Higher-positioned results SHOULD generally be more relevant than lower-positioned results. The extension intentionally does **not** define a portable numeric score, semantic reranking, recency blending, or per-connector custom weighting in v1.
+Results are returned in relevance-oriented order. Higher-positioned results SHOULD generally be more relevant than lower-positioned results. The advertised BM25 score is implementation-relative and uses `order: "lower_is_better"` in the reference. The extension intentionally does **not** define portable score calibration, semantic reranking, recency blending, or per-connector custom weighting in v1.
 
 ## Non-goals
 
@@ -198,7 +206,7 @@ Out of scope for v1; future extensions or revisions may address them separately:
 - Cross-connector entity resolution.
 - Generic boolean / predicate query DSL.
 - Connector-specific search semantics on the public surface.
-- A portable numeric relevance score.
+- Portable score calibration.
 - A `POST /v1/search` body-DSL surface (reserved as a possible future extension).
 - Mandatory promotion of this extension to core PDPP.
 
