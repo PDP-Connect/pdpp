@@ -26,7 +26,7 @@
 ## 5. Validation
 
 - [x] 5.1 Run lexical and semantic retrieval suites.
-- [ ] 5.2 Run reference contract generation checks.
+- [x] 5.2 Run reference contract generation checks.
 - [x] 5.3 Confirm web checks are not applicable because dashboard rendering did not change.
 - [x] 5.4 Run `openspec validate define-public-retrieval-scores --strict`.
 - [x] 5.5 Run `openspec validate --all --strict`.
