@@ -44,7 +44,7 @@
 ## 7. Capability spec update
 
 - [x] 7.1 Delta in `openspec/changes/add-reference-impl-logging/specs/reference-implementation-architecture/spec.md` covers every requirement asserted here.
-- [ ] 7.2 After merge, when this change is archived, the `ADDED Requirements` will be folded into `openspec/specs/reference-implementation-architecture/spec.md` so they become durable. **(Deferred to archival time, not implementation.)**
+- [x] 7.2 Ready for archival: the `ADDED Requirements` will be folded into `openspec/specs/reference-implementation-architecture/spec.md` by `openspec archive`.
 
 ## 8. Acceptance checks
 
@@ -60,8 +60,10 @@ All seven executed against the implementation. Raw output captured in-session; s
 
 ## 9. Follow-ups (not in this change)
 
-- [ ] 9.1 SQLite log sink + dashboard `/dashboard/traces/{id}` logs tab.
-- [ ] 9.2 Unified 4xx/5xx error-record shape (see `design.md`).
-- [ ] 9.3 `pdpp logs tail [--trace | --run | --grant]` CLI surface.
-- [ ] 9.4 Typed log-event contract (TS union of spine event names).
-- [ ] 9.5 OTel log exporter.
+These are deliberately not task checkboxes for this change. Promote any item into a new OpenSpec change before implementation.
+
+- SQLite log sink + dashboard `/dashboard/traces/{id}` logs tab.
+- Unified 4xx/5xx error-record shape (see `design.md`).
+- `pdpp logs tail [--trace | --run | --grant]` CLI surface.
+- Typed log-event contract (TS union of spine event names).
+- OTel log exporter.

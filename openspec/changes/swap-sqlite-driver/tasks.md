@@ -1,10 +1,12 @@
+Status note (2026-04-24): the dependency swap itself has landed in `reference-implementation` and `packages/polyfill-connectors`. The remaining active work is the inspectable query-tree extraction, call-site migration to `server/queries/**`, crash-regression verification, and cleanup/follow-up triage.
+
 ## 1. Dependencies
 
-- [ ] 1.1 Add `better-sqlite3` to `reference-implementation/package.json` `dependencies`.
-- [ ] 1.2 Remove `@databases/sqlite` from `reference-implementation/package.json`.
-- [ ] 1.3 Add `better-sqlite3` to `packages/polyfill-connectors/package.json` `dependencies`.
-- [ ] 1.4 Remove `@databases/sqlite` from `packages/polyfill-connectors/package.json`.
-- [ ] 1.5 Run `pnpm install` at the repo root, verify both packages compile their native addon (N-API build).
+- [x] 1.1 Add `better-sqlite3` to `reference-implementation/package.json` `dependencies`.
+- [x] 1.2 Remove `@databases/sqlite` from `reference-implementation/package.json`.
+- [x] 1.3 Add `better-sqlite3` to `packages/polyfill-connectors/package.json` `dependencies`.
+- [x] 1.4 Remove `@databases/sqlite` from `packages/polyfill-connectors/package.json`.
+- [x] 1.5 Run `pnpm install` at the repo root, verify both packages compile their native addon (N-API build).
 
 ## 2. Query tree
 
@@ -25,7 +27,7 @@
 
 ## 3. Rewrite `server/db.js`
 
-- [ ] 3.1 Replace the `@databases/sqlite` import with `better-sqlite3`.
+- [x] 3.1 Replace the `@databases/sqlite` import with `better-sqlite3`.
 - [ ] 3.2 In `initDb(path)`: open the DB, apply PRAGMAs synchronously (WAL, synchronous=NORMAL, etc.), run schema statements via `db.exec(...)`, then call `loadQueries(db, path.to.queries)` and stash the result alongside the db handle.
 - [ ] 3.3 Export `getDb()` (returns `Database` instance) and `getQueries()` (returns the loaded registry).
 - [ ] 3.4 Confirm PRAGMAs `journal_mode = WAL`, `synchronous = NORMAL`, `temp_store = MEMORY`, `mmap_size = 268435456`, `cache_size = -65536` still apply for file-backed DBs (and are skipped for `:memory:`, matching existing behavior).
@@ -50,9 +52,9 @@
 
 ## 6. Migrate polyfill-connectors usages
 
-- [ ] 6.1 `packages/polyfill-connectors/connectors/imessage/index.ts`: swap `@databases/sqlite` read-only open of Apple's `chat.db` to `better-sqlite3` with `{ readonly: true, fileMustExist: true }`.
-- [ ] 6.2 `packages/polyfill-connectors/bin/verify-all.ts`: same swap.
-- [ ] 6.3 Delete `packages/polyfill-connectors/types/databases-sqlite.d.ts` (no longer needed).
+- [x] 6.1 `packages/polyfill-connectors/connectors/imessage/index.ts`: swap `@databases/sqlite` read-only open of Apple's `chat.db` to `better-sqlite3` with `{ readonly: true, fileMustExist: true }`.
+- [x] 6.2 `packages/polyfill-connectors/bin/verify-all.ts`: same swap.
+- [x] 6.3 Delete `packages/polyfill-connectors/types/databases-sqlite.d.ts` (no longer needed).
 
 ## 7. Regression & crash verification
 
