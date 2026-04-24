@@ -13,6 +13,8 @@ interface NavItem {
 
 export type DashboardSection = "overview" | "search" | "traces" | "grants" | "runs" | "records";
 
+const SCHEME_PREFIX_RE = /^https?:\/\//;
+
 const NAV: NavItem[] = [
   { href: "/dashboard", label: "Overview", match: (a) => a === "overview" },
   { href: "/dashboard/search", label: "Search", match: (a) => a === "search" },
@@ -146,7 +148,7 @@ function EnvFooter() {
 }
 
 function stripScheme(url: string): string {
-  return url.replace(/^https?:\/\//, "");
+  return url.replace(SCHEME_PREFIX_RE, "");
 }
 
 function Topbar() {

@@ -1,5 +1,7 @@
 import { getAsInternalUrl, ReferenceServerUnreachableError, withOwnerSessionCookie } from "./owner-token.ts";
 
+const DURATION_RE = /^(\d+)(s|m|h|d)?$/i;
+
 function asJson(body: unknown) {
   return JSON.stringify(body);
 }
@@ -55,7 +57,7 @@ async function fetchAs(path: string, init: RequestInit): Promise<Response> {
 
 function parseDurationInput(value: string, label: string): number {
   const trimmed = value.trim();
-  const match = trimmed.match(/^(\d+)(s|m|h|d)?$/i);
+  const match = trimmed.match(DURATION_RE);
   if (!match) {
     throw new Error(`Invalid ${label} value '${trimmed}'. Use values like 30m, 60s, 2h, or 1d.`);
   }

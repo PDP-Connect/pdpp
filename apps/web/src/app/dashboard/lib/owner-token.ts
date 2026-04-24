@@ -18,6 +18,7 @@ import {
 
 const SUBJECT_ID = process.env.PDPP_SUBJECT_ID || "the owner";
 const CLIENT_ID = "pdpp-polyfill-owner-bootstrap";
+const CONTROL_CHAR_RE = /[\u0000-\u001F\u007F]/;
 
 let cachedToken: string | null = null;
 let inFlight: Promise<string> | null = null;
