@@ -160,43 +160,37 @@ function formatAmount(milli: number): string {
   return `${sign}$${Math.abs(n).toFixed(2)}`;
 }
 
-export function summarize(connectorId: string, stream: string, data: RecordData): string {
-  const key = `${connectorShortName(connectorId)}::${stream}`;
-  const fn = SUMMARIES[key];
-  if (fn) {
-    const out = fn(data);
-    if (out) {
-      return out;
+function summarizeMessageLike(data: RecordData): string | null {
+  const author = s(data.author_role ?? data.role ?? data.from ?? data.user, 24);
+  const body = s(data.content ?? data.text ?? data.message ?? data.body, 100);
+  if (author || body) {
+    return [author, body].filter(Boolean).join(": ");
+  }
+  return null;
+}
+
+function summarizeTransactionLike(data: RecordData): string | null {
+  const amt = typeof data.amount === "number" ? formatAmount(data.amount) : s(data.amount, 16);
+  const desc = s(data.description ?? data.memo ?? data.payee_name, 80);
+  if (amt || desc) {
+    return [amt, desc].filter(Boolean).join(" — ");
+  }
+  return null;
+}
+
+const COMMON_TITLE_FIELDS = ["title", "name", "subject", "description"] as const;
+
+function summarizeCommonTitleField(data: RecordData): string | null {
+  for (const field of COMMON_TITLE_FIELDS) {
+    const v = data[field];
+    if (typeof v === "string" && v.trim()) {
+      return s(v, 120);
     }
   }
-  // Fallbacks by stream name alone (generic)
-  const streamLower = stream.toLowerCase();
-  if (streamLower.includes("message") || streamLower.includes("chat")) {
-    const author = s(data.author_role ?? data.role ?? data.from ?? data.user, 24);
-    const body = s(data.content ?? data.text ?? data.message ?? data.body, 100);
-    if (author || body) {
-      return [author, body].filter(Boolean).join(": ");
-    }
-  }
-  if (streamLower.includes("transaction")) {
-    const amt = typeof data.amount === "number" ? formatAmount(data.amount) : s(data.amount, 16);
-    const desc = s(data.description ?? data.memo ?? data.payee_name, 80);
-    if (amt || desc) {
-      return [amt, desc].filter(Boolean).join(" — ");
-    }
-  }
-  if (typeof data.title === "string" && data.title.trim()) {
-    return s(data.title, 120);
-  }
-  if (typeof data.name === "string" && data.name.trim()) {
-    return s(data.name, 120);
-  }
-  if (typeof data.subject === "string" && data.subject.trim()) {
-    return s(data.subject, 120);
-  }
-  if (typeof data.description === "string" && data.description.trim()) {
-    return s(data.description, 120);
-  }
+  return null;
+}
+
+function summarizeNameSuffix(data: RecordData): string | null {
   // Prefer any *_name field (category_name, payee_name, etc.) before
   // falling back to the first generic string.
   for (const [k, v] of Object.entries(data)) {
@@ -207,5 +201,36 @@ export function summarize(connectorId: string, stream: string, data: RecordData)
       return s(v, 120);
     }
   }
+  return null;
+}
+
+function summarizeFallback(stream: string, data: RecordData): string {
+  const streamLower = stream.toLowerCase();
+  if (streamLower.includes("message") || streamLower.includes("chat")) {
+    const msg = summarizeMessageLike(data);
+    if (msg) {
+      return msg;
+    }
+  }
+  if (streamLower.includes("transaction")) {
+    const tx = summarizeTransactionLike(data);
+    if (tx) {
+      return tx;
+    }
+  }
+  const picked = summarizeCommonTitleField(data) ?? summarizeNameSuffix(data);
+  if (picked) {
+    return picked;
+  }
   return firstString(data) || "(no summary)";
+}
+
+export function summarize(connectorId: string, stream: string, data: RecordData): string {
+  const key = `${connectorShortName(connectorId)}::${stream}`;
+  const fn = SUMMARIES[key];
+  const specific = fn?.(data);
+  if (specific) {
+    return specific;
+  }
+  return summarizeFallback(stream, data);
 }
