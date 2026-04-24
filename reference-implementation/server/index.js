@@ -31,6 +31,7 @@ import { reconcilePolyfillManifests } from './polyfill-manifest-reconcile.ts';
 import {
   computeIndexState as computeSemanticIndexState,
   configureSemanticBackend,
+  getSemanticIndexBackfillProgress,
   getSemanticBackend,
   resolveSemanticBackendFromEnv,
   runSemanticSearch,
@@ -1760,6 +1761,7 @@ function buildAsApp(opts = {}) {
           getBackend: () => getSemanticBackend(),
           getDb: () => getDb(),
           computeIndexState: () => computeSemanticIndexState(),
+          getBackfillProgress: () => getSemanticIndexBackfillProgress(),
           getConfiguredNativeManifest: () => getConfiguredNativeManifest(),
           listRegisteredConnectorIds: () => listRegisteredConnectorIds(),
           getConnectorManifest: (connectorId) => getConnectorManifest(connectorId),

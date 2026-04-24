@@ -55,6 +55,21 @@ export type SemanticIndexState = "built" | "building" | "stale";
 
 export type VectorIndexKind = "sqlite-vec" | "blob-flat";
 
+export interface SemanticBackfillProgress {
+  readonly active_jobs: number;
+  readonly connector_id: string;
+  readonly id: string;
+  readonly indexed_vectors: number;
+  readonly manifest_streams_checked: number;
+  readonly manifest_streams_total: number;
+  readonly phase: "planning" | "checking" | "rebuilding" | "cleanup";
+  readonly records_scanned: number;
+  readonly records_total: number | null;
+  readonly started_at: string;
+  readonly stream: string | null;
+  readonly updated_at: string;
+}
+
 // Minimal DB shape used by diagnostics: vectorIndexKind is stamped by
 // initDb() in db.js. dbPath is the resolved path passed to initDb().
 export interface DiagnosticsDb {
@@ -67,6 +82,7 @@ export interface DiagnosticsEnv {
 
 export interface DeploymentDiagnosticsInput {
   readonly backend: DiagnosticsBackend | null;
+  readonly backfillProgress?: SemanticBackfillProgress | null;
   readonly db: DiagnosticsDb | null;
   readonly dbPath: string;
   readonly env: DiagnosticsEnv;
@@ -139,6 +155,7 @@ export interface DeploymentDiagnosticsReport {
     readonly index: {
       readonly kind: VectorIndexKind | null;
       readonly state: SemanticIndexState | null;
+      readonly backfill_progress: SemanticBackfillProgress | null;
     };
     readonly participation: ParticipationSummary;
   };
@@ -406,6 +423,7 @@ export interface CollectDeploymentDiagnosticsOptions {
 export interface DeploymentDiagnosticsRuntimeDeps {
   readonly computeIndexState: () => SemanticIndexState;
   readonly getBackend: () => DiagnosticsBackend | null;
+  readonly getBackfillProgress?: () => SemanticBackfillProgress | null;
   readonly getConfiguredNativeManifest: () => DiagnosticsManifest | null;
   readonly getConnectorManifest: (connectorId: string) => Promise<DiagnosticsManifest | null>;
   readonly getDb: () => DiagnosticsDb | null;
@@ -447,6 +465,7 @@ export async function collectDeploymentDiagnostics(
     backend,
     db,
     dbPath: opts.dbPath,
+    backfillProgress: deps.getBackfillProgress ? deps.getBackfillProgress() : null,
     manifests,
     indexState,
     env,
@@ -479,6 +498,7 @@ export function buildDeploymentDiagnostics(input: DeploymentDiagnosticsInput): D
       index: {
         kind: input.db ? input.db.vectorIndexKind : null,
         state: input.indexState,
+        backfill_progress: input.backfillProgress ?? null,
       },
       participation,
     },

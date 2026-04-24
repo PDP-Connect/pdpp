@@ -652,6 +652,7 @@ async function buildSnapshot({ q, perConnectorPlans, isOwner }) {
  */
 async function runFtsQueryForConnector({ connectorId, planEntries, q, allowsSnippets }) {
   const db = getDb();
+  const ftsQuery = buildFtsUserTextQuery(q);
   // Build one query per stream-field plan entry, scoped to this connector
   // and the (stream, field) pair. This guarantees the index is only ever
   // queried for declared+authorized fields.
@@ -690,7 +691,7 @@ async function runFtsQueryForConnector({ connectorId, planEntries, q, allowsSnip
           AND r.deleted = 0
         ORDER BY score ASC
         LIMIT 200
-      `).all(connectorId, entry.streamName, field, q);
+      `).all(connectorId, entry.streamName, field, ftsQuery);
       for (const row of rows) {
         const key = `${entry.streamName}:${row.record_key}`;
         const existing = collapsed.get(key);
@@ -725,6 +726,15 @@ async function runFtsQueryForConnector({ connectorId, planEntries, q, allowsSnip
   const hits = Array.from(collapsed.values()).sort((a, b) => a.score - b.score);
   // Strip score before merge — never exposed to the client
   return hits.map(({ score: _score, ...rest }) => rest);
+}
+
+function buildFtsUserTextQuery(q) {
+  const terms = String(q || '')
+    .trim()
+    .split(/\s+/)
+    .filter((term) => term.length > 0)
+    .map((term) => `"${term.replaceAll('"', '""')}"`);
+  return terms.length > 0 ? terms.join(' ') : '""';
 }
 
 function roundRobinMerge(perConnectorHits) {

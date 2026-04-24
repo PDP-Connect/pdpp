@@ -93,6 +93,7 @@ function SemanticSection({ report }: { report: DeploymentDiagnostics }) {
   const { backend, index } = report.semantic;
   return (
     <Section title="Semantic backend">
+      {index.backfill_progress ? <BackfillProgress progress={index.backfill_progress} /> : null}
       <dl className="grid grid-cols-1 gap-x-6 gap-y-2 sm:grid-cols-2">
         <Field label="Configured" value={yesNo(backend.configured)} />
         <Field label="Available" value={yesNo(backend.available)} />
@@ -115,6 +116,57 @@ function SemanticSection({ report }: { report: DeploymentDiagnostics }) {
         <Field label="Index state" value={index.state ?? "—"} />
       </dl>
     </Section>
+  );
+}
+
+function BackfillProgress({
+  progress,
+}: {
+  progress: NonNullable<DeploymentDiagnostics["semantic"]["index"]["backfill_progress"]>;
+}) {
+  const percent =
+    progress.records_total && progress.records_total > 0
+      ? Math.min(100, Math.round((progress.records_scanned / progress.records_total) * 100))
+      : null;
+  const streamLabel = progress.stream
+    ? `${shortConnectorName(progress.connector_id)} / ${progress.stream}`
+    : shortConnectorName(progress.connector_id);
+  const rate = recordsPerSecond(progress);
+
+  return (
+    <div className="mb-4 rounded border border-amber-400/50 bg-amber-50/70 px-3 py-3 text-sm dark:bg-amber-950/30">
+      <div className="flex flex-col gap-1 sm:flex-row sm:items-baseline sm:justify-between">
+        <div>
+          <div className="font-medium">Backfill progress</div>
+          <p className="mt-1 text-muted-foreground">
+            {progress.phase} · {streamLabel}
+          </p>
+        </div>
+        <div className="text-muted-foreground text-xs tabular-nums">
+          {progress.manifest_streams_checked}/{progress.manifest_streams_total} streams checked
+        </div>
+      </div>
+      {percent === null ? (
+        <p className="mt-2 text-muted-foreground text-xs">Scanning has not started for the current stream yet.</p>
+      ) : (
+        <div className="mt-3">
+          <div className="h-2 overflow-hidden rounded bg-background/80">
+            <div className="h-full bg-amber-500 transition-[width]" style={{ width: `${percent}%` }} />
+          </div>
+          <div className="mt-1 flex flex-wrap justify-between gap-x-4 gap-y-1 text-muted-foreground text-xs">
+            <span>
+              {progress.records_scanned.toLocaleString()} / {progress.records_total?.toLocaleString()} records scanned
+              {rate ? ` · ${rate} records/s` : ""}
+            </span>
+            <span>{percent}%</span>
+          </div>
+        </div>
+      )}
+      <p className="mt-1 text-muted-foreground text-xs">
+        {progress.indexed_vectors.toLocaleString()} vectors indexed · updated {formatTime(progress.updated_at)}
+        {progress.active_jobs > 1 ? ` · ${progress.active_jobs} active jobs` : ""}
+      </p>
+    </div>
   );
 }
 
@@ -257,6 +309,25 @@ function Field({ label, value }: { label: string; value: string }) {
   );
 }
 
+function recordsPerSecond(
+  progress: NonNullable<DeploymentDiagnostics["semantic"]["index"]["backfill_progress"]>
+): string | null {
+  const started = Date.parse(progress.started_at);
+  const updated = Date.parse(progress.updated_at);
+  if (!(Number.isFinite(started) && Number.isFinite(updated)) || updated <= started || progress.records_scanned <= 0) {
+    return null;
+  }
+  return (progress.records_scanned / ((updated - started) / 1000)).toFixed(1);
+}
+
+function formatTime(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  return date.toLocaleTimeString();
+}
+
 function yesNo(v: boolean): string {
   return v ? "yes" : "no";
 }
@@ -266,6 +337,15 @@ function formatLanguageBias(bias: DeploymentDiagnostics["semantic"]["backend"]["
     return "—";
   }
   return bias.note ? `${bias.primary} (${bias.note})` : bias.primary;
+}
+
+function shortConnectorName(connectorId: string): string {
+  try {
+    const url = new URL(connectorId);
+    return url.pathname.split("/").filter(Boolean).at(-1) ?? connectorId;
+  } catch {
+    return connectorId;
+  }
 }
 
 function formatEnvValue(entry: DeploymentDiagnostics["environment"][number]): string {

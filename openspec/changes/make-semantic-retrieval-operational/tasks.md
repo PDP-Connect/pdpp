@@ -10,6 +10,7 @@
 - [x] 2.2 Add a read-only `/dashboard/deployment` page that renders the diagnostics clearly and redacts all secret values.
 - [x] 2.3 Show explicit warnings for zero semantic participation, stale index, unavailable embedding backend, missing model cache, disabled download, and vector-index fallback.
 - [x] 2.4 Add tests proving deployment diagnostics redacts secrets and reports zero participation separately from backend/index readiness.
+- [x] 2.5 Surface active semantic backfill progress in diagnostics and `/dashboard/deployment`, including current connector/stream, stream-check counts, records scanned/total, indexed vectors, and last update time.
 
 ## 3. First-Party Semantic Coverage
 

@@ -317,6 +317,20 @@ export interface DeploymentDiagnostics {
     index: {
       kind: "sqlite-vec" | "blob-flat" | null;
       state: "built" | "building" | "stale" | null;
+      backfill_progress: {
+        active_jobs: number;
+        connector_id: string;
+        id: string;
+        indexed_vectors: number;
+        manifest_streams_checked: number;
+        manifest_streams_total: number;
+        phase: "planning" | "checking" | "rebuilding" | "cleanup";
+        records_scanned: number;
+        records_total: number | null;
+        started_at: string;
+        stream: string | null;
+        updated_at: string;
+      } | null;
     };
     participation: {
       connector_count: number;

@@ -290,6 +290,8 @@ export function resolveSemanticBackendFromEnv(env = process.env) {
 // null (extension is not advertised).
 let backend = null;
 let activeBackfillCount = 0;
+let nextBackfillJobId = 1;
+const backfillJobs = new Map();
 
 /**
  * Configure or clear the module-scoped embedding backend. Pass null to
@@ -312,6 +314,48 @@ export function getSemanticBackend() {
 
 export function isSemanticIndexBackfillActive() {
   return activeBackfillCount > 0;
+}
+
+function publicBackfillJob(job) {
+  return {
+    id: job.id,
+    connector_id: job.connectorId,
+    stream: job.stream,
+    phase: job.phase,
+    active_jobs: activeBackfillCount,
+    manifest_streams_checked: job.manifestStreamsChecked,
+    manifest_streams_total: job.manifestStreamsTotal,
+    records_scanned: job.recordsScanned,
+    records_total: job.recordsTotal,
+    indexed_vectors: job.indexedVectors,
+    started_at: job.startedAt,
+    updated_at: job.updatedAt,
+  };
+}
+
+function latestBackfillJob() {
+  let latest = null;
+  for (const job of backfillJobs.values()) {
+    if (!latest || job.updatedAt > latest.updatedAt) {
+      latest = job;
+    }
+  }
+  return latest;
+}
+
+function updateBackfillJob(job, patch) {
+  const updated = {
+    ...job,
+    ...patch,
+    updatedAt: new Date().toISOString(),
+  };
+  backfillJobs.set(updated.id, updated);
+  return updated;
+}
+
+export function getSemanticIndexBackfillProgress() {
+  const job = latestBackfillJob();
+  return job ? publicBackfillJob(job) : null;
 }
 
 // ─── Vector index interface + backends ─────────────────────────────────────
@@ -735,7 +779,7 @@ function backendStorageIdentity(b) {
   return parts.join(';');
 }
 
-async function rebuildSemanticIndexForStream({ connectorId, stream, declaredFields }) {
+async function rebuildSemanticIndexForStream({ connectorId, stream, declaredFields, recordsToScan = null, progressJob = null }) {
   const index = ensureVectorIndex();
   if (!index || !backend) return 0;
   await index.deleteByConnectorStream({ connectorId, stream });
@@ -744,6 +788,7 @@ async function rebuildSemanticIndexForStream({ connectorId, stream, declaredFiel
   const PAGE = 500;
   let lastId = 0;
   let indexed = 0;
+  let scanned = 0;
   for (;;) {
     const rows = db.prepare(`
       SELECT id, record_key, record_json
@@ -784,7 +829,15 @@ async function rebuildSemanticIndexForStream({ connectorId, stream, declaredFiel
         await index.upsert(entry);
       }
     }
+    scanned += rows.length;
     indexed += entries.length;
+    if (progressJob) {
+      progressJob = updateBackfillJob(progressJob, {
+        recordsScanned: scanned,
+        recordsTotal: recordsToScan,
+        indexedVectors: indexed,
+      });
+    }
     await yieldImmediate();
     if (rows.length < PAGE) break;
   }
@@ -814,6 +867,24 @@ export async function semanticIndexBackfillForManifest({ manifest, log = () => {
   if (!manifest?.connector_id || !Array.isArray(manifest?.streams)) return;
   if (!backend) return;
   activeBackfillCount += 1;
+  const participatingStreams = manifest.streams.filter((mStream) => {
+    const declaredFields = mStream?.query?.search?.semantic_fields;
+    return Array.isArray(declaredFields) && declaredFields.length > 0;
+  }).length;
+  let progressJob = {
+    id: `semantic_backfill_${nextBackfillJobId++}`,
+    connectorId: manifest.connector_id,
+    stream: null,
+    phase: 'planning',
+    manifestStreamsChecked: 0,
+    manifestStreamsTotal: participatingStreams,
+    recordsScanned: 0,
+    recordsTotal: null,
+    indexedVectors: 0,
+    startedAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+  backfillJobs.set(progressJob.id, progressJob);
   try {
   const connectorId = manifest.connector_id;
   const db = getDb();
@@ -850,6 +921,14 @@ export async function semanticIndexBackfillForManifest({ manifest, log = () => {
       }
       continue;
     }
+    progressJob = updateBackfillJob(progressJob, {
+      stream,
+      phase: 'checking',
+      manifestStreamsChecked: Math.min(progressJob.manifestStreamsChecked + 1, progressJob.manifestStreamsTotal),
+      recordsScanned: 0,
+      recordsTotal: null,
+      indexedVectors: 0,
+    });
 
     const newFingerprint = fingerprintSemanticFields(declaredFields);
     const metaRow = db.prepare(`
@@ -908,9 +987,22 @@ export async function semanticIndexBackfillForManifest({ manifest, log = () => {
       WHERE connector_id = ? AND stream = ? AND deleted = 0
     `).get(connectorId, stream);
     const recordsToScan = Number(recordCountRow?.n || 0);
+    progressJob = updateBackfillJob(progressJob, {
+      stream,
+      phase: 'rebuilding',
+      recordsScanned: 0,
+      recordsTotal: recordsToScan,
+      indexedVectors: 0,
+    });
     log(`[PDPP] Semantic index rebuild starting for ${connectorId} stream='${stream}' ` +
         `(records=${recordsToScan}, fields=${declaredFields.length})`);
-    const indexed = await rebuildSemanticIndexForStream({ connectorId, stream, declaredFields });
+    const indexed = await rebuildSemanticIndexForStream({
+      connectorId,
+      stream,
+      declaredFields,
+      recordsToScan,
+      progressJob,
+    });
     log(`[PDPP] Semantic index rebuild completed for ${connectorId} stream='${stream}' ` +
         `(records=${recordsToScan}, indexed=${indexed})`);
 
@@ -925,6 +1017,13 @@ export async function semanticIndexBackfillForManifest({ manifest, log = () => {
         updated_at         = excluded.updated_at
     `).run(connectorId, stream, newFingerprint, currentModel, currentDims, currentMetric, new Date().toISOString());
   }
+  progressJob = updateBackfillJob(progressJob, {
+    stream: null,
+    phase: 'cleanup',
+    recordsScanned: 0,
+    recordsTotal: null,
+    indexedVectors: 0,
+  });
 
   // Orphan meta rows: streams that previously had meta but are gone from the
   // manifest entirely.
@@ -943,6 +1042,7 @@ export async function semanticIndexBackfillForManifest({ manifest, log = () => {
   }
   } finally {
     activeBackfillCount = Math.max(0, activeBackfillCount - 1);
+    backfillJobs.delete(progressJob.id);
   }
 }
 

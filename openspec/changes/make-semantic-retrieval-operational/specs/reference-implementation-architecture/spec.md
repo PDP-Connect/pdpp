@@ -62,12 +62,17 @@ The reference implementation SHALL allow an operator to configure one active sem
 
 ### Requirement: Reference deployment diagnostics SHALL expose semantic retrieval health without leaking secrets
 
-The reference dashboard SHALL provide a read-only deployment diagnostics surface that makes semantic retrieval readiness inspectable by an operator. The diagnostics SHALL include semantic backend status, vector index status, model/profile identity, language bias, participating semantic fields, manifest provenance, database/index topology, and relevant environment configuration with secret values redacted.
+The reference dashboard SHALL provide a read-only deployment diagnostics surface that makes semantic retrieval readiness inspectable by an operator. The diagnostics SHALL include semantic backend status, vector index status, active semantic backfill progress when present, model/profile identity, language bias, participating semantic fields, manifest provenance, database/index topology, and relevant environment configuration with secret values redacted.
 
 #### Scenario: Operator opens deployment diagnostics
 - **WHEN** an operator opens the deployment diagnostics page
 - **THEN** the page SHALL show whether semantic retrieval is enabled, which backend/index are active, the current index state, and which connectors/streams/fields participate
 - **AND** the page SHALL show warnings for zero participation, stale index, unavailable backend, missing model cache, disabled model download, and vector-index fallback when applicable
+
+#### Scenario: Semantic backfill is active
+- **WHEN** the reference is rebuilding the semantic index in the background
+- **THEN** deployment diagnostics SHALL report the active connector and stream when known
+- **AND** the dashboard SHALL show bounded progress such as records scanned, total records for the current stream when known, indexed vectors, stream-check counts, and last update time
 
 #### Scenario: Diagnostics include environment configuration
 - **WHEN** diagnostics display environment-derived configuration

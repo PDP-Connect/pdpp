@@ -695,6 +695,23 @@ test('owner-mode record_url is dereference-able and returns the canonical record
   });
 });
 
+test('lexical search treats punctuation and hyphens as user text, not FTS syntax', async () => {
+  await withHarness({}, async ({ asUrl, rsUrl }) => {
+    const ownerToken = await issueOwnerToken(asUrl);
+    const connectorA = REDDITISH_MANIFEST_A.connector_id;
+    await ingest(rsUrl, ownerToken, connectorA, 'posts', [
+      { id: 'p1', title: 'style-driven refactor', selftext: 'cleanup note', source_created_at: '2026-04-01T00:00:00Z' },
+    ]);
+
+    const { status, body } = await fetchJson(
+      `${rsUrl}/v1/search?q=${encodeURIComponent('style-driven')}`,
+      { headers: { 'Authorization': `Bearer ${ownerToken}` } },
+    );
+    assert.equal(status, 200);
+    assert.ok(body.data.some((r) => r.record_key === 'p1'), 'hyphenated query should match without SQLITE_ERROR');
+  });
+});
+
 // ─── 9.9 — helper-level: results without record_url/snippet are still valid ─
 
 test('buildSearchPlanForGrant honors declared ∩ authorized; parseSearchParams enforces v1 allowlist', () => {

@@ -231,6 +231,35 @@ test('building index warning fires when indexState is "building"', () => {
   assert.ok(!codes.includes('zero_participation'));
 });
 
+test('building index diagnostics include optional backfill progress', () => {
+  const progress = {
+    id: 'semantic_backfill_1',
+    connector_id: 'https://test.pdpp.org/connectors/a',
+    stream: 'posts',
+    phase: 'rebuilding',
+    active_jobs: 1,
+    manifest_streams_checked: 1,
+    manifest_streams_total: 2,
+    records_scanned: 500,
+    records_total: 1000,
+    indexed_vectors: 700,
+    started_at: '2026-04-24T10:00:00.000Z',
+    updated_at: '2026-04-24T10:00:05.000Z',
+  };
+  const report = buildDeploymentDiagnostics({
+    backend: fakeBackend(),
+    db: { vectorIndexKind: 'sqlite-vec' },
+    dbPath: '/tmp/test.sqlite',
+    manifests: [
+      { manifest: manifestWithSemantic(), provenance: 'polyfill-registered' },
+    ],
+    indexState: 'building',
+    backfillProgress: progress,
+    env: {},
+  });
+  assert.deepEqual(report.semantic.index.backfill_progress, progress);
+});
+
 test('backend reports unavailable when available() returns false', () => {
   const report = buildDeploymentDiagnostics({
     backend: fakeBackend({ available: () => false }),
