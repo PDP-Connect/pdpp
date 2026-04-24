@@ -8,7 +8,7 @@ import {
   compareTimestampValues,
   pickSemanticTimestamp,
   timestampWithinWindow,
-} from './ref-record-utils.js';
+} from './ref-record-utils.ts';
 import { listSpineCorrelations } from '../lib/spine.js';
 
 function parseManifest(raw, connectorId) {
