@@ -215,17 +215,38 @@ export async function listPendingApprovals() {
   return approvals;
 }
 
-export async function listRecordsTimeline({
-  connectorId = null,
-  stream = null,
-  since = null,
-  until = null,
-  limit = 50,
-  order = 'desc',
-  timestampMode = 'native',
-} = {}) {
-  // Build the WHERE clause dynamically. Values are always bound, never
-  // interpolated; the only thing that varies is which clauses are present.
+const SAFE_JSON_FIELD = /^[A-Za-z_][A-Za-z_0-9]*$/;
+const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
+
+function safeJsonPathExpr(field, label) {
+  if (typeof field !== 'string' || !SAFE_JSON_FIELD.test(field)) {
+    throw new Error(`[ref-control] Unsafe JSON field ${label}: ${JSON.stringify(field)}`);
+  }
+  return `json_extract(record_json, '$.${field}')`;
+}
+
+/**
+ * Normalize caller-supplied `since`/`until` values for SQL comparison. Mirrors
+ * what `ref-record-utils.js::parseDateLike` does for the JS post-filter: a
+ * bare `YYYY-MM-DD` value expands to the start (since) or end (until) of the
+ * day so ISO-datetime-valued rows on the boundary match as intended.
+ * Non-date-only values pass through unchanged; SQLite's BINARY comparison on
+ * ISO-8601 strings is equivalent to chronological ordering.
+ */
+function expandBoundary(value, boundary) {
+  if (typeof value !== 'string' || !value.trim()) return value;
+  const trimmed = value.trim();
+  if (!DATE_ONLY.test(trimmed)) return trimmed;
+  return `${trimmed}${boundary === 'end' ? 'T23:59:59.999Z' : 'T00:00:00.000Z'}`;
+}
+
+/**
+ * Enumerate the (connector_id, stream) pairs we need to query, narrowed by
+ * caller-supplied filters. Cheap: records(connector_id, stream) is indexed,
+ * and the count of pairs is on the order of (registered connectors × streams
+ * per connector) — dozens, not thousands.
+ */
+function enumerateCandidatePairs(db, connectorId, stream) {
   const where = ['deleted = 0'];
   const binds = [];
   if (connectorId) {
@@ -236,49 +257,121 @@ export async function listRecordsTimeline({
     where.push('stream = ?');
     binds.push(stream);
   }
-
-  const rows = getDb().prepare(`
-    SELECT connector_id, stream, record_key, record_json, emitted_at, version
+  const rows = db.prepare(`
+    SELECT DISTINCT connector_id, stream
     FROM records
     WHERE ${where.join(' AND ')}
   `).all(...binds);
+  return rows.map((row) => ({ connectorId: row.connector_id, stream: row.stream }));
+}
 
-  const manifestCache = new Map();
-  const data = [];
-  for (const row of rows) {
-    if (!manifestCache.has(row.connector_id)) {
-      manifestCache.set(row.connector_id, await getConnectorManifest(row.connector_id));
+/**
+ * Slice-4 rewrite of `/_ref/records/timeline`.
+ *
+ * The legacy version read every non-deleted row from `records`, JSON-parsed
+ * each, window-filtered in JS, then sorted + clipped. For large corpuses
+ * (hundreds of thousands of records) that allocated hundreds of MB per call.
+ *
+ * New shape: per-(connector, stream) prepared statements that push the
+ * `since`/`until` window into SQL against either the manifest-declared
+ * `consent_time_field`/`cursor_field` (native mode) or the `emitted_at` column
+ * (emitted mode). Each per-pair query streams via `.iterate()` and is
+ * `LIMIT`-bounded. Results are merged in JS and clipped to the caller's
+ * `limit`.
+ *
+ * Route contract preserved: returns `{object: 'list', data, meta}` with the
+ * same entry shape (connector_id, stream, id, emitted_at, version, data,
+ * semantic_timestamp, display_timestamp).
+ */
+export async function listRecordsTimeline({
+  connectorId = null,
+  stream = null,
+  since = null,
+  until = null,
+  limit = 50,
+  order = 'desc',
+  timestampMode = 'native',
+} = {}) {
+  const db = getDb();
+  const pairs = enumerateCandidatePairs(db, connectorId, stream);
+  const perPairLimit = Math.max(limit * 2, 10);
+  const orderDir = order === 'asc' ? 'ASC' : 'DESC';
+
+  const collected = [];
+  for (const pair of pairs) {
+    const manifest = await getConnectorManifest(pair.connectorId);
+    const manifestStream = manifest?.streams?.find((item) => item.name === pair.stream) || null;
+
+    // Native mode uses the manifest-declared semantic timestamp field for
+    // the window check and the SQL ORDER BY, falling back to `emitted_at`
+    // when the field is undeclared or missing on a particular row — same
+    // rule the legacy JS path applied via `semanticTimestamp?.value ||
+    // row.emitted_at`. Emitted mode uses `emitted_at` unconditionally.
+    const semanticField = timestampMode === 'native'
+      ? manifestStream?.consent_time_field || manifestStream?.cursor_field || null
+      : null;
+    const timestampExpr = semanticField
+      ? `COALESCE(NULLIF(${safeJsonPathExpr(semanticField, 'semantic_time_field')}, ''), emitted_at)`
+      : 'emitted_at';
+
+    const where = [
+      'connector_id = ?',
+      'stream = ?',
+      'deleted = 0',
+    ];
+    const binds = [pair.connectorId, pair.stream];
+
+    if (since) {
+      where.push(`${timestampExpr} >= ?`);
+      binds.push(expandBoundary(since, 'start'));
     }
-    const manifest = manifestCache.get(row.connector_id);
-    const manifestStream = manifest?.streams?.find((item) => item.name === row.stream) || null;
-    const recordData = row.record_json ? JSON.parse(row.record_json) : null;
-    const semanticTimestamp = pickSemanticTimestamp(manifestStream, recordData);
-    const displayTimestamp = chooseDisplayTimestamp({
-      semanticTimestamp,
-      emittedAt: row.emitted_at,
-      mode: timestampMode,
-    });
-    if (timestampMode === 'native') {
-      const candidateTimestamp = semanticTimestamp?.value || row.emitted_at;
-      if (!timestampWithinWindow(candidateTimestamp, since, until)) continue;
-    } else if (!timestampWithinWindow(row.emitted_at, since, until)) {
-      continue;
+    if (until) {
+      where.push(`${timestampExpr} <= ?`);
+      binds.push(expandBoundary(until, 'end'));
     }
 
-    data.push({
-      object: 'timeline_entry',
-      connector_id: row.connector_id,
-      stream: row.stream,
-      id: row.record_key,
-      emitted_at: row.emitted_at,
-      version: row.version,
-      data: recordData,
-      semantic_timestamp: semanticTimestamp,
-      display_timestamp: displayTimestamp,
-    });
+    const sql = `
+      SELECT connector_id, stream, record_key, record_json, emitted_at, version
+      FROM records
+      WHERE ${where.join(' AND ')}
+      ORDER BY ${timestampExpr} ${orderDir}, emitted_at ${orderDir}, record_key ${orderDir}
+      LIMIT ?
+    `;
+    binds.push(perPairLimit);
+
+    const stmt = db.prepare(sql);
+    for (const row of stmt.iterate(...binds)) {
+      const recordData = row.record_json ? JSON.parse(row.record_json) : null;
+      const semanticTimestamp = pickSemanticTimestamp(manifestStream, recordData);
+      const displayTimestamp = chooseDisplayTimestamp({
+        semanticTimestamp,
+        emittedAt: row.emitted_at,
+        mode: timestampMode,
+      });
+      // Final-pass JS window check — covers the edge case where the SQL
+      // compared ISO strings lexically but `since`/`until` used a date-only
+      // value (`YYYY-MM-DD`); the helper normalizes those to day boundaries.
+      if (timestampMode === 'native') {
+        const candidateTimestamp = semanticTimestamp?.value || row.emitted_at;
+        if (!timestampWithinWindow(candidateTimestamp, since, until)) continue;
+      } else if (!timestampWithinWindow(row.emitted_at, since, until)) {
+        continue;
+      }
+      collected.push({
+        object: 'timeline_entry',
+        connector_id: row.connector_id,
+        stream: row.stream,
+        id: row.record_key,
+        emitted_at: row.emitted_at,
+        version: row.version,
+        data: recordData,
+        semantic_timestamp: semanticTimestamp,
+        display_timestamp: displayTimestamp,
+      });
+    }
   }
 
-  data.sort((left, right) => {
+  collected.sort((left, right) => {
     const primary = compareTimestampValues(left.display_timestamp, right.display_timestamp);
     if (primary !== 0) {
       return order === 'asc' ? primary : -primary;
@@ -293,7 +386,7 @@ export async function listRecordsTimeline({
       : String(right.id).localeCompare(String(left.id));
   });
 
-  const bounded = data.slice(0, limit);
+  const bounded = collected.slice(0, limit);
   return {
     object: 'list',
     data: bounded,
