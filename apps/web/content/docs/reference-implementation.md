@@ -112,8 +112,11 @@ In the current reference, successful and route-level rejected `/v1/streams`, `/v
 
 - `Request-Id`
 - `PDPP-Reference-Trace-Id`
+- `PDPP-Reference-Revision`
 
-That header pair is a reference-only correlation aid. It lets a caller jump from a live read response to the existing `GET /_ref/traces/:traceId` reader without adding a broader trace-listing surface.
+`Request-Id` and `PDPP-Reference-Trace-Id` are reference-only correlation aids. They let a caller jump from a live read response to the existing `GET /_ref/traces/:traceId` reader without adding a broader trace-listing surface.
+
+`PDPP-Reference-Revision` is reference implementation metadata, not protocol negotiation. It is emitted by the authorization server, resource server, composed proxy-visible routes, and `_ref` surfaces so operators can tell which reference build is running without overloading the protocol `PDPP-Version` header. The value uses `PDPP_REFERENCE_REVISION` when set, otherwise the package version plus git revision when available, and falls back to an `unknown` revision when build metadata is not available.
 
 ### Reference-only introspection and traces
 

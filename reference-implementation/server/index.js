@@ -63,6 +63,10 @@ import {
   DEFAULT_LOCAL_DCR_INITIAL_ACCESS_TOKEN,
   DEFAULT_PRE_REGISTERED_PUBLIC_CLIENTS,
 } from './reference-local-defaults.ts';
+import {
+  resolveReferenceRevision,
+  setReferenceRevisionHeader,
+} from './reference-revision.js';
 import { resolveReferenceTopology } from './reference-topology.ts';
 
 const AS_PORT = parseInt(process.env.AS_PORT || '7662');
@@ -1039,6 +1043,7 @@ function buildAsApp(opts = {}) {
   const app = createApp({ logger: opts.logger });
   const nativeMode = !!resolveNativeManifest(opts);
   const providerName = resolveProviderName(opts);
+  const referenceRevision = resolveReferenceRevision(opts);
   const controller = opts.controller || null;
   const dynamicClientRegistrationEnabled = resolveDynamicClientRegistrationEnabled(opts);
   const dynamicClientRegistrationInitialAccessTokens = resolveDynamicClientRegistrationInitialAccessTokens(opts);
@@ -1048,6 +1053,12 @@ function buildAsApp(opts = {}) {
     subjectId: ownerAuthConfig.subjectId,
     providerName,
   });
+  app.use((req, res, next) => {
+    res.setHeader('Request-Id', req.get('Request-Id') || generateSpineId('req'));
+    setReferenceRevisionHeader(res, referenceRevision);
+    next();
+  });
+
   // Shared hosted-UI stylesheet for reference server-rendered HTML pages
   // (consent, device, approval results, owner-login). This is a
   // reference-only asset, not a PDPP protocol surface. See
@@ -1149,11 +1160,6 @@ function buildAsApp(opts = {}) {
     const pending = await getPendingConsent(deviceCode);
     return { deviceCode, pending };
   }
-
-  app.use((req, res, next) => {
-    res.setHeader('Request-Id', req.get('Request-Id') || generateSpineId('req'));
-    next();
-  });
 
   // Primary reference surface: RFC 8414 authorization-server metadata.
   app.get('/.well-known/oauth-authorization-server', { contract: 'getAuthorizationServerMetadata' }, (req, res) => {
@@ -2033,9 +2039,11 @@ function buildRsApp(opts = {}) {
   const app = createApp({ logger: opts.logger });
   const nativeMode = !!resolveNativeManifest(opts);
   const providerName = resolveProviderName(opts);
+  const referenceRevision = resolveReferenceRevision(opts);
 
   app.use((req, res, next) => {
     res.setHeader('Request-Id', req.get('Request-Id') || generateSpineId('req'));
+    setReferenceRevisionHeader(res, referenceRevision);
     // PDPP-Version negotiation
     const requestedVersion = req.headers['pdpp-version'];
     const CURRENT_VERSION = '2026-04-06';
@@ -3052,6 +3060,7 @@ export async function startServer(opts = {}) {
     ignoreAmbientPublicUrls,
     ownerAuthPassword: opts.ownerAuthPassword,
     ownerAuthSubjectId: opts.ownerAuthSubjectId,
+    referenceRevision: opts.referenceRevision,
     logger,
   });
 
@@ -3083,6 +3092,7 @@ export async function startServer(opts = {}) {
     // builder.
     semanticRetrievalSupported: opts.semanticRetrievalSupported,
     semanticRetrievalCapability: opts.semanticRetrievalCapability,
+    referenceRevision: opts.referenceRevision,
   });
   const rsServer = await rsApp.listen(requestedRsPort, bindHost);
   const rsPort = rsServer.address().port;

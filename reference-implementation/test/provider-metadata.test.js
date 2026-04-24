@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 
 import { startServer } from '../server/index.js';
+import { PDPP_REFERENCE_REVISION_HEADER } from '../server/reference-revision.js';
 
 const TEST_DCR_INITIAL_ACCESS_TOKEN = 'pdpp-reference-test-initial-access-token';
 
@@ -39,6 +40,16 @@ async function fetchJson(url, opts = {}) {
   const resp = await fetch(url, opts);
   const body = await resp.json();
   return { status: resp.status, body };
+}
+
+function expectReferenceRevisionHeader(resp, expectedRevision) {
+  assert.equal(resp.headers.get(PDPP_REFERENCE_REVISION_HEADER), expectedRevision);
+}
+
+async function fetchJsonResponse(url, opts = {}) {
+  const resp = await fetch(url, opts);
+  const body = await resp.json();
+  return { resp, body };
 }
 
 
@@ -178,6 +189,43 @@ test('provider metadata routes expose current honest capability set', async () =
     assert.deepEqual(authorizationServer.body.token_endpoint_auth_methods_supported, ['none']);
     assert.equal(authorizationServer.body.device_authorization_endpoint, `${asUrl}/oauth/device_authorization`);
     assert.deepEqual(authorizationServer.body.grant_types_supported, ['urn:ietf:params:oauth:grant-type:device_code']);
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test('reference revision header is distinct reference metadata across AS, RS, and _ref surfaces', async () => {
+  const referenceRevision = 'pdpp-reference@test-revision';
+  const server = await startServer({
+    quiet: true,
+    asPort: 0,
+    rsPort: 0,
+    dbPath: ':memory:',
+    referenceRevision,
+  });
+  const asUrl = `http://localhost:${server.asPort}`;
+  const rsUrl = `http://localhost:${server.rsPort}`;
+
+  try {
+    const { resp: asMetadata } = await fetchJsonResponse(`${asUrl}/.well-known/oauth-authorization-server`);
+    assert.equal(asMetadata.status, 200);
+    expectReferenceRevisionHeader(asMetadata, referenceRevision);
+    assert.equal(asMetadata.headers.get('PDPP-Version'), null);
+
+    const { resp: rsMetadata } = await fetchJsonResponse(`${rsUrl}/.well-known/oauth-protected-resource`);
+    assert.equal(rsMetadata.status, 200);
+    expectReferenceRevisionHeader(rsMetadata, referenceRevision);
+    assert.equal(rsMetadata.headers.get('PDPP-Version'), '2026-04-06');
+
+    const refSurface = await fetch(`${asUrl}/_ref/connectors`);
+    assert.equal(refSurface.status, 200);
+    expectReferenceRevisionHeader(refSurface, referenceRevision);
+    assert.equal(refSurface.headers.get('PDPP-Version'), null);
+
+    const hostedAsset = await fetch(`${asUrl}/__pdpp/hosted-ui.css`);
+    assert.equal(hostedAsset.status, 200);
+    expectReferenceRevisionHeader(hostedAsset, referenceRevision);
+    assert.equal(hostedAsset.headers.get('PDPP-Version'), null);
   } finally {
     await closeServer(server);
   }
