@@ -155,9 +155,10 @@ function PendingInteractionSection({
   return (
     <Callout
       action={<StatusBadge inline status="pending" />}
-      className="mb-6"
+      className="mb-6 border border-[color:var(--warning)] border-l-4 bg-[color:var(--warning-wash)]"
       description="This run is alive, but it cannot continue until the requested interaction is satisfied."
       surface="human"
+      title="Waiting on operator input"
     >
       <dl className="pdpp-caption grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
         <dt className="text-muted-foreground">kind</dt>

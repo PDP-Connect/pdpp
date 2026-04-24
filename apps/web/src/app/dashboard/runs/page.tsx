@@ -3,6 +3,7 @@ import { Button } from "@/components/ui/button.tsx";
 import { Input } from "@/components/ui/input.tsx";
 import { Select } from "@/components/ui/select.tsx";
 import { Timestamp } from "@/components/ui/timestamp.tsx";
+import { LivePoller } from "../components/live-poller.tsx";
 import { PeekEmpty, PeekPane, PeekTimeline, pivotsFromEnvelope } from "../components/peek.tsx";
 import {
   DataList,
@@ -115,8 +116,16 @@ export default async function RunsPage({ searchParams }: { searchParams: Promise
     params.q ? { label: "query", value: params.q } : null,
   ].filter((item): item is { label: string; value: string } => Boolean(item));
 
+  // Auto-refresh this list whenever a run is still running or waiting on
+  // operator input. A run with `status === "started"` is non-terminal, and
+  // a run whose kinds contain `run.interaction_required` without a matching
+  // `run.interaction_completed` is awaiting input and may transition at any
+  // time.
+  const liveRunCount = result.data.filter(isLiveRun).length;
+
   return (
     <DashboardShell active="runs">
+      <LivePoller enabled={liveRunCount > 0} />
       <PageHeader
         count={`${result.data.length}${result.has_more ? "+" : ""}`}
         description="Connector runs and their lifecycle: staging, advance, progress, and failures."
@@ -193,6 +202,7 @@ export default async function RunsPage({ searchParams }: { searchParams: Promise
 
 function RunRow({ run, params }: { run: RunSummary; params: Params }) {
   const peeked = params.peek === run.run_id;
+  const awaitingInput = isAwaitingInteraction(run);
   return (
     <Link
       aria-current={peeked ? "true" : undefined}
@@ -203,6 +213,7 @@ function RunRow({ run, params }: { run: RunSummary; params: Params }) {
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <code className="pdpp-caption break-all font-medium font-mono text-foreground">{run.run_id}</code>
         <div className="flex items-center gap-2">
+          {awaitingInput ? <AwaitingInputChip /> : null}
           <StatusBadge status={run.status} />
           <span className="pdpp-caption text-muted-foreground">
             <Timestamp value={run.last_at} />
@@ -217,6 +228,38 @@ function RunRow({ run, params }: { run: RunSummary; params: Params }) {
       </div>
     </Link>
   );
+}
+
+function AwaitingInputChip() {
+  return (
+    <span
+      className="pdpp-eyebrow rounded-[3px] bg-[color:var(--warning-wash)] px-1.5 py-0.5 font-medium text-[color:var(--warning)]"
+      data-surface="human"
+      title="This run is paused and requires operator input. Open it to respond."
+    >
+      needs input
+    </span>
+  );
+}
+
+// A run is "live" (worth auto-polling) if it is non-terminal OR is waiting
+// on operator input. We key off the summary `kinds` array because the
+// reference /_ref/runs endpoint already aggregates event types per run;
+// no new contract is needed.
+function isLiveRun(run: RunSummary): boolean {
+  if (run.status === "started") {
+    return true;
+  }
+  return isAwaitingInteraction(run);
+}
+
+function isAwaitingInteraction(run: RunSummary): boolean {
+  // Summary aggregation: if any interaction_required event exists but no
+  // interaction_completed event does, the run is waiting on input. This is
+  // a best-effort signal — the run detail page remains authoritative and
+  // matches individual interaction ids against completions.
+  const kinds = new Set(run.kinds ?? []);
+  return kinds.has("run.interaction_required") && !kinds.has("run.interaction_completed");
 }
 
 function Pivots({ envelope, currentKind }: { envelope: TimelineEnvelope; currentKind: "trace" | "grant" | "run" }) {
