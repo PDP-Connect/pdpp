@@ -324,7 +324,9 @@ function violationStringField(v: unknown): string | null {
 }
 
 function violationStringListField(v: unknown): string[] | null {
-  if (!Array.isArray(v)) return null;
+  if (!Array.isArray(v)) {
+    return null;
+  }
   const items = v.filter((x): x is string => typeof x === "string" && x.length > 0);
   return items.length > 0 ? items : null;
 }
@@ -386,10 +388,7 @@ function ViolationDiagnosis({ failure }: { failure: SpineEvent | undefined }) {
               ) : (
                 <span className="text-muted-foreground">event</span>
               )}
-              <a
-                className="ml-2 text-primary underline-offset-2 hover:underline"
-                href={`#${lastValidEventId}`}
-              >
+              <a className="ml-2 text-primary underline-offset-2 hover:underline" href={`#${lastValidEventId}`}>
                 {lastValidEventId} →
               </a>
             </dd>
