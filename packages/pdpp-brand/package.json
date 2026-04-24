@@ -7,7 +7,7 @@
     "./app.css": "./app.css",
     "./base.css": "./base.css",
     "./docs.css": "./docs.css",
-    "./chrome": "./chrome.js"
+    "./chrome": "./chrome.ts"
   },
   "dependencies": {
     "@fontsource-variable/geist": "^5.2.8",
