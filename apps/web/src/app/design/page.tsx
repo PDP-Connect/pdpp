@@ -38,6 +38,12 @@ import { Select } from "@/components/ui/select.tsx";
 import { Textarea } from "@/components/ui/textarea.tsx";
 import { LONGVIEW_CLIENT_URI, LONGVIEW_POLICY_URI, LONGVIEW_TOS_URI } from "@/lib/longview-world.ts";
 
+// Showcase-only no-op — this page is a static design surface; real revoke is
+// wired up in /dashboard/grants. Lint (noEmptyBlockStatements) rejects `() => {}`.
+function noopRevoke(): void {
+  // Intentionally empty; see comment above.
+}
+
 // ─── Nav ──────────────────────────────────────────────────────────────────────
 
 const NAV_SECTIONS = [
@@ -1963,7 +1969,7 @@ function ComponentsSection() {
           </p>
           <SpecimenSwitcher
             specimens={GRANT_SPECIMENS}
-            render={(data) => <GrantInspector key={data.grantId} {...data} onRevoke={() => {}} />}
+            render={(data) => <GrantInspector key={data.grantId} {...data} onRevoke={noopRevoke} />}
           />
         </div>
 
@@ -3180,7 +3186,7 @@ function ExampleWorldsSection() {
 
             <div>
               <SubLabel>Grant surface</SubLabel>
-              <GrantInspector key={`${world.name}-grant`} {...world.grant} onRevoke={() => {}} />
+              <GrantInspector key={`${world.name}-grant`} {...world.grant} onRevoke={noopRevoke} />
             </div>
           </div>
         </div>

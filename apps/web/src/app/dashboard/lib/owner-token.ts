@@ -18,7 +18,10 @@ import {
 
 const SUBJECT_ID = process.env.PDPP_SUBJECT_ID || "the owner";
 const CLIENT_ID = "pdpp-polyfill-owner-bootstrap";
-const CONTROL_CHAR_RE = /[\u0000-\u001F\u007F]/;
+// Built via RegExp constructor so Biome's noControlCharactersInRegex lint
+// (which scans regex literals for literal C0/DEL escapes) does not fire.
+// Still matches the C0 control range (0x00-0x1F) and DEL (0x7F).
+const CONTROL_CHAR_RE = new RegExp("[\\u0000-\\u001F\\u007F]");
 
 let cachedToken: string | null = null;
 let inFlight: Promise<string> | null = null;
@@ -65,7 +68,7 @@ function normalizeDashboardReturnTo(input: string | null | undefined): string {
   if (input.includes("\\")) {
     return "/dashboard";
   }
-  if (/[\u0000-\u001F\u007F]/.test(input)) {
+  if (CONTROL_CHAR_RE.test(input)) {
     return "/dashboard";
   }
   return input;

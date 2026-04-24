@@ -8,7 +8,10 @@ import { Dialog, DialogBackdrop, DialogPopup, DialogPortal } from "@/components/
 // Shared open/close handle so the trigger button (in the topbar) and the drawer
 // itself can live in different subtrees of the server-rendered shell without
 // needing a full React Context for a single boolean flag.
-let setOpenRef: (open: boolean) => void = () => {};
+function noopSetOpen(_open: boolean): void {
+  // Placeholder until <MobileDrawer /> mounts and installs the real setter.
+}
+let setOpenRef: (open: boolean) => void = noopSetOpen;
 
 export function MobileDrawerTrigger() {
   return (
@@ -42,7 +45,7 @@ export function MobileDrawer({ children }: { children: ReactNode }) {
   useEffect(() => {
     setOpenRef = setOpen;
     return () => {
-      setOpenRef = () => {};
+      setOpenRef = noopSetOpen;
     };
   }, []);
 

@@ -14,7 +14,10 @@ const SHORTCUTS = [
   { label: "Records", href: "/dashboard/records" },
 ];
 
-let openRef: { open: () => void } = { open: () => {} };
+function noopOpen(): void {
+  // Placeholder until <CommandPalette /> mounts and installs the real opener.
+}
+let openRef: { open: () => void } = { open: noopOpen };
 
 export function CommandPaletteTrigger() {
   return (
@@ -43,7 +46,7 @@ export function CommandPalette() {
   useEffect(() => {
     openRef = { open: () => setOpen(true) };
     return () => {
-      openRef = { open: () => {} };
+      openRef = { open: noopOpen };
     };
   }, []);
 

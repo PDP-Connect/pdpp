@@ -46,15 +46,13 @@ export default async function OpenSpecSpecsPage() {
                 title={s.title}
                 excerpt={s.excerpt}
                 footer={
-                  <>
-                    {s.relatedChanges.length > 0 ? (
-                      <span>
-                        active in: <span className="font-mono">{s.relatedChanges.join(", ")}</span>
-                      </span>
-                    ) : (
-                      <span className="opacity-70">no active changes</span>
-                    )}
-                  </>
+                  s.relatedChanges.length > 0 ? (
+                    <span>
+                      active in: <span className="font-mono">{s.relatedChanges.join(", ")}</span>
+                    </span>
+                  ) : (
+                    <span className="opacity-70">no active changes</span>
+                  )
                 }
               />
             ))}
