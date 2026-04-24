@@ -294,12 +294,6 @@ export interface DeploymentDiagnostics {
     provenance: "absent" | "present" | "redacted";
     secret: boolean;
   }>;
-  manifests: ReadonlyArray<{
-    connector_id: string;
-    display_name: string | null;
-    provenance: "native" | "polyfill-registered";
-    semantic_stream_count: number;
-  }>;
   lexical: {
     index: {
       state: "built" | "building";
@@ -319,6 +313,12 @@ export interface DeploymentDiagnostics {
       } | null;
     };
   };
+  manifests: ReadonlyArray<{
+    connector_id: string;
+    display_name: string | null;
+    provenance: "native" | "polyfill-registered";
+    semantic_stream_count: number;
+  }>;
   semantic: {
     backend: {
       configured: boolean;
