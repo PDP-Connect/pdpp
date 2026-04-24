@@ -1144,6 +1144,7 @@ test('startup backfills existing polyfill connectors without re-registration', a
     closeDb();
 
     server = await bootServer();
+    await server.startupBackfillDone;
     asUrl = `http://localhost:${server.asPort}`;
     rsUrl = `http://localhost:${server.rsPort}`;
 

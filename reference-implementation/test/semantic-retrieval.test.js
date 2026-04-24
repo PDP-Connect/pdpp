@@ -862,6 +862,7 @@ test('restart regression: semantic coverage survives process restart without re-
         dynamicClientRegistrationInitialAccessTokens: [TEST_DCR_INITIAL_ACCESS_TOKEN],
       });
       try {
+        await server.startupBackfillDone;
         const rsUrl = `http://localhost:${server.rsPort}`;
         const asUrl = `http://localhost:${server.asPort}`;
         // Re-register manifest (polyfill topology re-registers on each boot;
@@ -924,9 +925,9 @@ test('backend identity change flips index_state to stale until rebuild restores'
         await closeServer(server);
       }
     }
-    // Second boot — install a stub with a different model_id. Backfill should
-    // detect backend drift, rebuild, and advertise built by request time
-    // (backfill runs synchronously during startup).
+    // Second boot — install a stub with a different model_id. Startup
+    // backfill runs after AS/RS listen, so wait for the returned promise
+    // before asserting the steady-state advertisement.
     {
       const { makeStubBackend } = await import('../server/search-semantic.js');
       const driftedBackend = makeStubBackend({ dimensions: 64 });
@@ -943,6 +944,7 @@ test('backend identity change flips index_state to stale until rebuild restores'
         semanticRetrievalBackend: adapter,
       });
       try {
+        await server.startupBackfillDone;
         const rsUrl = `http://localhost:${server.rsPort}`;
         const asUrl = `http://localhost:${server.asPort}`;
         await fetch(`${asUrl}/connectors`, {

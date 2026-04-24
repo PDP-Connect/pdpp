@@ -89,6 +89,83 @@ function looksLikePolyfillDeploymentDbPath(dbPath) {
   return dbPath.includes('/polyfill-connectors/') && dbPath.endsWith('polyfill.sqlite');
 }
 
+async function collectRetrievalStartupBackfillManifests({ nativeManifest, logger }) {
+  if (nativeManifest) {
+    return [nativeManifest];
+  }
+
+  const manifests = [];
+  const connectorIds = await listRegisteredConnectorIds();
+  for (const connectorId of connectorIds) {
+    try {
+      const manifest = await getConnectorManifest(connectorId);
+      if (manifest) {
+        manifests.push(manifest);
+      }
+    } catch (err) {
+      logger.warn(
+        { err, connectorId },
+        'skipping retrieval startup backfill for connector with invalid manifest',
+      );
+    }
+  }
+  return manifests;
+}
+
+async function runRetrievalStartupBackfill({ manifests, logger }) {
+  if (manifests.length === 0) {
+    return;
+  }
+
+  const startedAt = Date.now();
+  logger.info({ connectorCount: manifests.length }, 'retrieval startup backfill started');
+
+  for (const manifest of manifests) {
+    const connectorId = manifest.connector_id;
+    try {
+      logger.info({ connectorId }, 'retrieval startup backfill connector started');
+      await lexicalIndexBackfillForManifest({
+        manifest,
+        log: (msg) => logger.info(msg),
+      });
+      if (getSemanticBackend()) {
+        await semanticIndexBackfillForManifest({
+          manifest,
+          log: (msg) => logger.info(msg),
+        });
+      }
+      logger.info({ connectorId }, 'retrieval startup backfill connector completed');
+    } catch (err) {
+      logger.warn(
+        { err, connectorId },
+        'retrieval startup backfill failed for connector',
+      );
+    }
+  }
+
+  logger.info(
+    { connectorCount: manifests.length, duration_ms: Date.now() - startedAt },
+    'retrieval startup backfill completed',
+  );
+}
+
+function scheduleRetrievalStartupBackfill({ manifests, logger }) {
+  if (manifests.length === 0) {
+    return Promise.resolve();
+  }
+
+  logger.info(
+    { connectorCount: manifests.length },
+    'retrieval startup backfill scheduled after AS/RS listen',
+  );
+
+  return new Promise((resolve) => setImmediate(resolve))
+    .then(() => runRetrievalStartupBackfill({ manifests, logger }))
+    .catch((err) => {
+      logger.warn({ err }, 'retrieval startup backfill crashed');
+    });
+}
+
 function pdppError(res, status, code, message, param = null) {
   const body = { error: { type: typeFor(status), code, message } };
   if (param) body.error.param = param;
@@ -2907,57 +2984,14 @@ export async function startServer(opts = {}) {
   }
 
   // Startup retrieval backfill. Existing data should become searchable after
-  // restart without requiring re-ingest.
-  //
-  // Native mode: the configured native manifest is the only known connector,
-  // so backfill it directly here.
-  //
-  // Polyfill mode: the DB may already contain registered connectors from a
-  // previous run. Those manifests need the same startup pass, otherwise an
-  // upgraded DB can keep empty lexical / semantic indexes until each
-  // connector is re-registered manually. New registrations still backfill
-  // inside registerConnector.
-  if (nativeConfig?.nativeManifest) {
-    await lexicalIndexBackfillForManifest({
-      manifest: nativeConfig.nativeManifest,
-      log: (msg) => logger.info(msg),
-    });
-    // Semantic retrieval index startup backfill parallels the lexical one.
-    // No-op when no backend is configured (semanticRetrievalSupported === false)
-    // or when no participating stream declares semantic_fields. Restart
-    // survival: the backfill sees the persisted semantic_search_meta row and
-    // skips rebuild when fingerprint/model/dimensions/distance_metric all
-    // match the live backend.
-    if (getSemanticBackend()) {
-      await semanticIndexBackfillForManifest({
-        manifest: nativeConfig.nativeManifest,
-        log: (msg) => logger.info(msg),
-      });
-    }
-  } else {
-    const connectorIds = await listRegisteredConnectorIds();
-    for (const connectorId of connectorIds) {
-      try {
-        const manifest = await getConnectorManifest(connectorId);
-        if (!manifest) continue;
-        await lexicalIndexBackfillForManifest({
-          manifest,
-          log: (msg) => logger.info(msg),
-        });
-        if (getSemanticBackend()) {
-          await semanticIndexBackfillForManifest({
-            manifest,
-            log: (msg) => logger.info(msg),
-          });
-        }
-      } catch (err) {
-        logger.warn(
-          { err, connectorId },
-          'skipping retrieval startup backfill for connector with invalid manifest',
-        );
-      }
-    }
-  }
+  // restart without requiring re-ingest, but a large local corpus can take
+  // minutes to rebuild. Capture the boot-time manifest set now, then schedule
+  // the actual index work after AS/RS are already listening. New connector
+  // registrations still backfill synchronously in registerConnector.
+  const startupBackfillManifests = await collectRetrievalStartupBackfillManifests({
+    nativeManifest: nativeConfig?.nativeManifest || null,
+    logger,
+  });
 
   const providerName =
     opts.providerName ||
@@ -3046,7 +3080,14 @@ export async function startServer(opts = {}) {
   const rsPort = rsServer.address().port;
   runtimeContext.rsUrl = configuredRsPublicUrl || `http://localhost:${rsPort}`;
   logger.info({ port: rsPort, url: `http://localhost:${rsPort}` }, 'resource server listening');
-  return { asServer, rsServer, asPort, rsPort, logger };
+  const startupBackfillDone = scheduleRetrievalStartupBackfill({
+    manifests: startupBackfillManifests,
+    logger,
+  });
+  if (opts.awaitStartupBackfill === true) {
+    await startupBackfillDone;
+  }
+  return { asServer, rsServer, asPort, rsPort, logger, startupBackfillDone };
 }
 
 // ─── CLI entrypoint ──────────────────────────────────────────────────────────

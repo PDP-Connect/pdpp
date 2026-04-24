@@ -25,6 +25,7 @@
  */
 
 import { randomBytes, createHash } from 'crypto';
+import { setImmediate as yieldImmediate } from 'node:timers/promises';
 import { getConnectorManifest } from './auth.js';
 import { getDb } from './db.js';
 
@@ -103,6 +104,7 @@ export function makeStubBackend({ dimensions = 64 } = {}) {
 // Module-scoped backend, configured by configureSemanticBackend() or left
 // null (extension is not advertised).
 let backend = null;
+let activeBackfillCount = 0;
 
 /**
  * Configure or clear the module-scoped embedding backend. Pass null to
@@ -123,6 +125,10 @@ export function getSemanticBackend() {
   return backend;
 }
 
+export function isSemanticIndexBackfillActive() {
+  return activeBackfillCount > 0;
+}
+
 // ─── Vector index interface + backends ─────────────────────────────────────
 
 /**
@@ -136,6 +142,19 @@ export function getSemanticBackend() {
  */
 function makeBlobFlatIndex({ db, dimensions, distanceMetric }) {
   const byteLen = dimensions * 4;
+  const upsertStmt = db.prepare(`
+    INSERT INTO semantic_search_blob(connector_id, scope_key, record_key, embedding)
+    VALUES(?, ?, ?, ?)
+    ON CONFLICT(connector_id, scope_key, record_key) DO UPDATE SET
+      embedding = excluded.embedding
+  `);
+  const upsertManyTx = db.transaction((entries) => {
+    for (const entry of entries) {
+      const buf = Buffer.from(entry.vector.buffer, entry.vector.byteOffset, entry.vector.byteLength);
+      upsertStmt.run(entry.connectorId, entry.scopeKey, entry.recordKey, buf);
+    }
+  });
+
   function distance(a, b) {
     if (distanceMetric === 'cosine') {
       // Vectors are pre-normalized by the stub; for hosted backends we
@@ -163,12 +182,11 @@ function makeBlobFlatIndex({ db, dimensions, distanceMetric }) {
     kind: 'blob-flat',
     async upsert({ connectorId, scopeKey, recordKey, vector }) {
       const buf = Buffer.from(vector.buffer, vector.byteOffset, vector.byteLength);
-      db.prepare(`
-        INSERT INTO semantic_search_blob(connector_id, scope_key, record_key, embedding)
-        VALUES(?, ?, ?, ?)
-        ON CONFLICT(connector_id, scope_key, record_key) DO UPDATE SET
-          embedding = excluded.embedding
-      `).run(connectorId, scopeKey, recordKey, buf);
+      upsertStmt.run(connectorId, scopeKey, recordKey, buf);
+    },
+    async upsertMany(entries) {
+      if (entries.length === 0) return;
+      upsertManyTx(entries);
     },
     async deleteRecord({ connectorId, stream, recordKey }) {
       // scope_key contains stream as the first JSON array element. Use
@@ -277,28 +295,47 @@ function makeSqliteVecIndex({ db, dimensions, distanceMetric }) {
   }
   ensureTable();
 
+  const selectRowidStmt = db.prepare(`
+    SELECT rowid FROM semantic_search_rowid
+    WHERE connector_id = ? AND scope_key = ? AND record_key = ?
+  `);
+  const updateVecStmt = db.prepare(`
+    UPDATE semantic_search_vec SET embedding = ? WHERE rowid = ?
+  `);
+  const insertVecStmt = db.prepare(`
+    INSERT INTO semantic_search_vec(connector_id, scope_key, record_key, embedding)
+    VALUES(?, ?, ?, ?)
+  `);
+  const insertRowidStmt = db.prepare(`
+    INSERT INTO semantic_search_rowid(connector_id, scope_key, record_key, rowid)
+    VALUES(?, ?, ?, ?)
+  `);
+
+  function upsertOne({ connectorId, scopeKey, recordKey, vector }) {
+    const buf = Buffer.from(vector.buffer, vector.byteOffset, vector.byteLength);
+    const existing = selectRowidStmt.get(connectorId, scopeKey, recordKey);
+    if (existing) {
+      updateVecStmt.run(buf, existing.rowid);
+      return;
+    }
+    const info = insertVecStmt.run(connectorId, scopeKey, recordKey, buf);
+    insertRowidStmt.run(connectorId, scopeKey, recordKey, Number(info.lastInsertRowid));
+  }
+
+  const upsertManyTx = db.transaction((entries) => {
+    for (const entry of entries) {
+      upsertOne(entry);
+    }
+  });
+
   return {
     kind: 'sqlite-vec',
     async upsert({ connectorId, scopeKey, recordKey, vector }) {
-      const buf = Buffer.from(vector.buffer, vector.byteOffset, vector.byteLength);
-      const existing = db.prepare(`
-        SELECT rowid FROM semantic_search_rowid
-        WHERE connector_id = ? AND scope_key = ? AND record_key = ?
-      `).get(connectorId, scopeKey, recordKey);
-      if (existing) {
-        db.prepare(`
-          UPDATE semantic_search_vec SET embedding = ? WHERE rowid = ?
-        `).run(buf, existing.rowid);
-        return;
-      }
-      const info = db.prepare(`
-        INSERT INTO semantic_search_vec(connector_id, scope_key, record_key, embedding)
-        VALUES(?, ?, ?, ?)
-      `).run(connectorId, scopeKey, recordKey, buf);
-      db.prepare(`
-        INSERT INTO semantic_search_rowid(connector_id, scope_key, record_key, rowid)
-        VALUES(?, ?, ?, ?)
-      `).run(connectorId, scopeKey, recordKey, Number(info.lastInsertRowid));
+      upsertOne({ connectorId, scopeKey, recordKey, vector });
+    },
+    async upsertMany(entries) {
+      if (entries.length === 0) return;
+      upsertManyTx(entries);
     },
     async deleteRecord({ connectorId, stream, recordKey }) {
       // Any scope_key whose first array element is stream.
@@ -490,24 +527,28 @@ function fingerprintSemanticFields(declaredFields) {
 
 async function rebuildSemanticIndexForStream({ connectorId, stream, declaredFields }) {
   const index = ensureVectorIndex();
-  if (!index || !backend) return;
+  if (!index || !backend) return 0;
   await index.deleteByConnectorStream({ connectorId, stream });
 
   const db = getDb();
   const PAGE = 500;
-  let offset = 0;
+  let lastId = 0;
+  let indexed = 0;
   for (;;) {
     const rows = db.prepare(`
-      SELECT record_key, record_json
+      SELECT id, record_key, record_json
       FROM records
       WHERE connector_id = ?
         AND stream = ?
         AND deleted = 0
+        AND id > ?
       ORDER BY id ASC
-      LIMIT ? OFFSET ?
-    `).all(connectorId, stream, PAGE, offset);
+      LIMIT ?
+    `).all(connectorId, stream, lastId, PAGE);
     if (rows.length === 0) break;
+    const entries = [];
     for (const row of rows) {
+      lastId = Number(row.id);
       let data;
       try {
         data = row.record_json ? JSON.parse(row.record_json) : null;
@@ -518,7 +559,7 @@ async function rebuildSemanticIndexForStream({ connectorId, stream, declaredFiel
         const value = data?.[field];
         if (typeof value !== 'string' || value.length === 0) continue;
         const vector = await backend.embedDocument(value);
-        await index.upsert({
+        entries.push({
           connectorId,
           scopeKey: encodeScopeKey(stream, field),
           recordKey: row.record_key,
@@ -526,9 +567,18 @@ async function rebuildSemanticIndexForStream({ connectorId, stream, declaredFiel
         });
       }
     }
+    if (entries.length > 0 && typeof index.upsertMany === 'function') {
+      await index.upsertMany(entries);
+    } else {
+      for (const entry of entries) {
+        await index.upsert(entry);
+      }
+    }
+    indexed += entries.length;
+    await yieldImmediate();
     if (rows.length < PAGE) break;
-    offset += rows.length;
   }
+  return indexed;
 }
 
 /**
@@ -553,6 +603,8 @@ async function rebuildSemanticIndexForStream({ connectorId, stream, declaredFiel
 export async function semanticIndexBackfillForManifest({ manifest, log = () => {} } = {}) {
   if (!manifest?.connector_id || !Array.isArray(manifest?.streams)) return;
   if (!backend) return;
+  activeBackfillCount += 1;
+  try {
   const connectorId = manifest.connector_id;
   const db = getDb();
   const index = ensureVectorIndex();
@@ -640,7 +692,17 @@ export async function semanticIndexBackfillForManifest({ manifest, log = () => {
 
     if (!needsRebuild) continue;
 
-    await rebuildSemanticIndexForStream({ connectorId, stream, declaredFields });
+    const recordCountRow = db.prepare(`
+      SELECT COUNT(*) AS n
+      FROM records
+      WHERE connector_id = ? AND stream = ? AND deleted = 0
+    `).get(connectorId, stream);
+    const recordsToScan = Number(recordCountRow?.n || 0);
+    log(`[PDPP] Semantic index rebuild starting for ${connectorId} stream='${stream}' ` +
+        `(records=${recordsToScan}, fields=${declaredFields.length})`);
+    const indexed = await rebuildSemanticIndexForStream({ connectorId, stream, declaredFields });
+    log(`[PDPP] Semantic index rebuild completed for ${connectorId} stream='${stream}' ` +
+        `(records=${recordsToScan}, indexed=${indexed})`);
 
     db.prepare(`
       INSERT INTO semantic_search_meta(connector_id, stream, fields_fingerprint, model_id, dimensions, distance_metric, updated_at)
@@ -669,6 +731,9 @@ export async function semanticIndexBackfillForManifest({ manifest, log = () => {
       WHERE connector_id = ? AND stream = ?
     `).run(connectorId, row.stream);
   }
+  } finally {
+    activeBackfillCount = Math.max(0, activeBackfillCount - 1);
+  }
 }
 
 /**
@@ -683,6 +748,7 @@ export async function semanticIndexBackfillForManifest({ manifest, log = () => {
  */
 export function computeIndexState() {
   if (!backend) return 'stale';
+  if (isSemanticIndexBackfillActive()) return 'building';
   const db = getDb();
   const rows = db.prepare(`
     SELECT model_id, dimensions, distance_metric

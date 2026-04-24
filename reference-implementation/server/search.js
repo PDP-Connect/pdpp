@@ -18,6 +18,7 @@
  */
 
 import { randomBytes } from 'crypto';
+import { setImmediate as yieldImmediate } from 'node:timers/promises';
 import { getConnectorManifest } from './auth.js';
 import { getDb } from './db.js';
 
@@ -110,22 +111,35 @@ async function rebuildLexicalIndexForStream({ connectorId, stream, declaredField
     WHERE connector_id = ? AND stream = ?
   `).run(connectorId, stream);
 
+  const insertStmt = db.prepare(`
+    INSERT INTO lexical_search_index(connector_id, stream, record_key, field, text)
+    VALUES(?, ?, ?, ?, ?)
+  `);
+  const insertRows = db.transaction((entries) => {
+    for (const entry of entries) {
+      insertStmt.run(connectorId, stream, entry.recordKey, entry.field, entry.text);
+    }
+  });
+
   // Stream the records page-by-page so we don't pull the whole table into
   // memory on big stores.
   const PAGE = 500;
-  let offset = 0;
+  let lastId = 0;
   for (;;) {
     const rows = db.prepare(`
-      SELECT record_key, record_json
+      SELECT id, record_key, record_json
       FROM records
       WHERE connector_id = ?
         AND stream = ?
         AND deleted = 0
+        AND id > ?
       ORDER BY id ASC
-      LIMIT ? OFFSET ?
-    `).all(connectorId, stream, PAGE, offset);
+      LIMIT ?
+    `).all(connectorId, stream, lastId, PAGE);
     if (rows.length === 0) break;
+    const entries = [];
     for (const row of rows) {
+      lastId = Number(row.id);
       let data;
       try {
         data = row.record_json ? JSON.parse(row.record_json) : null;
@@ -137,14 +151,14 @@ async function rebuildLexicalIndexForStream({ connectorId, stream, declaredField
       for (const field of declaredFields) {
         const value = data?.[field];
         if (typeof value !== 'string' || value.length === 0) continue;
-        db.prepare(`
-          INSERT INTO lexical_search_index(connector_id, stream, record_key, field, text)
-          VALUES(?, ?, ?, ?, ?)
-        `).run(connectorId, stream, row.record_key, field, value);
+        entries.push({ recordKey: row.record_key, field, text: value });
       }
     }
+    if (entries.length > 0) {
+      insertRows(entries);
+    }
+    await yieldImmediate();
     if (rows.length < PAGE) break;
-    offset += rows.length;
   }
 }
 
