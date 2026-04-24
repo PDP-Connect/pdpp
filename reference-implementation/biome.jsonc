@@ -21,6 +21,7 @@
       "examples/**/*.ts",
       "*.jsonc",
       "*.json",
+      "!report.*.json",
       "!node_modules"
     ]
   }
