@@ -61,7 +61,7 @@ import {
   DEFAULT_LOCAL_DCR_INITIAL_ACCESS_TOKEN,
   DEFAULT_PRE_REGISTERED_PUBLIC_CLIENTS,
 } from './reference-local-defaults.js';
-import { resolveReferenceTopology } from './reference-topology.js';
+import { resolveReferenceTopology } from './reference-topology.ts';
 
 const AS_PORT = parseInt(process.env.AS_PORT || '7662');
 const RS_PORT = parseInt(process.env.RS_PORT || '7663');

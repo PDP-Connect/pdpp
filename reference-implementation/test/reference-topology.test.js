@@ -8,7 +8,7 @@ import {
   resolveReferenceBrowserOrigin,
   resolveReferenceMode,
   resolveReferenceTopology,
-} from '../server/reference-topology.js';
+} from '../server/reference-topology.ts';
 
 test('reference topology defaults to direct mode when no composed-origin signals are present', () => {
   assert.equal(

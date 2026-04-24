@@ -11,10 +11,7 @@
       "types": "./server/reference-local-defaults.d.ts",
       "default": "./server/reference-local-defaults.js"
     },
-    "./reference-topology": {
-      "types": "./server/reference-topology.d.ts",
-      "default": "./server/reference-topology.js"
-    },
+    "./reference-topology": "./server/reference-topology.ts",
     "./owner-session": "./server/owner-session.ts"
   },
   "scripts": {
