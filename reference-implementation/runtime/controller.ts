@@ -243,7 +243,12 @@ const activeRuns = new Map<string, ActiveRun>();
 // dashboard-submitted values satisfy the current live run only and are never
 // persisted to `.env.local`, SQLite config/state, or spine event payloads.
 const activeRunInteractions = new Map<string, ActiveRunInteraction>();
-let referenceFixtureConnectorIds: Set<string> | null = null;
+interface ManifestFingerprint {
+  readonly streams: string;
+  readonly version: string;
+}
+let referenceFixtureFingerprints: Map<string, ManifestFingerprint> | null = null;
+let polyfillManifestFingerprints: Map<string, ManifestFingerprint> | null = null;
 let polyfillConnectorPaths: Map<string, string> | null = null;
 const ABANDONED_CONTROLLER_RUN_REASON = "controller_restarted";
 
@@ -257,29 +262,62 @@ function nowIso(): string {
 
 // ─── Connector-path discovery (cached per-process) ──────────────────────────
 
-function loadReferenceFixtureConnectorIds(): Set<string> {
-  if (referenceFixtureConnectorIds) {
-    return referenceFixtureConnectorIds;
+// A manifest fingerprint is a cheap, stable summary used to tell the
+// reference fixture manifest apart from the shipped polyfill manifest when
+// they share the same `connector_id`. We compare version plus the sorted
+// list of declared stream names — that is enough to distinguish the two
+// github.json files today without pulling in a full JSON equality check.
+function fingerprintManifest(manifest: ConnectorManifest | null | undefined): ManifestFingerprint | null {
+  if (!manifest || typeof manifest !== "object") {
+    return null;
   }
-  const ids = new Set<string>();
+  const version =
+    typeof (manifest as { version?: unknown }).version === "string" ? (manifest as { version: string }).version : "";
+  const rawStreams = (manifest as { streams?: unknown }).streams;
+  const streamNames: string[] = [];
+  if (Array.isArray(rawStreams)) {
+    for (const stream of rawStreams) {
+      const name = (stream as { name?: unknown } | null)?.name;
+      if (typeof name === "string" && name.trim()) {
+        streamNames.push(name.trim());
+      }
+    }
+  }
+  streamNames.sort();
+  return { version, streams: streamNames.join(",") };
+}
+
+function fingerprintsEqual(a: ManifestFingerprint | null, b: ManifestFingerprint | null): boolean {
+  return !!(a && b && a.version === b.version && a.streams === b.streams);
+}
+
+function loadReferenceFixtureFingerprints(): Map<string, ManifestFingerprint> {
+  if (referenceFixtureFingerprints) {
+    return referenceFixtureFingerprints;
+  }
+  const entries = new Map<string, ManifestFingerprint>();
   for (const file of readdirSync(REFERENCE_MANIFESTS_DIR)) {
     if (!file.endsWith(".json")) {
       continue;
     }
     try {
-      const manifest = JSON.parse(readFileSync(join(REFERENCE_MANIFESTS_DIR, file), "utf8")) as {
-        connector_id?: string;
-      } | null;
-      const connectorId = manifest?.connector_id;
-      if (typeof connectorId === "string" && connectorId.trim()) {
-        ids.add(connectorId.trim());
+      const manifest = JSON.parse(
+        readFileSync(join(REFERENCE_MANIFESTS_DIR, file), "utf8")
+      ) as ConnectorManifest | null;
+      const connectorId = (manifest as { connector_id?: unknown } | null)?.connector_id;
+      if (typeof connectorId !== "string" || !connectorId.trim()) {
+        continue;
+      }
+      const fp = fingerprintManifest(manifest);
+      if (fp) {
+        entries.set(connectorId.trim(), fp);
       }
     } catch {
       // Ignore malformed local fixture manifests during runtime path discovery.
     }
   }
-  referenceFixtureConnectorIds = ids;
-  return ids;
+  referenceFixtureFingerprints = entries;
+  return entries;
 }
 
 function loadPolyfillConnectorPaths(): Map<string, string> {
@@ -287,8 +325,10 @@ function loadPolyfillConnectorPaths(): Map<string, string> {
     return polyfillConnectorPaths;
   }
   const paths = new Map<string, string>();
+  const fingerprints = new Map<string, ManifestFingerprint>();
   if (!existsSync(POLYFILL_MANIFESTS_DIR)) {
     polyfillConnectorPaths = paths;
+    polyfillManifestFingerprints = fingerprints;
     return paths;
   }
   for (const file of readdirSync(POLYFILL_MANIFESTS_DIR)) {
@@ -304,26 +344,91 @@ function loadPolyfillConnectorPaths(): Map<string, string> {
       continue;
     }
     try {
-      const manifest = JSON.parse(readFileSync(join(POLYFILL_MANIFESTS_DIR, file), "utf8")) as {
-        connector_id?: string;
-      } | null;
-      const connectorId = manifest?.connector_id;
-      if (typeof connectorId === "string" && connectorId.trim()) {
-        paths.set(connectorId.trim(), connectorPath);
+      const manifest = JSON.parse(readFileSync(join(POLYFILL_MANIFESTS_DIR, file), "utf8")) as ConnectorManifest | null;
+      const connectorId = (manifest as { connector_id?: unknown } | null)?.connector_id;
+      if (typeof connectorId !== "string" || !connectorId.trim()) {
+        continue;
+      }
+      const trimmedId = connectorId.trim();
+      paths.set(trimmedId, connectorPath);
+      const fp = fingerprintManifest(manifest);
+      if (fp) {
+        fingerprints.set(trimmedId, fp);
       }
     } catch {
       // Ignore malformed manifests when building the local connector-path map.
     }
   }
   polyfillConnectorPaths = paths;
+  polyfillManifestFingerprints = fingerprints;
   return paths;
 }
 
-export function resolveDefaultConnectorPath(connectorId: string): string | null {
-  if (loadReferenceFixtureConnectorIds().has(connectorId)) {
+function loadPolyfillManifestFingerprints(): Map<string, ManifestFingerprint> {
+  if (!polyfillManifestFingerprints) {
+    loadPolyfillConnectorPaths();
+  }
+  return polyfillManifestFingerprints ?? new Map<string, ManifestFingerprint>();
+}
+
+// Resolve the connector-implementation path for a controller-managed run.
+//
+// Why this is non-trivial: the reference fixture manifests in
+// reference-implementation/manifests/ and the shipped polyfill manifests in
+// packages/polyfill-connectors/manifests/ can share a `connector_id`
+// (for example, GitHub). The reference fixture is served by the seed
+// connector at reference-implementation/connectors/seed/index.js, while
+// the shipped polyfill connector lives at
+// packages/polyfill-connectors/connectors/<name>/index.ts. Silently
+// preferring the seed on collision caused a protocol violation: the seed
+// GitHub fixture emits a `commits` PROGRESS stream that the polyfill
+// manifest does not declare.
+//
+// Rules applied here, in order:
+//   1. When the caller passes the active manifest, compare a stable
+//      fingerprint (version + sorted stream names) against the on-disk
+//      reference fixture and polyfill manifests for that connector_id:
+//        - match polyfill → polyfill connector path;
+//        - match reference → seed connector path;
+//   2. No match, or no manifest provided: prefer the shipped polyfill
+//      connector when it exists. Polyfill is the deployed production
+//      surface; the seed is a fixture kept for explicit reference fixture
+//      manifests and tests.
+//   3. Fall back to the seed connector only when the reference fixture has
+//      a manifest for this connector_id. Unknown ids resolve to null.
+export function resolveDefaultConnectorPath(connectorId: string, manifest?: ConnectorManifest): string | null {
+  const referenceFingerprints = loadReferenceFixtureFingerprints();
+  const polyfillFingerprints = loadPolyfillManifestFingerprints();
+  const polyfillPaths = loadPolyfillConnectorPaths();
+  const polyfillPath = polyfillPaths.get(connectorId) || null;
+  const hasReferenceFixture = referenceFingerprints.has(connectorId);
+
+  const activeFingerprint = fingerprintManifest(manifest ?? null);
+  if (activeFingerprint) {
+    if (polyfillPath && fingerprintsEqual(activeFingerprint, polyfillFingerprints.get(connectorId) ?? null)) {
+      return polyfillPath;
+    }
+    if (hasReferenceFixture && fingerprintsEqual(activeFingerprint, referenceFingerprints.get(connectorId) ?? null)) {
+      return SEED_CONNECTOR_PATH;
+    }
+  }
+
+  if (polyfillPath) {
+    return polyfillPath;
+  }
+  if (hasReferenceFixture) {
     return SEED_CONNECTOR_PATH;
   }
-  return loadPolyfillConnectorPaths().get(connectorId) || null;
+  return null;
+}
+
+// Reset cached manifest/path discovery. Tests rewrite manifest files on
+// disk during setup; without a reset hook the first test's cached maps
+// would mask later ones.
+export function __resetControllerPathResolverCachesForTests(): void {
+  referenceFixtureFingerprints = null;
+  polyfillManifestFingerprints = null;
+  polyfillConnectorPaths = null;
 }
 
 // ─── Schedule helpers ───────────────────────────────────────────────────────
