@@ -5,6 +5,7 @@ export interface SiteNavLink {
 
 export const siteNav: readonly SiteNavLink[] = [
   { text: "Reference", link: "/reference" },
+  { text: "Sandbox", link: "/sandbox" },
   { text: "Docs", link: "/docs" },
   { text: "Planning", link: "/planning" },
 ];

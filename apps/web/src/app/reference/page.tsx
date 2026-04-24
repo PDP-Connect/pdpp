@@ -37,8 +37,7 @@ const architectureLayers = [
     label: "Educational surface",
     route: "/sandbox",
     title: "Sandbox",
-    body: "Planned mock-backed walkthroughs for learning PDPP flows without real credentials or owner data.",
-    comingSoon: true,
+    body: "Mock-backed walkthrough placeholder for learning PDPP flows without real credentials or owner data.",
   },
 ] as const;
 
@@ -50,6 +49,18 @@ const trustBoundaries = [
 ] as const;
 
 const referenceLinks = [
+  {
+    label: "Coverage",
+    title: "Public coverage matrix",
+    href: "/reference/coverage",
+    body: "Falsifiable status rows for protocol flows, retrieval extensions, collection profiles, reference diagnostics, sandbox, and deferred scope.",
+  },
+  {
+    label: "Sandbox",
+    title: "Mock educational placeholder",
+    href: "/sandbox",
+    body: "Simulated-only sandbox contract: seeded data, resettable state, no real credentials, and distinct chrome from the live dashboard.",
+  },
   {
     label: "Repository",
     title: "GitHub source",
@@ -216,22 +227,14 @@ export default function ReferencePage() {
           <div className="mb-4 flex flex-col gap-1">
             <h2 className="pdpp-heading text-foreground">Review paths</h2>
             <p className="pdpp-body text-muted-foreground">
-              These links avoid dead-end demo promises: sandbox is planned, while local and self-hosted paths are
-              runnable from the repository.
+              These links keep artifact boundaries explicit: protocol docs are normative, coverage is public evidence,
+              sandbox is mock-only, and live operation remains local or self-hosted.
             </p>
           </div>
           <div className="grid gap-3 md:grid-cols-2">
             {referenceLinks.map((item) => (
               <ReferenceLink item={item} key={item.href} />
             ))}
-            <div className="rounded-xl border border-dashed bg-background/60 p-4">
-              <div className="pdpp-eyebrow text-muted-foreground">Coming soon</div>
-              <h3 className="pdpp-title mt-2 text-foreground">Sandbox walkthroughs</h3>
-              <p className="pdpp-caption mt-2 text-muted-foreground">
-                `/sandbox` is planned as a mock-backed educational surface. It is intentionally not linked until the
-                route exists, so this page does not send reviewers to a 404.
-              </p>
-            </div>
             <ReferenceLink
               item={{
                 label: "Implementation notes",
@@ -285,7 +288,6 @@ function Statement({ eyebrow, title, body }: { eyebrow: string; title: string; b
 }
 
 function SurfaceRow({ layer }: { layer: (typeof architectureLayers)[number] }) {
-  const isComingSoon = "comingSoon" in layer && layer.comingSoon;
   const content = (
     <>
       <div>
@@ -293,13 +295,9 @@ function SurfaceRow({ layer }: { layer: (typeof architectureLayers)[number] }) {
         <h3 className="pdpp-title mt-1 text-foreground">{layer.title}</h3>
       </div>
       <p className="pdpp-body text-muted-foreground">{layer.body}</p>
-      <div className="pdpp-caption font-mono text-muted-foreground">{isComingSoon ? "planned" : layer.route}</div>
+      <div className="pdpp-caption font-mono text-muted-foreground">{layer.route}</div>
     </>
   );
-
-  if (isComingSoon) {
-    return <div className="grid gap-3 p-4 md:grid-cols-[12rem_minmax(0,1fr)_6rem]">{content}</div>;
-  }
 
   return (
     <Link
