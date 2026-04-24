@@ -1,28 +1,28 @@
 ## 1. Baseline
 
-- [ ] 1.1 Capture current `openspec list`, `openspec list --specs`, and active unchecked tasks into `reports/baseline.md`.
-- [ ] 1.2 Confirm `openspec validate --all --strict` passes before cleanup edits.
-- [ ] 1.3 Inventory all design-note locations and count notes by directory.
+- [x] 1.1 Capture current `openspec list`, `openspec list --specs`, and active unchecked tasks into `reports/baseline.md`.
+- [x] 1.2 Confirm `openspec validate --all --strict` passes before cleanup edits.
+- [x] 1.3 Inventory all design-note locations and count notes by directory.
 
 ## 2. Active Change Inventory
 
-- [ ] 2.1 Audit `swap-sqlite-driver` and recommend keep, narrow, split, or archive.
-- [ ] 2.2 Audit `reference-implementation-program` and identify exact blockers to archival.
-- [ ] 2.3 Audit `add-polyfill-connector-system` and identify which tasks are shipped, stale, backlog, open question, or ready to split.
-- [ ] 2.4 Write `reports/active-change-inventory.md` with one row per active change and owner recommendation.
+- [x] 2.1 Audit `swap-sqlite-driver` and recommend keep, narrow, split, or archive.
+- [x] 2.2 Audit `reference-implementation-program` and identify exact blockers to archival.
+- [x] 2.3 Audit `add-polyfill-connector-system` and identify which tasks are shipped, stale, backlog, open question, or ready to split.
+- [x] 2.4 Write `reports/active-change-inventory.md` with one row per active change and owner recommendation.
 
 ## 3. Design-Note Triage
 
-- [ ] 3.1 Audit `openspec/changes/reference-implementation-program/design-notes/`.
-- [ ] 3.2 Audit `openspec/changes/add-polyfill-connector-system/design-notes/`.
-- [ ] 3.3 Audit root `design-notes/`.
-- [ ] 3.4 Write `reports/design-note-triage.md` classifying notes or note clusters as `promote`, `sprint-needed`, `defer`, `superseded`, `connector-background`, or `historical`.
-- [ ] 3.5 Normalize headers on the highest-value notes that remain active intake.
+- [x] 3.1 Audit `openspec/changes/reference-implementation-program/design-notes/`.
+- [x] 3.2 Audit `openspec/changes/add-polyfill-connector-system/design-notes/`.
+- [x] 3.3 Audit root `design-notes/`.
+- [x] 3.4 Write `reports/design-note-triage.md` classifying notes or note clusters as `promote`, `sprint-needed`, `defer`, `superseded`, `connector-background`, or `historical`.
+- [x] 3.5 Normalize headers on the highest-value notes that remain active intake.
 
 ## 4. Canonical Spec Gap Audit
 
-- [ ] 4.1 Compare canonical `openspec/specs/*` against shipped docs/routes/tests for reference architecture, retrieval, control plane, logging, and polyfill runtime behavior.
-- [ ] 4.2 Write `reports/spec-gap-audit.md` listing missing coverage and whether each gap should be fixed in this change or a follow-up.
+- [x] 4.1 Compare canonical `openspec/specs/*` against shipped docs/routes/tests for reference architecture, retrieval, control plane, logging, and polyfill runtime behavior.
+- [x] 4.2 Write `reports/spec-gap-audit.md` listing missing coverage and whether each gap should be fixed in this change or a follow-up.
 - [ ] 4.3 Add governance-only missing requirements in this change if found.
 - [ ] 4.4 Create follow-up OpenSpec change stubs for non-governance missing spec coverage if needed.
 
