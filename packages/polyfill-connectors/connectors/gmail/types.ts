@@ -30,8 +30,10 @@ export interface InteractionMessage {
 }
 
 export interface ProgressMessage {
+  count?: number;
   message: string;
   stream?: string;
+  total?: number;
   type: "PROGRESS";
 }
 

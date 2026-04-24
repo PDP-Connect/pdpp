@@ -273,11 +273,14 @@ export async function emitStatementRecords(
     };
     await deps.emitRecord("statements", rec);
   }
-  await deps.emit({
+  const progressMsg = {
     type: "PROGRESS",
     stream: "statements",
     message: `Hydrated ${summary.successes}/${summary.attempts || indexRows.length} PDFs`,
-  });
+    count: summary.successes,
+    total: summary.attempts || indexRows.length,
+  } as const;
+  await deps.emit(progressMsg);
   await deps.emit({
     type: "STATE",
     stream: "statements",

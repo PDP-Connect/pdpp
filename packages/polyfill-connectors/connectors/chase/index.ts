@@ -666,18 +666,25 @@ async function emitNoAccountsDiagnostic(page: Page, emit: EmitFn): Promise<void>
   });
 }
 
-async function processAccountDownload(deps: EmitDeps, page: Page, account: ChaseAccount): Promise<void> {
+async function processAccountDownload(
+  deps: EmitDeps,
+  page: Page,
+  account: ChaseAccount,
+  accountProgress?: { index: number; total: number }
+): Promise<void> {
   const activityChoice = chooseActivity(
     deps.requested,
     deps.txState,
     deps.wantsTransactions ? "transactions" : "balances",
     account.internal_id
   );
-  await deps.emit({
+  const progressMsg = {
     type: "PROGRESS",
     stream: "transactions",
     message: `${account.name}: downloading QFX (activity=${activityChoice.activity})`,
-  });
+    ...(accountProgress ? { count: accountProgress.index, total: accountProgress.total } : {}),
+  } as const;
+  await deps.emit(progressMsg);
 
   const downloadOpts: DownloadOptions = activityChoice.dateRange
     ? { activity: activityChoice.activity, dateRange: activityChoice.dateRange }
@@ -735,8 +742,12 @@ async function runTransactionsAndBalances(
   page: Page,
   filteredAccounts: readonly ChaseAccount[]
 ): Promise<void> {
-  for (const a of filteredAccounts) {
-    await processAccountDownload(deps, page, a);
+  for (let i = 0; i < filteredAccounts.length; i++) {
+    const account = filteredAccounts[i];
+    if (!account) {
+      continue;
+    }
+    await processAccountDownload(deps, page, account, { index: i + 1, total: filteredAccounts.length });
   }
 }
 
@@ -828,7 +839,19 @@ async function runStatements(
       message: `Found ${rows.length} statement row(s)`,
     });
 
-    for (const row of rows) {
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      if (!row) {
+        continue;
+      }
+      const progressMsg = {
+        type: "PROGRESS",
+        stream: "statements",
+        message: `Processing statement ${i + 1}/${rows.length}`,
+        count: i + 1,
+        total: rows.length,
+      } as const;
+      await deps.emit(progressMsg);
       await processStatementRow(deps, page, row, filteredAccounts, accounts, accountsResFilter);
     }
 

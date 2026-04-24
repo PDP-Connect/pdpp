@@ -90,6 +90,7 @@ export interface GitHubIssue {
 
 export interface GitHubSearchResponse {
   items?: GitHubIssue[];
+  total_count?: number;
 }
 
 export interface GitHubPullDetail {

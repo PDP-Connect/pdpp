@@ -551,11 +551,14 @@ export async function runMessagesAndConversationsWithDetail(
       }
       await processConversationDetail(deps, c, detail, emitConversation);
     }
-    deps.emit({
+    const progressMsg = {
       type: "PROGRESS",
       stream: "messages",
       message: `Synced ${Math.min(i + CONVO_DETAIL_BATCH, convosToSync.length)} / ${convosToSync.length} conversations`,
-    });
+      count: Math.min(i + CONVO_DETAIL_BATCH, convosToSync.length),
+      total: convosToSync.length,
+    } as const;
+    deps.emit(progressMsg);
     await new Promise((r) => setTimeout(r, CONVO_BATCH_PAUSE_MS));
   }
 }
@@ -567,11 +570,14 @@ export async function runConversationsAndMessagesStreams(
   const conversationsCursor = state.conversations as { last_update_time?: string | null } | undefined;
   const priorCursor = conversationsCursor?.last_update_time || null;
   const convosToSync = await listConversationsSinceCursor(deps, priorCursor);
-  deps.emit({
+  const foundProgressMsg = {
     type: "PROGRESS",
     stream: "conversations",
     message: `Found ${convosToSync.length} conversations to sync`,
-  });
+    count: convosToSync.length,
+    total: convosToSync.length,
+  } as const;
+  deps.emit(foundProgressMsg);
 
   const emitConversation = async (c: ConversationListItem, detail: ConversationDetail | null): Promise<void> => {
     if (!deps.requested.has("conversations")) {

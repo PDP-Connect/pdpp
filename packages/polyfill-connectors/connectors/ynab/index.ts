@@ -492,7 +492,7 @@ type EmitFn = (msg: { type: "STATE"; stream: string; cursor: unknown }) => Promi
 
 type TrackedEmitRecord = (stream: string, data: RecordData) => Promise<void>;
 
-type ProgressFn = (message: string, extra?: { stream?: string }) => Promise<void>;
+type ProgressFn = (message: string, extra?: { count?: number; stream?: string; total?: number }) => Promise<void>;
 
 interface BudgetCtx {
   budgetId: string;
@@ -514,6 +514,11 @@ async function collectAccounts(ctx: BudgetCtx): Promise<void> {
   const res = await ynab<YnabAccountsResponse>(`/budgets/${budgetId}/accounts`, token, {
     ...(knowledge === undefined ? {} : { knowledge }),
   });
+  await progress(`Fetched ${res.data.accounts.length} accounts for budget ${budgetId}`, {
+    stream: "accounts",
+    count: res.data.accounts.length,
+    total: res.data.accounts.length,
+  });
   for (const a of res.data.accounts) {
     await trackAndEmit("accounts", accountRecord(a, budgetId));
   }
@@ -532,6 +537,15 @@ async function collectCategoriesAndGroups(ctx: BudgetCtx): Promise<void> {
   const res = await ynab<YnabCategoriesResponse>(`/budgets/${budgetId}/categories`, token, {
     ...(knowledge === undefined ? {} : { knowledge }),
   });
+  const categoryCount = res.data.category_groups.reduce((sum, group) => sum + (group.categories?.length ?? 0), 0);
+  await progress(
+    `Fetched ${categoryCount} categories in ${res.data.category_groups.length} groups for budget ${budgetId}`,
+    {
+      stream: "categories",
+      count: categoryCount,
+      total: categoryCount,
+    }
+  );
   for (const group of res.data.category_groups) {
     if (requested.has("category_groups")) {
       await trackAndEmit("category_groups", categoryGroupRecord(group, budgetId));
@@ -561,6 +575,11 @@ async function collectPayees(ctx: BudgetCtx): Promise<void> {
   const res = await ynab<YnabPayeesResponse>(`/budgets/${budgetId}/payees`, token, {
     ...(knowledge === undefined ? {} : { knowledge }),
   });
+  await progress(`Fetched ${res.data.payees.length} payees for budget ${budgetId}`, {
+    stream: "payees",
+    count: res.data.payees.length,
+    total: res.data.payees.length,
+  });
   for (const p of res.data.payees) {
     await trackAndEmit("payees", payeeRecord(p, budgetId));
   }
@@ -576,6 +595,11 @@ async function collectPayeeLocations(ctx: BudgetCtx): Promise<void> {
     stream: "payee_locations",
   });
   const res = await ynab<YnabPayeeLocationsResponse>(`/budgets/${budgetId}/payee_locations`, token);
+  await progress(`Fetched ${res.data.payee_locations.length} payee locations for budget ${budgetId}`, {
+    stream: "payee_locations",
+    count: res.data.payee_locations.length,
+    total: res.data.payee_locations.length,
+  });
   for (const loc of res.data.payee_locations) {
     await trackAndEmit("payee_locations", payeeLocationRecord(loc, budgetId));
   }
@@ -610,12 +634,22 @@ async function collectTransactions(ctx: BudgetCtx): Promise<void> {
     ...(knowledge === undefined ? {} : { knowledge }),
     ...(sinceDate === undefined ? {} : { sinceDate }),
   });
+  let emittedTransactions = 0;
   for (const t of res.data.transactions) {
     if (!withinTimeRange(t.date, stream?.time_range)) {
       continue;
     }
     await trackAndEmit("transactions", transactionRecord(t, budgetId, accountTypeById));
+    emittedTransactions++;
   }
+  await progress(
+    `Processed ${res.data.transactions.length} transactions for budget ${budgetId}; emitted ${emittedTransactions}`,
+    {
+      stream: "transactions",
+      count: res.data.transactions.length,
+      total: res.data.transactions.length,
+    }
+  );
   const txns =
     (newState.transactions as Record<string, { server_knowledge: number; since_date?: string }> | undefined) ?? {};
   const storedSince = sinceDate || priorSinceDate || scopeSince;
@@ -639,6 +673,11 @@ async function collectScheduledTransactions(ctx: BudgetCtx): Promise<void> {
   const knowledge = priorKnowledge(state, "scheduled_transactions", budgetId);
   const res = await ynab<YnabScheduledTransactionsResponse>(`/budgets/${budgetId}/scheduled_transactions`, token, {
     ...(knowledge === undefined ? {} : { knowledge }),
+  });
+  await progress(`Fetched ${res.data.scheduled_transactions.length} scheduled transactions for budget ${budgetId}`, {
+    stream: "scheduled_transactions",
+    count: res.data.scheduled_transactions.length,
+    total: res.data.scheduled_transactions.length,
   });
   for (const s of res.data.scheduled_transactions) {
     await trackAndEmit("scheduled_transactions", scheduledTransactionRecord(s, budgetId));
@@ -666,6 +705,11 @@ async function fetchMonthsIfNeeded(ctx: BudgetCtx, shouldFetch: boolean): Promis
     ...(knowledge === undefined ? {} : { knowledge }),
   });
   const monthList = res.data.months;
+  await progress(`Fetched ${monthList.length} months for budget ${budgetId}`, {
+    stream: "months",
+    count: monthList.length,
+    total: monthList.length,
+  });
   if (requested.has("months")) {
     for (const m of monthList) {
       await trackAndEmit("months", monthRecord(m, budgetId));
@@ -712,8 +756,16 @@ async function collectMonthCategories(
   });
 
   let highestMonth: string | null = priorCutoff || scopeSince || null;
-  for (const m of activeMonths) {
-    await progress(`Fetching categories for budget ${budgetId} month ${m.month}`, { stream: "month_categories" });
+  for (let i = 0; i < activeMonths.length; i++) {
+    const m = activeMonths[i];
+    if (!m) {
+      continue;
+    }
+    await progress(`Fetching categories for budget ${budgetId} month ${m.month}`, {
+      stream: "month_categories",
+      count: i + 1,
+      total: activeMonths.length,
+    });
     const monthRes = await ynab<YnabMonthDetailResponse>(`/budgets/${budgetId}/months/${m.month}`, token);
     const monthDetail = monthRes.data.month;
     for (const c of monthDetail.categories ?? []) {
@@ -723,6 +775,11 @@ async function collectMonthCategories(
       highestMonth = m.month;
     }
   }
+  await progress(`Fetched month categories for ${activeMonths.length} months in budget ${budgetId}`, {
+    stream: "month_categories",
+    count: activeMonths.length,
+    total: activeMonths.length,
+  });
   const mcNew = (newState.month_categories as Record<string, { last_fetched_month?: string }> | undefined) ?? {};
   // Rewind cutoff by one month so the most recently closed month gets
   // one more pass next run (guards against late-arriving edits).
@@ -801,12 +858,18 @@ runConnector({
       }
       return runtimeEmitRecord(stream, data);
     };
+    const progressWithCounters: ProgressFn = progress;
 
     // 1. Budgets — always fetched; needed to enumerate downstream streams.
-    await progress("Fetching budgets", { stream: "budgets" });
+    await progressWithCounters("Fetching budgets", { stream: "budgets" });
     const budgetsRes = await ynab<YnabBudgetsResponse>("/budgets", token);
     const budgets = budgetsRes.data.budgets;
     const budgetIds = budgets.map((b) => b.id);
+    await progressWithCounters(`Fetched ${budgets.length} budgets`, {
+      stream: "budgets",
+      count: budgets.length,
+      total: budgets.length,
+    });
 
     if (requested.has("budgets")) {
       for (const b of budgets) {
@@ -829,7 +892,7 @@ runConnector({
         requested: requested as Map<string, { time_range?: TimeRange }>,
         emit,
         trackAndEmit,
-        progress,
+        progress: progressWithCounters,
       });
     }
   },

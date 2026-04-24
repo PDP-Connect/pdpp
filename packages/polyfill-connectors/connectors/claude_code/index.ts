@@ -435,7 +435,7 @@ async function parseJsonlFile(args: ParseJsonlFileArgs): Promise<string | null> 
 
   for await (const obj of iterJsonlLines(path)) {
     lineCount++;
-    if (lineCount % LINE_PROGRESS_INTERVAL === 0) {
+    if (!buildOnly && lineCount % LINE_PROGRESS_INTERVAL === 0) {
       await emit({
         type: "PROGRESS",
         message: `  ${path}: ${lineCount} lines parsed`,
@@ -605,7 +605,7 @@ async function processJsonlFile({
   }
   await args.emit({
     type: "PROGRESS",
-    message: `Parsing ${progressLabel} (${(st.size / BYTES_PER_MB).toFixed(1)}MB)`,
+    message: `${args.buildOnly ? "Indexing" : "Emitting"} ${progressLabel} (${(st.size / BYTES_PER_MB).toFixed(1)}MB)`,
   });
   await parseJsonlFile({
     buildOnly: args.buildOnly,

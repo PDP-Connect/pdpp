@@ -294,3 +294,21 @@ test("emitMessagesPass: one message throwing doesn't halt the rest of the batch"
   assert.equal(msgRecords.length, 1, "the second message emits even though the first errored");
   assert.equal(msgRecords[0]?.data.id, "good-msg");
 });
+
+test("emitMessagesPass: progress includes count and total when metadata count is known", async () => {
+  const { deps, progress } = makeHarness({ wantMessages: true });
+  const metas = Array.from({ length: 500 }, (_, i) =>
+    makeMsg({
+      emailId: `gmmsgid-${i}`,
+      threadId: `gmthrid-${i}`,
+      uid: i + 1,
+    })
+  );
+
+  await emitMessagesPass(deps, metas);
+
+  assert.equal(progress.length, 1);
+  assert.equal(progress[0]?.stream, "messages");
+  assert.equal(progress[0]?.count, 500);
+  assert.equal(progress[0]?.total, 500);
+});

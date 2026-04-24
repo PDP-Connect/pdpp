@@ -345,6 +345,8 @@ export async function emitMessagesPass(deps: PerMessageDeps, metas: readonly Fet
           type: "PROGRESS",
           stream: "messages",
           message: `Fetched ${count} messages`,
+          count,
+          total: metas.length,
         });
       }
     } catch (perMsgErr) {
@@ -531,9 +533,17 @@ async function collectMetadata(client: ImapFlow, fetchRange: string): Promise<Fe
         type: "PROGRESS",
         stream: "messages",
         message: `Collected ${metas.length} message headers`,
+        count: metas.length,
       });
     }
   }
+  await emit({
+    type: "PROGRESS",
+    stream: "messages",
+    message: `Collected ${metas.length} message headers`,
+    count: metas.length,
+    total: metas.length,
+  });
   return metas;
 }
 

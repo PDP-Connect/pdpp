@@ -79,7 +79,8 @@ Last revised: 2026-04-24.
 - [x] `ntfy` bridge module — exists at `src/ntfy.js`, used by scheduler-runner and the new CLI interaction handler
 - [x] Orchestrator CLI now wires `onInteraction` — file-drop response + ntfy + TTY prompt. Runs that need creds/OTP no longer fail silently.
 - [ ] Pause/resume INTERACTION handling — runtime supports parking, scheduler doesn't read the state yet
-- [ ] First-party connector progress reporting pass — audit core connectors and emit `PROGRESS { count, total }` wherever the upstream exposes a bounded unit of work (pages, files, accounts, budgets, repositories, archive entries). Connectors that cannot know a total should still report phase/count honestly. Do not invent percentages.
+- [~] First-party connector progress reporting pass — audit core connectors and emit `PROGRESS { count, total }` wherever the upstream exposes a bounded unit of work (pages, files, accounts, budgets, repositories, archive entries). Connectors that cannot know a total should still report phase/count honestly. Do not invent percentages.
+  - 2026-04-24 worker pass patched bounded counters for ynab, gmail, github PR search, chase, usaa statement hydration, and chatgpt conversation detail batches; compacted duplicate Claude Code line progress. Audit captured in `design-notes/core-connector-progress-audit-2026-04-24.md`.
 - [ ] **Nightly status summary via ntfy** — today still fires manually
 - [ ] **Partial-run honesty mechanism** (SKIP_RESULT taxonomy + known_gaps in STATE + recovery execution contract) — documented as three linked open questions. Decision required across all three together. See the three `*-open-question.md` notes.
 
@@ -200,7 +201,8 @@ These are the highest-leverage gaps surfaced by live assistant use of the refere
 
 ### Claude Code
 - [x] Fix live `sessions` ingest regression: current run can emit >1k `IN_PROGRESS` events then fail `/ingest/sessions` with `500 Internal Server Error`. Captured with a safe synthetic Claude Code sessions fixture: controller-managed composed-mode runs were posting the NDJSON sessions batch to the public browser origin, so proxy/body handling could turn `/v1/ingest/sessions` into a 500. Regression test now traps the public origin and proves Claude Code ingest uses the internal RS URL.
-- [ ] Reduce or summarize Claude Code two-pass progress volume. The >1k `IN_PROGRESS` rows were not the 500 root cause, but the connector currently emits per-file parse progress in both build and emit passes; decide whether to compact connector progress or summarize it in the operator UI.
+- [x] Reduce or summarize Claude Code two-pass progress volume. The >1k `IN_PROGRESS` rows were not the 500 root cause, but the connector currently emits per-file parse progress in both build and emit passes; decide whether to compact connector progress or summarize it in the operator UI.
+  - 2026-04-24 worker pass keeps build-pass per-file liveness, suppresses duplicate build-pass per-line progress, and labels file progress as indexing vs emitting.
 - [ ] Recursive session traversal: `projects/<p>/<session>/subagents/*.jsonl` + `/tool-results/*.txt` (currently missed — main jsonl only has sidechain stubs + ~500-char previews)
 - [ ] Add `memory_notes` stream (from `projects/<p>/memory/*.md` — direct analog to ChatGPT `memories`)
 - [ ] Add `skills` stream (from `~/.claude/skills/<name>/SKILL.md`)
@@ -213,7 +215,8 @@ These are the highest-leverage gaps surfaced by live assistant use of the refere
 - [ ] Add `approval_rules` stream (from `~/.codex/rules/default.rules`)
 
 ### GitHub
-- [ ] Fix `progress_for_undeclared_stream` regression: either add an honest `commits` stream to the GitHub manifest/scope or stop emitting `PROGRESS` for `commits`. Current runtime behavior is correct to reject progress for undeclared streams.
+- [x] Fix `progress_for_undeclared_stream` regression: either add an honest `commits` stream to the GitHub manifest/scope or stop emitting `PROGRESS` for `commits`. Current runtime behavior is correct to reject progress for undeclared streams.
+  - 2026-04-24 worker audit found current GitHub connector emits PROGRESS only for declared streams (`user`, `repositories`, `starred`, `issues`, `pull_requests`, `gists`); no `commits` progress remains.
 - [ ] Add `issues` stream (authored, assigned, mentioned, commented — via `/search/issues`)
 - [ ] Add `pull_requests` stream (authored, reviewed, review-requested, merged — via `/search/issues`)
 - [ ] Add `gists` stream (owned + starred; full content bytes cheap)

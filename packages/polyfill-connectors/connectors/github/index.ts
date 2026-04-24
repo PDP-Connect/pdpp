@@ -83,7 +83,7 @@ async function gh<T>(
 interface StreamCtx {
   emit: (msg: { type: "STATE"; stream: string; cursor: unknown }) => Promise<void>;
   emitRecord: (stream: string, data: Record<string, unknown>) => Promise<void>;
-  progress: (message: string, extra?: { stream?: string }) => Promise<void>;
+  progress: (message: string, extra?: { count?: number; stream?: string; total?: number }) => Promise<void>;
   requested: Map<string, { time_range?: { since?: string; until?: string } }>;
   state: Record<string, unknown>;
   token: string;
@@ -331,12 +331,19 @@ async function collectPullRequests(ctx: StreamCtx): Promise<void> {
   const { data: me } = await gh<GitHubUser>("/user", ctx.token);
   let path: string | null = buildPrSearchPath(me.login, sinceParam);
   let stop = false;
+  let fetchedCount = 0;
   while (path && !stop) {
     const page: GhResult<GitHubSearchResponse> = await gh<GitHubSearchResponse>(path, ctx.token);
     const items = page.data.items || [];
     const result = await emitPullRequestPage(ctx, items, sinceParam, until, latestUpdated);
     latestUpdated = result.latest;
     stop = result.stop;
+    fetchedCount += items.length;
+    await ctx.progress(`Fetched pull request page (${items.length} item(s))`, {
+      stream: "pull_requests",
+      count: Math.min(fetchedCount, page.data.total_count ?? fetchedCount),
+      ...(page.data.total_count === undefined ? {} : { total: page.data.total_count }),
+    });
     path = page.nextUrl;
   }
   await ctx.emit({
