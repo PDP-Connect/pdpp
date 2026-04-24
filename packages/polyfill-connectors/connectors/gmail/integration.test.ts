@@ -28,10 +28,13 @@
  */
 
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { Readable } from "node:stream";
 import { test } from "node:test";
 import type {
   FetchMessageObject,
   MessageEnvelopeObject,
+  MessageStructureObject,
   // biome-ignore lint/correctness/noUnresolvedImports: imapflow is declared in package.json; Biome's resolver doesn't see it here
 } from "imapflow";
 import { type EmittedRecord, makeRecordingEmit } from "../../src/test-harness.ts";
@@ -39,8 +42,11 @@ import {
   emitMessagesPass,
   type FetchBodiesFn,
   type FetchedBodies,
+  type HydrateAttachmentFn,
+  makeAttachmentHydrator,
   type PerMessageDeps,
   processMessage,
+  selectAllMailFetchRange,
 } from "./index.ts";
 import type { ProgressMessage, StreamRequest } from "./types.ts";
 
@@ -68,6 +74,7 @@ const defaultFetchBodies: FetchBodiesFn = (): Promise<FetchedBodies> =>
 
 interface HarnessOverrides {
   fetchBodies?: FetchBodiesFn;
+  hydrateAttachment?: HydrateAttachmentFn;
   nowIso?: () => string;
   requested?: Map<string, StreamRequest>;
   timeRange?: { since?: string; until?: string };
@@ -89,6 +96,7 @@ function makeHarness(overrides: HarnessOverrides = {}): RecordingHarness {
     },
     emitRecord: harness.emitRecord,
     fetchBodies: overrides.fetchBodies ?? defaultFetchBodies,
+    hydrateAttachment: overrides.hydrateAttachment ?? ((_, attachment) => Promise.resolve(attachment)),
     nowIso: overrides.nowIso ?? ((): string => FROZEN_NOW),
     requested,
     timeRange: overrides.timeRange,
@@ -96,6 +104,38 @@ function makeHarness(overrides: HarnessOverrides = {}): RecordingHarness {
     wantMessages: overrides.wantMessages ?? true,
   };
   return { deps, emitted: harness.emitted, progress };
+}
+
+function makeAttachmentMsg(): FetchMessageObject {
+  const bodyStructure: MessageStructureObject = {
+    childNodes: [
+      {
+        type: "text/plain",
+        encoding: "7bit",
+        parameters: { charset: "utf-8" },
+      },
+      {
+        type: "application/pdf",
+        disposition: "attachment",
+        dispositionParameters: { filename: "invoice.pdf" },
+        encoding: "base64",
+        size: 21,
+      },
+    ],
+    type: "multipart/mixed",
+  };
+  return makeMsg({
+    bodyStructure,
+  });
+}
+
+function blobRefBlobId(record: EmittedRecord | undefined): string | null {
+  const blobRef = record?.data.blob_ref;
+  if (blobRef && typeof blobRef === "object" && !Array.isArray(blobRef)) {
+    const blobId = (blobRef as Record<string, unknown>).blob_id;
+    return typeof blobId === "string" ? blobId : null;
+  }
+  return null;
 }
 
 /** Minimal-but-complete FetchMessageObject. imapflow only requires seq+uid;
@@ -157,6 +197,185 @@ test("processMessage: wantMessages=false suppresses messages but still emits mes
     emitted.some((r) => r.stream === "message_bodies"),
     "message_bodies still flows"
   );
+});
+
+test("processMessage: hydrates requested attachments with blob_ref, hash, MIME type, and stable id", async () => {
+  const bytes = Buffer.from("pdf attachment bytes");
+  const expectedSha = createHash("sha256").update(bytes).digest("hex");
+  const uploadCalls: Array<{ recordKey: string; sha256: string }> = [];
+  const hydrateAttachment = makeAttachmentHydrator({
+    connectorId: "https://registry.pdpp.org/connectors/gmail",
+    fetchAttachment: () =>
+      Promise.resolve({
+        content: Readable.from([bytes.subarray(0, 4), bytes.subarray(4)]),
+        expectedSize: bytes.length,
+        mimeType: "application/pdf",
+      }),
+    uploadBlob: async ({ content, recordKey, mimeType }) => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of content) {
+        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      }
+      const uploaded = Buffer.concat(chunks);
+      const sha256 = createHash("sha256").update(uploaded).digest("hex");
+      uploadCalls.push({ recordKey, sha256 });
+      return {
+        blob_id: `blob_sha256_${sha256}`,
+        mime_type: mimeType,
+        sha256,
+        size_bytes: uploaded.byteLength,
+      };
+    },
+  });
+  const { deps, emitted } = makeHarness({
+    hydrateAttachment,
+    requested: makeRequested(["attachments"]),
+    wantBodies: false,
+    wantMessages: false,
+  });
+
+  await processMessage(deps, makeAttachmentMsg());
+
+  const attachment = emitted.find((record) => record.stream === "attachments");
+  assert.ok(attachment, "expected hydrated attachment record");
+  assert.equal(attachment.data.id, "gmmsgid-1111:2");
+  assert.equal(attachment.data.content_sha256, expectedSha);
+  assert.equal(attachment.data.content_type, "application/pdf");
+  assert.equal(attachment.data.size_bytes, bytes.length);
+  assert.equal(attachment.data.hydration_status, "hydrated");
+  assert.equal(attachment.data.hydration_error, null);
+  assert.deepEqual(attachment.data.blob_ref, {
+    blob_id: `blob_sha256_${expectedSha}`,
+    mime_type: "application/pdf",
+    sha256: expectedSha,
+    size_bytes: bytes.length,
+  });
+  assert.deepEqual(uploadCalls, [{ recordKey: "gmmsgid-1111:2", sha256: expectedSha }]);
+});
+
+test("processMessage: emits bounded failed attachment metadata without fake blob ids", async () => {
+  const hydrateAttachment = makeAttachmentHydrator({
+    connectorId: "https://registry.pdpp.org/connectors/gmail",
+    fetchAttachment: () => Promise.reject(new Error(`download failed ${"x".repeat(400)}`)),
+    uploadBlob: () => Promise.reject(new Error("should not upload when download fails")),
+  });
+  const { deps, emitted } = makeHarness({
+    hydrateAttachment,
+    requested: makeRequested(["attachments"]),
+    wantBodies: false,
+    wantMessages: false,
+  });
+
+  await processMessage(deps, makeAttachmentMsg());
+
+  const attachment = emitted.find((record) => record.stream === "attachments");
+  assert.ok(attachment, "expected failed attachment metadata");
+  assert.equal(attachment.data.id, "gmmsgid-1111:2");
+  assert.equal(attachment.data.blob_ref, null);
+  assert.equal(attachment.data.content_sha256, null);
+  assert.equal(attachment.data.hydration_status, "failed");
+  assert.equal(typeof attachment.data.hydration_error, "string");
+  assert.ok(String(attachment.data.hydration_error).length <= 240);
+});
+
+test("processMessage: rerun hydration preserves attachment identity and idempotent blob identity", async () => {
+  const bytes = Buffer.from("same bytes");
+  const expectedSha = createHash("sha256").update(bytes).digest("hex");
+  let uploadCount = 0;
+  const hydrateAttachment = makeAttachmentHydrator({
+    connectorId: "https://registry.pdpp.org/connectors/gmail",
+    fetchAttachment: () =>
+      Promise.resolve({
+        content: Readable.from([bytes]),
+        expectedSize: bytes.length,
+        mimeType: "application/pdf",
+      }),
+    uploadBlob: async ({ content, mimeType }) => {
+      for await (const _chunk of content) {
+        // Drain the stream; the fake upload service dedupes by hash.
+      }
+      uploadCount += 1;
+      return {
+        blob_id: `blob_sha256_${expectedSha}`,
+        mime_type: mimeType,
+        sha256: expectedSha,
+        size_bytes: bytes.length,
+      };
+    },
+  });
+  const first = makeHarness({
+    hydrateAttachment,
+    requested: makeRequested(["attachments"]),
+    wantBodies: false,
+    wantMessages: false,
+  });
+  const second = makeHarness({
+    hydrateAttachment,
+    requested: makeRequested(["attachments"]),
+    wantBodies: false,
+    wantMessages: false,
+  });
+
+  await processMessage(first.deps, makeAttachmentMsg());
+  await processMessage(second.deps, makeAttachmentMsg());
+
+  const firstAttachment = first.emitted.find((record) => record.stream === "attachments");
+  const secondAttachment = second.emitted.find((record) => record.stream === "attachments");
+  assert.ok(firstAttachment);
+  assert.ok(secondAttachment);
+  assert.equal(firstAttachment.data.id, secondAttachment.data.id);
+  assert.equal(blobRefBlobId(firstAttachment), blobRefBlobId(secondAttachment));
+  assert.equal(uploadCount, 2, "reruns may re-upload, but blob identity remains content-addressed and stable");
+});
+
+test("selectAllMailFetchRange: incremental attachment runs revisit prior messages for metadata-only backfill", () => {
+  assert.equal(selectAllMailFetchRange({ fullResync: false, priorUidnext: 500 }, makeRequested(["messages"])), "500:*");
+  assert.equal(
+    selectAllMailFetchRange({ fullResync: false, priorUidnext: 500 }, makeRequested(["attachments"])),
+    "1:*"
+  );
+  assert.equal(selectAllMailFetchRange({ fullResync: true, priorUidnext: 500 }, makeRequested(["attachments"])), "1:*");
+});
+
+test("processMessage: attachment bytes are not inlined into message_bodies", async () => {
+  const attachmentBytes = Buffer.from("secret attachment payload");
+  const hydrateAttachment = makeAttachmentHydrator({
+    connectorId: "https://registry.pdpp.org/connectors/gmail",
+    fetchAttachment: () =>
+      Promise.resolve({
+        content: Readable.from([attachmentBytes]),
+        expectedSize: attachmentBytes.length,
+        mimeType: "application/octet-stream",
+      }),
+    uploadBlob: async ({ content, mimeType }) => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of content) {
+        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      }
+      const sha256 = createHash("sha256").update(Buffer.concat(chunks)).digest("hex");
+      return {
+        blob_id: `blob_sha256_${sha256}`,
+        mime_type: mimeType,
+        sha256,
+        size_bytes: attachmentBytes.length,
+      };
+    },
+  });
+  const { deps, emitted } = makeHarness({
+    hydrateAttachment,
+    requested: makeRequested(["message_bodies", "attachments"]),
+    wantBodies: true,
+    wantMessages: false,
+  });
+
+  await processMessage(deps, makeAttachmentMsg());
+
+  const body = emitted.find((record) => record.stream === "message_bodies");
+  const attachment = emitted.find((record) => record.stream === "attachments");
+  assert.ok(body);
+  assert.ok(attachment);
+  assert.equal(JSON.stringify(body.data).includes("secret attachment payload"), false);
+  assert.equal(JSON.stringify(attachment.data).includes("secret attachment payload"), false);
 });
 
 test("processMessage: wantBodies=false suppresses message_bodies but still emits the messages record", async () => {

@@ -238,6 +238,10 @@ test("decodeBodystructureForAttachments: extracts both inline and attachment lea
   assert.equal(inline.content_id, "<image1@example.com>");
   assert.equal(inline.id, "msg-1:2");
   assert.equal(inline.size_bytes, 24_576);
+  assert.equal(inline.blob_ref, null);
+  assert.equal(inline.content_sha256, null);
+  assert.equal(inline.hydration_status, "deferred");
+  assert.equal(inline.hydration_error, null);
 
   const pdf = items.find((a) => a.filename === "invoice.pdf");
   assert.ok(pdf);

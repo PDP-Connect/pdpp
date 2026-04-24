@@ -21,6 +21,7 @@
  * Rate budget: keep to one concurrent connection; fetch in windows of 200.
  */
 
+import { createHash } from "node:crypto";
 import { createInterface, type Interface as ReadlineInterface } from "node:readline";
 import {
   type FetchMessageObject,
@@ -58,6 +59,9 @@ import {
 } from "./parsers.ts";
 import type {
   AllMailCursor,
+  AttachmentHydrationStatus,
+  AttachmentRecord,
+  BlobRef,
   EmittedMessage,
   InteractionMessage,
   InteractionResponse,
@@ -80,6 +84,11 @@ const SNIPPET_FETCH_MAX_BYTES = 4096;
 const ERROR_MSG_TAIL = 400;
 const FLUSH_HARD_TIMEOUT_MS = 3000;
 const DEFAULT_CRED_TIMEOUT_S = 1800;
+const DEFAULT_GMAIL_CONNECTOR_ID = "https://registry.pdpp.org/connectors/gmail";
+const HYDRATION_ERROR_MAX_CHARS = 240;
+const DEFAULT_ATTACHMENT_MIME_TYPE = "application/octet-stream";
+const BLOB_UPLOAD_ENV_ERROR =
+  "blob upload unavailable: PDPP_RS_URL and PDPP_OWNER_TOKEN must be provided by the runtime";
 
 // ─── imapflow interface augmentation ────────────────────────────────────
 
@@ -223,10 +232,29 @@ export type FetchBodiesFn = (
   wantMessages: boolean
 ) => Promise<FetchedBodies>;
 
+export interface AttachmentDownload {
+  content: AsyncIterable<Buffer | Uint8Array | string>;
+  expectedSize: number | null;
+  mimeType: string;
+}
+
+export type FetchAttachmentFn = (msg: FetchMessageObject, attachment: AttachmentRecord) => Promise<AttachmentDownload>;
+
+export type UploadAttachmentBlobFn = (args: {
+  content: AsyncIterable<Buffer | Uint8Array | string>;
+  connectorId: string;
+  mimeType: string;
+  recordKey: string;
+  stream: "attachments";
+}) => Promise<BlobRef>;
+
+export type HydrateAttachmentFn = (msg: FetchMessageObject, attachment: AttachmentRecord) => Promise<AttachmentRecord>;
+
 export interface PerMessageDeps {
   emitProgress: ProgressEmitter;
   emitRecord: EmitRecordFn;
   fetchBodies: FetchBodiesFn;
+  hydrateAttachment: HydrateAttachmentFn;
   nowIso: () => string;
   requested: Map<string, StreamRequest>;
   timeRange: { since?: string; until?: string } | undefined;
@@ -320,7 +348,7 @@ export async function processMessage(deps: PerMessageDeps, msg: FetchMessageObje
 
   if (deps.requested.has("attachments") && attachments.length) {
     for (const a of attachments) {
-      await deps.emitRecord("attachments", { ...a });
+      await deps.emitRecord("attachments", { ...(await deps.hydrateAttachment(msg, a)) });
     }
   }
   return true;
@@ -637,6 +665,241 @@ async function fetchBodies(
   }
 }
 
+export function selectAllMailFetchRange(
+  session: { fullResync: boolean; priorUidnext: number },
+  requested: Map<string, StreamRequest>
+): string {
+  if (session.fullResync || requested.has("attachments")) {
+    return "1:*";
+  }
+  return `${session.priorUidnext}:*`;
+}
+
+function boundedHydrationError(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err);
+  return raw.slice(0, HYDRATION_ERROR_MAX_CHARS);
+}
+
+function attachmentWithHydrationFailure(
+  attachment: AttachmentRecord,
+  status: Exclude<AttachmentHydrationStatus, "hydrated">,
+  err: unknown
+): AttachmentRecord {
+  return {
+    ...attachment,
+    blob_ref: null,
+    content_sha256: null,
+    hydration_status: status,
+    hydration_error: boundedHydrationError(err),
+  };
+}
+
+export function makeAttachmentHydrator(args: {
+  connectorId: string;
+  fetchAttachment: FetchAttachmentFn;
+  uploadBlob: UploadAttachmentBlobFn;
+}): HydrateAttachmentFn {
+  return async (msg, attachment) => {
+    try {
+      const downloaded = await args.fetchAttachment(msg, attachment);
+      const blobRef = await args.uploadBlob({
+        content: downloaded.content,
+        connectorId: args.connectorId,
+        mimeType: downloaded.mimeType || attachment.content_type || DEFAULT_ATTACHMENT_MIME_TYPE,
+        recordKey: attachment.id,
+        stream: "attachments",
+      });
+      return {
+        ...attachment,
+        blob_ref: blobRef,
+        content_sha256: blobRef.sha256,
+        content_type: blobRef.mime_type,
+        size_bytes: blobRef.size_bytes,
+        hydration_status: "hydrated",
+        hydration_error: null,
+      };
+    } catch (err) {
+      return attachmentWithHydrationFailure(attachment, "failed", err);
+    }
+  };
+}
+
+interface ImapDownloadMeta {
+  contentType?: string;
+  expectedSize?: number;
+}
+
+interface ImapDownloadResponse {
+  content: AsyncIterable<Buffer | Uint8Array | string>;
+  meta?: ImapDownloadMeta;
+}
+
+export async function fetchAttachmentPart(
+  client: ImapFlow,
+  msg: FetchMessageObject,
+  attachment: AttachmentRecord
+): Promise<AttachmentDownload> {
+  if (!msg.uid) {
+    throw new Error("attachment download requires IMAP UID");
+  }
+  const response = (await client.download(String(msg.uid), attachment.part_index, {
+    uid: true,
+  })) as ImapDownloadResponse;
+  return {
+    content: response.content,
+    expectedSize: typeof response.meta?.expectedSize === "number" ? response.meta.expectedSize : attachment.size_bytes,
+    mimeType: response.meta?.contentType || attachment.content_type || DEFAULT_ATTACHMENT_MIME_TYPE,
+  };
+}
+
+interface BlobUploadResponse {
+  blob_id: string;
+  mime_type: string;
+  object: "blob";
+  sha256: string;
+  size_bytes: number;
+}
+
+function isBlobUploadResponse(value: unknown): value is BlobUploadResponse {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const record = value as Record<string, unknown>;
+  return (
+    record.object === "blob" &&
+    typeof record.blob_id === "string" &&
+    typeof record.mime_type === "string" &&
+    typeof record.sha256 === "string" &&
+    typeof record.size_bytes === "number"
+  );
+}
+
+function makeBlobUploadUrl(args: {
+  connectorId: string;
+  recordKey: string;
+  rsUrl: string;
+  stream: "attachments";
+}): URL {
+  const url = new URL("/v1/blobs", args.rsUrl);
+  url.searchParams.set("connector_id", args.connectorId);
+  url.searchParams.set("stream", args.stream);
+  url.searchParams.set("record_key", args.recordKey);
+  return url;
+}
+
+interface HashingUploadBody {
+  body: ReadableStream<Uint8Array>;
+  digest: Promise<{ sha256: string; sizeBytes: number }>;
+}
+
+function toUploadChunk(chunk: Buffer | Uint8Array | string): Uint8Array {
+  return Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+}
+
+function createHashingUploadBody(content: AsyncIterable<Buffer | Uint8Array | string>): HashingUploadBody {
+  const hash = createHash("sha256");
+  const iterator = content[Symbol.asyncIterator]();
+  let sizeBytes = 0;
+  let settled = false;
+  let resolveDigest: (value: { sha256: string; sizeBytes: number }) => void = () => undefined;
+  let rejectDigest: (reason?: unknown) => void = () => undefined;
+  const digest = new Promise<{ sha256: string; sizeBytes: number }>((resolve, reject) => {
+    resolveDigest = resolve;
+    rejectDigest = reject;
+  });
+  const settleDigest = (): void => {
+    if (settled) {
+      return;
+    }
+    settled = true;
+    resolveDigest({ sha256: hash.digest("hex"), sizeBytes });
+  };
+  const failDigest = (reason: unknown): void => {
+    if (settled) {
+      return;
+    }
+    settled = true;
+    rejectDigest(reason);
+  };
+  const body = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        const next = await iterator.next();
+        if (next.done) {
+          settleDigest();
+          controller.close();
+          return;
+        }
+        const chunk = toUploadChunk(next.value);
+        hash.update(chunk);
+        sizeBytes += chunk.byteLength;
+        controller.enqueue(chunk);
+      } catch (err) {
+        failDigest(err);
+        controller.error(err);
+      }
+    },
+    async cancel(reason) {
+      failDigest(reason);
+      if (typeof iterator.return === "function") {
+        await iterator.return();
+      }
+    },
+  });
+  return { body, digest };
+}
+
+interface StreamingRequestInit extends Omit<RequestInit, "body"> {
+  body: ReadableStream<Uint8Array>;
+  duplex: "half";
+}
+
+export function makeReferenceBlobUploader(args: { ownerToken: string; rsUrl: string }): UploadAttachmentBlobFn {
+  return async ({ connectorId, content, mimeType, recordKey, stream }) => {
+    const upload = createHashingUploadBody(content);
+    const requestInit: StreamingRequestInit = {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${args.ownerToken}`,
+        "Content-Type": mimeType,
+      },
+      body: upload.body,
+      duplex: "half",
+    };
+    const response = await fetch(makeBlobUploadUrl({ connectorId, recordKey, rsUrl: args.rsUrl, stream }), requestInit);
+    const body = (await response.json().catch((): unknown => null)) as unknown;
+    if (!response.ok) {
+      const message =
+        body && typeof body === "object" && !Array.isArray(body)
+          ? String((body as Record<string, unknown>).error ?? response.statusText)
+          : response.statusText;
+      throw new Error(`blob upload failed (${response.status}): ${message}`);
+    }
+    if (!isBlobUploadResponse(body)) {
+      throw new Error("blob upload returned an invalid response");
+    }
+    const localHash = await upload.digest;
+    if (body.sha256 !== localHash.sha256 || body.size_bytes !== localHash.sizeBytes) {
+      throw new Error("blob upload hash/size mismatch");
+    }
+    return {
+      blob_id: body.blob_id,
+      mime_type: body.mime_type,
+      sha256: body.sha256,
+      size_bytes: body.size_bytes,
+    };
+  };
+}
+
+function buildRuntimeBlobUploader(): UploadAttachmentBlobFn {
+  const rsUrl = process.env.PDPP_RS_URL || process.env.RS_URL;
+  const ownerToken = process.env.PDPP_OWNER_TOKEN;
+  if (!(rsUrl && ownerToken)) {
+    return () => Promise.reject(new Error(BLOB_UPLOAD_ENV_ERROR));
+  }
+  return makeReferenceBlobUploader({ ownerToken, rsUrl });
+}
+
 // ─── Delta pass (flag/label changes since priorModseq) ──────────────────
 
 async function runDeltaPass(
@@ -775,7 +1038,7 @@ async function runAllMailPasses(
   // - Incremental: new UIDs (priorUidnext..*) + flag/label changes
   //   (CHANGEDSINCE priorModseq).
   const timeRange = deps.requested.get("messages")?.time_range || deps.requested.get("attachments")?.time_range;
-  const fetchRange = session.fullResync ? "1:*" : `${session.priorUidnext}:*`;
+  const fetchRange = selectAllMailFetchRange(session, deps.requested);
   await emit({
     type: "PROGRESS",
     message: `Fetching ${session.fullResync ? "all" : "new"} messages (${fetchRange}) from ${allMail.path}`,
@@ -808,10 +1071,16 @@ async function runAllMailPasses(
 
   const fetchBodiesBound: FetchBodiesFn = (msg, selection, wantBodies, wantMessages) =>
     fetchBodies(client, msg, selection, wantBodies, wantMessages);
+  const hydrateAttachment = makeAttachmentHydrator({
+    connectorId: process.env.PDPP_CONNECTOR_ID || DEFAULT_GMAIL_CONNECTOR_ID,
+    fetchAttachment: (msg, attachment) => fetchAttachmentPart(client, msg, attachment),
+    uploadBlob: buildRuntimeBlobUploader(),
+  });
   const perMessageDeps: PerMessageDeps = {
     emitProgress: (m) => emit(m),
     emitRecord: deps.emitRecord,
     fetchBodies: fetchBodiesBound,
+    hydrateAttachment,
     nowIso,
     requested: deps.requested,
     timeRange,

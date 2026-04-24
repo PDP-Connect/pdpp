@@ -606,7 +606,12 @@ export async function runConnector(opts) {
     : [connectorPath];
   const proc = spawn(process.execPath, args, {
     stdio: ['pipe', 'pipe', 'pipe'],
-    env: { ...process.env },
+    env: {
+      ...process.env,
+      PDPP_CONNECTOR_ID: connectorId,
+      PDPP_OWNER_TOKEN: ownerToken,
+      PDPP_RS_URL: rsUrl,
+    },
   });
 
   const traceContext = opts.traceContext || createTraceContext({ scenarioId: opts.scenarioId });
