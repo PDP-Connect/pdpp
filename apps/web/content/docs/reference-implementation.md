@@ -1,9 +1,11 @@
 ---
-title: "Reference Implementation"
-description: "The forkable PDPP reference implementation: native provider, polyfill path, Longview client, CLI, and reference-only traces."
+title: "Reference Implementation Notes"
+description: "Current implementation behavior for the forkable PDPP reference stack. Not normative protocol documentation."
 ---
 
-The `reference-implementation/` package is the forkable PDPP reference substrate in this repo. It is where the current authorization server, resource server, runtime, CLI, and black-box tests prove the protocol.
+These are implementation notes for the current `reference-implementation/` package. The public explainer and run/deploy entrypoint is [/reference](/reference). For protocol semantics, use the protocol docs under [/docs](/docs).
+
+The `reference-implementation/` package is the forkable PDPP reference substrate in this repo. It is where the current authorization server, resource server, runtime, CLI, and black-box tests exercise the protocol.
 
 For repo-level orientation, start with the root `README.md`. For runnable package details, see `reference-implementation/README.md`.
 
@@ -126,7 +128,7 @@ The implementation also exposes narrow reference-only surfaces for debugging and
 - `GET /_ref/grants/:grantId/timeline`
 - `GET /_ref/runs/:runId/timeline`
 
-These are intentionally reference artifacts. They are not part of the core PDPP protocol.
+These are intentionally reference artifacts. They are not part of the core PDPP protocol, and the dashboard that renders them is an operator surface for a running local or self-hosted instance.
 
 ## What has been intentionally removed
 
@@ -161,8 +163,8 @@ Notably:
 
 - the provider-connect profile is still thin and intentionally conservative
 - the current metadata proves request staging, protected DCR, and owner self-export, not a complete third-party authorization-code ecosystem profile
-- the control-plane / dashboard layer is not built yet
-- the website consumes the reference but does not define its primary contract
+- the public website explains the reference but does not define its primary contract
+- the dashboard is a live-instance operator surface, not a hosted canonical PDPP demo
 
 The most trustworthy description of the live system remains:
 

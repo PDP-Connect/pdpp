@@ -13,9 +13,9 @@
 
 ## 3. Reference Explainer
 
-- [ ] 3.1 Create `/reference` as a public reference-implementation explainer with purpose, non-goals, architecture, trust boundaries, and run/deploy CTAs.
-- [ ] 3.2 Add links from `/reference` to GitHub, README, architecture docs, OpenSpec, sandbox, and self-hosted/local dashboard instructions.
-- [ ] 3.3 Move or relabel existing reference implementation docs so they are reachable from `/reference` without blurring protocol docs.
+- [x] 3.1 Create `/reference` as a public reference-implementation explainer with purpose, non-goals, architecture, trust boundaries, and run/deploy CTAs.
+- [x] 3.2 Add links from `/reference` to GitHub, README, architecture docs, OpenSpec, sandbox, and self-hosted/local dashboard instructions.
+- [x] 3.3 Move or relabel existing reference implementation docs so they are reachable from `/reference` without blurring protocol docs.
 
 ## 4. Coverage Matrix
 

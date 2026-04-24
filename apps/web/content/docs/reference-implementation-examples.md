@@ -1,11 +1,11 @@
 ---
-title: "Reference Examples"
-description: "Current end-to-end examples from the live PDPP reference implementation."
+title: "Reference Implementation Examples"
+description: "Current end-to-end examples from the live PDPP reference implementation. Not normative protocol documentation."
 ---
 
 These examples document the **current reference implementation**, not a hypothetical future deployment. They show the real surfaces exposed by `reference-implementation/server`, `reference-implementation/runtime`, and `reference-implementation/cli` today.
 
-If you want the runnable package overview first, start with [/docs/reference-implementation](/docs/reference-implementation).
+If you want the public explainer and run/deploy posture first, start with [/reference](/reference). If you want the detailed implementation notes, continue to [/docs/reference-implementation](/docs/reference-implementation).
 
 Two boundaries matter when reading them:
 
