@@ -1,0 +1,47 @@
+services:
+  reference:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: reference
+    environment:
+      AS_PORT: "7662"
+      RS_PORT: "7663"
+      PDPP_REFERENCE_MODE: composed
+      PDPP_REFERENCE_ORIGIN: ${PDPP_REFERENCE_ORIGIN:-http://localhost:3000}
+      PDPP_DB_PATH: ${PDPP_DB_PATH:-/var/lib/pdpp/pdpp.sqlite}
+      PDPP_EMBEDDING_CACHE_DIR: ${PDPP_EMBEDDING_CACHE_DIR:-/var/cache/pdpp/transformers}
+      PDPP_EMBEDDING_DOWNLOAD_ALLOWED: ${PDPP_EMBEDDING_DOWNLOAD_ALLOWED:-1}
+      PDPP_REFERENCE_OPERATIONAL_DEFAULTS: "1"
+      PDPP_OWNER_PASSWORD: ${PDPP_OWNER_PASSWORD:-}
+      PDPP_OWNER_SUBJECT_ID: ${PDPP_OWNER_SUBJECT_ID:-owner_local}
+      PDPP_DCR_INITIAL_ACCESS_TOKENS: ${PDPP_DCR_INITIAL_ACCESS_TOKENS:-}
+    ports:
+      - "7662:7662"
+      - "7663:7663"
+    volumes:
+      - ./packages/polyfill-connectors/.pdpp-data:/var/lib/pdpp
+      - pdpp-transformers:/var/cache/pdpp/transformers
+      - pdpp-home:/root/.pdpp
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: web
+    depends_on:
+      - reference
+    environment:
+      PDPP_REFERENCE_MODE: composed
+      PDPP_REFERENCE_ORIGIN: ${PDPP_REFERENCE_ORIGIN:-http://localhost:3000}
+      PDPP_AS_URL: http://reference:7662
+      PDPP_RS_URL: http://reference:7663
+      PDPP_OWNER_PASSWORD: ${PDPP_OWNER_PASSWORD:-}
+      PDPP_OWNER_SUBJECT_ID: ${PDPP_OWNER_SUBJECT_ID:-owner_local}
+      PDPP_ENABLE_DASHBOARD: ${PDPP_ENABLE_DASHBOARD:-1}
+    ports:
+      - "3000:3000"
+
+volumes:
+  pdpp-transformers:
+  pdpp-home:

@@ -1,0 +1,43 @@
+services:
+  reference:
+    environment:
+      NODE_ENV: development
+    command: >
+      sh -lc 'node --watch reference-implementation/server/index.js'
+    volumes:
+      - .:/app
+      - pdpp-root-node-modules:/app/node_modules
+      - pdpp-reference-node-modules:/app/reference-implementation/node_modules
+      - pdpp-web-node-modules:/app/apps/web/node_modules
+      - pdpp-polyfill-node-modules:/app/packages/polyfill-connectors/node_modules
+      - pdpp-brand-node-modules:/app/packages/pdpp-brand/node_modules
+      - pdpp-contract-node-modules:/app/packages/reference-contract/node_modules
+      - ./packages/polyfill-connectors/.pdpp-data:/var/lib/pdpp
+      - pdpp-transformers:/var/cache/pdpp/transformers
+      - pdpp-home:/root/.pdpp
+
+  web:
+    environment:
+      NODE_ENV: development
+      NEXT_TELEMETRY_DISABLED: "1"
+      WATCHPACK_POLLING: ${WATCHPACK_POLLING:-true}
+    command: >
+      sh -lc 'pnpm --dir apps/web openspec:git-metadata && pnpm --dir apps/web exec next dev --webpack --hostname 0.0.0.0 --port 3000'
+    volumes:
+      - .:/app
+      - pdpp-root-node-modules:/app/node_modules
+      - pdpp-reference-node-modules:/app/reference-implementation/node_modules
+      - pdpp-web-node-modules:/app/apps/web/node_modules
+      - pdpp-web-next:/app/apps/web/.next
+      - pdpp-polyfill-node-modules:/app/packages/polyfill-connectors/node_modules
+      - pdpp-brand-node-modules:/app/packages/pdpp-brand/node_modules
+      - pdpp-contract-node-modules:/app/packages/reference-contract/node_modules
+
+volumes:
+  pdpp-root-node-modules:
+  pdpp-reference-node-modules:
+  pdpp-web-node-modules:
+  pdpp-web-next:
+  pdpp-polyfill-node-modules:
+  pdpp-brand-node-modules:
+  pdpp-contract-node-modules:

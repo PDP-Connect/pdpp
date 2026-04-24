@@ -1,0 +1,54 @@
+services:
+  pdpp-server:
+    build:
+      context: ../e2e
+      dockerfile: ../demo/Dockerfile.pdpp-server
+    ports:
+      - "7662:7662"  # AS
+      - "7663:7663"  # RS
+    environment:
+      - AS_PORT=7662
+      - RS_PORT=7663
+      - LOG_PRETTY=1
+      - PDPP_DB_PATH=/data/pdpp.db
+    volumes:
+      - pdpp-data:/data
+    networks:
+      - demo
+
+  browser-server:
+    build:
+      context: ./browser-server
+    ports:
+      - "${BROWSER_SERVER_HOST_PORT:-3101}:3100"
+    environment:
+      - PDPP_AS_URL=http://pdpp-server:7662
+      - PDPP_RS_URL=http://pdpp-server:7663
+      - PORT=3100
+    depends_on:
+      - pdpp-server
+    networks:
+      - demo
+    shm_size: '2gb'
+
+  app:
+    build:
+      context: ./app
+    ports:
+      - "${APP_HOST_PORT:-3002}:3000"
+    environment:
+      - PDPP_AS_URL=http://pdpp-server:7662
+      - PDPP_RS_URL=http://pdpp-server:7663
+      - BROWSER_SERVER_URL=http://browser-server:3100
+    depends_on:
+      - pdpp-server
+      - browser-server
+    networks:
+      - demo
+
+networks:
+  demo:
+    driver: bridge
+
+volumes:
+  pdpp-data:

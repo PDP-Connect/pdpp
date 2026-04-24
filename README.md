@@ -64,6 +64,29 @@ semantic backfill may download model files into
 `reference-implementation/.cache/transformers` while the servers are already
 listening.
 
+Run the same live reference stack with Docker Compose:
+
+```bash
+cp .env.docker.example .env.docker
+docker compose --env-file .env.docker up --build
+```
+
+Then open `http://localhost:3000`. The Compose stack keeps the browser-facing
+origin on `:3000` and runs the reference AS/RS internally as the same AS
+`:7662` / RS `:7663` process pair used by local development. Secrets belong in
+runtime env or `.env.docker`; they are not baked into the images.
+
+For Docker-based development with hot reload:
+
+```bash
+pnpm docker:dev
+```
+
+That uses `docker-compose.dev.yml` to bind-mount the repo, run the reference
+server under Node watch mode, and run the web app with Next dev on `:3000`.
+Use the default Compose command above or `pnpm docker:smoke` when you want the
+production-style Docker path instead.
+
 Run the reference implementation server:
 
 ```bash

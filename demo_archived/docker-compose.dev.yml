@@ -1,0 +1,20 @@
+services:
+  app:
+    build:
+      context: ./app
+      dockerfile: Dockerfile.dev
+    ports:
+      - "${APP_HOST_PORT:-3002}:3000"
+    environment:
+      - PDPP_AS_URL=http://pdpp-server:7662
+      - PDPP_RS_URL=http://pdpp-server:7663
+      - BROWSER_SERVER_URL=http://browser-server:3100
+    volumes:
+      - ./app:/app
+      - /app/node_modules
+      - /app/.next
+    depends_on:
+      - pdpp-server
+      - browser-server
+    networks:
+      - demo

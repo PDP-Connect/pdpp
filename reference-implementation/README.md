@@ -283,7 +283,7 @@ metadata, device verification URLs, and PAR authorization URLs.
 Run the server:
 
 ```bash
-pnpm --dir reference-implementation server
+pnpm --dir reference-implementation run server
 ```
 
 That starts the AS/RS directly on their own listen ports (`:7662` / `:7663`)
@@ -293,7 +293,7 @@ If you need to force direct mode while other composition-oriented env is set in
 your shell, run:
 
 ```bash
-PDPP_REFERENCE_MODE=direct pnpm --dir reference-implementation server
+PDPP_REFERENCE_MODE=direct pnpm --dir reference-implementation run server
 ```
 
 Inspect the CLI:
@@ -313,6 +313,79 @@ Verify the generated contract artifacts are current:
 ```bash
 pnpm reference-contract:check-generated
 ```
+
+### Docker Compose reference stack
+
+The supported Docker path is a root-level Compose assembly for the live
+reference stack:
+
+```bash
+cp .env.docker.example .env.docker
+docker compose --env-file .env.docker up --build
+```
+
+Open `http://localhost:3000` for the browser-facing reference origin. The
+Compose stack runs:
+
+- `reference` — one AS/RS process, AS on `:7662`, RS on `:7663`
+- `web` — the Next app on `:3000`, proxying the AS/RS in composed mode
+
+The important topology rule is that `PDPP_REFERENCE_ORIGIN` is what the
+browser uses, while `PDPP_AS_URL` and `PDPP_RS_URL` are container-internal
+service URLs. The default Compose values are:
+
+```bash
+PDPP_REFERENCE_ORIGIN=http://localhost:3000
+PDPP_AS_URL=http://reference:7662
+PDPP_RS_URL=http://reference:7663
+```
+
+Do not use `localhost` for cross-container AS/RS calls; inside Docker,
+`localhost` means the current container.
+
+Persistent mounts are defined for:
+
+- `packages/polyfill-connectors/.pdpp-data/` bind-mounted to `/var/lib/pdpp`,
+  with `PDPP_DB_PATH` at `/var/lib/pdpp/pdpp.sqlite`
+- `PDPP_EMBEDDING_CACHE_DIR` at `/var/cache/pdpp/transformers`
+- `~/.pdpp/` for browser profiles, daemon files, and connector session state
+
+The first boot may download the default MiniLM model into the embedding cache.
+Set `PDPP_EMBEDDING_DOWNLOAD_ALLOWED=0` if you want to avoid that and accept
+the corresponding deployment diagnostic warning until the cache is prewarmed.
+
+Secrets must be supplied at runtime through environment variables,
+`.env.docker`, or Docker secrets. Do not bake `PDPP_OWNER_PASSWORD`, connector
+passwords, tokens, cookies, or DCR initial access tokens into images. The
+repo-root `.env.local` remains a local development convenience, not a Docker
+or production posture.
+
+Browser-based polyfill connectors are not clean-room portable demos. They need
+persistent browser profiles and remain subject to upstream anti-bot behavior.
+Mount any optional local connector inputs, such as Slack archives, explicitly
+when testing those connectors.
+
+Run the smoke validation:
+
+```bash
+pnpm docker:smoke
+```
+
+The smoke check builds the stack, verifies AS/RS metadata through the composed
+browser origin, checks that public metadata does not leak Docker service names,
+and confirms `/dashboard` redirects to `/owner/login` when owner auth is
+configured.
+
+For Docker-based development with hot reload, run:
+
+```bash
+pnpm docker:dev
+```
+
+That overlays `docker-compose.dev.yml`, bind-mounts the repo into the
+containers, runs the reference server with Node watch mode, and runs the web
+app with Next dev. Dependency folders stay in Docker named volumes so host
+installs and container installs do not trample each other.
 
 ### Example third-party client app
 

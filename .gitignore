@@ -7,6 +7,7 @@ local/
 .env
 .env.*
 !.env.example
+!.env.docker.example
 
 # Local ad-hoc notes (not committed)
 agent-access.md
@@ -16,6 +17,8 @@ agent-access.md
 *.yml
 !lefthook.yml
 !.github/**/*.yml
+!docker-compose.yml
+!docker-compose.dev.yml
 tmp/
 docs/inbox/
 docs/outbox/

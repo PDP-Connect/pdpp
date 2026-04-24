@@ -1,5 +1,9 @@
 # PDPP Demo v2 — Implementation Plan
 
+> Archived plan: this document describes the older `demo_archived/` demo stack.
+> The supported live reference Docker path is the repo-root `docker-compose.yml`
+> documented in `README.md` and `reference-implementation/README.md`.
+
 ## Goal
 
 A single-page, Docker-based demo that makes the full PDPP spec visible and visceral to a non-technical audience (CEO, product, engineering). The demo uses a **real browser scraping real Instagram**, no mocks. Every spec feature that can be shown, is shown.

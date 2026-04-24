@@ -1,0 +1,70 @@
+# syntax=docker/dockerfile:1.7
+
+ARG NODE_VERSION=25-bookworm-slim
+ARG PNPM_VERSION=10.33.0
+
+FROM node:${NODE_VERSION} AS base
+
+ARG PNPM_VERSION
+
+ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0 \
+    PNPM_HOME=/pnpm \
+    PATH=/pnpm:$PATH
+
+WORKDIR /app
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends ca-certificates curl g++ make python3 \
+  && rm -rf /var/lib/apt/lists/* \
+  && npm install -g --force corepack \
+  && corepack enable \
+  && corepack prepare "pnpm@${PNPM_VERSION}" --activate
+
+FROM base AS deps
+
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
+COPY apps/web/package.json apps/web/package.json
+COPY packages/pdpp-brand/package.json packages/pdpp-brand/package.json
+COPY packages/polyfill-connectors/package.json packages/polyfill-connectors/package.json
+COPY packages/reference-contract/package.json packages/reference-contract/package.json
+COPY reference-implementation/package.json reference-implementation/package.json
+
+RUN pnpm install --frozen-lockfile
+
+FROM deps AS source
+
+COPY . .
+
+FROM source AS web-builder
+
+RUN pnpm --filter pdpp-web build
+
+FROM base AS reference
+
+ENV NODE_ENV=production \
+    AS_PORT=7662 \
+    RS_PORT=7663 \
+    PDPP_REFERENCE_OPERATIONAL_DEFAULTS=1
+
+COPY --from=source /app /app
+
+EXPOSE 7662 7663
+
+CMD ["node", "reference-implementation/server/index.js"]
+
+FROM base AS web
+
+ENV NODE_ENV=production \
+    HOSTNAME=0.0.0.0 \
+    PORT=3000
+
+COPY --from=web-builder /app/apps/web/.next/standalone ./
+COPY --from=web-builder /app/apps/web/.next/static ./apps/web/.next/static
+COPY --from=web-builder /app/apps/web/public ./apps/web/public
+COPY --from=web-builder /app/openspec ./openspec
+COPY --from=web-builder /app/design-notes ./design-notes
+COPY --from=web-builder /app/spec-*.md ./
+
+EXPOSE 3000
+
+CMD ["node", "apps/web/server.js"]
