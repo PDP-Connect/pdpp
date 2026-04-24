@@ -1,8 +1,9 @@
 # Query/API readiness audit - 2026-04-24
 
-Status: audit complete
-Branch: `audit-query-api-readiness`
-Worktree: `/home/user/code/pdpp-query-api-audit`
+Status: audit complete; reverified by `query-api-gap-audit`
+Original branch: `audit-query-api-readiness`
+Verification branch: `query-api-gap-audit`
+Verification worktree: `/home/user/code/pdpp-query-api-gap-audit`
 Scope: read-only audit of `reference-implementation/server`, query docs/specs, OpenSpec artifacts, and `packages/polyfill-connectors/manifests`.
 
 ## Executive summary
@@ -176,6 +177,33 @@ Recommended next split:
 3. Decide and validate relationship direction before enabling polyfill `query.expand`; then add parent-to-child expansions for Gmail and Slack message children.
 4. Add public discovery for owner polyfill connector IDs, or explicitly choose an alternate discovery model.
 5. Split Gmail attachment-byte hydration into a dedicated OpenSpec change and keep current `attachments` clearly metadata-only.
+
+## Query-api-gap-audit verification addendum
+
+Worker lane `query-api-gap-audit` rechecked this note from `main` at `24541ed` on 2026-04-24. The requested bug-intake precedent path `docs/inbox/connector-binding-shadow-bug-2026-04-24.md` was absent; the same note exists at `openspec/changes/add-polyfill-connector-system/design-notes/connector-binding-shadow-bug-2026-04-24.md` and was used only as process precedent.
+
+Evidence snapshot:
+
+| Claim | Rechecked evidence | Result |
+| --- | --- | --- |
+| First-party polyfill manifests do not expose range filters. | Script over `packages/polyfill-connectors/manifests/*.json` counted `query.range_filters` entries. | Every shipped polyfill manifest reported `range_fields=0`; only the reference Spotify fixture has declared range filters. |
+| First-party polyfill manifests do not enable expansion. | Same manifest scan counted `query.expand` entries and `relationships`. | Every shipped polyfill manifest reported `expand=0`; several have relationships, especially Slack, YNAB, Gmail, USAA, Chase, ChatGPT/Codex/Claude Code, but none are expandable. |
+| Range filtering is implementation-ready but declaration-gated. | `reference-implementation/server/records.js` validates `filter[field][gte|gt|lte|lt]` against scalar/date schemas and `manifestStream.query.range_filters`; `reference-implementation/test/query-contract.test.js` covers declared and undeclared cases. | Accurate. Backfill can be manifest/test work under the existing contract. |
+| `expand[]` is parent-to-child and grant-safe today. | `normalizeExpandRequest`, `fetchExpansionChildrenGroupedByForeignKey`, list/detail tests, and insufficient-scope tests in `query-contract.test.js`. | Accurate. Do not enable belongs-to relationships until the relation direction contract changes. |
+| Schema metadata is present per stream but not fully discoverable for owner polyfill callers. | `GET /v1/streams/:stream` returns `object: "stream_metadata"`, schema, primary key, cursor/consent fields, relationships, query, views, freshness; owner polyfill route resolution still requires a connector scope. | Accurate. A public owner-token connector enumeration or all-schema endpoint remains the missing discovery floor. |
+| `changes_since` cannot be bootstrapped by documented client API. | `parseChangesSinceCursor` accepts opaque base64 JSON with `kind: "changes_since"`/`version`; tests hand-build version-0 cursors; `since=` is rejected; docs still contain the `next_cursor` conflict. | Accurate. This needs a docs correction plus an OpenSpec change for the initial-bookmark contract. |
+| Gmail attachment content is not hydrated. | Gmail manifest exposes `attachments` metadata fields only; Gmail parser/tests cover metadata; blob authorization requires visible top-level `data.blob_ref`; attachment records do not emit it. | Accurate. Keep byte/blob hydration separate from `message_bodies`. |
+| Blob docs overclaim current route behavior. | Server registers `GET /v1/blobs/:blob_id` only and sends `Content-Type`/`Content-Length`; docs mention `HEAD` and range-read guidance. | Accurate. Fix docs or implement/test the broader HTTP behavior before clients rely on it. |
+
+Concrete follow-up OpenSpec slices recommended from this worker lane:
+
+| Recommended change name | Task slice | Notes |
+| --- | --- | --- |
+| `backfill-first-party-query-range-filters` | Add `query.range_filters` to first-party manifests; add manifest validation for field existence, orderable schema type, and supported operators; add assistant-critical record-list smoke tests. | Does not need a new public filter grammar, but does change first-party manifest behavior and validator expectations. |
+| `define-query-schema-discovery-floor` | Choose public owner-token connector enumeration plus existing per-stream metadata, or a one-shot schema/capability endpoint; correct stale stream metadata docs. | Required before assistant clients can self-discover polyfill connector IDs and stream capabilities without out-of-band IDs. |
+| `enable-safe-parent-child-expand` | Validate `query.expand` against relationships and child foreign keys; enable only safe parent-to-child joins first, especially Gmail `messages -> message_bodies/attachments` and Slack `messages -> reactions/message_attachments`. | Belongs-to/reverse/nested graph expansion should stay deferred unless explicitly specified. |
+| `define-initial-changes-bookmark` | Correct `next_cursor` vs `next_changes_since` docs; define a first-bookmark flow such as `changes_since=beginning`, a changes-cursor endpoint, or terminal `next_changes_since` on full-list responses. | Do not expose or document internal version-0 cursor construction as client API. |
+| `hydrate-gmail-attachment-blobs` | Add attachment byte download, content-addressing, `blob_ref`, grant affordance, extracted-text decision, and blob HTTP behavior tests. | Keep separate from the metadata-only attachment and `message_bodies` work. |
 
 ## Validation plan for implementation slices
 
