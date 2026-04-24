@@ -32,6 +32,12 @@ import { useProtocol } from "@/lib/use-protocol.ts";
 
 const SPEC_BASE_URL = "https://pdpp-smoky.vercel.app";
 
+// Stable synthetic keys for the decorative payroll-bar illustrations.
+// These lists never reorder; the keys are purely to satisfy noArrayIndexKey.
+const INGEST_BAR_IDS = Array.from({ length: 22 }, (_, i) => `ingest-bar-${i}`);
+const DELTA_EXISTING_BAR_IDS = Array.from({ length: 24 }, (_, i) => `delta-existing-${i}`);
+const DELTA_NEW_BAR_IDS = Array.from({ length: 1 }, (_, i) => `delta-new-${i}`);
+
 // ─── Section definitions ────────────────────────────────────────────────────
 
 const SECTIONS = [
@@ -476,9 +482,9 @@ function IncrementalSync() {
             First query: 24 pay statements
           </div>
           <div className="flex flex-wrap items-center gap-0.5">
-            {Array.from({ length: 22 }, (_, i) => (
+            {INGEST_BAR_IDS.map((id, i) => (
               <div
-                key={i}
+                key={id}
                 className="h-3 w-1.5 rounded-sm"
                 style={{
                   backgroundColor: "var(--primary)",
@@ -526,9 +532,9 @@ function IncrementalSync() {
           </div>
           <div className="flex flex-wrap items-center gap-0.5">
             {/* Existing records (dimmed) */}
-            {Array.from({ length: 24 }, (_, i) => (
+            {DELTA_EXISTING_BAR_IDS.map((id, i) => (
               <div
-                key={i}
+                key={id}
                 className="h-3 w-1.5 rounded-sm"
                 style={{
                   backgroundColor: "var(--border)",
@@ -538,9 +544,9 @@ function IncrementalSync() {
               />
             ))}
             {/* New records (green, staggered) */}
-            {Array.from({ length: 1 }, (_, i) => (
+            {DELTA_NEW_BAR_IDS.map((id, i) => (
               <div
-                key={`new-${i}`}
+                key={id}
                 className="h-3 w-1.5 rounded-sm"
                 style={{
                   backgroundColor: "var(--success)",
@@ -1253,11 +1259,11 @@ export function ReferenceApp({ hero, currentLabel = "Reference" }: ReferenceAppP
                     detail: '{ status: "succeeded", records_emitted: 24 }',
                     color: "var(--primary)",
                   },
-                ].map((m, i) => (
+                ].map((m, i, arr) => (
                   <div
-                    key={i}
+                    key={m.detail}
                     className="flex items-start gap-2 py-1.5 font-mono text-xs"
-                    style={{ borderBottom: i < 5 ? "1px solid var(--border)" : "none" }}
+                    style={{ borderBottom: i < arr.length - 1 ? "1px solid var(--border)" : "none" }}
                   >
                     <span className="w-4 shrink-0 text-center" style={{ color: "var(--muted-foreground)" }}>
                       {m.dir}
@@ -1536,11 +1542,11 @@ Content-Type: application/json
                     trust: "Server warning",
                     color: "var(--primary)",
                   },
-                ].map((row, i) => (
+                ].map((row, i, arr) => (
                   <div
-                    key={i}
+                    key={row.element}
                     className="flex items-start gap-2 py-1.5 text-xs"
-                    style={{ borderBottom: i < 5 ? "1px solid var(--border)" : "none" }}
+                    style={{ borderBottom: i < arr.length - 1 ? "1px solid var(--border)" : "none" }}
                   >
                     <div className="mt-1.5 h-1 w-1 shrink-0 rounded-full" style={{ backgroundColor: row.color }} />
                     <div className="min-w-0 flex-1">
@@ -1847,9 +1853,12 @@ Authorization: Bearer <client_token>
                   Initial sync: {protocol.syncResult?.records?.length || 24} records
                 </div>
                 <div className="mb-1 flex flex-wrap items-center gap-0.5">
-                  {Array.from({ length: protocol.syncResult?.records?.length || 24 }, (_, i) => (
+                  {Array.from(
+                    { length: protocol.syncResult?.records?.length || 24 },
+                    (_, i) => `sync-bar-${i}`
+                  ).map((id) => (
                     <div
-                      key={i}
+                      key={id}
                       className="h-3 w-1.5 rounded-sm"
                       style={{ backgroundColor: "var(--primary)", opacity: 0.5 }}
                     />

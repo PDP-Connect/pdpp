@@ -128,8 +128,8 @@ function Stat({ title, rows, emphasis }: { title: string; rows: [string, string]
     >
       <h3 className="pdpp-eyebrow mb-2">{title}</h3>
       <dl className="pdpp-caption grid grid-cols-[auto_1fr] gap-x-2 gap-y-1">
-        {rows.map(([k, v], i) => (
-          <Fragment key={i}>
+        {rows.map(([k, v]) => (
+          <Fragment key={k}>
             <dt className="text-muted-foreground">{k}</dt>
             <dd className="break-all tabular-nums">{v}</dd>
           </Fragment>

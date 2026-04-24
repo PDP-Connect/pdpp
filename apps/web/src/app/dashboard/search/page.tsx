@@ -259,6 +259,7 @@ export default async function SearchPage({
               title="traces"
               href="/dashboard/traces"
               items={result.traces}
+              getKey={(t) => t.trace_id}
               renderItem={(t) => (
                 <Link
                   href={`/dashboard/traces/${encodeURIComponent(t.trace_id)}`}
@@ -275,6 +276,7 @@ export default async function SearchPage({
               title="grants"
               href="/dashboard/grants"
               items={result.grants}
+              getKey={(g) => g.grant_id}
               renderItem={(g) => (
                 <Link
                   href={`/dashboard/grants/${encodeURIComponent(g.grant_id)}`}
@@ -291,6 +293,7 @@ export default async function SearchPage({
               title="runs"
               href="/dashboard/runs"
               items={result.runs}
+              getKey={(r) => r.run_id}
               renderItem={(r) => (
                 <Link
                   href={`/dashboard/runs/${encodeURIComponent(r.run_id)}`}
@@ -345,11 +348,13 @@ function ArtifactSection<T>({
   href,
   items,
   renderItem,
+  getKey,
 }: {
   title: string;
   href: string;
   items: T[];
   renderItem: (item: T) => React.ReactNode;
+  getKey: (item: T) => string;
 }) {
   if (items.length === 0) {
     return null;
@@ -365,8 +370,8 @@ function ArtifactSection<T>({
         </Link>
       </h2>
       <ul className="divide-y divide-border border-y">
-        {items.map((item, i) => (
-          <li key={i}>{renderItem(item)}</li>
+        {items.map((item) => (
+          <li key={getKey(item)}>{renderItem(item)}</li>
         ))}
       </ul>
     </section>

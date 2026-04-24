@@ -13,7 +13,7 @@ export function OpenSpecBreadcrumbs({ crumbs }: { crumbs: OpenSpecCrumb[] }) {
         {crumbs.map((crumb, i) => {
           const isLast = i === crumbs.length - 1;
           return (
-            <Fragment key={`${crumb.label}-${i}`}>
+            <Fragment key={`${crumb.href ?? "leaf"}:${crumb.label}`}>
               <li>
                 {crumb.href && !isLast ? (
                   <Link href={crumb.href} className="transition-colors hover:text-foreground">

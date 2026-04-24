@@ -54,7 +54,7 @@ function Breadcrumbs({ items }: { items: Breadcrumb[] }) {
       aria-label="Breadcrumb"
     >
       {items.map((item, index) => (
-        <span key={`${item.label}:${index}`} className="inline-flex items-center gap-1.5">
+        <span key={`${item.href ?? "leaf"}:${item.label}`} className="inline-flex items-center gap-1.5">
           {index > 0 ? <span className="text-muted-foreground/60">/</span> : null}
           {item.href ? (
             <Link href={item.href} className="underline-offset-2 hover:text-foreground hover:underline">
