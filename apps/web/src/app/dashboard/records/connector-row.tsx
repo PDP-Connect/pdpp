@@ -106,22 +106,13 @@ export function ConnectorRow({ overview, runsHref }: RowProps) {
             {totalRecords.toLocaleString()} records · {streams.length} stream
             {streams.length === 1 ? "" : "s"}
           </span>
-          <span className="inline-flex items-center gap-1">
-            <span>last sync:</span>
-            {lastSuccessfulRun ? <Timestamp value={lastSuccessfulRun.last_at} /> : <span>never</span>}
-            {lastSuccessfulRun ? <span aria-hidden>·</span> : null}
-            {lastSuccessfulRun ? (
-              <span>
-                {lastSuccessfulRun.event_count.toLocaleString()} event
-                {lastSuccessfulRun.event_count === 1 ? "" : "s"}
-              </span>
-            ) : null}
-          </span>
+          <ConnectorFreshnessLine lastRun={lastRun} lastSuccessfulRun={lastSuccessfulRun} totalRecords={totalRecords} />
         </div>
 
         {/* Status + action */}
         <div className="flex shrink-0 items-center gap-2">
           <RunStatus
+            hasRecords={totalRecords > 0}
             lastRun={lastRun}
             running={running}
             runStart={running ? effectiveStartIso : lastRun?.first_at}
@@ -157,11 +148,13 @@ export function ConnectorRow({ overview, runsHref }: RowProps) {
 }
 
 function RunStatus({
+  hasRecords,
   running,
   runStart,
   lastRun,
   runsHref,
 }: {
+  hasRecords: boolean;
   running: boolean;
   runStart: string | undefined;
   lastRun: ConnectorRunRef | null;
@@ -176,6 +169,17 @@ function RunStatus({
     );
   }
   if (!lastRun) {
+    if (hasRecords) {
+      return (
+        <span
+          className="pdpp-caption inline-flex items-center gap-1 text-muted-foreground"
+          title="records exist, but this database has no recorded sync run for this connector"
+        >
+          <StatusDot tone="neutral" />
+          Data present
+        </span>
+      );
+    }
     return (
       <span className="pdpp-caption inline-flex items-center gap-1 text-muted-foreground" title="never run">
         <StatusDot tone="neutral" />
@@ -216,6 +220,47 @@ function RunStatus({
       {lastRun.status.replace(/_/g, " ")}
     </span>
   );
+}
+
+function ConnectorFreshnessLine({
+  lastRun,
+  lastSuccessfulRun,
+  totalRecords,
+}: {
+  lastRun: ConnectorRunRef | null;
+  lastSuccessfulRun: ConnectorRunRef | null;
+  totalRecords: number;
+}) {
+  if (lastSuccessfulRun) {
+    return (
+      <span className="inline-flex items-center gap-1">
+        <span>last success:</span>
+        <Timestamp value={lastSuccessfulRun.last_at} />
+        <span aria-hidden>·</span>
+        <span>
+          {lastSuccessfulRun.event_count.toLocaleString()} event
+          {lastSuccessfulRun.event_count === 1 ? "" : "s"}
+        </span>
+      </span>
+    );
+  }
+
+  if (lastRun) {
+    return (
+      <span className="inline-flex items-center gap-1">
+        <span>last attempt:</span>
+        <Timestamp value={lastRun.last_at} />
+        <span aria-hidden>·</span>
+        <span>{lastRun.status.replace(/_/g, " ")}</span>
+      </span>
+    );
+  }
+
+  if (totalRecords > 0) {
+    return <span>records present · no run history</span>;
+  }
+
+  return <span>last sync: never</span>;
 }
 
 function RunningBadge({ startedAt, href }: { startedAt: string | undefined; href?: string }) {

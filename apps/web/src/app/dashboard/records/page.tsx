@@ -115,7 +115,7 @@ export default async function RecordsIndexPage() {
     const ts = o.lastSuccessfulRun ? Date.parse(o.lastSuccessfulRun.last_at) : 0;
     return ts > 0 && now - ts > STALE_MS;
   }).length;
-  const neverRun = withData.filter((o) => !o.lastRun).length;
+  const noRunHistory = withData.filter((o) => !o.lastRun && o.totalRecords > 0).length;
 
   return (
     <DashboardShell active="records">
@@ -140,9 +140,9 @@ export default async function RecordsIndexPage() {
           value={syncedRecently.toLocaleString()}
         />
         <HealthStat
-          label={freshnessLabel(staleCount, neverRun)}
-          tone={staleCount > 0 || neverRun > 0 ? "warning" : "neutral"}
-          value={(staleCount || neverRun || 0).toLocaleString()}
+          label={freshnessLabel(staleCount, noRunHistory)}
+          tone={staleCount > 0 || noRunHistory > 0 ? "warning" : "neutral"}
+          value={(staleCount || noRunHistory || 0).toLocaleString()}
         />
         <HealthStat
           label={activityLabel(failedCount, runningCount)}
@@ -192,12 +192,12 @@ const HEALTH_STAT_TONE_CLASSES: Record<HealthStatTone, string> = {
   neutral: "text-foreground",
 };
 
-function freshnessLabel(stale: number, never: number): string {
+function freshnessLabel(stale: number, noRunHistory: number): string {
   if (stale > 0) {
     return "Stale >7d";
   }
-  if (never > 0) {
-    return "Never run";
+  if (noRunHistory > 0) {
+    return "No run history";
   }
   return "All fresh";
 }
