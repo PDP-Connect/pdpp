@@ -4,7 +4,7 @@
 // the full OpenAPI artifact and in reference-implementation docs, but NOT in
 // the public PDPP contract surface.
 
-import { ErrorObjectSchema, FreshnessSchema } from '../common/index.js';
+import { ErrorObjectSchema, FreshnessSchema } from '../common/index.ts';
 
 const ConnectorSummarySchema = {
   type: 'object',

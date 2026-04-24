@@ -21,7 +21,7 @@ import {
   OAuthErrorSchema,
   OrderSchema,
   UriSchema,
-} from '../common/index.js';
+} from '../common/index.ts';
 
 const NonEmptyStringSchema = {
   type: 'string',

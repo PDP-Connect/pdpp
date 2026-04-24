@@ -7,7 +7,7 @@
   "main": "./src/index.js",
   "exports": {
     ".": "./src/index.js",
-    "./common": "./src/common/index.js",
+    "./common": "./src/common/index.ts",
     "./public": "./src/public/index.js",
     "./reference": "./src/reference/index.js",
     "./builders": "./src/builders/index.ts",

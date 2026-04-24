@@ -10,7 +10,7 @@
 //   - CLI / dashboard query builders
 //   - tests
 
-export * from './common/index.js';
+export * from './common/index.ts';
 export * from './public/index.js';
 export * from './reference/index.js';
 export * from './builders/index.ts';
