@@ -125,6 +125,18 @@ async function login(asUrl, password) {
   };
 }
 
+async function fetchJson(url, opts = {}) {
+  const resp = await fetch(url, opts);
+  const text = await resp.text();
+  let body = null;
+  try {
+    body = text ? JSON.parse(text) : null;
+  } catch {
+    body = text;
+  }
+  return { status: resp.status, body };
+}
+
 // ── 1. disabled: unchanged open local-dev behavior ───────────────────────────
 test('owner-auth placeholder: when PDPP_OWNER_PASSWORD unset, /consent and /device remain open', async () => {
   await withServer({}, async ({ asUrl }) => {
@@ -406,6 +418,48 @@ test('owner-auth placeholder: public OAuth metadata and /oauth/par routes are no
     // /oauth/par accepts requests without an owner session (client-side flow).
     const requestUri = await startPendingConsent(asUrl);
     assert.ok(typeof requestUri === 'string' && requestUri.length > 0);
+  });
+});
+
+test('owner-auth placeholder: enabled — _ref mutations require owner session while reads remain open', async () => {
+  await withServer({ ownerAuthPassword: TEST_PASSWORD }, async ({ asUrl }) => {
+    await startPendingConsent(asUrl);
+    const connectorId = SPOTIFY_MANIFEST.connector_id;
+
+    const read = await fetchJson(`${asUrl}/_ref/connectors`);
+    assert.equal(read.status, 200, '_ref read routes remain open');
+    assert.equal(read.body.object, 'list');
+
+    const unauthenticatedMutation = await fetchJson(
+      `${asUrl}/_ref/connectors/${encodeURIComponent(connectorId)}/schedule`,
+      {
+        method: 'PUT',
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ interval_seconds: 300, enabled: true }),
+      },
+    );
+    assert.equal(unauthenticatedMutation.status, 401);
+    assert.equal(unauthenticatedMutation.body.error.code, 'owner_session_required');
+
+    const { cookie } = await login(asUrl, TEST_PASSWORD);
+    const authenticatedMutation = await fetchJson(
+      `${asUrl}/_ref/connectors/${encodeURIComponent(connectorId)}/schedule`,
+      {
+        method: 'PUT',
+        headers: {
+          Accept: 'application/json',
+          Cookie: cookie,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ interval_seconds: 300, enabled: true }),
+      },
+    );
+    assert.equal(authenticatedMutation.status, 200);
+    assert.equal(authenticatedMutation.body.connector_id, connectorId);
+    assert.equal(authenticatedMutation.body.interval_seconds, 300);
   });
 });
 

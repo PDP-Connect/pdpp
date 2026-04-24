@@ -1561,37 +1561,42 @@ function buildAsApp(opts = {}) {
   // existing run timeline; this route is mutation-only and is not a public
   // PDPP API. Submitted `data` satisfies the current run only — it is not
   // written to `.env.local`, SQLite config/state, or spine event payloads.
-  app.post('/_ref/runs/:runId/interaction', { contract: 'refRunInteraction' }, async (req, res) => {
-    try {
-      if (!controller || typeof controller.respondToInteraction !== 'function') {
-        return pdppError(res, 404, 'not_found', 'Controller is not configured on this server');
+  app.post(
+    '/_ref/runs/:runId/interaction',
+    { contract: 'refRunInteraction' },
+    ownerAuth.requireOwnerSession,
+    async (req, res) => {
+      try {
+        if (!controller || typeof controller.respondToInteraction !== 'function') {
+          return pdppError(res, 404, 'not_found', 'Controller is not configured on this server');
+        }
+        const runId = decodeURIComponent(req.params.runId);
+        const body = req.body || {};
+        if (typeof body.interaction_id !== 'string' || !body.interaction_id.trim()) {
+          return pdppError(res, 400, 'invalid_request', 'interaction_id is required', 'interaction_id');
+        }
+        if (body.status !== 'success' && body.status !== 'cancelled') {
+          return pdppError(res, 400, 'invalid_status', 'status must be "success" or "cancelled"', 'status');
+        }
+        if (body.data != null && (typeof body.data !== 'object' || Array.isArray(body.data))) {
+          return pdppError(res, 400, 'invalid_request', 'data must be an object if provided', 'data');
+        }
+        const result = controller.respondToInteraction(runId, {
+          interaction_id: body.interaction_id,
+          status: body.status,
+          data: body.data,
+        });
+        res.status(202).json({
+          object: 'run_interaction_ack',
+          run_id: runId,
+          interaction_id: body.interaction_id,
+          status: result.status,
+        });
+      } catch (err) {
+        handleError(res, err);
       }
-      const runId = decodeURIComponent(req.params.runId);
-      const body = req.body || {};
-      if (typeof body.interaction_id !== 'string' || !body.interaction_id.trim()) {
-        return pdppError(res, 400, 'invalid_request', 'interaction_id is required', 'interaction_id');
-      }
-      if (body.status !== 'success' && body.status !== 'cancelled') {
-        return pdppError(res, 400, 'invalid_status', 'status must be "success" or "cancelled"', 'status');
-      }
-      if (body.data != null && (typeof body.data !== 'object' || Array.isArray(body.data))) {
-        return pdppError(res, 400, 'invalid_request', 'data must be an object if provided', 'data');
-      }
-      const result = controller.respondToInteraction(runId, {
-        interaction_id: body.interaction_id,
-        status: body.status,
-        data: body.data,
-      });
-      res.status(202).json({
-        object: 'run_interaction_ack',
-        run_id: runId,
-        interaction_id: body.interaction_id,
-        status: result.status,
-      });
-    } catch (err) {
-      handleError(res, err);
     }
-  });
+  );
 
   // Reference-only dataset summary for the operator-console hero band. Returns
   // live aggregate counts and retained-bytes totals across the substrate, plus
@@ -1666,59 +1671,84 @@ function buildAsApp(opts = {}) {
     }
   });
 
-  app.post('/_ref/connectors/:connectorId/run', { contract: 'refRunConnector' }, async (req, res) => {
-    try {
-      const connectorId = decodeURIComponent(req.params.connectorId);
-      const started = await controller.runNow(connectorId);
-      res.status(202).json(started);
-    } catch (err) {
-      handleError(res, err);
-    }
-  });
-
-  app.put('/_ref/connectors/:connectorId/schedule', { contract: 'refPutConnectorSchedule' }, async (req, res) => {
-    try {
-      const connectorId = decodeURIComponent(req.params.connectorId);
-      await resolveRegisteredConnectorManifest(connectorId);
-      const schedule = await controller.upsertSchedule(connectorId, req.body || {});
-      res.json(schedule);
-    } catch (err) {
-      handleError(res, err);
-    }
-  });
-
-  app.post('/_ref/connectors/:connectorId/schedule/pause', { contract: 'refPauseConnectorSchedule' }, async (req, res) => {
-    try {
-      const connectorId = decodeURIComponent(req.params.connectorId);
-      const schedule = await controller.setScheduleEnabled(connectorId, false);
-      res.json(schedule);
-    } catch (err) {
-      handleError(res, err);
-    }
-  });
-
-  app.post('/_ref/connectors/:connectorId/schedule/resume', { contract: 'refResumeConnectorSchedule' }, async (req, res) => {
-    try {
-      const connectorId = decodeURIComponent(req.params.connectorId);
-      const schedule = await controller.setScheduleEnabled(connectorId, true);
-      res.json(schedule);
-    } catch (err) {
-      handleError(res, err);
-    }
-  });
-
-  app.delete('/_ref/connectors/:connectorId/schedule', { contract: 'refDeleteConnectorSchedule' }, async (req, res) => {
-    try {
-      const connectorId = decodeURIComponent(req.params.connectorId);
-      const deleted = await controller.deleteSchedule(connectorId);
-      if (!deleted) {
-        return pdppError(res, 404, 'not_found', `Schedule not found for connector: ${connectorId}`);
+  app.post(
+    '/_ref/connectors/:connectorId/run',
+    { contract: 'refRunConnector' },
+    ownerAuth.requireOwnerSession,
+    async (req, res) => {
+      try {
+        const connectorId = decodeURIComponent(req.params.connectorId);
+        const started = await controller.runNow(connectorId);
+        res.status(202).json(started);
+      } catch (err) {
+        handleError(res, err);
       }
-      res.status(204).end();
-    } catch (err) {
-      handleError(res, err);
     }
-  });
+  );
+
+  app.put(
+    '/_ref/connectors/:connectorId/schedule',
+    { contract: 'refPutConnectorSchedule' },
+    ownerAuth.requireOwnerSession,
+    async (req, res) => {
+      try {
+        const connectorId = decodeURIComponent(req.params.connectorId);
+        await resolveRegisteredConnectorManifest(connectorId);
+        const schedule = await controller.upsertSchedule(connectorId, req.body || {});
+        res.json(schedule);
+      } catch (err) {
+        handleError(res, err);
+      }
+    }
+  );
+
+  app.post(
+    '/_ref/connectors/:connectorId/schedule/pause',
+    { contract: 'refPauseConnectorSchedule' },
+    ownerAuth.requireOwnerSession,
+    async (req, res) => {
+      try {
+        const connectorId = decodeURIComponent(req.params.connectorId);
+        const schedule = await controller.setScheduleEnabled(connectorId, false);
+        res.json(schedule);
+      } catch (err) {
+        handleError(res, err);
+      }
+    }
+  );
+
+  app.post(
+    '/_ref/connectors/:connectorId/schedule/resume',
+    { contract: 'refResumeConnectorSchedule' },
+    ownerAuth.requireOwnerSession,
+    async (req, res) => {
+      try {
+        const connectorId = decodeURIComponent(req.params.connectorId);
+        const schedule = await controller.setScheduleEnabled(connectorId, true);
+        res.json(schedule);
+      } catch (err) {
+        handleError(res, err);
+      }
+    }
+  );
+
+  app.delete(
+    '/_ref/connectors/:connectorId/schedule',
+    { contract: 'refDeleteConnectorSchedule' },
+    ownerAuth.requireOwnerSession,
+    async (req, res) => {
+      try {
+        const connectorId = decodeURIComponent(req.params.connectorId);
+        const deleted = await controller.deleteSchedule(connectorId);
+        if (!deleted) {
+          return pdppError(res, 404, 'not_found', `Schedule not found for connector: ${connectorId}`);
+        }
+        res.status(204).end();
+      } catch (err) {
+        handleError(res, err);
+      }
+    }
+  );
 
   if (!nativeMode) {
     // Polyfill-only connector registry surface for the reference personal-server world.
