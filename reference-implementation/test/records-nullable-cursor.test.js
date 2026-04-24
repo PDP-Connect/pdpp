@@ -308,22 +308,20 @@ test('records paginate with nullable integer cursor_field', async () => {
   });
 });
 
-test('plain nullable string cursor_field with no date format is still rejected', async () => {
-  await withHarness(async ({ asUrl, rsUrl }) => {
+test('plain nullable string cursor_field with no date format is rejected at registration', async () => {
+  await withHarness(async ({ asUrl }) => {
     const manifest = unsupportedPlainStringManifest();
-    await registerManifest(asUrl, manifest);
-    const ownerToken = await issueOwnerToken(asUrl);
-    await seedStream(rsUrl, ownerToken, manifest.connector_id, 'notes', [
-      { id: 'n1', title: 'apple' },
-    ], 'title');
-
-    const { status } = await fetchJson(
-      `${rsUrl}/v1/streams/notes/records?connector_id=${encodeURIComponent(manifest.connector_id)}`,
-      { headers: { Authorization: `Bearer ${ownerToken}` } },
-    );
-    // The SQL-layer pagination path intentionally bails on non-date strings
-    // to avoid BINARY-vs-localeCompare drift. Surface is a 5xx from the
-    // unhandled `not_supported` error — this asserts we don't silently widen.
-    assert.notEqual(status, 200, 'plain-string cursor must not be accepted');
+    const resp = await fetch(`${asUrl}/connectors`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(manifest),
+    });
+    // The manifest validator catches unsupported cursor_field shapes up-front
+    // so the same bug class (500s on /records) cannot recur for freshly
+    // registered connectors. Stale DB manifests that predate this guardrail
+    // are handled by the runtime in-memory fallback path instead.
+    assert.equal(resp.status, 400, 'unsupported cursor_field rejected at registration');
+    const body = await resp.json();
+    assert.ok(/cursor_field/i.test(body.error?.message ?? ''));
   });
 });

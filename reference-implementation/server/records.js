@@ -297,6 +297,53 @@ function coerceComparableValue(value, fieldSchema, { strict = false } = {}) {
   return String(value);
 }
 
+/**
+ * Compare two values under the semantics of a declared field schema, used by
+ * the in-memory fallback sort/seek path. Mirrors the old JS comparator: numeric
+ * compare for integer/number (and date-coerced), `localeCompare` for strings,
+ * with null values sorted after present values (the seek builder handles the
+ * missing-bucket toggle separately).
+ */
+function compareComparableValues(left, right, fieldSchema) {
+  const l = coerceComparableValue(left, fieldSchema);
+  const r = coerceComparableValue(right, fieldSchema);
+  if (typeof l === 'number' && typeof r === 'number') return l - r;
+  return String(l ?? '').localeCompare(String(r ?? ''));
+}
+
+/**
+ * (cursor_value, primary_key) → (cursor_value, primary_key) comparison with
+ * the manifest-declared schema types. `order === 'ASC'` produces ascending
+ * order, `'DESC'` descending. Missing cursor values (null/'') bucket last in
+ * ASC and first in DESC — matches the SQL path's `__cursor_missing` keyway.
+ */
+function compareLogicalPositions(left, right, manifestStream, order) {
+  const direction = order === 'ASC' ? 1 : -1;
+  const cursorField = manifestStream?.cursor_field || null;
+
+  if (cursorField) {
+    const fieldSchema = getFieldSchema(manifestStream, cursorField);
+    const leftMissing = left?.cursor_value == null || left.cursor_value === '';
+    const rightMissing = right?.cursor_value == null || right.cursor_value === '';
+    if (leftMissing !== rightMissing) {
+      // Missing bucket is after present in ASC, before in DESC.
+      return (leftMissing ? 1 : -1) * direction;
+    }
+    if (!leftMissing && !rightMissing) {
+      const cmp = compareComparableValues(left.cursor_value, right.cursor_value, fieldSchema);
+      if (cmp !== 0) return cmp * direction;
+    }
+  }
+
+  const primaryKeyFields = normalizePrimaryKey(manifestStream?.primary_key);
+  for (let i = 0; i < primaryKeyFields.length; i += 1) {
+    const fieldSchema = getFieldSchema(manifestStream, primaryKeyFields[i]);
+    const cmp = compareComparableValues(left?.primary_key?.[i], right?.primary_key?.[i], fieldSchema);
+    if (cmp !== 0) return cmp * direction;
+  }
+  return 0;
+}
+
 function normalizeExactFilterValue(value, field) {
   if (value != null && typeof value === 'object') {
     throw invalidQueryError(`Exact filter on '${field}' must use a scalar value`);
@@ -574,34 +621,51 @@ function jsonExtractExpr(field) {
  *   our corpus uses `["id"]` primary keys — always strings of ASCII hex /
  *   UUID / etc. BINARY == localeCompare on ASCII.
  */
-function assertCursorFieldParityOrThrow(manifestStream) {
+/**
+ * Returns `{supported, reason}` for a stream's `cursor_field`. A supported
+ * cursor field means the SQL-pushdown records path will produce results
+ * consistent with the JS comparator. Unsupported shapes route the stream
+ * through `fetchVisibleRecordRowsInMemory` instead — see the fallback in
+ * `fetchVisibleRecordRowsPaginated`.
+ */
+function classifyCursorFieldSqlSupport(manifestStream) {
   const field = manifestStream?.cursor_field;
-  if (!field) return;
+  if (!field) return { supported: true, reason: null };
   const schema = getFieldSchema(manifestStream, field);
   if (!schema) {
-    throw new Error(`[records] cursor_field '${field}' not in schema.properties`);
+    return {
+      supported: false,
+      reason: `cursor_field '${field}' not in schema.properties`,
+    };
   }
-  // Accept both bare (`type: "string"`) and nullable (`type: ["string", "null"]`)
-  // schemas. A nullable cursor just adds more rows to the "missing" bucket,
-  // which the existing `__cursor_missing` ORDER BY keyway already handles.
   const types = nonNullSchemaTypes(schema);
   const numeric = types.size === 1 && (types.has('integer') || types.has('number'));
   const isoDate =
     types.size === 1
     && types.has('string')
     && (schema.format === 'date' || schema.format === 'date-time');
-  if (!numeric && !isoDate) {
-    // Deliberate bail — see exact-parity note above.
-    const typeLabel = JSON.stringify(schema.type);
-    const err = new Error(
+  if (numeric || isoDate) return { supported: true, reason: null };
+  const typeLabel = JSON.stringify(schema.type);
+  return {
+    supported: false,
+    reason:
       `cursor_field '${field}' has schema type ${typeLabel}${schema.format ? ` format '${schema.format}'` : ''}; ` +
       'SQL-layer sort is only supported for numeric or ISO date/date-time cursor_fields ' +
-      '(nullable variants allowed). ' +
-      'Widen support in records.js::fetchVisibleRecordRowsPaginated before using.',
-    );
-    err.code = 'not_supported';
-    throw err;
-  }
+      '(nullable variants allowed). Repair the manifest, or let the reference ' +
+      'fallback handle it in-memory (logged at first use).',
+  };
+}
+
+// Streams we've already logged a fallback for, so we don't flood stderr.
+const _sqlFallbackLoggedStreams = new Set();
+function logSqlFallbackOnce(connectorId, stream, reason) {
+  const key = `${connectorId}::${stream}`;
+  if (_sqlFallbackLoggedStreams.has(key)) return;
+  _sqlFallbackLoggedStreams.add(key);
+  // eslint-disable-next-line no-console
+  console.warn(
+    `[records] stream ${connectorId}/${stream} using in-memory pagination fallback: ${reason}`,
+  );
 }
 
 /**
@@ -707,6 +771,91 @@ function buildCursorSeekClause(manifestStream, cursorPosition, order) {
  * visible rows in SQL-sort-order, already carrying `rawData` + `sortPosition`
  * to match the shape `queryRecords` expects.
  */
+
+/**
+ * In-memory fallback used when a stream's `cursor_field` is not SQL-safe.
+ * Loads the visible connector/stream records with access-control pushdown in
+ * SQL (WHERE only; no ORDER BY / LIMIT), then sorts and seeks in JS using
+ * `compareLogicalPositions`.
+ *
+ * Trade-offs vs the SQL path:
+ *   - Memory: one pass over all visible records for the stream; acceptable for
+ *     the reference but not for very large streams. The registration-time
+ *     guardrail + manifest repairs are expected to keep this path rare.
+ *   - Correctness: exact parity with the old JS comparator, including
+ *     `localeCompare` on plain strings, which is what the SQL path bails on.
+ */
+function fetchVisibleRecordRowsInMemory({
+  db,
+  connectorId,
+  stream,
+  effective,
+  manifestStream,
+  compiledFilters = [],
+  cursorPosition,
+  limit,
+  order,
+}) {
+  const consentTimeField = manifestStream?.consent_time_field;
+
+  // Access-control pushdown: keep the same WHERE shape the SQL path uses, just
+  // without ORDER BY / LIMIT / cursor-seek.
+  const whereParts = ['connector_id = ?', 'stream = ?', 'deleted = 0'];
+  const whereBinds = [connectorId, stream];
+  if (effective.timeRange && consentTimeField) {
+    assertSafeJsonField(consentTimeField, 'consent_time_field');
+    const ctExpr = jsonExtractExpr(consentTimeField);
+    whereParts.push(`${ctExpr} IS NOT NULL`);
+    if (effective.timeRange.since != null) {
+      whereParts.push(`${ctExpr} >= ?`);
+      whereBinds.push(new Date(effective.timeRange.since).toISOString());
+    }
+    if (effective.timeRange.until != null) {
+      whereParts.push(`${ctExpr} < ?`);
+      whereBinds.push(new Date(effective.timeRange.until).toISOString());
+    }
+  }
+  if (effective.resources && effective.resources.length > 0) {
+    const placeholders = effective.resources.map(() => '?').join(', ');
+    whereParts.push(`record_key IN (${placeholders})`);
+    whereBinds.push(...effective.resources);
+  }
+
+  const sql = `
+    SELECT record_key, record_json, emitted_at
+    FROM records
+    WHERE ${whereParts.join(' AND ')}
+  `;
+
+  const stmt = db.prepare(sql);
+  const visible = [];
+  for (const row of stmt.iterate(...whereBinds)) {
+    const rawData = JSON.parse(row.record_json);
+    if (compiledFilters.length && !passesRequestFilters(rawData, compiledFilters)) continue;
+    visible.push({
+      record_key: row.record_key,
+      rawData,
+      emitted_at: row.emitted_at,
+      sortPosition: buildRecordSortPosition(rawData, row.record_key, manifestStream),
+    });
+  }
+
+  visible.sort((left, right) =>
+    compareLogicalPositions(left.sortPosition, right.sortPosition, manifestStream, order),
+  );
+
+  const afterCursor = cursorPosition
+    ? visible.filter(
+        (row) =>
+          compareLogicalPositions(row.sortPosition, cursorPosition, manifestStream, order) > 0,
+      )
+    : visible;
+
+  const hasMore = afterCursor.length > limit;
+  const rows = hasMore ? afterCursor.slice(0, limit) : afterCursor;
+  return { rows, hasMore, scanned: visible.length, underread: false };
+}
+
 function fetchVisibleRecordRowsPaginated({
   db,
   connectorId,
@@ -718,7 +867,26 @@ function fetchVisibleRecordRowsPaginated({
   limit,
   order,
 }) {
-  assertCursorFieldParityOrThrow(manifestStream);
+  // Graceful per-stream fallback for manifests whose cursor_field is not
+  // compatible with the SQL sort path. Registration-time validation catches
+  // this for freshly-registered connectors (see auth.js), but stale DB rows
+  // predating the guardrail can still slip through — this keeps assistant-
+  // critical browsing working rather than 500-ing.
+  const sqlSupport = classifyCursorFieldSqlSupport(manifestStream);
+  if (!sqlSupport.supported) {
+    logSqlFallbackOnce(connectorId, stream, sqlSupport.reason);
+    return fetchVisibleRecordRowsInMemory({
+      db,
+      connectorId,
+      stream,
+      effective,
+      manifestStream,
+      compiledFilters,
+      cursorPosition,
+      limit,
+      order,
+    });
+  }
 
   const consentTimeField = manifestStream?.consent_time_field;
   const cursorField = manifestStream?.cursor_field || null;
@@ -920,6 +1088,86 @@ async function hydrateExpandedRelations({
  * `{record_key, rawData, emitted_at, sortPosition}` shape the caller expects
  * for `buildResponseRecord`.
  */
+/**
+ * In-memory fallback for `fetchExpansionChildrenGroupedByForeignKey`. Used
+ * when the child stream's cursor_field is not SQL-safe. Same per-parent cap
+ * semantics, but ordering + partitioning happen in JS.
+ */
+function fetchExpansionChildrenGroupedByForeignKeyInMemory({
+  db,
+  connectorId,
+  childStream,
+  childManifestStream,
+  childEffective,
+  foreignKeyField,
+  parentKeys,
+  cardinality,
+  limit,
+}) {
+  const result = new Map();
+  if (!parentKeys.length) return result;
+
+  const consentTimeField = childManifestStream?.consent_time_field;
+  const primaryKeyFields = normalizePrimaryKey(childManifestStream?.primary_key);
+  if (primaryKeyFields.length === 0) {
+    throw new Error('[records] child stream manifest primary_key is required for expansion');
+  }
+
+  const whereParts = ['connector_id = ?', 'stream = ?', 'deleted = 0'];
+  const whereBinds = [connectorId, childStream];
+  if (childEffective.timeRange && consentTimeField) {
+    assertSafeJsonField(consentTimeField, 'consent_time_field');
+    const ctExpr = jsonExtractExpr(consentTimeField);
+    whereParts.push(`${ctExpr} IS NOT NULL`);
+    if (childEffective.timeRange.since != null) {
+      whereParts.push(`${ctExpr} >= ?`);
+      whereBinds.push(new Date(childEffective.timeRange.since).toISOString());
+    }
+    if (childEffective.timeRange.until != null) {
+      whereParts.push(`${ctExpr} < ?`);
+      whereBinds.push(new Date(childEffective.timeRange.until).toISOString());
+    }
+  }
+  if (childEffective.resources && childEffective.resources.length > 0) {
+    const placeholders = childEffective.resources.map(() => '?').join(', ');
+    whereParts.push(`record_key IN (${placeholders})`);
+    whereBinds.push(...childEffective.resources);
+  }
+  assertSafeJsonField(foreignKeyField, 'foreign_key');
+  const fkExpr = jsonExtractExpr(foreignKeyField);
+  const parentPlaceholders = parentKeys.map(() => '?').join(', ');
+  whereParts.push(`${fkExpr} IN (${parentPlaceholders})`);
+
+  const sql = `
+    SELECT record_key, record_json, emitted_at, ${fkExpr} AS __fk
+    FROM records
+    WHERE ${whereParts.join(' AND ')}
+  `;
+
+  const stmt = db.prepare(sql);
+  const rankBound = cardinality === 'has_one' ? 1 : limit + 1;
+  const buckets = new Map();
+  for (const row of stmt.iterate(...whereBinds, ...parentKeys)) {
+    const rawData = JSON.parse(row.record_json);
+    const relationKey = encodeKey(row.__fk);
+    const childRow = {
+      record_key: row.record_key,
+      rawData,
+      emitted_at: row.emitted_at,
+      sortPosition: buildRecordSortPosition(rawData, row.record_key, childManifestStream),
+    };
+    if (!buckets.has(relationKey)) buckets.set(relationKey, []);
+    buckets.get(relationKey).push(childRow);
+  }
+  for (const [relationKey, bucket] of buckets) {
+    bucket.sort((l, r) =>
+      compareLogicalPositions(l.sortPosition, r.sortPosition, childManifestStream, 'ASC'),
+    );
+    result.set(relationKey, bucket.slice(0, rankBound));
+  }
+  return result;
+}
+
 function fetchExpansionChildrenGroupedByForeignKey({
   db,
   connectorId,
@@ -935,9 +1183,25 @@ function fetchExpansionChildrenGroupedByForeignKey({
   if (!parentKeys.length) return result;
 
   assertSafeJsonField(foreignKeyField, 'foreign_key');
-  // Exact-parity check for child's sort key; `compareLogicalPositions` on the
-  // child path used the same rules, so the same constraints apply.
-  assertCursorFieldParityOrThrow(childManifestStream);
+  // If the child stream's cursor_field isn't SQL-safe, fall back to an
+  // in-memory per-foreign-key group so the expansion still hydrates. Rare in
+  // practice (expansion streams are typically the narrow, well-typed ones),
+  // but keeps the whole read from failing over one badly-declared child.
+  const childSqlSupport = classifyCursorFieldSqlSupport(childManifestStream);
+  if (!childSqlSupport.supported) {
+    logSqlFallbackOnce(connectorId, childStream, `expansion: ${childSqlSupport.reason}`);
+    return fetchExpansionChildrenGroupedByForeignKeyInMemory({
+      db,
+      connectorId,
+      childStream,
+      childManifestStream,
+      childEffective,
+      foreignKeyField,
+      parentKeys,
+      cardinality,
+      limit,
+    });
+  }
 
   const primaryKeyFields = normalizePrimaryKey(childManifestStream?.primary_key);
   if (primaryKeyFields.length === 0) {

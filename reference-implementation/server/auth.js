@@ -116,6 +116,26 @@ function isTopLevelSearchableStringField(fieldSchema) {
   return type.every((entry) => entry === 'string' || entry === 'null');
 }
 
+/**
+ * Mirror of the records-path cursor-field compatibility check. Kept small and
+ * colocated with the validator so authoring mistakes are caught at registration
+ * rather than at first read. Must stay in sync with
+ * reference-implementation/server/records.js::assertCursorFieldParityOrThrow.
+ */
+function isReferenceCompatibleCursorSchema(fieldSchema) {
+  if (!fieldSchema || typeof fieldSchema !== 'object') return false;
+  const rawType = fieldSchema.type;
+  const typeList = Array.isArray(rawType) ? rawType : rawType != null ? [rawType] : [];
+  const nonNull = typeList.filter((t) => t !== 'null');
+  if (nonNull.length !== 1) return false;
+  const only = nonNull[0];
+  if (only === 'integer' || only === 'number') return true;
+  if (only === 'string') {
+    return fieldSchema.format === 'date' || fieldSchema.format === 'date-time';
+  }
+  return false;
+}
+
 function resolveConfiguredNativeStorageBinding(opts = {}) {
   const nativeManifest = resolveConfiguredNativeManifest(opts);
   const connectorId = nativeManifest?.storage_binding?.connector_id;
@@ -1182,7 +1202,7 @@ function invalidConnectorManifest(message, code = 'invalid_request') {
   return err;
 }
 
-function validateConnectorManifest(manifest = {}, code = 'invalid_request') {
+function validateConnectorManifest(manifest = {}, code = 'invalid_request', opts = {}) {
   if (!isNonEmptyString(manifest.connector_id)) {
     throw invalidConnectorManifest('connector_id is required', code);
   }
@@ -1226,6 +1246,28 @@ function validateConnectorManifest(manifest = {}, code = 'invalid_request') {
     for (const fieldName of ['cursor_field', 'consent_time_field']) {
       if (stream[fieldName] != null && !schemaFieldNames.has(stream[fieldName])) {
         throw invalidConnectorManifest(`Stream '${stream.name}' ${fieldName} must exist in schema.properties`, code);
+      }
+    }
+
+    // Reference guardrail: the SQL-backed records path only supports a narrow
+    // set of `cursor_field` shapes (see
+    // reference-implementation/server/records.js::classifyCursorFieldSqlSupport).
+    // Reject incompatible declarations at registration time so the same bug
+    // class (500s on /records for shipped manifests) cannot recur.
+    //
+    // Skipped on read (`skipCursorFieldSortCheck: true`): a DB that predates
+    // this guardrail may still hold stale manifests; blocking reads on them
+    // would defeat the whole point of the runtime JS-comparator fallback in
+    // records.js. Registration-time paths always enforce the check.
+    if (stream.cursor_field != null && !opts.skipCursorFieldSortCheck) {
+      const cursorSchema = schemaProperties[stream.cursor_field];
+      if (!isReferenceCompatibleCursorSchema(cursorSchema)) {
+        throw invalidConnectorManifest(
+          `Stream '${stream.name}' cursor_field '${stream.cursor_field}' has an unsupported schema for the reference records path. ` +
+            'Supported shapes: integer, number, string with format "date" or "date-time", or the nullable variants of those. ' +
+            `Declared: type=${JSON.stringify(cursorSchema?.type)}${cursorSchema?.format ? ` format="${cursorSchema.format}"` : ''}.`,
+          code,
+        );
       }
     }
 
@@ -1324,7 +1366,11 @@ export async function getConnectorManifest(connectorId) {
   if (!row) return null;
   try {
     const manifest = JSON.parse(row.manifest);
-    validateConnectorManifest(manifest, 'connector_invalid');
+    // Read-path validation: skip the reference cursor_field sort-compat check
+    // so stale DB manifests (pre-guardrail) still flow through to the records
+    // module's in-memory fallback. Registration-time paths enforce the full
+    // check; see validateConnectorManifest.
+    validateConnectorManifest(manifest, 'connector_invalid', { skipCursorFieldSortCheck: true });
     return manifest;
   } catch {
     throw invalidConnectorManifest(`Connector manifest for ${connectorId} is malformed or no longer valid`, 'connector_invalid');

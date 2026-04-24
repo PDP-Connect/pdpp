@@ -26,6 +26,7 @@ import {
   listStreams, listAllStreams, getSyncState, putSyncState, getDatasetSummary,
 } from './records.js';
 import { lexicalIndexBackfillForManifest, runLexicalSearch } from './search.js';
+import { reconcilePolyfillManifests } from './polyfill-manifest-reconcile.js';
 import { createOwnerAuthPlaceholder, OWNER_AUTH_DEFAULT_SUBJECT_ID } from './owner-auth.js';
 import { createController } from '../runtime/controller.js';
 import { createApp, buildLogger } from './transport.js';
@@ -66,6 +67,17 @@ const PDPP_DCR_INITIAL_ACCESS_TOKENS = (process.env.PDPP_DCR_INITIAL_ACCESS_TOKE
 const PDPP_REFERENCE_TRACE_ID_HEADER = 'PDPP-Reference-Trace-Id';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
+
+// Heuristic: is this DB path a canonical polyfill-connectors deployment DB?
+// Used to decide whether to auto-reconcile persisted manifests on startup.
+// The dev script's default
+// (`../packages/polyfill-connectors/.pdpp-data/polyfill.sqlite`) is the
+// authoritative sentinel; overrides use the explicit opts/env knob.
+function looksLikePolyfillDeploymentDbPath(dbPath) {
+  if (!dbPath || typeof dbPath !== 'string') return false;
+  if (dbPath === ':memory:') return false;
+  return dbPath.includes('/polyfill-connectors/') && dbPath.endsWith('polyfill.sqlite');
+}
 
 function pdppError(res, status, code, message, param = null) {
   const body = { error: { type: typeFor(status), code, message } };
@@ -2618,6 +2630,45 @@ export async function startServer(opts = {}) {
   logger.info('database initialized');
 
   configureNativeManifest(nativeConfig?.nativeManifest || null);
+
+  // Polyfill-mode manifest reconciliation. The reference persists connector
+  // manifests in the DB; when we ship corrections to first-party manifests
+  // (schema typing, cursor_field format, etc.), existing databases need to
+  // self-heal rather than continue using stale schema declarations. Scoped
+  // to the shipped `packages/polyfill-connectors/manifests/` set; custom
+  // connectors are left alone.
+  //
+  // Default behavior:
+  //   - Enabled when `PDPP_DB_PATH` / `opts.dbPath` points at the canonical
+  //     polyfill-connectors data directory (the real deployment) so the
+  //     owner's server self-heals on restart after a reference ships manifest
+  //     fixes.
+  //   - Disabled everywhere else (tests, unknown ad-hoc databases) to avoid
+  //     clobbering connector manifests that happen to share ids with shipped
+  //     polyfill manifests but have test-specific shape.
+  //
+  // `opts.reconcilePolyfillManifests` and `PDPP_RECONCILE_POLYFILL_MANIFESTS`
+  // always override the default.
+  if (!nativeConfig?.nativeManifest) {
+    const resolvedDbPath = opts.dbPath || DB_PATH;
+    const envToggle = process.env.PDPP_RECONCILE_POLYFILL_MANIFESTS;
+    const envEnabled =
+      envToggle === '1' ? true : envToggle === '0' ? false : undefined;
+    const defaultEnabled = looksLikePolyfillDeploymentDbPath(resolvedDbPath);
+    const reconcileEnabled =
+      opts.reconcilePolyfillManifests !== undefined
+        ? !!opts.reconcilePolyfillManifests
+        : envEnabled !== undefined
+          ? envEnabled
+          : defaultEnabled;
+    const summary = await reconcilePolyfillManifests({
+      enabled: reconcileEnabled,
+      log: (msg) => logger.info(msg),
+    });
+    if (summary.scanned > 0) {
+      logger.info(summary, 'polyfill manifest reconcile summary');
+    }
+  }
 
   // Lexical retrieval index startup drift-detect + backfill.
   //
