@@ -15,7 +15,7 @@ import {
 } from './metadata.ts';
 import { createTraceContext, emitSpineEvent, generateSpineId, listSpineCorrelations, listSpineEvents, searchSpine } from '../lib/spine.ts';
 import {
-  registerConnector, getConnectorManifest, getManifestForStorageBinding, initiateGrant, getPendingConsent,
+  registerConnector, getConnectorManifest, getConfiguredNativeManifest, getManifestForStorageBinding, initiateGrant, getPendingConsent,
   approveGrant, introspect, revokeGrant, denyGrant,
   initiateOwnerDeviceAuthorization, getOwnerDeviceAuthorizationByUserCode,
   approveOwnerDeviceAuthorization, denyOwnerDeviceAuthorization, exchangeOwnerDeviceCode, configureNativeManifest,
@@ -36,6 +36,7 @@ import {
   runSemanticSearch,
   semanticIndexBackfillForManifest,
 } from './search-semantic.js';
+import { collectDeploymentDiagnostics } from './deployment-diagnostics.ts';
 import { createOwnerAuthPlaceholder, OWNER_AUTH_DEFAULT_SUBJECT_ID } from './owner-auth.ts';
 import { createController } from '../runtime/controller.ts';
 import { createApp, buildLogger } from './transport.js';
@@ -1671,6 +1672,28 @@ function buildAsApp(opts = {}) {
     }
   });
 
+  // /_ref/deployment — reference operator diagnostics. Not a PDPP protocol
+  // surface; the dashboard's /dashboard/deployment page reads this. Secret
+  // redaction is enforced inside collectDeploymentDiagnostics.
+  app.get('/_ref/deployment', async (req, res) => {
+    try {
+      const report = await collectDeploymentDiagnostics(
+        {
+          getBackend: () => getSemanticBackend(),
+          getDb: () => getDb(),
+          computeIndexState: () => computeSemanticIndexState(),
+          getConfiguredNativeManifest: () => getConfiguredNativeManifest(),
+          listRegisteredConnectorIds: () => listRegisteredConnectorIds(),
+          getConnectorManifest: (connectorId) => getConnectorManifest(connectorId),
+        },
+        { dbPath: opts.dbPath || DB_PATH }
+      );
+      res.json(report);
+    } catch (err) {
+      handleError(res, err);
+    }
+  });
+
   app.post(
     '/_ref/connectors/:connectorId/run',
     { contract: 'refRunConnector' },
@@ -2979,6 +3002,7 @@ export async function startServer(opts = {}) {
     nativeManifest: nativeConfig?.nativeManifest || null,
     controller,
     providerName,
+    dbPath: opts.dbPath || DB_PATH,
     enableDynamicClientRegistration: resolveDynamicClientRegistrationEnabled(opts),
     dynamicClientRegistrationInitialAccessTokens: resolveDynamicClientRegistrationInitialAccessTokens(opts),
     asPublicUrl: configuredAsPublicUrl,

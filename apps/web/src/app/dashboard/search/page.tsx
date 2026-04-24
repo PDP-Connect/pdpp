@@ -1,8 +1,15 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
+import { shouldAttemptSemanticUplift } from "pdpp-reference-implementation/deployment-diagnostics";
 import { DashboardShell, ServerUnreachable } from "../components/shell.tsx";
 import { ReferenceServerUnreachableError } from "../lib/owner-token.ts";
-import { type GrantSummary, type RunSummary, refSearch, type TraceSummary } from "../lib/ref-client.ts";
+import {
+  type GrantSummary,
+  getDeploymentDiagnostics,
+  type RunSummary,
+  refSearch,
+  type TraceSummary,
+} from "../lib/ref-client.ts";
 import {
   getRecord,
   isSemanticRetrievalAdvertised,
@@ -115,7 +122,26 @@ async function hitToRecordHit(hit: SearchResultHit): Promise<RecordHit> {
  *     user cannot act on.
  */
 async function searchRecords(query: string, cursor: string | null, prevStack: string[]): Promise<RecordPage> {
-  const wantSemantic = cursor === null && (await isSemanticRetrievalAdvertised());
+  // Gate the semantic uplift on TWO signals:
+  //   1. the RS advertises capabilities.semantic_retrieval.supported = true
+  //   2. diagnostics report at least one (connector, stream, field) tuple
+  //      participating in semantic retrieval
+  // The second check prevents the "advertised + zero corpus" misconfiguration
+  // from rendering every first-page search as if semantic retrieval ran and
+  // found nothing. The operator-facing reason is surfaced on
+  // /dashboard/deployment; here we degrade silently.
+  let wantSemantic = false;
+  if (cursor === null) {
+    const [advertised, participationFieldCount] = await Promise.all([
+      isSemanticRetrievalAdvertised(),
+      getDeploymentDiagnostics()
+        .then((d) => d.semantic.participation.field_count)
+        // Diagnostics fetch is best-effort; if it fails, treat as zero
+        // participation so the gate stays closed.
+        .catch(() => 0),
+    ]);
+    wantSemantic = shouldAttemptSemanticUplift({ advertised, participationFieldCount });
+  }
 
   const [lexicalPage, semanticPage] = await Promise.all([
     searchRecordsLexical(query, {

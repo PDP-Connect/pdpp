@@ -6,10 +6,10 @@
 
 ## 2. Operational Diagnostics
 
-- [ ] 2.1 Add a reference diagnostics helper that reports semantic backend availability, vector index kind/state, model/profile identity, language bias, participating connectors/streams/fields, manifest provenance, DB path, and warnings.
-- [ ] 2.2 Add a read-only `/dashboard/deployment` page that renders the diagnostics clearly and redacts all secret values.
-- [ ] 2.3 Show explicit warnings for zero semantic participation, stale index, unavailable embedding backend, missing model cache, disabled download, and vector-index fallback.
-- [ ] 2.4 Add tests proving deployment diagnostics redacts secrets and reports zero participation separately from backend/index readiness.
+- [x] 2.1 Add a reference diagnostics helper that reports semantic backend availability, vector index kind/state, model/profile identity, language bias, participating connectors/streams/fields, manifest provenance, DB path, and warnings.
+- [x] 2.2 Add a read-only `/dashboard/deployment` page that renders the diagnostics clearly and redacts all secret values.
+- [x] 2.3 Show explicit warnings for zero semantic participation, stale index, unavailable embedding backend, missing model cache, disabled download, and vector-index fallback.
+- [x] 2.4 Add tests proving deployment diagnostics redacts secrets and reports zero participation separately from backend/index readiness.
 
 ## 3. First-Party Semantic Coverage
 
@@ -40,9 +40,9 @@
 
 ## 7. Dashboard Search Integration
 
-- [ ] 7.1 Update dashboard blended search so semantic uplift is attempted only when semantic capability is advertised and diagnostics indicate non-zero participation.
-- [ ] 7.2 When semantic is unavailable, stale, or zero-participation, degrade silently in search results but make the reason visible on `/dashboard/deployment`.
-- [ ] 7.3 Add tests for the blended search zero-participation path so an empty semantic index does not look like successful semantic uplift.
+- [x] 7.1 Update dashboard blended search so semantic uplift is attempted only when semantic capability is advertised and diagnostics indicate non-zero participation.
+- [x] 7.2 When semantic is unavailable, stale, or zero-participation, degrade silently in search results but make the reason visible on `/dashboard/deployment`.
+- [x] 7.3 Add tests for the blended search zero-participation path so an empty semantic index does not look like successful semantic uplift.
 
 ## 8. Docs And Validation
 

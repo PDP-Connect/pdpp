@@ -163,6 +163,16 @@ export function configureNativeManifest(manifest = null) {
   configuredNativeManifest = manifest ? cloneJson(manifest) : null;
 }
 
+/**
+ * Return a defensive copy of the currently-configured native manifest, or
+ * null when the reference is running in polyfill mode. Diagnostics-only:
+ * callers that need the manifest for an auth decision go through
+ * getManifestForStorageBinding / getConnectorManifest.
+ */
+export function getConfiguredNativeManifest() {
+  return configuredNativeManifest ? cloneJson(configuredNativeManifest) : null;
+}
+
 function resolveConfiguredNativeManifest(opts = {}) {
   return opts.nativeManifest || configuredNativeManifest || null;
 }

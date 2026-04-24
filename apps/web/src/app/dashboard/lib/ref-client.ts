@@ -282,6 +282,68 @@ export async function getDatasetSummary(): Promise<DatasetSummary> {
   return (await refFetch("/_ref/dataset/summary")) as DatasetSummary;
 }
 
+// The reference deployment diagnostics surface. Consumed by the operator-
+// facing /dashboard/deployment page. Shape matches the report returned by
+// server/deployment-diagnostics.ts; the RS redacts secrets before sending,
+// and the dashboard must not re-assemble them.
+export interface DeploymentDiagnostics {
+  database: { path: string };
+  environment: ReadonlyArray<{
+    name: string;
+    value: string | null;
+    provenance: "absent" | "present" | "redacted";
+    secret: boolean;
+  }>;
+  manifests: ReadonlyArray<{
+    connector_id: string;
+    display_name: string | null;
+    provenance: "native" | "polyfill-registered";
+    semantic_stream_count: number;
+  }>;
+  semantic: {
+    backend: {
+      configured: boolean;
+      available: boolean;
+      model: string | null;
+      dimensions: number | null;
+      distance_metric: string | null;
+      language_bias: { primary: string; note?: string } | null;
+      model_cache_path: string | null;
+      model_cache_present: boolean | null;
+      download_allowed: boolean | null;
+    };
+    index: {
+      kind: "sqlite-vec" | "blob-flat" | null;
+      state: "built" | "building" | "stale" | null;
+    };
+    participation: {
+      connector_count: number;
+      stream_count: number;
+      field_count: number;
+      tuples: ReadonlyArray<{
+        connector_id: string;
+        stream: string;
+        field: string;
+        provenance: "native" | "polyfill-registered";
+      }>;
+    };
+  };
+  warnings: ReadonlyArray<{
+    code:
+      | "zero_participation"
+      | "stale_index"
+      | "backend_unavailable"
+      | "missing_model_cache"
+      | "download_disabled"
+      | "vector_index_fallback";
+    message: string;
+  }>;
+}
+
+export async function getDeploymentDiagnostics(): Promise<DeploymentDiagnostics> {
+  return (await refFetch("/_ref/deployment")) as DeploymentDiagnostics;
+}
+
 export async function refSearch(query: string): Promise<{
   object: "search_result";
   traces: TraceSummary[];

@@ -1,0 +1,276 @@
+import { Callout, PageHeader, Section } from "../components/primitives.tsx";
+import { DashboardShell, EmptyState, ServerUnreachable } from "../components/shell.tsx";
+import { ReferenceServerUnreachableError } from "../lib/owner-token.ts";
+import { type DeploymentDiagnostics, getDeploymentDiagnostics } from "../lib/ref-client.ts";
+
+export const dynamic = "force-dynamic";
+
+// Operator-facing diagnostics for the reference deployment. Not a PDPP
+// protocol surface — this page consumes /_ref/deployment and renders the
+// report the RS already redacted. The goal is "why isn't semantic working"
+// answered in one glance, without the operator reading logs or SSHing in.
+//
+// Spec: openspec/changes/make-semantic-retrieval-operational/
+//       specs/reference-implementation-architecture/spec.md
+export default async function DeploymentPage() {
+  let report: DeploymentDiagnostics | null = null;
+  let unreachable = false;
+  try {
+    report = await getDeploymentDiagnostics();
+  } catch (err) {
+    if (err instanceof ReferenceServerUnreachableError) {
+      unreachable = true;
+    } else {
+      throw err;
+    }
+  }
+
+  if (unreachable || !report) {
+    return (
+      <DashboardShell active="deployment">
+        <ServerUnreachable />
+      </DashboardShell>
+    );
+  }
+
+  return (
+    <DashboardShell active="deployment">
+      <PageHeader
+        breadcrumbs={[{ href: "/dashboard", label: "Dashboard" }, { label: "Deployment" }]}
+        description="Operator diagnostics for the reference semantic retrieval surface. Read-only. Secret environment values are redacted before reaching this page."
+        title="Deployment"
+      />
+
+      <WarningsSection warnings={report.warnings} />
+      <SemanticSection report={report} />
+      <ParticipationSection participation={report.semantic.participation} />
+      <ManifestsSection manifests={report.manifests} />
+      <DatabaseSection database={report.database} indexKind={report.semantic.index.kind} />
+      <EnvironmentSection environment={report.environment} />
+    </DashboardShell>
+  );
+}
+
+// ─── Warnings ──────────────────────────────────────────────────────────────
+
+const WARNING_TITLES: Record<DeploymentDiagnostics["warnings"][number]["code"], string> = {
+  zero_participation: "Zero semantic participation",
+  stale_index: "Semantic index is stale",
+  backend_unavailable: "Embedding backend unavailable",
+  missing_model_cache: "Embedding model cache missing",
+  download_disabled: "Model download disabled",
+  vector_index_fallback: "Using blob-flat vector fallback",
+};
+
+function WarningsSection({ warnings }: { warnings: DeploymentDiagnostics["warnings"] }) {
+  if (warnings.length === 0) {
+    return (
+      <Section title="Warnings">
+        <p className="pdpp-body text-muted-foreground">No warnings. Semantic retrieval looks operational.</p>
+      </Section>
+    );
+  }
+  return (
+    <Section title={`Warnings (${warnings.length})`}>
+      <div className="flex flex-col gap-3">
+        {warnings.map((warning) => (
+          <Callout
+            description={warning.message}
+            key={warning.code}
+            surface="human"
+            title={WARNING_TITLES[warning.code]}
+          />
+        ))}
+      </div>
+    </Section>
+  );
+}
+
+// ─── Semantic backend + index ──────────────────────────────────────────────
+
+function SemanticSection({ report }: { report: DeploymentDiagnostics }) {
+  const { backend, index } = report.semantic;
+  return (
+    <Section title="Semantic backend">
+      <dl className="grid grid-cols-1 gap-x-6 gap-y-2 sm:grid-cols-2">
+        <Field label="Configured" value={yesNo(backend.configured)} />
+        <Field label="Available" value={yesNo(backend.available)} />
+        <Field label="Model" value={backend.model ?? "—"} />
+        <Field label="Dimensions" value={backend.dimensions === null ? "—" : String(backend.dimensions)} />
+        <Field label="Distance metric" value={backend.distance_metric ?? "—"} />
+        <Field label="Language bias" value={formatLanguageBias(backend.language_bias)} />
+        <Field label="Model cache path" value={backend.model_cache_path ?? "—"} />
+        <Field
+          label="Model cached"
+          value={backend.model_cache_present === null ? "—" : yesNo(backend.model_cache_present)}
+        />
+        <Field
+          label="Download allowed"
+          value={backend.download_allowed === null ? "—" : yesNo(backend.download_allowed)}
+        />
+        <Field label="Vector index kind" value={index.kind ?? "—"} />
+        <Field label="Index state" value={index.state ?? "—"} />
+      </dl>
+    </Section>
+  );
+}
+
+// ─── Participation ─────────────────────────────────────────────────────────
+
+function ParticipationSection({
+  participation,
+}: {
+  participation: DeploymentDiagnostics["semantic"]["participation"];
+}) {
+  return (
+    <Section
+      description="Every (connector, stream, field) that contributes to semantic retrieval. Derived from loaded manifests — changing a manifest's semantic_fields updates this list after restart or reconciliation."
+      title={`Participation (${participation.field_count} fields across ${participation.connector_count} connectors)`}
+    >
+      {participation.tuples.length === 0 ? (
+        <EmptyState
+          hint="No loaded manifest declares query.search.semantic_fields. Until at least one stream participates, semantic retrieval returns empty results even if the backend and index are ready."
+          title="No participating fields"
+        />
+      ) : (
+        <table className="w-full border-border/80 border-y text-left text-sm">
+          <thead>
+            <tr className="text-muted-foreground text-xs uppercase tracking-wide">
+              <th className="px-2 py-2 font-medium">Connector</th>
+              <th className="px-2 py-2 font-medium">Stream</th>
+              <th className="px-2 py-2 font-medium">Field</th>
+              <th className="px-2 py-2 font-medium">Provenance</th>
+            </tr>
+          </thead>
+          <tbody>
+            {participation.tuples.map((t) => (
+              <tr className="border-border/60 border-t" key={`${t.connector_id}::${t.stream}::${t.field}`}>
+                <td className="px-2 py-1.5 font-mono text-xs">{t.connector_id}</td>
+                <td className="px-2 py-1.5">{t.stream}</td>
+                <td className="px-2 py-1.5 font-mono text-xs">{t.field}</td>
+                <td className="px-2 py-1.5 text-muted-foreground text-xs">{t.provenance}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </Section>
+  );
+}
+
+// ─── Manifests ─────────────────────────────────────────────────────────────
+
+function ManifestsSection({ manifests }: { manifests: DeploymentDiagnostics["manifests"] }) {
+  return (
+    <Section
+      description="Manifests currently loaded by the reference server."
+      title={`Manifests (${manifests.length})`}
+    >
+      {manifests.length === 0 ? (
+        <EmptyState title="No connectors registered" />
+      ) : (
+        <table className="w-full border-border/80 border-y text-left text-sm">
+          <thead>
+            <tr className="text-muted-foreground text-xs uppercase tracking-wide">
+              <th className="px-2 py-2 font-medium">Connector</th>
+              <th className="px-2 py-2 font-medium">Name</th>
+              <th className="px-2 py-2 font-medium">Provenance</th>
+              <th className="px-2 py-2 font-medium">Semantic streams</th>
+            </tr>
+          </thead>
+          <tbody>
+            {manifests.map((m) => (
+              <tr className="border-border/60 border-t" key={m.connector_id}>
+                <td className="px-2 py-1.5 font-mono text-xs">{m.connector_id}</td>
+                <td className="px-2 py-1.5">{m.display_name ?? "—"}</td>
+                <td className="px-2 py-1.5 text-muted-foreground text-xs">{m.provenance}</td>
+                <td className="px-2 py-1.5 tabular-nums">{m.semantic_stream_count}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </Section>
+  );
+}
+
+// ─── Database + vector index ───────────────────────────────────────────────
+
+function DatabaseSection({
+  database,
+  indexKind,
+}: {
+  database: DeploymentDiagnostics["database"];
+  indexKind: DeploymentDiagnostics["semantic"]["index"]["kind"];
+}) {
+  return (
+    <Section title="Database">
+      <dl className="grid grid-cols-1 gap-x-6 gap-y-2 sm:grid-cols-2">
+        <Field label="Path" value={database.path} />
+        <Field label="Vector index kind" value={indexKind ?? "—"} />
+      </dl>
+    </Section>
+  );
+}
+
+// ─── Environment ───────────────────────────────────────────────────────────
+
+function EnvironmentSection({ environment }: { environment: DeploymentDiagnostics["environment"] }) {
+  return (
+    <Section
+      description="Relevant environment variables shaping reference behavior. Secrets are redacted by the server and never reach this page."
+      title="Environment"
+    >
+      <table className="w-full border-border/80 border-y text-left text-sm">
+        <thead>
+          <tr className="text-muted-foreground text-xs uppercase tracking-wide">
+            <th className="px-2 py-2 font-medium">Name</th>
+            <th className="px-2 py-2 font-medium">Value</th>
+            <th className="px-2 py-2 font-medium">Provenance</th>
+          </tr>
+        </thead>
+        <tbody>
+          {environment.map((entry) => (
+            <tr className="border-border/60 border-t" key={entry.name}>
+              <td className="px-2 py-1.5 font-mono text-xs">{entry.name}</td>
+              <td className="px-2 py-1.5 font-mono text-xs">{formatEnvValue(entry)}</td>
+              <td className="px-2 py-1.5 text-muted-foreground text-xs">{entry.provenance}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </Section>
+  );
+}
+
+// ─── Formatting helpers ────────────────────────────────────────────────────
+
+function Field({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex min-w-0 flex-col">
+      <dt className="pdpp-eyebrow text-muted-foreground">{label}</dt>
+      <dd className="pdpp-body break-words">{value}</dd>
+    </div>
+  );
+}
+
+function yesNo(v: boolean): string {
+  return v ? "yes" : "no";
+}
+
+function formatLanguageBias(bias: DeploymentDiagnostics["semantic"]["backend"]["language_bias"]): string {
+  if (!bias) {
+    return "—";
+  }
+  return bias.note ? `${bias.primary} (${bias.note})` : bias.primary;
+}
+
+function formatEnvValue(entry: DeploymentDiagnostics["environment"][number]): string {
+  if (entry.provenance === "redacted") {
+    return "••• redacted •••";
+  }
+  if (entry.provenance === "absent") {
+    return "—";
+  }
+  return entry.value ?? "—";
+}

@@ -9,7 +9,8 @@
   "exports": {
     "./reference-local-defaults": "./server/reference-local-defaults.ts",
     "./reference-topology": "./server/reference-topology.ts",
-    "./owner-session": "./server/owner-session.ts"
+    "./owner-session": "./server/owner-session.ts",
+    "./deployment-diagnostics": "./server/deployment-diagnostics.ts"
   },
   "scripts": {
     "//dev": "Default dev is quiet again. Use `pnpm dev:trace-gc` only when investigating native/V8 crash behavior under load.",

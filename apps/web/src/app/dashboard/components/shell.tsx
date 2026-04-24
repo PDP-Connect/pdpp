@@ -11,7 +11,7 @@ interface NavItem {
   match: (active: DashboardSection) => boolean;
 }
 
-export type DashboardSection = "overview" | "search" | "traces" | "grants" | "runs" | "records";
+export type DashboardSection = "overview" | "search" | "traces" | "grants" | "runs" | "records" | "deployment";
 
 const SCHEME_PREFIX_RE = /^https?:\/\//;
 
@@ -22,6 +22,7 @@ const NAV: NavItem[] = [
   { href: "/dashboard/grants", label: "Grants", match: (a) => a === "grants" },
   { href: "/dashboard/runs", label: "Runs", match: (a) => a === "runs" },
   { href: "/dashboard/records", label: "Records", match: (a) => a === "records" },
+  { href: "/dashboard/deployment", label: "Deployment", match: (a) => a === "deployment" },
 ];
 
 export function DashboardShell({ active, children }: { active: DashboardSection; children: ReactNode }) {
