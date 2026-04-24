@@ -2619,17 +2619,38 @@ export async function startServer(opts = {}) {
 
   configureNativeManifest(nativeConfig?.nativeManifest || null);
 
-  // Lexical retrieval index startup drift-detect + backfill. For native
-  // mode, the configured native manifest is the only known connector at
-  // startup, so we backfill it directly here. For polyfill mode, connectors
-  // are registered via POST /connectors after startup; their backfill
-  // happens inside registerConnector. Either way: pre-existing records
-  // become searchable without requiring re-ingest.
+  // Lexical retrieval index startup drift-detect + backfill.
+  //
+  // Native mode: the configured native manifest is the only known connector
+  // at startup, so backfill it directly here.
+  //
+  // Polyfill mode: the DB may already contain registered connectors from a
+  // previous run. Those manifests need the same startup pass, otherwise an
+  // existing DB upgraded onto a lexical-search-aware server can keep an empty
+  // FTS table forever unless each connector is re-registered manually. New
+  // registrations still backfill inside registerConnector.
   if (nativeConfig?.nativeManifest) {
     await lexicalIndexBackfillForManifest({
       manifest: nativeConfig.nativeManifest,
-      log: logger,
+      log: (msg) => logger.info(msg),
     });
+  } else {
+    const connectorIds = await listRegisteredConnectorIds();
+    for (const connectorId of connectorIds) {
+      try {
+        const manifest = await getConnectorManifest(connectorId);
+        if (!manifest) continue;
+        await lexicalIndexBackfillForManifest({
+          manifest,
+          log: (msg) => logger.info(msg),
+        });
+      } catch (err) {
+        logger.warn(
+          { err, connectorId },
+          'skipping lexical retrieval startup backfill for connector with invalid manifest',
+        );
+      }
+    }
   }
 
   const providerName =

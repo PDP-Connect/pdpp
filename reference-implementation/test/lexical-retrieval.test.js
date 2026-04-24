@@ -33,12 +33,16 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 
 import {
   buildSearchPlanForGrant,
   parseSearchParams,
 } from '../server/search.js';
 import { startServer } from '../server/index.js';
+import { getDb, initDb, closeDb } from '../server/db.js';
 
 // ─── harness ────────────────────────────────────────────────────────────────
 
@@ -1071,5 +1075,91 @@ test('manifest update that swaps lexical_fields (same cardinality) rebuilds the 
     );
   } finally {
     await closeServer(server);
+  }
+});
+
+/**
+ * Regression: restarting on an existing polyfill DB must backfill lexical
+ * search for already-registered connectors, without requiring a fresh
+ * POST /connectors call.
+ *
+ * This simulates the real failure mode on localhost:
+ *   1. A DB already contains connector manifests + records.
+ *   2. The lexical FTS tables are empty (e.g. DB created before the
+ *      lexical retrieval tranche landed).
+ *   3. Server restarts in polyfill mode.
+ *   4. /v1/search must return historical hits immediately.
+ */
+test('startup backfills existing polyfill connectors without re-registration', async () => {
+  const tempDir = await mkdtemp(join(tmpdir(), 'pdpp-lexical-restart-'));
+  const dbPath = join(tempDir, 'polyfill.sqlite');
+
+  const bootServer = () => startServer({
+    quiet: true,
+    asPort: 0,
+    rsPort: 0,
+    dbPath,
+    dynamicClientRegistrationInitialAccessTokens: [TEST_DCR_INITIAL_ACCESS_TOKEN],
+  });
+
+  let server = await bootServer();
+  let asUrl = `http://localhost:${server.asPort}`;
+  let rsUrl = `http://localhost:${server.rsPort}`;
+
+  try {
+    const reg = await fetch(`${asUrl}/connectors`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(REDDITISH_MANIFEST_A),
+    });
+    assert.equal(reg.status, 201, 'register connector');
+
+    const ownerToken = await issueOwnerToken(asUrl);
+    await ingest(rsUrl, ownerToken, REDDITISH_MANIFEST_A.connector_id, 'posts', [
+      {
+        id: 'restart-p1',
+        title: 'the owner orchard notes',
+        selftext: 'historical lexical hit',
+        source_created_at: '2026-04-01T00:00:00Z',
+      },
+    ]);
+
+    const beforeRestart = await fetchJson(
+      `${rsUrl}/v1/search?q=the owner`,
+      { headers: { Authorization: `Bearer ${ownerToken}` } },
+    );
+    assert.equal(beforeRestart.status, 200);
+    assert.ok(
+      beforeRestart.body.data.some((r) => r.record_key === 'restart-p1'),
+      'sanity: record is searchable before restart',
+    );
+
+    await closeServer(server);
+    closeDb();
+
+    await initDb(dbPath);
+    const db = getDb();
+    db.prepare('DELETE FROM lexical_search_index').run();
+    db.prepare('DELETE FROM lexical_search_meta').run();
+    closeDb();
+
+    server = await bootServer();
+    asUrl = `http://localhost:${server.asPort}`;
+    rsUrl = `http://localhost:${server.rsPort}`;
+
+    const ownerTokenAfterRestart = await issueOwnerToken(asUrl);
+    const afterRestart = await fetchJson(
+      `${rsUrl}/v1/search?q=the owner`,
+      { headers: { Authorization: `Bearer ${ownerTokenAfterRestart}` } },
+    );
+    assert.equal(afterRestart.status, 200);
+    assert.ok(
+      afterRestart.body.data.some((r) => r.record_key === 'restart-p1'),
+      'startup backfill should restore historical hits without re-registration',
+    );
+  } finally {
+    await closeServer(server).catch(() => {});
+    closeDb();
+    await rm(tempDir, { recursive: true, force: true });
   }
 });
