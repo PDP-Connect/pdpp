@@ -224,6 +224,10 @@ export function decodeBodystructureForAttachments(
       encoding: node.encoding || null,
       part_index: partIndex,
       message_received_at: receivedAt,
+      blob_ref: null,
+      content_sha256: null,
+      hydration_status: "deferred",
+      hydration_error: null,
     });
   };
   walk(structure, path);

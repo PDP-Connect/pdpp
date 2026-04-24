@@ -21,7 +21,7 @@
       "description": "Individual messages in All Mail. Derived from Gmail's X-GM-MSGID.",
       "display": {
         "label": "Your messages",
-        "detail": "Email metadata and envelopes: sender, recipients, subject, date, labels, flags, attachment presence, short snippet. Full bodies and attachment bytes are not captured in v1."
+        "detail": "Email metadata and envelopes: sender, recipients, subject, date, labels, flags, attachment presence, short snippet. Full bodies live in the separate email-text stream, and attachment file bytes live behind attachment blob references."
       },
       "semantics": "mutable_state",
       "schema": {
@@ -534,10 +534,10 @@
     },
     {
       "name": "attachments",
-      "description": "Attachment metadata (not bytes) per message.",
+      "description": "Attachment metadata and, when hydrated, a blob reference for the attachment file bytes.",
       "display": {
         "label": "Your attachments",
-        "detail": "Filename, content-type, size, inline/attached disposition. Does NOT capture file contents."
+        "detail": "Filename, content-type, size, inline/attached disposition, and hydration status. When `blob_ref` is granted, clients can fetch the actual attachment file bytes through the blob endpoint."
       },
       "semantics": "append_only",
       "schema": {
@@ -588,13 +588,61 @@
           "message_received_at": {
             "type": "string",
             "format": "date-time"
+          },
+          "blob_ref": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "blob_id": {
+                "type": "string"
+              },
+              "mime_type": {
+                "type": "string"
+              },
+              "size_bytes": {
+                "type": "integer"
+              },
+              "sha256": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "blob_id",
+              "mime_type",
+              "size_bytes",
+              "sha256"
+            ],
+            "additionalProperties": true
+          },
+          "content_sha256": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "hydration_status": {
+            "type": "string",
+            "enum": [
+              "hydrated",
+              "failed",
+              "deferred"
+            ]
+          },
+          "hydration_error": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
           "id",
           "message_id",
           "part_index",
-          "message_received_at"
+          "message_received_at",
+          "hydration_status"
         ]
       },
       "primary_key": [

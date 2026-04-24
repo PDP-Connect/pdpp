@@ -56,6 +56,14 @@ Existing attachment primary keys should remain stable. The implementation should
 
 The connector state must not treat "message metadata seen" as proof that attachment bytes are hydrated. A run should be able to identify attachments whose record lacks a hydrated `blob_ref` and schedule them for hydration without duplicating records.
 
+Implementation note: the current Gmail connector does not have a connector-local read API for existing RS rows, so the backfill trigger is conservative. When the `attachments` stream is requested, incremental Gmail runs revisit the All Mail range (`1:*`) and re-emit the same attachment primary keys with hydrated blob linkage. This favors correctness and idempotent backfill over incremental efficiency until the runtime exposes a narrower "records missing blob_ref" worklist.
+
+### 4a. Runtime authority for blob upload
+
+The existing blob upload route is owner-authorized, matching the runtime authority already used to ingest records and persist connector state. To let the Gmail child process stream attachment bytes directly to `POST /v1/blobs`, the runtime passes `PDPP_RS_URL`, `PDPP_OWNER_TOKEN`, and `PDPP_CONNECTOR_ID` into the connector child environment.
+
+Security tradeoff: this broadens the connector child process' ambient authority from "emit records over stdout" to "call owner-authorized RS routes directly" for the duration of the run. The implementation keeps the exposure local to the spawned child process and uses the existing short-lived runtime owner token rather than a new static secret, but a future runtime-owned upload binding would be preferable because it could proxy blob uploads without placing owner bearer material in connector environment variables.
+
 ### 5. `message_bodies` stays separate from attachments
 
 `message_bodies` is a content stream for email text and HTML. It is keyed 1:1 with messages, searchable, and independently grantable from header metadata. Attachment blobs are per-file binary payloads attached to messages. They should be discovered through `attachments` records and fetched through the blob endpoint, not folded into `message_bodies`.

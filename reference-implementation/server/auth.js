@@ -141,6 +141,36 @@ function isRangeQueryableFieldSchema(fieldSchema) {
   return isReferenceCompatibleCursorSchema(fieldSchema);
 }
 
+function schemaTypeIncludes(fieldSchema, typeName) {
+  const rawType = fieldSchema?.type;
+  if (rawType === typeName) return true;
+  return Array.isArray(rawType) && rawType.includes(typeName);
+}
+
+function validateBlobRefSchemaDeclaration(stream, fieldSchema, code) {
+  if (!schemaTypeIncludes(fieldSchema, 'object')) {
+    throw invalidConnectorManifest(`Stream '${stream.name}' blob_ref must be an object or nullable object`, code);
+  }
+  const properties = fieldSchema.properties;
+  if (!properties || typeof properties !== 'object' || Array.isArray(properties)) {
+    throw invalidConnectorManifest(`Stream '${stream.name}' blob_ref must declare object properties`, code);
+  }
+  for (const [fieldName, expectedType] of Object.entries({
+    blob_id: 'string',
+    mime_type: 'string',
+    size_bytes: 'integer',
+    sha256: 'string',
+  })) {
+    if (!properties[fieldName] || properties[fieldName].type !== expectedType) {
+      throw invalidConnectorManifest(`Stream '${stream.name}' blob_ref.${fieldName} must be type ${expectedType}`, code);
+    }
+  }
+  const required = Array.isArray(fieldSchema.required) ? fieldSchema.required : [];
+  if (!required.includes('blob_id')) {
+    throw invalidConnectorManifest(`Stream '${stream.name}' blob_ref must require blob_id`, code);
+  }
+}
+
 function resolveConfiguredNativeStorageBinding(opts = {}) {
   const nativeManifest = resolveConfiguredNativeManifest(opts);
   const connectorId = nativeManifest?.storage_binding?.connector_id;
@@ -1350,6 +1380,10 @@ function validateConnectorManifest(manifest = {}, code = 'invalid_request', opts
       if (stream[fieldName] != null && !schemaFieldNames.has(stream[fieldName])) {
         throw invalidConnectorManifest(`Stream '${stream.name}' ${fieldName} must exist in schema.properties`, code);
       }
+    }
+
+    if (schemaProperties.blob_ref !== undefined) {
+      validateBlobRefSchemaDeclaration(stream, schemaProperties.blob_ref, code);
     }
 
     // Reference guardrail: the SQL-backed records path only supports a narrow

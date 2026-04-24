@@ -280,6 +280,10 @@ async function seedGmailExpansionFixture(rsUrl, ownerToken, connectorId) {
       encoding: 'base64',
       part_index: '2',
       message_received_at: '2026-04-01T10:00:00Z',
+      blob_ref: null,
+      content_sha256: null,
+      hydration_status: 'deferred',
+      hydration_error: null,
     },
     {
       id: 'att-2',
@@ -292,6 +296,10 @@ async function seedGmailExpansionFixture(rsUrl, ownerToken, connectorId) {
       encoding: 'base64',
       part_index: '3',
       message_received_at: '2026-04-01T10:00:00Z',
+      blob_ref: null,
+      content_sha256: null,
+      hydration_status: 'deferred',
+      hydration_error: null,
     },
     {
       id: 'att-3',
@@ -304,6 +312,10 @@ async function seedGmailExpansionFixture(rsUrl, ownerToken, connectorId) {
       encoding: '7bit',
       part_index: '4',
       message_received_at: '2026-04-01T10:00:00Z',
+      blob_ref: null,
+      content_sha256: null,
+      hydration_status: 'deferred',
+      hydration_error: null,
     },
   ]);
 }
@@ -1087,18 +1099,126 @@ test('gmail messages expand attachment metadata with limits and missing-child pa
     );
     assert.deepEqual(
       Object.keys(messageWithAttachments.expanded.attachments.data[0].data || {}).sort(),
-      ['content_type', 'filename', 'id', 'message_id', 'message_received_at', 'part_index'],
+      ['content_type', 'filename', 'hydration_status', 'id', 'message_id', 'message_received_at', 'part_index'],
     );
     assert.equal(
       JSON.stringify(messageWithAttachments.expanded.attachments).includes('blob_ref'),
       false,
-      'attachment expansion remains metadata-only until blob hydration lands',
+      'attachment expansion must not expose blob_ref unless the child grant includes it',
     );
 
     const messageWithoutAttachments = body.data.find((record) => record.id === 'msg-2');
     assert.equal(messageWithoutAttachments.expanded.attachments.object, 'list');
     assert.equal(messageWithoutAttachments.expanded.attachments.has_more, false);
     assert.deepEqual(messageWithoutAttachments.expanded.attachments.data, []);
+  });
+});
+
+test('gmail messages expand hydrated attachments with grant-visible blob_ref fetch_url', async () => {
+  await withHarness(async ({ asUrl, rsUrl }) => {
+    const ownerToken = await issueOwnerToken(asUrl, 'gmail_expand_attachment_blob_owner');
+    const gmailManifest = readGmailManifest();
+    const connectorId = gmailManifest.connector_id;
+    const reg = await registerConnectorManifest(asUrl, gmailManifest);
+    assert.equal(reg.status, 201, 'register gmail manifest');
+
+    const bytes = Buffer.from('invoice attachment bytes');
+    const blob = await uploadBlob(
+      rsUrl,
+      ownerToken,
+      { connector_id: connectorId, stream: 'attachments', record_key: 'msg-blob:2' },
+      bytes,
+      'application/pdf',
+    );
+    assert.equal(blob.status, 200);
+
+    await seedGmailStream(rsUrl, ownerToken, connectorId, 'messages', [
+      {
+        id: 'msg-blob',
+        thread_id: 'thread-blob',
+        subject: 'Blob invoice',
+        received_at: '2026-04-03T10:00:00Z',
+        to: [],
+        cc: [],
+        bcc: [],
+        reply_to: [],
+        references: [],
+        labels: [],
+        is_draft: false,
+        is_flagged: false,
+        is_seen: true,
+        is_answered: false,
+        has_attachments: true,
+        snippet: 'Invoice attached.',
+      },
+    ]);
+    await seedGmailStream(rsUrl, ownerToken, connectorId, 'attachments', [
+      {
+        id: 'msg-blob:2',
+        message_id: 'msg-blob',
+        filename: 'invoice.pdf',
+        content_type: 'application/pdf',
+        size_bytes: blob.body.size_bytes,
+        content_id: null,
+        is_inline: false,
+        encoding: 'base64',
+        part_index: '2',
+        message_received_at: '2026-04-03T10:00:00Z',
+        blob_ref: {
+          blob_id: blob.body.blob_id,
+          mime_type: blob.body.mime_type,
+          size_bytes: blob.body.size_bytes,
+          sha256: blob.body.sha256,
+        },
+        content_sha256: blob.body.sha256,
+        hydration_status: 'hydrated',
+        hydration_error: null,
+      },
+    ]);
+
+    const approved = await approveGrant(asUrl, 'gmail_expand_attachment_blob_owner', {
+      client_id: 'longview',
+      connector_id: connectorId,
+      purpose_code: 'https://pdpp.org/purpose/personalization',
+      purpose_description: 'Read Gmail messages with attachment blobs',
+      access_mode: 'continuous',
+      streams: [
+        { name: 'messages', fields: ['id', 'thread_id', 'subject', 'received_at', 'has_attachments'] },
+        {
+          name: 'attachments',
+          fields: [
+            'id',
+            'message_id',
+            'filename',
+            'content_type',
+            'size_bytes',
+            'part_index',
+            'message_received_at',
+            'blob_ref',
+            'content_sha256',
+            'hydration_status',
+          ],
+        },
+      ],
+    });
+
+    const expanded = await fetchJson(
+      `${rsUrl}/v1/streams/messages/records?connector_id=${encodeURIComponent(connectorId)}&expand=attachments`,
+      { headers: { Authorization: `Bearer ${approved.token}` } },
+    );
+    assert.equal(expanded.status, 200);
+    const message = expanded.body.data.find((record) => record.id === 'msg-blob');
+    const attachment = message?.expanded?.attachments?.data?.[0];
+    assert.ok(attachment, 'expanded attachment should be present');
+    assert.equal(attachment.data.blob_ref.fetch_url, `/v1/blobs/${blob.body.blob_id}`);
+    assert.equal(attachment.data.content_sha256, blob.body.sha256);
+    assert.equal(attachment.data.hydration_status, 'hydrated');
+
+    const blobResp = await fetch(`${rsUrl}/v1/blobs/${blob.body.blob_id}`, {
+      headers: { Authorization: `Bearer ${approved.token}` },
+    });
+    assert.equal(blobResp.status, 200);
+    assert.deepEqual(Buffer.from(await blobResp.arrayBuffer()), bytes);
   });
 });
 
@@ -1164,6 +1284,33 @@ test('connector manifest validation rejects unsafe query.expand declarations', a
     const invalidLimitsResp = await registerConnectorManifest(asUrl, invalidLimits);
     assert.equal(invalidLimitsResp.status, 400);
     assert.match(invalidLimitsResp.body.error.message, /default_limit must be less than or equal to max_limit/);
+  });
+});
+
+test('connector manifest validation accepts gmail attachment blob_ref and rejects malformed declarations', async () => {
+  await withHarness(async ({ asUrl }) => {
+    const gmailManifest = readGmailManifest();
+    gmailManifest.connector_id = `${gmailManifest.connector_id}#blob-ref-valid`;
+    const valid = await registerConnectorManifest(asUrl, gmailManifest);
+    assert.equal(valid.status, 201);
+
+    const missingBlobId = cloneJson(gmailManifest);
+    missingBlobId.connector_id = `${gmailManifest.connector_id}#missing-blob-id`;
+    const attachmentStream = missingBlobId.streams.find((stream) => stream.name === 'attachments');
+    delete attachmentStream.schema.properties.blob_ref.properties.blob_id;
+
+    const missingBlobIdResp = await registerConnectorManifest(asUrl, missingBlobId);
+    assert.equal(missingBlobIdResp.status, 400);
+    assert.match(missingBlobIdResp.body.error.message, /blob_ref\.blob_id must be type string/);
+
+    const notObject = cloneJson(gmailManifest);
+    notObject.connector_id = `${gmailManifest.connector_id}#blob-ref-not-object`;
+    const notObjectAttachmentStream = notObject.streams.find((stream) => stream.name === 'attachments');
+    notObjectAttachmentStream.schema.properties.blob_ref = { type: 'string' };
+
+    const notObjectResp = await registerConnectorManifest(asUrl, notObject);
+    assert.equal(notObjectResp.status, 400);
+    assert.match(notObjectResp.body.error.message, /blob_ref must be an object or nullable object/);
   });
 });
 

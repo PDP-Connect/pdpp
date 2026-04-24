@@ -61,16 +61,29 @@ export interface DoneMessage {
 export type EmittedMessage = ProgressMessage | StateMessage | RecordMessage | DoneMessage | InteractionMessage;
 
 export interface AttachmentRecord {
+  blob_ref: BlobRef | null;
   content_id: string | null;
+  content_sha256: string | null;
   content_type: string | null;
   encoding: string | null;
   filename: string | null;
+  hydration_error: string | null;
+  hydration_status: AttachmentHydrationStatus;
   id: string;
   is_inline: boolean;
   message_id: string;
   message_received_at: string;
   part_index: string;
   size_bytes: number | null;
+}
+
+export type AttachmentHydrationStatus = "deferred" | "failed" | "hydrated";
+
+export interface BlobRef {
+  blob_id: string;
+  mime_type: string;
+  sha256: string;
+  size_bytes: number;
 }
 
 export interface AllMailCursor {
