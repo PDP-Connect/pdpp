@@ -181,6 +181,17 @@ these tasks are tracked here.
 
 P0 stream additions identified by the Layer 2 audits (`design-notes/layer-2-coverage-chatgpt-claude-codex.md`, `design-notes/layer-2-coverage-gmail-ynab-usaa-github.md`). Implementation is connector code + manifest; spec-question resolution happens in parallel via the open-question notes above.
 
+## Query/API readiness follow-up (raised 2026-04-24)
+
+These are the highest-leverage gaps surfaced by live assistant use of the reference API. Start with an audit matrix before adding new surface area: field/stream, current manifest declaration, current server behavior, docs/spec claim, tests, and recommended fix.
+
+- [ ] Audit first-party stream schemas for useful range-filter declarations. Add every honest date/date-time/numeric `query.range_filters` entry that enables common windows like "last 7 days" or amount windows; document exclusions where field types, cursor semantics, or source data quality make range filtering unsafe.
+- [ ] Audit schema discoverability for every stream. Decide whether the current `/v1/streams/:stream` metadata is sufficient or whether the reference needs an explicit schema/capability endpoint that lists each field's type, exact-filter support, range-filter support, semantic/lexical participation, cursor role, and expandable relations.
+- [ ] Audit `expand[]` end to end against the public docs/spec and live server behavior. Verify declared relationships, grant safety, list/detail parity, `expand_limit`, missing/unknown relation errors, and high-value joins such as Gmail messages to message_bodies, attachments, and threads.
+- [ ] Audit `changes_since` usability. Confirm whether clients can obtain an initial cursor/documented timestamp, whether raw timestamp input is supported or should be, and whether daily surfacer/incremental-agent workflows can use it without poll-everything-and-diff.
+- [ ] Keep Gmail attachment-content work separate from `message_bodies`: `message_bodies` is done, but attachment byte/blob hydration is still pending until `attachments` records expose content-addressed bytes and, ideally, extracted text affordances for PDFs/docs.
+- [ ] Defer new public surfaces (`/v1/timeline`, `/v1/entities`, aggregations/facets, webhook subscriptions, hybrid lexical+semantic search, semantic score exposure/reranking) until the audit above identifies which behavior is already promised versus which needs a new OpenSpec change.
+
 ### ChatGPT
 - [ ] Add `custom_gpts` stream (from `/backend-api/gizmos/mine`)
 - [ ] Add `custom_instructions` stream (from `/backend-api/user_system_messages`)

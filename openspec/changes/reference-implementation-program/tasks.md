@@ -305,4 +305,9 @@
   - [x] Share one owner-session verifier between the reference server and the Next dashboard so `/dashboard/*` is gated by the same placeholder owner session when `PDPP_OWNER_PASSWORD` is set
   - [x] Rewrite dashboard owner/hosted-flow affordances to same-origin browser paths and keep the real owner-device and consent flows working through the composed origin
   - [x] Validate the single-origin local reference experience end to end, including owner login, dashboard gating, metadata, device verification, pending consent, and public `/v1/*` reads
+- [ ] Add a reference build/revision response header distinct from `PDPP-Version`
+  - [ ] Define the header name and semantics (`PDPP-Reference-Revision` or equivalent) as reference-implementation metadata, not protocol version negotiation
+  - [ ] Source the value from git/package build metadata where available, with an honest fallback for local dirty/unknown builds
+  - [ ] Emit it consistently from AS, RS, composed proxy-visible routes, and reference-only surfaces
+  - [ ] Update docs/tests so operators can tell which reference build is running without overloading the protocol `PDPP-Version` header
 - [ ] Deferred follow-up: broad storage abstraction beyond the current explicit seams. Captured in `design-notes/broad-storage-abstraction-2026-04-24.md`; promote only when a concrete second backend or deployment target exists.
