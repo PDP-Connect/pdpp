@@ -12,7 +12,7 @@
     "./reference": "./src/reference/index.js",
     "./builders": "./src/builders/index.ts",
     "./openapi": "./src/openapi/index.js",
-    "./validate": "./src/validate.js"
+    "./validate": "./src/validate.ts"
   },
   "scripts": {
     "generate:openapi": "node ./src/openapi/generate.js",

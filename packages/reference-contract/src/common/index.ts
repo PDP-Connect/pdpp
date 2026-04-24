@@ -32,6 +32,44 @@ export interface JsonSchema {
   [extension: string]: unknown;
 }
 
+// Shared shape of a route manifest. Every entry in `publicManifests` and
+// `referenceManifests` conforms to this. Request / response schemas are
+// JSON-Schema objects; bodies optionally carry a content type.
+//
+// The reference implementation (reference-implementation/server/*) relies
+// on this shape for validation wiring and for mapping manifests onto live
+// routes, so the fields here match what that server actually reads. When
+// a new keyword is needed (e.g. operator-only hints), add it here and the
+// type will propagate through validate.ts and downstream consumers.
+export interface RouteSchemaBody {
+  contentType?: string;
+  schema?: JsonSchema;
+}
+
+export interface RouteRequest {
+  body?: RouteSchemaBody;
+  headers?: JsonSchema;
+  params?: JsonSchema;
+  query?: JsonSchema;
+}
+
+export interface RouteResponse {
+  contentType?: string;
+  description?: string;
+  schema?: JsonSchema;
+}
+
+export interface RouteManifest {
+  id: string;
+  method: string;
+  path: string;
+  request?: RouteRequest;
+  responses?: Record<string, RouteResponse>;
+  summary?: string;
+  surface: "public" | "reference";
+  tags?: readonly string[];
+}
+
 export const IdSchema: JsonSchema = {
   $id: "pdpp/common/Id",
   type: "string",
