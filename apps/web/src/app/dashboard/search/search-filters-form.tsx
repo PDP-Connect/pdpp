@@ -1,13 +1,13 @@
-'use client';
+"use client";
 
-import Link from 'next/link';
-import { useEffect, useMemo, useState } from 'react';
+import Link from "next/link";
+import { useEffect, useMemo, useState } from "react";
 
-type ConnectorOption = {
-  value: string;
+interface ConnectorOption {
   label: string;
   streams: string[];
-};
+  value: string;
+}
 
 export function SearchFiltersForm({
   query,
@@ -27,48 +27,42 @@ export function SearchFiltersForm({
 
   const streamOptions = useMemo(() => {
     if (!selectedConnector) {
-      return Array.from(
-        new Set(connectorOptions.flatMap((option) => option.streams)),
-      ).sort();
+      return Array.from(new Set(connectorOptions.flatMap((option) => option.streams))).sort();
     }
-    return (
-      connectorOptions.find((option) => option.value === selectedConnector)?.streams ?? []
-    ).slice().sort();
+    return (connectorOptions.find((option) => option.value === selectedConnector)?.streams ?? []).slice().sort();
   }, [connectorOptions, selectedConnector]);
 
   useEffect(() => {
     if (selectedStream && !streamOptions.includes(selectedStream)) {
-      setSelectedStream('');
+      setSelectedStream("");
     }
   }, [selectedStream, streamOptions]);
 
-  const hasActiveFilters = Boolean(
-    query.trim() || selectedConnector || selectedStream || sortOrder !== 'native:desc',
-  );
+  const hasActiveFilters = Boolean(query.trim() || selectedConnector || selectedStream || sortOrder !== "native:desc");
 
   return (
     <form
-      method="get"
       className="mb-6 grid gap-2 md:grid-cols-[minmax(18rem,2fr)_minmax(11rem,1fr)_minmax(11rem,1fr)_minmax(12rem,1fr)_auto] md:items-end"
+      method="get"
     >
       <label className="grid gap-1 text-xs">
         <span className="text-muted-foreground">query</span>
         <input
-          type="search"
-          name="q"
-          defaultValue={query}
-          placeholder="trace id, connector, stream, or record text…"
-          className="border-border bg-background w-full rounded border px-3 py-2"
           autoFocus
+          className="w-full rounded border border-border bg-background px-3 py-2"
+          defaultValue={query}
+          name="q"
+          placeholder="trace id, connector, stream, or record text…"
+          type="search"
         />
       </label>
       <label className="grid gap-1 text-xs">
         <span className="text-muted-foreground">connector</span>
         <select
+          className="rounded border border-border bg-background px-3 py-2"
           name="connector_id"
-          value={selectedConnector}
           onChange={(event) => setSelectedConnector(event.target.value)}
-          className="border-border bg-background rounded border px-3 py-2"
+          value={selectedConnector}
         >
           <option value="">all connectors</option>
           {connectorOptions.map((option) => (
@@ -81,10 +75,10 @@ export function SearchFiltersForm({
       <label className="grid gap-1 text-xs">
         <span className="text-muted-foreground">stream</span>
         <select
+          className="rounded border border-border bg-background px-3 py-2"
           name="stream"
-          value={selectedStream}
           onChange={(event) => setSelectedStream(event.target.value)}
-          className="border-border bg-background rounded border px-3 py-2"
+          value={selectedStream}
         >
           <option value="">all streams</option>
           {streamOptions.map((streamName) => (
@@ -97,9 +91,9 @@ export function SearchFiltersForm({
       <label className="grid gap-1 text-xs">
         <span className="text-muted-foreground">sort records by</span>
         <select
-          name="sort_order"
+          className="rounded border border-border bg-background px-3 py-2"
           defaultValue={sortOrder}
-          className="border-border bg-background rounded border px-3 py-2"
+          name="sort_order"
         >
           <option value="native:desc">newest native date first</option>
           <option value="native:asc">oldest native date first</option>
@@ -108,15 +102,15 @@ export function SearchFiltersForm({
         </select>
       </label>
       <button
+        className="self-start rounded border border-border px-3 py-2 hover:bg-muted/50 md:self-auto"
         type="submit"
-        className="border-border hover:bg-muted/50 self-start rounded border px-3 py-2 md:self-auto"
       >
         apply
       </button>
       {hasActiveFilters ? (
         <Link
+          className="self-start px-1 py-2 text-muted-foreground text-xs underline-offset-2 hover:underline md:self-auto"
           href="/dashboard/search"
-          className="text-muted-foreground self-start px-1 py-2 text-xs underline-offset-2 hover:underline md:self-auto"
         >
           reset
         </Link>

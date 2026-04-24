@@ -1,20 +1,16 @@
-import type { Metadata } from 'next';
-import { notFound } from 'next/navigation';
-import {
-  OpenSpecArtifactCard,
-  OpenSpecBreadcrumbs,
-  OpenSpecEmptyState,
-  OpenSpecShell,
-  buildOpenSpecSidebarSections,
-} from '@/components/openspec';
-import {
-  getOpenSpecChange,
-  listOpenSpecChangeSpecDeltas,
-  listOpenSpecChanges,
-} from '@/lib/openspec';
-import { PLANNING_LABEL, planningPath } from '@/lib/openspec/public';
+import type { Metadata } from "next";
+import { notFound } from "next/navigation";
+import { OpenSpecArtifactCard } from "@/components/openspec/open-spec-artifact-card.tsx";
+import { OpenSpecBreadcrumbs } from "@/components/openspec/open-spec-breadcrumbs.tsx";
+import { OpenSpecEmptyState } from "@/components/openspec/open-spec-empty-state.tsx";
+import { OpenSpecShell } from "@/components/openspec/open-spec-shell.tsx";
+import { buildOpenSpecSidebarSections } from "@/components/openspec/sidebar-sections.ts";
+import { getOpenSpecChange, listOpenSpecChangeSpecDeltas, listOpenSpecChanges } from "@/lib/openspec/index.ts";
+import { PLANNING_LABEL, planningPath } from "@/lib/openspec/public.ts";
 
-type PageProps = { params: Promise<{ change: string }> };
+interface PageProps {
+  params: Promise<{ change: string }>;
+}
 
 export async function generateStaticParams() {
   const changes = await listOpenSpecChanges();
@@ -24,22 +20,23 @@ export async function generateStaticParams() {
 export async function generateMetadata({ params }: PageProps): Promise<Metadata> {
   const { change } = await params;
   const summary = await getOpenSpecChange(change);
-  if (!summary) return { title: `Spec deltas not found — ${PLANNING_LABEL} — PDPP` };
+  if (!summary) {
+    return { title: `Spec deltas not found — ${PLANNING_LABEL} — PDPP` };
+  }
   return { title: `${summary.title} — Spec Deltas — ${PLANNING_LABEL} — PDPP` };
 }
 
 export default async function ChangeSpecDeltasPage({ params }: PageProps) {
   const { change } = await params;
-  const [summary, deltas] = await Promise.all([
-    getOpenSpecChange(change),
-    listOpenSpecChangeSpecDeltas(change),
-  ]);
-  if (!summary) notFound();
+  const [summary, deltas] = await Promise.all([getOpenSpecChange(change), listOpenSpecChangeSpecDeltas(change)]);
+  if (!summary) {
+    notFound();
+  }
 
   const sections = buildOpenSpecSidebarSections({
-    kind: 'change',
+    kind: "change",
     changeName: change,
-    artifact: 'spec-deltas',
+    artifact: "spec-deltas",
   });
 
   return (
@@ -48,35 +45,32 @@ export default async function ChangeSpecDeltasPage({ params }: PageProps) {
         <OpenSpecBreadcrumbs
           crumbs={[
             { label: PLANNING_LABEL, href: planningPath() },
-            { label: 'Changes', href: planningPath('/changes') },
+            { label: "Changes", href: planningPath("/changes") },
             { label: change, href: planningPath(`/changes/${change}`) },
-            { label: 'Spec Deltas' },
+            { label: "Spec Deltas" },
           ]}
         />
         <header className="flex flex-col gap-2">
-          <h1 className="text-[clamp(1.6rem,2.8vw,2.05rem)] font-semibold tracking-tight leading-tight">
-            Spec deltas
-          </h1>
+          <h1 className="font-semibold text-[clamp(1.6rem,2.8vw,2.05rem)] leading-tight tracking-tight">Spec deltas</h1>
           <p className="pdpp-body max-w-3xl text-muted-foreground">
-            Per-capability spec changes proposed by{' '}
-            <span className="font-mono">{change}</span>.
+            Per-capability spec changes proposed by <span className="font-mono">{change}</span>.
           </p>
         </header>
 
         {deltas.length === 0 ? (
           <OpenSpecEmptyState
-            title="No spec deltas in this change"
             description="This change does not propose modifications to any capability spec."
+            title="No spec deltas in this change"
           />
         ) : (
           <div className="flex flex-col divide-y divide-border/60">
             {deltas.map((d) => (
               <OpenSpecArtifactCard
-                key={d.capability}
-                href={planningPath(`/changes/${change}/specs/${d.capability}`)}
-                eyebrow={d.capability}
-                title={d.title}
                 excerpt={d.excerpt}
+                eyebrow={d.capability}
+                href={planningPath(`/changes/${change}/specs/${d.capability}`)}
+                key={d.capability}
+                title={d.title}
               />
             ))}
           </div>

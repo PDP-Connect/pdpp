@@ -1,46 +1,46 @@
-'use client';
+"use client";
 
-import Link from 'next/link';
-import { useRouter } from 'next/navigation';
-import * as React from 'react';
-import { Button } from '@/components/ui/button';
-import { Timestamp } from '@/components/ui/timestamp';
-import type { ConnectorOverview, ConnectorRunRef } from '../lib/rs-client';
-import { runConnectorNowAction, type RunNowResult } from './actions';
+import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { useCallback, useEffect, useMemo, useState, useTransition } from "react";
+import { Button } from "@/components/ui/button.tsx";
+import { Timestamp } from "@/components/ui/timestamp.tsx";
+import type { ConnectorOverview, ConnectorRunRef } from "../lib/rs-client.ts";
+import { type RunNowResult, runConnectorNowAction } from "./actions.ts";
 
 // Elapsed-time tick for the in-progress label. Separate from the poll
 // cadence: the counter should feel alive even between polls.
-const ELAPSED_TICK_MS = 1_000;
+const ELAPSED_TICK_MS = 1000;
 
-type RowProps = {
+interface RowProps {
   overview: ConnectorOverview;
   /** Relative href to the runs page, used for failure drill-in. */
   runsHref: string;
-};
+}
 
-type ToastState =
-  | { kind: 'none' }
-  | { kind: 'already_running' }
-  | { kind: 'error'; message: string };
+type ToastState = { kind: "none" } | { kind: "already_running" } | { kind: "error"; message: string };
 
 export function ConnectorRow({ overview, runsHref }: RowProps) {
-  const { connector, totalRecords, streams, lastRun, lastSuccessfulRun, isRunning } =
-    overview;
+  const { connector, totalRecords, streams, lastRun, lastSuccessfulRun, isRunning } = overview;
   const router = useRouter();
-  const [isPending, startTransition] = React.useTransition();
+  const [isPending, startTransition] = useTransition();
   // Optimistic: if the user just clicked, treat as running until the next
   // server refresh tells us otherwise. This avoids the awkward gap between
   // action return and route revalidation.
-  const [optimisticRunning, setOptimisticRunning] = React.useState(false);
-  const [toast, setToast] = React.useState<ToastState>({ kind: 'none' });
+  const [optimisticRunning, setOptimisticRunning] = useState(false);
+  const [toast, setToast] = useState<ToastState>({ kind: "none" });
   const running = isRunning || optimisticRunning;
 
   // Clear the optimistic flag once server-side state agrees the run
   // started (isRunning from props) or terminated (a new lastRun with
   // a terminal status newer than the one we had).
-  React.useEffect(() => {
-    if (!optimisticRunning) return;
-    if (isRunning) setOptimisticRunning(false);
+  useEffect(() => {
+    if (!optimisticRunning) {
+      return;
+    }
+    if (isRunning) {
+      setOptimisticRunning(false);
+    }
   }, [isRunning, optimisticRunning]);
 
   // When the user just optimistically started a run, we don't yet know
@@ -49,20 +49,20 @@ export function ConnectorRow({ overview, runsHref }: RowProps) {
   // the PREVIOUS run). Clamp to "now" for the optimistic window; once
   // the server confirms the real active run, lastRun.first_at is the
   // fresh run's timestamp and we use it.
-  const [optimisticStart] = React.useState(() => Date.now());
-  const effectiveStartIso = isRunning && lastRun
-    ? lastRun.first_at
-    : new Date(optimisticStart).toISOString();
+  const [optimisticStart] = useState(() => Date.now());
+  const effectiveStartIso = isRunning && lastRun ? lastRun.first_at : new Date(optimisticStart).toISOString();
 
   // Auto-clear non-error toasts after a few seconds.
-  React.useEffect(() => {
-    if (toast.kind === 'none') return;
-    const id = setTimeout(() => setToast({ kind: 'none' }), 5_000);
+  useEffect(() => {
+    if (toast.kind === "none") {
+      return;
+    }
+    const id = setTimeout(() => setToast({ kind: "none" }), 5000);
     return () => clearTimeout(id);
   }, [toast]);
 
-  const handleSync = React.useCallback(() => {
-    setToast({ kind: 'none' });
+  const handleSync = useCallback(() => {
+    setToast({ kind: "none" });
     setOptimisticRunning(true);
     startTransition(async () => {
       const res: RunNowResult = await runConnectorNowAction(connector.connector_id);
@@ -73,12 +73,12 @@ export function ConnectorRow({ overview, runsHref }: RowProps) {
         return;
       }
       setOptimisticRunning(false);
-      if (res.reason === 'already_running') {
-        setToast({ kind: 'already_running' });
+      if (res.reason === "already_running") {
+        setToast({ kind: "already_running" });
         router.refresh();
         return;
       }
-      setToast({ kind: 'error', message: res.message });
+      setToast({ kind: "error", message: res.message });
     });
   }, [connector.connector_id, router]);
 
@@ -87,43 +87,33 @@ export function ConnectorRow({ overview, runsHref }: RowProps) {
 
   return (
     <li>
-      <div className="hover:bg-muted/40 flex flex-col gap-3 px-3 py-3 transition-colors sm:flex-row sm:items-center sm:justify-between sm:gap-4">
+      <div className="flex flex-col gap-3 px-3 py-3 transition-colors hover:bg-muted/40 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
         {/* Identity */}
         <div className="min-w-0 flex-1">
           <Link
-            href={detailHref}
-            className="group flex flex-col gap-0.5 focus:outline-none"
             aria-label={`Open ${displayName} detail`}
+            className="group flex flex-col gap-0.5 focus:outline-none"
+            href={detailHref}
           >
-            <span className="pdpp-body font-medium text-foreground group-hover:underline">
-              {displayName}
-            </span>
-            <span className="pdpp-caption text-muted-foreground truncate font-mono">
-              {connector.connector_id}
-            </span>
+            <span className="pdpp-body font-medium text-foreground group-hover:underline">{displayName}</span>
+            <span className="pdpp-caption truncate font-mono text-muted-foreground">{connector.connector_id}</span>
           </Link>
         </div>
 
         {/* Stats */}
-        <div className="pdpp-caption text-muted-foreground flex shrink-0 flex-col gap-0.5 sm:items-end sm:text-right tabular-nums">
+        <div className="pdpp-caption flex shrink-0 flex-col gap-0.5 text-muted-foreground tabular-nums sm:items-end sm:text-right">
           <span>
             {totalRecords.toLocaleString()} records · {streams.length} stream
-            {streams.length === 1 ? '' : 's'}
+            {streams.length === 1 ? "" : "s"}
           </span>
           <span className="inline-flex items-center gap-1">
             <span>last sync:</span>
-            {lastSuccessfulRun ? (
-              <Timestamp value={lastSuccessfulRun.last_at} />
-            ) : (
-              <span>never</span>
-            )}
-            {lastSuccessfulRun ? (
-              <span aria-hidden>·</span>
-            ) : null}
+            {lastSuccessfulRun ? <Timestamp value={lastSuccessfulRun.last_at} /> : <span>never</span>}
+            {lastSuccessfulRun ? <span aria-hidden>·</span> : null}
             {lastSuccessfulRun ? (
               <span>
                 {lastSuccessfulRun.event_count.toLocaleString()} event
-                {lastSuccessfulRun.event_count === 1 ? '' : 's'}
+                {lastSuccessfulRun.event_count === 1 ? "" : "s"}
               </span>
             ) : null}
           </span>
@@ -132,38 +122,36 @@ export function ConnectorRow({ overview, runsHref }: RowProps) {
         {/* Status + action */}
         <div className="flex shrink-0 items-center gap-2">
           <RunStatus
+            lastRun={lastRun}
             running={running}
             runStart={running ? effectiveStartIso : lastRun?.first_at}
-            lastRun={lastRun}
             runsHref={runsHref}
           />
           <Button
-            size="sm"
-            onClick={handleSync}
-            disabled={running || isPending}
             aria-label={running ? `Sync in progress for ${displayName}` : `Sync ${displayName} now`}
+            disabled={running || isPending}
+            onClick={handleSync}
+            size="sm"
           >
-            {running ? 'Syncing…' : 'Sync now'}
+            {running ? "Syncing…" : "Sync now"}
           </Button>
         </div>
       </div>
 
       {/* Toasts rendered inline so they don't obscure other rows. */}
-      {toast.kind !== 'none' ? (
+      {toast.kind === "none" ? null : (
         <div
-          role="status"
           aria-live="polite"
           className={
-            toast.kind === 'error'
-              ? 'border-l-destructive bg-destructive/5 pdpp-caption text-destructive mx-3 mb-2 border-l-2 px-3 py-2'
-              : 'bg-muted/60 pdpp-caption text-muted-foreground mx-3 mb-2 px-3 py-2'
+            toast.kind === "error"
+              ? "pdpp-caption mx-3 mb-2 border-l-2 border-l-destructive bg-destructive/5 px-3 py-2 text-destructive"
+              : "pdpp-caption mx-3 mb-2 bg-muted/60 px-3 py-2 text-muted-foreground"
           }
+          role="status"
         >
-          {toast.kind === 'already_running'
-            ? 'A sync for this connector is already in progress.'
-            : toast.message}
+          {toast.kind === "already_running" ? "A sync for this connector is already in progress." : toast.message}
         </div>
-      ) : null}
+      )}
     </li>
   );
 }
@@ -180,36 +168,38 @@ function RunStatus({
   runsHref: string;
 }) {
   if (running) {
-    return <RunningBadge startedAt={runStart} href={lastRun ? `${runsHref}/${encodeURIComponent(lastRun.run_id)}` : undefined} />;
+    return (
+      <RunningBadge
+        href={lastRun ? `${runsHref}/${encodeURIComponent(lastRun.run_id)}` : undefined}
+        startedAt={runStart}
+      />
+    );
   }
   if (!lastRun) {
     return (
-      <span
-        className="pdpp-caption text-muted-foreground inline-flex items-center gap-1"
-        aria-label="never run"
-      >
+      <span className="pdpp-caption inline-flex items-center gap-1 text-muted-foreground" title="never run">
         <StatusDot tone="neutral" />
         Never run
       </span>
     );
   }
-  if (lastRun.status === 'failed') {
+  if (lastRun.status === "failed") {
     return (
       <Link
+        className="pdpp-caption inline-flex items-center gap-1 text-destructive hover:underline"
         href={`${runsHref}/${encodeURIComponent(lastRun.run_id)}`}
-        className="pdpp-caption text-destructive inline-flex items-center gap-1 hover:underline"
-        title={lastRun.failure_reason ?? 'Run failed'}
+        title={lastRun.failure_reason ?? "Run failed"}
       >
-        <StatusDot tone="danger" shape="triangle" />
+        <StatusDot shape="triangle" tone="danger" />
         Failed
       </Link>
     );
   }
-  if (lastRun.status === 'succeeded' || lastRun.status === 'success') {
+  if (lastRun.status === "succeeded" || lastRun.status === "success") {
     return (
       <span
-        className="pdpp-caption text-muted-foreground inline-flex items-center gap-1"
-        aria-label="idle, last run succeeded"
+        className="pdpp-caption inline-flex items-center gap-1 text-muted-foreground"
+        title="idle, last run succeeded"
       >
         <StatusDot tone="success" />
         Idle
@@ -219,11 +209,11 @@ function RunStatus({
   // Unknown or skipped — still idle from the user's perspective.
   return (
     <span
-      className="pdpp-caption text-muted-foreground inline-flex items-center gap-1"
-      aria-label={`idle, last run ${lastRun.status}`}
+      className="pdpp-caption inline-flex items-center gap-1 text-muted-foreground"
+      title={`idle, last run ${lastRun.status}`}
     >
       <StatusDot tone="neutral" />
-      {lastRun.status.replace(/_/g, ' ')}
+      {lastRun.status.replace(/_/g, " ")}
     </span>
   );
 }
@@ -232,67 +222,73 @@ function RunningBadge({ startedAt, href }: { startedAt: string | undefined; href
   // Elapsed-time ticker. Only active while this component is mounted —
   // mount happens only when the row is in a running state, so the
   // interval is cheap.
-  const startedMs = React.useMemo(() => {
-    if (!startedAt) return Date.now();
+  const startedMs = useMemo(() => {
+    if (!startedAt) {
+      return Date.now();
+    }
     const t = Date.parse(startedAt);
     return Number.isFinite(t) ? t : Date.now();
   }, [startedAt]);
-  const [now, setNow] = React.useState(() => Date.now());
-  React.useEffect(() => {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
     const id = setInterval(() => setNow(Date.now()), ELAPSED_TICK_MS);
     return () => clearInterval(id);
   }, []);
   const secs = Math.max(0, Math.floor((now - startedMs) / 1000));
   const content = (
     <span
-      className="pdpp-caption text-foreground inline-flex items-center gap-1"
       aria-live="polite"
-      aria-label={`running for ${secs} seconds`}
+      className="pdpp-caption inline-flex items-center gap-1 text-foreground"
+      title={`running for ${secs} seconds`}
     >
       <StatusDot tone="running" />
       Running · {formatElapsed(secs)}
     </span>
   );
-  if (!href) return content;
+  if (!href) {
+    return content;
+  }
   return (
-    <Link href={href} className="hover:text-foreground/80 underline-offset-2 hover:underline">
+    <Link className="underline-offset-2 hover:text-foreground/80 hover:underline" href={href}>
       {content}
     </Link>
   );
 }
 
 function formatElapsed(secs: number): string {
-  if (secs < 60) return `${secs}s`;
+  if (secs < 60) {
+    return `${secs}s`;
+  }
   const m = Math.floor(secs / 60);
   const s = secs % 60;
-  return `${m}m ${s.toString().padStart(2, '0')}s`;
+  return `${m}m ${s.toString().padStart(2, "0")}s`;
 }
 
 function StatusDot({
   tone,
-  shape = 'circle',
+  shape = "circle",
 }: {
-  tone: 'running' | 'success' | 'danger' | 'neutral';
-  shape?: 'circle' | 'triangle';
+  tone: "running" | "success" | "danger" | "neutral";
+  shape?: "circle" | "triangle";
 }) {
   // Shape + color reinforce each other (a11y: color is never alone).
-  if (shape === 'triangle') {
+  if (shape === "triangle") {
     return (
       <span
         aria-hidden
-        className="inline-block h-0 w-0 border-x-[4px] border-b-[7px] border-x-transparent"
-        style={{ borderBottomColor: 'var(--color-destructive, #dc2626)' }}
+        className="inline-block h-0 w-0 border-x-[4px] border-x-transparent border-b-[7px]"
+        style={{ borderBottomColor: "var(--color-destructive, #dc2626)" }}
       />
     );
   }
-  const base = 'inline-block h-2 w-2 rounded-full';
-  if (tone === 'running') {
+  const base = "inline-block h-2 w-2 rounded-full";
+  if (tone === "running") {
     return <span aria-hidden className={`${base} animate-pulse bg-blue-500`} />;
   }
-  if (tone === 'success') {
+  if (tone === "success") {
     return <span aria-hidden className={`${base} bg-emerald-500`} />;
   }
-  if (tone === 'danger') {
+  if (tone === "danger") {
     return <span aria-hidden className={`${base} bg-destructive`} />;
   }
   return <span aria-hidden className={`${base} bg-muted-foreground/40`} />;

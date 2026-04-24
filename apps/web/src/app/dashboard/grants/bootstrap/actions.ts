@@ -1,19 +1,19 @@
-'use server';
+"use server";
 
-import { redirect } from 'next/navigation';
-import { requireDashboardAccess } from '../../lib/dashboard-access';
+import { redirect } from "next/navigation";
+import { requireDashboardAccess } from "../../lib/dashboard-access.ts";
 import {
-  DASHBOARD_BOOTSTRAP_CLIENT_ID,
   approveOwnerBootstrapFlow,
+  DASHBOARD_BOOTSTRAP_CLIENT_ID,
   denyOwnerBootstrapFlow,
   exchangeOwnerBootstrapToken,
   introspectOwnerBootstrapToken,
   setOwnerBootstrapFlowError,
   startOwnerBootstrapFlow,
-} from '../../lib/operator-bootstrap';
+} from "../../lib/operator-bootstrap.ts";
 
 function asString(value: FormDataEntryValue | null): string {
-  return typeof value === 'string' ? value.trim() : '';
+  return typeof value === "string" ? value.trim() : "";
 }
 
 function flowHref(flowId: string): string {
@@ -25,12 +25,12 @@ function errorHref(message: string): string {
 }
 
 function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : 'Unexpected operator action failure';
+  return err instanceof Error ? err.message : "Unexpected operator action failure";
 }
 
 export async function startOwnerTokenFlowAction(formData: FormData) {
-  await requireDashboardAccess('/dashboard/grants/bootstrap');
-  const clientId = asString(formData.get('client_id')) || DASHBOARD_BOOTSTRAP_CLIENT_ID;
+  await requireDashboardAccess("/dashboard/grants/bootstrap");
+  const clientId = asString(formData.get("client_id")) || DASHBOARD_BOOTSTRAP_CLIENT_ID;
   let target: string;
   try {
     const flow = await startOwnerBootstrapFlow(clientId);
@@ -42,9 +42,9 @@ export async function startOwnerTokenFlowAction(formData: FormData) {
 }
 
 export async function approveOwnerTokenFlowAction(formData: FormData) {
-  const flowId = asString(formData.get('flow_id'));
+  const flowId = asString(formData.get("flow_id"));
   await requireDashboardAccess(flowHref(flowId));
-  const subjectId = asString(formData.get('subject_id')) || 'owner_local';
+  const subjectId = asString(formData.get("subject_id")) || "owner_local";
   try {
     await approveOwnerBootstrapFlow(flowId, subjectId);
   } catch (err) {
@@ -54,9 +54,9 @@ export async function approveOwnerTokenFlowAction(formData: FormData) {
 }
 
 export async function denyOwnerTokenFlowAction(formData: FormData) {
-  const flowId = asString(formData.get('flow_id'));
+  const flowId = asString(formData.get("flow_id"));
   await requireDashboardAccess(flowHref(flowId));
-  const subjectId = asString(formData.get('subject_id')) || 'owner_local';
+  const subjectId = asString(formData.get("subject_id")) || "owner_local";
   try {
     await denyOwnerBootstrapFlow(flowId, subjectId);
   } catch (err) {
@@ -66,7 +66,7 @@ export async function denyOwnerTokenFlowAction(formData: FormData) {
 }
 
 export async function exchangeOwnerTokenFlowAction(formData: FormData) {
-  const flowId = asString(formData.get('flow_id'));
+  const flowId = asString(formData.get("flow_id"));
   await requireDashboardAccess(flowHref(flowId));
   try {
     await exchangeOwnerBootstrapToken(flowId);
@@ -77,7 +77,7 @@ export async function exchangeOwnerTokenFlowAction(formData: FormData) {
 }
 
 export async function introspectOwnerTokenFlowAction(formData: FormData) {
-  const flowId = asString(formData.get('flow_id'));
+  const flowId = asString(formData.get("flow_id"));
   await requireDashboardAccess(flowHref(flowId));
   try {
     await introspectOwnerBootstrapToken(flowId);

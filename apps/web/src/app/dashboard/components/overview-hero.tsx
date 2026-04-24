@@ -1,6 +1,6 @@
-import Link from 'next/link';
-import type { DatasetSummary } from '../lib/ref-client';
-import { Timestamp } from '@/components/ui/timestamp';
+import Link from "next/link";
+import { Timestamp } from "@/components/ui/timestamp.tsx";
+import type { DatasetSummary } from "../lib/ref-client.ts";
 
 /**
  * Overview-page credibility hero.
@@ -23,37 +23,34 @@ export function OverviewHero({ summary }: { summary: DatasetSummary }) {
   }
 
   return (
-    <section className="mb-8" aria-label="Dataset overview">
-      <p className="pdpp-heading text-foreground font-semibold tabular-nums">
+    <section aria-label="Dataset overview" className="mb-8">
+      <p className="pdpp-heading font-semibold text-foreground tabular-nums">
         <span>{formatBytes(summary.total_retained_bytes)}</span>
-        <span className="text-muted-foreground font-normal"> across </span>
+        <span className="font-normal text-muted-foreground"> across </span>
         <span>{formatInteger(summary.record_count)}</span>
-        <span className="text-muted-foreground font-normal"> records from </span>
+        <span className="font-normal text-muted-foreground"> records from </span>
         <span>{formatInteger(summary.connector_count)}</span>
-        <span className="text-muted-foreground font-normal">
-          {summary.connector_count === 1 ? ' connector' : ' connectors'}
+        <span className="font-normal text-muted-foreground">
+          {summary.connector_count === 1 ? " connector" : " connectors"}
         </span>
         {summary.earliest_record_time ? (
           <>
-            <span className="text-muted-foreground font-normal"> · since </span>
-            <Timestamp value={summary.earliest_record_time} precision="date" mode="absolute" className="font-medium" />
+            <span className="font-normal text-muted-foreground"> · since </span>
+            <Timestamp className="font-medium" mode="absolute" precision="date" value={summary.earliest_record_time} />
           </>
         ) : null}
       </p>
 
-      <BreadthRow
-        connectors={summary.top_connectors}
-        totalConnectors={summary.connector_count}
-      />
+      <BreadthRow connectors={summary.top_connectors} totalConnectors={summary.connector_count} />
 
-      <p className="pdpp-body text-muted-foreground mt-3">
-        Each approved grant issues runs that write records into streams —{' '}
+      <p className="pdpp-body mt-3 text-muted-foreground">
+        Each approved grant issues runs that write records into streams —{" "}
         <Link
-          href="/dashboard/records"
           className="text-muted-foreground decoration-muted-foreground/50 underline-offset-2 hover:text-foreground hover:underline"
+          href="/dashboard/records"
         >
           every record is inspectable
-        </Link>{' '}
+        </Link>{" "}
         through <code className="pdpp-caption font-mono">/v1/streams</code>.
       </p>
     </section>
@@ -62,13 +59,13 @@ export function OverviewHero({ summary }: { summary: DatasetSummary }) {
 
 function EmptyHero() {
   return (
-    <section className="mb-8" aria-label="Dataset overview">
-      <p className="pdpp-heading text-foreground font-semibold">
+    <section aria-label="Dataset overview" className="mb-8">
+      <p className="pdpp-heading font-semibold text-foreground">
         <span>No records yet</span>
-        <span className="text-muted-foreground font-normal"> · 0 connectors connected</span>
+        <span className="font-normal text-muted-foreground"> · 0 connectors connected</span>
       </p>
-      <p className="pdpp-body text-muted-foreground mt-3">
-        Start a grant to begin ingesting. Every record lands inspectable through{' '}
+      <p className="pdpp-body mt-3 text-muted-foreground">
+        Start a grant to begin ingesting. Every record lands inspectable through{" "}
         <code className="pdpp-caption font-mono">/v1/streams</code>.
       </p>
     </section>
@@ -79,21 +76,23 @@ function BreadthRow({
   connectors,
   totalConnectors,
 }: {
-  connectors: DatasetSummary['top_connectors'];
+  connectors: DatasetSummary["top_connectors"];
   totalConnectors: number;
 }) {
-  if (connectors.length === 0) return null;
+  if (connectors.length === 0) {
+    return null;
+  }
   const extra = Math.max(totalConnectors - connectors.length, 0);
   return (
-    <p className="pdpp-body text-muted-foreground mt-2 flex flex-wrap items-baseline gap-x-4 gap-y-1">
+    <p className="pdpp-body mt-2 flex flex-wrap items-baseline gap-x-4 gap-y-1 text-muted-foreground">
       {connectors.map((c, i) => (
-        <span key={c.connector_id} className="inline-flex items-baseline gap-1.5">
+        <span className="inline-flex items-baseline gap-1.5" key={c.connector_id}>
           <span
             aria-hidden
             className="inline-block h-1.5 w-1.5 rounded-full"
             style={{ backgroundColor: identityColor(i) }}
           />
-          <code className="pdpp-caption text-foreground font-mono" title={c.connector_id}>
+          <code className="pdpp-caption font-mono text-foreground" title={c.connector_id}>
             {displayConnectorSlug(c.connector_id)}
           </code>
           <span className="tabular-nums">{formatInteger(c.record_count)}</span>
@@ -101,8 +100,8 @@ function BreadthRow({
       ))}
       {extra > 0 ? (
         <Link
+          className="text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
           href="/dashboard/records"
-          className="text-muted-foreground hover:text-foreground hover:underline underline-offset-2"
         >
           +{extra} more
         </Link>
@@ -113,19 +112,22 @@ function BreadthRow({
 
 // Deterministic low-saturation identity colors for the top-connectors row.
 // These are small decorative dots only; no meaning is carried by specific hue.
+const IDENTITY_PALETTE = [
+  "oklch(0.72 0.12 65)",
+  "oklch(0.70 0.11 155)",
+  "oklch(0.68 0.13 240)",
+  "oklch(0.70 0.11 320)",
+  "oklch(0.72 0.10 25)",
+] as const;
+
 function identityColor(index: number): string {
-  const palette = [
-    'oklch(0.72 0.12 65)',
-    'oklch(0.70 0.11 155)',
-    'oklch(0.68 0.13 240)',
-    'oklch(0.70 0.11 320)',
-    'oklch(0.72 0.10 25)',
-  ];
-  return palette[index % palette.length];
+  // Modulo keeps the lookup in-bounds; the fallback is a defensive no-op
+  // that also satisfies `noUncheckedIndexedAccess` without a non-null assertion.
+  return IDENTITY_PALETTE[index % IDENTITY_PALETTE.length] ?? IDENTITY_PALETTE[0];
 }
 
 function formatInteger(n: number): string {
-  return Number.isFinite(n) ? n.toLocaleString('en-US') : '0';
+  return Number.isFinite(n) ? n.toLocaleString("en-US") : "0";
 }
 
 /**
@@ -137,28 +139,34 @@ function formatInteger(n: number): string {
 function displayConnectorSlug(connectorId: string): string {
   try {
     const url = new URL(connectorId);
-    const segments = url.pathname.split('/').filter(Boolean);
-    const last = segments[segments.length - 1];
+    const segments = url.pathname.split("/").filter(Boolean);
+    const last = segments.at(-1);
     return last || url.hostname;
   } catch {
     return connectorId;
   }
 }
 
-
 /**
  * Decimal byte formatter (MB = 1,000,000 bytes) matching Stripe/Vercel/Plaid
  * conventions and consumer intuition about "184 MB". Scales up through GB, TB.
  */
 function formatBytes(bytes: number): string {
-  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
-  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  if (!Number.isFinite(bytes) || bytes <= 0) {
+    return "0 B";
+  }
+  const units = ["B", "KB", "MB", "GB", "TB"];
   let value = bytes;
   let unitIndex = 0;
   while (value >= 1000 && unitIndex < units.length - 1) {
     value /= 1000;
     unitIndex += 1;
   }
-  const rounded = value >= 100 ? Math.round(value) : value >= 10 ? value.toFixed(1) : value.toFixed(2);
+  let rounded: string | number = value.toFixed(2);
+  if (value >= 100) {
+    rounded = Math.round(value);
+  } else if (value >= 10) {
+    rounded = value.toFixed(1);
+  }
   return `${rounded} ${units[unitIndex]}`;
 }

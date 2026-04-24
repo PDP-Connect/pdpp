@@ -20,7 +20,7 @@ import { fileURLToPath } from 'node:url';
 
 import { startServer } from '../server/index.js';
 import { closeDb, getDb, initDb } from '../server/db.js';
-import { resolveDefaultConnectorPath } from '../runtime/controller.js';
+import { resolveDefaultConnectorPath } from '../runtime/controller.ts';
 import { createTraceContext, emitSpineEvent } from '../lib/spine.ts';
 import { validateRequest, listOperations } from '@pdpp/reference-contract';
 

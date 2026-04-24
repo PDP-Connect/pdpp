@@ -1,15 +1,9 @@
-'use client';
+"use client";
 
-import Link from 'next/link';
-import { useRouter, useSearchParams } from 'next/navigation';
-import { useCallback, useState } from 'react';
-import {
-  Popover,
-  PopoverPopup,
-  PopoverPortal,
-  PopoverPositioner,
-  PopoverTrigger,
-} from '@/components/ui/popover';
+import Link from "next/link";
+import { useRouter, useSearchParams } from "next/navigation";
+import { useCallback, useState } from "react";
+import { Popover, PopoverPopup, PopoverPortal, PopoverPositioner, PopoverTrigger } from "@/components/ui/popover.tsx";
 
 export function ColumnsMenu({
   allColumns,
@@ -20,78 +14,80 @@ export function ColumnsMenu({
   allColumns: string[];
   defaultColumns: string[];
   selectedColumns: string[];
-  mode: 'default' | 'custom' | 'all';
+  mode: "default" | "custom" | "all";
 }) {
   const [open, setOpen] = useState(false);
   const router = useRouter();
   const params = useSearchParams();
 
   const apply = useCallback(
-    (columns: 'reset' | 'all' | string[]) => {
+    (columns: "reset" | "all" | string[]) => {
       const next = new URLSearchParams(params.toString());
-      if (columns === 'reset') next.delete('columns');
-      else if (columns === 'all') next.set('columns', '*');
-      else if (columns.length === 0) next.delete('columns');
-      else next.set('columns', columns.join(','));
+      if (columns === "reset") {
+        next.delete("columns");
+      } else if (columns === "all") {
+        next.set("columns", "*");
+      } else if (columns.length === 0) {
+        next.delete("columns");
+      } else {
+        next.set("columns", columns.join(","));
+      }
       const qs = next.toString();
-      router.replace(qs ? `?${qs}` : '?', { scroll: false });
+      router.replace(qs ? `?${qs}` : "?", { scroll: false });
     },
-    [params, router],
+    [params, router]
   );
 
   const toggle = useCallback(
     (column: string) => {
-      const base = mode === 'default' ? defaultColumns : selectedColumns;
+      const base = mode === "default" ? defaultColumns : selectedColumns;
       const has = base.includes(column);
       const nextSet = has ? base.filter((c) => c !== column) : [...base, column];
       const ordered = allColumns.filter((c) => nextSet.includes(c));
-      if (
-        ordered.length === defaultColumns.length &&
-        ordered.every((c, i) => defaultColumns[i] === c)
-      ) {
-        apply('reset');
+      if (ordered.length === defaultColumns.length && ordered.every((c, i) => defaultColumns[i] === c)) {
+        apply("reset");
       } else {
         apply(ordered);
       }
     },
-    [allColumns, defaultColumns, selectedColumns, mode, apply],
+    [allColumns, defaultColumns, selectedColumns, mode, apply]
   );
 
   const count = selectedColumns.length;
-  const label =
-    mode === 'all'
-      ? `Columns · all ${count}`
-      : mode === 'custom'
-        ? `Columns · ${count}`
-        : `Columns · ${count} default`;
+  let label = `Columns · ${count} default`;
+  if (mode === "all") {
+    label = `Columns · all ${count}`;
+  } else if (mode === "custom") {
+    label = `Columns · ${count}`;
+  }
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger
-        className="pdpp-label border-border/80 bg-background hover:bg-muted/60 inline-flex h-8 items-center rounded-md border px-3 text-foreground transition-colors data-[popup-open]:bg-muted/60"
-      >
+    <Popover onOpenChange={setOpen} open={open}>
+      <PopoverTrigger className="pdpp-label inline-flex h-8 items-center rounded-md border border-border/80 bg-background px-3 text-foreground transition-colors hover:bg-muted/60 data-[popup-open]:bg-muted/60">
         {label}
-        <span aria-hidden className="ml-2 text-muted-foreground">▾</span>
+        <span aria-hidden className="ml-2 text-muted-foreground">
+          ▾
+        </span>
       </PopoverTrigger>
       <PopoverPortal>
         <PopoverPositioner align="end" sideOffset={4}>
           <PopoverPopup className="w-72 overflow-hidden">
-            <div className="border-b border-border/70 px-3 py-2">
+            <div className="border-border/70 border-b px-3 py-2">
               <div className="flex items-center justify-between gap-2">
                 <span className="pdpp-eyebrow">Displayed columns</span>
                 <div className="pdpp-caption flex items-center gap-2">
                   <button
+                    className="text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+                    onClick={() => apply("reset")}
                     type="button"
-                    onClick={() => apply('reset')}
-                    className="text-muted-foreground hover:text-foreground underline-offset-2 hover:underline"
                   >
                     Default
                   </button>
                   <span className="text-muted-foreground/40">·</span>
                   <button
+                    className="text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+                    onClick={() => apply("all")}
                     type="button"
-                    onClick={() => apply('all')}
-                    className="text-muted-foreground hover:text-foreground underline-offset-2 hover:underline"
                   >
                     Show all
                   </button>
@@ -103,12 +99,12 @@ export function ColumnsMenu({
                 const checked = selectedColumns.includes(column);
                 return (
                   <li key={column}>
-                    <label className="pdpp-caption hover:bg-muted/40 flex cursor-pointer items-center gap-2 px-3 py-1.5">
+                    <label className="pdpp-caption flex cursor-pointer items-center gap-2 px-3 py-1.5 hover:bg-muted/40">
                       <input
-                        type="checkbox"
-                        className="h-3.5 w-3.5 accent-foreground"
                         checked={checked}
+                        className="h-3.5 w-3.5 accent-foreground"
                         onChange={() => toggle(column)}
+                        type="checkbox"
                       />
                       <span className="flex-1 font-mono">{column}</span>
                     </label>
@@ -116,12 +112,12 @@ export function ColumnsMenu({
                 );
               })}
             </ul>
-            <div className="pdpp-caption border-t border-border/70 px-3 py-2 text-muted-foreground">
+            <div className="pdpp-caption border-border/70 border-t px-3 py-2 text-muted-foreground">
               <Link
-                href="?columns=*"
-                scroll={false}
                 className="underline-offset-2 hover:underline"
+                href="?columns=*"
                 onClick={() => setOpen(false)}
+                scroll={false}
               >
                 Share this view
               </Link>

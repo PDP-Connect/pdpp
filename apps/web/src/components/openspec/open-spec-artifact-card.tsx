@@ -1,5 +1,5 @@
-import Link from 'next/link';
-import type { ReactNode } from 'react';
+import Link from "next/link";
+import type { ReactNode } from "react";
 
 export function OpenSpecArtifactCard({
   href,
@@ -20,16 +20,12 @@ export function OpenSpecArtifactCard({
 
   return (
     <Link
-      href={href}
       className="group -mx-2 grid gap-2 rounded-md px-2 py-4 transition-colors hover:bg-muted/35 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start"
+      href={href}
     >
       <div className="min-w-0 flex-1">
         <div className="pdpp-title text-foreground">{title}</div>
-        {excerpt && (
-          <p className="pdpp-body mt-2 max-w-[72ch] line-clamp-3 text-muted-foreground">
-            {excerpt}
-          </p>
-        )}
+        {excerpt && <p className="pdpp-body mt-2 line-clamp-3 max-w-[72ch] text-muted-foreground">{excerpt}</p>}
         {hasMetaLine && (
           <div className="pdpp-caption mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-muted-foreground">
             {eyebrow && <span className="font-mono">{eyebrow}</span>}

@@ -1,16 +1,13 @@
 {
   "compilerOptions": {
     "target": "ES2017",
-    "lib": [
-      "dom",
-      "dom.iterable",
-      "esnext"
-    ],
+    "lib": ["dom", "dom.iterable", "esnext"],
     "allowJs": true,
     "skipLibCheck": true,
     "strict": true,
     "noImplicitReturns": true,
     "noFallthroughCasesInSwitch": true,
+    "noUncheckedIndexedAccess": true,
     "useUnknownInCatchVariables": true,
     "noEmit": true,
     "esModuleInterop": true,
@@ -20,18 +17,18 @@
     "isolatedModules": true,
     "jsx": "react-jsx",
     "incremental": true,
+    // Ultracite's useImportExtensions rule requires explicit extensions
+    // on local imports; Next.js / tsx strip them at load time. Same
+    // pattern as packages/polyfill-connectors/tsconfig.json.
+    "allowImportingTsExtensions": true,
     "plugins": [
       {
         "name": "next"
       }
     ],
     "paths": {
-      "@/*": [
-        "./src/*"
-      ],
-      "collections/*": [
-        "./.source/*"
-      ]
+      "@/*": ["./src/*"],
+      "collections/*": ["./.source/*"]
     }
   },
   "include": [
@@ -41,7 +38,5 @@
     ".next/types/**/*.ts",
     ".next/dev/types/**/*.ts"
   ],
-  "exclude": [
-    "node_modules"
-  ]
+  "exclude": ["node_modules"]
 }

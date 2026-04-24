@@ -1,123 +1,117 @@
-'use client';
+"use client";
 
-import { useRouter } from 'next/navigation';
-import * as React from 'react';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { submitRunInteractionAction, type RunInteractionActionState } from './actions';
+import { useRouter } from "next/navigation";
+import { type SyntheticEvent, useState, useTransition } from "react";
+import { Button } from "@/components/ui/button.tsx";
+import { Input } from "@/components/ui/input.tsx";
+import { type RunInteractionActionState, submitRunInteractionAction } from "./actions.ts";
 
-type InteractionField = {
-  name: string;
+interface InteractionField {
+  format: "password" | "text";
   label: string | null;
-  format: 'password' | 'text';
+  name: string;
   required: boolean;
-};
+}
 
-type Props = {
-  runId: string;
-  interactionId: string;
-  kind: 'credentials' | 'otp' | 'manual_action' | string;
-  message: string;
+interface Props {
   fields: InteractionField[];
-};
+  interactionId: string;
+  kind: "credentials" | "otp" | "manual_action" | string;
+  message: string;
+  runId: string;
+}
 
 const INITIAL: RunInteractionActionState = { error: null, status: null };
 
 export function RunInteractionForm({ runId, interactionId, kind, message, fields }: Props) {
   const router = useRouter();
-  const [isPending, startTransition] = React.useTransition();
-  const [state, setState] = React.useState<RunInteractionActionState>(INITIAL);
+  const [isPending, startTransition] = useTransition();
+  const [state, setState] = useState<RunInteractionActionState>(INITIAL);
 
-  // Reset local state if a new interaction supersedes the current one.
-  React.useEffect(() => {
-    setState(INITIAL);
-  }, [interactionId]);
+  function submitWithStatus(formData: FormData, status: "success" | "cancelled") {
+    formData.set("status", status);
+    formData.set("run_id", runId);
+    formData.set("interaction_id", interactionId);
+    startTransition(async () => {
+      const next = await submitRunInteractionAction(INITIAL, formData);
+      setState(next);
+      if (!next.error) {
+        router.refresh();
+      }
+    });
+  }
 
-  const submitWithStatus = React.useCallback(
-    (formData: FormData, status: 'success' | 'cancelled') => {
-      formData.set('status', status);
-      formData.set('run_id', runId);
-      formData.set('interaction_id', interactionId);
-      startTransition(async () => {
-        const next = await submitRunInteractionAction(INITIAL, formData);
-        setState(next);
-        if (!next.error) router.refresh();
-      });
-    },
-    [runId, interactionId, router],
-  );
+  function handleSubmit(event: SyntheticEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const formData = new FormData(event.currentTarget);
+    submitWithStatus(formData, "success");
+  }
 
-  const handleSubmit = React.useCallback(
-    (event: React.SyntheticEvent<HTMLFormElement>) => {
-      event.preventDefault();
-      const formData = new FormData(event.currentTarget);
-      submitWithStatus(formData, 'success');
-    },
-    [submitWithStatus],
-  );
+  function handleCancel() {
+    submitWithStatus(new FormData(), "cancelled");
+  }
 
-  const handleCancel = React.useCallback(() => {
-    submitWithStatus(new FormData(), 'cancelled');
-  }, [submitWithStatus]);
-
-  const showFields = kind !== 'manual_action' && fields.length > 0;
-  const submitLabel =
-    kind === 'manual_action'
-      ? "I've completed this step — continue"
-      : kind === 'otp'
-        ? 'Submit code'
-        : 'Submit credentials';
+  const showFields = kind !== "manual_action" && fields.length > 0;
+  const submitLabel = getSubmitLabel(kind);
 
   return (
     <form
-      onSubmit={handleSubmit}
+      aria-label={`Answer interaction ${interactionId}`}
       autoComplete="off"
       className="mt-3 flex flex-col gap-3"
-      aria-label={`Answer interaction ${interactionId}`}
+      onSubmit={handleSubmit}
     >
       <p className="pdpp-caption text-muted-foreground">{message}</p>
       {showFields ? (
         <div className="grid gap-2">
-          {fields.map((field) => (
-            <label key={field.name} className="flex flex-col gap-1">
-              <span className="pdpp-caption text-muted-foreground">
-                {field.label || field.name}
-                {field.required ? <span aria-hidden="true"> *</span> : null}
-              </span>
-              <Input
-                name={field.name}
-                type={field.format === 'password' ? 'password' : 'text'}
-                autoComplete="off"
-                required={field.required}
-                spellCheck={false}
-              />
-            </label>
-          ))}
+          {fields.map((field) => {
+            const fieldId = `interaction-${interactionId}-${field.name}`;
+            return (
+              <label className="flex flex-col gap-1" htmlFor={fieldId} key={field.name}>
+                <span className="pdpp-caption text-muted-foreground">
+                  {field.label || field.name}
+                  {field.required ? <span aria-hidden="true"> *</span> : null}
+                </span>
+                <Input
+                  autoComplete="off"
+                  id={fieldId}
+                  name={field.name}
+                  required={field.required}
+                  spellCheck={false}
+                  type={field.format === "password" ? "password" : "text"}
+                />
+              </label>
+            );
+          })}
         </div>
       ) : null}
       <p className="pdpp-caption text-muted-foreground">
-        Values you submit here satisfy this run only. The reference server does not persist them as
-        durable connector credentials, env vars, or timeline payloads.
+        Values you submit here satisfy this run only. The reference server does not persist them as durable connector
+        credentials, env vars, or timeline payloads.
       </p>
       {state.error ? (
-        <p role="alert" className="pdpp-caption text-destructive">
+        <p className="pdpp-caption text-destructive" role="alert">
           {state.error}
         </p>
       ) : null}
       <div className="flex flex-wrap gap-2">
-        <Button type="submit" size="sm" disabled={isPending}>
-          {isPending ? 'Submitting…' : submitLabel}
+        <Button disabled={isPending} size="sm" type="submit">
+          {isPending ? "Submitting…" : submitLabel}
         </Button>
-        <Button
-          type="button"
-          size="sm"
-          variant="outline"
-          onClick={handleCancel}
-          disabled={isPending}
-        >
+        <Button disabled={isPending} onClick={handleCancel} size="sm" type="button" variant="outline">
           Cancel interaction
         </Button>
       </div>
     </form>
   );
+}
+
+function getSubmitLabel(kind: Props["kind"]): string {
+  if (kind === "manual_action") {
+    return "I've completed this step — continue";
+  }
+  if (kind === "otp") {
+    return "Submit code";
+  }
+  return "Submit credentials";
 }

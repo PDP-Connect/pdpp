@@ -1,45 +1,51 @@
-'use client';
+"use client";
 
-import { useRouter } from 'next/navigation';
-import * as React from 'react';
-import { Button } from '@/components/ui/button';
-import { runConnectorNowAction, type RunNowResult } from '../actions';
+import { useRouter } from "next/navigation";
+import { useCallback, useEffect, useState, useTransition } from "react";
+import { Button } from "@/components/ui/button.tsx";
+import { type RunNowResult, runConnectorNowAction } from "../actions.ts";
 
-const RUNNING_POLL_MS = 3_000;
+const RUNNING_POLL_MS = 3000;
 
-type Props = {
+interface Props {
   connectorId: string;
   displayName: string;
   initialRunning: boolean;
-};
+}
 
 export function SyncNowButton({ connectorId, displayName, initialRunning }: Props) {
   const router = useRouter();
-  const [isPending, startTransition] = React.useTransition();
-  const [optimisticRunning, setOptimisticRunning] = React.useState(false);
-  const [toast, setToast] = React.useState<string | null>(null);
-  const [toastTone, setToastTone] = React.useState<'info' | 'error'>('info');
+  const [isPending, startTransition] = useTransition();
+  const [optimisticRunning, setOptimisticRunning] = useState(false);
+  const [toast, setToast] = useState<string | null>(null);
+  const [toastTone, setToastTone] = useState<"info" | "error">("info");
   const running = initialRunning || optimisticRunning;
 
   // Poll while running so the detail page auto-updates when the run
   // terminates — matches the index row's behavior.
-  React.useEffect(() => {
-    if (!running) return;
+  useEffect(() => {
+    if (!running) {
+      return;
+    }
     const id = setInterval(() => router.refresh(), RUNNING_POLL_MS);
     return () => clearInterval(id);
   }, [running, router]);
 
-  React.useEffect(() => {
-    if (optimisticRunning && initialRunning) setOptimisticRunning(false);
+  useEffect(() => {
+    if (optimisticRunning && initialRunning) {
+      setOptimisticRunning(false);
+    }
   }, [initialRunning, optimisticRunning]);
 
-  React.useEffect(() => {
-    if (!toast) return;
-    const id = setTimeout(() => setToast(null), 5_000);
+  useEffect(() => {
+    if (!toast) {
+      return;
+    }
+    const id = setTimeout(() => setToast(null), 5000);
     return () => clearTimeout(id);
   }, [toast]);
 
-  const handleClick = React.useCallback(() => {
+  const handleClick = useCallback(() => {
     setToast(null);
     setOptimisticRunning(true);
     startTransition(async () => {
@@ -49,13 +55,13 @@ export function SyncNowButton({ connectorId, displayName, initialRunning }: Prop
         return;
       }
       setOptimisticRunning(false);
-      if (res.reason === 'already_running') {
-        setToastTone('info');
-        setToast('A sync is already in progress.');
+      if (res.reason === "already_running") {
+        setToastTone("info");
+        setToast("A sync is already in progress.");
         router.refresh();
         return;
       }
-      setToastTone('error');
+      setToastTone("error");
       setToast(res.message);
     });
   }, [connectorId, router]);
@@ -63,22 +69,18 @@ export function SyncNowButton({ connectorId, displayName, initialRunning }: Prop
   return (
     <div className="flex flex-col items-end gap-1">
       <Button
-        size="sm"
-        onClick={handleClick}
-        disabled={running || isPending}
         aria-label={running ? `Sync in progress for ${displayName}` : `Sync ${displayName} now`}
+        disabled={running || isPending}
+        onClick={handleClick}
+        size="sm"
       >
-        {running ? 'Syncing…' : 'Sync now'}
+        {running ? "Syncing…" : "Sync now"}
       </Button>
       {toast ? (
         <span
-          role="status"
           aria-live="polite"
-          className={
-            toastTone === 'error'
-              ? 'pdpp-caption text-destructive'
-              : 'pdpp-caption text-muted-foreground'
-          }
+          className={toastTone === "error" ? "pdpp-caption text-destructive" : "pdpp-caption text-muted-foreground"}
+          role="status"
         >
           {toast}
         </span>

@@ -6,34 +6,34 @@
  * without inventing a second token minting surface.
  */
 import {
-  ReferenceServerUnreachableError,
   getAsInternalUrl,
   getReferencePublicOrigin,
+  ReferenceServerUnreachableError,
   withOwnerSessionCookie,
-} from './owner-token';
+} from "./owner-token.ts";
 
-export const DASHBOARD_BOOTSTRAP_CLIENT_ID = 'pdpp-web-dashboard';
+export const DASHBOARD_BOOTSTRAP_CLIENT_ID = "pdpp-web-dashboard";
 
-export type OwnerBootstrapFlow = {
-  flowId: string;
+export interface OwnerBootstrapFlow {
+  approvalUpdatedAt: string | null;
   clientId: string;
-  subjectId: string | null;
-  status: 'pending_approval' | 'approved' | 'denied' | 'token_issued';
-  startedAt: string;
-  expiresAt: string | null;
-  intervalSeconds: number;
   deviceCode: string;
+  expiresAt: string | null;
+  flowId: string;
+  intervalSeconds: number;
+  introspectedAt: string | null;
+  introspection: Record<string, unknown> | null;
+  lastError: string | null;
+  startedAt: string;
+  status: "pending_approval" | "approved" | "denied" | "token_issued";
+  subjectId: string | null;
+  token: string | null;
+  tokenIssuedAt: string | null;
+  tokenResponse: Record<string, unknown> | null;
   userCode: string;
   verificationUri: string | null;
   verificationUriComplete: string | null;
-  approvalUpdatedAt: string | null;
-  tokenIssuedAt: string | null;
-  token: string | null;
-  tokenResponse: Record<string, unknown> | null;
-  introspection: Record<string, unknown> | null;
-  introspectedAt: string | null;
-  lastError: string | null;
-};
+}
 
 type OwnerBootstrapStore = Map<string, OwnerBootstrapFlow>;
 
@@ -51,36 +51,36 @@ function asForm(body: Record<string, string>): string {
   return new URLSearchParams(body).toString();
 }
 
-async function readBody(res: Response): Promise<unknown> {
-  const contentType = res.headers.get('content-type') ?? '';
-  if (contentType.includes('application/json')) {
+function readBody(res: Response): Promise<unknown> {
+  const contentType = res.headers.get("content-type") ?? "";
+  if (contentType.includes("application/json")) {
     return res.json();
   }
   return res.text();
 }
 
 function describeError(body: unknown, fallback: string): string {
-  if (body && typeof body === 'object') {
+  if (body && typeof body === "object") {
     const oauth = body as {
       error?: string | { message?: string };
       error_description?: string;
     };
-    if (typeof oauth.error_description === 'string' && oauth.error_description) {
+    if (typeof oauth.error_description === "string" && oauth.error_description) {
       return oauth.error_description;
     }
-    if (typeof oauth.error === 'string' && oauth.error) {
+    if (typeof oauth.error === "string" && oauth.error) {
       return oauth.error;
     }
     if (
       oauth.error &&
-      typeof oauth.error === 'object' &&
-      typeof oauth.error.message === 'string' &&
+      typeof oauth.error === "object" &&
+      typeof oauth.error.message === "string" &&
       oauth.error.message
     ) {
       return oauth.error.message;
     }
   }
-  if (typeof body === 'string' && body.trim()) {
+  if (typeof body === "string" && body.trim()) {
     return body.trim();
   }
   return fallback;
@@ -104,15 +104,12 @@ async function fetchAs(path: string, init: RequestInit): Promise<Response> {
     return await fetch(
       `${getAsInternalUrl()}${path}`,
       await withOwnerSessionCookie({
-        cache: 'no-store',
+        cache: "no-store",
         ...init,
-      }),
+      })
     );
   } catch (err) {
-    throw new ReferenceServerUnreachableError(
-      `Cannot reach authorization server at ${getAsInternalUrl()}`,
-      err,
-    );
+    throw new ReferenceServerUnreachableError(`Cannot reach authorization server at ${getAsInternalUrl()}`, err);
   }
 }
 
@@ -122,26 +119,24 @@ export function getOwnerBootstrapFlow(flowId: string): OwnerBootstrapFlow | null
 
 export function setOwnerBootstrapFlowError(flowId: string, message: string): OwnerBootstrapFlow | null {
   const flow = getOwnerBootstrapFlow(flowId);
-  if (!flow) return null;
+  if (!flow) {
+    return null;
+  }
   return saveFlow({
     ...flow,
     lastError: message,
   });
 }
 
-export async function startOwnerBootstrapFlow(
-  clientId = DASHBOARD_BOOTSTRAP_CLIENT_ID,
-): Promise<OwnerBootstrapFlow> {
-  const response = await fetchAs('/oauth/device_authorization', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+export async function startOwnerBootstrapFlow(clientId = DASHBOARD_BOOTSTRAP_CLIENT_ID): Promise<OwnerBootstrapFlow> {
+  const response = await fetchAs("/oauth/device_authorization", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: asForm({ client_id: clientId }),
   });
   const body = await readBody(response);
-  if (!response.ok || !body || typeof body !== 'object') {
-    throw new Error(
-      describeError(body, `device_authorization failed (${response.status})`),
-    );
+  if (!(response.ok && body) || typeof body !== "object") {
+    throw new Error(describeError(body, `device_authorization failed (${response.status})`));
   }
 
   const payload = body as {
@@ -153,25 +148,23 @@ export async function startOwnerBootstrapFlow(
     verification_uri_complete?: string;
   };
   if (
-    typeof payload.device_code !== 'string' ||
+    typeof payload.device_code !== "string" ||
     !payload.device_code ||
-    typeof payload.user_code !== 'string' ||
+    typeof payload.user_code !== "string" ||
     !payload.user_code
   ) {
-    throw new Error('device_authorization succeeded without device_code/user_code');
+    throw new Error("device_authorization succeeded without device_code/user_code");
   }
 
   const flow: OwnerBootstrapFlow = {
     flowId: crypto.randomUUID(),
     clientId,
     subjectId: null,
-    status: 'pending_approval',
+    status: "pending_approval",
     startedAt: new Date().toISOString(),
     expiresAt:
-      typeof payload.expires_in === 'number'
-        ? new Date(Date.now() + payload.expires_in * 1000).toISOString()
-        : null,
-    intervalSeconds: typeof payload.interval === 'number' ? payload.interval : 5,
+      typeof payload.expires_in === "number" ? new Date(Date.now() + payload.expires_in * 1000).toISOString() : null,
+    intervalSeconds: typeof payload.interval === "number" ? payload.interval : 5,
     deviceCode: payload.device_code,
     userCode: payload.user_code,
     verificationUri: payload.verification_uri ?? null,
@@ -188,14 +181,11 @@ export async function startOwnerBootstrapFlow(
   return saveFlow(flow);
 }
 
-export async function approveOwnerBootstrapFlow(
-  flowId: string,
-  subjectId: string,
-): Promise<OwnerBootstrapFlow> {
+export async function approveOwnerBootstrapFlow(flowId: string, subjectId: string): Promise<OwnerBootstrapFlow> {
   const flow = requireFlow(flowId);
-  const response = await fetchAs('/device/approve', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+  const response = await fetchAs("/device/approve", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: asForm({ user_code: flow.userCode, subject_id: subjectId }),
   });
   const body = await readBody(response);
@@ -205,20 +195,17 @@ export async function approveOwnerBootstrapFlow(
   return saveFlow({
     ...flow,
     subjectId,
-    status: 'approved',
+    status: "approved",
     approvalUpdatedAt: new Date().toISOString(),
     lastError: null,
   });
 }
 
-export async function denyOwnerBootstrapFlow(
-  flowId: string,
-  subjectId: string,
-): Promise<OwnerBootstrapFlow> {
+export async function denyOwnerBootstrapFlow(flowId: string, subjectId: string): Promise<OwnerBootstrapFlow> {
   const flow = requireFlow(flowId);
-  const response = await fetchAs('/device/deny', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+  const response = await fetchAs("/device/deny", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: asForm({ user_code: flow.userCode, subject_id: subjectId }),
   });
   const body = await readBody(response);
@@ -228,7 +215,7 @@ export async function denyOwnerBootstrapFlow(
   return saveFlow({
     ...flow,
     subjectId,
-    status: 'denied',
+    status: "denied",
     approvalUpdatedAt: new Date().toISOString(),
     token: null,
     tokenResponse: null,
@@ -238,32 +225,30 @@ export async function denyOwnerBootstrapFlow(
   });
 }
 
-export async function exchangeOwnerBootstrapToken(
-  flowId: string,
-): Promise<OwnerBootstrapFlow> {
+export async function exchangeOwnerBootstrapToken(flowId: string): Promise<OwnerBootstrapFlow> {
   const flow = requireFlow(flowId);
-  const response = await fetchAs('/oauth/token', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+  const response = await fetchAs("/oauth/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: asForm({
-      grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
+      grant_type: "urn:ietf:params:oauth:grant-type:device_code",
       device_code: flow.deviceCode,
       client_id: flow.clientId,
     }),
   });
   const body = await readBody(response);
-  if (!response.ok || !body || typeof body !== 'object') {
+  if (!(response.ok && body) || typeof body !== "object") {
     throw new Error(describeError(body, `token exchange failed (${response.status})`));
   }
   const payload = body as {
     access_token?: string;
   } & Record<string, unknown>;
-  if (typeof payload.access_token !== 'string' || !payload.access_token) {
-    throw new Error('token exchange succeeded without an access_token');
+  if (typeof payload.access_token !== "string" || !payload.access_token) {
+    throw new Error("token exchange succeeded without an access_token");
   }
   return saveFlow({
     ...flow,
-    status: 'token_issued',
+    status: "token_issued",
     token: payload.access_token,
     tokenResponse: payload,
     tokenIssuedAt: new Date().toISOString(),
@@ -271,20 +256,18 @@ export async function exchangeOwnerBootstrapToken(
   });
 }
 
-export async function introspectOwnerBootstrapToken(
-  flowId: string,
-): Promise<OwnerBootstrapFlow> {
+export async function introspectOwnerBootstrapToken(flowId: string): Promise<OwnerBootstrapFlow> {
   const flow = requireFlow(flowId);
   if (!flow.token) {
-    throw new Error('No token available yet for introspection');
+    throw new Error("No token available yet for introspection");
   }
-  const response = await fetchAs('/introspect', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+  const response = await fetchAs("/introspect", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ token: flow.token }),
   });
   const body = await readBody(response);
-  if (!response.ok || !body || typeof body !== 'object') {
+  if (!(response.ok && body) || typeof body !== "object") {
     throw new Error(describeError(body, `introspection failed (${response.status})`));
   }
   return saveFlow({
@@ -303,14 +286,16 @@ export async function buildOwnerBootstrapExamples(flow: OwnerBootstrapFlow) {
     cliLogin: `pdpp auth login --client-id ${shellQuote(flow.clientId)} --as-url ${shellQuote(asUrl)} --format json`,
     cliIntrospect: flow.token
       ? `pdpp auth introspect --as-url ${shellQuote(asUrl)} --token ${shellQuote(flow.token)} --format json`
-      : 'pdpp auth introspect --as-url <as-url> --token <token> --format json',
+      : "pdpp auth introspect --as-url <as-url> --token <token> --format json",
     startCurl: `curl -sS -X POST ${shellQuote(`${asUrl}/oauth/device_authorization`)} \\\n  -H 'Content-Type: application/x-www-form-urlencoded' \\\n  --data ${shellQuote(asForm({ client_id: flow.clientId }))}`,
-    approveCurl: `curl -sS -X POST ${shellQuote(`${asUrl}/device/approve`)} \\\n  -H 'Content-Type: application/x-www-form-urlencoded' \\\n  --data ${shellQuote(asForm({ user_code: flow.userCode, subject_id: flow.subjectId ?? 'owner_local' }))}`,
-    exchangeCurl: `curl -sS -X POST ${shellQuote(`${asUrl}/oauth/token`)} \\\n  -H 'Content-Type: application/x-www-form-urlencoded' \\\n  --data ${shellQuote(asForm({
-      grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
-      device_code: flow.deviceCode,
-      client_id: flow.clientId,
-    }))}`,
+    approveCurl: `curl -sS -X POST ${shellQuote(`${asUrl}/device/approve`)} \\\n  -H 'Content-Type: application/x-www-form-urlencoded' \\\n  --data ${shellQuote(asForm({ user_code: flow.userCode, subject_id: flow.subjectId ?? "owner_local" }))}`,
+    exchangeCurl: `curl -sS -X POST ${shellQuote(`${asUrl}/oauth/token`)} \\\n  -H 'Content-Type: application/x-www-form-urlencoded' \\\n  --data ${shellQuote(
+      asForm({
+        grant_type: "urn:ietf:params:oauth:grant-type:device_code",
+        device_code: flow.deviceCode,
+        client_id: flow.clientId,
+      })
+    )}`,
     introspectCurl: flow.token
       ? `curl -sS -X POST ${shellQuote(`${asUrl}/introspect`)} \\\n  -H 'Content-Type: application/json' \\\n  --data ${shellQuote(JSON.stringify({ token: flow.token }))}`
       : `curl -sS -X POST ${shellQuote(`${asUrl}/introspect`)} \\\n  -H 'Content-Type: application/json' \\\n  --data '{"token":"<token>"}'`,
@@ -321,5 +306,5 @@ export async function buildOwnerBootstrapExamples(flow: OwnerBootstrapFlow) {
 }
 
 function shellQuote(value: string): string {
-  return `'${value.replace(/'/g, `'\"'\"'`)}'`;
+  return `'${value.replace(/'/g, `'"'"'`)}'`;
 }

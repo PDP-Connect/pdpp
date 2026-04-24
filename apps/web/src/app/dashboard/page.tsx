@@ -1,59 +1,54 @@
-import Link from 'next/link';
-import { DashboardShell, EmptyState, ServerUnreachable } from './components/shell';
+import Link from "next/link";
+import { Timestamp } from "@/components/ui/timestamp.tsx";
+import { OverviewHero } from "./components/overview-hero.tsx";
+import { DataList, PageHeader, Section, StatusBadge } from "./components/primitives.tsx";
+import { DashboardShell, EmptyState, ServerUnreachable } from "./components/shell.tsx";
+import { ReferenceServerUnreachableError } from "./lib/owner-token.ts";
 import {
-  DataList,
-  PageHeader,
-  Section,
-  StatusBadge,
-} from './components/primitives';
-import { OverviewHero } from './components/overview-hero';
-import { ReferenceServerUnreachableError } from './lib/owner-token';
-import {
+  type DatasetSummary,
+  type GrantSummary,
   getDatasetSummary,
   listGrants,
   listRuns,
   listTraces,
-  type DatasetSummary,
-  type GrantSummary,
   type RunSummary,
   type TraceSummary,
-} from './lib/ref-client';
-import { Timestamp } from '@/components/ui/timestamp';
+} from "./lib/ref-client.ts";
 
-export const dynamic = 'force-dynamic';
+export const dynamic = "force-dynamic";
 
-type OverviewData = {
-  summary: DatasetSummary;
-  failedTraces: TraceSummary[];
+interface OverviewData {
+  actionNeeded: number;
   failedRuns: RunSummary[];
+  failedTraces: TraceSummary[];
   recentDecisions: GrantSummary[];
   recentRuns: RunSummary[];
-  actionNeeded: number;
-};
+  summary: DatasetSummary;
+}
 
 async function loadOverview(): Promise<OverviewData> {
   // Scale first. Then the things that need attention: failed traces/runs
   // and recently-decided grants. Recent runs support "what's happening now".
-  const [
-    summary,
-    failedTraces,
-    failedRuns,
-    revokedGrants,
-    deniedGrants,
-    issuedGrants,
-    recentRuns,
-  ] = await Promise.all([
+  const [summary, failedTraces, failedRuns, revokedGrants, deniedGrants, issuedGrants, recentRuns] = await Promise.all([
     getDatasetSummary(),
-    listTraces({ status: 'failed', limit: 5 }),
-    listRuns({ status: 'failed', limit: 5 }),
-    listGrants({ status: 'revoked', limit: 5 }),
-    listGrants({ status: 'denied', limit: 5 }),
-    listGrants({ status: 'issued', limit: 5 }),
+    listTraces({ status: "failed", limit: 5 }),
+    listRuns({ status: "failed", limit: 5 }),
+    listGrants({ status: "revoked", limit: 5 }),
+    listGrants({ status: "denied", limit: 5 }),
+    listGrants({ status: "issued", limit: 5 }),
     listRuns({ limit: 8 }),
   ]);
 
   const recentDecisions = [...revokedGrants.data, ...deniedGrants.data, ...issuedGrants.data]
-    .sort((a, b) => (a.last_at < b.last_at ? 1 : a.last_at > b.last_at ? -1 : 0))
+    .sort((a, b) => {
+      if (a.last_at < b.last_at) {
+        return 1;
+      }
+      if (a.last_at > b.last_at) {
+        return -1;
+      }
+      return 0;
+    })
     .slice(0, 6);
 
   return {
@@ -87,50 +82,47 @@ export default async function DashboardPage() {
   return (
     <DashboardShell active="overview">
       <PageHeader
-        title="Overview"
         description="A local-first operator console for the PDPP reference stack. Inspect traces, grants, runs, and retained records."
+        title="Overview"
       />
 
       <OverviewHero summary={data.summary} />
 
-      <StatusStrip
-        actionNeeded={data.actionNeeded}
-        hasFailures={hasFailures}
-      />
+      <StatusStrip actionNeeded={data.actionNeeded} hasFailures={hasFailures} />
 
       <div className="grid gap-8 lg:grid-cols-2">
         <Section
-          title="Failed traces"
-          description="Recent protocol interactions that did not complete."
           action={
             <Link
+              className="text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
               href="/dashboard/traces?status=failed"
-              className="text-muted-foreground hover:text-foreground underline-offset-2 hover:underline"
             >
               view all →
             </Link>
           }
+          description="Recent protocol interactions that did not complete."
+          title="Failed traces"
         >
           {data.failedTraces.length === 0 ? (
-            <EmptyState title="No failed traces" hint="Nothing has failed in the recent window." />
+            <EmptyState hint="Nothing has failed in the recent window." title="No failed traces" />
           ) : (
             <DataList>
               {data.failedTraces.map((t) => (
                 <li key={t.trace_id}>
                   <Link
+                    className="block px-3 py-2.5 transition-colors hover:bg-muted/40"
                     href={`/dashboard/traces?peek=${encodeURIComponent(t.trace_id)}`}
-                    className="hover:bg-muted/40 block px-3 py-2.5 transition-colors"
                   >
                     <div className="flex flex-wrap items-baseline justify-between gap-2">
-                      <code className="pdpp-caption text-foreground break-all font-mono font-medium">
-                        {t.trace_id}
-                      </code>
-                      <span className="pdpp-caption text-muted-foreground"><Timestamp value={t.last_at} /></span>
+                      <code className="pdpp-caption break-all font-medium font-mono text-foreground">{t.trace_id}</code>
+                      <span className="pdpp-caption text-muted-foreground">
+                        <Timestamp value={t.last_at} />
+                      </span>
                     </div>
                     <div className="pdpp-caption mt-1 flex flex-wrap items-center gap-2">
                       <StatusBadge status={t.status} />
                       <span className="text-muted-foreground">
-                        {t.failure?.reason ?? t.kinds.slice(0, 3).join(', ')}
+                        {t.failure?.reason ?? t.kinds.slice(0, 3).join(", ")}
                       </span>
                     </div>
                   </Link>
@@ -141,38 +133,35 @@ export default async function DashboardPage() {
         </Section>
 
         <Section
-          title="Failed runs"
-          description="Connector runs that errored or were cancelled."
           action={
             <Link
+              className="text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
               href="/dashboard/runs?status=failed"
-              className="text-muted-foreground hover:text-foreground underline-offset-2 hover:underline"
             >
               view all →
             </Link>
           }
+          description="Connector runs that errored or were cancelled."
         >
           {data.failedRuns.length === 0 ? (
-            <EmptyState title="No failed runs" hint="Nothing has failed in the recent window." />
+            <EmptyState hint="Nothing has failed in the recent window." title="No failed runs" />
           ) : (
             <DataList>
               {data.failedRuns.map((r) => (
                 <li key={r.run_id}>
                   <Link
+                    className="block px-3 py-2.5 transition-colors hover:bg-muted/40"
                     href={`/dashboard/runs?peek=${encodeURIComponent(r.run_id)}`}
-                    className="hover:bg-muted/40 block px-3 py-2.5 transition-colors"
                   >
                     <div className="flex flex-wrap items-baseline justify-between gap-2">
-                      <code className="pdpp-caption text-foreground break-all font-mono font-medium">
-                        {r.run_id}
-                      </code>
-                      <span className="pdpp-caption text-muted-foreground"><Timestamp value={r.last_at} /></span>
+                      <code className="pdpp-caption break-all font-medium font-mono text-foreground">{r.run_id}</code>
+                      <span className="pdpp-caption text-muted-foreground">
+                        <Timestamp value={r.last_at} />
+                      </span>
                     </div>
                     <div className="pdpp-caption mt-1 flex flex-wrap items-center gap-2">
                       <StatusBadge status={r.status} />
-                      <span className="text-muted-foreground">
-                        {r.failure_reason ?? r.connector_id ?? '—'}
-                      </span>
+                      <span className="text-muted-foreground">{r.failure_reason ?? r.connector_id ?? "—"}</span>
                     </div>
                   </Link>
                 </li>
@@ -183,49 +172,58 @@ export default async function DashboardPage() {
       </div>
 
       <Section
-        title="Recent grant decisions"
-        description="Issued, revoked, or denied in the last window."
         action={
           <Link
+            className="text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
             href="/dashboard/grants"
-            className="text-muted-foreground hover:text-foreground underline-offset-2 hover:underline"
           >
             view all →
           </Link>
         }
+        description="Issued, revoked, or denied in the last window."
+        title="Recent grant decisions"
       >
         {data.recentDecisions.length === 0 ? (
           <EmptyState title="No recent grant decisions" />
         ) : (
           <DataList>
-            {data.recentDecisions.map((g) => (
-              <li key={g.grant_id}>
-                <Link
-                  href={`/dashboard/grants?peek=${encodeURIComponent(g.grant_id)}`}
-                  className="pdpp-caption hover:bg-muted/40 grid gap-1 px-3 py-2.5 transition-colors sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_9rem]"
-                >
-                  <code className="text-foreground break-all font-mono font-medium">{g.grant_id}</code>
-                  <span className="text-muted-foreground min-w-0 truncate">
-                    client {g.client_id ?? '—'}
-                    {g.connector_id ? ` · ${g.connector_id}` : g.provider_id ? ` · ${g.provider_id}` : ''}
-                  </span>
-                  <span className="pdpp-caption flex items-center gap-2 justify-self-end">
-                    <StatusBadge status={g.status} />
-                    <span className="text-muted-foreground"><Timestamp value={g.last_at} /></span>
-                  </span>
-                </Link>
-              </li>
-            ))}
+            {data.recentDecisions.map((g) => {
+              let providerSuffix = "";
+              if (g.connector_id) {
+                providerSuffix = ` · ${g.connector_id}`;
+              } else if (g.provider_id) {
+                providerSuffix = ` · ${g.provider_id}`;
+              }
+              return (
+                <li key={g.grant_id}>
+                  <Link
+                    className="pdpp-caption grid gap-1 px-3 py-2.5 transition-colors hover:bg-muted/40 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_9rem]"
+                    href={`/dashboard/grants?peek=${encodeURIComponent(g.grant_id)}`}
+                  >
+                    <code className="break-all font-medium font-mono text-foreground">{g.grant_id}</code>
+                    <span className="min-w-0 truncate text-muted-foreground">
+                      client {g.client_id ?? "—"}
+                      {providerSuffix}
+                    </span>
+                    <span className="pdpp-caption flex items-center gap-2 justify-self-end">
+                      <StatusBadge status={g.status} />
+                      <span className="text-muted-foreground">
+                        <Timestamp value={g.last_at} />
+                      </span>
+                    </span>
+                  </Link>
+                </li>
+              );
+            })}
           </DataList>
         )}
       </Section>
 
       <Section
-        title="Recent runs"
         action={
           <Link
+            className="text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
             href="/dashboard/runs"
-            className="text-muted-foreground hover:text-foreground underline-offset-2 hover:underline"
           >
             view all →
           </Link>
@@ -238,17 +236,19 @@ export default async function DashboardPage() {
             {data.recentRuns.map((r) => (
               <li key={r.run_id}>
                 <Link
+                  className="pdpp-caption grid gap-1 px-3 py-2.5 transition-colors hover:bg-muted/40 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_9rem]"
                   href={`/dashboard/runs?peek=${encodeURIComponent(r.run_id)}`}
-                  className="pdpp-caption hover:bg-muted/40 grid gap-1 px-3 py-2.5 transition-colors sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_9rem]"
                 >
-                  <code className="text-foreground break-all font-mono font-medium">{r.run_id}</code>
-                  <span className="text-muted-foreground min-w-0 truncate">
-                    {r.connector_id ?? r.provider_id ?? '—'}
-                    {r.failure_reason ? ` · ${r.failure_reason}` : ''}
+                  <code className="break-all font-medium font-mono text-foreground">{r.run_id}</code>
+                  <span className="min-w-0 truncate text-muted-foreground">
+                    {r.connector_id ?? r.provider_id ?? "—"}
+                    {r.failure_reason ? ` · ${r.failure_reason}` : ""}
                   </span>
                   <span className="pdpp-caption flex items-center gap-2 justify-self-end">
                     <StatusBadge status={r.status} />
-                    <span className="text-muted-foreground"><Timestamp value={r.last_at} /></span>
+                    <span className="text-muted-foreground">
+                      <Timestamp value={r.last_at} />
+                    </span>
                   </span>
                 </Link>
               </li>
@@ -264,27 +264,23 @@ function StatusStrip({ actionNeeded, hasFailures }: { actionNeeded: number; hasF
   if (!hasFailures) {
     return (
       <div className="pdpp-caption mb-8 flex items-center gap-2">
-        <span
-          aria-hidden
-          className="inline-block h-1.5 w-1.5 rounded-full"
-          style={{ background: 'var(--success)' }}
-        />
-        <span className="text-foreground font-medium">All clear.</span>
+        <span aria-hidden className="inline-block h-1.5 w-1.5 rounded-full" style={{ background: "var(--success)" }} />
+        <span className="font-medium text-foreground">All clear.</span>
         <span className="text-muted-foreground">No failed traces or runs in the recent window.</span>
       </div>
     );
   }
   return (
-    <div className="pdpp-caption border-destructive/30 bg-destructive/5 mb-8 flex flex-wrap items-center gap-3 rounded-md border-l-4 border-l-destructive/60 border px-4 py-2.5">
-      <span className="text-destructive font-medium">
-        {actionNeeded} recent failure{actionNeeded === 1 ? '' : 's'}
+    <div className="pdpp-caption mb-8 flex flex-wrap items-center gap-3 rounded-md border border-destructive/30 border-l-4 border-l-destructive/60 bg-destructive/5 px-4 py-2.5">
+      <span className="font-medium text-destructive">
+        {actionNeeded} recent failure{actionNeeded === 1 ? "" : "s"}
       </span>
       <span className="text-muted-foreground">needs attention</span>
       <div className="ml-auto flex flex-wrap items-center gap-3">
-        <Link href="/dashboard/traces?status=failed" className="underline-offset-2 hover:underline">
+        <Link className="underline-offset-2 hover:underline" href="/dashboard/traces?status=failed">
           review traces →
         </Link>
-        <Link href="/dashboard/runs?status=failed" className="underline-offset-2 hover:underline">
+        <Link className="underline-offset-2 hover:underline" href="/dashboard/runs?status=failed">
           review runs →
         </Link>
       </div>

@@ -1,36 +1,37 @@
-'use server';
+"use server";
 
-import { revalidatePath } from 'next/cache';
-import { requireDashboardAccess } from '../../lib/dashboard-access';
-import { submitRunInteraction } from '../../lib/operator-runs';
+import { revalidatePath } from "next/cache";
+import { requireDashboardAccess } from "../../lib/dashboard-access.ts";
+import { submitRunInteraction } from "../../lib/operator-runs.ts";
 
 function asString(value: FormDataEntryValue | null): string {
-  return typeof value === 'string' ? value.trim() : '';
+  return typeof value === "string" ? value.trim() : "";
 }
 
 function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : 'Unexpected interaction submission failure';
+  return err instanceof Error ? err.message : "Unexpected interaction submission failure";
 }
 
-export type RunInteractionActionState = {
+export interface RunInteractionActionState {
   error: string | null;
-  status: 'success' | 'cancelled' | null;
-};
+  status: "success" | "cancelled" | null;
+}
 
 export async function submitRunInteractionAction(
   _prev: RunInteractionActionState,
-  formData: FormData,
+  formData: FormData
 ): Promise<RunInteractionActionState> {
-  const runId = asString(formData.get('run_id'));
-  if (!runId) return { error: 'Missing run_id', status: null };
+  const runId = asString(formData.get("run_id"));
+  if (!runId) {
+    return { error: "Missing run_id", status: null };
+  }
   await requireDashboardAccess(`/dashboard/runs/${encodeURIComponent(runId)}`);
 
-  const interactionId = asString(formData.get('interaction_id'));
-  const rawStatus = asString(formData.get('status'));
-  const status =
-    rawStatus === 'success' || rawStatus === 'cancelled' ? rawStatus : null;
-  if (!interactionId || !status) {
-    return { error: 'Missing interaction_id or status', status: null };
+  const interactionId = asString(formData.get("interaction_id"));
+  const rawStatus = asString(formData.get("status"));
+  const status = rawStatus === "success" || rawStatus === "cancelled" ? rawStatus : null;
+  if (!(interactionId && status)) {
+    return { error: "Missing interaction_id or status", status: null };
   }
 
   // Pull every other form field as interaction data. The form is schema-shaped
@@ -38,10 +39,14 @@ export async function submitRunInteractionAction(
   // the runtime as the current INTERACTION_RESPONSE and not stored anywhere
   // durable on the dashboard side — no cookies, no logs, no localStorage.
   const data: Record<string, string> = {};
-  if (status === 'success') {
+  if (status === "success") {
     for (const [key, value] of formData.entries()) {
-      if (key === 'run_id' || key === 'interaction_id' || key === 'status') continue;
-      if (typeof value !== 'string') continue;
+      if (key === "run_id" || key === "interaction_id" || key === "status") {
+        continue;
+      }
+      if (typeof value !== "string") {
+        continue;
+      }
       data[key] = value;
     }
   }

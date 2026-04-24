@@ -1,19 +1,19 @@
-'use client';
+"use client";
 
-import Link from 'next/link';
-import { usePathname } from 'next/navigation';
-import { siteNav } from '@pdpp/brand/chrome';
-import { PdppLogo } from '@/components/PdppLogo';
+import { siteNav } from "@pdpp/brand/chrome";
+import Link from "next/link";
+import { usePathname } from "next/navigation";
+import { PdppLogo } from "@/components/pdpp-logo.tsx";
 
 export function SiteHeader({ currentLabel }: { currentLabel: string }) {
   const pathname = usePathname();
-  const isHome = pathname === '/';
+  const isHome = pathname === "/";
 
   return (
     <div className="flex items-center gap-2">
-      <Link href="/" className="flex items-center gap-2 shrink-0" aria-label="PDPP home">
-        <PdppLogo variant="mark" size={22} title="" />
-        <span className="text-sm font-semibold tracking-tight" style={{ color: 'var(--foreground)' }}>
+      <Link aria-label="PDPP home" className="flex shrink-0 items-center gap-2" href="/">
+        <PdppLogo size={22} title="" variant="mark" />
+        <span className="font-semibold text-sm tracking-tight" style={{ color: "var(--foreground)" }}>
           PDPP
         </span>
       </Link>
@@ -24,12 +24,9 @@ export function SiteHeader({ currentLabel }: { currentLabel: string }) {
       ) : (
         // Breadcrumb label is desktop-only; on mobile the active nav pill
         // already indicates the current page (avoids "Docs / Docs" collision).
-        <span className="hidden md:flex items-center gap-2">
-          <span style={{ color: 'var(--muted-foreground)', opacity: 0.4 }}>/</span>
-          <span
-            className="text-sm whitespace-nowrap md:min-w-[8.5rem]"
-            style={{ color: 'var(--muted-foreground)' }}
-          >
+        <span className="hidden items-center gap-2 md:flex">
+          <span style={{ color: "var(--muted-foreground)", opacity: 0.4 }}>/</span>
+          <span className="whitespace-nowrap text-sm md:min-w-[8.5rem]" style={{ color: "var(--muted-foreground)" }}>
             {currentLabel}
           </span>
         </span>
@@ -39,17 +36,16 @@ export function SiteHeader({ currentLabel }: { currentLabel: string }) {
           const active =
             pathname === item.link ||
             pathname.startsWith(`${item.link}/`) ||
-            (item.link === '/planning' &&
-              (pathname === '/openspec' || pathname.startsWith('/openspec/')));
+            (item.link === "/planning" && (pathname === "/openspec" || pathname.startsWith("/openspec/")));
 
           return (
             <Link
-              key={item.link}
-              href={item.link}
               className="rounded-full px-3 py-1.5 text-xs transition-colors"
+              href={item.link}
+              key={item.link}
               style={{
-                backgroundColor: active ? 'var(--foreground)' : 'transparent',
-                color: active ? 'var(--background)' : 'var(--muted-foreground)',
+                backgroundColor: active ? "var(--foreground)" : "transparent",
+                color: active ? "var(--background)" : "var(--muted-foreground)",
               }}
             >
               {item.text}

@@ -1,36 +1,34 @@
-import Link from 'next/link';
-import { cn } from '@/lib/utils';
+import Link from "next/link";
+import { cn } from "@/lib/utils.ts";
 
-export type OpenSpecSidebarItem = {
+export interface OpenSpecSidebarItem {
+  active?: boolean;
   href: string;
   label: string;
-  active?: boolean;
-};
+}
 
-export type OpenSpecSidebarSection = {
+export interface OpenSpecSidebarSection {
   heading: string;
   items: OpenSpecSidebarItem[];
-};
+}
 
 export function OpenSpecSidebar({ sections }: { sections: OpenSpecSidebarSection[] }) {
   return (
     <aside className="hidden xl:sticky xl:top-[4.5rem] xl:block xl:self-start">
       <nav className="flex flex-col gap-5">
         {sections.map((section) => (
-          <div key={section.heading} className="flex flex-col gap-2">
-            <div className="text-xs font-medium text-muted-foreground">{section.heading}</div>
+          <div className="flex flex-col gap-2" key={section.heading}>
+            <div className="font-medium text-muted-foreground text-xs">{section.heading}</div>
             <ul className="flex flex-col gap-1">
               {section.items.map((item) => (
                 <li key={`${section.heading}-${item.href}`}>
                   <Link
-                    href={item.href}
-                    aria-current={item.active ? 'page' : undefined}
+                    aria-current={item.active ? "page" : undefined}
                     className={cn(
-                      'pdpp-label block py-1 transition-colors',
-                      item.active
-                        ? 'text-foreground'
-                        : 'text-muted-foreground hover:text-foreground',
+                      "pdpp-label block py-1 transition-colors",
+                      item.active ? "text-foreground" : "text-muted-foreground hover:text-foreground"
                     )}
+                    href={item.href}
                   >
                     {item.label}
                   </Link>

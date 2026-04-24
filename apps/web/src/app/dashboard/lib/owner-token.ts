@@ -5,44 +5,54 @@
  * - owner-session forwarding and dashboard gating
  * - owner self-export token minting
  */
-import 'server-only';
+import "server-only";
 
-import { cookies, headers } from 'next/headers';
-import { redirect } from 'next/navigation';
-import {
-  createOwnerSessionController,
-  OWNER_AUTH_COOKIE_NAME,
-} from 'pdpp-reference-implementation/owner-session';
+import { cookies, headers } from "next/headers";
+import { redirect } from "next/navigation";
+import { createOwnerSessionController, OWNER_AUTH_COOKIE_NAME } from "pdpp-reference-implementation/owner-session";
 import {
   resolveReferenceBrowserOrigin,
   resolveReferenceTopology,
   stripTrailingSlash,
-} from 'pdpp-reference-implementation/reference-topology';
+} from "pdpp-reference-implementation/reference-topology";
 
-const SUBJECT_ID = process.env.PDPP_SUBJECT_ID || 'the owner';
-const CLIENT_ID = 'pdpp-polyfill-owner-bootstrap';
+const SUBJECT_ID = process.env.PDPP_SUBJECT_ID || "the owner";
+const CLIENT_ID = "pdpp-polyfill-owner-bootstrap";
+const C0_CONTROL_END = 0x1f;
+const DEL = 0x7f;
+
+// Character-code scan instead of a regex literal. A regex form with
+// C0 or DEL escapes trips Biome's noControlCharactersInRegex, and the
+// RegExp-constructor workaround trips useRegexLiterals. This explicit
+// loop matches the same rejection set (C0: 0x00-0x1F, DEL: 0x7F).
+function containsControlChar(value: string): boolean {
+  for (let i = 0; i < value.length; i++) {
+    const code = value.charCodeAt(i);
+    if (code <= C0_CONTROL_END || code === DEL) {
+      return true;
+    }
+  }
+  return false;
+}
 
 let cachedToken: string | null = null;
 let inFlight: Promise<string> | null = null;
 
 function ensureLeadingSlash(value: string): string {
-  return value.startsWith('/') ? value : `/${value}`;
+  return value.startsWith("/") ? value : `/${value}`;
 }
 
 async function getRequestOrigin(): Promise<string | null> {
   try {
     const headerList = await headers();
-    const host =
-      headerList.get('x-forwarded-host') ??
-      headerList.get('host');
-    if (!host) return null;
+    const host = headerList.get("x-forwarded-host") ?? headerList.get("host");
+    if (!host) {
+      return null;
+    }
 
     const protocol =
-      headerList
-        .get('x-forwarded-proto')
-        ?.split(',')[0]
-        ?.trim() ||
-      (host.startsWith('localhost') || host.startsWith('127.0.0.1') ? 'http' : 'https');
+      headerList.get("x-forwarded-proto")?.split(",")[0]?.trim() ||
+      (host.startsWith("localhost") || host.startsWith("127.0.0.1") ? "http" : "https");
 
     return `${protocol}://${host}`;
   } catch {
@@ -58,11 +68,21 @@ function resolveConfiguredReferenceOrigin(): string | null {
 const referenceTopology = resolveReferenceTopology();
 
 function normalizeDashboardReturnTo(input: string | null | undefined): string {
-  if (typeof input !== 'string' || !input) return '/dashboard';
-  if (!input.startsWith('/dashboard')) return '/dashboard';
-  if (input.startsWith('//')) return '/dashboard';
-  if (input.includes('\\')) return '/dashboard';
-  if (/[\u0000-\u001F\u007F]/.test(input)) return '/dashboard';
+  if (typeof input !== "string" || !input) {
+    return "/dashboard";
+  }
+  if (!input.startsWith("/dashboard")) {
+    return "/dashboard";
+  }
+  if (input.startsWith("//")) {
+    return "/dashboard";
+  }
+  if (input.includes("\\")) {
+    return "/dashboard";
+  }
+  if (containsControlChar(input)) {
+    return "/dashboard";
+  }
   return input;
 }
 
@@ -80,7 +100,7 @@ export function getRsInternalUrl(): string {
 }
 
 export function getOwnerLoginPath(): string {
-  return '/owner/login';
+  return "/owner/login";
 }
 
 export function getReferencePublicPath(path: string): string {
@@ -100,8 +120,10 @@ export async function getReferencePublicUrl(path: string): Promise<string> {
 }
 
 export async function toReferencePublicUrl(input: string): Promise<string> {
-  if (!input) return input;
-  if (input.startsWith('/')) {
+  if (!input) {
+    return input;
+  }
+  if (input.startsWith("/")) {
     return getReferencePublicUrl(input);
   }
 
@@ -114,10 +136,7 @@ export async function toReferencePublicUrl(input: string): Promise<string> {
     }
 
     if (origin === getAsInternalUrl() || origin === getRsInternalUrl()) {
-      return new URL(
-        `${url.pathname}${url.search}${url.hash}`,
-        `${publicOrigin}/`,
-      ).toString();
+      return new URL(`${url.pathname}${url.search}${url.hash}`, `${publicOrigin}/`).toString();
     }
 
     return url.toString();
@@ -127,7 +146,9 @@ export async function toReferencePublicUrl(input: string): Promise<string> {
 }
 
 export async function getOwnerSessionCookieHeader(): Promise<string | null> {
-  if (!ownerSessionController.enabled) return null;
+  if (!ownerSessionController.enabled) {
+    return null;
+  }
 
   try {
     const cookieStore = await cookies();
@@ -138,18 +159,15 @@ export async function getOwnerSessionCookieHeader(): Promise<string | null> {
   }
 }
 
-export async function withOwnerSessionCookie(
-  init: RequestInit = {},
-): Promise<RequestInit> {
+export async function withOwnerSessionCookie(init: RequestInit = {}): Promise<RequestInit> {
   const cookieHeader = await getOwnerSessionCookieHeader();
-  if (!cookieHeader) return init;
+  if (!cookieHeader) {
+    return init;
+  }
 
   const requestHeaders = new Headers(init.headers);
-  const existingCookie = requestHeaders.get('cookie');
-  requestHeaders.set(
-    'cookie',
-    existingCookie ? `${existingCookie}; ${cookieHeader}` : cookieHeader,
-  );
+  const existingCookie = requestHeaders.get("cookie");
+  requestHeaders.set("cookie", existingCookie ? `${existingCookie}; ${cookieHeader}` : cookieHeader);
 
   return {
     ...init,
@@ -162,56 +180,55 @@ export function isOwnerSessionGateEnabled(): boolean {
 }
 
 export async function requireDashboardOwnerSession(explicitReturnTo?: string) {
-  if (!ownerSessionController.enabled) return null;
+  if (!ownerSessionController.enabled) {
+    return null;
+  }
 
   const cookieStore = await cookies();
   const rawCookie = cookieStore.get(OWNER_AUTH_COOKIE_NAME)?.value ?? null;
   const session = ownerSessionController.readSessionFromCookieValue(rawCookie);
-  if (session) return session;
+  if (session) {
+    return session;
+  }
 
   let returnTo = explicitReturnTo;
   if (!returnTo) {
     const headerList = await headers();
-    returnTo = headerList.get('x-pdpp-return-to') ?? '/dashboard';
+    returnTo = headerList.get("x-pdpp-return-to") ?? "/dashboard";
   }
 
-  redirect(
-    `${getOwnerLoginPath()}?return_to=${encodeURIComponent(normalizeDashboardReturnTo(returnTo))}`,
-  );
+  redirect(`${getOwnerLoginPath()}?return_to=${encodeURIComponent(normalizeDashboardReturnTo(returnTo))}`);
 }
 
 export class ReferenceServerUnreachableError extends Error {
-  constructor(message: string, public readonly cause: unknown) {
+  readonly cause: unknown;
+
+  constructor(message: string, cause: unknown) {
     super(message);
-    this.name = 'ReferenceServerUnreachableError';
+    this.name = "ReferenceServerUnreachableError";
+    this.cause = cause;
   }
 }
 
 async function mintOwnerToken(): Promise<string> {
-  const form = (obj: Record<string, string>) =>
-    new URLSearchParams(obj).toString();
+  const form = (obj: Record<string, string>) => new URLSearchParams(obj).toString();
 
   let deviceRes: Response;
   try {
     deviceRes = await fetch(
       `${getAsInternalUrl()}/oauth/device_authorization`,
       await withOwnerSessionCookie({
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
         body: form({ client_id: CLIENT_ID }),
-        cache: 'no-store',
-      }),
+        cache: "no-store",
+      })
     );
   } catch (err) {
-    throw new ReferenceServerUnreachableError(
-      `Cannot reach authorization server at ${getAsInternalUrl()}`,
-      err,
-    );
+    throw new ReferenceServerUnreachableError(`Cannot reach authorization server at ${getAsInternalUrl()}`, err);
   }
   if (!deviceRes.ok) {
-    throw new Error(
-      `device_authorization failed (${deviceRes.status}): ${await deviceRes.text()}`,
-    );
+    throw new Error(`device_authorization failed (${deviceRes.status}): ${await deviceRes.text()}`);
   }
   const device = (await deviceRes.json()) as {
     device_code: string;
@@ -221,43 +238,43 @@ async function mintOwnerToken(): Promise<string> {
   const approveRes = await fetch(
     `${getAsInternalUrl()}/device/approve`,
     await withOwnerSessionCookie({
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: form({ user_code: device.user_code, subject_id: SUBJECT_ID }),
-      cache: 'no-store',
-    }),
+      cache: "no-store",
+    })
   );
   if (!approveRes.ok) {
-    throw new Error(
-      `device/approve failed (${approveRes.status}): ${await approveRes.text()}`,
-    );
+    throw new Error(`device/approve failed (${approveRes.status}): ${await approveRes.text()}`);
   }
 
   const tokenRes = await fetch(
     `${getAsInternalUrl()}/oauth/token`,
     await withOwnerSessionCookie({
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: form({
-        grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
+        grant_type: "urn:ietf:params:oauth:grant-type:device_code",
         device_code: device.device_code,
         client_id: CLIENT_ID,
       }),
-      cache: 'no-store',
-    }),
+      cache: "no-store",
+    })
   );
   if (!tokenRes.ok) {
-    throw new Error(
-      `/oauth/token failed (${tokenRes.status}): ${await tokenRes.text()}`,
-    );
+    throw new Error(`/oauth/token failed (${tokenRes.status}): ${await tokenRes.text()}`);
   }
   const { access_token } = (await tokenRes.json()) as { access_token: string };
   return access_token;
 }
 
-export async function getOwnerToken(force = false): Promise<string> {
-  if (!force && cachedToken) return cachedToken;
-  if (!force && inFlight) return inFlight;
+export function getOwnerToken(force = false): Promise<string> {
+  if (!force && cachedToken) {
+    return Promise.resolve(cachedToken);
+  }
+  if (!force && inFlight) {
+    return inFlight;
+  }
   inFlight = mintOwnerToken()
     .then((t) => {
       cachedToken = t;

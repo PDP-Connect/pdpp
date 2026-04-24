@@ -1,49 +1,40 @@
-import type { Metadata } from 'next';
-import {
-  OpenSpecBreadcrumbs,
-  OpenSpecEmptyState,
-  OpenSpecNoteGroups,
-  OpenSpecShell,
-  buildOpenSpecSidebarSections,
-} from '@/components/openspec';
-import { listOpenSpecDesignNoteGroups, listOpenSpecDesignNotes } from '@/lib/openspec';
-import { Timestamp } from '@/components/ui/timestamp';
-import { OPENSPEC_IMPLEMENTATION_LABEL, PLANNING_LABEL, planningPath } from '@/lib/openspec/public';
+import type { Metadata } from "next";
+import { OpenSpecBreadcrumbs } from "@/components/openspec/open-spec-breadcrumbs.tsx";
+import { OpenSpecEmptyState } from "@/components/openspec/open-spec-empty-state.tsx";
+import { OpenSpecNoteGroups } from "@/components/openspec/open-spec-note-groups.tsx";
+import { OpenSpecShell } from "@/components/openspec/open-spec-shell.tsx";
+import { buildOpenSpecSidebarSections } from "@/components/openspec/sidebar-sections.ts";
+import { Timestamp } from "@/components/ui/timestamp.tsx";
+import { listOpenSpecDesignNoteGroups, listOpenSpecDesignNotes } from "@/lib/openspec/index.ts";
+import { OPENSPEC_IMPLEMENTATION_LABEL, PLANNING_LABEL, planningPath } from "@/lib/openspec/public.ts";
 
 export const metadata: Metadata = {
   title: `Project notes — ${PLANNING_LABEL} — PDPP`,
   description:
-    'Grouped change-local notes for the PDPP reference implementation: open questions, plans, audits, and research not yet promoted into canonical OpenSpec artifacts.',
+    "Grouped change-local notes for the PDPP reference implementation: open questions, plans, audits, and research not yet promoted into canonical OpenSpec artifacts.",
 };
 
 export default async function OpenSpecDesignNotesPage() {
-  const [groups, notes] = await Promise.all([
-    listOpenSpecDesignNoteGroups(),
-    listOpenSpecDesignNotes(),
-  ]);
-  const sections = buildOpenSpecSidebarSections({ kind: 'notes' });
+  const [groups, notes] = await Promise.all([listOpenSpecDesignNoteGroups(), listOpenSpecDesignNotes()]);
+  const sections = buildOpenSpecSidebarSections({ kind: "notes" });
   const latestNote = notes[0]?.lastModified ?? null;
-  const openQuestionCount = notes.filter(
-    (note) => note.noteKind === 'open-question',
-  ).length;
+  const openQuestionCount = notes.filter((note) => note.noteKind === "open-question").length;
 
   return (
     <OpenSpecShell sections={sections}>
       <div className="flex flex-col gap-6">
-        <OpenSpecBreadcrumbs
-          crumbs={[{ label: PLANNING_LABEL, href: planningPath() }, { label: 'Project notes' }]}
-        />
+        <OpenSpecBreadcrumbs crumbs={[{ label: PLANNING_LABEL, href: planningPath() }, { label: "Project notes" }]} />
         <header className="flex flex-col gap-3">
-          <h1 className="text-[clamp(1.6rem,2.8vw,2.05rem)] font-semibold tracking-tight leading-tight">
+          <h1 className="font-semibold text-[clamp(1.6rem,2.8vw,2.05rem)] leading-tight tracking-tight">
             Project notes
           </h1>
           <p className="pdpp-body max-w-3xl text-muted-foreground">
-            Change-local notes co-located under{' '}
+            Change-local notes co-located under{" "}
             <code className="font-mono text-xs">
               {OPENSPEC_IMPLEMENTATION_LABEL.toLowerCase()}/changes/*/design-notes/
             </code>
-            . This is where open questions, plans, audits, and research live before they are
-            promoted into official change artifacts.
+            . This is where open questions, plans, audits, and research live before they are promoted into official
+            change artifacts.
           </p>
         </header>
 
@@ -59,13 +50,8 @@ export default async function OpenSpecDesignNotesPage() {
               <span className="font-semibold text-foreground">{openQuestionCount}</span> open questions
             </span>
             {latestNote && (
-              <span className="pdpp-body text-muted-foreground inline-flex items-baseline gap-1">
-                last updated{' '}
-                <Timestamp
-                  value={latestNote}
-                  precision="date"
-                  className="font-semibold text-foreground"
-                />
+              <span className="pdpp-body inline-flex items-baseline gap-1 text-muted-foreground">
+                last updated <Timestamp className="font-semibold text-foreground" precision="date" value={latestNote} />
               </span>
             )}
           </div>
@@ -73,8 +59,8 @@ export default async function OpenSpecDesignNotesPage() {
 
         {groups.length === 0 ? (
           <OpenSpecEmptyState
-            title="No project notes found"
             description="There are currently no markdown files under openspec/changes/*/design-notes/."
+            title="No project notes found"
           />
         ) : (
           <OpenSpecNoteGroups groups={groups} showChangeLink />

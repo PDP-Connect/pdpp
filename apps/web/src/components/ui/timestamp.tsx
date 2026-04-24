@@ -1,18 +1,18 @@
 "use client";
 
-import * as React from "react";
+import { useEffect, useState } from "react";
 
-import { cn } from "@/lib/utils";
+import { cn } from "@/lib/utils.ts";
 
 export type TimestampMode = "auto" | "relative" | "absolute";
 export type TimestampPrecision = "datetime" | "date";
 
-export type TimestampProps = {
-  value: string | number | Date | null | undefined;
+export interface TimestampProps {
+  className?: string;
   mode?: TimestampMode;
   precision?: TimestampPrecision;
-  className?: string;
-};
+  value: string | number | Date | null | undefined;
+}
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
@@ -47,7 +47,9 @@ const tooltipFmt = new Intl.DateTimeFormat(undefined, {
 const relFmt = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
 
 function parse(value: TimestampProps["value"]): Date | null {
-  if (value == null || value === "") return null;
+  if (value == null || value === "") {
+    return null;
+  }
   const d = value instanceof Date ? value : new Date(value);
   return Number.isNaN(d.getTime()) ? null : d;
 }
@@ -59,9 +61,15 @@ function formatAbsolute(d: Date, precision: TimestampPrecision): string {
 function formatRelative(d: Date, now: number): string {
   const diffMs = d.getTime() - now;
   const abs = Math.abs(diffMs);
-  if (abs < 45_000) return "just now";
-  if (abs < HOUR) return relFmt.format(Math.round(diffMs / MINUTE), "minute");
-  if (abs < DAY) return relFmt.format(Math.round(diffMs / HOUR), "hour");
+  if (abs < 45_000) {
+    return "just now";
+  }
+  if (abs < HOUR) {
+    return relFmt.format(Math.round(diffMs / MINUTE), "minute");
+  }
+  if (abs < DAY) {
+    return relFmt.format(Math.round(diffMs / HOUR), "hour");
+  }
   return relFmt.format(Math.round(diffMs / DAY), "day");
 }
 
@@ -73,7 +81,9 @@ function subscribeToTick(cb: () => void): () => void {
   tickSubscribers.add(cb);
   if (tickInterval === null) {
     tickInterval = setInterval(() => {
-      tickSubscribers.forEach((fn) => fn());
+      for (const fn of tickSubscribers) {
+        fn();
+      }
     }, MINUTE);
   }
   return () => {
@@ -86,9 +96,11 @@ function subscribeToTick(cb: () => void): () => void {
 }
 
 function useNowTick(enabled: boolean): number {
-  const [now, setNow] = React.useState(() => Date.now());
-  React.useEffect(() => {
-    if (!enabled) return;
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!enabled) {
+      return;
+    }
     setNow(Date.now());
     return subscribeToTick(() => setNow(Date.now()));
   }, [enabled]);
@@ -96,17 +108,12 @@ function useNowTick(enabled: boolean): number {
 }
 
 function useHasMounted(): boolean {
-  const [mounted, setMounted] = React.useState(false);
-  React.useEffect(() => setMounted(true), []);
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
   return mounted;
 }
 
-export function Timestamp({
-  value,
-  mode = "auto",
-  precision = "datetime",
-  className,
-}: TimestampProps) {
+export function Timestamp({ value, mode = "auto", precision = "datetime", className }: TimestampProps) {
   const date = parse(value);
   const mounted = useHasMounted();
   const now = useNowTick(mounted && mode !== "absolute");
@@ -114,11 +121,7 @@ export function Timestamp({
   if (!date) {
     const raw = typeof value === "string" ? value : "";
     return (
-      <span
-        className={cn("text-muted-foreground tabular-nums", className)}
-        aria-label="invalid or missing timestamp"
-        title={raw || undefined}
-      >
+      <span className={cn("text-muted-foreground tabular-nums", className)} title={raw || undefined}>
         —
       </span>
     );
@@ -126,21 +129,15 @@ export function Timestamp({
 
   const iso = date.toISOString();
   const ageMs = Math.abs(Date.now() - date.getTime());
-  const useRelative =
-    mode === "relative" || (mode === "auto" && mounted && ageMs < RELATIVE_CUTOFF);
+  const useRelative = mode === "relative" || (mode === "auto" && mounted && ageMs < RELATIVE_CUTOFF);
 
-  const label = !mounted
-    ? formatAbsolute(date, precision)
-    : useRelative
-      ? formatRelative(date, now)
-      : formatAbsolute(date, precision);
+  let label = formatAbsolute(date, precision);
+  if (mounted && useRelative) {
+    label = formatRelative(date, now);
+  }
 
   return (
-    <time
-      dateTime={iso}
-      title={mounted ? tooltipFmt.format(date) : iso}
-      className={cn("tabular-nums", className)}
-    >
+    <time className={cn("tabular-nums", className)} dateTime={iso} title={mounted ? tooltipFmt.format(date) : iso}>
       {label}
     </time>
   );

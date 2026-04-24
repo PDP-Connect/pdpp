@@ -1,21 +1,21 @@
-type HeadingNode = {
-  type: 'heading';
+interface HeadingNode {
   children?: Array<{ type?: string; value?: string }>;
   data?: {
     id?: string;
     hProperties?: Record<string, unknown>;
   };
-};
+  type: "heading";
+}
 
-type TreeNode = {
-  type?: string;
+interface TreeNode {
   children?: TreeNode[];
   data?: {
     id?: string;
     hProperties?: Record<string, unknown>;
   };
+  type?: string;
   value?: string;
-};
+}
 
 const LEGACY_ID_PATTERN = /\s*\{#([A-Za-z0-9_-]+)\}\s*$/;
 
@@ -34,7 +34,7 @@ function visit(node: TreeNode, visitor: (node: TreeNode) => void) {
 function applyLegacyId(node: HeadingNode) {
   const lastChild = node.children?.[node.children.length - 1];
 
-  if (!lastChild || lastChild.type !== 'text' || typeof lastChild.value !== 'string') {
+  if (!lastChild || lastChild.type !== "text" || typeof lastChild.value !== "string") {
     return;
   }
 
@@ -45,7 +45,7 @@ function applyLegacyId(node: HeadingNode) {
   }
 
   const [, id] = match;
-  const cleaned = lastChild.value.replace(LEGACY_ID_PATTERN, '');
+  const cleaned = lastChild.value.replace(LEGACY_ID_PATTERN, "");
 
   lastChild.value = cleaned;
   node.data ??= {};
@@ -59,7 +59,7 @@ function applyLegacyId(node: HeadingNode) {
 export function remarkLegacyHeadingIds() {
   return (tree: TreeNode) => {
     visit(tree, (node) => {
-      if (node.type === 'heading') {
+      if (node.type === "heading") {
         applyLegacyId(node as HeadingNode);
       }
     });

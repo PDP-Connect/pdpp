@@ -1,12 +1,12 @@
-import { notFound } from 'next/navigation';
-import { getLLMText } from '@/lib/get-llm-text';
-import { source } from '@/lib/docs-source';
+import { notFound } from "next/navigation";
+import { source } from "@/lib/docs-source.ts";
+import { getLLMText } from "@/lib/get-llm-text.ts";
 
-type RouteContext = {
+interface RouteContext {
   params: Promise<{
     slug?: string[];
   }>;
-};
+}
 
 export const revalidate = false;
 
@@ -20,7 +20,7 @@ export async function GET(_: Request, { params }: RouteContext) {
 
   return new Response(await getLLMText(page), {
     headers: {
-      'content-type': 'text/markdown; charset=utf-8',
+      "content-type": "text/markdown; charset=utf-8",
     },
   });
 }

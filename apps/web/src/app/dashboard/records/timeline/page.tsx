@@ -1,23 +1,13 @@
-import Link from 'next/link';
-import { DashboardShell, OwnerTokenRequired, ServerUnreachable } from '../../components/shell';
-import { Button, buttonVariants } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import {
-  DataList,
-  PageHeader,
-  Section,
-  Toolbar,
-} from '../../components/primitives';
-import { ReferenceServerUnreachableError } from '../../lib/owner-token';
-import { Timestamp } from '@/components/ui/timestamp';
-import {
-  defaultWindow,
-  loadTimeline,
-  shortConnectorName,
-  type TimelineEntry,
-} from '../../lib/timeline';
+import Link from "next/link";
+import { Button, buttonVariants } from "@/components/ui/button.tsx";
+import { Input } from "@/components/ui/input.tsx";
+import { Timestamp } from "@/components/ui/timestamp.tsx";
+import { DataList, PageHeader, Section, Toolbar } from "../../components/primitives.tsx";
+import { DashboardShell, ServerUnreachable } from "../../components/shell.tsx";
+import { ReferenceServerUnreachableError } from "../../lib/owner-token.ts";
+import { defaultWindow, loadTimeline, shortConnectorName, type TimelineEntry } from "../../lib/timeline.ts";
 
-export const dynamic = 'force-dynamic';
+export const dynamic = "force-dynamic";
 
 export default async function RecordsTimelinePage({
   searchParams,
@@ -47,10 +37,10 @@ export default async function RecordsTimelinePage({
   return (
     <DashboardShell active="records">
       <PageHeader
-        title="Timeline"
-        description="Time-anchored records across all connectors, sorted by the owner's data time."
-        breadcrumbs={[{ label: 'Records', href: '/dashboard/records' }, { label: 'Timeline' }]}
+        breadcrumbs={[{ label: "Records", href: "/dashboard/records" }, { label: "Timeline" }]}
         count={`${result.entries.length} entries · ${result.sources} streams scanned · ${result.scanned} records`}
+        description="Time-anchored records across all connectors, sorted by the owner's data time."
+        title="Timeline"
       />
 
       <form method="get">
@@ -61,9 +51,9 @@ export default async function RecordsTimelinePage({
                 const { since: s, until: u } = defaultWindow(d);
                 return (
                   <Link
-                    key={d}
+                    className="text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
                     href={`/dashboard/records/timeline?since=${s}&until=${u}`}
-                    className="text-muted-foreground hover:text-foreground underline-offset-2 hover:underline"
+                    key={d}
                   >
                     {d}d
                   </Link>
@@ -72,20 +62,20 @@ export default async function RecordsTimelinePage({
             </div>
           }
         >
-          <label className="flex min-w-0 flex-col gap-1">
+          <label className="flex min-w-0 flex-col gap-1" htmlFor="records-timeline-since">
             <span className="pdpp-eyebrow">Since</span>
-            <Input type="date" name="since" defaultValue={since} />
+            <Input defaultValue={since} id="records-timeline-since" name="since" type="date" />
           </label>
-          <label className="flex min-w-0 flex-col gap-1">
+          <label className="flex min-w-0 flex-col gap-1" htmlFor="records-timeline-until">
             <span className="pdpp-eyebrow">Until</span>
-            <Input type="date" name="until" defaultValue={until} />
+            <Input defaultValue={until} id="records-timeline-until" name="until" type="date" />
           </label>
-          <Button type="submit" size="sm" className="mt-5">
+          <Button className="mt-5" size="sm" type="submit">
             Apply
           </Button>
           <Link
+            className={`${buttonVariants({ variant: "ghost", size: "sm" })} mt-5`}
             href="/dashboard/records/timeline"
-            className={`${buttonVariants({ variant: 'ghost', size: 'sm' })} mt-5`}
           >
             Reset
           </Link>
@@ -116,15 +106,15 @@ function TimelineRow({ entry }: { entry: TimelineEntry }) {
   const connectorShort = shortConnectorName(entry.connectorId);
   return (
     <Link
+      className="pdpp-caption grid gap-1 px-3 py-2.5 transition-colors hover:bg-muted/40 sm:grid-cols-[11rem_11rem_1fr] sm:items-baseline sm:gap-4"
       href={href}
-      className="pdpp-caption hover:bg-muted/40 grid gap-1 px-3 py-2.5 transition-colors sm:grid-cols-[11rem_11rem_1fr] sm:items-baseline sm:gap-4"
     >
-      <span className="text-muted-foreground whitespace-nowrap">
+      <span className="whitespace-nowrap text-muted-foreground">
         <Timestamp value={entry.timestamp} />
       </span>
-      <span className="text-foreground flex items-baseline gap-2 whitespace-nowrap">
-        <span className="truncate font-mono font-medium">{connectorShort}</span>
-        <span className="pdpp-caption text-muted-foreground truncate font-mono">{entry.stream}</span>
+      <span className="flex items-baseline gap-2 whitespace-nowrap text-foreground">
+        <span className="truncate font-medium font-mono">{connectorShort}</span>
+        <span className="pdpp-caption truncate font-mono text-muted-foreground">{entry.stream}</span>
       </span>
       <span className="break-words">{entry.summary}</span>
     </Link>

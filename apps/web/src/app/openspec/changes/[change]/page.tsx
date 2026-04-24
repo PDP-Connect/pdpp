@@ -1,28 +1,26 @@
-import type { Metadata } from 'next';
-import { notFound } from 'next/navigation';
-import {
-  OpenSpecArtifactCard,
-  OpenSpecBreadcrumbs,
-  OpenSpecChangeHeader,
-  OpenSpecEmptyState,
-  OpenSpecNoteGroups,
-  OpenSpecSectionCard,
-  OpenSpecShell,
-  OpenSpecSourceLink,
-  buildOpenSpecSidebarSections,
-} from '@/components/openspec';
+import type { Metadata } from "next";
+import { notFound } from "next/navigation";
+import { OpenSpecArtifactCard } from "@/components/openspec/open-spec-artifact-card.tsx";
+import { OpenSpecBreadcrumbs } from "@/components/openspec/open-spec-breadcrumbs.tsx";
+import { OpenSpecChangeHeader } from "@/components/openspec/open-spec-change-header.tsx";
+import { OpenSpecEmptyState } from "@/components/openspec/open-spec-empty-state.tsx";
+import { OpenSpecNoteGroups } from "@/components/openspec/open-spec-note-groups.tsx";
+import { OpenSpecSectionCard } from "@/components/openspec/open-spec-section-card.tsx";
+import { OpenSpecShell } from "@/components/openspec/open-spec-shell.tsx";
+import { OpenSpecSourceLink } from "@/components/openspec/open-spec-source-link.tsx";
+import { buildOpenSpecSidebarSections } from "@/components/openspec/sidebar-sections.ts";
+import type { OpenSpecDesignNoteGroup } from "@/lib/openspec/index.ts";
 import {
   getOpenSpecChange,
   listOpenSpecChangeDesignNotes,
   listOpenSpecChangeSpecDeltas,
   listOpenSpecChanges,
-} from '@/lib/openspec';
-import type { OpenSpecDesignNoteGroup } from '@/lib/openspec';
-import { PLANNING_LABEL, planningPath } from '@/lib/openspec/public';
+} from "@/lib/openspec/index.ts";
+import { PLANNING_LABEL, planningPath } from "@/lib/openspec/public.ts";
 
-type PageProps = {
+interface PageProps {
   params: Promise<{ change: string }>;
-};
+}
 
 export async function generateStaticParams() {
   const changes = await listOpenSpecChanges();
@@ -32,7 +30,9 @@ export async function generateStaticParams() {
 export async function generateMetadata({ params }: PageProps): Promise<Metadata> {
   const { change: changeName } = await params;
   const change = await getOpenSpecChange(changeName);
-  if (!change) return { title: `Change not found — ${PLANNING_LABEL} — PDPP` };
+  if (!change) {
+    return { title: `Change not found — ${PLANNING_LABEL} — PDPP` };
+  }
   return {
     title: `${change.title} — ${PLANNING_LABEL} — PDPP`,
     description: change.excerpt ?? undefined,
@@ -46,12 +46,14 @@ export default async function ChangeOverviewPage({ params }: PageProps) {
     listOpenSpecChangeSpecDeltas(changeName),
     listOpenSpecChangeDesignNotes(changeName),
   ]);
-  if (!change) notFound();
+  if (!change) {
+    notFound();
+  }
 
   const sections = buildOpenSpecSidebarSections({
-    kind: 'change',
+    kind: "change",
     changeName,
-    artifact: 'overview',
+    artifact: "overview",
   });
 
   const basePath = planningPath(`/changes/${changeName}`);
@@ -63,25 +65,18 @@ export default async function ChangeOverviewPage({ params }: PageProps) {
           noteCount: designNotes.length,
           createdAt: designNotes.reduce<string | null>(
             (earliest, note) =>
-              !note.createdAt || (earliest && earliest <= note.createdAt)
-                ? earliest
-                : note.createdAt,
-            null,
+              !note.createdAt || (earliest && earliest <= note.createdAt) ? earliest : note.createdAt,
+            null
           ),
           lastModified: designNotes.reduce<string | null>(
             (latest, note) =>
-              !note.lastModified || (latest && latest >= note.lastModified)
-                ? latest
-                : note.lastModified,
-            null,
+              !note.lastModified || (latest && latest >= note.lastModified) ? latest : note.lastModified,
+            null
           ),
-          countsByKind: designNotes.reduce<OpenSpecDesignNoteGroup['countsByKind']>(
-            (acc, note) => {
-              acc[note.noteKind] = (acc[note.noteKind] ?? 0) + 1;
-              return acc;
-            },
-            {},
-          ),
+          countsByKind: designNotes.reduce<OpenSpecDesignNoteGroup["countsByKind"]>((acc, note) => {
+            acc[note.noteKind] = (acc[note.noteKind] ?? 0) + 1;
+            return acc;
+          }, {}),
           notes: designNotes,
         }
       : null;
@@ -94,13 +89,13 @@ export default async function ChangeOverviewPage({ params }: PageProps) {
   }> = [
     {
       href: `${basePath}/proposal`,
-      title: 'Proposal',
+      title: "Proposal",
       excerpt: change.proposalExcerpt,
       disabled: !change.hasProposal,
     },
     {
       href: `${basePath}/design`,
-      title: 'Design',
+      title: "Design",
       excerpt: change.designExcerpt,
       disabled: !change.hasDesign,
     },
@@ -112,10 +107,7 @@ export default async function ChangeOverviewPage({ params }: PageProps) {
     },
     {
       href: `${basePath}/specs`,
-      title:
-        deltas.length > 0
-          ? `Spec Deltas (${deltas.length})`
-          : 'Spec Deltas',
+      title: deltas.length > 0 ? `Spec Deltas (${deltas.length})` : "Spec Deltas",
       excerpt: null,
       disabled: deltas.length === 0,
     },
@@ -127,57 +119,50 @@ export default async function ChangeOverviewPage({ params }: PageProps) {
         <OpenSpecBreadcrumbs
           crumbs={[
             { label: PLANNING_LABEL, href: planningPath() },
-            { label: 'Changes', href: planningPath('/changes') },
+            { label: "Changes", href: planningPath("/changes") },
             { label: change.name },
           ]}
         />
         <OpenSpecChangeHeader change={change} />
-        <OpenSpecSourceLink
-          repoRelativePath={`openspec/changes/${change.name}/`}
-        />
+        <OpenSpecSourceLink repoRelativePath={`openspec/changes/${change.name}/`} />
 
-        <OpenSpecSectionCard title="Artifacts" description="Official change artifacts tracked in the canonical OpenSpec structure.">
+        <OpenSpecSectionCard
+          description="Official change artifacts tracked in the canonical OpenSpec structure."
+          title="Artifacts"
+        >
           <div className="flex flex-col divide-y divide-border/60">
             {artifacts.map((a) =>
               a.disabled ? (
-                <div
-                  key={a.title}
-                  className="flex flex-col gap-1.5 py-4 text-muted-foreground"
-                >
+                <div className="flex flex-col gap-1.5 py-4 text-muted-foreground" key={a.title}>
                   <div className="font-medium text-foreground/75">{a.title}</div>
                   <div className="pdpp-body opacity-80">Not present for this change.</div>
                 </div>
               ) : (
-                <OpenSpecArtifactCard
-                  key={a.title}
-                  href={a.href}
-                  title={a.title}
-                  excerpt={a.excerpt}
-                />
-              ),
+                <OpenSpecArtifactCard excerpt={a.excerpt} href={a.href} key={a.title} title={a.title} />
+              )
             )}
           </div>
         </OpenSpecSectionCard>
 
         {change.affectedCapabilities.length > 0 && (
           <OpenSpecSectionCard
-            title="Affected capabilities"
             description="Capability specs this change proposes to modify."
+            title="Affected capabilities"
           >
             <div className="flex flex-col divide-y divide-border/60">
               {deltas.length === 0 ? (
                 <OpenSpecEmptyState
-                  title="No spec deltas found"
                   description="This change lists affected capabilities but has no spec delta files yet."
+                  title="No spec deltas found"
                 />
               ) : (
                 deltas.map((d) => (
                   <OpenSpecArtifactCard
-                    key={d.capability}
-                    href={`${basePath}/specs/${d.capability}`}
-                    eyebrow={d.capability}
-                    title={d.title}
                     excerpt={d.excerpt}
+                    eyebrow={d.capability}
+                    href={`${basePath}/specs/${d.capability}`}
+                    key={d.capability}
+                    title={d.title}
                   />
                 ))
               )}
@@ -187,8 +172,8 @@ export default async function ChangeOverviewPage({ params }: PageProps) {
 
         {noteGroup && (
           <OpenSpecSectionCard
-            title="Project notes"
             description="Change-local notes that support this workstream but have not been promoted into the official change artifacts."
+            title="Project notes"
           >
             <OpenSpecNoteGroups groups={[noteGroup]} />
           </OpenSpecSectionCard>

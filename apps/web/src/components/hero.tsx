@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import type { ReactNode } from "react";
 
 /**
  * PDPP canonical hero component.
@@ -20,43 +20,50 @@ import type { ReactNode } from 'react';
  * - `dual`: both gradients meet at the border. The "human meets protocol"
  *   treatment, reserved for the landing page hero.
  */
-type HeroLayout = 'cross' | 'bleeding';
-type HeroGradient = 'warm' | 'cool' | 'dual';
-type HeroSize = 'compact' | 'splash';
+type HeroLayout = "cross" | "bleeding";
+type HeroGradient = "warm" | "cool" | "dual";
+type HeroSize = "compact" | "splash";
 
-type HeroProps = {
-  layout?: HeroLayout;
+interface HeroProps {
+  actions?: ReactNode;
+  description?: ReactNode;
+  eyebrow?: ReactNode;
   gradient?: HeroGradient;
+  layout?: HeroLayout;
   /** `compact` (default): page-header scale, tight vertical padding.
       `splash`: landing-hero scale, 112px vertical padding, 60px title. */
   size?: HeroSize;
-  eyebrow?: ReactNode;
   title: ReactNode;
-  description?: ReactNode;
-  actions?: ReactNode;
-};
+}
 
-const warmWash = 'linear-gradient(to right, var(--human-wash), transparent 60%)';
-const coolWash = 'linear-gradient(to left, var(--primary-wash), transparent 60%)';
+const warmWash = "linear-gradient(to right, var(--human-wash), transparent 60%)";
+const coolWash = "linear-gradient(to left, var(--primary-wash), transparent 60%)";
+
+function titleMarginBottom({ description, isSplash }: { description: boolean; isSplash: boolean }): string | number {
+  if (!description) {
+    return 0;
+  }
+  return isSplash ? "1.5rem" : "0.75rem";
+}
 
 function gradientForRightQuadrant(g: HeroGradient): string {
-  return g === 'cool' ? 'transparent' : warmWash;
+  return g === "cool" ? "transparent" : warmWash;
 }
 
 function gradientForLeftQuadrant(g: HeroGradient): string {
-  return g === 'warm' ? 'transparent' : coolWash;
+  return g === "warm" ? "transparent" : coolWash;
 }
 
 export function Hero({
-  layout = 'cross',
-  gradient = 'warm',
-  size = 'compact',
+  layout = "cross",
+  gradient = "warm",
+  size = "compact",
   eyebrow,
   title,
   description,
   actions,
 }: HeroProps) {
-  if (layout === 'cross') {
+  if (layout === "cross") {
     return (
       <>
         {/* Desktop: cross-quadrant — blank left + gradient right */}
@@ -64,26 +71,20 @@ export function Hero({
           <div
             className="shrink-0"
             style={{
-              width: 'var(--pdpp-sidebar-width)',
+              width: "var(--pdpp-sidebar-width)",
               background: gradientForLeftQuadrant(gradient),
-              borderBottom: '1px solid var(--border)',
+              borderBottom: "1px solid var(--border)",
             }}
           />
           <div
             className="flex-1"
             style={{
-              borderLeft: '1px solid var(--human)',
-              borderBottom: '1px solid var(--border)',
+              borderLeft: "1px solid var(--human)",
+              borderBottom: "1px solid var(--border)",
               background: gradientForRightQuadrant(gradient),
             }}
           >
-            <HeroContent
-              size={size}
-              eyebrow={eyebrow}
-              title={title}
-              description={description}
-              actions={actions}
-            />
+            <HeroContent actions={actions} description={description} eyebrow={eyebrow} size={size} title={title} />
           </div>
         </div>
 
@@ -91,18 +92,12 @@ export function Hero({
         <div
           className="md:hidden"
           style={{
-            borderLeft: '1px solid var(--human)',
-            borderBottom: '1px solid var(--border)',
+            borderLeft: "1px solid var(--human)",
+            borderBottom: "1px solid var(--border)",
             background: gradientForRightQuadrant(gradient),
           }}
         >
-          <HeroContent
-            size={size}
-            eyebrow={eyebrow}
-            title={title}
-            description={description}
-            actions={actions}
-          />
+          <HeroContent actions={actions} description={description} eyebrow={eyebrow} size={size} title={title} />
         </div>
       </>
     );
@@ -112,18 +107,12 @@ export function Hero({
   return (
     <div
       style={{
-        borderLeft: '1px solid var(--human)',
-        borderBottom: '1px solid var(--border)',
+        borderLeft: "1px solid var(--human)",
+        borderBottom: "1px solid var(--border)",
         background: gradientForRightQuadrant(gradient),
       }}
     >
-      <HeroContent
-        size={size}
-        eyebrow={eyebrow}
-        title={title}
-        description={description}
-        actions={actions}
-      />
+      <HeroContent actions={actions} description={description} eyebrow={eyebrow} size={size} title={title} />
     </div>
   );
 }
@@ -141,29 +130,29 @@ function HeroContent({
   description?: ReactNode;
   actions?: ReactNode;
 }) {
-  const isSplash = size === 'splash';
-  const padding = isSplash ? 'px-5 md:px-12 pt-20 pb-16 md:pt-28 md:pb-24' : 'px-5 md:px-12 py-10';
-  const titleClass = isSplash ? 'pdpp-display-lg' : 'pdpp-display';
-  const descClass = isSplash ? 'pdpp-body-lg' : 'pdpp-body';
+  const isSplash = size === "splash";
+  const padding = isSplash ? "px-5 md:px-12 pt-20 pb-16 md:pt-28 md:pb-24" : "px-5 md:px-12 py-10";
+  const titleClass = isSplash ? "pdpp-display-lg" : "pdpp-display";
+  const descClass = isSplash ? "pdpp-body-lg" : "pdpp-body";
 
   return (
     <div className={`${padding} max-w-3xl`}>
-      {eyebrow && <div className={isSplash ? 'mb-8' : 'pdpp-eyebrow'}>{eyebrow}</div>}
+      {eyebrow && <div className={isSplash ? "mb-8" : "pdpp-eyebrow"}>{eyebrow}</div>}
       <h1
         className={titleClass}
         style={{
-          marginTop: eyebrow && !isSplash ? '0.5rem' : 0,
-          marginBottom: description ? (isSplash ? '1.5rem' : '0.75rem') : 0,
+          marginTop: eyebrow && !isSplash ? "0.5rem" : 0,
+          marginBottom: titleMarginBottom({ description: Boolean(description), isSplash }),
         }}
       >
         {title}
       </h1>
       {description && (
-        <div className={descClass} style={{ maxWidth: '52ch', color: 'var(--muted-foreground)' }}>
+        <div className={descClass} style={{ maxWidth: "52ch", color: "var(--muted-foreground)" }}>
           {description}
         </div>
       )}
-      {actions && <div className={`flex flex-wrap gap-3 ${isSplash ? 'mt-10' : 'mt-5'}`}>{actions}</div>}
+      {actions && <div className={`flex flex-wrap gap-3 ${isSplash ? "mt-10" : "mt-5"}`}>{actions}</div>}
     </div>
   );
 }
