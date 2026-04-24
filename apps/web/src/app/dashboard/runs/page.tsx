@@ -33,6 +33,41 @@ interface Params {
   status?: string;
 }
 
+function renderRunsPeek({
+  peekId,
+  peekEnvelope,
+  closePeekHref,
+  openPeekFullHref,
+}: {
+  peekId: string | undefined;
+  peekEnvelope: TimelineEnvelope | null;
+  closePeekHref: string;
+  openPeekFullHref: string;
+}) {
+  if (!peekId) {
+    return <PeekEmpty />;
+  }
+  if (!peekEnvelope) {
+    return (
+      <PeekPane title={`run ${peekId}`} closeHref={closePeekHref} openHref={openPeekFullHref}>
+        <p className="text-muted-foreground">Run not found.</p>
+      </PeekPane>
+    );
+  }
+  return (
+    <PeekPane
+      title={`run ${peekId}`}
+      closeHref={closePeekHref}
+      openHref={openPeekFullHref}
+      cliCommand={`pdpp run timeline ${peekId}`}
+    >
+      <Pivots envelope={peekEnvelope} currentKind="run" />
+      <div className="pdpp-caption mb-2 text-muted-foreground">{peekEnvelope.events.length} events</div>
+      <PeekTimeline events={peekEnvelope.events} />
+    </PeekPane>
+  );
+}
+
 function listHref(params: Params, overrides: Partial<Params> = {}): string {
   const merged = { ...params, ...overrides };
   const qs = Object.entries(merged)
@@ -148,30 +183,7 @@ export default async function RunsPage({ searchParams }: { searchParams: Promise
             {result.has_more && result.next_cursor && <Pager next={listHref(params, { cursor: result.next_cursor })} />}
           </>
         }
-        peek={
-          params.peek ? (
-            <>
-              {peekEnvelope ? (
-                <PeekPane
-                  title={`run ${params.peek}`}
-                  closeHref={closePeekHref}
-                  openHref={openPeekFullHref}
-                  cliCommand={`pdpp run timeline ${params.peek}`}
-                >
-                  <Pivots envelope={peekEnvelope} currentKind="run" />
-                  <div className="pdpp-caption mb-2 text-muted-foreground">{peekEnvelope.events.length} events</div>
-                  <PeekTimeline events={peekEnvelope.events} />
-                </PeekPane>
-              ) : (
-                <PeekPane title={`run ${params.peek}`} closeHref={closePeekHref} openHref={openPeekFullHref}>
-                  <p className="text-muted-foreground">Run not found.</p>
-                </PeekPane>
-              )}
-            </>
-          ) : (
-            <PeekEmpty />
-          )
-        }
+        peek={renderRunsPeek({ peekId: params.peek, peekEnvelope, closePeekHref, openPeekFullHref })}
       />
     </DashboardShell>
   );

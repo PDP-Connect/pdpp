@@ -39,6 +39,41 @@ interface Params {
   status?: string;
 }
 
+function renderGrantsPeek({
+  peekId,
+  peekEnvelope,
+  closePeekHref,
+  openPeekFullHref,
+}: {
+  peekId: string | undefined;
+  peekEnvelope: TimelineEnvelope | null;
+  closePeekHref: string;
+  openPeekFullHref: string;
+}) {
+  if (!peekId) {
+    return <PeekEmpty />;
+  }
+  if (!peekEnvelope) {
+    return (
+      <PeekPane title={`grant ${peekId}`} closeHref={closePeekHref} openHref={openPeekFullHref}>
+        <p className="text-muted-foreground">Grant not found.</p>
+      </PeekPane>
+    );
+  }
+  return (
+    <PeekPane
+      title={`grant ${peekId}`}
+      closeHref={closePeekHref}
+      openHref={openPeekFullHref}
+      cliCommand={`pdpp grant timeline ${peekId}`}
+    >
+      <Pivots envelope={peekEnvelope} currentKind="grant" />
+      <div className="pdpp-caption mb-2 text-muted-foreground">{peekEnvelope.events.length} events</div>
+      <PeekTimeline events={peekEnvelope.events} />
+    </PeekPane>
+  );
+}
+
 function listHref(params: Params, overrides: Partial<Params> = {}): string {
   const merged = { ...params, ...overrides };
   const qs = Object.entries(merged)
@@ -196,30 +231,7 @@ export default async function GrantsPage({ searchParams }: { searchParams: Promi
               )}
             </>
           }
-          peek={
-            params.peek ? (
-              <>
-                {peekEnvelope ? (
-                  <PeekPane
-                    title={`grant ${params.peek}`}
-                    closeHref={closePeekHref}
-                    openHref={openPeekFullHref}
-                    cliCommand={`pdpp grant timeline ${params.peek}`}
-                  >
-                    <Pivots envelope={peekEnvelope} currentKind="grant" />
-                    <div className="pdpp-caption mb-2 text-muted-foreground">{peekEnvelope.events.length} events</div>
-                    <PeekTimeline events={peekEnvelope.events} />
-                  </PeekPane>
-                ) : (
-                  <PeekPane title={`grant ${params.peek}`} closeHref={closePeekHref} openHref={openPeekFullHref}>
-                    <p className="text-muted-foreground">Grant not found.</p>
-                  </PeekPane>
-                )}
-              </>
-            ) : (
-              <PeekEmpty />
-            )
-          }
+          peek={renderGrantsPeek({ peekId: params.peek, peekEnvelope, closePeekHref, openPeekFullHref })}
         />
       </Section>
     </DashboardShell>
