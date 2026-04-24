@@ -24,6 +24,144 @@ The owner agent is the integration gatekeeper. The owner:
 
 Workers do not merge to `main` unless explicitly told to do so.
 
+## Communication Model
+
+Use GitHub pull requests when a branch is pushed and intended to merge. A draft
+PR is the best branch-scoped communication channel: it has a diff, status,
+review, comments, CI, and a durable merge record.
+
+For local-only work, use the same shape without GitHub:
+
+- branch/worktree = PR branch;
+- local workstream card = PR description;
+- local blocker file = PR review thread;
+- local merge-queue entry = ready-for-review label;
+- OpenSpec/design notes = durable design truth, not status chatter.
+
+Do not use the human owner as the message bus. Use the repository and local
+workstream hub for routine status. Escalate to the human only when an owner
+judgment is genuinely required.
+
+### Local Workstream Hub
+
+The reliable local channel is a shared directory under Git's common directory:
+
+```bash
+WORKSTREAM_HUB="$(git rev-parse --git-common-dir)/workstreams"
+mkdir -p "$WORKSTREAM_HUB"/{cards,blockers,merge-queue,archive}
+touch "$WORKSTREAM_HUB/decisions.md" "$WORKSTREAM_HUB/events.ndjson"
+```
+
+Why this location:
+
+- every worktree for the repo resolves the same `git-common-dir`;
+- the files are local-only and cannot be accidentally committed;
+- the hub survives branch switches and worktree rebuilds;
+- one file per workstream avoids merge conflicts and queue-file contention.
+
+Do not put active queue state in `docs/` or `openspec/`. Those are committed
+artifacts, not a local message bus. Commit only stable process docs, design
+decisions, proposals, specs, and final reports that should survive as project
+history.
+
+### Workstream Card
+
+Each active branch gets one card:
+
+```bash
+branch="$(git branch --show-current)"
+card="$(git rev-parse --git-common-dir)/workstreams/cards/$branch.md"
+```
+
+Card template:
+
+```md
+# <branch>
+
+Status: active | blocked | merge-ready | merged | abandoned
+Owner lane: runtime/search | docker/ops | connector:<name> | web/operator | openspec | polish
+Worktree:
+Base:
+Last updated:
+
+## Objective
+
+## Scope
+
+## Out Of Scope
+
+## Current State
+
+## Validation
+
+## Blockers
+
+## Merge Notes
+
+Distinctive last line: <copyable phrase for thread lookup>
+```
+
+Workers update their card instead of sending routine progress through the human.
+If two agents need to collaborate, they read each other's cards and append a
+short note to their own card describing the dependency.
+
+### Blockers
+
+Use a blocker file only when work is stopped:
+
+```bash
+blocker="$(git rev-parse --git-common-dir)/workstreams/blockers/$branch.md"
+```
+
+Blocker files must include:
+
+- branch/worktree;
+- exact blocking question;
+- options considered;
+- recommended path;
+- commands already run;
+- whether code was changed before the blocker.
+
+Delete or archive the blocker file when resolved, and record the decision in the
+workstream card or `decisions.md` if it affects more than one branch.
+
+### Merge Queue
+
+A worker marks a branch ready by creating:
+
+```bash
+ready="$(git rev-parse --git-common-dir)/workstreams/merge-queue/$branch.md"
+```
+
+The merge-queue entry should be a final report, not a request for a status
+conversation. It must include commit hashes, files changed, validation, known
+baseline failures, residual risks, and `git status --short`.
+
+The owner reviews merge-queue entries in dependency order, not arrival order.
+
+### Decisions Log
+
+Use `decisions.md` only for cross-lane decisions, such as:
+
+- "filtered search requires an OpenSpec change before implementation";
+- "local Docker compose persists `~/.pdpp` as a volume";
+- "semantic score remains server-internal for this tranche";
+- "GitHub connector should add `commits` stream rather than suppress progress."
+
+Do not use it for branch-local implementation notes.
+
+### Event Journal
+
+`events.ndjson` is optional but useful for automation. Append one JSON object per
+meaningful transition:
+
+```json
+{"ts":"2026-04-24T15:10:00-05:00","branch":"fix-github-progress-stream","event":"blocked","summary":"Need owner choice: add commits stream or suppress progress"}
+```
+
+Keep entries single-line and append-only. The card remains the human-readable
+source of truth.
+
 ### Worker Agent
 
 A worker owns one bounded lane. A worker:
@@ -143,6 +281,7 @@ Final report must include:
 - residual risks
 - next recommended slice
 - `git status --short`
+- updated local workstream card or draft PR description
 ```
 
 ## Standard Validation Matrix
