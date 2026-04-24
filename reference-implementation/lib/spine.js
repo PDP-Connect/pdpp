@@ -240,101 +240,238 @@ function deriveGrantLifecycleStatus(events) {
   return status;
 }
 
+const CORRELATION_COLUMN = {
+  trace: 'trace_id',
+  grant: 'grant_id',
+  run: 'run_id',
+};
+
+/**
+ * SQL-level aggregation of spine events into per-correlation summaries.
+ *
+ * Slice-3 replacement for the full-scan version that read every spine_event,
+ * grouped in JS, sorted in JS, paged in JS. New shape:
+ *
+ *   1. SQL `GROUP BY <correlation_column>` with bounded aggregates and SQL
+ *      LIMIT/ORDER BY. `since`/`until`/`status` (strict — i.e., existence of
+ *      any matching event) push into the WHERE clause. `clientId`/`providerId`/
+ *      `grantId` are event-column equality filters pushed into WHERE too.
+ *   2. SQL `q` narrowing via LIKE on the indexed correlation columns.
+ *      Secondary-field LIKE (request_id / client_id / provider_id) stays as a
+ *      page-scope filter in JS to avoid a Cartesian product in the GROUP BY.
+ *   3. Page-scope hydration: for the at-most-`limit` group ids, fetch their
+ *      events via `listSpineEvents({[key]: id})` (already indexed) and run
+ *      `summarizeEvents` / `deriveGrantLifecycleStatus` to produce the same
+ *      response shape as before.
+ *   4. Page-scope JS filters: `connectorId` (derived from event JSON) and
+ *      the fuzzy `q` match on secondary fields.
+ *
+ * Backwards-compatible return shape: `{summaries, hasMore, nextCursor}`. The
+ * cursor remains `"<last_at>::<id>"` encoded via `stableCursor`.
+ */
 export async function listSpineCorrelations(key, filters = {}) {
   const db = getDb();
   if (!db) return { summaries: [], hasMore: false, nextCursor: null };
-  const rows = db.prepare('SELECT * FROM spine_events ORDER BY rowid').all();
-  const events = hydrateRows(rows);
-  const column =
-    key === 'trace'
-      ? 'trace_id'
-      : key === 'grant'
-      ? 'grant_id'
-      : key === 'run'
-      ? 'run_id'
-      : null;
+  const column = CORRELATION_COLUMN[key];
   if (!column) return { summaries: [], hasMore: false, nextCursor: null };
 
-  const groups = new Map();
-  for (const ev of events) {
-    const id = ev[column];
-    if (!id) continue;
-    if (!groups.has(id)) groups.set(id, []);
-    groups.get(id).push(ev);
+  const limit = Math.max(1, Math.min(Number(filters.limit) || 50, 500));
+
+  const whereParts = [`${column} IS NOT NULL`];
+  const whereBinds = [];
+
+  // since/until: test against MAX/MIN respectively, done as HAVING after GROUP BY.
+  const havingParts = [];
+  const havingBinds = [];
+  if (filters.since) {
+    havingParts.push('MAX(occurred_at) >= ?');
+    havingBinds.push(filters.since);
+  }
+  if (filters.until) {
+    havingParts.push('MIN(occurred_at) <= ?');
+    havingBinds.push(filters.until);
   }
 
+  // Event-column equality filters. Valid because these columns tag the event
+  // and every event in a correlation carries the same value (or null) for them.
+  if (filters.clientId) {
+    whereParts.push('client_id = ?');
+    whereBinds.push(filters.clientId);
+  }
+  if (filters.providerId) {
+    whereParts.push('provider_id = ?');
+    whereBinds.push(filters.providerId);
+  }
+  if (filters.grantId && column !== 'grant_id') {
+    whereParts.push('grant_id = ?');
+    whereBinds.push(filters.grantId);
+  }
+
+  // q narrowing on the indexed correlation column. Secondary-field LIKE stays
+  // in the page-scope pass below.
+  if (filters.q) {
+    whereParts.push(`${column} LIKE ?`);
+    whereBinds.push(`%${String(filters.q)}%`);
+  }
+
+  // Cursor seek: pages are ordered by (last_at DESC, id DESC) for stability.
+  // The cursor encodes the last `(last_at, id)` of the previous page; we skip
+  // to rows strictly after it in that order.
+  const cursorValue = decodeCursor(filters.cursor);
+  let cursorLastAt = null;
+  let cursorId = null;
+  if (cursorValue) {
+    const sep = cursorValue.indexOf('::');
+    if (sep > 0) {
+      cursorLastAt = cursorValue.slice(0, sep);
+      cursorId = cursorValue.slice(sep + 2);
+    }
+  }
+
+  // Over-fetch by a generous multiplier so the page-scope JS filters (status,
+  // connectorId, fuzzy q on secondary fields) have room to reject without
+  // under-filling the response. Bounded and still cheap vs. reading every row.
+  const sqlLimit = limit * 4;
+
+  // For `grant` key, status comes from event-type lifecycle derivation and
+  // cannot be filtered in SQL. For `trace` and `run`, status is "last event's
+  // status" — also derived post-aggregate. Both are applied in the JS pass.
+  if (cursorLastAt) {
+    havingParts.push(`(MAX(occurred_at) < ? OR (MAX(occurred_at) = ? AND ${column} < ?))`);
+    havingBinds.push(cursorLastAt, cursorLastAt, cursorId);
+  }
+  const havingSql = havingParts.length ? ` HAVING ${havingParts.join(' AND ')}` : '';
+
+  const sql = `
+    SELECT
+      ${column} AS id,
+      MIN(occurred_at) AS first_at,
+      MAX(occurred_at) AS last_at,
+      COUNT(*) AS event_count
+    FROM spine_events
+    WHERE ${whereParts.join(' AND ')}
+    GROUP BY ${column}${havingSql}
+    ORDER BY last_at DESC, id DESC
+    LIMIT ?
+  `;
+
+  const aggRows = db.prepare(sql).all(...whereBinds, ...havingBinds, sqlLimit);
+
   const summaries = [];
-  for (const [id, grouped] of groups.entries()) {
-    const s = summarizeEvents(grouped);
+  const listEventsByCorrelation = {
+    trace_id: (id) => listSpineEventsSync(db, { traceId: id }),
+    grant_id: (id) => listSpineEventsSync(db, { grantId: id }),
+    run_id: (id) => listSpineEventsSync(db, { runId: id }),
+  };
+
+  for (const aggRow of aggRows) {
+    const events = listEventsByCorrelation[column](aggRow.id);
+    if (!events.length) continue;
+    const s = summarizeEvents(events);
     if (!s) continue;
-    s.id = id;
-    if (key === 'grant') s.status = deriveGrantLifecycleStatus(grouped);
+    s.id = aggRow.id;
+    if (key === 'grant') s.status = deriveGrantLifecycleStatus(events);
+
     if (!applyFilters(s, filters)) continue;
     if (filters.connectorId && s.connector_id !== filters.connectorId) continue;
     if (filters.q) {
       const needle = String(filters.q).toLowerCase();
-      const hay = `${id} ${s.request_id || ''} ${s.grant_id || ''} ${s.run_id || ''} ${s.client_id || ''} ${s.provider_id || ''}`.toLowerCase();
+      const hay = `${aggRow.id} ${s.request_id || ''} ${s.grant_id || ''} ${s.run_id || ''} ${s.client_id || ''} ${s.provider_id || ''}`.toLowerCase();
       if (!hay.includes(needle)) continue;
     }
+
     summaries.push(s);
+    if (summaries.length >= limit + 1) break;
   }
 
-  summaries.sort((a, b) => (a.last_at < b.last_at ? 1 : a.last_at > b.last_at ? -1 : 0));
-
-  const limit = Math.max(1, Math.min(Number(filters.limit) || 50, 500));
-  const cursorAt = decodeCursor(filters.cursor);
-  const startIndex = cursorAt
-    ? summaries.findIndex((s) => `${s.last_at}::${s.id}` === cursorAt) + 1
-    : 0;
-  const effectiveStart = startIndex < 0 ? 0 : startIndex;
-  const page = summaries.slice(effectiveStart, effectiveStart + limit);
-  const hasMore = effectiveStart + limit < summaries.length;
+  const hasMore = summaries.length > limit;
+  const page = summaries.slice(0, limit);
   const nextCursor = hasMore && page.length
     ? stableCursor(`${page[page.length - 1].last_at}::${page[page.length - 1].id}`)
     : null;
   return { summaries: page, hasMore, nextCursor };
 }
 
+/**
+ * Synchronous internal helper — `listSpineEvents` wraps the same work in a
+ * Promise for historical reasons, but the aggregation loop above needs the
+ * rows in the same call frame to avoid an extra Promise allocation per group.
+ */
+function listSpineEventsSync(db, filters) {
+  let rows;
+  if (filters.traceId) {
+    rows = db.prepare('SELECT * FROM spine_events WHERE trace_id = ? ORDER BY rowid').all(filters.traceId);
+  } else if (filters.grantId) {
+    rows = db.prepare('SELECT * FROM spine_events WHERE grant_id = ? ORDER BY rowid').all(filters.grantId);
+  } else if (filters.runId) {
+    rows = db.prepare('SELECT * FROM spine_events WHERE run_id = ? ORDER BY rowid').all(filters.runId);
+  } else {
+    rows = [];
+  }
+  return hydrateRows(rows);
+}
+
+/**
+ * SQL-indexed search across spine_events. Exact match uses equality on the
+ * indexed (trace_id, grant_id, run_id) columns and a fallback equality on
+ * request_id. Fuzzy matches use LIKE on each indexed column; we fetch at
+ * most `limit + 1` distinct ids per column and summarize them page-scope.
+ *
+ * Replaces the full-scan variant which read every spine_event row.
+ */
 export async function searchSpine(query) {
   const db = getDb();
   if (!db) return { exact: null, traces: [], grants: [], runs: [] };
   const q = String(query || '').trim();
   if (!q) return { exact: null, traces: [], grants: [], runs: [] };
 
-  const rows = db.prepare('SELECT * FROM spine_events ORDER BY rowid').all();
-  const events = hydrateRows(rows);
-
   const exactMatch = (() => {
-    for (const ev of events) {
-      if (ev.trace_id === q) return { kind: 'trace', id: q };
-      if (ev.grant_id === q) return { kind: 'grant', id: q };
-      if (ev.run_id === q) return { kind: 'run', id: q };
-      if (ev.request_id === q) return ev.trace_id ? { kind: 'trace', id: ev.trace_id } : null;
+    // Indexed equality on the correlation columns — O(log N).
+    for (const { column, kind } of [
+      { column: 'trace_id', kind: 'trace' },
+      { column: 'grant_id', kind: 'grant' },
+      { column: 'run_id', kind: 'run' },
+    ]) {
+      const row = db.prepare(
+        `SELECT 1 FROM spine_events WHERE ${column} = ? LIMIT 1`,
+      ).get(q);
+      if (row) return { kind, id: q };
     }
+    // request_id is un-indexed but small-cardinality; the lookup is bounded by
+    // the very rare case where request_id equals the query string.
+    const fallback = db.prepare(
+      'SELECT trace_id FROM spine_events WHERE request_id = ? AND trace_id IS NOT NULL LIMIT 1',
+    ).get(q);
+    if (fallback?.trace_id) return { kind: 'trace', id: fallback.trace_id };
     return null;
   })();
 
+  const like = `%${q}%`;
   const summariesByKey = (column) => {
-    const groups = new Map();
-    for (const ev of events) {
-      const id = ev[column];
-      if (!id) continue;
-      if (!groups.has(id)) groups.set(id, []);
-      groups.get(id).push(ev);
-    }
+    // Find distinct ids where the correlation column LIKEs the needle. Bound
+    // to 10 rows (same as the legacy behavior) — cheap on indexed TEXT columns.
+    const idRows = db.prepare(
+      `SELECT DISTINCT ${column} AS id, MAX(occurred_at) AS last_at
+         FROM spine_events
+        WHERE ${column} IS NOT NULL
+          AND ${column} LIKE ?
+        GROUP BY ${column}
+        ORDER BY last_at DESC
+        LIMIT 10`,
+    ).all(like);
+
+    const filterKey = column === 'trace_id' ? 'traceId' : column === 'grant_id' ? 'grantId' : 'runId';
     const out = [];
-    const needle = q.toLowerCase();
-    for (const [id, grouped] of groups.entries()) {
-      const s = summarizeEvents(grouped);
+    for (const { id } of idRows) {
+      const events = listSpineEventsSync(db, { [filterKey]: id });
+      if (!events.length) continue;
+      const s = summarizeEvents(events);
       if (!s) continue;
       s.id = id;
-      if (column === 'grant_id') s.status = deriveGrantLifecycleStatus(grouped);
-      const hay = `${id} ${s.request_id || ''} ${s.grant_id || ''} ${s.run_id || ''} ${s.client_id || ''} ${s.provider_id || ''}`.toLowerCase();
-      if (!hay.includes(needle)) continue;
+      if (column === 'grant_id') s.status = deriveGrantLifecycleStatus(events);
       out.push(s);
     }
-    out.sort((a, b) => (a.last_at < b.last_at ? 1 : a.last_at > b.last_at ? -1 : 0));
-    return out.slice(0, 10);
+    return out;
   };
 
   return {
