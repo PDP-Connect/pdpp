@@ -1,5 +1,6 @@
 services:
   reference:
+    image: ${PDPP_REFERENCE_IMAGE:-ghcr.io/vana-com/pdpp/reference:main}
     build:
       context: .
       dockerfile: Dockerfile
@@ -25,6 +26,7 @@ services:
       - pdpp-home:/root/.pdpp
 
   web:
+    image: ${PDPP_WEB_IMAGE:-ghcr.io/vana-com/pdpp/web:main}
     build:
       context: .
       dockerfile: Dockerfile

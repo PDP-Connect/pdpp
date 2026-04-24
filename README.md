@@ -64,17 +64,32 @@ semantic backfill may download model files into
 `reference-implementation/.cache/transformers` while the servers are already
 listening.
 
-Run the same live reference stack with Docker Compose:
+Run the same live reference stack from public Docker images:
 
 ```bash
 cp .env.docker.example .env.docker
-docker compose --env-file .env.docker up --build
+# edit .env.docker and set PDPP_OWNER_PASSWORD for a protected dashboard
+docker compose --env-file .env.docker pull
+docker compose --env-file .env.docker up -d
 ```
 
 Then open `http://localhost:3000`. The Compose stack keeps the browser-facing
 origin on `:3000` and runs the reference AS/RS internally as the same AS
 `:7662` / RS `:7663` process pair used by local development. Secrets belong in
 runtime env or `.env.docker`; they are not baked into the images.
+
+Default public images:
+
+- `ghcr.io/vana-com/pdpp/reference:main`
+- `ghcr.io/vana-com/pdpp/web:main`
+
+For durable self-hosting, prefer a release tag, `sha-*` tag, or digest pin over
+the moving `main` tag. To build from local source instead of pulling public
+images, run:
+
+```bash
+docker compose --env-file .env.docker up --build
+```
 
 For Docker-based development with hot reload:
 
@@ -86,6 +101,20 @@ That uses `docker-compose.dev.yml` to bind-mount the repo, run the reference
 server under Node watch mode, and run the web app with Next dev on `:3000`.
 Use the default Compose command above or `pnpm docker:smoke` when you want the
 production-style Docker path instead.
+
+When accessing Docker dev through a LAN IP or reverse proxy, add the browser
+hostnames to `PDPP_WEB_ALLOWED_DEV_ORIGINS` in `.env.docker`, for example:
+
+```bash
+PDPP_WEB_ALLOWED_DEV_ORIGINS=peregrine-dev.vivid.fish,192.168.1.180
+```
+
+Reverse proxies must also forward WebSocket upgrade traffic for
+`/_next/webpack-hmr`; otherwise the page loads but Next HMR cannot connect.
+
+CI builds the Docker targets on pull requests and publishes public GHCR images
+from trusted refs. Maintainers should make the first published GHCR packages
+public in GitHub's package settings if the registry creates them private.
 
 Run the reference implementation server:
 

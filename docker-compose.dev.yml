@@ -3,7 +3,7 @@ services:
     environment:
       NODE_ENV: development
     command: >
-      sh -lc 'node --watch reference-implementation/server/index.js'
+      sh -lc 'node --env-file-if-exists=.env.local --watch reference-implementation/server/index.js'
     volumes:
       - .:/app
       - pdpp-root-node-modules:/app/node_modules
@@ -20,6 +20,7 @@ services:
     environment:
       NODE_ENV: development
       NEXT_TELEMETRY_DISABLED: "1"
+      PDPP_WEB_ALLOWED_DEV_ORIGINS: ${PDPP_WEB_ALLOWED_DEV_ORIGINS:-}
       WATCHPACK_POLLING: ${WATCHPACK_POLLING:-true}
     command: >
       sh -lc 'pnpm --dir apps/web openspec:git-metadata && pnpm --dir apps/web exec next dev --webpack --hostname 0.0.0.0 --port 3000'

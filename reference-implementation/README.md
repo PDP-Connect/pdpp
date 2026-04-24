@@ -317,11 +317,13 @@ pnpm reference-contract:check-generated
 ### Docker Compose reference stack
 
 The supported Docker path is a root-level Compose assembly for the live
-reference stack:
+reference stack. The quickest self-hosted path uses the public GHCR images:
 
 ```bash
 cp .env.docker.example .env.docker
-docker compose --env-file .env.docker up --build
+# edit .env.docker and set PDPP_OWNER_PASSWORD for a protected dashboard
+docker compose --env-file .env.docker pull
+docker compose --env-file .env.docker up -d
 ```
 
 Open `http://localhost:3000` for the browser-facing reference origin. The
@@ -329,6 +331,19 @@ Compose stack runs:
 
 - `reference` — one AS/RS process, AS on `:7662`, RS on `:7663`
 - `web` — the Next app on `:3000`, proxying the AS/RS in composed mode
+
+Default public images:
+
+- `ghcr.io/vana-com/pdpp/reference:main`
+- `ghcr.io/vana-com/pdpp/web:main`
+
+The `main` tag is a moving default-branch build. For durable self-hosting, pin
+a release tag, `sha-*` tag, or digest in `.env.docker`:
+
+```bash
+PDPP_REFERENCE_IMAGE=ghcr.io/vana-com/pdpp/reference:sha-...
+PDPP_WEB_IMAGE=ghcr.io/vana-com/pdpp/web:sha-...
+```
 
 The important topology rule is that `PDPP_REFERENCE_ORIGIN` is what the
 browser uses, while `PDPP_AS_URL` and `PDPP_RS_URL` are container-internal
@@ -365,6 +380,21 @@ persistent browser profiles and remain subject to upstream anti-bot behavior.
 Mount any optional local connector inputs, such as Slack archives, explicitly
 when testing those connectors.
 
+Update public-image deployments by pulling newer images and restarting the
+stack. This keeps the persisted SQLite DB, embedding cache, and browser profile
+volumes in place:
+
+```bash
+docker compose --env-file .env.docker pull
+docker compose --env-file .env.docker up -d
+```
+
+To build from the current local checkout instead of pulling public images:
+
+```bash
+docker compose --env-file .env.docker up --build
+```
+
 Run the smoke validation:
 
 ```bash
@@ -386,6 +416,26 @@ That overlays `docker-compose.dev.yml`, bind-mounts the repo into the
 containers, runs the reference server with Node watch mode, and runs the web
 app with Next dev. Dependency folders stay in Docker named volumes so host
 installs and container installs do not trample each other.
+
+Docker dev loads repo-root `.env.local` in the reference container so local
+connector credentials such as `GITHUB_PERSONAL_ACCESS_TOKEN` are available to
+controller-managed connector runs. Public-image and default Compose operation
+do not load `.env.local`; use `.env.docker`, environment variables, or Docker
+secrets there.
+
+When accessing Docker dev through a LAN IP or reverse proxy, add the browser
+hostnames to `PDPP_WEB_ALLOWED_DEV_ORIGINS` in `.env.docker`, for example:
+
+```bash
+PDPP_WEB_ALLOWED_DEV_ORIGINS=peregrine-dev.vivid.fish,192.168.1.180
+```
+
+Reverse proxies must also forward WebSocket upgrade traffic for
+`/_next/webpack-hmr`; otherwise the page loads but Next HMR cannot connect.
+
+CI builds the Docker targets on pull requests and publishes public GHCR images
+from trusted refs. Maintainers should make the first published GHCR packages
+public in GitHub's package settings if the registry creates them private.
 
 ### Example third-party client app
 

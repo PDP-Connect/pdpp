@@ -13,6 +13,21 @@ each change.
 - **AND** the composed public/internal URL topology SHALL remain the same as the
   default Docker stack
 
+#### Scenario: Docker dev mode is accessed through another host
+- **WHEN** an operator accesses Docker development mode through a LAN IP,
+  hostname, or reverse proxy
+- **THEN** the web service SHALL provide a documented configuration knob for
+  additional Next development origins
+- **AND** Docker development documentation SHALL state that reverse proxies must
+  forward WebSocket upgrade traffic for Next HMR
+
+#### Scenario: Docker dev mode runs connector flows
+- **WHEN** the reference service runs inside the Docker development override
+- **THEN** it SHALL load the repo-root local development env file when present
+- **AND** connector credentials from that file SHALL be available to
+  controller-managed connector runs without requiring production images to load
+  `.env.local`
+
 #### Scenario: Docker smoke mode remains reproducible
 - **WHEN** an operator runs the default Docker smoke validation
 - **THEN** it SHALL continue to build and run the production-style Docker stack
