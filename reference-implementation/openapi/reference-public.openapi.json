@@ -2790,7 +2790,9 @@
                   },
                   "required": [
                     "object",
-                    "name"
+                    "name",
+                    "field_capabilities",
+                    "expand_capabilities"
                   ]
                 }
               }

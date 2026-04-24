@@ -742,7 +742,7 @@ const StreamMetadataResponseSchema = {
     },
     freshness: FreshnessSchema,
   },
-  required: ["object", "name"],
+  required: ["object", "name", "field_capabilities", "expand_capabilities"],
 };
 
 const AuthHeaderSchema = {
