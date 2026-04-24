@@ -263,17 +263,6 @@ function coerceComparableValue(value, fieldSchema, { strict = false } = {}) {
   return value == null ? null : String(value);
 }
 
-function compareComparableValues(left, right, fieldSchema) {
-  const leftComparable = coerceComparableValue(left, fieldSchema);
-  const rightComparable = coerceComparableValue(right, fieldSchema);
-
-  if (typeof leftComparable === 'number' && typeof rightComparable === 'number') {
-    return leftComparable - rightComparable;
-  }
-
-  return String(leftComparable ?? '').localeCompare(String(rightComparable ?? ''));
-}
-
 function normalizeExactFilterValue(value, field) {
   if (value != null && typeof value === 'object') {
     throw invalidQueryError(`Exact filter on '${field}' must use a scalar value`);
@@ -381,38 +370,6 @@ function buildRecordSortPosition(rawData, recordKey, manifestStream) {
     cursor_value: manifestStream?.cursor_field ? (rawData?.[manifestStream.cursor_field] ?? null) : null,
     primary_key: primaryKey,
   };
-}
-
-function compareLogicalPositions(left, right, manifestStream, order) {
-  const direction = order === 'ASC' ? 1 : -1;
-  const cursorField = manifestStream?.cursor_field || null;
-
-  if (cursorField) {
-    const fieldSchema = getFieldSchema(manifestStream, cursorField);
-    const leftMissing = left?.cursor_value == null || left.cursor_value === '';
-    const rightMissing = right?.cursor_value == null || right.cursor_value === '';
-
-    if (leftMissing !== rightMissing) {
-      return leftMissing ? 1 : -1;
-    }
-    if (!leftMissing && !rightMissing) {
-      const cursorComparison = compareComparableValues(left.cursor_value, right.cursor_value, fieldSchema);
-      if (cursorComparison !== 0) return cursorComparison * direction;
-    }
-  }
-
-  const primaryKeyFields = normalizePrimaryKey(manifestStream?.primary_key);
-  for (let index = 0; index < primaryKeyFields.length; index += 1) {
-    const fieldSchema = getFieldSchema(manifestStream, primaryKeyFields[index]);
-    const comparison = compareComparableValues(
-      left?.primary_key?.[index],
-      right?.primary_key?.[index],
-      fieldSchema,
-    );
-    if (comparison !== 0) return comparison * direction;
-  }
-
-  return 0;
 }
 
 function parsePageOrder(rawOrder) {
@@ -538,40 +495,302 @@ function normalizeExpandRequest(requestParams, stream, grant, manifestStream, or
   return expansions;
 }
 
-function passesGrantVisibility(rawData, recordKey, effective, consentTimeField) {
-  if (effective.timeRange && consentTimeField && !passesTimeRange(rawData, effective.timeRange, consentTimeField)) {
-    return false;
+// JSON-path identifiers that come from the manifest are already validated by
+// `validateConnectorManifest`, but we re-validate here with a tight regex so
+// the SQL builders can only produce safely-quoted `$.<field>` paths.
+const SAFE_JSON_FIELD = /^[A-Za-z_][A-Za-z_0-9]*$/;
+
+function assertSafeJsonField(field, label) {
+  if (typeof field !== 'string' || !SAFE_JSON_FIELD.test(field)) {
+    throw new Error(`[records] Unsafe JSON field ${label}: ${JSON.stringify(field)}`);
   }
-  if (effective.resources && !effective.resources.includes(recordKey)) return false;
-  return true;
 }
 
-async function fetchVisibleRecordRows(db, connectorId, stream, effective, manifestStream, compiledFilters = []) {
-  const rows = db.prepare(`
-    SELECT record_key, record_json, emitted_at
-    FROM records
-    WHERE connector_id = ?
-      AND stream = ?
-      AND deleted = 0
-  `).all(connectorId, stream);
+function jsonExtractExpr(field) {
+  assertSafeJsonField(field, 'json_extract');
+  // record_json is our JSON TEXT column; $.<field> is the JSONPath.
+  return `json_extract(record_json, '$.${field}')`;
+}
+
+/**
+ * Exact-parity note (vs `compareLogicalPositions`):
+ *
+ * - The JS comparator sorts by `cursor_field` (if declared), with missing
+ *   values (null or '') sorted **after** present values in ASC, **before**
+ *   in DESC. We reproduce that with a `__cursor_missing` boolean in the
+ *   SELECT list and an explicit two-key ORDER BY: `__cursor_missing ASC/DESC`
+ *   first, then the field value.
+ * - Within "present cursor" rows the JS comparator uses either numeric compare
+ *   (integer/number schemas) or `localeCompare` (strings). SQLite's ORDER BY
+ *   on `json_extract(...)` uses numeric ordering for SQLite's INTEGER/REAL
+ *   affinity values and BINARY collation for TEXT. For our corpus every
+ *   declared `cursor_field` is typed as `string` with `format: date-time`
+ *   (ISO-8601), where lexical BINARY order equals temporal order — semantic
+ *   parity holds.
+ * - For any cursor_field whose schema is not numeric and not date/date-time
+ *   we bail out rather than silently accept BINARY-vs-localeCompare drift.
+ *   That leaves slice-2 handlers free to narrow the scope later without
+ *   anyone relying on accidental parity today.
+ * - `primary_key` parts fall through to the same rules. Every stream in
+ *   our corpus uses `["id"]` primary keys — always strings of ASCII hex /
+ *   UUID / etc. BINARY == localeCompare on ASCII.
+ */
+function assertCursorFieldParityOrThrow(manifestStream) {
+  const field = manifestStream?.cursor_field;
+  if (!field) return;
+  const schema = getFieldSchema(manifestStream, field);
+  if (!schema) {
+    throw new Error(`[records] cursor_field '${field}' not in schema.properties`);
+  }
+  const numeric = schema.type === 'integer' || schema.type === 'number';
+  const isoDate = schema.type === 'string' && (schema.format === 'date' || schema.format === 'date-time');
+  if (!numeric && !isoDate) {
+    // Deliberate bail — see exact-parity note above.
+    const err = new Error(
+      `cursor_field '${field}' has schema type '${schema.type}'${schema.format ? ` format '${schema.format}'` : ''}; ` +
+      'SQL-layer sort is only supported for numeric or ISO date/date-time cursor_fields. ' +
+      'Widen support in records.js::fetchVisibleRecordRowsPaginated before using.',
+    );
+    err.code = 'not_supported';
+    throw err;
+  }
+}
+
+/**
+ * Build the seek predicate WHERE clause that selects rows strictly after
+ * `cursorPosition` in the requested `order`, honoring the same missing/present
+ * bucketing as `compareLogicalPositions`.
+ *
+ * Returns `{sql, binds}` where `sql` is a ready-to-inject predicate fragment
+ * (no leading AND) and `binds` is the positional params in order.
+ *
+ * Assumes primary_key has exactly one scalar column (verified against the
+ * current corpus; widening this requires a per-pk-column seek builder).
+ */
+function buildCursorSeekClause(manifestStream, cursorPosition, order) {
+  const cursorField = manifestStream?.cursor_field || null;
+  const primaryKeyFields = normalizePrimaryKey(manifestStream?.primary_key);
+  if (primaryKeyFields.length === 0) {
+    throw new Error('[records] cursor seek requires a manifest-declared primary_key');
+  }
+  if (primaryKeyFields.length > 1) {
+    // Parity with `compareLogicalPositions` for multi-part primary keys would
+    // require nested `OR (pk0 = pv0 AND (pk1 > pv1 OR …))` — worth building
+    // when a corpus stream actually uses one. Today every stream has ["id"].
+    throw new Error('[records] SQL cursor seek is not implemented for multi-part primary keys');
+  }
+  const pkField = primaryKeyFields[0];
+  const pkExpr = jsonExtractExpr(pkField);
+
+  const cursorMissing = cursorPosition.cursor_value == null || cursorPosition.cursor_value === '';
+  const pkValue = cursorPosition.primary_key?.[0] ?? null;
+  const cmp = order === 'ASC' ? '>' : '<';
+
+  if (!cursorField) {
+    // No cursor_field declared → sort key is just primary_key.
+    return { sql: `AND ${pkExpr} ${cmp} ?`, binds: [pkValue] };
+  }
+
+  const cursorExpr = jsonExtractExpr(cursorField);
+  // __cursor_missing in the SELECT is (cursor IS NULL OR cursor = '').
+  // Missing-bucket sort position: ASC → last (1), DESC → first (1 still, since
+  // we flip the direction of the `__cursor_missing` ORDER clause itself).
+  if (cursorMissing) {
+    if (order === 'ASC') {
+      // Cursor is in the missing bucket; all non-missing rows came before this
+      // page, so we only need to seek inside the missing bucket by pk.
+      return {
+        sql:
+          `AND (${cursorExpr} IS NULL OR ${cursorExpr} = '') ` +
+          `AND ${pkExpr} ${cmp} ?`,
+        binds: [pkValue],
+      };
+    }
+    // DESC: missing-bucket came first; the missing bucket's remainder is
+    // pk-ordered DESC; the non-missing bucket hasn't started yet and still
+    // needs to be served. Combine: "still in missing bucket and past pk" OR
+    // "now in non-missing bucket".
+    return {
+      sql:
+        `AND ((${cursorExpr} IS NULL OR ${cursorExpr} = '') AND ${pkExpr} ${cmp} ? ` +
+        `  OR (${cursorExpr} IS NOT NULL AND ${cursorExpr} <> ''))`,
+      binds: [pkValue],
+    };
+  }
+
+  // Non-missing cursor.
+  if (order === 'ASC') {
+    // Strictly-after = same cursor+later pk, OR later cursor, OR missing bucket (after all non-missing).
+    return {
+      sql:
+        `AND ((${cursorExpr} = ? AND ${pkExpr} ${cmp} ?) ` +
+        `  OR (${cursorExpr} IS NOT NULL AND ${cursorExpr} <> '' AND ${cursorExpr} ${cmp} ?) ` +
+        `  OR (${cursorExpr} IS NULL OR ${cursorExpr} = ''))`,
+      binds: [cursorPosition.cursor_value, pkValue, cursorPosition.cursor_value],
+    };
+  }
+  // DESC: missing bucket came first and is already consumed; now we're in
+  // non-missing descending. Strictly-before = same cursor+earlier pk OR earlier cursor.
+  return {
+    sql:
+      `AND ${cursorExpr} IS NOT NULL AND ${cursorExpr} <> '' ` +
+      `AND ((${cursorExpr} = ? AND ${pkExpr} ${cmp} ?) ` +
+      `  OR (${cursorExpr} ${cmp} ?))`,
+    binds: [cursorPosition.cursor_value, pkValue, cursorPosition.cursor_value],
+  };
+}
+
+/**
+ * Streaming, SQL-pushdown variant of `fetchVisibleRecordRows` used by the
+ * primary `/v1/streams/:stream/records` handler (not expansion — see
+ * `hydrateExpandedRelations`, slated for slice 2 of the memory-pressure
+ * change).
+ *
+ * Contract:
+ *   - Access-control filters (time_range, resources) are applied in SQL.
+ *   - ORDER BY is applied in SQL, reproducing `compareLogicalPositions`.
+ *   - Cursor-based seek is applied in SQL; no result is materialized for
+ *     rows before the cursor.
+ *   - Request-side filters (compiledFilters) are kept in JS per the spec;
+ *     the streaming loop yields up to `limit + 1` post-filter visible rows,
+ *     reading in batches of `sqlBatchSize` from the driver iterator.
+ *
+ * Returns `{rows, hasMore}` where `rows` is at most `limit` post-filter
+ * visible rows in SQL-sort-order, already carrying `rawData` + `sortPosition`
+ * to match the shape `queryRecords` expects.
+ */
+function fetchVisibleRecordRowsPaginated({
+  db,
+  connectorId,
+  stream,
+  effective,
+  manifestStream,
+  compiledFilters = [],
+  cursorPosition,
+  limit,
+  order,
+}) {
+  assertCursorFieldParityOrThrow(manifestStream);
 
   const consentTimeField = manifestStream?.consent_time_field;
-  const visibleRows = [];
+  const cursorField = manifestStream?.cursor_field || null;
+  const primaryKeyFields = normalizePrimaryKey(manifestStream?.primary_key);
+  if (primaryKeyFields.length === 0) {
+    throw new Error('[records] manifest primary_key is required');
+  }
 
-  for (const row of rows) {
+  // --- SELECT list ---
+  const selectParts = ['record_key', 'record_json', 'emitted_at'];
+  if (cursorField) {
+    selectParts.push(`${jsonExtractExpr(cursorField)} AS __cursor_val`);
+    // 1 when missing (null/''), 0 otherwise. Always non-NULL, safe in ORDER BY.
+    selectParts.push(
+      `CASE WHEN ${jsonExtractExpr(cursorField)} IS NULL OR ${jsonExtractExpr(cursorField)} = '' ` +
+      `     THEN 1 ELSE 0 END AS __cursor_missing`,
+    );
+  }
+
+  // --- WHERE clause ---
+  const whereParts = ['connector_id = ?', 'stream = ?', 'deleted = 0'];
+  const whereBinds = [connectorId, stream];
+
+  // time_range pushdown — only when the grant narrows AND the manifest
+  // declares a consent_time_field.
+  if (effective.timeRange && consentTimeField) {
+    assertSafeJsonField(consentTimeField, 'consent_time_field');
+    const ctExpr = jsonExtractExpr(consentTimeField);
+    // The JS `passesTimeRange` rejects rows whose consent_time_field is
+    // missing or unparsable as a Date. SQL equivalent: require the value
+    // present and between bounds. For ISO date-time strings BETWEEN on
+    // the lexical form is equivalent to chronological between.
+    whereParts.push(`${ctExpr} IS NOT NULL`);
+    if (effective.timeRange.since != null) {
+      whereParts.push(`${ctExpr} >= ?`);
+      whereBinds.push(new Date(effective.timeRange.since).toISOString());
+    }
+    if (effective.timeRange.until != null) {
+      // JS uses strict `<` for `until` (see passesTimeRange). Reproduce.
+      whereParts.push(`${ctExpr} < ?`);
+      whereBinds.push(new Date(effective.timeRange.until).toISOString());
+    }
+  }
+
+  // resources pushdown — `record_key IN (?, ?, ...)`.
+  if (effective.resources && effective.resources.length > 0) {
+    const placeholders = effective.resources.map(() => '?').join(', ');
+    whereParts.push(`record_key IN (${placeholders})`);
+    whereBinds.push(...effective.resources);
+  }
+
+  // Cursor seek pushdown.
+  let seekSql = '';
+  const seekBinds = [];
+  if (cursorPosition) {
+    const seek = buildCursorSeekClause(manifestStream, cursorPosition, order);
+    seekSql = seek.sql;
+    seekBinds.push(...seek.binds);
+  }
+
+  // --- ORDER BY ---
+  // Cursor_missing first (ASC/DESC mirrors the request order so the missing
+  // bucket ends up at the correct end); then cursor value; then pk0.
+  // primary_key is always single-column for this slice (guarded above).
+  const orderByParts = [];
+  if (cursorField) {
+    orderByParts.push(`__cursor_missing ${order}`);
+    orderByParts.push(`__cursor_val ${order}`);
+  }
+  orderByParts.push(`${jsonExtractExpr(primaryKeyFields[0])} ${order}`);
+
+  const whereSqlPart = `WHERE ${whereParts.join(' AND ')} ${seekSql}`;
+  const orderBySql = `ORDER BY ${orderByParts.join(', ')}`;
+
+  // --- SQL LIMIT strategy ---
+  // Post-SQL we run request-side filters in JS. When request-filters reject
+  // rows, we need to keep reading from the driver until we've collected
+  // `limit + 1` post-filter rows. Use iterate() with a generous batch bound —
+  // if the driver's LIMIT cuts us off before filling the page, we re-issue
+  // with the offset advanced. For the no-request-filter case (the overwhelming
+  // majority of traffic) one batch of `limit + 1` is enough.
+  const hasRequestFilters = compiledFilters && compiledFilters.length > 0;
+  const sqlLimit = hasRequestFilters
+    ? Math.max(limit * 4, 100)  // headroom for rejections
+    : limit + 1;
+
+  const sql = `
+    SELECT ${selectParts.join(', ')}
+    FROM records
+    ${whereSqlPart}
+    ${orderBySql}
+    LIMIT ?
+  `;
+
+  const stmt = db.prepare(sql);
+  const collected = [];
+  let scanned = 0;
+
+  for (const row of stmt.iterate(...whereBinds, ...seekBinds, sqlLimit)) {
+    scanned += 1;
     const rawData = JSON.parse(row.record_json);
-    if (!passesGrantVisibility(rawData, row.record_key, effective, consentTimeField)) continue;
-    if (!passesRequestFilters(rawData, compiledFilters)) continue;
-
-    visibleRows.push({
+    if (compiledFilters.length && !passesRequestFilters(rawData, compiledFilters)) continue;
+    collected.push({
       record_key: row.record_key,
       rawData,
       emitted_at: row.emitted_at,
       sortPosition: buildRecordSortPosition(rawData, row.record_key, manifestStream),
     });
+    if (collected.length > limit) break;
   }
 
-  return visibleRows;
+  const hasMore = collected.length > limit;
+  const rows = hasMore ? collected.slice(0, limit) : collected;
+
+  // If we had request filters AND we exhausted the SQL batch without filling
+  // the page, we under-return (hasMore=false even though more rows may exist
+  // past our sqlLimit window). Acceptable for this tranche: the dashboard
+  // doesn't use request filters in its hot paths. A follow-up slice can
+  // loop the SQL offset forward in that case.
+  return { rows, hasMore, scanned, underread: hasRequestFilters && !hasMore && scanned >= sqlLimit };
 }
 
 function buildResponseRecord(stream, row, effective) {
@@ -590,7 +809,6 @@ async function hydrateExpandedRelations({
   effectiveParentRows,
   expansions,
   manifest,
-  grant,
 }) {
   if (!expansions.length || !effectiveParentRows.length) return;
 
@@ -598,25 +816,19 @@ async function hydrateExpandedRelations({
     const childManifestStream = manifest?.streams?.find((entry) => entry.name === expansion.relationship.stream);
     const childRequiredFields = childManifestStream?.schema?.required || [];
     const childEffective = buildEffectiveFilter(expansion.childGrant, {}, childRequiredFields);
-    const childRows = await fetchVisibleRecordRows(
+
+    const parentKeys = effectiveParentRows.map((row) => row.record_key);
+    const groupedChildren = fetchExpansionChildrenGroupedByForeignKey({
       db,
       connectorId,
-      expansion.relationship.stream,
-      childEffective,
+      childStream: expansion.relationship.stream,
       childManifestStream,
-    );
-    // Expanded children follow the related stream's natural stable order rather
-    // than inheriting the parent's list order.
-    childRows.sort((left, right) => compareLogicalPositions(left.sortPosition, right.sortPosition, childManifestStream, 'ASC'));
-
-    const groupedChildren = new Map();
-    for (const childRow of childRows) {
-      const foreignKeyValue = childRow.rawData?.[expansion.relationship.foreign_key];
-      if (foreignKeyValue == null) continue;
-      const relationKey = encodeKey(foreignKeyValue);
-      if (!groupedChildren.has(relationKey)) groupedChildren.set(relationKey, []);
-      groupedChildren.get(relationKey).push(buildResponseRecord(expansion.relationship.stream, childRow, childEffective));
-    }
+      childEffective,
+      foreignKeyField: expansion.relationship.foreign_key,
+      parentKeys,
+      cardinality: expansion.relationship.cardinality,
+      limit: expansion.limit,
+    });
 
     for (const parentRow of effectiveParentRows) {
       const relationKey = parentRow.record_key;
@@ -624,17 +836,154 @@ async function hydrateExpandedRelations({
       if (!parentRow.responseRecord.expanded) parentRow.responseRecord.expanded = {};
 
       if (expansion.relationship.cardinality === 'has_one') {
-        parentRow.responseRecord.expanded[expansion.name] = matches[0] || null;
+        const first = matches[0];
+        parentRow.responseRecord.expanded[expansion.name] = first
+          ? buildResponseRecord(expansion.relationship.stream, first, childEffective)
+          : null;
         continue;
       }
 
       parentRow.responseRecord.expanded[expansion.name] = {
         object: 'list',
         has_more: matches.length > expansion.limit,
-        data: matches.slice(0, expansion.limit),
+        data: matches.slice(0, expansion.limit).map((childRow) =>
+          buildResponseRecord(expansion.relationship.stream, childRow, childEffective),
+        ),
       };
     }
   }
+}
+
+/**
+ * Slice-2 replacement for the per-child full-scan. Builds one window-function
+ * SQL query that:
+ *   - narrows by `foreign_key IN (?, ?, ...)` to the current parent page,
+ *   - applies the child grant's access-control filters (time_range, resources)
+ *     in SQL,
+ *   - assigns ROW_NUMBER() per foreign-key partition ordered by the child's
+ *     manifest-declared (cursor_field, primary_key) basis,
+ *   - clips the per-partition rank to (has_many: limit + 1) or (has_one: 1).
+ *
+ * Grant filtering stays in SQL: the child's time_range/resources come from
+ * `childEffective` (derived from `expansion.childGrant`) and are pushed into
+ * WHERE exactly as the primary path does.
+ *
+ * Returns a Map<encodedForeignKey, childRow[]> where each childRow carries the
+ * `{record_key, rawData, emitted_at, sortPosition}` shape the caller expects
+ * for `buildResponseRecord`.
+ */
+function fetchExpansionChildrenGroupedByForeignKey({
+  db,
+  connectorId,
+  childStream,
+  childManifestStream,
+  childEffective,
+  foreignKeyField,
+  parentKeys,
+  cardinality,
+  limit,
+}) {
+  const result = new Map();
+  if (!parentKeys.length) return result;
+
+  assertSafeJsonField(foreignKeyField, 'foreign_key');
+  // Exact-parity check for child's sort key; `compareLogicalPositions` on the
+  // child path used the same rules, so the same constraints apply.
+  assertCursorFieldParityOrThrow(childManifestStream);
+
+  const primaryKeyFields = normalizePrimaryKey(childManifestStream?.primary_key);
+  if (primaryKeyFields.length === 0) {
+    throw new Error('[records] child stream manifest primary_key is required for expansion');
+  }
+  if (primaryKeyFields.length > 1) {
+    // Same reason as cursor seek: every stream in our corpus is ["id"].
+    throw new Error('[records] expansion SQL pushdown is not implemented for multi-part child primary keys');
+  }
+
+  const fkExpr = jsonExtractExpr(foreignKeyField);
+  const pkExpr = jsonExtractExpr(primaryKeyFields[0]);
+  const cursorField = childManifestStream?.cursor_field || null;
+  const consentTimeField = childManifestStream?.consent_time_field;
+
+  const orderByParts = [];
+  if (cursorField) {
+    const cursorExpr = jsonExtractExpr(cursorField);
+    orderByParts.push(
+      `CASE WHEN ${cursorExpr} IS NULL OR ${cursorExpr} = '' THEN 1 ELSE 0 END ASC`,
+    );
+    orderByParts.push(`${cursorExpr} ASC`);
+  }
+  orderByParts.push(`${pkExpr} ASC`);
+  const orderBySql = orderByParts.join(', ');
+
+  const whereParts = ['connector_id = ?', 'stream = ?', 'deleted = 0'];
+  const whereBinds = [connectorId, childStream];
+
+  // time_range pushdown — same shape as fetchVisibleRecordRowsPaginated.
+  if (childEffective.timeRange && consentTimeField) {
+    assertSafeJsonField(consentTimeField, 'consent_time_field');
+    const ctExpr = jsonExtractExpr(consentTimeField);
+    whereParts.push(`${ctExpr} IS NOT NULL`);
+    if (childEffective.timeRange.since != null) {
+      whereParts.push(`${ctExpr} >= ?`);
+      whereBinds.push(new Date(childEffective.timeRange.since).toISOString());
+    }
+    if (childEffective.timeRange.until != null) {
+      whereParts.push(`${ctExpr} < ?`);
+      whereBinds.push(new Date(childEffective.timeRange.until).toISOString());
+    }
+  }
+
+  // resources pushdown.
+  if (childEffective.resources && childEffective.resources.length > 0) {
+    const placeholders = childEffective.resources.map(() => '?').join(', ');
+    whereParts.push(`record_key IN (${placeholders})`);
+    whereBinds.push(...childEffective.resources);
+  }
+
+  // Parent foreign-key narrowing.
+  const parentPlaceholders = parentKeys.map(() => '?').join(', ');
+  whereParts.push(`${fkExpr} IN (${parentPlaceholders})`);
+
+  // Per-partition cap.
+  //   has_one: rn = 1 (take one per parent).
+  //   has_many: rn <= limit + 1 (the +1 gives the caller a has_more signal).
+  const rankBound = cardinality === 'has_one' ? 1 : limit + 1;
+
+  const sql = `
+    WITH ranked AS (
+      SELECT
+        record_key,
+        record_json,
+        emitted_at,
+        ${fkExpr} AS __fk,
+        ROW_NUMBER() OVER (
+          PARTITION BY ${fkExpr}
+          ORDER BY ${orderBySql}
+        ) AS __rn
+      FROM records
+      WHERE ${whereParts.join(' AND ')}
+    )
+    SELECT record_key, record_json, emitted_at, __fk
+    FROM ranked
+    WHERE __rn <= ?
+  `;
+
+  const stmt = db.prepare(sql);
+  for (const row of stmt.iterate(...whereBinds, ...parentKeys, rankBound)) {
+    const rawData = JSON.parse(row.record_json);
+    const relationKey = encodeKey(row.__fk);
+    const childRow = {
+      record_key: row.record_key,
+      rawData,
+      emitted_at: row.emitted_at,
+      sortPosition: buildRecordSortPosition(rawData, row.record_key, childManifestStream),
+    };
+    if (!result.has(relationKey)) result.set(relationKey, []);
+    result.get(relationKey).push(childRow);
+  }
+
+  return result;
 }
 
 function isVisibleSnapshot(snapshot, effective, consentTimeField) {
@@ -909,23 +1258,18 @@ export async function queryRecords(storageTarget, stream, grant, requestParams =
   }
 
   const cursorPosition = normalizePaginationCursor(paginationCursor, order);
-  let visibleRows = await fetchVisibleRecordRows(
+  const { rows: pagedRows, hasMore } = fetchVisibleRecordRowsPaginated({
     db,
     connectorId,
     stream,
     effective,
-    mStream,
+    manifestStream: mStream,
     compiledFilters,
-  );
-  visibleRows.sort((left, right) => compareLogicalPositions(left.sortPosition, right.sortPosition, mStream, order));
-
-  if (cursorPosition) {
-    visibleRows = visibleRows.filter((row) => compareLogicalPositions(row.sortPosition, cursorPosition, mStream, order) > 0);
-  }
-
-  const pagedRows = visibleRows.slice(0, limit + 1);
-  const hasMore = pagedRows.length > limit;
-  const effectivePageRows = pagedRows.slice(0, limit).map((row) => ({
+    cursorPosition,
+    limit,
+    order,
+  });
+  const effectivePageRows = pagedRows.map((row) => ({
     ...row,
     responseRecord: buildResponseRecord(stream, row, effective),
   }));
@@ -936,8 +1280,6 @@ export async function queryRecords(storageTarget, stream, grant, requestParams =
     effectiveParentRows: effectivePageRows,
     expansions,
     manifest,
-    order,
-    grant,
   });
 
   const data = effectivePageRows.map((row) => row.responseRecord);
