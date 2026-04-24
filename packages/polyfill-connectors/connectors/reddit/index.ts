@@ -2,27 +2,44 @@
 /**
  * PDPP Reddit Connector (v0.1.0)
  *
- * Auth: OAuth script-app credentials via REDDIT_CLIENT_ID +
- * REDDIT_CLIENT_SECRET + REDDIT_USERNAME + REDDIT_PASSWORD (install an app at
- * https://www.reddit.com/prefs/apps — type "script"). Or provide
- * REDDIT_ACCESS_TOKEN directly (shorter TTL).
+ * Reddit's OAuth script-app password grant was retired in 2024, so this
+ * connector collects via a logged-in browser session. All fetches happen
+ * through `page.evaluate(fetch)` against `old.reddit.com/*.json` — the same
+ * JSON the modern apps consume, served to the current session cookie.
+ * old.reddit.com has been stable since 2018 and is the polyfill-friendliest
+ * surface for personal data collection.
  *
  * Endpoints:
- *   /user/{u}/submitted
- *   /user/{u}/comments
- *   /user/{u}/saved (requires read+history scopes)
+ *   /user/{u}/submitted.json   — link + self posts
+ *   /user/{u}/comments.json    — comments
+ *   /user/{u}/saved.json       — mixed saved posts (t3) and comments (t1)
  *
- * Rate limit: 100 OAuth req/min.
+ * Pagination: opaque `after` cursor, newest-first. Incremental sync stops
+ * once we cross the earliest `created_utc` from the prior run — same
+ * pattern the original API-based connector used.
+ *
+ * Rate limit: Reddit's logged-in web JSON allows ~100 req/min before 429.
+ * We page at limit=100 and use a conservative 500ms politeDelay between
+ * pages.
  */
 
-import { nowIso, runConnector } from "../../src/connector-runtime.ts";
+import type { Page } from "playwright";
+import { ensureRedditSession } from "../../src/auto-login/reddit.ts";
+import {
+  type BrowserCollectContext,
+  type EmittedMessage,
+  nowIso,
+  politeDelay,
+  type RecordData,
+  runConnector,
+} from "../../src/connector-runtime.ts";
+import { isMainModule } from "../../src/is-main-module.ts";
 
-const USER_AGENT = "pdpp-reddit-connector/0.1";
+const USER_AGENT = "pdpp-reddit-connector/0.1 (polyfill; +https://pdpp.org)";
 const MAX_PAGES = 100;
+const PAGE_DELAY_MS = 500;
 
-interface RedditAccessTokenResponse {
-  access_token: string;
-}
+// ─── Reddit API shapes ──────────────────────────────────────────────────
 
 interface RedditChildData {
   body?: string | null;
@@ -54,169 +71,184 @@ interface RedditListing {
   };
 }
 
-const isoFromUnix = (u: number | string | undefined | null): string | null =>
-  u ? new Date(Number(u) * 1000).toISOString() : null;
-
-async function getAccessToken(): Promise<string> {
-  if (process.env.REDDIT_ACCESS_TOKEN) {
-    return process.env.REDDIT_ACCESS_TOKEN;
-  }
-  const clientId = process.env.REDDIT_CLIENT_ID;
-  const secret = process.env.REDDIT_CLIENT_SECRET;
-  const user = process.env.REDDIT_USERNAME;
-  const pass = process.env.REDDIT_PASSWORD;
-  if (!(clientId && secret && user && pass)) {
-    throw new Error(
-      "reddit_creds_missing: set REDDIT_ACCESS_TOKEN, or all of REDDIT_CLIENT_ID/SECRET/USERNAME/PASSWORD"
-    );
-  }
-  const basic = Buffer.from(`${clientId}:${secret}`).toString("base64");
-  const res = await fetch("https://www.reddit.com/api/v1/access_token", {
-    method: "POST",
-    headers: {
-      Authorization: `Basic ${basic}`,
-      "Content-Type": "application/x-www-form-urlencoded",
-      "User-Agent": USER_AGENT,
-    },
-    body: new URLSearchParams({
-      grant_type: "password",
-      username: user,
-      password: pass,
-    }).toString(),
-  });
-  if (!res.ok) {
-    throw new Error(`reddit_token_${String(res.status)}: ${(await res.text()).slice(0, 200)}`);
-  }
-  const body = (await res.json()) as RedditAccessTokenResponse;
-  return body.access_token;
+interface RedditFetchResult {
+  json: RedditListing | null;
+  status: number;
 }
 
-async function redditFetch(path: string, token: string): Promise<RedditListing> {
-  const res = await fetch(`https://oauth.reddit.com${path}`, {
-    headers: { Authorization: `Bearer ${token}`, "User-Agent": USER_AGENT },
-  });
-  if (res.status === 401) {
-    throw new Error("reddit_auth_failed");
+// ─── Fetch through the page (preserves session cookie + anti-bot) ───────
+
+async function redditFetch(page: Page, path: string): Promise<RedditFetchResult> {
+  return (await page.evaluate(
+    async ({ path, userAgent }) => {
+      try {
+        const res = await fetch(`https://old.reddit.com${path}`, {
+          credentials: "include",
+          headers: {
+            accept: "application/json",
+            "user-agent": userAgent,
+          },
+        });
+        const status = res.status;
+        let json: unknown = null;
+        try {
+          json = await res.json();
+        } catch {
+          json = null;
+        }
+        return { status, json };
+      } catch (err) {
+        return { status: 0, json: { error: String(err) } };
+      }
+    },
+    { path, userAgent: USER_AGENT }
+  )) as RedditFetchResult;
+}
+
+function assertListingOk(status: number, json: RedditListing | null, endpoint: string): asserts json is RedditListing {
+  if (status === 401 || status === 403) {
+    throw new Error(`reddit_auth_failed: ${status} on ${endpoint}`);
   }
-  if (res.status === 429) {
-    throw new Error("reddit_rate_limited");
+  if (status === 429) {
+    throw new Error(`reddit_rate_limited: 429 on ${endpoint}`);
   }
-  if (!res.ok) {
-    throw new Error(`reddit_http_${String(res.status)}: ${(await res.text()).slice(0, 200)}`);
+  if (status !== 200 || !json) {
+    throw new Error(`reddit_http_${status}: ${endpoint}`);
   }
-  return (await res.json()) as RedditListing;
+}
+
+/** Append children older-than-cursor into `all`; returns whether we crossed the cursor. */
+function appendNewChildren(
+  children: readonly RedditChild[],
+  sinceEpochUtc: number | null,
+  all: RedditChild[]
+): boolean {
+  for (const c of children) {
+    const created = Number(c?.data?.created_utc ?? 0);
+    if (sinceEpochUtc && created <= sinceEpochUtc) {
+      return true;
+    }
+    all.push(c);
+  }
+  return false;
 }
 
 /**
- * Paginate a Reddit listing. Reddit listings are newest-first and use an
- * opaque `after` cursor. We support incremental sync by stopping pagination
- * once we cross the earliest `created_utc` from the prior run.
+ * Paginate a Reddit listing. Newest-first, opaque `after` cursor. Stops
+ * once we cross the prior run's high-water created_utc (incremental), hit
+ * an empty page, or run out of `after`.
  */
-async function paginate(endpointTemplate: string, token: string, sinceEpochUtc: number | null): Promise<RedditChild[]> {
+async function paginate(page: Page, endpoint: string, sinceEpochUtc: number | null): Promise<RedditChild[]> {
   const all: RedditChild[] = [];
   let after: string | null = null;
-  let guard = MAX_PAGES;
-  while (guard-- > 0) {
-    const path = `${endpointTemplate}?limit=100${after ? `&after=${after}` : ""}`;
-    const json = await redditFetch(path, token);
-    const children = json?.data?.children || [];
-    if (!children.length) {
+
+  for (let guard = 0; guard < MAX_PAGES; guard++) {
+    const path = `${endpoint}?limit=100${after ? `&after=${encodeURIComponent(after)}` : ""}`;
+    const { status, json } = await redditFetch(page, path);
+    assertListingOk(status, json, endpoint);
+
+    const children = json.data?.children ?? [];
+    if (children.length === 0) {
+      break;
+    }
+    if (appendNewChildren(children, sinceEpochUtc, all)) {
       break;
     }
 
-    // Incremental stop: if we've gone past the cursor (created_utc < sinceEpoch),
-    // everything remaining is older — stop paginating.
-    let hitCursor = false;
-    for (const c of children) {
-      const created = Number(c?.data?.created_utc || 0);
-      if (sinceEpochUtc && created <= sinceEpochUtc) {
-        hitCursor = true;
-        break;
-      }
-      all.push(c);
-    }
-    if (hitCursor) {
-      break;
-    }
-
-    after = json?.data?.after ?? null;
+    after = json.data?.after ?? null;
     if (!after) {
       break;
     }
+    await politeDelay(PAGE_DELAY_MS);
   }
+
   return all;
 }
 
-function submittedRecord(d: RedditChildData): Record<string, unknown> {
+// ─── Record builders ────────────────────────────────────────────────────
+
+const isoFromUnix = (u: number | string | undefined | null): string | null =>
+  u ? new Date(Number(u) * 1000).toISOString() : null;
+
+const absolutePermalink = (permalink: string | null | undefined): string | null =>
+  permalink ? `https://reddit.com${permalink}` : null;
+
+function submittedRecord(d: RedditChildData): RecordData {
   return {
-    id: d.name,
+    id: d.name ?? null,
     subreddit: d.subreddit ?? null,
     title: d.title ?? null,
-    permalink: d.permalink ? `https://reddit.com${d.permalink}` : null,
+    permalink: absolutePermalink(d.permalink),
     url: d.url ?? null,
     selftext: d.selftext ?? null,
     is_self: d.is_self ?? null,
     score: d.score ?? null,
     num_comments: d.num_comments ?? null,
     upvote_ratio: d.upvote_ratio ?? null,
-    created_utc: isoFromUnix(d.created_utc) || nowIso(),
+    created_utc: isoFromUnix(d.created_utc) ?? nowIso(),
   };
 }
 
-function commentRecord(d: RedditChildData): Record<string, unknown> {
+function commentRecord(d: RedditChildData): RecordData {
   return {
-    id: d.name,
+    id: d.name ?? null,
     subreddit: d.subreddit ?? null,
     body: d.body ?? null,
     link_id: d.link_id ?? null,
     parent_id: d.parent_id ?? null,
-    permalink: d.permalink ? `https://reddit.com${d.permalink}` : null,
+    permalink: absolutePermalink(d.permalink),
     score: d.score ?? null,
-    created_utc: isoFromUnix(d.created_utc) || nowIso(),
+    created_utc: isoFromUnix(d.created_utc) ?? nowIso(),
   };
 }
 
-function savedRecord(c: RedditChild): Record<string, unknown> {
+function savedRecord(c: RedditChild): RecordData {
   const d = c.data;
   return {
-    id: d.name,
+    id: d.name ?? null,
     kind: c.kind,
     subreddit: d.subreddit ?? null,
     title: d.title ?? d.link_title ?? null,
     body: d.body ?? d.selftext ?? null,
-    permalink: d.permalink ? `https://reddit.com${d.permalink}` : null,
+    permalink: absolutePermalink(d.permalink),
     url: d.url ?? null,
-    created_utc: isoFromUnix(d.created_utc) || nowIso(),
+    created_utc: isoFromUnix(d.created_utc) ?? nowIso(),
   };
 }
+
+// ─── Stream runner ──────────────────────────────────────────────────────
 
 interface StreamCursor {
   last_created_utc?: number;
 }
 
 interface CollectStreamArgs {
-  emit: (msg: { type: "STATE"; stream: string; cursor: unknown }) => Promise<void>;
-  emitRecord: (stream: string, data: Record<string, unknown>) => Promise<void>;
+  emit: (msg: EmittedMessage) => Promise<void>;
+  emitRecord: (stream: string, data: RecordData) => Promise<void>;
   endpoint: string;
+  page: Page;
   progress: (message: string, extra?: { stream?: string }) => Promise<void>;
   progressMessage: string;
   state: Record<string, unknown>;
   streamName: string;
-  token: string;
-  toRecord: (c: RedditChild) => Record<string, unknown>;
+  toRecord: (c: RedditChild) => RecordData;
 }
 
 async function collectStream(args: CollectStreamArgs): Promise<void> {
-  const { streamName, endpoint, token, state, toRecord, emit, emitRecord, progress, progressMessage } = args;
+  const { emit, emitRecord, endpoint, page, progress, progressMessage, state, streamName, toRecord } = args;
   await progress(progressMessage, { stream: streamName });
+
   const cursor = state[streamName] as StreamCursor | undefined;
-  const sinceEpoch = cursor?.last_created_utc || null;
-  const items = await paginate(endpoint, token, sinceEpoch);
-  let latestEpoch = sinceEpoch || 0;
+  const sinceEpoch = cursor?.last_created_utc ?? null;
+
+  const items = await paginate(page, endpoint, sinceEpoch);
+
+  let latestEpoch = sinceEpoch ?? 0;
   for (const c of items) {
-    latestEpoch = Math.max(latestEpoch, Number(c.data.created_utc || 0));
+    latestEpoch = Math.max(latestEpoch, Number(c.data.created_utc ?? 0));
     await emitRecord(streamName, toRecord(c));
   }
+
   await emit({
     type: "STATE",
     stream: streamName,
@@ -224,58 +256,68 @@ async function collectStream(args: CollectStreamArgs): Promise<void> {
   });
 }
 
-runConnector({
-  name: "reddit",
-  retryablePattern: /ECONN|fetch failed|rate_limited/i,
-  auth: { kind: "env", required: ["REDDIT_USERNAME"] },
-  async collect({ state, requested, credentials, emit, emitRecord, progress }) {
-    const user = credentials.REDDIT_USERNAME;
-    if (!user) {
-      throw new Error("reddit_auth_failed");
-    }
+// ─── Entry ──────────────────────────────────────────────────────────────
 
-    const token = await getAccessToken();
+if (isMainModule(import.meta.url)) {
+  runConnector({
+    name: "reddit",
+    retryablePattern: /ECONN|ETIMEDOUT|fetch failed|reddit_rate_limited/i,
+    auth: { kind: "env", required: ["REDDIT_USERNAME", "REDDIT_PASSWORD"] },
+    browser: { profileName: "reddit" },
+    async ensureSession({ context, page, sendInteraction }) {
+      await ensureRedditSession({ context, page, sendInteraction });
+    },
+    async collect(ctx: BrowserCollectContext): Promise<void> {
+      const { credentials, emit, emitRecord, page, progress, requested, state } = ctx;
 
-    if (requested.has("submitted")) {
-      await collectStream({
-        streamName: "submitted",
-        endpoint: `/user/${encodeURIComponent(user)}/submitted`,
-        token,
-        state,
-        toRecord: (c) => submittedRecord(c.data),
-        emit,
-        emitRecord,
-        progress,
-        progressMessage: "Fetching submissions",
-      });
-    }
+      const user = credentials.REDDIT_USERNAME;
+      if (!user) {
+        throw new Error("reddit_auth_failed: REDDIT_USERNAME missing");
+      }
 
-    if (requested.has("comments")) {
-      await collectStream({
-        streamName: "comments",
-        endpoint: `/user/${encodeURIComponent(user)}/comments`,
-        token,
-        state,
-        toRecord: (c) => commentRecord(c.data),
-        emit,
-        emitRecord,
-        progress,
-        progressMessage: "Fetching comments",
-      });
-    }
+      const userPath = `/user/${encodeURIComponent(user)}`;
 
-    if (requested.has("saved")) {
-      await collectStream({
-        streamName: "saved",
-        endpoint: `/user/${encodeURIComponent(user)}/saved`,
-        token,
-        state,
-        toRecord: savedRecord,
-        emit,
-        emitRecord,
-        progress,
-        progressMessage: "Fetching saved items",
-      });
-    }
-  },
-});
+      if (requested.has("submitted")) {
+        await collectStream({
+          streamName: "submitted",
+          endpoint: `${userPath}/submitted.json`,
+          page,
+          state,
+          toRecord: (c) => submittedRecord(c.data),
+          emit,
+          emitRecord,
+          progress,
+          progressMessage: "Fetching submissions",
+        });
+      }
+
+      if (requested.has("comments")) {
+        await collectStream({
+          streamName: "comments",
+          endpoint: `${userPath}/comments.json`,
+          page,
+          state,
+          toRecord: (c) => commentRecord(c.data),
+          emit,
+          emitRecord,
+          progress,
+          progressMessage: "Fetching comments",
+        });
+      }
+
+      if (requested.has("saved")) {
+        await collectStream({
+          streamName: "saved",
+          endpoint: `${userPath}/saved.json`,
+          page,
+          state,
+          toRecord: savedRecord,
+          emit,
+          emitRecord,
+          progress,
+          progressMessage: "Fetching saved items",
+        });
+      }
+    },
+  });
+}
