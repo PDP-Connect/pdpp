@@ -30,10 +30,8 @@ const SEMANTIC_UPLIFT_LIMIT = 10;
 
 interface RecordHit {
   connectorId: string;
-  stream: string;
-  recordId: string;
   emittedAt: string;
-  snippet: string;
+  recordId: string;
   // True when this row was brought in by the semantic-retrieval uplift
   // AND did not also appear in the lexical result set. Drives the
   // per-row "also found by semantic match (experimental)" badge. Rows
@@ -41,21 +39,23 @@ interface RecordHit {
   // pattern of surfacing the retrieval source only when it would
   // otherwise leave the user wondering "how did this match?".
   semanticOnly?: boolean;
+  snippet: string;
+  stream: string;
 }
 
 interface RecordPage {
-  hits: RecordHit[];
   hasMore: boolean;
+  hits: RecordHit[];
   nextCursor: string | null;
   prevStack: string[];
 }
 
 interface SearchResult {
   exact: { kind: "trace" | "grant" | "run"; id: string } | null;
-  traces: TraceSummary[];
   grants: GrantSummary[];
-  runs: RunSummary[];
   records: RecordPage;
+  runs: RunSummary[];
+  traces: TraceSummary[];
 }
 
 /**

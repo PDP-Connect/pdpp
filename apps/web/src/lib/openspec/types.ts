@@ -1,24 +1,24 @@
 export type OpenSpecArtifactKind = "proposal" | "design" | "tasks" | "spec";
 
 export interface OpenSpecArtifact {
-  kind: OpenSpecArtifactKind;
-  title: string;
-  markdown: string;
-  excerpt: string | null;
-  repoRelativePath: string;
   absolutePath: string;
   createdAt: string | null;
+  excerpt: string | null;
+  kind: OpenSpecArtifactKind;
   lastModified: string | null;
+  markdown: string;
+  repoRelativePath: string;
+  title: string;
 }
 
 export interface OpenSpecSpecSummary {
   capability: string;
-  title: string;
-  excerpt: string | null;
-  repoRelativePath: string;
   createdAt: string | null;
+  excerpt: string | null;
   lastModified: string | null;
   relatedChanges: string[];
+  repoRelativePath: string;
+  title: string;
 }
 
 export type OpenSpecSpecDetail = OpenSpecSpecSummary & {
@@ -34,20 +34,20 @@ export interface OpenSpecChangeArtifactSummary {
 export type OpenSpecChangeStatus = "in-progress" | "complete" | "unknown";
 
 export interface OpenSpecChangeSummary {
+  affectedCapabilities: string[];
+  completedTasks: number;
+  createdAt: string | null;
+  excerpt: string | null;
+  hasDesign: boolean;
+  hasProposal: boolean;
+  hasSpecDeltas: boolean;
+  hasTasks: boolean;
+  lastModified: string | null;
   name: string;
-  title: string;
   status: OpenSpecChangeStatus;
   statusLabel: string | null;
-  completedTasks: number;
+  title: string;
   totalTasks: number;
-  createdAt: string | null;
-  lastModified: string | null;
-  excerpt: string | null;
-  affectedCapabilities: string[];
-  hasProposal: boolean;
-  hasDesign: boolean;
-  hasTasks: boolean;
-  hasSpecDeltas: boolean;
 }
 
 export type OpenSpecChangeDetail = OpenSpecChangeSummary & {
@@ -66,14 +66,14 @@ export type OpenSpecDesignNoteKind =
 
 export interface OpenSpecDesignNoteSummary {
   changeName: string;
-  noteSlug: string;
+  createdAt: string | null;
+  excerpt: string | null;
+  lastModified: string | null;
   noteKind: OpenSpecDesignNoteKind;
   noteKindLabel: string;
-  title: string;
-  excerpt: string | null;
+  noteSlug: string;
   repoRelativePath: string;
-  createdAt: string | null;
-  lastModified: string | null;
+  title: string;
 }
 
 export type OpenSpecDesignNoteDetail = OpenSpecDesignNoteSummary & {
@@ -83,15 +83,15 @@ export type OpenSpecDesignNoteDetail = OpenSpecDesignNoteSummary & {
 export interface OpenSpecDesignNoteGroup {
   changeName: string;
   changeTitle: string;
-  noteCount: number;
+  countsByKind: Partial<Record<OpenSpecDesignNoteKind, number>>;
   createdAt: string | null;
   lastModified: string | null;
-  countsByKind: Partial<Record<OpenSpecDesignNoteKind, number>>;
+  noteCount: number;
   notes: OpenSpecDesignNoteSummary[];
 }
 
 export interface OpenSpecLandingSummary {
   changes: OpenSpecChangeSummary[];
-  specs: OpenSpecSpecSummary[];
   designNotes: OpenSpecDesignNoteSummary[];
+  specs: OpenSpecSpecSummary[];
 }

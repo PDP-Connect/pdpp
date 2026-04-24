@@ -26,12 +26,12 @@ import {
 export const dynamic = "force-dynamic";
 
 interface Params {
-  cursor?: string;
-  status?: string;
   client_id?: string;
+  cursor?: string;
+  peek?: string;
   provider_id?: string;
   q?: string;
-  peek?: string;
+  status?: string;
 }
 
 function listHref(params: Params, overrides: Partial<Params> = {}): string {

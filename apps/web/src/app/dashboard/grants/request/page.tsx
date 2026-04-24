@@ -23,8 +23,8 @@ import {
 export const dynamic = "force-dynamic";
 
 interface Params {
-  workspace?: string;
   error?: string;
+  workspace?: string;
 }
 
 export default async function GrantRequestPage({ searchParams }: { searchParams: Promise<Params> }) {

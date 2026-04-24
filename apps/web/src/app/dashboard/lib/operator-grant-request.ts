@@ -19,31 +19,31 @@ export const DEFAULT_DCR_INITIAL_ACCESS_TOKEN =
     .find(Boolean) || DEFAULT_LOCAL_DCR_INITIAL_ACCESS_TOKEN;
 
 export interface GrantRequestDraft {
-  initialAccessToken: string;
+  accessMode: string;
   clientId: string;
   clientName: string;
   clientUri: string;
-  redirectUri: string;
   connectorId: string;
+  fields: string;
+  initialAccessToken: string;
   providerId: string;
   purposeCode: string;
   purposeDescription: string;
-  accessMode: string;
+  redirectUri: string;
   retention: string;
   streamName: string;
-  fields: string;
-  view: string;
   subjectId: string;
+  view: string;
 }
 
 export interface GrantRequestWorkspace {
-  workspaceId: string;
   createdAt: string;
-  updatedAt: string;
   draft: GrantRequestDraft;
+  lastError: string | null;
   registeredClient: Record<string, unknown> | null;
   stagedRequest: Record<string, unknown> | null;
-  lastError: string | null;
+  updatedAt: string;
+  workspaceId: string;
 }
 
 type GrantRequestStore = Map<string, GrantRequestWorkspace>;

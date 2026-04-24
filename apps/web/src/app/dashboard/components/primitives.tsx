@@ -4,8 +4,8 @@ import type { ReactNode } from "react";
 // ─── Types ──────────────────────────────────────────────────────────────────
 
 export interface Breadcrumb {
-  label: string;
   href?: string;
+  label: string;
 }
 
 export type MetaPillTone = "neutral" | "protocol" | "human" | "success" | "danger";

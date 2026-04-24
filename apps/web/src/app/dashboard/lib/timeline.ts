@@ -23,23 +23,23 @@ import { summarize } from "./timeline-summaries.ts";
 
 export interface TimelineEntry {
   connectorId: string;
-  stream: string;
   recordId: string;
-  timestamp: string; // ISO
+  stream: string;
   summary: string;
+  timestamp: string; // ISO
 }
 
 export interface TimelineOptions {
-  since?: string; // ISO date or datetime
-  until?: string;
   perStreamLimit?: number; // fetch budget per stream
+  since?: string; // ISO date or datetime
   totalLimit?: number; // final trim after merge
+  until?: string;
 }
 
 interface TimeAnchoredStream {
   connectorId: string;
-  streamName: string;
   consentTimeField: string;
+  streamName: string;
 }
 
 // Defaults chosen so a 20-stream world comes in comfortably under a second.

@@ -25,15 +25,15 @@ type HeroGradient = "warm" | "cool" | "dual";
 type HeroSize = "compact" | "splash";
 
 interface HeroProps {
-  layout?: HeroLayout;
+  actions?: ReactNode;
+  description?: ReactNode;
+  eyebrow?: ReactNode;
   gradient?: HeroGradient;
+  layout?: HeroLayout;
   /** `compact` (default): page-header scale, tight vertical padding.
       `splash`: landing-hero scale, 112px vertical padding, 60px title. */
   size?: HeroSize;
-  eyebrow?: ReactNode;
   title: ReactNode;
-  description?: ReactNode;
-  actions?: ReactNode;
 }
 
 const warmWash = "linear-gradient(to right, var(--human-wash), transparent 60%)";

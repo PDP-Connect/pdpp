@@ -1,19 +1,19 @@
 interface HeadingNode {
-  type: "heading";
   children?: Array<{ type?: string; value?: string }>;
   data?: {
     id?: string;
     hProperties?: Record<string, unknown>;
   };
+  type: "heading";
 }
 
 interface TreeNode {
-  type?: string;
   children?: TreeNode[];
   data?: {
     id?: string;
     hProperties?: Record<string, unknown>;
   };
+  type?: string;
   value?: string;
 }
 

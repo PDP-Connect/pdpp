@@ -4,9 +4,9 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 
 interface ConnectorOption {
-  value: string;
   label: string;
   streams: string[];
+  value: string;
 }
 
 export function SearchFiltersForm({

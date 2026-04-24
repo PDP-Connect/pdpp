@@ -14,12 +14,12 @@ import React from "react";
 //   streams[].recordCount, streams[].lastSynced
 
 export interface InventoryStream {
-  name: string;
-  label: string; // manifest display.label
   detail?: string; // manifest display.detail
-  semantics: "append_only" | "mutable_state";
-  recordCount: number;
+  label: string; // manifest display.label
   lastSynced?: string; // human-readable date, absent if never synced
+  name: string;
+  recordCount: number;
+  semantics: "append_only" | "mutable_state";
 }
 
 export interface StreamInventoryProps {

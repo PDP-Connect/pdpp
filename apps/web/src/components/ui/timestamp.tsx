@@ -8,10 +8,10 @@ export type TimestampMode = "auto" | "relative" | "absolute";
 export type TimestampPrecision = "datetime" | "date";
 
 export interface TimestampProps {
-  value: string | number | Date | null | undefined;
+  className?: string;
   mode?: TimestampMode;
   precision?: TimestampPrecision;
-  className?: string;
+  value: string | number | Date | null | undefined;
 }
 
 const MINUTE = 60_000;

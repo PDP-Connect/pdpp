@@ -6,16 +6,16 @@ let cachedGitMetadataManifest: Promise<OpenSpecGitMetadataManifest | null> | nul
 
 interface OpenSpecGitMetadataEntry {
   createdAt: string | null;
-  updatedAt: string | null;
-  tracked: boolean;
   source: "git" | "filesystem";
+  tracked: boolean;
+  updatedAt: string | null;
 }
 
 interface OpenSpecGitMetadataManifest {
+  files: Record<string, OpenSpecGitMetadataEntry>;
   generatedAt: string;
   repoRoot: string;
   shallow: boolean;
-  files: Record<string, OpenSpecGitMetadataEntry>;
 }
 
 export async function resolveRepoRoot(): Promise<string> {
@@ -98,11 +98,11 @@ export async function listMarkdownFiles(absDir: string): Promise<string[]> {
 }
 
 export interface RawArtifact {
-  markdown: string;
   absolutePath: string;
-  repoRelativePath: string;
   createdAt: string | null;
   lastModified: string | null;
+  markdown: string;
+  repoRelativePath: string;
 }
 
 function openSpecGitMetadataPath(repoRoot: string): string {

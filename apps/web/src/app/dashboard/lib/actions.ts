@@ -1,11 +1,11 @@
 export interface DashboardCommand {
-  id: string;
-  title: string;
   description: string;
   href: string;
+  id: string;
   keywords: string[];
   kind: "jump" | "action";
   section: "Navigate" | "Quick action" | "Search";
+  title: string;
 }
 
 const NAVIGATION_COMMANDS: DashboardCommand[] = [

@@ -30,13 +30,13 @@ import { approvePendingApprovalAction, denyPendingApprovalAction } from "./pendi
 export const dynamic = "force-dynamic";
 
 interface Params {
-  cursor?: string;
-  status?: string;
+  approval_error?: string;
   client_id?: string;
+  cursor?: string;
+  peek?: string;
   provider_id?: string;
   q?: string;
-  peek?: string;
-  approval_error?: string;
+  status?: string;
 }
 
 function listHref(params: Params, overrides: Partial<Params> = {}): string {

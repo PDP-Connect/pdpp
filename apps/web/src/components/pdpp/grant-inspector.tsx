@@ -40,32 +40,32 @@ function DateLike({ value }: { value: string | null | undefined }) {
 //   status (active/expired/revoked) — tracked by AS, not in grant
 
 export interface GrantStream {
-  name: string;
-  label: string; // manifest display.label
   detail?: string; // manifest display.detail
   fields?: string[]; // granted field allowlist, absent = all
-  view?: string; // informational — which view was selected
+  label: string; // manifest display.label
+  name: string;
   timeRange?: { since?: string; until?: string };
+  view?: string; // informational — which view was selected
 }
 
 export interface GrantInspectorProps {
-  grantId: string;
-  issuedAt: string; // human-readable date
-  status: "active" | "expired" | "revoked";
+  accessMode: "continuous" | "single_use";
   client: {
     clientId: string;
     name: string; // from client_display at consent time, or client_id
   };
+  expiresAt?: string | null; // human-readable date, null = no expiry
+  grantId: string;
+  issuedAt: string; // human-readable date
+  onRevoke?: () => void;
   purposeCode: string;
   purposeDescription?: string;
-  accessMode: "continuous" | "single_use";
-  expiresAt?: string | null; // human-readable date, null = no expiry
   retention?: {
     duration: string; // human-readable, e.g. "90 days"
     onExpiry: "delete" | "anonymize";
   };
+  status: "active" | "expired" | "revoked";
   streams: GrantStream[];
-  onRevoke?: () => void;
 }
 
 export function GrantInspector({

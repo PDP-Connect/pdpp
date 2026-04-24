@@ -32,20 +32,26 @@ import { Button } from "@/components/ui/button.tsx";
 //   optional.consequenceOn/Off
 
 export interface ConsentCardStream {
+  detail: string; // manifest display.detail — server-trusted
   key: string;
   label: string; // manifest display.label — server-trusted
-  detail: string; // manifest display.detail — server-trusted
 }
 
 export interface ConsentCardOptional {
+  consequenceOff: string; // server-generated generic copy in v0.1
+  consequenceOn: string; // server-generated generic copy in v0.1
+  detail: string; // manifest display.detail — server-trusted
   key: string;
   label: string; // manifest display.label — server-trusted
-  detail: string; // manifest display.detail — server-trusted
-  consequenceOn: string; // server-generated generic copy in v0.1
-  consequenceOff: string; // server-generated generic copy in v0.1
 }
 
 export interface ConsentCardProps {
+  accessMode: "continuous" | "single_use"; // grant.access_mode — protocol fact
+  commitments: string[]; // client_claims.commitments — attributed, disclaimed
+  onAllow?: () => void;
+  onDeny?: () => void;
+  optional?: ConsentCardOptional; // at most one optional stream (simplification for now)
+  purpose: string; // purpose_description — client-authored, first-class
   requester: {
     name: string; // resolved display name
     monogram: string; // server-derived fallback from resolved name
@@ -55,18 +61,12 @@ export interface ConsentCardProps {
     verified: boolean; // server-determined trust signal, never client-asserted
     logoSrc?: string; // server-selected or approved brand mark, never raw untrusted remote content
   };
-  purpose: string; // purpose_description — client-authored, first-class
-  commitments: string[]; // client_claims.commitments — attributed, disclaimed
   streams: ConsentCardStream[]; // required streams
-  optional?: ConsentCardOptional; // at most one optional stream (simplification for now)
-  accessMode: "continuous" | "single_use"; // grant.access_mode — protocol fact
   technical: {
     clientId: string; // grant.client.client_id
     purposeCode: string; // grant.purpose_code
     grantExpires: string; // grant.expires_at — server-formatted
   };
-  onAllow?: () => void;
-  onDeny?: () => void;
 }
 
 export function ConsentCard({

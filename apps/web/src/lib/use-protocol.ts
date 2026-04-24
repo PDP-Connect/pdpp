@@ -20,13 +20,13 @@ import { createSeededServer, type Grant, type MockPDPPServer, type QueryResult }
 export type ProtocolPhase = "idle" | "granted" | "revoked";
 
 export interface ProtocolState {
-  phase: ProtocolPhase;
-  grant: Grant | null;
-  queryResult: QueryResult | null;
-  syncResult: QueryResult | null;
-  syncCursor: string | null;
   exportResult: QueryResult | null;
+  grant: Grant | null;
+  phase: ProtocolPhase;
+  queryResult: QueryResult | null;
   serverStats: { name: string; recordCount: number; fields: string[] }[];
+  syncCursor: string | null;
+  syncResult: QueryResult | null;
 }
 
 const GRANT_TEMPLATE = {

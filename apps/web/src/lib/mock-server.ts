@@ -20,44 +20,44 @@ import { LONGVIEW_PAY_STATEMENT_ALL_FIELDS } from "./longview-world.ts";
 // ─── Types ──────────────────────────────────────────────────────────────────
 
 export interface Record {
-  key: string;
   data: { [field: string]: unknown };
   emitted_at: string;
+  key: string;
 }
 
 export interface Stream {
   name: string;
-  semantics: "append_only" | "mutable_state";
   records: Record[];
   schema_fields: string[]; // all fields the stream has
+  semantics: "append_only" | "mutable_state";
 }
 
 export interface Grant {
+  access_mode: "continuous" | "single_use";
+  client_id: string;
+  expires_at: string | null;
   grant_id: string;
   issued_at: string;
-  status: "active" | "revoked" | "expired";
-  client_id: string;
   purpose_code: string;
   purpose_description: string;
-  access_mode: "continuous" | "single_use";
-  expires_at: string | null;
   retention: { max_duration: string; on_expiry: "delete" | "anonymize" } | null;
+  status: "active" | "revoked" | "expired";
   streams: GrantStream[];
 }
 
 export interface GrantStream {
-  name: string;
   fields: string[] | null; // null = all fields
-  view: string | null;
+  name: string;
   time_range: { since?: string; until?: string } | null;
+  view: string | null;
 }
 
 export interface QueryResult {
-  status: number;
   error?: string;
-  records?: Record[];
   has_more: boolean;
   next_changes_since?: string;
+  records?: Record[];
+  status: number;
 }
 
 // ─── Mock Server ────────────────────────────────────────────────────────────

@@ -15,32 +15,32 @@ import { join } from "node:path";
 import { getOwnerToken, getRsInternalUrl, ReferenceServerUnreachableError } from "./owner-token.ts";
 
 export interface StreamSummary {
-  object: "stream";
-  name: string;
-  record_count: number;
   last_updated: string | null;
+  name: string;
+  object: "stream";
+  record_count: number;
 }
 
 export interface StreamRecord {
-  object: "record";
-  id: string;
-  stream: string;
   data: Record<string, unknown>;
   emitted_at: string;
+  id: string;
+  object: "record";
+  stream: string;
 }
 
 export interface RecordsPage {
-  object: "list";
   data: StreamRecord[];
   has_more: boolean;
   next_cursor?: string;
+  object: "list";
 }
 
 export interface ConnectorManifest {
   connector_id: string;
-  provider_id?: string;
   display_name?: string;
   name?: string;
+  provider_id?: string;
   streams?: Array<{ name: string; [k: string]: unknown }>;
 }
 
@@ -123,26 +123,26 @@ export async function getRecord(connectorId: string, stream: string, recordId: s
  * optional; the page must render correctly when they are absent.
  */
 export interface SearchResultHit {
-  object: "search_result";
-  stream: string;
-  record_key: string;
   connector_id: string;
-  record_url?: string;
   emitted_at: string;
   matched_fields: string[];
-  snippet?: { field: string; text: string };
+  object: "search_result";
+  record_key: string;
+  record_url?: string;
   // Present only on semantic-retrieval hits. Required on every /v1/search/semantic
   // result per the approved spec; absent on lexical hits. "hybrid" is reserved
   // for a future tranche (v1 lexical_blending is always false).
   retrieval_mode?: "semantic" | "hybrid";
+  snippet?: { field: string; text: string };
+  stream: string;
 }
 
 export interface SearchResultPage {
-  object: "list";
-  url?: string;
+  data: SearchResultHit[];
   has_more: boolean;
   next_cursor?: string;
-  data: SearchResultHit[];
+  object: "list";
+  url?: string;
 }
 
 /**
@@ -292,26 +292,26 @@ export async function listConnectorManifests(): Promise<ConnectorManifest[]> {
 
 export interface ConnectorOverview {
   connector: ConnectorManifest;
-  streams: StreamSummary[];
-  totalRecords: number;
+  error?: string;
+  /** Shortcut: true iff lastRun.status ∈ {started, in_progress}. */
+  isRunning: boolean;
   /** Most recent run (any status). Drives the status chip + elapsed time. */
   lastRun: ConnectorRunRef | null;
   /** Most recent SUCCEEDED run. Drives the "last synced" timestamp + delta. */
   lastSuccessfulRun: ConnectorRunRef | null;
-  /** Shortcut: true iff lastRun.status ∈ {started, in_progress}. */
-  isRunning: boolean;
-  error?: string;
+  streams: StreamSummary[];
+  totalRecords: number;
 }
 
 /** Thin projection of RunSummary fields the dashboard index needs.
  *  Keeps this module decoupled from ref-client (which is AS-scoped). */
 export interface ConnectorRunRef {
-  run_id: string;
+  event_count: number;
+  failure_reason: string | null;
   first_at: string;
   last_at: string;
-  event_count: number;
+  run_id: string;
   status: string;
-  failure_reason: string | null;
 }
 
 // ─── Display helpers (colocated to keep page files small) ────────────────
@@ -510,27 +510,26 @@ export function formatTimestamp(iso: string | null | undefined): string {
 // of manifest-declared `schema.properties` and keys observed in the sample.
 
 export interface FieldHealth {
-  name: string;
   declared: boolean;
-  present: boolean; // appeared in at least one sampled record (non-missing key)
-  nullCount: number; // null / undefined / empty-string / []
-  nonNullCount: number;
-  distinctValues: number; // capped; see DISTINCT_CAP
   distinctCapped: boolean;
+  distinctValues: number; // capped; see DISTINCT_CAP
+  name: string;
+  nonNullCount: number;
+  nullCount: number; // null / undefined / empty-string / []
+  present: boolean; // appeared in at least one sampled record (non-missing key)
   sampleValue: string | null; // a short example non-null value, for context
 }
 
 export interface StreamHealth {
   connectorId: string;
-  streamName: string;
-  totalRecords: number; // from RS metadata (not the sample)
-  sampled: number;
-  sampleLimit: number;
-  limited: boolean; // totalRecords > sampled
-  emittedAt: { min: string | null; max: string | null };
   cursorField: string | null;
   cursorRange: { min: string | null; max: string | null } | null;
+  emittedAt: { min: string | null; max: string | null };
   fields: FieldHealth[];
+  limited: boolean; // totalRecords > sampled
+  sampled: number;
+  sampleLimit: number;
+  streamName: string;
   summary: {
     declared: number;
     present: number;
@@ -539,6 +538,7 @@ export interface StreamHealth {
     declaredButAbsent: number; // manifest has it, data never emits it
     undeclaredPresent: number; // data has it, manifest doesn't declare it
   };
+  totalRecords: number; // from RS metadata (not the sample)
 }
 
 const DISTINCT_CAP = 50;
@@ -647,11 +647,11 @@ export async function streamHealth(
   }
 
   interface Agg {
-    present: boolean;
-    nullCount: number;
-    nonNullCount: number;
     distinct: Set<string>;
     distinctCapped: boolean;
+    nonNullCount: number;
+    nullCount: number;
+    present: boolean;
     sampleValue: string | null;
   }
 

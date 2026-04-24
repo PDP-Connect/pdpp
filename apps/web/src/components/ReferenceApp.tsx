@@ -105,8 +105,8 @@ const MULTI_CONNECTORS: ConnectorCardProps[] = [
 // ─── Section content ────────────────────────────────────────────────────────
 
 interface SectionConfig {
-  id: SectionId;
   headline: string;
+  id: SectionId;
   narrative: string;
   surface: "human" | "protocol" | "neutral";
 }
@@ -954,11 +954,11 @@ function DefaultReferenceHero() {
 // ─── Page ───────────────────────────────────────────────────────────────────
 
 interface ReferenceAppProps {
+  /** Label shown in the SiteHeader breadcrumb. Defaults to "Reference". */
+  currentLabel?: string;
   /** Rendered above the first protocol section. If omitted, the default
       hero (v0.1.0 badge + title + flow stepper) is used. */
   hero?: React.ReactNode;
-  /** Label shown in the SiteHeader breadcrumb. Defaults to "Reference". */
-  currentLabel?: string;
 }
 
 export function ReferenceApp({ hero, currentLabel = "Reference" }: ReferenceAppProps = {}) {

@@ -10,8 +10,8 @@ import React from "react";
 //   connectorId, displayName, version, streams[], profiles[]
 
 export interface ConnectorStream {
-  name: string;
   label?: string; // display.label, may be absent
+  name: string;
   semantics: "append_only" | "mutable_state";
   supportsFields: boolean; // selection.fields
   supportsResources: boolean; // selection.resources
@@ -28,9 +28,9 @@ export interface ConnectorProfile {
 export interface ConnectorCardProps {
   connectorId: string;
   displayName: string;
-  version: string;
-  streams: ConnectorStream[];
   profiles?: ConnectorProfile[];
+  streams: ConnectorStream[];
+  version: string;
 }
 
 export function ConnectorCard({ connectorId, displayName, version, streams, profiles }: ConnectorCardProps) {

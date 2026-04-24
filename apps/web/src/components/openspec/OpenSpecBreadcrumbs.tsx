@@ -2,8 +2,8 @@ import Link from "next/link";
 import { Fragment } from "react";
 
 export interface OpenSpecCrumb {
-  label: string;
   href?: string;
+  label: string;
 }
 
 export function OpenSpecBreadcrumbs({ crumbs }: { crumbs: OpenSpecCrumb[] }) {

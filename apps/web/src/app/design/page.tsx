@@ -2298,21 +2298,25 @@ function DashboardPrimitivesSection() {
 }
 
 interface CanonicalExampleWorld {
-  name: string;
-  monogram: string;
-  descriptor: string;
-  summary: string;
+  aiPosture: string;
   anchorStream: {
     name: string;
     cadence: string;
     syncStory: string;
   };
-  whyCare: string;
-  whyPdpp: string;
-  aiPosture: string;
-  risk: string;
-  sources: string[];
+  consent: ConsentCardProps;
+  descriptor: string;
   fit: string[];
+  grant: GrantInspectorProps;
+  monogram: string;
+  name: string;
+  projection: {
+    streamLabel: string;
+    summary: string;
+    granted: string[];
+    withheld: string[];
+  };
+  risk: string;
   rolloutCopy: {
     heroLine: string;
     consentPurpose: string;
@@ -2320,14 +2324,10 @@ interface CanonicalExampleWorld {
     docsBlurb: string;
     syncLine: string;
   };
-  consent: ConsentCardProps;
-  grant: GrantInspectorProps;
-  projection: {
-    streamLabel: string;
-    summary: string;
-    granted: string[];
-    withheld: string[];
-  };
+  sources: string[];
+  summary: string;
+  whyCare: string;
+  whyPdpp: string;
 }
 
 const COMPENSATION_STREAM_DETAILS = {
@@ -2500,10 +2500,10 @@ type LongviewLogoVariant = "aperture_span" | "horizon_tile" | "frame_lane";
 interface LongviewLogoCandidate {
   id: LongviewLogoVariant;
   name: string;
-  verdict: "recommended" | "alternative" | "discard";
-  summary: string;
-  strength: string;
   risk: string;
+  strength: string;
+  summary: string;
+  verdict: "recommended" | "alternative" | "discard";
 }
 
 const LONGVIEW_LOGO_CANDIDATES: LongviewLogoCandidate[] = [

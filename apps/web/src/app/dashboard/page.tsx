@@ -18,12 +18,12 @@ import {
 export const dynamic = "force-dynamic";
 
 interface OverviewData {
-  summary: DatasetSummary;
-  failedTraces: TraceSummary[];
+  actionNeeded: number;
   failedRuns: RunSummary[];
+  failedTraces: TraceSummary[];
   recentDecisions: GrantSummary[];
   recentRuns: RunSummary[];
-  actionNeeded: number;
+  summary: DatasetSummary;
 }
 
 async function loadOverview(): Promise<OverviewData> {

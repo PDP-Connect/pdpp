@@ -9,36 +9,36 @@
 import { getAsInternalUrl, ReferenceServerUnreachableError, withOwnerSessionCookie } from "./owner-token.ts";
 
 export interface SpineEvent {
+  actor_id: string | null;
+  actor_type: string | null;
+  client_id: string | null;
+  data: Record<string, unknown>;
   event_id: string;
   event_type: string;
-  occurred_at: string;
-  recorded_at: string;
-  scenario_id: string | null;
-  trace_id: string;
-  actor_type: string | null;
-  actor_id: string | null;
-  subject_type: string | null;
-  subject_id: string | null;
-  object_type: string | null;
-  object_id: string | null;
-  status: string | null;
-  request_id: string | null;
   grant_id: string | null;
-  run_id: string | null;
-  provider_id: string | null;
-  client_id: string | null;
-  stream_id: string | null;
-  token_id: string | null;
   interaction_id: string | null;
-  data: Record<string, unknown>;
+  object_id: string | null;
+  object_type: string | null;
+  occurred_at: string;
+  provider_id: string | null;
+  recorded_at: string;
+  request_id: string | null;
+  run_id: string | null;
+  scenario_id: string | null;
+  status: string | null;
+  stream_id: string | null;
+  subject_id: string | null;
+  subject_type: string | null;
+  token_id: string | null;
+  trace_id: string;
   version: string;
 }
 
 export interface TimelineEnvelope {
-  object: string;
-  trace_id: string | null;
   event_count: number;
   events: SpineEvent[];
+  object: string;
+  trace_id: string | null;
 }
 
 /**
@@ -66,10 +66,10 @@ function normalizeTimeline(raw: unknown): TimelineEnvelope {
 }
 
 export interface ListResponse<T> {
-  object: "list";
   data: T[];
   has_more: boolean;
   next_cursor?: string;
+  object: "list";
 }
 
 export interface FailureInfo {
@@ -78,72 +78,72 @@ export interface FailureInfo {
 }
 
 export interface TraceSummary {
-  object: "trace_summary";
-  trace_id: string;
-  first_at: string;
-  last_at: string;
-  event_count: number;
-  status: string;
-  kinds: string[];
-  request_id: string | null;
-  grant_id: string | null;
-  run_id: string | null;
-  client_id: string | null;
-  provider_id: string | null;
-  actor_type: string | null;
   actor_id: string | null;
+  actor_type: string | null;
+  client_id: string | null;
+  event_count: number;
   failure: FailureInfo | null;
+  first_at: string;
+  grant_id: string | null;
+  kinds: string[];
+  last_at: string;
+  object: "trace_summary";
+  provider_id: string | null;
+  request_id: string | null;
+  run_id: string | null;
+  status: string;
+  trace_id: string;
 }
 
 export interface GrantSummary {
-  object: "grant_summary";
-  grant_id: string;
-  first_at: string;
-  last_at: string;
-  event_count: number;
-  status: string;
   client_id: string | null;
-  provider_id: string | null;
   connector_id: string | null;
-  kinds: string[];
+  event_count: number;
   failure: FailureInfo | null;
+  first_at: string;
+  grant_id: string;
+  kinds: string[];
+  last_at: string;
+  object: "grant_summary";
+  provider_id: string | null;
+  status: string;
 }
 
 export interface RunSummary {
-  object: "run_summary";
-  run_id: string;
-  first_at: string;
-  last_at: string;
-  event_count: number;
-  status: string;
   connector_id: string | null;
-  provider_id: string | null;
-  grant_id: string | null;
+  event_count: number;
   failure_reason: string | null;
+  first_at: string;
+  grant_id: string | null;
   kinds: string[];
+  last_at: string;
+  object: "run_summary";
+  provider_id: string | null;
+  run_id: string;
+  status: string;
 }
 
 export interface RefConnectorRunSummary {
-  run_id: string;
-  status: string;
-  started_at: string;
+  event_count: number;
+  failure_reason: string | null;
   finished_at: string | null;
   first_at: string;
   last_at: string;
-  event_count: number;
-  failure_reason: string | null;
+  run_id: string;
+  started_at: string;
+  status: string;
 }
 
 export interface RefConnectorSummary {
   connector_id: string;
   display_name: string;
-  manifest_version: string | null;
-  streams: string[];
-  total_records: number;
   freshness: Record<string, unknown>;
-  schedule: Record<string, unknown> | null;
   last_run: RefConnectorRunSummary | null;
   last_successful_run: RefConnectorRunSummary | null;
+  manifest_version: string | null;
+  schedule: Record<string, unknown> | null;
+  streams: string[];
+  total_records: number;
 }
 
 class RefNotFoundError extends Error {
@@ -211,16 +211,16 @@ export async function getRunTimeline(runId: string): Promise<TimelineEnvelope | 
 }
 
 export interface ListQuery {
-  limit?: number;
-  cursor?: string;
-  since?: string;
-  until?: string;
-  status?: string;
   client_id?: string;
-  provider_id?: string;
   connector_id?: string;
+  cursor?: string;
   grant_id?: string;
+  limit?: number;
+  provider_id?: string;
   q?: string;
+  since?: string;
+  status?: string;
+  until?: string;
 }
 
 export async function listTraces(opts: ListQuery = {}): Promise<ListResponse<TraceSummary>> {
@@ -249,28 +249,28 @@ export async function listConnectorSummaries(): Promise<ListResponse<RefConnecto
 }
 
 export interface DatasetConnectorSummary {
-  object: "dataset_connector_summary";
   connector_id: string;
+  object: "dataset_connector_summary";
   record_count: number;
 }
 
 export interface DatasetSummary {
-  object: "dataset_summary";
-  connector_count: number;
-  stream_count: number;
-  record_count: number;
-  record_json_bytes: number;
-  record_changes_json_bytes: number;
   blob_bytes: number;
-  total_retained_bytes: number;
-  /** Real-world earliest timestamp pulled from record data via each stream's manifest-declared `consent_time_field`. */
-  earliest_record_time: string | null;
-  /** Real-world latest timestamp pulled the same way. */
-  latest_record_time: string | null;
+  connector_count: number;
   /** Substrate ingestion bounds (when the runtime wrote the row). Not the real age of the data. */
   earliest_ingested_at: string | null;
+  /** Real-world earliest timestamp pulled from record data via each stream's manifest-declared `consent_time_field`. */
+  earliest_record_time: string | null;
   latest_ingested_at: string | null;
+  /** Real-world latest timestamp pulled the same way. */
+  latest_record_time: string | null;
+  object: "dataset_summary";
+  record_changes_json_bytes: number;
+  record_count: number;
+  record_json_bytes: number;
+  stream_count: number;
   top_connectors: DatasetConnectorSummary[];
+  total_retained_bytes: number;
 }
 
 export async function getDatasetSummary(): Promise<DatasetSummary> {
@@ -294,17 +294,17 @@ export async function refSearch(query: string): Promise<{
 }
 
 export interface PendingApproval {
-  object: "approval";
-  kind: "consent" | "owner_device";
   approval_id: string;
   client_id?: string | null;
-  user_code?: string | null;
   created_at: string;
   grant_preview?: {
     connector_id?: string | null;
     provider_id?: string | null;
     streams?: Array<{ name?: string } | string>;
   } | null;
+  kind: "consent" | "owner_device";
+  object: "approval";
+  user_code?: string | null;
 }
 
 export async function listPendingApprovals(): Promise<ListResponse<PendingApproval>> {

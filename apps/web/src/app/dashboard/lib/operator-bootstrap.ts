@@ -15,24 +15,24 @@ import {
 export const DASHBOARD_BOOTSTRAP_CLIENT_ID = "pdpp-web-dashboard";
 
 export interface OwnerBootstrapFlow {
-  flowId: string;
+  approvalUpdatedAt: string | null;
   clientId: string;
-  subjectId: string | null;
-  status: "pending_approval" | "approved" | "denied" | "token_issued";
-  startedAt: string;
-  expiresAt: string | null;
-  intervalSeconds: number;
   deviceCode: string;
+  expiresAt: string | null;
+  flowId: string;
+  intervalSeconds: number;
+  introspectedAt: string | null;
+  introspection: Record<string, unknown> | null;
+  lastError: string | null;
+  startedAt: string;
+  status: "pending_approval" | "approved" | "denied" | "token_issued";
+  subjectId: string | null;
+  token: string | null;
+  tokenIssuedAt: string | null;
+  tokenResponse: Record<string, unknown> | null;
   userCode: string;
   verificationUri: string | null;
   verificationUriComplete: string | null;
-  approvalUpdatedAt: string | null;
-  tokenIssuedAt: string | null;
-  token: string | null;
-  tokenResponse: Record<string, unknown> | null;
-  introspection: Record<string, unknown> | null;
-  introspectedAt: string | null;
-  lastError: string | null;
 }
 
 type OwnerBootstrapStore = Map<string, OwnerBootstrapFlow>;

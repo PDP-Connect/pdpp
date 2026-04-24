@@ -8,9 +8,9 @@ import React from "react";
 // Renders as a mono link with the § prefix.
 
 export interface SpecCitationProps {
-  section: string; // e.g. "4.2" or "6.1"
-  label: string; // e.g. "Selection Request"
   href?: string; // optional link to spec page
+  label: string; // e.g. "Selection Request"
+  section: string; // e.g. "4.2" or "6.1"
 }
 
 export function SpecCitation({ section, label, href }: SpecCitationProps) {

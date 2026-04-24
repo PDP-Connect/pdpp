@@ -2,9 +2,9 @@ import Link from "next/link";
 import { cn } from "@/lib/utils.ts";
 
 export interface OpenSpecSidebarItem {
+  active?: boolean;
   href: string;
   label: string;
-  active?: boolean;
 }
 
 export interface OpenSpecSidebarSection {

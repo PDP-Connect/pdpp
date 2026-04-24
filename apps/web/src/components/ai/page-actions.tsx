@@ -6,14 +6,14 @@ import {
 } from "fumadocs-ui/layouts/docs/page";
 
 interface LLMCopyButtonProps {
-  markdownUrl: string;
   className?: string;
+  markdownUrl: string;
 }
 
 interface ViewOptionsProps {
-  markdownUrl: string;
-  githubUrl?: string;
   className?: string;
+  githubUrl?: string;
+  markdownUrl: string;
 }
 
 export function LLMCopyButton(props: LLMCopyButtonProps) {
