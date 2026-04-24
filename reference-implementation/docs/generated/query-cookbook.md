@@ -66,7 +66,7 @@ GET /v1/streams/top_artists/records?changes_since=<next_changes_since>
 
 ## Expansion
 
-Expand a relationship declared under `query.expand`. Depth is 1. Use `expand_limit[<relation>]` to bound expanded `has_many` children.
+Expand a relationship declared under `query.expand`. Depth is 1. Use `expand_limit[<relation>]` to bound expanded `has_many` children. Expansion is incompatible with `changes_since`; incremental sync pages return changed parent records only.
 
 ```http
 GET /v1/streams/saved_tracks/records?expand[]=recently_played&expand_limit[recently_played]=5
