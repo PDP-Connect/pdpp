@@ -23,6 +23,7 @@ const RANGE_FILTERED_CONNECTORS = [
   'usaa',
   'amazon',
 ];
+const AGGREGATION_DECLARED_CONNECTORS = ['ynab', 'chase', 'usaa', 'gmail', 'slack'];
 
 function readManifest(name) {
   return JSON.parse(readFileSync(join(POLYFILL_MANIFEST_DIR, `${name}.json`), 'utf8'));
@@ -40,6 +41,20 @@ function isOrderableRangeSchema(schema) {
   if (types.length !== 1) return false;
   if (types[0] === 'integer' || types[0] === 'number') return true;
   return types[0] === 'string' && (schema?.format === 'date' || schema?.format === 'date-time');
+}
+
+function isNumericAggregateSchema(schema) {
+  const types = nonNullSchemaTypes(schema);
+  return types.length === 1 && (types[0] === 'integer' || types[0] === 'number');
+}
+
+function isMinMaxAggregateSchema(schema) {
+  return isOrderableRangeSchema(schema);
+}
+
+function isScalarAggregateGroupSchema(schema) {
+  const types = nonNullSchemaTypes(schema);
+  return types.length === 1 && ['boolean', 'integer', 'number', 'string'].includes(types[0]);
 }
 
 async function closeServer(server) {
@@ -278,6 +293,76 @@ test('first-party polyfill manifests declare only valid range filter fields', ()
 test('first-party polyfill manifests with range filters register through the AS validator', async () => {
   await withHarness(async ({ asUrl }) => {
     for (const manifestName of RANGE_FILTERED_CONNECTORS) {
+      await registerManifest(asUrl, readManifest(manifestName));
+    }
+  });
+});
+
+test('first-party polyfill manifests declare only conservative aggregation fields', () => {
+  for (const manifestName of AGGREGATION_DECLARED_CONNECTORS) {
+    const manifest = readManifest(manifestName);
+    const declaredStreams = manifest.streams.filter((stream) => stream.query?.aggregations);
+    assert.ok(declaredStreams.length > 0, `${manifestName} should declare at least one aggregation stream`);
+
+    for (const stream of declaredStreams) {
+      const aggregations = stream.query.aggregations;
+      assert.equal(aggregations.count, true, `${manifestName}.${stream.name} count must be declared explicitly`);
+      for (const field of aggregations.sum || []) {
+        const schema = stream.schema?.properties?.[field];
+        assert.ok(schema, `${manifestName}.${stream.name}.sum.${field} must exist in schema.properties`);
+        assert.ok(isNumericAggregateSchema(schema), `${manifestName}.${stream.name}.sum.${field} must be numeric`);
+      }
+      for (const metric of ['min', 'max']) {
+        for (const field of aggregations[metric] || []) {
+          const schema = stream.schema?.properties?.[field];
+          assert.ok(schema, `${manifestName}.${stream.name}.${metric}.${field} must exist in schema.properties`);
+          assert.ok(isMinMaxAggregateSchema(schema), `${manifestName}.${stream.name}.${metric}.${field} must be numeric, date, or date-time`);
+        }
+      }
+      for (const field of aggregations.group_by || []) {
+        const schema = stream.schema?.properties?.[field];
+        assert.ok(schema, `${manifestName}.${stream.name}.group_by.${field} must exist in schema.properties`);
+        assert.ok(isScalarAggregateGroupSchema(schema), `${manifestName}.${stream.name}.group_by.${field} must be scalar`);
+        assert.equal(/(^id$|_id$|text|subject|snippet|memo|description|name|email)/i.test(field), false, `${manifestName}.${stream.name}.group_by.${field} should avoid identifiers and free text`);
+      }
+    }
+  }
+});
+
+test('manifest validator rejects unsafe aggregation declarations', async () => {
+  await withHarness(async ({ asUrl }) => {
+    const unknownField = readManifest('ynab');
+    unknownField.streams.find((stream) => stream.name === 'transactions').query.aggregations.sum.push('not_a_field');
+    const unknownResp = await fetch(`${asUrl}/connectors`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(unknownField),
+    });
+    assert.equal(unknownResp.status, 400);
+
+    const nonNumericSum = readManifest('ynab');
+    nonNumericSum.streams.find((stream) => stream.name === 'transactions').query.aggregations.sum.push('cleared');
+    const nonNumericResp = await fetch(`${asUrl}/connectors`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(nonNumericSum),
+    });
+    assert.equal(nonNumericResp.status, 400);
+
+    const nonScalarGroup = readManifest('gmail');
+    nonScalarGroup.streams.find((stream) => stream.name === 'messages').query.aggregations.group_by.push('labels');
+    const nonScalarResp = await fetch(`${asUrl}/connectors`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(nonScalarGroup),
+    });
+    assert.equal(nonScalarResp.status, 400);
+  });
+});
+
+test('first-party polyfill manifests with aggregation declarations register through the AS validator', async () => {
+  await withHarness(async ({ asUrl }) => {
+    for (const manifestName of AGGREGATION_DECLARED_CONNECTORS) {
       await registerManifest(asUrl, readManifest(manifestName));
     }
   });

@@ -1059,6 +1059,25 @@
             "lte",
             "lt"
           ]
+        },
+        "aggregations": {
+          "count": true,
+          "sum": [
+            "amount"
+          ],
+          "min": [
+            "date",
+            "amount"
+          ],
+          "max": [
+            "date",
+            "amount"
+          ],
+          "group_by": [
+            "cleared",
+            "approved",
+            "account_type"
+          ]
         }
       }
     },

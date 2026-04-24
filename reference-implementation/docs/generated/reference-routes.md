@@ -17,6 +17,7 @@ Generated from `packages/reference-contract/src/public/`. Do not edit by hand.
 | **GET** | `/v1/streams` | `listStreams` | List streams available under the current grant or owner scope. |
 | **GET** | `/v1/streams/{stream}` | `getStreamMetadata` | Return stream metadata including declared query capabilities and advisory freshness. |
 | **GET** | `/v1/streams/{stream}/records` | `listRecords` | List records in a stream under grant enforcement. Supports logical-cursor pagination, exact and declared range filters, and changes_since. |
+| **GET** | `/v1/streams/{stream}/aggregate` | `aggregateStream` | Compute a single-stream grant-safe aggregation. Supports count, numeric sum, numeric/date min/max, grouped counts, and existing exact/range filters over declared fields. |
 | **GET** | `/v1/streams/{stream}/records/{id}` | `getRecord` | Fetch a single record by primary key under grant enforcement, with optional declared expansion. |
 | **GET** | `/v1/search` | `searchRecordsLexical` | Optional lexical retrieval extension: search records across authorized streams by text. See the lexical-retrieval capability spec. |
 | **GET** | `/v1/search/semantic` | `searchRecordsSemantic` | Experimental optional extension: semantic retrieval across authorized streams by text. See the semantic-retrieval capability spec. Unstable in v1. |
@@ -264,6 +265,34 @@ List records in a stream under grant enforcement. Supports logical-cursor pagina
 - `403` — Grant does not permit this request
 - `404` — Stream or record not found
 - `410` — Cursor expired
+
+## aggregateStream
+
+`GET /v1/streams/{stream}/aggregate`
+
+Compute a single-stream grant-safe aggregation. Supports count, numeric sum, numeric/date min/max, grouped counts, and existing exact/range filters over declared fields.
+
+### Query parameters
+
+- `metric` — enum `count | sum | min | max`
+- `field` — string
+- `group_by` — string
+- `limit` — integer · min: 1 · max: 100
+- `filter` — object
+- `connector_id` — string
+- `subject_id` — string
+
+### Path parameters
+
+- `stream` — string
+
+### Responses
+
+- `200` — JSON body
+- `400` — Invalid request
+- `401` — Missing or invalid access token
+- `403` — Grant does not permit this request
+- `404` — Stream or record not found
 
 ## getRecord
 

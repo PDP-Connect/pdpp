@@ -141,6 +141,12 @@ function isRangeQueryableFieldSchema(fieldSchema) {
   return isReferenceCompatibleCursorSchema(fieldSchema);
 }
 
+function nonNullSchemaTypes(schema) {
+  const rawType = schema?.type;
+  const typeList = Array.isArray(rawType) ? rawType : rawType != null ? [rawType] : [];
+  return typeList.filter((type) => type !== 'null');
+}
+
 function schemaTypeIncludes(fieldSchema, typeName) {
   const rawType = fieldSchema?.type;
   if (rawType === typeName) return true;
@@ -169,6 +175,21 @@ function validateBlobRefSchemaDeclaration(stream, fieldSchema, code) {
   if (!required.includes('blob_id')) {
     throw invalidConnectorManifest(`Stream '${stream.name}' blob_ref must require blob_id`, code);
   }
+}
+
+function isNumericAggregateFieldSchema(fieldSchema) {
+  const nonNull = nonNullSchemaTypes(fieldSchema);
+  return nonNull.length === 1 && (nonNull[0] === 'integer' || nonNull[0] === 'number');
+}
+
+function isMinMaxAggregateFieldSchema(fieldSchema) {
+  return isReferenceCompatibleCursorSchema(fieldSchema);
+}
+
+function isScalarAggregateGroupFieldSchema(fieldSchema) {
+  const nonNull = nonNullSchemaTypes(fieldSchema);
+  if (nonNull.length !== 1) return false;
+  return ['boolean', 'integer', 'number', 'string'].includes(nonNull[0]);
 }
 
 function resolveConfiguredNativeStorageBinding(opts = {}) {
@@ -1495,6 +1516,48 @@ function validateConnectorManifest(manifest = {}, code = 'invalid_request', opts
         const fieldSchema = schemaProperties[fieldName];
         if (!isRangeQueryableFieldSchema(fieldSchema)) {
           throw invalidConnectorManifest(`Stream '${stream.name}' query.range_filters entry '${fieldName}' must be an integer, number, date, date-time, or nullable variant`, code);
+        }
+      }
+    }
+
+    if (stream.query?.aggregations !== undefined) {
+      const declared = stream.query.aggregations;
+      if (!declared || typeof declared !== 'object' || Array.isArray(declared)) {
+        throw invalidConnectorManifest(`Stream '${stream.name}' query.aggregations must be an object`, code);
+      }
+      const allowedKeys = new Set(['count', 'sum', 'min', 'max', 'group_by']);
+      const unknownKeys = Object.keys(declared).filter((key) => !allowedKeys.has(key));
+      if (unknownKeys.length) {
+        throw invalidConnectorManifest(`Stream '${stream.name}' query.aggregations has unsupported keys: ${unknownKeys.join(', ')}`, code);
+      }
+      if (declared.count !== undefined && declared.count !== true) {
+        throw invalidConnectorManifest(`Stream '${stream.name}' query.aggregations.count must be true when declared`, code);
+      }
+      for (const key of ['sum', 'min', 'max', 'group_by']) {
+        const fields = declared[key];
+        if (fields === undefined) continue;
+        if (!Array.isArray(fields) || fields.length === 0 || fields.some((field) => !isNonEmptyString(field))) {
+          throw invalidConnectorManifest(`Stream '${stream.name}' query.aggregations.${key} must be a non-empty array of field names`, code);
+        }
+        const seenFields = new Set();
+        for (const fieldName of fields) {
+          if (seenFields.has(fieldName)) {
+            throw invalidConnectorManifest(`Stream '${stream.name}' query.aggregations.${key} duplicates field '${fieldName}'`, code);
+          }
+          seenFields.add(fieldName);
+          if (!schemaFieldNames.has(fieldName)) {
+            throw invalidConnectorManifest(`Stream '${stream.name}' query.aggregations.${key} references unknown field '${fieldName}'`, code);
+          }
+          const fieldSchema = schemaProperties[fieldName];
+          if (key === 'sum' && !isNumericAggregateFieldSchema(fieldSchema)) {
+            throw invalidConnectorManifest(`Stream '${stream.name}' query.aggregations.sum entry '${fieldName}' must be an integer, number, or nullable variant`, code);
+          }
+          if ((key === 'min' || key === 'max') && !isMinMaxAggregateFieldSchema(fieldSchema)) {
+            throw invalidConnectorManifest(`Stream '${stream.name}' query.aggregations.${key} entry '${fieldName}' must be an integer, number, date, date-time, or nullable variant`, code);
+          }
+          if (key === 'group_by' && !isScalarAggregateGroupFieldSchema(fieldSchema)) {
+            throw invalidConnectorManifest(`Stream '${stream.name}' query.aggregations.group_by entry '${fieldName}' must be a top-level scalar field; arrays, objects, blobs, and ambiguous types are not supported`, code);
+          }
         }
       }
     }

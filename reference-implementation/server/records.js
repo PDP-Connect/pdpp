@@ -204,6 +204,18 @@ const SUPPORTED_RECORD_QUERY_PARAMS = new Set([
   'order',
   'view',
 ]);
+const SUPPORTED_AGGREGATE_QUERY_PARAMS = new Set([
+  'connector_id',
+  'field',
+  'filter',
+  'group_by',
+  'limit',
+  'metric',
+  'subject_id',
+]);
+const SUPPORTED_AGGREGATE_METRICS = new Set(['count', 'sum', 'min', 'max']);
+const MAX_AGGREGATE_GROUP_LIMIT = 100;
+const DEFAULT_AGGREGATE_GROUP_LIMIT = 10;
 
 function invalidQueryError(message, code = 'invalid_request') {
   const err = new Error(message);
@@ -234,6 +246,26 @@ function nonNullSchemaTypes(schema) {
   if (raw == null) return new Set();
   const list = Array.isArray(raw) ? raw : [raw];
   return new Set(list.filter((t) => t !== 'null'));
+}
+
+const AGGREGATE_SCALAR_SCHEMA_TYPES = new Set(['boolean', 'integer', 'number', 'string']);
+
+function isScalarAggregateSchema(fieldSchema) {
+  const types = nonNullSchemaTypes(fieldSchema);
+  if (types.size !== 1) return false;
+  return AGGREGATE_SCALAR_SCHEMA_TYPES.has([...types][0]);
+}
+
+function isNumericAggregateSchema(fieldSchema) {
+  const types = nonNullSchemaTypes(fieldSchema);
+  return types.size === 1 && (types.has('integer') || types.has('number'));
+}
+
+function isMinMaxAggregateSchema(fieldSchema) {
+  const types = nonNullSchemaTypes(fieldSchema);
+  if (types.size !== 1) return false;
+  if (types.has('integer') || types.has('number')) return true;
+  return types.has('string') && (fieldSchema?.format === 'date' || fieldSchema?.format === 'date-time');
 }
 
 function parseIntegerValue(value) {
@@ -378,6 +410,104 @@ function validateTopLevelQueryParams(requestParams) {
   if (unsupported.length) {
     throw invalidQueryError(`Unsupported query parameter: ${unsupported.join(', ')}`);
   }
+}
+
+function validateTopLevelAggregateParams(requestParams) {
+  const unsupported = Object.keys(requestParams).filter((key) => !SUPPORTED_AGGREGATE_QUERY_PARAMS.has(key));
+  if (unsupported.length) {
+    throw invalidQueryError(`Unsupported query parameter: ${unsupported.join(', ')}`);
+  }
+}
+
+function normalizeAggregateMetric(value) {
+  const metric = String(value || '').trim();
+  if (!SUPPORTED_AGGREGATE_METRICS.has(metric)) {
+    throw invalidQueryError('metric must be one of count, sum, min, max');
+  }
+  return metric;
+}
+
+function normalizeAggregateLimit(value, groupBy) {
+  if (!groupBy) {
+    if (value != null) throw invalidQueryError('limit is only supported with group_by');
+    return null;
+  }
+  if (value == null || value === '') return DEFAULT_AGGREGATE_GROUP_LIMIT;
+  if (Array.isArray(value) || (typeof value === 'object' && value !== null)) {
+    throw invalidQueryError('limit must be an integer');
+  }
+  const limit = Number.parseInt(String(value), 10);
+  if (!Number.isInteger(limit) || String(limit) !== String(value).trim() || limit < 1 || limit > MAX_AGGREGATE_GROUP_LIMIT) {
+    throw invalidQueryError(`limit must be an integer between 1 and ${MAX_AGGREGATE_GROUP_LIMIT}`);
+  }
+  return limit;
+}
+
+function getDeclaredAggregateFields(manifestStream, kind) {
+  const fields = manifestStream?.query?.aggregations?.[kind];
+  return Array.isArray(fields) ? fields : [];
+}
+
+function requireDeclaredAggregate(manifestStream, kind, field) {
+  if (!getDeclaredAggregateFields(manifestStream, kind).includes(field)) {
+    throw invalidQueryError(`Aggregation ${kind} is not declared for '${field}'`);
+  }
+}
+
+function requireAggregateFieldGranted(streamGrant, field) {
+  if (streamGrant.fields && !streamGrant.fields.includes(field)) {
+    throw invalidQueryError(`Aggregation field '${field}' not in grant`, 'field_not_granted');
+  }
+}
+
+function normalizeAggregateRequest(requestParams, streamGrant, manifestStream) {
+  validateTopLevelAggregateParams(requestParams);
+
+  const aggregations = manifestStream?.query?.aggregations;
+  if (!aggregations || typeof aggregations !== 'object' || Array.isArray(aggregations)) {
+    throw invalidQueryError(`Aggregations are not declared for stream '${manifestStream?.name || ''}'`);
+  }
+
+  const metric = normalizeAggregateMetric(requestParams.metric);
+  const field = requestParams.field == null || requestParams.field === ''
+    ? null
+    : String(requestParams.field).trim();
+  const groupBy = requestParams.group_by == null || requestParams.group_by === ''
+    ? null
+    : String(requestParams.group_by).trim();
+  const limit = normalizeAggregateLimit(requestParams.limit, groupBy);
+
+  if (metric === 'count') {
+    if (field) throw invalidQueryError('field is not supported for count');
+    if (aggregations.count !== true) {
+      throw invalidQueryError(`Count aggregation is not declared for stream '${manifestStream?.name || ''}'`);
+    }
+  } else {
+    if (groupBy) throw invalidQueryError('group_by is supported only with metric=count');
+    if (!field) throw invalidQueryError(`field is required for ${metric}`);
+    const fieldSchema = getFieldSchema(manifestStream, field);
+    if (!fieldSchema) throw invalidQueryError(`Unknown field: ${field}`, 'unknown_field');
+    requireAggregateFieldGranted(streamGrant, field);
+    requireDeclaredAggregate(manifestStream, metric, field);
+    if (metric === 'sum' && !isNumericAggregateSchema(fieldSchema)) {
+      throw invalidQueryError(`Aggregation sum requires a numeric field; '${field}' is not numeric`);
+    }
+    if ((metric === 'min' || metric === 'max') && !isMinMaxAggregateSchema(fieldSchema)) {
+      throw invalidQueryError(`Aggregation ${metric} requires a numeric, date, or date-time field; '${field}' is not supported`);
+    }
+  }
+
+  if (groupBy) {
+    const groupSchema = getFieldSchema(manifestStream, groupBy);
+    if (!groupSchema) throw invalidQueryError(`Unknown field: ${groupBy}`, 'unknown_field');
+    requireAggregateFieldGranted(streamGrant, groupBy);
+    requireDeclaredAggregate(manifestStream, 'group_by', groupBy);
+    if (!isScalarAggregateSchema(groupSchema)) {
+      throw invalidQueryError(`Grouped counts require a scalar field; '${groupBy}' is not scalar`);
+    }
+  }
+
+  return { metric, field, groupBy, limit };
 }
 
 function normalizeExpandRequest(requestParams, stream, grant, manifestStream, order) {
@@ -1487,6 +1617,118 @@ export async function queryRecords(storageTarget, stream, grant, requestParams =
 
   if (hasMore && data.length) {
     response.next_cursor = encodeRecordsPageCursor(effectivePageRows[effectivePageRows.length - 1].sortPosition, order);
+  }
+
+  return response;
+}
+
+/**
+ * Aggregate records for one stream under the same grant and filter semantics
+ * used by record listing. This first surface deliberately scans visible rows
+ * in-process instead of adding aggregate indexes; it is a semantic floor.
+ */
+export async function aggregateRecords(storageTarget, stream, grant, requestParams = {}, manifest = null) {
+  const connectorId = resolveStorageConnectorId(storageTarget);
+  const db = getDb();
+
+  const streamGrant = grant.streams.find((entry) => entry.name === stream);
+  if (!streamGrant) {
+    const err = new Error(`Stream '${stream}' not in grant`);
+    err.code = 'grant_stream_not_allowed';
+    throw err;
+  }
+
+  const manifestStream = manifest?.streams?.find((entry) => entry.name === stream);
+  if (!manifestStream) {
+    const err = new Error(`Stream '${stream}' not found`);
+    err.code = 'not_found';
+    throw err;
+  }
+
+  const aggregateRequest = normalizeAggregateRequest(requestParams, streamGrant, manifestStream);
+  const compiledFilters = compileRequestFilters(requestParams.filter, streamGrant, manifestStream);
+  const effective = buildEffectiveFilter(streamGrant, {});
+  const consentTimeField = manifestStream?.consent_time_field || null;
+
+  const rows = db.prepare(`
+    SELECT record_key, record_json
+    FROM records
+    WHERE connector_id = ?
+      AND stream = ?
+      AND deleted = 0
+    ORDER BY record_key ASC
+  `).all(connectorId, stream);
+
+  let visibleCount = 0;
+  let sum = 0;
+  let bestComparable = null;
+  let bestValue = null;
+  const groups = new Map();
+  const aggregateFieldSchema = aggregateRequest.field
+    ? getFieldSchema(manifestStream, aggregateRequest.field)
+    : null;
+
+  for (const row of rows) {
+    const rawData = JSON.parse(row.record_json);
+    if (effective.resources && !effective.resources.includes(row.record_key)) continue;
+    if (effective.timeRange && consentTimeField && !passesTimeRange(rawData, effective.timeRange, consentTimeField)) continue;
+    if (compiledFilters.length && !passesRequestFilters(rawData, compiledFilters)) continue;
+
+    visibleCount += 1;
+
+    if (aggregateRequest.groupBy) {
+      const rawGroupValue = rawData[aggregateRequest.groupBy] ?? null;
+      const key = JSON.stringify(rawGroupValue);
+      const entry = groups.get(key) || { key: rawGroupValue, count: 0 };
+      entry.count += 1;
+      groups.set(key, entry);
+      continue;
+    }
+
+    if (aggregateRequest.metric === 'sum') {
+      const comparable = coerceComparableValue(rawData[aggregateRequest.field], aggregateFieldSchema);
+      if (typeof comparable === 'number' && Number.isFinite(comparable)) {
+        sum += comparable;
+      }
+      continue;
+    }
+
+    if (aggregateRequest.metric === 'min' || aggregateRequest.metric === 'max') {
+      const comparable = coerceComparableValue(rawData[aggregateRequest.field], aggregateFieldSchema);
+      if (comparable == null) continue;
+      const shouldReplace = bestComparable == null
+        || (aggregateRequest.metric === 'min' ? comparable < bestComparable : comparable > bestComparable);
+      if (shouldReplace) {
+        bestComparable = comparable;
+        bestValue = rawData[aggregateRequest.field];
+      }
+    }
+  }
+
+  const response = {
+    object: 'aggregation',
+    stream,
+    metric: aggregateRequest.metric,
+    field: aggregateRequest.field,
+    group_by: aggregateRequest.groupBy,
+    filtered_record_count: visibleCount,
+  };
+
+  if (aggregateRequest.groupBy) {
+    response.limit = aggregateRequest.limit;
+    response.groups = [...groups.values()]
+      .sort((left, right) => {
+        const countCmp = right.count - left.count;
+        if (countCmp !== 0) return countCmp;
+        return JSON.stringify(left.key).localeCompare(JSON.stringify(right.key));
+      })
+      .slice(0, aggregateRequest.limit);
+  } else if (aggregateRequest.metric === 'count') {
+    response.value = visibleCount;
+  } else if (aggregateRequest.metric === 'sum') {
+    response.value = sum;
+  } else {
+    response.value = bestValue;
   }
 
   return response;

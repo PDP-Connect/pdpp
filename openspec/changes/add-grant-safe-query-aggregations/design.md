@@ -27,6 +27,8 @@ Prefer `GET /v1/streams/:stream/aggregate` because it keeps source identity and 
 
 Do not infer aggregatable fields from schema alone. Add a stream-level `query.aggregations` declaration so manifests choose which scalar fields are safe for grouping or numeric/date aggregation. This prevents accidental grouping on high-cardinality identifiers or sensitive free-text fields.
 
+Aggregation discoverability uses `query.aggregations` as the source of truth. When stream metadata also exposes field-level capabilities, the reference projects per-field aggregation flags from that same declaration so clients can plan without reading two unrelated shapes. This projection is not a second source of truth.
+
 ### Reuse filters
 
 Aggregation requests should accept existing exact and range filters. A query like "sum amount where date >= X" should use the same filter validation as record listing so behavior does not fork.
