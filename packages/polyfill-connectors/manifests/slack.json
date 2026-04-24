@@ -361,6 +361,20 @@
             "topic",
             "purpose"
           ]
+        },
+        "range_filters": {
+          "created_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "num_members": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
         }
       }
     },
@@ -872,6 +886,38 @@
           "semantic_fields": [
             "text"
           ]
+        },
+        "range_filters": {
+          "sent_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "reply_count": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "file_count": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "attachment_count": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "reaction_count": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
         }
       }
     },
@@ -1213,6 +1259,32 @@
             "title",
             "pretty_type"
           ]
+        },
+        "range_filters": {
+          "created_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "size": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "original_w": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "original_h": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
         }
       }
     },
@@ -1383,6 +1455,26 @@
             "title",
             "content_markdown"
           ]
+        },
+        "range_filters": {
+          "created_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "updated_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "content_bytes": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
         }
       }
     },
@@ -1456,7 +1548,17 @@
         "fields": true,
         "resources": true
       },
-      "incremental": true
+      "incremental": true,
+      "query": {
+        "range_filters": {
+          "starred_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        }
+      }
     },
     {
       "name": "user_groups",
@@ -1664,6 +1766,20 @@
           "semantic_fields": [
             "text"
           ]
+        },
+        "range_filters": {
+          "scheduled_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "completed_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
         }
       }
     },
@@ -1736,7 +1852,29 @@
           "foreign_key": "channel_id",
           "cardinality": "has_one"
         }
-      ]
+      ],
+      "query": {
+        "range_filters": {
+          "last_read_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "unread_count": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "unread_count_display": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        }
+      }
     }
   ],
   "profiles": [

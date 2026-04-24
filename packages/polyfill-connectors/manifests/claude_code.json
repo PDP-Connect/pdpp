@@ -109,6 +109,26 @@
             "user_type",
             "entrypoint"
           ]
+        },
+        "range_filters": {
+          "started_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "last_event_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "message_count": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
         }
       }
     },
@@ -214,6 +234,14 @@
           "semantic_fields": [
             "content"
           ]
+        },
+        "range_filters": {
+          "timestamp": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
         }
       }
     },
@@ -311,6 +339,20 @@
           "semantic_fields": [
             "content_preview"
           ]
+        },
+        "range_filters": {
+          "timestamp": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "content_bytes": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
         }
       }
     },
@@ -396,6 +438,14 @@
             "description",
             "content"
           ]
+        },
+        "range_filters": {
+          "mtime_epoch": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
         }
       }
     },
@@ -473,6 +523,14 @@
           "semantic_fields": [
             "description",
             "content"
+          ]
+        },
+        "range_filters": {
+          "mtime_epoch": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
           ]
         }
       }

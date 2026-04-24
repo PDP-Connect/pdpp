@@ -94,6 +94,7 @@ const SUPPORTED_PENDING_SELECTION_FIELDS = new Set([
   'streams',
   'type',
 ]);
+const SUPPORTED_RANGE_OPERATORS = new Set(['gte', 'gt', 'lte', 'lt']);
 
 function cloneJson(value) {
   return value == null ? value : JSON.parse(JSON.stringify(value));
@@ -134,6 +135,10 @@ function isReferenceCompatibleCursorSchema(fieldSchema) {
     return fieldSchema.format === 'date' || fieldSchema.format === 'date-time';
   }
   return false;
+}
+
+function isRangeQueryableFieldSchema(fieldSchema) {
+  return isReferenceCompatibleCursorSchema(fieldSchema);
 }
 
 function resolveConfiguredNativeStorageBinding(opts = {}) {
@@ -1349,6 +1354,25 @@ function validateConnectorManifest(manifest = {}, code = 'invalid_request', opts
         const fieldSchema = schemaProperties[fieldName];
         if (!isTopLevelSearchableStringField(fieldSchema)) {
           throw invalidConnectorManifest(`Stream '${stream.name}' query.search.semantic_fields entry '${fieldName}' must be a top-level string or nullable-string field; v1 does not support nested paths, arrays, blobs, or non-string scalar types`, code);
+        }
+      }
+    }
+
+    if (stream.query?.range_filters !== undefined) {
+      const declared = stream.query.range_filters;
+      if (!declared || typeof declared !== 'object' || Array.isArray(declared)) {
+        throw invalidConnectorManifest(`Stream '${stream.name}' query.range_filters must be an object keyed by field name`, code);
+      }
+      for (const [fieldName, operators] of Object.entries(declared)) {
+        if (!schemaFieldNames.has(fieldName)) {
+          throw invalidConnectorManifest(`Stream '${stream.name}' query.range_filters references unknown field '${fieldName}'`, code);
+        }
+        if (!Array.isArray(operators) || operators.length === 0 || operators.some((operator) => !SUPPORTED_RANGE_OPERATORS.has(operator))) {
+          throw invalidConnectorManifest(`Stream '${stream.name}' query.range_filters entry '${fieldName}' must use supported operators: gte, gt, lte, lt`, code);
+        }
+        const fieldSchema = schemaProperties[fieldName];
+        if (!isRangeQueryableFieldSchema(fieldSchema)) {
+          throw invalidConnectorManifest(`Stream '${stream.name}' query.range_filters entry '${fieldName}' must be an integer, number, date, date-time, or nullable variant`, code);
         }
       }
     }

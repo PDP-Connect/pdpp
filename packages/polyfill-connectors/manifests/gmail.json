@@ -209,6 +209,26 @@
             "subject",
             "snippet"
           ]
+        },
+        "range_filters": {
+          "received_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "date": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "size_bytes": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
         }
       }
     },
@@ -287,6 +307,38 @@
           ],
           "semantic_fields": [
             "subject"
+          ]
+        },
+        "range_filters": {
+          "first_message_date": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "last_message_date": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "message_count": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "unread_count": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "flagged_count": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
           ]
         }
       }
@@ -439,6 +491,20 @@
           "semantic_fields": [
             "body_text"
           ]
+        },
+        "range_filters": {
+          "body_text_bytes": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "body_html_bytes": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
         }
       }
     },
@@ -531,6 +597,20 @@
             "filename",
             "content_type",
             "content_id"
+          ]
+        },
+        "range_filters": {
+          "message_received_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "size_bytes": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
           ]
         }
       }

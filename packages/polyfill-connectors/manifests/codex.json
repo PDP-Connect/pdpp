@@ -169,6 +169,38 @@
             "title",
             "first_user_message"
           ]
+        },
+        "range_filters": {
+          "started_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "last_event_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "message_count": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "function_call_count": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "tokens_used": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
         }
       }
     },
@@ -247,6 +279,14 @@
           ],
           "semantic_fields": [
             "content"
+          ]
+        },
+        "range_filters": {
+          "timestamp": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
           ]
         }
       }
@@ -330,6 +370,14 @@
             "arguments",
             "output_preview"
           ]
+        },
+        "range_filters": {
+          "timestamp": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
         }
       }
     },
@@ -394,6 +442,14 @@
           ],
           "semantic_fields": [
             "rule_text"
+          ]
+        },
+        "range_filters": {
+          "mtime_epoch": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
           ]
         }
       }
@@ -466,6 +522,14 @@
             "description",
             "content"
           ]
+        },
+        "range_filters": {
+          "mtime_epoch": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
         }
       }
     },
@@ -532,6 +596,14 @@
             "description",
             "content",
             "path"
+          ]
+        },
+        "range_filters": {
+          "mtime_epoch": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
           ]
         }
       }

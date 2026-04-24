@@ -90,6 +90,20 @@
             "type",
             "status"
           ]
+        },
+        "range_filters": {
+          "balance_cents": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "available_balance_cents": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
         }
       }
     },
@@ -220,6 +234,26 @@
             "description",
             "original_description"
           ]
+        },
+        "range_filters": {
+          "date": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "amount": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "balance_after_cents": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
         }
       }
     },
@@ -315,6 +349,14 @@
             "title",
             "account_reference"
           ]
+        },
+        "range_filters": {
+          "date_delivered": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
         }
       }
     },
@@ -386,6 +428,14 @@
           "semantic_fields": [
             "subject",
             "preview"
+          ]
+        },
+        "range_filters": {
+          "date_received": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
           ]
         }
       }
@@ -500,6 +550,32 @@
           "lexical_fields": [
             "account_nickname",
             "billing_status"
+          ]
+        },
+        "range_filters": {
+          "available_credit_cents": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "credit_limit_cents": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "current_balance_cents": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "cash_rewards_cents": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
           ]
         }
       }

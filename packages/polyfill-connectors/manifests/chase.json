@@ -123,6 +123,44 @@
             "type",
             "status"
           ]
+        },
+        "range_filters": {
+          "balance_cents": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "available_balance_cents": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "available_credit_cents": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "credit_limit_cents": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "statement_balance_cents": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "balance_as_of": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
         }
       }
     },
@@ -267,6 +305,20 @@
           "semantic_fields": [
             "memo"
           ]
+        },
+        "range_filters": {
+          "date": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "amount": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
         }
       }
     },
@@ -364,6 +416,14 @@
             "title",
             "account_reference"
           ]
+        },
+        "range_filters": {
+          "date_delivered": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
         }
       }
     },
@@ -432,7 +492,29 @@
           "foreign_key": "account_id",
           "cardinality": "has_one"
         }
-      ]
+      ],
+      "query": {
+        "range_filters": {
+          "as_of": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "ledger_balance_cents": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "available_balance_cents": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        }
+      }
     }
   ]
 }

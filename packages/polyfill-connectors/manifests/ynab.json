@@ -148,6 +148,14 @@
             "currency_symbol",
             "date_format_string"
           ]
+        },
+        "range_filters": {
+          "last_modified_on": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
         }
       }
     },
@@ -333,6 +341,32 @@
           ],
           "semantic_fields": [
             "note"
+          ]
+        },
+        "range_filters": {
+          "balance": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "cleared_balance": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "uncleared_balance": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "last_reconciled_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
           ]
         }
       }
@@ -565,6 +599,62 @@
           ],
           "semantic_fields": [
             "note"
+          ]
+        },
+        "range_filters": {
+          "budgeted": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "activity": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "balance": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "goal_target": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "goal_target_date": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "goal_percentage_complete": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "goal_overall_funded": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "goal_overall_left": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "goal_under_funded": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
           ]
         }
       }
@@ -955,6 +1045,20 @@
           "semantic_fields": [
             "memo"
           ]
+        },
+        "range_filters": {
+          "date": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "amount": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
         }
       }
     },
@@ -1095,6 +1199,26 @@
           "semantic_fields": [
             "memo"
           ]
+        },
+        "range_filters": {
+          "date_first": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "date_next": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "amount": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
         }
       }
     },
@@ -1170,6 +1294,44 @@
           ],
           "semantic_fields": [
             "note"
+          ]
+        },
+        "range_filters": {
+          "month": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "income": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "budgeted": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "activity": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "to_be_budgeted": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "age_of_money": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
           ]
         }
       }
@@ -1403,6 +1565,62 @@
           ],
           "semantic_fields": [
             "note"
+          ]
+        },
+        "range_filters": {
+          "month": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "budgeted": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "activity": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "balance": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "goal_target": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "goal_percentage_complete": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "goal_overall_funded": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "goal_overall_left": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "goal_under_funded": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
           ]
         }
       }

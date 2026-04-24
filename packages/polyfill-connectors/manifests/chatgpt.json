@@ -109,6 +109,26 @@
           "semantic_fields": [
             "title"
           ]
+        },
+        "range_filters": {
+          "create_time": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "update_time": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "message_count_on_current_branch": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
         }
       }
     },
@@ -222,6 +242,14 @@
           "semantic_fields": [
             "content"
           ]
+        },
+        "range_filters": {
+          "create_time": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
         }
       }
     },
@@ -279,6 +307,20 @@
           ],
           "semantic_fields": [
             "content"
+          ]
+        },
+        "range_filters": {
+          "created_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "updated_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
           ]
         }
       }
@@ -401,6 +443,20 @@
             "display_welcome_message",
             "instructions"
           ]
+        },
+        "range_filters": {
+          "created_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "updated_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
         }
       }
     },
@@ -467,6 +523,14 @@
           "semantic_fields": [
             "about_user",
             "response_style"
+          ]
+        },
+        "range_filters": {
+          "updated_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
           ]
         }
       }
@@ -560,6 +624,14 @@
           "semantic_fields": [
             "title",
             "highlighted_text"
+          ]
+        },
+        "range_filters": {
+          "created_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
           ]
         }
       }

@@ -148,6 +148,26 @@
             "status_detail",
             "payment_method_summary"
           ]
+        },
+        "range_filters": {
+          "order_date": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "order_total_cents": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "item_count": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
         }
       }
     },
@@ -254,6 +274,26 @@
           "lexical_fields": [
             "name",
             "seller"
+          ]
+        },
+        "range_filters": {
+          "order_date": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "unit_price_cents": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "quantity": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
           ]
         }
       }

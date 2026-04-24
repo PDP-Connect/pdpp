@@ -147,6 +147,44 @@
           "semantic_fields": [
             "bio"
           ]
+        },
+        "range_filters": {
+          "created_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "updated_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "followers": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "following": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "public_repos": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "public_gists": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
         }
       }
     },
@@ -309,6 +347,56 @@
           "semantic_fields": [
             "description"
           ]
+        },
+        "range_filters": {
+          "created_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "updated_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "pushed_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "stargazers_count": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "forks_count": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "open_issues_count": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "watchers_count": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "size_kb": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
         }
       }
     },
@@ -385,6 +473,20 @@
           ],
           "semantic_fields": [
             "description"
+          ]
+        },
+        "range_filters": {
+          "starred_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "stargazers_count": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
           ]
         }
       }
@@ -557,6 +659,38 @@
           "semantic_fields": [
             "title",
             "body"
+          ]
+        },
+        "range_filters": {
+          "created_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "updated_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "closed_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "comments": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "reactions_total_count": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
           ]
         }
       }
@@ -785,6 +919,74 @@
             "title",
             "body"
           ]
+        },
+        "range_filters": {
+          "created_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "updated_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "closed_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "merged_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "comments": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "reactions_total_count": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "commits_count": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "additions": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "deletions": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "changed_files": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "review_comments_count": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
         }
       }
     },
@@ -900,6 +1102,32 @@
           ],
           "semantic_fields": [
             "description"
+          ]
+        },
+        "range_filters": {
+          "created_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "updated_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "files_total_count": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "comments_count": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
           ]
         }
       }
