@@ -1412,6 +1412,66 @@ test('shipped gmail manifest contributes semantic coverage after reconcile witho
   }
 });
 
+test('multilingual-minilm profile builds embeddings and returns semantic hits', { timeout: 180_000 }, async () => {
+  const cacheDir = process.env.PDPP_MULTILINGUAL_MINILM_SMOKE_CACHE_DIR
+    || path.join(os.tmpdir(), 'pdpp-multilingual-minilm-smoke-cache');
+  const backend = resolveSemanticBackendFromEnv({
+    PDPP_SEMANTIC_EMBEDDING_BACKEND: 'local',
+    PDPP_EMBEDDING_PROFILE_ID: 'multilingual-minilm',
+    PDPP_EMBEDDING_CACHE_DIR: cacheDir,
+    PDPP_EMBEDDING_DOWNLOAD_ALLOWED: '1',
+  });
+
+  assert.ok(backend, 'multilingual-minilm backend resolves');
+  assert.equal(backend.profileId(), 'multilingual-minilm');
+  assert.equal(backend.model(), 'Xenova/paraphrase-multilingual-MiniLM-L12-v2');
+  assert.equal(backend.dimensions(), 384);
+  assert.equal(backend.languageBias()?.primary, 'multi');
+
+  const vector = await backend.embedDocument('La ricevuta del treno per Milano e pronta.');
+  assert.equal(vector.length, 384, 'multilingual-minilm builds 384-dimensional embeddings');
+  assert.equal(backend.modelCachePresent(), true, 'profile model files are cached after embedding');
+
+  await withHarness({ semanticRetrievalBackend: backend }, async ({ asUrl, rsUrl }) => {
+    const ownerToken = await issueOwnerToken(asUrl);
+    const connectorA = MANIFEST_A.connector_id;
+    await ingest(rsUrl, ownerToken, connectorA, 'posts', [
+      {
+        id: 'it-1',
+        title: 'Ricevuta del treno per Milano',
+        selftext: 'Promemoria: scaricare la ricevuta del viaggio in treno verso Milano.',
+        subreddit: 'viaggi',
+        source_created_at: '2026-04-18T09:00:00Z',
+      },
+      {
+        id: 'it-2',
+        title: 'Lista della spesa',
+        selftext: 'Comprare pane, pomodori e caffe prima di cena.',
+        subreddit: 'casa',
+        source_created_at: '2026-04-18T10:00:00Z',
+      },
+    ]);
+
+    const { status: metadataStatus, body: metadata } = await fetchJson(
+      `${rsUrl}/.well-known/oauth-protected-resource`,
+    );
+    assert.equal(metadataStatus, 200);
+    assert.equal(metadata.capabilities?.semantic_retrieval?.model, backend.model());
+    assert.equal(metadata.capabilities?.semantic_retrieval?.language_bias?.primary, 'multi');
+
+    const { status, body } = await fetchJson(
+      `${rsUrl}/v1/search/semantic?q=${encodeURIComponent('ricevuta treno Milano')}`,
+      { headers: { Authorization: `Bearer ${ownerToken}` } },
+    );
+
+    assert.equal(status, 200);
+    assert.ok(
+      (body.data || []).some((hit) => hit.record_key === 'it-1' && hit.retrieval_mode === 'semantic'),
+      'multilingual-minilm returns a semantic hit from the Italian corpus',
+    );
+  });
+});
+
 test('parseSemanticSearchParams accepts the v1 allowlist, rejects everything else', () => {
   const ok = parseSemanticSearchParams({ q: 'x' });
   assert.equal(ok.q, 'x');

@@ -29,7 +29,7 @@
 ## 5. Multilingual Profile Support
 
 - [x] 5.1 Add operator configuration for one active semantic embedding profile, including profile ID, model ID or preset, cache directory, download policy, dimensions, distance metric, and language-bias metadata. (`PDPP_EMBEDDING_PROFILE_ID`, `PDPP_EMBEDDING_MODEL_ID`, `PDPP_EMBEDDING_CACHE_DIR`, `PDPP_EMBEDDING_DOWNLOAD_ALLOWED`, `PDPP_EMBEDDING_DTYPE`, `PDPP_EMBEDDING_DIMENSIONS`, `PDPP_EMBEDDING_DISTANCE_METRIC`.)
-- [ ] 5.2 Verify the documented `multilingual-minilm` profile can build embeddings and return semantic hits in an executable smoke test. (Profile and docs are present; the larger model download/runtime smoke remains intentionally unrun in this slice.)
+- [x] 5.2 Verify the documented `multilingual-minilm` profile can build embeddings and return semantic hits in an executable smoke test. (`multilingual-minilm profile builds embeddings and returns semantic hits` loads the documented Transformers.js profile, builds a 384d embedding, verifies cache/profile metadata, and returns a semantic hit from a small Italian corpus.)
 - [x] 5.3 Decide whether the default operational profile should be multilingual or English-biased, based on measured install size, first-run behavior, latency, and result quality smoke tests. (Default is English-biased `minilm` because it is much smaller/faster for low-compute local demos; `multilingual-minilm` is the documented Italian/mixed-language switch.)
 - [x] 5.4 Confirm changing the active profile marks existing semantic index coverage stale and rebuilds from stored records. (Semantic storage identity now includes model/profile/dtype/dimensions/metric; the existing restart/backend-identity tests cover stale-then-built rebuild behavior.)
 
