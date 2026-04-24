@@ -36,7 +36,7 @@ function firstString(data: RecordData, skipKeys: string[] = ['id']): string {
 
 function connectorShortName(connectorId: string): string {
   const m = connectorId.match(/\/connectors\/([^/]+)$/);
-  return m ? m[1] : connectorId;
+  return m?.[1] ?? connectorId;
 }
 
 // Stream-specific summaries. Keyed by the short connector name (e.g.

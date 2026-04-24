@@ -113,15 +113,18 @@ function BreadthRow({
 
 // Deterministic low-saturation identity colors for the top-connectors row.
 // These are small decorative dots only; no meaning is carried by specific hue.
+const IDENTITY_PALETTE = [
+  'oklch(0.72 0.12 65)',
+  'oklch(0.70 0.11 155)',
+  'oklch(0.68 0.13 240)',
+  'oklch(0.70 0.11 320)',
+  'oklch(0.72 0.10 25)',
+] as const;
+
 function identityColor(index: number): string {
-  const palette = [
-    'oklch(0.72 0.12 65)',
-    'oklch(0.70 0.11 155)',
-    'oklch(0.68 0.13 240)',
-    'oklch(0.70 0.11 320)',
-    'oklch(0.72 0.10 25)',
-  ];
-  return palette[index % palette.length];
+  // Modulo keeps the lookup in-bounds; the fallback is a defensive no-op
+  // that also satisfies `noUncheckedIndexedAccess` without a non-null assertion.
+  return IDENTITY_PALETTE[index % IDENTITY_PALETTE.length] ?? IDENTITY_PALETTE[0];
 }
 
 function formatInteger(n: number): string {

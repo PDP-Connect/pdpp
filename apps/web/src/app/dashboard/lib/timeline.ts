@@ -179,5 +179,5 @@ export function defaultWindow(days = 7): { since: string; until: string } {
 
 export function shortConnectorName(connectorId: string): string {
   const m = connectorId.match(/\/connectors\/([^/]+)$/);
-  return m ? m[1] : connectorId;
+  return m?.[1] ?? connectorId;
 }

@@ -363,8 +363,11 @@ function PaginationBar({
   // The popped remainder becomes the next request's prev stack.
   let prevHref: string | null = null;
   if (prevStack.length > 0) {
+    // prevStack.length > 0, so pop() must yield a defined entry; coalesce to
+    // the 'first' sentinel so the subsequent cursor branch type-narrows
+    // without a non-null assertion.
     const newStack = prevStack.slice(0, -1);
-    const newCursor = prevStack[prevStack.length - 1];
+    const newCursor = prevStack[prevStack.length - 1] ?? 'first';
     const params = new URLSearchParams({ q: query });
     if (newCursor !== 'first') params.set('cursor', newCursor);
     if (newStack.length > 0) params.set('prev', encodePrevStack(newStack));
