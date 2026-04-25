@@ -14,9 +14,10 @@ non-recommended alternatives, and tradeoffs we examined.
 
 - **Recommendation**: a small host-side **PDPP host bridge** process that
   uses Patchright's `launchPersistentContext` against
-  `~/.pdpp/profiles/<connector-or-subject>/` and exposes the resulting
-  browser's CDP endpoint over loopback. The Dockerized connector runtime
-  attaches to that endpoint via Patchright's `chromium.connectOverCDP()`.
+  `~/.pdpp/profiles/<connector-or-subject>/` and exposes a local bridge
+  endpoint over loopback. The implementation tranche must prove whether
+  that endpoint can be a direct CDP handoff or must be a thin
+  bridge-owned command broker around the persistent context.
 - **Not recommended (default)**: connecting Docker directly to the user's
   daily Chrome via `--remote-debugging-port=9222`. Acceptable only as a
   documented operator escape hatch with explicit profile guidance.
@@ -35,7 +36,9 @@ documents is non-persistent by design.
 
 This kills the simplest mental model ("`patchright.launchServer()` on the
 host, Docker connects"). Instead the host must run its own process that
-owns the persistent context and exposes its CDP endpoint.
+owns the persistent context and exposes a controlled local bridge
+endpoint. The exact transport (direct CDP versus bridge-owned broker)
+is an implementation proof item, not a settled fact in this memo.
 
 References:
 - Playwright `BrowserType.launchServer`: no `userDataDir` argument.
@@ -137,7 +140,7 @@ pdpp-host-bridge (Node, Patchright)    |  reference container
        { channel: "chrome",            |        │
          headless: false,              |        │  CDP over WS
          viewport: null })             |  ◀────┘  (loopback only)
-  └─ exposes context CDP endpoint      |
+  └─ exposes local bridge endpoint     |
        at ws://127.0.0.1:<port>        |
        gated by a per-launch token     |
 ```
@@ -148,8 +151,10 @@ Why this shape:
   used by `acquireIsolatedBrowser`. The native and Docker paths share a
   profile-naming convention, which keeps multi-account future work
   unified.
-- It keeps Patchright on both sides, so launch-side and client-side
-  stealth both apply.
+- It keeps browser launch inside Patchright. If direct Patchright
+  client attachment proves reliable, client-side stealth stays
+  Patchright-owned as well; otherwise the bridge-owned broker keeps the
+  Dockerized connector out of raw daily Chrome.
 - The host bridge is thin: it doesn't impersonate the connector; it
   just owns the persistent context and a token-gated handoff.
 - It is explicit. The user starts the bridge themselves
@@ -252,7 +257,7 @@ Why ChatGPT:
 **Validation flow**:
 
 1. Operator starts `pnpm pdpp host-bridge` on the host. Bridge prints
-   the token and the WS endpoint.
+   the token and the local endpoint.
 2. Operator exports `PDPP_HOST_BROWSER_BRIDGE_URL` and
    `PDPP_HOST_BROWSER_BRIDGE_TOKEN` into the Compose environment.
 3. Operator starts the Compose stack and triggers a ChatGPT connector

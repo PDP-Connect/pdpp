@@ -1,8 +1,9 @@
 ## 1. Feasibility
 
-- [x] Spike host Patchright/Playwright server from Docker against a visible host browser with a dedicated PDPP profile. (Findings: `launchServer()` does not accept `userDataDir`; persistent profiles require a host process owning a `launchPersistentContext`. Bridge shape captured in `design-notes/host-bridge-feasibility-spike.md`.)
-- [x] Spike host Chrome-over-CDP from Docker and document the Patchright stealth tradeoff. (Findings: loses Patchright launch-side stealth; remote-debugging-port broadcasts to all local processes; only acceptable as a documented escape hatch with a dedicated `--user-data-dir`.)
-- [x] Confirm host setup on macOS and Linux; note Windows requirements if not tested. (macOS/Linux supported; Linux Compose requires `extra_hosts: ["host.docker.internal:host-gateway"]`. Windows marked "documented but unverified" for the first implementation slice.)
+- [x] Analyze the host Patchright/Playwright server options and document the persistent-profile constraint. (Finding: `launchServer()` does not accept `userDataDir`; persistent profiles require a host process owning a `launchPersistentContext`. Bridge shape captured in `design-notes/host-bridge-feasibility-spike.md`.)
+- [ ] Prove the chosen host persistent-context bridge from Docker against a visible host browser with a dedicated PDPP profile. (Deferred to the implementation tranche; the design names this as a required validation, not a completed proof.)
+- [x] Analyze host Chrome-over-CDP from Docker and document the Patchright stealth tradeoff. (Findings: loses Patchright launch-side stealth; remote-debugging-port broadcasts to all local processes; only acceptable as a documented escape hatch with a dedicated `--user-data-dir`.)
+- [ ] Confirm host setup on macOS and Linux; note Windows requirements if not tested. (Expected: macOS/Windows have `host.docker.internal`; Linux Compose requires `extra_hosts: ["host.docker.internal:host-gateway"]`. Actual platform validation remains part of the implementation tranche.)
 - [x] Decide whether the host bridge should be launched manually, by a helper script, or by Docker Compose instructions. (Decision: launched manually by the operator via a small in-repo CLI; Compose only documents the env vars and `extra_hosts`; Compose does not auto-start the bridge.)
 
 ## 2. Design

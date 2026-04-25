@@ -43,9 +43,12 @@ browser profile.
 
 The first implementation path is a small **host-side PDPP browser
 bridge process** that owns a Patchright `launchPersistentContext`
-against the dedicated profile directory and exposes the resulting
-browser's CDP endpoint over loopback. The Dockerized connector runtime
-attaches via Patchright's `chromium.connectOverCDP()`.
+against the dedicated profile directory and exposes an explicitly
+configured local control endpoint over loopback. The Dockerized
+connector runtime attaches through that bridge. The first
+implementation tranche MUST prove whether the bridge can safely expose
+the persistent context through CDP (`chromium.connectOverCDP()`) or
+needs a thin bridge-owned command broker around the persistent context.
 
 ```text
 host                                   | docker
@@ -55,8 +58,8 @@ pdpp host-bridge process                |  reference container
        (~/.pdpp/profiles/<name>/,       |     ↳ acquireRemoteBrowser()
         channel: "chrome",              |        │
         headless: false,                |        │  CDP over WS
-        viewport: null)                 |  ◀────┘  loopback only
-  └─ exposes CDP endpoint               |
+       viewport: null)                 |  ◀────┘  loopback only
+  └─ exposes control endpoint           |
        ws://127.0.0.1:<port>            |
        gated by per-launch token        |
 ```
@@ -66,8 +69,10 @@ This is the recommended path because it is the only one that:
 - Uses a real host browser window the user can see and click.
 - Preserves the dedicated `~/.pdpp/profiles/<...>/` profile layout that
   the native runtime already uses.
-- Keeps Patchright on both sides of the bridge so launch-side and
-  client-side stealth both apply.
+- Keeps the browser launch inside Patchright. If the implementation
+  proves a Patchright client can attach cleanly to the persistent
+  context, client-side stealth also stays Patchright-owned; otherwise
+  the bridge-owned broker keeps connector code out of raw daily Chrome.
 - Stays explicit: the bridge is a separate process the user starts and
   stops, not a container behavior the user can forget about.
 
@@ -210,7 +215,7 @@ The slice is "user sees host browser, completes interaction, connector
 continues":
 
 1. Operator starts the host bridge on their machine. The bridge prints
-   the token and the WS endpoint.
+   the token and the local endpoint.
 2. Operator exports `PDPP_HOST_BROWSER_BRIDGE_URL` and
    `PDPP_HOST_BROWSER_BRIDGE_TOKEN` into the Compose environment.
 3. Operator starts the Compose stack and triggers a ChatGPT connector
@@ -239,7 +244,7 @@ Listed here so the next slice has a concrete starting point:
 
 - `packages/polyfill-connectors/src/browser-launch.ts` — add an
   `acquireRemoteBrowser` (or augment `acquireIsolatedBrowser`) that
-  routes through `chromium.connectOverCDP` when
+  routes through the host bridge when
   `PDPP_HOST_BROWSER_BRIDGE_URL` is set.
 - `reference-implementation/runtime/controller.ts` — recognize the
   typed `host_browser_bridge_unavailable` failure and surface it
