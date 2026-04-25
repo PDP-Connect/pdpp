@@ -38,6 +38,7 @@ import type {
 const DEFAULT_PAGE_LIMIT = 25;
 const MAX_PAGE_LIMIT = 100;
 const SEARCH_SNIPPET_PADDING = 32;
+const SANDBOX_PATH_SUFFIX_RE = /\/sandbox$/;
 
 const DEMO_NOTICE = {
   is_demo: true,
@@ -111,12 +112,12 @@ export interface SchemaResponse {
   object: "schema_graph";
 }
 
-export function buildSchemaResponse(): SchemaResponse {
+export function buildSchemaResponse(issuer = DEMO_ISSUER): SchemaResponse {
   return {
     object: "schema_graph",
     is_demo: true,
     notice: DEMO_NOTICE.notice,
-    issuer: DEMO_ISSUER,
+    issuer,
     connectors: DEMO_CONNECTORS.map((connector) => ({
       connector_id: connector.connector_id,
       display_name: connector.display_name,
@@ -310,12 +311,19 @@ export function buildRecordDetail(streamKey: string, recordId: string): RecordDe
 
 export interface SearchHit {
   connector_id: string;
+  emitted_at: string;
   matched_fields: string[];
-  object: "search_hit";
-  record_id: string;
+  object: "search_result";
+  record_key: string;
   record_time: string;
-  score: number;
-  snippet: string;
+  record_url: string;
+  score: {
+    kind: "sandbox_lexical_rank";
+    order: "higher_is_better";
+    value: number;
+    value_semantics: "demo_only";
+  };
+  snippet: { field: string; text: string };
   stream: string;
 }
 
@@ -337,66 +345,43 @@ function snippetAround(haystack: string, needle: string): string {
 }
 
 export interface SearchResponse {
-  hits: SearchHit[];
+  data: SearchHit[];
+  has_more: false;
   is_demo: true;
+  next_cursor: null;
   notice: typeof DEMO_NOTICE.notice;
-  object: "search_result";
+  object: "list";
   query: string;
   total: number;
+  url: "/sandbox/v1/search";
 }
 
 export function buildSearchResponse(query: string): SearchResponse {
   const trimmed = query.trim();
   if (trimmed.length === 0) {
     return {
-      object: "search_result",
+      object: "list",
       is_demo: true,
       notice: DEMO_NOTICE.notice,
+      url: "/sandbox/v1/search",
       query: "",
       total: 0,
-      hits: [],
+      has_more: false,
+      next_cursor: null,
+      data: [],
     };
   }
   const lower = trimmed.toLowerCase();
   const hits: SearchHit[] = [];
   for (const record of DEMO_RECORDS) {
-    const matchedFields: string[] = [];
-    let bestSnippet = "";
-    let bestScore = 0;
-    for (const [field, raw] of Object.entries(record.fields)) {
-      let value: string;
-      if (typeof raw === "string") {
-        value = raw;
-      } else {
-        value = JSON.stringify(raw);
-      }
-      const lowerValue = value.toLowerCase();
-      const idx = lowerValue.indexOf(lower);
-      if (idx >= 0) {
-        matchedFields.push(field);
-        const score = (lowerValue.match(new RegExp(escapeRegex(lower), "g")) ?? []).length;
-        if (score > bestScore || bestSnippet.length === 0) {
-          bestScore = score;
-          bestSnippet = `${field}: ${snippetAround(value, trimmed)}`;
-        }
-      }
-    }
-    if (matchedFields.length > 0) {
-      hits.push({
-        object: "search_hit",
-        connector_id: record.connector_id,
-        record_id: record.record_id,
-        record_time: record.record_time,
-        stream: record.stream,
-        matched_fields: matchedFields,
-        snippet: bestSnippet,
-        score: matchedFields.length + bestScore,
-      });
+    const hit = buildSearchHit(record, { lower, trimmed });
+    if (hit) {
+      hits.push(hit);
     }
   }
   hits.sort((a, b) => {
-    if (b.score !== a.score) {
-      return b.score - a.score;
+    if (b.score.value !== a.score.value) {
+      return b.score.value - a.score.value;
     }
     if (a.record_time < b.record_time) {
       return 1;
@@ -407,12 +392,52 @@ export function buildSearchResponse(query: string): SearchResponse {
     return 0;
   });
   return {
-    object: "search_result",
+    object: "list",
     is_demo: true,
     notice: DEMO_NOTICE.notice,
+    url: "/sandbox/v1/search",
     query: trimmed,
     total: hits.length,
-    hits,
+    has_more: false,
+    next_cursor: null,
+    data: hits,
+  };
+}
+
+function buildSearchHit(record: DemoRecord, query: { lower: string; trimmed: string }): SearchHit | null {
+  const matchedFields: string[] = [];
+  let bestMatch: { field: string; score: number; snippet: string } | null = null;
+  for (const [field, raw] of Object.entries(record.fields)) {
+    const value = typeof raw === "string" ? raw : JSON.stringify(raw);
+    const lowerValue = value.toLowerCase();
+    if (!lowerValue.includes(query.lower)) {
+      continue;
+    }
+    matchedFields.push(field);
+    const score = (lowerValue.match(new RegExp(escapeRegex(query.lower), "g")) ?? []).length;
+    if (!bestMatch || score > bestMatch.score) {
+      bestMatch = { field, score, snippet: snippetAround(value, query.trimmed) };
+    }
+  }
+  if (!bestMatch) {
+    return null;
+  }
+  return {
+    object: "search_result",
+    connector_id: record.connector_id,
+    emitted_at: record.ingested_at,
+    matched_fields: matchedFields,
+    record_key: record.record_id,
+    record_time: record.record_time,
+    record_url: `/sandbox/v1/streams/${encodeURIComponent(record.stream)}/records/${encodeURIComponent(record.record_id)}`,
+    score: {
+      kind: "sandbox_lexical_rank",
+      value: matchedFields.length + bestMatch.score,
+      order: "higher_is_better",
+      value_semantics: "demo_only",
+    },
+    snippet: { field: bestMatch.field, text: bestMatch.snippet },
+    stream: record.stream,
   };
 }
 
@@ -754,16 +779,16 @@ export interface OAuthAuthServerMetadata {
   token_endpoint: string;
 }
 
-export function buildAuthServerMetadata(): OAuthAuthServerMetadata {
+export function buildAuthServerMetadata(issuer = DEMO_ISSUER): OAuthAuthServerMetadata {
   return {
     is_demo: true,
     notice: DEMO_NOTICE.notice,
-    issuer: DEMO_ISSUER,
-    authorization_endpoint: `${DEMO_ISSUER}/authorize`,
-    pushed_authorization_request_endpoint: `${DEMO_ISSUER}/par`,
-    token_endpoint: `${DEMO_ISSUER}/token`,
-    introspection_endpoint: `${DEMO_ISSUER}/introspect`,
-    revocation_endpoint: `${DEMO_ISSUER}/revoke`,
+    issuer,
+    authorization_endpoint: `${issuer}/authorize`,
+    pushed_authorization_request_endpoint: `${issuer}/par`,
+    token_endpoint: `${issuer}/token`,
+    introspection_endpoint: `${issuer}/introspect`,
+    revocation_endpoint: `${issuer}/revoke`,
     grant_types_supported: ["authorization_code", "urn:pdpp:params:oauth:grant-type:scoped_grant"],
     response_types_supported: ["code"],
     scopes_supported: [
@@ -774,9 +799,9 @@ export function buildAuthServerMetadata(): OAuthAuthServerMetadata {
     ],
     pdpp_demo: {
       note: "Sandbox demo metadata. The real reference advertises live AS endpoints under the deployment origin.",
-      streams_endpoint: `${DEMO_ISSUER}/v1/streams`,
-      schema_endpoint: `${DEMO_ISSUER}/v1/schema`,
-      search_endpoint: `${DEMO_ISSUER}/v1/search`,
+      streams_endpoint: `${issuer}/v1/streams`,
+      schema_endpoint: `${issuer}/v1/schema`,
+      search_endpoint: `${issuer}/v1/search`,
     },
   };
 }
@@ -797,14 +822,14 @@ export interface OAuthProtectedResourceMetadata {
   scopes_supported: string[];
 }
 
-export function buildProtectedResourceMetadata(): OAuthProtectedResourceMetadata {
+export function buildProtectedResourceMetadata(issuer = DEMO_ISSUER): OAuthProtectedResourceMetadata {
   return {
     is_demo: true,
     notice: DEMO_NOTICE.notice,
-    resource: DEMO_ISSUER,
-    authorization_servers: [DEMO_ISSUER],
+    resource: issuer,
+    authorization_servers: [issuer],
     bearer_methods_supported: ["header"],
-    resource_documentation: "https://pdpp.example.invalid/docs",
+    resource_documentation: issuer.replace(SANDBOX_PATH_SUFFIX_RE, "/docs"),
     scopes_supported: [
       "stream:pay_statements:read",
       "stream:tax_documents:read",
@@ -813,9 +838,9 @@ export function buildProtectedResourceMetadata(): OAuthProtectedResourceMetadata
     ],
     pdpp_demo: {
       note: "Sandbox demo metadata. Advertises sandbox-prefixed endpoints; not a live RS.",
-      streams_endpoint: `${DEMO_ISSUER}/v1/streams`,
-      record_endpoint_template: `${DEMO_ISSUER}/v1/streams/{stream}/records/{recordId}`,
-      search_endpoint: `${DEMO_ISSUER}/v1/search`,
+      streams_endpoint: `${issuer}/v1/streams`,
+      record_endpoint_template: `${issuer}/v1/streams/{stream}/records/{recordId}`,
+      search_endpoint: `${issuer}/v1/search`,
     },
   };
 }

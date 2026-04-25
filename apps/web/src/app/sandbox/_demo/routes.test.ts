@@ -15,21 +15,23 @@ async function jsonOf(res: Response): Promise<unknown> {
 }
 
 test("/sandbox/v1/schema returns the schema graph with demo flags", async () => {
-  const res = schemaGet();
+  const res = schemaGet(new Request("https://pdpp.dev/sandbox/v1/schema"));
   assert.equal(res.status, 200);
   assert.equal(res.headers.get("x-pdpp-demo"), "1");
-  const body = (await jsonOf(res)) as { object: string; is_demo: boolean };
+  const body = (await jsonOf(res)) as { object: string; is_demo: boolean; issuer: string };
   assert.equal(body.object, "schema_graph");
   assert.equal(body.is_demo, true);
+  assert.equal(body.issuer, "https://pdpp.dev/sandbox");
 });
 
 test("/sandbox/v1/search?q=payroll returns hits", async () => {
   const res = searchGet(new Request("https://example.invalid/sandbox/v1/search?q=payroll"));
   assert.equal(res.status, 200);
-  const body = (await jsonOf(res)) as { object: string; total: number; hits: unknown[] };
-  assert.equal(body.object, "search_result");
+  const body = (await jsonOf(res)) as { object: string; total: number; data: unknown[]; has_more: boolean };
+  assert.equal(body.object, "list");
   assert.ok(body.total > 0);
-  assert.equal(body.hits.length, body.total);
+  assert.equal(body.data.length, body.total);
+  assert.equal(body.has_more, false);
 });
 
 test("/sandbox/v1/streams/:stream returns 404 for unknown stream", async () => {
@@ -68,10 +70,11 @@ test("/sandbox/_ref/grants/:id/timeline returns ordered events", async () => {
 });
 
 test("/sandbox/.well-known/oauth-authorization-server advertises sandbox endpoints", async () => {
-  const res = authServerGet();
+  const res = authServerGet(new Request("https://pdpp.dev/sandbox/.well-known/oauth-authorization-server"));
   assert.equal(res.status, 200);
   const body = (await jsonOf(res)) as { is_demo: boolean; issuer: string; authorization_endpoint: string };
   assert.equal(body.is_demo, true);
+  assert.equal(body.issuer, "https://pdpp.dev/sandbox");
   assert.match(body.issuer, SANDBOX_ISSUER_RE);
   assert.match(body.authorization_endpoint, SANDBOX_AUTHORIZE_RE);
 });

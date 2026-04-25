@@ -20,7 +20,7 @@ const EXAMPLES: readonly Example[] = [
     title: "Schema graph",
     method: "GET",
     endpoint: "/sandbox/v1/schema",
-    request: "curl -s https://EXAMPLE/sandbox/v1/schema",
+    request: "curl -s /sandbox/v1/schema",
     responseHint: "Returns connectors → streams → fields with semantic class.",
     description: "Use when discovering what streams and fields the demo dataset offers.",
   },
@@ -29,7 +29,7 @@ const EXAMPLES: readonly Example[] = [
     title: "List streams",
     method: "GET",
     endpoint: "/sandbox/v1/streams",
-    request: "curl -s 'https://EXAMPLE/sandbox/v1/streams?limit=10'",
+    request: "curl -s '/sandbox/v1/streams?limit=10'",
     responseHint: "Paginated list of stream summaries.",
     description: "Each summary includes stream key, label, record count, and field count.",
   },
@@ -38,7 +38,7 @@ const EXAMPLES: readonly Example[] = [
     title: "Stream detail",
     method: "GET",
     endpoint: "/sandbox/v1/streams/pay_statements",
-    request: "curl -s https://EXAMPLE/sandbox/v1/streams/pay_statements",
+    request: "curl -s /sandbox/v1/streams/pay_statements",
     responseHint: "Full stream descriptor with schema, retention, and counts.",
     description: "Replace the path segment with any stream key from the schema graph.",
   },
@@ -47,7 +47,7 @@ const EXAMPLES: readonly Example[] = [
     title: "List records",
     method: "GET",
     endpoint: "/sandbox/v1/streams/pay_statements/records",
-    request: "curl -s 'https://EXAMPLE/sandbox/v1/streams/pay_statements/records?limit=2'",
+    request: "curl -s '/sandbox/v1/streams/pay_statements/records?limit=2'",
     responseHint: "Paginated record summaries newest-first, each with a preview string.",
     description: "Supports cursor pagination via `limit` and `cursor`.",
   },
@@ -56,7 +56,7 @@ const EXAMPLES: readonly Example[] = [
     title: "Record detail",
     method: "GET",
     endpoint: "/sandbox/v1/streams/pay_statements/records/rec_sb_paystmt_2026_03",
-    request: "curl -s https://EXAMPLE/sandbox/v1/streams/pay_statements/records/rec_sb_paystmt_2026_03",
+    request: "curl -s /sandbox/v1/streams/pay_statements/records/rec_sb_paystmt_2026_03",
     responseHint: "Full field projection for one record.",
     description: "Returns the full fictional record including its projection map.",
   },
@@ -65,7 +65,7 @@ const EXAMPLES: readonly Example[] = [
     title: "Search",
     method: "GET",
     endpoint: "/sandbox/v1/search",
-    request: "curl -s 'https://EXAMPLE/sandbox/v1/search?q=payroll'",
+    request: "curl -s '/sandbox/v1/search?q=payroll'",
     responseHint: "Lexical hits across all seeded records with snippets and matched fields.",
     description: "Try queries like `payroll`, `Northwind`, `follow-up`.",
   },
@@ -141,8 +141,8 @@ export default function SandboxApiExamplesPage() {
         <div className="pdpp-eyebrow text-muted-foreground">Sandbox / API examples</div>
         <h1 className="pdpp-heading mt-2 text-foreground">Demo API examples</h1>
         <p className="pdpp-body mt-2 max-w-3xl text-muted-foreground">
-          Every endpoint below is callable directly against this deployment. Replace <InlineCode>EXAMPLE</InlineCode>{" "}
-          with the host you reached this page on. All responses are JSON; all carry an{" "}
+          Every endpoint below is callable directly against this deployment. The examples use root-relative paths so
+          they work on localhost, Vercel previews, and pdpp.dev. All responses are JSON; all carry an{" "}
           <InlineCode>x-pdpp-demo</InlineCode> header so agents can be sure they are looking at sandbox data.
         </p>
         <p className="pdpp-caption mt-2 text-muted-foreground">

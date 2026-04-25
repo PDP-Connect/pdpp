@@ -1,3 +1,4 @@
+import { headers } from "next/headers";
 import {
   buildAuthServerMetadata,
   buildDatasetSummary,
@@ -9,15 +10,16 @@ import {
 import { CodeBlock } from "../_demo/components/code-block.tsx";
 import { SandboxShell } from "../_demo/components/shell.tsx";
 
-export const dynamic = "force-static";
+export const dynamic = "force-dynamic";
 
-export default function SandboxDeploymentPage() {
+export default async function SandboxDeploymentPage() {
   const summary = buildDatasetSummary();
   const connectors = getDemoConnectors();
   const streams = getDemoStreams();
   const capabilities = getDemoCapabilities();
-  const auth = buildAuthServerMetadata();
-  const rs = buildProtectedResourceMetadata();
+  const issuer = `${await getRequestOrigin()}/sandbox`;
+  const auth = buildAuthServerMetadata(issuer);
+  const rs = buildProtectedResourceMetadata(issuer);
 
   return (
     <SandboxShell active="deployment">
@@ -104,6 +106,15 @@ export default function SandboxDeploymentPage() {
       </section>
     </SandboxShell>
   );
+}
+
+async function getRequestOrigin(): Promise<string> {
+  const headerList = await headers();
+  const host = headerList.get("x-forwarded-host") ?? headerList.get("host") ?? "localhost:3000";
+  const protocol =
+    headerList.get("x-forwarded-proto")?.split(",")[0]?.trim() ||
+    (host.startsWith("localhost") || host.startsWith("127.0.0.1") ? "http" : "https");
+  return `${protocol}://${host}`;
 }
 
 function Stat({ label, value }: { label: string; value: string | number }) {

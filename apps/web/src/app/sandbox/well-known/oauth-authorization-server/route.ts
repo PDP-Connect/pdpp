@@ -1,8 +1,8 @@
 import { buildAuthServerMetadata } from "../../_demo/builders.ts";
-import { jsonResponse } from "../../v1/_helpers.ts";
+import { jsonResponse, sandboxIssuerFromRequest } from "../../v1/_helpers.ts";
 
-export const dynamic = "force-static";
+export const dynamic = "force-dynamic";
 
-export function GET() {
-  return jsonResponse(buildAuthServerMetadata());
+export function GET(request: Request) {
+  return jsonResponse(buildAuthServerMetadata(sandboxIssuerFromRequest(request)));
 }

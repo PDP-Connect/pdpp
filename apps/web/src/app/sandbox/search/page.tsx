@@ -60,25 +60,27 @@ export default async function SandboxSearchPage(props: { searchParams: Promise<{
           <h2 className="pdpp-title mb-3 text-foreground">
             {results.total} {results.total === 1 ? "match" : "matches"} for <InlineCode>{query}</InlineCode>
           </h2>
-          {results.hits.length === 0 ? (
+          {results.data.length === 0 ? (
             <p className="pdpp-body text-muted-foreground">No matches in seeded records.</p>
           ) : (
             <ul className="divide-y divide-border/70 border-border/70 border-y">
-              {results.hits.map((hit) => (
-                <li className="px-3 py-3" key={hit.record_id}>
+              {results.data.map((hit) => (
+                <li className="px-3 py-3" key={hit.record_key}>
                   <Link
                     className="block"
-                    href={`/sandbox/records/${encodeURIComponent(hit.stream)}/${encodeURIComponent(hit.record_id)}`}
+                    href={`/sandbox/records/${encodeURIComponent(hit.stream)}/${encodeURIComponent(hit.record_key)}`}
                   >
                     <div className="flex flex-wrap items-baseline justify-between gap-2">
                       <code className="pdpp-caption break-all font-medium font-mono text-foreground">
-                        {hit.record_id}
+                        {hit.record_key}
                       </code>
                       <span className="pdpp-caption text-muted-foreground">
                         {hit.connector_id} · {hit.stream}
                       </span>
                     </div>
-                    <div className="pdpp-caption mt-1 text-muted-foreground">{hit.snippet}</div>
+                    <div className="pdpp-caption mt-1 text-muted-foreground">
+                      {hit.snippet.field}: {hit.snippet.text}
+                    </div>
                     <div className="pdpp-eyebrow mt-1 text-muted-foreground">
                       matched: {hit.matched_fields.join(", ")}
                     </div>

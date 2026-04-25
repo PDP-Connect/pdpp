@@ -32,6 +32,11 @@ export function notFound(message: string): Response {
   );
 }
 
+export function sandboxIssuerFromRequest(request: Request): string {
+  const url = new URL(request.url);
+  return `${url.origin}/sandbox`;
+}
+
 export function readListParams(url: URL): {
   cursor: string | null;
   limit: number | undefined;

@@ -202,27 +202,27 @@ export default function SandboxOverviewPage() {
         >
           <div className="grid gap-4">
             <ApiExample
-              command="curl -s https://EXAMPLE/sandbox/v1/schema"
+              command="curl -s /sandbox/v1/schema"
               description="Schema graph: connectors, streams, fields, semantic classes."
               endpoint="GET /sandbox/v1/schema"
             />
             <ApiExample
-              command="curl -s 'https://EXAMPLE/sandbox/v1/streams/pay_statements/records?limit=2'"
+              command="curl -s '/sandbox/v1/streams/pay_statements/records?limit=2'"
               description="Paginated record list for a single stream."
               endpoint="GET /sandbox/v1/streams/pay_statements/records"
             />
             <ApiExample
-              command="curl -s 'https://EXAMPLE/sandbox/v1/search?q=payroll'"
+              command="curl -s '/sandbox/v1/search?q=payroll'"
               description="Lexical search across all seeded records."
               endpoint="GET /sandbox/v1/search?q=payroll"
             />
             <ApiExample
-              command="curl -s https://EXAMPLE/sandbox/_ref/grants/grant_sb_quill_paystmt/timeline"
+              command="curl -s /sandbox/_ref/grants/grant_sb_quill_paystmt/timeline"
               description="Reference-only timeline for one grant."
               endpoint="GET /sandbox/_ref/grants/grant_sb_quill_paystmt/timeline"
             />
             <ApiExample
-              command="curl -s https://EXAMPLE/sandbox/.well-known/oauth-authorization-server"
+              command="curl -s /sandbox/.well-known/oauth-authorization-server"
               description="Demo AS metadata advertising sandbox-prefixed endpoints."
               endpoint="GET /sandbox/.well-known/oauth-authorization-server"
             />

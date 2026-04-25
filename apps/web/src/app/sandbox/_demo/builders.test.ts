@@ -74,25 +74,31 @@ test("record detail returns null for unknown ids and full fields for known ones"
 
 test("search returns deterministic hits with snippets and matched_fields", () => {
   const empty = buildSearchResponse("");
+  assert.equal(empty.object, "list");
   assert.equal(empty.total, 0);
+  assert.deepEqual(empty.data, []);
   const payroll = buildSearchResponse("payroll");
   assert.ok(payroll.total > 0);
-  for (const hit of payroll.hits) {
+  assert.equal(payroll.data.length, payroll.total);
+  assert.equal(payroll.has_more, false);
+  for (const hit of payroll.data) {
+    assert.equal(hit.object, "search_result");
+    assert.ok(hit.record_url.startsWith("/sandbox/v1/streams/"));
     assert.ok(hit.matched_fields.length > 0);
-    assert.ok(hit.snippet.length > 0);
+    assert.ok(hit.snippet.text.length > 0);
   }
   // Repeat call yields identical structure.
   const payroll2 = buildSearchResponse("payroll");
   assert.deepEqual(
-    payroll2.hits.map((h) => h.record_id),
-    payroll.hits.map((h) => h.record_id)
+    payroll2.data.map((h) => h.record_key),
+    payroll.data.map((h) => h.record_key)
   );
 });
 
 test("search with no matches returns an empty hit list", () => {
   const result = buildSearchResponse("ZZZ_definitely_no_match_ZZZ");
   assert.equal(result.total, 0);
-  assert.deepEqual(result.hits, []);
+  assert.deepEqual(result.data, []);
 });
 
 test("grants list filters by status", () => {
@@ -144,13 +150,15 @@ const SANDBOX_AUTHORIZE_RE = /\/sandbox\/authorize$/;
 const SANDBOX_SCHEMA_RE = /\/sandbox\/v1\/schema$/;
 
 test("well-known metadata advertises sandbox-prefixed endpoints", () => {
-  const auth = buildAuthServerMetadata();
+  const auth = buildAuthServerMetadata("https://pdpp.dev/sandbox");
   assert.equal(auth.is_demo, true);
   assert.match(auth.issuer, SANDBOX_SUFFIX_RE);
   assert.match(auth.authorization_endpoint, SANDBOX_AUTHORIZE_RE);
   assert.match(auth.pdpp_demo.schema_endpoint, SANDBOX_SCHEMA_RE);
-  const rs = buildProtectedResourceMetadata();
+  assert.equal(auth.issuer, "https://pdpp.dev/sandbox");
+  const rs = buildProtectedResourceMetadata("https://pdpp.dev/sandbox");
   assert.equal(rs.is_demo, true);
   assert.match(rs.resource, SANDBOX_SUFFIX_RE);
   assert.ok(rs.authorization_servers.every((s) => s.endsWith("/sandbox")));
+  assert.equal(rs.resource_documentation, "https://pdpp.dev/docs");
 });
