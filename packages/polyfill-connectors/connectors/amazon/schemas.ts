@@ -16,6 +16,7 @@
  */
 
 import { z } from "zod";
+import { makeValidateRecord } from "../../src/schema-registry.ts";
 
 // Module-level regexes (Biome useTopLevelRegex) — compiled once, reused
 // across every record validated by this module.
@@ -137,26 +138,4 @@ export const SCHEMAS: Record<string, z.ZodTypeAny> = {
   order_items: orderItemSchema,
 };
 
-/**
- * Validate a record against its stream's schema. Returns:
- *   { ok: true, data }  — record is valid
- *   { ok: false, issues } — array of { path, message } describing failures
- */
-export function validateRecord(
-  stream: string,
-  data: Record<string, unknown>
-): { ok: true; data: Record<string, unknown> } | { ok: false; issues: Array<{ path: string; message: string }> } {
-  const schema = SCHEMAS[stream];
-  if (!schema) {
-    return { ok: true, data }; // unknown stream, no validation
-  }
-  const result = schema.safeParse(data);
-  if (result.success) {
-    return { ok: true, data: result.data as Record<string, unknown> };
-  }
-  const issues = result.error.issues.map((i) => ({
-    path: i.path.join("."),
-    message: i.message,
-  }));
-  return { ok: false, issues };
-}
+export const validateRecord = makeValidateRecord(SCHEMAS);

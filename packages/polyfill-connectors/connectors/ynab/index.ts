@@ -30,6 +30,7 @@
 
 import { nowIso, type RecordData, runConnector } from "../../src/connector-runtime.ts";
 import { isMainModule } from "../../src/is-main-module.ts";
+import { validateRecord } from "./schemas.ts";
 
 const API_BASE = "https://api.ynab.com/v1";
 
@@ -842,6 +843,7 @@ if (isMainModule(import.meta.url)) {
     // to { id } and emits with op: 'delete'.
     isTombstone: (_stream, d) => d.deleted === true,
     auth: { kind: "env", required: ["YNAB_PERSONAL_ACCESS_TOKEN"] },
+    validateRecord,
     async collect({ state, requested, credentials, emit, emitRecord: runtimeEmitRecord, progress }) {
       const token = credentials.YNAB_PERSONAL_ACCESS_TOKEN;
       if (!token) {

@@ -19,13 +19,7 @@
 import pRetry, { AbortError } from "p-retry";
 import type { Page } from "playwright";
 import { ensureAmazonSession } from "../../src/auto-login/amazon.ts";
-import {
-  type BrowserCollectContext,
-  nowIso,
-  politeDelay,
-  runConnector,
-  type ValidateRecord,
-} from "../../src/connector-runtime.ts";
+import { type BrowserCollectContext, nowIso, politeDelay, runConnector } from "../../src/connector-runtime.ts";
 import { isMainModule } from "../../src/is-main-module.ts";
 import {
   buildOrderItemRecord,
@@ -35,10 +29,8 @@ import {
   parseOrderDetailDom,
   parseOrdersListDom,
 } from "./parsers.ts";
-import { listPageOrderShape, validateRecord as validateRecordRaw } from "./schemas.ts";
+import { listPageOrderShape, validateRecord } from "./schemas.ts";
 import type { ListPageDiagnostics, ListPageOrder, OrderDetail } from "./types.ts";
-
-const validateRecord = validateRecordRaw as ValidateRecord;
 
 interface YearState {
   frozen: boolean;

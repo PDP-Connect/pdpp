@@ -1,7 +1,7 @@
 {
   "protocol_version": "0.1.0",
   "connector_id": "https://registry.pdpp.org/connectors/slack",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "display_name": "Slack",
   "runtime_requirements": {
     "bindings": {

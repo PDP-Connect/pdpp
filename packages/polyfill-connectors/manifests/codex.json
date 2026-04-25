@@ -1,7 +1,7 @@
 {
   "protocol_version": "0.1.0",
   "connector_id": "https://registry.pdpp.org/connectors/codex",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "display_name": "OpenAI Codex CLI",
   "runtime_requirements": {
     "bindings": {
@@ -367,6 +367,10 @@
         "search": {
           "lexical_fields": [
             "name",
+            "arguments",
+            "output_preview"
+          ],
+          "semantic_fields": [
             "arguments",
             "output_preview"
           ]

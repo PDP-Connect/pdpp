@@ -1,7 +1,7 @@
 {
   "protocol_version": "0.1.0",
   "connector_id": "https://registry.pdpp.org/connectors/gmail",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "display_name": "Gmail",
   "runtime_requirements": {
     "bindings": {

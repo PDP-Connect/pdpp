@@ -76,6 +76,7 @@ import {
   toSlackTime,
   WORKSPACE_LIST_ARROW,
 } from "./parsers.ts";
+import { validateRecord } from "./schemas.ts";
 import type {
   CanvasRow,
   ChannelRow,
@@ -860,6 +861,7 @@ if (isMainModule(import.meta.url)) {
   runConnector({
     name: "slack",
     retryablePattern: /ECONN|timeout/i,
+    validateRecord,
     auth: {
       kind: "env",
       required: ["SLACK_WORKSPACE", "SLACK_TOKEN", "SLACK_COOKIE"],

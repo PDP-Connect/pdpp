@@ -65,6 +65,7 @@ import {
   textPreview,
   YEAR_DIR_RE,
 } from "./parsers.ts";
+import { validateRecord } from "./schemas.ts";
 import type { PendingCall, RolloutAggregate, RolloutObject, RolloutPayload, StartMessage, ThreadRow } from "./types.ts";
 
 const emit = (m: EmittedMessage): boolean => process.stdout.write(stringifyForJsonl(m));
@@ -843,6 +844,17 @@ async function main(): Promise<void> {
     }
     const resSet = resFilters.get(s);
     if (resSet && !resSet.has(String(d.id))) {
+      return;
+    }
+    const validation = validateRecord(s, d);
+    if (!validation.ok) {
+      const message = `${String(d.id)}: ${validation.issues.map((i) => `${i.path}: ${i.message}`).join("; ")}`;
+      emit({
+        type: "SKIP_RESULT",
+        stream: s,
+        reason: "shape_check_failed",
+        message,
+      });
       return;
     }
     emit({

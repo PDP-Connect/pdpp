@@ -11,7 +11,7 @@
  */
 
 import { z } from "zod";
-import type { RecordData, ValidateRecord } from "../../src/connector-runtime.ts";
+import { makeValidateRecord } from "../../src/schema-registry.ts";
 import { TEXT_MAX_CHARS } from "./parsers.ts";
 
 // Module-scoped regexes (Biome useTopLevelRegex).
@@ -111,18 +111,4 @@ export const SCHEMAS: Record<string, z.ZodTypeAny> = {
   gilded: voteSchema,
 };
 
-export const validateRecord: ValidateRecord = (stream, data) => {
-  const schema = SCHEMAS[stream];
-  if (!schema) {
-    return { ok: true, data };
-  }
-  const result = schema.safeParse(data);
-  if (result.success) {
-    return { ok: true, data: result.data as RecordData };
-  }
-  const issues = result.error.issues.map((i) => ({
-    path: i.path.join("."),
-    message: i.message,
-  }));
-  return { ok: false, issues };
-};
+export const validateRecord = makeValidateRecord(SCHEMAS);

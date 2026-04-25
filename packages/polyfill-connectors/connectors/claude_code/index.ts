@@ -48,6 +48,7 @@ import {
   textPreview,
   widenSessionTimeRange,
 } from "./parsers.ts";
+import { validateRecord } from "./schemas.ts";
 import type { ClaudeCodeState, JsonlObject, SessionAccumulator } from "./types.ts";
 
 const nowIso = (): string => new Date().toISOString();
@@ -848,6 +849,7 @@ async function runSkillsAndCommands(
 if (isMainModule(import.meta.url)) {
   runConnector({
     name: "claude_code",
+    validateRecord,
     async collect({ state, requested, emit, emitRecord }) {
       const claudeHome = process.env.CLAUDE_CODE_HOME || join(homedir(), ".claude");
       const baseDir = process.env.CLAUDE_CODE_PROJECTS_DIR || join(claudeHome, "projects");

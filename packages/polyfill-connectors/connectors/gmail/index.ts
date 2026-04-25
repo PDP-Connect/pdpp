@@ -57,6 +57,7 @@ import {
   toLabelsArray,
   updateThreadAggregate,
 } from "./parsers.ts";
+import { validateRecord } from "./schemas.ts";
 import type {
   AllMailCursor,
   AttachmentHydrationStatus,
@@ -1123,12 +1124,22 @@ function makeEmitRecord(
     if (resSet && !resSet.has(canonical)) {
       return;
     }
+
+    // Validate record against schema.
+    const validation = validateRecord(stream, data);
+    if (!validation.ok) {
+      process.stderr.write(
+        `[gmail] SKIP_RESULT ${stream} ${canonical}: ${validation.issues.map((i) => `${i.path}: ${i.message}`).join("; ")}\n`
+      );
+      return;
+    }
+
     const key: string | number = typeof keyCandidate === "number" ? keyCandidate : canonical;
     await emit({
       type: "RECORD",
       stream,
       key,
-      data,
+      data: validation.data,
       emitted_at: emittedAt,
     });
     incTotal();

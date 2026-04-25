@@ -18,6 +18,7 @@
  */
 
 import { z } from "zod";
+import { makeValidateRecord } from "../../src/schema-registry.ts";
 
 // Permissive ID: non-empty, bounded, no whitespace or control chars.
 const idSchema = z.string().min(1).max(128).regex(/^\S+$/, "must not contain whitespace");
@@ -135,25 +136,4 @@ export const SCHEMAS: Record<string, z.ZodTypeAny> = {
   shared_conversations: sharedConversationSchema,
 };
 
-/**
- * Validate a record against its stream's schema.
- * Returns { ok: true, data } on pass, { ok: false, issues } on fail.
- */
-export function validateRecord(
-  stream: string,
-  data: Record<string, unknown>
-): { ok: true; data: Record<string, unknown> } | { ok: false; issues: Array<{ path: string; message: string }> } {
-  const schema = SCHEMAS[stream];
-  if (!schema) {
-    return { ok: true, data };
-  }
-  const result = schema.safeParse(data);
-  if (result.success) {
-    return { ok: true, data: result.data as Record<string, unknown> };
-  }
-  const issues = result.error.issues.map((i) => ({
-    path: i.path.join("."),
-    message: i.message,
-  }));
-  return { ok: false, issues };
-}
+export const validateRecord = makeValidateRecord(SCHEMAS);

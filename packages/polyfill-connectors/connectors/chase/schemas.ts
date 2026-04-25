@@ -14,6 +14,7 @@
  */
 
 import { z } from "zod";
+import { makeValidateRecord } from "../../src/schema-registry.ts";
 
 // ─── Shared atoms ───────────────────────────────────────────────────────
 
@@ -130,21 +131,4 @@ export const SCHEMAS: Record<string, z.ZodTypeAny> = {
   balances: balanceSchema,
 };
 
-export function validateRecord(
-  stream: string,
-  data: Record<string, unknown>
-): { ok: true; data: Record<string, unknown> } | { ok: false; issues: Array<{ path: string; message: string }> } {
-  const schema = SCHEMAS[stream];
-  if (!schema) {
-    return { ok: true, data };
-  }
-  const result = schema.safeParse(data);
-  if (result.success) {
-    return { ok: true, data: result.data as Record<string, unknown> };
-  }
-  const issues = result.error.issues.map((i) => ({
-    path: i.path.join("."),
-    message: i.message,
-  }));
-  return { ok: false, issues };
-}
+export const validateRecord = makeValidateRecord(SCHEMAS);

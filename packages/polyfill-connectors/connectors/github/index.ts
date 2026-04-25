@@ -35,6 +35,7 @@ import {
   starredRecord,
   userRecord,
 } from "./parsers.ts";
+import { validateRecord } from "./schemas.ts";
 import type {
   GhFetchOptions,
   GhResult,
@@ -398,6 +399,7 @@ async function collectGists(ctx: StreamCtx): Promise<void> {
 runConnector({
   name: "github",
   retryablePattern: /rate_limited|ECONN|fetch failed/,
+  validateRecord,
   // GITHUB_TOKEN is the universal GitHub-CI env var; accept it as a fallback.
   auth: {
     kind: "env",
