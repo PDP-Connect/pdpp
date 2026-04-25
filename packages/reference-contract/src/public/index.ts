@@ -434,6 +434,41 @@ const ServerCapabilitiesSchema = {
   },
 };
 
+// Discovery hints describe the canonical first-call shapes a caller needs
+// after reading the protected-resource metadata document. The block is
+// derived from runtime state so it cannot drift from live behavior. See:
+//   openspec/changes/polish-reference-api-discovery-seams/specs/reference-implementation-architecture/spec.md
+const ProtectedResourceDiscoveryHintsSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    schema_endpoint: NonEmptyStringSchema,
+    query_base: NonEmptyStringSchema,
+    search: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        endpoint: NonEmptyStringSchema,
+        scope_param: NonEmptyStringSchema,
+        filter_requires_single_stream: { type: "boolean" },
+      },
+      required: ["endpoint", "scope_param", "filter_requires_single_stream"],
+    },
+    aggregate: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        endpoint_template: NonEmptyStringSchema,
+      },
+      required: ["endpoint_template"],
+    },
+    changes_since_bootstrap: NonEmptyStringSchema,
+    blob_indirection: NonEmptyStringSchema,
+    hybrid_pagination_supported: { type: "boolean" },
+  },
+  required: ["schema_endpoint", "query_base", "changes_since_bootstrap", "blob_indirection"],
+};
+
 const ProtectedResourceMetadataSchema = {
   type: "object",
   additionalProperties: false,
@@ -458,6 +493,7 @@ const ProtectedResourceMetadataSchema = {
       items: { type: "string", enum: ["owner", "client"] },
     },
     pdpp_core_query_base: UriSchema,
+    pdpp_discovery_hints: ProtectedResourceDiscoveryHintsSchema,
     capabilities: ServerCapabilitiesSchema,
   },
   required: [
@@ -470,6 +506,31 @@ const ProtectedResourceMetadataSchema = {
     "pdpp_token_kinds_supported",
     "pdpp_core_query_base",
   ],
+};
+
+// Cold-start discovery index. Unauthenticated `GET /` on AS and RS returns
+// a tiny pointer at the next hop. See:
+//   openspec/changes/polish-reference-api-discovery-seams
+const DiscoveryIndexResponseSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    object: { const: "pdpp_discovery_index" },
+    role: { type: "string", enum: ["authorization_server", "resource_server"] },
+    resource_name: NonEmptyStringSchema,
+    links: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        well_known: NonEmptyStringSchema,
+        well_known_authorization_server: NonEmptyStringSchema,
+        schema: NonEmptyStringSchema,
+        core_query_base: NonEmptyStringSchema,
+      },
+    },
+    reference_revision: NonEmptyStringSchema,
+  },
+  required: ["object", "role", "resource_name", "links", "reference_revision"],
 };
 
 const DynamicClientRegistrationRequestSchema = {
@@ -924,6 +985,36 @@ const OAuthFlowErrors = {
 };
 
 export const publicManifests = [
+  {
+    id: "getRsDiscoveryIndex",
+    method: "GET",
+    path: "/",
+    surface: "public",
+    tags: ["metadata"],
+    summary:
+      "Unauthenticated cold-start pointer at the resource server root. Names the well-known endpoint, the `/v1/schema` capability discovery surface, the core query base, and the running reference revision so a probe learns the next hop without trial-and-error.",
+    responses: {
+      200: { schema: DiscoveryIndexResponseSchema },
+    },
+  },
+  {
+    // The AS exposes the same discovery shape on its own root with a smaller
+    // link set (well_known_authorization_server only). We register a
+    // distinct manifest id for the AS surface so the contract registry
+    // maintains a 1:1 map between operation ids and route bindings; the
+    // generated OpenAPI document deduplicates the two `GET /` entries to
+    // avoid a path collision (see openapi/generate.js).
+    id: "getAsDiscoveryIndex",
+    method: "GET",
+    path: "/",
+    surface: "public",
+    tags: ["metadata"],
+    summary:
+      "Unauthenticated cold-start pointer at the authorization server root. Names the AS well-known endpoint and the running reference revision so a probe learns the next hop without trial-and-error.",
+    responses: {
+      200: { schema: DiscoveryIndexResponseSchema },
+    },
+  },
   {
     id: "getAuthorizationServerMetadata",
     method: "GET",

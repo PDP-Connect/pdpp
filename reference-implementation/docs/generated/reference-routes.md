@@ -4,6 +4,8 @@ Generated from `packages/reference-contract/src/public/`. Do not edit by hand.
 
 | Method | Path | Operation | Summary |
 |--------|------|-----------|---------|
+| **GET** | `/` | `getRsDiscoveryIndex` | Unauthenticated cold-start pointer at the resource server root. Names the well-known endpoint, the `/v1/schema` capability discovery surface, the core query base, and the running reference revision so a probe learns the next hop without trial-and-error. |
+| **GET** | `/` | `getAsDiscoveryIndex` | Unauthenticated cold-start pointer at the authorization server root. Names the AS well-known endpoint and the running reference revision so a probe learns the next hop without trial-and-error. |
 | **GET** | `/.well-known/oauth-authorization-server` | `getAuthorizationServerMetadata` | Return RFC 8414 authorization-server metadata with the reference provider-connect capability extensions. |
 | **GET** | `/.well-known/oauth-protected-resource` | `getProtectedResourceMetadata` | Return RFC 9728 protected-resource metadata advertising the PDPP query base and owner-self-export capabilities. |
 | **POST** | `/oauth/register` | `registerDynamicClient` | Register a public client through the reference dynamic client registration profile. |
@@ -25,6 +27,26 @@ Generated from `packages/reference-contract/src/public/`. Do not edit by hand.
 | **GET** | `/v1/search/hybrid` | `searchRecordsHybrid` | Experimental optional extension: hybrid retrieval blending lexical and semantic recall under one grant-safe result list. See the hybrid-retrieval capability spec. |
 | **POST** | `/v1/blobs` | `uploadBlob` | Upload connector/runtime-owned blob bytes for a bound record. |
 | **GET** | `/v1/blobs/{blob_id}` | `getBlob` | Fetch blob bytes authorized by the caller having discovered the referencing record under grant. |
+
+## getRsDiscoveryIndex
+
+`GET /`
+
+Unauthenticated cold-start pointer at the resource server root. Names the well-known endpoint, the `/v1/schema` capability discovery surface, the core query base, and the running reference revision so a probe learns the next hop without trial-and-error.
+
+### Responses
+
+- `200` — JSON body
+
+## getAsDiscoveryIndex
+
+`GET /`
+
+Unauthenticated cold-start pointer at the authorization server root. Names the AS well-known endpoint and the running reference revision so a probe learns the next hop without trial-and-error.
+
+### Responses
+
+- `200` — JSON body
 
 ## getAuthorizationServerMetadata
 

@@ -103,10 +103,18 @@ export function generateOpenApi({ includeReference = false } = {}) {
     paths: {},
     components: { schemas: {} },
   };
+  // The reference splits some surfaces across two listening servers (AS and
+  // RS) but advertises a single OpenAPI document. When two manifests share
+  // (method, path), keep the first registered manifest in the document. The
+  // contract registry still holds both ids for runtime route validation;
+  // duplicating an OpenAPI path entry would produce an invalid document
+  // because OpenAPI 3.1 requires path+method to be unique per document.
   for (const manifest of manifests) {
     const path = pathToOpenApi(manifest.path);
+    const method = manifest.method.toLowerCase();
     const pathItem = document.paths[path] || (document.paths[path] = {});
-    pathItem[manifest.method.toLowerCase()] = operationFromManifest(manifest);
+    if (pathItem[method]) continue;
+    pathItem[method] = operationFromManifest(manifest);
   }
   return document;
 }

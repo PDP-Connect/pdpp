@@ -24,6 +24,78 @@
     }
   ],
   "paths": {
+    "/": {
+      "get": {
+        "operationId": "getRsDiscoveryIndex",
+        "tags": [
+          "metadata"
+        ],
+        "summary": "Unauthenticated cold-start pointer at the resource server root. Names the well-known endpoint, the `/v1/schema` capability discovery surface, the core query base, and the running reference revision so a probe learns the next hop without trial-and-error.",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "object": {
+                      "const": "pdpp_discovery_index"
+                    },
+                    "role": {
+                      "type": "string",
+                      "enum": [
+                        "authorization_server",
+                        "resource_server"
+                      ]
+                    },
+                    "resource_name": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "links": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "well_known": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "well_known_authorization_server": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "schema": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "core_query_base": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      }
+                    },
+                    "reference_revision": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "required": [
+                    "object",
+                    "role",
+                    "resource_name",
+                    "links",
+                    "reference_revision"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/.well-known/oauth-authorization-server": {
       "get": {
         "operationId": "getAuthorizationServerMetadata",
@@ -187,6 +259,72 @@
                     "pdpp_core_query_base": {
                       "type": "string",
                       "format": "uri"
+                    },
+                    "pdpp_discovery_hints": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "schema_endpoint": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "query_base": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "search": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "properties": {
+                            "endpoint": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "scope_param": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "filter_requires_single_stream": {
+                              "type": "boolean"
+                            }
+                          },
+                          "required": [
+                            "endpoint",
+                            "scope_param",
+                            "filter_requires_single_stream"
+                          ]
+                        },
+                        "aggregate": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "properties": {
+                            "endpoint_template": {
+                              "type": "string",
+                              "minLength": 1
+                            }
+                          },
+                          "required": [
+                            "endpoint_template"
+                          ]
+                        },
+                        "changes_since_bootstrap": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "blob_indirection": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "hybrid_pagination_supported": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "schema_endpoint",
+                        "query_base",
+                        "changes_since_bootstrap",
+                        "blob_indirection"
+                      ]
                     },
                     "capabilities": {
                       "type": "object",
