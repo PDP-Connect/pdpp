@@ -118,6 +118,69 @@ PDPP_WEB_ALLOWED_DEV_ORIGINS=peregrine-dev.vivid.fish,192.168.1.180
 Reverse proxies must also forward WebSocket upgrade traffic for
 `/_next/webpack-hmr`; otherwise the page loads but Next HMR cannot connect.
 
+#### Browser-backed connectors in Docker
+
+Connectors like ChatGPT and USAA need a real browser the operator can see and
+click for login, OTP, or Cloudflare challenges. In Docker, those interactions
+go through the host browser bridge — a small process that runs on the host,
+owns a Patchright persistent context against `~/.pdpp/profiles/<name>/`, and
+exposes its CDP endpoint to the container.
+
+The bridge bind host depends on platform:
+
+##### macOS / Windows Docker Desktop
+
+`host.docker.internal` is forwarded to host loopback by Docker Desktop, so
+the default 127.0.0.1 bind works:
+
+```bash
+# 1. Start the bridge for the target connector profile.
+pnpm --dir packages/polyfill-connectors exec tsx \
+  bin/host-browser-bridge.ts --profile chatgpt
+# The bridge prints a URL+token. Export them into your Compose environment:
+export PDPP_HOST_BROWSER_BRIDGE_URL=ws://host.docker.internal:7670
+export PDPP_HOST_BROWSER_BRIDGE_TOKEN=<token-printed-by-bridge>
+
+# 2. Start the stack as usual; ChatGPT runs will drive the host browser.
+docker compose --env-file .env.docker up
+```
+
+##### Linux Docker
+
+`host.docker.internal:host-gateway` resolves to the docker bridge gateway IP
+(typically `172.17.0.1`), which is **not** host loopback. A 127.0.0.1-only
+bind is unreachable from the container — verified empirically. Bind the
+bridge to the docker bridge IP and tell the container to use that IP:
+
+```bash
+DOCKER_BRIDGE_IP=$(ip -4 addr show docker0 | awk '/inet /{print $2}' | cut -d/ -f1)
+
+# 1. Start the bridge bound to the docker bridge IP.
+pnpm --dir packages/polyfill-connectors exec tsx \
+  bin/host-browser-bridge.ts --profile chatgpt --bind-host "$DOCKER_BRIDGE_IP"
+
+# 2. The bridge prints the matching URL — use it directly:
+export PDPP_HOST_BROWSER_BRIDGE_URL=ws://$DOCKER_BRIDGE_IP:7670
+export PDPP_HOST_BROWSER_BRIDGE_TOKEN=<token-printed-by-bridge>
+
+# 3. Verify the container can reach the bridge before running connectors:
+docker run --rm --add-host=host.docker.internal:host-gateway \
+  curlimages/curl:latest \
+  curl -sf "http://$DOCKER_BRIDGE_IP:7670/"  # expects: pdpp-host-browser-bridge
+```
+
+The bridge prints a Linux-specific warning when started with
+`--bind-host=127.0.0.1`, with the exact `ip` invocation above. Binding to
+`0.0.0.0` is supported via `--allow-public-bind` but exposes the bridge to
+the LAN — prefer the bridge IP, which limits exposure to local containers.
+
+When the bridge env vars are set but the bridge isn't reachable, runs fail
+fast with `host_browser_bridge_unavailable` rather than waiting on an
+invisible browser. When the env vars are unset, browser-backed Docker runs
+behave as before (in-container Chromium). See
+`openspec/changes/design-host-browser-bridge-for-docker/design.md` for the
+full design.
+
 CI builds Docker targets on pull requests without pushing images. On `main`,
 semantic-release creates GitHub releases from Conventional Commits and the same
 release workflow publishes stable GHCR tags for both Docker targets. Maintainers

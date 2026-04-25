@@ -23,3 +23,21 @@
 
 - [x] `openspec validate design-host-browser-bridge-for-docker --strict`
 - [x] `openspec validate --all --strict`
+
+## 5. Implementation Slice (branch `implement-host-browser-bridge`)
+
+- [x] Container-side env resolver (`packages/polyfill-connectors/src/host-browser-bridge-config.ts`) — fail-closed parsing with stable failure code `host_browser_bridge_unavailable`, unit-tested.
+- [x] Container-side acquisition router (`packages/polyfill-connectors/src/browser-launch.ts:acquireBrowserForConnector`) — picks bridge vs native isolated launcher; throws `HostBrowserBridgeUnavailableError` on misconfig or unreachable bridge; emits the daily-Chrome warning on opt-in.
+- [x] Connector runtime wiring (`packages/polyfill-connectors/src/connector-runtime.ts:acquireBrowser`) — surfaces the stable failure code in the terminal-error message so the controller renders the deployment-config error state.
+- [x] Host bridge CLI (`packages/polyfill-connectors/bin/host-browser-bridge.ts`) — owns Patchright `launchPersistentContext`, reads `DevToolsActivePort`, exposes a token-gated WebSocket reverse proxy, prints the env exports operators need, closes the host browser on SIGINT/SIGTERM.
+- [x] Bind-host parameter (`--bind-host` / `PDPP_HOST_BRIDGE_BIND_HOST`) with safe default `127.0.0.1` and explicit acknowledgement (`--allow-public-bind`) for `0.0.0.0`. Linux operators must set this to the docker bridge IP (typically `172.17.0.1`); the bridge emits a startup warning on Linux when 127.0.0.1 is used. Empirically validated end-to-end: Linux container reaches a `172.17.0.1`-bound bridge through `host.docker.internal`, and is correctly unreachable for a `127.0.0.1`-bound bridge — the original assumption that "host-gateway delivers to host loopback" was wrong.
+- [x] Compose passthrough (`docker-compose.yml`) — declares the three bridge env vars and adds `extra_hosts: ["host.docker.internal:host-gateway"]` so Linux Compose can reach the host (when the bridge is bound to the docker bridge IP).
+- [x] Operator docs (`README.md`, `.env.docker.example`) — split macOS/Windows vs Linux flows; honest about which bind host each platform needs.
+- [x] Unit tests for env resolution, token/auth behavior, bridge-unavailable failure, CLI argv parsing, bind-host validation, banner content.
+- [x] Integration tests for the bridge proxy (`bin/host-browser-bridge-proxy.test.ts`) covering: HTTP root, 401 on missing token, frame round-trip with right token, Host-header rejection, non-loopback bind path. These exercise the same `startBridgeServer` the CLI uses.
+- [x] CDP-frame proxy correctness — `WebSocket.RawData` typing instead of `as Buffer`; sanitizer for receive-only close codes (1004, 1005, 1006, 1015) so a clean client `ws.close()` doesn't crash the proxy.
+- [x] `pnpm --dir packages/polyfill-connectors run verify` (typecheck + ultracite).
+- [x] `pnpm --dir packages/polyfill-connectors run test` (751/751 pass; 5 baseline skipped).
+- [ ] Manual end-to-end proof: run the host bridge against a real ChatGPT profile, attach from a Compose run, complete an OTP/Cloudflare interaction in the visible host browser, observe the connector finish. (Not run in this slice — requires a live ChatGPT account and a running Compose stack with active credentials. See merge-queue note.)
+- [ ] Dashboard render of `host_browser_bridge_unavailable` as a distinct deployment-config state. (Deferred to a follow-up web slice; the runtime already surfaces the stable code in the terminal-error message so the dashboard can pattern-match without further runtime changes.)
+- [ ] `kind=host_browser_required` interaction emission from connectors. (Deferred. Today the visible-host-browser flow is implicit: the bridge launches a window the operator sees while the connector blocks on its existing `auto-login` interaction handshake. Adding an explicit kind is a connector-side spec change worth its own slice.)

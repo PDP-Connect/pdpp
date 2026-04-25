@@ -17,6 +17,19 @@ services:
       PDPP_OWNER_PASSWORD: ${PDPP_OWNER_PASSWORD:-}
       PDPP_OWNER_SUBJECT_ID: ${PDPP_OWNER_SUBJECT_ID:-owner_local}
       PDPP_DCR_INITIAL_ACCESS_TOKENS: ${PDPP_DCR_INITIAL_ACCESS_TOKENS:-}
+      # Host browser bridge — opt-in for browser-backed connectors (e.g. ChatGPT,
+      # USAA) that need a visible host browser the operator can see and click.
+      # Run `pnpm --dir packages/polyfill-connectors exec tsx bin/host-browser-bridge.ts
+      # --profile <name>` on the host first; the bridge prints the URL+token to
+      # export here. See openspec/changes/design-host-browser-bridge-for-docker.
+      PDPP_HOST_BROWSER_BRIDGE_URL: ${PDPP_HOST_BROWSER_BRIDGE_URL:-}
+      PDPP_HOST_BROWSER_BRIDGE_TOKEN: ${PDPP_HOST_BROWSER_BRIDGE_TOKEN:-}
+      PDPP_HOST_BROWSER_BRIDGE_DAILY_CHROME: ${PDPP_HOST_BROWSER_BRIDGE_DAILY_CHROME:-}
+    # Required on Linux so the container can resolve `host.docker.internal` to
+    # the host gateway (already provided automatically on macOS/Windows). Safe
+    # to leave on every platform.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "7662:7662"
       - "7663:7663"
