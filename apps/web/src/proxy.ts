@@ -47,6 +47,15 @@ function resolveReferenceProxyTarget(pathname: string): string | null {
   return null;
 }
 
+function isSandboxInternalAlias(pathname: string): boolean {
+  return (
+    pathname === "/sandbox/ref" ||
+    pathname.startsWith("/sandbox/ref/") ||
+    pathname === "/sandbox/well-known" ||
+    pathname.startsWith("/sandbox/well-known/")
+  );
+}
+
 export default function proxy(request: NextRequest) {
   if (isMarkdownPreferred(request)) {
     const result = rewriteLLM(request.nextUrl.pathname);
@@ -54,6 +63,17 @@ export default function proxy(request: NextRequest) {
     if (result) {
       return NextResponse.rewrite(new URL(result, request.nextUrl));
     }
+  }
+
+  if (isSandboxInternalAlias(request.nextUrl.pathname)) {
+    return NextResponse.json(
+      {
+        object: "error",
+        error: "not_found",
+        message: "Use the canonical sandbox paths: /sandbox/_ref/** or /sandbox/.well-known/**.",
+      },
+      { status: 404 }
+    );
   }
 
   if (request.nextUrl.pathname === "/dashboard" || request.nextUrl.pathname.startsWith("/dashboard/")) {
@@ -84,6 +104,10 @@ export const config = {
     "/docs/:path*",
     "/dashboard",
     "/dashboard/:path*",
+    "/sandbox/ref",
+    "/sandbox/ref/:path*",
+    "/sandbox/well-known",
+    "/sandbox/well-known/:path*",
     "/.well-known/:path*",
     "/oauth/:path*",
     "/introspect",
