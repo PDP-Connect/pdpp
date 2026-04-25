@@ -368,12 +368,14 @@ Default public images:
 - `ghcr.io/vana-com/pdpp/reference:main`
 - `ghcr.io/vana-com/pdpp/web:main`
 
-The `main` tag is a moving default-branch build. For durable self-hosting, pin
-a release tag, `sha-*` tag, or digest in `.env.docker`:
+The `main` tag is a moving default-branch build. Stable semantic-release images
+are published as exact version tags such as `1.2.3`, moving minor-series tags
+such as `1.2`, and `latest`. For durable self-hosting, pin an exact version,
+`sha-*` tag, or digest in `.env.docker`:
 
 ```bash
-PDPP_REFERENCE_IMAGE=ghcr.io/vana-com/pdpp/reference:sha-...
-PDPP_WEB_IMAGE=ghcr.io/vana-com/pdpp/web:sha-...
+PDPP_REFERENCE_IMAGE=ghcr.io/vana-com/pdpp/reference:1.2.3
+PDPP_WEB_IMAGE=ghcr.io/vana-com/pdpp/web:1.2.3
 ```
 
 The important topology rule is that `PDPP_REFERENCE_ORIGIN` is what the
@@ -464,9 +466,23 @@ PDPP_WEB_ALLOWED_DEV_ORIGINS=peregrine-dev.vivid.fish,192.168.1.180
 Reverse proxies must also forward WebSocket upgrade traffic for
 `/_next/webpack-hmr`; otherwise the page loads but Next HMR cannot connect.
 
-CI builds the Docker targets on pull requests and publishes public GHCR images
-from trusted refs. Maintainers should make the first published GHCR packages
-public in GitHub's package settings if the registry creates them private.
+CI builds the Docker targets on pull requests without pushing images. On
+`main`, semantic-release creates GitHub releases from Conventional Commits and
+the same release workflow publishes stable GHCR tags for both Docker targets:
+`${version}`, `${major}.${minor}`, `latest`, and `sha-*`. Maintainers should
+make the first published GHCR packages public in GitHub's package settings if
+the registry creates them private.
+
+Maintainers can preview the next release calculation locally:
+
+```bash
+GITHUB_TOKEN=$(gh auth token) pnpm release:dry-run
+```
+
+The release path uses GitHub Actions credentials for GitHub releases and GHCR.
+It does not publish npm packages and must not bundle `.env.local`, owner
+passwords, connector credentials, SQLite data, model cache files, or browser
+profiles into images.
 
 ### Example third-party client app
 

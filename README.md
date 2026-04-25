@@ -87,9 +87,11 @@ Default public images:
 - `ghcr.io/vana-com/pdpp/reference:main`
 - `ghcr.io/vana-com/pdpp/web:main`
 
-For durable self-hosting, prefer a release tag, `sha-*` tag, or digest pin over
-the moving `main` tag. To build from local source instead of pulling public
-images, run:
+`main` is a moving default-branch build. Stable semantic-release images are
+published as exact version tags such as `1.2.3`, moving minor-series tags such
+as `1.2`, and `latest`. For durable self-hosting, prefer an exact version,
+`sha-*` tag, or digest pin over a moving tag. To build from local source
+instead of pulling public images, run:
 
 ```bash
 docker compose --env-file .env.docker up --build
@@ -116,9 +118,11 @@ PDPP_WEB_ALLOWED_DEV_ORIGINS=peregrine-dev.vivid.fish,192.168.1.180
 Reverse proxies must also forward WebSocket upgrade traffic for
 `/_next/webpack-hmr`; otherwise the page loads but Next HMR cannot connect.
 
-CI builds the Docker targets on pull requests and publishes public GHCR images
-from trusted refs. Maintainers should make the first published GHCR packages
-public in GitHub's package settings if the registry creates them private.
+CI builds Docker targets on pull requests without pushing images. On `main`,
+semantic-release creates GitHub releases from Conventional Commits and the same
+release workflow publishes stable GHCR tags for both Docker targets. Maintainers
+should make the first published GHCR packages public in GitHub's package
+settings if the registry creates them private.
 
 Run the reference implementation server:
 
@@ -137,6 +141,33 @@ Run the reference implementation tests:
 ```bash
 pnpm reference-implementation:test
 ```
+
+## Releases
+
+Releases are automated with semantic-release on `main`. Commit messages follow
+Conventional Commits: `fix:` creates a patch release, `feat:` creates a minor
+release, and breaking changes create a major release.
+
+Preview the next release locally:
+
+```bash
+GITHUB_TOKEN=$(gh auth token) pnpm release:dry-run
+```
+
+The release workflow validates generated reference-contract artifacts, verifies
+the reference implementation, typechecks the web app, builds both Docker image
+targets, creates the GitHub release and `v${version}` tag, then publishes:
+
+- `ghcr.io/vana-com/pdpp/reference:${version}`
+- `ghcr.io/vana-com/pdpp/reference:${major}.${minor}`
+- `ghcr.io/vana-com/pdpp/reference:latest`
+- `ghcr.io/vana-com/pdpp/reference:sha-*`
+- matching `web` tags
+
+Release automation uses GitHub Actions credentials for GitHub releases and
+GHCR. It does not publish npm packages and must not bundle `.env.local`, owner
+passwords, connector credentials, SQLite data, model cache files, or browser
+profiles into images.
 
 ## Authority order
 

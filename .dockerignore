@@ -1,5 +1,6 @@
 .git
 .vercel
+**/.vercel
 .claude
 .agents
 .codex
@@ -15,6 +16,8 @@ node_modules
 
 .env
 .env.*
+**/.env
+**/.env.*
 !.env.docker.example
 
 local
@@ -24,6 +27,7 @@ docs/outbox
 demo_archived
 
 packages/polyfill-connectors/.pdpp-data
+packages/polyfill-connectors/fixtures/*/raw
 reference-implementation/.cache
 reference-implementation/report.*.json
 

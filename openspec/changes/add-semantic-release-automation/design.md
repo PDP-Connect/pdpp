@@ -89,6 +89,19 @@ Alternatives considered:
   clearer and avoids moving Docker-specific details into semantic-release
   plugin config.
 
+### Docker context excludes local environment files recursively
+
+The release build context SHALL ignore both root and nested `.env*` files and
+Vercel local env directories. Local development uses `.env.local` and
+`.env.docker`; release images must only receive runtime configuration when a
+container starts.
+
+Alternatives considered:
+
+- Rely on existing root-only ignore patterns: insufficient, because web-local
+  files such as `apps/web/.env.local` can still be copied and read by Next
+  during production builds.
+
 ### Image tags are release-friendly and reproducible
 
 For each published release, the workflow SHALL push:

@@ -12,6 +12,8 @@
     "docker:smoke": "bash scripts/docker-smoke.sh",
     "reference-contract:generate": "pnpm --filter @pdpp/reference-contract run generate:all",
     "reference-contract:check-generated": "pnpm --filter @pdpp/reference-contract run check:generated",
+    "release": "semantic-release",
+    "release:dry-run": "semantic-release --dry-run --no-ci",
     "reference-implementation:test": "pnpm --dir reference-implementation run test",
     "reference-implementation:server": "pnpm --dir reference-implementation run server",
     "reference-implementation:server:dev": "pnpm --dir reference-implementation run dev",
@@ -27,9 +29,12 @@
   "devDependencies": {
     "@biomejs/biome": "^2.4.12",
     "@pdpp/brand": "workspace:*",
+    "@semantic-release/exec": "^7.1.0",
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^25.6.0",
+    "conventional-changelog-conventionalcommits": "^9.3.1",
     "lefthook": "^2.1.6",
+    "semantic-release": "^25.0.3",
     "tsx": "^4.21.0",
     "typescript": "^6.0.3",
     "ultracite": "^7.6.0"

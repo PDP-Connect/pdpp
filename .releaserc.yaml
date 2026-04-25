@@ -1,0 +1,16 @@
+branches: ["main"]
+tagFormat: "v${version}"
+preset: "conventionalcommits"
+plugins:
+  - - "@semantic-release/commit-analyzer"
+    - preset: conventionalcommits
+  - - "@semantic-release/release-notes-generator"
+    - preset: conventionalcommits
+  - - "@semantic-release/github"
+    - successComment: false
+      failComment: false
+      failTitle: false
+      labels: false
+      releasedLabels: false
+  - - "@semantic-release/exec"
+    - publishCmd: "node scripts/semantic-release-github-output.mjs publish ${nextRelease.version} ${nextRelease.gitTag}"
