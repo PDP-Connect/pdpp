@@ -7,10 +7,11 @@ The owner decision for the short-term local-device story is explicit: **Docker s
 ## What Changes
 
 - Design a host-browser bridge for local Docker deployments.
-- Prefer a host-side Patchright/Playwright server if it can preserve Patchright behavior and dedicated PDPP profiles.
-- Evaluate host Chrome over CDP only as a fallback and document the stealth tradeoff.
-- Require explicit opt-in and actionable failure when the bridge is not configured.
-- Keep remote streaming and full connector-worker protocols out of scope.
+- Recommend a host-side **PDPP browser bridge process** that owns a Patchright `launchPersistentContext` against `~/.pdpp/profiles/<name>/` and exposes an explicitly configured local bridge endpoint over loopback. (`launchServer()` cannot preserve persistent profiles, so a host process must own the persistent context directly. The implementation tranche must prove whether the handoff is direct CDP or a bridge-owned broker. See `design.md` and `design-notes/host-bridge-feasibility-spike.md`.)
+- Treat host Chrome over plain CDP as a documented escape hatch only; it forfeits Patchright's launch-side stealth and risks exposing the user's daily browser.
+- Require explicit opt-in (loopback bind, shared-secret token) and actionable failure (`host_browser_bridge_unavailable`) when the bridge is not configured.
+- Name **ChatGPT** as the first vertical slice for "user sees host browser, completes interaction, connector continues."
+- Keep remote streaming, noVNC, and full connector-worker protocols out of scope.
 
 ## Capabilities
 
