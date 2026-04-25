@@ -1345,3 +1345,82 @@ test('startup backfills existing polyfill connectors without re-registration', a
     await rm(tempDir, { recursive: true, force: true });
   }
 });
+
+test('startup backfill treats records with only empty lexical field values as in sync', async () => {
+  const tempDir = await mkdtemp(join(tmpdir(), 'pdpp-lexical-empty-restart-'));
+  const dbPath = join(tempDir, 'pdpp.sqlite');
+
+  const bootServer = () => startServer({
+    quiet: true,
+    asPort: 0,
+    rsPort: 0,
+    dbPath,
+    dynamicClientRegistrationInitialAccessTokens: [TEST_DCR_INITIAL_ACCESS_TOKEN],
+  });
+
+  let server = await bootServer();
+  let originalMetaUpdatedAt = null;
+  try {
+    const asUrl = `http://localhost:${server.asPort}`;
+    const rsUrl = `http://localhost:${server.rsPort}`;
+    const reg = await fetch(`${asUrl}/connectors`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(REDDITISH_MANIFEST_A),
+    });
+    assert.equal(reg.status, 201, 'register connector');
+
+    const ownerToken = await issueOwnerToken(asUrl);
+    await ingest(rsUrl, ownerToken, REDDITISH_MANIFEST_A.connector_id, 'posts', [
+      {
+        id: 'empty-lexical-1',
+        title: '',
+        selftext: '',
+        source_created_at: '2026-04-01T00:00:00Z',
+      },
+    ]);
+
+    const db = getDb();
+    assert.equal(
+      db.prepare('SELECT COUNT(*) AS n FROM lexical_search_index WHERE connector_id = ? AND stream = ?')
+        .get(REDDITISH_MANIFEST_A.connector_id, 'posts').n,
+      0,
+      'empty lexical fields should not write FTS rows',
+    );
+    originalMetaUpdatedAt = db.prepare(`
+      SELECT updated_at
+      FROM lexical_search_meta
+      WHERE connector_id = ? AND stream = ?
+    `).get(REDDITISH_MANIFEST_A.connector_id, 'posts')?.updated_at ?? null;
+    assert.ok(originalMetaUpdatedAt, 'registration backfill should write lexical meta');
+
+    await closeServer(server);
+    closeDb();
+    await new Promise((resolve) => setTimeout(resolve, 5));
+
+    server = await bootServer();
+    await server.startupBackfillDone;
+
+    const restartedDb = getDb();
+    assert.equal(
+      restartedDb.prepare('SELECT COUNT(*) AS n FROM lexical_search_index WHERE connector_id = ? AND stream = ?')
+        .get(REDDITISH_MANIFEST_A.connector_id, 'posts').n,
+      0,
+      'restart should not fabricate FTS rows for empty fields',
+    );
+    const restartedMetaUpdatedAt = restartedDb.prepare(`
+      SELECT updated_at
+      FROM lexical_search_meta
+      WHERE connector_id = ? AND stream = ?
+    `).get(REDDITISH_MANIFEST_A.connector_id, 'posts')?.updated_at ?? null;
+    assert.equal(
+      restartedMetaUpdatedAt,
+      originalMetaUpdatedAt,
+      'startup backfill should not rewrite meta when zero indexable lexical values are already in sync',
+    );
+  } finally {
+    await closeServer(server).catch(() => {});
+    closeDb();
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});

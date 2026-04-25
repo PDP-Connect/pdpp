@@ -246,6 +246,28 @@ function fingerprintLexicalFields(declaredFields) {
   return JSON.stringify(unique);
 }
 
+function jsonPathForTopLevelField(field) {
+  return `$."${String(field).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+}
+
+function countIndexableTextValues({ db, connectorId, stream, declaredFields }) {
+  const stmt = db.prepare(`
+    SELECT COUNT(*) AS n
+    FROM records
+    WHERE connector_id = ?
+      AND stream = ?
+      AND deleted = 0
+      AND json_type(record_json, ?) = 'text'
+      AND length(json_extract(record_json, ?)) > 0
+  `);
+  let total = 0;
+  for (const field of declaredFields) {
+    const path = jsonPathForTopLevelField(field);
+    total += Number(stmt.get(connectorId, stream, path, path)?.n || 0);
+  }
+  return total;
+}
+
 /**
  * Drift-detect + rebuild the lexical index for every participating stream of
  * a manifest. Idempotent and safe to call repeatedly.
@@ -368,7 +390,7 @@ export async function lexicalIndexBackfillForManifest({ manifest, log = () => {}
     let needsRebuild = fingerprintChanged;
     let recordCount = 0;
     let indexCount = 0;
-    let upperBound = 0;
+    let expectedIndexRows = 0;
 
     const countRecords = () => {
       const row = db.prepare(`
@@ -380,9 +402,10 @@ export async function lexicalIndexBackfillForManifest({ manifest, log = () => {}
     };
 
     if (!needsRebuild) {
-      // Fingerprint matches — fall back to the row-count band check for
-      // degenerate cases. This is cheap and catches "index rows missing
-      // for a stream that has records" without re-reading the records.
+      // Fingerprint matches — compare against the actual number of non-empty
+      // declared text values. Some streams legitimately have records but zero
+      // lexical text for a declared field; treating `indexCount === 0` as drift
+      // would rebuild those streams on every restart.
       recordCount = countRecords();
 
       const indexCountRows = db.prepare(`
@@ -392,11 +415,8 @@ export async function lexicalIndexBackfillForManifest({ manifest, log = () => {}
       `).all(connectorId, stream);
       indexCount = Number(indexCountRows[0]?.n || 0);
 
-      upperBound = recordCount * declaredFields.length;
-      const inSync =
-        recordCount === 0
-          ? indexCount === 0
-          : indexCount > 0 && indexCount <= upperBound;
+      expectedIndexRows = countIndexableTextValues({ db, connectorId, stream, declaredFields });
+      const inSync = indexCount === expectedIndexRows;
       needsRebuild = !inSync;
     }
 
@@ -417,7 +437,7 @@ export async function lexicalIndexBackfillForManifest({ manifest, log = () => {}
           `(was=${persistedFingerprint ?? 'null'}, now=${newFingerprint}) — rebuilding`);
     } else {
       log(`[PDPP] Lexical index drift for ${connectorId} stream='${stream}' ` +
-          `(records=${recordCount}, index=${indexCount}, expected ≤ ${upperBound}) — rebuilding`);
+          `(records=${recordCount}, index=${indexCount}, expected=${expectedIndexRows}) — rebuilding`);
     }
 
     const indexedRows = await rebuildLexicalIndexForStream({

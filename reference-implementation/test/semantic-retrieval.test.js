@@ -1085,6 +1085,64 @@ test('restart regression: semantic coverage survives process restart without re-
   }
 });
 
+test('restart regression: streams with only empty semantic field values do not rebuild forever', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pdpp-semantic-empty-restart-'));
+  const dbPath = path.join(tmpDir, 'pdpp.sqlite');
+  try {
+    {
+      const server = await startServer({
+        quiet: true,
+        asPort: 0,
+        rsPort: 0,
+        dbPath,
+        dynamicClientRegistrationInitialAccessTokens: [TEST_DCR_INITIAL_ACCESS_TOKEN],
+      });
+      try {
+        const asUrl = `http://localhost:${server.asPort}`;
+        const rsUrl = `http://localhost:${server.rsPort}`;
+        const reg = await fetch(`${asUrl}/connectors`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(MANIFEST_A),
+        });
+        assert.equal(reg.status, 201);
+        const ownerToken = await issueOwnerToken(asUrl);
+        await ingest(rsUrl, ownerToken, MANIFEST_A.connector_id, 'posts', [
+          { id: 'empty-semantic-1', title: '', selftext: '', source_created_at: '2026-04-01T00:00:00Z' },
+        ]);
+        assert.equal(countPersistedSemanticVectors(), 0, 'empty semantic fields should not write vectors');
+      } finally {
+        await closeServer(server);
+      }
+    }
+
+    {
+      const countingBackend = makeDocumentCountingBackend();
+      const server = await startServer({
+        quiet: true,
+        asPort: 0,
+        rsPort: 0,
+        dbPath,
+        dynamicClientRegistrationInitialAccessTokens: [TEST_DCR_INITIAL_ACCESS_TOKEN],
+        semanticRetrievalBackend: countingBackend,
+      });
+      try {
+        await server.startupBackfillDone;
+        assert.equal(
+          countingBackend.documentEmbeds(),
+          0,
+          'restart drift check should treat zero indexable semantic values as in sync',
+        );
+        assert.equal(countPersistedSemanticVectors(), 0, 'restart should not fabricate vectors for empty fields');
+      } finally {
+        await closeServer(server);
+      }
+    }
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
 test('interrupted semantic backfill resumes and embeds only missing record-field pairs', async () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pdpp-semantic-resume-'));
   const dbPath = path.join(tmpDir, 'pdpp.sqlite');
