@@ -13,6 +13,7 @@
 import { listSpineCorrelations, listSpineEvents, type SpineEventRecord, type SpineSummary } from "../lib/spine.ts";
 import { buildPendingConsentRequestUri, getConnectorManifest } from "./auth.js";
 import { getDb } from "./db.js";
+import { referenceQueries } from "./queries/index.ts";
 import {
   chooseDisplayTimestamp,
   compareTimestampValues,
@@ -379,15 +380,7 @@ function buildStreamSummary(
 
 function listRegisteredConnectorRows(): ConnectorRow[] {
   const db = getDb() as RefControlDatabase;
-  return db
-    .prepare(
-      `
-    SELECT connector_id, manifest
-    FROM connectors
-    ORDER BY connector_id ASC
-  `
-    )
-    .all<ConnectorRow>();
+  return db.prepare(referenceQueries.listRegisteredConnectors.sql).all<ConnectorRow>();
 }
 
 function getScheduleFrom(controller: ControllerLike | null | undefined, connectorId: string): Promise<unknown> {
@@ -616,6 +609,9 @@ function buildTimelineSql({
   timestampMode: "emitted" | "native";
   until: string | null;
 }): { sql: string; binds: (number | string)[]; timestampExpr: string } {
+  // Keep this dynamic SQL inline: optional time-window predicates, native
+  // timestamp JSON fields, and caller-selected order direction change the
+  // statement shape in ways that are easier to audit beside the validation.
   const semanticField =
     timestampMode === "native" ? manifestStream?.consent_time_field || manifestStream?.cursor_field || null : null;
   const timestampExpr = semanticField
