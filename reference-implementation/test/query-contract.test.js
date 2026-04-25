@@ -18,7 +18,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { dirname, join } from 'node:path';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 import { startServer } from '../server/index.js';
@@ -399,6 +399,123 @@ test('connector discovery scopes client tokens to the granted source and streams
     assert.equal(serialized.includes('saved_tracks'), false);
     assert.equal(serialized.includes('recently_played'), false);
   });
+});
+
+test('schema discovery enumerates owner-visible polyfill connectors with full per-stream capabilities', async () => {
+  await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
+    const gmailManifest = readGmailManifest();
+    assert.equal((await registerConnectorManifest(asUrl, gmailManifest)).status, 201);
+    const ownerToken = await issueOwnerToken(asUrl, 'schema_owner');
+    const { status, body } = await fetchJson(`${rsUrl}/v1/schema`, {
+      headers: { 'Authorization': `Bearer ${ownerToken}` },
+    });
+
+    assert.equal(status, 200);
+    assert.equal(body.object, 'schema');
+    assert.deepEqual(body.bearer, { token_kind: 'owner', scope: 'owner' });
+    assert.equal(body.connectors.length, 2);
+
+    const connectorIds = body.connectors.map((c) => c.connector_id).sort();
+    assert.deepEqual(
+      connectorIds,
+      [spotifyManifest.connector_id, gmailManifest.connector_id].sort(),
+    );
+
+    const spotify = body.connectors.find((c) => c.connector_id === spotifyManifest.connector_id);
+    assert.deepEqual(spotify.source, {
+      binding_kind: 'connector',
+      connector_id: spotifyManifest.connector_id,
+    });
+    assert.deepEqual(
+      spotify.streams.map((s) => s.name).sort(),
+      spotifyManifest.streams.map((s) => s.name).sort(),
+    );
+    const topArtists = spotify.streams.find((s) => s.name === 'top_artists');
+    assert.equal(topArtists.object, 'stream_metadata');
+    assert.ok(topArtists.schema?.properties, 'schema is included per stream');
+    assert.ok(topArtists.field_capabilities.source_updated_at, 'field_capabilities are included');
+    assert.deepEqual(topArtists.field_capabilities.source_updated_at.range_filter, {
+      declared: true,
+      usable: true,
+      operators: ['gte', 'gt', 'lte', 'lt'],
+    });
+    assert.equal(topArtists.freshness.status, 'unknown');
+    assert.ok(Array.isArray(topArtists.expand_capabilities), 'expand_capabilities is an array');
+
+    const gmail = body.connectors.find((c) => c.connector_id === gmailManifest.connector_id);
+    const messages = gmail.streams.find((s) => s.name === 'messages');
+    assert.equal(messages.field_capabilities.subject.lexical_search.usable, true);
+    assert.ok(messages.expand_capabilities.some((entry) => entry.name === 'attachments'));
+  });
+});
+
+test('schema discovery scopes a client token to its grant source and streams', async () => {
+  await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
+    const gmailManifest = readGmailManifest();
+    assert.equal((await registerConnectorManifest(asUrl, gmailManifest)).status, 201);
+    const approved = await approveGrant(asUrl, 'schema_client_owner', {
+      client_id: 'longview',
+      connector_id: spotifyManifest.connector_id,
+      purpose_code: 'https://pdpp.org/purpose/analytics',
+      purpose_description: 'schema discovery client scope',
+      access_mode: 'continuous',
+      streams: [{ name: 'top_artists', fields: ['id', 'name', 'source_updated_at'] }],
+    });
+    assert.ok(approved.token, 'expected client token');
+
+    const { status, body } = await fetchJson(`${rsUrl}/v1/schema`, {
+      headers: { 'Authorization': `Bearer ${approved.token}` },
+    });
+
+    assert.equal(status, 200);
+    assert.equal(body.object, 'schema');
+    assert.equal(body.bearer.token_kind, 'client');
+    assert.equal(body.bearer.scope, 'grant');
+    assert.ok(body.bearer.grant_id, 'grant_id surfaces on bearer projection');
+    assert.equal(body.connectors.length, 1);
+    const connector = body.connectors[0];
+    assert.equal(connector.connector_id, spotifyManifest.connector_id);
+    assert.deepEqual(connector.streams.map((s) => s.name), ['top_artists']);
+    assert.equal(connector.stream_count, 1);
+
+    const topArtists = connector.streams[0];
+    // field-limited grant: granted fields are usable; ungranted fields are present but not usable.
+    assert.equal(topArtists.field_capabilities.id.granted, true);
+    assert.equal(topArtists.field_capabilities.name.granted, true);
+    assert.equal(topArtists.field_capabilities.source_updated_at.granted, true);
+    assert.equal(topArtists.field_capabilities.source_updated_at.range_filter.usable, true);
+    assert.ok(topArtists.field_capabilities.popularity, 'popularity field is enumerated');
+    assert.equal(topArtists.field_capabilities.popularity.granted, false);
+    assert.equal(topArtists.field_capabilities.popularity.exact_filter.usable, false);
+    assert.equal(topArtists.field_capabilities.popularity.exact_filter.reason, 'field_not_granted');
+
+    const serialized = JSON.stringify(body);
+    assert.equal(serialized.includes(gmailManifest.connector_id), false, 'must not leak other connectors');
+    assert.equal(serialized.includes('saved_tracks'), false, 'must not leak ungranted streams');
+  });
+});
+
+test('schema discovery returns an empty connector array when no connectors are registered', async () => {
+  const server = await startServer({
+    quiet: true,
+    asPort: 0,
+    rsPort: 0,
+    dbPath: ':memory:',
+    dynamicClientRegistrationInitialAccessTokens: [TEST_DCR_INITIAL_ACCESS_TOKEN],
+  });
+  try {
+    const asUrl = `http://localhost:${server.asPort}`;
+    const rsUrl = `http://localhost:${server.rsPort}`;
+    const ownerToken = await issueOwnerToken(asUrl, 'empty_owner');
+    const { status, body } = await fetchJson(`${rsUrl}/v1/schema`, {
+      headers: { 'Authorization': `Bearer ${ownerToken}` },
+    });
+    assert.equal(status, 200);
+    assert.equal(body.object, 'schema');
+    assert.deepEqual(body.connectors, []);
+  } finally {
+    await closeServer(server);
+  }
 });
 
 test('stream metadata publishes normalized field capabilities for owner tokens', async () => {
@@ -1417,6 +1534,325 @@ test('gmail message expansion rejects missing child grant and reverse thread rel
     );
     assert.equal(reverseThread.status, 400);
     assert.equal(reverseThread.body.error.code, 'invalid_expand');
+  });
+});
+
+function readSlackManifest() {
+  return JSON.parse(readFileSync(join(POLYFILL_MANIFESTS_DIR, 'slack.json'), 'utf8'));
+}
+
+async function seedSlackStream(rsUrl, ownerToken, connectorId, stream, records) {
+  const lines = records.map((record) => JSON.stringify({
+    key: record.id,
+    data: record,
+    emitted_at: record.emitted_at || record.sent_at || '2026-04-01T00:00:00Z',
+  })).join('\n');
+  const resp = await fetch(`${rsUrl}/v1/ingest/${encodeURIComponent(stream)}?connector_id=${encodeURIComponent(connectorId)}`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${ownerToken}`,
+      'Content-Type': 'application/x-ndjson',
+    },
+    body: lines,
+  });
+  assert.equal(resp.status, 200, `ingest slack ${stream} ok`);
+}
+
+async function seedSlackExpansionFixture(rsUrl, ownerToken, connectorId) {
+  await seedSlackStream(rsUrl, ownerToken, connectorId, 'messages', [
+    {
+      id: 'C1:1700000001.000100',
+      channel_id: 'C1',
+      user_id: 'U1',
+      ts: '1700000001.000100',
+      sent_at: '2026-04-01T10:00:00Z',
+      thread_ts: null,
+      is_thread_parent: false,
+      reply_count: 0,
+      latest_reply: null,
+      subtype: null,
+      is_tombstone: false,
+      text: 'Have you seen this article?',
+      has_attachments: true,
+      attachment_count: 2,
+      reaction_count: 3,
+    },
+    {
+      id: 'C1:1700000002.000200',
+      channel_id: 'C1',
+      user_id: 'U2',
+      ts: '1700000002.000200',
+      sent_at: '2026-04-02T10:00:00Z',
+      thread_ts: null,
+      is_thread_parent: false,
+      reply_count: 0,
+      subtype: null,
+      is_tombstone: false,
+      text: 'No attachments here',
+      has_attachments: false,
+      attachment_count: 0,
+      reaction_count: 0,
+    },
+  ]);
+  await seedSlackStream(rsUrl, ownerToken, connectorId, 'message_attachments', [
+    {
+      id: 'C1:1700000001.000100:0',
+      message_id: 'C1:1700000001.000100',
+      channel_id: 'C1',
+      index: 0,
+      fallback: 'Example dot com',
+      service_name: 'example.com',
+      title: 'Example article',
+      title_link: 'https://example.com/post',
+      text: 'Lede paragraph',
+      from_url: 'https://example.com/post',
+    },
+    {
+      id: 'C1:1700000001.000100:1',
+      message_id: 'C1:1700000001.000100',
+      channel_id: 'C1',
+      index: 1,
+      fallback: 'Doc preview',
+      service_name: 'docs.example.com',
+      title: 'Internal doc',
+      title_link: 'https://docs.example.com/d/abc',
+    },
+    {
+      id: 'C1:1700000001.000100:2',
+      message_id: 'C1:1700000001.000100',
+      channel_id: 'C1',
+      index: 2,
+      fallback: 'Third unfurl',
+      service_name: 'third.example.com',
+      title: 'Third unfurl',
+    },
+  ]);
+  await seedSlackStream(rsUrl, ownerToken, connectorId, 'reactions', [
+    {
+      id: 'C1:1700000001.000100:tada:U1',
+      message_id: 'C1:1700000001.000100',
+      channel_id: 'C1',
+      user_id: 'U1',
+      emoji: 'tada',
+    },
+    {
+      id: 'C1:1700000001.000100:tada:U2',
+      message_id: 'C1:1700000001.000100',
+      channel_id: 'C1',
+      user_id: 'U2',
+      emoji: 'tada',
+    },
+    {
+      id: 'C1:1700000001.000100:eyes:U2',
+      message_id: 'C1:1700000001.000100',
+      channel_id: 'C1',
+      user_id: 'U2',
+      emoji: 'eyes',
+    },
+  ]);
+}
+
+test('first-party manifests declare only parent-to-child query.expand entries with FK on child', () => {
+  const manifests = readdirSync(POLYFILL_MANIFESTS_DIR)
+    .filter((name) => name.endsWith('.json'))
+    .map((filename) => ({
+      manifestName: filename.replace(/\.json$/, ''),
+      manifest: JSON.parse(readFileSync(join(POLYFILL_MANIFESTS_DIR, filename), 'utf8')),
+    }))
+    .filter(({ manifest }) => manifest.streams.some((stream) => Array.isArray(stream.query?.expand)));
+
+  assert.ok(manifests.some(({ manifestName }) => manifestName === 'gmail'), 'gmail should keep its existing expand declarations');
+  assert.ok(manifests.some(({ manifestName }) => manifestName === 'slack'), 'slack should declare the newly enabled expand relations');
+
+  for (const { manifestName, manifest } of manifests) {
+    const streamsByName = new Map(manifest.streams.map((stream) => [stream.name, stream]));
+    for (const stream of manifest.streams) {
+      const declared = stream.query?.expand || [];
+      for (const capability of declared) {
+        const relationship = (stream.relationships || []).find((entry) => entry.name === capability.name);
+        assert.ok(
+          relationship,
+          `${manifestName}.${stream.name} expand '${capability.name}' must match a same-stream relationship`,
+        );
+        const child = streamsByName.get(relationship.stream);
+        assert.ok(child, `${manifestName}.${stream.name} expand '${capability.name}' targets unknown stream`);
+        assert.ok(
+          Object.prototype.hasOwnProperty.call(child.schema?.properties || {}, relationship.foreign_key),
+          `${manifestName}.${stream.name} expand '${capability.name}' fk must be top-level on child`,
+        );
+        assert.ok(
+          (child.schema?.required || []).includes(relationship.foreign_key),
+          `${manifestName}.${stream.name} expand '${capability.name}' fk should be required on child to avoid silent drops`,
+        );
+        assert.ok(
+          ['has_one', 'has_many'].includes(relationship.cardinality),
+          `${manifestName}.${stream.name} expand '${capability.name}' must declare has_one or has_many cardinality`,
+        );
+        if (relationship.cardinality === 'has_many') {
+          assert.ok(
+            Number.isInteger(capability.default_limit) && capability.default_limit > 0,
+            `${manifestName}.${stream.name} expand '${capability.name}' has_many requires a positive default_limit`,
+          );
+          assert.ok(
+            Number.isInteger(capability.max_limit) && capability.max_limit >= capability.default_limit,
+            `${manifestName}.${stream.name} expand '${capability.name}' has_many requires max_limit >= default_limit`,
+          );
+        }
+      }
+    }
+  }
+});
+
+test('slack messages expand message_attachments and reactions on list and detail reads', async () => {
+  await withHarness(async ({ asUrl, rsUrl }) => {
+    const ownerToken = await issueOwnerToken(asUrl, 'slack_expand_owner');
+    const slackManifest = readSlackManifest();
+    const connectorId = slackManifest.connector_id;
+    const reg = await registerConnectorManifest(asUrl, slackManifest);
+    assert.equal(reg.status, 201, 'register slack manifest');
+    await seedSlackExpansionFixture(rsUrl, ownerToken, connectorId);
+
+    const metadata = await fetchJson(
+      `${rsUrl}/v1/streams/messages?connector_id=${encodeURIComponent(connectorId)}`,
+      { headers: { Authorization: `Bearer ${ownerToken}` } },
+    );
+    assert.equal(metadata.status, 200);
+    assert.deepEqual(
+      metadata.body.query.expand.map((entry) => entry.name).sort(),
+      ['message_attachments', 'reactions'],
+    );
+
+    const approved = await approveGrant(asUrl, 'slack_expand_owner', {
+      client_id: 'longview',
+      connector_id: connectorId,
+      purpose_code: 'https://pdpp.org/purpose/personalization',
+      purpose_description: 'Read Slack messages with link previews and reactions',
+      access_mode: 'continuous',
+      streams: [
+        { name: 'messages', fields: ['id', 'channel_id', 'sent_at', 'text'] },
+        { name: 'message_attachments', fields: ['id', 'message_id', 'service_name', 'title'] },
+        { name: 'reactions', fields: ['id', 'message_id', 'emoji', 'user_id'] },
+      ],
+    });
+
+    const list = await fetchJson(
+      `${rsUrl}/v1/streams/messages/records?connector_id=${encodeURIComponent(connectorId)}&order=asc&expand=message_attachments&expand=reactions`,
+      { headers: { Authorization: `Bearer ${approved.token}` } },
+    );
+    assert.equal(list.status, 200);
+    assert.equal(list.body.data.length, 2);
+
+    const messageWithChildren = list.body.data.find((record) => record.id === 'C1:1700000001.000100');
+    assert.ok(messageWithChildren?.expanded?.message_attachments);
+    assert.equal(messageWithChildren.expanded.message_attachments.object, 'list');
+    assert.equal(messageWithChildren.expanded.message_attachments.has_more, false);
+    assert.deepEqual(
+      messageWithChildren.expanded.message_attachments.data.map((entry) => entry.id).sort(),
+      [
+        'C1:1700000001.000100:0',
+        'C1:1700000001.000100:1',
+        'C1:1700000001.000100:2',
+      ],
+    );
+    assert.deepEqual(
+      Object.keys(messageWithChildren.expanded.message_attachments.data[0].data || {}).sort(),
+      ['channel_id', 'id', 'index', 'message_id', 'service_name', 'title'],
+    );
+
+    assert.ok(messageWithChildren.expanded.reactions);
+    assert.equal(messageWithChildren.expanded.reactions.object, 'list');
+    assert.equal(messageWithChildren.expanded.reactions.data.length, 3);
+    assert.deepEqual(
+      Object.keys(messageWithChildren.expanded.reactions.data[0].data || {}).sort(),
+      ['channel_id', 'emoji', 'id', 'message_id', 'user_id'],
+    );
+
+    const messageWithoutChildren = list.body.data.find((record) => record.id === 'C1:1700000002.000200');
+    assert.deepEqual(messageWithoutChildren.expanded.message_attachments.data, []);
+    assert.deepEqual(messageWithoutChildren.expanded.reactions.data, []);
+
+    const detail = await fetchJson(
+      `${rsUrl}/v1/streams/messages/records/${encodeURIComponent('C1:1700000001.000100')}?connector_id=${encodeURIComponent(connectorId)}&expand=message_attachments`,
+      { headers: { Authorization: `Bearer ${approved.token}` } },
+    );
+    assert.equal(detail.status, 200);
+    assert.equal(detail.body.expanded.message_attachments.data.length, 3);
+  });
+});
+
+test('slack messages expand_limit caps message_attachments and reactions independently', async () => {
+  await withHarness(async ({ asUrl, rsUrl }) => {
+    const ownerToken = await issueOwnerToken(asUrl, 'slack_expand_limit_owner');
+    const slackManifest = readSlackManifest();
+    const connectorId = slackManifest.connector_id;
+    const reg = await registerConnectorManifest(asUrl, slackManifest);
+    assert.equal(reg.status, 201, 'register slack manifest');
+    await seedSlackExpansionFixture(rsUrl, ownerToken, connectorId);
+
+    const approved = await approveGrant(asUrl, 'slack_expand_limit_owner', {
+      client_id: 'longview',
+      connector_id: connectorId,
+      purpose_code: 'https://pdpp.org/purpose/personalization',
+      purpose_description: 'Read Slack messages with capped child fan-out',
+      access_mode: 'continuous',
+      streams: [
+        { name: 'messages', fields: ['id', 'channel_id', 'sent_at'] },
+        { name: 'message_attachments', fields: ['id', 'message_id', 'title'] },
+        { name: 'reactions', fields: ['id', 'message_id', 'emoji'] },
+      ],
+    });
+
+    const { status, body } = await fetchJson(
+      `${rsUrl}/v1/streams/messages/records?connector_id=${encodeURIComponent(connectorId)}&order=asc&expand=message_attachments&expand=reactions&expand_limit[message_attachments]=2&expand_limit[reactions]=1`,
+      { headers: { Authorization: `Bearer ${approved.token}` } },
+    );
+    assert.equal(status, 200);
+    const message = body.data.find((record) => record.id === 'C1:1700000001.000100');
+    assert.equal(message.expanded.message_attachments.has_more, true);
+    assert.equal(message.expanded.message_attachments.data.length, 2);
+    assert.equal(message.expanded.reactions.has_more, true);
+    assert.equal(message.expanded.reactions.data.length, 1);
+
+    const overMax = await fetchJson(
+      `${rsUrl}/v1/streams/messages/records?connector_id=${encodeURIComponent(connectorId)}&expand=reactions&expand_limit[reactions]=999`,
+      { headers: { Authorization: `Bearer ${approved.token}` } },
+    );
+    assert.equal(overMax.status, 400);
+    assert.equal(overMax.body.error.code, 'invalid_expand');
+  });
+});
+
+test('slack message expansion rejects requests missing the child grant', async () => {
+  await withHarness(async ({ asUrl, rsUrl }) => {
+    const ownerToken = await issueOwnerToken(asUrl, 'slack_expand_reject_owner');
+    const slackManifest = readSlackManifest();
+    const connectorId = slackManifest.connector_id;
+    const reg = await registerConnectorManifest(asUrl, slackManifest);
+    assert.equal(reg.status, 201, 'register slack manifest');
+    await seedSlackExpansionFixture(rsUrl, ownerToken, connectorId);
+
+    const approved = await approveGrant(asUrl, 'slack_expand_reject_owner', {
+      client_id: 'longview',
+      connector_id: connectorId,
+      purpose_code: 'https://pdpp.org/purpose/personalization',
+      purpose_description: 'Read Slack messages only',
+      access_mode: 'continuous',
+      streams: [{ name: 'messages', fields: ['id', 'channel_id', 'sent_at'] }],
+    });
+
+    const missingAttachments = await fetchJson(
+      `${rsUrl}/v1/streams/messages/records?connector_id=${encodeURIComponent(connectorId)}&expand=message_attachments`,
+      { headers: { Authorization: `Bearer ${approved.token}` } },
+    );
+    assert.equal(missingAttachments.status, 403);
+    assert.equal(missingAttachments.body.error.code, 'insufficient_scope');
+
+    const reverseChannel = await fetchJson(
+      `${rsUrl}/v1/streams/messages/records?connector_id=${encodeURIComponent(connectorId)}&expand=channel`,
+      { headers: { Authorization: `Bearer ${approved.token}` } },
+    );
+    assert.equal(reverseChannel.status, 400);
+    assert.equal(reverseChannel.body.error.code, 'invalid_expand');
   });
 });
 

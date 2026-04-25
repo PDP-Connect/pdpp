@@ -860,6 +860,44 @@ const StreamMetadataResponseSchema = {
   required: ["object", "name", "field_capabilities", "expand_capabilities"],
 };
 
+const SchemaResponseSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    object: { const: "schema" },
+    bearer: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        token_kind: { type: "string", enum: ["owner", "client"] },
+        scope: { type: "string", enum: ["owner", "grant"] },
+        grant_id: { type: "string" },
+        client_id: { type: "string" },
+      },
+      required: ["token_kind", "scope"],
+    },
+    connectors: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          object: { const: "connector" },
+          connector_id: { type: "string" },
+          source: { type: "object", additionalProperties: true },
+          stream_count: { type: "integer", minimum: 0 },
+          streams: {
+            type: "array",
+            items: StreamMetadataResponseSchema,
+          },
+        },
+        required: ["object", "source", "stream_count", "streams"],
+      },
+    },
+  },
+  required: ["object", "bearer", "connectors"],
+};
+
 const AuthHeaderSchema = {
   type: "object",
   additionalProperties: true,
@@ -1063,6 +1101,22 @@ export const publicManifests = [
     },
     responses: {
       200: { schema: ConnectorListResponseSchema },
+      ...ProtectedReadErrors,
+    },
+  },
+  {
+    id: "getSchema",
+    method: "GET",
+    path: "/v1/schema",
+    surface: "public",
+    tags: ["records"],
+    summary:
+      "Return the caller-visible source/stream capability graph in one shot. Owner tokens see every owner-visible connector; client tokens see only the grant's source and streams. Each stream entry reuses the per-stream metadata shape (schema, query declarations, field capabilities, expand capabilities, freshness).",
+    request: {
+      headers: AuthHeaderSchema,
+    },
+    responses: {
+      200: { schema: SchemaResponseSchema },
       ...ProtectedReadErrors,
     },
   },

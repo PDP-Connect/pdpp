@@ -2374,6 +2374,645 @@
         }
       }
     },
+    "/v1/schema": {
+      "get": {
+        "operationId": "getSchema",
+        "tags": [
+          "records"
+        ],
+        "summary": "Return the caller-visible source/stream capability graph in one shot. Owner tokens see every owner-visible connector; client tokens see only the grant's source and streams. Each stream entry reuses the per-stream metadata shape (schema, query declarations, field capabilities, expand capabilities, freshness).",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "object": {
+                      "const": "schema"
+                    },
+                    "bearer": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "token_kind": {
+                          "type": "string",
+                          "enum": [
+                            "owner",
+                            "client"
+                          ]
+                        },
+                        "scope": {
+                          "type": "string",
+                          "enum": [
+                            "owner",
+                            "grant"
+                          ]
+                        },
+                        "grant_id": {
+                          "type": "string"
+                        },
+                        "client_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "token_kind",
+                        "scope"
+                      ]
+                    },
+                    "connectors": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                          "object": {
+                            "const": "connector"
+                          },
+                          "connector_id": {
+                            "type": "string"
+                          },
+                          "source": {
+                            "type": "object",
+                            "additionalProperties": true
+                          },
+                          "stream_count": {
+                            "type": "integer",
+                            "minimum": 0
+                          },
+                          "streams": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "additionalProperties": true,
+                              "properties": {
+                                "object": {
+                                  "const": "stream_metadata"
+                                },
+                                "name": {
+                                  "type": "string"
+                                },
+                                "schema": {
+                                  "type": "object"
+                                },
+                                "primary_key": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string"
+                                  }
+                                },
+                                "cursor_field": {
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                },
+                                "consent_time_field": {
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                },
+                                "selection": {
+                                  "type": "object"
+                                },
+                                "views": {
+                                  "type": "array"
+                                },
+                                "relationships": {
+                                  "type": "array"
+                                },
+                                "query": {
+                                  "type": "object",
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "range_filters": {
+                                      "type": "object"
+                                    },
+                                    "expand": {
+                                      "type": "array"
+                                    },
+                                    "aggregations": {
+                                      "type": "object",
+                                      "additionalProperties": false,
+                                      "properties": {
+                                        "count": {
+                                          "const": true
+                                        },
+                                        "sum": {
+                                          "type": "array",
+                                          "items": {
+                                            "type": "string"
+                                          }
+                                        },
+                                        "min": {
+                                          "type": "array",
+                                          "items": {
+                                            "type": "string"
+                                          }
+                                        },
+                                        "max": {
+                                          "type": "array",
+                                          "items": {
+                                            "type": "string"
+                                          }
+                                        },
+                                        "group_by": {
+                                          "type": "array",
+                                          "items": {
+                                            "type": "string"
+                                          }
+                                        }
+                                      }
+                                    }
+                                  }
+                                },
+                                "field_capabilities": {
+                                  "type": "object",
+                                  "additionalProperties": {
+                                    "type": "object",
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "schema": {
+                                        "type": "object",
+                                        "additionalProperties": true
+                                      },
+                                      "granted": {
+                                        "type": "boolean"
+                                      },
+                                      "exact_filter": {
+                                        "type": "object",
+                                        "additionalProperties": false,
+                                        "properties": {
+                                          "declared": {
+                                            "type": "boolean"
+                                          },
+                                          "usable": {
+                                            "type": "boolean"
+                                          },
+                                          "reason": {
+                                            "type": "string"
+                                          }
+                                        },
+                                        "required": [
+                                          "declared",
+                                          "usable"
+                                        ]
+                                      },
+                                      "range_filter": {
+                                        "type": "object",
+                                        "additionalProperties": false,
+                                        "properties": {
+                                          "declared": {
+                                            "type": "boolean"
+                                          },
+                                          "usable": {
+                                            "type": "boolean"
+                                          },
+                                          "operators": {
+                                            "type": "array",
+                                            "items": {
+                                              "type": "string",
+                                              "minLength": 1
+                                            }
+                                          },
+                                          "reason": {
+                                            "type": "string"
+                                          }
+                                        },
+                                        "required": [
+                                          "declared",
+                                          "usable"
+                                        ]
+                                      },
+                                      "lexical_search": {
+                                        "type": "object",
+                                        "additionalProperties": false,
+                                        "properties": {
+                                          "declared": {
+                                            "type": "boolean"
+                                          },
+                                          "usable": {
+                                            "type": "boolean"
+                                          },
+                                          "reason": {
+                                            "type": "string"
+                                          }
+                                        },
+                                        "required": [
+                                          "declared",
+                                          "usable"
+                                        ]
+                                      },
+                                      "semantic_search": {
+                                        "type": "object",
+                                        "additionalProperties": false,
+                                        "properties": {
+                                          "declared": {
+                                            "type": "boolean"
+                                          },
+                                          "usable": {
+                                            "type": "boolean"
+                                          },
+                                          "reason": {
+                                            "type": "string"
+                                          }
+                                        },
+                                        "required": [
+                                          "declared",
+                                          "usable"
+                                        ]
+                                      },
+                                      "aggregation": {
+                                        "type": "object",
+                                        "additionalProperties": false,
+                                        "properties": {
+                                          "sum": {
+                                            "type": "object",
+                                            "additionalProperties": false,
+                                            "properties": {
+                                              "declared": {
+                                                "type": "boolean"
+                                              },
+                                              "usable": {
+                                                "type": "boolean"
+                                              },
+                                              "reason": {
+                                                "type": "string"
+                                              }
+                                            },
+                                            "required": [
+                                              "declared",
+                                              "usable"
+                                            ]
+                                          },
+                                          "min": {
+                                            "type": "object",
+                                            "additionalProperties": false,
+                                            "properties": {
+                                              "declared": {
+                                                "type": "boolean"
+                                              },
+                                              "usable": {
+                                                "type": "boolean"
+                                              },
+                                              "reason": {
+                                                "type": "string"
+                                              }
+                                            },
+                                            "required": [
+                                              "declared",
+                                              "usable"
+                                            ]
+                                          },
+                                          "max": {
+                                            "type": "object",
+                                            "additionalProperties": false,
+                                            "properties": {
+                                              "declared": {
+                                                "type": "boolean"
+                                              },
+                                              "usable": {
+                                                "type": "boolean"
+                                              },
+                                              "reason": {
+                                                "type": "string"
+                                              }
+                                            },
+                                            "required": [
+                                              "declared",
+                                              "usable"
+                                            ]
+                                          },
+                                          "group_by": {
+                                            "type": "object",
+                                            "additionalProperties": false,
+                                            "properties": {
+                                              "declared": {
+                                                "type": "boolean"
+                                              },
+                                              "usable": {
+                                                "type": "boolean"
+                                              },
+                                              "reason": {
+                                                "type": "string"
+                                              }
+                                            },
+                                            "required": [
+                                              "declared",
+                                              "usable"
+                                            ]
+                                          }
+                                        },
+                                        "required": [
+                                          "sum",
+                                          "min",
+                                          "max",
+                                          "group_by"
+                                        ]
+                                      }
+                                    },
+                                    "required": [
+                                      "schema",
+                                      "granted",
+                                      "exact_filter",
+                                      "range_filter",
+                                      "lexical_search",
+                                      "semantic_search",
+                                      "aggregation"
+                                    ]
+                                  }
+                                },
+                                "expand_capabilities": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "object",
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "name": {
+                                        "type": "string",
+                                        "minLength": 1
+                                      },
+                                      "stream": {
+                                        "type": "string",
+                                        "minLength": 1
+                                      },
+                                      "cardinality": {
+                                        "type": "string",
+                                        "enum": [
+                                          "has_one",
+                                          "has_many"
+                                        ]
+                                      },
+                                      "foreign_key": {
+                                        "type": "string",
+                                        "minLength": 1
+                                      },
+                                      "default_limit": {
+                                        "type": "integer",
+                                        "minimum": 1
+                                      },
+                                      "max_limit": {
+                                        "type": "integer",
+                                        "minimum": 1
+                                      },
+                                      "granted": {
+                                        "type": "boolean"
+                                      },
+                                      "usable": {
+                                        "type": "boolean"
+                                      },
+                                      "reason": {
+                                        "type": "string"
+                                      }
+                                    },
+                                    "required": [
+                                      "name",
+                                      "stream",
+                                      "cardinality",
+                                      "granted",
+                                      "usable"
+                                    ]
+                                  }
+                                },
+                                "freshness": {
+                                  "$id": "pdpp/common/Freshness",
+                                  "type": "object",
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "status": {
+                                      "$id": "pdpp/common/FreshnessStatus",
+                                      "type": "string",
+                                      "enum": [
+                                        "current",
+                                        "stale",
+                                        "unknown"
+                                      ]
+                                    },
+                                    "captured_at": {
+                                      "type": "string",
+                                      "format": "date-time"
+                                    },
+                                    "last_attempted_at": {
+                                      "type": "string",
+                                      "format": "date-time"
+                                    }
+                                  },
+                                  "required": [
+                                    "status"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "object",
+                                "name",
+                                "field_capabilities",
+                                "expand_capabilities"
+                              ]
+                            }
+                          }
+                        },
+                        "required": [
+                          "object",
+                          "source",
+                          "stream_count",
+                          "streams"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "object",
+                    "bearer",
+                    "connectors"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$id": "pdpp/common/PdppError",
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "type": {
+                          "type": "string"
+                        },
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "param": {
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "code",
+                        "message",
+                        "request_id"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid access token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$id": "pdpp/common/PdppError",
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "type": {
+                          "type": "string"
+                        },
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "param": {
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "code",
+                        "message",
+                        "request_id"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Grant does not permit this request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$id": "pdpp/common/PdppError",
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "type": {
+                          "type": "string"
+                        },
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "param": {
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "code",
+                        "message",
+                        "request_id"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Stream or record not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$id": "pdpp/common/PdppError",
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "type": {
+                          "type": "string"
+                        },
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "param": {
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "code",
+                        "message",
+                        "request_id"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/streams": {
       "get": {
         "operationId": "listStreams",

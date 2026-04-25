@@ -874,6 +874,18 @@
           "stream": "users",
           "foreign_key": "user_id",
           "cardinality": "has_one"
+        },
+        {
+          "name": "message_attachments",
+          "stream": "message_attachments",
+          "foreign_key": "message_id",
+          "cardinality": "has_many"
+        },
+        {
+          "name": "reactions",
+          "stream": "reactions",
+          "foreign_key": "message_id",
+          "cardinality": "has_many"
         }
       ],
       "query": {
@@ -947,7 +959,19 @@
             "is_thread_parent",
             "is_tombstone"
           ]
-        }
+        },
+        "expand": [
+          {
+            "name": "message_attachments",
+            "default_limit": 10,
+            "max_limit": 50
+          },
+          {
+            "name": "reactions",
+            "default_limit": 25,
+            "max_limit": 200
+          }
+        ]
       }
     },
     {

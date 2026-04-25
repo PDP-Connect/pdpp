@@ -874,6 +874,10 @@ Two authentication boundaries exist:
 
 ### Endpoints
 
+#### Discover schema and capabilities
+
+A Core RS MAY expose a one-shot discovery endpoint that returns the caller-visible source/stream capability graph (schema, query declarations, field capabilities, expansion capabilities, and freshness) in a single response, scoped to the bearer (owner-visible connectors for owner tokens; grant scope for client tokens). The PDPP reference implementation exposes this at `GET /v1/schema`. The shape MUST be derivable from the same per-stream metadata that powers `GET /v1/streams/{stream}` — discovery is an aggregation, not an independent capability model.
+
 #### List streams
 
 ```

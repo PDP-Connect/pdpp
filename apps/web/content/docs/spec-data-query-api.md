@@ -35,6 +35,43 @@ The response echoes the version. Every response includes a `Request-Id` header f
 
 ## Endpoints
 
+### Discover the schema (one shot)
+
+```
+GET /v1/schema
+```
+
+Returns the caller-visible source/stream capability graph in a single response. Owner tokens see every owner-visible connector and stream — no `connector_id` needed. Client tokens see only the source and streams authorized by the grant.
+
+Each per-stream entry uses the same shape as `GET /v1/streams/{stream}`: `schema`, `primary_key`, `cursor_field`, `consent_time_field`, `query` (declared filters / aggregations / expansion), `field_capabilities`, `expand_capabilities`, and `freshness`. Use `field_capabilities[<field>]` to learn which exact filters, range filters, lexical/semantic search fields, and aggregation operators are valid for each field without trial-and-error errors.
+
+**Response (excerpt):**
+```json
+{
+  "object": "schema",
+  "bearer": { "token_kind": "owner", "scope": "owner" },
+  "connectors": [
+    {
+      "object": "connector",
+      "connector_id": "conn_spotify",
+      "source": { "binding_kind": "connector", "connector_id": "conn_spotify" },
+      "stream_count": 3,
+      "streams": [
+        {
+          "object": "stream_metadata",
+          "name": "top_artists",
+          "schema": { "type": "object", "properties": { "...": {} } },
+          "query": { "range_filters": { "source_updated_at": ["gte","gt","lte","lt"] } },
+          "field_capabilities": { "...": {} },
+          "expand_capabilities": [],
+          "freshness": { "status": "unknown" }
+        }
+      ]
+    }
+  ]
+}
+```
+
 ### List streams
 
 ```
