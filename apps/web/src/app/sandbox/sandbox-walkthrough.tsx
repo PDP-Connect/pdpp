@@ -60,7 +60,7 @@ function nextActions(state: SandboxState): readonly ButtonSpec[] {
     case "initial":
       return [
         {
-          label: "Stage the request",
+          label: state.decision === "denied" ? "Stage a new request" : "Stage the request",
           action: { type: "request" },
           variant: "default",
           hint: "Simulates a client POST to /par with the proposed scope.",
@@ -153,6 +153,7 @@ function ScenarioPane({
   state: SandboxState;
 }) {
   const stepCopy = state.phase === "initial" ? null : STEP_COPY[state.phase];
+  const denied = state.decision === "denied";
 
   return (
     <section className="rounded-2xl border bg-card/80 p-5 shadow-sm">
@@ -182,11 +183,14 @@ function ScenarioPane({
           </div>
         ) : (
           <div className="rounded-xl border border-dashed bg-background/60 p-4">
-            <div className="pdpp-eyebrow text-muted-foreground">Start here</div>
-            <h2 className="pdpp-title mt-1 text-foreground">A small, end-to-end PDPP story</h2>
+            <div className="pdpp-eyebrow text-muted-foreground">{denied ? "Denied" : "Start here"}</div>
+            <h2 className="pdpp-title mt-1 text-foreground">
+              {denied ? "Sam declined the request" : "A small, end-to-end PDPP story"}
+            </h2>
             <p className="pdpp-body mt-2 text-muted-foreground">
-              Press <span className="font-mono text-foreground">Stage the request</span> to begin. You'll play the
-              fictional owner, Sam, deciding what Quill Tax can read from a simulated payroll connector.
+              {denied
+                ? "No grant was created, and no records were returned. The denial transcript remains visible on the right until you retry or reset."
+                : "Press Stage the request to begin. You'll play the fictional owner, Sam, deciding what Quill Tax can read from a simulated payroll connector."}
             </p>
           </div>
         )}
@@ -260,6 +264,9 @@ function deriveScopeStatus(state: SandboxState): {
   label: string;
   tone: "success" | "destructive" | "neutral" | "muted";
 } {
+  if (state.decision === "denied") {
+    return { label: "Denied by owner", tone: "destructive" };
+  }
   if (state.phase === "revoked") {
     return { label: "Revoked", tone: "destructive" };
   }
@@ -322,6 +329,23 @@ function Detail({ label, value }: { label: string; value: string }) {
 }
 
 function RecordsCard({ state }: { state: SandboxState }) {
+  if (state.decision === "denied") {
+    return (
+      <div className="rounded-xl border border-[color:var(--destructive)]/30 bg-[color:var(--destructive)]/5 p-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <div className="pdpp-eyebrow text-[color:var(--destructive)]">Denied</div>
+            <div className="pdpp-title mt-1 text-foreground">Owner declined; no grant was issued</div>
+          </div>
+          <StatusPill label="403 owner_denied" tone="destructive" />
+        </div>
+        <p className="pdpp-caption mt-2 text-muted-foreground">
+          Quill Tax receives refusal evidence instead of records. Stage a new request to replay the approval path.
+        </p>
+      </div>
+    );
+  }
+
   if (state.recordsVisible) {
     return (
       <div className="rounded-xl border bg-background/60 p-4">
@@ -417,6 +441,8 @@ function ActionRow({ actions, dispatch }: { actions: readonly ButtonSpec[]; disp
 }
 
 function TranscriptPane({ state, transcript }: { state: SandboxState; transcript: readonly TranscriptEntry[] }) {
+  const activeTranscriptId = state.decision === "denied" ? "denied" : state.phase;
+
   return (
     <section className="rounded-2xl border bg-card/80 p-5 shadow-sm">
       <header className="flex items-center justify-between gap-3">
@@ -436,7 +462,7 @@ function TranscriptPane({ state, transcript }: { state: SandboxState; transcript
       <ol className="mt-4 space-y-3">
         {transcript.map((entry) => (
           <li key={entry.id}>
-            <TranscriptCard entry={entry} highlighted={entry.id === state.phase} />
+            <TranscriptCard entry={entry} highlighted={entry.id === activeTranscriptId} />
           </li>
         ))}
       </ol>
@@ -469,7 +495,7 @@ function TranscriptCard({ entry, highlighted }: { entry: TranscriptEntry; highli
           <span className="pdpp-caption font-mono text-foreground">{entry.method}</span>
           <span className="pdpp-caption font-mono text-muted-foreground">{entry.endpoint}</span>
         </div>
-        <span className="pdpp-eyebrow text-muted-foreground transition-transform group-open:rotate-90">▸</span>
+        <span className="pdpp-eyebrow text-muted-foreground transition-transform group-open:rotate-90">&gt;</span>
       </summary>
       <div className="px-3 pb-3">
         <div className="pdpp-caption mb-1.5 text-muted-foreground">{entry.label}</div>

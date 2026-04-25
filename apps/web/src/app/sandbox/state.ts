@@ -58,11 +58,12 @@ export function reduce(state: SandboxState, action: SandboxAction): SandboxState
       if (state.phase !== "requested") {
         return state;
       }
-      // Denial returns to initial so the visitor can retry; we still record the
-      // attempt in history so the UI can show a denied transcript.
+      // Denial creates no grant, but it remains visible as refusal evidence
+      // until the visitor retries or resets.
       return {
         ...INITIAL_STATE,
-        history: [...state.history, "initial"],
+        decision: "denied",
+        history: state.history,
       };
     }
     case "query": {
@@ -104,7 +105,7 @@ export interface TranscriptEntry {
   available: boolean;
   body: unknown;
   endpoint: string;
-  id: SandboxPhase;
+  id: SandboxPhase | "denied";
   label: string;
   method: string;
 }
@@ -114,6 +115,7 @@ export function buildTranscript(state: SandboxState): readonly TranscriptEntry[]
   const granted = state.history.includes("granted");
   const queried = state.history.includes("queried");
   const revoked = state.history.includes("revoked");
+  const denied = state.decision === "denied";
 
   return [
     {
@@ -137,6 +139,25 @@ export function buildTranscript(state: SandboxState): readonly TranscriptEntry[]
           commitments: SANDBOX_CLIENT.commitments,
           attribution: "self-asserted by client; not verified by the sandbox",
         },
+      },
+    },
+    {
+      id: "denied",
+      label: "2a. Owner denies the request",
+      method: "POST",
+      endpoint: "/grants",
+      available: denied,
+      body: {
+        simulated: true,
+        status: 403,
+        error: "owner_denied",
+        owner_id: SANDBOX_OWNER.ownerId,
+        client_id: SANDBOX_CLIENT.clientId,
+        requested_scope: {
+          streams: [SANDBOX_STREAM.key],
+          fields: SANDBOX_STREAM.fields,
+        },
+        message: "Owner declined this request. No grant was created and no records were returned.",
       },
     },
     {

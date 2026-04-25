@@ -34,11 +34,16 @@ test("revoke hides records and pins the refusal evidence", () => {
   assert.ok(revoked.lastDeniedQueryAt);
 });
 
-test("deny returns to initial state but keeps history breadcrumb", () => {
+test("deny returns to initial state but keeps refusal evidence", () => {
   const denied = run(["request", "deny"]);
   assert.equal(denied.phase, "initial");
-  assert.equal(denied.decision, "pending");
-  assert.ok(denied.history.length > INITIAL_STATE.history.length);
+  assert.equal(denied.decision, "denied");
+  assert.deepEqual(denied.history, ["initial", "requested"]);
+
+  const transcript = buildTranscript(denied);
+  const denial = transcript.find((entry) => entry.id === "denied");
+  assert.equal(denial?.available, true);
+  assert.equal((denial?.body as { error?: string }).error, "owner_denied");
 });
 
 test("reset returns to initial regardless of phase", () => {
@@ -63,19 +68,19 @@ test("transcript entries reveal in lockstep with phases reached", () => {
   const initial = buildTranscript(INITIAL_STATE);
   assert.deepEqual(
     initial.map((entry) => entry.available),
-    [false, false, false, false]
+    [false, false, false, false, false]
   );
 
   const queried = buildTranscript(run(["request", "approve", "query"]));
   assert.deepEqual(
     queried.map((entry) => entry.available),
-    [true, true, true, false]
+    [true, false, true, true, false]
   );
 
   const revoked = buildTranscript(run(["request", "approve", "query", "revoke"]));
   assert.deepEqual(
     revoked.map((entry) => entry.available),
-    [true, true, true, true]
+    [true, false, true, true, true]
   );
 });
 

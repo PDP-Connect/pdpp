@@ -23,7 +23,7 @@ const audienceCards = [
   {
     eyebrow: "Skeptic",
     title: "Confirm scope is enforced, not implied",
-    body: "Run the query before approval and after revocation. The simulated resource server refuses both.",
+    body: "Approve a grant, revoke it, and watch the simulated resource server refuse the next read.",
   },
 ] as const;
 
