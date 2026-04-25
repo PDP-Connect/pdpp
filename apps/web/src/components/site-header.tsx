@@ -4,6 +4,7 @@ import { siteNav } from "@pdpp/brand/chrome";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { PdppLogo } from "@/components/pdpp-logo.tsx";
+import { ThemeToggle } from "@/components/theme/theme-toggle.tsx";
 
 export function SiteHeader({ currentLabel }: { currentLabel: string }) {
   const pathname = usePathname();
@@ -49,6 +50,7 @@ export function SiteHeader({ currentLabel }: { currentLabel: string }) {
             </Link>
           );
         })}
+        <ThemeToggle className="ml-1" />
       </nav>
     </div>
   );

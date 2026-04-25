@@ -55,7 +55,7 @@
 
 #nd-subnav {
   height: 3rem;
-  background: color-mix(in oklab, var(--background) 92%, white / 78%);
+  background: color-mix(in oklab, var(--background) 92%, var(--surface-tint) / 78%);
   border-bottom-color: var(--border);
   backdrop-filter: blur(10px);
 }
@@ -119,8 +119,8 @@
 
 #nd-sidebar {
   background:
-    linear-gradient(to bottom, color-mix(in oklab, var(--human-wash) 58%, white), transparent 18%),
-    color-mix(in oklab, var(--background) 97%, white);
+    linear-gradient(to bottom, color-mix(in oklab, var(--human-wash) 58%, var(--surface-tint)), transparent 18%),
+    color-mix(in oklab, var(--background) 97%, var(--surface-tint));
   border-right-color: var(--border);
   box-shadow: none;
 }
@@ -248,7 +248,7 @@
 }
 
 .pdpp-docs-body.prose {
-  color: color-mix(in oklab, var(--foreground) 84%, white);
+  color: color-mix(in oklab, var(--foreground) 84%, var(--surface-tint));
   font-size: 1rem;
   line-height: 1.8;
 }
@@ -285,7 +285,7 @@
 
 .pdpp-docs-body p,
 .pdpp-docs-body li {
-  color: color-mix(in oklab, var(--foreground) 82%, white);
+  color: color-mix(in oklab, var(--foreground) 82%, var(--surface-tint));
 }
 
 .pdpp-docs-body a {
@@ -298,7 +298,7 @@
   margin: 1.75rem 0;
   padding: 1rem 1.1rem;
   border-left: 2px solid var(--human);
-  background: color-mix(in oklab, var(--human-wash) 82%, white);
+  background: color-mix(in oklab, var(--human-wash) 82%, var(--surface-tint));
   color: var(--foreground);
 }
 
@@ -306,7 +306,7 @@
   padding: 0.18rem 0.42rem;
   border: 1px solid var(--border);
   border-radius: 999px;
-  background: color-mix(in oklab, var(--muted) 84%, white);
+  background: color-mix(in oklab, var(--muted) 84%, var(--surface-tint));
   font-size: 0.9em;
 }
 
@@ -344,14 +344,14 @@
 }
 
 .pdpp-docs-body thead {
-  background: color-mix(in oklab, var(--muted) 92%, white);
+  background: color-mix(in oklab, var(--muted) 92%, var(--surface-tint));
 }
 
 .pdpp-docs-body tbody,
 .pdpp-docs-body tr,
 .pdpp-docs-body td {
   background: var(--background);
-  color: color-mix(in oklab, var(--foreground) 82%, white);
+  color: color-mix(in oklab, var(--foreground) 82%, var(--surface-tint));
 }
 
 .pdpp-docs-body th {
@@ -393,5 +393,5 @@
 
 [data-toc-popover] header {
   border-bottom-color: var(--border);
-  background: color-mix(in oklab, var(--background) 90%, white / 78%);
+  background: color-mix(in oklab, var(--background) 90%, var(--surface-tint) / 78%);
 }

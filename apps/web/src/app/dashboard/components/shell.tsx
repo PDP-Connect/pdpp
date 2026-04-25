@@ -1,6 +1,7 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { PdppLogo } from "@/components/pdpp-logo.tsx";
+import { ThemeToggle } from "@/components/theme/theme-toggle.tsx";
 import { getAsInternalUrl, getOwnerLoginPath, getReferencePublicOrigin, getRsInternalUrl } from "../lib/owner-token.ts";
 import { CommandPalette, CommandPaletteTrigger } from "./command-palette.tsx";
 import { CopyButton } from "./copy-button.tsx";
@@ -230,6 +231,7 @@ function Topbar() {
         </Link>
       </div>
       <div className="flex-1" />
+      <ThemeToggle />
       <CommandPaletteTrigger />
     </div>
   );
