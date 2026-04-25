@@ -77,7 +77,7 @@ export interface AttachmentRecord {
   size_bytes: number | null;
 }
 
-export type AttachmentHydrationStatus = "deferred" | "failed" | "hydrated";
+export type AttachmentHydrationStatus = "deferred" | "failed" | "hydrated" | "too_large";
 
 export interface BlobRef {
   blob_id: string;

@@ -650,7 +650,8 @@
             "enum": [
               "hydrated",
               "failed",
-              "deferred"
+              "deferred",
+              "too_large"
             ]
           },
           "hydration_error": {

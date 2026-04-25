@@ -9,19 +9,19 @@
 
 ## 2. Gmail Attachment Vertical Slice
 
-- [ ] 2.1 Confirm the current Gmail connector path can access attachment bytes for messages already collected.
-- [ ] 2.2 Add connector-side byte fetch for Gmail attachments behind a bounded size policy.
-- [ ] 2.3 Store fetched bytes through the existing reference blob storage seam.
-- [ ] 2.4 Emit `blob_ref`, `content_sha256`, and `hydration_status: "hydrated"` for successfully hydrated attachments.
-- [ ] 2.5 Preserve metadata-only attachment records with a truthful hydration status when byte fetch is unavailable, skipped, blocked, too large, or failed.
-- [ ] 2.6 Ensure logs, run timeline data, and errors do not include attachment bytes or sensitive signed source URLs.
+- [x] 2.1 Confirm the current Gmail connector path can access attachment bytes for messages already collected.
+- [x] 2.2 Add connector-side byte fetch for Gmail attachments behind a bounded size policy.
+- [x] 2.3 Store fetched bytes through the existing reference blob storage seam.
+- [x] 2.4 Emit `blob_ref`, `content_sha256`, and `hydration_status: "hydrated"` for successfully hydrated attachments.
+- [x] 2.5 Preserve metadata-only attachment records with a truthful hydration status when byte fetch is unavailable, skipped, blocked, too large, or failed.
+- [x] 2.6 Ensure logs, run timeline data, and errors do not include attachment bytes or sensitive signed source URLs.
 
 ## 3. Contract And Query Tests
 
-- [ ] 3.1 Add or extend Gmail connector tests with fixture-backed hydrated and metadata-only attachments.
-- [ ] 3.2 Add reference query tests proving `expand=attachments` exposes `blob_ref.fetch_url` only when the grant includes `attachments.blob_ref`.
-- [ ] 3.3 Add reference query tests proving `GET /v1/blobs/{blob_id}` returns bytes for visible blobs and rejects hidden blobs.
-- [ ] 3.4 Add restart/idempotency coverage showing repeated hydration does not duplicate stored bytes.
+- [x] 3.1 Add or extend Gmail connector tests with fixture-backed hydrated and metadata-only attachments.
+- [x] 3.2 Add reference query tests proving `expand=attachments` exposes `blob_ref.fetch_url` only when the grant includes `attachments.blob_ref`.
+- [x] 3.3 Add reference query tests proving `GET /v1/blobs/{blob_id}` returns bytes for visible blobs and rejects hidden blobs.
+- [x] 3.4 Add restart/idempotency coverage showing repeated hydration does not duplicate stored bytes.
 
 ## 4. Broader First-Party Follow-Ups
 
