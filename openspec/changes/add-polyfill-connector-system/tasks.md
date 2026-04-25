@@ -166,9 +166,11 @@ these tasks are tracked here.
 
 ### Tranche D — narrow protocol proof
 
-- [ ] Build a subprocess-level protocol harness as a narrow Phase 1 only.
+- [x] Build a subprocess-level protocol harness as a narrow Phase 1 only.
   Success criteria: one non-browser connector test, one browser connector test, and evidence that the harness catches something helper-level tests do not.
-- [ ] Decide on wider rollout of protocol subprocess tests only after Phase 1 proves stable and worth the maintenance cost.
+  - 2026-04-24 worker lane added `runConnectorProtocolSubprocess`, proving START over stdin through RECORD / STATE / PROGRESS / SKIP_RESULT to DONE over stdout against a real child process. Coverage is synthetic and no-network: one non-browser fixture plus one browser-shaped no-browser fixture. The harness also rejects a child that exits without terminal DONE, covering process/stdio failure modes direct `makeRecordingEmit` helper tests cannot observe.
+- [x] Decide on wider rollout of protocol subprocess tests only after Phase 1 proves stable and worth the maintenance cost.
+  - Decision: do not roll this out across the live connector fleet yet. Keep the subprocess harness as a narrow protocol sentinel because Phase 1 proves useful coverage for bootstrap/stdout/DONE behavior, but fleet-wide subprocess tests would duplicate existing collect-layer coverage and add maintenance cost around auth, fixtures, and browser setup. Add connector-specific subprocess cases only when a connector introduces a new entrypoint/auth/bootstrap pattern or regresses at the process boundary.
 
 ### Explicitly deferred unless evidence changes
 

@@ -14,9 +14,15 @@
  */
 
 import assert from "node:assert/strict";
+import { dirname, join, resolve } from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 import type { EmittedMessage, ValidateRecord } from "./connector-runtime.ts";
-import { makeRecordingEmit } from "./test-harness.ts";
+import { makeRecordingEmit, runConnectorProtocolSubprocess } from "./test-harness.ts";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const PACKAGE_ROOT = resolve(__dirname, "..");
+const fixturePath = (name: string): string => join(PACKAGE_ROOT, "src", "test-fixtures", name);
 
 // ─── Pass-through mode ───────────────────────────────────────────────────
 
@@ -175,4 +181,69 @@ test("makeRecordingEmit: .events records validation failures with kind='record-s
   assert.equal(h.events.length, 2);
   assert.equal(h.events[0]?.kind, "record");
   assert.equal(h.events[1]?.kind, "record-skipped");
+});
+
+// ─── Subprocess protocol harness ────────────────────────────────────────
+
+test("runConnectorProtocolSubprocess: non-browser fixture completes START to DONE over stdio", async () => {
+  const result = await runConnectorProtocolSubprocess({
+    cwd: PACKAGE_ROOT,
+    entrypoint: fixturePath("protocol-subprocess-non-browser.ts"),
+    start: { type: "START", scope: { streams: [{ name: "items" }] } },
+  });
+
+  assert.equal(result.code, 0);
+  assert.equal(result.stderr, "");
+
+  const types = result.messages.map((m) => m.type);
+  assert.deepEqual(types, ["PROGRESS", "RECORD", "SKIP_RESULT", "STATE", "PROGRESS", "DONE"]);
+
+  const record = result.messages.find((m): m is Extract<EmittedMessage, { type: "RECORD" }> => m.type === "RECORD");
+  assert.ok(record);
+  assert.equal(record.stream, "items");
+  assert.equal(record.key, "item-1");
+
+  const skip = result.messages.find(
+    (m): m is Extract<EmittedMessage, { type: "SKIP_RESULT" }> => m.type === "SKIP_RESULT"
+  );
+  assert.ok(skip, "invalid fixture row should become a runtime SKIP_RESULT");
+  assert.equal(skip.reason, "shape_check_failed");
+
+  const done = result.messages.at(-1);
+  assert.equal(done?.type, "DONE");
+  if (done?.type === "DONE") {
+    assert.equal(done.status, "succeeded");
+    assert.equal(done.records_emitted, 1);
+  }
+});
+
+test("runConnectorProtocolSubprocess: browser-shaped no-browser fixture completes without launching Playwright", async () => {
+  const result = await runConnectorProtocolSubprocess({
+    cwd: PACKAGE_ROOT,
+    entrypoint: fixturePath("protocol-subprocess-browser-shaped.ts"),
+    start: { type: "START", scope: { streams: [{ name: "orders" }, { name: "order_details" }] } },
+  });
+
+  assert.equal(result.code, 0);
+  assert.equal(result.messages.at(-1)?.type, "DONE");
+  assert.ok(
+    result.messages.some((m) => m.type === "SKIP_RESULT" && m.stream === "order_details"),
+    "browser-shaped fixture should report the deferred detail path without live browser work"
+  );
+  assert.ok(
+    result.messages.some((m) => m.type === "RECORD" && m.stream === "orders"),
+    "browser-shaped fixture should still emit the parent list record"
+  );
+});
+
+test("runConnectorProtocolSubprocess: rejects a child that exits without terminal DONE", async () => {
+  await assert.rejects(
+    () =>
+      runConnectorProtocolSubprocess({
+        cwd: PACKAGE_ROOT,
+        entrypoint: fixturePath("protocol-subprocess-bad-no-done.ts"),
+        start: { type: "START", scope: { streams: [{ name: "items" }] } },
+      }),
+    /exited without DONE/
+  );
 });

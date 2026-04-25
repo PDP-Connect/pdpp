@@ -19,7 +19,9 @@
  * factories and pure helpers.
  */
 
+import { spawn } from "node:child_process";
 import type { EmittedMessage, RecordData, ValidateRecord } from "./connector-runtime.ts";
+import { stringifyForJsonl } from "./safe-emit.ts";
 
 /** A record that passed (or bypassed) shape-check and would flow
  *  downstream as a RECORD in production. */
@@ -57,6 +59,26 @@ export interface RecordingEmit {
   events: RecordedEvent[];
   protocolMessages: EmittedMessage[];
   skipped: SkippedRecord[];
+}
+
+export interface ConnectorSubprocessResult {
+  code: number | null;
+  messages: EmittedMessage[];
+  rawStdout: string;
+  signal: NodeJS.Signals | null;
+  stderr: string;
+}
+
+export interface ConnectorSubprocessOptions {
+  cwd: string;
+  entrypoint: string;
+  env?: NodeJS.ProcessEnv;
+  start: {
+    scope: { streams: Array<{ name: string; resources?: string[]; time_range?: { since?: string; until?: string } }> };
+    state?: Record<string, unknown>;
+    type: "START";
+  };
+  timeoutMs?: number;
 }
 
 /**
@@ -99,4 +121,116 @@ export function makeRecordingEmit(validateRecord?: ValidateRecord): RecordingEmi
   };
 
   return { emit, emitRecord, emitted, events, skipped, protocolMessages };
+}
+
+/**
+ * Run a connector entrypoint as a real child process and drive the
+ * Collection Profile protocol over stdio. Unlike `makeRecordingEmit`,
+ * this proves START parsing, stdout JSONL framing, DONE emission, and
+ * process exit behavior without importing the connector module directly.
+ */
+export function runConnectorProtocolSubprocess(
+  options: ConnectorSubprocessOptions
+): Promise<ConnectorSubprocessResult> {
+  const timeoutMs = options.timeoutMs ?? 15_000;
+
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ["--import", "tsx", options.entrypoint], {
+      cwd: options.cwd,
+      env: {
+        ...process.env,
+        PATCHRIGHT_SKIP_BROWSER_DOWNLOAD: "1",
+        PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1",
+        ...options.env,
+      },
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+
+    const messages: EmittedMessage[] = [];
+    let rawStdout = "";
+    let stderr = "";
+    let stdoutBuffer = "";
+    let settled = false;
+    let timer: NodeJS.Timeout;
+
+    const finish = (fn: () => void): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timer);
+      fn();
+    };
+
+    const parseLine = (line: string): void => {
+      if (!line.trim()) {
+        return;
+      }
+      try {
+        messages.push(JSON.parse(line) as EmittedMessage);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        finish(() => reject(new Error(`connector emitted invalid JSONL: ${message}; line=${line}`)));
+      }
+    };
+
+    timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      finish(() => reject(new Error(`connector subprocess timed out after ${String(timeoutMs)}ms; stderr=${stderr}`)));
+    }, timeoutMs);
+
+    child.stdout?.on("data", (chunk: Buffer) => {
+      const text = chunk.toString();
+      rawStdout += text;
+      stdoutBuffer += text;
+      let newlineIndex = stdoutBuffer.indexOf("\n");
+      while (newlineIndex !== -1) {
+        const line = stdoutBuffer.slice(0, newlineIndex);
+        stdoutBuffer = stdoutBuffer.slice(newlineIndex + 1);
+        parseLine(line);
+        newlineIndex = stdoutBuffer.indexOf("\n");
+      }
+    });
+
+    child.stderr?.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString();
+    });
+
+    child.on("error", (err) => {
+      finish(() => reject(err));
+    });
+
+    child.on("exit", (code, signal) => {
+      if (stdoutBuffer.trim()) {
+        parseLine(stdoutBuffer);
+      }
+      if (settled) {
+        return;
+      }
+      const done = messages.findLast((m) => m.type === "DONE");
+      if (!done) {
+        finish(() =>
+          reject(
+            new Error(
+              `connector subprocess exited without DONE: code=${String(code)} signal=${String(signal)} stderr=${stderr}`
+            )
+          )
+        );
+        return;
+      }
+      if (done.status === "failed") {
+        finish(() =>
+          reject(
+            new Error(
+              `connector subprocess reported failed: ${done.error?.message ?? "unknown"}; code=${String(code)} stderr=${stderr}`
+            )
+          )
+        );
+        return;
+      }
+      finish(() => resolve({ code, signal, stderr, rawStdout, messages }));
+    });
+
+    child.stdin?.end(stringifyForJsonl(options.start));
+  });
 }
