@@ -19,6 +19,8 @@
 import Database from 'better-sqlite3';
 import * as sqliteVec from 'sqlite-vec';
 
+const DEFAULT_SQLITE_BUSY_TIMEOUT_MS = 30_000;
+
 let db;
 
 export function getDb() {
@@ -35,6 +37,15 @@ export function closeDb() {
     try { db.close(); } catch { /* best-effort */ }
     db = null;
   }
+}
+
+function resolveSqliteBusyTimeoutMs(value = process.env.PDPP_SQLITE_BUSY_TIMEOUT_MS) {
+  if (value == null || value === '') return DEFAULT_SQLITE_BUSY_TIMEOUT_MS;
+  const timeout = Number(value);
+  if (!Number.isFinite(timeout) || timeout < 0) {
+    throw new Error(`PDPP_SQLITE_BUSY_TIMEOUT_MS must be a non-negative number, got ${value}`);
+  }
+  return Math.floor(timeout);
 }
 
 const SCHEMA = `
@@ -443,9 +454,11 @@ function loadVectorExtension(raw) {
   }
 }
 
-export function initDb(path = ':memory:') {
+export function initDb(path = ':memory:', opts = {}) {
   closeDb();
-  const raw = new Database(path);
+  const busyTimeoutMs = resolveSqliteBusyTimeoutMs(opts.busyTimeoutMs);
+  const raw = new Database(path, { timeout: busyTimeoutMs });
+  raw.pragma(`busy_timeout = ${busyTimeoutMs}`);
 
   // Performance PRAGMAs — see openspec/changes/add-polyfill-connector-system/
   // design-notes/sqlite-performance-recommendations.md for rationale. WAL is

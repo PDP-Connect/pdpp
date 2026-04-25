@@ -6,7 +6,7 @@
  */
 import { createHash } from 'node:crypto';
 
-import { getDb, initDb } from './db.js';
+import { closeDb, getDb, initDb } from './db.js';
 import {
   buildAuthorizationServerMetadata,
   buildLexicalRetrievalCapability,
@@ -3448,7 +3448,7 @@ function buildRsApp(opts = {}) {
 export async function startServer(opts = {}) {
   const logger = opts.logger ?? buildLogger({ quiet: !!opts.quiet });
   const nativeConfig = validateNativeConfiguration(opts);
-  await initDb(opts.dbPath || DB_PATH);
+  await initDb(opts.dbPath || DB_PATH, { busyTimeoutMs: opts.sqliteBusyTimeoutMs });
   await seedPreRegisteredClients(resolvePreRegisteredPublicClients(opts));
   logger.info('database initialized');
 
@@ -3660,7 +3660,9 @@ if (process.argv[1] && process.argv[1].endsWith('server/index.js')) {
       try { srv.closeAllConnections?.(); } catch {}
       srv.close(() => { clearTimeout(t); resolve(); });
     });
-    await Promise.allSettled([closeTimeout(server.asServer), closeTimeout(server.rsServer)]);
+    const closingServers = [closeTimeout(server.asServer), closeTimeout(server.rsServer)];
+    closeDb();
+    await Promise.allSettled(closingServers);
     process.exit(0);
   };
   process.on('SIGTERM', exitOnSignal('SIGTERM'));
@@ -3670,6 +3672,7 @@ if (process.argv[1] && process.argv[1].endsWith('server/index.js')) {
     server.asServer = result.asServer;
     server.rsServer = result.rsServer;
   }).catch(err => {
+    closeDb();
     cliLogger.fatal({ err }, 'startup failed');
     process.nextTick(() => process.exit(1));
   });

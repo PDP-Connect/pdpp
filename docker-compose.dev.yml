@@ -2,7 +2,7 @@ services:
   reference:
     environment:
       NODE_ENV: development
-      PDPP_EMBEDDING_CACHE_DIR: /app/reference-implementation/.cache/transformers
+      PDPP_EMBEDDING_CACHE_DIR: /var/cache/pdpp/transformers
     command: >
       sh -lc 'node --env-file-if-exists=.env.local --watch reference-implementation/server/index.js'
     volumes:
