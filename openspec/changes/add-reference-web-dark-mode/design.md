@@ -26,9 +26,9 @@ inline script in `<head>`:
    match.
 
 The inline script is the only place that runs before hydration. The
-`ThemeProvider` reads the same storage key to seed React state and emits
-a custom event when the user flips the toggle so other tabs can sync via
-the storage event listener.
+`ThemeProvider` reads the same storage key to seed React state. Explicit
+choices are written to localStorage; other tabs receive those changes through
+the browser's standard `storage` event.
 
 `suppressHydrationWarning` is already present on `<html>`; we keep it.
 
