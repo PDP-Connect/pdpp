@@ -48,6 +48,65 @@ function resolveSqliteBusyTimeoutMs(value = process.env.PDPP_SQLITE_BUSY_TIMEOUT
   return Math.floor(timeout);
 }
 
+/**
+ * Best-effort retry wrapper for SQLite writes that race against a
+ * still-shutting-down sibling process. The canonical case: `node --watch`
+ * (and Docker dev compose, which runs `node --watch`) restarts the server
+ * after an edit. SQLite's per-process `busy_timeout` retries are usually
+ * enough, but on slow hosts and bind-mounted volumes the new process can
+ * occasionally observe a `SQLITE_BUSY` from the old process's WAL writer
+ * faster than the busy-timeout window covers (e.g., the old process held
+ * a mid-startup write transaction that `db.close()` rolled back, but the
+ * `-shm`/`-wal` lock wasn't visible-as-released yet to the new opener).
+ *
+ * Use this only for startup writes that:
+ *   - are bounded and idempotent (seeds, reconciles), and
+ *   - we'd rather retry than fail-the-process on transient contention.
+ *
+ * Persistent locks still surface — once the retry budget is exhausted we
+ * rethrow with the original error so operators see a real diagnostic.
+ *
+ * Spec note: the `PDPP_SQLITE_BUSY_TIMEOUT_MS` ceiling already bounds
+ * SQLite's own retry loop. This helper layers a small bounded application
+ * retry on top so we don't re-enter SQLite immediately after a busy
+ * failure — backoff gives the sibling process time to finish closing.
+ */
+const TRANSIENT_LOCK_CODES = new Set(['SQLITE_BUSY', 'SQLITE_LOCKED', 'SQLITE_BUSY_SNAPSHOT']);
+
+export function isTransientSqliteLockError(err) {
+  if (!err) return false;
+  if (err.code && TRANSIENT_LOCK_CODES.has(err.code)) return true;
+  const message = typeof err.message === 'string' ? err.message : '';
+  return message.includes('database is locked') || message.includes('database table is locked');
+}
+
+export async function runWithSqliteBusyRetry(fn, opts = {}) {
+  const maxAttempts = Number.isFinite(opts.maxAttempts) ? Math.max(1, opts.maxAttempts) : 5;
+  const initialDelayMs = Number.isFinite(opts.initialDelayMs) ? Math.max(0, opts.initialDelayMs) : 100;
+  const maxDelayMs = Number.isFinite(opts.maxDelayMs) ? Math.max(initialDelayMs, opts.maxDelayMs) : 1500;
+  const onRetry = typeof opts.onRetry === 'function' ? opts.onRetry : null;
+  const sleep = typeof opts.sleep === 'function'
+    ? opts.sleep
+    : (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  let attempt = 0;
+  let lastErr;
+  while (attempt < maxAttempts) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      if (!isTransientSqliteLockError(err)) throw err;
+      attempt += 1;
+      if (attempt >= maxAttempts) break;
+      const delay = Math.min(maxDelayMs, initialDelayMs * 2 ** (attempt - 1));
+      if (onRetry) onRetry({ err, attempt, delay });
+      await sleep(delay);
+    }
+  }
+  throw lastErr;
+}
+
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS connectors (
   connector_id TEXT PRIMARY KEY,

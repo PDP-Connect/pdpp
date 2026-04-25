@@ -8,7 +8,7 @@
  * - Implements RFC 7662-style introspection with PDPP extensions
  */
 import { randomBytes } from 'crypto';
-import { getDb } from './db.js';
+import { getDb, runWithSqliteBusyRetry } from './db.js';
 import { createTraceContext, emitSpineEvent } from '../lib/spine.ts';
 
 function generateToken() {
@@ -1212,18 +1212,29 @@ async function upsertRegisteredClient({
   );
 }
 
-export async function seedPreRegisteredClients(clients = []) {
+export async function seedPreRegisteredClients(clients = [], opts = {}) {
+  // Startup seeding races against a sibling process that may still be
+  // shutting down (Docker dev compose runs `node --watch`, and `--watch`
+  // restart can briefly overlap with the old process's WAL writer). The
+  // canonical SQLite `busy_timeout` covers most of this window; the
+  // bounded application-level retry below covers the residual gap on
+  // slow hosts / bind-mounted volumes where the lock release becomes
+  // visible to the new opener fractionally late.
+  const onRetry = typeof opts.onRetry === 'function' ? opts.onRetry : null;
   for (const client of clients) {
     if (!client?.client_id) continue;
-    await upsertRegisteredClient({
-      clientId: client.client_id,
-      registrationMode: client.registration_mode || 'pre_registered_public',
-      metadata: client.metadata || {
-        client_name: client.client_name || client.client_id,
-        token_endpoint_auth_method: client.token_endpoint_auth_method || 'none',
-      },
-      clientSecret: client.client_secret || null,
-    });
+    await runWithSqliteBusyRetry(
+      () => upsertRegisteredClient({
+        clientId: client.client_id,
+        registrationMode: client.registration_mode || 'pre_registered_public',
+        metadata: client.metadata || {
+          client_name: client.client_name || client.client_id,
+          token_endpoint_auth_method: client.token_endpoint_auth_method || 'none',
+        },
+        clientSecret: client.client_secret || null,
+      }),
+      { onRetry, ...(opts.retry || {}) },
+    );
   }
 }
 
