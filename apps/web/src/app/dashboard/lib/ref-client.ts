@@ -122,6 +122,7 @@ export interface RunSummary {
   grant_id: string | null;
   kinds: string[];
   last_at: string;
+  needs_input: boolean;
   object: "run_summary";
   provider_id: string | null;
   run_id: string;

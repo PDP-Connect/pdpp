@@ -1819,6 +1819,7 @@ function buildAsApp(opts = {}) {
       event_count: s.event_count,
       status: s.status,
       kinds: s.kinds,
+      needs_input: Boolean(s.needs_input),
       connector_id: s.connector_id || null,
       provider_id: s.provider_id,
       grant_id: s.grant_id,

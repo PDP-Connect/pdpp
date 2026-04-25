@@ -179,6 +179,7 @@ export interface SpineSummary {
   id?: string;
   kinds: string[];
   last_at: string;
+  needs_input: boolean;
   provider_id: string | null;
   request_id: string | null;
   run_id: string | null;
@@ -477,6 +478,7 @@ function summarizeEvents(events: readonly SpineEventRecord[]): SpineSummary | nu
   }
 
   const terminalFailure = events.find((e) => e.status === "failed" || e.status === "rejected");
+  const needs_input = hasPendingRunInteraction(events, status);
 
   let connector_id: string | null = null;
   for (const ev of events) {
@@ -493,6 +495,7 @@ function summarizeEvents(events: readonly SpineEventRecord[]): SpineSummary | nu
     event_count: events.length,
     status,
     kinds,
+    needs_input,
     request_id: pickFirstNonNull(events, "request_id") as string | null,
     grant_id: pickFirstNonNull(events, "grant_id") as string | null,
     trace_id: pickFirstNonNull(events, "trace_id") as string | null,
@@ -509,6 +512,32 @@ function summarizeEvents(events: readonly SpineEventRecord[]): SpineSummary | nu
         }
       : null,
   };
+}
+
+function hasPendingRunInteraction(events: readonly SpineEventRecord[], status: string): boolean {
+  if (["succeeded", "failed", "cancelled", "rejected"].includes(status)) {
+    return false;
+  }
+
+  const completed = new Set(
+    events
+      .filter((event) => event.event_type === "run.interaction_completed")
+      .map((event) => event.interaction_id)
+      .filter((value): value is string => typeof value === "string" && value.length > 0)
+  );
+
+  for (let i = events.length - 1; i >= 0; i -= 1) {
+    const event = events[i];
+    if (!event || event.event_type !== "run.interaction_required") {
+      continue;
+    }
+    if (typeof event.interaction_id !== "string" || event.interaction_id.length === 0) {
+      continue;
+    }
+    return !completed.has(event.interaction_id);
+  }
+
+  return false;
 }
 
 function readFailureReason(data: unknown): string | null {

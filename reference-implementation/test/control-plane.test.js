@@ -18,6 +18,7 @@ import { fileURLToPath } from 'node:url';
 import { startServer } from '../server/index.js';
 import { ingestRecord } from '../server/records.js';
 import { getDb } from '../server/db.js';
+import { emitSpineEvent } from '../lib/spine.ts';
 import { runConnector } from '../runtime/index.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -183,6 +184,113 @@ test('_ref listing helpers', async (t) => {
 
       const { body: failed } = await fetchJson(`${asUrl}/_ref/runs?status=failed`);
       for (const r of failed.data) assert.equal(r.status, 'failed');
+    });
+  });
+
+  await t.test('GET /_ref/runs reports pending interaction state without relying on event-kind sets', async () => {
+    await withHarness(async ({ asUrl, spotifyManifest }) => {
+      const source = { connector_id: spotifyManifest.connector_id };
+      const base = {
+        actor_id: spotifyManifest.connector_id,
+        actor_type: 'runtime',
+        object_type: 'run',
+        scenario_id: 'scn_pending_interaction_test',
+        trace_id: 'trc_pending_interaction_test',
+      };
+
+      await emitSpineEvent({
+        ...base,
+        event_type: 'run.started',
+        object_id: 'run_pending_input',
+        occurred_at: '2026-04-24T00:00:00.000Z',
+        run_id: 'run_pending_input',
+        status: 'started',
+        data: { source },
+      });
+      await emitSpineEvent({
+        ...base,
+        event_type: 'run.interaction_required',
+        interaction_id: 'int_first',
+        object_id: 'run_pending_input',
+        occurred_at: '2026-04-24T00:00:01.000Z',
+        run_id: 'run_pending_input',
+        status: 'started',
+        data: { source, kind: 'otp', message: 'enter code' },
+      });
+      await emitSpineEvent({
+        ...base,
+        event_type: 'run.started',
+        object_id: 'run_terminal_stale_input',
+        occurred_at: '2026-04-24T00:01:00.000Z',
+        run_id: 'run_terminal_stale_input',
+        status: 'started',
+        data: { source },
+      });
+      await emitSpineEvent({
+        ...base,
+        event_type: 'run.interaction_required',
+        interaction_id: 'int_stale',
+        object_id: 'run_terminal_stale_input',
+        occurred_at: '2026-04-24T00:01:01.000Z',
+        run_id: 'run_terminal_stale_input',
+        status: 'started',
+        data: { source, kind: 'manual_action', message: 'manual step' },
+      });
+      await emitSpineEvent({
+        ...base,
+        event_type: 'run.failed',
+        object_id: 'run_terminal_stale_input',
+        occurred_at: '2026-04-24T00:01:02.000Z',
+        run_id: 'run_terminal_stale_input',
+        status: 'failed',
+        data: { source, reason: 'runtime_error' },
+      });
+      await emitSpineEvent({
+        ...base,
+        event_type: 'run.started',
+        object_id: 'run_second_input',
+        occurred_at: '2026-04-24T00:02:00.000Z',
+        run_id: 'run_second_input',
+        status: 'started',
+        data: { source },
+      });
+      await emitSpineEvent({
+        ...base,
+        event_type: 'run.interaction_required',
+        interaction_id: 'int_old',
+        object_id: 'run_second_input',
+        occurred_at: '2026-04-24T00:02:01.000Z',
+        run_id: 'run_second_input',
+        status: 'started',
+        data: { source, kind: 'credentials', message: 'credentials' },
+      });
+      await emitSpineEvent({
+        ...base,
+        event_type: 'run.interaction_completed',
+        interaction_id: 'int_old',
+        object_id: 'run_second_input',
+        occurred_at: '2026-04-24T00:02:02.000Z',
+        run_id: 'run_second_input',
+        status: 'success',
+        data: { source, status: 'success' },
+      });
+      await emitSpineEvent({
+        ...base,
+        event_type: 'run.interaction_required',
+        interaction_id: 'int_new',
+        object_id: 'run_second_input',
+        occurred_at: '2026-04-24T00:02:03.000Z',
+        run_id: 'run_second_input',
+        status: 'started',
+        data: { source, kind: 'otp', message: 'new code' },
+      });
+
+      const { body } = await fetchJson(`${asUrl}/_ref/runs?limit=50&q=run_`);
+      const byId = new Map(body.data.map((run) => [run.run_id, run]));
+
+      assert.equal(byId.get('run_pending_input')?.needs_input, true);
+      assert.equal(byId.get('run_terminal_stale_input')?.needs_input, false);
+      assert.equal(byId.get('run_second_input')?.needs_input, true);
     });
   });
 
