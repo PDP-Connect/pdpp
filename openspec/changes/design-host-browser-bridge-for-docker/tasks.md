@@ -23,3 +23,18 @@
 
 - [x] `openspec validate design-host-browser-bridge-for-docker --strict`
 - [x] `openspec validate --all --strict`
+
+## 5. Implementation Slice (branch `implement-host-browser-bridge`)
+
+- [x] Container-side env resolver (`packages/polyfill-connectors/src/host-browser-bridge-config.ts`) — fail-closed parsing with stable failure code `host_browser_bridge_unavailable`, unit-tested.
+- [x] Container-side acquisition router (`packages/polyfill-connectors/src/browser-launch.ts:acquireBrowserForConnector`) — picks bridge vs native isolated launcher; throws `HostBrowserBridgeUnavailableError` on misconfig or unreachable bridge; emits the daily-Chrome warning on opt-in.
+- [x] Connector runtime wiring (`packages/polyfill-connectors/src/connector-runtime.ts:acquireBrowser`) — surfaces the stable failure code in the terminal-error message so the controller renders the deployment-config error state.
+- [x] Host bridge CLI (`packages/polyfill-connectors/bin/host-browser-bridge.ts`) — owns Patchright `launchPersistentContext`, reads `DevToolsActivePort`, exposes a token-gated WebSocket reverse proxy on 127.0.0.1, prints the env exports operators need, closes the host browser on SIGINT/SIGTERM.
+- [x] Compose passthrough (`docker-compose.yml`) — declares the three bridge env vars and adds `extra_hosts: ["host.docker.internal:host-gateway"]` so Linux Compose can reach the host.
+- [x] Operator docs (`README.md`, `.env.docker.example`) — describe the start-bridge → export-env → run-stack flow and the daily-Chrome escape hatch.
+- [x] Unit tests for env resolution, token/auth behavior, bridge-unavailable failure, and CLI argv parsing.
+- [x] `pnpm --dir packages/polyfill-connectors run verify` (typecheck + ultracite).
+- [x] `pnpm --dir packages/polyfill-connectors run test` (732/732 pass; 5 baseline skipped).
+- [ ] Manual end-to-end proof: run the host bridge against a real ChatGPT profile, attach from a Compose run, complete an OTP/Cloudflare interaction in the visible host browser, observe the connector finish. (Not run in this slice — requires a live ChatGPT account and a running Compose stack with active credentials. See merge-queue note.)
+- [ ] Dashboard render of `host_browser_bridge_unavailable` as a distinct deployment-config state. (Deferred to a follow-up web slice; the runtime already surfaces the stable code in the terminal-error message so the dashboard can pattern-match without further runtime changes.)
+- [ ] `kind=host_browser_required` interaction emission from connectors. (Deferred. Today the visible-host-browser flow is implicit: the bridge launches a window the operator sees while the connector blocks on its existing `auto-login` interaction handshake. Adding an explicit kind is a connector-side spec change worth its own slice.)

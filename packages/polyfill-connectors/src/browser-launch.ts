@@ -20,6 +20,11 @@ import { existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Browser, BrowserContext, chromium } from "playwright";
+import {
+  HOST_BROWSER_BRIDGE_UNAVAILABLE_CODE,
+  hostBrowserBridgeUnavailableMessage,
+  resolveHostBrowserBridgeConfig,
+} from "./host-browser-bridge-config.ts";
 
 const PROFILE_NAME_RE = /^[A-Za-z0-9_-]+$/;
 
@@ -32,6 +37,26 @@ export interface IsolatedBrowser {
 export interface AcquireIsolatedBrowserOptions {
   headless?: boolean;
   profileName: string;
+}
+
+/**
+ * Failure surfaced when the runtime is configured to use the host
+ * browser bridge but the bridge is unreachable, mismatched, or
+ * misconfigured. Carries the stable `code` the dashboard uses to
+ * render the deployment-config error state. See
+ * `openspec/changes/design-host-browser-bridge-for-docker/design.md` §
+ * Failure Mode.
+ */
+export class HostBrowserBridgeUnavailableError extends Error {
+  readonly code: typeof HOST_BROWSER_BRIDGE_UNAVAILABLE_CODE;
+  readonly bridgeUrl: string | null;
+
+  constructor(args: { message: string; bridgeUrl: string | null }) {
+    super(args.message);
+    this.name = "HostBrowserBridgeUnavailableError";
+    this.code = HOST_BROWSER_BRIDGE_UNAVAILABLE_CODE;
+    this.bridgeUrl = args.bridgeUrl;
+  }
 }
 
 function configuredBrowserChannel(): string | undefined {
@@ -168,4 +193,121 @@ function logChromiumFallback(): void {
       "For best stealth on the host, run `pnpm --dir packages/polyfill-connectors exec patchright install chrome` " +
       "(or set PDPP_BROWSER_CHANNEL to override).\n"
   );
+}
+
+// ─── Host bridge acquisition ───────────────────────────────────────────
+
+/**
+ * Acquire a browser by attaching to a host-side PDPP browser bridge over
+ * CDP. Used when the connector runs in Docker and a visible host browser
+ * is required. The bridge owns the persistent context against
+ * `~/.pdpp/profiles/<profile>/` on the host; this function only attaches
+ * to the bridge's CDP endpoint via Patchright's `connectOverCDP`. See
+ * `bin/host-browser-bridge.ts` for the host side and
+ * `openspec/changes/design-host-browser-bridge-for-docker/design.md`.
+ */
+export async function acquireRemoteHostBrowser(args: {
+  bridgeUrl: string;
+  bridgeToken: string;
+}): Promise<IsolatedBrowser> {
+  // @ts-expect-error — patchright.chromium is runtime-identical to playwright.chromium
+  const { chromium: localChromium }: { chromium: typeof chromium } = await import("patchright");
+
+  let browser: Browser;
+  try {
+    browser = await localChromium.connectOverCDP(args.bridgeUrl, {
+      // The host bridge enforces the shared-secret token on the WS
+      // upgrade. CDP connections accept arbitrary upgrade headers via
+      // the `headers` option. We send a stable header name the bridge
+      // recognizes; rejecting the connection there is what produces a
+      // clean "unauthenticated" failure rather than a dangling socket.
+      headers: { "x-pdpp-bridge-token": args.bridgeToken },
+    });
+  } catch (err) {
+    const cause = err instanceof Error ? err.message : String(err);
+    throw new HostBrowserBridgeUnavailableError({
+      bridgeUrl: args.bridgeUrl,
+      message: hostBrowserBridgeUnavailableMessage({ url: args.bridgeUrl, cause }),
+    });
+  }
+
+  // The bridge launches its persistent context first, so attaching via
+  // CDP gives us back at least one default context. We use that — every
+  // page in it shares the host profile by construction.
+  const contexts = browser.contexts();
+  const context = contexts[0];
+  if (!context) {
+    // Defensive: this should never happen because the bridge launches a
+    // persistent context before accepting connections. If it does, we
+    // surface the same error code so the dashboard treats it uniformly.
+    await browser.close().catch(() => {
+      /* ignore */
+    });
+    throw new HostBrowserBridgeUnavailableError({
+      bridgeUrl: args.bridgeUrl,
+      message: `Host browser bridge at ${args.bridgeUrl} returned no contexts; the bridge may have started without a persistent context.`,
+    });
+  }
+
+  return {
+    context,
+    browser,
+    release: async (): Promise<void> => {
+      // Closing the CDP-attached browser detaches us from the host
+      // browser without closing it on the host side. The host bridge
+      // owns the host-browser lifecycle.
+      try {
+        await browser.close();
+      } catch {
+        /* ignore */
+      }
+    },
+  };
+}
+
+// ─── Router ────────────────────────────────────────────────────────────
+
+/**
+ * Acquire a browser context for connector use, picking between the
+ * native isolated launcher and the host browser bridge based on
+ * environment variables.
+ *
+ * Routing:
+ *   - If PDPP_HOST_BROWSER_BRIDGE_URL is set, the runtime attaches to
+ *     the host bridge via `acquireRemoteHostBrowser`.
+ *   - If the bridge is configured but malformed (missing token,
+ *     non-ws URL), this throws `HostBrowserBridgeUnavailableError` so
+ *     the run fails fast rather than silently launching an invisible
+ *     in-container browser.
+ *   - Otherwise, the runtime uses `acquireIsolatedBrowser` against
+ *     `~/.pdpp/profiles/<profileName>/` exactly as before.
+ */
+export async function acquireBrowserForConnector(options: AcquireIsolatedBrowserOptions): Promise<IsolatedBrowser> {
+  const resolution = resolveHostBrowserBridgeConfig(process.env);
+
+  if (resolution.mode === "misconfigured") {
+    throw new HostBrowserBridgeUnavailableError({
+      bridgeUrl: null,
+      message: `Host browser bridge is misconfigured: ${resolution.reason}`,
+    });
+  }
+
+  if (resolution.mode === "configured") {
+    if (resolution.config.dailyChromeAcknowledged) {
+      // Loud per-acquisition warning: the operator opted into pointing
+      // the bridge at a host Chrome that may be their daily profile.
+      // The dashboard surfaces this on the run page; we duplicate it on
+      // stderr so it lands in container logs too.
+      process.stderr.write(
+        "[browser-launch] PDPP_HOST_BROWSER_BRIDGE_DAILY_CHROME=1 — connecting to a host browser " +
+          "the operator has acknowledged may be their daily Chrome profile. Trust posture is non-default.\n"
+      );
+    }
+    return await acquireRemoteHostBrowser({
+      bridgeUrl: resolution.config.url,
+      bridgeToken: resolution.config.token,
+    });
+  }
+
+  return await acquireIsolatedBrowser(options);
 }

@@ -603,15 +603,28 @@ interface AcquiredBrowser {
   release: () => Promise<void>;
 }
 
-/** Acquire an isolated browser context; throws TerminalError on failure. */
+/**
+ * Acquire a browser context for the connector, routing through the
+ * host browser bridge if configured (Docker/Compose) or falling back
+ * to the native isolated launcher (host-direct runs). Throws
+ * TerminalError on failure; preserves
+ * HostBrowserBridgeUnavailableError's stable code in the message so
+ * downstream logs/dashboards can pattern-match.
+ */
 async function acquireBrowser(browser: BrowserConfig, name: string): Promise<AcquiredBrowser> {
-  const { acquireIsolatedBrowser } = await import("./browser-launch.ts");
+  const { acquireBrowserForConnector, HostBrowserBridgeUnavailableError } = await import("./browser-launch.ts");
   const profileName = browser.profileName ?? name;
   const envKey = `PDPP_${profileName.toUpperCase()}_HEADLESS`;
   const headless = browser.headless ?? process.env[envKey] !== "0";
   try {
-    return await acquireIsolatedBrowser({ profileName, headless });
+    return await acquireBrowserForConnector({ profileName, headless });
   } catch (err) {
+    if (err instanceof HostBrowserBridgeUnavailableError) {
+      // Surface the stable code in the terminal-error message so the
+      // controller's run-failed copy can render the deployment-config
+      // error state rather than a generic browser failure.
+      throw new TerminalError(`[${err.code}] ${err.message}`, false);
+    }
     const message = err instanceof Error ? err.message : String(err);
     throw new TerminalError(`could not open browser profile: ${message}`, false);
   }

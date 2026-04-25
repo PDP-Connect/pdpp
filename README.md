@@ -118,6 +118,35 @@ PDPP_WEB_ALLOWED_DEV_ORIGINS=peregrine-dev.vivid.fish,192.168.1.180
 Reverse proxies must also forward WebSocket upgrade traffic for
 `/_next/webpack-hmr`; otherwise the page loads but Next HMR cannot connect.
 
+#### Browser-backed connectors in Docker
+
+Connectors like ChatGPT and USAA need a real browser the operator can see and
+click for login, OTP, or Cloudflare challenges. In Docker, those interactions
+go through the host browser bridge — a small process that runs on the host,
+owns a Patchright persistent context against `~/.pdpp/profiles/<name>/`, and
+exposes its CDP endpoint over loopback so the container can attach.
+
+```bash
+# 1. On the host, start the bridge for the target connector profile.
+pnpm --dir packages/polyfill-connectors exec tsx \
+  bin/host-browser-bridge.ts --profile chatgpt
+# The bridge prints a URL+token. Export them into your Compose environment:
+export PDPP_HOST_BROWSER_BRIDGE_URL=ws://host.docker.internal:7670
+export PDPP_HOST_BROWSER_BRIDGE_TOKEN=<token-printed-by-bridge>
+
+# 2. Start the stack as usual; ChatGPT runs will drive the host browser.
+docker compose --env-file .env.docker up
+```
+
+When the bridge env vars are set but the bridge isn't reachable, runs fail
+fast with `host_browser_bridge_unavailable` rather than waiting on an
+invisible browser. When the env vars are unset, browser-backed Docker runs
+behave as before (in-container Chromium). The `host.docker.internal` mapping
+on Linux is provided by the `extra_hosts: ["host.docker.internal:host-gateway"]`
+entry already in `docker-compose.yml`. See
+`openspec/changes/design-host-browser-bridge-for-docker/design.md` for the
+full design.
+
 CI builds Docker targets on pull requests without pushing images. On `main`,
 semantic-release creates GitHub releases from Conventional Commits and the same
 release workflow publishes stable GHCR tags for both Docker targets. Maintainers
