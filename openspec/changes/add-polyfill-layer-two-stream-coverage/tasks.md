@@ -11,16 +11,19 @@
 
 ## 2. Connector Slices
 
-- [ ] ChatGPT: audit and complete `custom_gpts`, `custom_instructions`, and `shared_conversations` coverage if not already shipped.
+- [x] ChatGPT: audit and complete `custom_gpts`, `custom_instructions`, and `shared_conversations` coverage if not already shipped.
+  - 2026-04-25 ChatGPT/GitHub/Slack audit slice: `custom_gpts`, `custom_instructions`, and `shared_conversations` are declared in `manifests/chatgpt.json`, validated by `connectors/chatgpt/schemas.ts`, and collected by `connectors/chatgpt/index.ts`. This slice added fake-API integration coverage for `custom_gpts` pagination/403 skip behavior and `shared_conversations` pagination/404 skip behavior; existing coverage already covered `custom_instructions` 200/404/500 paths and parser shapes.
 - [x] Claude Code: add recursive sidechain/tool-result traversal, `memory_notes`, `skills`, and `slash_commands` where source files exist.
 - [x] Codex: evaluate `state_5.sqlite` as canonical session metadata and add prompts, skills, and approval rules where source files exist.
   - 2026-04-25 closeout: `state_5.sqlite#threads`, `prompts`, `skills`, and `rules` were already implemented. The manifest/code now explicitly document that `rules` is the honest stream name for Codex approval/trust rules.
-- [ ] GitHub: evaluate issues, pull requests, gists, followers, and following streams against available token scopes.
+- [x] GitHub: evaluate issues, pull requests, gists, followers, and following streams against available token scopes.
+  - 2026-04-25 ChatGPT/GitHub/Slack audit slice: `issues`, `pull_requests`, and `gists` are declared in `manifests/github.json`, implemented in `connectors/github/index.ts`, and parser-covered in `connectors/github/parsers.test.ts`. `followers` and `following` are currently profile count fields on the `user` stream, not standalone relationship streams; adding row-level follower/following streams would require a follow-up manifest/schema/collector slice plus live token verification against `/user/followers` and `/user/following`.
 - [x] YNAB: add `month_categories` coverage.
   - 2026-04-24 worker closeout: connector and manifest already had `month_categories`; this slice added import-safe helper coverage for stable primary keys, one-month cursor rewind, time-range/deleted-month filtering, emitted records, and state cursor behavior without live YNAB auth.
 - [ ] USAA: wire transfers, bill payments, scheduled transactions, external accounts, and statement metadata only where live access is stable.
 - [ ] Gmail: keep attachment blob hydration separate from generic text extraction; add any missing safe relationships after `expand[]` support.
-- [ ] Slack: audit v0.3.0 coverage for reactions, attachments, canvases, stars, user groups, and reminders.
+- [x] Slack: audit v0.3.0 coverage for reactions, attachments, canvases, stars, user groups, and reminders.
+  - 2026-04-25 ChatGPT/GitHub/Slack audit slice: `reactions`, `message_attachments`, and `canvases` are declared in `manifests/slack.json`, implemented in `connectors/slack/index.ts`/`parsers.ts`, and covered by parser/integration tests. `stars`, `user_groups`, and `reminders` are manifest-declared as Layer 2 streams but intentionally emit `SKIP_RESULT` from the slackdump archive path because slackdump archive mode does not call `stars.list`, `usergroups.list`, or `reminders.list`; implementing them requires an API fallback with live Slack credentials.
 - [ ] Reddit: re-ingest from verified Reddit credentials or keep connector marked untrusted.
 - [ ] Spotify: keep blocked/untrusted until real account access is possible.
 
@@ -28,10 +31,15 @@
 
 - [x] Add or update connector parser/integration tests for each changed connector.
   - 2026-04-24 worker slice added `packages/polyfill-connectors/connectors/ynab/integration.test.ts`.
+  - 2026-04-25 ChatGPT/GitHub/Slack audit slice added `custom_gpts` and `shared_conversations` fake-API integration coverage in `packages/polyfill-connectors/connectors/chatgpt/integration.test.ts`.
 - [x] Run `pnpm --dir packages/polyfill-connectors run verify`.
   - 2026-04-24 worker slice: passed.
+  - 2026-04-25 ChatGPT/GitHub/Slack audit slice: passed after installing workspace dependencies in the isolated worktree with `pnpm install --ignore-scripts`.
 - [ ] Run targeted reference ingestion/query tests for any changed manifest shape.
   - 2026-04-24 worker slice: not applicable; no manifest shape changed. Targeted YNAB connector integration test passed with `pnpm --dir packages/polyfill-connectors exec node --test --test-timeout=30000 --import tsx connectors/ynab/integration.test.ts`. Full connector tests passed with `pnpm --dir packages/polyfill-connectors test` (586 tests, 580 passed, 6 skipped).
+  - 2026-04-25 ChatGPT/GitHub/Slack audit slice: not applicable; no manifest shape changed. Targeted ChatGPT/GitHub/Slack connector tests passed with `pnpm --dir packages/polyfill-connectors exec node --test --test-timeout=30000 --import tsx connectors/chatgpt/integration.test.ts connectors/chatgpt/parsers.test.ts connectors/github/parsers.test.ts connectors/slack/parsers.test.ts connectors/slack/integration.test.ts` (117 tests passed). Full connector tests also passed with `pnpm --dir packages/polyfill-connectors test` (595 tests, 589 passed, 6 skipped).
 - [x] Run `openspec validate add-polyfill-layer-two-stream-coverage --strict`.
   - 2026-04-24 worker slice: passed.
-- [ ] Run `openspec validate --all --strict`.
+  - 2026-04-25 ChatGPT/GitHub/Slack audit slice: passed.
+- [x] Run `openspec validate --all --strict`.
+  - 2026-04-25 ChatGPT/GitHub/Slack audit slice: passed (12 items).

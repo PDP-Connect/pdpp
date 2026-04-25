@@ -49,7 +49,14 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { EmittedMessage } from "../../src/connector-runtime.ts";
 import { type EmittedRecord, makeRecordingEmit } from "../../src/test-harness.ts";
-import { processConversationDetail, runCustomInstructionsStream, runMemoriesStream, type StreamDeps } from "./index.ts";
+import {
+  processConversationDetail,
+  runCustomGptsStream,
+  runCustomInstructionsStream,
+  runMemoriesStream,
+  runSharedConversationsStream,
+  type StreamDeps,
+} from "./index.ts";
 import { buildConversationRecord, type ConversationDetail } from "./parsers.ts";
 import { validateRecord } from "./schemas.ts";
 import type { ChatGptApi, ChatGptFetchResult, ChatGptJson, ChatGptNode, ConversationListItem } from "./types.ts";
@@ -339,4 +346,121 @@ test("runCustomInstructionsStream: 500 → SKIP_RESULT('http_error'), no record"
   const skip = messages.find((m): m is Extract<EmittedMessage, { type: "SKIP_RESULT" }> => m.type === "SKIP_RESULT");
   assert.ok(skip);
   assert.equal(skip.reason, "http_error", "non-200 non-404/403 uses the generic http_error bucket");
+});
+
+test("runCustomGptsStream: paginates gizmos/mine and emits STATE when complete", async () => {
+  const { deps, emitted, messages } = makeHarness({
+    fetchQueue: [
+      {
+        status: 200,
+        json: {
+          cursor: "next-page",
+          items: [
+            {
+              resource: {
+                gizmo: {
+                  id: "g-1",
+                  display: { name: "Planner", description: "Plans work" },
+                  tools: [{ type: "browser" }],
+                  sharing: "private",
+                },
+              },
+            },
+          ],
+        },
+      },
+      {
+        status: 200,
+        json: {
+          items: [
+            {
+              id: "g-2",
+              display_name: "Writer",
+              display_description: "Writes prose",
+              tools: ["dalle"],
+              sharing: "public",
+            },
+          ],
+        },
+      },
+    ],
+    requested: ["custom_gpts"],
+  });
+
+  await runCustomGptsStream(deps);
+
+  const gpts = emitted.filter((r) => r.stream === "custom_gpts");
+  assert.equal(gpts.length, 2);
+  assert.equal(gpts[0]?.data.id, "g-1");
+  assert.equal(gpts[1]?.data.id, "g-2");
+  assert.equal(gpts[1]?.data.is_public, true);
+  assert.equal(messages.filter((m) => m.type === "STATE" && m.stream === "custom_gpts").length, 1);
+});
+
+test("runCustomGptsStream: 403 → SKIP_RESULT('not_available'), no STATE", async () => {
+  const { deps, emitted, messages } = makeHarness({
+    fetchQueue: [{ status: 403, json: null }],
+    requested: ["custom_gpts"],
+  });
+
+  await runCustomGptsStream(deps);
+
+  assert.equal(emitted.length, 0);
+  const skip = messages.find((m): m is Extract<EmittedMessage, { type: "SKIP_RESULT" }> => m.type === "SKIP_RESULT");
+  assert.ok(skip);
+  assert.equal(skip.stream, "custom_gpts");
+  assert.equal(skip.reason, "not_available");
+  assert.equal(messages.filter((m) => m.type === "STATE").length, 0);
+});
+
+test("runSharedConversationsStream: paginates shared conversations and emits STATE when complete", async () => {
+  const firstPageItems = Array.from({ length: 100 }, (_, idx) => ({
+    share_id: `s-${idx}`,
+    conversation_id: `c-${idx}`,
+    title: `Share ${idx}`,
+    create_time: 1_700_000_000 + idx,
+  }));
+  const { deps, emitted, messages } = makeHarness({
+    fetchQueue: [
+      { status: 200, json: { items: firstPageItems } },
+      {
+        status: 200,
+        json: {
+          items: [
+            {
+              share_id: "s-100",
+              conversation_id: "c-100",
+              title: "Final share",
+              create_time: 1_700_000_100,
+            },
+          ],
+        },
+      },
+    ],
+    requested: ["shared_conversations"],
+  });
+
+  await runSharedConversationsStream(deps);
+
+  const shares = emitted.filter((r) => r.stream === "shared_conversations");
+  assert.equal(shares.length, 101);
+  assert.equal(shares[0]?.data.id, "s-0");
+  assert.equal(shares[100]?.data.id, "s-100");
+  assert.equal(messages.filter((m) => m.type === "STATE" && m.stream === "shared_conversations").length, 1);
+});
+
+test("runSharedConversationsStream: 404 → SKIP_RESULT('not_available'), no record", async () => {
+  const { deps, emitted, messages } = makeHarness({
+    fetchQueue: [{ status: 404, json: null }],
+    requested: ["shared_conversations"],
+  });
+
+  await runSharedConversationsStream(deps);
+
+  assert.equal(emitted.length, 0);
+  const skip = messages.find((m): m is Extract<EmittedMessage, { type: "SKIP_RESULT" }> => m.type === "SKIP_RESULT");
+  assert.ok(skip);
+  assert.equal(skip.stream, "shared_conversations");
+  assert.equal(skip.reason, "not_available");
+  assert.equal(messages.filter((m) => m.type === "STATE").length, 0);
 });

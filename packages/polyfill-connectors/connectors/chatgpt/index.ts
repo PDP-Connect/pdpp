@@ -359,7 +359,7 @@ export async function processConversationDetail(
 const PAGINATION_SAFETY_LIMIT = 5000;
 const GIZMO_MAX_PAGES = 50;
 
-async function runCustomGptsStream(deps: StreamDeps): Promise<void> {
+export async function runCustomGptsStream(deps: StreamDeps): Promise<void> {
   deps.emit({
     type: "PROGRESS",
     stream: "custom_gpts",
@@ -416,7 +416,7 @@ async function runCustomGptsStream(deps: StreamDeps): Promise<void> {
   }
 }
 
-async function runSharedConversationsStream(deps: StreamDeps): Promise<void> {
+export async function runSharedConversationsStream(deps: StreamDeps): Promise<void> {
   deps.emit({
     type: "PROGRESS",
     stream: "shared_conversations",
