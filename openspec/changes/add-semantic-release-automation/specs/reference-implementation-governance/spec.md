@@ -17,6 +17,12 @@ the default branch using Conventional Commits.
 - **THEN** CI SHALL complete without creating a GitHub release
 - **AND** CI SHALL NOT publish release image tags
 
+#### Scenario: A repository release version is published
+- **WHEN** semantic-release publishes a repository version
+- **THEN** that version SHALL NOT imply a new PDPP protocol version unless a
+  protocol-version change is explicitly included in the relevant protocol
+  artifacts
+
 ### Requirement: Release Docker images are published from the release workflow
 
 The repository SHALL publish stable public Docker image tags as part of the
@@ -59,35 +65,3 @@ Docker layers.
 - **WHEN** a maintainer runs the documented semantic-release dry run
 - **THEN** the command SHALL preview release calculation without publishing a
   GitHub release or Docker images
-## ADDED Requirements
-
-### Requirement: Release automation SHALL publish stable artifacts from one trusted workflow
-
-The repository SHALL define a single trusted release automation path that creates
-GitHub releases and publishes stable public Docker image tags from the same
-validated default-branch workflow.
-
-#### Scenario: A default-branch release is created
-- **WHEN** the release workflow determines that a new semantic version should be published
-- **THEN** it SHALL create the GitHub release and publish stable GHCR image tags from the same workflow run
-- **AND** the published image tags SHALL be traceable to the release version and source commit
-
-#### Scenario: A pull request validates Docker images
-- **WHEN** a pull request builds Docker images for validation
-- **THEN** it SHALL NOT publish stable release tags or create a GitHub release
-
-### Requirement: Release automation SHALL keep local data and protocol version semantics separate
-
-Release automation SHALL NOT package local owner data, local SQLite databases,
-environment secrets, model caches, or other operator-local state into public
-release artifacts. Repository package/release versions SHALL remain separate
-from PDPP protocol-version headers unless a protocol change explicitly updates
-the relevant protocol artifacts.
-
-#### Scenario: Release images are built
-- **WHEN** the reference AS/RS or web image is built for release
-- **THEN** the image SHALL exclude local `.env` files, SQLite data, cached models, and owner-specific runtime state
-
-#### Scenario: A semantic-release version is published
-- **WHEN** semantic-release publishes a package/repository version
-- **THEN** that version SHALL NOT imply a new PDPP protocol version unless a protocol-version change is explicitly included
