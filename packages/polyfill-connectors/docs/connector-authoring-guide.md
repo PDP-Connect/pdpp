@@ -309,6 +309,29 @@ pnpm exec tsx bin/scrub-fixtures.ts <connector>
 
 This applies the shared defaults in `src/scrub-defaults.ts` (emails, SSNs, credit-card-shaped digit runs, US phone numbers, labeled account numbers, deterministic street-address patterns, and labeled names) plus any connector-specific rules in `connectors/<connector>/scrub-rules.ts`. Output lands in `fixtures/<connector>/scrubbed/<runId>/`, which **is** committable after review.
 
+For free-form text that deterministic rules cannot classify safely, use an LLM or human reviewer to produce a structured redaction plan, then pass it to the scrubber:
+
+```bash
+pnpm exec tsx bin/scrub-fixtures.ts <connector> <runId> --llm-redactions-dir ./local-redactions/<connector>
+```
+
+The scrubber does not call a network API. It only consumes one reviewed plan file per raw fixture, named after the raw relative path with `.redactions.json` appended, for example `dom/orders-list.html.redactions.json`:
+
+```json
+{
+  "version": 1,
+  "redactions": [
+    {
+      "text": "Alice Example",
+      "replacement": "[REDACTED_NAME]",
+      "reason": "person name in delivery status"
+    }
+  ]
+}
+```
+
+This mode is fail-closed: every raw file must have a plan file, every replacement must be a `[REDACTED_*]` placeholder, and every target string must still exist after deterministic scrubbing. If any plan is missing, invalid, or stale, the run exits before writing that run's scrubbed output.
+
 **Connector-specific scrub rules**
 
 Create `connectors/<name>/scrub-rules.ts` exporting an array:
@@ -329,6 +352,8 @@ Scope is `'all'` (every file type), `'html'`, or `'json'`. Rules run in order; d
 Review the scrubbed tree by eye. The default rules are conservative but not exhaustive — for example, free-form notes, merchant names, unlabeled people names, and platform-specific IDs may not be caught by defaults. Add connector-specific rules for any pattern you find in review.
 
 Confirm the scrubbed fixture preserves parser-relevant structure before commit: selectors, object keys, stream names, timestamps that are safe to retain, and representative non-sensitive values should remain stable. Redact or replace all owner identifiers, free-form notes, account numbers, addresses, emails, phones, and platform IDs that can identify the owner. If review finds sensitive content the deterministic scrubber cannot safely classify, do not commit the fixture until a connector-specific rule or reviewed manual redaction covers it.
+
+When committing a pilot fixture, commit only `fixtures/<connector>/scrubbed/<runId>/...` and tests that consume it. Do not commit `fixtures/<connector>/raw/...` or local redaction-plan directories; keep those local unless a plan itself is synthetic and intentionally useful as test data.
 
 **Smoke-test the capture pipeline**
 

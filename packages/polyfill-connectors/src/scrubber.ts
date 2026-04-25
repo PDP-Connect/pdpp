@@ -12,10 +12,23 @@ export interface ScrubRule {
   scope: ScrubScope;
 }
 
+export interface StructuredRedaction {
+  reason: string;
+  replacement: string;
+  text: string;
+}
+
+export interface StructuredRedactionPlan {
+  redactions: StructuredRedaction[];
+  version: 1;
+}
+
 interface ConnectorScrubRuleModule {
   default?: unknown;
   scrubRules?: unknown;
 }
+
+const REDACTION_REPLACEMENT_RE = /^\[REDACTED_[A-Z0-9_]+\]$/;
 
 export function fileScopeOf(path: string): ScrubScope {
   const ext = extname(path).toLowerCase();
@@ -40,6 +53,34 @@ export function applyScrubRules(content: string, rules: readonly ScrubRule[], fi
       const replacement = rule.replacement;
       out = out.replace(rule.pattern, (substring: string, ...args: string[]) => replacement(substring, ...args));
     }
+  }
+  return out;
+}
+
+export function parseStructuredRedactionPlan(value: unknown): StructuredRedactionPlan {
+  if (!value || typeof value !== "object") {
+    throw new Error("redaction plan must be an object");
+  }
+  const candidate = value as { version?: unknown; redactions?: unknown };
+  if (candidate.version !== 1) {
+    throw new Error("redaction plan version must be 1");
+  }
+  if (!Array.isArray(candidate.redactions)) {
+    throw new Error("redaction plan redactions must be an array");
+  }
+  return {
+    version: 1,
+    redactions: candidate.redactions.map(parseStructuredRedaction),
+  };
+}
+
+export function applyStructuredRedactionPlan(content: string, plan: StructuredRedactionPlan): string {
+  let out = content;
+  for (const redaction of plan.redactions) {
+    if (!out.includes(redaction.text)) {
+      throw new Error(`redaction target not found: ${redaction.reason}`);
+    }
+    out = out.split(redaction.text).join(redaction.replacement);
   }
   return out;
 }
@@ -79,4 +120,25 @@ function isScrubRule(value: unknown): value is ScrubRule {
     (typeof candidate.replacement === "string" || typeof candidate.replacement === "function") &&
     (candidate.scope === "all" || candidate.scope === "html" || candidate.scope === "json")
   );
+}
+
+function parseStructuredRedaction(value: unknown, index: number): StructuredRedaction {
+  if (!value || typeof value !== "object") {
+    throw new Error(`redaction ${index} must be an object`);
+  }
+  const candidate = value as { text?: unknown; replacement?: unknown; reason?: unknown };
+  if (typeof candidate.text !== "string" || candidate.text.length === 0) {
+    throw new Error(`redaction ${index} text must be a non-empty string`);
+  }
+  if (typeof candidate.replacement !== "string" || !REDACTION_REPLACEMENT_RE.test(candidate.replacement)) {
+    throw new Error(`redaction ${index} replacement must be a [REDACTED_*] placeholder`);
+  }
+  if (typeof candidate.reason !== "string" || candidate.reason.length === 0) {
+    throw new Error(`redaction ${index} reason must be a non-empty string`);
+  }
+  return {
+    text: candidate.text,
+    replacement: candidate.replacement,
+    reason: candidate.reason,
+  };
 }

@@ -21,7 +21,10 @@ connectors/<name>/
 Captured live fixtures live at `fixtures/<name>/raw/` (gitignored).
 The scrubber (`bin/scrub-fixtures.ts`) produces
 `fixtures/<name>/scrubbed/` (not ignored). Commit scrubbed fixtures only
-after running the scrubber and reviewing the output by eye.
+after running the scrubber and reviewing the output by eye. For free-form
+text that regexes cannot safely classify, pass reviewed structured plans
+with `--llm-redactions-dir`; the scrubber validates those plans locally and
+fails closed without calling an API.
 
 ## The runConnector contract
 
@@ -189,10 +192,12 @@ See amazon for the full pattern.
 
 Set `PDPP_CAPTURE_FIXTURES=1` during a run to record DOM snapshots and
 emitted records under `fixtures/<name>/raw/<iso-timestamp>/`. Scrub
-them with `npx tsx bin/scrub-fixtures.ts <name>`. The default scrubber
-is regex-only (emails, phones, SSNs, cards); it's insufficient for
-real captures that contain addresses or merchant payloads. Until the
-LLM-based scrubber lands, captured fixtures stay local-only.
+them with `pnpm exec tsx bin/scrub-fixtures.ts <name>`. The default
+scrubber handles deterministic PII patterns and connector-specific rules.
+If a real capture includes free-form names, notes, profile text, or other
+semantic PII, generate and review structured redaction plans, then rerun
+with `--llm-redactions-dir <dir>`. Commit only reviewed scrubbed fixtures,
+never `raw/`.
 
 ## Why each of these exists
 

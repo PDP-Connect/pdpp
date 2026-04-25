@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 import {
   API_BASE,
   assigneeNames,
@@ -18,29 +21,26 @@ import {
   truncateBody,
   userRecord,
 } from "./parsers.ts";
-import type { GitHubGist, GitHubIssue, GitHubPullDetail, GitHubRepo } from "./types.ts";
+import type { GitHubGist, GitHubIssue, GitHubPullDetail, GitHubRepo, GitHubUser } from "./types.ts";
 
-// Synthetic fixtures — kept inline (rather than under __fixtures__/) so
-// Biome's pre-commit lint doesn't choke on non-TS files under connectors/.
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const SCRUBBED_FIXTURE_DIR = join(__dirname, "..", "..", "fixtures", "github", "scrubbed", "pilot-real-shape", "api");
 
-const USER_FIXTURE = {
-  id: 42,
-  login: "octocat",
-  name: "Octo Cat",
-  email: "octo@example.com",
-  bio: "the original",
-  company: "@github",
-  location: "earth",
-  blog: "https://example.com",
-  twitter_username: "octocat",
-  public_repos: 7,
-  public_gists: 2,
-  followers: 100,
-  following: 50,
-  created_at: "2020-01-01T00:00:00Z",
-  updated_at: "2026-01-01T00:00:00Z",
-  avatar_url: "https://example.com/a.png",
-};
+function readScrubbedUserFixture(): GitHubUser {
+  const parsed = JSON.parse(readFileSync(join(SCRUBBED_FIXTURE_DIR, "user.json"), "utf8")) as unknown;
+  if (!parsed || typeof parsed !== "object") {
+    throw new Error("expected GitHub user fixture object");
+  }
+  const candidate = parsed as Partial<GitHubUser>;
+  if (typeof candidate.id !== "number" || typeof candidate.login !== "string") {
+    throw new Error("expected GitHub user fixture id and login");
+  }
+  return {
+    ...candidate,
+    id: candidate.id,
+    login: candidate.login,
+  };
+}
 
 const REPO_FIXTURE: GitHubRepo = {
   id: 1001,
@@ -206,10 +206,11 @@ test("truncateBody: non-string → null", () => {
 // ─── userRecord ──────────────────────────────────────────────────────────
 
 test("userRecord: maps fixture fields with id stringified", () => {
-  const r = userRecord(USER_FIXTURE);
-  assert.equal(r.id, "42");
-  assert.equal(r.login, "octocat");
-  assert.equal(r.name, "Octo Cat");
+  const r = userRecord(readScrubbedUserFixture());
+  assert.equal(r.id, "424242");
+  assert.equal(r.login, "[REDACTED_LOGIN]");
+  assert.equal(r.name, "[REDACTED_NAME]");
+  assert.equal(r.email, "redacted@example.com");
   assert.equal(r.public_repos, 7);
 });
 

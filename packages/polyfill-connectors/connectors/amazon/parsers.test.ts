@@ -19,6 +19,7 @@ import type { DetailItem, ListPageOrder, OrderDetail } from "./types.ts";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const FIXTURE_DIR = join(__dirname, "__fixtures__");
 const LOCAL_RAW_DIR = join(__dirname, "..", "..", "fixtures", "amazon", "raw", "2026-04-23T00-13-01-167Z", "dom");
+const SCRUBBED_FIXTURE_DIR = join(__dirname, "..", "..", "fixtures", "amazon", "scrubbed", "pilot-real-shape", "dom");
 
 function readFixture(relPath: string): string {
   return readFileSync(join(FIXTURE_DIR, relPath), "utf8");
@@ -120,26 +121,26 @@ test("itemId: falls back to 'unknown' when both ASIN and name are absent/empty",
 
 // ─── parseOrdersListDom ──────────────────────────────────────────────────
 
-test("parseOrdersListDom: synthetic-minimal fixture extracts one full order", () => {
-  const html = readFixture("orders-list-minimal.html");
+test("parseOrdersListDom: scrubbed real-shape fixture extracts full orders", () => {
+  const html = readFileSync(join(SCRUBBED_FIXTURE_DIR, "orders-list-2026.html"), "utf8");
   const orders = parseOrdersListDom(html);
   assert.equal(orders.length, 1);
   const o = orders[0];
   assert.ok(o);
-  assert.equal(o.orderId, "111-2222222-3333333");
-  assert.equal(o.orderDateRaw, "January 15, 2024");
-  assert.equal(o.orderTotal, "$42.99");
-  assert.equal(o.deliveryStatus, "Delivered January 17");
+  assert.equal(o.orderId, "113-7654321-4567890");
+  assert.equal(o.orderDateRaw, "April 18, 2026");
+  assert.equal(o.orderTotal, "$86.42");
+  assert.equal(o.deliveryStatus, "Delivered April 20 to [REDACTED_NAME] at [REDACTED_ADDRESS]");
   assert.equal(o.items.length, 2);
   assert.deepEqual(o.items[0], {
-    name: "Synthetic Widget Model A",
-    url: "https://www.amazon.com/dp/B01ABCDEFG?ref=fake",
-    asin: "B01ABCDEFG",
+    name: "Noise Canceling Headphones",
+    url: "https://www.amazon.com/dp/B0REALSH1A?ref=ppx_yo_dt_b_product_details",
+    asin: "B0REALSH1A",
   });
   assert.deepEqual(o.items[1], {
-    name: "Synthetic Gadget Model B",
-    url: "https://www.amazon.com/gp/product/B02HIJKLMN?ref=fake",
-    asin: "B02HIJKLMN",
+    name: "USB-C Travel Charger",
+    url: "https://www.amazon.com/gp/product/B0REALSH2B?ref=ppx_yo_dt_b_product_details",
+    asin: "B0REALSH2B",
   });
 });
 

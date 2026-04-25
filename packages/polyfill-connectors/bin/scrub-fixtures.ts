@@ -4,7 +4,7 @@
  * Scrub captured fixtures for a connector.
  *
  * Usage:
- *   pnpm exec tsx bin/scrub-fixtures.ts <connector> [runId]
+ *   pnpm exec tsx bin/scrub-fixtures.ts <connector> [runId] [--llm-redactions-dir <dir>]
  *
  * Reads every file under `fixtures/<connector>/raw/<runId>/` (or all runIds
  * if none given), applies default scrub rules (src/scrub-defaults.ts) plus
@@ -17,17 +17,39 @@
  * Scrub rules are {pattern: RegExp, replacement: string, scope: 'all'|'html'|'json'}.
  * Connector rules are applied AFTER defaults so connector-specific patterns
  * can override broader defaults if needed.
+ * Optional LLM redaction plans live in a parallel directory. For each raw
+ * relative file path, provide `<rel>.redactions.json` containing:
+ * {"version":1,"redactions":[{"text":"Alice","replacement":"[REDACTED_NAME]","reason":"person"}]}
+ * Missing or invalid plans fail the run before any scrubbed output is written.
  *
  * Exit codes: 0 on success, 1 on error, 2 if no raw files found.
  */
 
 import { existsSync } from "node:fs";
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, join, relative } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { applyScrubRules, fileScopeOf, loadConnectorScrubRules, type ScrubRule } from "../src/scrubber.ts";
+import {
+  applyScrubRules,
+  applyStructuredRedactionPlan,
+  fileScopeOf,
+  loadConnectorScrubRules,
+  parseStructuredRedactionPlan,
+  type ScrubRule,
+} from "../src/scrubber.ts";
 
 const PACKAGE_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
+
+interface CliArgs {
+  connector: string;
+  llmRedactionsDir: string | null;
+  runId: string | undefined;
+}
+
+interface PendingWrite {
+  dst: string;
+  out: string;
+}
 
 async function walk(dir: string): Promise<string[]> {
   const out: string[] = [];
@@ -52,13 +74,55 @@ async function listRunIds(rawRoot: string, runIdArg: string | undefined): Promis
   return entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name);
 }
 
+function parseArgs(argv: readonly string[]): CliArgs | null {
+  const positional: string[] = [];
+  let llmRedactionsDir: string | null = null;
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === "--llm-redactions-dir") {
+      const value = argv[i + 1];
+      if (!value) {
+        return null;
+      }
+      llmRedactionsDir = resolve(process.cwd(), value);
+      i++;
+      continue;
+    }
+    if (arg?.startsWith("--")) {
+      return null;
+    }
+    if (arg) {
+      positional.push(arg);
+    }
+  }
+  const [connector, runId] = positional;
+  if (!(connector && positional.length <= 2)) {
+    return null;
+  }
+  return { connector, llmRedactionsDir, runId };
+}
+
+async function applyLlmPlan(content: string, rel: string, planRoot: string | null): Promise<string> {
+  if (!planRoot) {
+    return content;
+  }
+  const planPath = join(planRoot, `${rel}.redactions.json`);
+  if (!existsSync(planPath)) {
+    throw new Error(`missing LLM redaction plan for ${rel}: expected ${planPath}`);
+  }
+  const planJson = JSON.parse(await readFile(planPath, "utf8")) as unknown;
+  const plan = parseStructuredRedactionPlan(planJson);
+  return applyStructuredRedactionPlan(content, plan);
+}
+
 async function main(): Promise<void> {
-  const [, , connector, runIdArg] = process.argv;
-  if (!connector) {
-    console.error("Usage: pnpm exec tsx bin/scrub-fixtures.ts <connector> [runId]");
+  const args = parseArgs(process.argv.slice(2));
+  if (!args) {
+    console.error("Usage: pnpm exec tsx bin/scrub-fixtures.ts <connector> [runId] [--llm-redactions-dir <dir>]");
     process.exit(1);
   }
 
+  const { connector, llmRedactionsDir, runId: runIdArg } = args;
   const rawRoot = join(PACKAGE_ROOT, "fixtures", connector, "raw");
   const scrubbedRoot = join(PACKAGE_ROOT, "fixtures", connector, "scrubbed");
 
@@ -79,6 +143,9 @@ async function main(): Promise<void> {
   console.log(
     `Scrubbing ${connector} with ${defaultScrubRules.length} default + ${connectorRules.length} connector-specific rules`
   );
+  if (llmRedactionsDir) {
+    console.log(`Using fail-closed LLM redaction plans from ${llmRedactionsDir}`);
+  }
 
   for (const runId of runIds) {
     const rawDir = join(rawRoot, runId);
@@ -89,17 +156,21 @@ async function main(): Promise<void> {
     }
 
     console.log(`\n${runId}: ${files.length} files`);
-    let scrubbed = 0;
+    const pendingWrites: PendingWrite[] = [];
     for (const src of files) {
       const rel = relative(rawDir, src);
       const dst = join(outDir, rel);
-      await mkdir(dirname(dst), { recursive: true });
       const raw = await readFile(src, "utf8");
-      const out = applyScrubRules(raw, allRules, fileScopeOf(src));
-      await writeFile(dst, out);
-      scrubbed++;
+      const deterministicOut = applyScrubRules(raw, allRules, fileScopeOf(src));
+      const out = await applyLlmPlan(deterministicOut, rel, llmRedactionsDir);
+      pendingWrites.push({ dst, out });
     }
-    console.log(`  wrote ${scrubbed} scrubbed files to ${relative(PACKAGE_ROOT, outDir)}`);
+
+    for (const pending of pendingWrites) {
+      await mkdir(dirname(pending.dst), { recursive: true });
+      await writeFile(pending.dst, pending.out);
+    }
+    console.log(`  wrote ${pendingWrites.length} scrubbed files to ${relative(PACKAGE_ROOT, outDir)}`);
   }
 
   console.log("\nDone. Review the scrubbed/ tree before committing.");
