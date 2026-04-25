@@ -1420,6 +1420,316 @@ test('gmail message expansion rejects missing child grant and reverse thread rel
   });
 });
 
+function readSlackManifest() {
+  return JSON.parse(readFileSync(join(POLYFILL_MANIFESTS_DIR, 'slack.json'), 'utf8'));
+}
+
+async function seedSlackStream(rsUrl, ownerToken, connectorId, stream, records) {
+  const lines = records.map((record) => JSON.stringify({
+    key: record.id,
+    data: record,
+    emitted_at: record.emitted_at || record.sent_at || '2026-04-01T00:00:00Z',
+  })).join('\n');
+  const resp = await fetch(`${rsUrl}/v1/ingest/${encodeURIComponent(stream)}?connector_id=${encodeURIComponent(connectorId)}`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${ownerToken}`,
+      'Content-Type': 'application/x-ndjson',
+    },
+    body: lines,
+  });
+  assert.equal(resp.status, 200, `ingest slack ${stream} ok`);
+}
+
+async function seedSlackExpansionFixture(rsUrl, ownerToken, connectorId) {
+  await seedSlackStream(rsUrl, ownerToken, connectorId, 'messages', [
+    {
+      id: 'C1:1700000001.000100',
+      channel_id: 'C1',
+      user_id: 'U1',
+      ts: '1700000001.000100',
+      sent_at: '2026-04-01T10:00:00Z',
+      thread_ts: null,
+      is_thread_parent: false,
+      reply_count: 0,
+      latest_reply: null,
+      subtype: null,
+      is_tombstone: false,
+      text: 'Have you seen this article?',
+      has_attachments: true,
+      attachment_count: 2,
+      reaction_count: 3,
+    },
+    {
+      id: 'C1:1700000002.000200',
+      channel_id: 'C1',
+      user_id: 'U2',
+      ts: '1700000002.000200',
+      sent_at: '2026-04-02T10:00:00Z',
+      thread_ts: null,
+      is_thread_parent: false,
+      reply_count: 0,
+      subtype: null,
+      is_tombstone: false,
+      text: 'No attachments here',
+      has_attachments: false,
+      attachment_count: 0,
+      reaction_count: 0,
+    },
+  ]);
+  await seedSlackStream(rsUrl, ownerToken, connectorId, 'message_attachments', [
+    {
+      id: 'C1:1700000001.000100:0',
+      message_id: 'C1:1700000001.000100',
+      channel_id: 'C1',
+      index: 0,
+      fallback: 'Example dot com',
+      service_name: 'example.com',
+      title: 'Example article',
+      title_link: 'https://example.com/post',
+      text: 'Lede paragraph',
+      from_url: 'https://example.com/post',
+    },
+    {
+      id: 'C1:1700000001.000100:1',
+      message_id: 'C1:1700000001.000100',
+      channel_id: 'C1',
+      index: 1,
+      fallback: 'Doc preview',
+      service_name: 'docs.example.com',
+      title: 'Internal doc',
+      title_link: 'https://docs.example.com/d/abc',
+    },
+    {
+      id: 'C1:1700000001.000100:2',
+      message_id: 'C1:1700000001.000100',
+      channel_id: 'C1',
+      index: 2,
+      fallback: 'Third unfurl',
+      service_name: 'third.example.com',
+      title: 'Third unfurl',
+    },
+  ]);
+  await seedSlackStream(rsUrl, ownerToken, connectorId, 'reactions', [
+    {
+      id: 'C1:1700000001.000100:tada:U1',
+      message_id: 'C1:1700000001.000100',
+      channel_id: 'C1',
+      user_id: 'U1',
+      emoji: 'tada',
+    },
+    {
+      id: 'C1:1700000001.000100:tada:U2',
+      message_id: 'C1:1700000001.000100',
+      channel_id: 'C1',
+      user_id: 'U2',
+      emoji: 'tada',
+    },
+    {
+      id: 'C1:1700000001.000100:eyes:U2',
+      message_id: 'C1:1700000001.000100',
+      channel_id: 'C1',
+      user_id: 'U2',
+      emoji: 'eyes',
+    },
+  ]);
+}
+
+test('first-party manifests declare only parent-to-child query.expand entries with FK on child', () => {
+  const manifestNames = ['gmail', 'slack'];
+  for (const manifestName of manifestNames) {
+    const manifest = JSON.parse(readFileSync(join(POLYFILL_MANIFESTS_DIR, `${manifestName}.json`), 'utf8'));
+    const streamsByName = new Map(manifest.streams.map((stream) => [stream.name, stream]));
+    for (const stream of manifest.streams) {
+      const declared = stream.query?.expand || [];
+      for (const capability of declared) {
+        const relationship = (stream.relationships || []).find((entry) => entry.name === capability.name);
+        assert.ok(
+          relationship,
+          `${manifestName}.${stream.name} expand '${capability.name}' must match a same-stream relationship`,
+        );
+        const child = streamsByName.get(relationship.stream);
+        assert.ok(child, `${manifestName}.${stream.name} expand '${capability.name}' targets unknown stream`);
+        assert.ok(
+          Object.prototype.hasOwnProperty.call(child.schema?.properties || {}, relationship.foreign_key),
+          `${manifestName}.${stream.name} expand '${capability.name}' fk must be top-level on child`,
+        );
+        assert.ok(
+          (child.schema?.required || []).includes(relationship.foreign_key),
+          `${manifestName}.${stream.name} expand '${capability.name}' fk should be required on child to avoid silent drops`,
+        );
+        assert.ok(
+          ['has_one', 'has_many'].includes(relationship.cardinality),
+          `${manifestName}.${stream.name} expand '${capability.name}' must declare has_one or has_many cardinality`,
+        );
+        if (relationship.cardinality === 'has_many') {
+          assert.ok(
+            Number.isInteger(capability.default_limit) && capability.default_limit > 0,
+            `${manifestName}.${stream.name} expand '${capability.name}' has_many requires a positive default_limit`,
+          );
+          assert.ok(
+            Number.isInteger(capability.max_limit) && capability.max_limit >= capability.default_limit,
+            `${manifestName}.${stream.name} expand '${capability.name}' has_many requires max_limit >= default_limit`,
+          );
+        }
+      }
+    }
+  }
+});
+
+test('slack messages expand message_attachments and reactions on list and detail reads', async () => {
+  await withHarness(async ({ asUrl, rsUrl }) => {
+    const ownerToken = await issueOwnerToken(asUrl, 'slack_expand_owner');
+    const slackManifest = readSlackManifest();
+    const connectorId = slackManifest.connector_id;
+    const reg = await registerConnectorManifest(asUrl, slackManifest);
+    assert.equal(reg.status, 201, 'register slack manifest');
+    await seedSlackExpansionFixture(rsUrl, ownerToken, connectorId);
+
+    const metadata = await fetchJson(
+      `${rsUrl}/v1/streams/messages?connector_id=${encodeURIComponent(connectorId)}`,
+      { headers: { Authorization: `Bearer ${ownerToken}` } },
+    );
+    assert.equal(metadata.status, 200);
+    assert.deepEqual(
+      metadata.body.query.expand.map((entry) => entry.name).sort(),
+      ['message_attachments', 'reactions'],
+    );
+
+    const approved = await approveGrant(asUrl, 'slack_expand_owner', {
+      client_id: 'longview',
+      connector_id: connectorId,
+      purpose_code: 'https://pdpp.org/purpose/personalization',
+      purpose_description: 'Read Slack messages with link previews and reactions',
+      access_mode: 'continuous',
+      streams: [
+        { name: 'messages', fields: ['id', 'channel_id', 'sent_at', 'text'] },
+        { name: 'message_attachments', fields: ['id', 'message_id', 'service_name', 'title'] },
+        { name: 'reactions', fields: ['id', 'message_id', 'emoji', 'user_id'] },
+      ],
+    });
+
+    const list = await fetchJson(
+      `${rsUrl}/v1/streams/messages/records?connector_id=${encodeURIComponent(connectorId)}&order=asc&expand=message_attachments&expand=reactions`,
+      { headers: { Authorization: `Bearer ${approved.token}` } },
+    );
+    assert.equal(list.status, 200);
+    assert.equal(list.body.data.length, 2);
+
+    const messageWithChildren = list.body.data.find((record) => record.id === 'C1:1700000001.000100');
+    assert.ok(messageWithChildren?.expanded?.message_attachments);
+    assert.equal(messageWithChildren.expanded.message_attachments.object, 'list');
+    assert.equal(messageWithChildren.expanded.message_attachments.has_more, false);
+    assert.deepEqual(
+      messageWithChildren.expanded.message_attachments.data.map((entry) => entry.id).sort(),
+      [
+        'C1:1700000001.000100:0',
+        'C1:1700000001.000100:1',
+        'C1:1700000001.000100:2',
+      ],
+    );
+    assert.deepEqual(
+      Object.keys(messageWithChildren.expanded.message_attachments.data[0].data || {}).sort(),
+      ['channel_id', 'id', 'index', 'message_id', 'service_name', 'title'],
+    );
+
+    assert.ok(messageWithChildren.expanded.reactions);
+    assert.equal(messageWithChildren.expanded.reactions.object, 'list');
+    assert.equal(messageWithChildren.expanded.reactions.data.length, 3);
+    assert.deepEqual(
+      Object.keys(messageWithChildren.expanded.reactions.data[0].data || {}).sort(),
+      ['channel_id', 'emoji', 'id', 'message_id', 'user_id'],
+    );
+
+    const messageWithoutChildren = list.body.data.find((record) => record.id === 'C1:1700000002.000200');
+    assert.deepEqual(messageWithoutChildren.expanded.message_attachments.data, []);
+    assert.deepEqual(messageWithoutChildren.expanded.reactions.data, []);
+
+    const detail = await fetchJson(
+      `${rsUrl}/v1/streams/messages/records/${encodeURIComponent('C1:1700000001.000100')}?connector_id=${encodeURIComponent(connectorId)}&expand=message_attachments`,
+      { headers: { Authorization: `Bearer ${approved.token}` } },
+    );
+    assert.equal(detail.status, 200);
+    assert.equal(detail.body.expanded.message_attachments.data.length, 3);
+  });
+});
+
+test('slack messages expand_limit caps message_attachments and reactions independently', async () => {
+  await withHarness(async ({ asUrl, rsUrl }) => {
+    const ownerToken = await issueOwnerToken(asUrl, 'slack_expand_limit_owner');
+    const slackManifest = readSlackManifest();
+    const connectorId = slackManifest.connector_id;
+    const reg = await registerConnectorManifest(asUrl, slackManifest);
+    assert.equal(reg.status, 201, 'register slack manifest');
+    await seedSlackExpansionFixture(rsUrl, ownerToken, connectorId);
+
+    const approved = await approveGrant(asUrl, 'slack_expand_limit_owner', {
+      client_id: 'longview',
+      connector_id: connectorId,
+      purpose_code: 'https://pdpp.org/purpose/personalization',
+      purpose_description: 'Read Slack messages with capped child fan-out',
+      access_mode: 'continuous',
+      streams: [
+        { name: 'messages', fields: ['id', 'channel_id', 'sent_at'] },
+        { name: 'message_attachments', fields: ['id', 'message_id', 'title'] },
+        { name: 'reactions', fields: ['id', 'message_id', 'emoji'] },
+      ],
+    });
+
+    const { status, body } = await fetchJson(
+      `${rsUrl}/v1/streams/messages/records?connector_id=${encodeURIComponent(connectorId)}&order=asc&expand=message_attachments&expand=reactions&expand_limit[message_attachments]=2&expand_limit[reactions]=1`,
+      { headers: { Authorization: `Bearer ${approved.token}` } },
+    );
+    assert.equal(status, 200);
+    const message = body.data.find((record) => record.id === 'C1:1700000001.000100');
+    assert.equal(message.expanded.message_attachments.has_more, true);
+    assert.equal(message.expanded.message_attachments.data.length, 2);
+    assert.equal(message.expanded.reactions.has_more, true);
+    assert.equal(message.expanded.reactions.data.length, 1);
+
+    const overMax = await fetchJson(
+      `${rsUrl}/v1/streams/messages/records?connector_id=${encodeURIComponent(connectorId)}&expand=reactions&expand_limit[reactions]=999`,
+      { headers: { Authorization: `Bearer ${approved.token}` } },
+    );
+    assert.equal(overMax.status, 400);
+    assert.equal(overMax.body.error.code, 'invalid_expand');
+  });
+});
+
+test('slack message expansion rejects requests missing the child grant', async () => {
+  await withHarness(async ({ asUrl, rsUrl }) => {
+    const ownerToken = await issueOwnerToken(asUrl, 'slack_expand_reject_owner');
+    const slackManifest = readSlackManifest();
+    const connectorId = slackManifest.connector_id;
+    const reg = await registerConnectorManifest(asUrl, slackManifest);
+    assert.equal(reg.status, 201, 'register slack manifest');
+    await seedSlackExpansionFixture(rsUrl, ownerToken, connectorId);
+
+    const approved = await approveGrant(asUrl, 'slack_expand_reject_owner', {
+      client_id: 'longview',
+      connector_id: connectorId,
+      purpose_code: 'https://pdpp.org/purpose/personalization',
+      purpose_description: 'Read Slack messages only',
+      access_mode: 'continuous',
+      streams: [{ name: 'messages', fields: ['id', 'channel_id', 'sent_at'] }],
+    });
+
+    const missingAttachments = await fetchJson(
+      `${rsUrl}/v1/streams/messages/records?connector_id=${encodeURIComponent(connectorId)}&expand=message_attachments`,
+      { headers: { Authorization: `Bearer ${approved.token}` } },
+    );
+    assert.equal(missingAttachments.status, 403);
+    assert.equal(missingAttachments.body.error.code, 'insufficient_scope');
+
+    const reverseChannel = await fetchJson(
+      `${rsUrl}/v1/streams/messages/records?connector_id=${encodeURIComponent(connectorId)}&expand=channel`,
+      { headers: { Authorization: `Bearer ${approved.token}` } },
+    );
+    assert.equal(reverseChannel.status, 400);
+    assert.equal(reverseChannel.body.error.code, 'invalid_expand');
+  });
+});
+
 test('connector manifest validation rejects unsafe query.expand declarations', async () => {
   await withHarness(async ({ asUrl, spotifyManifest }) => {
     const missingRelationship = cloneJson(spotifyManifest);
