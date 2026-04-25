@@ -146,6 +146,7 @@ const LOCAL_EMBEDDING_PROFILES = {
 
 const DISTANCE_METRICS = new Set(['cosine', 'dot', 'l2']);
 const EMBEDDING_BACKEND_ENV = 'PDPP_SEMANTIC_EMBEDDING_BACKEND';
+export const DEFAULT_SEMANTIC_EMBEDDING_INPUT_MAX_CHARS = 2048;
 const DEFAULT_TRANSFORMERS_CACHE_DIR = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   '..',
@@ -231,6 +232,12 @@ function normalizeEmbeddingVector(output, expectedDimensions) {
     throw new Error(`embedding backend returned ${vec.length} dimensions; expected ${expectedDimensions}`);
   }
   return vec;
+}
+
+function normalizeSemanticEmbeddingInput(value) {
+  if (typeof value !== 'string' || value.length === 0) return null;
+  if (value.length <= DEFAULT_SEMANTIC_EMBEDDING_INPUT_MAX_CHARS) return value;
+  return value.slice(0, DEFAULT_SEMANTIC_EMBEDDING_INPUT_MAX_CHARS);
 }
 
 /**
@@ -778,23 +785,27 @@ export async function semanticIndexUpsert({ connectorId, stream, recordKey, data
   if (!declared) return;
   const index = ensureVectorIndex();
   if (!index) return;
+  const entries = [];
   for (const field of declared) {
-    const value = data?.[field];
-    if (typeof value !== 'string' || value.length === 0) {
-      // Remove any stale embedding for this field if the new value is empty.
-      await index.deleteByConnectorScope({
-        connectorId,
-        scopeKey: encodeScopeKey(stream, field),
-      });
-      continue;
-    }
-    const vector = await backend.embedDocument(value);
-    await index.upsert({
+    const text = normalizeSemanticEmbeddingInput(data?.[field]);
+    if (!text) continue;
+    const vector = await backend.embedDocument(text);
+    entries.push({
       connectorId,
       scopeKey: encodeScopeKey(stream, field),
       recordKey,
       vector,
     });
+  }
+  // Delete only this logical record's stale vectors after embeddings succeed.
+  // Deleting by scope here would wipe every row for the field.
+  await index.deleteRecord({ connectorId, stream, recordKey });
+  if (entries.length > 0 && typeof index.upsertMany === 'function') {
+    await index.upsertMany(entries);
+    return;
+  }
+  for (const entry of entries) {
+    await index.upsert(entry);
   }
 }
 
@@ -903,13 +914,13 @@ async function rebuildSemanticIndexForStream({
         continue;
       }
       for (const field of declaredFields) {
-        const value = data?.[field];
-        if (typeof value !== 'string' || value.length === 0) continue;
+        const text = normalizeSemanticEmbeddingInput(data?.[field]);
+        if (!text) continue;
         const scopeKey = encodeScopeKey(stream, field);
         if (existingKeys?.has(encodeVectorPairKey(scopeKey, row.record_key))) {
           continue;
         }
-        const vector = await backend.embedDocument(value);
+        const vector = await backend.embedDocument(text);
         entries.push({
           connectorId,
           scopeKey,
@@ -970,7 +981,10 @@ function deleteBackfillProgress(db, { connectorId, stream }) {
  *   2. model_id / dimensions / distance_metric mismatch (backend identity).
  *      Any change invalidates every row — the stored vectors were produced
  *      by a different model.
- *   3. Row-count band for streams whose fingerprint already matches.
+ *   3. Row-count guard for streams whose fingerprint already matches.
+ *      A zero index is rebuilt only when records actually contain non-empty
+ *      declared text; non-zero in-band counts are left alone to avoid
+ *      destructive full-stream rebuilds from benign count skew.
  *
  * Streams that previously participated but no longer declare semantic_fields
  * have their stale index rows + meta dropped. Same pattern as lexical.
@@ -1075,11 +1089,14 @@ export async function semanticIndexBackfillForManifest({ manifest, log = () => {
       || Number(metaRow.dimensions) !== currentDims
       || metaRow.distance_metric !== currentMetric;
 
-    let needsRebuild = fingerprintChanged || backendChanged;
-    let canResume = needsRebuild && progressMatches;
+    let needsRebuild = fingerprintChanged || backendChanged || progressMatches;
+    let canResume = progressMatches;
 
     if (!needsRebuild) {
-      // Row-count band check.
+      // Row-count guard. Exact semantic counts are expensive and brittle for
+      // large local stores; use exact expected rows only to distinguish
+      // "empty because no indexable text exists" from "empty because the index
+      // was never built". Non-zero in-band counts are treated as usable.
       const recordCountRow = db.prepare(`
         SELECT COUNT(*) AS n
         FROM records
@@ -1092,13 +1109,18 @@ export async function semanticIndexBackfillForManifest({ manifest, log = () => {
       for (const field of declaredFields) {
         indexCount += index.countByConnectorScope(connectorId, encodeScopeKey(stream, field));
       }
-      const expectedIndexRows = countIndexableSemanticValues({ db, connectorId, stream, declaredFields });
-      const inSync = indexCount === expectedIndexRows;
+      const maxIndexRows = recordCount * declaredFields.length;
+      const expectedIndexRows = indexCount === 0 || indexCount > maxIndexRows
+        ? countIndexableSemanticValues({ db, connectorId, stream, declaredFields })
+        : null;
+      const inSync = indexCount > 0
+        ? indexCount <= maxIndexRows
+        : expectedIndexRows === 0;
       needsRebuild = !inSync;
       if (needsRebuild) {
         canResume = false;
         log(`[PDPP] Semantic index drift for ${connectorId} stream='${stream}' ` +
-            `(records=${recordCount}, index=${indexCount}, expected=${expectedIndexRows}) — rebuilding`);
+            `(records=${recordCount}, index=${indexCount}, expected=${expectedIndexRows ?? 'not_checked'}, max=${maxIndexRows}) — rebuilding`);
       } else if (progressRow) {
         deleteBackfillProgress(db, { connectorId, stream });
       }
@@ -1652,7 +1674,7 @@ export async function runSemanticSearch({
  * says semantic on any hits that do come back.
  */
 async function buildSemanticSnapshot({ q, perConnectorPlans, isOwner }) {
-  const queryVector = await backend.embedQuery(q);
+  const queryVector = await backend.embedQuery(normalizeSemanticEmbeddingInput(q) ?? '');
   const index = ensureVectorIndex();
 
   // Configurable KNN overscan — we fetch more per connector than the final

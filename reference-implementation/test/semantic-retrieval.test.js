@@ -45,9 +45,11 @@ import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 import {
+  DEFAULT_SEMANTIC_EMBEDDING_INPUT_MAX_CHARS,
   makeStubBackend,
   parseSemanticSearchParams,
   resolveSemanticBackendFromEnv,
+  semanticIndexDelete,
 } from '../server/search-semantic.js';
 import { startServer } from '../server/index.js';
 import { getDb } from '../server/db.js';
@@ -991,6 +993,25 @@ function makeDocumentCountingBackend() {
   };
 }
 
+function makeEmbeddingInputCapturingBackend() {
+  const base = makeStubBackend();
+  const documentInputs = [];
+  const queryInputs = [];
+  return {
+    ...base,
+    embedDocument: async (text) => {
+      documentInputs.push(text);
+      return base.embedDocument(text);
+    },
+    embedQuery: async (text) => {
+      queryInputs.push(text);
+      return base.embedQuery(text);
+    },
+    documentInputs: () => documentInputs.slice(),
+    queryInputs: () => queryInputs.slice(),
+  };
+}
+
 function countPersistedSemanticVectors() {
   const db = getDb();
   const table = db.vectorIndexKind === 'sqlite-vec'
@@ -1134,6 +1155,199 @@ test('restart regression: streams with only empty semantic field values do not r
           'restart drift check should treat zero indexable semantic values as in sync',
         );
         assert.equal(countPersistedSemanticVectors(), 0, 'restart should not fabricate vectors for empty fields');
+      } finally {
+        await closeServer(server);
+      }
+    }
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('semantic indexing caps oversized text before embedding', async () => {
+  const capturingBackend = makeEmbeddingInputCapturingBackend();
+  await withHarness({ semanticRetrievalBackend: capturingBackend }, async ({ asUrl, rsUrl }) => {
+    const reg = await fetch(`${asUrl}/connectors`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(MANIFEST_A),
+    });
+    assert.equal(reg.status, 201);
+
+    const longText = `oversized semantic input ${'x'.repeat(DEFAULT_SEMANTIC_EMBEDDING_INPUT_MAX_CHARS + 200)}`;
+    const ownerToken = await issueOwnerToken(asUrl);
+    await ingest(rsUrl, ownerToken, MANIFEST_A.connector_id, 'posts', [
+      { id: 'long-semantic-1', title: longText, selftext: '', source_created_at: '2026-04-01T00:00:00Z' },
+    ]);
+
+    assert.ok(
+      capturingBackend.documentInputs().some((text) => text.length === DEFAULT_SEMANTIC_EMBEDDING_INPUT_MAX_CHARS),
+      'document embedding receives a capped input',
+    );
+    assert.ok(
+      capturingBackend.documentInputs().every((text) => text.length <= DEFAULT_SEMANTIC_EMBEDDING_INPUT_MAX_CHARS),
+      'no document embedding receives the full oversized field',
+    );
+
+    const { status, body } = await fetchJson(
+      `${rsUrl}/v1/search/semantic?q=${encodeURIComponent(longText)}`,
+      { headers: { Authorization: `Bearer ${ownerToken}` } },
+    );
+    assert.equal(status, 200);
+    assert.ok(body.data.some((hit) => hit.record_key === 'long-semantic-1'));
+    assert.ok(
+      capturingBackend.queryInputs().every((text) => text.length <= DEFAULT_SEMANTIC_EMBEDDING_INPUT_MAX_CHARS),
+      'query embedding is capped with the same limit',
+    );
+  });
+});
+
+test('semantic upsert with an empty field deletes only that record, not the whole scope', async () => {
+  await withHarness({}, async ({ asUrl, rsUrl }) => {
+    const reg = await fetch(`${asUrl}/connectors`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(MANIFEST_A),
+    });
+    assert.equal(reg.status, 201);
+    const ownerToken = await issueOwnerToken(asUrl);
+    await ingest(rsUrl, ownerToken, MANIFEST_A.connector_id, 'posts', [
+      {
+        id: 'empty-upsert-1',
+        title: 'first semantic survivor',
+        selftext: '',
+        source_created_at: '2026-04-01T00:00:00Z',
+      },
+      {
+        id: 'empty-upsert-2',
+        title: 'second semantic survivor',
+        selftext: '',
+        source_created_at: '2026-04-01T00:00:00Z',
+      },
+    ]);
+    assert.equal(countPersistedSemanticVectors(), 2, 'initial ingest writes one vector per non-empty title');
+
+    await ingest(rsUrl, ownerToken, MANIFEST_A.connector_id, 'posts', [
+      { id: 'empty-upsert-1', title: '', selftext: '', source_created_at: '2026-04-01T00:00:00Z' },
+    ]);
+    assert.equal(
+      countPersistedSemanticVectors(),
+      1,
+      'empty update removes only the updated record vector',
+    );
+
+    const { status, body } = await fetchJson(
+      `${rsUrl}/v1/search/semantic?q=${encodeURIComponent('second semantic survivor')}`,
+      { headers: { Authorization: `Bearer ${ownerToken}` } },
+    );
+    assert.equal(status, 200);
+    assert.ok(body.data.some((hit) => hit.record_key === 'empty-upsert-2'));
+    assert.equal(
+      body.data.some((hit) => hit.record_key === 'empty-upsert-1'),
+      false,
+      'the emptied record no longer contributes semantic hits',
+    );
+  });
+});
+
+test('interrupted semantic backfill with existing meta resumes instead of rebuilding from scratch', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pdpp-semantic-meta-resume-'));
+  const dbPath = path.join(tmpDir, 'pdpp.sqlite');
+  try {
+    {
+      const server = await startServer({
+        quiet: true,
+        asPort: 0,
+        rsPort: 0,
+        dbPath,
+        dynamicClientRegistrationInitialAccessTokens: [TEST_DCR_INITIAL_ACCESS_TOKEN],
+      });
+      try {
+        const asUrl = `http://localhost:${server.asPort}`;
+        const rsUrl = `http://localhost:${server.rsPort}`;
+        const reg = await fetch(`${asUrl}/connectors`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(MANIFEST_A),
+        });
+        assert.equal(reg.status, 201);
+        const ownerToken = await issueOwnerToken(asUrl);
+        await ingest(rsUrl, ownerToken, MANIFEST_A.connector_id, 'posts', [
+          {
+            id: 'meta-resume-1',
+            title: 'meta resume one',
+            selftext: '',
+            source_created_at: '2026-04-01T00:00:00Z',
+          },
+          {
+            id: 'meta-resume-2',
+            title: 'meta resume two',
+            selftext: '',
+            source_created_at: '2026-04-01T00:00:00Z',
+          },
+          {
+            id: 'meta-resume-3',
+            title: 'meta resume three',
+            selftext: '',
+            source_created_at: '2026-04-01T00:00:00Z',
+          },
+        ]);
+        assert.equal(countPersistedSemanticVectors(), 3, 'initial write path indexes all records');
+
+        await semanticIndexDelete({
+          connectorId: MANIFEST_A.connector_id,
+          stream: 'posts',
+          recordKey: 'meta-resume-2',
+        });
+        assert.equal(countPersistedSemanticVectors(), 2, 'one vector is missing before simulated restart');
+
+        const db = getDb();
+        const meta = db.prepare(`
+          SELECT fields_fingerprint, model_id, dimensions, distance_metric
+          FROM semantic_search_meta
+          WHERE connector_id = ? AND stream = 'posts'
+        `).get(MANIFEST_A.connector_id);
+        assert.ok(meta, 'completed meta exists before simulated interrupted resume');
+        db.prepare(`
+          INSERT INTO semantic_search_backfill_progress(connector_id, stream, fields_fingerprint, model_id, dimensions, distance_metric, updated_at)
+          VALUES(?, 'posts', ?, ?, ?, ?, ?)
+        `).run(
+          MANIFEST_A.connector_id,
+          meta.fields_fingerprint,
+          meta.model_id,
+          meta.dimensions,
+          meta.distance_metric,
+          new Date().toISOString(),
+        );
+      } finally {
+        await closeServer(server);
+      }
+    }
+
+    {
+      const countingBackend = makeDocumentCountingBackend();
+      const server = await startServer({
+        quiet: true,
+        asPort: 0,
+        rsPort: 0,
+        dbPath,
+        dynamicClientRegistrationInitialAccessTokens: [TEST_DCR_INITIAL_ACCESS_TOKEN],
+        semanticRetrievalBackend: countingBackend,
+      });
+      try {
+        await server.startupBackfillDone;
+        assert.equal(
+          countingBackend.documentEmbeds(),
+          1,
+          'matching progress row should resume the missing vector instead of deleting and rebuilding all rows',
+        );
+        assert.equal(countPersistedSemanticVectors(), 3, 'resume restores the missing vector');
+        const db = getDb();
+        assert.equal(
+          db.prepare('SELECT COUNT(*) AS n FROM semantic_search_backfill_progress').get().n,
+          0,
+          'progress row is cleared after resume completes',
+        );
       } finally {
         await closeServer(server);
       }
