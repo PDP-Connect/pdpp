@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { dirname, join } from 'node:path';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 import { startServer } from '../server/index.js';
@@ -11,23 +11,23 @@ const REPO_ROOT = join(__dirname, '..', '..');
 const POLYFILL_MANIFEST_DIR = join(REPO_ROOT, 'packages/polyfill-connectors/manifests');
 const TEST_DCR_INITIAL_ACCESS_TOKEN = 'pdpp-reference-test-initial-access-token';
 const SUPPORTED_RANGE_OPERATORS = new Set(['gte', 'gt', 'lte', 'lt']);
-const RANGE_FILTERED_CONNECTORS = [
-  'gmail',
-  'slack',
-  'github',
-  'ynab',
-  'chatgpt',
-  'codex',
-  'claude_code',
-  'chase',
-  'usaa',
-  'amazon',
-];
 const AGGREGATION_DECLARED_CONNECTORS = ['ynab', 'chase', 'usaa', 'gmail', 'slack'];
+const POLYFILL_MANIFEST_NAMES = readdirSync(POLYFILL_MANIFEST_DIR)
+  .filter((fileName) => fileName.endsWith('.json'))
+  .map((fileName) => fileName.replace(/\.json$/, ''))
+  .sort();
 
 function readManifest(name) {
   return JSON.parse(readFileSync(join(POLYFILL_MANIFEST_DIR, `${name}.json`), 'utf8'));
 }
+
+function hasQueryRangeFilters(manifest) {
+  return manifest.streams.some((stream) => Object.keys(stream.query?.range_filters || {}).length > 0);
+}
+
+const RANGE_FILTERED_CONNECTORS = POLYFILL_MANIFEST_NAMES.filter((manifestName) =>
+  hasQueryRangeFilters(readManifest(manifestName)),
+);
 
 function nonNullSchemaTypes(schema) {
   const raw = schema?.type;
@@ -266,6 +266,18 @@ const rangeQueryCases = [
       { id: 'amazon_new', order_date: '2026-01-03', order_total_cents: 9000 },
     ],
     expectedIds: ['amazon_hit', 'amazon_new'],
+  },
+  {
+    manifestName: 'reddit',
+    stream: 'submitted',
+    field: 'score',
+    threshold: '10',
+    records: [
+      { id: 'reddit_old', created_utc: '2026-01-01T00:00:00Z', score: 1 },
+      { id: 'reddit_hit', created_utc: '2026-01-02T00:00:00Z', score: 10 },
+      { id: 'reddit_new', created_utc: '2026-01-03T00:00:00Z', score: 25 },
+    ],
+    expectedIds: ['reddit_hit', 'reddit_new'],
   },
 ];
 
