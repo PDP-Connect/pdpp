@@ -10,6 +10,19 @@ does not replace `AGENTS.md` or OpenSpec:
 
 ## Roles
 
+## Delegation Backend
+
+Current constraint: do not use Codex sub-agents for worker lanes. Codex token
+budget is reserved for the owner/integration pass. Parallel implementation,
+investigation, and review lanes should run through Claude Code workers in local
+worktrees, usually attached to tmux and coordinated through the local workstream
+hub described below.
+
+This constraint is operational, not architectural. If the human owner explicitly
+reverses it, this section can be updated. Until then, worker task packets should
+be written for Claude Code, and the owner agent should not call Codex sub-agent
+delegation tools.
+
 ### Owner Agent
 
 The owner agent is the integration gatekeeper. The owner:
