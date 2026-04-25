@@ -429,6 +429,11 @@ test("resolveMaxAttachmentBytes: env override is honored only when positive inte
     DEFAULT_MAX_ATTACHMENT_BYTES,
     "unparseable override is ignored"
   );
+  assert.equal(
+    resolveMaxAttachmentBytes({ PDPP_GMAIL_MAX_ATTACHMENT_BYTES: "123abc" }),
+    DEFAULT_MAX_ATTACHMENT_BYTES,
+    "partially numeric override is ignored"
+  );
 });
 
 test("selectAllMailFetchRange: incremental attachment runs revisit prior messages for metadata-only backfill", () => {

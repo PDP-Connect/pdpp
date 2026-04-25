@@ -96,6 +96,7 @@ const BLOB_UPLOAD_ENV_ERROR =
 // while streaming bytes (defense against under-reported sizes).
 export const DEFAULT_MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 const MAX_ATTACHMENT_BYTES_ENV = "PDPP_GMAIL_MAX_ATTACHMENT_BYTES";
+const POSITIVE_INTEGER_PATTERN = /^\d+$/;
 
 // ─── imapflow interface augmentation ────────────────────────────────────
 
@@ -709,6 +710,9 @@ function attachmentWithHydrationFailure(
 export function resolveMaxAttachmentBytes(env: NodeJS.ProcessEnv = process.env): number {
   const raw = env[MAX_ATTACHMENT_BYTES_ENV];
   if (!raw) {
+    return DEFAULT_MAX_ATTACHMENT_BYTES;
+  }
+  if (!POSITIVE_INTEGER_PATTERN.test(raw)) {
     return DEFAULT_MAX_ATTACHMENT_BYTES;
   }
   const parsed = Number.parseInt(raw, 10);
