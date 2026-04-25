@@ -29,6 +29,7 @@
  */
 
 import { nowIso, type RecordData, runConnector } from "../../src/connector-runtime.ts";
+import { isMainModule } from "../../src/is-main-module.ts";
 
 const API_BASE = "https://api.ynab.com/v1";
 
@@ -277,7 +278,7 @@ function priorKnowledge(state: Record<string, unknown>, streamName: string, budg
 // Rewind an ISO month (YYYY-MM-DD, day is always 01 from YNAB) by one month.
 // Used to keep the cutoff one step behind the highest month we've fetched, so
 // the most recent closed month gets one more pass on the next run.
-function rewindOneMonth(monthIso: string): string {
+export function rewindOneMonth(monthIso: string): string {
   const parts = monthIso.split("-").map(Number);
   const y = parts[0] ?? 0;
   const m = parts[1] ?? 1;
@@ -460,7 +461,7 @@ function monthRecord(m: YnabMonth, budgetId: string): RecordData {
   };
 }
 
-function monthCategoryRecord(c: YnabCategory, month: string, budgetId: string): RecordData {
+export function monthCategoryRecord(c: YnabCategory, month: string, budgetId: string): RecordData {
   return {
     id: `${budgetId}:${month}:${c.id}`,
     budget_id: budgetId,
@@ -494,7 +495,7 @@ type TrackedEmitRecord = (stream: string, data: RecordData) => Promise<void>;
 
 type ProgressFn = (message: string, extra?: { count?: number; stream?: string; total?: number }) => Promise<void>;
 
-interface BudgetCtx {
+export interface BudgetCtx {
   budgetId: string;
   emit: EmitFn;
   newState: Record<string, unknown>;
@@ -722,10 +723,18 @@ async function fetchMonthsIfNeeded(ctx: BudgetCtx, shouldFetch: boolean): Promis
   return monthList;
 }
 
-async function collectMonthCategories(
+type MonthDetailFetcher = (budgetId: string, month: string, token: string) => Promise<YnabMonth>;
+
+async function fetchMonthDetail(budgetId: string, month: string, token: string): Promise<YnabMonth> {
+  const monthRes = await ynab<YnabMonthDetailResponse>(`/budgets/${budgetId}/months/${month}`, token);
+  return monthRes.data.month;
+}
+
+export async function collectMonthCategories(
   ctx: BudgetCtx,
   monthList: YnabMonth[],
-  monthCategoriesStream: { time_range?: TimeRange }
+  monthCategoriesStream: { time_range?: TimeRange },
+  fetchMonth: MonthDetailFetcher = fetchMonthDetail
 ): Promise<void> {
   const { budgetId, token, state, newState, emit, trackAndEmit, progress } = ctx;
   const mcState = state.month_categories as Record<string, { last_fetched_month?: string }> | undefined;
@@ -766,8 +775,7 @@ async function collectMonthCategories(
       count: i + 1,
       total: activeMonths.length,
     });
-    const monthRes = await ynab<YnabMonthDetailResponse>(`/budgets/${budgetId}/months/${m.month}`, token);
-    const monthDetail = monthRes.data.month;
+    const monthDetail = await fetchMonth(budgetId, m.month, token);
     for (const c of monthDetail.categories ?? []) {
       await trackAndEmit("month_categories", monthCategoryRecord(c, m.month, budgetId));
     }
@@ -826,74 +834,76 @@ async function collectForBudget(ctx: BudgetCtx): Promise<void> {
   }
 }
 
-runConnector({
-  name: "ynab",
-  retryablePattern: /rate_limited|ECONN|ETIMEDOUT|fetch failed/i,
-  // YNAB marks deleted records with `deleted: true` in-band. Runtime strips
-  // to { id } and emits with op: 'delete'.
-  isTombstone: (_stream, d) => d.deleted === true,
-  auth: { kind: "env", required: ["YNAB_PERSONAL_ACCESS_TOKEN"] },
-  async collect({ state, requested, credentials, emit, emitRecord: runtimeEmitRecord, progress }) {
-    const token = credentials.YNAB_PERSONAL_ACCESS_TOKEN;
-    if (!token) {
-      throw new Error("ynab_auth_failed");
-    }
-
-    const newState: Record<string, unknown> = JSON.parse(JSON.stringify(state));
-
-    // Track which IDs we emitted this run, per stream. Used later for
-    // end-of-stream tombstones: IDs present in prior state but not in this
-    // run are treated as deletions the server never told us about
-    // (YNAB occasionally hard-deletes without soft-delete marker).
-    const emittedIds = new Map<string, Set<string>>();
-    for (const [streamName] of requested) {
-      emittedIds.set(streamName, new Set<string>());
-    }
-
-    // Trap to record ids so end-of-stream reconciliation can compare.
-    // Delegates to the runtime's emitRecord; only observes ids flowing through.
-    const trackAndEmit: TrackedEmitRecord = (stream, data) => {
-      if (data.id != null) {
-        emittedIds.get(stream)?.add(String(data.id));
+if (isMainModule(import.meta.url)) {
+  runConnector({
+    name: "ynab",
+    retryablePattern: /rate_limited|ECONN|ETIMEDOUT|fetch failed/i,
+    // YNAB marks deleted records with `deleted: true` in-band. Runtime strips
+    // to { id } and emits with op: 'delete'.
+    isTombstone: (_stream, d) => d.deleted === true,
+    auth: { kind: "env", required: ["YNAB_PERSONAL_ACCESS_TOKEN"] },
+    async collect({ state, requested, credentials, emit, emitRecord: runtimeEmitRecord, progress }) {
+      const token = credentials.YNAB_PERSONAL_ACCESS_TOKEN;
+      if (!token) {
+        throw new Error("ynab_auth_failed");
       }
-      return runtimeEmitRecord(stream, data);
-    };
-    const progressWithCounters: ProgressFn = progress;
 
-    // 1. Budgets — always fetched; needed to enumerate downstream streams.
-    await progressWithCounters("Fetching budgets", { stream: "budgets" });
-    const budgetsRes = await ynab<YnabBudgetsResponse>("/budgets", token);
-    const budgets = budgetsRes.data.budgets;
-    const budgetIds = budgets.map((b) => b.id);
-    await progressWithCounters(`Fetched ${budgets.length} budgets`, {
-      stream: "budgets",
-      count: budgets.length,
-      total: budgets.length,
-    });
+      const newState: Record<string, unknown> = JSON.parse(JSON.stringify(state));
 
-    if (requested.has("budgets")) {
-      for (const b of budgets) {
-        await trackAndEmit("budgets", budgetRecord(b));
+      // Track which IDs we emitted this run, per stream. Used later for
+      // end-of-stream tombstones: IDs present in prior state but not in this
+      // run are treated as deletions the server never told us about
+      // (YNAB occasionally hard-deletes without soft-delete marker).
+      const emittedIds = new Map<string, Set<string>>();
+      for (const [streamName] of requested) {
+        emittedIds.set(streamName, new Set<string>());
       }
-      await emit({
-        type: "STATE",
+
+      // Trap to record ids so end-of-stream reconciliation can compare.
+      // Delegates to the runtime's emitRecord; only observes ids flowing through.
+      const trackAndEmit: TrackedEmitRecord = (stream, data) => {
+        if (data.id != null) {
+          emittedIds.get(stream)?.add(String(data.id));
+        }
+        return runtimeEmitRecord(stream, data);
+      };
+      const progressWithCounters: ProgressFn = progress;
+
+      // 1. Budgets — always fetched; needed to enumerate downstream streams.
+      await progressWithCounters("Fetching budgets", { stream: "budgets" });
+      const budgetsRes = await ynab<YnabBudgetsResponse>("/budgets", token);
+      const budgets = budgetsRes.data.budgets;
+      const budgetIds = budgets.map((b) => b.id);
+      await progressWithCounters(`Fetched ${budgets.length} budgets`, {
         stream: "budgets",
-        cursor: { fetched_at: nowIso() },
+        count: budgets.length,
+        total: budgets.length,
       });
-      newState.budgets = { fetched_at: nowIso() };
-    }
 
-    for (const budgetId of budgetIds) {
-      await collectForBudget({
-        budgetId,
-        token,
-        state,
-        newState,
-        requested: requested as Map<string, { time_range?: TimeRange }>,
-        emit,
-        trackAndEmit,
-        progress: progressWithCounters,
-      });
-    }
-  },
-});
+      if (requested.has("budgets")) {
+        for (const b of budgets) {
+          await trackAndEmit("budgets", budgetRecord(b));
+        }
+        await emit({
+          type: "STATE",
+          stream: "budgets",
+          cursor: { fetched_at: nowIso() },
+        });
+        newState.budgets = { fetched_at: nowIso() };
+      }
+
+      for (const budgetId of budgetIds) {
+        await collectForBudget({
+          budgetId,
+          token,
+          state,
+          newState,
+          requested: requested as Map<string, { time_range?: TimeRange }>,
+          emit,
+          trackAndEmit,
+          progress: progressWithCounters,
+        });
+      }
+    },
+  });
+}
