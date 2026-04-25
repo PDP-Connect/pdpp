@@ -310,6 +310,7 @@ export interface ConnectorRunRef {
   event_count: number;
   failure_reason: string | null;
   first_at: string;
+  known_gaps?: unknown[];
   last_at: string;
   run_id: string;
   status: string;
@@ -834,6 +835,7 @@ function projectRun(
         event_count: number;
         status: string;
         failure_reason: string | null;
+        known_gaps?: Record<string, unknown>[] | null;
       }
     | undefined
 ): ConnectorRunRef | null {
@@ -847,6 +849,7 @@ function projectRun(
     event_count: summary.event_count,
     status: summary.status,
     failure_reason: summary.failure_reason,
+    known_gaps: summary.known_gaps ?? [],
   };
 }
 

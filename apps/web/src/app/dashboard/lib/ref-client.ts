@@ -134,6 +134,7 @@ export interface RefConnectorRunSummary {
   failure_reason: string | null;
   finished_at: string | null;
   first_at: string;
+  known_gaps?: unknown[];
   last_at: string;
   run_id: string;
   started_at: string;

@@ -6,6 +6,14 @@ import { DashboardShell, ServerUnreachable } from "../../components/shell.tsx";
 import { TimelineView } from "../../components/timeline-view.tsx";
 import { getAsInternalUrl, ReferenceServerUnreachableError } from "../../lib/owner-token.ts";
 import { getRunTimeline, type SpineEvent, type TimelineEnvelope } from "../../lib/ref-client.ts";
+import {
+  classifyKnownGaps,
+  extractTerminalKnownGaps,
+  formatGapReason,
+  formatRecoveryHint,
+  type KnownGap,
+  type KnownGapSummary,
+} from "../../lib/run-gaps.ts";
 import { RunInteractionForm } from "./interaction-form.tsx";
 import { RunDetailPoller } from "./run-detail-poller.tsx";
 
@@ -58,6 +66,8 @@ export default async function RunDetailPage({ params }: { params: Promise<{ runI
   const pendingInteraction = active ? getPendingInteraction(events) : null;
   const latestProgress = getLatestProgress(events);
   const failure = events.find((e) => e.event_type === "run.failed");
+  const terminalKnownGaps = extractTerminalKnownGaps(events);
+  const gapClassification = classifyKnownGaps(terminalKnownGaps.gaps);
   const stateTone = getRunStateTone({ active, pendingInteraction: Boolean(pendingInteraction), terminalStatus });
   const stateValue = getRunStateValue({ active, pendingInteraction: Boolean(pendingInteraction), terminalStatus });
   const failureRows = summarizeFailure(failure);
@@ -82,6 +92,12 @@ export default async function RunDetailPage({ params }: { params: Promise<{ runI
         failureRows={failureRows}
         interactions={interactions}
         progress={progress}
+      />
+      <KnownGapsSection
+        coverageGaps={gapClassification.coverageGaps}
+        protocolViolationCount={gapClassification.protocolViolationGaps.length}
+        skippedCount={events.filter((e) => e.event_type === "run.stream_skipped").length}
+        summary={terminalKnownGaps.summary ?? gapClassification.summary}
       />
       <ViolationDiagnosis failure={failure} />
       <Section title="Timeline">
@@ -285,6 +301,86 @@ function StatsGrid({
       <Stat emphasis={Boolean(failure)} rows={failureRows} title="Failure" />
     </div>
   );
+}
+
+function KnownGapsSection({
+  coverageGaps,
+  protocolViolationCount,
+  skippedCount,
+  summary,
+}: {
+  coverageGaps: KnownGap[];
+  protocolViolationCount: number;
+  skippedCount: number;
+  summary: KnownGapSummary | null;
+}) {
+  if (coverageGaps.length === 0 && protocolViolationCount === 0 && skippedCount === 0) {
+    return null;
+  }
+
+  return (
+    <section className="mb-8 rounded-md border border-[color:var(--warning)]/35 border-l-4 border-l-[color:var(--warning)] bg-[color:var(--warning-wash)]/45 px-4 py-3">
+      <header className="mb-3 flex flex-col gap-1 sm:flex-row sm:items-baseline sm:justify-between">
+        <div>
+          <h3 className="pdpp-eyebrow">Known source gaps</h3>
+          <p className="pdpp-caption text-muted-foreground">
+            Partial coverage means flushed records may be useful, but this run did not collect every requested source.
+          </p>
+        </div>
+        {summary?.count ? (
+          <span className="pdpp-caption text-muted-foreground">
+            {summary.count} gap{summary.count === 1 ? "" : "s"}
+            {summary.truncated ? " · truncated" : ""}
+          </span>
+        ) : null}
+      </header>
+
+      {coverageGaps.length > 0 ? (
+        <ul className="space-y-2">
+          {coverageGaps.map((gap) => (
+            <li className="rounded-md border border-border/70 bg-background/70 px-3 py-2" key={knownGapKey(gap)}>
+              <div className="pdpp-caption flex flex-wrap items-baseline gap-x-2 gap-y-1">
+                <span className="font-medium text-foreground">{formatGapReason(gap.kind)}</span>
+                <span className="text-muted-foreground">reason</span>
+                <code>{formatGapReason(gap.reason)}</code>
+                {gap.stream ? (
+                  <>
+                    <span className="text-muted-foreground">stream</span>
+                    <code>{gap.stream}</code>
+                  </>
+                ) : null}
+              </div>
+              <div className="pdpp-caption mt-1 text-muted-foreground">
+                recovery: <span className="text-foreground">{formatRecoveryHint(gap)}</span>
+                {gap.message ? ` · ${gap.message}` : ""}
+              </div>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="pdpp-caption text-muted-foreground">
+          No partial source-coverage gaps were reported. Protocol failures are shown separately below.
+        </p>
+      )}
+
+      {protocolViolationCount > 0 ? (
+        <p className="pdpp-caption mt-3 text-muted-foreground">
+          {protocolViolationCount} protocol-violation gap{protocolViolationCount === 1 ? "" : "s"} omitted here; see
+          Failure diagnosis.
+        </p>
+      ) : null}
+      {skippedCount > 0 && coverageGaps.length === 0 ? (
+        <p className="pdpp-caption mt-3 text-muted-foreground">
+          Timeline includes {skippedCount} skipped stream event{skippedCount === 1 ? "" : "s"} without terminal gap
+          details.
+        </p>
+      ) : null}
+    </section>
+  );
+}
+
+function knownGapKey(gap: KnownGap): string {
+  return [gap.kind, gap.reason, gap.stream ?? "run", gap.message ?? "", formatRecoveryHint(gap)].join(":");
 }
 
 /**

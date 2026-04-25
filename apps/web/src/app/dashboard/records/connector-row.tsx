@@ -6,6 +6,7 @@ import { useCallback, useEffect, useMemo, useState, useTransition } from "react"
 import { Button } from "@/components/ui/button.tsx";
 import { Timestamp } from "@/components/ui/timestamp.tsx";
 import type { ConnectorOverview, ConnectorRunRef } from "../lib/rs-client.ts";
+import { connectorHasPartialCoverageHint, normalizeKnownGaps } from "../lib/run-gaps.ts";
 import { type RunNowResult, runConnectorNowAction } from "./actions.ts";
 
 // Elapsed-time tick for the in-progress label. Separate from the poll
@@ -30,6 +31,8 @@ export function ConnectorRow({ overview, runsHref }: RowProps) {
   const [optimisticRunning, setOptimisticRunning] = useState(false);
   const [toast, setToast] = useState<ToastState>({ kind: "none" });
   const running = isRunning || optimisticRunning;
+  const lastRunKnownGaps = normalizeKnownGaps(lastRun?.known_gaps);
+  const hasPartialCoverageHint = connectorHasPartialCoverageHint({ lastRunKnownGaps, totalRecords });
 
   // Clear the optimistic flag once server-side state agrees the run
   // started (isRunning from props) or terminated (a new lastRun with
@@ -107,6 +110,15 @@ export function ConnectorRow({ overview, runsHref }: RowProps) {
             {streams.length === 1 ? "" : "s"}
           </span>
           <ConnectorFreshnessLine lastRun={lastRun} lastSuccessfulRun={lastSuccessfulRun} totalRecords={totalRecords} />
+          {hasPartialCoverageHint ? (
+            <Link
+              className="inline-flex items-center gap-1 text-[color:var(--warning)] underline-offset-2 hover:underline"
+              href={`${runsHref}/${encodeURIComponent(lastRun?.run_id ?? "")}`}
+              title="Latest run produced records but reported known source gaps"
+            >
+              Partial source coverage
+            </Link>
+          ) : null}
         </div>
 
         {/* Status + action */}
@@ -160,6 +172,12 @@ function RunStatus({
   lastRun: ConnectorRunRef | null;
   runsHref: string;
 }) {
+  const lastRunKnownGaps = normalizeKnownGaps(lastRun?.known_gaps);
+  const hasPartialCoverageHint = connectorHasPartialCoverageHint({
+    lastRunKnownGaps,
+    totalRecords: hasRecords ? 1 : 0,
+  });
+
   if (running) {
     return (
       <RunningBadge
@@ -188,6 +206,18 @@ function RunStatus({
     );
   }
   if (lastRun.status === "failed") {
+    if (hasPartialCoverageHint) {
+      return (
+        <Link
+          className="pdpp-caption inline-flex items-center gap-1 text-[color:var(--warning)] hover:underline"
+          href={`${runsHref}/${encodeURIComponent(lastRun.run_id)}`}
+          title={lastRun.failure_reason ?? "Run failed after producing partial data"}
+        >
+          <StatusDot shape="diamond" tone="warning" />
+          Partial
+        </Link>
+      );
+    }
     return (
       <Link
         className="pdpp-caption inline-flex items-center gap-1 text-destructive hover:underline"
@@ -200,6 +230,18 @@ function RunStatus({
     );
   }
   if (lastRun.status === "succeeded" || lastRun.status === "success") {
+    if (hasPartialCoverageHint) {
+      return (
+        <Link
+          className="pdpp-caption inline-flex items-center gap-1 text-[color:var(--warning)] hover:underline"
+          href={`${runsHref}/${encodeURIComponent(lastRun.run_id)}`}
+          title="Idle, but the latest run reported known source gaps"
+        >
+          <StatusDot shape="diamond" tone="warning" />
+          Partial
+        </Link>
+      );
+    }
     return (
       <span
         className="pdpp-caption inline-flex items-center gap-1 text-muted-foreground"
@@ -313,10 +355,13 @@ function StatusDot({
   tone,
   shape = "circle",
 }: {
-  tone: "running" | "success" | "danger" | "neutral";
-  shape?: "circle" | "triangle";
+  tone: "running" | "success" | "danger" | "neutral" | "warning";
+  shape?: "circle" | "diamond" | "triangle";
 }) {
   // Shape + color reinforce each other (a11y: color is never alone).
+  if (shape === "diamond") {
+    return <span aria-hidden className="inline-block h-2 w-2 rotate-45 bg-[color:var(--warning)]" />;
+  }
   if (shape === "triangle") {
     return (
       <span
@@ -335,6 +380,9 @@ function StatusDot({
   }
   if (tone === "danger") {
     return <span aria-hidden className={`${base} bg-destructive`} />;
+  }
+  if (tone === "warning") {
+    return <span aria-hidden className={`${base} bg-[color:var(--warning)]`} />;
   }
   return <span aria-hidden className={`${base} bg-muted-foreground/40`} />;
 }

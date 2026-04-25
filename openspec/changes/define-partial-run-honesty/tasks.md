@@ -12,15 +12,15 @@
 
 ## 3. Dashboard
 
-- [ ] Render partial/gap status on run detail.
-- [ ] Render connector-row/list hints when the latest run produced data but has known gaps.
-- [ ] Keep failed protocol violations visually distinct from partial source coverage.
+- [x] Render partial/gap status on run detail.
+- [x] Render connector-row/list hints when the latest run produced data but has known gaps.
+- [x] Keep failed protocol violations visually distinct from partial source coverage.
 
 ## 4. Validation
 
-- [ ] Add runtime tests for skipped stream, partial flush then failure, and missing credential/manual-action gaps.
-- [ ] Add dashboard rendering tests or focused component coverage for known gaps.
-- [ ] Run `pnpm --dir reference-implementation run verify`.
-- [ ] Run `pnpm --dir apps/web run types:check`.
-- [ ] Run `openspec validate define-partial-run-honesty --strict`.
-- [ ] Run `openspec validate --all --strict`.
+- [x] Add runtime tests for skipped stream, partial flush then failure, and missing credential/manual-action gaps.
+- [x] Add dashboard rendering tests or focused component coverage for known gaps.
+- [x] Run `pnpm --dir reference-implementation run verify`.
+- [x] Run `pnpm --dir apps/web run types:check`.
+- [x] Run `openspec validate define-partial-run-honesty --strict`.
+- [x] Run `openspec validate --all --strict`.

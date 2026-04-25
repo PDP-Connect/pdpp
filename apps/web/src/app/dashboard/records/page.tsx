@@ -42,6 +42,7 @@ function toConnectorRunRef(summary: RefConnectorRunSummary | null) {
     event_count: summary.event_count,
     status: summary.status,
     failure_reason: summary.failure_reason,
+    known_gaps: summary.known_gaps ?? [],
   };
 }
 
