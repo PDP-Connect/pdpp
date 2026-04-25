@@ -25,6 +25,7 @@
 - [x] Slack: audit v0.3.0 coverage for reactions, attachments, canvases, stars, user groups, and reminders.
   - 2026-04-25 ChatGPT/GitHub/Slack audit slice: `reactions`, `message_attachments`, and `canvases` are declared in `manifests/slack.json`, implemented in `connectors/slack/index.ts`/`parsers.ts`, and covered by parser/integration tests. `stars`, `user_groups`, and `reminders` are manifest-declared as Layer 2 streams but intentionally emit `SKIP_RESULT` from the slackdump archive path because slackdump archive mode does not call `stars.list`, `usergroups.list`, or `reminders.list`; implementing them requires an API fallback with live Slack credentials.
 - [ ] Reddit: re-ingest from verified Reddit credentials or keep connector marked untrusted.
+  - 2026-04-24 owner pass completed the connector-side stream/schema work but did not mark existing DB rows trusted: `reddit` v0.2.0 now declares and shape-checks `submitted`, `comments`, `saved`, `upvoted`, `downvoted`, `hidden`, and `gilded`, with parser/integration coverage for pagination, cursoring, request scoping, and schema-failure skips. The local database still needs the separate purge/re-ingest step before Reddit can be used as internal-demo evidence.
 - [ ] Spotify: keep blocked/untrusted until real account access is possible.
 
 ## 3. Validation
@@ -32,12 +33,14 @@
 - [x] Add or update connector parser/integration tests for each changed connector.
   - 2026-04-24 worker slice added `packages/polyfill-connectors/connectors/ynab/integration.test.ts`.
   - 2026-04-25 ChatGPT/GitHub/Slack audit slice added `custom_gpts` and `shared_conversations` fake-API integration coverage in `packages/polyfill-connectors/connectors/chatgpt/integration.test.ts`.
+  - 2026-04-24 owner pass added `packages/polyfill-connectors/connectors/reddit/parsers.test.ts` and `packages/polyfill-connectors/connectors/reddit/integration.test.ts` for the Reddit v0.2.0 stream expansion and schema validation.
 - [x] Run `pnpm --dir packages/polyfill-connectors run verify`.
   - 2026-04-24 worker slice: passed.
   - 2026-04-25 ChatGPT/GitHub/Slack audit slice: passed after installing workspace dependencies in the isolated worktree with `pnpm install --ignore-scripts`.
-- [ ] Run targeted reference ingestion/query tests for any changed manifest shape.
+- [x] Run targeted reference ingestion/query tests for any changed manifest shape.
   - 2026-04-24 worker slice: not applicable; no manifest shape changed. Targeted YNAB connector integration test passed with `pnpm --dir packages/polyfill-connectors exec node --test --test-timeout=30000 --import tsx connectors/ynab/integration.test.ts`. Full connector tests passed with `pnpm --dir packages/polyfill-connectors test` (586 tests, 580 passed, 6 skipped).
   - 2026-04-25 ChatGPT/GitHub/Slack audit slice: not applicable; no manifest shape changed. Targeted ChatGPT/GitHub/Slack connector tests passed with `pnpm --dir packages/polyfill-connectors exec node --test --test-timeout=30000 --import tsx connectors/chatgpt/integration.test.ts connectors/chatgpt/parsers.test.ts connectors/github/parsers.test.ts connectors/slack/parsers.test.ts connectors/slack/integration.test.ts` (117 tests passed). Full connector tests also passed with `pnpm --dir packages/polyfill-connectors test` (595 tests, 589 passed, 6 skipped).
+  - 2026-04-24 owner pass changed the Reddit manifest shape; targeted connector tests passed with `pnpm --dir packages/polyfill-connectors exec node --test --test-timeout=30000 --import tsx connectors/reddit/integration.test.ts connectors/reddit/parsers.test.ts`. Reference registration/query validation passed with `pnpm --dir reference-implementation exec node --test test/polyfill-range-filters.test.js test/query-contract.test.js` (39/39).
 - [x] Run `openspec validate add-polyfill-layer-two-stream-coverage --strict`.
   - 2026-04-24 worker slice: passed.
   - 2026-04-25 ChatGPT/GitHub/Slack audit slice: passed.

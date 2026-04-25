@@ -1,7 +1,7 @@
 {
   "protocol_version": "0.1.0",
   "connector_id": "https://registry.pdpp.org/connectors/reddit",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "display_name": "Reddit",
   "runtime_requirements": {
     "bindings": {
@@ -52,13 +52,31 @@
               "null"
             ]
           },
+          "domain": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "selftext": {
             "type": [
               "string",
               "null"
             ]
           },
+          "selftext_len": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "is_self": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "over_18": {
             "type": [
               "boolean",
               "null"
@@ -82,7 +100,17 @@
               "null"
             ]
           },
+          "gilded": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "created_utc": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "fetched_at": {
             "type": "string",
             "format": "date-time"
           }
@@ -112,6 +140,26 @@
           "semantic_fields": [
             "title",
             "selftext"
+          ]
+        },
+        "range_filters": {
+          "created_utc": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "score": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "num_comments": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
           ]
         }
       }
@@ -142,6 +190,12 @@
               "null"
             ]
           },
+          "body_len": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "link_id": {
             "type": [
               "string",
@@ -151,6 +205,12 @@
           "parent_id": {
             "type": [
               "string",
+              "null"
+            ]
+          },
+          "is_top_level": {
+            "type": [
+              "boolean",
               "null"
             ]
           },
@@ -166,7 +226,17 @@
               "null"
             ]
           },
+          "gilded": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "created_utc": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "fetched_at": {
             "type": "string",
             "format": "date-time"
           }
@@ -195,6 +265,20 @@
           "semantic_fields": [
             "body"
           ]
+        },
+        "range_filters": {
+          "created_utc": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "score": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
         }
       }
     },
@@ -213,10 +297,10 @@
             "type": "string"
           },
           "kind": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": "string"
+          },
+          "is_post": {
+            "type": "boolean"
           },
           "subreddit": {
             "type": [
@@ -236,6 +320,12 @@
               "null"
             ]
           },
+          "body_len": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "permalink": {
             "type": [
               "string",
@@ -249,6 +339,10 @@
             ]
           },
           "created_utc": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "fetched_at": {
             "type": "string",
             "format": "date-time"
           }
@@ -278,6 +372,518 @@
           "semantic_fields": [
             "title",
             "body"
+          ]
+        },
+        "range_filters": {
+          "created_utc": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        }
+      }
+    },
+    {
+      "name": "upvoted",
+      "description": "Posts and comments the user has upvoted.",
+      "display": {
+        "label": "Your upvoted Reddit items",
+        "detail": "Posts and comments you've upvoted; owner-only preference signal."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "is_post": {
+            "type": "boolean"
+          },
+          "subreddit": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "body": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "body_len": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "permalink": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "score": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "num_comments": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "created_utc": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "fetched_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "created_utc"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "created_utc",
+      "consent_time_field": "created_utc",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": true,
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "subreddit",
+            "title",
+            "body"
+          ],
+          "semantic_fields": [
+            "title",
+            "body"
+          ]
+        },
+        "range_filters": {
+          "created_utc": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "score": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "num_comments": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        }
+      }
+    },
+    {
+      "name": "downvoted",
+      "description": "Posts and comments the user has downvoted.",
+      "display": {
+        "label": "Your downvoted Reddit items",
+        "detail": "Posts and comments you've downvoted; owner-only preference signal."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "is_post": {
+            "type": "boolean"
+          },
+          "subreddit": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "body": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "body_len": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "permalink": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "score": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "num_comments": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "created_utc": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "fetched_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "created_utc"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "created_utc",
+      "consent_time_field": "created_utc",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": true,
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "subreddit",
+            "title",
+            "body"
+          ],
+          "semantic_fields": [
+            "title",
+            "body"
+          ]
+        },
+        "range_filters": {
+          "created_utc": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "score": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "num_comments": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        }
+      }
+    },
+    {
+      "name": "hidden",
+      "description": "Posts and comments the user has hidden.",
+      "display": {
+        "label": "Your hidden Reddit items",
+        "detail": "Posts and comments you've hidden; owner-only preference signal."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "is_post": {
+            "type": "boolean"
+          },
+          "subreddit": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "body": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "body_len": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "permalink": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "score": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "num_comments": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "created_utc": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "fetched_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "created_utc"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "created_utc",
+      "consent_time_field": "created_utc",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": true,
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "subreddit",
+            "title",
+            "body"
+          ],
+          "semantic_fields": [
+            "title",
+            "body"
+          ]
+        },
+        "range_filters": {
+          "created_utc": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "score": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "num_comments": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        }
+      }
+    },
+    {
+      "name": "gilded",
+      "description": "Posts and comments by the user that received Reddit awards.",
+      "display": {
+        "label": "Your gilded Reddit items",
+        "detail": "Posts and comments by you that received awards."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "is_post": {
+            "type": "boolean"
+          },
+          "subreddit": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "body": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "body_len": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "permalink": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "score": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "num_comments": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "created_utc": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "fetched_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "created_utc"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "created_utc",
+      "consent_time_field": "created_utc",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": true,
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "subreddit",
+            "title",
+            "body"
+          ],
+          "semantic_fields": [
+            "title",
+            "body"
+          ]
+        },
+        "range_filters": {
+          "created_utc": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "score": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "num_comments": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
           ]
         }
       }
