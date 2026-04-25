@@ -40,6 +40,9 @@
 
 ## 6. Followups (not in this change)
 
+- manifest/schema/emit reconciliation: audit every connector for declared streams with no emitted records, emitted streams missing from the manifest, and `SCHEMAS` keys that do not match the manifest. The owner review already fixed GitHub/Slack drift in this tranche; make this a reusable check.
+- fixture replay tests: add committed `__fixtures__`/replay coverage for the six newly schemed connectors so schema confidence does not depend on the owner's local SQLite database.
 - usaa: 6 records emit with missing currency or empty-string descriptions. File as data-quality issue; do not loosen schema.
 - reddit: re-ingest from a v0.2 connector capture so the local DB matches the v0.2 schema. Tracked in `add-polyfill-connector-system/tasks.md`.
+- zod cleanup: replace deprecated `z.string().url()` usage in connector schemas.
 - The 18 connectors with no `parsers.ts` yet are out of scope — they don't have anything to validate.
