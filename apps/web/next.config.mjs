@@ -162,6 +162,25 @@ const nextConfig = {
         source: '/docs/:path*.mdx',
         destination: '/llms.mdx/docs/:path*',
       },
+      // Sandbox demo well-known metadata. Next.js cannot route a path
+      // segment that starts with a dot directly, so the handlers live
+      // under `well-known/**` and we expose them at `/.well-known/**`.
+      {
+        source: '/sandbox/.well-known/oauth-authorization-server',
+        destination: '/sandbox/well-known/oauth-authorization-server',
+      },
+      {
+        source: '/sandbox/.well-known/oauth-protected-resource',
+        destination: '/sandbox/well-known/oauth-protected-resource',
+      },
+      // Sandbox demo reference-only inspection routes. Public path uses
+      // the underscore convention from the live reference (`/_ref/`); the
+      // handlers live under `ref/**` so Next's "private folder" rule does
+      // not exclude them from routing.
+      {
+        source: '/sandbox/_ref/:path*',
+        destination: '/sandbox/ref/:path*',
+      },
     ];
   },
   webpack(config) {

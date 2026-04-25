@@ -36,8 +36,8 @@ const architectureLayers = [
   {
     label: "Educational surface",
     route: "/sandbox",
-    title: "Sandbox",
-    body: "Interactive mock-backed walkthrough of one PDPP scenario end to end: request, consent, scoped read, revocation, refusal. No credentials, no live data.",
+    title: "Sandbox demo instance",
+    body: "A mock reference instance backed by deterministic fictional data. Browse connectors, streams, records, grants, runs, traces, and call sandbox-prefixed AS/RS-shaped APIs without credentials. The guided one-scenario walkthrough lives at /sandbox/walkthrough.",
   },
 ] as const;
 
@@ -57,9 +57,9 @@ const referenceLinks = [
   },
   {
     label: "Sandbox",
-    title: "Interactive mock walkthrough",
+    title: "Mock reference demo instance",
     href: "/sandbox",
-    body: "Click through one full PDPP scenario in your browser: a fictional client requests scoped pay statements, the owner approves, the resource server returns only granted fields, and revocation refuses the next read. Inspectable JSON for each step.",
+    body: "Browse a public, credential-free PDPP reference surface backed by fictional data. Inspect records/grants/runs/traces, call sandbox-prefixed AS/RS-shaped APIs (/sandbox/v1/**, /sandbox/_ref/**, /sandbox/.well-known/**), and read the guided walkthrough at /sandbox/walkthrough.",
   },
   {
     label: "Repository",

@@ -243,15 +243,82 @@ export const coverageRows = [
     demonstrated: "yes",
     status: "implemented",
     evidence: [
-      webRoute("/sandbox", "apps/web/src/app/sandbox/page.tsx", "Functional sandbox walkthrough"),
+      webRoute(
+        "/sandbox/walkthrough",
+        "apps/web/src/app/sandbox/walkthrough/page.tsx",
+        "Functional sandbox walkthrough"
+      ),
       {
         label: "Sandbox state reducer tests",
-        href: "https://github.com/vana-com/pdpp/blob/main/apps/web/src/app/sandbox/state.test.ts",
-        sourcePath: "apps/web/src/app/sandbox/state.test.ts",
+        href: "https://github.com/vana-com/pdpp/blob/main/apps/web/src/app/sandbox/walkthrough/state.test.ts",
+        sourcePath: "apps/web/src/app/sandbox/walkthrough/state.test.ts",
       },
     ],
     notes:
       "End-to-end mock walkthrough covers request, owner consent, scoped query, revocation, and post-revocation refusal. Fixtures are fictional and the page never asks for real credentials.",
+  },
+  {
+    concept: "Mock reference demo instance (dashboard-shaped)",
+    category: "Sandbox",
+    specified: "not-applicable",
+    documented: "yes",
+    implemented: "yes",
+    tested: "yes",
+    demonstrated: "yes",
+    status: "implemented",
+    evidence: [
+      webRoute("/sandbox", "apps/web/src/app/sandbox/page.tsx", "Demo overview"),
+      webRoute("/sandbox/records", "apps/web/src/app/sandbox/records/page.tsx", "Records browser"),
+      webRoute("/sandbox/grants", "apps/web/src/app/sandbox/grants/page.tsx", "Grants list"),
+      webRoute("/sandbox/runs", "apps/web/src/app/sandbox/runs/page.tsx", "Runs list"),
+      webRoute("/sandbox/traces", "apps/web/src/app/sandbox/traces/page.tsx", "Traces list"),
+      webRoute("/sandbox/deployment", "apps/web/src/app/sandbox/deployment/page.tsx", "Deployment / capabilities"),
+      {
+        label: "Demo dataset and builder tests",
+        href: "https://github.com/vana-com/pdpp/blob/main/apps/web/src/app/sandbox/_demo",
+        sourcePath: "apps/web/src/app/sandbox/_demo",
+      },
+    ],
+    notes:
+      "Dashboard-shaped surface backed by deterministic fictional data: connectors, streams, records, grants (issued/revoked/denied), runs (succeeded/failed/needs_input), traces, and deployment metadata. No live AS/RS, no credentials, no owner-token mint.",
+  },
+  {
+    concept: "Mock callable demo APIs (sandbox-prefixed)",
+    category: "Sandbox",
+    specified: "not-applicable",
+    documented: "yes",
+    implemented: "yes",
+    tested: "yes",
+    demonstrated: "yes",
+    status: "implemented",
+    evidence: [
+      webRoute("/sandbox/v1/schema", "apps/web/src/app/sandbox/v1/schema/route.ts", "GET /sandbox/v1/schema"),
+      webRoute("/sandbox/v1/streams", "apps/web/src/app/sandbox/v1/streams/route.ts", "GET /sandbox/v1/streams"),
+      webRoute(
+        "/sandbox/v1/streams/pay_statements/records",
+        "apps/web/src/app/sandbox/v1/streams/[stream]/records/route.ts",
+        "GET /sandbox/v1/streams/:stream/records"
+      ),
+      webRoute("/sandbox/v1/search?q=payroll", "apps/web/src/app/sandbox/v1/search/route.ts", "GET /sandbox/v1/search"),
+      webRoute(
+        "/sandbox/_ref/grants/grant_sb_quill_paystmt/timeline",
+        "apps/web/src/app/sandbox/ref/grants/[grantId]/timeline/route.ts",
+        "GET /sandbox/_ref/grants/:id/timeline"
+      ),
+      webRoute(
+        "/sandbox/.well-known/oauth-authorization-server",
+        "apps/web/src/app/sandbox/well-known/oauth-authorization-server/route.ts",
+        "GET /sandbox/.well-known/oauth-authorization-server"
+      ),
+      webRoute("/sandbox/api-examples", "apps/web/src/app/sandbox/api-examples/page.tsx", "Copyable API examples"),
+      {
+        label: "Route handler and builder tests",
+        href: "https://github.com/vana-com/pdpp/blob/main/apps/web/src/app/sandbox/_demo/routes.test.ts",
+        sourcePath: "apps/web/src/app/sandbox/_demo/routes.test.ts",
+      },
+    ],
+    notes:
+      "Sandbox-prefixed JSON APIs share builders with the demo UI so the rendered surface and HTTP responses cannot drift. Each response carries an `x-pdpp-demo: 1` header and an `is_demo: true` field.",
   },
   {
     concept: "Semantic subset grants and predicate-in-grant",

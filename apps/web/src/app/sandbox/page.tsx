@@ -1,167 +1,279 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { buttonVariants } from "@/components/ui/button.tsx";
-import { SandboxWalkthrough } from "./sandbox-walkthrough.tsx";
+import type { ReactNode } from "react";
+import {
+  buildDatasetSummary,
+  buildGrantsList,
+  buildRunsList,
+  buildTracesList,
+  getDemoCapabilities,
+  getDemoConnectors,
+} from "./_demo/builders.ts";
+import { CodeBlock, InlineCode } from "./_demo/components/code-block.tsx";
+import { SandboxShell } from "./_demo/components/shell.tsx";
 
 export const metadata: Metadata = {
-  title: "PDPP Sandbox - Try a scoped grant end to end",
+  title: "PDPP sandbox · mock reference demo instance",
   description:
-    "An interactive, mock-backed PDPP walkthrough: a fictional client requests scoped pay-statement access, the owner approves a bounded grant, the resource server returns only granted fields, and revocation refuses the next read. No credentials, no live data.",
+    "A public, credential-free PDPP reference instance backed by fictional data. Inspect connectors, streams, records, grants, runs, traces, and call sandbox-prefixed AS/RS APIs.",
 };
 
-const audienceCards = [
-  {
-    eyebrow: "Reviewer",
-    title: "See the surface a real owner approves",
-    body: "Grant scope, fields, retention, and refusal evidence are all visible without reading the spec first.",
-  },
-  {
-    eyebrow: "Implementer",
-    title: "Inspect the API shapes",
-    body: "Each step exposes a representative request/response so you can compare your own draft to the protocol.",
-  },
-  {
-    eyebrow: "Skeptic",
-    title: "Confirm scope is enforced, not implied",
-    body: "Approve a grant, revoke it, and watch the simulated resource server refuse the next read.",
-  },
-] as const;
+export const dynamic = "force-static";
 
-const guarantees = [
-  "Everything below is fictional. No real Acme, Northwind, Quill Tax, payroll, or owner exists.",
-  "No credential or token entry. The sandbox cannot connect to real platforms.",
-  "State lives only in this browser tab. Reset returns you to step 0; closing the tab forgets it.",
-  "JSON shapes are representative, not captured from a live reference run.",
-] as const;
+const STATUS_TONE: Record<string, string> = {
+  succeeded: "text-[color:var(--success)]",
+  issued: "text-[color:var(--success)]",
+  revoked: "text-destructive",
+  denied: "text-destructive",
+  failed: "text-destructive",
+  needs_input: "text-[color:var(--warning)]",
+};
 
-export default function SandboxPage() {
+export default function SandboxOverviewPage() {
+  const summary = buildDatasetSummary();
+  const grants = buildGrantsList({ limit: 5 });
+  const runs = buildRunsList({ limit: 5 });
+  const traces = buildTracesList({ limit: 5 });
+  const connectors = getDemoConnectors();
+  const capabilities = getDemoCapabilities();
+
   return (
-    <main className="relative overflow-hidden">
-      <div
-        aria-hidden="true"
-        className="pointer-events-none absolute inset-x-0 top-0 h-[28rem]"
-        style={{
-          background:
-            "radial-gradient(circle at 16% 18%, oklch(0.72 0.11 45 / 0.16), transparent 34%), radial-gradient(circle at 82% 10%, oklch(0.58 0.172 253.7 / 0.12), transparent 32%)",
-        }}
-      />
-      <div className="relative mx-auto w-full max-w-7xl px-4 py-10 sm:px-6 lg:py-14">
-        <section className="grid gap-8 lg:grid-cols-[minmax(0,1fr)_22rem]">
-          <div className="min-w-0">
-            <div className="pdpp-eyebrow text-muted-foreground">Sandbox / Mock educational surface</div>
-            <h1 className="pdpp-display mt-3 max-w-4xl text-foreground">
-              A scoped PDPP grant, end to end, in your browser.
-            </h1>
-            <p className="pdpp-body-lg mt-5 max-w-3xl text-muted-foreground">
-              Click through a fictional tax-prep app asking a fictional owner for three pay statements. Approve the
-              grant, see only the granted fields come back, then revoke and watch the next read get refused. The
-              transcript on the right shows the API-shaped JSON for each step.
-            </p>
-            <div className="mt-7 flex flex-wrap gap-2.5">
-              <Link className={buttonVariants({ variant: "default", size: "lg" })} href="#walkthrough">
-                Start the walkthrough
-              </Link>
-              <Link className={buttonVariants({ variant: "outline", size: "lg" })} href="/reference/coverage">
-                See coverage matrix
-              </Link>
-              <Link className={buttonVariants({ variant: "outline", size: "lg" })} href="/docs">
-                Protocol docs
-              </Link>
-            </div>
-          </div>
+    <SandboxShell active="overview">
+      <header className="mb-8 border-border/80 border-b pb-5">
+        <div className="pdpp-eyebrow text-muted-foreground">Sandbox / Demo overview</div>
+        <h1 className="pdpp-display mt-2 text-foreground">Mock reference demo instance</h1>
+        <p className="pdpp-body mt-3 max-w-3xl text-muted-foreground">
+          A working PDPP reference surface backed by deterministic fictional data. The pages below mirror the live{" "}
+          <Link className="underline underline-offset-2" href="/reference">
+            reference dashboard
+          </Link>{" "}
+          but never call a live AS/RS, never request credentials, and never expose private records. Every page here is
+          also reachable as a JSON API under <InlineCode>/sandbox/v1/**</InlineCode> or{" "}
+          <InlineCode>/sandbox/_ref/**</InlineCode>.
+        </p>
+      </header>
 
-          <aside className="rounded-2xl border bg-card/80 p-5 shadow-sm backdrop-blur">
-            <div className="pdpp-eyebrow text-muted-foreground">What this is</div>
-            <div className="pdpp-heading mt-2 text-foreground">Simulated, not hosted</div>
-            <p className="pdpp-caption mt-3 text-muted-foreground">
-              This is the public sandbox: a single coherent PDPP scenario you can click through. It does not run the
-              reference server, host owner accounts, or accept credentials.
-            </p>
-            <ul className="mt-4 space-y-2">
-              {guarantees.map((line) => (
-                <li className="grid grid-cols-[0.6rem_minmax(0,1fr)] gap-2.5" key={line}>
-                  <span className="mt-2 h-1.5 rounded-full bg-primary" />
-                  <span className="pdpp-caption text-muted-foreground">{line}</span>
-                </li>
-              ))}
-            </ul>
-          </aside>
-        </section>
+      <section className="mb-10 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <KpiCard label="Connectors" value={summary.connector_count} />
+        <KpiCard label="Streams" value={summary.stream_count} />
+        <KpiCard label="Records" value={summary.record_count} />
+        <KpiCard label="Approx. retained bytes" value={summary.total_retained_bytes.toLocaleString()} />
+      </section>
 
-        <section className="mt-12" id="walkthrough">
-          <SandboxWalkthrough />
-        </section>
+      <section className="mb-10 grid gap-8 lg:grid-cols-2">
+        <Panel
+          action={
+            <Link className="hover:text-foreground hover:underline" href="/sandbox/grants">
+              view all →
+            </Link>
+          }
+          description="Recent decisions across the seeded demo grants."
+          title="Grants"
+        >
+          <ul className="divide-y divide-border/70 border-border/70 border-y">
+            {grants.data.map((grant) => (
+              <li className="px-3 py-2.5" key={grant.grant_id}>
+                <Link className="block" href={`/sandbox/grants/${encodeURIComponent(grant.grant_id)}`}>
+                  <div className="flex flex-wrap items-baseline justify-between gap-2">
+                    <code className="pdpp-caption break-all font-medium font-mono text-foreground">
+                      {grant.grant_id}
+                    </code>
+                    <span className={`pdpp-eyebrow ${STATUS_TONE[grant.status] ?? "text-muted-foreground"}`}>
+                      {grant.status}
+                    </span>
+                  </div>
+                  <div className="pdpp-caption mt-1 text-muted-foreground">
+                    client {grant.client_id ?? "—"} · stream {grant.stream}
+                  </div>
+                </Link>
+              </li>
+            ))}
+          </ul>
+        </Panel>
+        <Panel
+          action={
+            <Link className="hover:text-foreground hover:underline" href="/sandbox/runs">
+              view all →
+            </Link>
+          }
+          description="Connector runs across the seeded demo dataset."
+          title="Runs"
+        >
+          <ul className="divide-y divide-border/70 border-border/70 border-y">
+            {runs.data.map((run) => (
+              <li className="px-3 py-2.5" key={run.run_id}>
+                <Link className="block" href={`/sandbox/runs/${encodeURIComponent(run.run_id)}`}>
+                  <div className="flex flex-wrap items-baseline justify-between gap-2">
+                    <code className="pdpp-caption break-all font-medium font-mono text-foreground">{run.run_id}</code>
+                    <span className={`pdpp-eyebrow ${STATUS_TONE[run.status] ?? "text-muted-foreground"}`}>
+                      {run.status}
+                    </span>
+                  </div>
+                  <div className="pdpp-caption mt-1 text-muted-foreground">
+                    {run.connector_id} · {run.failure_reason ?? "no failure"}
+                  </div>
+                </Link>
+              </li>
+            ))}
+          </ul>
+        </Panel>
+      </section>
 
-        <section className="mt-14 grid gap-3 md:grid-cols-3">
-          {audienceCards.map((card) => (
-            <article className="rounded-2xl border bg-card/70 p-5" key={card.title}>
-              <div className="pdpp-eyebrow text-muted-foreground">{card.eyebrow}</div>
-              <h2 className="pdpp-title mt-2 text-foreground">{card.title}</h2>
-              <p className="pdpp-caption mt-2 text-muted-foreground">{card.body}</p>
-            </article>
-          ))}
-        </section>
+      <section className="mb-10">
+        <Panel
+          action={
+            <Link className="hover:text-foreground hover:underline" href="/sandbox/traces">
+              view all →
+            </Link>
+          }
+          description="End-to-end interaction summaries across the seeded grants and runs."
+          title="Traces"
+        >
+          <ul className="divide-y divide-border/70 border-border/70 border-y">
+            {traces.data.map((trace) => (
+              <li className="px-3 py-2.5" key={trace.trace_id}>
+                <Link className="block" href={`/sandbox/traces/${encodeURIComponent(trace.trace_id)}`}>
+                  <div className="flex flex-wrap items-baseline justify-between gap-2">
+                    <code className="pdpp-caption break-all font-medium font-mono text-foreground">
+                      {trace.trace_id}
+                    </code>
+                    <span className={`pdpp-eyebrow ${STATUS_TONE[trace.status] ?? "text-muted-foreground"}`}>
+                      {trace.status}
+                    </span>
+                  </div>
+                  <div className="pdpp-caption mt-1 text-muted-foreground">{trace.kinds.slice(0, 4).join(" · ")}</div>
+                </Link>
+              </li>
+            ))}
+          </ul>
+        </Panel>
+      </section>
 
-        <section className="mt-14 grid gap-8 lg:grid-cols-[18rem_minmax(0,1fr)]">
-          <div>
-            <h2 className="pdpp-heading text-foreground">What this sandbox isn't</h2>
-            <p className="pdpp-body mt-2 text-muted-foreground">
-              Keeping artifact boundaries crisp is part of the protocol's contract with reviewers.
-            </p>
-          </div>
-          <div className="grid gap-3 md:grid-cols-3">
-            <Boundary
-              body="Operator views run against a real local or self-hosted reference instance with owner auth. They are intentionally out of scope here."
-              eyebrow="Not the dashboard"
-              href="/reference"
-              hrefLabel="See the surface map"
-              title="/dashboard is for live operation"
+      <section className="mb-10">
+        <Panel description="Seeded demo connectors, drawn from common operator scenarios." title="Connectors">
+          <ul className="divide-y divide-border/70 border-border/70 border-y">
+            {connectors.map((connector) => (
+              <li
+                className="grid grid-cols-1 gap-1 px-3 py-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_8rem]"
+                key={connector.connector_id}
+              >
+                <span className="pdpp-body font-medium text-foreground">{connector.display_name}</span>
+                <span className="pdpp-caption text-muted-foreground">{connector.description}</span>
+                <span className="pdpp-eyebrow text-muted-foreground">{connector.provenance}</span>
+              </li>
+            ))}
+          </ul>
+        </Panel>
+      </section>
+
+      <section className="mb-10">
+        <Panel
+          description="What this demo demonstrates today vs. what the live reference implements."
+          title="Capabilities"
+        >
+          <ul className="divide-y divide-border/70 border-border/70 border-y">
+            {capabilities.map((cap) => (
+              <li
+                className="grid grid-cols-1 gap-1 px-3 py-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_6rem_6rem]"
+                key={cap.capability}
+              >
+                <span className="pdpp-body font-medium text-foreground">{cap.capability}</span>
+                <span className="pdpp-caption text-muted-foreground">{cap.description}</span>
+                <span
+                  className={`pdpp-eyebrow ${cap.implemented ? "text-[color:var(--success)]" : "text-muted-foreground"}`}
+                >
+                  {cap.implemented ? "implemented" : "—"}
+                </span>
+                <span
+                  className={`pdpp-eyebrow ${cap.demonstrated_in_demo ? "text-[color:var(--success)]" : "text-muted-foreground"}`}
+                >
+                  {cap.demonstrated_in_demo ? "in demo" : "not in demo"}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </Panel>
+      </section>
+
+      <section className="mb-12">
+        <Panel
+          description="Try the demo APIs from your terminal. All endpoints return JSON."
+          title="Quick API examples"
+        >
+          <div className="grid gap-4">
+            <ApiExample
+              command="curl -s https://EXAMPLE/sandbox/v1/schema"
+              description="Schema graph: connectors, streams, fields, semantic classes."
+              endpoint="GET /sandbox/v1/schema"
             />
-            <Boundary
-              body="When the sandbox and the docs disagree, trust the docs. The sandbox is pedagogy, not a conformance suite."
-              eyebrow="Not the protocol"
-              href="/docs"
-              hrefLabel="Read the docs"
-              title="/docs holds normative semantics"
+            <ApiExample
+              command="curl -s 'https://EXAMPLE/sandbox/v1/streams/pay_statements/records?limit=2'"
+              description="Paginated record list for a single stream."
+              endpoint="GET /sandbox/v1/streams/pay_statements/records"
             />
-            <Boundary
-              body="Vana does not host a canonical PDPP owner instance. To run one, fork the repo and use the Docker compose stack."
-              eyebrow="Not a hosted service"
-              href="/reference"
-              hrefLabel="Self-host instructions"
-              title="No live reference instance"
+            <ApiExample
+              command="curl -s 'https://EXAMPLE/sandbox/v1/search?q=payroll'"
+              description="Lexical search across all seeded records."
+              endpoint="GET /sandbox/v1/search?q=payroll"
+            />
+            <ApiExample
+              command="curl -s https://EXAMPLE/sandbox/_ref/grants/grant_sb_quill_paystmt/timeline"
+              description="Reference-only timeline for one grant."
+              endpoint="GET /sandbox/_ref/grants/grant_sb_quill_paystmt/timeline"
+            />
+            <ApiExample
+              command="curl -s https://EXAMPLE/sandbox/.well-known/oauth-authorization-server"
+              description="Demo AS metadata advertising sandbox-prefixed endpoints."
+              endpoint="GET /sandbox/.well-known/oauth-authorization-server"
             />
           </div>
-        </section>
-      </div>
-    </main>
+        </Panel>
+      </section>
+    </SandboxShell>
   );
 }
 
-function Boundary({
-  eyebrow,
+function KpiCard({ label, value }: { label: string; value: string | number }) {
+  return (
+    <div className="rounded-md border border-border/80 bg-card/60 px-4 py-3">
+      <div className="pdpp-eyebrow text-muted-foreground">{label}</div>
+      <div className="pdpp-heading mt-1 font-semibold text-foreground tabular-nums">{value}</div>
+    </div>
+  );
+}
+
+function Panel({
   title,
-  body,
-  href,
-  hrefLabel,
+  description,
+  action,
+  children,
 }: {
-  eyebrow: string;
   title: string;
-  body: string;
-  href: string;
-  hrefLabel: string;
+  description?: string;
+  action?: ReactNode;
+  children: ReactNode;
 }) {
   return (
-    <article className="flex flex-col rounded-2xl border bg-card/70 p-5">
-      <div className="pdpp-eyebrow text-muted-foreground">{eyebrow}</div>
-      <h3 className="pdpp-title mt-2 text-foreground">{title}</h3>
-      <p className="pdpp-caption mt-2 text-muted-foreground">{body}</p>
-      <Link
-        className="pdpp-caption mt-3 self-start text-foreground underline decoration-border underline-offset-4 hover:decoration-foreground"
-        href={href}
-      >
-        {hrefLabel} -&gt;
-      </Link>
-    </article>
+    <section>
+      <div className="mb-3 flex flex-col gap-1 sm:flex-row sm:items-baseline sm:justify-between sm:gap-4">
+        <div className="min-w-0">
+          <h2 className="pdpp-title text-foreground">{title}</h2>
+          {description ? <p className="pdpp-caption mt-0.5 text-muted-foreground">{description}</p> : null}
+        </div>
+        {action ? <div className="pdpp-caption text-muted-foreground">{action}</div> : null}
+      </div>
+      {children}
+    </section>
+  );
+}
+
+function ApiExample({ endpoint, command, description }: { endpoint: string; command: string; description: string }) {
+  return (
+    <div>
+      <div className="pdpp-caption text-muted-foreground">
+        <InlineCode>{endpoint}</InlineCode> — {description}
+      </div>
+      <CodeBlock language="shell">{command}</CodeBlock>
+    </div>
   );
 }
