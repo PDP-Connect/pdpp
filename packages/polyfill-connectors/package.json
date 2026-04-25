@@ -16,7 +16,7 @@
     "postinstall": "patchright install chromium",
     "check": "ultracite check",
     "fix": "ultracite fix",
-    "test": "node --test --test-timeout=30000 --import tsx 'connectors/**/*.test.ts' 'src/**/*.test.ts'",
+    "test": "node --test --test-timeout=30000 --import tsx 'bin/**/*.test.ts' 'connectors/**/*.test.ts' 'src/**/*.test.ts'",
     "typecheck": "tsc --noEmit",
     "verify": "pnpm typecheck && pnpm check"
   },

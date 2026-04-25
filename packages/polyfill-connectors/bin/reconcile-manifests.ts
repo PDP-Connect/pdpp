@@ -3,10 +3,13 @@
  * CLI for the manifest-vs-schema-vs-emit reconciler. Iterates every
  * first-party manifest, finds the matching connector source, and prints
  * any drift. Returns nonzero if any connector has drift, so this is
- * suitable for CI / pre-commit gating.
+ * suitable for CI / pre-commit gating. By default, only schema-bearing
+ * connectors are checked; `--all` is the broader audit mode that also reports
+ * known schemaless-connector coverage gaps.
  *
  * Usage:
- *   pnpm exec tsx bin/reconcile-manifests.ts                  # all
+ *   pnpm exec tsx bin/reconcile-manifests.ts                  # schema-bearing gate
+ *   pnpm exec tsx bin/reconcile-manifests.ts --all            # all manifests audit
  *   pnpm exec tsx bin/reconcile-manifests.ts amazon github    # subset
  */
 
@@ -43,6 +46,12 @@ function listManifestNames(): string[] {
     .sort();
 }
 
+function listSchemaConnectorNames(): string[] {
+  return readdirSync(CONNECTORS_DIR)
+    .filter((name) => existsSync(join(CONNECTORS_DIR, name, "schemas.ts")))
+    .sort();
+}
+
 function buildReport(name: string): ReconcileReport | null {
   const dir = join(CONNECTORS_DIR, connectorDirFor(name));
   if (!existsSync(dir)) {
@@ -74,9 +83,37 @@ function printReport(r: ReconcileReport): void {
   }
 }
 
+function printUsage(): void {
+  console.log(`Usage:
+  pnpm exec tsx bin/reconcile-manifests.ts [--all] [connector ...]
+
+Default:
+  Check schema-bearing connectors only. This is the CI/pre-commit gate.
+
+Options:
+  --all    Audit every manifest, including known schemaless coverage gaps.
+  --help   Show this help text.
+`);
+}
+
+function parseTargets(argv: string[]): string[] | null {
+  if (argv.includes("--help") || argv.includes("-h")) {
+    printUsage();
+    return null;
+  }
+  const includeAll = argv.includes("--all");
+  const targets = argv.filter((arg) => arg !== "--all");
+  if (targets.length > 0) {
+    return targets;
+  }
+  return includeAll ? listManifestNames() : listSchemaConnectorNames();
+}
+
 function main(): void {
-  const argv = process.argv.slice(2);
-  const targets = argv.length > 0 ? argv : listManifestNames();
+  const targets = parseTargets(process.argv.slice(2));
+  if (targets === null) {
+    return;
+  }
   let totalDrift = 0;
   for (const name of targets) {
     const r = buildReport(name);

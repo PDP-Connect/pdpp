@@ -11,7 +11,7 @@ This change closes all three. The usaa data-quality drift (6/924 records flagged
 ## What Changes
 
 - Add `src/manifest-reconcile.ts` — pure reconciler over manifest streams, schema-registry keys, and emit-site stream literals. Plus `bin/reconcile-manifests.ts` (operator CLI) and `bin/reconcile-manifests.test.ts` (regression net for the eleven schema-bearing connectors).
-- Author committed pilot fixtures for github, gmail, ynab, codex, claude_code, slack at `fixtures/<connector>/scrubbed/pilot-real-shape/records/<stream>.jsonl`. Synthetic-but-shape-real, [REDACTED_*]-placeholder content, all records pass `validateRecord` for their stream.
+- Author committed pilot fixtures for github, gmail, ynab, codex, claude_code, slack at `fixtures/<connector>/scrubbed/pilot-real-shape/records/<stream>.jsonl`. Synthetic-but-shape-real, [REDACTED_*]-placeholder content for identifying fields, all records pass `validateRecord` for their stream.
 - Add `src/pilot-fixture-test-helper.ts` and one `pilot-fixture.test.ts` per connector. Helper enforces: fixture directory exists; ≥1 stream file present; each stream file has ≥1 record; every record passes validateRecord.
 - Replace `z.string().url()` with `z.url()` in amazon, chase, usaa schemas (zod 4 idiomatic).
 - Document the usaa replay drift as data cleanup (re-ingest, do not loosen) in `add-polyfill-connector-system/tasks.md`.
@@ -28,11 +28,11 @@ This change closes all three. The usaa data-quality drift (6/924 records flagged
 - `packages/polyfill-connectors/src/manifest-reconcile.ts` (new)
 - `packages/polyfill-connectors/src/manifest-reconcile.test.ts` (new, 16 tests)
 - `packages/polyfill-connectors/src/pilot-fixture-test-helper.ts` (new)
-- `packages/polyfill-connectors/bin/reconcile-manifests.ts` (new CLI)
+- `packages/polyfill-connectors/bin/reconcile-manifests.ts` (new CLI; schema-bearing gate by default, `--all` for broad audit)
 - `packages/polyfill-connectors/bin/reconcile-manifests.test.ts` (new, 11 tests — one per schema-bearing connector)
 - `packages/polyfill-connectors/bin/replay-pilot-fixtures.ts` (new diagnostic CLI)
 - `packages/polyfill-connectors/connectors/{github,gmail,ynab,codex,claude_code,slack}/pilot-fixture.test.ts` (new, 6 files)
-- `packages/polyfill-connectors/fixtures/{github,gmail,ynab,codex,claude_code,slack}/scrubbed/pilot-real-shape/records/*.jsonl` (new, 38 files, 62 records total)
+- `packages/polyfill-connectors/fixtures/{github,gmail,ynab,codex,claude_code,slack}/scrubbed/pilot-real-shape/records/*.jsonl` (new, 42 files, 62 records total)
 - `packages/polyfill-connectors/connectors/{amazon,chase,usaa}/schemas.ts` (z.string().url() → z.url())
 - `openspec/changes/add-polyfill-connector-system/tasks.md` (note usaa drift findings + decision)
 - No runtime, manifest, or downstream-consumer changes.
