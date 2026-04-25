@@ -162,6 +162,13 @@ export function runConnectorProtocolSubprocess(
       fn();
     };
 
+    const rejectAndKill = (error: Error): void => {
+      if (!child.killed) {
+        child.kill("SIGKILL");
+      }
+      finish(() => reject(error));
+    };
+
     const parseLine = (line: string): void => {
       if (!line.trim()) {
         return;
@@ -170,13 +177,12 @@ export function runConnectorProtocolSubprocess(
         messages.push(JSON.parse(line) as EmittedMessage);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        finish(() => reject(new Error(`connector emitted invalid JSONL: ${message}; line=${line}`)));
+        rejectAndKill(new Error(`connector emitted invalid JSONL: ${message}; line=${line}`));
       }
     };
 
     timer = setTimeout(() => {
-      child.kill("SIGKILL");
-      finish(() => reject(new Error(`connector subprocess timed out after ${String(timeoutMs)}ms; stderr=${stderr}`)));
+      rejectAndKill(new Error(`connector subprocess timed out after ${String(timeoutMs)}ms; stderr=${stderr}`));
     }, timeoutMs);
 
     child.stdout?.on("data", (chunk: Buffer) => {
@@ -213,6 +219,16 @@ export function runConnectorProtocolSubprocess(
           reject(
             new Error(
               `connector subprocess exited without DONE: code=${String(code)} signal=${String(signal)} stderr=${stderr}`
+            )
+          )
+        );
+        return;
+      }
+      if (code !== 0 || signal) {
+        finish(() =>
+          reject(
+            new Error(
+              `connector subprocess exited non-zero after DONE: code=${String(code)} signal=${String(signal)} stderr=${stderr}`
             )
           )
         );

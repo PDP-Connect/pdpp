@@ -247,3 +247,15 @@ test("runConnectorProtocolSubprocess: rejects a child that exits without termina
     /exited without DONE/
   );
 });
+
+test("runConnectorProtocolSubprocess: rejects non-zero child exit even after terminal DONE", async () => {
+  await assert.rejects(
+    () =>
+      runConnectorProtocolSubprocess({
+        cwd: PACKAGE_ROOT,
+        entrypoint: fixturePath("protocol-subprocess-done-then-fail.ts"),
+        start: { type: "START", scope: { streams: [{ name: "items" }] } },
+      }),
+    /exited non-zero after DONE/
+  );
+});
