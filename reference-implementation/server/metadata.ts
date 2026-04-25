@@ -278,6 +278,66 @@ export function buildSemanticRetrievalCapability({
   return capability;
 }
 
+// Builds the hybrid-retrieval extension advertisement carried inside the
+// resource-server metadata document. See:
+//   openspec/changes/define-hybrid-retrieval/specs/hybrid-retrieval/spec.md
+//
+// Truthfulness rule: callers must only publish this capability when BOTH
+// lexical and semantic retrieval are actually reachable on this server, so
+// composition under the same grant is honest. This builder returns null
+// when the caller cannot assert that — callers should then omit the key.
+export interface HybridRetrievalCapabilityInput {
+  crossStream?: boolean;
+  cursorSupported?: boolean;
+  defaultLimit?: number;
+  endpoint?: string;
+  lexicalAvailable?: boolean;
+  maxLimit?: number;
+  semanticAvailable?: boolean;
+  supported?: boolean;
+}
+
+export interface HybridRetrievalCapability {
+  cross_stream: boolean;
+  cursor_supported: boolean;
+  default_limit: number;
+  endpoint: string;
+  max_limit: number;
+  sources: readonly ["lexical", "semantic"];
+  stability: "experimental";
+  supported: true;
+}
+
+export function buildHybridRetrievalCapability({
+  supported = true,
+  endpoint = "/v1/search/hybrid",
+  crossStream = true,
+  defaultLimit = 25,
+  maxLimit = 100,
+  cursorSupported = false,
+  lexicalAvailable = true,
+  semanticAvailable = true,
+}: HybridRetrievalCapabilityInput = {}): HybridRetrievalCapability | { supported: false } | null {
+  if (!supported) {
+    return { supported: false };
+  }
+  // Hybrid retrieval only makes sense when BOTH underlying surfaces are
+  // advertised. Callers must gate on that; we defend here too.
+  if (!(lexicalAvailable && semanticAvailable)) {
+    return null;
+  }
+  return {
+    supported: true,
+    stability: "experimental",
+    endpoint,
+    cross_stream: crossStream,
+    default_limit: defaultLimit,
+    max_limit: maxLimit,
+    cursor_supported: cursorSupported,
+    sources: ["lexical", "semantic"] as const,
+  };
+}
+
 // Authorization-server metadata is the OAuth 2.0 / PDPP discovery
 // document. Optional fields are emitted only when supplied (or
 // non-empty for arrays); this matches the schema's

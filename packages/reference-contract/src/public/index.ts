@@ -412,6 +412,25 @@ const ServerCapabilitiesSchema = {
         "index_state",
       ],
     },
+    hybrid_retrieval: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        supported: { type: "boolean" },
+        stability: { type: "string", enum: ["experimental"] },
+        endpoint: NonEmptyStringSchema,
+        cross_stream: { type: "boolean" },
+        default_limit: { type: "integer", minimum: 1 },
+        max_limit: { type: "integer", minimum: 1 },
+        cursor_supported: { type: "boolean" },
+        sources: {
+          type: "array",
+          minItems: 2,
+          items: { type: "string", enum: ["lexical", "semantic"] },
+        },
+      },
+      required: ["supported"],
+    },
   },
 };
 
@@ -1338,6 +1357,111 @@ export const publicManifests = [
       401: { schema: ErrorObjectSchema, description: "Missing or invalid access token" },
       403: { schema: ErrorObjectSchema, description: "Grant does not permit a named stream (client tokens only)" },
       410: { schema: ErrorObjectSchema, description: "Cursor expired or refers to an unknown snapshot" },
+    },
+  },
+  {
+    id: "searchRecordsHybrid",
+    method: "GET",
+    path: "/v1/search/hybrid",
+    surface: "public",
+    tags: ["records", "hybrid-retrieval"],
+    summary:
+      "Experimental optional extension: hybrid retrieval blending lexical and semantic recall under one grant-safe result list. See the hybrid-retrieval capability spec.",
+    request: {
+      headers: AuthHeaderSchema,
+      // Mirrors the lexical + semantic allowlists. v1 intentionally omits
+      // cursor/pagination knobs (see the hybrid-retrieval spec: first-tranche
+      // servers either encode snapshot-honest cursors or omit cursor support
+      // entirely). The reference rejects cursor to keep pagination honest.
+      query: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          q: NonEmptyStringSchema,
+          limit: { type: "integer", minimum: 1, maximum: 100 },
+          streams: {
+            anyOf: [NonEmptyStringSchema, { type: "array", items: NonEmptyStringSchema, minItems: 1 }],
+          },
+          filter: {
+            type: "object",
+            additionalProperties: true,
+          },
+        },
+        required: ["q"],
+      },
+    },
+    responses: {
+      200: {
+        schema: {
+          type: "object",
+          additionalProperties: true,
+          properties: {
+            object: { const: "list" },
+            url: { type: "string" },
+            has_more: { type: "boolean" },
+            data: {
+              type: "array",
+              items: {
+                type: "object",
+                additionalProperties: true,
+                properties: {
+                  object: { const: "search_result" },
+                  stream: NonEmptyStringSchema,
+                  record_key: NonEmptyStringSchema,
+                  connector_id: NonEmptyStringSchema,
+                  record_url: { type: "string" },
+                  emitted_at: NonEmptyStringSchema,
+                  matched_fields: {
+                    type: "array",
+                    items: NonEmptyStringSchema,
+                  },
+                  retrieval_mode: { const: "hybrid" },
+                  retrieval_sources: {
+                    type: "array",
+                    minItems: 1,
+                    items: { type: "string", enum: ["lexical", "semantic"] },
+                  },
+                  scores: {
+                    type: "object",
+                    additionalProperties: false,
+                    properties: {
+                      lexical: RetrievalScoreSchema,
+                      semantic: RetrievalScoreSchema,
+                    },
+                  },
+                  snippet: {
+                    type: "object",
+                    additionalProperties: false,
+                    properties: {
+                      field: NonEmptyStringSchema,
+                      text: { type: "string" },
+                    },
+                    required: ["field", "text"],
+                  },
+                },
+                required: [
+                  "object",
+                  "stream",
+                  "record_key",
+                  "connector_id",
+                  "emitted_at",
+                  "matched_fields",
+                  "retrieval_mode",
+                  "retrieval_sources",
+                ],
+              },
+            },
+          },
+          required: ["object", "data", "has_more"],
+        },
+      },
+      400: {
+        schema: ErrorObjectSchema,
+        description: "Invalid request (e.g. unsupported v1 query parameter, missing q, cursor parameter)",
+      },
+      401: { schema: ErrorObjectSchema, description: "Missing or invalid access token" },
+      403: { schema: ErrorObjectSchema, description: "Grant does not permit a named stream (client tokens only)" },
+      404: { schema: ErrorObjectSchema, description: "Hybrid retrieval not advertised on this server" },
     },
   },
   {

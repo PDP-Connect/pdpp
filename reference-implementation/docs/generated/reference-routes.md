@@ -21,6 +21,7 @@ Generated from `packages/reference-contract/src/public/`. Do not edit by hand.
 | **GET** | `/v1/streams/{stream}/records/{id}` | `getRecord` | Fetch a single record by primary key under grant enforcement, with optional declared expansion. |
 | **GET** | `/v1/search` | `searchRecordsLexical` | Optional lexical retrieval extension: search records across authorized streams by text. See the lexical-retrieval capability spec. |
 | **GET** | `/v1/search/semantic` | `searchRecordsSemantic` | Experimental optional extension: semantic retrieval across authorized streams by text. See the semantic-retrieval capability spec. Unstable in v1. |
+| **GET** | `/v1/search/hybrid` | `searchRecordsHybrid` | Experimental optional extension: hybrid retrieval blending lexical and semantic recall under one grant-safe result list. See the hybrid-retrieval capability spec. |
 | **POST** | `/v1/blobs` | `uploadBlob` | Upload connector/runtime-owned blob bytes for a bound record. |
 | **GET** | `/v1/blobs/{blob_id}` | `getBlob` | Fetch blob bytes authorized by the caller having discovered the referencing record under grant. |
 
@@ -363,6 +364,27 @@ Experimental optional extension: semantic retrieval across authorized streams by
 - `401` — Missing or invalid access token
 - `403` — Grant does not permit a named stream (client tokens only)
 - `410` — Cursor expired or refers to an unknown snapshot
+
+## searchRecordsHybrid
+
+`GET /v1/search/hybrid`
+
+Experimental optional extension: hybrid retrieval blending lexical and semantic recall under one grant-safe result list. See the hybrid-retrieval capability spec.
+
+### Query parameters
+
+- `q` — string
+- `limit` — integer · min: 1 · max: 100
+- `streams` — any
+- `filter` — object
+
+### Responses
+
+- `200` — JSON body
+- `400` — Invalid request (e.g. unsupported v1 query parameter, missing q, cursor parameter)
+- `401` — Missing or invalid access token
+- `403` — Grant does not permit a named stream (client tokens only)
+- `404` — Hybrid retrieval not advertised on this server
 
 ## uploadBlob
 

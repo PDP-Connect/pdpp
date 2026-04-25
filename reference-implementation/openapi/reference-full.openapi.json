@@ -409,6 +409,53 @@
                             "max_limit",
                             "index_state"
                           ]
+                        },
+                        "hybrid_retrieval": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "properties": {
+                            "supported": {
+                              "type": "boolean"
+                            },
+                            "stability": {
+                              "type": "string",
+                              "enum": [
+                                "experimental"
+                              ]
+                            },
+                            "endpoint": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "cross_stream": {
+                              "type": "boolean"
+                            },
+                            "default_limit": {
+                              "type": "integer",
+                              "minimum": 1
+                            },
+                            "max_limit": {
+                              "type": "integer",
+                              "minimum": 1
+                            },
+                            "cursor_supported": {
+                              "type": "boolean"
+                            },
+                            "sources": {
+                              "type": "array",
+                              "minItems": 2,
+                              "items": {
+                                "type": "string",
+                                "enum": [
+                                  "lexical",
+                                  "semantic"
+                                ]
+                              }
+                            }
+                          },
+                          "required": [
+                            "supported"
+                          ]
                         }
                       }
                     }
@@ -4982,6 +5029,413 @@
           },
           "410": {
             "description": "Cursor expired or refers to an unknown snapshot",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$id": "pdpp/common/PdppError",
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "type": {
+                          "type": "string"
+                        },
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "param": {
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "code",
+                        "message",
+                        "request_id"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/search/hybrid": {
+      "get": {
+        "operationId": "searchRecordsHybrid",
+        "tags": [
+          "records",
+          "hybrid-retrieval"
+        ],
+        "summary": "Experimental optional extension: hybrid retrieval blending lexical and semantic recall under one grant-safe result list. See the hybrid-retrieval capability spec.",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "q",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            }
+          },
+          {
+            "in": "query",
+            "name": "streams",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "minItems": 1
+                }
+              ]
+            }
+          },
+          {
+            "in": "query",
+            "name": "filter",
+            "required": false,
+            "schema": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "properties": {
+                    "object": {
+                      "const": "list"
+                    },
+                    "url": {
+                      "type": "string"
+                    },
+                    "has_more": {
+                      "type": "boolean"
+                    },
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "additionalProperties": true,
+                        "properties": {
+                          "object": {
+                            "const": "search_result"
+                          },
+                          "stream": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "record_key": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "connector_id": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "record_url": {
+                            "type": "string"
+                          },
+                          "emitted_at": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "matched_fields": {
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "minLength": 1
+                            }
+                          },
+                          "retrieval_mode": {
+                            "const": "hybrid"
+                          },
+                          "retrieval_sources": {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": {
+                              "type": "string",
+                              "enum": [
+                                "lexical",
+                                "semantic"
+                              ]
+                            }
+                          },
+                          "scores": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                              "lexical": {
+                                "type": "object",
+                                "additionalProperties": false,
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "enum": [
+                                      "bm25",
+                                      "semantic_distance"
+                                    ]
+                                  },
+                                  "value": {
+                                    "type": "number"
+                                  },
+                                  "order": {
+                                    "type": "string",
+                                    "enum": [
+                                      "higher_is_better",
+                                      "lower_is_better"
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "kind",
+                                  "value",
+                                  "order"
+                                ]
+                              },
+                              "semantic": {
+                                "type": "object",
+                                "additionalProperties": false,
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "enum": [
+                                      "bm25",
+                                      "semantic_distance"
+                                    ]
+                                  },
+                                  "value": {
+                                    "type": "number"
+                                  },
+                                  "order": {
+                                    "type": "string",
+                                    "enum": [
+                                      "higher_is_better",
+                                      "lower_is_better"
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "kind",
+                                  "value",
+                                  "order"
+                                ]
+                              }
+                            }
+                          },
+                          "snippet": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                              "field": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "text": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "field",
+                              "text"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "object",
+                          "stream",
+                          "record_key",
+                          "connector_id",
+                          "emitted_at",
+                          "matched_fields",
+                          "retrieval_mode",
+                          "retrieval_sources"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "object",
+                    "data",
+                    "has_more"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (e.g. unsupported v1 query parameter, missing q, cursor parameter)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$id": "pdpp/common/PdppError",
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "type": {
+                          "type": "string"
+                        },
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "param": {
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "code",
+                        "message",
+                        "request_id"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid access token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$id": "pdpp/common/PdppError",
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "type": {
+                          "type": "string"
+                        },
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "param": {
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "code",
+                        "message",
+                        "request_id"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Grant does not permit a named stream (client tokens only)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$id": "pdpp/common/PdppError",
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "type": {
+                          "type": "string"
+                        },
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "param": {
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "code",
+                        "message",
+                        "request_id"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Hybrid retrieval not advertised on this server",
             "content": {
               "application/json": {
                 "schema": {

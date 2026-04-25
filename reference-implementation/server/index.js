@@ -9,6 +9,7 @@ import { createHash } from 'node:crypto';
 import { closeDb, getDb, initDb } from './db.js';
 import {
   buildAuthorizationServerMetadata,
+  buildHybridRetrievalCapability,
   buildLexicalRetrievalCapability,
   buildProtectedResourceMetadata,
   buildSemanticRetrievalCapability,
@@ -29,6 +30,7 @@ import {
   listStreams, listAllStreams, getSyncState, putSyncState, getDatasetSummary,
 } from './records.js';
 import { getLexicalIndexBackfillProgress, lexicalIndexBackfillForManifest, runLexicalSearch } from './search.js';
+import { runHybridSearch } from './search-hybrid.js';
 import { reconcilePolyfillManifests } from './polyfill-manifest-reconcile.ts';
 import {
   computeIndexState as computeSemanticIndexState,
@@ -2387,6 +2389,29 @@ function buildRsApp(opts = {}) {
       }
     }
 
+    // Hybrid retrieval experimental extension advertisement. Truthfulness
+    // rules: only publish when BOTH lexical and semantic retrieval are
+    // advertised with supported:true on this server, so the composition
+    // under one grant is honest. opts.hybridRetrievalSupported === false
+    // suppresses it; opts.hybridRetrievalCapability overrides the shape.
+    // v1 hybrid reports cursor_supported:false because the endpoint
+    // rejects cursor parameters — see search-hybrid.js module header.
+    if (opts.hybridRetrievalCapability) {
+      capabilities.hybrid_retrieval = opts.hybridRetrievalCapability;
+    } else if (opts.hybridRetrievalSupported !== false) {
+      const lexSupported = capabilities.lexical_retrieval?.supported === true;
+      const semSupported = capabilities.semantic_retrieval?.supported === true;
+      if (lexSupported && semSupported) {
+        const hybridCap = buildHybridRetrievalCapability({
+          lexicalAvailable: true,
+          semanticAvailable: true,
+        });
+        if (hybridCap && hybridCap.supported === true) {
+          capabilities.hybrid_retrieval = hybridCap;
+        }
+      }
+    }
+
     res.json(
       buildProtectedResourceMetadata({
         resource,
@@ -3194,6 +3219,97 @@ function buildRsApp(opts = {}) {
     });
   }
 
+  // Experimental — public hybrid retrieval. Composes lexical + semantic under
+  // the same grant; deduplicates by (connector_id, stream, record_key); emits
+  // per-source provenance and score objects. Registered only when BOTH
+  // underlying surfaces are active on this server. See:
+  //   openspec/changes/define-hybrid-retrieval/specs/hybrid-retrieval/spec.md
+  const hybridBackendAtRegistration = getSemanticBackend();
+  const hybridSemanticAvailable = !!(
+    hybridBackendAtRegistration
+    && hybridBackendAtRegistration.available()
+    && opts.semanticRetrievalSupported !== false
+  );
+  const hybridLexicalAvailable = opts.lexicalRetrievalSupported !== false;
+  if (
+    opts.hybridRetrievalSupported !== false
+    && hybridLexicalAvailable
+    && hybridSemanticAvailable
+  ) {
+    app.get('/v1/search/hybrid', { contract: 'searchRecordsHybrid' }, requireToken, async (req, res) => {
+      let queryContext = null;
+      try {
+        const { tokenInfo } = req;
+        const queryId = ensureRequestId(res);
+        const { actorType, actorId, traceId, scenarioId } = buildQueryActorContext(tokenInfo);
+        setReferenceTraceId(res, traceId);
+
+        const isOwner = tokenInfo.pdpp_token_kind === 'owner';
+        queryContext = {
+          tokenInfo,
+          queryId,
+          actorType,
+          actorId,
+          traceId,
+          scenarioId,
+          sourceDescriptor: isOwner ? null : buildSourceDescriptor(tokenInfo.grant?.source),
+          streamId: null,
+          queryData: { query_shape: 'search_hybrid' },
+        };
+        await emitQueryReceived(queryContext, req);
+
+        const { envelope, disclosureData } = await runHybridSearch({
+          req,
+          opts,
+          tokenInfo,
+          resolveOwnerVisibleConnectorIds: async () => {
+            const native = resolveNativeManifest(opts);
+            if (native?.storage_binding?.connector_id) {
+              return [native.storage_binding.connector_id];
+            }
+            return await listRegisteredConnectorIds();
+          },
+          resolveOwnerScopeForConnector: (connectorId) => ({
+            public_scope: 'polyfill',
+            source: { binding_kind: 'connector', connector_id: connectorId },
+            storage_binding: { connector_id: connectorId },
+          }),
+          resolveOwnerManifestFromScope: (ownerScope) =>
+            resolveOwnerManifestFromScope(ownerScope, opts),
+          buildOwnerReadGrantForManifest: (manifest) => ({
+            streams: (manifest?.streams || []).map((s) => ({ name: s.name })),
+          }),
+          resolveGrantManifest: (info) => resolveGrantManifest(info, opts),
+        });
+
+        await emitSpineEvent({
+          event_type: 'disclosure.served',
+          trace_id: traceId,
+          scenario_id: scenarioId,
+          actor_type: actorType,
+          actor_id: actorId,
+          subject_type: 'subject',
+          subject_id: tokenInfo.subject_id || null,
+          object_type: 'query',
+          object_id: queryId,
+          status: 'succeeded',
+          grant_id: tokenInfo.grant_id || null,
+          client_id: tokenInfo.client_id || null,
+          stream_id: null,
+          token_id: req.headers.authorization?.slice(7) || null,
+          data: disclosureData,
+        });
+
+        res.json(envelope);
+      } catch (err) {
+        if (queryContext) {
+          return await rejectQuery(res, req, queryContext, err);
+        }
+        handleError(res, err);
+      }
+    });
+  }
+
   app.post('/v1/blobs', { contract: 'uploadBlob' }, requireToken, requireOwner, async (req, res) => {
     try {
       const connectorId = resolveSingleNonEmptyQueryValue(req.query.connector_id, 'connector_id');
@@ -3607,6 +3723,12 @@ export async function startServer(opts = {}) {
     // builder.
     semanticRetrievalSupported: opts.semanticRetrievalSupported,
     semanticRetrievalCapability: opts.semanticRetrievalCapability,
+    // Hybrid retrieval experimental extension knobs — see search-hybrid.js +
+    // the metadata route. Forwarded verbatim so test harnesses and operator
+    // configs reach both the route registration gate and the advertisement
+    // builder.
+    hybridRetrievalSupported: opts.hybridRetrievalSupported,
+    hybridRetrievalCapability: opts.hybridRetrievalCapability,
     referenceRevision: opts.referenceRevision,
   });
   const rsServer = await rsApp.listen(requestedRsPort, bindHost);
