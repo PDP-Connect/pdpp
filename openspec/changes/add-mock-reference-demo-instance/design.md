@@ -92,3 +92,46 @@ The sandbox should show endpoint examples and copyable curl snippets against `/s
 ## Open Questions
 
 None blocking for the first slice. Future work may decide whether demo state should support per-visitor mutations, shareable sessions, or a separate subdomain. Those are intentionally deferred until the deterministic demo proves useful.
+
+## Owner Audit: The First Slice Is Not Yet The Intended Sandbox
+
+After implementation, owner review found a product-architecture mismatch. The first slice created a useful public demo portal with callable mock APIs, but it did not create the stronger experience originally intended: the real reference dashboard experience with its AS/RS dependencies swapped for deterministic mock AS/RS behavior.
+
+That distinction matters. A reviewer should feel like they are using PDPP's reference implementation in a safe sandbox environment, not a parallel tutorial app that resembles the reference. The current implementation is useful scaffolding, but it should be treated as an intermediate state until the dashboard is factored behind a live/mock data-source seam.
+
+### Prior-art findings
+
+- Stripe's sandbox model is an isolated environment that can be used from the Dashboard, CLI, and API. The core experience remains Stripe; the environment changes from live to simulated and isolated.
+- Stripe test mode similarly uses API keys to create and retrieve simulated data, while dashboard state and integration flows remain familiar.
+- Plaid Sandbox supplies rich test data and special sandbox-only endpoints for scenario setup, but consumers still exercise the same Link/API integration shape.
+- Twilio test credentials are used the same way as live credentials; inputs are validated as if real, but no charging, state mutation, or carrier/real-world connection happens.
+- Storybook/MSW's network-mocking pattern reinforces the same principle at UI scale: components keep making real network-shaped requests while the network layer supplies mocked responses.
+
+### Current implementation audit
+
+What is good:
+
+- The seeded data is deterministic, fictional, and safe to expose publicly.
+- `/sandbox/v1/**`, `/sandbox/_ref/**`, and `/sandbox/.well-known/**` are callable and share builders with the sandbox UI.
+- The public site can demonstrate API shapes without Docker, `.env.local`, SQLite, credentials, or a running reference server.
+- The live `/dashboard/**` owner boundary was not weakened.
+
+What is wrong for the intended product:
+
+- `/sandbox/**` is implemented as a forked route family with bespoke pages and a sandbox shell rather than the live dashboard bound to a mock data source.
+- Many sandbox pages call response builders directly. They do not prove that the dashboard data-access layer can run against a mock AS/RS.
+- The UI copy and navigation still feel pedagogical. The primary surface should feel like a working demo instance, with explanatory material demoted to banners, empty states, help panels, API examples, and `/sandbox/walkthrough`.
+- The implementation cannot catch regressions in the real dashboard's records/search/grants/runs/traces experience because those pages are not what the visitor is using.
+
+### Corrective decision
+
+The intended architecture is a two-source dashboard:
+
+- `live` source: current `/dashboard/**` owner-authenticated clients that talk to the configured AS/RS.
+- `sandbox` source: deterministic mock AS/RS source backed by the seeded dataset and demo route handlers.
+
+The reusable unit should be dashboard feature components and data contracts, not cloned pages. `/dashboard/**` binds the feature components to the live source and owner gate. `/sandbox/**` binds the same feature components to the sandbox source, shows persistent demo labeling, and never mints owner tokens or calls the live AS/RS.
+
+For Next.js server components, this does not require browser-only MSW. The seam can be a typed server-side data-source interface plus route handlers that expose the same seeded state over `/sandbox/v1/**` and `/sandbox/_ref/**`. MSW remains useful for client-side/story-level tests, but the public deployed sandbox should not depend on a service worker.
+
+The current mock API routes and seeded dataset should be retained. The corrective tranche should replace forked dashboard-like pages with shared dashboard feature components wherever practical, leaving only sandbox-specific chrome, demo labels, and API-example/walkthrough pages as bespoke sandbox UI.

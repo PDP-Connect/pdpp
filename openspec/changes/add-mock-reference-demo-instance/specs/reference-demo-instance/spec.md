@@ -16,19 +16,41 @@ The public sandbox SHALL provide a mock reference demo instance that presents da
 
 ### Requirement: Demo dashboard SHALL cover the core reference journey
 
-The mock reference demo instance SHALL expose dashboard-like pages for the core reference journey: overview, records, search, grants, runs, traces, and deployment/capability inspection. Pages MAY be simpler than the live dashboard, but they SHALL use consistent concepts and labels.
+The mock reference demo instance SHALL expose the core reference dashboard journey: overview, records, search, grants, runs, traces, and deployment/capability inspection. The primary sandbox experience SHALL reuse the live dashboard's feature components and data contracts wherever practical, binding them to deterministic mock AS/RS data rather than cloning a tutorial-specific dashboard.
 
 #### Scenario: Visitor browses records
 - **WHEN** a visitor opens the sandbox records surface
 - **THEN** they SHALL be able to inspect fictional connectors, streams, records, stream metadata, and at least one record detail view
+- **AND** the interaction model SHALL substantially match the live dashboard records experience
 
 #### Scenario: Visitor searches data
 - **WHEN** a visitor uses the sandbox search surface
 - **THEN** they SHALL be able to search the fictional records and inspect which stream/record matched
+- **AND** the interaction model SHALL substantially match the live dashboard search experience
 
 #### Scenario: Visitor inspects control-plane evidence
 - **WHEN** a visitor opens sandbox grants, runs, or traces
 - **THEN** they SHALL see fictional but coherent timelines that demonstrate request, consent, scoped access, revocation, run success, run failure, and reference-only event evidence where applicable
+- **AND** timeline rendering SHALL substantially match the live dashboard timeline experience
+
+### Requirement: Sandbox dashboard SHALL use a mock data-source seam
+
+The mock reference demo instance SHALL exercise the real dashboard feature layer through a typed data-source seam. `/dashboard/**` SHALL bind that feature layer to live owner-authenticated AS/RS clients. `/sandbox/**` SHALL bind the same feature layer to deterministic mock AS/RS state. Sandbox-specific pages MAY exist for API examples, walkthroughs, and educational documentation, but the primary records/search/grants/runs/traces experience SHALL NOT be a forked tutorial implementation.
+
+#### Scenario: Live dashboard renders
+- **WHEN** `/dashboard/**` renders a dashboard feature
+- **THEN** it SHALL use the live data source
+- **AND** it SHALL keep owner authentication and live AS/RS behavior unchanged
+
+#### Scenario: Sandbox dashboard renders
+- **WHEN** `/sandbox/**` renders the corresponding dashboard feature
+- **THEN** it SHALL use the sandbox data source
+- **AND** it SHALL NOT mint owner tokens, forward owner-session cookies, or call the live AS/RS
+- **AND** it SHALL retain persistent demo labeling
+
+#### Scenario: Dashboard feature changes
+- **WHEN** a dashboard records/search/grants/runs/traces feature changes in a way that affects the user journey
+- **THEN** the sandbox-backed version SHALL either inherit the change through shared feature components or explicitly document why the sandbox diverges
 
 ### Requirement: Demo APIs SHALL be callable and share state with the UI
 

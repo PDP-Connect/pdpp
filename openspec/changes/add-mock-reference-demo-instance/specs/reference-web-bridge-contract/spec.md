@@ -17,5 +17,5 @@ Website routes that expose mock AS/RS behavior for the public sandbox SHALL rema
 
 #### Scenario: Sandbox dashboard fetches demo data
 - **WHEN** `/sandbox/**` renders dashboard-like demo state
-- **THEN** it SHALL use sandbox-specific demo clients or response builders
+- **THEN** it SHALL use a sandbox data-source implementation compatible with the dashboard feature layer
 - **AND** it SHALL NOT mint owner tokens, forward owner-session cookies, or call the live AS/RS
