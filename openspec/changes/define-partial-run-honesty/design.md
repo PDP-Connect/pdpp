@@ -10,6 +10,14 @@ Make partial connector runs inspectable and safe to reason about. A run can be u
 - `known_gaps`: durable summary of what the run did not collect and why.
 - recovery contract: a machine-readable hint about whether rerun, credentials, manual action, selector update, or upstream unblock is the next step.
 
+## Slice Decisions
+
+- Initial gap taxonomy is reference-runtime only: `skip_result`, `interaction_required`, `run_failed`, and `checkpoint_commit`.
+- Recovery hints are bounded to `retry_by_runtime`, `retry_on_connector_upgrade`, `refresh_credentials`, `manual_action_required`, `update_selector`, `upstream_unblock`, `not_retriable`, and `unknown`.
+- Runtime timeline payloads keep `run.stream_skipped` as the per-skip event and add a terminal `known_gaps` array plus `known_gaps_summary` on `run.completed` / `run.failed`.
+- Gap payloads may carry bounded `scope.resource_ids` and `scope.time_range` when a connector supplies them; arbitrary connector payloads, raw interaction responses, credentials, cookies, OTPs, and state cursors are not copied into gap payloads.
+- Scheduler and reference control-plane summaries forward `known_gaps` for observability only. This slice does not add dashboard rendering or retry execution.
+
 ## Boundary
 
 This is initially reference-runtime behavior. If later implementations need interop around partial-run semantics, the relevant parts can graduate into the Collection Profile or a sibling profile.

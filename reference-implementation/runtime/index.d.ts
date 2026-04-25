@@ -38,6 +38,7 @@ export interface RuntimeRunConnectorOptions {
 export interface RuntimeRunConnectorResult {
   checkpoint_summary?: Record<string, unknown> | null;
   connector_error?: { message?: string; retryable?: boolean | null } | null;
+  known_gaps?: Record<string, unknown>[] | null;
   message?: string;
   records_emitted?: number;
   reported_records_emitted?: number | null;

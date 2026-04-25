@@ -63,6 +63,7 @@ export interface RunSource {
 export interface RunConnectorResult {
   readonly checkpoint_summary?: Record<string, unknown> | null;
   readonly connector_error?: ConnectorError | null;
+  readonly known_gaps?: readonly Record<string, unknown>[] | null;
   readonly message?: string;
   readonly records_emitted?: number;
   readonly reported_records_emitted?: number | null;
@@ -82,6 +83,7 @@ interface RunConnectorError {
   readonly checkpoint_summary?: Record<string, unknown> | null;
   readonly connector_error?: ConnectorError | null;
   readonly failure_reason?: string | null;
+  readonly known_gaps?: readonly Record<string, unknown>[] | null;
   readonly message?: string;
   readonly records_emitted?: number;
   readonly reported_records_emitted?: number | null;
@@ -116,6 +118,7 @@ export interface RunRecord {
   readonly connectorId: string;
   readonly error?: string;
   readonly failureReason?: string | null;
+  readonly knownGaps: readonly Record<string, unknown>[];
   readonly recordsEmitted: number;
   readonly reportedRecordsEmitted?: number | null;
   readonly runId?: string | null;
@@ -237,6 +240,7 @@ function describeFailedRunResult(result: RunConnectorResult): RunConnectorError 
     failure_reason: result.terminal_reason === "connector_protocol_violation" ? result.terminal_reason : null,
     terminal_reason: result.terminal_reason || null,
     connector_error: result.connector_error || null,
+    known_gaps: result.known_gaps || null,
   };
 }
 
@@ -297,6 +301,7 @@ function buildSingleUseExhaustedSkip(connectorId: string): RunRecord {
     status: "skipped",
     recordsEmitted: 0,
     checkpointSummary: null,
+    knownGaps: [],
     startedAt: nowIso(),
     completedAt: nowIso(),
     error: "single_use grant already consumed",
@@ -311,6 +316,7 @@ function buildDisabledGrantSkip(connectorId: string, terminalReason: TerminalGra
     status: "skipped",
     recordsEmitted: 0,
     checkpointSummary: null,
+    knownGaps: [],
     terminalReason,
     startedAt: nowIso(),
     completedAt: nowIso(),
@@ -339,6 +345,7 @@ function buildSuccessOrFailureRecord({
     recordsEmitted: result.records_emitted || 0,
     reportedRecordsEmitted: result.reported_records_emitted ?? null,
     checkpointSummary: result.checkpoint_summary || null,
+    knownGaps: result.known_gaps || [],
     runId: result.run_id || null,
     traceId: result.trace_id || null,
     failureReason: null,
@@ -366,6 +373,7 @@ function buildExhaustedFailureRecord({
     recordsEmitted: lastError?.records_emitted ?? 0,
     reportedRecordsEmitted: lastError?.reported_records_emitted ?? null,
     checkpointSummary: lastError?.checkpoint_summary || null,
+    knownGaps: lastError?.known_gaps || [],
     runId: lastError?.run_id || null,
     traceId: lastError?.trace_id || null,
     failureReason: lastError?.failure_reason || null,

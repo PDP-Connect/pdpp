@@ -2036,8 +2036,140 @@ rl.on('line', (line) => {
       assert.equal(skippedEvent.data.source?.connector_id, connectorId);
       assert.equal(skippedEvent.data.reason, 'rate_limited');
       assert.equal(skippedEvent.data.message, 'Platform returned 429');
+      assert.equal(skippedEvent.data.known_gap.kind, 'skip_result');
+      assert.equal(skippedEvent.data.known_gap.recovery_hint.action, 'retry_by_runtime');
+
+      const completedEvent = (runTimeline.data || []).find((event) => event.event_type === 'run.completed');
+      assert.ok(completedEvent, 'expected run.completed event');
+      assert.equal(completedEvent.data.known_gaps.length, 1);
+      assert.equal(completedEvent.data.known_gaps[0].reason, 'rate_limited');
+      assert.deepEqual(completedEvent.data.known_gaps_summary.by_reason, { rate_limited: 1 });
     } finally {
       cleanup();
+      await closeServer(server);
+    }
+  });
+
+  await t.test('runtime reports known gaps for partial flush then failed terminal state', async () => {
+    const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
+    const { asPort, rsPort } = server;
+    const { ownerToken, connectorId } = await setupConnector(server, asPort);
+    const asUrl = `http://localhost:${asPort}`;
+
+    const { connectorPath, cleanup } = createTestConnector([
+      {
+        type: 'RECORD',
+        stream: 'items',
+        key: 'partial_1',
+        data: { id: 'partial_1', value: 'landed before failure' },
+        emitted_at: new Date().toISOString(),
+      },
+      { type: 'STATE', stream: 'items', cursor: { last_id: 'partial_1' } },
+      {
+        type: 'DONE',
+        status: 'failed',
+        records_emitted: 1,
+        error: { message: 'password=supersecret upstream 500', retryable: true },
+      },
+    ]);
+
+    try {
+      const result = await runConnector({
+        connectorPath,
+        connectorId,
+        ownerToken,
+        manifest: MINIMAL_MANIFEST,
+        state: null,
+        collectionMode: 'full_refresh',
+        persistState: true,
+        rsUrl: `http://localhost:${rsPort}`,
+        onInteraction: async () => ({}),
+      });
+
+      assert.equal(result.status, 'failed');
+      assert.equal(result.records_emitted, 1);
+      assert.ok(result.known_gaps.some((gap) => gap.kind === 'run_failed'));
+
+      const { body: runTimeline } = await fetchJson(`${asUrl}/_ref/runs/${encodeURIComponent(result.run_id)}/timeline`);
+      const failedEvent = (runTimeline.data || []).find((event) => event.event_type === 'run.failed');
+      assert.ok(failedEvent, 'expected run.failed event');
+      assert.equal(failedEvent.data.records_flushed, 1);
+      assert.equal(failedEvent.data.checkpoint_commit_status, 'not_committed');
+      assert.ok(failedEvent.data.known_gaps.some((gap) => gap.kind === 'run_failed'));
+      assert.ok(failedEvent.data.known_gaps.some((gap) => gap.kind === 'checkpoint_commit'));
+      const runFailedGap = failedEvent.data.known_gaps.find((gap) => gap.kind === 'run_failed');
+      assert.match(runFailedGap.message, /\[REDACTED\]/);
+      assert.doesNotMatch(JSON.stringify(failedEvent.data.known_gaps), /supersecret/);
+    } finally {
+      cleanup();
+      await closeServer(server);
+    }
+  });
+
+  await t.test('runtime reports manual-action known gaps without persisting interaction responses', async () => {
+    const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
+    const { asPort, rsPort } = server;
+    const { ownerToken, connectorId } = await setupConnector(server, asPort);
+    const asUrl = `http://localhost:${asPort}`;
+
+    const tmpDir = mkdtempSync(join(tmpdir(), 'pdpp-manual-gap-'));
+    const connectorPath = join(tmpDir, 'connector.mjs');
+    writeFileSync(connectorPath, `
+import { createInterface } from 'readline';
+const rl = createInterface({ input: process.stdin, terminal: false });
+rl.on('line', (line) => {
+  const msg = JSON.parse(line);
+  if (msg.type === 'START') {
+    process.stdout.write(JSON.stringify({
+      type: 'INTERACTION',
+      request_id: 'manual_login',
+      stream: 'items',
+      kind: 'manual_action',
+      message: 'Complete platform login',
+    }) + '\\n');
+    return;
+  }
+  if (msg.type === 'INTERACTION_RESPONSE') {
+    process.stdout.write(JSON.stringify({
+      type: 'DONE',
+      status: 'cancelled',
+      records_emitted: 0,
+      error: { message: 'manual login cancelled', retryable: false },
+    }) + '\\n');
+    rl.close();
+    process.exit(1);
+  }
+});
+`, 'utf-8');
+
+    try {
+      const result = await runConnector({
+        connectorPath,
+        connectorId,
+        ownerToken,
+        manifest: MINIMAL_MANIFEST,
+        state: null,
+        collectionMode: 'full_refresh',
+        persistState: true,
+        rsUrl: `http://localhost:${rsPort}`,
+        onInteraction: async () => ({
+          type: 'INTERACTION_RESPONSE',
+          request_id: 'manual_login',
+          status: 'cancelled',
+          data: { password: 'supersecret', otp: '123456' },
+        }),
+      });
+
+      assert.equal(result.status, 'cancelled');
+      const { body: runTimeline } = await fetchJson(`${asUrl}/_ref/runs/${encodeURIComponent(result.run_id)}/timeline`);
+      const failedEvent = (runTimeline.data || []).find((event) => event.event_type === 'run.failed');
+      assert.ok(failedEvent, 'expected run.failed event for cancelled terminal status');
+      const interactionGap = failedEvent.data.known_gaps.find((gap) => gap.kind === 'interaction_required');
+      assert.ok(interactionGap, 'expected interaction-required known gap');
+      assert.equal(interactionGap.recovery_hint.action, 'manual_action_required');
+      assert.doesNotMatch(JSON.stringify(runTimeline.data), /supersecret|123456/);
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
       await closeServer(server);
     }
   });

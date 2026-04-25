@@ -96,7 +96,7 @@ async function registerConnector(asUrl, manifest) {
   assert.equal(registerResp.status, 201, 'register connector');
 }
 
-async function emitSyntheticRun({ connectorId, runId, status, occurredAt }) {
+async function emitSyntheticRun({ connectorId, runId, status, occurredAt, knownGaps = [] }) {
   const trace = createTraceContext({ scenarioId: `scn_${runId}` });
   await emitSpineEvent({
     event_type: 'run.started',
@@ -140,6 +140,7 @@ async function emitSyntheticRun({ connectorId, runId, status, occurredAt }) {
       checkpoint_commit_status: 'not_committed',
       state_streams_staged: 0,
       state_streams_committed: 0,
+      ...(knownGaps.length ? { known_gaps: knownGaps } : {}),
       ...(status === 'failed' ? { reason: 'synthetic_failure' } : {}),
     },
   });
@@ -189,6 +190,34 @@ test('GET /_ref/connectors finds connector runs that are older than newer runs f
     assert.equal(entry.last_run?.run_id, 'run_spotify_older_success');
     assert.equal(entry.last_run?.status, 'succeeded');
     assert.equal(entry.last_successful_run?.run_id, 'run_spotify_older_success');
+  });
+});
+
+test('GET /_ref/connectors projects known gaps from the latest run summary', async () => {
+  await withHarness(async ({ asUrl, spotifyManifest }) => {
+    const connectorId = spotifyManifest.connector_id;
+    const knownGaps = [
+      {
+        kind: 'skip_result',
+        stream: 'top_artists',
+        reason: 'http_429',
+        recovery_hint: { action: 'retry_by_runtime', retryable: true },
+      },
+    ];
+    await emitSyntheticRun({
+      connectorId,
+      runId: 'run_spotify_known_gap',
+      status: 'succeeded',
+      occurredAt: '2026-04-24T10:00:00.000Z',
+      knownGaps,
+    });
+
+    const { status, body } = await fetchJson(`${asUrl}/_ref/connectors`);
+    assert.equal(status, 200);
+    const entry = body.data.find((row) => row.connector_id === connectorId);
+    assert.ok(entry, 'spotify connector should be listed');
+    assert.equal(entry.last_run?.run_id, 'run_spotify_known_gap');
+    assert.deepEqual(entry.last_run?.known_gaps, knownGaps);
   });
 });
 

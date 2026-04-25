@@ -720,6 +720,99 @@ rl.on('line', (line) => {
   }
 });
 
+test('scheduler preserves known gaps from partial connector runs', async () => {
+  const manifest = {
+    protocol_version: '0.1.0',
+    connector_id: 'https://registry.pdpp.org/connectors/scheduler-known-gap-test',
+    version: '1.0.0',
+    display_name: 'Scheduler Known Gap Test Connector',
+    streams: [
+      {
+        name: 'items',
+        semantics: 'append_only',
+        schema: {
+          type: 'object',
+          properties: {
+            id: { type: 'string' },
+          },
+          required: ['id'],
+        },
+        primary_key: ['id'],
+      },
+    ],
+  };
+  const tmpDir = mkdtempSync(join(tmpdir(), 'pdpp-scheduler-known-gap-'));
+  const connectorPath = join(tmpDir, 'connector.mjs');
+  writeFileSync(connectorPath, `
+import { createInterface } from 'readline';
+const rl = createInterface({ input: process.stdin, terminal: false });
+rl.on('line', (line) => {
+  const msg = JSON.parse(line);
+  if (msg.type !== 'START') return;
+  process.stdout.write(JSON.stringify({
+    type: 'SKIP_RESULT',
+    stream: 'items',
+    reason: 'http_429',
+    message: 'provider returned 429',
+    resource_ids: ['item_1'],
+  }) + '\\n');
+  process.stdout.write(JSON.stringify({ type: 'DONE', status: 'succeeded', records_emitted: 0 }) + '\\n');
+  rl.close();
+  process.exit(0);
+});
+`, 'utf-8');
+
+  const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
+  const asUrl = `http://localhost:${server.asPort}`;
+  const rsUrl = `http://localhost:${server.rsPort}`;
+  const completedRuns = [];
+
+  try {
+    const registerResp = await fetchJson(`${asUrl}/connectors`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(manifest),
+    });
+    assert.equal(registerResp.status, 201);
+
+    const ownerToken = await issueOwnerToken(asUrl, 'scheduler_known_gap_user');
+    const scheduler = createScheduler({
+      connectors: [
+        {
+          connectorId: manifest.connector_id,
+          connectorPath,
+          manifest,
+          ownerToken,
+          intervalMs: 60_000,
+          maxRetries: 0,
+        },
+      ],
+      rsUrl,
+      onInteraction: async () => ({ status: 'cancelled' }),
+      onRunComplete: (record) => completedRuns.push(record),
+      getState: async () => null,
+      setState: async () => {},
+    });
+
+    scheduler.start();
+    await waitFor(() => completedRuns.length === 1);
+    scheduler.stop();
+
+    const [record] = completedRuns;
+    assert.equal(record.status, 'succeeded');
+    assert.equal(record.knownGaps.length, 1);
+    assert.equal(record.knownGaps[0].kind, 'skip_result');
+    assert.equal(record.knownGaps[0].recovery_hint.action, 'retry_by_runtime');
+    assert.deepEqual(record.knownGaps[0].scope.resource_ids, ['item_1']);
+
+    const stats = scheduler.getStats();
+    assert.deepEqual(stats[manifest.connector_id].lastRun?.knownGaps, record.knownGaps);
+  } finally {
+    rmSync(tmpDir, { recursive: true, force: true });
+    await closeServer(server);
+  }
+});
+
 test('scheduler preserves connector-declared terminal error details from cancelled runs', async () => {
   const manifest = {
     protocol_version: '0.1.0',

@@ -1,14 +1,14 @@
 ## 1. Requirements
 
-- [ ] Re-read the partial-run, cursor-finality, and gap-recovery design notes under `add-polyfill-connector-system`.
-- [ ] Decide the initial gap taxonomy and whether it is reference-only or Collection Profile candidate behavior.
-- [ ] Define the timeline payload shape for skipped streams, known gaps, and recovery hints.
+- [x] Re-read the partial-run, cursor-finality, and gap-recovery design notes under `add-polyfill-connector-system`.
+- [x] Decide the initial gap taxonomy and whether it is reference-only or Collection Profile candidate behavior.
+- [x] Define the timeline payload shape for skipped streams, known gaps, and recovery hints.
 
 ## 2. Runtime
 
-- [ ] Add or normalize `SKIP_RESULT` / skip event handling where connectors already expose bounded skips.
-- [ ] Add a run-level known-gaps summary derived from skipped streams, failed terminal state, and checkpoint commit state.
-- [ ] Ensure secrets and raw interaction responses are never persisted in gap payloads.
+- [x] Add or normalize `SKIP_RESULT` / skip event handling where connectors already expose bounded skips.
+- [x] Add a run-level known-gaps summary derived from skipped streams, failed terminal state, and checkpoint commit state.
+- [x] Ensure secrets and raw interaction responses are never persisted in gap payloads.
 
 ## 3. Dashboard
 

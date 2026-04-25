@@ -10,7 +10,7 @@
 // reference implementation exposes for its own dashboard. Clients must
 // not depend on the response shape.
 
-import { listSpineCorrelations, type SpineSummary } from "../lib/spine.ts";
+import { listSpineCorrelations, listSpineEvents, type SpineEventRecord, type SpineSummary } from "../lib/spine.ts";
 import { buildPendingConsentRequestUri, getConnectorManifest } from "./auth.js";
 import { getDb } from "./db.js";
 import {
@@ -89,6 +89,7 @@ interface ConnectorRunSummary {
   readonly failure_reason: string | null;
   readonly finished_at: string | null;
   readonly first_at: string;
+  readonly known_gaps: unknown[];
   readonly last_at: string;
   readonly run_id: string | undefined;
   readonly started_at: string;
@@ -272,12 +273,29 @@ function buildFreshness(lastUpdated: string | null = null): Freshness {
   };
 }
 
-function toConnectorRunSummary(summary: SpineSummary | null): ConnectorRunSummary | null {
+function extractKnownGaps(events: readonly SpineEventRecord[]): unknown[] {
+  for (let i = events.length - 1; i >= 0; i -= 1) {
+    const event = events[i];
+    if (!event || (event.event_type !== "run.completed" && event.event_type !== "run.failed")) {
+      continue;
+    }
+    const data = event.data;
+    if (data && typeof data === "object" && Array.isArray((data as Record<string, unknown>).known_gaps)) {
+      return (data as { known_gaps: unknown[] }).known_gaps;
+    }
+    return [];
+  }
+  return [];
+}
+
+async function toConnectorRunSummary(summary: SpineSummary | null): Promise<ConnectorRunSummary | null> {
   if (!summary) {
     return null;
   }
+  const runId = summary.id || summary.run_id || null;
+  const events = runId ? await listSpineEvents({ runId }) : [];
   return {
-    run_id: summary.id,
+    run_id: runId || undefined,
     status: summary.status,
     started_at: summary.first_at,
     finished_at: summary.status === "pending" ? null : summary.last_at,
@@ -285,6 +303,7 @@ function toConnectorRunSummary(summary: SpineSummary | null): ConnectorRunSummar
     last_at: summary.last_at,
     event_count: summary.event_count,
     failure_reason: summary.failure?.reason || null,
+    known_gaps: extractKnownGaps(events),
   };
 }
 

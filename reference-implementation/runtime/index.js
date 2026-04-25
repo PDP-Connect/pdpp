@@ -201,6 +201,20 @@ async function readIngestResponse(resp, stream, batchSize) {
  */
 const VIOLATION_STRING_MAX = 200;
 const VIOLATION_LIST_MAX = 20;
+const GAP_STRING_MAX = 200;
+const GAP_LIST_MAX = 20;
+const KNOWN_GAPS_MAX = 50;
+
+const RECOVERY_ACTIONS = new Set([
+  'retry_by_runtime',
+  'retry_on_connector_upgrade',
+  'refresh_credentials',
+  'manual_action_required',
+  'update_selector',
+  'upstream_unblock',
+  'not_retriable',
+  'unknown',
+]);
 
 function boundString(value) {
   if (typeof value !== 'string') return null;
@@ -215,6 +229,124 @@ function boundStringList(values) {
     return safe.map((v) => boundString(v));
   }
   return safe.slice(0, VIOLATION_LIST_MAX).map((v) => boundString(v));
+}
+
+function boundGapString(value) {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  const redacted = trimmed
+    .replace(/\b(bearer|token|password|passwd|cookie|secret|otp)\b\s*[:=]\s*["']?[^"',\s}]+/gi, '$1=[REDACTED]')
+    .replace(/\b\d{6}\b/g, '[REDACTED_OTP]');
+  if (redacted.length <= GAP_STRING_MAX) return redacted;
+  return redacted.slice(0, GAP_STRING_MAX - 1) + '…';
+}
+
+function boundGapStringList(values) {
+  if (!Array.isArray(values)) return null;
+  const bounded = values.map((value) => boundGapString(value)).filter(Boolean);
+  if (!bounded.length) return null;
+  return bounded.slice(0, GAP_LIST_MAX);
+}
+
+function inferRecoveryAction(reason, message, interactionKind = null) {
+  const text = `${reason || ''} ${message || ''} ${interactionKind || ''}`.toLowerCase();
+  if (/\b(otp|mfa|2fa|manual|captcha|anti[-_ ]?bot)\b/.test(text)) {
+    return 'manual_action_required';
+  }
+  if (/\b(credential|credentials|auth|login|session_expired|reauth|token)\b/.test(text)) {
+    return 'refresh_credentials';
+  }
+  if (/\b(rate|429|timeout|timed out|5\d\d|network|temporar|retry)\b/.test(text)) {
+    return 'retry_by_runtime';
+  }
+  if (/\b(template|parser|schema|version|unsupported|capability)\b/.test(text)) {
+    return 'retry_on_connector_upgrade';
+  }
+  if (/\b(selector|selectors|dom|drift)\b/.test(text)) {
+    return 'update_selector';
+  }
+  if (/\b(blocked|locked|unavailable|upstream)\b/.test(text)) {
+    return 'upstream_unblock';
+  }
+  return 'unknown';
+}
+
+function normalizeRecoveryHint(input, { reason = null, message = null, interactionKind = null } = {}) {
+  const inferredAction = inferRecoveryAction(reason, message, interactionKind);
+  if (typeof input === 'string' && RECOVERY_ACTIONS.has(input)) {
+    return { action: input, retryable: input === 'retry_by_runtime' };
+  }
+  if (input && typeof input === 'object' && !Array.isArray(input)) {
+    const action = RECOVERY_ACTIONS.has(input.action) ? input.action : inferredAction;
+    return {
+      action,
+      retryable: typeof input.retryable === 'boolean' ? input.retryable : action === 'retry_by_runtime',
+    };
+  }
+  return {
+    action: inferredAction,
+    retryable: inferredAction === 'retry_by_runtime',
+  };
+}
+
+function normalizeGapScope(msg) {
+  const scope = {};
+  const resourceIds = boundGapStringList(msg.resource_ids || msg.resources);
+  if (resourceIds) {
+    scope.resource_ids = resourceIds;
+    if (Array.isArray(msg.resource_ids || msg.resources) && (msg.resource_ids || msg.resources).length > GAP_LIST_MAX) {
+      scope.truncated = true;
+    }
+  }
+  if (msg.time_range && typeof msg.time_range === 'object' && !Array.isArray(msg.time_range)) {
+    const since = boundGapString(msg.time_range.since);
+    const until = boundGapString(msg.time_range.until);
+    if (since || until) {
+      scope.time_range = {
+        ...(since ? { since } : {}),
+        ...(until ? { until } : {}),
+      };
+    }
+  }
+  return Object.keys(scope).length ? scope : null;
+}
+
+function buildKnownGap({
+  kind,
+  stream = null,
+  reason = null,
+  message = null,
+  recoveryHint = null,
+  scope = null,
+  interactionKind = null,
+}) {
+  const safeReason = boundGapString(reason) || 'unknown';
+  const safeMessage = boundGapString(message);
+  return {
+    kind,
+    stream: boundGapString(stream),
+    reason: safeReason,
+    ...(safeMessage ? { message: safeMessage } : {}),
+    ...(scope ? { scope } : {}),
+    recovery_hint: normalizeRecoveryHint(recoveryHint, {
+      reason: safeReason,
+      message: safeMessage,
+      interactionKind,
+    }),
+  };
+}
+
+function summarizeKnownGaps(gaps) {
+  const byReason = {};
+  for (const gap of gaps) {
+    byReason[gap.reason] = (byReason[gap.reason] || 0) + 1;
+  }
+  return {
+    count: gaps.length,
+    truncated: gaps.length > KNOWN_GAPS_MAX,
+    by_reason: byReason,
+  };
 }
 
 function toPublicIngestFailure(value) {
@@ -518,6 +650,35 @@ function validateSkipResultMessage(msg, scopeByStream) {
   validateOptionalScopedStream(msg.stream, 'SKIP_RESULT', scopeByStream);
   requireOptionalNonEmptyString(msg.reason, 'SKIP_RESULT.reason');
   requireOptionalNonEmptyString(msg.message, 'SKIP_RESULT.message');
+  if (msg.recovery_hint != null) {
+    const validRecoveryHint =
+      (typeof msg.recovery_hint === 'string' && RECOVERY_ACTIONS.has(msg.recovery_hint))
+      || (
+        typeof msg.recovery_hint === 'object'
+        && !Array.isArray(msg.recovery_hint)
+        && (msg.recovery_hint.action == null || RECOVERY_ACTIONS.has(msg.recovery_hint.action))
+        && (msg.recovery_hint.retryable == null || typeof msg.recovery_hint.retryable === 'boolean')
+      );
+    if (!validRecoveryHint) {
+      throw new Error('Connector emitted invalid SKIP_RESULT.recovery_hint');
+    }
+  }
+  for (const fieldName of ['resource_ids', 'resources']) {
+    if (msg[fieldName] != null && (!Array.isArray(msg[fieldName]) || msg[fieldName].some((value) => typeof value !== 'string' || !value.trim()))) {
+      throw new Error(`Connector emitted invalid SKIP_RESULT.${fieldName}: expected non-empty string array`);
+    }
+  }
+  if (msg.time_range != null) {
+    if (typeof msg.time_range !== 'object' || Array.isArray(msg.time_range)) {
+      throw new Error('Connector emitted invalid SKIP_RESULT.time_range: expected object');
+    }
+    for (const fieldName of ['since', 'until']) {
+      const value = msg.time_range[fieldName];
+      if (value != null && (typeof value !== 'string' || !value.trim())) {
+        throw new Error(`Connector emitted invalid SKIP_RESULT.time_range.${fieldName}: expected non-empty string`);
+      }
+    }
+  }
 }
 
 function validateInteractionMessage(msg, scopeByStream) {
@@ -748,6 +909,7 @@ export async function runConnector(opts) {
   let pendingInteraction = null;
   let terminalEventRecorded = false;
   let doneMessage = null;
+  const knownGaps = [];
 
   // Batch records for ingest
   const recordBatch = {};
@@ -773,6 +935,34 @@ export async function runConnector(opts) {
     return 'committed';
   }
 
+  function appendKnownGap(gap) {
+    knownGaps.push(gap);
+  }
+
+  function buildKnownGapsForTerminal(reason = null, connectorError = null) {
+    const terminalGaps = [...knownGaps];
+    if (finalStatus === 'failed') {
+      terminalGaps.push(buildKnownGap({
+        kind: 'run_failed',
+        reason: reason || 'run_failed',
+        message: connectorError?.message || null,
+        recoveryHint: connectorError?.retryable === true ? 'retry_by_runtime' : null,
+      }));
+    }
+    const commitStatus = checkpointCommitStatus();
+    if (commitStatus === 'not_committed' || commitStatus === 'partially_committed') {
+      terminalGaps.push(buildKnownGap({
+        kind: 'checkpoint_commit',
+        reason: commitStatus,
+        message: commitStatus === 'partially_committed'
+          ? 'Some staged stream state was not committed'
+          : 'Staged stream state was not committed',
+        recoveryHint: 'retry_by_runtime',
+      }));
+    }
+    return terminalGaps;
+  }
+
   function buildRunTerminalData({
     recordsEmitted = totalEmitted,
     reason = null,
@@ -785,6 +975,8 @@ export async function runConnector(opts) {
     const stateStreamsStaged = countStagedStateStreams();
     const stateStreamsCommitted = committedStateStreams.size;
     const publicIngestFailure = toPublicIngestFailure(ingestFailure);
+    const terminalKnownGaps = buildKnownGapsForTerminal(reason, connectorError);
+    const visibleKnownGaps = terminalKnownGaps.slice(0, KNOWN_GAPS_MAX);
     return {
       source: runSource,
       grant_id: grantId,
@@ -806,6 +998,12 @@ export async function runConnector(opts) {
         ? {}
         : { connector_error_retryable: connectorError.retryable }),
       ...(publicIngestFailure ? { ingest_failure: publicIngestFailure } : {}),
+      ...(terminalKnownGaps.length
+        ? {
+            known_gaps: visibleKnownGaps,
+            known_gaps_summary: summarizeKnownGaps(terminalKnownGaps),
+          }
+        : {}),
       ...(violation instanceof ProtocolViolation
         ? { violation: violation.toPublicShape({ lastValidSpineEvent }) }
         : {}),
@@ -1019,6 +1217,7 @@ export async function runConnector(opts) {
         err.checkpoint_summary = checkpointSummary;
         err.terminal_reason = failureReason;
         err.connector_error = null;
+        err.known_gaps = buildKnownGapsForTerminal(failureReason, null);
 
         if (!terminalEventRecorded) {
           try {
@@ -1232,14 +1431,37 @@ export async function runConnector(opts) {
             },
           });
 
+          if (responseStatus !== 'success') {
+            const interactionRecoveryHint = msg.kind === 'manual_action' || msg.kind === 'otp'
+              ? 'manual_action_required'
+              : 'refresh_credentials';
+            appendKnownGap(buildKnownGap({
+              kind: 'interaction_required',
+              stream: msg.stream || null,
+              reason: `interaction_${responseStatus}`,
+              message: msg.message,
+              recoveryHint: interactionRecoveryHint,
+              interactionKind: msg.kind,
+            }));
+          }
+
           pendingInteraction = null;
           proc.stdin.write(JSON.stringify({ ...response, status: responseStatus }) + '\n');
           pendingInteractionViolationReject = null;
           break;
         }
 
-        case 'SKIP_RESULT':
+        case 'SKIP_RESULT': {
           validateSkipResultMessage(msg, scopeByStream);
+          const gap = buildKnownGap({
+            kind: 'skip_result',
+            stream: msg.stream || null,
+            reason: msg.reason || null,
+            message: msg.message || null,
+            recoveryHint: msg.recovery_hint || null,
+            scope: normalizeGapScope(msg),
+          });
+          appendKnownGap(gap);
           await emitSpineEventTracked({
             event_type: 'run.stream_skipped',
             trace_id: traceContext.trace_id,
@@ -1255,11 +1477,13 @@ export async function runConnector(opts) {
               source: runSource,
               stream: msg.stream || null,
               reason: msg.reason || null,
-              message: msg.message || null,
+              message: boundGapString(msg.message) || null,
+              known_gap: gap,
             },
           });
           onProgress(msg);
           break;
+        }
 
         case 'PROGRESS':
           validateProgressMessage(msg, scopeByStream);
@@ -1359,6 +1583,7 @@ export async function runConnector(opts) {
               exitCodeMismatch.checkpoint_summary = buildCheckpointSummary();
               exitCodeMismatch.terminal_reason = failureReason;
               exitCodeMismatch.connector_error = doneMessage.error || null;
+              exitCodeMismatch.known_gaps = buildKnownGapsForTerminal(failureReason, doneMessage.error || null);
               exitCodeMismatch.records_emitted = doneMessage.records_emitted;
               exitCodeMismatch.reported_records_emitted = doneMessage.records_emitted;
 
@@ -1402,6 +1627,7 @@ export async function runConnector(opts) {
               recordsEmittedMismatch.checkpoint_summary = buildCheckpointSummary();
               recordsEmittedMismatch.terminal_reason = failureReason;
               recordsEmittedMismatch.connector_error = doneMessage.error || null;
+              recordsEmittedMismatch.known_gaps = buildKnownGapsForTerminal(failureReason, doneMessage.error || null);
               recordsEmittedMismatch.records_emitted = totalEmitted;
               recordsEmittedMismatch.reported_records_emitted = doneMessage.records_emitted;
 
@@ -1489,6 +1715,14 @@ export async function runConnector(opts) {
           records_emitted: totalEmitted,
           state: newState,
           checkpoint_summary: buildCheckpointSummary(),
+          known_gaps: buildKnownGapsForTerminal(
+            doneMessage
+              ? (doneMessage.status === 'failed'
+                  ? 'connector_reported_failed'
+                  : (doneMessage.status === 'cancelled' ? 'connector_reported_cancelled' : null))
+              : (finalStatus === 'failed' ? 'connector_exit_without_done' : null),
+            doneMessage?.error || null,
+          ),
           exit_code: code,
           run_id: runId,
           trace_id: traceContext.trace_id,
@@ -1508,6 +1742,7 @@ export async function runConnector(opts) {
         err.checkpoint_summary = buildCheckpointSummary();
         err.terminal_reason = failureReason;
         err.connector_error = doneMessage?.error || null;
+        err.known_gaps = buildKnownGapsForTerminal(failureReason, doneMessage?.error || null);
         err.records_emitted = totalEmitted;
         if (doneMessage?.records_emitted !== null && doneMessage?.records_emitted !== undefined) {
           err.reported_records_emitted = doneMessage.records_emitted;
