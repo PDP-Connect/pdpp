@@ -89,16 +89,22 @@ owns.
 
 Host side:
 
-- `PDPP_HOST_BRIDGE_PORT` — loopback port. Default `7670`.
+- `PDPP_HOST_BRIDGE_PORT` — port to bind on. Default `7670`.
+- `PDPP_HOST_BRIDGE_BIND_HOST` — IP to bind on. Default `127.0.0.1`. On
+  Linux Docker the operator MUST set this to the docker bridge IP
+  (typically `172.17.0.1`); see Auth and Binding Model below.
 - `PDPP_HOST_BRIDGE_TOKEN` — required per-launch shared secret.
+- `PDPP_HOST_BRIDGE_ALLOW_PUBLIC_BIND` — set to `1` to acknowledge a
+  `0.0.0.0` bind (LAN exposure). Off by default.
 - `PDPP_HOST_BRIDGE_PROFILE_ROOT` — defaults to `~/.pdpp/profiles`.
 - `PDPP_HOST_BRIDGE_LOG` — optional path for the bridge log.
 
 Container side:
 
 - `PDPP_HOST_BROWSER_BRIDGE_URL` — e.g.
-  `ws://host.docker.internal:7670`. When set, the connector uses the
-  bridge instead of `acquireIsolatedBrowser`.
+  `ws://host.docker.internal:7670` (macOS/Windows Docker Desktop) or
+  `ws://172.17.0.1:7670` (Linux Docker). When set, the connector uses
+  the bridge instead of `acquireIsolatedBrowser`.
 - `PDPP_HOST_BROWSER_BRIDGE_TOKEN` — must match the host token.
 - `PDPP_HOST_BROWSER_BRIDGE_DAILY_CHROME` — opt-in escape hatch for the
   documented "drive my real Chrome" tradeoff. Off by default. The name
@@ -106,15 +112,33 @@ Container side:
 
 ### Auth and Binding Model
 
-- The bridge SHALL bind to `127.0.0.1` only. It SHALL NOT bind to
-  `0.0.0.0`.
+The bind host depends on the operator's Docker platform. The earlier
+draft of this design said "bind to 127.0.0.1 only"; that is correct on
+macOS/Windows Docker Desktop (where Docker forwards
+`host.docker.internal` to host loopback) but **wrong on Linux Docker**:
+verified empirically, `host.docker.internal:host-gateway` resolves to
+the docker bridge gateway IP (typically `172.17.0.1`), and a
+127.0.0.1-only bind is not reachable from the container via that
+gateway. The bridge therefore exposes an explicit `--bind-host` /
+`PDPP_HOST_BRIDGE_BIND_HOST` knob.
+
+- The bridge SHALL bind to a single, explicitly chosen IPv4 address.
+  Default `127.0.0.1`.
+- On Linux Docker, the operator SHALL set the bind host to the docker
+  bridge gateway IP (e.g. `172.17.0.1`). The bridge SHALL emit a
+  startup warning when running on Linux with a 127.0.0.1 bind.
+- Binding `0.0.0.0` requires explicit acknowledgement
+  (`--allow-public-bind` or `PDPP_HOST_BRIDGE_ALLOW_PUBLIC_BIND=1`)
+  because it accepts traffic from every interface, including the LAN.
 - The bridge SHALL require the shared token in the WS upgrade headers;
-  unauthenticated connections SHALL be rejected.
-- The bridge SHALL reject connections whose `Origin`/`Host` is not
-  `127.0.0.1` or `host.docker.internal`.
-- On Linux, the Docker stack SHALL set
+  unauthenticated connections SHALL be rejected with HTTP 401.
+- The bridge SHALL reject connections whose `Host` header is not one
+  of: `127.0.0.1`, `localhost`, `host.docker.internal`, or the IP the
+  bridge bound to. `0.0.0.0` is never accepted as a Host header.
+- On Linux Docker, the Compose stack SHALL set
   `extra_hosts: ["host.docker.internal:host-gateway"]` so the container
-  can reach the bridge.
+  can reach the bridge by that alias when the operator binds to the
+  docker bridge IP.
 - The bridge SHALL log every accepted connection.
 
 ### Failure Mode When Unavailable
