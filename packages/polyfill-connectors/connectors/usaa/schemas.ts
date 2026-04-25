@@ -97,7 +97,7 @@ export const statementSchema = z.object({
   title: cleanString(200),
   date_delivered: dateString.nullable(),
   account_reference: z.string().min(1).max(200).nullable(),
-  document_url: z.string().url().nullable(),
+  document_url: z.url().nullable(),
   // Local file path (file:// URL) or blob reference
   pdf_path: z.string().min(1).max(500).nullable(),
   // SHA-256 = 64 hex chars

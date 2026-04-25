@@ -103,7 +103,7 @@ export const orderItemSchema = z.object({
   order_date: z.string().regex(ISO_DATE_RE),
   asin: asinSchema,
   name: itemNameSchema,
-  url: z.string().url().nullable(),
+  url: z.url().nullable(),
   unit_price: currencyStringSchema,
   unit_price_cents: centsSchema,
   quantity: z.number().int().min(1).max(999),
@@ -125,7 +125,7 @@ export const listPageOrderShape = z.object({
   items: z.array(
     z.object({
       name: z.string().min(2).max(1024),
-      url: z.string().url().nullable(),
+      url: z.url().nullable(),
       asin: asinSchema,
     })
   ),
