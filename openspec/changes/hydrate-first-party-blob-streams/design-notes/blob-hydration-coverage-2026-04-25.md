@@ -35,7 +35,14 @@ Track which first-party connector streams can plausibly collect binary bytes and
 
 ## Open Questions
 
-- What default max blob size is safe for local reference deployments?
-- Should blob hydration be configurable per connector/profile?
-- Should failed hydration have a standard `hydration_error_code` field shape?
-- Which streams should later add extracted text, OCR, or document parsing as a separate capability?
+- ~~What default max blob size is safe for local reference deployments?~~ Settled for the Gmail slice: **25 MiB** (Gmail's per-message attachment cap). Operator override via `PDPP_GMAIL_MAX_ATTACHMENT_BYTES` (positive integer; non-positive/unparseable values fall back to default). Other connectors should pick their own conservative defaults aligned with their source caps.
+- Should blob hydration be configurable per connector/profile? Open. The current Gmail slice gates only by env var; per-profile gating likely belongs in the manifest layer rather than connector code.
+- Should failed hydration have a standard `hydration_error_code` field shape? Open. The current implementation truncates `hydration_error` to 240 chars and uses an enum status (`hydrated|deferred|failed|too_large`). A separate `hydration_error_code` is likely needed once a second connector hits non-overlapping failure modes.
+- Which streams should later add extracted text, OCR, or document parsing as a separate capability? Out of scope for this change; pull when a downstream consumer needs structured content.
+
+## Gmail Slice — Implementation Snapshot (2026-04-25)
+
+- Hydration is gated by a bounded size cap enforced **twice**: once before download (when `attachment.size_bytes` declares the source size) and once during streaming (against under-reported source sizes), via `enforceMaxBytes`. Tests cover both paths.
+- Status enum on the Gmail manifest is now `hydrated | deferred | failed | too_large`. Other "missing bytes" reasons (`unavailable`, `blocked`, `skipped`) are not yet used by Gmail; add them to other connectors only when those connectors actually hit those branches so the enum reflects observable behavior.
+- Idempotency is content-addressed at the reference blob substrate (`INSERT OR IGNORE` keyed on sha256). Reruns of the same attachment produce the same `blob_id` without duplicating storage; verified by the connector-level test "rerun hydration preserves attachment identity and idempotent blob identity" plus the reference-side "blob upload is content-addressed, idempotent, and fetch-safe through visible blob_ref" test.
+- IMAP error surfaces never carry signed URLs (the connector uses an authenticated IMAP session, not signed-URL HTTP), so no redaction is needed in this slice. Other connectors that download via signed URLs MUST scrub before populating `hydration_error`.

@@ -121,7 +121,7 @@ export const attachmentsSchema = z.object({
   message_received_at: isoDateTimeSchema,
   blob_ref: z.any().nullable().optional(),
   content_sha256: z.string().nullable().optional(),
-  hydration_status: z.enum(["deferred", "hydrated", "failed"]).optional(),
+  hydration_status: z.enum(["deferred", "hydrated", "failed", "too_large"]).optional(),
   hydration_error: z.string().nullable().optional(),
 });
 

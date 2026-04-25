@@ -90,6 +90,12 @@ const HYDRATION_ERROR_MAX_CHARS = 240;
 const DEFAULT_ATTACHMENT_MIME_TYPE = "application/octet-stream";
 const BLOB_UPLOAD_ENV_ERROR =
   "blob upload unavailable: PDPP_RS_URL and PDPP_OWNER_TOKEN must be provided by the runtime";
+// Conservative default chosen to align with Gmail's per-message attachment
+// cap (25 MiB). Operators can raise/lower with PDPP_GMAIL_MAX_ATTACHMENT_BYTES;
+// the value is enforced both before download (when source size is known) and
+// while streaming bytes (defense against under-reported sizes).
+export const DEFAULT_MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+const MAX_ATTACHMENT_BYTES_ENV = "PDPP_GMAIL_MAX_ATTACHMENT_BYTES";
 
 // ─── imapflow interface augmentation ────────────────────────────────────
 
@@ -695,16 +701,100 @@ function attachmentWithHydrationFailure(
   };
 }
 
+/**
+ * Resolve the per-attachment max byte cap from env, falling back to the
+ * conservative default. Non-positive or non-numeric overrides are ignored
+ * so a misconfigured env var can never silently disable the cap.
+ */
+export function resolveMaxAttachmentBytes(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env[MAX_ATTACHMENT_BYTES_ENV];
+  if (!raw) {
+    return DEFAULT_MAX_ATTACHMENT_BYTES;
+  }
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return DEFAULT_MAX_ATTACHMENT_BYTES;
+  }
+  return parsed;
+}
+
+class AttachmentTooLargeError extends Error {
+  constructor(observedBytes: number, maxBytes: number) {
+    super(`attachment exceeds max size: ${observedBytes} > ${maxBytes} bytes`);
+    this.name = "AttachmentTooLargeError";
+  }
+}
+
+/**
+ * Wrap an AsyncIterable so that consumed bytes are tallied and the stream
+ * aborts with `AttachmentTooLargeError` the moment it exceeds the cap.
+ * Used as a defense-in-depth guard against attachments whose source size
+ * is missing or under-reported.
+ */
+function enforceMaxBytes(
+  content: AsyncIterable<Buffer | Uint8Array | string>,
+  maxBytes: number
+): AsyncIterable<Buffer | Uint8Array | string> {
+  return {
+    [Symbol.asyncIterator](): AsyncIterator<Buffer | Uint8Array | string> {
+      const inner = content[Symbol.asyncIterator]();
+      let observed = 0;
+      return {
+        async next() {
+          const step = await inner.next();
+          if (step.done) {
+            return step;
+          }
+          const chunk = step.value;
+          const chunkSize =
+            typeof chunk === "string" ? Buffer.byteLength(chunk) : (chunk as Buffer | Uint8Array).byteLength;
+          observed += chunkSize;
+          if (observed > maxBytes) {
+            if (typeof inner.return === "function") {
+              await inner.return();
+            }
+            throw new AttachmentTooLargeError(observed, maxBytes);
+          }
+          return step;
+        },
+        return(value): Promise<IteratorResult<Buffer | Uint8Array | string>> {
+          if (typeof inner.return === "function") {
+            return inner.return(value);
+          }
+          return Promise.resolve({ done: true, value });
+        },
+      };
+    },
+  };
+}
+
 export function makeAttachmentHydrator(args: {
   connectorId: string;
   fetchAttachment: FetchAttachmentFn;
+  maxBytes?: number;
   uploadBlob: UploadAttachmentBlobFn;
 }): HydrateAttachmentFn {
+  const maxBytes = args.maxBytes ?? DEFAULT_MAX_ATTACHMENT_BYTES;
   return async (msg, attachment) => {
+    if (typeof attachment.size_bytes === "number" && attachment.size_bytes > maxBytes) {
+      return attachmentWithHydrationFailure(
+        attachment,
+        "too_large",
+        new AttachmentTooLargeError(attachment.size_bytes, maxBytes)
+      );
+    }
     try {
       const downloaded = await args.fetchAttachment(msg, attachment);
+      if (typeof downloaded.expectedSize === "number" && downloaded.expectedSize > maxBytes) {
+        return attachmentWithHydrationFailure(
+          attachment,
+          "too_large",
+          new AttachmentTooLargeError(downloaded.expectedSize, maxBytes)
+        );
+      }
+      const guarded = enforceMaxBytes(downloaded.content, maxBytes);
       const blobRef = await args.uploadBlob({
-        content: downloaded.content,
+        content: guarded,
         connectorId: args.connectorId,
         mimeType: downloaded.mimeType || attachment.content_type || DEFAULT_ATTACHMENT_MIME_TYPE,
         recordKey: attachment.id,
@@ -720,7 +810,9 @@ export function makeAttachmentHydrator(args: {
         hydration_error: null,
       };
     } catch (err) {
-      return attachmentWithHydrationFailure(attachment, "failed", err);
+      const status: Exclude<AttachmentHydrationStatus, "hydrated"> =
+        err instanceof AttachmentTooLargeError ? "too_large" : "failed";
+      return attachmentWithHydrationFailure(attachment, status, err);
     }
   };
 }
@@ -1075,6 +1167,7 @@ async function runAllMailPasses(
   const hydrateAttachment = makeAttachmentHydrator({
     connectorId: process.env.PDPP_CONNECTOR_ID || DEFAULT_GMAIL_CONNECTOR_ID,
     fetchAttachment: (msg, attachment) => fetchAttachmentPart(client, msg, attachment),
+    maxBytes: resolveMaxAttachmentBytes(),
     uploadBlob: buildRuntimeBlobUploader(),
   });
   const perMessageDeps: PerMessageDeps = {

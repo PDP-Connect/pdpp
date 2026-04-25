@@ -30,7 +30,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { Readable } from "node:stream";
-import { test } from "node:test";
+import { mock, test } from "node:test";
 import type {
   FetchMessageObject,
   MessageEnvelopeObject,
@@ -39,6 +39,7 @@ import type {
 } from "imapflow";
 import { type EmittedRecord, makeRecordingEmit } from "../../src/test-harness.ts";
 import {
+  DEFAULT_MAX_ATTACHMENT_BYTES,
   emitMessagesPass,
   type FetchBodiesFn,
   type FetchedBodies,
@@ -46,6 +47,7 @@ import {
   makeAttachmentHydrator,
   type PerMessageDeps,
   processMessage,
+  resolveMaxAttachmentBytes,
   selectAllMailFetchRange,
 } from "./index.ts";
 import type { ProgressMessage, StreamRequest } from "./types.ts";
@@ -326,6 +328,107 @@ test("processMessage: rerun hydration preserves attachment identity and idempote
   assert.equal(firstAttachment.data.id, secondAttachment.data.id);
   assert.equal(blobRefBlobId(firstAttachment), blobRefBlobId(secondAttachment));
   assert.equal(uploadCount, 2, "reruns may re-upload, but blob identity remains content-addressed and stable");
+});
+
+test("processMessage: refuses hydration when source-reported size exceeds the bounded cap (declared size)", async () => {
+  const fetchAttachment = mock.fn(() =>
+    Promise.reject(new Error("fetch should be skipped when size_bytes > maxBytes"))
+  );
+  const uploadBlob = mock.fn(() => Promise.reject(new Error("upload should be skipped when size_bytes > maxBytes")));
+  const hydrateAttachment = makeAttachmentHydrator({
+    connectorId: "https://registry.pdpp.org/connectors/gmail",
+    fetchAttachment,
+    maxBytes: 1024,
+    uploadBlob,
+  });
+  const oversize: MessageStructureObject = {
+    childNodes: [
+      {
+        type: "application/pdf",
+        disposition: "attachment",
+        dispositionParameters: { filename: "huge.pdf" },
+        encoding: "base64",
+        size: 5000,
+      },
+    ],
+    type: "multipart/mixed",
+  };
+  const { deps, emitted } = makeHarness({
+    hydrateAttachment,
+    requested: makeRequested(["attachments"]),
+    wantBodies: false,
+    wantMessages: false,
+  });
+  await processMessage(deps, makeMsg({ bodyStructure: oversize }));
+
+  const attachment = emitted.find((record) => record.stream === "attachments");
+  assert.ok(attachment, "expected too_large attachment metadata");
+  assert.equal(attachment.data.hydration_status, "too_large");
+  assert.equal(attachment.data.blob_ref, null);
+  assert.equal(attachment.data.content_sha256, null);
+  assert.equal(typeof attachment.data.hydration_error, "string");
+  assert.equal(fetchAttachment.mock.callCount(), 0, "must not download when declared size exceeds cap");
+  assert.equal(uploadBlob.mock.callCount(), 0, "must not upload when declared size exceeds cap");
+});
+
+test("processMessage: refuses hydration when streamed bytes overshoot the cap (under-reported size)", async () => {
+  const oversizedBytes = Buffer.alloc(2048, 0x41);
+  const uploadBlob = mock.fn(({ content }: { content: AsyncIterable<Buffer | Uint8Array | string> }) => {
+    return (async () => {
+      let bytes = 0;
+      // Drain the upstream stream — guard should error before we collect everything.
+      for await (const chunk of content) {
+        bytes += Buffer.isBuffer(chunk) ? chunk.byteLength : Buffer.from(chunk).byteLength;
+      }
+      return {
+        blob_id: "blob_unused",
+        mime_type: "application/octet-stream",
+        sha256: "0".repeat(64),
+        size_bytes: bytes,
+      };
+    })();
+  });
+  const hydrateAttachment = makeAttachmentHydrator({
+    connectorId: "https://registry.pdpp.org/connectors/gmail",
+    fetchAttachment: () =>
+      Promise.resolve({
+        // Source under-reports the size: declared 100 bytes but actually 2048.
+        content: Readable.from([oversizedBytes.subarray(0, 700), oversizedBytes.subarray(700)]),
+        expectedSize: 100,
+        mimeType: "application/octet-stream",
+      }),
+    maxBytes: 1024,
+    uploadBlob,
+  });
+
+  const { deps, emitted } = makeHarness({
+    hydrateAttachment,
+    requested: makeRequested(["attachments"]),
+    wantBodies: false,
+    wantMessages: false,
+  });
+  await processMessage(deps, makeAttachmentMsg());
+
+  const attachment = emitted.find((record) => record.stream === "attachments");
+  assert.ok(attachment, "expected too_large attachment metadata");
+  assert.equal(attachment.data.hydration_status, "too_large");
+  assert.equal(attachment.data.blob_ref, null);
+  assert.equal(uploadBlob.mock.callCount(), 1, "upload was attempted but the streaming cap fired mid-flight");
+});
+
+test("resolveMaxAttachmentBytes: env override is honored only when positive integer; otherwise falls back to default", () => {
+  assert.equal(resolveMaxAttachmentBytes({}), DEFAULT_MAX_ATTACHMENT_BYTES);
+  assert.equal(resolveMaxAttachmentBytes({ PDPP_GMAIL_MAX_ATTACHMENT_BYTES: "1048576" }), 1_048_576);
+  assert.equal(
+    resolveMaxAttachmentBytes({ PDPP_GMAIL_MAX_ATTACHMENT_BYTES: "0" }),
+    DEFAULT_MAX_ATTACHMENT_BYTES,
+    "non-positive override is ignored"
+  );
+  assert.equal(
+    resolveMaxAttachmentBytes({ PDPP_GMAIL_MAX_ATTACHMENT_BYTES: "abc" }),
+    DEFAULT_MAX_ATTACHMENT_BYTES,
+    "unparseable override is ignored"
+  );
 });
 
 test("selectAllMailFetchRange: incremental attachment runs revisit prior messages for metadata-only backfill", () => {
