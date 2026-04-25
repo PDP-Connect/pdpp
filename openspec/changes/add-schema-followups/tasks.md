@@ -29,9 +29,9 @@
 - [x] 42 new pilot-fixture replay tests pass.
 - [x] 11 new fleet-reconciliation tests pass.
 - [x] 16 new manifest-reconcile unit tests pass.
-- [ ] `pnpm --dir packages/polyfill-connectors run verify`.
-- [ ] `openspec validate add-schema-validation-coverage --strict` (per directive).
-- [ ] `openspec validate --all --strict`.
+- [x] `pnpm --dir packages/polyfill-connectors run verify`.
+- [x] `openspec validate add-schema-followups --strict` and `openspec validate add-schema-validation-coverage --strict`.
+- [x] `openspec validate --all --strict`.
 
 ## 6. Out of scope
 
