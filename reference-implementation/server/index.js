@@ -4010,9 +4010,20 @@ if (process.argv[1] && process.argv[1].endsWith('server/index.js')) {
     // re-acquire the WAL writer immediately after this one exits).
     const closeTimeout = (srv) => new Promise((resolve) => {
       if (!srv) { resolve(); return; }
-      const t = setTimeout(resolve, 2000);
-      try { srv.closeAllConnections?.(); } catch {}
-      srv.close(() => { clearTimeout(t); resolve(); });
+      let done = false;
+      let forceTimer = null;
+      const finish = () => {
+        if (done) return;
+        done = true;
+        if (forceTimer) clearTimeout(forceTimer);
+        resolve();
+      };
+      forceTimer = setTimeout(() => {
+        try { srv.closeAllConnections?.(); } catch {}
+        finish();
+      }, 2000);
+      try { srv.closeIdleConnections?.(); } catch {}
+      try { srv.close(finish); } catch { finish(); }
     });
     await Promise.allSettled([
       closeTimeout(server.asServer),
