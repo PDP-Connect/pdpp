@@ -137,8 +137,39 @@ interface TokenBody {
   access_token: string;
 }
 
+/**
+ * Sign in to the AS as the owner when `PDPP_OWNER_PASSWORD` is set, returning
+ * the session cookie to attach to subsequent gated requests (e.g. /device/approve).
+ * When the password is unset the AS leaves the gate disabled and we return null.
+ */
+async function ownerLoginCookie(asUrl: string): Promise<string | null> {
+  const password = process.env.PDPP_OWNER_PASSWORD;
+  if (!password) {
+    return null;
+  }
+  const res = await fetch(`${asUrl}/owner/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ password }).toString(),
+    redirect: "manual",
+  });
+  if (res.status !== 302 && res.status !== 303) {
+    const t = await res.text().catch(() => "");
+    throw new Error(`/owner/login failed ${res.status}: ${t.slice(0, 200)}`);
+  }
+  const setCookie = res.headers.get("set-cookie");
+  if (!setCookie) {
+    throw new Error("/owner/login returned no Set-Cookie header");
+  }
+  // First name=value pair only; strip attributes like Path, HttpOnly, Max-Age.
+  return setCookie.split(";")[0] ?? null;
+}
+
 export async function issueOwnerToken(asUrl: string, subjectId: string = DEFAULT_SUBJECT_ID): Promise<string> {
   const clientId = OWNER_BOOTSTRAP_CLIENT;
+  const cookie = await ownerLoginCookie(asUrl);
+  const cookieHeader: Record<string, string> = cookie ? { Cookie: cookie } : {};
+
   const deviceReq = await asFetch(asUrl, "/oauth/device_authorization", {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -151,7 +182,7 @@ export async function issueOwnerToken(asUrl: string, subjectId: string = DEFAULT
 
   const approveRes = await fetch(`${asUrl}/device/approve`, {
     method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    headers: { "Content-Type": "application/x-www-form-urlencoded", ...cookieHeader },
     body: new URLSearchParams({
       user_code: device.user_code,
       subject_id: subjectId,
