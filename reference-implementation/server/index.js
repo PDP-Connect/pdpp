@@ -1413,6 +1413,23 @@ function buildAsApp(opts = {}) {
     res.send(HOSTED_UI_CSS);
   });
 
+  // Cold-start discovery index: a tiny unauthenticated pointer at `/` so an
+  // integrator probing the AS root learns where the AS well-known endpoint
+  // lives without trial-and-error. The body intentionally restates the
+  // running reference revision (also exposed via the response header) so an
+  // LLM agent has a single document to read.
+  app.get('/', { contract: 'getAsDiscoveryIndex' }, (req, res) => {
+    res.json({
+      object: 'pdpp_discovery_index',
+      role: 'authorization_server',
+      resource_name: providerName,
+      links: {
+        well_known_authorization_server: '/.well-known/oauth-authorization-server',
+      },
+      reference_revision: referenceRevision,
+    });
+  });
+
   // Reference-only owner-auth placeholder. This is NOT a public PDPP
   // protocol surface; it gates local approval UIs when
   // `PDPP_OWNER_PASSWORD` is set, and is a no-op otherwise. See
@@ -2400,6 +2417,24 @@ function buildRsApp(opts = {}) {
     next();
   });
 
+  // Cold-start discovery index: a tiny unauthenticated pointer at `/` so a
+  // probe at the RS root learns where the well-known endpoint, capability
+  // schema, and core query base live before guessing at REST/LLM-API
+  // conventions. See openspec/changes/polish-reference-api-discovery-seams.
+  app.get('/', { contract: 'getRsDiscoveryIndex' }, (req, res) => {
+    res.json({
+      object: 'pdpp_discovery_index',
+      role: 'resource_server',
+      resource_name: providerName,
+      links: {
+        well_known: '/.well-known/oauth-protected-resource',
+        schema: '/v1/schema',
+        core_query_base: '/v1',
+      },
+      reference_revision: referenceRevision,
+    });
+  });
+
   // Primary reference surface: RFC 9728 protected-resource metadata.
   app.get('/.well-known/oauth-protected-resource', { contract: 'getProtectedResourceMetadata' }, (req, res) => {
     const explicitResource = opts.rsPublicUrl || (!opts.ignoreAmbientPublicUrls ? process.env.RS_PUBLIC_URL : null);
@@ -2472,6 +2507,34 @@ function buildRsApp(opts = {}) {
       }
     }
 
+    // Discovery hints — names the canonical first-call shapes a caller needs
+    // after reading this metadata document, derived from the same runtime
+    // state used for capability advertisement so the block cannot drift
+    // from live behavior. See:
+    //   openspec/changes/polish-reference-api-discovery-seams
+    const discoveryHints = {
+      schema_endpoint: '/v1/schema',
+      query_base: '/v1',
+      aggregate: {
+        endpoint_template: '/v1/streams/{stream}/aggregate',
+      },
+      changes_since_bootstrap: 'beginning',
+      blob_indirection: 'data.blob_ref.fetch_url',
+    };
+    if (capabilities.lexical_retrieval?.supported === true) {
+      discoveryHints.search = {
+        endpoint: capabilities.lexical_retrieval.endpoint || '/v1/search',
+        scope_param: 'streams[]',
+        // The v1 lexical contract requires exactly one streams[] value when
+        // any filter[...] parameter is present. See the lexical-retrieval
+        // capability spec.
+        filter_requires_single_stream: true,
+      };
+    }
+    if (capabilities.hybrid_retrieval?.supported === true) {
+      discoveryHints.hybrid_pagination_supported = !!capabilities.hybrid_retrieval.cursor_supported;
+    }
+
     res.json(
       buildProtectedResourceMetadata({
         resource,
@@ -2482,6 +2545,7 @@ function buildRsApp(opts = {}) {
         selfExportSupported: true,
         tokenKindsSupported: ['owner', 'client'],
         capabilities,
+        discoveryHints,
       })
     );
   });

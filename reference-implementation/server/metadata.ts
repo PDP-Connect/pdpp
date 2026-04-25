@@ -39,9 +39,31 @@ export function resolvePublicUrl(req: ResolvePublicUrlRequest, explicitUrl?: str
 // schemas are the authoritative source of truth for what's accepted on
 // the wire — this builder just shapes the output the same way the
 // schemas demand.
+// Discovery-hint shape published as `pdpp_discovery_hints` inside the
+// protected-resource metadata document. The block is generated from the
+// same runtime state that drives capability advertisement so it cannot
+// drift from live behavior. See:
+//   openspec/changes/polish-reference-api-discovery-seams/specs/reference-implementation-architecture/spec.md
+export interface ProtectedResourceDiscoveryHints {
+  aggregate: {
+    endpoint_template: string;
+  };
+  blob_indirection: "data.blob_ref.fetch_url";
+  changes_since_bootstrap: "beginning";
+  hybrid_pagination_supported?: boolean;
+  query_base: string;
+  schema_endpoint: string;
+  search?: {
+    endpoint: string;
+    filter_requires_single_stream: boolean;
+    scope_param: "streams[]";
+  };
+}
+
 export interface ProtectedResourceMetadataInput {
   authorizationServers: readonly string[];
   capabilities?: Record<string, unknown> | null;
+  discoveryHints?: ProtectedResourceDiscoveryHints | null;
   providerConnectVersion: string;
   queryBase: string;
   resource: string;
@@ -55,6 +77,7 @@ export interface ProtectedResourceMetadata {
   bearer_methods_supported: readonly string[];
   capabilities?: Record<string, unknown>;
   pdpp_core_query_base: string;
+  pdpp_discovery_hints?: ProtectedResourceDiscoveryHints;
   pdpp_provider_connect_version: string;
   pdpp_self_export_supported: boolean;
   pdpp_token_kinds_supported: readonly string[];
@@ -71,6 +94,7 @@ export function buildProtectedResourceMetadata({
   selfExportSupported,
   tokenKindsSupported,
   capabilities,
+  discoveryHints,
 }: ProtectedResourceMetadataInput): ProtectedResourceMetadata {
   const metadata: ProtectedResourceMetadata = {
     resource,
@@ -82,6 +106,9 @@ export function buildProtectedResourceMetadata({
     pdpp_token_kinds_supported: tokenKindsSupported,
     pdpp_core_query_base: queryBase,
   };
+  if (discoveryHints) {
+    metadata.pdpp_discovery_hints = discoveryHints;
+  }
   if (capabilities && typeof capabilities === "object" && Object.keys(capabilities).length > 0) {
     metadata.capabilities = capabilities;
   }

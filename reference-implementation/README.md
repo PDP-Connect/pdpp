@@ -428,6 +428,23 @@ To build from the current local checkout instead of pulling public images:
 docker compose --env-file .env.docker up --build
 ```
 
+The `.git` directory is excluded from the Docker build context, so the
+reference image cannot derive a real revision at startup and falls back to
+`pdpp-reference@<package-version>+unknown` in the
+`PDPP-Reference-Revision` response header and the `GET /` discovery index.
+Pass the running commit through the `PDPP_REFERENCE_REVISION` build arg so
+production images publish a real revision:
+
+```bash
+docker build \
+  --build-arg PDPP_REFERENCE_REVISION="$(git rev-parse --short=12 HEAD)" \
+  --target reference \
+  -t pdpp-reference:local .
+```
+
+The runtime continues to honor the `PDPP_REFERENCE_REVISION` env var, so the
+revision can also be set or overridden at container start time.
+
 Run the smoke validation:
 
 ```bash

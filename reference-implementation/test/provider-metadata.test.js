@@ -554,3 +554,189 @@ test('native startup rejects manifests whose storage_binding includes unsupporte
     /Native manifest storage_binding must include only connector_id/
   );
 });
+
+test('AS root exposes an unauthenticated discovery index pointing at the well-known endpoint', async () => {
+  const server = await startServer({
+    quiet: true,
+    asPort: 0,
+    rsPort: 0,
+    dbPath: ':memory:',
+    referenceRevision: 'pdpp-reference@test+sentinel',
+  });
+  const asUrl = `http://localhost:${server.asPort}`;
+
+  try {
+    const { resp, body } = await fetchJsonResponse(`${asUrl}/`);
+    assert.equal(resp.status, 200);
+    assert.equal(body.object, 'pdpp_discovery_index');
+    assert.equal(body.role, 'authorization_server');
+    assert.equal(body.links.well_known_authorization_server, '/.well-known/oauth-authorization-server');
+    assert.equal(body.reference_revision, 'pdpp-reference@test+sentinel');
+    expectReferenceRevisionHeader(resp, 'pdpp-reference@test+sentinel');
+    assert.equal(body.links.well_known, undefined);
+    assert.equal(body.links.schema, undefined);
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test('RS root exposes an unauthenticated discovery index pointing at well-known, schema, and the core query base', async () => {
+  const server = await startServer({
+    quiet: true,
+    asPort: 0,
+    rsPort: 0,
+    dbPath: ':memory:',
+    referenceRevision: 'pdpp-reference@test+sentinel',
+  });
+  const rsUrl = `http://localhost:${server.rsPort}`;
+
+  try {
+    const { resp, body } = await fetchJsonResponse(`${rsUrl}/`);
+    assert.equal(resp.status, 200);
+    assert.equal(body.object, 'pdpp_discovery_index');
+    assert.equal(body.role, 'resource_server');
+    assert.equal(body.links.well_known, '/.well-known/oauth-protected-resource');
+    assert.equal(body.links.schema, '/v1/schema');
+    assert.equal(body.links.core_query_base, '/v1');
+    assert.equal(body.reference_revision, 'pdpp-reference@test+sentinel');
+    expectReferenceRevisionHeader(resp, 'pdpp-reference@test+sentinel');
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test('discovery index does not require authentication', async () => {
+  const server = await startServer({
+    quiet: true,
+    asPort: 0,
+    rsPort: 0,
+    dbPath: ':memory:',
+  });
+  const rsUrl = `http://localhost:${server.rsPort}`;
+
+  try {
+    // Calling with a deliberately bogus token should still succeed since the
+    // route is unauthenticated and routes registered before the requireToken
+    // middleware. The body shape must still be a discovery index.
+    const { resp, body } = await fetchJsonResponse(`${rsUrl}/`, {
+      headers: { authorization: 'Bearer not-a-real-token' },
+    });
+    assert.equal(resp.status, 200);
+    assert.equal(body.object, 'pdpp_discovery_index');
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test('protected-resource metadata names canonical first-call shapes via pdpp_discovery_hints', async () => {
+  const server = await startServer({
+    quiet: true,
+    asPort: 0,
+    rsPort: 0,
+    dbPath: ':memory:',
+  });
+  const rsUrl = `http://localhost:${server.rsPort}`;
+
+  try {
+    const protectedResource = await fetchJson(`${rsUrl}/.well-known/oauth-protected-resource`);
+    assert.equal(protectedResource.status, 200);
+    const hints = protectedResource.body.pdpp_discovery_hints;
+    assert.ok(hints, 'pdpp_discovery_hints should be present');
+    assert.equal(hints.schema_endpoint, '/v1/schema');
+    assert.equal(hints.query_base, '/v1');
+    assert.equal(hints.aggregate.endpoint_template, '/v1/streams/{stream}/aggregate');
+    assert.equal(hints.changes_since_bootstrap, 'beginning');
+    assert.equal(hints.blob_indirection, 'data.blob_ref.fetch_url');
+
+    // Lexical retrieval is advertised by default; the search hints should
+    // mirror the canonical streams[] scope and the v1 single-stream filter
+    // constraint.
+    assert.ok(hints.search, 'search hints should be present when lexical retrieval is advertised');
+    assert.equal(hints.search.endpoint, '/v1/search');
+    assert.equal(hints.search.scope_param, 'streams[]');
+    assert.equal(hints.search.filter_requires_single_stream, true);
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test('pdpp_discovery_hints omits hybrid pagination when hybrid is not advertised', async () => {
+  const server = await startServer({
+    quiet: true,
+    asPort: 0,
+    rsPort: 0,
+    dbPath: ':memory:',
+    // Disable semantic so hybrid is not advertised. Lexical stays on.
+    semanticRetrievalSupported: false,
+  });
+  const rsUrl = `http://localhost:${server.rsPort}`;
+
+  try {
+    const { body } = await fetchJsonResponse(`${rsUrl}/.well-known/oauth-protected-resource`);
+    const hints = body.pdpp_discovery_hints;
+    assert.ok(hints);
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(hints, 'hybrid_pagination_supported'),
+      false,
+      'hybrid_pagination_supported should be omitted when hybrid retrieval is not advertised',
+    );
+    // Lexical search hints remain present.
+    assert.ok(hints.search);
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test('pdpp_discovery_hints omits search when lexical retrieval is suppressed', async () => {
+  const server = await startServer({
+    quiet: true,
+    asPort: 0,
+    rsPort: 0,
+    dbPath: ':memory:',
+    lexicalRetrievalSupported: false,
+    semanticRetrievalSupported: false,
+  });
+  const rsUrl = `http://localhost:${server.rsPort}`;
+
+  try {
+    const { body } = await fetchJsonResponse(`${rsUrl}/.well-known/oauth-protected-resource`);
+    const hints = body.pdpp_discovery_hints;
+    assert.ok(hints);
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(hints, 'search'),
+      false,
+      'search hints should be omitted when lexical retrieval is suppressed',
+    );
+    // Static hints unrelated to retrieval extensions are still present.
+    assert.equal(hints.schema_endpoint, '/v1/schema');
+    assert.equal(hints.changes_since_bootstrap, 'beginning');
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test('PDPP_REFERENCE_REVISION env override flows into the discovery index and response header', async () => {
+  const previous = process.env.PDPP_REFERENCE_REVISION;
+  process.env.PDPP_REFERENCE_REVISION = 'pdpp-reference@1.2.3+abc123';
+  let server;
+  try {
+    server = await startServer({
+      quiet: true,
+      asPort: 0,
+      rsPort: 0,
+      dbPath: ':memory:',
+    });
+    const rsUrl = `http://localhost:${server.rsPort}`;
+    const { resp, body } = await fetchJsonResponse(`${rsUrl}/`);
+    assert.equal(resp.status, 200);
+    assert.equal(body.reference_revision, 'pdpp-reference@1.2.3+abc123');
+    expectReferenceRevisionHeader(resp, 'pdpp-reference@1.2.3+abc123');
+  } finally {
+    if (server) await closeServer(server);
+    if (previous === undefined) {
+      delete process.env.PDPP_REFERENCE_REVISION;
+    } else {
+      process.env.PDPP_REFERENCE_REVISION = previous;
+    }
+  }
+});
