@@ -1304,7 +1304,9 @@ export function parseSemanticSearchParams(query) {
   const streams = normalizeStreamsParam(query.streams ?? query['streams[]']);
   const hasFilter = Object.prototype.hasOwnProperty.call(query, 'filter');
   if (hasFilter && (!streams || streams.length !== 1)) {
-    const err = new Error('filter[...] requires exactly one streams[] value');
+    const err = new Error(
+      "filter[...] requires exactly one streams[] value (e.g. ?streams[]=messages&filter[received_at][gte]=...). filter[stream] and filter[connector_id] are not supported.",
+    );
     err.code = 'invalid_request';
     err.param = 'streams';
     throw err;

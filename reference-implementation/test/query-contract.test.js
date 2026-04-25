@@ -401,6 +401,123 @@ test('connector discovery scopes client tokens to the granted source and streams
   });
 });
 
+test('schema discovery enumerates owner-visible polyfill connectors with full per-stream capabilities', async () => {
+  await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
+    const gmailManifest = readGmailManifest();
+    assert.equal((await registerConnectorManifest(asUrl, gmailManifest)).status, 201);
+    const ownerToken = await issueOwnerToken(asUrl, 'schema_owner');
+    const { status, body } = await fetchJson(`${rsUrl}/v1/schema`, {
+      headers: { 'Authorization': `Bearer ${ownerToken}` },
+    });
+
+    assert.equal(status, 200);
+    assert.equal(body.object, 'schema');
+    assert.deepEqual(body.bearer, { token_kind: 'owner', scope: 'owner' });
+    assert.equal(body.connectors.length, 2);
+
+    const connectorIds = body.connectors.map((c) => c.connector_id).sort();
+    assert.deepEqual(
+      connectorIds,
+      [spotifyManifest.connector_id, gmailManifest.connector_id].sort(),
+    );
+
+    const spotify = body.connectors.find((c) => c.connector_id === spotifyManifest.connector_id);
+    assert.deepEqual(spotify.source, {
+      binding_kind: 'connector',
+      connector_id: spotifyManifest.connector_id,
+    });
+    assert.deepEqual(
+      spotify.streams.map((s) => s.name).sort(),
+      spotifyManifest.streams.map((s) => s.name).sort(),
+    );
+    const topArtists = spotify.streams.find((s) => s.name === 'top_artists');
+    assert.equal(topArtists.object, 'stream_metadata');
+    assert.ok(topArtists.schema?.properties, 'schema is included per stream');
+    assert.ok(topArtists.field_capabilities.source_updated_at, 'field_capabilities are included');
+    assert.deepEqual(topArtists.field_capabilities.source_updated_at.range_filter, {
+      declared: true,
+      usable: true,
+      operators: ['gte', 'gt', 'lte', 'lt'],
+    });
+    assert.equal(topArtists.freshness.status, 'unknown');
+    assert.ok(Array.isArray(topArtists.expand_capabilities), 'expand_capabilities is an array');
+
+    const gmail = body.connectors.find((c) => c.connector_id === gmailManifest.connector_id);
+    const messages = gmail.streams.find((s) => s.name === 'messages');
+    assert.equal(messages.field_capabilities.subject.lexical_search.usable, true);
+    assert.ok(messages.expand_capabilities.some((entry) => entry.name === 'attachments'));
+  });
+});
+
+test('schema discovery scopes a client token to its grant source and streams', async () => {
+  await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
+    const gmailManifest = readGmailManifest();
+    assert.equal((await registerConnectorManifest(asUrl, gmailManifest)).status, 201);
+    const approved = await approveGrant(asUrl, 'schema_client_owner', {
+      client_id: 'longview',
+      connector_id: spotifyManifest.connector_id,
+      purpose_code: 'https://pdpp.org/purpose/analytics',
+      purpose_description: 'schema discovery client scope',
+      access_mode: 'continuous',
+      streams: [{ name: 'top_artists', fields: ['id', 'name', 'source_updated_at'] }],
+    });
+    assert.ok(approved.token, 'expected client token');
+
+    const { status, body } = await fetchJson(`${rsUrl}/v1/schema`, {
+      headers: { 'Authorization': `Bearer ${approved.token}` },
+    });
+
+    assert.equal(status, 200);
+    assert.equal(body.object, 'schema');
+    assert.equal(body.bearer.token_kind, 'client');
+    assert.equal(body.bearer.scope, 'grant');
+    assert.ok(body.bearer.grant_id, 'grant_id surfaces on bearer projection');
+    assert.equal(body.connectors.length, 1);
+    const connector = body.connectors[0];
+    assert.equal(connector.connector_id, spotifyManifest.connector_id);
+    assert.deepEqual(connector.streams.map((s) => s.name), ['top_artists']);
+    assert.equal(connector.stream_count, 1);
+
+    const topArtists = connector.streams[0];
+    // field-limited grant: granted fields are usable; ungranted fields are present but not usable.
+    assert.equal(topArtists.field_capabilities.id.granted, true);
+    assert.equal(topArtists.field_capabilities.name.granted, true);
+    assert.equal(topArtists.field_capabilities.source_updated_at.granted, true);
+    assert.equal(topArtists.field_capabilities.source_updated_at.range_filter.usable, true);
+    assert.ok(topArtists.field_capabilities.popularity, 'popularity field is enumerated');
+    assert.equal(topArtists.field_capabilities.popularity.granted, false);
+    assert.equal(topArtists.field_capabilities.popularity.exact_filter.usable, false);
+    assert.equal(topArtists.field_capabilities.popularity.exact_filter.reason, 'field_not_granted');
+
+    const serialized = JSON.stringify(body);
+    assert.equal(serialized.includes(gmailManifest.connector_id), false, 'must not leak other connectors');
+    assert.equal(serialized.includes('saved_tracks'), false, 'must not leak ungranted streams');
+  });
+});
+
+test('schema discovery returns an empty connector array when no connectors are registered', async () => {
+  const server = await startServer({
+    quiet: true,
+    asPort: 0,
+    rsPort: 0,
+    dbPath: ':memory:',
+    dynamicClientRegistrationInitialAccessTokens: [TEST_DCR_INITIAL_ACCESS_TOKEN],
+  });
+  try {
+    const asUrl = `http://localhost:${server.asPort}`;
+    const rsUrl = `http://localhost:${server.rsPort}`;
+    const ownerToken = await issueOwnerToken(asUrl, 'empty_owner');
+    const { status, body } = await fetchJson(`${rsUrl}/v1/schema`, {
+      headers: { 'Authorization': `Bearer ${ownerToken}` },
+    });
+    assert.equal(status, 200);
+    assert.equal(body.object, 'schema');
+    assert.deepEqual(body.connectors, []);
+  } finally {
+    await closeServer(server);
+  }
+});
+
 test('stream metadata publishes normalized field capabilities for owner tokens', async () => {
   await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
     const ownerToken = await issueOwnerToken(asUrl);

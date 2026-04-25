@@ -14,6 +14,7 @@ Generated from `packages/reference-contract/src/public/`. Do not edit by hand.
 | **POST** | `/introspect` | `introspectToken` | Inspect token activity and, for active client tokens, the bound grant projection. |
 | **POST** | `/grants/{grantId}/revoke` | `revokeGrant` | Revoke a grant and all tokens minted from it. |
 | **GET** | `/v1/connectors` | `listConnectors` | List connector or source boundaries visible under the bearer token, with stream summaries and coarse capability hints. |
+| **GET** | `/v1/schema` | `getSchema` | Return the caller-visible source/stream capability graph in one shot. Owner tokens see every owner-visible connector; client tokens see only the grant's source and streams. Each stream entry reuses the per-stream metadata shape (schema, query declarations, field capabilities, expand capabilities, freshness). |
 | **GET** | `/v1/streams` | `listStreams` | List streams available under the current grant or owner scope. |
 | **GET** | `/v1/streams/{stream}` | `getStreamMetadata` | Return stream metadata including declared query capabilities and advisory freshness. |
 | **GET** | `/v1/streams/{stream}/records` | `listRecords` | List records in a stream under grant enforcement. Supports logical-cursor pagination, exact and declared range filters, and changes_since. |
@@ -182,6 +183,20 @@ Revoke a grant and all tokens minted from it.
 `GET /v1/connectors`
 
 List connector or source boundaries visible under the bearer token, with stream summaries and coarse capability hints.
+
+### Responses
+
+- `200` — JSON body
+- `400` — Invalid request
+- `401` — Missing or invalid access token
+- `403` — Grant does not permit this request
+- `404` — Stream or record not found
+
+## getSchema
+
+`GET /v1/schema`
+
+Return the caller-visible source/stream capability graph in one shot. Owner tokens see every owner-visible connector; client tokens see only the grant's source and streams. Each stream entry reuses the per-stream metadata shape (schema, query declarations, field capabilities, expand capabilities, freshness).
 
 ### Responses
 

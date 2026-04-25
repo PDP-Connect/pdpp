@@ -1029,6 +1029,28 @@ function buildFieldCapabilities(manifestStream, streamGrant = null) {
   );
 }
 
+function buildStreamMetadataEntry({ manifestStream, streamGrant = null, grantStreams = [], freshness = null }) {
+  const expandStreamGrant = streamGrant
+    ? { ...streamGrant, grantStreams }
+    : null;
+  return {
+    object: 'stream_metadata',
+    name: manifestStream.name,
+    semantics: manifestStream.semantics,
+    schema: manifestStream.schema,
+    primary_key: normalizePrimaryKey(manifestStream.primary_key),
+    cursor_field: manifestStream.cursor_field,
+    consent_time_field: manifestStream.consent_time_field,
+    selection: manifestStream.selection,
+    views: manifestStream.views || [],
+    relationships: manifestStream.relationships || [],
+    query: manifestStream.query || {},
+    field_capabilities: buildFieldCapabilities(manifestStream, streamGrant),
+    expand_capabilities: buildExpandCapabilities(manifestStream, expandStreamGrant),
+    freshness: freshness ?? buildFreshness(null),
+  };
+}
+
 function buildExpandCapabilities(manifestStream, streamGrant = null) {
   const relationships = new Map((manifestStream?.relationships || []).map((relationship) => [relationship.name, relationship]));
   const grantedStreams = Array.isArray(streamGrant?.grantStreams)
@@ -1102,6 +1124,44 @@ function buildStreamDiscoverySummary({ connectorId = null, stream, summary = nul
     freshness: buildFreshness(lastUpdated),
     capabilities: buildStreamDiscoveryCapabilities({ connectorId, stream }),
   };
+}
+
+async function buildConnectorSchemaItem({ source, storageBinding, manifest, grant = null }) {
+  const connectorId = source?.binding_kind === 'connector' ? source.connector_id : null;
+  const streamSummaries = grant
+    ? await listStreams(storageBinding, grant, manifest)
+    : await listAllStreams(storageBinding);
+  const summaryByName = new Map(streamSummaries.map((summary) => [summary.name, summary]));
+  const grantStreamByName = grant
+    ? new Map((grant.streams || []).map((streamGrant) => [streamGrant.name, streamGrant]))
+    : null;
+  const visibleStreams = grant
+    ? grant.streams
+      .map((streamGrant) => manifest.streams.find((stream) => stream.name === streamGrant.name))
+      .filter(Boolean)
+    : manifest.streams || [];
+  const grantStreams = grant?.streams || [];
+
+  const streams = visibleStreams.map((manifestStream) => {
+    const lastUpdated = summaryByName.get(manifestStream.name)?.last_updated || null;
+    return buildStreamMetadataEntry({
+      manifestStream,
+      streamGrant: grantStreamByName ? grantStreamByName.get(manifestStream.name) || null : null,
+      grantStreams,
+      freshness: buildFreshness(lastUpdated),
+    });
+  });
+
+  const item = {
+    object: 'connector',
+    source,
+    stream_count: streams.length,
+    streams,
+  };
+  if (connectorId) {
+    item.connector_id = connectorId;
+  }
+  return item;
 }
 
 async function buildConnectorDiscoveryItem({ source, storageBinding, manifest, grant = null }) {
@@ -2496,6 +2556,109 @@ function buildRsApp(opts = {}) {
     }
   });
 
+  // GET /v1/schema — one-shot capability/schema discovery for the bearer
+  app.get('/v1/schema', { contract: 'getSchema' }, requireToken, async (req, res) => {
+    let queryContext = null;
+    try {
+      const { tokenInfo } = req;
+      const queryId = ensureRequestId(res);
+      const { actorType, actorId, traceId, scenarioId } = buildQueryActorContext(tokenInfo);
+      setReferenceTraceId(res, traceId);
+
+      queryContext = {
+        tokenInfo,
+        queryId,
+        actorType,
+        actorId,
+        traceId,
+        scenarioId,
+        sourceDescriptor: null,
+        queryData: { query_shape: 'schema' },
+      };
+
+      let connectorItems = [];
+      const bearer = {
+        token_kind: tokenInfo.pdpp_token_kind,
+        scope: tokenInfo.pdpp_token_kind === 'owner' ? 'owner' : 'grant',
+      };
+      if (tokenInfo.grant_id) bearer.grant_id = tokenInfo.grant_id;
+      if (tokenInfo.client_id) bearer.client_id = tokenInfo.client_id;
+
+      if (tokenInfo.pdpp_token_kind === 'owner') {
+        const nativeManifest = resolveNativeManifest(opts);
+        const nativeStorageBinding = resolveNativeStorageBinding(opts);
+        if (nativeManifest && nativeStorageBinding) {
+          const source = buildSourceDescriptor({
+            binding_kind: 'provider_native',
+            provider_id: nativeManifest.provider_id,
+          });
+          queryContext.sourceDescriptor = source;
+          connectorItems = [await buildConnectorSchemaItem({
+            source,
+            storageBinding: nativeStorageBinding,
+            manifest: nativeManifest,
+          })];
+        } else {
+          const connectorIds = await listRegisteredConnectorIds();
+          connectorItems = await Promise.all(connectorIds.map(async (connectorId) => {
+            const manifest = await resolveRegisteredConnectorManifest(connectorId);
+            return buildConnectorSchemaItem({
+              source: { binding_kind: 'connector', connector_id: connectorId },
+              storageBinding: { connector_id: connectorId },
+              manifest,
+            });
+          }));
+        }
+      } else {
+        const grantResolved = await resolveGrantManifest(tokenInfo, opts);
+        const source = grantResolved.source;
+        queryContext.sourceDescriptor = source;
+        connectorItems = [await buildConnectorSchemaItem({
+          source,
+          storageBinding: grantResolved.storageBinding,
+          manifest: grantResolved.manifest,
+          grant: tokenInfo.grant,
+        })];
+      }
+
+      await emitQueryReceived(queryContext, req);
+
+      await emitSpineEvent({
+        event_type: 'disclosure.served',
+        trace_id: traceId,
+        scenario_id: scenarioId,
+        actor_type: actorType,
+        actor_id: actorId,
+        subject_type: 'subject',
+        subject_id: tokenInfo.subject_id || null,
+        object_type: 'query',
+        object_id: queryId,
+        status: 'succeeded',
+        grant_id: tokenInfo.grant_id || null,
+        client_id: tokenInfo.client_id || null,
+        token_id: req.headers.authorization?.slice(7) || null,
+        data: {
+          source: queryContext.sourceDescriptor,
+          query_shape: 'schema',
+          connector_count: connectorItems.length,
+          stream_count: connectorItems.reduce((sum, item) => sum + item.stream_count, 0),
+        },
+      });
+
+      res.json({
+        object: 'schema',
+        bearer,
+        connectors: connectorItems,
+      });
+    } catch (err) {
+      if (queryContext) {
+        await emitQueryReceived(queryContext, req);
+        return await rejectQuery(res, req, queryContext, err);
+      }
+      handleError(res, err);
+    }
+  });
+
   // GET /v1/streams — list streams (client or owner)
   app.get('/v1/streams', { contract: 'listStreams' }, requireToken, async (req, res) => {
     let queryContext = null;
@@ -2634,32 +2797,21 @@ function buildRsApp(opts = {}) {
         }
       }
 
-      const metadataBody = {
-        object: 'stream_metadata',
-        name: mStream.name,
-        semantics: mStream.semantics,
-        schema: mStream.schema,
-        primary_key: normalizePrimaryKey(mStream.primary_key),
-        cursor_field: mStream.cursor_field,
-        consent_time_field: mStream.consent_time_field,
-        selection: mStream.selection,
-        views: mStream.views || [],
-        relationships: mStream.relationships || [],
-        query: mStream.query || {},
-        field_capabilities: buildFieldCapabilities(mStream, streamGrant),
-        expand_capabilities: buildExpandCapabilities(mStream, streamGrant
-          ? { ...streamGrant, grantStreams: tokenInfo.grant?.streams || [] }
-          : null),
-        freshness: await getVisibleStreamFreshness({
-          tokenInfo,
-          storageBinding:
-            tokenInfo.pdpp_token_kind === 'owner'
-              ? resolveOwnerReadScope(req, opts).storage_binding
-              : resolveGrantStorageBinding(tokenInfo),
-          stream: req.params.stream,
-          manifest,
-        }),
-      };
+      const freshness = await getVisibleStreamFreshness({
+        tokenInfo,
+        storageBinding:
+          tokenInfo.pdpp_token_kind === 'owner'
+            ? resolveOwnerReadScope(req, opts).storage_binding
+            : resolveGrantStorageBinding(tokenInfo),
+        stream: req.params.stream,
+        manifest,
+      });
+      const metadataBody = buildStreamMetadataEntry({
+        manifestStream: mStream,
+        streamGrant,
+        grantStreams: tokenInfo.grant?.streams || [],
+        freshness,
+      });
 
       await emitSpineEvent({
         event_type: 'disclosure.served',

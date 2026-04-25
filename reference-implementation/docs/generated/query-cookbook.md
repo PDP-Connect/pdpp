@@ -2,6 +2,17 @@
 
 All examples below target the public record-query surface at `/v1/streams/...`. Tokens are Bearer access tokens bound to a PDPP grant (see spec §7).
 
+## Discovery (one shot)
+
+`GET /v1/schema` returns every connector and stream visible to the bearer in a single response. Owner tokens (polyfill mode) get every owner-visible connector with no `connector_id` required; client tokens see only the streams in the grant. Each stream entry reuses the per-stream metadata shape, including `schema`, `query` declarations, `field_capabilities`, `expand_capabilities`, and `freshness`.
+
+```http
+GET /v1/schema
+Authorization: Bearer <owner_or_client_token>
+```
+
+Use the per-field `field_capabilities[<field>]` flags (`exact_filter`, `range_filter`, `lexical_search`, `semantic_search`, `aggregation`) to learn which filters and aggregations are valid for each field without trial-and-error 400s. Per-stream `query.range_filters` / `query.aggregations` / `query.expand` lists are still emitted for callers that prefer the manifest view.
+
 ## Exact filter
 
 Exact filters apply only to authorized top-level scalar fields. Unknown, unauthorized, or non-scalar fields are rejected.
@@ -21,12 +32,14 @@ GET /v1/streams/top_artists/records?filter[source_updated_at][gte]=2026-01-01T00
 
 ## Filtered retrieval
 
-`GET /v1/search` and `GET /v1/search/semantic` accept the same `filter[...]` syntax as record listing when the request names exactly one `streams` value. Range filters are still valid only for fields declared under that stream's `query.range_filters`; use stream metadata to discover the supported fields and operators.
+`GET /v1/search` and `GET /v1/search/semantic` accept the same `filter[...]` syntax as record listing when the request names exactly one `streams` value. Range filters are still valid only for fields declared under that stream's `query.range_filters`; use stream metadata or `GET /v1/schema` to discover the supported fields and operators.
 
 ```http
-GET /v1/search?q=invoice&streams=messages&filter[received_at][gte]=2026-04-01T00:00:00Z
+GET /v1/search?q=invoice&streams[]=messages&filter[received_at][gte]=2026-04-01T00:00:00Z
 Authorization: Bearer pdq_token_abc123
 ```
+
+Stream scoping uses repeated `streams[]=<name>` (or a single `streams=<name>`). There is no `filter[stream]` or `filter[connector_id]` parameter; cross-connector scoping happens automatically per the bearer's grant or owner scope.
 
 Retrieval responses may include typed implementation-relative scores when advertised. Portable score calibration, score-driven server-side reranking controls, and caller-controlled hybrid ranking remain deferred.
 
@@ -87,6 +100,8 @@ GET /v1/streams/saved_tracks/records?expand[]=recently_played&expand_limit[recen
 ```
 
 ## Blob fetch
+
+Records that include attachment-like bytes carry a `data.blob_ref` object. The reference RS decorates that object with a `fetch_url` (e.g., `/v1/blobs/<blob_id>`) which is the only supported byte-fetch path. There is no `/v1/attachments/<id>/content` (or similar) endpoint — discover bytes from the record's `blob_ref.fetch_url` rather than constructing attachment-specific content URLs.
 
 ```http
 GET /v1/blobs/<blob_id>
