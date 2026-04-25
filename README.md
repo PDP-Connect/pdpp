@@ -166,7 +166,7 @@ export PDPP_HOST_BROWSER_BRIDGE_TOKEN=<token-printed-by-bridge>
 # 3. Verify the container can reach the bridge before running connectors:
 docker run --rm --add-host=host.docker.internal:host-gateway \
   curlimages/curl:latest \
-  curl -sf "$PDPP_HOST_BROWSER_BRIDGE_URL"  # 404 is fine; UNREACHABLE is not
+  curl -sf "http://$DOCKER_BRIDGE_IP:7670/"  # expects: pdpp-host-browser-bridge
 ```
 
 The bridge prints a Linux-specific warning when started with

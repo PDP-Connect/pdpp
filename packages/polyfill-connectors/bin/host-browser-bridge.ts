@@ -580,7 +580,7 @@ export function buildBanner(options: BridgeOptions, upstreamUrl: string): string
   lines.push(
     "Verify a container can reach the bridge:",
     "  docker run --rm --add-host=host.docker.internal:host-gateway curlimages/curl:latest \\",
-    `    curl -sf -H "x-pdpp-bridge-token: <wrong-token>" ${containerSideHost.startsWith("172.") || containerSideHost.startsWith("10.") || containerSideHost.startsWith("192.") ? "http" : "http"}://${containerSideHost}:${String(options.port)}/ \\`,
+    `    curl -sf -H "x-pdpp-bridge-token: <wrong-token>" http://${containerSideHost}:${String(options.port)}/ \\`,
     "    && echo OK || echo UNREACHABLE",
     "  (200 OK on the HTTP root means TCP reachability; an HTTP 401 on a WS",
     "   upgrade with the wrong token means the auth path is wired up.)",
