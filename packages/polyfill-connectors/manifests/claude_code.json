@@ -450,6 +450,102 @@
       }
     },
     {
+      "name": "memory_notes",
+      "description": "Project-scoped Claude Code memory notes under ~/.claude/projects/<project>/memory/*.md. Each record captures frontmatter metadata and the note body (capped at 20k chars).",
+      "display": {
+        "label": "Your Claude Code memory notes",
+        "detail": "Project path, note path, name, description, body, frontmatter, and on-disk path."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "project_path": {
+            "type": "string"
+          },
+          "note_path": {
+            "type": "string"
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "path": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "content": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "frontmatter": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "mtime_epoch": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "project_path",
+          "note_path"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "mtime_epoch",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": false,
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "project_path",
+            "note_path",
+            "name",
+            "description",
+            "content"
+          ],
+          "semantic_fields": [
+            "description",
+            "content"
+          ]
+        },
+        "range_filters": {
+          "mtime_epoch": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        }
+      }
+    },
+    {
       "name": "slash_commands",
       "description": "User-authored Claude Code slash commands under ~/.claude/commands/*.md. Each record captures frontmatter, the command body (capped at 20k chars), and the file's absolute path.",
       "display": {
@@ -554,6 +650,9 @@
           "name": "skills"
         },
         {
+          "name": "memory_notes"
+        },
+        {
           "name": "slash_commands"
         }
       ]
@@ -572,10 +671,13 @@
     },
     {
       "id": "customizations",
-      "label": "Your skills and slash commands",
+      "label": "Your skills, memory notes, and slash commands",
       "streams": [
         {
           "name": "skills"
+        },
+        {
+          "name": "memory_notes"
         },
         {
           "name": "slash_commands"

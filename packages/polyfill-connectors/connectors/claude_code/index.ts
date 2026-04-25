@@ -11,6 +11,7 @@
  *   messages        — user prompts + assistant responses (top-level *.jsonl + <sessionId>/subagents/*.jsonl)
  *   attachments     — hook outputs, tool uses, file snapshots, permission-mode changes,
  *                     and tool-results/*.txt blobs (event_type: "tool_result_file")
+ *   memory_notes    — project-scoped memory notes under ~/.claude/projects/<project>/memory/*.md
  *   skills          — user-authored skills under ~/.claude/skills/<skill>/SKILL.md
  *   slash_commands  — user-authored slash commands under ~/.claude/commands/*.md
  *
@@ -32,6 +33,7 @@ import {
   ATTACHMENT_PREVIEW_CHARS,
   applyProjectDirScope,
   BYTES_PER_MB,
+  buildMemoryNoteRecord,
   buildSkillRecord,
   buildSlashCommandRecord,
   extractContent,
@@ -49,6 +51,7 @@ import {
 import type { ClaudeCodeState, JsonlObject, SessionAccumulator } from "./types.ts";
 
 const nowIso = (): string => new Date().toISOString();
+const MD_FILE_RE = /\.md$/i;
 
 async function* iterJsonlLines(path: string): AsyncGenerator<JsonlObject> {
   const r = createFileReader({
@@ -389,6 +392,39 @@ async function walkToolResults(args: WalkToolResultsArgs): Promise<void> {
   await walk(toolResultsDir);
 }
 
+// ─── Recursive file walking ─────────────────────────────────────────────
+
+async function readFilesRecursively(
+  rootDir: string,
+  predicate: (ent: Dirent) => boolean
+): Promise<Array<{ fullPath: string; relPath: string }>> {
+  const out: Array<{ fullPath: string; relPath: string }> = [];
+  const walk = async (dir: string, prefix: string): Promise<void> => {
+    let items: Dirent[];
+    try {
+      items = await readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const ent of items.sort((a, b) => a.name.localeCompare(b.name))) {
+      if (ent.name.startsWith(".")) {
+        continue;
+      }
+      const relPath = prefix ? `${prefix}/${ent.name}` : ent.name;
+      const fullPath = join(dir, ent.name);
+      if (ent.isDirectory()) {
+        await walk(fullPath, relPath);
+        continue;
+      }
+      if (predicate(ent)) {
+        out.push({ fullPath, relPath });
+      }
+    }
+  };
+  await walk(rootDir, "");
+  return out;
+}
+
 // ─── JSONL-file parsing ─────────────────────────────────────────────────
 
 function updateSessionAccumulator(
@@ -562,6 +598,50 @@ async function emitSlashCommands({ claudeHome, requested, emitRecord }: EmitSkil
   await walk(commandsDir, "");
 }
 
+// ─── Project memory notes ───────────────────────────────────────────────
+
+interface EmitProjectMemoryNotesArgs {
+  emitRecord: (stream: string, data: RecordData) => Promise<void>;
+  projectDir: string;
+  projectPath: string;
+  requested: Map<string, StreamScope>;
+}
+
+async function emitProjectMemoryNotes({
+  emitRecord,
+  projectDir,
+  projectPath,
+  requested,
+}: EmitProjectMemoryNotesArgs): Promise<void> {
+  if (!requested.has("memory_notes")) {
+    return;
+  }
+  const memoryDir = join(projectPath, "memory");
+  const files = await readFilesRecursively(
+    memoryDir,
+    (ent) => (ent.isFile() || ent.isSymbolicLink()) && MD_FILE_RE.test(ent.name)
+  );
+  for (const { fullPath, relPath } of files) {
+    let st: ReturnType<typeof statSync>;
+    let raw: string;
+    try {
+      st = statSync(fullPath);
+    } catch {
+      continue;
+    }
+    try {
+      raw = await readFile(fullPath, "utf8");
+    } catch {
+      continue;
+    }
+    const { frontmatter, body } = parseFrontmatter(raw);
+    await emitRecord(
+      "memory_notes",
+      buildMemoryNoteRecord({ projectDir, relPath, frontmatter, body, path: fullPath, mtimeMs: st.mtimeMs })
+    );
+  }
+}
+
 // ─── Projects directory scan ────────────────────────────────────────────
 
 export interface ScanProjectDirsArgs {
@@ -639,12 +719,11 @@ async function processTopLevelJsonl(
 }
 
 async function readSubagentFiles(subagentsDir: string): Promise<string[]> {
-  try {
-    const sEntries = await readdir(subagentsDir, { withFileTypes: true });
-    return sEntries.filter((e) => e.isFile() && e.name.endsWith(".jsonl")).map((e) => e.name);
-  } catch {
-    return [];
-  }
+  const files = await readFilesRecursively(
+    subagentsDir,
+    (ent) => (ent.isFile() || ent.isSymbolicLink()) && ent.name.endsWith(".jsonl")
+  );
+  return files.map((file) => file.relPath);
 }
 
 async function processSessionDir(
@@ -689,6 +768,9 @@ async function scanProjectDir(projectDir: string, args: ScanProjectDirsArgs): Pr
     entries = await readdir(projectPath, { withFileTypes: true });
   } catch {
     return;
+  }
+  if (args.buildOnly) {
+    await emitProjectMemoryNotes({ projectDir, projectPath, requested: args.requested, emitRecord: args.emitRecord });
   }
   await processTopLevelJsonl(entries, projectPath, projectDir, args);
 
@@ -779,7 +861,11 @@ if (isMainModule(import.meta.url)) {
       await runSkillsAndCommands(claudeHome, requested, emit, emitRecord);
 
       // ---- sessions / messages / attachments ----
-      const needsProjects = requested.has("sessions") || requested.has("messages") || requested.has("attachments");
+      const needsProjects =
+        requested.has("sessions") ||
+        requested.has("messages") ||
+        requested.has("attachments") ||
+        requested.has("memory_notes");
       if (!needsProjects) {
         return;
       }
@@ -814,6 +900,14 @@ if (isMainModule(import.meta.url)) {
         await emit({
           type: "STATE",
           stream: "sessions",
+          cursor: { fetched_at: nowIso() },
+        });
+      }
+
+      if (requested.has("memory_notes")) {
+        await emit({
+          type: "STATE",
+          stream: "memory_notes",
           cursor: { fetched_at: nowIso() },
         });
       }

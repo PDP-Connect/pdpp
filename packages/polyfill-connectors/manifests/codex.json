@@ -383,7 +383,7 @@
     },
     {
       "name": "rules",
-      "description": "Personal trust-registry rules recorded in ~/.codex/rules/*.rules \u2014 the de-facto log of approval decisions. One record per rule line.",
+      "description": "Personal trust-registry rules recorded in ~/.codex/rules/*.rules \u2014 the de-facto log of approval decisions. One record per rule line. The stream is named `rules` to match the real local directory; `approval_rules` was backlog shorthand, not an on-disk source name.",
       "display": {
         "label": "Your Codex approval rules",
         "detail": "Each rule line (e.g. prefix_rule / decision=allow) from your .rules files, with ruleset and position."

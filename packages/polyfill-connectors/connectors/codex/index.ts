@@ -16,7 +16,9 @@
  *   messages        — user/assistant text messages (from rollout-*.jsonl).
  *   function_calls  — shell/tool invocations + outputs (from rollout-*.jsonl).
  *   rules           — personal trust-registry entries (~/.codex/rules/*.rules),
- *                     one record per rule line.
+ *                     one record per rule line. The stream is intentionally
+ *                     named after the real local directory rather than the
+ *                     backlog shorthand "approval_rules".
  *   prompts         — user-authored prompts (~/.codex/prompts/*.md).
  *   skills          — user-authored skills (~/.codex/skills/<name>/SKILL.md).
  *

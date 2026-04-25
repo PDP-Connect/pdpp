@@ -5,7 +5,7 @@
  * `emitSessionsFromAccumulators`, then runs `scanProjectDirs` a second
  * time with `buildOnly: false`. Proves end-to-end that:
  *
- *   1. Pass 1 (buildOnly=true) populates accumulators and emits nothing.
+ *   1. Pass 1 (buildOnly=true) populates accumulators and emits no child records.
  *   2. Sessions emit before messages/attachments in the full run.
  *   3. Pass 2 emits the expected child records.
  *   4. No double-count: the session record's message_count matches the
@@ -31,6 +31,8 @@ import type { SessionAccumulator } from "./types.ts";
 
 /** Write a minimal synthetic project tree:
  *    <baseDir>/<projectDir>/<sessionId>.jsonl
+ *    <baseDir>/<projectDir>/<sessionId>/subagents/nested/side.jsonl
+ *    <baseDir>/<projectDir>/memory/nested/note.md
  *
  * `baseDir` is passed to scanProjectDirs as-is (in production this is
  * `~/.claude/projects`). The JSONL has one `user` line and one
@@ -38,14 +40,20 @@ import type { SessionAccumulator } from "./types.ts";
  * processJsonlLine's observe pass pins sessionId from line 1's
  * `sessionId` field.
  */
+const SYNTHETIC_SESSION_ID = "12345678-1234-orch";
+
 async function makeSyntheticProjectTree(): Promise<{ baseDir: string; cleanup: () => Promise<void> }> {
   const root = await mkdtemp(join(tmpdir(), "pdpp-cc-orch-"));
   const projectDir = join(root, "-Users-test-my-project");
   await mkdir(projectDir, { recursive: true });
-  const sessionFile = join(projectDir, "sess-ORCH-001.jsonl");
+  const sessionFile = join(projectDir, `${SYNTHETIC_SESSION_ID}.jsonl`);
+  const subagentsDir = join(projectDir, SYNTHETIC_SESSION_ID, "subagents", "nested");
+  const memoryDir = join(projectDir, "memory", "nested");
+  await mkdir(subagentsDir, { recursive: true });
+  await mkdir(memoryDir, { recursive: true });
   const lines = [
     {
-      sessionId: "sess-ORCH-001",
+      sessionId: SYNTHETIC_SESSION_ID,
       type: "user",
       uuid: "m1",
       timestamp: "2026-04-23T10:00:00Z",
@@ -53,14 +61,14 @@ async function makeSyntheticProjectTree(): Promise<{ baseDir: string; cleanup: (
       cwd: "/Users/user/my-project",
     },
     {
-      sessionId: "sess-ORCH-001",
+      sessionId: SYNTHETIC_SESSION_ID,
       type: "assistant",
       uuid: "m2",
       timestamp: "2026-04-23T10:00:01Z",
       message: { content: "hi back" },
     },
     {
-      sessionId: "sess-ORCH-001",
+      sessionId: SYNTHETIC_SESSION_ID,
       type: "attachment",
       uuid: "a1",
       timestamp: "2026-04-23T10:00:02Z",
@@ -68,6 +76,20 @@ async function makeSyntheticProjectTree(): Promise<{ baseDir: string; cleanup: (
     },
   ];
   await writeFile(sessionFile, `${lines.map((l) => JSON.stringify(l)).join("\n")}\n`, "utf8");
+  await writeFile(
+    join(subagentsDir, "side.jsonl"),
+    `${JSON.stringify({
+      sessionId: "wrong-sidechain-session",
+      type: "assistant",
+      uuid: "side-m1",
+      timestamp: "2026-04-23T10:00:03Z",
+      isSidechain: true,
+      agentId: "agent-1",
+      message: { content: "sidechain reply" },
+    })}\n`,
+    "utf8"
+  );
+  await writeFile(join(memoryDir, "note.md"), "---\ntitle: Memory Note\n---\nremember this", "utf8");
 
   return {
     baseDir: root,
@@ -85,14 +107,14 @@ function silentEmit(): (msg: EmittedMessage) => Promise<void> {
   return (): Promise<void> => Promise.resolve();
 }
 
-test("scanProjectDirs: pass 1 (buildOnly=true) populates accumulators but emits nothing", async () => {
+test("scanProjectDirs: pass 1 (buildOnly=true) populates accumulators but emits no child records", async () => {
   const { baseDir, cleanup } = await makeSyntheticProjectTree();
   try {
     const harness = makeRecordingEmit();
     const sessionAccumulators = new Map<string, SessionAccumulator>();
     const fileMtimes: Record<string, number> = {};
     const newMtimes: Record<string, number> = {};
-    const requested = makeRequested(["sessions", "messages", "attachments"]);
+    const requested = makeRequested(["sessions", "messages", "attachments", "memory_notes"]);
 
     const args: ScanProjectDirsArgs = {
       baseDir,
@@ -107,11 +129,21 @@ test("scanProjectDirs: pass 1 (buildOnly=true) populates accumulators but emits 
 
     await scanProjectDirs(args);
 
-    assert.equal(harness.emitted.length, 0, "buildOnly=true must emit zero records");
+    assert.equal(harness.emitted.filter((r) => r.stream === "messages").length, 0, "buildOnly=true emits no messages");
+    assert.equal(
+      harness.emitted.filter((r) => r.stream === "attachments").length,
+      0,
+      "buildOnly=true emits no attachments"
+    );
+    assert.equal(
+      harness.emitted.filter((r) => r.stream === "memory_notes").length,
+      1,
+      "memory note emits on build pass"
+    );
     assert.equal(sessionAccumulators.size, 1, "exactly one session observed");
-    const acc = sessionAccumulators.get("sess-ORCH-001");
+    const acc = sessionAccumulators.get(SYNTHETIC_SESSION_ID);
     assert.ok(acc, "session accumulator present");
-    assert.equal(acc.message_count, 2, "accumulated 2 message lines");
+    assert.equal(acc.message_count, 3, "accumulated top-level plus recursive subagent message lines");
   } finally {
     await cleanup();
   }
@@ -124,7 +156,7 @@ test("scanProjectDirs: full two-pass — sessions emit BEFORE messages (parent-f
     const sessionAccumulators = new Map<string, SessionAccumulator>();
     const fileMtimes: Record<string, number> = {};
     const newMtimes: Record<string, number> = {};
-    const requested = makeRequested(["sessions", "messages", "attachments"]);
+    const requested = makeRequested(["sessions", "messages", "attachments", "memory_notes"]);
 
     // Pass 1: build accumulators silently.
     await scanProjectDirs({
@@ -173,12 +205,57 @@ test("scanProjectDirs: full two-pass — sessions emit BEFORE messages (parent-f
     const messageCount = harness.emitted.filter((r) => r.stream === "messages").length;
     const attachmentCount = harness.emitted.filter((r) => r.stream === "attachments").length;
     assert.equal(sessionCount, 1);
-    assert.equal(messageCount, 2);
+    const memoryNoteCount = harness.emitted.filter((r) => r.stream === "memory_notes").length;
+    assert.equal(messageCount, 3);
     assert.equal(attachmentCount, 1);
+    assert.equal(memoryNoteCount, 1);
 
     // Message_count on the session record is the correct count, not doubled.
     const sessionRec = harness.emitted[firstSession];
-    assert.equal(sessionRec?.data.message_count, 2, "no accumulator double-count from pass 2");
+    assert.equal(sessionRec?.data.message_count, 3, "no accumulator double-count from pass 2");
+    const sidechain = harness.emitted.find((r) => r.stream === "messages" && r.data.id === "side-m1");
+    assert.equal(sidechain?.data.session_id, SYNTHETIC_SESSION_ID, "recursive subagent folds into parent session");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("scanProjectDirs: unchanged file mtime skips child records on an incremental pass", async () => {
+  const { baseDir, cleanup } = await makeSyntheticProjectTree();
+  try {
+    const requested = makeRequested(["messages", "attachments"]);
+    const sessionAccumulators = new Map<string, SessionAccumulator>();
+    const firstPass = makeRecordingEmit();
+    const firstMtimes: Record<string, number> = {};
+    const newMtimes: Record<string, number> = {};
+
+    await scanProjectDirs({
+      baseDir,
+      buildOnly: false,
+      emit: silentEmit(),
+      emitRecord: firstPass.emitRecord,
+      fileMtimes: firstMtimes,
+      newMtimes,
+      requested,
+      sessionAccumulators,
+    });
+
+    assert.equal(firstPass.emitted.filter((r) => r.stream === "messages").length, 3, "first pass emits messages");
+    assert.equal(Object.keys(newMtimes).length, 2, "top-level and recursive subagent mtimes captured");
+
+    const secondPass = makeRecordingEmit();
+    await scanProjectDirs({
+      baseDir,
+      buildOnly: false,
+      emit: silentEmit(),
+      emitRecord: secondPass.emitRecord,
+      fileMtimes: { ...newMtimes },
+      newMtimes: {},
+      requested,
+      sessionAccumulators: new Map(),
+    });
+
+    assert.equal(secondPass.emitted.length, 0, "unchanged mtimes skip re-emitting child records");
   } finally {
     await cleanup();
   }

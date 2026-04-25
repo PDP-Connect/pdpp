@@ -30,6 +30,7 @@ const CLAUDE_FM_QUOTED_DOUBLE_RE = /^"([\s\S]*)"$/;
 const CLAUDE_FM_QUOTED_SINGLE_RE = /^'([\s\S]*)'$/;
 const CLAUDE_FM_COLLAPSE_WS_RE = /\s+/g;
 const CLAUDE_FM_LINE_SPLIT_RE = /\r?\n/;
+const CLAUDE_MD_SUFFIX_RE = /\.md$/i;
 
 // ─── Previews ───────────────────────────────────────────────────────────
 
@@ -241,6 +242,28 @@ export function buildSkillRecord(args: {
     name: args.frontmatter.name || args.name,
     description: args.frontmatter.description || null,
     source: "user",
+    path: args.path,
+    content: truncateBody(args.body),
+    frontmatter: args.frontmatter,
+    mtime_epoch: Math.floor(args.mtimeMs / 1000),
+  };
+}
+
+export function buildMemoryNoteRecord(args: {
+  projectDir: string;
+  relPath: string;
+  frontmatter: Record<string, string>;
+  body: string;
+  path: string;
+  mtimeMs: number;
+}): Record<string, unknown> {
+  const fallbackName = args.relPath.replace(CLAUDE_MD_SUFFIX_RE, "");
+  return {
+    id: `memory_notes:${args.projectDir}/${args.relPath}`,
+    project_path: args.projectDir,
+    note_path: args.relPath,
+    name: args.frontmatter.name || args.frontmatter.title || fallbackName,
+    description: args.frontmatter.description || null,
     path: args.path,
     content: truncateBody(args.body),
     frontmatter: args.frontmatter,

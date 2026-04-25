@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   applyProjectDirScope,
+  buildMemoryNoteRecord,
   buildSkillRecord,
   buildSlashCommandRecord,
   extractContent,
@@ -197,6 +198,23 @@ test("buildSkillRecord: falls back to dir name when frontmatter lacks name", () 
   });
   assert.equal(r.name, "dir-name");
   assert.equal(r.description, null);
+});
+
+test("buildMemoryNoteRecord: stable id includes project and relative path", () => {
+  const r = buildMemoryNoteRecord({
+    projectDir: "-home-user-project",
+    relPath: "nested/note.md",
+    frontmatter: { title: "Project Note", description: "d" },
+    body: "body",
+    path: "/p/memory/nested/note.md",
+    mtimeMs: 2000,
+  });
+  assert.equal(r.id, "memory_notes:-home-user-project/nested/note.md");
+  assert.equal(r.project_path, "-home-user-project");
+  assert.equal(r.note_path, "nested/note.md");
+  assert.equal(r.name, "Project Note");
+  assert.equal(r.description, "d");
+  assert.equal(r.mtime_epoch, 2);
 });
 
 test("buildSlashCommandRecord: nested idPath + fallback base", () => {
