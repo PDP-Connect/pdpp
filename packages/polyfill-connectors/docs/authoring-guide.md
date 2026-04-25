@@ -20,8 +20,8 @@ connectors/<name>/
 
 Captured live fixtures live at `fixtures/<name>/raw/` (gitignored).
 The scrubber (`bin/scrub-fixtures.ts`) produces
-`fixtures/<name>/scrubbed/` (also gitignored until an LLM-based
-scrubber lands — see OpenSpec `add-polyfill-connector-system/tasks.md`).
+`fixtures/<name>/scrubbed/` (not ignored). Commit scrubbed fixtures only
+after running the scrubber and reviewing the output by eye.
 
 ## The runConnector contract
 

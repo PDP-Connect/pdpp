@@ -1,15 +1,15 @@
 ## 1. Policy
 
-- [ ] Document raw and scrubbed fixture directory conventions.
-- [ ] Ensure raw fixture directories are ignored.
-- [ ] Define review criteria for committing scrubbed fixtures.
+- [x] Document raw and scrubbed fixture directory conventions.
+- [x] Ensure raw fixture directories are ignored.
+- [x] Define review criteria for committing scrubbed fixtures.
 
 ## 2. Scrubber
 
-- [ ] Extend the existing regex scrubber for common emails, phones, cards, account numbers, addresses, and names where deterministic patterns are reliable.
-- [ ] Add connector-specific scrub-rule entry points.
+- [x] Extend the existing regex scrubber for common emails, phones, cards, account numbers, addresses, and names where deterministic patterns are reliable.
+- [x] Add connector-specific scrub-rule entry points.
 - [ ] Add an LLM-assisted redaction mode for free-form text, with structured output and conservative failure behavior.
-- [ ] Add tests proving secrets are redacted and structure is preserved on representative fixtures.
+- [x] Add tests proving secrets are redacted and structure is preserved on representative fixtures.
 
 ## 3. Connector Adoption
 

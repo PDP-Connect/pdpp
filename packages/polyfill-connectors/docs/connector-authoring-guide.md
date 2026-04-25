@@ -304,14 +304,14 @@ The `capture` handle is `null` unless `PDPP_CAPTURE_FIXTURES=1`. Guard with `if 
 Raw fixtures contain your real PII — emails, addresses, order IDs, account numbers. Never commit `raw/`. Run the scrubber:
 
 ```bash
-node bin/scrub-fixtures.mjs <connector>
+pnpm exec tsx bin/scrub-fixtures.ts <connector>
 ```
 
-This applies the shared defaults in `src/scrub-defaults.js` (emails, SSNs, credit-card-shaped digit runs, US phone numbers) plus any connector-specific rules in `connectors/<connector>/scrub-rules.js`. Output lands in `fixtures/<connector>/scrubbed/<runId>/`, which **is** committable.
+This applies the shared defaults in `src/scrub-defaults.ts` (emails, SSNs, credit-card-shaped digit runs, US phone numbers, labeled account numbers, deterministic street-address patterns, and labeled names) plus any connector-specific rules in `connectors/<connector>/scrub-rules.ts`. Output lands in `fixtures/<connector>/scrubbed/<runId>/`, which **is** committable after review.
 
 **Connector-specific scrub rules**
 
-Create `connectors/<name>/scrub-rules.js` exporting an array:
+Create `connectors/<name>/scrub-rules.ts` exporting an array:
 
 ```js
 export const scrubRules = [
@@ -326,11 +326,13 @@ Scope is `'all'` (every file type), `'html'`, or `'json'`. Rules run in order; d
 
 **Before committing scrubbed fixtures**
 
-Review the scrubbed tree by eye. The default rules are conservative but not exhaustive — for example, addresses, postal codes, and names are not caught by defaults. Add connector-specific rules for any pattern you find in review.
+Review the scrubbed tree by eye. The default rules are conservative but not exhaustive — for example, free-form notes, merchant names, unlabeled people names, and platform-specific IDs may not be caught by defaults. Add connector-specific rules for any pattern you find in review.
+
+Confirm the scrubbed fixture preserves parser-relevant structure before commit: selectors, object keys, stream names, timestamps that are safe to retain, and representative non-sensitive values should remain stable. Redact or replace all owner identifiers, free-form notes, account numbers, addresses, emails, phones, and platform IDs that can identify the owner. If review finds sensitive content the deterministic scrubber cannot safely classify, do not commit the fixture until a connector-specific rule or reviewed manual redaction covers it.
 
 **Smoke-test the capture pipeline**
 
-`node bin/test-fixture-capture.mjs` runs a self-contained end-to-end check (no network, no browser) that capture + scrub produce sanitized output from PII-bearing input. Run it after changing anything in `fixture-capture.js`, `scrub-defaults.js`, or `scrub-fixtures.mjs`.
+`pnpm exec tsx bin/test-fixture-capture.ts` runs a self-contained end-to-end check (no network, no browser) that capture + scrub produce sanitized output from PII-bearing input. Run it after changing anything in `fixture-capture.ts`, `scrub-defaults.ts`, or `scrub-fixtures.ts`.
 
 ### Pre-ship checklist
 

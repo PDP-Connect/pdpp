@@ -4,11 +4,11 @@
  * Scrub captured fixtures for a connector.
  *
  * Usage:
- *   node bin/scrub-fixtures.mjs <connector> [runId]
+ *   pnpm exec tsx bin/scrub-fixtures.ts <connector> [runId]
  *
  * Reads every file under `fixtures/<connector>/raw/<runId>/` (or all runIds
- * if none given), applies default scrub rules (src/scrub-defaults.js) plus
- * connector-specific rules (connectors/<connector>/scrub-rules.js if it
+ * if none given), applies default scrub rules (src/scrub-defaults.ts) plus
+ * connector-specific rules (connectors/<connector>/scrub-rules.ts if it
  * exists), and writes sanitized copies to `fixtures/<connector>/scrubbed/<runId>/`.
  *
  * The raw/ tree stays gitignored (local-only, PII). The scrubbed/ tree is
@@ -22,19 +22,12 @@
  */
 
 import { existsSync } from "node:fs";
-import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
-import { dirname, extname, join, relative } from "node:path";
+import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { dirname, join, relative } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { applyScrubRules, fileScopeOf, loadConnectorScrubRules, type ScrubRule } from "../src/scrubber.ts";
 
 const PACKAGE_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
-
-type ScrubScope = "all" | "html" | "json";
-
-interface ScrubRule {
-  pattern: RegExp;
-  replacement: string | ((match: string, ...groups: string[]) => string);
-  scope?: ScrubScope;
-}
 
 async function walk(dir: string): Promise<string[]> {
   const out: string[] = [];
@@ -50,65 +43,19 @@ async function walk(dir: string): Promise<string[]> {
   return out;
 }
 
-function scopeMatches(fileScope: ScrubScope, ruleScope: ScrubScope | undefined): boolean {
-  if (ruleScope === "all" || !ruleScope) {
-    return true;
+async function listRunIds(rawRoot: string, runIdArg: string | undefined): Promise<string[]> {
+  if (runIdArg) {
+    return [runIdArg];
   }
-  return ruleScope === fileScope;
-}
 
-function fileScopeOf(path: string): ScrubScope {
-  const ext = extname(path).toLowerCase();
-  if (ext === ".html" || ext === ".htm") {
-    return "html";
-  }
-  if (ext === ".json" || ext === ".jsonl") {
-    return "json";
-  }
-  return "all";
-}
-
-function applyRules(content: string, rules: ScrubRule[], fileScope: ScrubScope): string {
-  let out = content;
-  for (const rule of rules) {
-    if (!scopeMatches(fileScope, rule.scope)) {
-      continue;
-    }
-    const { pattern, replacement } = rule;
-    if (!(pattern instanceof RegExp)) {
-      console.warn("skipping rule with non-regex pattern:", rule);
-      continue;
-    }
-    if (typeof replacement === "function") {
-      out = out.replace(pattern, replacement);
-    } else {
-      out = out.replace(pattern, replacement);
-    }
-  }
-  return out;
-}
-
-async function loadConnectorRules(connector: string): Promise<ScrubRule[]> {
-  const file = join(PACKAGE_ROOT, "connectors", connector, "scrub-rules.js");
-  if (!existsSync(file)) {
-    return [];
-  }
-  const mod = (await import(pathToFileURL(file).href)) as {
-    scrubRules?: ScrubRule[];
-    default?: ScrubRule[];
-  };
-  const rules = mod.scrubRules || mod.default || [];
-  if (!Array.isArray(rules)) {
-    console.warn(`${file}: expected scrubRules array; got ${typeof rules}`);
-    return [];
-  }
-  return rules;
+  const entries = await readdir(rawRoot, { withFileTypes: true });
+  return entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name);
 }
 
 async function main(): Promise<void> {
   const [, , connector, runIdArg] = process.argv;
   if (!connector) {
-    console.error("Usage: node bin/scrub-fixtures.mjs <connector> [runId]");
+    console.error("Usage: pnpm exec tsx bin/scrub-fixtures.ts <connector> [runId]");
     process.exit(1);
   }
 
@@ -121,16 +68,12 @@ async function main(): Promise<void> {
     process.exit(2);
   }
 
-  // Original filter used an async predicate — that's a bug (returns a Promise,
-  // which is truthy). Keep behaviour but type it honestly.
-  const runIds = runIdArg
-    ? [runIdArg]
-    : (await readdir(rawRoot)).filter(async (n) => (await stat(join(rawRoot, n))).isDirectory());
+  const runIds = await listRunIds(rawRoot, runIdArg);
 
   const { defaultScrubRules } = (await import(pathToFileURL(join(PACKAGE_ROOT, "src/scrub-defaults.ts")).href)) as {
     defaultScrubRules: ScrubRule[];
   };
-  const connectorRules = await loadConnectorRules(connector);
+  const connectorRules = await loadConnectorScrubRules(PACKAGE_ROOT, connector);
   const allRules: ScrubRule[] = [...defaultScrubRules, ...connectorRules];
 
   console.log(
@@ -152,7 +95,7 @@ async function main(): Promise<void> {
       const dst = join(outDir, rel);
       await mkdir(dirname(dst), { recursive: true });
       const raw = await readFile(src, "utf8");
-      const out = applyRules(raw, allRules, fileScopeOf(src));
+      const out = applyScrubRules(raw, allRules, fileScopeOf(src));
       await writeFile(dst, out);
       scrubbed++;
     }
