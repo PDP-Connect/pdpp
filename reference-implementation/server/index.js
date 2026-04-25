@@ -3781,7 +3781,17 @@ export async function startServer(opts = {}) {
   const logger = opts.logger ?? buildLogger({ quiet: !!opts.quiet });
   const nativeConfig = validateNativeConfiguration(opts);
   await initDb(opts.dbPath || DB_PATH, { busyTimeoutMs: opts.sqliteBusyTimeoutMs });
-  await seedPreRegisteredClients(resolvePreRegisteredPublicClients(opts));
+  await seedPreRegisteredClients(
+    resolvePreRegisteredPublicClients(opts),
+    {
+      onRetry: ({ attempt, delay, err }) => {
+        logger.warn(
+          { attempt, delayMs: delay, code: err?.code, msg: err?.message },
+          'startup client seed contended with sqlite lock; retrying',
+        );
+      },
+    },
+  );
   logger.info('database initialized');
 
   configureNativeManifest(nativeConfig?.nativeManifest || null);
@@ -3992,15 +4002,34 @@ if (process.argv[1] && process.argv[1].endsWith('server/index.js')) {
     if (shuttingDown) return;
     shuttingDown = true;
     cliLogger.info({ signal }, 'shutdown signal received');
+    // Close HTTP servers FIRST so in-flight handlers can finish their
+    // SQLite writes (commit or rollback) before we release the DB
+    // handle. Closing the DB underneath active handlers can leave a
+    // mid-transaction lock visible to a sibling process (Docker dev
+    // compose restarts via `node --watch`, so a new process may try to
+    // re-acquire the WAL writer immediately after this one exits).
     const closeTimeout = (srv) => new Promise((resolve) => {
       if (!srv) { resolve(); return; }
-      const t = setTimeout(resolve, 2000);
-      try { srv.closeAllConnections?.(); } catch {}
-      srv.close(() => { clearTimeout(t); resolve(); });
+      let done = false;
+      let forceTimer = null;
+      const finish = () => {
+        if (done) return;
+        done = true;
+        if (forceTimer) clearTimeout(forceTimer);
+        resolve();
+      };
+      forceTimer = setTimeout(() => {
+        try { srv.closeAllConnections?.(); } catch {}
+        finish();
+      }, 2000);
+      try { srv.closeIdleConnections?.(); } catch {}
+      try { srv.close(finish); } catch { finish(); }
     });
-    const closingServers = [closeTimeout(server.asServer), closeTimeout(server.rsServer)];
+    await Promise.allSettled([
+      closeTimeout(server.asServer),
+      closeTimeout(server.rsServer),
+    ]);
     closeDb();
-    await Promise.allSettled(closingServers);
     process.exit(0);
   };
   process.on('SIGTERM', exitOnSignal('SIGTERM'));
