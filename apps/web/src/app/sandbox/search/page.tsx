@@ -3,7 +3,8 @@ import { buildSearchResponse } from "../_demo/builders.ts";
 import { CodeBlock, InlineCode } from "../_demo/components/code-block.tsx";
 import { SandboxShell } from "../_demo/components/shell.tsx";
 
-export const dynamic = "force-static";
+// Search reads query-string state; static prerendering drops `?q=...`.
+export const dynamic = "force-dynamic";
 
 const SUGGESTIONS = ["payroll", "Northwind", "follow-up", "Bluebird", "income"] as const;
 
