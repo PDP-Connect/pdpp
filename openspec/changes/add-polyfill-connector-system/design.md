@@ -1,5 +1,7 @@
 # Design — add-polyfill-connector-system
 
+> Supersession note (2026-04-25): browser-backed connector details in this early design are historical where they mention a shared `~/.pdpp/browser-profile/`, browser bootstrap/probe CLI, or browser daemon. Current implementation uses per-connector isolated Patchright profiles via `packages/polyfill-connectors/src/browser-launch.ts`; see `openspec/changes/retire-browser-daemon`.
+
 ## Operational model
 
 ### Three classes of authentication

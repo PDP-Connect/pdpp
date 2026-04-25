@@ -605,7 +605,7 @@ interface AcquiredBrowser {
 
 /** Acquire an isolated browser context; throws TerminalError on failure. */
 async function acquireBrowser(browser: BrowserConfig, name: string): Promise<AcquiredBrowser> {
-  const { acquireIsolatedBrowser } = await import("./browser-daemon.ts");
+  const { acquireIsolatedBrowser } = await import("./browser-launch.ts");
   const profileName = browser.profileName ?? name;
   const envKey = `PDPP_${profileName.toUpperCase()}_HEADLESS`;
   const headless = browser.headless ?? process.env[envKey] !== "0";

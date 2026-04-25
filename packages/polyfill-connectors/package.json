@@ -14,8 +14,6 @@
   "name": "@pdpp/polyfill-connectors",
   "scripts": {
     "postinstall": "patchright install chromium",
-    "bootstrap:browser": "node ./bin/pdpp-connectors.js browser bootstrap",
-    "probe:browser": "node ./bin/pdpp-connectors.js browser probe",
     "check": "ultracite check",
     "fix": "ultracite fix",
     "test": "node --test --test-timeout=30000 --import tsx 'connectors/**/*.test.ts' 'src/**/*.test.ts'",
@@ -26,9 +24,6 @@
   "version": "0.0.1",
   "private": true,
   "description": "Polyfill connectors for non-PDPP platforms (YNAB, Gmail, Amazon, ChatGPT, USAA).",
-  "bin": {
-    "pdpp-connectors": "./bin/pdpp-connectors.js"
-  },
   "devDependencies": {
     "@biomejs/biome": "2.4.12",
     "ultracite": "7.6.0"

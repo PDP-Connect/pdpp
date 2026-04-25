@@ -49,6 +49,12 @@ ENV NODE_ENV=production \
 
 COPY --from=source /app /app
 
+# Runtime browser assets are installed outside /app, so the deps-stage
+# postinstall cache is not present in final images. Install real Chrome for
+# Patchright's recommended channel plus bundled Chromium as an explicit
+# fallback for the isolated launcher.
+RUN pnpm --dir packages/polyfill-connectors exec patchright install --with-deps chrome chromium
+
 EXPOSE 7662 7663
 
 CMD ["node", "reference-implementation/server/index.js"]

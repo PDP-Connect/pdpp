@@ -26,7 +26,7 @@ entire connector program forward at once:
   - slack 349,139 · claude-code 235,757 · codex 74,033 · gmail 50,407 · ynab 21,513 · chatgpt 11,341 · github 8,608 · usaa 924
 - **Data provenance caveat:** any local Spotify or Reddit rows currently visible in the reference DB are not trusted as the owner-account data. Treat them as seed/demo/fake population until they are purged and replaced by a verified real-account ingest.
 - **All 8 connectors' most recent run committed state successfully.**
-- **Browser daemon** (`src/browser-daemon.js`, `bin/browser-daemon-worker.js`) — long-lived Chromium preserves session cookies across connector runs; fixed USAA's session-token-expiry-on-process-exit problem.
+- **Browser daemon retired 2026-04-25** (`openspec/changes/retire-browser-daemon`). The original USAA session-token-on-exit motivation never made it into the production runtime — the runtime path always launched per-connector isolated patchright profiles via `acquireIsolatedBrowser`. Re-auth on each run via `ensureSession` is the supported pattern for short-server-session sites.
 - **Fleet-wide JSONL correctness fixes**: U+2028/U+2029 escape + BigInt coercion + stdout backpressure drain in `src/safe-emit.js`; Gmail 887-record crash and Slack 1,716-record truncation both traced to these.
 - **USAA**: credit-card CSV export working; PDF parser handles trailing-minus currency, non-statement filter, and year-assignment for December-on-January-statement cases.
 - **Slack**: 24 GB archive, 196k distinct messages, 0 missing thread parents; retry-budget bump (`config/slackdump-api-config.toml`) resolves eng_github-class 500-error cascade.
@@ -88,7 +88,7 @@ entire connector program forward at once:
 
 ## Infrastructure (still pending)
 
-- [x] Browser daemon — long-lived Chromium, CDP-attached, session cookies persist across runs. `pdpp-connectors browser start|stop|status|restart|logs` CLI. Resolves the USAA session-token-on-process-exit problem documented in the 2026-04-20 Opus research.
+- [x] ~~Browser daemon — long-lived Chromium, CDP-attached, session cookies persist across runs. `pdpp-connectors browser start|stop|status|restart|logs` CLI. Resolves the USAA session-token-on-process-exit problem documented in the 2026-04-20 Opus research.~~ **Superseded 2026-04-25** by `openspec/changes/retire-browser-daemon`. Production runtime never used the daemon path; the per-connector isolated patchright profile in `acquireIsolatedBrowser` is the only remaining browser-launch primitive.
 - [x] Session keep-alive probes (`scripts/session-keepalive.mjs`) — 8-min interval ping against Chase + Amazon authenticated URLs.
 - [ ] Scheduler persistence (SQLite-backed `run_history` + `last_run_time`)
 - [ ] Inbox module (`reference-implementation/server/inbox.js`) + routes + minimal HTML *(reference-impl concern)*

@@ -2,10 +2,12 @@
 /**
  * PDPP ChatGPT Connector (v0.1.0)
  *
- * Uses an authenticated Playwright persistent profile (bootstrapped via
- * `pdpp-connectors browser bootstrap`). All fetches happen via
- * page.evaluate(fetch) inside the browser context to preserve Cloudflare
- * TLS fingerprint.
+ * Uses an isolated patchright profile under `~/.pdpp/profiles/chatgpt/` via
+ * `acquireIsolatedBrowser`. Initial credentialing happens through the
+ * connector's auto-login flow (`src/auto-login/chatgpt.ts`), which drives
+ * login + 2FA via `INTERACTION kind=credentials`/`kind=otp` from a normal
+ * connector run. All subsequent fetches happen via page.evaluate(fetch)
+ * inside the browser context to preserve Cloudflare TLS fingerprint.
  *
  * Extracts bearer token from #client-bootstrap, device ID from oai-did
  * cookie. Walks conversation tree from root → current_node for each

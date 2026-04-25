@@ -20,8 +20,9 @@
  * connector mode today would commit us to a `mode` flag in START/state
  * that we haven't designed.
  *
- * Status by section (as of 2026-04-21):
- *   - [✓] Attach to browser daemon via CDP (validated against live daemon)
+ * Status by section (as of 2026-04-21, daemon retired 2026-04-25):
+ *   - [✓] Acquire isolated patchright browser (replaces the legacy CDP-attach
+ *         to a shared daemon — see `openspec/changes/retire-browser-daemon`)
  *   - [✓] Navigate to Privacy Central preview URL (validated — URL is
  *         `/hz/privacy-central/data-requests/preview.html`)
  *   - [~] Handle Amazon re-auth challenge (reuses ensureAmazonSession;
@@ -33,13 +34,13 @@
  *   - [ ] Zip download & ingest — explicitly out of scope (open question).
  */
 
-import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 // biome-ignore lint/correctness/noUnresolvedImports: dotenv is declared in package.json; Biome's resolver can't follow its conditional exports
 import { config as dotenvConfig } from "dotenv";
-import { chromium, type Page } from "playwright";
+import type { Page } from "playwright";
 import { ensureAmazonSession } from "../src/auto-login/amazon.ts";
+import { acquireIsolatedBrowser } from "../src/browser-launch.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, "..", "..", "..");
@@ -120,19 +121,6 @@ function sendInteractionAndWait(msg: InteractionMessage): Promise<InteractionRes
   });
 }
 
-interface BrowserDaemonDiscovery {
-  wsEndpoint: string;
-}
-
-function readDaemonDiscovery(): BrowserDaemonDiscovery {
-  try {
-    return JSON.parse(readFileSync(`${process.env.HOME}/.pdpp/browser-daemon.json`, "utf8")) as BrowserDaemonDiscovery;
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    throw new Error(`could not read browser-daemon.json: ${msg}. Start the daemon first.`);
-  }
-}
-
 interface FormStateSnapshot {
   bodyPreview: string;
   buttons: Array<{
@@ -207,13 +195,11 @@ function snapshotFormState(page: Page): Promise<FormStateSnapshot> {
 }
 
 async function main(): Promise<void> {
-  const disc = readDaemonDiscovery();
-  console.error(`[request-export] attaching to daemon ws=${disc.wsEndpoint.slice(0, 40)}…`);
-  const browser = await chromium.connectOverCDP(disc.wsEndpoint);
-  const context = browser.contexts()[0];
-  if (!context) {
-    throw new Error("no browser context available");
-  }
+  console.error("[request-export] launching isolated patchright browser (profile=amazon)");
+  const { context, release } = await acquireIsolatedBrowser({
+    profileName: "amazon",
+    headless: false,
+  });
   const page = await context.newPage();
 
   try {
@@ -453,9 +439,7 @@ async function main(): Promise<void> {
     await page.close().catch(() => {
       /* ignore */
     });
-    await browser.close().catch(() => {
-      /* ignore */
-    });
+    await release();
   }
 }
 

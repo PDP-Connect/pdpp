@@ -18,10 +18,10 @@ Everything else is mechanical.
 
 - Node.js ≥ 20
 - `pnpm` installed (`npm i -g pnpm` if not)
-- Google Chrome installed (macOS: `/Applications/Google Chrome.app`; Linux: `google-chrome-stable`)
+- Google Chrome recommended for the strongest Patchright stealth posture. If Chrome is absent, the connector falls back to bundled Patchright Chromium installed by `pnpm install`.
 - A ChatGPT account (email + password)
 
-Quick sanity check for Chrome on macOS: `ls "/Applications/Google Chrome.app"` — if that succeeds, you're good.
+Quick sanity check for Chrome on macOS: `ls "/Applications/Google Chrome.app"`. To install Chrome-for-Testing for Patchright explicitly, run `pnpm --dir packages/polyfill-connectors exec patchright install chrome`.
 
 ## Repo setup
 
@@ -69,7 +69,7 @@ What happens:
 1. An embedded PDPP authorization + resource server starts on two local ports (ephemeral).
 2. The ChatGPT manifest is registered.
 3. An owner token is minted internally.
-4. The browser daemon auto-starts, launching patched Chrome.
+4. An isolated patchright Chrome launches against `~/.pdpp/profiles/chatgpt/`.
 5. The connector logs into ChatGPT. If 2FA is required, the terminal will print an `INTERACTION` prompt — type the OTP code into the same terminal and press Enter.
 6. Conversations, messages, memories, and other streams are extracted and written to `$PDPP_DB_PATH`.
 7. The orchestrator prints record counts per stream, then exits.
@@ -202,7 +202,7 @@ The dashboard reads from the same PDPP server you started earlier (at 7662/7663)
 - Connector run already exited — nothing to stop there.
 - Stop the PDPP server: Ctrl+C in terminal 2.
 - Stop the dashboard: Ctrl+C in terminal 4.
-- Stop the browser daemon: `node packages/polyfill-connectors/bin/pdpp-connectors.js browser stop`
+- The Chrome process exits when the connector run finishes; nothing extra to stop.
 - The sqlite file at `$PDPP_DB_PATH` persists your data. Delete it if you want to start clean.
 
 ## Troubleshooting

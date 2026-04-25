@@ -43,7 +43,7 @@ Three active directives in chatgpt. Verified they were NOT stale after DOM lib �
 
 2. `fetch()` body param (1 site) — suppression was hiding a real `exactOptionalPropertyTypes` violation. Passing `{ body: undefined }` doesn't match `BodyInit | null`. Fixed by building `RequestInit` and conditionally assigning `body` only when present.
 
-Net: 3 → 0 `@ts-expect-error` directives in chatgpt. The only remaining active directive in the package is in `src/browser-daemon.ts` for patchright ↔ playwright nominal type mismatch — out of scope for Item #7.
+Net: 3 → 0 `@ts-expect-error` directives in chatgpt. The only remaining active directive in the package is in `src/browser-launch.ts` (formerly `src/browser-daemon.ts`, retired 2026-04-25) for patchright ↔ playwright nominal type mismatch — out of scope for Item #7.
 
 ## #6 — apple_health timeout
 

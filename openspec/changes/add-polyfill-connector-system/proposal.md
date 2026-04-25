@@ -8,6 +8,8 @@
 
 **Delivery signal (2026-04-21):** 951,313 records across 8 active connectors queryable via the RS: slack 349k, claude-code 236k, codex 74k, gmail 50k, ynab 22k, chatgpt 11k, github 9k, usaa 1k. All connectors' most recent run committed state successfully. See `tasks.md` for the full table.
 
+**Supersession note (2026-04-25):** the original shared browser-profile / browser-daemon plan below is historical. `openspec/changes/retire-browser-daemon` makes per-connector isolated Patchright profiles (`~/.pdpp/profiles/<connector>/`) the only supported browser-launch path; `design-notes/host-browser-bridge-open-question.md` tracks the separate Docker/remote-browser UX question.
+
 ## Why
 
 The reference implementation today has sample polyfill connectors (Spotify, GitHub, Reddit) backed by seed fixtures. It does not yet have **living polyfill connectors against real platforms** for a real user, running on a real schedule, with a real human-in-the-loop interaction channel.

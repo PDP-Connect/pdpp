@@ -55,7 +55,7 @@ What the runtime provides to `collect()`:
 
 Use these libraries by default. They are chosen because they are actively maintained and are the community defaults in 2026:
 
-- **`patchright`** — Playwright drop-in with bundled Chromium stealth patches (Runtime.Enable, Console.Enable, and others). Replaces `rebrowser-playwright` which went stale in mid-2025. The maintainer tracks upstream Playwright within days. `launchPersistentContext` with `channel: "chrome"` is the recommended launch path; do not override args or userAgent except for specific workarounds (e.g. the DownloadBubble bug).
+- **`patchright`** — Playwright drop-in with stealth patches (Runtime.Enable, Console.Enable, command-flag leaks, and others). Replaces `rebrowser-playwright` which went stale in mid-2025. Per the patchright README "Best Practice" config, `launchPersistentContext` is called with `channel: "chrome"`, `viewport: null`, and `headless: false`; do **not** set custom `userAgent` or extra browser headers; do **not** re-add the Chromium flags patchright manages (`--disable-blink-features=AutomationControlled` (added by patchright), `--enable-automation`/`--disable-popup-blocking`/`--disable-component-update`/`--disable-default-apps`/`--disable-extensions` (removed by patchright)). The reference auto-detects: if real Chrome (system or `pnpm --dir packages/polyfill-connectors exec patchright install chrome`) is available it uses `channel: "chrome"`; if not, it falls back once to bundled Patchright Chromium (installed by `pnpm install` postinstall) and logs the fallback. The reference Docker image installs real Chrome explicitly so the recommended channel is the default in-container. `PDPP_BROWSER_CHANNEL=<value>` is a strict override (no fallback). For best stealth on a host checkout, run `pnpm --dir packages/polyfill-connectors exec patchright install chrome` once. Override `args` only for specific workarounds (e.g. the DownloadBubble bug).
 - **`zod`** — schema validation. Each connector exports schemas for its streams in `schemas.js`; the connector validates records before emit and sends `SKIP_RESULT` on validation failure. See §3.
 - **`p-retry`** (v8+) — retry with exponential backoff + jitter for transient network/5xx/429 errors. Use `AbortError` to signal non-retryable failures.
 - **Native Playwright tracing** (`context.tracing.start()` / `.stop()`) — gate behind `PDPP_TRACE=1` env, write to `/tmp/<connector>-trace-<ts>.zip`. Replayable in Playwright Inspector.
@@ -70,14 +70,16 @@ Do **not** use:
 
 ## 0. Browser architecture (for scrapers)
 
-All new scraping connectors should use `acquireIsolatedBrowser({ profileName: '<connector>' })` from `src/browser-daemon.js`. This:
+All scraping connectors use `acquireIsolatedBrowser({ profileName: '<connector>' })` from `src/browser-launch.ts`. This:
 
 - Launches patchright-patched Chrome per connector run (full stealth: launch-side AND client-side).
 - Uses a persistent profile directory at `~/.pdpp/profiles/<connector>/`, so cookies, localStorage, and trusted-device state persist across runs of that connector.
 - Is isolated from other connectors (different profile dir = different fingerprint, different cookies, no cross-contamination).
 - Supports concurrent runs across connectors (each connector has its own browser process; no lockfile).
 
-Do **not** use the legacy `acquireBrowser()` daemon path for new connectors. The daemon exists for backwards compatibility with connectors not yet migrated, but its CDP-attach architecture forfeits patchright's client-side stealth (the patches that run on `evaluate`/`locator` calls, not just at browser launch). The daemon will be retired once all connectors are migrated.
+This is the only browser-launch primitive. The legacy shared browser daemon and shared profile launcher were retired 2026-04-25 (`openspec/changes/retire-browser-daemon`).
+
+Multi-account note: the runtime today defaults `profileName` to the connector name, which is single-account by design. When multi-account support ships, the convention will become `${connectorName}__${subjectId}` so two accounts on the same platform get independent profile directories.
 
 **When to deviate**: if a connector is so cheap (a single HTTP call behind a session) that launching a full browser per run is wasteful, prefer a plain HTTP client (`fetch`, session cookies from a stored JSON). Scraping that drives a UI belongs in the isolated-browser pattern.
 
@@ -207,7 +209,7 @@ You can't run a new connector against a new user's account ahead of time. Shape 
 - **Login before challenge.** Drive credentials from env/secrets. If a challenge (OTP, 2FA, SMS) fires, emit `INTERACTION kind=otp` and block until the orchestrator forwards the code.
 - **Never assume a human is present.** A connector running unattended at 3am must either complete or emit a clear INTERACTION; it must not hang, retry indefinitely, or produce partial output.
 - **Session elevation is a thing.** Some platforms (Amazon Privacy Central) require a *recent* password entry even for logged-in sessions. Handle these distinct from "session dead".
-- **Cookie longevity varies.** Chromium drops session cookies on exit. If the platform uses session cookies for auth (USAA, Amazon), use the long-lived browser daemon (`src/browser-daemon.js`). Otherwise launchPersistentContext is fine.
+- **Cookie longevity varies.** Chromium drops `Session`-scoped cookies (no `Max-Age`) when the process exits. For platforms whose auth uses such cookies (USAA), accept that each run will re-auth via `ensureSession` — the connector's auto-login flow handles this. The runtime model serializes runs per connector and schedules them well outside any in-memory session-cookie window, so a long-lived daemon would not buy anything in practice.
 
 ---
 

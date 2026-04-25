@@ -59,4 +59,4 @@ Declared but not realizable from a slackdump archive (see comments in `index.js`
 
 ## Auth
 
-Requires `SLACK_TOKEN`, `SLACK_COOKIE`, `SLACK_WORKSPACE` in env. Bootstrap these via `bin/bootstrap-slack-session.js` (Playwright-driven login).
+Requires `SLACK_TOKEN`, `SLACK_COOKIE`, `SLACK_WORKSPACE` in env. Capture `SLACK_TOKEN` (an `xoxc-` token) and `SLACK_COOKIE` (the `d=...` cookie value) from a logged-in browser session against your workspace.

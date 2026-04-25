@@ -20,7 +20,7 @@ These connectors fetch via the platform's public HTTP API using a long-lived tok
 | Connector | Auth | Bootstrap | Maintainer-verified | First-run portable | Records (mine) |
 |---|---|---|---|---|---|
 | ynab | `YNAB_PAT` | Manual: ynab.com/settings → "New Token" | ✅ | ✅ | ~10,311 |
-| github | `GITHUB_PERSONAL_ACCESS_TOKEN` | **Automated** via `bin/bootstrap-github-pat.js` | ✅ | ✅ | 553 |
+| github | `GITHUB_PERSONAL_ACCESS_TOKEN` | Manual: github.com/settings/tokens | ✅ | ✅ | 553 |
 | gmail | `GMAIL_USER`, `GMAIL_APP_PASSWORD`, `GMAIL_IMAP_HOST` | Google app password | ✅ | ✅ | ~27,359 |
 | notion | `NOTION_API_TOKEN` | Manual: notion.so/my-integrations → "New integration" | 🟡 code ready | ✅ (expected) | — |
 | oura | `OURA_PERSONAL_ACCESS_TOKEN` | Manual: cloud.ouraring.com/personal-access-tokens | 🟡 code ready | ✅ (expected) | — |
@@ -34,7 +34,7 @@ These connectors fetch via the platform's public HTTP API using a long-lived tok
 
 These connectors drive a Playwright session against a persistent browser profile. Session expiry is handled by `src/auto-login/<platform>.js` helpers that drive re-login + 2FA via `INTERACTION`. **None of these are first-run portable without some friction** — the upstream platforms have anti-bot surfaces that treat fresh IPs and cold profiles as higher-risk by design.
 
-All browser-scrape connectors now use `acquireIsolatedBrowser({ profileName: '<name>' })` (per-connector on-disk profile at `~/.pdpp/profiles/<name>/`, full patchright stealth). The legacy shared daemon at `~/.pdpp/browser-profile/` is retained only as Chase's `PDPP_CHASE_SHARED_PROFILE=1` escape hatch. See `docs/connector-authoring-guide.md`.
+All browser-scrape connectors use `acquireIsolatedBrowser({ profileName: '<name>' })` (per-connector on-disk profile at `~/.pdpp/profiles/<name>/`, full patchright stealth). See `docs/connector-authoring-guide.md`. The legacy shared daemon and shared `~/.pdpp/browser-profile/` were retired 2026-04-25 (`openspec/changes/retire-browser-daemon`).
 
 First-run-portability notes are platform-specific and worth reading before handing the connector to a new user:
 
@@ -78,9 +78,6 @@ These connectors parse local files without network access. Run on-device only. *
 ```bash
 # One-shot run
 node packages/polyfill-connectors/bin/orchestrate.js run <name>
-
-# Bootstrap a token (where automated)
-node packages/polyfill-connectors/bin/bootstrap-github-pat.js
 
 # Validate all manifests
 node packages/polyfill-connectors/bin/register-all.js --embedded
