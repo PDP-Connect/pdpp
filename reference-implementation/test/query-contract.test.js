@@ -18,7 +18,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { dirname, join } from 'node:path';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 import { startServer } from '../server/index.js';
@@ -1536,9 +1536,18 @@ async function seedSlackExpansionFixture(rsUrl, ownerToken, connectorId) {
 }
 
 test('first-party manifests declare only parent-to-child query.expand entries with FK on child', () => {
-  const manifestNames = ['gmail', 'slack'];
-  for (const manifestName of manifestNames) {
-    const manifest = JSON.parse(readFileSync(join(POLYFILL_MANIFESTS_DIR, `${manifestName}.json`), 'utf8'));
+  const manifests = readdirSync(POLYFILL_MANIFESTS_DIR)
+    .filter((name) => name.endsWith('.json'))
+    .map((filename) => ({
+      manifestName: filename.replace(/\.json$/, ''),
+      manifest: JSON.parse(readFileSync(join(POLYFILL_MANIFESTS_DIR, filename), 'utf8')),
+    }))
+    .filter(({ manifest }) => manifest.streams.some((stream) => Array.isArray(stream.query?.expand)));
+
+  assert.ok(manifests.some(({ manifestName }) => manifestName === 'gmail'), 'gmail should keep its existing expand declarations');
+  assert.ok(manifests.some(({ manifestName }) => manifestName === 'slack'), 'slack should declare the newly enabled expand relations');
+
+  for (const { manifestName, manifest } of manifests) {
     const streamsByName = new Map(manifest.streams.map((stream) => [stream.name, stream]));
     for (const stream of manifest.streams) {
       const declared = stream.query?.expand || [];
