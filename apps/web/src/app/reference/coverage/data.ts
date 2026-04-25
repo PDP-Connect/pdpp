@@ -237,13 +237,21 @@ export const coverageRows = [
     concept: "Mock sandbox protocol walkthroughs",
     category: "Sandbox",
     specified: "not-applicable",
-    documented: "partial",
-    implemented: "no",
-    tested: "not-applicable",
-    demonstrated: "no",
-    status: "planned",
-    evidence: [webRoute("/sandbox", "apps/web/src/app/sandbox/page.tsx", "Sandbox placeholder")],
-    notes: "This change creates the mock-backed placeholder and contract, not the full sandbox runtime.",
+    documented: "yes",
+    implemented: "yes",
+    tested: "yes",
+    demonstrated: "yes",
+    status: "implemented",
+    evidence: [
+      webRoute("/sandbox", "apps/web/src/app/sandbox/page.tsx", "Functional sandbox walkthrough"),
+      {
+        label: "Sandbox state reducer tests",
+        href: "https://github.com/vana-com/pdpp/blob/main/apps/web/src/app/sandbox/state.test.ts",
+        sourcePath: "apps/web/src/app/sandbox/state.test.ts",
+      },
+    ],
+    notes:
+      "End-to-end mock walkthrough covers request, owner consent, scoped query, revocation, and post-revocation refusal. Fixtures are fictional and the page never asks for real credentials.",
   },
   {
     concept: "Semantic subset grants and predicate-in-grant",
@@ -288,7 +296,7 @@ export const coverageSummary = {
   implemented: coverageRows.filter((row) => row.implemented === "yes").length,
   partial: coverageRows.filter((row) => row.status === "partial").length,
   deferred: coverageRows.filter((row) => row.status === "deferred").length,
-  planned: coverageRows.filter((row) => row.status === "planned").length,
+  planned: coverageRows.filter((row) => (row.status as CoverageStatus) === "planned").length,
 } as const;
 
 function validateCoverageRows(rows: readonly CoverageRow[]): void {
