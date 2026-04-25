@@ -37,7 +37,7 @@ const architectureLayers = [
     label: "Educational surface",
     route: "/sandbox",
     title: "Sandbox",
-    body: "Mock-backed walkthrough placeholder for learning PDPP flows without real credentials or owner data.",
+    body: "Interactive mock-backed walkthrough of one PDPP scenario end to end: request, consent, scoped read, revocation, refusal. No credentials, no live data.",
   },
 ] as const;
 
@@ -57,9 +57,9 @@ const referenceLinks = [
   },
   {
     label: "Sandbox",
-    title: "Mock educational placeholder",
+    title: "Interactive mock walkthrough",
     href: "/sandbox",
-    body: "Simulated-only sandbox contract: seeded data, resettable state, no real credentials, and distinct chrome from the live dashboard.",
+    body: "Click through one full PDPP scenario in your browser: a fictional client requests scoped pay statements, the owner approves, the resource server returns only granted fields, and revocation refuses the next read. Inspectable JSON for each step.",
   },
   {
     label: "Repository",

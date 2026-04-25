@@ -1,44 +1,37 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import type React from "react";
 import { buttonVariants } from "@/components/ui/button.tsx";
+import { SandboxWalkthrough } from "./sandbox-walkthrough.tsx";
 
 export const metadata: Metadata = {
-  title: "Mock Sandbox - PDPP",
+  title: "PDPP Sandbox - Try a scoped grant end to end",
   description:
-    "A clearly labeled placeholder for a future mock-backed PDPP sandbox with seeded data, resettable state, and no real credentials.",
+    "An interactive, mock-backed PDPP walkthrough: a fictional client requests scoped pay-statement access, the owner approves a bounded grant, the resource server returns only granted fields, and revocation refuses the next read. No credentials, no live data.",
 };
 
-const sandboxContract = [
+const audienceCards = [
   {
-    title: "Mock-backed only",
-    body: "The sandbox will use seeded records, mock connector manifests, and simulated authorization events. It will not connect to real platform accounts.",
+    eyebrow: "Reviewer",
+    title: "See the surface a real owner approves",
+    body: "Grant scope, fields, retention, and refusal evidence are all visible without reading the spec first.",
   },
   {
-    title: "No real credentials",
-    body: "Visitors will not be asked for Gmail, GitHub, bank, payroll, or other platform credentials. Any login-like UI must be specimen copy.",
+    eyebrow: "Implementer",
+    title: "Inspect the API shapes",
+    body: "Each step exposes a representative request/response so you can compare your own draft to the protocol.",
   },
   {
-    title: "Resettable state",
-    body: "Walkthrough state should be disposable and reset between sessions so a visitor cannot mistake it for a durable owner account.",
-  },
-  {
-    title: "Protocol-flow walkthroughs",
-    body: "The goal is to teach request, consent, grant, query, revocation, collection, and retrieval extension shapes with inspectable examples.",
-  },
-  {
-    title: "Distinct from dashboard",
-    body: "The sandbox may reuse display primitives, but its chrome and copy must stay visibly simulated, unlike the live operator dashboard.",
+    eyebrow: "Skeptic",
+    title: "Confirm scope is enforced, not implied",
+    body: "Approve a grant, revoke it, and watch the simulated resource server refuse the next read.",
   },
 ] as const;
 
-const plannedWalkthroughs = [
-  "Client requests scoped pay-statement access",
-  "Owner approves a bounded grant",
-  "App reads only granted fields",
-  "Owner revokes access and sees refusal evidence",
-  "Mock connector emits RECORD and STATE messages",
-  "Lexical and semantic search explain candidate references",
+const guarantees = [
+  "Everything below is fictional. No real Acme, Northwind, Quill Tax, payroll, or owner exists.",
+  "No credential or token entry. The sandbox cannot connect to real platforms.",
+  "State lives only in this browser tab. Reset returns you to step 0; closing the tab forgets it.",
+  "JSON shapes are representative, not captured from a live reference run.",
 ] as const;
 
 export default function SandboxPage() {
@@ -46,29 +39,30 @@ export default function SandboxPage() {
     <main className="relative overflow-hidden">
       <div
         aria-hidden="true"
-        className="pointer-events-none absolute inset-x-0 top-0 h-[30rem]"
+        className="pointer-events-none absolute inset-x-0 top-0 h-[28rem]"
         style={{
           background:
             "radial-gradient(circle at 16% 18%, oklch(0.72 0.11 45 / 0.16), transparent 34%), radial-gradient(circle at 82% 10%, oklch(0.58 0.172 253.7 / 0.12), transparent 32%)",
         }}
       />
-      <div className="relative mx-auto w-full max-w-6xl px-4 py-10 sm:px-6 lg:py-14">
-        <section className="grid gap-8 lg:grid-cols-[minmax(0,1fr)_23rem]">
-          <div>
+      <div className="relative mx-auto w-full max-w-7xl px-4 py-10 sm:px-6 lg:py-14">
+        <section className="grid gap-8 lg:grid-cols-[minmax(0,1fr)_22rem]">
+          <div className="min-w-0">
             <div className="pdpp-eyebrow text-muted-foreground">Sandbox / Mock educational surface</div>
             <h1 className="pdpp-display mt-3 max-w-4xl text-foreground">
-              A pedagogical PDPP sandbox, not a live owner dashboard.
+              A scoped PDPP grant, end to end, in your browser.
             </h1>
             <p className="pdpp-body-lg mt-5 max-w-3xl text-muted-foreground">
-              This placeholder defines the sandbox contract before the full runtime exists. The future sandbox should
-              teach protocol flows with seeded data, resettable state, and no real credentials or owner records.
+              Click through a fictional tax-prep app asking a fictional owner for three pay statements. Approve the
+              grant, see only the granted fields come back, then revoke and watch the next read get refused. The
+              transcript on the right shows the API-shaped JSON for each step.
             </p>
             <div className="mt-7 flex flex-wrap gap-2.5">
-              <Link className={buttonVariants({ variant: "default", size: "lg" })} href="/reference/coverage">
-                View coverage matrix
+              <Link className={buttonVariants({ variant: "default", size: "lg" })} href="#walkthrough">
+                Start the walkthrough
               </Link>
-              <Link className={buttonVariants({ variant: "outline", size: "lg" })} href="/reference">
-                Reference explainer
+              <Link className={buttonVariants({ variant: "outline", size: "lg" })} href="/reference/coverage">
+                See coverage matrix
               </Link>
               <Link className={buttonVariants({ variant: "outline", size: "lg" })} href="/docs">
                 Protocol docs
@@ -76,67 +70,98 @@ export default function SandboxPage() {
             </div>
           </div>
 
-          <aside className="rounded-2xl border border-dashed bg-card/80 p-5 shadow-sm backdrop-blur">
-            <div className="pdpp-eyebrow text-muted-foreground">Current state</div>
-            <div className="pdpp-heading mt-3 text-foreground">Placeholder only</div>
+          <aside className="rounded-2xl border bg-card/80 p-5 shadow-sm backdrop-blur">
+            <div className="pdpp-eyebrow text-muted-foreground">What this is</div>
+            <div className="pdpp-heading mt-2 text-foreground">Simulated, not hosted</div>
             <p className="pdpp-caption mt-3 text-muted-foreground">
-              There is no credential entry, no live connector connection, no hosted owner account, and no operational
-              dashboard state on this surface.
+              This is the public sandbox: a single coherent PDPP scenario you can click through. It does not run the
+              reference server, host owner accounts, or accept credentials.
             </p>
+            <ul className="mt-4 space-y-2">
+              {guarantees.map((line) => (
+                <li className="grid grid-cols-[0.6rem_minmax(0,1fr)] gap-2.5" key={line}>
+                  <span className="mt-2 h-1.5 rounded-full bg-primary" />
+                  <span className="pdpp-caption text-muted-foreground">{line}</span>
+                </li>
+              ))}
+            </ul>
           </aside>
         </section>
 
-        <section className="mt-14 grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-          {sandboxContract.map((item) => (
-            <article className="rounded-2xl border bg-card/70 p-5" key={item.title}>
-              <h2 className="pdpp-title text-foreground">{item.title}</h2>
-              <p className="pdpp-caption mt-2 text-muted-foreground">{item.body}</p>
+        <section className="mt-12" id="walkthrough">
+          <SandboxWalkthrough />
+        </section>
+
+        <section className="mt-14 grid gap-3 md:grid-cols-3">
+          {audienceCards.map((card) => (
+            <article className="rounded-2xl border bg-card/70 p-5" key={card.title}>
+              <div className="pdpp-eyebrow text-muted-foreground">{card.eyebrow}</div>
+              <h2 className="pdpp-title mt-2 text-foreground">{card.title}</h2>
+              <p className="pdpp-caption mt-2 text-muted-foreground">{card.body}</p>
             </article>
           ))}
         </section>
 
-        <section className="mt-14 grid gap-8 lg:grid-cols-[16rem_minmax(0,1fr)]">
+        <section className="mt-14 grid gap-8 lg:grid-cols-[18rem_minmax(0,1fr)]">
           <div>
-            <h2 className="pdpp-heading text-foreground">Planned walkthroughs</h2>
+            <h2 className="pdpp-heading text-foreground">What this sandbox isn't</h2>
             <p className="pdpp-body mt-2 text-muted-foreground">
-              These are education targets, not claims that the public sandbox runtime exists today.
+              Keeping artifact boundaries crisp is part of the protocol's contract with reviewers.
             </p>
           </div>
-          <div className="rounded-2xl border bg-card/70 p-4">
-            <ol className="grid gap-3 md:grid-cols-2">
-              {plannedWalkthroughs.map((item, index) => (
-                <li className="grid grid-cols-[2rem_minmax(0,1fr)] gap-3 rounded-xl bg-background/60 p-3" key={item}>
-                  <span className="pdpp-caption flex size-8 items-center justify-center rounded-full bg-primary text-primary-foreground">
-                    {index + 1}
-                  </span>
-                  <span className="pdpp-caption self-center text-foreground">{item}</span>
-                </li>
-              ))}
-            </ol>
+          <div className="grid gap-3 md:grid-cols-3">
+            <Boundary
+              body="Operator views run against a real local or self-hosted reference instance with owner auth. They are intentionally out of scope here."
+              eyebrow="Not the dashboard"
+              href="/reference"
+              hrefLabel="See the surface map"
+              title="/dashboard is for live operation"
+            />
+            <Boundary
+              body="When the sandbox and the docs disagree, trust the docs. The sandbox is pedagogy, not a conformance suite."
+              eyebrow="Not the protocol"
+              href="/docs"
+              hrefLabel="Read the docs"
+              title="/docs holds normative semantics"
+            />
+            <Boundary
+              body="Vana does not host a canonical PDPP owner instance. To run one, fork the repo and use the Docker compose stack."
+              eyebrow="Not a hosted service"
+              href="/reference"
+              hrefLabel="Self-host instructions"
+              title="No live reference instance"
+            />
           </div>
-        </section>
-
-        <section className="mt-14 rounded-2xl border bg-card/70 p-5">
-          <div className="pdpp-eyebrow text-muted-foreground">Artifact boundary</div>
-          <p className="pdpp-body mt-3 max-w-4xl text-muted-foreground">
-            Protocol docs at <LinkLabel href="/docs">/docs</LinkLabel> remain normative. The reference explainer at{" "}
-            <LinkLabel href="/reference">/reference</LinkLabel> describes forkable implementation behavior. The live
-            dashboard at <span className="font-mono text-foreground">/dashboard</span> is for authenticated operation of
-            a running instance. This sandbox is for simulated learning only.
-          </p>
         </section>
       </div>
     </main>
   );
 }
 
-function LinkLabel({ href, children }: { href: string; children: React.ReactNode }) {
+function Boundary({
+  eyebrow,
+  title,
+  body,
+  href,
+  hrefLabel,
+}: {
+  eyebrow: string;
+  title: string;
+  body: string;
+  href: string;
+  hrefLabel: string;
+}) {
   return (
-    <Link
-      className="text-foreground underline decoration-border underline-offset-4 hover:decoration-foreground"
-      href={href}
-    >
-      {children}
-    </Link>
+    <article className="flex flex-col rounded-2xl border bg-card/70 p-5">
+      <div className="pdpp-eyebrow text-muted-foreground">{eyebrow}</div>
+      <h3 className="pdpp-title mt-2 text-foreground">{title}</h3>
+      <p className="pdpp-caption mt-2 text-muted-foreground">{body}</p>
+      <Link
+        className="pdpp-caption mt-3 self-start text-foreground underline decoration-border underline-offset-4 hover:decoration-foreground"
+        href={href}
+      >
+        {hrefLabel} -&gt;
+      </Link>
+    </article>
   );
 }

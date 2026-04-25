@@ -59,7 +59,7 @@ export default function ReferenceCoveragePage() {
                 Reference explainer
               </Link>
               <Link className={buttonVariants({ variant: "outline", size: "lg" })} href="/sandbox">
-                Open mock sandbox
+                Try the sandbox walkthrough
               </Link>
               <Link className={buttonVariants({ variant: "outline", size: "lg" })} href="/docs">
                 Protocol docs
