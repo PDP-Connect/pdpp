@@ -30,9 +30,9 @@
 
 ## 5. Connector Defaults
 
-- [ ] Classify first-party connectors by refresh posture: frequent automatic, moderate automatic, daily automatic, manual-by-default, paused/unsupported.
-- [ ] Add todo entries for connectors whose live behavior contradicts their recommended policy.
-- [ ] Include progress-reporting improvements for connectors where the dashboard cannot explain run progress well enough.
+- [x] Classify first-party connectors by refresh posture: frequent automatic, moderate automatic, daily automatic, manual-by-default, paused/unsupported. (See `design-notes/2026-04-26-first-party-refresh-defaults.md`. Locked in CI by `reference-implementation/test/polyfill-refresh-defaults.test.js`.)
+- [x] Add todo entries for connectors whose live behavior contradicts their recommended policy. (Captured in the "Live-behavior contradictions" section of `design-notes/2026-04-26-first-party-refresh-defaults.md`. No first-party manifest needs a posture flip today: Chase / ChatGPT / USAA evidence is messaging/transport/capability, not policy.)
+- [x] Include progress-reporting improvements for connectors where the dashboard cannot explain run progress well enough. (Captured in the "Progress-reporting gaps" section of `design-notes/2026-04-26-first-party-refresh-defaults.md` — concrete targets: Slack, YNAB, Chase, Gmail, ChatGPT/Anthropic browser-scrape group, Claude Code/Codex.)
 
 ## 6. Protocol Candidate Handling
 
@@ -49,4 +49,4 @@
 - [x] Run `openspec validate add-connector-refresh-policy-controls --strict`.
 - [x] Run `openspec validate --all --strict`.
 
-> Remaining followups are section 5 connector defaults: first-party refresh posture classification, live-behavior contradiction todos, and connector progress-reporting improvements.
+> Section 5 is now closed: first-party refresh-posture classification is documented in `design-notes/2026-04-26-first-party-refresh-defaults.md` and locked by `reference-implementation/test/polyfill-refresh-defaults.test.js` (4 tests). Live-behavior contradictions and connector progress-reporting gaps are captured as durable todos in that design note. Follow-up implementation work (Slack/YNAB/Chase/Gmail progress emission; Chase `stream_skipped` messaging; ChatGPT host browser bridge; USAA transport debugging) belongs to later tranches and is not part of this change.
