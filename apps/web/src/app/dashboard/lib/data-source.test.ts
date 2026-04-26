@@ -32,7 +32,8 @@ const DATA_SOURCE_PATH = join(HERE, "data-source.ts");
 
 const TS_FILE_RE = /\.(ts|tsx)$/;
 const LIVE_KIND_RE = /kind:\s*"live"/;
-const SANDBOX_IMPORT_RE = /\bfrom\s+\(?\s*["'][^"']*\/sandbox(\/|["'])/m;
+const SANDBOX_FROM_IMPORT_RE = /\bfrom\s+["'][^"']*\/sandbox(?:\/|["'])/m;
+const SANDBOX_DYNAMIC_IMPORT_RE = /\bimport\s*\(\s*["'][^"']*\/sandbox(?:\/|["'])/m;
 
 async function walk(dir: string, files: string[] = []): Promise<string[]> {
   const entries = await readdir(dir, { withFileTypes: true });
@@ -79,18 +80,24 @@ test("live data source binds every DashboardDataSource method", async () => {
   }
 });
 
-function stripCommentsAndStrings(src: string): string {
-  // Cheap and good enough for the static-import check: drop // line
-  // comments, /* block */ comments, and the contents of single/double/
-  // backtick string literals so doc references to "sandbox" don't trip
-  // the guard.
-  return src
-    .replace(/\/\*[\s\S]*?\*\//g, "")
-    .replace(/(^|[^:])\/\/[^\n]*/g, "$1")
-    .replace(/"(?:[^"\\]|\\.)*"/g, '""')
-    .replace(/'(?:[^'\\]|\\.)*'/g, "''")
-    .replace(/`(?:[^`\\]|\\.)*`/g, "``");
+function stripComments(src: string): string {
+  // Drop comments but keep string literal contents. Import paths live inside
+  // strings, so stripping strings would make the guard a false negative.
+  return src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/[^\n]*/g, "$1");
 }
+
+function hasSandboxImport(src: string): boolean {
+  const withoutComments = stripComments(src);
+  return SANDBOX_FROM_IMPORT_RE.test(withoutComments) || SANDBOX_DYNAMIC_IMPORT_RE.test(withoutComments);
+}
+
+test("sandbox import detector catches static and dynamic imports", () => {
+  assert.equal(hasSandboxImport('import { x } from "@/app/sandbox/_demo/data-source.ts";'), true);
+  assert.equal(hasSandboxImport('export { x } from "../../sandbox/_demo/data-source.ts";'), true);
+  assert.equal(hasSandboxImport('const x = await import("../sandbox/_demo/data-source.ts");'), true);
+  assert.equal(hasSandboxImport('// import { x } from "@/app/sandbox/_demo/data-source.ts";'), false);
+  assert.equal(hasSandboxImport('const label = "sandbox";'), false);
+});
 
 test("/dashboard/** never imports from /sandbox/**", async () => {
   const files = await walk(DASHBOARD_DIR);
@@ -99,13 +106,12 @@ test("/dashboard/** never imports from /sandbox/**", async () => {
     if (file === SELF) {
       continue;
     }
-    const src = stripCommentsAndStrings(await readFile(file, "utf8"));
+    const src = await readFile(file, "utf8");
     // Match Next/TS import statements that resolve to the sandbox tree:
     //   import ... from "@/app/sandbox/..."
     //   import ... from "../../sandbox/..."
     //   import ... from "../sandbox/..."
-    const sandboxImport = SANDBOX_IMPORT_RE.test(src);
-    if (sandboxImport) {
+    if (hasSandboxImport(src)) {
       offenders.push(file);
     }
   }
@@ -123,7 +129,7 @@ test("/dashboard/** never references the sandbox data source binding", async () 
     if (file === SELF) {
       continue;
     }
-    const src = stripCommentsAndStrings(await readFile(file, "utf8"));
+    const src = stripComments(await readFile(file, "utf8"));
     if (src.includes("sandboxDashboardDataSource")) {
       offenders.push(file);
     }
