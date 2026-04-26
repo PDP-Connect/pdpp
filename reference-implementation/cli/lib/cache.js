@@ -120,8 +120,9 @@ export function deleteGrantFiles(cacheRoot, grantId) {
   }
 }
 
-export function hasUsableGrant(cacheRoot, { connectorId, providerId, streams } = {}) {
+export function hasUsableGrant(cacheRoot, { grantId, connectorId, providerId, streams } = {}) {
   for (const grant of listGrants(cacheRoot)) {
+    if (grantId && grant.grant_id !== grantId) continue;
     if (grant.revoked) continue;
     if (grant.expires_at && new Date(grant.expires_at).getTime() <= Date.now()) continue;
     if (connectorId && grant.connector_id !== connectorId) continue;

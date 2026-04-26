@@ -370,9 +370,7 @@ async function runWait(flags, cacheRoot) {
   const intervalMs = intervalSeconds * 1000;
 
   while (Date.now() < deadline) {
-    const found = grantId
-      ? (readToken(cacheRoot, grantId) ? readGrant(cacheRoot, grantId) : null)
-      : hasUsableGrant(cacheRoot);
+    const found = hasUsableGrant(cacheRoot, grantId ? { grantId } : {});
 
     if (found) {
       const resolvedGrantId = found.grant_id || grantId;

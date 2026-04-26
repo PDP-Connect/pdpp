@@ -554,3 +554,39 @@ Subcommands:
   assert.ok(usageText.includes('wait'), 'AGENT_USAGE must document the wait subcommand');
   assert.ok(usageText.includes('poll') || usageText.includes('Poll'), 'wait description must mention polling');
 });
+
+test('agent wait --grant-id: does not succeed for an expired grant', async () => {
+  const cacheRoot = makeTmpCache();
+  await ensureCacheDirs(cacheRoot);
+
+  writeGrant(cacheRoot, 'grant_expired_wait', {
+    grant_id: 'grant_expired_wait',
+    connector_id: 'https://registry.pdpp.org/connectors/spotify',
+    streams: [{ name: 'listening_history' }],
+    revoked: false,
+    expires_at: new Date(Date.now() - 1000).toISOString(), // already expired
+  });
+  await writeToken(cacheRoot, 'grant_expired_wait', 'expired-token');
+
+  // hasUsableGrant with grantId must reject an expired grant
+  const found = hasUsableGrant(cacheRoot, { grantId: 'grant_expired_wait' });
+  assert.equal(found, null, 'wait --grant-id must not return an expired grant');
+});
+
+test('agent wait --grant-id: does not succeed for a locally revoked grant', async () => {
+  const cacheRoot = makeTmpCache();
+  await ensureCacheDirs(cacheRoot);
+
+  writeGrant(cacheRoot, 'grant_revoked_wait', {
+    grant_id: 'grant_revoked_wait',
+    connector_id: 'https://registry.pdpp.org/connectors/spotify',
+    streams: [{ name: 'listening_history' }],
+    revoked: true, // locally marked revoked
+    expires_at: new Date(Date.now() + 3600 * 1000).toISOString(),
+  });
+  await writeToken(cacheRoot, 'grant_revoked_wait', 'revoked-token');
+
+  // hasUsableGrant with grantId must reject a revoked grant
+  const found = hasUsableGrant(cacheRoot, { grantId: 'grant_revoked_wait' });
+  assert.equal(found, null, 'wait --grant-id must not return a locally revoked grant');
+});
