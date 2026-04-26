@@ -596,27 +596,16 @@ function summarizeFailure(failure: SpineEvent | undefined): [string, string][] {
 
 // ─── Host browser bridge unavailable ────────────────────────────────────────
 // Surfaced as a distinct deployment-config error state, not a generic failure.
-// The stable error code is `host_browser_bridge_unavailable`; the runtime
-// embeds it in the run.failed event's `data.reason` field.
+//
+// Wire path: HostBrowserBridgeUnavailableError → TerminalError("[host_browser_bridge_unavailable] <msg>")
+// → connector DONE { status:"failed", error:{ message:"[code] ...", retryable:false } }
+// → run.failed data { reason:"connector_reported_failed", connector_error_message:"[code] ..." }
+//
+// So data.reason is always "connector_reported_failed" for this class of failure.
+// The stable code lives in data.connector_error_message (primary) and may also appear
+// in data.reason, data.failure_reason, or a future data.connector_error_code/code field.
 
-const HOST_BROWSER_BRIDGE_UNAVAILABLE_CODE = "host_browser_bridge_unavailable";
-
-interface BridgeUnavailableInfo {
-  cause: string;
-  url: string | null;
-}
-
-function extractBridgeUnavailable(failure: SpineEvent | undefined): BridgeUnavailableInfo | null {
-  if (!failure) {
-    return null;
-  }
-  const reason = String(failure.data?.reason ?? failure.data?.failure_reason ?? "");
-  if (!reason.includes(HOST_BROWSER_BRIDGE_UNAVAILABLE_CODE)) {
-    return null;
-  }
-  const url = typeof failure.data?.bridge_url === "string" ? failure.data.bridge_url : null;
-  return { cause: reason, url };
-}
+import { type BridgeUnavailableInfo, extractBridgeUnavailable } from "./bridge-unavailable.ts";
 
 function BridgeUnavailableSection({ bridgeUnavailable }: { bridgeUnavailable: BridgeUnavailableInfo | null }) {
   if (!bridgeUnavailable) {
