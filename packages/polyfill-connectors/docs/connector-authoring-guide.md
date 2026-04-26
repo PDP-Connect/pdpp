@@ -400,6 +400,118 @@ This is not a TODO list; it's a contract. It tells the next user whether to trus
 
 ---
 
+## 12. Blob hydration (file/attachment bytes)
+
+When a stream carries binary payload (attachments, statement PDFs,
+uploaded files, message media), don't inline bytes into records and
+don't invent a stream-specific download URL. The contract is fixed:
+
+1. The connector fetches bytes from the source while operating under
+   the owner-authorized session it already holds (IMAP, signed Slack
+   token, scrape session, on-disk filesystem path).
+2. The connector uploads bytes to the reference RS via
+   `POST /v1/blobs?connector_id=…&stream=…&record_key=…`. The RS
+   stores them content-addressed (sha256) and returns a `blob_ref`.
+3. The connector emits a record whose `data.blob_ref` carries
+   `{ blob_id, mime_type, size_bytes, sha256 }`, plus
+   `content_sha256` (mirrors the blob sha) and `hydration_status`.
+4. Clients fetch via `GET /v1/blobs/{blob_id}`, reached through the
+   server-injected `blob_ref.fetch_url`. There is no
+   `/v1/streams/.../{id}/content` or `/v1/blobs/{id}/download`. Don't
+   invent one in the manifest, the connector, or the docs.
+
+### Manifest fields a hydratable stream needs
+
+```json
+{
+  "blob_ref": {
+    "type": ["object", "null"],
+    "properties": {
+      "blob_id":   { "type": "string" },
+      "mime_type": { "type": "string" },
+      "size_bytes":{ "type": "integer" },
+      "sha256":    { "type": "string" }
+    },
+    "required": ["blob_id", "mime_type", "size_bytes", "sha256"],
+    "additionalProperties": true
+  },
+  "content_sha256":    { "type": ["string", "null"] },
+  "hydration_status":  { "type": "string", "enum": ["hydrated","failed","deferred","too_large"] },
+  "hydration_error":   { "type": ["string", "null"] }
+}
+```
+
+Add other status enum values (`unavailable`, `blocked`, `skipped`)
+**only when your connector actually exercises that branch**. Pre-adding
+unreachable values lies about observable behavior.
+
+### Reference implementation (Gmail)
+
+The shipped reference is `connectors/gmail/index.ts`:
+
+- `enforceMaxBytes(content, maxBytes)` — generator wrapper that throws
+  when a stream's running byte count exceeds the cap. Reuse this — do
+  not re-implement it.
+- `makeReferenceBlobUploader({ ownerToken, rsUrl })` — creates the
+  streaming upload body, computes sha256 inline, posts to `/v1/blobs`,
+  parses the typed response. Reuse this for any
+  `AsyncIterable<Buffer | Uint8Array | string>` source.
+- `attachmentWithHydrationFailure(attachment, status, err)` — preserves
+  metadata, sets `blob_ref: null`, sets `hydration_status`, and applies
+  `boundedHydrationError` (240-char truncation).
+
+### Size policy
+
+Pick a conservative default aligned with the source's per-item cap.
+Expose an operator override env var (e.g.
+`PDPP_<CONNECTOR>_MAX_<ARTIFACT>_BYTES`). Enforce **twice**: once
+before download (against the upstream-reported `size_bytes`) and once
+during streaming (against under-reported sources) via
+`enforceMaxBytes`. Both checks have to be present; only one is a bug.
+
+### Failure handling
+
+- Always emit a metadata-only record with a truthful `hydration_status`
+  when bytes are unavailable — never silently drop the row.
+- `hydration_error` is **public** (it's a record field). Never put
+  signed URLs, tokens, file paths that leak filenames, or full stack
+  traces in it. Use `boundedHydrationError` to truncate.
+- Connectors that download via signed URLs MUST scrub query strings
+  before populating `hydration_error`. Gmail's IMAP path has no such
+  risk; signed-URL connectors do.
+
+### Idempotency
+
+Re-running a connector on the same attachment must produce the same
+`blob_id` and not duplicate bytes. The reference RS gives you this
+for free via content-addressed `INSERT OR IGNORE` on sha256. Don't
+add per-connector dedup logic; trust the substrate.
+
+### Current hydration status (2026-04-26)
+
+- ✅ **Shipped**: `gmail.attachments` (vertical slice).
+- ⏳ **Deferred follow-ups** with focused design notes under
+  `openspec/changes/hydrate-first-party-blob-streams/design-notes/`:
+  - `slack-blob-followup-2026-04-26.md` (slack `files`, `canvases`)
+  - `financial-statement-blob-followup-2026-04-26.md` (chase, usaa
+    `statements`)
+  - `commerce-receipt-blob-followup-2026-04-26.md` (amazon and other
+    commerce invoices)
+  - `assistant-artifact-blob-followup-2026-04-26.md` (chatgpt,
+    claude_code, codex, imessage, whatsapp)
+  - `source-host-blob-followup-2026-04-26.md` (github gists,
+    pr_artifacts)
+  - `social-media-blob-followup-2026-04-26.md` (reddit, meta,
+    twitter_archive, loom)
+- 📋 The full audit table is in
+  `blob-hydration-coverage-2026-04-25.md` in the same directory.
+
+Pick from the deferred list before adding bytes to a connector that
+isn't on it; if your connector isn't covered, update the audit table
+in the same PR.
+
+---
+
 ## Appendix A: Known failure modes across our connectors
 
 (Accumulate as observed. Each entry is a teaching moment for future authors.)

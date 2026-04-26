@@ -277,6 +277,8 @@ Binary data (photos, videos, audio, documents) is not inlined in records. The re
 
 `mime_type` MUST be a valid IANA media type (see [IANA Media Types](https://www.iana.org/assignments/media-types/)). Connectors emit `blob_ref` without a `fetch_url`. The resource server injects `fetch_url` at read time when serving records via the query API.
 
+`fetch_url` is the only PDPP-API way to discover bytes. Clients MUST follow it verbatim and treat it as opaque. The PDPP API does NOT define resource-specific byte URLs such as `/v1/streams/{stream}/records/{id}/content`, `/download`, or `/file`. Implementations MUST NOT expose such URLs as part of the PDPP contract, and clients MUST NOT construct them.
+
 ### Cross-stream references (resource_ref)
 
 When a record references a record in a different stream on the same resource server, use a `resource_ref`. This is a within-subject, within-server pointer. Cross-user or cross-server references are out of scope.

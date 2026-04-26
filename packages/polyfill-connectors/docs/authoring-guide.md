@@ -199,6 +199,30 @@ semantic PII, generate and review structured redaction plans, then rerun
 with `--llm-redactions-dir <dir>`. Commit only reviewed scrubbed fixtures,
 never `raw/`.
 
+## Blob hydration (file/attachment bytes)
+
+Streams that carry binary payload (attachments, statement PDFs, files)
+must use the reference RS blob substrate, not stream-specific download
+URLs. The shape:
+
+- Connector fetches bytes from the source under its existing
+  authenticated session.
+- Connector uploads to `POST /v1/blobs?connector_id=…&stream=…&record_key=…`
+  using the streaming uploader from `connectors/gmail/index.ts`
+  (`makeReferenceBlobUploader`).
+- Connector emits a record with `blob_ref` (`blob_id`, `mime_type`,
+  `size_bytes`, `sha256`), `content_sha256`, and `hydration_status`
+  (`hydrated | failed | deferred | too_large`, plus `unavailable` /
+  `blocked` only when actually exercised).
+- Clients fetch via `GET /v1/blobs/{blob_id}` reached through
+  `blob_ref.fetch_url`. There is no `/content` or `/download` URL on
+  the PDPP API; do not invent one in the manifest or the connector.
+
+See `connector-authoring-guide.md` §12 for the full pattern, size
+policy, failure handling, and the current per-connector hydration
+status (only `gmail.attachments` is shipped today; others are tracked
+in `openspec/changes/hydrate-first-party-blob-streams/design-notes/`).
+
 ## Why each of these exists
 
 - `parsers.ts` — pure functions are cheap to test and impossible to
