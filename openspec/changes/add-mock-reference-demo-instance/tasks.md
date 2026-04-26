@@ -63,3 +63,13 @@
 - [x] 8.2 Replace demo-shaped envelopes such as `object: "schema_graph"` with live-shaped mock AS/RS envelopes where practical, or document any deliberate divergence inline and in the API examples.
 - [x] 8.3 Add route tests that assert key live-shape invariants for `/sandbox/v1/schema`, `/sandbox/v1/streams`, `/sandbox/v1/search`, records, `_ref` lists, and timeline routes.
 - [x] 8.4 Re-smoke the public demo API examples after the fidelity pass.
+
+## 9. Records Timeline Parity Correction
+
+- [x] 9.1 Refactor `loadTimeline` to take a `DashboardDataSource` so the same loader runs against both live AS/RS and the seeded sandbox dataset.
+- [x] 9.2 Advertise `consent_time_field` on each sandbox stream manifest and seed the demo dataset so a multi-stream timeline is meaningful.
+- [x] 9.3 Extract a shared `RecordsTimelineView` component bound to `Routes` so `/dashboard/records/timeline` and `/sandbox/records/timeline` render the same view.
+- [x] 9.4 Add `/sandbox/records/timeline/page.tsx` that uses `DashboardShell mode="mock-owner"`, `sandboxRoutes`, and `sandboxDashboardDataSource`.
+- [x] 9.5 Update the records subnav so Timeline is reachable in both live and mock-owner modes (the prior assumption that the sandbox dataset was too small no longer holds).
+- [x] 9.6 Extend `mock-owner-shell.test.ts` so `records/timeline/page.tsx` is enforced as a primary mock-owner dashboard page.
+- [x] 9.7 Add focused timeline regression tests covering manifest `consent_time_field` advertisement, anchored-stream discovery, deterministic seeded entries, and since/until window filtering against the sandbox source.

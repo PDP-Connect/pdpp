@@ -1,19 +1,25 @@
 /**
- * Inline pre-hydration theme resolver.
+ * Inline pre-paint theme resolver.
  *
- * This runs synchronously in <head> before React hydration so the page paints
- * with the correct theme on the first frame. It is intentionally minimal —
- * any error short-circuits to the light default rather than throwing.
+ * This is rendered as a raw blocking <script> inside <head> of the root
+ * layout (a Server Component) so the browser executes it before painting
+ * the body. That is the only reliable way in App Router to apply the
+ * resolved theme on the first frame: `next/script` with
+ * `strategy="beforeInteractive"` only guarantees ordering relative to
+ * Next's own scripts, not first paint, which is what produces the
+ * dark/light/dark flicker users were seeing.
+ *
+ * Because the script lives in a Server Component, React does not warn
+ * about a raw `<script>` child. The script body is a static literal —
+ * the storage key is interpolated from a module constant, never user
+ * input — so there is no XSS surface.
  *
  * Storage key and class hooks are kept in sync with `theme-provider.tsx`.
  */
 
-import Script from "next/script";
-
 const THEME_STORAGE_KEY = "pdpp-theme";
 
-const SCRIPT = `
-(function () {
+const SCRIPT = `(function () {
   try {
     var stored = null;
     try { stored = window.localStorage.getItem("${THEME_STORAGE_KEY}"); } catch (_) {}
@@ -26,18 +32,14 @@ const SCRIPT = `
     root.dataset.theme = resolved;
     root.style.colorScheme = resolved;
   } catch (_) { /* fall through to light default */ }
-})();
-`;
+})();`;
 
 export function ThemeScript() {
-  // next/script with beforeInteractive is the App Router-supported way
-  // to ship a synchronous script that runs before hydration. Content is
-  // a static literal — no user input.
-  return (
-    <Script id="pdpp-theme-script" strategy="beforeInteractive">
-      {SCRIPT}
-    </Script>
-  );
+  // biome-ignore lint/security/noDangerouslySetInnerHtml: static literal, no user input; required for sync pre-paint execution in App Router <head>.
+  return <script dangerouslySetInnerHTML={{ __html: SCRIPT }} />;
 }
+
+/** Exposed so tests can assert the resolver string is present in built HTML. */
+export const THEME_RESOLVER_SOURCE = SCRIPT;
 
 export const THEME_KEY = THEME_STORAGE_KEY;

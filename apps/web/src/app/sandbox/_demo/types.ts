@@ -18,6 +18,13 @@ export interface DemoFieldDef {
 
 export interface DemoStreamDef {
   readonly connector_id: string;
+  /**
+   * Field name within `DemoRecord.fields` that carries the owner's
+   * consent-time signal. Mirrors the live manifest's `consent_time_field`
+   * so the shared timeline loader can scan sandbox records the same way
+   * it scans live RS records.
+   */
+  readonly consent_time_field: string;
   readonly description: string;
   readonly fields: readonly DemoFieldDef[];
   readonly key: string;

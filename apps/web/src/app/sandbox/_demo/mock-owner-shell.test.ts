@@ -39,6 +39,7 @@ const FORCE_DYNAMIC_RE = /export\s+const\s+dynamic\s*=\s*["']force-dynamic["']/;
 const PRIMARY_DASHBOARD_PAGES = [
   "overview/page.tsx",
   "records/page.tsx",
+  "records/timeline/page.tsx",
   "records/[connector]/page.tsx",
   "records/[connector]/[stream]/page.tsx",
   "records/[connector]/[stream]/[recordKey]/page.tsx",

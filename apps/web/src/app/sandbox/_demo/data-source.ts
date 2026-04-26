@@ -197,6 +197,7 @@ function buildConnectorManifest(connectorId: string): ConnectorManifest {
     provider_id: connector?.provider_id,
     streams: streams.map((s) => ({
       name: s.key,
+      consent_time_field: s.consent_time_field,
       preview_fields: s.fields.slice(0, 4).map((f) => f.name),
       schema: {
         properties: Object.fromEntries(s.fields.map((f) => [f.name, { type: f.type }])),

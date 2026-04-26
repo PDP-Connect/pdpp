@@ -56,6 +56,21 @@
 - [x] 5.4 `openspec validate add-reference-web-dark-mode --strict`
 - [x] 5.5 `openspec validate --all --strict`
 
+## Theme flicker regression closeout
+
+- [x] T.1 Restore the `<head>`-mounted raw `<script dangerouslySetInnerHTML>`
+  resolver in `apps/web/src/components/theme/theme-script.tsx`. The previous
+  `next/script` with `strategy="beforeInteractive"` shape did not block paint
+  in App Router, producing a dark/light/dark flicker on first load. Document
+  the requirement inline so it does not regress.
+- [x] T.2 Add `apps/web/src/components/theme/theme-script.test.ts` to assert
+  (a) the resolver is a raw `<script>` (no `next/script` import), (b) it is
+  rendered inside `<head>` of the root layout before `<body>`, (c) it
+  applies the `dark` class and reads `pdpp-theme` localStorage, (d) the
+  IIFE is try/catch-wrapped so a failure cannot block paint, and
+  (e) `RootProvider theme={{ enabled: false }}` remains in place so
+  Fumadocs does not duplicate the toggle.
+
 ## 6. Deferred
 
 - [ ] 6.1 Marketing `/` hero polish in dark mode (illustrations/washes use

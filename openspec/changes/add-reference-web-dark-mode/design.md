@@ -32,6 +32,20 @@ the browser's standard `storage` event.
 
 `suppressHydrationWarning` is already present on `<html>`; we keep it.
 
+### Why a raw `<script>` and not `next/script`
+
+The resolver MUST be a raw `<script dangerouslySetInnerHTML={…} />` rendered
+inside `<head>` of the root layout (a Server Component), not a `next/script`
+component with `strategy="beforeInteractive"`. In App Router the latter only
+orders relative to Next's own bundles; it does not block paint. We hit
+exactly that bug during 2026-04 sandbox-parity work — users observed a
+dark/light/dark flicker because the body painted with the default class set
+before `next/script` injected the theme class. Because the inline script
+lives in a Server Component, React does not warn about a raw `<script>`
+child, and the inserted body is a static module-level literal, so there is
+no XSS surface. A regression test (`apps/web/src/components/theme/theme-script.test.ts`)
+keeps this invariant.
+
 ## Token shape
 
 The brand exposes semantic tokens (`--background`, `--foreground`, `--card`,
