@@ -47,6 +47,7 @@ import {
   type ConnectorOverview,
   getConnectorOverview,
   getRecord,
+  isHybridRetrievalAdvertised,
   isSemanticRetrievalAdvertised,
   listConnectorManifests,
   listStreams,
@@ -55,6 +56,7 @@ import {
   type SearchResultPage,
   type StreamRecord,
   type StreamSummary,
+  searchRecordsHybrid,
   searchRecordsLexical,
   searchRecordsSemantic,
 } from "./rs-client.ts";
@@ -68,6 +70,7 @@ export interface DashboardDataSource {
   getRecord(connectorId: string, stream: string, recordId: string): Promise<StreamRecord>;
   getRunTimeline(runId: string): Promise<TimelineEnvelope | null>;
   getTraceTimeline(traceId: string): Promise<TimelineEnvelope | null>;
+  isHybridRetrievalAdvertised(): Promise<boolean>;
   isSemanticRetrievalAdvertised(): Promise<boolean>;
   readonly kind: "live" | "sandbox";
   listConnectorManifests(): Promise<ConnectorManifest[]>;
@@ -92,6 +95,7 @@ export interface DashboardDataSource {
     runs: RunSummary[];
     exact: { kind: "trace" | "grant" | "run"; id: string } | null;
   }>;
+  searchRecordsHybrid(query: string, opts?: { streams?: string[]; limit?: number }): Promise<SearchResultPage>;
   searchRecordsLexical(
     query: string,
     opts?: { streams?: string[]; limit?: number; cursor?: string }
@@ -118,7 +122,9 @@ export const liveDashboardDataSource: DashboardDataSource = {
   refSearch,
   searchRecordsLexical,
   searchRecordsSemantic,
+  searchRecordsHybrid,
   isSemanticRetrievalAdvertised,
+  isHybridRetrievalAdvertised,
   listGrants,
   listRuns,
   listTraces,

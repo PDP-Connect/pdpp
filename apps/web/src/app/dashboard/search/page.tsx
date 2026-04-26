@@ -13,9 +13,11 @@ import {
 } from "../lib/ref-client.ts";
 import {
   getRecord,
+  isHybridRetrievalAdvertised,
   isSemanticRetrievalAdvertised,
   type SearchResultHit,
   type SearchResultPage,
+  searchRecordsHybrid,
   searchRecordsLexical,
   searchRecordsSemantic,
 } from "../lib/rs-client.ts";
@@ -39,13 +41,12 @@ const SEMANTIC_UPLIFT_LIMIT = 10;
 interface RecordHit {
   connectorId: string;
   emittedAt: string;
+  // Which sources the hybrid endpoint reported for this specific record.
+  // Undefined when hybrid retrieval was not used.
+  hybridSources?: ("lexical" | "semantic")[];
   recordId: string;
-  // True when this row was brought in by the semantic-retrieval uplift
-  // AND did not also appear in the lexical result set. Drives the
-  // per-row "also found by semantic match (experimental)" badge. Rows
-  // that lexical retrieval found stay unbadged — the Stripe/Linear
-  // pattern of surfacing the retrieval source only when it would
-  // otherwise leave the user wondering "how did this match?".
+  // True when the record came from client-side semantic uplift and was not
+  // in the lexical result set. Drives the "semantic · experimental" badge.
   semanticOnly?: boolean;
   snippet: string;
   stream: string;
@@ -105,61 +106,110 @@ async function hitToRecordHit(hit: SearchResultHit): Promise<RecordHit> {
 }
 
 /**
- * Dashboard record search. Runs the public lexical retrieval extension
- * (the stable retrieval floor) across every owner-visible stream that
- * declares lexical_fields. When the RS also advertises
- * `capabilities.semantic_retrieval`, runs semantic retrieval in parallel
- * and blends its hits in as a first-page quality uplift — Stripe/Linear
- * style: one query box, best-effort blended retrieval, never ask the
- * user which surface they want.
+ * Dashboard record search. Three retrieval modes in preference order:
  *
- * Blend rules:
- *   - Lexical is primary. Its ordering is preserved; its pagination drives
- *     the URL's ?cursor= stack.
- *   - Semantic is additive. Hits that the lexical set already contains
- *     are discarded (dedup by connector/stream/record). Hits that are
- *     semantic-only get appended after the lexical list, each tagged with
- *     `semanticOnly: true` so the row renders with an "experimental"
- *     badge.
- *   - Semantic runs ONLY on the first page (cursor === null). Subsequent
- *     pages advance lexical only; semantic is a first-impression boost,
- *     not a second retrieval surface paginating alongside. This matches
- *     how Linear's blended search actually behaves.
- *   - Capability probe is fail-closed: if the RS doesn't advertise
- *     semantic retrieval, or the probe errors, we skip semantic silently.
- *     Dashboards should never surface backend configuration errors the
- *     user cannot act on.
+ * 1. Hybrid (preferred): When the RS advertises `capabilities.hybrid_retrieval`,
+ *    call GET /v1/search/hybrid on the first page. The server deduplicates and
+ *    scores server-side; results carry per-record provenance in `retrieval_sources`.
+ *    No cursor in v1 — hybrid runs on the first page only.
+ *
+ * 2. Lexical + semantic blend (fallback when hybrid is absent): The original
+ *    first-page-only semantic uplift. Lexical is primary and paginates;
+ *    semantic-only hits are appended with a badge.
+ *
+ * 3. Lexical only (fallback when neither hybrid nor semantic are advertised or
+ *    the participation gate is closed).
+ *
+ * All capability probes are fail-closed: an error returns false so the
+ * dashboard degrades silently to a lower tier rather than surfacing
+ * backend configuration errors the user cannot act on.
  */
 async function searchRecords(query: string, cursor: string | null, prevStack: string[]): Promise<RecordPage> {
-  // Gate the semantic uplift on TWO signals:
-  //   1. the RS advertises capabilities.semantic_retrieval.supported = true
-  //   2. diagnostics report at least one (connector, stream, field) tuple
-  //      participating in semantic retrieval
-  // The second check prevents the "advertised + zero corpus" misconfiguration
-  // from rendering every first-page search as if semantic retrieval ran and
-  // found nothing. The operator-facing reason is surfaced on
-  // /dashboard/deployment; here we degrade silently.
-  let wantSemantic = false;
+  let hybridAdvertised = false;
   let advertised = false;
   let participationFieldCount = 0;
   let semanticIndexState: "built" | "building" | "stale" | null = null;
+
   if (cursor === null) {
-    const [advertisedResult, diagnostics] = await Promise.all([
+    // Probe both hybrid and semantic in parallel on the first page.
+    const [hybridAdResult, semanticAdResult, diagnostics] = await Promise.all([
+      isHybridRetrievalAdvertised(),
       isSemanticRetrievalAdvertised(),
       getDeploymentDiagnostics()
         .then((d) => ({
           participationFieldCount: d.semantic.participation.field_count,
           semanticIndexState: d.semantic.index.state,
         }))
-        // Diagnostics fetch is best-effort; if it fails, treat as zero
-        // participation so the gate stays closed.
         .catch(() => ({ participationFieldCount: 0, semanticIndexState: null })),
     ]);
-    advertised = advertisedResult;
+    hybridAdvertised = hybridAdResult;
+    advertised = semanticAdResult;
     participationFieldCount = diagnostics.participationFieldCount;
     semanticIndexState = diagnostics.semanticIndexState;
-    wantSemantic = shouldAttemptSemanticUplift({ advertised, participationFieldCount });
   }
+
+  // ── Path 1: hybrid retrieval ──────────────────────────────────────────────
+  if (hybridAdvertised && cursor === null) {
+    const hybridResult = await searchRecordsHybrid(query, { limit: PAGE_LIMIT })
+      .then((p) => ({ page: p, error: null as string | null }))
+      .catch((err: unknown) => ({
+        page: null as SearchResultPage | null,
+        error: err instanceof Error ? err.message : String(err),
+      }));
+
+    if (hybridResult.page) {
+      // Hybrid succeeded — use its results as the sole source for page 1.
+      // Lexical still drives pages 2+; hybrid is a first-page quality boost.
+      const lexicalPage = await searchRecordsLexical(query, { limit: PAGE_LIMIT });
+      const hybridHits = await Promise.all(
+        hybridResult.page.data.map(async (h: SearchResultHit) => {
+          const base = await hitToRecordHit(h);
+          return {
+            ...base,
+            hybridSources: Array.isArray(h.retrieval_sources) ? h.retrieval_sources : undefined,
+          };
+        })
+      );
+
+      const debug: RetrievalDebug = {
+        isFirstPage: true,
+        hybridAdvertised,
+        hybridAttempted: true,
+        hybridCount: hybridResult.page.data.length,
+        hybridError: null,
+        capabilityAdvertised: advertised,
+        participationFieldCount,
+        semanticIndexState,
+        semanticAttempted: false,
+        semanticError: null,
+        lexicalCount: lexicalPage.data.length,
+        semanticCount: 0,
+        upliftCount: 0,
+        dedupedOutCount: 0,
+        semanticHitKeys: [],
+      };
+
+      return {
+        hits: hybridHits,
+        hasMore: lexicalPage.has_more,
+        nextCursor: lexicalPage.next_cursor ?? null,
+        prevStack,
+        retrievalNotice: buildRetrievalNotice(semanticIndexState),
+        debug,
+      };
+    }
+    // Hybrid call failed — fall through to the lexical+semantic blend.
+    // Log the error in debug but keep the gate open for the semantic path.
+  }
+
+  // ── Path 2 & 3: lexical (+ optional semantic uplift) ─────────────────────
+  //
+  // Semantic uplift requires TWO signals:
+  //   1. RS advertises capabilities.semantic_retrieval.supported = true
+  //   2. Diagnostics report ≥1 participating (connector, stream, field) tuple
+  // The second check prevents "advertised + zero corpus" from looking like
+  // "semantic ran and found nothing".
+  const wantSemantic = cursor === null && shouldAttemptSemanticUplift({ advertised, participationFieldCount });
 
   const [lexicalPage, semanticResult] = await Promise.all([
     searchRecordsLexical(query, {
@@ -177,7 +227,6 @@ async function searchRecords(query: string, cursor: string | null, prevStack: st
   ]);
 
   const semanticPage = semanticResult.page;
-
   const lexicalHits = await Promise.all(lexicalPage.data.map((h) => hitToRecordHit(h)));
 
   let upliftHits: RecordHit[] = [];
@@ -198,6 +247,10 @@ async function searchRecords(query: string, cursor: string | null, prevStack: st
 
   const debug: RetrievalDebug = {
     isFirstPage: cursor === null,
+    hybridAdvertised,
+    hybridAttempted: false,
+    hybridCount: 0,
+    hybridError: null,
     capabilityAdvertised: advertised,
     participationFieldCount,
     semanticIndexState,
@@ -224,6 +277,10 @@ async function searchRecords(query: string, cursor: string | null, prevStack: st
 interface RetrievalDebug {
   capabilityAdvertised: boolean;
   dedupedOutCount: number;
+  hybridAdvertised: boolean;
+  hybridAttempted: boolean;
+  hybridCount: number;
+  hybridError: string | null;
   isFirstPage: boolean;
   lexicalCount: number;
   participationFieldCount: number;
@@ -587,6 +644,30 @@ function RetrievalNoticeCallout({ notice }: { notice: RetrievalNotice | null }) 
   );
 }
 
+function RetrievalBadge({ hit }: { hit: RecordHit }) {
+  if (hit.hybridSources && hit.hybridSources.length > 0) {
+    return (
+      <span
+        className="ml-2 inline-flex items-baseline gap-1 rounded border border-border px-1.5 py-0.5 align-baseline text-[10px] text-muted-foreground uppercase tracking-wide"
+        title={`Found by hybrid retrieval (experimental). Sources: ${hit.hybridSources.join(", ")}.`}
+      >
+        {hit.hybridSources.join(" + ")} · hybrid
+      </span>
+    );
+  }
+  if (hit.semanticOnly) {
+    return (
+      <span
+        className="ml-2 inline-flex items-baseline gap-1 rounded border border-border px-1.5 py-0.5 align-baseline text-[10px] text-muted-foreground uppercase tracking-wide"
+        title="This record did not match the text lexically. Found by semantic retrieval, which is an experimental feature and may change."
+      >
+        semantic · experimental
+      </span>
+    );
+  }
+  return null;
+}
+
 function RecordRow({ hit, query }: { hit: RecordHit; query: string }) {
   const href = `/dashboard/records/${encodeURIComponent(hit.connectorId)}/${encodeURIComponent(hit.stream)}/${encodeURIComponent(hit.recordId)}`;
   return (
@@ -601,14 +682,7 @@ function RecordRow({ hit, query }: { hit: RecordHit; query: string }) {
       </span>
       <span className="break-words">
         <Highlight query={query} text={hit.snippet} />
-        {hit.semanticOnly ? (
-          <span
-            className="ml-2 inline-flex items-baseline gap-1 rounded border border-border px-1.5 py-0.5 align-baseline text-[10px] text-muted-foreground uppercase tracking-wide"
-            title="This record did not match the text lexically. Found by semantic retrieval, which is an experimental feature and may change."
-          >
-            semantic · experimental
-          </span>
-        ) : null}
+        <RetrievalBadge hit={hit} />
       </span>
     </Link>
   );
