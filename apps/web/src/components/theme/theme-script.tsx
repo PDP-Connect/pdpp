@@ -8,6 +8,8 @@
  * Storage key and class hooks are kept in sync with `theme-provider.tsx`.
  */
 
+import Script from "next/script";
+
 const THEME_STORAGE_KEY = "pdpp-theme";
 
 const SCRIPT = `
@@ -28,10 +30,14 @@ const SCRIPT = `
 `;
 
 export function ThemeScript() {
-  // dangerouslySetInnerHTML is the only way to ship a synchronous script
-  // that runs before hydration. Content is a static literal — no user input.
-  // biome-ignore lint/security/noDangerouslySetInnerHtml: required for pre-hydration theme application
-  return <script dangerouslySetInnerHTML={{ __html: SCRIPT }} />;
+  // next/script with beforeInteractive is the App Router-supported way
+  // to ship a synchronous script that runs before hydration. Content is
+  // a static literal — no user input.
+  return (
+    <Script id="pdpp-theme-script" strategy="beforeInteractive">
+      {SCRIPT}
+    </Script>
+  );
 }
 
 export const THEME_KEY = THEME_STORAGE_KEY;

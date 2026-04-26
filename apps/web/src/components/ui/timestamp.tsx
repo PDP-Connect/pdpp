@@ -19,13 +19,7 @@ const HOUR = 60 * MINUTE;
 const DAY = 24 * HOUR;
 const RELATIVE_CUTOFF = 7 * DAY;
 
-const dateFmt = new Intl.DateTimeFormat(undefined, {
-  year: "numeric",
-  month: "short",
-  day: "numeric",
-});
-
-const dateTimeFmt = new Intl.DateTimeFormat(undefined, {
+const localDateTimeFmt = new Intl.DateTimeFormat(undefined, {
   year: "numeric",
   month: "short",
   day: "numeric",
@@ -46,6 +40,22 @@ const tooltipFmt = new Intl.DateTimeFormat(undefined, {
 
 const relFmt = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
 
+const utcDateFmt = new Intl.DateTimeFormat("en-US", {
+  year: "numeric",
+  month: "short",
+  day: "numeric",
+  timeZone: "UTC",
+});
+
+const utcDateTimeFmt = new Intl.DateTimeFormat("en-US", {
+  year: "numeric",
+  month: "short",
+  day: "numeric",
+  hour: "numeric",
+  minute: "2-digit",
+  timeZone: "UTC",
+});
+
 function parse(value: TimestampProps["value"]): Date | null {
   if (value == null || value === "") {
     return null;
@@ -54,8 +64,12 @@ function parse(value: TimestampProps["value"]): Date | null {
   return Number.isNaN(d.getTime()) ? null : d;
 }
 
-function formatAbsolute(d: Date, precision: TimestampPrecision): string {
-  return precision === "date" ? dateFmt.format(d) : dateTimeFmt.format(d);
+function formatAbsolute(d: Date, precision: TimestampPrecision, mounted: boolean): string {
+  if (precision === "date") {
+    // Treat date-only displays as calendar dates, not as local midnights.
+    return utcDateFmt.format(d);
+  }
+  return mounted ? localDateTimeFmt.format(d) : utcDateTimeFmt.format(d);
 }
 
 function formatRelative(d: Date, now: number): string {
@@ -131,7 +145,7 @@ export function Timestamp({ value, mode = "auto", precision = "datetime", classN
   const ageMs = Math.abs(Date.now() - date.getTime());
   const useRelative = mode === "relative" || (mode === "auto" && mounted && ageMs < RELATIVE_CUTOFF);
 
-  let label = formatAbsolute(date, precision);
+  let label = formatAbsolute(date, precision, mounted);
   if (mounted && useRelative) {
     label = formatRelative(date, now);
   }
