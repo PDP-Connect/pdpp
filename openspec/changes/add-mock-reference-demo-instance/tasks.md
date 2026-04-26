@@ -50,9 +50,16 @@
 - [x] 6.7 Add regression tests proving the same dashboard feature components render against both live-shaped fixture data and sandbox data, and that `/dashboard/**` never falls back to sandbox data.
 - [x] 6.8 Run `openspec validate add-mock-reference-demo-instance --strict`, `openspec validate --all --strict`, sandbox route tests, dashboard feature tests, `pnpm --dir apps/web run types:check`, `pnpm --dir apps/web run check`, and `pnpm --dir apps/web run build`.
 
-## 7. Demo API Fidelity Follow-Up
+## 7. Mock-Owner Dashboard Mode Correction
 
-- [ ] 7.1 Audit `/sandbox/v1/**`, `/sandbox/_ref/**`, and `/sandbox/.well-known/**` against the live reference envelopes they claim to mirror.
-- [ ] 7.2 Replace demo-shaped envelopes such as `object: "schema_graph"` with live-shaped mock AS/RS envelopes where practical, or document any deliberate divergence inline and in the API examples.
-- [ ] 7.3 Add route tests that assert key live-shape invariants for `/sandbox/v1/schema`, `/sandbox/v1/streams`, `/sandbox/v1/search`, records, `_ref` lists, and timeline routes.
-- [ ] 7.4 Re-smoke the public demo API examples after the fidelity pass.
+- [ ] 7.1 Refactor the sandbox primary dashboard surfaces so they use dashboard shell/chrome/navigation in mock-owner mode rather than `SandboxShell` as a separate product shell.
+- [ ] 7.2 Make `/sandbox` a concise mock-owner entrypoint/launcher and route the primary demo journey into dashboard-mode sandbox pages; keep `/sandbox/api-examples` and `/sandbox/walkthrough` as secondary educational surfaces.
+- [ ] 7.3 Remove tutorial/framing copy from primary records/search/grants/runs/traces/deployment pages unless the divergence is safety-driven or demo-state-specific.
+- [ ] 7.4 Add or update tests proving `/sandbox/**` primary dashboard pages use the mock-owner dashboard shell, retain persistent demo labeling, and do not weaken `/dashboard/**` live owner-auth behavior.
+
+## 8. Demo API Fidelity Follow-Up
+
+- [ ] 8.1 Audit `/sandbox/v1/**`, `/sandbox/_ref/**`, and `/sandbox/.well-known/**` against the live reference envelopes they claim to mirror.
+- [ ] 8.2 Replace demo-shaped envelopes such as `object: "schema_graph"` with live-shaped mock AS/RS envelopes where practical, or document any deliberate divergence inline and in the API examples.
+- [ ] 8.3 Add route tests that assert key live-shape invariants for `/sandbox/v1/schema`, `/sandbox/v1/streams`, `/sandbox/v1/search`, records, `_ref` lists, and timeline routes.
+- [ ] 8.4 Re-smoke the public demo API examples after the fidelity pass.

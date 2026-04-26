@@ -62,11 +62,15 @@ Seeded state should live in a typed module shared by the demo UI and demo route 
 
 Alternative considered: per-visitor server sessions. That creates persistence, reset, abuse, and deployment questions for no first-slice benefit. Deterministic module state is enough to demonstrate the reference contract and is much easier to verify.
 
-### 4. Build a sandbox-specific dashboard shell instead of weakening `/dashboard`
+### 4. Build a mock-owner dashboard mode instead of a forked sandbox shell
 
-The worker may reuse dashboard primitives, timeline views, status badges, cards, and layout patterns. It should not import live dashboard clients that mint owner tokens or require owner sessions. Create sandbox-specific clients/components as needed.
+The primary sandbox experience should be the reference dashboard running against a mock owner data source. `/sandbox` should behave like a "log in as mock owner" entrypoint: after entry, the visitor sees the same dashboard information architecture, feature components, and core copy as the live owner dashboard, with only a persistent and subtle "demo mode / fictional data" affordance. Educational material belongs in `/sandbox/api-examples`, `/sandbox/walkthrough`, help links, or secondary panels, not in the primary dashboard chrome.
 
-Alternative considered: add a "demo mode" flag to the existing `/dashboard/**` route. That would risk weakening owner gating and make every live operator page reason about two data sources. A sandbox route family is safer.
+This still must not weaken `/dashboard/**`. The live dashboard remains owner-gated and bound to live AS/RS clients. The mock-owner dashboard binds the same feature layer to deterministic sandbox data through an explicit data-source seam and route prefix.
+
+Alternative considered: keep a sandbox-specific shell that resembles the dashboard. That is safer in the short term, but it creates the wrong product abstraction: a parallel tutorial app rather than the real reference dashboard with mocked dependencies. Owner review rejected that direction.
+
+Alternative considered: expose a demo-mode flag on `/dashboard/**`. That would make public demo routing and owner-auth behavior easier to confuse. Keeping `/sandbox/**` as the route family while sharing the dashboard shell and feature components preserves a hard route boundary without forking the product experience.
 
 ### 5. Make API discoverability part of the product surface
 
@@ -75,8 +79,8 @@ The sandbox should show endpoint examples and copyable curl snippets against `/s
 ## Risks / Trade-offs
 
 - **Risk: Demo API drifts from live reference behavior** -> Keep the first slice small, use typed response builders, and add tests that exercise both UI/client functions and route handlers.
-- **Risk: Visitors mistake demo data for a hosted owner instance** -> Use persistent "Demo instance / fictional data" chrome, seeded names, and `/sandbox` URL prefix.
-- **Risk: Reusing dashboard code weakens owner auth** -> Do not route `/dashboard/**` through demo mode. Keep sandbox clients separate from owner-token clients.
+- **Risk: Visitors mistake demo data for a hosted owner instance** -> Use a persistent but secondary "Mock owner / fictional data" banner, seeded names, and the `/sandbox` URL prefix.
+- **Risk: Reusing dashboard code weakens owner auth** -> Do not route `/dashboard/**` through demo mode. Keep the live data source separate from the sandbox data source and add static guard tests proving live dashboard code does not import sandbox data.
 - **Risk: Scope balloons into a full fake reference server** -> Deliver one coherent vertical slice with records/search/schema/grants/runs/traces/deployment rather than every route and mutation.
 - **Risk: Static module state cannot demonstrate mutation** -> For this tranche, represent revocation and failures as seeded traces/grants/runs. Add per-visitor mutable state only in a later explicit change if needed.
 
@@ -135,3 +139,15 @@ The reusable unit should be dashboard feature components and data contracts, not
 For Next.js server components, this does not require browser-only MSW. The seam can be a typed server-side data-source interface plus route handlers that expose the same seeded state over `/sandbox/v1/**` and `/sandbox/_ref/**`. MSW remains useful for client-side/story-level tests, but the public deployed sandbox should not depend on a service worker.
 
 The current mock API routes and seeded dataset should be retained. The corrective tranche should replace forked dashboard-like pages with shared dashboard feature components wherever practical, leaving only sandbox-specific chrome, demo labels, and API-example/walkthrough pages as bespoke sandbox UI.
+
+### Owner correction: primary sandbox is mock-owner dashboard mode
+
+Owner review on 2026-04-26 clarified that the acceptable product target is not "sandbox pages that use some shared dashboard views." The target is "log in as a mock owner, then use the real dashboard experience against mock AS/RS data." The implementation should therefore prefer:
+
+- a sandbox launcher that explicitly enters mock-owner mode;
+- shared dashboard shell/chrome/navigation for the primary experience;
+- shared dashboard feature components and live-shaped data contracts;
+- minimal persistent demo labeling rather than tutorial copy in the dashboard path;
+- API examples and walkthroughs as secondary surfaces.
+
+Any remaining divergence from the live dashboard experience must be deliberate, safety-driven, and documented.
