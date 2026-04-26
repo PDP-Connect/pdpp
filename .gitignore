@@ -19,6 +19,7 @@ agent-access.md
 !.github/**/*.yml
 !docker-compose.yml
 !docker-compose.dev.yml
+core.*
 tmp/
 docs/inbox/
 docs/outbox/

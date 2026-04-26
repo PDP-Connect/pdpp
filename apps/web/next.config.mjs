@@ -27,12 +27,29 @@ function parseAllowedDevOrigins(value) {
 
 const allowedDevOrigins = parseAllowedDevOrigins(process.env.PDPP_WEB_ALLOWED_DEV_ORIGINS);
 
+function parseBuildWorkers(value) {
+  if (!value) {
+    return 1;
+  }
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 1;
+}
+
+const buildWorkers = parseBuildWorkers(process.env.PDPP_WEB_BUILD_WORKERS);
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   ...(allowedDevOrigins.length > 0 ? { allowedDevOrigins } : {}),
   output: 'standalone',
   outputFileTracingRoot: path.join(__dirname, '../..'),
   reactStrictMode: true,
+  experimental: {
+    // The default is host CPU count minus one (23 on the owner workstation),
+    // which repeatedly trips native SIGSEGV / SIGTRAP during production
+    // builds on Next 16.2.x. Keep the canonical build stable by default while
+    // still allowing CI/operators to raise it intentionally.
+    cpus: buildWorkers,
+  },
   // Transpile the reference-implementation workspace package so Next can
   // consume its TypeScript sources directly once shim pairs (.js + .d.ts)
   // collapse into single .ts exports. Without this, Next's bundler would

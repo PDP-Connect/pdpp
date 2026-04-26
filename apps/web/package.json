@@ -3,10 +3,11 @@
   "version": "1.0.0",
   "private": true,
   "//dev": "TEMPORARY: --webpack works around a Turbopack dev-server async-hook leak in Next 16.2.x (RangeError: Map maximum size exceeded). Remove the flag once vercel/next.js#91396 is fixed.",
+  "//build": "TEMPORARY: --webpack keeps local/CI builds off Turbopack after repeated native SIGSEGV during static page generation on Next 16.2.x.",
   "scripts": {
     "openspec:git-metadata": "node ./scripts/generate-openspec-git-metadata.mjs",
     "dev": "pnpm openspec:git-metadata && next dev --webpack",
-    "build": "pnpm openspec:git-metadata && next build",
+    "build": "pnpm openspec:git-metadata && next build --webpack",
     "start": "next start",
     "types:check": "fumadocs-mdx && next typegen && tsc --noEmit",
     "check": "ultracite check",
