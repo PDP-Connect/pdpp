@@ -38,7 +38,12 @@ export default async function OpenSpecDesignNotesPage() {
             <MetaPill label="workstreams" value={groups.length} />
             <MetaPill label="notes" value={notes.length} />
             {openQuestionCount > 0 && <MetaPill label="open questions" tone="protocol" value={openQuestionCount} />}
-            {latestNote && <MetaPill label="updated" value={<Timestamp precision="date" value={latestNote} />} />}
+            {latestNote && (
+              <MetaPill
+                label="updated"
+                value={<Timestamp precision="date" value={latestNote} valueKind="calendar-date" />}
+              />
+            )}
           </>
         }
         title="Project notes"

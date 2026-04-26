@@ -45,7 +45,12 @@ export default async function PlanningLandingPage() {
             <MetaPill label="specs" value={specs.length} />
             <MetaPill label="notes" value={designNotes.length} />
             {openQuestionCount > 0 && <MetaPill label="open questions" tone="protocol" value={openQuestionCount} />}
-            {lastTouched && <MetaPill label="updated" value={<Timestamp precision="date" value={lastTouched} />} />}
+            {lastTouched && (
+              <MetaPill
+                label="updated"
+                value={<Timestamp precision="date" value={lastTouched} valueKind="calendar-date" />}
+              />
+            )}
           </>
         }
         title={PLANNING_LABEL}
@@ -70,7 +75,7 @@ export default async function PlanningLandingPage() {
                     )}
                     {c.lastModified && (
                       <span className="inline-flex items-baseline gap-1">
-                        updated <Timestamp precision="date" value={c.lastModified} />
+                        updated <Timestamp precision="date" value={c.lastModified} valueKind="calendar-date" />
                       </span>
                     )}
                   </>

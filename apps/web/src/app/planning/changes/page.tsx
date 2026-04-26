@@ -57,7 +57,7 @@ export default async function OpenSpecChangesPage() {
                   )}
                   {c.lastModified && (
                     <span className="inline-flex items-baseline gap-1">
-                      updated <Timestamp precision="date" value={c.lastModified} />
+                      updated <Timestamp precision="date" value={c.lastModified} valueKind="calendar-date" />
                     </span>
                   )}
                 </>

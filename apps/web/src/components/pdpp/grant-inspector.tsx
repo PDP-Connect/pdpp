@@ -18,7 +18,7 @@ function DateLike({ value }: { value: string | null | undefined }) {
   const looksISO = ISO_DATE_OR_DATETIME_RE.test(value);
   const parsed = looksISO ? new Date(value) : null;
   if (parsed && !Number.isNaN(parsed.getTime())) {
-    return <Timestamp mode="absolute" precision="date" value={parsed} />;
+    return <Timestamp mode="absolute" precision="date" value={value} />;
   }
   return <>{value}</>;
 }

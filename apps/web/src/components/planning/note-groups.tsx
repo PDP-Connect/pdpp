@@ -47,10 +47,10 @@ function noteDates(note: OpenSpecDesignNoteSummary) {
     return (
       <>
         <span className="inline-flex items-baseline gap-1">
-          created <Timestamp precision="date" value={created} />
+          created <Timestamp precision="date" value={created} valueKind="calendar-date" />
         </span>
         <span className="inline-flex items-baseline gap-1">
-          updated <Timestamp precision="date" value={updated} />
+          updated <Timestamp precision="date" value={updated} valueKind="calendar-date" />
         </span>
       </>
     );
@@ -59,14 +59,14 @@ function noteDates(note: OpenSpecDesignNoteSummary) {
   if (created) {
     return (
       <span className="inline-flex items-baseline gap-1">
-        created <Timestamp precision="date" value={created} />
+        created <Timestamp precision="date" value={created} valueKind="calendar-date" />
       </span>
     );
   }
   if (updated) {
     return (
       <span className="inline-flex items-baseline gap-1">
-        updated <Timestamp precision="date" value={updated} />
+        updated <Timestamp precision="date" value={updated} valueKind="calendar-date" />
       </span>
     );
   }
@@ -155,7 +155,7 @@ export function NoteGroups({
                     {group.lastModified ? (
                       <>
                         {" "}
-                        · updated <Timestamp precision="date" value={group.lastModified} />
+                        · updated <Timestamp precision="date" value={group.lastModified} valueKind="calendar-date" />
                       </>
                     ) : null}
                   </div>
@@ -179,7 +179,7 @@ export function NoteGroups({
                   {group.lastModified ? (
                     <>
                       {" "}
-                      · updated <Timestamp precision="date" value={group.lastModified} />
+                      · updated <Timestamp precision="date" value={group.lastModified} valueKind="calendar-date" />
                     </>
                   ) : null}
                 </p>

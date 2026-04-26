@@ -28,7 +28,7 @@ export function SourceLink({
       {createdAt && (
         <>
           <span className="inline-flex items-baseline gap-1">
-            Created <Timestamp precision="date" value={createdAt} />
+            Created <Timestamp precision="date" value={createdAt} valueKind="calendar-date" />
           </span>
           <span aria-hidden="true" className="opacity-40">
             ·
@@ -38,7 +38,7 @@ export function SourceLink({
       {showUpdated && (
         <>
           <span className="inline-flex items-baseline gap-1">
-            Updated <Timestamp precision="date" value={lastModified} />
+            Updated <Timestamp precision="date" value={lastModified} valueKind="calendar-date" />
           </span>
           <span aria-hidden="true" className="opacity-40">
             ·

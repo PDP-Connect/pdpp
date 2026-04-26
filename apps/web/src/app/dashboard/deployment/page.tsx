@@ -1,3 +1,4 @@
+import { Timestamp } from "@/components/ui/timestamp.tsx";
 import { LivePoller } from "../components/live-poller.tsx";
 import { Callout, PageHeader, Section } from "../components/primitives.tsx";
 import { DashboardShell, EmptyState, ServerUnreachable } from "../components/shell.tsx";
@@ -227,7 +228,7 @@ function BackfillProgress({
         </div>
       )}
       <p className="mt-1 text-muted-foreground text-xs">
-        {indexedCount.toLocaleString()} {indexedLabel} · updated {formatTime(progress.updated_at)}
+        {indexedCount.toLocaleString()} {indexedLabel} · updated <Timestamp value={progress.updated_at} />
         {progress.active_jobs > 1 ? ` · ${progress.active_jobs} active jobs` : ""}
       </p>
     </div>
@@ -384,14 +385,6 @@ function recordsPerSecond(
     return null;
   }
   return (progress.records_scanned / ((updated - started) / 1000)).toFixed(1);
-}
-
-function formatTime(value: string): string {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return value;
-  }
-  return date.toLocaleTimeString();
 }
 
 function yesNo(v: boolean): string {
