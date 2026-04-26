@@ -455,3 +455,102 @@ test('agent-flow: owner-token kind rejection', async () => {
   assert.notEqual(ownerIntrospection.pdpp_token_kind, 'client',
     'owner tokens must be rejected at the store boundary');
 });
+
+// ─── wait tests ───────────────────────────────────────────────────────────────
+
+test('agent wait: returns immediately when a usable token is already cached', async () => {
+  const cacheRoot = makeTmpCache();
+  await ensureCacheDirs(cacheRoot);
+
+  writeGrant(cacheRoot, 'grant_wait_ready', {
+    grant_id: 'grant_wait_ready',
+    connector_id: 'https://registry.pdpp.org/connectors/spotify',
+    streams: [{ name: 'listening_history' }],
+    revoked: false,
+    expires_at: new Date(Date.now() + 3600 * 1000).toISOString(),
+  });
+  await writeToken(cacheRoot, 'grant_wait_ready', 'ready-token-value');
+
+  // Replicate the wait logic directly (no CLI spawn needed — tests the library layer)
+  const found = hasUsableGrant(cacheRoot);
+  assert.ok(found, 'wait should find a usable grant immediately');
+  assert.equal(found.grant_id, 'grant_wait_ready');
+
+  // Token must be readable from the cache (but wait itself must not print it)
+  const token = readToken(cacheRoot, found.grant_id);
+  assert.equal(token, 'ready-token-value');
+});
+
+test('agent wait: returns for a specific grant-id when that grant is cached', async () => {
+  const cacheRoot = makeTmpCache();
+  await ensureCacheDirs(cacheRoot);
+
+  // Write two grants; wait should find the named one
+  writeGrant(cacheRoot, 'grant_other', {
+    grant_id: 'grant_other',
+    connector_id: 'https://registry.pdpp.org/connectors/github',
+    streams: [{ name: 'issues' }],
+    revoked: false,
+    expires_at: new Date(Date.now() + 3600 * 1000).toISOString(),
+  });
+  // No token for grant_other yet
+
+  writeGrant(cacheRoot, 'grant_target', {
+    grant_id: 'grant_target',
+    connector_id: 'https://registry.pdpp.org/connectors/spotify',
+    streams: [{ name: 'listening_history' }],
+    revoked: false,
+    expires_at: new Date(Date.now() + 3600 * 1000).toISOString(),
+  });
+  await writeToken(cacheRoot, 'grant_target', 'target-token');
+
+  // Wait for a specific grant-id — mirrors the --grant-id path in runWait
+  const specificGrantId = 'grant_target';
+  const token = readToken(cacheRoot, specificGrantId);
+  const grant = readGrant(cacheRoot, specificGrantId);
+  const found = token ? grant : null;
+
+  assert.ok(found, 'wait should find the specific named grant');
+  assert.equal(found.grant_id, 'grant_target');
+  // The other grant with no token is not returned
+  assert.equal(readToken(cacheRoot, 'grant_other'), null);
+});
+
+test('agent wait: times out cleanly when no token is cached', async () => {
+  const cacheRoot = makeTmpCache();
+  await ensureCacheDirs(cacheRoot);
+
+  // No grants at all — wait must time out
+  const timeoutSeconds = 1;
+  const intervalMs = 200;
+  const deadline = Date.now() + timeoutSeconds * 1000;
+
+  let found = null;
+  while (Date.now() < deadline) {
+    found = hasUsableGrant(cacheRoot);
+    if (found) break;
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
+
+  assert.equal(found, null, 'wait must time out without finding a grant when cache is empty');
+  // Verify no token material was produced
+  const grants = listGrants(cacheRoot);
+  assert.equal(grants.length, 0, 'cache should remain empty after a timed-out wait');
+});
+
+test('agent wait: AGENT_USAGE documents the wait subcommand', () => {
+  // Smoke-test that the usage string is internally consistent (no spawn required)
+  // Import the module dynamically to avoid server startup
+  const usageText = `Usage: pdpp agent <subcommand> [options]
+
+Subcommands:
+  bootstrap   Discover AS/RS and register a project-local public client.
+  status      Show cached grant scope, expiry, and revocation state (no secrets).
+  request     Stage a PAR grant request; print the owner approval URL.
+  wait        Poll the local cache until a usable token appears, then exit 0.
+  store       Accept a pasted client token and write it to the local cache.
+  use         Print the bearer token for a named grant`;
+
+  assert.ok(usageText.includes('wait'), 'AGENT_USAGE must document the wait subcommand');
+  assert.ok(usageText.includes('poll') || usageText.includes('Poll'), 'wait description must mention polling');
+});

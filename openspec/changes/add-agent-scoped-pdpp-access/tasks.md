@@ -6,11 +6,11 @@
 
 ## 2. CLI Workflow
 
-- [x] Add a CLI command group for agent access bootstrap, status, request, wait, use, forget, and revoke. (`cli/commands/agent.js`)
+- [x] Add a CLI command group for agent access bootstrap, status, request, wait, use, forget, and revoke. (`cli/commands/agent.js` — all seven subcommands implemented)
 - [x] Implement a project-local client identity convention with stable display metadata and no owner-token persistence. (`cli/lib/cache.js`)
 - [x] Implement grant-request creation with owner-readable purpose text, stream/field/time-range selection, retention, and access mode. (`cli/commands/agent.js#runRequest`)
 - [x] Print a browser approval URL and user-action instructions; optionally open the URL when configured. (`agent request` prints approval URL; PDPP_OPEN_BROWSER env opens browser)
-- [ ] Poll consent completion without aggressive retrying. (deferred: no public polling endpoint exists; documented as protocol-candidate gap in design-notes; `store` subcommand handles paste path)
+- [ ] Poll consent completion without aggressive retrying. (deferred: no public AS polling endpoint exists for PAR-staged client grants; `wait` polls the local cache only — another process must run `pdpp agent store` after browser approval; AS-side polling remains a protocol-candidate gap documented in design-notes)
 - [x] Store resulting client grant metadata and token in the project-local cache. (`cli/commands/agent.js#runStore`, `cli/lib/cache.js`)
 - [x] Add status output that shows grant scope, expiry, source, and revocation state without printing secrets. (`agent status` reads only non-secret grant metadata)
 

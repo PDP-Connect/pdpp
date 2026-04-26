@@ -5,21 +5,21 @@
  *   bootstrap   discover AS/RS, register a project client, write .pdpp/agent-access.json
  *   status      show cached grant scope/expiry/revocation state (never prints tokens)
  *   request     stage a PAR grant request and print the owner approval URL
- *   wait        poll for manual confirmation that a token has been stored (paste path)
+ *   wait        poll the local cache until a usable token appears (no AS contact)
  *   store       accept a pasted token and write it to the local cache
  *   use         print the bearer token for a cached grant (for piping to curl)
  *   forget      remove a cached grant and token without revoking on the server
  *   revoke      revoke a grant on the AS and remove from local cache
  *
  * Protocol-candidate note: the reference has no public poll-for-approval endpoint
- * for PAR-staged client grants. The `store` subcommand handles the paste path.
- * A future `pdpp agent wait` with real polling requires a separate AS change.
- * This gap is documented in openspec/changes/add-agent-scoped-pdpp-access/design-notes/.
+ * for PAR-staged client grants. `wait` polls only the local cache; another process
+ * (the owner's browser + `pdpp agent store`) must write the token. AS-side consent
+ * polling remains a protocol-candidate gap documented in design-notes/.
  */
 
 import { spawnSync } from 'node:child_process';
 import { parseArgs } from '../lib/args.js';
-import { readJsonInput, resolveAsUrl, resolveInitialAccessToken, resolveRsUrl } from '../lib/common.js';
+import { resolveAsUrl, resolveInitialAccessToken, resolveRsUrl } from '../lib/common.js';
 import { PdppCliError, PdppUsageError } from '../lib/errors.js';
 import { bearer, fetchJson } from '../lib/fetch.js';
 import { resolveFormat, writeData } from '../lib/output.js';
@@ -47,6 +47,7 @@ Subcommands:
   bootstrap   Discover AS/RS and register a project-local public client.
   status      Show cached grant scope, expiry, and revocation state (no secrets).
   request     Stage a PAR grant request; print the owner approval URL.
+  wait        Poll the local cache until a usable token appears, then exit 0.
   store       Accept a pasted client token and write it to the local cache.
   use         Print the bearer token for a named grant (pipe to curl -H "Authorization: Bearer \$(...)").
   forget      Remove a cached grant and its token without revoking on the AS.
@@ -67,6 +68,11 @@ Grant request options (pdpp agent request):
   --access-mode <mode>   single_use | time_bounded | continuous (default: time_bounded)
   --client-id <id>       Use a specific registered client id (default: first cached client)
   --initial-access-token <token>  Initial access token for DCR (default: $PDPP_INITIAL_ACCESS_TOKEN)
+
+Wait options (pdpp agent wait):
+  --grant-id <id>           Wait for a specific grant ID (default: any usable grant)
+  --timeout-seconds <n>     Give up after this many seconds (default: 300)
+  --interval-seconds <n>    Poll interval in seconds (default: 5)
 
 Store options (pdpp agent store):
   --grant-id <id>        Grant ID to associate the pasted token with
@@ -93,6 +99,10 @@ export async function runAgent(argv) {
 
   if (subcommand === 'request') {
     return runRequest(flags, cacheRoot);
+  }
+
+  if (subcommand === 'wait') {
+    return runWait(flags, cacheRoot);
   }
 
   if (subcommand === 'store') {
@@ -336,6 +346,56 @@ async function runRequest(flags, cacheRoot) {
   );
 }
 
+// ─── wait ─────────────────────────────────────────────────────────────────────
+
+async function runWait(flags, cacheRoot) {
+  const grantId = flags['grant-id'] || null;
+  const timeoutSeconds = Math.max(parseInt(flags['timeout-seconds'] || '300', 10) || 300, 1);
+  const intervalSeconds = Math.max(parseInt(flags['interval-seconds'] || '5', 10) || 5, 1);
+
+  process.stderr.write(
+    'Waiting for a usable token to appear in the local cache.\n' +
+    'This command does NOT contact the AS. No AS polling endpoint exists yet for\n' +
+    'PAR-staged client grants — that is a documented protocol-candidate gap.\n' +
+    '\n' +
+    'To unblock this wait:\n' +
+    '  1. Open the approval URL printed by "pdpp agent request" in a browser.\n' +
+    '  2. Approve the request.\n' +
+    '  3. Copy the token shown on the approval page.\n' +
+    '  4. In another terminal: pdpp agent store --grant-id <id> --token <token>\n' +
+    '\n'
+  );
+
+  const deadline = Date.now() + timeoutSeconds * 1000;
+  const intervalMs = intervalSeconds * 1000;
+
+  while (Date.now() < deadline) {
+    const found = grantId
+      ? (readToken(cacheRoot, grantId) ? readGrant(cacheRoot, grantId) : null)
+      : hasUsableGrant(cacheRoot);
+
+    if (found) {
+      const resolvedGrantId = found.grant_id || grantId;
+      process.stderr.write(`Token found for grant ${resolvedGrantId}. Proceeding.\n`);
+      writeData(
+        { object: 'agent_wait_result', grant_id: resolvedGrantId, token_cached: true },
+        resolveFormat(flags, 'json', 'json'),
+      );
+      return;
+    }
+
+    const remaining = Math.round((deadline - Date.now()) / 1000);
+    process.stderr.write(`Waiting... (${remaining}s remaining)\r`);
+    await sleep(intervalMs);
+  }
+
+  throw new PdppCliError(
+    `Timed out after ${timeoutSeconds}s waiting for a cached token. ` +
+    'Run "pdpp agent store --grant-id <id> --token <token>" to store a token, then retry.',
+    1,
+  );
+}
+
 // ─── store ────────────────────────────────────────────────────────────────────
 
 async function runStore(flags, cacheRoot) {
@@ -521,4 +581,8 @@ function maybeOpenBrowser(url) {
   } catch {
     return false;
   }
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
