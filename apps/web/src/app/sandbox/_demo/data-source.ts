@@ -554,6 +554,16 @@ export const sandboxDashboardDataSource: DashboardDataSource = {
     return false;
   },
 
+  async searchRecordsHybrid(): Promise<SearchResultPage> {
+    // Sandbox does not advertise hybrid retrieval. This method should never
+    // be reached because isHybridRetrievalAdvertised() returns false.
+    return { object: "list", data: [], has_more: false };
+  },
+
+  async isHybridRetrievalAdvertised(): Promise<boolean> {
+    return false;
+  },
+
   async listGrants(opts: ListQuery = {}): Promise<ListResponse<LiveGrantSummary>> {
     const all = getDemoGrants()
       .filter((g) => statusFilterMatches(opts.status, g.status))

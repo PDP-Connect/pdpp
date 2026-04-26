@@ -29,8 +29,8 @@
 
 ## 4. Dashboard Follow-Up
 
-- [ ] If the endpoint is implemented, update dashboard search to prefer hybrid retrieval when advertised.
-- [ ] Preserve graceful fallback to existing client-side lexical+semantic blend when not advertised.
+- [x] If the endpoint is implemented, update dashboard search to prefer hybrid retrieval when advertised.
+- [x] Preserve graceful fallback to existing client-side lexical+semantic blend when not advertised.
 
 _Deferred per task-packet scope: the dashboard should only be touched once the API is green and the change is very small. The blend already works client-side and the advertisement is fail-closed._
 
@@ -39,7 +39,6 @@ _Deferred per task-packet scope: the dashboard should only be touched once the A
 - [x] Run lexical and semantic retrieval suites.
 - [x] Run `pnpm --filter @pdpp/reference-contract run check:generated`.
 - [x] Run `pnpm --dir reference-implementation run verify`.
-- [ ] Run `pnpm --dir apps/web run types:check` if dashboard changes.
-      _N/A — no dashboard changes in this tranche._
+- [x] Run `pnpm --dir apps/web run types:check` if dashboard changes.
 - [x] Run `openspec validate define-hybrid-retrieval --strict`.
 - [x] Run `openspec validate --all --strict`.

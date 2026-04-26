@@ -130,10 +130,10 @@ export interface SearchResultHit {
   object: "search_result";
   record_key: string;
   record_url?: string;
-  // Present only on semantic-retrieval hits. Required on every /v1/search/semantic
-  // result per the approved spec; absent on lexical hits. "hybrid" is reserved
-  // for a future tranche (v1 lexical_blending is always false).
+  // Present on semantic and hybrid hits; absent on lexical hits.
   retrieval_mode?: "semantic" | "hybrid";
+  // Present only on hybrid hits: which source(s) contributed this record.
+  retrieval_sources?: ("lexical" | "semantic")[];
   snippet?: { field: string; text: string };
   stream: string;
 }
@@ -268,6 +268,67 @@ export async function isSemanticRetrievalAdvertised(): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/**
+ * Fail-closed probe for `capabilities.hybrid_retrieval.supported: true` on
+ * the RS's protected-resource metadata document. Returns false on any error.
+ * Mirrors isSemanticRetrievalAdvertised exactly — same fail-closed contract.
+ */
+export async function isHybridRetrievalAdvertised(): Promise<boolean> {
+  try {
+    const res = await fetch(`${getRsInternalUrl()}/.well-known/oauth-protected-resource`, {
+      cache: "no-store",
+    });
+    if (!res.ok) {
+      return false;
+    }
+    const body = (await res.json()) as { capabilities?: { hybrid_retrieval?: { supported?: boolean } } };
+    return body.capabilities?.hybrid_retrieval?.supported === true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Call the experimental hybrid retrieval endpoint at GET /v1/search/hybrid.
+ * Only call this when `isHybridRetrievalAdvertised()` returns true.
+ *
+ * The endpoint deduplicates by (connector_id, stream, record_key) server-side
+ * and returns provenance in `retrieval_sources`. v1 does not support cursors;
+ * this is a first-page-only call.
+ *
+ * See: openspec/changes/define-hybrid-retrieval/specs/hybrid-retrieval/spec.md
+ */
+export async function searchRecordsHybrid(
+  query: string,
+  opts: { streams?: string[]; limit?: number } = {}
+): Promise<SearchResultPage> {
+  const token = await getOwnerToken();
+  const url = new URL(`${getRsInternalUrl()}/v1/search/hybrid`);
+  url.searchParams.set("q", query);
+  if (typeof opts.limit === "number") {
+    url.searchParams.set("limit", String(opts.limit));
+  }
+  for (const s of opts.streams ?? []) {
+    if (typeof s === "string" && s.length > 0) {
+      url.searchParams.append("streams", s);
+    }
+  }
+  let res: Response;
+  try {
+    res = await fetch(url.toString(), {
+      headers: { Authorization: `Bearer ${token}` },
+      cache: "no-store",
+    });
+  } catch (err) {
+    throw new ReferenceServerUnreachableError(`Cannot reach resource server at ${getRsInternalUrl()}`, err);
+  }
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`RS /v1/search/hybrid failed (${res.status}): ${body}`);
+  }
+  return (await res.json()) as SearchResultPage;
 }
 
 export async function listConnectorManifests(): Promise<ConnectorManifest[]> {
