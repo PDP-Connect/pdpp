@@ -1,3 +1,12 @@
+## Status
+
+Superseded by `add-mock-reference-demo-instance`.
+
+This change captured the first attempt to replace placeholder sandbox copy with a scenario-first walkthrough. Owner
+review rejected that as the primary product direction: `/sandbox` should behave like a mock-owner reference dashboard
+backed by deterministic mock AS/RS data, with walkthrough/API examples as secondary support surfaces. Do not archive
+this change as canonical unless it is first reconciled with `add-mock-reference-demo-instance`.
+
 ## Why
 
 `/sandbox` currently reads like a placeholder for work we intend to do. Public reviewers and prospective implementers need a concrete, useful surface that lets them experience PDPP with simulated data immediately, without connecting real accounts or running the reference stack.

@@ -1,3 +1,8 @@
+## Status
+
+Superseded by `add-mock-reference-demo-instance`. These tasks describe the rejected scenario-first sandbox attempt and
+should not be used as implementation guidance for the primary sandbox route family.
+
 ## 1. Sandbox Data Model
 
 - [x] 1.1 Create a small seeded sandbox scenario module with fictional connectors, streams, records, grants, and API-shaped examples.

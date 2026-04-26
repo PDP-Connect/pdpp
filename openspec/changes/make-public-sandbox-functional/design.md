@@ -1,3 +1,19 @@
+## Status
+
+Superseded by `add-mock-reference-demo-instance`.
+
+This design intentionally built a scenario-first sandbox rather than a mock reference dashboard. That was the wrong
+primary product target. The accepted direction is now:
+
+- `/sandbox` is a concise launcher into mock-owner dashboard mode.
+- `/sandbox/overview`, `/sandbox/records`, `/sandbox/search`, and adjacent primary pages reuse dashboard shell/chrome
+  and feature components against deterministic mock AS/RS data.
+- `/sandbox/api-examples` and `/sandbox/walkthrough` remain supporting educational surfaces.
+- The public site header must not wrap mock-owner dashboard pages; otherwise the sandbox looks like a docs page
+  nested around an operator dashboard.
+
+Retain this file as historical context only. Future work should follow `add-mock-reference-demo-instance`.
+
 ## Context
 
 The current `/sandbox` route is intentionally honest but not useful: it says the sandbox is a future mock-backed educational surface. That satisfied the route-topology change, but it is not good enough for an internal demo or a public reviewer. A visitor should be able to click through a simulated PDPP story and understand why the protocol matters without reading the whole spec first.

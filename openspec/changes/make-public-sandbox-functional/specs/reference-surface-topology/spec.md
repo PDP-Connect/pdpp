@@ -1,3 +1,6 @@
+> Superseded by `add-mock-reference-demo-instance`. Do not archive this delta as canonical without first reconciling it
+> with the mock-owner dashboard direction.
+
 ## MODIFIED Requirements
 
 ### Requirement: A sandbox surface SHALL be mock-backed and pedagogical
