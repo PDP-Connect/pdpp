@@ -14,6 +14,7 @@ import {
   type KnownGap,
   type KnownGapSummary,
 } from "../../lib/run-gaps.ts";
+import { type BridgeUnavailableInfo, extractBridgeUnavailable } from "./bridge-unavailable.ts";
 import { RunInteractionForm } from "./interaction-form.tsx";
 import { RunDetailPoller } from "./run-detail-poller.tsx";
 
@@ -601,12 +602,6 @@ function summarizeFailure(failure: SpineEvent | undefined): [string, string][] {
 // → connector DONE { status:"failed", error:{ message:"[code] ...", retryable:false } }
 // → run.failed data { reason:"connector_reported_failed", connector_error_message:"[code] ..." }
 //
-// So data.reason is always "connector_reported_failed" for this class of failure.
-// The stable code lives in data.connector_error_message (primary) and may also appear
-// in data.reason, data.failure_reason, or a future data.connector_error_code/code field.
-
-import { type BridgeUnavailableInfo, extractBridgeUnavailable } from "./bridge-unavailable.ts";
-
 function BridgeUnavailableSection({ bridgeUnavailable }: { bridgeUnavailable: BridgeUnavailableInfo | null }) {
   if (!bridgeUnavailable) {
     return null;
