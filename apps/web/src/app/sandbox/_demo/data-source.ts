@@ -33,6 +33,7 @@ import type {
   PendingApproval,
   RefConnectorRunSummary,
   RefConnectorSummary,
+  RefSchedule,
   SpineEvent,
   TimelineEnvelope,
 } from "@/app/dashboard/lib/ref-client.ts";
@@ -137,6 +138,36 @@ function refConnectorRunSummary(runId: string | undefined): RefConnectorRunSumma
   };
 }
 
+const SCHEDULE_INTERVAL: Record<string, number> = {
+  daily: 86_400,
+  weekly: 604_800,
+  manual: 86_400,
+};
+
+function buildDemoSchedule(connectorId: string, kind: string): RefSchedule {
+  const interval = SCHEDULE_INTERVAL[kind] ?? 86_400;
+  const now = new Date().toISOString();
+  return {
+    object: "schedule",
+    connector_id: connectorId,
+    interval_seconds: interval,
+    jitter_seconds: 0,
+    enabled: kind !== "manual",
+    created_at: now,
+    updated_at: now,
+    next_due_at: null,
+    active_run_id: null,
+    last_started_at: null,
+    last_finished_at: null,
+    last_error_code: null,
+    last_successful_at: null,
+    effective_mode: kind === "manual" ? "manual" : "automatic",
+    human_attention_needed: false,
+    recommended_policy: null,
+    minimum_interval_warning: null,
+  };
+}
+
 function buildRefConnectorSummary(connectorId: string): RefConnectorSummary {
   const connector = getDemoConnectors().find((c) => c.connector_id === connectorId);
   const streams = streamsForConnector(connectorId);
@@ -150,7 +181,7 @@ function buildRefConnectorSummary(connectorId: string): RefConnectorSummary {
     last_run: refConnectorRunSummary(lastRunId),
     last_successful_run: refConnectorRunSummary(lastSuccessId),
     manifest_version: "1.0.0-demo",
-    schedule: connector?.schedule ? { kind: connector.schedule } : null,
+    schedule: connector?.schedule ? buildDemoSchedule(connectorId, connector.schedule) : null,
     streams: streams.map((s) => s.key),
     total_records: totalRecordsForConnector(connectorId),
   };

@@ -696,6 +696,64 @@ test('schedule upsert on unknown connector returns 404', async () => {
   });
 });
 
+test('schedule upsert returns policy_warning when interval is below minimum_interval_seconds', async () => {
+  const manifest = {
+    protocol_version: '0.1.0',
+    connector_id: 'https://registry.pdpp.org/connectors/policy-warning-test',
+    version: '1.0.0',
+    display_name: 'Policy Warning Test',
+    streams: [
+      {
+        name: 'items',
+        semantics: 'append_only',
+        schema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] },
+        primary_key: ['id'],
+      },
+    ],
+    capabilities: {
+      refresh_policy: {
+        recommended_mode: 'automatic',
+        minimum_interval_seconds: 3600,
+        recommended_interval_seconds: 86400,
+        interaction_posture: 'credentials',
+        rationale: 'API rate limits; high-friction credentials.',
+      },
+    },
+  };
+
+  const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
+  const asUrl = `http://localhost:${server.asPort}`;
+  try {
+    await registerConnector(asUrl, manifest);
+
+    // Below minimum — expect policy_warning in response body.
+    const putResp = await fetch(`${asUrl}/_ref/connectors/${encodeURIComponent(manifest.connector_id)}/schedule`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ interval_seconds: 600 }),
+    });
+    assert.equal(putResp.status, 200);
+    const body = await putResp.json();
+    assert.equal(body.object, 'schedule');
+    assert.equal(body.interval_seconds, 600);
+    assert.ok(typeof body.policy_warning === 'string' && body.policy_warning.length > 0,
+      'expected policy_warning string when interval is below minimum');
+    assert.ok(body.policy_warning.includes('3600'), 'warning should mention minimum interval');
+
+    // At or above recommended — policy_warning should be absent or null.
+    const putResp2 = await fetch(`${asUrl}/_ref/connectors/${encodeURIComponent(manifest.connector_id)}/schedule`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ interval_seconds: 86400 }),
+    });
+    assert.equal(putResp2.status, 200);
+    const body2 = await putResp2.json();
+    assert.ok(!body2.policy_warning, 'no policy_warning when interval meets or exceeds recommended');
+  } finally {
+    await closeServer(server);
+  }
+});
+
 test('GET /_ref/approvals surfaces pending provider-connect consents with grant preview', async () => {
   await withHarness(async ({ asUrl, spotifyManifest }) => {
     // Start a PAR request that will be pending until approve/deny.

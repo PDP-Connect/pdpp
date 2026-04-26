@@ -23,6 +23,7 @@ export interface Routes {
     overview: string;
     records: string;
     recordsTimeline: string;
+    schedules: string;
     search: string;
     grants: string;
     runs: string;
@@ -42,6 +43,7 @@ function makeRoutes(basePath: string, opts: { overview?: string } = {}): Routes 
       overview: opts.overview ?? basePath,
       records: `${basePath}/records`,
       recordsTimeline: `${basePath}/records/timeline`,
+      schedules: `${basePath}/schedules`,
       search: `${basePath}/search`,
       grants: `${basePath}/grants`,
       runs: `${basePath}/runs`,

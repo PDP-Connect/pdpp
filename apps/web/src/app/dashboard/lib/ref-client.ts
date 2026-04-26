@@ -141,6 +141,40 @@ export interface RefConnectorRunSummary {
   status: string;
 }
 
+export interface RefreshPolicy {
+  background_safe?: boolean;
+  bot_detection_sensitivity?: "high" | "low" | "medium";
+  interaction_posture?: "credentials" | "manual_action_likely" | "none" | "otp_likely";
+  maximum_staleness_seconds?: number;
+  minimum_interval_seconds?: number;
+  rate_limit_sensitivity?: "high" | "low" | "medium";
+  rationale?: string;
+  recommended_interval_seconds?: number;
+  recommended_mode?: "automatic" | "manual" | "paused";
+  session_lifetime_seconds?: number;
+}
+
+export interface RefSchedule {
+  active_run_id: string | null;
+  connector_id: string;
+  created_at: string;
+  effective_mode: "automatic" | "manual" | "paused";
+  enabled: boolean;
+  human_attention_needed: boolean;
+  interval_seconds: number;
+  jitter_seconds: number;
+  last_error_code: string | null;
+  last_finished_at: string | null;
+  last_started_at: string | null;
+  last_successful_at: string | null;
+  minimum_interval_warning: string | null;
+  next_due_at: string | null;
+  object: "schedule";
+  policy_warning?: string | null;
+  recommended_policy: RefreshPolicy | null;
+  updated_at: string;
+}
+
 export interface RefConnectorSummary {
   connector_id: string;
   display_name: string;
@@ -148,7 +182,8 @@ export interface RefConnectorSummary {
   last_run: RefConnectorRunSummary | null;
   last_successful_run: RefConnectorRunSummary | null;
   manifest_version: string | null;
-  schedule: Record<string, unknown> | null;
+  refresh_policy?: RefreshPolicy | null;
+  schedule: RefSchedule | null;
   streams: string[];
   total_records: number;
 }
@@ -253,6 +288,21 @@ export async function listRuns(opts: ListQuery = {}): Promise<ListResponse<RunSu
 
 export async function listConnectorSummaries(): Promise<ListResponse<RefConnectorSummary>> {
   return (await refFetch("/_ref/connectors")) as ListResponse<RefConnectorSummary>;
+}
+
+export async function listSchedules(): Promise<ListResponse<RefSchedule>> {
+  return (await refFetch("/_ref/schedules")) as ListResponse<RefSchedule>;
+}
+
+export async function getConnectorSchedule(connectorId: string): Promise<RefSchedule | null> {
+  try {
+    return (await refFetch(`/_ref/connectors/${encodeURIComponent(connectorId)}/schedule`)) as RefSchedule;
+  } catch (err) {
+    if (err instanceof RefNotFoundError) {
+      return null;
+    }
+    throw err;
+  }
 }
 
 export interface DatasetConnectorSummary {

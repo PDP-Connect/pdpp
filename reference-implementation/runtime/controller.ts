@@ -51,6 +51,11 @@ export interface ConnectorSchedulePatch {
   jitter_seconds?: number;
 }
 
+export interface ScheduleUpsertResult {
+  readonly policy_warning: string | null;
+  readonly schedule: ScheduleApi;
+}
+
 export interface ValidatedSchedulePatch {
   readonly enabled: boolean;
   readonly interval_seconds: number;
@@ -80,23 +85,43 @@ interface TerminalRunRow {
 
 export interface RuntimeProjection {
   readonly active_run_id: string | null;
+  readonly human_attention_needed: boolean;
   readonly last_error_code: string | null;
   readonly last_finished_at: string | null;
   readonly last_started_at: string | null;
+  readonly last_successful_at: string | null;
+}
+
+export interface RefreshPolicy {
+  readonly background_safe?: boolean;
+  readonly bot_detection_sensitivity?: "high" | "low" | "medium";
+  readonly interaction_posture?: "credentials" | "manual_action_likely" | "none" | "otp_likely";
+  readonly maximum_staleness_seconds?: number;
+  readonly minimum_interval_seconds?: number;
+  readonly rate_limit_sensitivity?: "high" | "low" | "medium";
+  readonly rationale?: string;
+  readonly recommended_interval_seconds?: number;
+  readonly recommended_mode?: "automatic" | "manual" | "paused";
+  readonly session_lifetime_seconds?: number;
 }
 
 export interface ScheduleApi {
   readonly active_run_id: string | null;
   readonly connector_id: string;
   readonly created_at: string;
+  readonly effective_mode: "automatic" | "manual" | "paused";
   readonly enabled: boolean;
+  readonly human_attention_needed: boolean;
   readonly interval_seconds: number;
   readonly jitter_seconds: number;
   readonly last_error_code: string | null;
   readonly last_finished_at: string | null;
   readonly last_started_at: string | null;
+  readonly last_successful_at: string | null;
+  readonly minimum_interval_warning: string | null;
   readonly next_due_at: string | null;
   readonly object: "schedule";
+  readonly recommended_policy: RefreshPolicy | null;
   readonly updated_at: string;
 }
 
@@ -184,10 +209,12 @@ export interface Controller {
   getPendingInteraction(runId: string): PendingInteractionProjection | null;
   getSchedule(connectorId: string): Promise<ScheduleApi | null>;
   listSchedules(): Promise<ScheduleApi[]>;
+  markNeedsHuman(connectorId: string): void;
+  clearNeedsHuman(connectorId: string): void;
   respondToInteraction(runId: string, input?: RunInteractionResponseInput): RunInteractionAck;
   runNow(connectorId: string, options?: RunNowOptions): Promise<RunNowResult>;
   setScheduleEnabled(connectorId: string, enabled: boolean): Promise<ScheduleApi | null>;
-  upsertSchedule(connectorId: string, input: ConnectorSchedulePatch): Promise<ScheduleApi | null>;
+  upsertSchedule(connectorId: string, input: ConnectorSchedulePatch): Promise<ScheduleUpsertResult>;
 }
 
 interface RuntimeInteraction {
@@ -243,6 +270,11 @@ const activeRuns = new Map<string, ActiveRun>();
 // dashboard-submitted values satisfy the current live run only and are never
 // persisted to `.env.local`, SQLite config/state, or spine event payloads.
 const activeRunInteractions = new Map<string, ActiveRunInteraction>();
+// Connectors where an automatic background run surfaced an unresolvable
+// human-attention interaction. The scheduler checks this before launching
+// new automatic attempts so high-friction connectors don't spam OTP/login
+// requests in the background. Manual "run now" bypasses this flag.
+const needsHumanAttention = new Set<string>();
 interface ManifestFingerprint {
   readonly streams: string;
   readonly version: string;
@@ -441,6 +473,8 @@ function getRuntimeProjection(connectorId: string): RuntimeProjection {
       last_started_at: null,
       last_finished_at: null,
       last_error_code: null,
+      last_successful_at: null,
+      human_attention_needed: needsHumanAttention.has(connectorId),
     };
   }
   return {
@@ -448,6 +482,8 @@ function getRuntimeProjection(connectorId: string): RuntimeProjection {
     last_started_at: active.started_at,
     last_finished_at: null,
     last_error_code: null,
+    last_successful_at: null,
+    human_attention_needed: needsHumanAttention.has(connectorId),
   };
 }
 
@@ -481,6 +517,11 @@ function brokerInteraction(
 export function __resetControllerInteractionStateForTests(): void {
   activeRunInteractions.clear();
   activeRuns.clear();
+  needsHumanAttention.clear();
+}
+
+export function isNeedsHumanAttention(connectorId: string): boolean {
+  return needsHumanAttention.has(connectorId);
 }
 
 function validateScheduleInput(input: ConnectorSchedulePatch | null | undefined): ValidatedSchedulePatch {
@@ -519,13 +560,48 @@ function validateScheduleInput(input: ConnectorSchedulePatch | null | undefined)
   return { interval_seconds: interval, jitter_seconds: jitter, enabled };
 }
 
+function computeEffectiveMode(
+  row: ScheduleRow,
+  runtimeProjection: RuntimeProjection | null
+): "automatic" | "manual" | "paused" {
+  if (!row.enabled) {
+    return "paused";
+  }
+  if (runtimeProjection?.human_attention_needed) {
+    return "paused";
+  }
+  return "automatic";
+}
+
+function buildMinimumIntervalWarning(
+  intervalSeconds: number,
+  policy: RefreshPolicy | null
+): string | null {
+  if (!policy) {
+    return null;
+  }
+  const minimum = policy.minimum_interval_seconds;
+  const recommended = policy.recommended_interval_seconds;
+  if (minimum !== undefined && intervalSeconds < minimum) {
+    return `Interval ${intervalSeconds}s is below the connector's minimum recommended interval of ${minimum}s. This may cause rate-limiting or platform blocks.`;
+  }
+  if (recommended !== undefined && intervalSeconds < recommended) {
+    return `Interval ${intervalSeconds}s is below the connector's recommended interval of ${recommended}s.`;
+  }
+  return null;
+}
+
 function scheduleRowToApi(
   row: ScheduleRow | null,
-  runtimeProjection: RuntimeProjection | null = null
+  runtimeProjection: RuntimeProjection | null = null,
+  policy: RefreshPolicy | null = null
 ): ScheduleApi | null {
   if (!row) {
     return null;
   }
+  const effectiveMode = computeEffectiveMode(row, runtimeProjection);
+  const humanAttentionNeeded = runtimeProjection?.human_attention_needed ?? false;
+  const minimumIntervalWarning = buildMinimumIntervalWarning(row.interval_seconds, policy);
   return {
     object: "schedule",
     connector_id: row.connector_id,
@@ -539,6 +615,11 @@ function scheduleRowToApi(
     last_started_at: runtimeProjection?.last_started_at || null,
     last_finished_at: runtimeProjection?.last_finished_at || null,
     last_error_code: runtimeProjection?.last_error_code || null,
+    last_successful_at: runtimeProjection?.last_successful_at || null,
+    effective_mode: effectiveMode,
+    human_attention_needed: humanAttentionNeeded,
+    recommended_policy: policy,
+    minimum_interval_warning: minimumIntervalWarning,
   };
 }
 
@@ -692,13 +773,30 @@ export function createController(opts: ControllerOptions = {}): Controller {
     return approved.access_token;
   }
 
+  async function getConnectorRefreshPolicy(connectorId: string): Promise<RefreshPolicy | null> {
+    try {
+      const manifest = await getConnectorManifest(connectorId);
+      if (!manifest || typeof manifest !== "object") {
+        return null;
+      }
+      const caps = (manifest as { capabilities?: unknown }).capabilities;
+      if (!caps || typeof caps !== "object") {
+        return null;
+      }
+      const policy = (caps as { refresh_policy?: unknown }).refresh_policy;
+      if (!policy || typeof policy !== "object" || Array.isArray(policy)) {
+        return null;
+      }
+      return policy as RefreshPolicy;
+    } catch {
+      return null;
+    }
+  }
+
   // Schedule reads/writes are synchronous against the sqlite handle, but we
   // keep the controller surface async so future slices can add I/O (e.g.
   // mirroring to a remote control plane) without a signature break.
-  // Wrapping in Promise.resolve keeps the returned type Promise<T> honestly
-  // without triggering ultracite's `useAwait` (which requires `async` fns
-  // to contain at least one await).
-  function listSchedules(): Promise<ScheduleApi[]> {
+  async function listSchedules(): Promise<ScheduleApi[]> {
     const rows = db
       .prepare(
         `
@@ -708,20 +806,26 @@ export function createController(opts: ControllerOptions = {}): Controller {
     `
       )
       .all<ScheduleRow>();
-    return Promise.resolve(
-      rows.flatMap((row) => {
-        const api = scheduleRowToApi(row, getRuntimeProjection(row.connector_id));
-        return api ? [api] : [];
+    const apis = await Promise.all(
+      rows.map(async (row) => {
+        const policy = await getConnectorRefreshPolicy(row.connector_id);
+        const api = scheduleRowToApi(row, getRuntimeProjection(row.connector_id), policy);
+        return api;
       })
     );
+    return apis.flatMap((api) => (api ? [api] : []));
   }
 
-  function getSchedule(connectorId: string): Promise<ScheduleApi | null> {
+  async function getSchedule(connectorId: string): Promise<ScheduleApi | null> {
     const row = getScheduleRow(connectorId);
-    return Promise.resolve(row ? scheduleRowToApi(row, getRuntimeProjection(connectorId)) : null);
+    if (!row) {
+      return null;
+    }
+    const policy = await getConnectorRefreshPolicy(connectorId);
+    return scheduleRowToApi(row, getRuntimeProjection(connectorId), policy);
   }
 
-  function upsertSchedule(connectorId: string, input: ConnectorSchedulePatch): Promise<ScheduleApi | null> {
+  async function upsertSchedule(connectorId: string, input: ConnectorSchedulePatch): Promise<ScheduleUpsertResult> {
     const now = nowIso();
     const validated = validateScheduleInput(input);
     const existing = getScheduleRow(connectorId);
@@ -741,13 +845,16 @@ export function createController(opts: ControllerOptions = {}): Controller {
       `
       ).run(connectorId, validated.interval_seconds, validated.jitter_seconds, validated.enabled ? 1 : 0, now, now);
     }
-    return Promise.resolve(scheduleRowToApi(getScheduleRow(connectorId), getRuntimeProjection(connectorId)));
+    const policy = await getConnectorRefreshPolicy(connectorId);
+    const schedule = scheduleRowToApi(getScheduleRow(connectorId), getRuntimeProjection(connectorId), policy);
+    const policy_warning = schedule ? buildMinimumIntervalWarning(validated.interval_seconds, policy) : null;
+    return { schedule: schedule!, policy_warning };
   }
 
-  function setScheduleEnabled(connectorId: string, enabled: boolean): Promise<ScheduleApi | null> {
+  async function setScheduleEnabled(connectorId: string, enabled: boolean): Promise<ScheduleApi | null> {
     const existing = getScheduleRow(connectorId);
     if (!existing) {
-      return Promise.reject(new ControllerError(`Schedule not found for connector: ${connectorId}`, "not_found"));
+      throw new ControllerError(`Schedule not found for connector: ${connectorId}`, "not_found");
     }
     db.prepare(
       `
@@ -756,7 +863,16 @@ export function createController(opts: ControllerOptions = {}): Controller {
       WHERE connector_id = ?
     `
     ).run(enabled ? 1 : 0, nowIso(), connectorId);
-    return Promise.resolve(scheduleRowToApi(getScheduleRow(connectorId), getRuntimeProjection(connectorId)));
+    const policy = await getConnectorRefreshPolicy(connectorId);
+    return scheduleRowToApi(getScheduleRow(connectorId), getRuntimeProjection(connectorId), policy);
+  }
+
+  function markNeedsHuman(connectorId: string): void {
+    needsHumanAttention.add(connectorId);
+  }
+
+  function clearNeedsHuman(connectorId: string): void {
+    needsHumanAttention.delete(connectorId);
   }
 
   function deleteSchedule(connectorId: string): Promise<boolean> {
@@ -804,6 +920,10 @@ export function createController(opts: ControllerOptions = {}): Controller {
       (options.scenarioId ? createTraceContext({ scenarioId: options.scenarioId }) : createTraceContext());
     const runId = options.runId || `run_${Date.now()}`;
     const startedAt = nowIso();
+
+    // Manual run initiated by the owner: clear any pending human-attention flag
+    // so the scheduler can resume automatic runs after this interaction resolves.
+    needsHumanAttention.delete(connectorId);
 
     persistActiveRun({
       connector_id: connectorId,
@@ -925,6 +1045,8 @@ export function createController(opts: ControllerOptions = {}): Controller {
     getPendingInteraction,
     respondToInteraction,
     runNow,
+    markNeedsHuman,
+    clearNeedsHuman,
     // Approval + connector inventory live in `auth.js`
     // (`listPendingApprovals`, `listConnectors`, `getConnectorManifest`).
     // Route handlers call those helpers directly; the controller does not
