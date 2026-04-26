@@ -1,70 +1,109 @@
 import Link from "next/link";
-import { buildRunsList } from "../_demo/builders.ts";
-import { CodeBlock, InlineCode } from "../_demo/components/code-block.tsx";
+import { StatusBadge } from "@/app/dashboard/components/primitives.tsx";
+import { type ListWithPeekParams, ListWithPeekView } from "@/app/dashboard/components/views/list-with-peek.tsx";
+import { sandboxRoutes } from "@/app/dashboard/components/views/routes.ts";
+import type { RunSummary } from "@/app/dashboard/lib/ref-client.ts";
+import { Timestamp } from "@/components/ui/timestamp.tsx";
 import { SandboxShell } from "../_demo/components/shell.tsx";
+import { sandboxDashboardDataSource } from "../_demo/data-source.ts";
 
 export const dynamic = "force-static";
 
-const STATUS_TONE: Record<string, string> = {
-  succeeded: "text-[color:var(--success)]",
-  failed: "text-destructive",
-  needs_input: "text-[color:var(--warning)]",
-  started: "text-[color:var(--warning)]",
-};
+interface Params {
+  connector_id?: string;
+  cursor?: string;
+  peek?: string;
+  q?: string;
+  status?: string;
+}
 
-export default async function SandboxRunsPage(props: { searchParams: Promise<{ status?: string }> }) {
-  const { status } = await props.searchParams;
-  const runs = buildRunsList({ status });
+function listHref(params: Params, overrides: Record<string, string | undefined>): string {
+  const merged: Record<string, string | undefined> = { ...params, ...overrides };
+  const qs = Object.entries(merged)
+    .filter(([, v]) => v !== undefined && v !== "")
+    .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`)
+    .join("&");
+  return qs ? `/sandbox/runs?${qs}` : "/sandbox/runs";
+}
+
+export default async function SandboxRunsPage({ searchParams }: { searchParams: Promise<Params> }) {
+  const params = await searchParams;
+  const ds = sandboxDashboardDataSource;
+  const result = await ds.listRuns({
+    cursor: params.cursor,
+    status: params.status,
+    connector_id: params.connector_id,
+    q: params.q,
+    limit: 50,
+  });
+  const peekEnvelope = params.peek ? await ds.getRunTimeline(params.peek) : null;
+
+  const viewParams: ListWithPeekParams<RunSummary> = {
+    active: "runs",
+    routes: sandboxRoutes,
+    subject: "run",
+    title: "Runs",
+    description: "Mock connector runs across the seeded sandbox dataset, including a needs-input and a failed example.",
+    result,
+    rowKey: (r) => r.run_id,
+    renderRow: (run, { peeked, href }) => (
+      <Link
+        aria-current={peeked ? "true" : undefined}
+        className={`block px-3 py-2.5 transition-colors ${peeked ? "bg-muted" : "hover:bg-muted/40"}`}
+        href={href}
+        scroll={false}
+      >
+        <div className="flex flex-wrap items-baseline justify-between gap-2">
+          <code className="pdpp-caption break-all font-medium font-mono text-foreground">{run.run_id}</code>
+          <div className="flex items-center gap-2">
+            {run.needs_input ? (
+              <span className="pdpp-eyebrow rounded-[3px] bg-[color:var(--warning-wash)] px-1.5 py-0.5 font-medium text-[color:var(--warning)]">
+                needs input
+              </span>
+            ) : null}
+            <StatusBadge status={run.status} />
+            <span className="pdpp-caption text-muted-foreground">
+              <Timestamp value={run.last_at} />
+            </span>
+          </div>
+        </div>
+        <div className="pdpp-caption mt-1 text-muted-foreground">
+          {run.event_count} events · {run.connector_id ?? "—"}
+          {run.failure_reason ? ` · ${run.failure_reason}` : ""}
+        </div>
+      </Link>
+    ),
+    filters: {
+      query: { name: "q", placeholder: "id contains…", defaultValue: params.q ?? "" },
+      connector: { name: "connector_id", defaultValue: params.connector_id ?? "" },
+      status: {
+        name: "status",
+        defaultValue: params.status ?? "",
+        options: [
+          { value: "succeeded", label: "succeeded" },
+          { value: "failed", label: "failed" },
+          { value: "needs_input", label: "needs input" },
+          { value: "started", label: "started" },
+        ],
+      },
+    },
+    activeFilterChips: [
+      params.status ? { label: "status", value: params.status } : null,
+      params.connector_id ? { label: "connector", value: params.connector_id } : null,
+      params.q ? { label: "query", value: params.q } : null,
+    ].filter((c): c is { label: string; value: string } => Boolean(c)),
+    resetHref: "/sandbox/runs",
+    buildListHref: (overrides) => listHref(params, overrides),
+    peekId: params.peek,
+    peekEnvelope,
+    peekCliCommand: (id) => `pdpp run timeline ${id}`,
+    emptyTitle: "No runs",
+    emptyHint: "The seeded sandbox always returns the demo run set; this filter excluded all of them.",
+  };
 
   return (
     <SandboxShell active="runs">
-      <header className="mb-6 border-border/80 border-b pb-5">
-        <div className="pdpp-eyebrow text-muted-foreground">Sandbox / Runs</div>
-        <h1 className="pdpp-heading mt-2 text-foreground">Connector runs</h1>
-        <p className="pdpp-body mt-2 max-w-3xl text-muted-foreground">
-          Demo runs for the seeded connectors. Includes a successful run, a failure, and a needs-input case. Backed by{" "}
-          <InlineCode>/sandbox/_ref/runs</InlineCode>.
-        </p>
-      </header>
-
-      <nav aria-label="Run status filters" className="mb-4 flex flex-wrap gap-2">
-        {[undefined, "succeeded", "failed", "needs_input"].map((s) => {
-          const href = s ? `/sandbox/runs?status=${s}` : "/sandbox/runs";
-          const label = s ?? "all";
-          const active = (status ?? undefined) === s;
-          return (
-            <Link
-              className={`pdpp-eyebrow rounded-full border px-2.5 py-0.5 ${active ? "border-foreground text-foreground" : "border-border text-muted-foreground hover:text-foreground"}`}
-              href={href}
-              key={label}
-            >
-              {label}
-            </Link>
-          );
-        })}
-      </nav>
-
-      <ul className="divide-y divide-border/70 border-border/70 border-y">
-        {runs.data.map((r) => (
-          <li className="px-3 py-3" key={r.run_id}>
-            <Link className="block" href={`/sandbox/runs/${encodeURIComponent(r.run_id)}`}>
-              <div className="flex flex-wrap items-baseline justify-between gap-2">
-                <code className="pdpp-caption break-all font-medium font-mono text-foreground">{r.run_id}</code>
-                <span className={`pdpp-eyebrow ${STATUS_TONE[r.status] ?? "text-muted-foreground"}`}>{r.status}</span>
-              </div>
-              <div className="pdpp-caption mt-1 text-muted-foreground">
-                {r.connector_id} · started {r.started_at} · {r.failure_reason ?? "no failure"}
-              </div>
-            </Link>
-          </li>
-        ))}
-      </ul>
-
-      <section className="mt-10">
-        <h2 className="pdpp-title mb-3 text-foreground">API examples</h2>
-        <CodeBlock language="shell">{`curl -s /sandbox/_ref/runs
-curl -s '/sandbox/_ref/runs?status=failed'`}</CodeBlock>
-      </section>
+      <ListWithPeekView params={viewParams} />
     </SandboxShell>
   );
 }

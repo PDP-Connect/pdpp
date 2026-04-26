@@ -1,57 +1,41 @@
-import Link from "next/link";
 import { notFound } from "next/navigation";
-import { buildRunTimeline, getDemoRuns } from "../../_demo/builders.ts";
-import { CodeBlock, InlineCode } from "../../_demo/components/code-block.tsx";
+import { sandboxRoutes } from "@/app/dashboard/components/views/routes.ts";
+import { TimelineDetailView } from "@/app/dashboard/components/views/timeline-detail-view.tsx";
 import { SandboxShell } from "../../_demo/components/shell.tsx";
-import { Timeline } from "../../_demo/components/timeline.tsx";
+import { sandboxDashboardDataSource } from "../../_demo/data-source.ts";
 
 export const dynamic = "force-static";
 
-export default async function SandboxRunDetailPage(props: { params: Promise<{ runId: string }> }) {
-  const { runId } = await props.params;
-  const run = getDemoRuns().find((r) => r.run_id === runId);
-  const maybeTimeline = buildRunTimeline(runId);
-  if (!(run && maybeTimeline)) {
+export default async function SandboxRunDetailPage({ params }: { params: Promise<{ runId: string }> }) {
+  const { runId: raw } = await params;
+  const runId = decodeURIComponent(raw);
+  const envelope = await sandboxDashboardDataSource.getRunTimeline(runId);
+  if (!envelope) {
     notFound();
-    return null;
   }
-  const timeline = maybeTimeline;
-
+  const connectorId = envelope.events.find((e) => e.actor_type === "runtime")?.actor_id ?? null;
   return (
     <SandboxShell active="runs">
-      <header className="mb-6 border-border/80 border-b pb-5">
-        <nav
-          aria-label="Breadcrumb"
-          className="pdpp-caption mb-3 flex flex-wrap items-center gap-x-1.5 text-muted-foreground"
-        >
-          <Link className="hover:text-foreground hover:underline" href="/sandbox/runs">
-            Runs
-          </Link>
-          <span className="text-muted-foreground/60">/</span>
-          <span className="text-foreground">{run.run_id}</span>
-        </nav>
-        <h1 className="pdpp-heading break-all text-foreground">{run.run_id}</h1>
-        <p className="pdpp-caption mt-2 text-muted-foreground">
-          Status <InlineCode>{run.status}</InlineCode> · connector <InlineCode>{run.connector_id}</InlineCode> · started{" "}
-          {run.started_at}
-          {run.failure_reason ? (
-            <>
-              {" "}
-              · failure <InlineCode>{run.failure_reason}</InlineCode>
-            </>
-          ) : null}
-        </p>
-      </header>
-
-      <section className="mb-10">
-        <h2 className="pdpp-title mb-3 text-foreground">Timeline</h2>
-        <Timeline events={timeline.events} />
-      </section>
-
-      <section className="mb-10">
-        <h2 className="pdpp-title mb-3 text-foreground">API example</h2>
-        <CodeBlock language="shell">{`curl -s /sandbox/_ref/runs/${run.run_id}/timeline`}</CodeBlock>
-      </section>
+      <TimelineDetailView
+        breadcrumbs={[{ label: "Runs", href: sandboxRoutes.section.runs }, { label: "Run" }]}
+        cliCommand={`pdpp run timeline ${runId}`}
+        description={
+          <>
+            {connectorId ? (
+              <>
+                connector <span className="font-mono text-foreground">{connectorId}</span>
+                {" · "}
+              </>
+            ) : null}
+            {envelope.events.length} events
+          </>
+        }
+        envelope={envelope}
+        id={runId}
+        rawUrl={`/sandbox/_ref/runs/${encodeURIComponent(runId)}/timeline`}
+        routes={sandboxRoutes}
+        subject="run"
+      />
     </SandboxShell>
   );
 }

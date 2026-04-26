@@ -1,21 +1,37 @@
+/**
+ * Sandbox deployment page. Renders the same operator-facing diagnostic
+ * surfaces the live `/dashboard/deployment` page renders (warnings,
+ * lexical/semantic state, manifests, environment, database) bound to
+ * the sandbox data source — plus the demo-only AS/RS metadata and
+ * capabilities matrix that already exist for sandbox visitors.
+ *
+ * Visual language matches the live page: PageHeader, Section, Callout.
+ */
+
 import { headers } from "next/headers";
-import {
-  buildAuthServerMetadata,
-  buildDatasetSummary,
-  buildProtectedResourceMetadata,
-  getDemoCapabilities,
-  getDemoConnectors,
-  getDemoStreams,
-} from "../_demo/builders.ts";
+import { Callout, PageHeader, Section } from "@/app/dashboard/components/primitives.tsx";
+import { EmptyState } from "@/app/dashboard/components/shell.tsx";
+import { sandboxRoutes } from "@/app/dashboard/components/views/routes.ts";
+import { buildAuthServerMetadata, buildProtectedResourceMetadata, getDemoCapabilities } from "../_demo/builders.ts";
 import { CodeBlock } from "../_demo/components/code-block.tsx";
 import { SandboxShell } from "../_demo/components/shell.tsx";
+import { sandboxDashboardDataSource } from "../_demo/data-source.ts";
 
 export const dynamic = "force-dynamic";
 
+const WARNING_TITLES: Record<string, string> = {
+  zero_participation: "Zero semantic participation",
+  lexical_building_index: "Lexical index is rebuilding",
+  building_index: "Semantic index is rebuilding",
+  stale_index: "Semantic index is stale",
+  backend_unavailable: "Embedding backend unavailable",
+  missing_model_cache: "Embedding model cache missing",
+  download_disabled: "Model download disabled",
+  vector_index_fallback: "Using blob-flat vector fallback",
+};
+
 export default async function SandboxDeploymentPage() {
-  const summary = buildDatasetSummary();
-  const connectors = getDemoConnectors();
-  const streams = getDemoStreams();
+  const report = await sandboxDashboardDataSource.getDeploymentDiagnostics();
   const capabilities = getDemoCapabilities();
   const issuer = `${await getRequestOrigin()}/sandbox`;
   const auth = buildAuthServerMetadata(issuer);
@@ -23,45 +39,113 @@ export default async function SandboxDeploymentPage() {
 
   return (
     <SandboxShell active="deployment">
-      <header className="mb-6 border-border/80 border-b pb-5">
-        <div className="pdpp-eyebrow text-muted-foreground">Sandbox / Deployment</div>
-        <h1 className="pdpp-heading mt-2 text-foreground">Deployment and capabilities</h1>
-        <p className="pdpp-body mt-2 max-w-3xl text-muted-foreground">
-          Demo metadata describing what this sandbox demonstrates and what the live reference exposes. The mock AS/RS
-          metadata advertises sandbox-prefixed endpoints; agents and engineers can discover the surface from these
-          documents.
-        </p>
-      </header>
+      <PageHeader
+        breadcrumbs={[{ href: sandboxRoutes.section.overview, label: "Sandbox" }, { label: "Deployment" }]}
+        description="Operator diagnostics for the sandbox reference instance. Mirrors the live deployment page; values reflect the deterministic mock backend (no real semantic backend, no real DB)."
+        title="Deployment"
+      />
 
-      <section className="mb-10 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        <Stat label="Connectors" value={summary.connector_count} />
-        <Stat label="Streams" value={summary.stream_count} />
-        <Stat label="Records" value={summary.record_count} />
-        <Stat label="Capabilities tracked" value={capabilities.length} />
-      </section>
+      <Section title={`Warnings (${report.warnings.length})`}>
+        {report.warnings.length === 0 ? (
+          <p className="pdpp-body text-muted-foreground">No warnings. Sandbox retrieval is operational.</p>
+        ) : (
+          <div className="flex flex-col gap-3">
+            {report.warnings.map((w) => (
+              <Callout description={w.message} key={w.code} surface="human" title={WARNING_TITLES[w.code] ?? w.code} />
+            ))}
+          </div>
+        )}
+      </Section>
 
-      <section className="mb-10">
-        <h2 className="pdpp-title mb-3 text-foreground">Connector manifests (simulated)</h2>
-        <ul className="divide-y divide-border/70 border-border/70 border-y">
-          {connectors.map((c) => {
-            const connectorStreams = streams.filter((s) => s.connector_id === c.connector_id);
-            return (
-              <li className="px-3 py-3" key={c.connector_id}>
-                <div className="pdpp-body font-medium text-foreground">{c.display_name}</div>
-                <div className="pdpp-caption text-muted-foreground">
-                  <code className="font-mono">{c.connector_id}</code> · {c.provenance} · schedule {c.schedule ?? "—"}
-                </div>
-                <div className="pdpp-caption mt-1 text-muted-foreground">
-                  Streams: {connectorStreams.map((s) => s.key).join(", ")}
-                </div>
-              </li>
-            );
-          })}
-        </ul>
-      </section>
+      <Section title="Lexical index">
+        <dl className="grid grid-cols-1 gap-x-6 gap-y-2 sm:grid-cols-2">
+          <Field label="Index state" value={report.lexical.index.state} />
+          <Field label="Backfill" value={report.lexical.index.backfill_progress ? "in progress" : "—"} />
+        </dl>
+      </Section>
 
-      <section className="mb-10">
-        <h2 className="pdpp-title mb-3 text-foreground">Capabilities matrix</h2>
+      <Section title="Semantic backend">
+        <dl className="grid grid-cols-1 gap-x-6 gap-y-2 sm:grid-cols-2">
+          <Field label="Configured" value={yesNo(report.semantic.backend.configured)} />
+          <Field label="Available" value={yesNo(report.semantic.backend.available)} />
+          <Field label="Vector index kind" value={report.semantic.index.kind ?? "—"} />
+          <Field label="Index state" value={report.semantic.index.state ?? "—"} />
+        </dl>
+      </Section>
+
+      <Section
+        description="Sandbox uses lexical search only; participating fields are reported by the live deployment."
+        title={`Participation (${report.semantic.participation.field_count} fields)`}
+      >
+        {report.semantic.participation.tuples.length === 0 ? (
+          <EmptyState
+            hint="The sandbox semantic backend is not configured. Run the live reference and declare semantic_fields on a manifest to populate this list."
+            title="No participating fields"
+          />
+        ) : null}
+      </Section>
+
+      <Section
+        description="Manifests bound to the sandbox demo dataset."
+        title={`Manifests (${report.manifests.length})`}
+      >
+        <table className="w-full border-border/80 border-y text-left text-sm">
+          <thead>
+            <tr className="text-muted-foreground text-xs uppercase tracking-wide">
+              <th className="px-2 py-2 font-medium">Connector</th>
+              <th className="px-2 py-2 font-medium">Name</th>
+              <th className="px-2 py-2 font-medium">Provenance</th>
+              <th className="px-2 py-2 font-medium">Semantic streams</th>
+            </tr>
+          </thead>
+          <tbody>
+            {report.manifests.map((m) => (
+              <tr className="border-border/60 border-t" key={m.connector_id}>
+                <td className="px-2 py-1.5 font-mono text-xs">{m.connector_id}</td>
+                <td className="px-2 py-1.5">{m.display_name ?? "—"}</td>
+                <td className="px-2 py-1.5 text-muted-foreground text-xs">{m.provenance}</td>
+                <td className="px-2 py-1.5 tabular-nums">{m.semantic_stream_count}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </Section>
+
+      <Section title="Database">
+        <dl className="grid grid-cols-1 gap-x-6 gap-y-2 sm:grid-cols-2">
+          <Field label="Path" value={report.database.path} />
+          <Field label="Vector index kind" value={report.semantic.index.kind ?? "—"} />
+        </dl>
+      </Section>
+
+      <Section
+        description="Demo environment markers. The sandbox does not read real environment variables."
+        title="Environment"
+      >
+        <table className="w-full border-border/80 border-y text-left text-sm">
+          <thead>
+            <tr className="text-muted-foreground text-xs uppercase tracking-wide">
+              <th className="px-2 py-2 font-medium">Name</th>
+              <th className="px-2 py-2 font-medium">Value</th>
+              <th className="px-2 py-2 font-medium">Provenance</th>
+            </tr>
+          </thead>
+          <tbody>
+            {report.environment.map((entry) => (
+              <tr className="border-border/60 border-t" key={entry.name}>
+                <td className="px-2 py-1.5 font-mono text-xs">{entry.name}</td>
+                <td className="px-2 py-1.5 font-mono text-xs">{entry.value ?? "—"}</td>
+                <td className="px-2 py-1.5 text-muted-foreground text-xs">{entry.provenance}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </Section>
+
+      <Section
+        description="What this demo demonstrates today vs. what the live reference implements."
+        title="Capabilities matrix"
+      >
         <ul className="divide-y divide-border/70 border-border/70 border-y">
           {capabilities.map((cap) => (
             <li
@@ -87,25 +171,30 @@ export default async function SandboxDeploymentPage() {
             </li>
           ))}
         </ul>
-      </section>
+      </Section>
 
-      <section className="mb-10">
-        <h2 className="pdpp-title mb-3 text-foreground">AS metadata</h2>
-        <p className="pdpp-caption mb-2 text-muted-foreground">
-          Reachable at <code className="font-mono">/sandbox/.well-known/oauth-authorization-server</code>.
-        </p>
+      <Section description="Reachable at /sandbox/.well-known/oauth-authorization-server" title="AS metadata (demo)">
         <CodeBlock language="json">{JSON.stringify(auth, null, 2)}</CodeBlock>
-      </section>
+      </Section>
 
-      <section className="mb-10">
-        <h2 className="pdpp-title mb-3 text-foreground">RS metadata</h2>
-        <p className="pdpp-caption mb-2 text-muted-foreground">
-          Reachable at <code className="font-mono">/sandbox/.well-known/oauth-protected-resource</code>.
-        </p>
+      <Section description="Reachable at /sandbox/.well-known/oauth-protected-resource" title="RS metadata (demo)">
         <CodeBlock language="json">{JSON.stringify(rs, null, 2)}</CodeBlock>
-      </section>
+      </Section>
     </SandboxShell>
   );
+}
+
+function Field({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex min-w-0 flex-col">
+      <dt className="pdpp-eyebrow text-muted-foreground">{label}</dt>
+      <dd className="pdpp-body break-words">{value}</dd>
+    </div>
+  );
+}
+
+function yesNo(v: boolean): string {
+  return v ? "yes" : "no";
 }
 
 async function getRequestOrigin(): Promise<string> {
@@ -115,13 +204,4 @@ async function getRequestOrigin(): Promise<string> {
     headerList.get("x-forwarded-proto")?.split(",")[0]?.trim() ||
     (host.startsWith("localhost") || host.startsWith("127.0.0.1") ? "http" : "https");
   return `${protocol}://${host}`;
-}
-
-function Stat({ label, value }: { label: string; value: string | number }) {
-  return (
-    <div className="rounded-md border border-border/80 bg-card/60 px-4 py-3">
-      <div className="pdpp-eyebrow text-muted-foreground">{label}</div>
-      <div className="pdpp-heading mt-1 font-semibold text-foreground tabular-nums">{value}</div>
-    </div>
-  );
 }

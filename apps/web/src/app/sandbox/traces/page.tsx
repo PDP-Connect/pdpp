@@ -1,51 +1,102 @@
 import Link from "next/link";
-import { buildTracesList } from "../_demo/builders.ts";
-import { CodeBlock, InlineCode } from "../_demo/components/code-block.tsx";
+import { StatusBadge } from "@/app/dashboard/components/primitives.tsx";
+import { type ListWithPeekParams, ListWithPeekView } from "@/app/dashboard/components/views/list-with-peek.tsx";
+import { sandboxRoutes } from "@/app/dashboard/components/views/routes.ts";
+import type { TraceSummary } from "@/app/dashboard/lib/ref-client.ts";
+import { Timestamp } from "@/components/ui/timestamp.tsx";
 import { SandboxShell } from "../_demo/components/shell.tsx";
+import { sandboxDashboardDataSource } from "../_demo/data-source.ts";
 
 export const dynamic = "force-static";
 
-const STATUS_TONE: Record<string, string> = {
-  succeeded: "text-[color:var(--success)]",
-  revoked: "text-destructive",
-  denied: "text-destructive",
-  failed: "text-destructive",
-};
+interface Params {
+  cursor?: string;
+  peek?: string;
+  q?: string;
+  status?: string;
+}
 
-export default async function SandboxTracesPage(props: { searchParams: Promise<{ status?: string }> }) {
-  const { status } = await props.searchParams;
-  const traces = buildTracesList({ status });
+function listHref(params: Params, overrides: Record<string, string | undefined>): string {
+  const merged: Record<string, string | undefined> = { ...params, ...overrides };
+  const qs = Object.entries(merged)
+    .filter(([, v]) => v !== undefined && v !== "")
+    .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`)
+    .join("&");
+  return qs ? `/sandbox/traces?${qs}` : "/sandbox/traces";
+}
+
+export default async function SandboxTracesPage({ searchParams }: { searchParams: Promise<Params> }) {
+  const params = await searchParams;
+  const ds = sandboxDashboardDataSource;
+  const result = await ds.listTraces({
+    cursor: params.cursor,
+    status: params.status,
+    q: params.q,
+    limit: 50,
+  });
+  const peekEnvelope = params.peek ? await ds.getTraceTimeline(params.peek) : null;
+
+  const viewParams: ListWithPeekParams<TraceSummary> = {
+    active: "traces",
+    routes: sandboxRoutes,
+    subject: "trace",
+    title: "Traces",
+    description: "Mock event-spine traces across the seeded grants and runs.",
+    result,
+    rowKey: (t) => t.trace_id,
+    renderRow: (trace, { peeked, href }) => (
+      <Link
+        aria-current={peeked ? "true" : undefined}
+        className={`block px-3 py-2.5 transition-colors ${peeked ? "bg-muted" : "hover:bg-muted/40"}`}
+        href={href}
+        scroll={false}
+      >
+        <div className="flex flex-wrap items-baseline justify-between gap-2">
+          <code className="pdpp-caption break-all font-medium font-mono text-foreground">{trace.trace_id}</code>
+          <div className="flex items-center gap-2">
+            <StatusBadge status={trace.status} />
+            <span className="pdpp-caption text-muted-foreground">
+              <Timestamp value={trace.last_at} />
+            </span>
+          </div>
+        </div>
+        <div className="pdpp-caption mt-1 text-muted-foreground">
+          {trace.event_count} events
+          {trace.client_id ? ` · client ${trace.client_id}` : ""}
+          {" · "}
+          {trace.kinds.slice(0, 4).join(", ")}
+        </div>
+      </Link>
+    ),
+    filters: {
+      query: { name: "q", placeholder: "id contains…", defaultValue: params.q ?? "" },
+      status: {
+        name: "status",
+        defaultValue: params.status ?? "",
+        options: [
+          { value: "succeeded", label: "succeeded" },
+          { value: "failed", label: "failed" },
+          { value: "denied", label: "denied" },
+          { value: "revoked", label: "revoked" },
+        ],
+      },
+    },
+    activeFilterChips: [
+      params.status ? { label: "status", value: params.status } : null,
+      params.q ? { label: "query", value: params.q } : null,
+    ].filter((c): c is { label: string; value: string } => Boolean(c)),
+    resetHref: "/sandbox/traces",
+    buildListHref: (overrides) => listHref(params, overrides),
+    peekId: params.peek,
+    peekEnvelope,
+    peekCliCommand: (id) => `pdpp trace show ${id}`,
+    emptyTitle: "No traces",
+    emptyHint: "The seeded sandbox always returns the demo trace set; this filter excluded all of them.",
+  };
 
   return (
     <SandboxShell active="traces">
-      <header className="mb-6 border-border/80 border-b pb-5">
-        <div className="pdpp-eyebrow text-muted-foreground">Sandbox / Traces</div>
-        <h1 className="pdpp-heading mt-2 text-foreground">Traces</h1>
-        <p className="pdpp-body mt-2 max-w-3xl text-muted-foreground">
-          End-to-end interaction summaries across the seeded demo data. Backed by{" "}
-          <InlineCode>/sandbox/_ref/traces</InlineCode>.
-        </p>
-      </header>
-
-      <ul className="divide-y divide-border/70 border-border/70 border-y">
-        {traces.data.map((t) => (
-          <li className="px-3 py-3" key={t.trace_id}>
-            <Link className="block" href={`/sandbox/traces/${encodeURIComponent(t.trace_id)}`}>
-              <div className="flex flex-wrap items-baseline justify-between gap-2">
-                <code className="pdpp-caption break-all font-medium font-mono text-foreground">{t.trace_id}</code>
-                <span className={`pdpp-eyebrow ${STATUS_TONE[t.status] ?? "text-muted-foreground"}`}>{t.status}</span>
-              </div>
-              <div className="pdpp-caption mt-1 text-muted-foreground">{t.kinds.join(" · ")}</div>
-            </Link>
-          </li>
-        ))}
-      </ul>
-
-      <section className="mt-10">
-        <h2 className="pdpp-title mb-3 text-foreground">API examples</h2>
-        <CodeBlock language="shell">{`curl -s /sandbox/_ref/traces
-curl -s '/sandbox/_ref/traces?status=failed'`}</CodeBlock>
-      </section>
+      <ListWithPeekView params={viewParams} />
     </SandboxShell>
   );
 }

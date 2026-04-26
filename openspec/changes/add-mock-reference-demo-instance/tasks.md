@@ -41,11 +41,11 @@
 
 ## 6. Corrective Tranche: Real Dashboard With Mock AS/RS
 
-- [ ] 6.1 Audit `/dashboard/**` pages and data clients to define the smallest typed `DashboardDataSource` seam that covers overview, records, search, grants, runs, traces, deployment, and timelines without weakening owner auth.
-- [ ] 6.2 Extract shared dashboard feature components for the core journey so `/dashboard/**` and `/sandbox/**` can bind the same UI to different data sources.
-- [ ] 6.3 Implement the live data source by wrapping the existing owner-authenticated AS/RS clients with no behavior change.
-- [ ] 6.4 Implement the sandbox data source over the deterministic seeded dataset and mock AS/RS response builders.
-- [ ] 6.5 Replace forked sandbox records/search/grants/runs/traces/deployment pages with the shared dashboard feature components bound to the sandbox data source.
-- [ ] 6.6 Keep `/sandbox/api-examples` and `/sandbox/walkthrough` as supporting educational surfaces, not the primary demo instance.
-- [ ] 6.7 Add regression tests proving the same dashboard feature components render against both live-shaped fixture data and sandbox data, and that `/dashboard/**` never falls back to sandbox data.
-- [ ] 6.8 Run `openspec validate add-mock-reference-demo-instance --strict`, `openspec validate --all --strict`, sandbox route tests, dashboard feature tests, `pnpm --dir apps/web run types:check`, `pnpm --dir apps/web run check`, and `pnpm --dir apps/web run build`.
+- [x] 6.1 Audit `/dashboard/**` pages and data clients to define the smallest typed `DashboardDataSource` seam that covers overview, records, search, grants, runs, traces, deployment, and timelines without weakening owner auth.
+- [x] 6.2 Extract shared dashboard feature components for the core journey so `/dashboard/**` and `/sandbox/**` can bind the same UI to different data sources.
+- [x] 6.3 Implement the live data source by wrapping the existing owner-authenticated AS/RS clients with no behavior change.
+- [x] 6.4 Implement the sandbox data source over the deterministic seeded dataset and mock AS/RS response builders.
+- [x] 6.5 Replace forked sandbox records/search/grants/runs/traces/deployment pages with the shared dashboard feature components bound to the sandbox data source.
+- [x] 6.6 Keep `/sandbox/api-examples` and `/sandbox/walkthrough` as supporting educational surfaces, not the primary demo instance.
+- [x] 6.7 Add regression tests proving the same dashboard feature components render against both live-shaped fixture data and sandbox data, and that `/dashboard/**` never falls back to sandbox data.
+- [x] 6.8 Run `openspec validate add-mock-reference-demo-instance --strict`, `openspec validate --all --strict`, sandbox route tests, dashboard feature tests, `pnpm --dir apps/web run types:check`, `pnpm --dir apps/web run check`, and `pnpm --dir apps/web run build`.
