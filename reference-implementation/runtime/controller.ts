@@ -204,13 +204,13 @@ export interface ControllerOptions {
 }
 
 export interface Controller {
+  clearNeedsHuman(connectorId: string): void;
   deleteSchedule(connectorId: string): Promise<boolean>;
   getActiveRun(connectorId: string): ActiveRun | null;
   getPendingInteraction(runId: string): PendingInteractionProjection | null;
   getSchedule(connectorId: string): Promise<ScheduleApi | null>;
   listSchedules(): Promise<ScheduleApi[]>;
   markNeedsHuman(connectorId: string): void;
-  clearNeedsHuman(connectorId: string): void;
   respondToInteraction(runId: string, input?: RunInteractionResponseInput): RunInteractionAck;
   runNow(connectorId: string, options?: RunNowOptions): Promise<RunNowResult>;
   setScheduleEnabled(connectorId: string, enabled: boolean): Promise<ScheduleApi | null>;
@@ -573,10 +573,7 @@ function computeEffectiveMode(
   return "automatic";
 }
 
-function buildMinimumIntervalWarning(
-  intervalSeconds: number,
-  policy: RefreshPolicy | null
-): string | null {
+function buildMinimumIntervalWarning(intervalSeconds: number, policy: RefreshPolicy | null): string | null {
   if (!policy) {
     return null;
   }
@@ -847,8 +844,11 @@ export function createController(opts: ControllerOptions = {}): Controller {
     }
     const policy = await getConnectorRefreshPolicy(connectorId);
     const schedule = scheduleRowToApi(getScheduleRow(connectorId), getRuntimeProjection(connectorId), policy);
-    const policy_warning = schedule ? buildMinimumIntervalWarning(validated.interval_seconds, policy) : null;
-    return { schedule: schedule!, policy_warning };
+    if (!schedule) {
+      throw new ControllerError(`Schedule not found after upsert for connector: ${connectorId}`, "internal_error");
+    }
+    const policy_warning = buildMinimumIntervalWarning(validated.interval_seconds, policy);
+    return { schedule, policy_warning };
   }
 
   async function setScheduleEnabled(connectorId: string, enabled: boolean): Promise<ScheduleApi | null> {

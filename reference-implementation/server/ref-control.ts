@@ -393,7 +393,9 @@ function getScheduleFrom(controller: ControllerLike | null | undefined, connecto
 
 function extractRefreshPolicy(manifest: ConnectorManifest): unknown {
   const caps = manifest.capabilities as Record<string, unknown> | undefined;
-  if (!caps || typeof caps !== "object") return null;
+  if (!caps || typeof caps !== "object") {
+    return null;
+  }
   return caps.refresh_policy ?? null;
 }
 
