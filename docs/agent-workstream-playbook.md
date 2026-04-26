@@ -58,6 +58,34 @@ Do not use the human owner as the message bus. Use the repository and local
 workstream hub for routine status. Escalate to the human only when an owner
 judgment is genuinely required.
 
+### Messaging Claude Workers In Tmux
+
+When sending follow-up guidance to an interactive Claude worker, do not assume a
+raw `tmux send-keys` call was submitted. Claude panes may be mid-tool-call, and
+text can sit in the input box until an explicit submit reaches the pane.
+
+Use this owner-side pattern:
+
+```bash
+tmux set-buffer -- "$message"
+tmux paste-buffer -t "main:<window>"
+tmux send-keys -t "main:<window>" Enter
+sleep 1
+tmux capture-pane -t "main:<window>" -p -S -40 | tail -40
+```
+
+After sending, verify one of these is true before moving on:
+
+- Claude shows the message in the transcript or queued-message area.
+- Claude begins responding to the message.
+- The prompt is empty and waiting for the next instruction.
+
+If the message is still visible after the `❯` prompt as editable input, submit it
+again with `tmux send-keys -t "main:<window>" Enter` and re-check. For critical
+instructions, prefer writing the guidance into a non-sensitive handoff file under
+`tmp/workstreams/` and tell the worker to read that file, so the instruction is
+auditable even if the interactive pane is interrupted.
+
 ### Local Workstream Hub
 
 The reliable local channel is a shared directory under Git's common directory:
