@@ -1,8 +1,8 @@
 ## 1. Discovery And Design
 
-- [ ] Audit the existing reference CLI/auth flow for client registration, PAR, consent approval, token exchange, introspection, revoke, `/v1/schema`, retrieval, blobs, aggregations, and changes cursors.
-- [ ] Identify which pieces are public PDPP surfaces, which are reference-only, and which are protocol-candidate gaps.
-- [ ] Document the approved cache location, file shape, permissions, and redaction rules.
+- [x] Audit the existing reference CLI/auth flow for client registration, PAR, consent approval, token exchange, introspection, revoke, `/v1/schema`, retrieval, blobs, aggregations, and changes cursors. (`design-notes/2026-04-25-reference-surface-audit.md`)
+- [x] Identify which pieces are public PDPP surfaces, which are reference-only, and which are protocol-candidate gaps. (memo above; biggest gap: no public polling endpoint for PAR-staged client grants)
+- [x] Document the approved cache location, file shape, permissions, and redaction rules. (memo + `docs/agent-skills/pdpp-data-access/references/security.md`)
 
 ## 2. CLI Workflow
 
@@ -16,12 +16,12 @@
 
 ## 3. Agent Skill
 
-- [ ] Create a `pdpp-data-access` agent skill with concise core workflow and reference files for query cookbook, grant design, security, and troubleshooting.
-- [ ] Teach capability-first discovery via AS/RS metadata and `/v1/schema`.
-- [ ] Teach narrow grant selection, incremental grant upgrades, and denial fallback behavior.
-- [ ] Teach efficient data consumption: filtered search, hybrid/semantic/lexical retrieval, records pagination, `changes_since`, blobs, aggregations, and grant-safe hydration.
-- [ ] Include examples for email, finance, coding-history, and cross-connector assistant memory tasks.
-- [ ] Include hard prohibitions against owner-token use, token exfiltration, committing `.pdpp`, or broadening access silently.
+- [x] Create a `pdpp-data-access` agent skill with concise core workflow and reference files for query cookbook, grant design, security, and troubleshooting. (`docs/agent-skills/pdpp-data-access/`)
+- [x] Teach capability-first discovery via AS/RS metadata and `/v1/schema`. (SKILL "Core workflow §1 / §7" + `references/query-cookbook.md`)
+- [x] Teach narrow grant selection, incremental grant upgrades, and denial fallback behavior. (`references/grant-design.md`, troubleshooting "Owner says no")
+- [x] Teach efficient data consumption: filtered search, hybrid/semantic/lexical retrieval, records pagination, `changes_since`, blobs, aggregations, and grant-safe hydration. (`references/query-cookbook.md`)
+- [x] Include examples for email, finance, coding-history, and cross-connector assistant memory tasks. (SKILL "Examples")
+- [x] Include hard prohibitions against owner-token use, token exfiltration, committing `.pdpp`, or broadening access silently. (SKILL "Hard rules", `references/security.md`)
 
 ## 4. Approval UX
 
