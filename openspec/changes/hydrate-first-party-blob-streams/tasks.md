@@ -39,8 +39,8 @@
 
 ## 6. Validation
 
-- [ ] 6.1 Run `openspec validate hydrate-first-party-blob-streams --strict`.
-- [ ] 6.2 Run `openspec validate --all --strict`.
-- [ ] 6.3 Run the Gmail connector test suite.
-- [ ] 6.4 Run relevant reference query-contract tests.
-- [ ] 6.5 Run package-level typecheck/lint/verify for touched packages.
+- [x] 6.1 Run `openspec validate hydrate-first-party-blob-streams --strict`.
+- [x] 6.2 Run `openspec validate --all --strict`.
+- [x] 6.3 Run the Gmail connector test suite.
+- [x] 6.4 Run relevant reference query-contract tests.
+- [x] 6.5 Run package-level typecheck/lint/verify for touched packages.
