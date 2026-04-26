@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { PdppCliError, PdppUsageError } from './lib/errors.js';
+import { runAgent } from './commands/agent.js';
 import { runAuth } from './commands/auth.js';
 import { runGrant } from './commands/grant.js';
 import { runInspect } from './commands/inspect.js';
@@ -12,6 +13,17 @@ import { runSeed } from './commands/seed.js';
 import { runTrace } from './commands/trace.js';
 
 const HELP = `PDPP CLI (reference implementation surface; some commands are reference-only)
+
+Agent access (project-local grant management for coding agents):
+  pdpp agent bootstrap [--rs-url <url>] [--as-url <url>] [--initial-access-token <tok>]
+  pdpp agent status [--format json|table]
+  pdpp agent request --connector-id <id> --streams <s1,s2> --purpose <text> [--access-mode <mode>]
+  pdpp agent store --grant-id <id> --token <token>
+  pdpp agent use [<grant-id>]
+  pdpp agent forget <grant-id>
+  pdpp agent revoke <grant-id>
+
+Standard CLI (reference implementation surface; some commands are reference-only)
 
 Usage:
   pdpp auth login [--client-id <id>] [--as-url <url> | --rs-url <url>] [--timeout-seconds <n>] [--format json]
@@ -41,6 +53,7 @@ Notes:
 `;
 
 const COMMANDS = {
+  agent: runAgent,
   auth: runAuth,
   grant: runGrant,
   inspect: runInspect,
