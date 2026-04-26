@@ -1,7 +1,7 @@
 import { notFound } from "next/navigation";
+import { DashboardShell } from "@/app/dashboard/components/shell.tsx";
 import { sandboxRoutes } from "@/app/dashboard/components/views/routes.ts";
 import { TimelineDetailView } from "@/app/dashboard/components/views/timeline-detail-view.tsx";
-import { SandboxShell } from "../../_demo/components/shell.tsx";
 import { sandboxDashboardDataSource } from "../../_demo/data-source.ts";
 
 export const dynamic = "force-static";
@@ -15,7 +15,7 @@ export default async function SandboxTraceDetailPage({ params }: { params: Promi
   }
   const first = envelope.events[0];
   return (
-    <SandboxShell active="traces">
+    <DashboardShell active="traces" mode="mock-owner">
       <TimelineDetailView
         breadcrumbs={[{ label: "Traces", href: sandboxRoutes.section.traces }, { label: "Trace" }]}
         cliCommand={`pdpp trace show ${traceId}`}
@@ -38,6 +38,6 @@ export default async function SandboxTraceDetailPage({ params }: { params: Promi
         routes={sandboxRoutes}
         subject="trace"
       />
-    </SandboxShell>
+    </DashboardShell>
   );
 }

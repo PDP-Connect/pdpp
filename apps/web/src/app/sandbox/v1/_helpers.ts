@@ -23,10 +23,12 @@ export function jsonResponse(body: unknown, init?: { status?: number }): Respons
 export function notFound(message: string): Response {
   return jsonResponse(
     {
-      object: "error",
-      is_demo: true,
-      error: "not_found",
-      message,
+      error: {
+        type: "not_found_error",
+        code: "not_found",
+        message,
+        request_id: "req_sandbox_not_found",
+      },
     },
     { status: 404 }
   );

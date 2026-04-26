@@ -1,8 +1,8 @@
 import { notFound } from "next/navigation";
+import { DashboardShell } from "@/app/dashboard/components/shell.tsx";
 import { RecordDetailView } from "@/app/dashboard/components/views/record-detail-view.tsx";
 import { sandboxRoutes } from "@/app/dashboard/components/views/routes.ts";
 import type { StreamRecord } from "@/app/dashboard/lib/rs-client.ts";
-import { SandboxShell } from "../../../../_demo/components/shell.tsx";
 import { sandboxDashboardDataSource } from "../../../../_demo/data-source.ts";
 
 export const dynamic = "force-static";
@@ -28,7 +28,7 @@ export default async function SandboxRecordDetailPage({
     throw err;
   }
   return (
-    <SandboxShell active="records">
+    <DashboardShell active="records" mode="mock-owner">
       <RecordDetailView
         connectorId={connectorId}
         record={record}
@@ -36,6 +36,6 @@ export default async function SandboxRecordDetailPage({
         routes={sandboxRoutes}
         streamName={streamName}
       />
-    </SandboxShell>
+    </DashboardShell>
   );
 }

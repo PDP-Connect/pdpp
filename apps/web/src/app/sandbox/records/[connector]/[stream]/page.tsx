@@ -1,7 +1,7 @@
+import { DashboardShell } from "@/app/dashboard/components/shell.tsx";
 import { sandboxRoutes } from "@/app/dashboard/components/views/routes.ts";
 import { StreamRecordsView } from "@/app/dashboard/components/views/stream-records-view.tsx";
 import type { StreamManifest } from "@/app/dashboard/lib/rs-client.ts";
-import { SandboxShell } from "../../../_demo/components/shell.tsx";
 import { sandboxDashboardDataSource } from "../../../_demo/data-source.ts";
 
 export const dynamic = "force-static";
@@ -30,7 +30,7 @@ export default async function SandboxStreamPage({
   const streamManifest = (streamDef ?? null) as StreamManifest | null;
 
   return (
-    <SandboxShell active="records">
+    <DashboardShell active="records" mode="mock-owner">
       <StreamRecordsView
         columnsParam={columnsParam}
         connectorId={connectorId}
@@ -41,6 +41,6 @@ export default async function SandboxStreamPage({
         streamName={streamName}
         trail={trail}
       />
-    </SandboxShell>
+    </DashboardShell>
   );
 }

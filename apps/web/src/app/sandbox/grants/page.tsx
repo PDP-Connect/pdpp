@@ -1,10 +1,10 @@
 import Link from "next/link";
 import { StatusBadge } from "@/app/dashboard/components/primitives.tsx";
+import { DashboardShell } from "@/app/dashboard/components/shell.tsx";
 import { type ListWithPeekParams, ListWithPeekView } from "@/app/dashboard/components/views/list-with-peek.tsx";
 import { sandboxRoutes } from "@/app/dashboard/components/views/routes.ts";
 import type { GrantSummary } from "@/app/dashboard/lib/ref-client.ts";
 import { Timestamp } from "@/components/ui/timestamp.tsx";
-import { SandboxShell } from "../_demo/components/shell.tsx";
 import { sandboxDashboardDataSource } from "../_demo/data-source.ts";
 
 export const dynamic = "force-static";
@@ -36,7 +36,7 @@ export default async function SandboxGrantsPage({ searchParams }: { searchParams
     routes: sandboxRoutes,
     subject: "grant",
     title: "Grants",
-    description: "Mock grant decisions across the seeded sandbox dataset. Read-only.",
+    description: "Issued, revoked, and denied grant decisions.",
     result,
     rowKey: (g) => g.grant_id,
     renderRow: (grant, { peeked, href }) => (
@@ -84,12 +84,12 @@ export default async function SandboxGrantsPage({ searchParams }: { searchParams
     peekEnvelope,
     peekCliCommand: (id) => `pdpp grant timeline ${id}`,
     emptyTitle: "No grants",
-    emptyHint: "The seeded sandbox always returns the demo grant set; this filter excluded all of them.",
+    emptyHint: "No grants match this filter.",
   };
 
   return (
-    <SandboxShell active="grants">
+    <DashboardShell active="grants" mode="mock-owner">
       <ListWithPeekView params={viewParams} />
-    </SandboxShell>
+    </DashboardShell>
   );
 }

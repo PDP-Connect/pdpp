@@ -6,6 +6,7 @@ import { getAsInternalUrl, getOwnerLoginPath, getReferencePublicOrigin, getRsInt
 import { CommandPalette, CommandPaletteTrigger } from "./command-palette.tsx";
 import { CopyButton } from "./copy-button.tsx";
 import { MobileDrawer, MobileDrawerTrigger } from "./mobile-drawer.tsx";
+import { dashboardRoutes, type Routes, sandboxRoutes } from "./views/routes.ts";
 
 interface NavItem {
   href: string;
@@ -15,56 +16,87 @@ interface NavItem {
 
 export type DashboardSection = "overview" | "search" | "traces" | "grants" | "runs" | "records" | "deployment";
 
+/**
+ * Shell binding mode.
+ *
+ * `live` is the default and renders the operator dashboard against the
+ * configured AS/RS — keep owner-auth behavior and live probes intact.
+ *
+ * `mock-owner` is the public sandbox binding: same shell, same nav,
+ * same chrome, but URLs prefix `/sandbox/...` and the env footer is
+ * replaced with a non-probing reference-instance summary so the
+ * sandbox never reaches out to a live AS/RS. The persistent
+ * "Mock owner · fictional data" affordance lives in the env footer.
+ */
+export type ShellMode = "live" | "mock-owner";
+
 const SCHEME_PREFIX_RE = /^https?:\/\//;
 
-const NAV: NavItem[] = [
-  { href: "/dashboard", label: "Overview", match: (a) => a === "overview" },
-  { href: "/dashboard/search", label: "Search", match: (a) => a === "search" },
-  { href: "/dashboard/traces", label: "Traces", match: (a) => a === "traces" },
-  { href: "/dashboard/grants", label: "Grants", match: (a) => a === "grants" },
-  { href: "/dashboard/runs", label: "Runs", match: (a) => a === "runs" },
-  { href: "/dashboard/records", label: "Records", match: (a) => a === "records" },
-  { href: "/dashboard/deployment", label: "Deployment", match: (a) => a === "deployment" },
-];
+function buildNav(routes: Routes): NavItem[] {
+  return [
+    { href: routes.section.overview, label: "Overview", match: (a) => a === "overview" },
+    { href: routes.section.search, label: "Search", match: (a) => a === "search" },
+    { href: routes.section.traces, label: "Traces", match: (a) => a === "traces" },
+    { href: routes.section.grants, label: "Grants", match: (a) => a === "grants" },
+    { href: routes.section.runs, label: "Runs", match: (a) => a === "runs" },
+    { href: routes.section.records, label: "Records", match: (a) => a === "records" },
+    { href: routes.section.deployment, label: "Deployment", match: (a) => a === "deployment" },
+  ];
+}
 
-export function DashboardShell({ active, children }: { active: DashboardSection; children: ReactNode }) {
+function resolveRoutes(mode: ShellMode): Routes {
+  return mode === "mock-owner" ? sandboxRoutes : dashboardRoutes;
+}
+
+export function DashboardShell({
+  active,
+  children,
+  mode = "live",
+}: {
+  active: DashboardSection;
+  children: ReactNode;
+  mode?: ShellMode;
+}) {
+  const routes = resolveRoutes(mode);
   return (
     <div className="min-h-screen">
       <div className="grid min-h-screen md:grid-cols-[15rem_minmax(0,1fr)]">
-        <DesktopSidebar active={active} />
+        <DesktopSidebar active={active} mode={mode} routes={routes} />
         <div className="min-w-0 border-border/80 border-l bg-background md:border-l">
-          <Topbar />
+          <Topbar overviewHref={routes.section.overview} />
           <main className="mx-auto w-full max-w-[1400px] px-6 py-8 sm:px-8 md:px-10">{children}</main>
         </div>
       </div>
       <MobileDrawer>
-        <SidebarContent active={active} />
+        <SidebarContent active={active} mode={mode} routes={routes} />
       </MobileDrawer>
-      <CommandPalette />
+      <CommandPalette basePath={routes.basePath} overviewHref={routes.section.overview} />
     </div>
   );
 }
 
-function DesktopSidebar({ active }: { active: DashboardSection }) {
+function DesktopSidebar({ active, mode, routes }: { active: DashboardSection; mode: ShellMode; routes: Routes }) {
   return (
     <aside className="sticky top-0 hidden h-screen flex-col justify-between py-6 pr-4 pl-6 md:flex">
-      <SidebarContent active={active} />
+      <SidebarContent active={active} mode={mode} routes={routes} />
     </aside>
   );
 }
 
-function SidebarContent({ active }: { active: DashboardSection }) {
+function SidebarContent({ active, mode, routes }: { active: DashboardSection; mode: ShellMode; routes: Routes }) {
+  const nav = buildNav(routes);
+  const tagline = mode === "mock-owner" ? "reference instance" : "control plane";
   return (
     <div className="flex h-full flex-col justify-between">
       <div>
-        <Link className="pdpp-body group inline-flex items-center gap-2 font-semibold" href="/dashboard">
+        <Link className="pdpp-body group inline-flex items-center gap-2 font-semibold" href={routes.section.overview}>
           <PdppLogo className="h-5 w-5" />
           <span className="tracking-tight">pdpp</span>
-          <span className="pdpp-caption font-normal text-muted-foreground">control plane</span>
+          <span className="pdpp-caption font-normal text-muted-foreground">{tagline}</span>
         </Link>
 
         <nav aria-label="Primary" className="mt-6 flex flex-col gap-0.5">
-          {NAV.map((item) => {
+          {nav.map((item) => {
             const isActive = item.match(active);
             return (
               <Link
@@ -85,16 +117,17 @@ function SidebarContent({ active }: { active: DashboardSection }) {
           })}
         </nav>
 
-        {active === "grants" ? <GrantsSubnav /> : null}
-        {active === "records" ? <RecordsSubnav /> : null}
+        {active === "grants" && mode === "live" ? <GrantsSubnav /> : null}
+        {active === "records" ? <RecordsSubnav mode={mode} routes={routes} /> : null}
       </div>
 
-      <EnvFooter />
+      {mode === "mock-owner" ? <MockOwnerFooter /> : <EnvFooter />}
     </div>
   );
 }
 
 function GrantsSubnav() {
+  // Owner-only flows; never rendered in mock-owner mode.
   const items = [
     { href: "/dashboard/grants#pending-approvals", label: "Pending approvals" },
     { href: "/dashboard/grants/request", label: "Grant request" },
@@ -103,11 +136,16 @@ function GrantsSubnav() {
   return <SidebarSubnav items={items} label="Grants workspace" />;
 }
 
-function RecordsSubnav() {
-  const items = [
-    { href: "/dashboard/records", label: "Connectors" },
-    { href: "/dashboard/records/timeline", label: "Timeline" },
-  ];
+function RecordsSubnav({ mode, routes }: { mode: ShellMode; routes: Routes }) {
+  // The records timeline is a live-only inspection surface; the sandbox
+  // dataset is too small to make it meaningful.
+  const items =
+    mode === "mock-owner"
+      ? [{ href: routes.section.records, label: "Connectors" }]
+      : [
+          { href: routes.section.records, label: "Connectors" },
+          { href: routes.section.recordsTimeline, label: "Timeline" },
+        ];
   return <SidebarSubnav items={items} label="Records" />;
 }
 
@@ -144,6 +182,43 @@ async function EnvFooter() {
       <ul className="pdpp-caption flex flex-col gap-1">
         <EndpointRow label="AS" online={asOnline} url={publicOrigin} />
         <EndpointRow label="RS" online={rsOnline} url={publicOrigin} />
+      </ul>
+    </div>
+  );
+}
+
+/**
+ * Sandbox/mock-owner footer. Replaces the live AS/RS probe so the
+ * sandbox never reaches out to a configured reference server, and
+ * carries the persistent "Mock owner · fictional data" affordance plus
+ * pointers to the supporting educational surfaces.
+ */
+function MockOwnerFooter() {
+  return (
+    <div className="pt-6">
+      <div className="pdpp-eyebrow mb-2 flex items-center gap-2">
+        <span aria-hidden className="inline-block h-1.5 w-1.5 rounded-full bg-amber-500/80" />
+        Mock owner
+      </div>
+      <p className="pdpp-caption text-muted-foreground">
+        Reference dashboard against deterministic fictional data. No real owner, no live calls.
+      </p>
+      <ul className="pdpp-caption mt-3 flex flex-col gap-1 text-muted-foreground">
+        <li>
+          <Link className="hover:text-foreground hover:underline" href="/sandbox/api-examples">
+            API examples →
+          </Link>
+        </li>
+        <li>
+          <Link className="hover:text-foreground hover:underline" href="/sandbox/walkthrough">
+            Guided walkthrough →
+          </Link>
+        </li>
+        <li>
+          <Link className="hover:text-foreground hover:underline" href="/sandbox">
+            Exit mock-owner mode →
+          </Link>
+        </li>
       </ul>
     </div>
   );
@@ -220,12 +295,12 @@ function stripScheme(url: string): string {
   return url.replace(SCHEME_PREFIX_RE, "");
 }
 
-function Topbar() {
+function Topbar({ overviewHref }: { overviewHref: string }) {
   return (
     <div className="sticky top-0 z-30 flex h-12 items-center justify-between gap-3 border-border/80 border-b bg-background/90 px-6 backdrop-blur sm:px-8 md:px-10">
       <div className="flex items-center gap-3 md:hidden">
         <MobileDrawerTrigger />
-        <Link className="pdpp-body inline-flex items-center gap-2 font-semibold" href="/dashboard">
+        <Link className="pdpp-body inline-flex items-center gap-2 font-semibold" href={overviewHref}>
           <PdppLogo className="h-5 w-5" />
           pdpp
         </Link>

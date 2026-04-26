@@ -10,11 +10,13 @@
 
 import { headers } from "next/headers";
 import { Callout, PageHeader, Section } from "@/app/dashboard/components/primitives.tsx";
-import { EmptyState } from "@/app/dashboard/components/shell.tsx";
-import { sandboxRoutes } from "@/app/dashboard/components/views/routes.ts";
-import { buildAuthServerMetadata, buildProtectedResourceMetadata, getDemoCapabilities } from "../_demo/builders.ts";
+import { DashboardShell, EmptyState } from "@/app/dashboard/components/shell.tsx";
+import {
+  buildLiveAuthServerMetadata,
+  buildLiveProtectedResourceMetadata,
+  getDemoCapabilities,
+} from "../_demo/builders.ts";
 import { CodeBlock } from "../_demo/components/code-block.tsx";
-import { SandboxShell } from "../_demo/components/shell.tsx";
 import { sandboxDashboardDataSource } from "../_demo/data-source.ts";
 
 export const dynamic = "force-dynamic";
@@ -34,14 +36,13 @@ export default async function SandboxDeploymentPage() {
   const report = await sandboxDashboardDataSource.getDeploymentDiagnostics();
   const capabilities = getDemoCapabilities();
   const issuer = `${await getRequestOrigin()}/sandbox`;
-  const auth = buildAuthServerMetadata(issuer);
-  const rs = buildProtectedResourceMetadata(issuer);
+  const auth = buildLiveAuthServerMetadata(issuer);
+  const rs = buildLiveProtectedResourceMetadata(issuer);
 
   return (
-    <SandboxShell active="deployment">
+    <DashboardShell active="deployment" mode="mock-owner">
       <PageHeader
-        breadcrumbs={[{ href: sandboxRoutes.section.overview, label: "Sandbox" }, { label: "Deployment" }]}
-        description="Operator diagnostics for the sandbox reference instance. Mirrors the live deployment page; values reflect the deterministic mock backend (no real semantic backend, no real DB)."
+        description="Reference deployment diagnostics: AS/RS metadata, retrieval state, and manifests."
         title="Deployment"
       />
 
@@ -74,19 +75,16 @@ export default async function SandboxDeploymentPage() {
       </Section>
 
       <Section
-        description="Sandbox uses lexical search only; participating fields are reported by the live deployment."
+        description="Fields advertised by manifests for semantic retrieval."
         title={`Participation (${report.semantic.participation.field_count} fields)`}
       >
         {report.semantic.participation.tuples.length === 0 ? (
-          <EmptyState
-            hint="The sandbox semantic backend is not configured. Run the live reference and declare semantic_fields on a manifest to populate this list."
-            title="No participating fields"
-          />
+          <EmptyState hint="No semantic backend configured for this deployment." title="No participating fields" />
         ) : null}
       </Section>
 
       <Section
-        description="Manifests bound to the sandbox demo dataset."
+        description="Connector manifests loaded by this deployment."
         title={`Manifests (${report.manifests.length})`}
       >
         <table className="w-full border-border/80 border-y text-left text-sm">
@@ -118,10 +116,7 @@ export default async function SandboxDeploymentPage() {
         </dl>
       </Section>
 
-      <Section
-        description="Demo environment markers. The sandbox does not read real environment variables."
-        title="Environment"
-      >
+      <Section description="Environment-driven configuration markers." title="Environment">
         <table className="w-full border-border/80 border-y text-left text-sm">
           <thead>
             <tr className="text-muted-foreground text-xs uppercase tracking-wide">
@@ -142,10 +137,7 @@ export default async function SandboxDeploymentPage() {
         </table>
       </Section>
 
-      <Section
-        description="What this demo demonstrates today vs. what the live reference implements."
-        title="Capabilities matrix"
-      >
+      <Section description="Capabilities advertised by this reference implementation." title="Capabilities matrix">
         <ul className="divide-y divide-border/70 border-border/70 border-y">
           {capabilities.map((cap) => (
             <li
@@ -173,14 +165,14 @@ export default async function SandboxDeploymentPage() {
         </ul>
       </Section>
 
-      <Section description="Reachable at /sandbox/.well-known/oauth-authorization-server" title="AS metadata (demo)">
+      <Section description="Live response from /sandbox/.well-known/oauth-authorization-server." title="AS metadata">
         <CodeBlock language="json">{JSON.stringify(auth, null, 2)}</CodeBlock>
       </Section>
 
-      <Section description="Reachable at /sandbox/.well-known/oauth-protected-resource" title="RS metadata (demo)">
+      <Section description="Live response from /sandbox/.well-known/oauth-protected-resource." title="RS metadata">
         <CodeBlock language="json">{JSON.stringify(rs, null, 2)}</CodeBlock>
       </Section>
-    </SandboxShell>
+    </DashboardShell>
   );
 }
 

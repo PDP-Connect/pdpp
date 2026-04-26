@@ -1,8 +1,8 @@
-import { buildSchemaResponse } from "../../_demo/builders.ts";
-import { jsonResponse, sandboxIssuerFromRequest } from "../_helpers.ts";
+import { buildLiveSchemaResponse } from "../../_demo/builders.ts";
+import { jsonResponse } from "../_helpers.ts";
 
-export const dynamic = "force-dynamic";
+export const dynamic = "force-static";
 
-export function GET(request: Request) {
-  return jsonResponse(buildSchemaResponse(sandboxIssuerFromRequest(request)));
+export function GET() {
+  return jsonResponse(buildLiveSchemaResponse());
 }

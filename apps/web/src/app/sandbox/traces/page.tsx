@@ -1,10 +1,10 @@
 import Link from "next/link";
 import { StatusBadge } from "@/app/dashboard/components/primitives.tsx";
+import { DashboardShell } from "@/app/dashboard/components/shell.tsx";
 import { type ListWithPeekParams, ListWithPeekView } from "@/app/dashboard/components/views/list-with-peek.tsx";
 import { sandboxRoutes } from "@/app/dashboard/components/views/routes.ts";
 import type { TraceSummary } from "@/app/dashboard/lib/ref-client.ts";
 import { Timestamp } from "@/components/ui/timestamp.tsx";
-import { SandboxShell } from "../_demo/components/shell.tsx";
 import { sandboxDashboardDataSource } from "../_demo/data-source.ts";
 
 export const dynamic = "force-static";
@@ -41,7 +41,7 @@ export default async function SandboxTracesPage({ searchParams }: { searchParams
     routes: sandboxRoutes,
     subject: "trace",
     title: "Traces",
-    description: "Mock event-spine traces across the seeded grants and runs.",
+    description: "Event-spine traces across grants and runs.",
     result,
     rowKey: (t) => t.trace_id,
     renderRow: (trace, { peeked, href }) => (
@@ -91,12 +91,12 @@ export default async function SandboxTracesPage({ searchParams }: { searchParams
     peekEnvelope,
     peekCliCommand: (id) => `pdpp trace show ${id}`,
     emptyTitle: "No traces",
-    emptyHint: "The seeded sandbox always returns the demo trace set; this filter excluded all of them.",
+    emptyHint: "No traces match this filter.",
   };
 
   return (
-    <SandboxShell active="traces">
+    <DashboardShell active="traces" mode="mock-owner">
       <ListWithPeekView params={viewParams} />
-    </SandboxShell>
+    </DashboardShell>
   );
 }

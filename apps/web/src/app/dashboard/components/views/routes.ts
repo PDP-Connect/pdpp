@@ -34,12 +34,12 @@ export interface Routes {
   trace(id: string): string;
 }
 
-function makeRoutes(basePath: string): Routes {
+function makeRoutes(basePath: string, opts: { overview?: string } = {}): Routes {
   const enc = (v: string) => encodeURIComponent(v);
   return {
     basePath,
     section: {
-      overview: basePath,
+      overview: opts.overview ?? basePath,
       records: `${basePath}/records`,
       recordsTimeline: `${basePath}/records/timeline`,
       search: `${basePath}/search`,
@@ -71,4 +71,11 @@ function makeRoutes(basePath: string): Routes {
 }
 
 export const dashboardRoutes: Routes = makeRoutes("/dashboard");
-export const sandboxRoutes: Routes = makeRoutes("/sandbox");
+
+/**
+ * Sandbox routes resolve to `/sandbox/*`. The overview lives at
+ * `/sandbox/overview`, not `/sandbox`, because `/sandbox` is the
+ * mock-owner launcher that introduces the reference instance and
+ * routes the visitor into the dashboard.
+ */
+export const sandboxRoutes: Routes = makeRoutes("/sandbox", { overview: "/sandbox/overview" });

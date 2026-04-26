@@ -1,10 +1,10 @@
 import Link from "next/link";
 import { StatusBadge } from "@/app/dashboard/components/primitives.tsx";
+import { DashboardShell } from "@/app/dashboard/components/shell.tsx";
 import { type ListWithPeekParams, ListWithPeekView } from "@/app/dashboard/components/views/list-with-peek.tsx";
 import { sandboxRoutes } from "@/app/dashboard/components/views/routes.ts";
 import type { RunSummary } from "@/app/dashboard/lib/ref-client.ts";
 import { Timestamp } from "@/components/ui/timestamp.tsx";
-import { SandboxShell } from "../_demo/components/shell.tsx";
 import { sandboxDashboardDataSource } from "../_demo/data-source.ts";
 
 export const dynamic = "force-static";
@@ -43,7 +43,7 @@ export default async function SandboxRunsPage({ searchParams }: { searchParams: 
     routes: sandboxRoutes,
     subject: "run",
     title: "Runs",
-    description: "Mock connector runs across the seeded sandbox dataset, including a needs-input and a failed example.",
+    description: "Connector runs and their outcomes.",
     result,
     rowKey: (r) => r.run_id,
     renderRow: (run, { peeked, href }) => (
@@ -98,12 +98,12 @@ export default async function SandboxRunsPage({ searchParams }: { searchParams: 
     peekEnvelope,
     peekCliCommand: (id) => `pdpp run timeline ${id}`,
     emptyTitle: "No runs",
-    emptyHint: "The seeded sandbox always returns the demo run set; this filter excluded all of them.",
+    emptyHint: "No runs match this filter.",
   };
 
   return (
-    <SandboxShell active="runs">
+    <DashboardShell active="runs" mode="mock-owner">
       <ListWithPeekView params={viewParams} />
-    </SandboxShell>
+    </DashboardShell>
   );
 }

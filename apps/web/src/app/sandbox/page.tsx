@@ -1,71 +1,126 @@
+/**
+ * Sandbox launcher.
+ *
+ * `/sandbox` is the mock-owner entrypoint into the reference dashboard.
+ * It is intentionally thin: a short framing paragraph, a primary CTA
+ * into the dashboard at `/sandbox/overview`, and secondary links to
+ * the supporting educational surfaces (API examples, walkthrough).
+ *
+ * The substantive demo experience is the dashboard itself, rendered in
+ * mock-owner mode. The launcher is the only place that frames the
+ * environment as simulated; once the visitor enters the dashboard,
+ * affordances live in the persistent sidebar footer.
+ */
+
 import type { Metadata } from "next";
 import Link from "next/link";
-import { OverviewView, type OverviewViewData } from "@/app/dashboard/components/views/overview-view.tsx";
-import { sandboxRoutes } from "@/app/dashboard/components/views/routes.ts";
-import { CodeBlock, InlineCode } from "./_demo/components/code-block.tsx";
-import { SandboxShell } from "./_demo/components/shell.tsx";
-import { sandboxDashboardDataSource } from "./_demo/data-source.ts";
+import { PdppLogo } from "@/components/pdpp-logo.tsx";
+import { SiteHeader } from "@/components/site-header.tsx";
 
 export const metadata: Metadata = {
-  title: "PDPP sandbox · mock reference demo instance",
+  title: "PDPP reference instance · Sandbox",
   description:
-    "A public, credential-free PDPP reference instance backed by fictional data. The sandbox renders the same dashboard the real owner sees, bound to deterministic mock AS/RS data.",
+    "Enter the PDPP reference dashboard as a mock owner. Deterministic fictional data, no credentials, no live calls.",
 };
 
 export const dynamic = "force-static";
 
-async function loadOverview(): Promise<OverviewViewData> {
-  const ds = sandboxDashboardDataSource;
-  const [summary, failedTraces, failedRuns, revoked, denied, issued, recentRuns] = await Promise.all([
-    ds.getDatasetSummary(),
-    ds.listTraces({ status: "failed", limit: 5 }),
-    ds.listRuns({ status: "failed", limit: 5 }),
-    ds.listGrants({ status: "revoked", limit: 5 }),
-    ds.listGrants({ status: "denied", limit: 5 }),
-    ds.listGrants({ status: "issued", limit: 5 }),
-    ds.listRuns({ limit: 8 }),
-  ]);
-  const recentDecisions = [...revoked.data, ...denied.data, ...issued.data]
-    .sort((a, b) => (a.last_at < b.last_at ? 1 : -1))
-    .slice(0, 6);
-  return {
-    summary,
-    failedTraces: failedTraces.data,
-    failedRuns: failedRuns.data,
-    recentDecisions,
-    recentRuns: recentRuns.data,
-    actionNeeded: failedTraces.data.length + failedRuns.data.length,
-  };
-}
+const HIGHLIGHTS = [
+  {
+    title: "Records, search, grants, runs, traces",
+    body: "The same operator views the live owner sees, bound to deterministic mock AS/RS data.",
+  },
+  {
+    title: "Callable APIs",
+    body: "/sandbox/v1/** and /sandbox/_ref/** mirror the reference envelopes. Curl them directly.",
+  },
+  {
+    title: "Reset by reload",
+    body: "All state lives in seeded fixtures. There's nothing real here, no cleanup needed.",
+  },
+] as const;
 
-export default async function SandboxOverviewPage() {
-  const data = await loadOverview();
+export default function SandboxLauncherPage() {
   return (
-    <SandboxShell active="overview">
-      <OverviewView
-        data={data}
-        description="Mock reference demo instance. The same dashboard the real owner sees, backed by deterministic fictional AS/RS data — no credentials, no live calls."
-        routes={sandboxRoutes}
-      />
-      <section className="mt-10 rounded-md border border-amber-400/40 bg-amber-400/5 px-4 py-4">
-        <h2 className="pdpp-title text-foreground">About this demo</h2>
-        <p className="pdpp-caption mt-1 text-muted-foreground">
-          Every page here is also reachable as a JSON API under <InlineCode>/sandbox/v1/**</InlineCode> or{" "}
-          <InlineCode>/sandbox/_ref/**</InlineCode>. See{" "}
-          <Link className="underline underline-offset-2" href="/sandbox/api-examples">
-            API examples
-          </Link>{" "}
-          or follow the guided{" "}
-          <Link className="underline underline-offset-2" href="/sandbox/walkthrough">
-            walkthrough
-          </Link>
-          .
-        </p>
-        <div className="mt-3 grid gap-3 sm:grid-cols-2">
-          <CodeBlock language="shell">curl -s /sandbox/v1/schema</CodeBlock>
-          <CodeBlock language="shell">curl -s /sandbox/v1/search?q=payroll</CodeBlock>
+    <div className="flex min-h-screen flex-col">
+      <header
+        className="sticky top-0 z-40 flex h-12 items-center px-5 md:px-6"
+        style={{
+          backgroundColor: "var(--background)",
+          backdropFilter: "blur(8px)",
+          borderBottom: "1px solid var(--border)",
+        }}
+      >
+        <SiteHeader currentLabel="Sandbox" />
+      </header>
+      <main className="mx-auto w-full max-w-3xl px-6 py-16 sm:px-8 md:px-10">
+        <div className="mb-2 inline-flex items-center gap-2 text-muted-foreground">
+          <PdppLogo className="h-5 w-5" />
+          <span className="pdpp-eyebrow">Reference instance · sandbox</span>
         </div>
-      </section>
-    </SandboxShell>
+        <h1 className="pdpp-display mt-4 text-foreground">Inspect PDPP as a mock owner</h1>
+        <p className="pdpp-body mt-4 max-w-2xl text-muted-foreground">
+          The sandbox runs the PDPP reference dashboard against deterministic fictional data. Browse records, watch
+          grants get issued and revoked, replay run timelines, and call the same APIs an integrator would call — all
+          without credentials, Docker, or a local SQLite file. Everything you see is invented; the protocol behavior is
+          real.
+        </p>
+
+        <div className="mt-8 flex flex-wrap items-center gap-3">
+          <Link
+            className="pdpp-body inline-flex items-center gap-2 rounded-md bg-foreground px-4 py-2 font-medium text-background transition-colors hover:bg-foreground/90"
+            href="/sandbox/overview"
+          >
+            Enter mock-owner dashboard →
+          </Link>
+          <Link
+            className="pdpp-body inline-flex items-center rounded-md border border-border px-4 py-2 text-foreground hover:bg-muted/60"
+            href="/sandbox/api-examples"
+          >
+            API examples
+          </Link>
+          <Link
+            className="pdpp-body inline-flex items-center rounded-md border border-border px-4 py-2 text-foreground hover:bg-muted/60"
+            href="/sandbox/walkthrough"
+          >
+            Guided walkthrough
+          </Link>
+        </div>
+
+        <ul className="mt-12 grid gap-4 sm:grid-cols-3">
+          {HIGHLIGHTS.map((h) => (
+            <li className="rounded-md border border-border/80 p-4" key={h.title}>
+              <h2 className="pdpp-title text-foreground">{h.title}</h2>
+              <p className="pdpp-caption mt-1 text-muted-foreground">{h.body}</p>
+            </li>
+          ))}
+        </ul>
+
+        <div className="mt-12 border-border/80 border-t pt-6">
+          <h2 className="pdpp-title text-foreground">Boundaries</h2>
+          <ul className="pdpp-caption mt-3 grid gap-1.5 text-muted-foreground sm:grid-cols-2">
+            <li>
+              <Link className="hover:text-foreground hover:underline" href="/reference">
+                Reference surface map →
+              </Link>
+            </li>
+            <li>
+              <Link className="hover:text-foreground hover:underline" href="/docs">
+                Protocol docs →
+              </Link>
+            </li>
+            <li>
+              <Link className="hover:text-foreground hover:underline" href="/reference/coverage">
+                Coverage matrix →
+              </Link>
+            </li>
+            <li>
+              <span className="font-mono text-foreground/70">/sandbox/v1/schema</span> ·{" "}
+              <span className="font-mono text-foreground/70">/sandbox/v1/search</span>
+            </li>
+          </ul>
+        </div>
+      </main>
+    </div>
   );
 }

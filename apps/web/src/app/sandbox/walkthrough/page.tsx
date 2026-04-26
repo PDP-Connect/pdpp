@@ -28,8 +28,8 @@ export default function WalkthroughPage() {
               <Link className={buttonVariants({ variant: "default", size: "lg" })} href="#walkthrough">
                 Start the walkthrough
               </Link>
-              <Link className={buttonVariants({ variant: "outline", size: "lg" })} href="/sandbox">
-                Back to demo overview
+              <Link className={buttonVariants({ variant: "outline", size: "lg" })} href="/sandbox/overview">
+                Open the dashboard
               </Link>
               <Link className={buttonVariants({ variant: "outline", size: "lg" })} href="/docs">
                 Protocol docs
@@ -42,10 +42,10 @@ export default function WalkthroughPage() {
             <div className="pdpp-heading mt-2 text-foreground">Simulated, not hosted</div>
             <p className="pdpp-caption mt-3 text-muted-foreground">
               A single coherent PDPP scenario you can click through. State lives only in this browser tab. It does not
-              run the reference server, host owner accounts, or accept credentials. For a broader demo with callable
-              APIs, see the{" "}
-              <Link className="underline underline-offset-2" href="/sandbox">
-                sandbox demo instance
+              run the reference server, host owner accounts, or accept credentials. For the full reference dashboard,
+              see the{" "}
+              <Link className="underline underline-offset-2" href="/sandbox/overview">
+                mock-owner dashboard
               </Link>
               .
             </p>

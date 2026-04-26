@@ -1,128 +1,92 @@
+/**
+ * Educational-pages shell for `/sandbox/api-examples` and
+ * `/sandbox/walkthrough`. These are supporting docs surfaces — they
+ * frame and supplement the mock-owner dashboard without dragging
+ * dashboard chrome into a docs context.
+ *
+ * Primary `/sandbox/**` dashboard pages use the live `DashboardShell`
+ * in mock-owner mode. The launcher at `/sandbox` is a standalone page.
+ */
+
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { PdppLogo } from "@/components/pdpp-logo.tsx";
-import { ThemeToggle } from "@/components/theme/theme-toggle.tsx";
+import { SiteHeader } from "@/components/site-header.tsx";
 
-export type SandboxSection =
-  | "overview"
-  | "records"
-  | "search"
-  | "grants"
-  | "runs"
-  | "traces"
-  | "deployment"
-  | "api"
-  | "walkthrough";
+export type SandboxEducationalSection = "api" | "walkthrough";
 
 interface NavItem {
   href: string;
   label: string;
-  match: SandboxSection;
+  match: SandboxEducationalSection;
 }
 
 const NAV: readonly NavItem[] = [
-  { href: "/sandbox", label: "Overview", match: "overview" },
-  { href: "/sandbox/records", label: "Records", match: "records" },
-  { href: "/sandbox/search", label: "Search", match: "search" },
-  { href: "/sandbox/grants", label: "Grants", match: "grants" },
-  { href: "/sandbox/runs", label: "Runs", match: "runs" },
-  { href: "/sandbox/traces", label: "Traces", match: "traces" },
-  { href: "/sandbox/deployment", label: "Deployment", match: "deployment" },
   { href: "/sandbox/api-examples", label: "API examples", match: "api" },
-  { href: "/sandbox/walkthrough", label: "Walkthrough", match: "walkthrough" },
+  { href: "/sandbox/walkthrough", label: "Guided walkthrough", match: "walkthrough" },
 ] as const;
 
 /**
- * Demo-instance shell. Mirrors the live `/dashboard` chrome so visitors see
- * the same operator concepts, but never imports owner-token clients and
- * always carries the "Demo instance / fictional data" label.
+ * Lightweight shell for the supporting educational pages. Renders the
+ * site header plus a small navigation row pointing back to the
+ * mock-owner dashboard launcher and across the educational pages. No
+ * dashboard sidebar; the educational pages are docs, not operator views.
  */
-export function SandboxShell({ active, children }: { active: SandboxSection; children: ReactNode }) {
+export function SandboxEducationalShell({
+  active,
+  children,
+}: {
+  active: SandboxEducationalSection;
+  children: ReactNode;
+}) {
   return (
-    <div className="min-h-screen">
-      <DemoBanner />
-      <div className="grid min-h-[calc(100vh-2.25rem)] md:grid-cols-[15rem_minmax(0,1fr)]">
-        <aside className="sticky top-9 hidden h-[calc(100vh-2.25rem)] flex-col justify-between py-6 pr-4 pl-6 md:flex">
-          <div>
-            <Link className="pdpp-body group inline-flex items-center gap-2 font-semibold" href="/sandbox">
-              <PdppLogo className="h-5 w-5" />
-              <span className="tracking-tight">pdpp</span>
-              <span className="pdpp-caption font-normal text-muted-foreground">demo instance</span>
+    <div className="flex min-h-screen flex-col">
+      <header
+        className="sticky top-0 z-40 flex h-12 items-center px-5 md:px-6"
+        style={{
+          backgroundColor: "var(--background)",
+          backdropFilter: "blur(8px)",
+          borderBottom: "1px solid var(--border)",
+        }}
+      >
+        <SiteHeader currentLabel="Sandbox" />
+      </header>
+      <div className="border-border/80 border-b">
+        <div className="mx-auto flex w-full max-w-[1100px] items-center justify-between gap-3 px-6 py-3 sm:px-8 md:px-10">
+          <Link className="pdpp-body inline-flex items-center gap-2 font-semibold text-foreground" href="/sandbox">
+            <PdppLogo className="h-5 w-5" />
+            <span className="tracking-tight">pdpp</span>
+            <span className="pdpp-caption font-normal text-muted-foreground">reference instance</span>
+          </Link>
+          <nav aria-label="Sandbox educational" className="flex items-center gap-1">
+            {NAV.map((item) => {
+              const isActive = item.match === active;
+              return (
+                <Link
+                  aria-current={isActive ? "page" : undefined}
+                  className={[
+                    "pdpp-caption rounded-md px-2.5 py-1 transition-colors",
+                    isActive
+                      ? "bg-muted font-medium text-foreground"
+                      : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
+                  ].join(" ")}
+                  href={item.href}
+                  key={item.href}
+                >
+                  {item.label}
+                </Link>
+              );
+            })}
+            <Link
+              className="pdpp-caption rounded-md px-2.5 py-1 text-muted-foreground hover:bg-muted/60 hover:text-foreground"
+              href="/sandbox/overview"
+            >
+              Open dashboard →
             </Link>
-            <nav aria-label="Sandbox navigation" className="mt-6 flex flex-col gap-0.5">
-              {NAV.map((item) => {
-                const isActive = item.match === active;
-                return (
-                  <Link
-                    aria-current={isActive ? "page" : undefined}
-                    className={[
-                      "pdpp-body relative rounded-md px-2.5 py-1.5 transition-colors",
-                      isActive
-                        ? "bg-muted font-medium text-foreground"
-                        : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
-                    ].join(" ")}
-                    href={item.href}
-                    key={item.href}
-                  >
-                    {item.label}
-                  </Link>
-                );
-              })}
-            </nav>
-            <div className="mt-6 border-border/80 border-t pt-4">
-              <div className="pdpp-eyebrow mb-2 px-2.5">Boundaries</div>
-              <ul className="pdpp-caption flex flex-col gap-1.5 px-2.5 text-muted-foreground">
-                <li>
-                  <Link className="hover:text-foreground hover:underline" href="/reference">
-                    Reference surface map →
-                  </Link>
-                </li>
-                <li>
-                  <Link className="hover:text-foreground hover:underline" href="/docs">
-                    Protocol docs →
-                  </Link>
-                </li>
-                <li>
-                  <Link className="hover:text-foreground hover:underline" href="/reference/coverage">
-                    Coverage matrix →
-                  </Link>
-                </li>
-              </ul>
-            </div>
-          </div>
-        </aside>
-        <div className="min-w-0 border-border/80 border-l bg-background md:border-l">
-          <div className="sticky top-9 z-30 flex h-12 items-center justify-between gap-3 border-border/80 border-b bg-background/90 px-6 backdrop-blur sm:px-8 md:px-10">
-            <Link className="pdpp-body inline-flex items-center gap-2 font-semibold md:hidden" href="/sandbox">
-              <PdppLogo className="h-5 w-5" />
-              pdpp
-            </Link>
-            <div className="flex-1" />
-            <span className="pdpp-eyebrow hidden items-center gap-2 rounded-full border border-amber-400/40 bg-amber-400/10 px-2.5 py-0.5 text-amber-700 sm:inline-flex dark:text-amber-300">
-              Demo · fictional data
-            </span>
-            <ThemeToggle />
-          </div>
-          <main className="mx-auto w-full max-w-[1400px] px-6 py-8 sm:px-8 md:px-10">{children}</main>
+          </nav>
         </div>
       </div>
-    </div>
-  );
-}
-
-function DemoBanner() {
-  return (
-    <div
-      className="sticky top-0 z-40 flex h-9 items-center justify-center gap-2 border-amber-500/30 border-b bg-amber-500/10 px-4 text-amber-900 text-xs dark:text-amber-200"
-      role="note"
-    >
-      <span className="pdpp-eyebrow">Sandbox demo instance</span>
-      <span aria-hidden className="text-amber-700/50 dark:text-amber-300/50">
-        ·
-      </span>
-      <span className="text-[0.7rem] sm:text-xs">
-        Deterministic fictional data. Not connected to real services. Reset by reloading.
-      </span>
+      <main className="mx-auto w-full max-w-[1100px] flex-1 px-6 py-8 sm:px-8 md:px-10">{children}</main>
     </div>
   );
 }

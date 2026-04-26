@@ -1,7 +1,7 @@
 import { notFound } from "next/navigation";
+import { DashboardShell } from "@/app/dashboard/components/shell.tsx";
 import { ConnectorDetailView } from "@/app/dashboard/components/views/connector-detail-view.tsx";
 import { sandboxRoutes } from "@/app/dashboard/components/views/routes.ts";
-import { SandboxShell } from "../../_demo/components/shell.tsx";
 import { sandboxDashboardDataSource } from "../../_demo/data-source.ts";
 
 export const dynamic = "force-static";
@@ -23,7 +23,7 @@ export default async function SandboxConnectorPage({ params }: { params: Promise
     ds.listRuns({ connector_id: connectorId, limit: RECENT_RUNS_LIMIT }),
   ]);
   return (
-    <SandboxShell active="records">
+    <DashboardShell active="records" mode="mock-owner">
       <ConnectorDetailView
         manifest={manifest}
         overview={overview}
@@ -31,6 +31,6 @@ export default async function SandboxConnectorPage({ params }: { params: Promise
         routes={sandboxRoutes}
         streams={streams}
       />
-    </SandboxShell>
+    </DashboardShell>
   );
 }

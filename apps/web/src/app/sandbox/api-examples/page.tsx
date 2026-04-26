@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { CodeBlock, InlineCode } from "../_demo/components/code-block.tsx";
-import { SandboxShell } from "../_demo/components/shell.tsx";
+import { SandboxEducationalShell } from "../_demo/components/shell.tsx";
 
 export const dynamic = "force-static";
 
@@ -17,12 +17,13 @@ interface Example {
 const EXAMPLES: readonly Example[] = [
   {
     surface: "v1",
-    title: "Schema graph",
+    title: "Schema",
     method: "GET",
     endpoint: "/sandbox/v1/schema",
     request: "curl -s /sandbox/v1/schema",
-    responseHint: "Returns connectors → streams → fields with semantic class.",
-    description: "Use when discovering what streams and fields the demo dataset offers.",
+    responseHint: "Live `schema` envelope: object='schema', bearer, connectors[].streams[] with stream_metadata.",
+    description:
+      "Discover connectors, streams, and field schemas. Same shape as /v1/schema on a real reference server.",
   },
   {
     surface: "v1",
@@ -30,17 +31,17 @@ const EXAMPLES: readonly Example[] = [
     method: "GET",
     endpoint: "/sandbox/v1/streams",
     request: "curl -s '/sandbox/v1/streams?limit=10'",
-    responseHint: "Paginated list of stream summaries.",
-    description: "Each summary includes stream key, label, record count, and field count.",
+    responseHint: "Live `list` envelope of `stream` rows: { name, record_count, last_updated, freshness }.",
+    description: "Supports cursor pagination via `limit` and `cursor`. Optional `connector_id` filter.",
   },
   {
     surface: "v1",
-    title: "Stream detail",
+    title: "Stream metadata",
     method: "GET",
     endpoint: "/sandbox/v1/streams/pay_statements",
     request: "curl -s /sandbox/v1/streams/pay_statements",
-    responseHint: "Full stream descriptor with schema, retention, and counts.",
-    description: "Replace the path segment with any stream key from the schema graph.",
+    responseHint: "Live `stream_metadata` envelope with schema, primary_key, cursor_field, freshness.",
+    description: "Replace the path segment with any stream name from /sandbox/v1/schema.",
   },
   {
     surface: "v1",
@@ -48,7 +49,7 @@ const EXAMPLES: readonly Example[] = [
     method: "GET",
     endpoint: "/sandbox/v1/streams/pay_statements/records",
     request: "curl -s '/sandbox/v1/streams/pay_statements/records?limit=2'",
-    responseHint: "Paginated record summaries newest-first, each with a preview string.",
+    responseHint: "Live `list` envelope of `record` rows: { object:'record', id, stream, data, emitted_at }.",
     description: "Supports cursor pagination via `limit` and `cursor`.",
   },
   {
@@ -57,17 +58,18 @@ const EXAMPLES: readonly Example[] = [
     method: "GET",
     endpoint: "/sandbox/v1/streams/pay_statements/records/rec_sb_paystmt_2026_03",
     request: "curl -s /sandbox/v1/streams/pay_statements/records/rec_sb_paystmt_2026_03",
-    responseHint: "Full field projection for one record.",
-    description: "Returns the full fictional record including its projection map.",
+    responseHint: "Single live `record` envelope: { id, stream, data, emitted_at }.",
+    description: "Use the `id` returned in list responses (record_key in the underlying RS).",
   },
   {
     surface: "v1",
-    title: "Search",
+    title: "Lexical search",
     method: "GET",
     endpoint: "/sandbox/v1/search",
     request: "curl -s '/sandbox/v1/search?q=payroll'",
-    responseHint: "Lexical hits across all seeded records with snippets and matched fields.",
-    description: "Try queries like `payroll`, `Northwind`, `follow-up`.",
+    responseHint:
+      "Live `list` of `search_result` rows: { stream, record_key, connector_id, record_url, emitted_at, matched_fields, snippet?, score? } with score.kind='bm25'.",
+    description: "Same shape as the public lexical retrieval extension. Try `payroll`, `Northwind`, `follow-up`.",
   },
   {
     surface: "_ref",
@@ -75,7 +77,7 @@ const EXAMPLES: readonly Example[] = [
     method: "GET",
     endpoint: "/sandbox/_ref/grants",
     request: "curl -s '/sandbox/_ref/grants?status=revoked'",
-    responseHint: "Reference-only grant summaries with status and stream.",
+    responseHint: "Live `list` of `grant_summary` rows with kinds[], failure?: { event_type, reason }.",
     description: "Filter by `status` (issued, revoked, denied) or `client_id`.",
   },
   {
@@ -84,7 +86,7 @@ const EXAMPLES: readonly Example[] = [
     method: "GET",
     endpoint: "/sandbox/_ref/grants/grant_sb_quill_paystmt/timeline",
     request: "curl -s /sandbox/_ref/grants/grant_sb_quill_paystmt/timeline",
-    responseHint: "Per-event timeline for one grant.",
+    responseHint: "Live `grant_timeline` envelope: { object, grant_id, trace_id, event_count, data: events[] }.",
     description: "See request → consent → grant → resource read events end-to-end.",
   },
   {
@@ -93,7 +95,7 @@ const EXAMPLES: readonly Example[] = [
     method: "GET",
     endpoint: "/sandbox/_ref/runs/run_sb_acme_2026_04_22/timeline",
     request: "curl -s /sandbox/_ref/runs/run_sb_acme_2026_04_22/timeline",
-    responseHint: "Per-event timeline for one connector run.",
+    responseHint: "Live `run_timeline` envelope: { object, run_id, trace_id, event_count, data: events[] }.",
     description: "Includes `started`, `records.synced`, and `succeeded`/`failed` events.",
   },
   {
@@ -102,7 +104,7 @@ const EXAMPLES: readonly Example[] = [
     method: "GET",
     endpoint: "/sandbox/_ref/traces/trace_sb_quill_paystmt",
     request: "curl -s /sandbox/_ref/traces/trace_sb_quill_paystmt",
-    responseHint: "Trace-level timeline merging grant and run events.",
+    responseHint: "Live `trace` envelope: { object, trace_id, event_count, data: events[] sorted by occurred_at }.",
     description: "Shows the full PDPP interaction across grant + resource read.",
   },
   {
@@ -111,8 +113,8 @@ const EXAMPLES: readonly Example[] = [
     method: "GET",
     endpoint: "/sandbox/_ref/dataset/summary",
     request: "curl -s /sandbox/_ref/dataset/summary",
-    responseHint: "Top-level dataset statistics for the demo instance.",
-    description: "Connector count, stream count, record count, retained-bytes approximation.",
+    responseHint: "Live `dataset_summary` envelope with retained-bytes, record-time bounds, top_connectors[].",
+    description: "Same fields as the live reference deployment summary.",
   },
   {
     surface: "well-known",
@@ -120,8 +122,8 @@ const EXAMPLES: readonly Example[] = [
     method: "GET",
     endpoint: "/sandbox/.well-known/oauth-authorization-server",
     request: "curl -s /sandbox/.well-known/oauth-authorization-server",
-    responseHint: "Demo AS metadata advertising sandbox-prefixed endpoints.",
-    description: "Inspect the issuer, authorization endpoint, and supported scopes for the mock AS.",
+    responseHint: "RFC 8414 + PDPP `pdpp_provider_connect_capabilities`. Same shape as a real AS.",
+    description: "Inspect the issuer, token/PAR/device endpoints, and provider-connect capabilities.",
   },
   {
     surface: "well-known",
@@ -129,21 +131,23 @@ const EXAMPLES: readonly Example[] = [
     method: "GET",
     endpoint: "/sandbox/.well-known/oauth-protected-resource",
     request: "curl -s /sandbox/.well-known/oauth-protected-resource",
-    responseHint: "Demo RS metadata advertising sandbox-prefixed endpoints.",
-    description: "Use to confirm the RS resource identifier and authorization servers list.",
+    responseHint:
+      "Live RS metadata: resource, authorization_servers, pdpp_discovery_hints, capabilities.lexical_retrieval.",
+    description: "Drives discovery: schema_endpoint, query_base, search endpoint, blob indirection.",
   },
 ];
 
 export default function SandboxApiExamplesPage() {
   return (
-    <SandboxShell active="api">
+    <SandboxEducationalShell active="api">
       <header className="mb-6 border-border/80 border-b pb-5">
         <div className="pdpp-eyebrow text-muted-foreground">Sandbox / API examples</div>
-        <h1 className="pdpp-heading mt-2 text-foreground">Demo API examples</h1>
+        <h1 className="pdpp-heading mt-2 text-foreground">Reference API examples</h1>
         <p className="pdpp-body mt-2 max-w-3xl text-muted-foreground">
-          Every endpoint below is callable directly against this deployment. The examples use root-relative paths so
-          they work on localhost, Vercel previews, and pdpp.dev. All responses are JSON; all carry an{" "}
-          <InlineCode>x-pdpp-demo</InlineCode> header so agents can be sure they are looking at sandbox data.
+          Every endpoint below is callable directly against this deployment and returns the same envelope shape a real
+          PDPP reference server would. All responses are JSON; the sandbox marker is the{" "}
+          <InlineCode>x-pdpp-demo</InlineCode> response header — payload shapes are intentionally identical to the live
+          reference so an agent can swap origins without touching parsing code.
         </p>
         <p className="pdpp-caption mt-2 text-muted-foreground">
           The full surface map lives at{" "}
@@ -174,7 +178,7 @@ export default function SandboxApiExamplesPage() {
           </div>
         </section>
       ))}
-    </SandboxShell>
+    </SandboxEducationalShell>
   );
 }
 

@@ -1,7 +1,7 @@
 import { notFound } from "next/navigation";
+import { DashboardShell } from "@/app/dashboard/components/shell.tsx";
 import { sandboxRoutes } from "@/app/dashboard/components/views/routes.ts";
 import { TimelineDetailView } from "@/app/dashboard/components/views/timeline-detail-view.tsx";
-import { SandboxShell } from "../../_demo/components/shell.tsx";
 import { sandboxDashboardDataSource } from "../../_demo/data-source.ts";
 
 export const dynamic = "force-static";
@@ -15,7 +15,7 @@ export default async function SandboxGrantDetailPage({ params }: { params: Promi
   }
   const revoked = envelope.events.some((e) => e.event_type === "grant.revoked" || e.status === "revoked");
   return (
-    <SandboxShell active="grants">
+    <DashboardShell active="grants" mode="mock-owner">
       <TimelineDetailView
         breadcrumbs={[{ label: "Grants", href: sandboxRoutes.section.grants }, { label: "Grant" }]}
         cliCommand={`pdpp grant timeline ${grantId}`}
@@ -26,6 +26,6 @@ export default async function SandboxGrantDetailPage({ params }: { params: Promi
         routes={sandboxRoutes}
         subject="grant"
       />
-    </SandboxShell>
+    </DashboardShell>
   );
 }

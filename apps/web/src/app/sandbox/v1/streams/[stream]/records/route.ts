@@ -1,4 +1,4 @@
-import { buildRecordsList } from "../../../../_demo/builders.ts";
+import { buildLiveRecordsList } from "../../../../_demo/builders.ts";
 import { jsonResponse, notFound, readListParams } from "../../../_helpers.ts";
 
 // Reads `cursor`, `limit`, `connector_id` from the query string.
@@ -8,7 +8,7 @@ export async function GET(request: Request, ctx: { params: Promise<{ stream: str
   const { stream } = await ctx.params;
   const url = new URL(request.url);
   const params = readListParams(url);
-  const list = buildRecordsList({
+  const list = buildLiveRecordsList({
     stream,
     cursor: params.cursor,
     limit: params.limit,

@@ -1,7 +1,7 @@
 import { notFound } from "next/navigation";
+import { DashboardShell } from "@/app/dashboard/components/shell.tsx";
 import { sandboxRoutes } from "@/app/dashboard/components/views/routes.ts";
 import { TimelineDetailView } from "@/app/dashboard/components/views/timeline-detail-view.tsx";
-import { SandboxShell } from "../../_demo/components/shell.tsx";
 import { sandboxDashboardDataSource } from "../../_demo/data-source.ts";
 
 export const dynamic = "force-static";
@@ -15,7 +15,7 @@ export default async function SandboxRunDetailPage({ params }: { params: Promise
   }
   const connectorId = envelope.events.find((e) => e.actor_type === "runtime")?.actor_id ?? null;
   return (
-    <SandboxShell active="runs">
+    <DashboardShell active="runs" mode="mock-owner">
       <TimelineDetailView
         breadcrumbs={[{ label: "Runs", href: sandboxRoutes.section.runs }, { label: "Run" }]}
         cliCommand={`pdpp run timeline ${runId}`}
@@ -36,6 +36,6 @@ export default async function SandboxRunDetailPage({ params }: { params: Promise
         routes={sandboxRoutes}
         subject="run"
       />
-    </SandboxShell>
+    </DashboardShell>
   );
 }

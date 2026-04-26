@@ -1,7 +1,7 @@
 import { redirect } from "next/navigation";
+import { DashboardShell } from "@/app/dashboard/components/shell.tsx";
 import { sandboxRoutes } from "@/app/dashboard/components/views/routes.ts";
 import { type SearchData, SearchView } from "@/app/dashboard/components/views/search-view.tsx";
-import { SandboxShell } from "../_demo/components/shell.tsx";
 import { sandboxDashboardDataSource } from "../_demo/data-source.ts";
 
 export const dynamic = "force-static";
@@ -54,13 +54,13 @@ export default async function SandboxSearchPage({
   }
 
   return (
-    <SandboxShell active="search">
+    <DashboardShell active="search" mode="mock-owner">
       <SearchView
         data={data}
-        emptyHint="Try a query like 'payroll', 'visit', or 'merchant' to search the seeded sandbox records. Paste a grant/run/trace id to jump directly."
+        emptyHint="Try a query like 'payroll', 'visit', or 'merchant'. Paste a grant/run/trace id to jump directly."
         query={query}
         routes={sandboxRoutes}
       />
-    </SandboxShell>
+    </DashboardShell>
   );
 }

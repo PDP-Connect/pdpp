@@ -1,8 +1,8 @@
+import { DashboardShell } from "@/app/dashboard/components/shell.tsx";
 import { RecordsListView } from "@/app/dashboard/components/views/records-list-view.tsx";
 import { sandboxRoutes } from "@/app/dashboard/components/views/routes.ts";
 import type { RefConnectorRunSummary, RefConnectorSummary } from "@/app/dashboard/lib/ref-client.ts";
 import type { ConnectorOverview } from "@/app/dashboard/lib/rs-client.ts";
-import { SandboxShell } from "../_demo/components/shell.tsx";
 import { sandboxDashboardDataSource } from "../_demo/data-source.ts";
 
 export const dynamic = "force-static";
@@ -49,8 +49,8 @@ export default async function SandboxRecordsPage() {
   const response = await sandboxDashboardDataSource.listConnectorSummaries();
   const overviews = response.data.map(toConnectorOverview);
   return (
-    <SandboxShell active="records">
+    <DashboardShell active="records" mode="mock-owner">
       <RecordsListView interactive={false} overviews={overviews} routes={sandboxRoutes} />
-    </SandboxShell>
+    </DashboardShell>
   );
 }

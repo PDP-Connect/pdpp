@@ -1,4 +1,4 @@
-import { buildRunsList } from "../../_demo/builders.ts";
+import { buildLiveRunsList } from "../../_demo/builders.ts";
 import { jsonResponse, readListParams } from "../../v1/_helpers.ts";
 
 export const dynamic = "force-dynamic";
@@ -7,7 +7,7 @@ export function GET(request: Request) {
   const url = new URL(request.url);
   const params = readListParams(url);
   return jsonResponse(
-    buildRunsList({
+    buildLiveRunsList({
       cursor: params.cursor,
       limit: params.limit,
       status: params.status,

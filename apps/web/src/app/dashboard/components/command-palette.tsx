@@ -5,14 +5,16 @@ import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button.tsx";
 import { Input } from "@/components/ui/input.tsx";
 
-const SHORTCUTS = [
-  { label: "Overview", href: "/dashboard" },
-  { label: "Search", href: "/dashboard/search" },
-  { label: "Traces", href: "/dashboard/traces" },
-  { label: "Grants", href: "/dashboard/grants" },
-  { label: "Runs", href: "/dashboard/runs" },
-  { label: "Records", href: "/dashboard/records" },
-];
+function buildShortcuts({ basePath, overviewHref }: { basePath: string; overviewHref: string }) {
+  return [
+    { label: "Overview", href: overviewHref },
+    { label: "Search", href: `${basePath}/search` },
+    { label: "Traces", href: `${basePath}/traces` },
+    { label: "Grants", href: `${basePath}/grants` },
+    { label: "Runs", href: `${basePath}/runs` },
+    { label: "Records", href: `${basePath}/records` },
+  ];
+}
 
 function noopOpen(): void {
   // Placeholder until <CommandPalette /> mounts and installs the real opener.
@@ -37,11 +39,18 @@ export function CommandPaletteTrigger() {
   );
 }
 
-export function CommandPalette() {
+export function CommandPalette({
+  basePath = "/dashboard",
+  overviewHref = basePath,
+}: {
+  basePath?: string;
+  overviewHref?: string;
+} = {}) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const shortcuts = buildShortcuts({ basePath, overviewHref });
 
   useEffect(() => {
     openRef = { open: () => setOpen(true) };
@@ -81,7 +90,7 @@ export function CommandPalette() {
       return;
     }
     setOpen(false);
-    router.push(`/dashboard/search?q=${encodeURIComponent(trimmed)}&jump=1`);
+    router.push(`${basePath}/search?q=${encodeURIComponent(trimmed)}&jump=1`);
   }
 
   return (
@@ -109,7 +118,7 @@ export function CommandPalette() {
             value={query}
           />
           <div className="mt-3 flex flex-wrap gap-1.5 text-muted-foreground">
-            {SHORTCUTS.map((s) => (
+            {shortcuts.map((s) => (
               <Button
                 key={s.href}
                 onClick={() => {
