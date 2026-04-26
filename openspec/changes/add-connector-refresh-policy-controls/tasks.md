@@ -14,7 +14,7 @@
 ## 3. Schedule Control Plane
 
 - [x] Extend schedule projections with recommended policy, effective mode, last success, last attempt, active run, and human-attention state. (`effective_mode` reflects what the reference will actually do — `automatic` for enabled schedules, `paused` when disabled or needs-human; `recommended_policy` carries the policy hint separately. `next_due_at` deferred.)
-- [x] Preserve owner-only mutation posture for schedule changes. (`/_ref/*` routes, owner token required.)
+- [x] Preserve owner-only mutation posture for schedule changes. (`/_ref/*` schedule mutations require the owner session middleware.)
 - [x] Add policy-aware validation warnings when an owner schedules below the recommended minimum interval. (`upsertSchedule` returns `policy_warning`; HTTP response includes it; dashboard surfaces as toast. Never rejects.)
 - [x] Add scheduler behavior for interaction-required background runs: automatic run triggers `markNeedsHuman`; subsequent automatic ticks suppress to one skip record then go silent until owner clears flag via manual run.
 - [x] Add explicit skip/delay history for policy decisions. (One `needs_human_attention` skip record emitted per human-attention cycle; `single_use grant already consumed` skip record for exhausted grants.)
@@ -43,10 +43,10 @@
 ## 7. Validation
 
 - [x] Run schedule lifecycle tests. (`test/control-actions.test.js` — schedule lifecycle, policy_warning, 19 tests pass.)
-- [x] Run scheduler retry/backoff/overlap tests. (`test/scheduler.test.js` — 24 tests pass, including needs-human skip/suppression and interaction-triggered mark.)
+- [x] Run scheduler retry/backoff/overlap tests. (`test/scheduler.test.js` — 23 tests pass, including needs-human skip/suppression and interaction-triggered mark.)
 - [x] Run manifest validation tests. (`test/manifest-refresh-policy.test.js` — 13 tests pass; `test/query-contract.test.js` 40 tests pass against seeded manifests.)
 - [x] Run apps/web typecheck, check, and build. (All pass; build generates 247 static pages.)
 - [x] Run `openspec validate add-connector-refresh-policy-controls --strict`.
 - [x] Run `openspec validate --all --strict`.
 
-> Sections 3 (schedule control plane), 4 (dashboard UX), 5 (connector defaults beyond policy seeding), and the schedule-lifecycle validation in section 7 are explicitly deferred to a later tranche per the task packet for `connector-refresh-policy-controls`. Apps/web checks are deferred because no apps/web code changed in this tranche.
+> Remaining followups are section 5 connector defaults: first-party refresh posture classification, live-behavior contradiction todos, and connector progress-reporting improvements.
