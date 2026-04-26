@@ -10,8 +10,8 @@ Related: hydrate-first-party-blob-streams
 
 Track which first-party connector streams can plausibly collect binary
 bytes and how this change classifies them. The audit covers every shipped
-manifest under `packages/polyfill-connectors/manifests/` (30 connectors,
-73 streams as of 2026-04-26) so that gaps are visible rather than hidden
+manifest under `packages/polyfill-connectors/manifests/` (31 connectors,
+111 streams as of 2026-04-26) so that gaps are visible rather than hidden
 behind a single "Gmail done" headline.
 
 ## Classification Key
@@ -165,7 +165,7 @@ stream that doesn't exist in the manifest today.
 
 ## Audit Methodology (How To Re-Run)
 
-- Inventory: `ls packages/polyfill-connectors/manifests/*.json` (30
+- Inventory: `ls packages/polyfill-connectors/manifests/*.json` (31
   connectors as of 2026-04-26).
 - Per-connector stream list: `jq '.streams[].name'`.
 - Candidate filter (any field name matching binary/file/blob heuristics):
