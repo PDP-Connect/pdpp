@@ -33,6 +33,8 @@ const MOCK_OWNER_FOOTER_RENDER_RE = /<MockOwnerFooter\s*\/>/;
 const SANDBOX_OVERVIEW_ROUTE_RE = /overview:\s*["']\/sandbox\/overview["']/;
 const COMMAND_PALETTE_OVERVIEW_RE =
   /<CommandPalette\s+basePath=\{routes\.basePath\}\s+overviewHref=\{routes\.section\.overview\}\s*\/>/;
+const SITE_HEADER_RE = /SiteHeader|currentLabel=["']Sandbox["']/;
+const FORCE_DYNAMIC_RE = /export\s+const\s+dynamic\s*=\s*["']force-dynamic["']/;
 
 const PRIMARY_DASHBOARD_PAGES = [
   "overview/page.tsx",
@@ -108,6 +110,20 @@ test("/sandbox launcher is not DashboardShell-rendered", async () => {
     "the /sandbox launcher must not render DashboardShell — it is the entrypoint, not the dashboard"
   );
   assert.match(src, SANDBOX_OVERVIEW_LINK_RE, "the launcher must link into /sandbox/overview");
+});
+
+test("/sandbox layout does not render global site chrome around mock-owner dashboard pages", async () => {
+  const src = await readFile(join(SANDBOX_DIR, "layout.tsx"), "utf8");
+  assert.equal(
+    SITE_HEADER_RE.test(src),
+    false,
+    "sandbox layout must not render SiteHeader; dashboard-mode pages already render DashboardShell"
+  );
+});
+
+test("/sandbox/search is dynamic so the server page receives ?q=... search params", async () => {
+  const src = await readFile(join(SANDBOX_DIR, "search", "page.tsx"), "utf8");
+  assert.match(src, FORCE_DYNAMIC_RE);
 });
 
 test("DashboardShell in mock-owner mode swaps in the mock-owner footer (no live AS/RS probe)", async () => {

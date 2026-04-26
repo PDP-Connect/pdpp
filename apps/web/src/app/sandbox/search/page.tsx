@@ -4,7 +4,7 @@ import { sandboxRoutes } from "@/app/dashboard/components/views/routes.ts";
 import { type SearchData, SearchView } from "@/app/dashboard/components/views/search-view.tsx";
 import { sandboxDashboardDataSource } from "../_demo/data-source.ts";
 
-export const dynamic = "force-static";
+export const dynamic = "force-dynamic";
 
 function exactMatchTarget(exact: { kind: "trace" | "grant" | "run"; id: string }): string {
   if (exact.kind === "trace") {

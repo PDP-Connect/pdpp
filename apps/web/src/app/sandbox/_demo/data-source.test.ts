@@ -186,6 +186,7 @@ test("refSearch is exact-id sensitive and returns live artifact shapes", async (
 test("searchRecordsLexical paginates and returns SearchResultPage shape", async () => {
   const page = await ds.searchRecordsLexical("payroll", { limit: 25 });
   assert.equal(page.object, "list");
+  assert.ok(page.data.length > 0, "payroll should produce seeded sandbox record hits");
   for (const hit of page.data) {
     assert.equal(hit.object, "search_result");
     assert.equal(typeof hit.connector_id, "string");
