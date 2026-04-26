@@ -90,7 +90,7 @@ function DecidedState({
           className="flex h-8 w-8 items-center justify-center rounded-full text-sm"
           style={{
             backgroundColor: approved ? "var(--success)" : "var(--muted)",
-            color: approved ? "white" : "var(--muted-foreground)",
+            color: approved ? "var(--background)" : "var(--muted-foreground)",
           }}
         >
           {approved ? "✓" : "×"}
@@ -121,7 +121,7 @@ function RequesterAvatar({ logoSrc, monogram }: { logoSrc?: string; monogram: st
       style={
         logoSrc
           ? { backgroundColor: "var(--background)", border: "1px solid var(--border)" }
-          : { backgroundColor: "var(--human)", color: "white" }
+          : { backgroundColor: "var(--human)", color: "var(--background)" }
       }
     >
       {logoSrc ? (

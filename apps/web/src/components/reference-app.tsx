@@ -597,7 +597,7 @@ function OutcomeCard({
           className="flex h-8 w-8 items-center justify-center rounded-full text-sm"
           style={{
             backgroundColor: variant === "granted" ? "var(--success)" : "var(--destructive)",
-            color: "white",
+            color: variant === "granted" ? "var(--background)" : "var(--destructive-foreground)",
           }}
         >
           {variant === "granted" ? "\u2713" : "\u00d7"}
