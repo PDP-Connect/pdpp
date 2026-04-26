@@ -9,14 +9,14 @@ Each entry binds the grant to one source. Cross-source tasks need multiple entri
 | Field | Meaning | Common values |
 | --- | --- | --- |
 | `type` | Grant family | `"https://pdpp.org/data-access"` for read access |
-| `connector_id` *or* `provider_id` | Which source | `"github"`, `"gmail"`, `"usaa"`, etc. (connector) or a registered provider id (native) |
+| `connector_id` *or* `provider_id` | Which source | Exact connector id from discovery, e.g. `"https://registry.pdpp.org/connectors/github"`, or a registered provider id (native) |
 | `purpose_code` | Coarse intent | `assist.summarize`, `assist.review`, `assist.search`, `assist.draft`, `assist.export` |
 | `purpose_description` | Owner-readable why | One sentence, plain English, scoped to the task |
 | `access_mode` | Lifetime/use shape | `single_use`, `time_bounded`, `continuous` |
-| `streams[]` | Streams + fields | `[{ "name": "commits", "fields": ["repo","sha","message","committed_at"] }]` |
+| `streams[]` | Streams + fields | `[{ "name": "pull_requests", "fields": ["repository_full_name","title","updated_at"] }]` |
 | `streams[].time_range` | When applicable | `{ "since": "2026-04-01T00:00:00Z" }` or relative window |
 
-Pick `connector_id` xor `provider_id`. The reference will reject a request that names both. Use `/v1/schema` (after you have any token) or the AS metadata to learn which form your environment exposes.
+Pick `connector_id` xor `provider_id`. The reference will reject a request that names both. For connector-backed access, use the exact `source.connector_id` value from `/v1/schema` or `/v1/connectors`; do not guess short aliases like `github`.
 
 ## Choosing each field
 
@@ -41,7 +41,7 @@ Avoid `assist.train`, `assist.export.third_party`, `assist.improve_model` etc. T
 
 Read like a UI label. One sentence. Concrete subject. Concrete time bound. Concrete output.
 
-- ✅ "Summarize last week's GitHub commits in the `acme/api` repo so I can draft your weekly update."
+- ✅ "Summarize last week's GitHub issues and pull requests in the `acme/api` repo so I can draft your weekly update."
 - ✅ "Find the Spotify track you played the most last month."
 - ❌ "Need data for analysis." (too vague)
 - ❌ "Get all messages." (no scope)
@@ -65,7 +65,7 @@ This is where most agents over-ask. For each stream:
 - Set `fields` to the smallest set that answers the task. If you know you only need `from`, `subject`, `received_at`, list those three. Don't expand to `["*"]` because it's convenient.
 - If the stream supports time filters, include `time_range` with `since` and `until` ISO timestamps. Owners are far more comfortable approving a windowed grant than an open one.
 
-If you need a relationship (e.g., commits with their PRs), prefer the connector's declared `relationships[]` and request `expand[]` capability via `/v1/schema` rather than asking for a second stream.
+If you need a relationship (e.g., Gmail messages with message bodies), prefer the connector's declared `relationships[]` and request `expand[]` capability via `/v1/schema` rather than asking for a second stream.
 
 ### What *not* to put in the grant
 
@@ -77,19 +77,19 @@ If you need a relationship (e.g., commits with their PRs), prefer the connector'
 
 ### Cross-stream task on one source
 
-GitHub commits + PRs:
+GitHub issues + PRs:
 
 ```json
 {
   "authorization_details": [{
     "type": "https://pdpp.org/data-access",
-    "connector_id": "github",
+    "connector_id": "https://registry.pdpp.org/connectors/github",
     "purpose_code": "assist.summarize",
-    "purpose_description": "Summarize my last 7 days of activity (commits and PRs) on acme/api.",
+    "purpose_description": "Summarize my last 7 days of GitHub issues and pull requests on acme/api.",
     "access_mode": "time_bounded",
     "streams": [
-      { "name": "commits", "fields": ["sha","repo","message","committed_at"], "time_range": { "since": "<7d>" } },
-      { "name": "pull_requests", "fields": ["number","repo","title","merged_at","state"], "time_range": { "since": "<7d>" } }
+      { "name": "issues", "fields": ["number","repository_full_name","title","state","updated_at"], "time_range": { "since": "<7d>" } },
+      { "name": "pull_requests", "fields": ["number","repository_full_name","title","merged_at","state","updated_at"], "time_range": { "since": "<7d>" } }
     ]
   }]
 }
@@ -100,18 +100,18 @@ GitHub commits + PRs:
 Two grants, two requests, two approvals. The owner sees each one explicitly.
 
 ```text
-Grant A: connector_id=gmail, streams=[messages], time_range=last 24h
-Grant B: connector_id=calendar, streams=[events], time_range=next 24h
+Grant A: connector_id=https://registry.pdpp.org/connectors/gmail, streams=[messages], time_range=last 24h
+Grant B: connector_id=https://registry.pdpp.org/connectors/ical, streams=[events], time_range=next 24h
 ```
 
 Don't try to bundle these into one `authorization_details[]` array entry — the reference treats one entry as one source binding.
 
 ### Upgrade flow
 
-Existing grant covers `commits`. New task needs `pull_requests`. Don't request a brand-new full-source grant. Build a smaller request that names only the *additional* streams and present it as an upgrade in the purpose description:
+Existing grant covers `issues`. New task needs `pull_requests`. Don't request a brand-new full-source grant. Build a smaller request that names only the *additional* streams and present it as an upgrade in the purpose description:
 
 ```json
-"purpose_description": "Extend the existing commit-summary grant with PR data so the digest can include reviewer assignments."
+"purpose_description": "Extend the existing GitHub issue-summary grant with PR data so the digest can include reviewer assignments."
 ```
 
 Two grants now exist, the user can revoke the upgrade alone, and the audit trail stays clean.

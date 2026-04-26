@@ -95,17 +95,18 @@ A grant request goes to `POST /oauth/par`. It must say, in owner-readable langua
   "client_id": "<your-registered-client-id>",
   "client_display": {
     "name": "Claude Code · myproject",
-    "context": "Reading the user's last 30 days of GitHub commits to draft a status update."
+    "context": "Reading the user's last 30 days of GitHub issues and pull requests to draft a status update."
   },
   "authorization_details": [
     {
       "type": "https://pdpp.org/data-access",
-      "connector_id": "github",
+      "connector_id": "https://registry.pdpp.org/connectors/github",
       "purpose_code": "assist.summarize",
-      "purpose_description": "Summarize recent GitHub activity for the user.",
+      "purpose_description": "Summarize recent GitHub issues and pull requests for the user.",
       "access_mode": "time_bounded",
       "streams": [
-        { "name": "commits" }
+        { "name": "issues" },
+        { "name": "pull_requests" }
       ]
     }
   ]
@@ -117,7 +118,7 @@ Notes:
 - `purpose_description` is read by the owner. Write it as one sentence the owner would accept on a consent screen.
 - Pick the smallest set of streams that can answer the current task. Adding fields later is cheap; explaining why you grabbed extra is expensive.
 - `access_mode` should be `single_use` or `time_bounded` for one-shot tasks. Long-lived agents use `continuous` only when the user has explicitly asked for it.
-- Pick `connector_id` (polyfill-style providers) **or** `provider_id` (native PDPP providers), never both. Use `/v1/schema` (after you have *any* token) or the AS metadata to learn which form applies.
+- Pick `connector_id` (polyfill-style providers) **or** `provider_id` (native PDPP providers), never both. Use the exact connector id from `/v1/schema` or `/v1/connectors` (for example `https://registry.pdpp.org/connectors/github`), not a guessed short name.
 
 Send it:
 
@@ -134,7 +135,7 @@ You get back `{ request_uri, authorization_url, expires_in }`. Print the `author
 
 Print the URL prominently. Examples of acceptable phrasing:
 
-> "I need access to your GitHub commits to do this. Open <approval URL> and approve the request — it expires in 5 minutes. Reply 'approved' here when done."
+> "I need access to your GitHub issues and pull requests to do this. Open <approval URL> and approve the request — it expires in 5 minutes. Reply 'approved' here when done."
 
 Acceptable channels: terminal output, tmux pane, chat reply, your tool's UI surface. Never: shell history that contains the request_uri alone, log files, third-party services, anywhere the URL would persist past the owner's session.
 
@@ -171,11 +172,11 @@ This returns the connectors, streams, fields, and capabilities **this specific g
 
 See `references/query-cookbook.md`. Quick map:
 
-- "give me the last N items": `GET /v1/streams/<stream>/records?limit=N&order=newest`
-- "show changes since cursor X": `GET /v1/streams/<stream>/records?changes_since=<cursor>` (when the schema declares `changes` capability)
-- "find records matching free text": `GET /v1/search?q=…` or `GET /v1/search/hybrid?q=…` (when advertised)
+- "give me the last N items": `GET /v1/streams/<stream>/records?limit=N&order=desc`
+- "show changes since cursor X": `GET /v1/streams/<stream>/records?changes_since=<cursor>` (bootstrap with `changes_since=beginning`)
+- "find records matching free text": `GET /v1/search?q=…` or `GET /v1/search/hybrid?q=…` (when advertised; scope with repeated `streams=` or `streams[]=` values, not CSV)
 - "fetch an attachment": follow `blob_ref.fetch_url` from the record body, never construct it
-- "count or sum": `GET /v1/streams/<stream>/aggregate?…` (when advertised)
+- "count or sum": `GET /v1/streams/<stream>/aggregate?metric=count` or `metric=sum&field=<field>` (when advertised)
 
 Default to filtered queries over full-table scans. If `/v1/schema` declares a filter or `expand[]` that answers the task, prefer it.
 
@@ -206,28 +207,28 @@ Don't grab all email. Build:
 {
   "authorization_details": [{
     "type": "https://pdpp.org/data-access",
-    "connector_id": "gmail",
+    "connector_id": "https://registry.pdpp.org/connectors/gmail",
     "purpose_code": "assist.summarize",
     "purpose_description": "Summarize emails from <sender> for the past 7 days.",
     "access_mode": "single_use",
-    "streams": [{ "name": "messages", "fields": ["from","subject","received_at","snippet"] }]
+    "streams": [{ "name": "messages", "fields": ["from_email","from_name","subject","received_at","snippet"] }]
   }]
 }
 ```
 
-After approval, query `/v1/streams/messages/records?from=<sender>&since=<7d>&limit=50`. Don't fetch full bodies until the summary needs them; fetch via `blob_ref.fetch_url` only for messages you actually surface.
+After approval, query `/v1/streams/messages/records?filter[from_email]=<sender>&filter[received_at][gte]=<7d-iso>&limit=50&order=desc`. Don't fetch full bodies until the summary needs them; request `expand=message_bodies` only when the grant covers the related stream, and follow `blob_ref.fetch_url` only for attachment blobs you actually surface.
 
 ### Finance triage
 
 User: "Did anything weird hit my checking account this month?"
 
-Use `connector_id: "usaa"` (or whichever finance connector the user has), stream `transactions`, fields `posted_at`, `amount`, `merchant`, `category`, time-bounded to the current month. `purpose_code: "assist.review"`, `access_mode: time_bounded`. Don't request `account_number`, `routing_number`, or any field not needed for the answer.
+Use the exact finance connector id from `/v1/schema` (for example `https://registry.pdpp.org/connectors/ynab` or `https://registry.pdpp.org/connectors/usaa`), stream `transactions`, fields such as `date`, `amount`, `payee_name`/`description`, and `category_name`, time-bounded to the current month. `purpose_code: "assist.review"`, `access_mode: time_bounded`. Don't request account numbers, routing numbers, or any field not needed for the answer.
 
 ### Coding history
 
-User: "Draft my weekly status update from this week's commits."
+User: "Draft my weekly status update from this week's engineering activity."
 
-`connector_id: "github"` (or `claude-code` if you want assistant memory), streams `commits` and optionally `pull_requests`, fields `repo`, `message`, `committed_at`, `additions`, `deletions`, time-bounded to 7 days. `purpose_code: "assist.summarize"`.
+Use the data source that actually has the activity. Current first-party GitHub exposes `issues` and `pull_requests`, not a `commits` stream; request fields such as `repository_full_name`, `title`, `state`, `updated_at`, `merged_at`, `additions`, and `deletions`. If the user wants coding-agent history, prefer `https://registry.pdpp.org/connectors/claude-code` or `https://registry.pdpp.org/connectors/codex` streams that `/v1/schema` shows as available.
 
 ### Cross-connector assistant memory
 
@@ -241,7 +242,7 @@ The `purpose_description` ends up on the user's consent screen. Write each one f
 
 - Bad: `"Get records for analysis."`
 - Bad: `"data_access scope=read"`
-- Good: `"Read your last 30 days of GitHub commits so I can draft a status update."`
+- Good: `"Read your last 30 days of GitHub issues and pull requests so I can draft a status update."`
 - Good: `"Look up your Spotify listens from yesterday so I can recommend a new playlist."`
 
 If you cannot write a one-sentence purpose the owner would approve at a glance, the request is too broad. Narrow it.

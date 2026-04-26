@@ -50,7 +50,7 @@ Read the token only at the moment of the HTTP call. Do not bind it to a long-liv
 
 ```bash
 TOKEN=$(cat .pdpp/tokens/<grant-id>.token); \
-  curl -fsS "$RS_URL/v1/streams/commits/records?limit=10" \
+  curl -fsS "$RS_URL/v1/streams/pull_requests/records?limit=10&order=desc" \
     -H "Authorization: Bearer $TOKEN"; \
   unset TOKEN
 ```
@@ -59,7 +59,7 @@ TOKEN=$(cat .pdpp/tokens/<grant-id>.token); \
 with open(token_path, "r") as f:
     token = f.read().strip()
 try:
-    response = httpx.get(f"{RS_URL}/v1/streams/commits/records",
+    response = httpx.get(f"{RS_URL}/v1/streams/pull_requests/records",
                         params={"limit": 10},
                         headers={"Authorization": f"Bearer {token}"})
 finally:

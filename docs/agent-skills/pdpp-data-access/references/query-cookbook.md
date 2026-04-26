@@ -18,14 +18,22 @@ The response shape:
   "bearer": { "token_kind": "client", "scope": "grant", "grant_id": "…", "client_id": "…" },
   "connectors": [
     {
-      "source": { "binding_kind": "connector", "connector_id": "github" },
+      "source": { "binding_kind": "connector", "connector_id": "https://registry.pdpp.org/connectors/gmail" },
       "streams": [
         {
-          "name": "commits",
-          "fields": ["sha","repo","message","committed_at","author"],
-          "filters": ["repo","author","since","until"],
-          "expand": [{ "name": "pull_request", "stream": "pull_requests" }],
-          "supports": { "records": true, "search": true, "aggregate": true, "changes_since": true, "blobs": false }
+          "object": "stream_metadata",
+          "name": "messages",
+          "schema": { "type": "object", "properties": { "received_at": { "type": "string", "format": "date-time" } } },
+          "query": { "range_filters": { "received_at": ["gte", "lt"] } },
+          "field_capabilities": {
+            "received_at": {
+              "granted": true,
+              "range_filter": { "declared": true, "usable": true, "operators": ["gte", "lt"] }
+            }
+          },
+          "expand_capabilities": [
+            { "name": "message_bodies", "stream": "message_bodies", "granted": true, "usable": true }
+          ]
         }
       ]
     }
@@ -33,56 +41,63 @@ The response shape:
 }
 ```
 
-**Use the `supports` map literally.** If `supports.changes_since` is false, do not call `?changes_since=…` — the server will reject. If a field isn't listed in `fields`, it's not in your grant.
+Use `field_capabilities`, `query`, and `expand_capabilities` literally. If a field's capability is not `usable`, do not call that filter/search/aggregation. If a stream does not list an `expand_capabilities` entry as `usable`, do not request that expansion. If a field is not present under `schema.properties`, it is not visible under your grant.
 
 ## Records
 
-List records (newest first):
+List records (newest first). Use `order=asc` or `order=desc` only:
 
 ```bash
-curl -fsS "$RS_URL/v1/streams/commits/records?limit=50&order=newest" \
+curl -fsS "$RS_URL/v1/streams/pull_requests/records?limit=50&order=desc" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
-Filter by declared filters (only those listed in `schema.connectors[].streams[].filters`):
+Filter by declared filters. Exact filters use `filter[field]=value`; range filters use `filter[field][op]=value` and require a declared range operator:
 
 ```bash
-curl -fsS "$RS_URL/v1/streams/commits/records?repo=acme/api&since=2026-04-18T00:00:00Z&limit=200" \
+curl -fsS "$RS_URL/v1/streams/pull_requests/records?filter[repository_full_name]=acme/api&filter[updated_at][gte]=2026-04-18T00:00:00Z&limit=200&order=desc" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
 Get one record by id:
 
 ```bash
-curl -fsS "$RS_URL/v1/streams/commits/records/<sha>" -H "Authorization: Bearer $TOKEN"
+curl -fsS "$RS_URL/v1/streams/pull_requests/records/<id>" -H "Authorization: Bearer $TOKEN"
 ```
 
-Pagination: every list response includes `next_cursor` when more results exist. Pass it back as `?cursor=…`. Don't loop unboundedly; pick a stop condition tied to the user's task ("first 200 commits" or "until the date drops below X").
+Pagination: every list response includes `next_cursor` when more results exist. Pass it back as `?cursor=…`. Don't loop unboundedly; pick a stop condition tied to the user's task ("first 200 pull requests" or "until the date drops below X").
 
 ## Changes since cursor
 
 Use this *instead of* re-pulling the full stream when you already have a cursor from a prior call:
 
 ```bash
-curl -fsS "$RS_URL/v1/streams/commits/records?changes_since=$LAST_CURSOR" \
+curl -fsS "$RS_URL/v1/streams/pull_requests/records?changes_since=$LAST_CURSOR" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
-Save the new `next_cursor` (or the response's `changes_cursor` field if present) into `grants/<grant-id>.json` so the next session resumes correctly. To bootstrap, pass `changes_since=beginning`.
+Save the response's `next_changes_since` into `grants/<grant-id>.json` so the next session resumes correctly. If the response also includes `next_cursor`, use it only to page within the same changes window. To bootstrap, pass `changes_since=beginning`.
 
 ## Search
 
 Lexical (always available when `/v1/search` is advertised):
 
 ```bash
-curl -fsS "$RS_URL/v1/search?q=acme%20launch&streams=messages,commits&limit=20" \
+curl -fsS "$RS_URL/v1/search?q=acme%20launch&limit=20" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
-Hybrid or semantic (only when the AS advertises `pdpp_provider_connect_capabilities` includes the corresponding flag and `/v1/schema` confirms `supports.search` for the stream):
+Scope search with repeated `streams=` entries or `streams[]=` entries, not CSV:
 
 ```bash
-curl -fsS "$RS_URL/v1/search/hybrid?q=acme%20launch&limit=20" \
+curl -fsS "$RS_URL/v1/search?q=acme%20launch&streams=messages&streams=pull_requests&limit=20" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+Hybrid or semantic (only when protected-resource metadata advertises `hybrid_retrieval` / `semantic_retrieval` and `/v1/schema` confirms the relevant fields are searchable):
+
+```bash
+curl -fsS "$RS_URL/v1/search/hybrid?q=acme%20launch&streams[]=messages&limit=20" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
@@ -90,14 +105,14 @@ Hybrid is the right default when available — it combines lexical and semantic.
 
 ## Aggregations
 
-Counts, sums, time histograms — when `supports.aggregate` is true:
+Counts, sums, time histograms — when the stream metadata advertises usable aggregation for the field:
 
 ```bash
-curl -fsS "$RS_URL/v1/streams/commits/aggregate?metric=count&group_by=repo&since=2026-04-01T00:00:00Z" \
+curl -fsS "$RS_URL/v1/streams/transactions/aggregate?metric=sum&field=amount&group_by=account_type&filter[date][gte]=2026-04-01" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
-Use aggregations before you reach for paginated record scans. "Top 5 repos by commits this month" is one aggregate call, not one full scan.
+Use aggregations before you reach for paginated record scans. "Total transaction amount by account type this month" is one aggregate call, not one full scan.
 
 ## Blobs (attachments, file bodies, binary)
 
@@ -119,24 +134,24 @@ Records that have attached binaries return a `blob_ref`:
 curl -fsS "$RS_URL/v1/blobs/b_456" -H "Authorization: Bearer $TOKEN" -o lease.pdf
 ```
 
-If `supports.blobs` is false for the stream, the records will not include `blob_ref` and `/v1/blobs/*` calls will return 404 or `insufficient_scope`.
+If the relevant stream/field does not expose `blob_ref`, the records will not include fetchable blob pointers and `/v1/blobs/*` calls will return 404 or `insufficient_scope`.
 
 ## Relationships and `expand[]`
 
-When the manifest declares relationships (e.g., commits → pull_request), the schema lists them under `streams[].expand`. Request hydration via `expand`:
+When the manifest declares relationships (e.g., Gmail `messages` → `message_bodies`), the schema lists them under `expand_capabilities`. Request hydration via `expand`:
 
 ```bash
-curl -fsS "$RS_URL/v1/streams/commits/records?expand=pull_request&limit=20" \
+curl -fsS "$RS_URL/v1/streams/messages/records?expand=message_bodies&limit=20" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
-Don't fan out into a second `pull_requests` query unless you actually need fields the relationship doesn't expose. `expand[]` keeps the call inside one grant boundary.
+Don't fan out into a second query unless you actually need fields the relationship doesn't expose. `expand[]` keeps the call inside one grant boundary.
 
 ## Aggregation patterns by task
 
 | Task | Pattern |
 | --- | --- |
-| "Summarize last week" | filtered records by `since`, then `aggregate` for top-N grouping |
+| "Summarize last week" | filtered records with `filter[date_field][gte]=…`, then `aggregate` for top-N grouping |
 | "Find anything that mentions X" | `search/hybrid` (or `search` if hybrid unavailable) |
 | "Triage anomalies" | aggregate by category/amount/sender, then drill into outliers via records |
 | "Resume incremental sync" | `changes_since=<saved-cursor>` |
