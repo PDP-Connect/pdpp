@@ -9,6 +9,22 @@ Short-term Docker interaction support is specifically **host browser control**:
 
 This change SHALL NOT pursue noVNC, WebRTC, or browser streaming for the short-term local-device tranche. Remote browser streaming remains a separate future deployment question.
 
+## Collection Profile Boundary
+
+This change does **not** finalize new Collection Profile semantics for
+`browser_automation` capability subfields. The host bridge is a reference
+deployment realization of browser automation, not a connector-declared
+semantic requirement.
+
+The unresolved spec question is whether the Collection Profile should refine
+`browser_automation` so connectors can declare browser capability requirements
+such as profile persistence, owner-visible interaction, and headless
+sufficiency while runtimes choose how to satisfy them. That question is
+captured in
+`design-notes/browser-binding-semantics-gap-2026-04-26.md` and MUST be
+promoted to its own OpenSpec change before any durable manifest semantics or
+conformance requirements are added.
+
 ## Profile Posture
 
 The default host-browser bridge SHALL use dedicated PDPP host profiles, not the user's daily Chrome profile.

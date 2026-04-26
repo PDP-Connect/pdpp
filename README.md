@@ -181,6 +181,16 @@ behave as before (in-container Chromium). See
 `openspec/changes/design-host-browser-bridge-for-docker/design.md` for the
 full design.
 
+Current Docker connector-support posture:
+
+| Connector(s) | Docker posture | Operator requirement | Current caveat |
+| --- | --- | --- | --- |
+| YNAB, GitHub | Supported without browser automation. | Provide the connector's token/PAT through `.env.docker`, shell env, or Docker secrets. | Connector correctness is still subject to live upstream behavior and each connector's declared stream contract. |
+| Gmail, Slack | Supported when their non-browser inputs are supplied. | Provide credentials/tokens and mount any local archives explicitly. | Interactive credential prompts happen through the run interaction UI; archive-backed streams only see files mounted into the container. |
+| OpenAI Codex CLI, Claude Code | Filesystem-only; supported in same-host Docker when host agent state is mounted read-only. | Add a local Compose override such as `${HOME}/.codex:/root/.codex:ro` and `${HOME}/.claude:/root/.claude:ro`; no extra env vars are needed because the connectors default to `~/.codex` and `~/.claude`. | Default Compose uses a named `pdpp-home` volume, so it does **not** see your host Codex/Claude history unless you mount it. Multi-device collection belongs to the proposed local-device exporter topology. |
+| Amazon, Chase, ChatGPT, Reddit, USAA | Browser-backed; Docker needs the host browser bridge for owner-visible login/challenge flows. | Start `host-browser-bridge.ts`, export the printed bridge URL/token, then run Compose. | Today the bridge is opt-in; the remaining gap is stricter fail-fast behavior when a browser-interactive Docker run has no visible-browser backend. Future remote deployments may use a streamed-browser backend instead. |
+| Spotify and other API/import connectors | Depends on connector maturity and required credentials/files. | Supply each connector's documented env vars or mounted files. | Some connectors are still fixture/pilot quality rather than proven live-account Docker flows. |
+
 CI builds Docker targets on pull requests without pushing images. On `main`,
 semantic-release creates GitHub releases from Conventional Commits and the same
 release workflow publishes stable GHCR tags for both Docker targets. Maintainers

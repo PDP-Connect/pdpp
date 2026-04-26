@@ -70,14 +70,16 @@ Do **not** use:
 
 ## 0. Browser architecture (for scrapers)
 
-All scraping connectors use `acquireIsolatedBrowser({ profileName: '<connector>' })` from `src/browser-launch.ts`. This:
+Browser-backed connectors declare `browser: { profileName, headless }`; the runtime then calls `acquireBrowserForConnector()` from `src/browser-launch.ts`. This routes through the host browser bridge when explicitly configured for Docker, otherwise it falls back to the native isolated launcher.
+
+Native isolated launches use `acquireIsolatedBrowser({ profileName: '<connector>' })`. This:
 
 - Launches patchright-patched Chrome per connector run (full stealth: launch-side AND client-side).
 - Uses a persistent profile directory at `~/.pdpp/profiles/<connector>/`, so cookies, localStorage, and trusted-device state persist across runs of that connector.
 - Is isolated from other connectors (different profile dir = different fingerprint, different cookies, no cross-contamination).
 - Supports concurrent runs across connectors (each connector has its own browser process; no lockfile).
 
-This is the only browser-launch primitive. The legacy shared browser daemon and shared profile launcher were retired 2026-04-25 (`openspec/changes/retire-browser-daemon`).
+The runtime router is the only connector-facing browser-launch primitive. The legacy shared browser daemon and shared profile launcher were retired 2026-04-25 (`openspec/changes/retire-browser-daemon`).
 
 Multi-account note: the runtime today defaults `profileName` to the connector name, which is single-account by design. When multi-account support ships, the convention will become `${connectorName}__${subjectId}` so two accounts on the same platform get independent profile directories.
 
