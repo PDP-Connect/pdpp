@@ -116,25 +116,62 @@ Use aggregations before you reach for paginated record scans. "Total transaction
 
 ## Blobs (attachments, file bodies, binary)
 
-Records that have attached binaries return a `blob_ref`:
+`blob_ref.fetch_url` is the **only** PDPP-API way to discover and fetch byte payload. There is no resource-specific `/content`, `/download`, or `/file` URL; do not construct one. Walking the chain looks like this:
 
-```json
-{
-  "id": "msg_123",
-  "subject": "Lease renewal",
-  "attachments": [
-    { "filename": "lease.pdf", "blob_ref": { "blob_id": "b_456", "fetch_url": "/v1/blobs/b_456" } }
-  ]
-}
-```
+1. List records on a stream that carries binary payload (e.g. Gmail `attachments`). Make sure your grant covers both the stream itself **and** the `blob_ref` field — without the field grant the response omits `blob_ref` entirely.
+2. The response's record body includes `blob_ref` with `blob_id`, `mime_type`, `size_bytes`, `sha256`, and a server-injected `fetch_url`:
 
-**Always use `blob_ref.fetch_url`. Do not construct the URL yourself.** It may be relative (prepend `$RS_URL`) or absolute; the reference returns relative.
+   ```json
+   {
+     "id": "att_789",
+     "filename": "lease.pdf",
+     "content_type": "application/pdf",
+     "size_bytes": 184320,
+     "hydration_status": "hydrated",
+     "blob_ref": {
+       "blob_id": "b_456",
+       "mime_type": "application/pdf",
+       "size_bytes": 184320,
+       "sha256": "a1b2c3...",
+       "fetch_url": "/v1/blobs/b_456"
+     }
+   }
+   ```
+
+3. Fetch the bytes by following `fetch_url` exactly as returned. Treat it as opaque: it may be relative (prepend `$RS_URL`) or absolute, and a future RS may return a 302 to a short-lived signed URL — your code should `--location` follow but not parse.
+
+   ```bash
+   curl -fsSL "$RS_URL/v1/blobs/b_456" -H "Authorization: Bearer $TOKEN" -o lease.pdf
+   ```
+
+**Common mistakes to avoid:**
+
+- ❌ Building a `/v1/streams/attachments/records/{id}/content` URL. That endpoint does not exist; the byte transport is always `/v1/blobs/{blob_id}` reached via `fetch_url`.
+- ❌ Building a `/v1/blobs/{blob_id}/download` URL or appending query strings. `GET /v1/blobs/{blob_id}` is the contract; `HEAD` works for size checks and `Range` is supported for large files.
+- ❌ Caching `fetch_url` across grants or sharing it between tokens. The bytes are gated by the same grant that surfaced the record; a stale or wrong-grant fetch will 404 or 403.
+
+If your records call returns no `blob_ref` field at all, the issue is one of:
+
+- The grant doesn't cover the `blob_ref` field on this stream — re-request the grant including that field.
+- The record's `hydration_status` is `deferred`, `failed`, `too_large`, `unavailable`, or `blocked`. The metadata row is real; the bytes are not. Surface the status to the user honestly rather than retrying.
+- The connector for this stream has not yet been migrated to emit `blob_ref` (see [openspec/changes/hydrate-first-party-blob-streams](../../../../openspec/changes/hydrate-first-party-blob-streams/) for the hydration audit). Today, only Gmail `attachments` ships hydration.
+
+### Cookbook example: fetch a recent attachment end-to-end
 
 ```bash
-curl -fsS "$RS_URL/v1/blobs/b_456" -H "Authorization: Bearer $TOKEN" -o lease.pdf
+# 1. Find an attachment record with a hydrated blob.
+curl -fsS "$RS_URL/v1/streams/attachments/records?filter[hydration_status]=hydrated&limit=5" \
+  -H "Authorization: Bearer $TOKEN" | jq '.data[0]'
+
+# 2. The response includes blob_ref. Pull blob_id and fetch_url out of it.
+BLOB_FETCH_URL=$(curl -fsS "$RS_URL/v1/streams/attachments/records?filter[hydration_status]=hydrated&limit=1" \
+  -H "Authorization: Bearer $TOKEN" | jq -r '.data[0].blob_ref.fetch_url')
+
+# 3. Follow fetch_url verbatim. -L follows any 302 the RS may emit to a signed URL.
+curl -fsSL "$RS_URL$BLOB_FETCH_URL" -H "Authorization: Bearer $TOKEN" -o downloaded.bin
 ```
 
-If the relevant stream/field does not expose `blob_ref`, the records will not include fetchable blob pointers and `/v1/blobs/*` calls will return 404 or `insufficient_scope`.
+If you reached this stream via `expand=attachments` on a parent record (e.g. `messages`), the same `blob_ref.fetch_url` field appears inside the expanded child object. Same rule: use it as-is.
 
 ## Relationships and `expand[]`
 

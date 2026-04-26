@@ -104,6 +104,18 @@ When the flow breaks, work the failure top-down: discovery → registration → 
 
 - Blob expired or wasn't ingested. Don't synthesize a URL; tell the user the attachment isn't available via this grant.
 
+**Symptom:** A record that should have an attachment is missing `blob_ref` entirely.
+
+- Three possibilities, in order of likelihood:
+  1. The grant doesn't include the `blob_ref` field on this stream — re-request the grant including it.
+  2. The record's `hydration_status` is `deferred`, `failed`, `too_large`, `unavailable`, or `blocked`. The metadata is real; the bytes are not. Surface the status to the user; don't retry blindly.
+  3. The connector for this stream hasn't yet been migrated to emit `blob_ref` (today only Gmail `attachments` ships hydration). Tell the user the bytes are not yet plumbed.
+- Do **not** guess at `/v1/streams/.../{id}/content` or `/v1/blobs/{id}/download` — neither is part of the PDPP API.
+
+**Symptom:** Tempted to construct a `/content` or `/download` URL.
+
+- Stop. The PDPP byte-fetch contract is `GET /v1/blobs/{blob_id}` reached through `blob_ref.fetch_url`. Anything else is a guess that may work today against one implementation and silently break against another.
+
 **Symptom:** Aggregate or search endpoint returns `unsupported_capability`.
 
 - `/v1/schema` advertised what's available; trust it. If you skipped the schema check, do it now.

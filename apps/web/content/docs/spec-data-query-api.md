@@ -231,7 +231,15 @@ Returns a single record. Supports `expand[]`.
 GET /v1/blobs/{blob_id}
 ```
 
-Returns raw binary data. The resource server authorizes blob access by verifying that:
+This is the **only** PDPP-API path for byte payload. Clients discover bytes by:
+
+1. Querying records on a stream that declares `blob_ref` (e.g. Gmail `attachments`).
+2. Reading the server-injected `blob_ref.fetch_url` from the record body.
+3. Following that URL verbatim.
+
+There is no resource-specific `/content`, `/download`, or `/file` endpoint. URL forms like `/v1/streams/attachments/records/{id}/content` or `/v1/blobs/{blob_id}/download` are **not** part of the PDPP API; do not generate or rely on them. If you need bytes and a record's `blob_ref` is missing or null, the answer is "those bytes are not available under this grant" — not "guess another URL."
+
+The resource server authorizes blob access by verifying that:
 1. The grant includes a stream containing a record that references this `blob_id`
 2. The referencing record passes all grant filters (time_range, fields)
 3. The `blob_ref` field itself is included in the grant's authorized field projection (if the grant uses a `fields` allowlist)
@@ -246,7 +254,7 @@ ETag: "a1b2c3..."
 Cache-Control: private, max-age=3600
 ```
 
-The server may return a `302` redirect to a short-lived signed URL for the actual blob storage.
+The server may return a `302` redirect to a short-lived signed URL for the actual blob storage. Treat `fetch_url` as opaque and follow redirects (e.g. `curl -L`); do not parse, cache, or share it across grants.
 
 `HEAD` is supported for size checks. `Range` headers are recommended for large files.
 
