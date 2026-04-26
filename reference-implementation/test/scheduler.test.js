@@ -2426,3 +2426,141 @@ rl.on('line', (line) => {
     }
   }
 });
+
+test('scheduler skips automatic run with needs_human_attention when isNeedsHuman returns true', async () => {
+  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, 'manifests/spotify.json'), 'utf8'));
+  const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
+  const asUrl = `http://localhost:${server.asPort}`;
+  const rsUrl = `http://localhost:${server.rsPort}`;
+  const completedRuns = [];
+
+  try {
+    const registerResp = await fetchJson(`${asUrl}/connectors`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(spotifyManifest),
+    });
+    assert.equal(registerResp.status, 201);
+
+    const ownerToken = await issueOwnerToken(asUrl, 'scheduler_nhuman_skip_user');
+    const scheduler = createScheduler({
+      connectors: [
+        {
+          connectorId: spotifyManifest.connector_id,
+          connectorPath: join(REFERENCE_IMPL_DIR, 'connectors/seed/index.js'),
+          manifest: spotifyManifest,
+          ownerToken,
+          intervalMs: 25,
+          maxRetries: 0,
+        },
+      ],
+      rsUrl,
+      onInteraction: async () => ({ status: 'cancelled' }),
+      onRunComplete: (record) => completedRuns.push(record),
+      getState: async () => null,
+      setState: async () => {},
+      isNeedsHuman: () => true,
+    });
+
+    scheduler.start();
+    await waitFor(() => completedRuns.length >= 1, 5000);
+    scheduler.stop();
+
+    const [first] = completedRuns;
+    assert.equal(first.status, 'skipped');
+    assert.equal(first.attempt, 0);
+    assert.ok(
+      first.error?.startsWith('needs_human_attention:'),
+      `expected needs_human_attention skip, got: ${first.error}`,
+    );
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test('scheduler marks connector as needs-human when automatic run triggers interaction', async () => {
+  const manifest = {
+    protocol_version: '0.1.0',
+    connector_id: 'https://registry.pdpp.org/connectors/scheduler-interaction-test',
+    version: '1.0.0',
+    display_name: 'Interaction Test Connector',
+    streams: [
+      {
+        name: 'items',
+        semantics: 'append_only',
+        schema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] },
+        primary_key: ['id'],
+      },
+    ],
+  };
+
+  const tmpDir = mkdtempSync(join(tmpdir(), 'pdpp-scheduler-interaction-'));
+  const connectorPath = join(tmpDir, 'connector.mjs');
+  // Connector that emits one INTERACTION then exits after response.
+  writeFileSync(connectorPath, `
+import { createInterface } from 'readline';
+process.on('SIGTERM', () => process.exit(1));
+const rl = createInterface({ input: process.stdin, terminal: false });
+rl.on('line', (line) => {
+  const msg = JSON.parse(line);
+  if (msg.type === 'INTERACTION_RESPONSE') {
+    process.stdout.write(JSON.stringify({ type: 'DONE', status: 'succeeded' }) + '\\n');
+    process.exit(0);
+  }
+  if (msg.type !== 'START') return;
+  process.stdout.write(JSON.stringify({
+    type: 'INTERACTION',
+    request_id: 'req_1',
+    kind: 'otp',
+    message: 'Enter OTP',
+  }) + '\\n');
+});
+`, 'utf-8');
+
+  const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
+  const asUrl = `http://localhost:${server.asPort}`;
+  const rsUrl = `http://localhost:${server.rsPort}`;
+  const completedRuns = [];
+  const markedConnectors = [];
+
+  try {
+    const registerResp = await fetchJson(`${asUrl}/connectors`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(manifest),
+    });
+    assert.equal(registerResp.status, 201);
+
+    const ownerToken = await issueOwnerToken(asUrl, 'scheduler_interaction_user');
+    const scheduler = createScheduler({
+      connectors: [
+        {
+          connectorId: manifest.connector_id,
+          connectorPath,
+          manifest,
+          ownerToken,
+          intervalMs: 60_000,
+          maxRetries: 0,
+        },
+      ],
+      rsUrl,
+      onInteraction: async () => ({ status: 'cancelled' }),
+      onRunComplete: (record) => completedRuns.push(record),
+      getState: async () => null,
+      setState: async () => {},
+      markNeedsHuman: (connectorId) => markedConnectors.push(connectorId),
+    });
+
+    scheduler.start();
+    await waitFor(() => completedRuns.length >= 1, 8000);
+    scheduler.stop();
+
+    assert.ok(
+      markedConnectors.includes(manifest.connector_id),
+      'markNeedsHuman should be called when an automatic run triggers an interaction',
+    );
+  } finally {
+    rmSync(tmpDir, { recursive: true, force: true });
+    await closeServer(server);
+  }
+});

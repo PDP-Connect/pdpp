@@ -143,10 +143,14 @@ export type InteractionHandler = (...args: unknown[]) => unknown;
 export type RunCompleteHandler = (record: RunRecord) => void;
 export type GetStateHandler = (connectorId: string) => Promise<unknown>;
 export type SetStateHandler = (connectorId: string, state: unknown) => Promise<void>;
+export type NeedsHumanHandler = (connectorId: string) => void;
+export type IsNeedsHumanHandler = (connectorId: string) => boolean;
 
 export interface SchedulerOptions {
   connectors: readonly ConnectorSchedule[];
   getState?: GetStateHandler;
+  isNeedsHuman?: IsNeedsHumanHandler;
+  markNeedsHuman?: NeedsHumanHandler;
   onInteraction: InteractionHandler;
   onRunComplete?: RunCompleteHandler;
   rsUrl?: string;
@@ -325,6 +329,21 @@ function buildDisabledGrantSkip(connectorId: string, terminalReason: TerminalGra
   };
 }
 
+function buildNeedsHumanSkip(connectorId: string): RunRecord {
+  return {
+    connectorId,
+    source: buildScheduledRunSource(connectorId),
+    status: "skipped",
+    recordsEmitted: 0,
+    checkpointSummary: null,
+    knownGaps: [],
+    startedAt: nowIso(),
+    completedAt: nowIso(),
+    error: "needs_human_attention: automatic run skipped until owner provides input",
+    attempt: 0,
+  };
+}
+
 // ─── Result → record ────────────────────────────────────────────────────────
 
 function buildSuccessOrFailureRecord({
@@ -436,6 +455,10 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
     setState = async () => {
       // no-op
     },
+    markNeedsHuman = () => {
+      // no-op
+    },
+    isNeedsHuman = () => false,
   } = opts;
 
   const runtime = buildRuntime();
@@ -585,7 +608,7 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
     return failRecord;
   }
 
-  async function executeRun(schedule: ConnectorSchedule): Promise<RunRecord | null> {
+  async function executeRun(schedule: ConnectorSchedule, isManual = false): Promise<RunRecord | null> {
     const { connectorId, connectorPath, manifest, ownerToken, grantAccessMode = "continuous" } = schedule;
 
     if (runtime.activeRuns.has(connectorId)) {
@@ -594,6 +617,13 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
     runtime.activeRuns.add(connectorId);
 
     try {
+      // Automatic runs skip connectors that previously surfaced a human-attention
+      // interaction. Manual runs (isManual=true) bypass this gate so the owner
+      // can resolve the issue. The controller also clears the flag on runNow.
+      if (!isManual && isNeedsHuman(connectorId)) {
+        return recordAndNotify(buildNeedsHumanSkip(connectorId));
+      }
+
       const singleUseSkip = maybeSkipSingleUseExhausted(connectorId, grantAccessMode);
       if (singleUseSkip) {
         return singleUseSkip;
@@ -611,6 +641,17 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
       const state = narrowState(await getState(connectorId));
       const collectionMode: "full_refresh" | "incremental" = state ? "incremental" : "full_refresh";
 
+      // Wrap onInteraction to detect when an automatic run surfaces a
+      // human-attention interaction. We mark the connector as needs-human
+      // so subsequent automatic ticks skip it rather than repeatedly
+      // prompting for OTP or manual browser action.
+      const wrappedInteraction: InteractionHandler = (interaction) => {
+        if (!isManual) {
+          markNeedsHuman(connectorId);
+        }
+        return onInteraction(interaction);
+      };
+
       return await runWithRetries(schedule, {
         connectorPath,
         connectorId,
@@ -620,7 +661,7 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
         collectionMode,
         persistState,
         rsUrl,
-        onInteraction,
+        onInteraction: wrappedInteraction,
         onProgress: () => {
           // no-op; progress is driven by the runtime's own logging.
         },

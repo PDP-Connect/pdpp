@@ -112,6 +112,7 @@ export interface ConnectorSummary {
   readonly last_run: ConnectorRunSummary | null;
   readonly last_successful_run: ConnectorRunSummary | null;
   readonly manifest_version: string | null;
+  readonly refresh_policy: unknown;
   readonly schedule: unknown;
   readonly streams: string[];
   readonly total_records: number;
@@ -390,6 +391,12 @@ function getScheduleFrom(controller: ControllerLike | null | undefined, connecto
   return Promise.resolve(null);
 }
 
+function extractRefreshPolicy(manifest: ConnectorManifest): unknown {
+  const caps = manifest.capabilities as Record<string, unknown> | undefined;
+  if (!caps || typeof caps !== "object") return null;
+  return caps.refresh_policy ?? null;
+}
+
 export function listConnectorSummaries(controller?: ControllerLike | null): Promise<ConnectorSummary[]> {
   const rows = listRegisteredConnectorRows();
   return Promise.all(
@@ -408,6 +415,7 @@ export function listConnectorSummaries(controller?: ControllerLike | null): Prom
         streams: (manifest.streams || []).map((stream) => stream.name),
         total_records: live.totalRecords,
         freshness: live.freshness,
+        refresh_policy: extractRefreshPolicy(manifest),
         schedule,
         last_run: lastRun,
         last_successful_run: lastSuccessfulRun,

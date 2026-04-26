@@ -14,7 +14,15 @@ interface NavItem {
   match: (active: DashboardSection) => boolean;
 }
 
-export type DashboardSection = "overview" | "search" | "traces" | "grants" | "runs" | "records" | "deployment";
+export type DashboardSection =
+  | "overview"
+  | "search"
+  | "traces"
+  | "grants"
+  | "runs"
+  | "records"
+  | "schedules"
+  | "deployment";
 
 /**
  * Shell binding mode.
@@ -40,6 +48,7 @@ function buildNav(routes: Routes): NavItem[] {
     { href: routes.section.grants, label: "Grants", match: (a) => a === "grants" },
     { href: routes.section.runs, label: "Runs", match: (a) => a === "runs" },
     { href: routes.section.records, label: "Records", match: (a) => a === "records" },
+    { href: routes.section.schedules, label: "Schedules", match: (a) => a === "schedules" },
     { href: routes.section.deployment, label: "Deployment", match: (a) => a === "deployment" },
   ];
 }

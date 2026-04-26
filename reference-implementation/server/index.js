@@ -2119,6 +2119,19 @@ function buildAsApp(opts = {}) {
     }
   });
 
+  app.get('/_ref/connectors/:connectorId/schedule', async (req, res) => {
+    try {
+      const connectorId = decodeURIComponent(req.params.connectorId);
+      const schedule = controller ? await controller.getSchedule(connectorId) : null;
+      if (!schedule) {
+        return pdppError(res, 404, 'not_found', `No schedule for connector: ${connectorId}`);
+      }
+      res.json(schedule);
+    } catch (err) {
+      handleError(res, err);
+    }
+  });
+
   // /_ref/deployment — reference operator diagnostics. Not a PDPP protocol
   // surface; the dashboard's /dashboard/deployment page reads this. Secret
   // redaction is enforced inside collectDeploymentDiagnostics.
@@ -2166,8 +2179,13 @@ function buildAsApp(opts = {}) {
       try {
         const connectorId = decodeURIComponent(req.params.connectorId);
         await resolveRegisteredConnectorManifest(connectorId);
-        const schedule = await controller.upsertSchedule(connectorId, req.body || {});
-        res.json(schedule);
+        const result = await controller.upsertSchedule(connectorId, req.body || {});
+        // Include policy_warning in the response so dashboard can surface it
+        // without a second round-trip.
+        const responseBody = result.policy_warning
+          ? { ...result.schedule, policy_warning: result.policy_warning }
+          : result.schedule;
+        res.json(responseBody);
       } catch (err) {
         handleError(res, err);
       }
