@@ -562,17 +562,13 @@ function validateScheduleInput(input: ConnectorSchedulePatch | null | undefined)
 
 function computeEffectiveMode(
   row: ScheduleRow,
-  runtimeProjection: RuntimeProjection | null,
-  policy: RefreshPolicy | null
+  runtimeProjection: RuntimeProjection | null
 ): "automatic" | "manual" | "paused" {
   if (!row.enabled) {
     return "paused";
   }
   if (runtimeProjection?.human_attention_needed) {
     return "paused";
-  }
-  if (policy?.recommended_mode === "manual") {
-    return "manual";
   }
   return "automatic";
 }
@@ -603,7 +599,7 @@ function scheduleRowToApi(
   if (!row) {
     return null;
   }
-  const effectiveMode = computeEffectiveMode(row, runtimeProjection, policy);
+  const effectiveMode = computeEffectiveMode(row, runtimeProjection);
   const humanAttentionNeeded = runtimeProjection?.human_attention_needed ?? false;
   const minimumIntervalWarning = buildMinimumIntervalWarning(row.interval_seconds, policy);
   return {

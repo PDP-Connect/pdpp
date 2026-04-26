@@ -279,6 +279,10 @@ interface SchedulerRuntime {
   readonly history: RunRecord[];
   readonly lastRunTime: Map<string, number>;
   readonly notifiedDisabledGrantFailures: Set<string>;
+  // Tracks connectors for which we have already emitted one needs-human skip
+  // record this cycle. Cleared when the owner clears the needs-human flag via
+  // clearNeedsHuman / runNow so the next automatic tick emits a fresh skip.
+  readonly notifiedNeedsHumanSkips: Set<string>;
   running: boolean;
   readonly timers: NodeJS.Timeout[];
 }
@@ -291,6 +295,7 @@ function buildRuntime(): SchedulerRuntime {
     history: [],
     lastRunTime: new Map(),
     notifiedDisabledGrantFailures: new Set(),
+    notifiedNeedsHumanSkips: new Set(),
     running: false,
     timers: [],
   };
@@ -620,8 +625,19 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
       // Automatic runs skip connectors that previously surfaced a human-attention
       // interaction. Manual runs (isManual=true) bypass this gate so the owner
       // can resolve the issue. The controller also clears the flag on runNow.
-      if (!isManual && isNeedsHuman(connectorId)) {
-        return recordAndNotify(buildNeedsHumanSkip(connectorId));
+      if (!isManual) {
+        if (isNeedsHuman(connectorId)) {
+          // Emit one inspectable skip record, then suppress further skips on
+          // subsequent ticks (mirrors the terminal-grant disabled pattern).
+          if (runtime.notifiedNeedsHumanSkips.has(connectorId)) {
+            return null;
+          }
+          runtime.notifiedNeedsHumanSkips.add(connectorId);
+          return recordAndNotify(buildNeedsHumanSkip(connectorId));
+        }
+        // Flag was cleared (owner ran manually or called clearNeedsHuman).
+        // Reset suppression so the next time the flag is set we emit a fresh skip.
+        runtime.notifiedNeedsHumanSkips.delete(connectorId);
       }
 
       const singleUseSkip = maybeSkipSingleUseExhausted(connectorId, grantAccessMode);

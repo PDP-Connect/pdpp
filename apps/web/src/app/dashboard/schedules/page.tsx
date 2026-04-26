@@ -15,7 +15,7 @@ export default async function SchedulesPage() {
   } catch (err) {
     if (err instanceof ReferenceServerUnreachableError) {
       return (
-        <DashboardShell active="records">
+        <DashboardShell active="schedules">
           <PageHeader title="Schedules" />
           <ServerUnreachable />
         </DashboardShell>
@@ -30,7 +30,7 @@ export default async function SchedulesPage() {
   const needsHumanCount = summaries.filter((s) => s.schedule?.human_attention_needed).length;
 
   return (
-    <DashboardShell active="records">
+    <DashboardShell active="schedules">
       <SchedulesPoller enabled={hasActiveRun} />
       <PageHeader
         count={`${withSchedule.length} scheduled · ${unscheduled.length} unscheduled`}

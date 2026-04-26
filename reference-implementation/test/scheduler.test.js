@@ -2450,6 +2450,7 @@ test('scheduler skips automatic run with needs_human_attention when isNeedsHuman
           connectorPath: join(REFERENCE_IMPL_DIR, 'connectors/seed/index.js'),
           manifest: spotifyManifest,
           ownerToken,
+          // Short interval so several ticks fire during the test window.
           intervalMs: 25,
           maxRetries: 0,
         },
@@ -2464,6 +2465,8 @@ test('scheduler skips automatic run with needs_human_attention when isNeedsHuman
 
     scheduler.start();
     await waitFor(() => completedRuns.length >= 1, 5000);
+    // Let several more ticks fire to verify suppression.
+    await new Promise((resolve) => setTimeout(resolve, 200));
     scheduler.stop();
 
     const [first] = completedRuns;
@@ -2472,6 +2475,11 @@ test('scheduler skips automatic run with needs_human_attention when isNeedsHuman
     assert.ok(
       first.error?.startsWith('needs_human_attention:'),
       `expected needs_human_attention skip, got: ${first.error}`,
+    );
+    assert.equal(
+      completedRuns.length,
+      1,
+      'needs-human skip should be emitted exactly once — subsequent ticks must be suppressed',
     );
   } finally {
     await closeServer(server);

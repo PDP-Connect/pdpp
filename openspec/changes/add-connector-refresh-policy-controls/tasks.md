@@ -13,19 +13,20 @@
 
 ## 3. Schedule Control Plane
 
-- [ ] Extend schedule projections with recommended policy, effective mode, next due, last success, last attempt, active run, and human-attention state.
-- [ ] Preserve owner-only mutation posture for schedule changes.
-- [ ] Add policy-aware validation warnings when an owner schedules below the recommended minimum interval.
-- [ ] Add scheduler behavior for interaction-required background runs: pause, mark needs-human, or skip next automatic attempt according to the chosen policy.
-- [ ] Add explicit skip/delay history for policy decisions.
+- [x] Extend schedule projections with recommended policy, effective mode, last success, last attempt, active run, and human-attention state. (`effective_mode` reflects what the reference will actually do — `automatic` for enabled schedules, `paused` when disabled or needs-human; `recommended_policy` carries the policy hint separately. `next_due_at` deferred.)
+- [x] Preserve owner-only mutation posture for schedule changes. (`/_ref/*` routes, owner token required.)
+- [x] Add policy-aware validation warnings when an owner schedules below the recommended minimum interval. (`upsertSchedule` returns `policy_warning`; HTTP response includes it; dashboard surfaces as toast. Never rejects.)
+- [x] Add scheduler behavior for interaction-required background runs: automatic run triggers `markNeedsHuman`; subsequent automatic ticks suppress to one skip record then go silent until owner clears flag via manual run.
+- [x] Add explicit skip/delay history for policy decisions. (One `needs_human_attention` skip record emitted per human-attention cycle; `single_use grant already consumed` skip record for exhausted grants.)
 
 ## 4. Dashboard UX
 
-- [ ] Build a connector schedule list view with connector, freshness, recommended mode, current schedule, last success, active run, next due, and action controls.
-- [ ] Add edit controls for manual, paused, and interval schedules.
-- [ ] Show connector rationale and friction warnings before saving aggressive schedules.
-- [ ] Link active/running/needs-input rows to run detail.
-- [ ] Make the view auto-refresh or poll while runs are active.
+- [x] Build a connector schedule list view with connector, recommended mode, current schedule, last success, active run, and action controls. (`/dashboard/schedules` page with scheduled/unscheduled sections, needs-human banner.)
+- [x] Add edit controls for paused and interval schedules. (Pause/Resume/Delete + inline interval/jitter editor.)
+- [x] Show connector rationale and friction warnings before saving aggressive schedules. (Pre-save friction callout for `otp_likely`, `manual_action_likely`, `credentials` postures; `policy_warning` toast on save.)
+- [x] Link active/running/needs-input rows to run detail. (Active-run link to `/dashboard/runs/:runId`; needs-human badge.)
+- [x] Make the view auto-refresh or poll while runs are active. (`SchedulesPoller` polls `router.refresh()` every 3s when `hasActiveRun`.)
+- [x] Add `/sandbox/schedules` read-only page so mock-owner nav link is not a 404.
 
 ## 5. Connector Defaults
 
@@ -41,10 +42,10 @@
 
 ## 7. Validation
 
-- [ ] Run schedule lifecycle tests.
-- [x] Run scheduler retry/backoff/overlap tests. (`test/scheduler.test.js` — 21 tests pass on this branch.)
+- [x] Run schedule lifecycle tests. (`test/control-actions.test.js` — schedule lifecycle, policy_warning, 19 tests pass.)
+- [x] Run scheduler retry/backoff/overlap tests. (`test/scheduler.test.js` — 24 tests pass, including needs-human skip/suppression and interaction-triggered mark.)
 - [x] Run manifest validation tests. (`test/manifest-refresh-policy.test.js` — 13 tests pass; `test/query-contract.test.js` 40 tests pass against seeded manifests.)
-- [ ] Run apps/web typecheck, check, and build.
+- [x] Run apps/web typecheck, check, and build. (All pass; build generates 247 static pages.)
 - [x] Run `openspec validate add-connector-refresh-policy-controls --strict`.
 - [x] Run `openspec validate --all --strict`.
 
