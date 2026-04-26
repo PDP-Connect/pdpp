@@ -3,8 +3,27 @@
   "connector_id": "https://registry.pdpp.org/connectors/oura",
   "version": "0.1.0",
   "display_name": "Oura",
-  "runtime_requirements": { "bindings": { "network": { "required": true } } },
-  "capabilities": { "human_interaction": [] },
+  "runtime_requirements": {
+    "bindings": {
+      "network": {
+        "required": true
+      }
+    }
+  },
+  "capabilities": {
+    "human_interaction": [],
+    "refresh_policy": {
+      "recommended_mode": "automatic",
+      "recommended_interval_seconds": 21600,
+      "minimum_interval_seconds": 3600,
+      "maximum_staleness_seconds": 86400,
+      "interaction_posture": "none",
+      "rate_limit_sensitivity": "low",
+      "bot_detection_sensitivity": "low",
+      "background_safe": true,
+      "rationale": "Oura sleep/readiness/activity data updates a few times per day; six-hourly refresh is enough."
+    }
+  },
   "streams": [
     {
       "name": "sleep",
@@ -17,76 +36,233 @@
       "schema": {
         "type": "object",
         "properties": {
-          "id": { "type": "string" },
-          "day": { "type": "string", "format": "date" },
-          "bedtime_start": { "type": ["string", "null"] },
-          "bedtime_end": { "type": ["string", "null"] },
-          "total_sleep_duration": { "type": ["integer", "null"] },
-          "rem_sleep_duration": { "type": ["integer", "null"] },
-          "deep_sleep_duration": { "type": ["integer", "null"] },
-          "light_sleep_duration": { "type": ["integer", "null"] },
-          "efficiency": { "type": ["integer", "null"] },
-          "latency": { "type": ["integer", "null"] },
-          "average_heart_rate": { "type": ["number", "null"] },
-          "lowest_heart_rate": { "type": ["integer", "null"] },
-          "average_hrv": { "type": ["number", "null"] },
-          "temperature_delta": { "type": ["number", "null"] },
-          "sleep_score": { "type": ["integer", "null"] }
+          "id": {
+            "type": "string"
+          },
+          "day": {
+            "type": "string",
+            "format": "date"
+          },
+          "bedtime_start": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "bedtime_end": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "total_sleep_duration": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "rem_sleep_duration": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "deep_sleep_duration": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "light_sleep_duration": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "efficiency": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "latency": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "average_heart_rate": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "lowest_heart_rate": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "average_hrv": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "temperature_delta": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "sleep_score": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
         },
-        "required": ["id", "day"]
+        "required": [
+          "id",
+          "day"
+        ]
       },
-      "primary_key": ["id"],
+      "primary_key": [
+        "id"
+      ],
       "cursor_field": "day",
       "consent_time_field": "day",
-      "selection": { "fields": true, "resources": true },
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
       "incremental": true
     },
     {
       "name": "readiness",
       "description": "Daily readiness scores.",
-      "display": { "label": "Your readiness", "detail": "Daily readiness score with contributing factors (activity balance, recovery index, HRV balance, etc.)." },
+      "display": {
+        "label": "Your readiness",
+        "detail": "Daily readiness score with contributing factors (activity balance, recovery index, HRV balance, etc.)."
+      },
       "semantics": "mutable_state",
       "schema": {
         "type": "object",
         "properties": {
-          "id": { "type": "string" },
-          "day": { "type": "string", "format": "date" },
-          "score": { "type": ["integer", "null"] },
-          "temperature_deviation": { "type": ["number", "null"] },
-          "temperature_trend_deviation": { "type": ["number", "null"] },
-          "contributors": { "type": "object" }
+          "id": {
+            "type": "string"
+          },
+          "day": {
+            "type": "string",
+            "format": "date"
+          },
+          "score": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "temperature_deviation": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "temperature_trend_deviation": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "contributors": {
+            "type": "object"
+          }
         },
-        "required": ["id", "day"]
+        "required": [
+          "id",
+          "day"
+        ]
       },
-      "primary_key": ["id"],
+      "primary_key": [
+        "id"
+      ],
       "cursor_field": "day",
       "consent_time_field": "day",
-      "selection": { "fields": true, "resources": true },
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
       "incremental": true
     },
     {
       "name": "activity",
       "description": "Daily activity and movement.",
-      "display": { "label": "Your activity", "detail": "Daily steps, active calories, total calories, inactive/low/medium/high activity time, target progress." },
+      "display": {
+        "label": "Your activity",
+        "detail": "Daily steps, active calories, total calories, inactive/low/medium/high activity time, target progress."
+      },
       "semantics": "mutable_state",
       "schema": {
         "type": "object",
         "properties": {
-          "id": { "type": "string" },
-          "day": { "type": "string", "format": "date" },
-          "score": { "type": ["integer", "null"] },
-          "active_calories": { "type": ["integer", "null"] },
-          "total_calories": { "type": ["integer", "null"] },
-          "steps": { "type": ["integer", "null"] },
-          "target_calories": { "type": ["integer", "null"] },
-          "equivalent_walking_distance": { "type": ["integer", "null"] }
+          "id": {
+            "type": "string"
+          },
+          "day": {
+            "type": "string",
+            "format": "date"
+          },
+          "score": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "active_calories": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "total_calories": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "steps": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "target_calories": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "equivalent_walking_distance": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
         },
-        "required": ["id", "day"]
+        "required": [
+          "id",
+          "day"
+        ]
       },
-      "primary_key": ["id"],
+      "primary_key": [
+        "id"
+      ],
       "cursor_field": "day",
       "consent_time_field": "day",
-      "selection": { "fields": true, "resources": true },
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
       "incremental": true
     }
   ]

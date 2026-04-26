@@ -11,7 +11,18 @@
     }
   },
   "capabilities": {
-    "human_interaction": []
+    "human_interaction": [],
+    "refresh_policy": {
+      "recommended_mode": "automatic",
+      "recommended_interval_seconds": 3600,
+      "minimum_interval_seconds": 300,
+      "maximum_staleness_seconds": 21600,
+      "interaction_posture": "none",
+      "rate_limit_sensitivity": "low",
+      "bot_detection_sensitivity": "low",
+      "background_safe": true,
+      "rationale": "Claude Code session logs live on local disk; re-reading them is cheap and has no platform cost."
+    }
   },
   "streams": [
     {

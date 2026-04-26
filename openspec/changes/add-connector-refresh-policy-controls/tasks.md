@@ -1,15 +1,15 @@
 ## 1. Audit Current Runtime
 
-- [ ] Inventory current schedule routes, controller persistence, dashboard controls, scheduler loop, retry policy, and run interaction behavior.
-- [ ] Confirm which schedule behavior is already shipped versus only specified by `add-reference-runtime-spec`.
-- [ ] Identify baseline tests that cover schedule lifecycle and scheduler retry behavior.
+- [x] Inventory current schedule routes, controller persistence, dashboard controls, scheduler loop, retry policy, and run interaction behavior. (See `design-notes/2026-04-25-current-state-audit.md`.)
+- [x] Confirm which schedule behavior is already shipped versus only specified by `add-reference-runtime-spec`.
+- [x] Identify baseline tests that cover schedule lifecycle and scheduler retry behavior. (`test/scheduler.test.js`, `test/control-actions.test.js`, `test/control-plane.test.js`, `test/run-interaction-control.test.js`.)
 
 ## 2. Manifest Refresh Policy
 
-- [ ] Add validation for `capabilities.refresh_policy`.
-- [ ] Seed first-party polyfill manifests with conservative refresh policies and owner-readable rationale.
-- [ ] Include policy hints for high-friction browser/bank connectors, API-token connectors, local-file connectors, and low-risk communication connectors.
-- [ ] Add manifest regression tests for valid/invalid refresh policies.
+- [x] Add validation for `capabilities.refresh_policy`. (`reference-implementation/server/auth.js#validateRefreshPolicyCapability`, called from `validateConnectorManifest`.)
+- [x] Seed first-party polyfill manifests with conservative refresh policies and owner-readable rationale. (31 manifests under `packages/polyfill-connectors/manifests/`.)
+- [x] Include policy hints for high-friction browser/bank connectors, API-token connectors, local-file connectors, and low-risk communication connectors.
+- [x] Add manifest regression tests for valid/invalid refresh policies. (`reference-implementation/test/manifest-refresh-policy.test.js`, 13 tests.)
 
 ## 3. Schedule Control Plane
 
@@ -35,15 +35,17 @@
 
 ## 6. Protocol Candidate Handling
 
-- [ ] Document `refresh_policy` as reference/polyfill metadata only.
-- [ ] If any part needs portable cross-implementation semantics, record it as a candidate for Collection Profile or companion-spec review.
-- [ ] Do not present schedule policy hints as finalized PDPP core protocol.
+- [x] Document `refresh_policy` as reference/polyfill metadata only. (`specs/polyfill-runtime/spec.md` plus inline comment in the validator.)
+- [x] If any part needs portable cross-implementation semantics, record it as a candidate for Collection Profile or companion-spec review. (Captured in `specs/polyfill-runtime/spec.md` final scenario and the audit note.)
+- [x] Do not present schedule policy hints as finalized PDPP core protocol.
 
 ## 7. Validation
 
 - [ ] Run schedule lifecycle tests.
-- [ ] Run scheduler retry/backoff/overlap tests.
-- [ ] Run manifest validation tests.
+- [x] Run scheduler retry/backoff/overlap tests. (`test/scheduler.test.js` — 21 tests pass on this branch.)
+- [x] Run manifest validation tests. (`test/manifest-refresh-policy.test.js` — 13 tests pass; `test/query-contract.test.js` 40 tests pass against seeded manifests.)
 - [ ] Run apps/web typecheck, check, and build.
-- [ ] Run `openspec validate add-connector-refresh-policy-controls --strict`.
-- [ ] Run `openspec validate --all --strict`.
+- [x] Run `openspec validate add-connector-refresh-policy-controls --strict`.
+- [x] Run `openspec validate --all --strict`.
+
+> Sections 3 (schedule control plane), 4 (dashboard UX), 5 (connector defaults beyond policy seeding), and the schedule-lifecycle validation in section 7 are explicitly deferred to a later tranche per the task packet for `connector-refresh-policy-controls`. Apps/web checks are deferred because no apps/web code changed in this tranche.

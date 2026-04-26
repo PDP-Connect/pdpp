@@ -1283,6 +1283,115 @@ function isPositiveInteger(value) {
   return Number.isInteger(value) && value > 0;
 }
 
+// Allowed values for the `capabilities.refresh_policy` declaration.
+// Kept inline (rather than imported from a shared module) so the
+// reference validator stays self-contained: this is reference/polyfill
+// metadata, not normative PDPP core protocol, and the vocabulary
+// SHOULD be promoted through a Collection Profile or companion spec
+// before it is treated as portable across implementations. See
+// `openspec/changes/add-connector-refresh-policy-controls/specs/polyfill-runtime/spec.md`.
+const REFRESH_POLICY_RECOMMENDED_MODES = new Set(['automatic', 'manual', 'paused']);
+const REFRESH_POLICY_INTERACTION_POSTURES = new Set([
+  'none',
+  'credentials',
+  'otp_likely',
+  'manual_action_likely',
+]);
+const REFRESH_POLICY_SENSITIVITY_LEVELS = new Set(['low', 'medium', 'high']);
+const REFRESH_POLICY_ALLOWED_KEYS = new Set([
+  'recommended_mode',
+  'recommended_interval_seconds',
+  'minimum_interval_seconds',
+  'maximum_staleness_seconds',
+  'interaction_posture',
+  'session_lifetime_seconds',
+  'rate_limit_sensitivity',
+  'bot_detection_sensitivity',
+  'background_safe',
+  'rationale',
+]);
+
+function validateRefreshPolicyCapability(manifest, code) {
+  const capabilities = manifest.capabilities;
+  if (capabilities === undefined || capabilities === null) return;
+  if (typeof capabilities !== 'object' || Array.isArray(capabilities)) {
+    throw invalidConnectorManifest('capabilities must be an object when declared', code);
+  }
+  const policy = capabilities.refresh_policy;
+  if (policy === undefined) return;
+  if (!policy || typeof policy !== 'object' || Array.isArray(policy)) {
+    throw invalidConnectorManifest('capabilities.refresh_policy must be an object when declared', code);
+  }
+  const unknownKeys = Object.keys(policy).filter((key) => !REFRESH_POLICY_ALLOWED_KEYS.has(key));
+  if (unknownKeys.length) {
+    throw invalidConnectorManifest(
+      `capabilities.refresh_policy has unsupported keys: ${unknownKeys.join(', ')}`,
+      code,
+    );
+  }
+  if (!isNonEmptyString(policy.recommended_mode) || !REFRESH_POLICY_RECOMMENDED_MODES.has(policy.recommended_mode)) {
+    throw invalidConnectorManifest(
+      'capabilities.refresh_policy.recommended_mode must be one of: automatic, manual, paused',
+      code,
+    );
+  }
+  if (!isNonEmptyString(policy.rationale)) {
+    throw invalidConnectorManifest(
+      'capabilities.refresh_policy.rationale must be a non-empty owner-readable string',
+      code,
+    );
+  }
+  for (const intervalKey of [
+    'recommended_interval_seconds',
+    'minimum_interval_seconds',
+    'maximum_staleness_seconds',
+    'session_lifetime_seconds',
+  ]) {
+    if (policy[intervalKey] !== undefined && !isPositiveInteger(policy[intervalKey])) {
+      throw invalidConnectorManifest(
+        `capabilities.refresh_policy.${intervalKey} must be a positive integer when declared`,
+        code,
+      );
+    }
+  }
+  if (
+    policy.recommended_interval_seconds !== undefined
+    && policy.minimum_interval_seconds !== undefined
+    && policy.recommended_interval_seconds < policy.minimum_interval_seconds
+  ) {
+    throw invalidConnectorManifest(
+      'capabilities.refresh_policy.recommended_interval_seconds must be >= minimum_interval_seconds',
+      code,
+    );
+  }
+  if (
+    policy.interaction_posture !== undefined
+    && (!isNonEmptyString(policy.interaction_posture) || !REFRESH_POLICY_INTERACTION_POSTURES.has(policy.interaction_posture))
+  ) {
+    throw invalidConnectorManifest(
+      'capabilities.refresh_policy.interaction_posture must be one of: none, credentials, otp_likely, manual_action_likely',
+      code,
+    );
+  }
+  for (const sensitivityKey of ['rate_limit_sensitivity', 'bot_detection_sensitivity']) {
+    if (
+      policy[sensitivityKey] !== undefined
+      && (!isNonEmptyString(policy[sensitivityKey]) || !REFRESH_POLICY_SENSITIVITY_LEVELS.has(policy[sensitivityKey]))
+    ) {
+      throw invalidConnectorManifest(
+        `capabilities.refresh_policy.${sensitivityKey} must be one of: low, medium, high`,
+        code,
+      );
+    }
+  }
+  if (policy.background_safe !== undefined && typeof policy.background_safe !== 'boolean') {
+    throw invalidConnectorManifest(
+      'capabilities.refresh_policy.background_safe must be a boolean when declared',
+      code,
+    );
+  }
+}
+
 function validateStreamExpandDeclarations({
   code,
   manifestStreamsByName,
@@ -1375,6 +1484,8 @@ function validateConnectorManifest(manifest = {}, code = 'invalid_request', opts
   if (!Array.isArray(manifest.streams) || manifest.streams.length === 0) {
     throw invalidConnectorManifest('Connector manifests must include a non-empty streams array', code);
   }
+
+  validateRefreshPolicyCapability(manifest, code);
 
   const manifestStreamsByName = new Map(
     manifest.streams

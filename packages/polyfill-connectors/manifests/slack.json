@@ -16,7 +16,18 @@
   "capabilities": {
     "human_interaction": [
       "credentials"
-    ]
+    ],
+    "refresh_policy": {
+      "recommended_mode": "automatic",
+      "recommended_interval_seconds": 1800,
+      "minimum_interval_seconds": 600,
+      "maximum_staleness_seconds": 7200,
+      "interaction_posture": "credentials",
+      "rate_limit_sensitivity": "medium",
+      "bot_detection_sensitivity": "low",
+      "background_safe": true,
+      "rationale": "Slack credentials are durable but the API has tier-based rate limits; refresh moderately."
+    }
   },
   "streams": [
     {
@@ -380,7 +391,7 @@
     },
     {
       "name": "channel_memberships",
-      "description": "Channel \u2194 user edges where slackdump could enumerate members.",
+      "description": "Channel ↔ user edges where slackdump could enumerate members.",
       "display": {
         "label": "Channel memberships",
         "detail": "For each channel we could see the membership of, one row per user. Includes DMs (channel member is the DM counterpart)."

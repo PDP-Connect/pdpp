@@ -13,7 +13,18 @@
   "capabilities": {
     "human_interaction": [
       "credentials"
-    ]
+    ],
+    "refresh_policy": {
+      "recommended_mode": "automatic",
+      "recommended_interval_seconds": 900,
+      "minimum_interval_seconds": 300,
+      "maximum_staleness_seconds": 3600,
+      "interaction_posture": "credentials",
+      "rate_limit_sensitivity": "low",
+      "bot_detection_sensitivity": "low",
+      "background_safe": true,
+      "rationale": "Gmail uses durable IMAP credentials and tolerates frequent background polling."
+    }
   },
   "streams": [
     {
@@ -450,7 +461,7 @@
       "description": "Full text and/or HTML body of each message, keyed 1:1 with messages. Kept in a separate stream so body content (sensitive, large) is independently grantable from headers/metadata.",
       "display": {
         "label": "The text of your emails",
-        "detail": "This is the stream that carries the actual written content of each email \u2014 the plain-text body and, when present, the HTML body. It is separate from 'Your messages' (which holds only headers like sender, subject, and date). Granting this stream gives a client access to what your emails say, not just who they're from."
+        "detail": "This is the stream that carries the actual written content of each email — the plain-text body and, when present, the HTML body. It is separate from 'Your messages' (which holds only headers like sender, subject, and date). Granting this stream gives a client access to what your emails say, not just who they're from."
       },
       "semantics": "append_only",
       "schema": {

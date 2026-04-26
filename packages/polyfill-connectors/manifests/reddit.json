@@ -11,7 +11,18 @@
     }
   },
   "capabilities": {
-    "human_interaction": []
+    "human_interaction": [],
+    "refresh_policy": {
+      "recommended_mode": "automatic",
+      "recommended_interval_seconds": 21600,
+      "minimum_interval_seconds": 3600,
+      "maximum_staleness_seconds": 86400,
+      "interaction_posture": "none",
+      "rate_limit_sensitivity": "medium",
+      "bot_detection_sensitivity": "medium",
+      "background_safe": true,
+      "rationale": "Reddit limits unauthenticated traffic; refresh user history a few times per day, not minutely."
+    }
   },
   "streams": [
     {

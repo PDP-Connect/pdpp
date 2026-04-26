@@ -13,7 +13,16 @@
   "capabilities": {
     "human_interaction": [
       "manual_action"
-    ]
+    ],
+    "refresh_policy": {
+      "recommended_mode": "manual",
+      "minimum_interval_seconds": 3600,
+      "interaction_posture": "manual_action_likely",
+      "rate_limit_sensitivity": "medium",
+      "bot_detection_sensitivity": "high",
+      "background_safe": false,
+      "rationale": "LinkedIn aggressively blocks automated access; profile refresh is manual-only."
+    }
   },
   "streams": [
     {

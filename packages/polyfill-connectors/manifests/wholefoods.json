@@ -14,7 +14,16 @@
     "human_interaction": [
       "manual_action",
       "otp"
-    ]
+    ],
+    "refresh_policy": {
+      "recommended_mode": "manual",
+      "minimum_interval_seconds": 7200,
+      "interaction_posture": "otp_likely",
+      "rate_limit_sensitivity": "medium",
+      "bot_detection_sensitivity": "high",
+      "background_safe": false,
+      "rationale": "Whole Foods (via Amazon) frequently requires OTP and triggers bot-detection; refresh manually."
+    }
   },
   "streams": [
     {

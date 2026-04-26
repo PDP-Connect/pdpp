@@ -11,7 +11,15 @@
     }
   },
   "capabilities": {
-    "human_interaction": []
+    "human_interaction": [],
+    "refresh_policy": {
+      "recommended_mode": "manual",
+      "interaction_posture": "manual_action_likely",
+      "rate_limit_sensitivity": "low",
+      "bot_detection_sensitivity": "low",
+      "background_safe": false,
+      "rationale": "Twitter/X archive must be requested from the platform; refresh cannot run in the background."
+    }
   },
   "streams": [
     {
