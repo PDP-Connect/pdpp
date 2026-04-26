@@ -94,7 +94,7 @@
    (cool blue primary, warm "human" accent) and pick lightness steps that
    stay readable on a near-neutral charcoal background — not a generic
    purple-on-pure-black AI dark mode. */
-html.dark {
+:is(html.dark, html[data-theme="dark"]) {
   --background: oklch(0.16 0.005 260);
   --foreground: oklch(0.96 0.005 260);
   --card: oklch(0.20 0.006 260);
@@ -138,6 +138,54 @@ html.dark {
   --surface-tint: oklch(0.10 0.005 260);
 
   color-scheme: dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  html[data-theme="system"] {
+    --background: oklch(0.16 0.005 260);
+    --foreground: oklch(0.96 0.005 260);
+    --card: oklch(0.20 0.006 260);
+    --card-foreground: oklch(0.96 0.005 260);
+    --popover: oklch(0.20 0.006 260);
+    --popover-foreground: oklch(0.96 0.005 260);
+
+    --primary: oklch(0.72 0.16 253.7);
+    --primary-foreground: oklch(0.14 0.01 260);
+
+    --secondary: oklch(0.26 0.006 260);
+    --secondary-foreground: oklch(0.96 0.005 260);
+
+    --muted: oklch(0.24 0.006 260);
+    --muted-foreground: oklch(0.70 0.01 260);
+
+    --accent: oklch(0.26 0.006 260);
+    --accent-foreground: oklch(0.96 0.005 260);
+
+    --destructive: oklch(0.70 0.18 25);
+    --destructive-foreground: oklch(0.14 0.01 260);
+
+    --border: oklch(0.28 0.006 260);
+    --input: oklch(0.32 0.006 260);
+    --ring: oklch(0.72 0.16 253.7);
+
+    --success: oklch(0.74 0.16 152);
+    --warning: oklch(0.80 0.15 75);
+    --edu-fg: oklch(0.78 0.08 280);
+
+    --success-wash: oklch(0.74 0.16 152 / 0.16);
+    --success-wash-strong: oklch(0.74 0.16 152 / 0.22);
+    --primary-wash: oklch(0.72 0.16 253.7 / 0.12);
+    --verified-wash: oklch(0.74 0.16 152 / 0.16);
+    --warning-wash: oklch(0.80 0.15 75 / 0.14);
+
+    --human: oklch(0.78 0.10 55);
+    --human-wash: oklch(0.78 0.10 55 / 0.10);
+
+    /* Lift mixers go *down* toward the page surface in dark mode. */
+    --surface-tint: oklch(0.10 0.005 260);
+
+    color-scheme: dark;
+  }
 }
 
 html {
@@ -198,12 +246,22 @@ samp {
   background: oklch(0 0 0 / 0.20);
 }
 
-html.dark ::-webkit-scrollbar-thumb {
+:is(html.dark, html[data-theme="dark"]) ::-webkit-scrollbar-thumb {
   background: oklch(1 0 0 / 0.14);
 }
 
-html.dark ::-webkit-scrollbar-thumb:hover {
+:is(html.dark, html[data-theme="dark"]) ::-webkit-scrollbar-thumb:hover {
   background: oklch(1 0 0 / 0.24);
+}
+
+@media (prefers-color-scheme: dark) {
+  html[data-theme="system"] ::-webkit-scrollbar-thumb {
+    background: oklch(1 0 0 / 0.14);
+  }
+
+  html[data-theme="system"] ::-webkit-scrollbar-thumb:hover {
+    background: oklch(1 0 0 / 0.24);
+  }
 }
 
 @keyframes spin {
@@ -238,8 +296,14 @@ html.dark ::-webkit-scrollbar-thumb:hover {
   background-size: 20px 20px;
 }
 
-html.dark [data-surface="stage"] {
+:is(html.dark, html[data-theme="dark"]) [data-surface="stage"] {
   background-image: radial-gradient(circle, oklch(1 0 0 / 0.07) 1px, transparent 1px);
+}
+
+@media (prefers-color-scheme: dark) {
+  html[data-theme="system"] [data-surface="stage"] {
+    background-image: radial-gradient(circle, oklch(1 0 0 / 0.07) 1px, transparent 1px);
+  }
 }
 
 [data-surface="human"] {

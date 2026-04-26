@@ -1,7 +1,6 @@
 import { RootProvider } from "fumadocs-ui/provider/next";
 import type { Metadata } from "next";
 import { ThemeProvider } from "@/components/theme/theme-provider.tsx";
-import { ThemeScript } from "@/components/theme/theme-script.tsx";
 import { TooltipProvider } from "@/components/ui/tooltip.tsx";
 import "./globals.css";
 
@@ -30,10 +29,7 @@ export const viewport = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" suppressHydrationWarning>
-      <head>
-        <ThemeScript />
-      </head>
+    <html data-theme="system" lang="en">
       <body>
         <ThemeProvider>
           <RootProvider theme={{ enabled: false }}>

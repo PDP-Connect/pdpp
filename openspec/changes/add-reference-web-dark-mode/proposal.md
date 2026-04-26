@@ -6,7 +6,7 @@ The reference web app is light-only. The owner uses the dashboard as a sustained
 
 - Define a dark-mode token set in `packages/pdpp-brand/base.css` under `html.dark` that preserves the brand's semantic structure (cool primary blue, human warm accent, success/warning/destructive at accessible contrast on dark surfaces) rather than the generic purple-on-black look.
 - Replace hardcoded `white` mixers in brand CSS (body gradient, sidebar tint, table header, prose mute) with a `--surface-tint` token that flips to a dark equivalent so docs and dashboard surfaces remain coherent in dark mode.
-- Add an inline pre-hydration theme script in `apps/web/src/app/layout.tsx` that resolves `localStorage('pdpp-theme')` or the `prefers-color-scheme` media query and sets `html.dark` before paint to avoid flash.
+- Add a CSS-driven theme runtime: the root layout renders `html[data-theme="system"]`, system mode uses `prefers-color-scheme` CSS tokens for first paint, and explicit choices persist in `localStorage` and apply on hydration without any theme script.
 - Add a small `ThemeProvider` + `ThemeToggle` client component pair under `apps/web/src/components/theme/` that exposes light / dark / system, persists explicit choices, and tracks `prefers-color-scheme` when in system mode.
 - Mount the toggle in the dashboard topbar (`apps/web/src/app/dashboard/components/shell.tsx`) and in the public site header (`apps/web/src/components/site-header.tsx`).
 - Adjust dashboard surfaces that currently rely on `dark:` Tailwind variants (search highlight, deployment page) to keep contrast in dark and verify that the existing `dark:` branches in shadcn primitives (`button`, `badge`) match the new token set.

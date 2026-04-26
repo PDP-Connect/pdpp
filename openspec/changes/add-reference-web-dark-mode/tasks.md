@@ -18,10 +18,9 @@
 
 ## 2. Theme runtime
 
-- [x] 2.1 Add inline pre-hydration theme script in
-  `apps/web/src/app/layout.tsx` (head, dangerouslySetInnerHTML) that reads
-  `localStorage` + `prefers-color-scheme` and applies `html.dark`,
-  `data-theme`, and `style.colorScheme` before paint.
+- [x] 2.1 Add CSS-driven theme initialization: the root layout renders
+  `html[data-theme="system"]`; system mode uses `prefers-color-scheme` CSS
+  tokens for first paint; no theme script is rendered.
 - [x] 2.2 Add `apps/web/src/components/theme/theme-provider.tsx` (client) that
   exposes `{ theme, resolvedTheme, setTheme }` via context, persists to
   `localStorage`, and listens for system preference changes when in `"system"`
@@ -58,18 +57,17 @@
 
 ## Theme flicker regression closeout
 
-- [x] T.1 Restore the `<head>`-mounted raw `<script dangerouslySetInnerHTML>`
-  resolver in `apps/web/src/components/theme/theme-script.tsx`. The previous
-  `next/script` with `strategy="beforeInteractive"` shape did not block paint
-  in App Router, producing a dark/light/dark flicker on first load. Document
-  the requirement inline so it does not regress.
-- [x] T.2 Add `apps/web/src/components/theme/theme-script.test.ts` to assert
-  (a) the resolver is a raw `<script>` (no `next/script` import), (b) it is
-  rendered inside `<head>` of the root layout before `<body>`, (c) it
-  applies the `dark` class and reads `pdpp-theme` localStorage, (d) the
-  IIFE is try/catch-wrapped so a failure cannot block paint, and
-  (e) `RootProvider theme={{ enabled: false }}` remains in place so
-  Fumadocs does not duplicate the toggle.
+- [x] T.1 Replace the unacceptable inline
+  `<script dangerouslySetInnerHTML>` resolver with static
+  `html[data-theme="system"]` and CSS `prefers-color-scheme` fallback. No
+  theme script is rendered.
+- [x] T.2 Add `apps/web/src/components/theme/theme-runtime.test.ts` to assert
+  (a) the root layout remains static and does not read cookies, (b) it renders
+  `html[data-theme="system"]`, (c) it does not use
+  `dangerouslySetInnerHTML`, `next/script`, a raw theme script, or
+  `suppressHydrationWarning`, (d) the provider persists explicit choices to
+  localStorage without direct cookie mutation, and (e) brand CSS supports
+  explicit dark plus first-paint system dark.
 
 ## 6. Deferred
 

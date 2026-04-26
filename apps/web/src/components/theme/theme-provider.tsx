@@ -1,10 +1,7 @@
 "use client";
 
 import { createContext, type ReactNode, useCallback, useContext, useEffect, useMemo, useState } from "react";
-import { THEME_KEY } from "./theme-script.tsx";
-
-export type ThemeChoice = "light" | "dark" | "system";
-export type ResolvedTheme = "light" | "dark";
+import { type ResolvedTheme, THEME_KEY, type ThemeChoice } from "./theme-state.ts";
 
 interface ThemeContextValue {
   /** What is actually painted right now. */
@@ -38,19 +35,31 @@ function readSystemPreference(): ResolvedTheme {
   return window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light";
 }
 
-function applyResolvedTheme(resolved: ResolvedTheme): void {
+function applyResolvedTheme(theme: ThemeChoice, resolved: ResolvedTheme): void {
   if (typeof document === "undefined") {
     return;
   }
   const root = document.documentElement;
   root.classList.toggle("dark", resolved === "dark");
-  root.dataset.theme = resolved;
+  root.dataset.theme = theme;
   root.style.colorScheme = resolved;
 }
 
+function persistThemeChoiceLocally(next: ThemeChoice): void {
+  try {
+    if (next === "system") {
+      window.localStorage.removeItem(THEME_KEY);
+      return;
+    }
+    window.localStorage.setItem(THEME_KEY, next);
+  } catch {
+    // storage may be disabled; the in-memory choice still applies.
+  }
+}
+
 export function ThemeProvider({ children }: { children: ReactNode }) {
-  // Initial state must match what the inline ThemeScript wrote to <html>,
-  // otherwise React would tear down the class on first commit.
+  // First paint is CSS-driven via html[data-theme="system"] and
+  // prefers-color-scheme. Explicit stored choices apply on mount.
   const [theme, setThemeState] = useState<ThemeChoice>(() => readStoredChoice());
   const [systemTheme, setSystemTheme] = useState<ResolvedTheme>(() => readSystemPreference());
 
@@ -83,21 +92,12 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
 
   // Keep the DOM in lockstep with React state.
   useEffect(() => {
-    applyResolvedTheme(resolvedTheme);
-  }, [resolvedTheme]);
+    applyResolvedTheme(theme, resolvedTheme);
+  }, [theme, resolvedTheme]);
 
   const setTheme = useCallback((next: ThemeChoice) => {
     setThemeState(next);
-    try {
-      if (next === "system") {
-        window.localStorage.removeItem(THEME_KEY);
-      } else {
-        window.localStorage.setItem(THEME_KEY, next);
-      }
-    } catch {
-      // storage may be disabled (private mode, sandbox); fall through —
-      // the in-memory choice still applies for this tab/session.
-    }
+    persistThemeChoiceLocally(next);
   }, []);
 
   const value = useMemo<ThemeContextValue>(

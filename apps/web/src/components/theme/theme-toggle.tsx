@@ -2,7 +2,8 @@
 
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button.tsx";
-import { type ThemeChoice, useTheme } from "./theme-provider.tsx";
+import { useTheme } from "./theme-provider.tsx";
+import type { ThemeChoice } from "./theme-state.ts";
 
 const NEXT: Record<ThemeChoice, ThemeChoice> = {
   light: "dark",
@@ -25,7 +26,7 @@ const CURRENT_LABEL: Record<ThemeChoice, string> = {
 export function ThemeToggle({ className }: { className?: string }) {
   const { theme, resolvedTheme, setTheme } = useTheme();
 
-  // The DOM was painted with whatever the inline script chose, so the icon
+  // The DOM was painted with the server/CSS theme choice, so the icon
   // must avoid rendering the React-state-driven icon during the first
   // commit — otherwise an SSR'd <html> with no class causes a brief
   // mismatch between icon and surface. We render an inert placeholder

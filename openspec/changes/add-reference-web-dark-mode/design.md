@@ -15,36 +15,45 @@ The body of the page is owned by Next App Router. We do not use
 `next-themes`; the theme machinery is small enough to write directly and we
 already have shadcn's `@custom-variant dark (&:is(.dark *))` wired up.
 
-Resolution order on a fresh session, executed *before* React hydration via an
-inline script in `<head>`:
+Resolution order on a fresh session:
 
-1. `localStorage.getItem("pdpp-theme")` if it equals `"light"` or `"dark"`.
-2. Otherwise (`"system"` or absent) read
-   `window.matchMedia("(prefers-color-scheme: dark)").matches`.
-3. Apply `document.documentElement.classList.toggle("dark", isDark)` and set
-   `data-theme="light|dark"` and `style.colorScheme` so native form controls
-   match.
+1. The root layout is static and renders `html[data-theme="system"]`.
+2. CSS handles first paint. System dark uses
+   `@media (prefers-color-scheme: dark)` with `html[data-theme="system"]`;
+   explicit dark uses the `html[data-theme="dark"]` / `.dark` selectors after
+   hydration.
+3. The client `ThemeProvider` reads `localStorage("pdpp-theme")`, applies
+   explicit choices after hydration, and tracks OS preference changes while in
+   system mode.
 
-The inline script is the only place that runs before hydration. The
-`ThemeProvider` reads the same storage key to seed React state. Explicit
-choices are written to localStorage; other tabs receive those changes through
-the browser's standard `storage` event.
+Explicit choices are written to `localStorage`; other tabs receive those
+changes through the browser's standard `storage` event.
 
-`suppressHydrationWarning` is already present on `<html>`; we keep it.
+The root layout does not use `suppressHydrationWarning`; a hydration-warning
+suppression would hide theme/runtime drift rather than proving the runtime is
+safe.
 
-### Why a raw `<script>` and not `next/script`
+### Why no bootstrap script
 
-The resolver MUST be a raw `<script dangerouslySetInnerHTML={…} />` rendered
-inside `<head>` of the root layout (a Server Component), not a `next/script`
-component with `strategy="beforeInteractive"`. In App Router the latter only
-orders relative to Next's own bundles; it does not block paint. We hit
-exactly that bug during 2026-04 sandbox-parity work — users observed a
-dark/light/dark flicker because the body painted with the default class set
-before `next/script` injected the theme class. Because the inline script
-lives in a Server Component, React does not warn about a raw `<script>`
-child, and the inserted body is a static module-level literal, so there is
-no XSS surface. A regression test (`apps/web/src/components/theme/theme-script.test.ts`)
-keeps this invariant.
+The resolver MUST NOT use `dangerouslySetInnerHTML`, a raw inline script, or a
+`next/script` bootstrap. An inline script technically works for a static
+literal, and Tailwind documents it as a common way to avoid FOUC, but it
+violates this project's security and review posture. A separate static script
+avoids inline injection but still leaves first-paint behavior dependent on
+client execution order.
+
+The accepted shape is CSS driven:
+
+- `apps/web/src/app/layout.tsx` remains static and renders
+  `html[data-theme="system"]`.
+- `packages/pdpp-brand/base.css` contains a `prefers-color-scheme` system-mode
+  fallback so the first paint follows the OS preference without JavaScript.
+- Explicit stored overrides are applied by the client provider after
+  hydration; this preserves static public pages and avoids root-layout cookie
+  reads that would make protocol/docs surfaces dynamic.
+- `apps/web/src/components/theme/theme-runtime.test.ts` fails if the runtime
+  reintroduces a script bootstrap, `dangerouslySetInnerHTML`, or
+  `suppressHydrationWarning`.
 
 ## Token shape
 

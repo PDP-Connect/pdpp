@@ -6,7 +6,7 @@
 @import "fumadocs-ui/css/preset.css";
 @import "@pdpp/brand/docs.css";
 
-@custom-variant dark (&:is(.dark *));
+@custom-variant dark (&:where(.dark, .dark *, [data-theme=dark], [data-theme=dark] *));
 
 @theme inline {
   --font-sans: var(--font-sans);
