@@ -49,3 +49,10 @@
 - [x] 6.6 Keep `/sandbox/api-examples` and `/sandbox/walkthrough` as supporting educational surfaces, not the primary demo instance.
 - [x] 6.7 Add regression tests proving the same dashboard feature components render against both live-shaped fixture data and sandbox data, and that `/dashboard/**` never falls back to sandbox data.
 - [x] 6.8 Run `openspec validate add-mock-reference-demo-instance --strict`, `openspec validate --all --strict`, sandbox route tests, dashboard feature tests, `pnpm --dir apps/web run types:check`, `pnpm --dir apps/web run check`, and `pnpm --dir apps/web run build`.
+
+## 7. Demo API Fidelity Follow-Up
+
+- [ ] 7.1 Audit `/sandbox/v1/**`, `/sandbox/_ref/**`, and `/sandbox/.well-known/**` against the live reference envelopes they claim to mirror.
+- [ ] 7.2 Replace demo-shaped envelopes such as `object: "schema_graph"` with live-shaped mock AS/RS envelopes where practical, or document any deliberate divergence inline and in the API examples.
+- [ ] 7.3 Add route tests that assert key live-shape invariants for `/sandbox/v1/schema`, `/sandbox/v1/streams`, `/sandbox/v1/search`, records, `_ref` lists, and timeline routes.
+- [ ] 7.4 Re-smoke the public demo API examples after the fidelity pass.
