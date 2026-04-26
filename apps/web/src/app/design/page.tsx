@@ -2625,7 +2625,9 @@ function LongviewIdentityLockup({
 }) {
   const wordColor = inverse ? "#FBFCFE" : "var(--foreground)";
   const descriptorColor = inverse ? "rgba(251, 252, 254, 0.68)" : "var(--primary)";
-  const chipBackground = inverse ? "rgba(251, 252, 254, 0.08)" : "color-mix(in oklab, var(--primary) 7%, white)";
+  const chipBackground = inverse
+    ? "rgba(251, 252, 254, 0.08)"
+    : "color-mix(in oklab, var(--primary) 7%, var(--surface-tint))";
   const chipBorder = inverse
     ? "1px solid rgba(251, 252, 254, 0.16)"
     : "1px solid color-mix(in oklab, var(--primary) 16%, var(--border))";
@@ -2721,13 +2723,13 @@ const LONGVIEW_VERDICT_TONES: Record<
 > = {
   recommended: {
     color: "var(--primary)",
-    backgroundColor: "color-mix(in oklab, var(--primary) 8%, white)",
+    backgroundColor: "color-mix(in oklab, var(--primary) 8%, var(--surface-tint))",
     border: "1px solid color-mix(in oklab, var(--primary) 18%, var(--border))",
     label: "Recommended",
   },
   alternative: {
     color: "var(--foreground)",
-    backgroundColor: "color-mix(in oklab, var(--human-wash) 82%, white)",
+    backgroundColor: "color-mix(in oklab, var(--human-wash) 82%, var(--surface-tint))",
     border: "1px solid color-mix(in oklab, var(--human) 18%, var(--border))",
     label: "Alternative",
   },
@@ -2763,8 +2765,8 @@ function LongviewCandidatePreview({ candidate }: { candidate: LongviewLogoCandid
         <div
           className="flex h-20 items-center justify-center rounded-[1rem] px-4"
           style={{
-            backgroundColor: "color-mix(in oklab, var(--muted) 58%, white)",
-            border: "1px solid color-mix(in oklab, var(--border) 86%, white)",
+            backgroundColor: "color-mix(in oklab, var(--muted) 58%, var(--surface-tint))",
+            border: "1px solid color-mix(in oklab, var(--border) 86%, var(--surface-tint))",
           }}
         >
           <LongviewLogoMark className="h-8 w-14" variant={candidate.id} />
@@ -2773,7 +2775,7 @@ function LongviewCandidatePreview({ candidate }: { candidate: LongviewLogoCandid
           className="flex h-20 items-center justify-center rounded-[1rem] px-4"
           style={{
             backgroundColor: "#203976",
-            border: "1px solid color-mix(in oklab, #203976 82%, white)",
+            border: "1px solid color-mix(in oklab, #203976 82%, var(--surface-tint))",
           }}
         >
           <LongviewLogoMark className="h-8 w-14" inverse variant={candidate.id} />
@@ -2846,7 +2848,7 @@ function ExampleWorldsSection() {
               <div
                 className="flex min-h-[7.5rem] items-center rounded-[1rem] px-5 py-4"
                 style={{
-                  backgroundColor: "color-mix(in oklab, var(--muted) 58%, white)",
+                  backgroundColor: "color-mix(in oklab, var(--muted) 58%, var(--surface-tint))",
                   border: "1px solid var(--border)",
                 }}
               >
@@ -2856,7 +2858,7 @@ function ExampleWorldsSection() {
                 className="flex min-h-[7.5rem] items-center rounded-[1rem] px-5 py-4"
                 style={{
                   backgroundColor: "#203976",
-                  border: "1px solid color-mix(in oklab, #203976 82%, white)",
+                  border: "1px solid color-mix(in oklab, #203976 82%, var(--surface-tint))",
                 }}
               >
                 <LongviewIdentityLockup inverse variant="aperture_span" />
@@ -2881,8 +2883,8 @@ function ExampleWorldsSection() {
                       className="rounded-[0.85rem] px-2 py-3 text-center"
                       key={size}
                       style={{
-                        backgroundColor: "color-mix(in oklab, var(--muted) 42%, white)",
-                        border: "1px solid color-mix(in oklab, var(--border) 86%, white)",
+                        backgroundColor: "color-mix(in oklab, var(--muted) 42%, var(--surface-tint))",
+                        border: "1px solid color-mix(in oklab, var(--border) 86%, var(--surface-tint))",
                       }}
                     >
                       <div className="flex h-10 items-center justify-center">
@@ -2929,7 +2931,7 @@ function ExampleWorldsSection() {
                     key={name}
                     style={{
                       color: "var(--foreground)",
-                      backgroundColor: "color-mix(in oklab, var(--muted) 44%, white)",
+                      backgroundColor: "color-mix(in oklab, var(--muted) 44%, var(--surface-tint))",
                       border: "1px solid var(--border)",
                     }}
                   >
@@ -3033,7 +3035,7 @@ function ExampleWorldsSection() {
                   className="rounded-full px-2.5 py-1 text-xs"
                   style={{
                     color: "var(--foreground)",
-                    backgroundColor: "color-mix(in oklab, var(--muted) 42%, white)",
+                    backgroundColor: "color-mix(in oklab, var(--muted) 42%, var(--surface-tint))",
                     border: "1px solid var(--border)",
                   }}
                 >
@@ -3043,7 +3045,7 @@ function ExampleWorldsSection() {
                   className="rounded-full px-2.5 py-1 text-xs"
                   style={{
                     color: "var(--foreground)",
-                    backgroundColor: "color-mix(in oklab, var(--muted) 42%, white)",
+                    backgroundColor: "color-mix(in oklab, var(--muted) 42%, var(--surface-tint))",
                     border: "1px solid var(--border)",
                   }}
                 >
@@ -3073,7 +3075,7 @@ function ExampleWorldsSection() {
                       key={source}
                       style={{
                         color: "var(--foreground)",
-                        backgroundColor: "color-mix(in oklab, var(--muted) 42%, white)",
+                        backgroundColor: "color-mix(in oklab, var(--muted) 42%, var(--surface-tint))",
                         border: "1px solid var(--border)",
                       }}
                     >
@@ -3231,7 +3233,7 @@ function ExampleWorldsSection() {
                         key={field}
                         style={{
                           color: "var(--foreground)",
-                          backgroundColor: "color-mix(in oklab, var(--primary) 10%, white)",
+                          backgroundColor: "color-mix(in oklab, var(--primary) 10%, var(--surface-tint))",
                           border: "1px solid color-mix(in oklab, var(--primary) 16%, var(--border))",
                         }}
                       >
@@ -3334,7 +3336,7 @@ function DocsSection() {
                   width: "var(--pdpp-sidebar-width)",
                   borderRight: "1px solid var(--border)",
                   background:
-                    "linear-gradient(to bottom, color-mix(in oklab, var(--human-wash) 58%, white), transparent 18%), color-mix(in oklab, var(--background) 97%, white)",
+                    "linear-gradient(to bottom, color-mix(in oklab, var(--human-wash) 58%, var(--surface-tint)), transparent 18%), color-mix(in oklab, var(--background) 97%, var(--surface-tint))",
                 }}
               >
                 <div className="px-3 py-5">
@@ -3456,7 +3458,7 @@ function DocsSection() {
                 className="rounded-full px-1.5 py-0.5 font-mono text-xs"
                 style={{
                   border: "1px solid var(--border)",
-                  backgroundColor: "color-mix(in oklab, var(--muted) 84%, white)",
+                  backgroundColor: "color-mix(in oklab, var(--muted) 84%, var(--surface-tint))",
                 }}
               >
                 authorization_details
@@ -3466,7 +3468,7 @@ function DocsSection() {
                 className="rounded-full px-1.5 py-0.5 font-mono text-xs"
                 style={{
                   border: "1px solid var(--border)",
-                  backgroundColor: "color-mix(in oklab, var(--muted) 84%, white)",
+                  backgroundColor: "color-mix(in oklab, var(--muted) 84%, var(--surface-tint))",
                 }}
               >
                 grant
@@ -3496,7 +3498,7 @@ function DocsSection() {
           <div className="flex flex-col gap-6" style={{ maxWidth: "760px" }}>
             <div className="overflow-x-auto" style={{ border: "1px solid var(--border)", borderRadius: "1rem" }}>
               <table className="w-full text-sm" style={{ borderCollapse: "collapse", minWidth: "480px" }}>
-                <thead style={{ backgroundColor: "color-mix(in oklab, var(--muted) 92%, white)" }}>
+                <thead style={{ backgroundColor: "color-mix(in oklab, var(--muted) 92%, var(--surface-tint))" }}>
                   <tr style={{ borderBottom: "1px solid var(--border)" }}>
                     {["Field", "Meaning", "Usage"].map((label) => (
                       <th
@@ -3538,7 +3540,7 @@ function DocsSection() {
               className="m-0 border-l-2 px-4 py-4 text-sm leading-relaxed"
               style={{
                 borderColor: "var(--human)",
-                backgroundColor: "color-mix(in oklab, var(--human-wash) 82%, white)",
+                backgroundColor: "color-mix(in oklab, var(--human-wash) 82%, var(--surface-tint))",
                 color: "var(--foreground)",
               }}
             >
