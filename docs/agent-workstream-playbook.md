@@ -35,7 +35,10 @@ The owner agent is the integration gatekeeper. The owner:
 - keeps the canonical task list up to date;
 - stops work when a branch, worktree, or repository state looks unsafe.
 
-Workers do not merge to `main` unless explicitly told to do so.
+Workers do not merge to `main` unless explicitly told to do so. They should use
+normal Git commands for branch work and commits, but should not directly edit
+the local `.git/workstreams` hub unless the owner has explicitly allowed it for
+that toolchain.
 
 ## Communication Model
 
@@ -71,6 +74,15 @@ Why this location:
 - the files are local-only and cannot be accidentally committed;
 - the hub survives branch switches and worktree rebuilds;
 - one file per workstream avoids merge conflicts and queue-file contention.
+
+Operational rule: normal Git commands are always allowed, but worker agents
+should not directly edit files under `.git/workstreams`. Some coding tools treat
+all direct writes under `.git/` as protected repository-internal mutation and
+will pause for approval even when `git add`, `git commit`, `git status`, and
+other normal Git commands are safe. The owner agent owns direct hub writes. A
+worker should instead print its final report or write it to a non-sensitive
+handoff path such as `tmp/workstreams/<branch>.md`; the owner copies reviewed
+handoffs into `.git/workstreams` as needed.
 
 Do not put active queue state in `docs/` or `openspec/`. Those are committed
 artifacts, not a local message bus. Commit only stable process docs, design
@@ -114,9 +126,12 @@ Last updated:
 Distinctive last line: <copyable phrase for thread lookup>
 ```
 
-Workers update their card instead of sending routine progress through the human.
-If two agents need to collaborate, they read each other's cards and append a
-short note to their own card describing the dependency.
+The owner updates cards from worker reports. Workers may read existing cards,
+but should avoid direct `.git/workstreams` writes unless explicitly instructed
+for a toolchain that does not prompt on `.git` edits. If two agents need to
+collaborate, they report the dependency in their final report or in a
+non-sensitive handoff file; the owner records the dependency in the relevant
+card.
 
 ### Blockers
 
@@ -140,15 +155,17 @@ workstream card or `decisions.md` if it affects more than one branch.
 
 ### Merge Queue
 
-A worker marks a branch ready by creating:
+A branch is ready when the owner creates:
 
 ```bash
 ready="$(git rev-parse --git-common-dir)/workstreams/merge-queue/$branch.md"
 ```
 
-The merge-queue entry should be a final report, not a request for a status
-conversation. It must include commit hashes, files changed, validation, known
-baseline failures, residual risks, and `git status --short`.
+The merge-queue entry should be copied from the worker's final report, not used
+as a status conversation. It must include commit hashes, files changed,
+validation, known baseline failures, residual risks, and `git status --short`.
+Workers should not write this file directly unless explicitly instructed by the
+owner for the current toolchain.
 
 The owner reviews merge-queue entries in dependency order, not arrival order.
 
@@ -294,7 +311,7 @@ Final report must include:
 - residual risks
 - next recommended slice
 - `git status --short`
-- updated local workstream card or draft PR description
+- draft PR description or handoff report path under `tmp/workstreams/`
 ```
 
 ## Standard Validation Matrix
