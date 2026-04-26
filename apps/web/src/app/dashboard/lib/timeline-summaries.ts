@@ -8,7 +8,12 @@
  * where appropriate). Keys match `${connectorId}::${stream}`; a fallback
  * generic function runs if no specific mapping exists.
  */
-import { truncate } from "./rs-client.ts";
+// Inlined to avoid pulling rs-client (and its server-only owner-token
+// dependency) into the timeline summary path. Used by both the live
+// dashboard and the sandbox mock-owner timeline.
+function truncate(s: string, n: number): string {
+  return s.length > n ? `${s.slice(0, n - 1)}…` : s;
+}
 
 export type RecordData = Record<string, unknown>;
 type SummaryFn = (data: RecordData) => string;

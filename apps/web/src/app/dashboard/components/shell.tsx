@@ -127,7 +127,7 @@ function SidebarContent({ active, mode, routes }: { active: DashboardSection; mo
         </nav>
 
         {active === "grants" && mode === "live" ? <GrantsSubnav /> : null}
-        {active === "records" ? <RecordsSubnav mode={mode} routes={routes} /> : null}
+        {active === "records" ? <RecordsSubnav routes={routes} /> : null}
       </div>
 
       {mode === "mock-owner" ? <MockOwnerFooter /> : <EnvFooter />}
@@ -145,16 +145,13 @@ function GrantsSubnav() {
   return <SidebarSubnav items={items} label="Grants workspace" />;
 }
 
-function RecordsSubnav({ mode, routes }: { mode: ShellMode; routes: Routes }) {
-  // The records timeline is a live-only inspection surface; the sandbox
-  // dataset is too small to make it meaningful.
-  const items =
-    mode === "mock-owner"
-      ? [{ href: routes.section.records, label: "Connectors" }]
-      : [
-          { href: routes.section.records, label: "Connectors" },
-          { href: routes.section.recordsTimeline, label: "Timeline" },
-        ];
+function RecordsSubnav({ routes }: { routes: Routes }) {
+  // Both modes expose Timeline: the mock-owner sandbox renders the same
+  // shared records-timeline view against the seeded dataset.
+  const items = [
+    { href: routes.section.records, label: "Connectors" },
+    { href: routes.section.recordsTimeline, label: "Timeline" },
+  ];
   return <SidebarSubnav items={items} label="Records" />;
 }
 

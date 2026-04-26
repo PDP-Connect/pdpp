@@ -104,6 +104,7 @@ export const DEMO_STREAMS: readonly DemoStreamDef[] = [
     description: "Per-period gross/net pay totals and the issuing employer.",
     retention_label: "Retained while this demo dataset is seeded.",
     latest_record_time: "2026-03-31T00:00:00Z",
+    consent_time_field: "period_end",
     fields: [
       { name: "period_end", type: "timestamp", semantic_class: "common", description: "End of the pay period." },
       { name: "employer", type: "string", semantic_class: "common", description: "Issuing employer display name." },
@@ -129,6 +130,7 @@ export const DEMO_STREAMS: readonly DemoStreamDef[] = [
     description: "End-of-year tax document index from the simulated payroll provider.",
     retention_label: "Retained while this demo dataset is seeded.",
     latest_record_time: "2026-01-31T00:00:00Z",
+    consent_time_field: "issued_at",
     fields: [
       { name: "year", type: "number", semantic_class: "common", description: "Tax year covered by the document." },
       { name: "document_kind", type: "string", semantic_class: "common", description: "e.g. W2, 1099." },
@@ -153,6 +155,7 @@ export const DEMO_STREAMS: readonly DemoStreamDef[] = [
     description: "Visit summary entries from the simulated personal-health provider.",
     retention_label: "Retained while this demo dataset is seeded.",
     latest_record_time: "2026-02-14T00:00:00Z",
+    consent_time_field: "visit_at",
     fields: [
       { name: "visit_at", type: "timestamp", semantic_class: "common", description: "When the visit occurred." },
       {
@@ -182,6 +185,7 @@ export const DEMO_STREAMS: readonly DemoStreamDef[] = [
     description: "Per-transaction posting from the simulated bank account.",
     retention_label: "Retained while this demo dataset is seeded.",
     latest_record_time: "2026-04-22T00:00:00Z",
+    consent_time_field: "posted_at",
     fields: [
       { name: "posted_at", type: "timestamp", semantic_class: "common", description: "When the transaction posted." },
       { name: "merchant", type: "string", semantic_class: "common", description: "Merchant display name." },

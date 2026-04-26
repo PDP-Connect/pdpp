@@ -151,3 +151,18 @@ Owner review on 2026-04-26 clarified that the acceptable product target is not "
 - API examples and walkthroughs as secondary surfaces.
 
 Any remaining divergence from the live dashboard experience must be deliberate, safety-driven, and documented.
+
+### Records timeline correction
+
+A later pass found one durable divergence still in place: `/sandbox/records/timeline` 404'd and the records subnav hid the Timeline entry in mock-owner mode, on the prior assumption that the seeded dataset was too small to be useful. That assumption was wrong once the dataset spans multiple connectors and time-anchored streams.
+
+The correction:
+
+- `loadTimeline` takes a `DashboardDataSource`, so the same loader runs against the live AS/RS and against the deterministic sandbox source.
+- Sandbox stream manifests advertise `consent_time_field` exactly the same way the live manifests do, so the loader's anchored-stream discovery works without any sandbox-specific branch.
+- A shared `RecordsTimelineView` bound to `Routes` renders the same UI in `/dashboard/records/timeline` and `/sandbox/records/timeline`.
+- The records subnav exposes Timeline in both modes.
+
+Sandbox divergence list (deliberate, narrow):
+
+- The default since/until window for the sandbox timeline is one year (vs. seven days live), because the seeded dataset is anchored around a frozen demo clock in early 2026 — a seven-day window centered on real "now" would render an empty list.

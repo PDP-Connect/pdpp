@@ -11,14 +11,17 @@
  * to keep the page responsive; with the default PER_STREAM_LIMIT the
  * total work is at most (# time-anchored streams) * PER_STREAM_LIMIT
  * record fetches.
+ *
+ * The loader takes a `DashboardDataSource` so the same view runs against
+ * the live owner-authenticated AS/RS in `/dashboard/**` and against the
+ * deterministic mock dataset in `/sandbox/**` without forking either
+ * page. Callers always pass an explicit source: this module is
+ * type-only with respect to the seam so it stays loadable from
+ * non-server contexts (e.g. unit tests) without dragging in
+ * `server-only` through the live binding.
  */
-import {
-  type ConnectorManifest,
-  listConnectorManifests,
-  listStreams,
-  queryRecords,
-  type StreamRecord,
-} from "./rs-client.ts";
+import type { DashboardDataSource } from "./data-source.ts";
+import type { ConnectorManifest, StreamRecord } from "./rs-client.ts";
 import { summarize } from "./timeline-summaries.ts";
 
 export interface TimelineEntry {
@@ -46,8 +49,12 @@ interface TimeAnchoredStream {
 const DEFAULT_PER_STREAM_LIMIT = 50;
 const DEFAULT_TOTAL_LIMIT = 500;
 
-export async function findTimeAnchoredStreams(): Promise<TimeAnchoredStream[]> {
-  const manifests = await listConnectorManifests();
+export async function findTimeAnchoredStreams(dataSource: DashboardDataSource): Promise<TimeAnchoredStream[]> {
+  const manifests = await dataSource.listConnectorManifests();
+  return collectTimeAnchoredStreams(manifests);
+}
+
+function collectTimeAnchoredStreams(manifests: ConnectorManifest[]): TimeAnchoredStream[] {
   const anchored: TimeAnchoredStream[] = [];
   for (const m of manifests) {
     for (const s of m.streams ?? []) {
@@ -69,12 +76,15 @@ export async function findTimeAnchoredStreams(): Promise<TimeAnchoredStream[]> {
  * Called separately so callers can display "sources" hints without
  * re-querying.
  */
-export async function connectorsWithData(manifests: ConnectorManifest[]): Promise<Map<string, Set<string>>> {
+export async function connectorsWithData(
+  manifests: ConnectorManifest[],
+  dataSource: DashboardDataSource
+): Promise<Map<string, Set<string>>> {
   const result = new Map<string, Set<string>>();
   await Promise.all(
     manifests.map(async (m) => {
       try {
-        const streams = await listStreams(m.connector_id);
+        const streams = await dataSource.listStreams(m.connector_id);
         const withData = new Set(streams.filter((s) => s.record_count > 0).map((s) => s.name));
         if (withData.size) {
           result.set(m.connector_id, withData);
@@ -108,16 +118,19 @@ function isoFromMs(ms: number): string {
 }
 
 export async function loadTimeline(
-  opts: TimelineOptions = {}
+  opts: TimelineOptions,
+  dataSource: DashboardDataSource
 ): Promise<{ entries: TimelineEntry[]; scanned: number; sources: number }> {
   const perStreamLimit = opts.perStreamLimit ?? DEFAULT_PER_STREAM_LIMIT;
   const totalLimit = opts.totalLimit ?? DEFAULT_TOTAL_LIMIT;
   const sinceMs = opts.since ? Date.parse(opts.since) : null;
   const untilMs = opts.until ? Date.parse(opts.until) : null;
 
-  const manifests = await listConnectorManifests();
-  const withData = await connectorsWithData(manifests);
-  const anchored = await findTimeAnchoredStreams();
+  const manifests = await dataSource.listConnectorManifests();
+  const [withData, anchored] = await Promise.all([
+    connectorsWithData(manifests, dataSource),
+    Promise.resolve(collectTimeAnchoredStreams(manifests)),
+  ]);
 
   // Only scan streams that (a) are time-anchored per manifest and
   // (b) have at least one record loaded in the RS.
@@ -130,7 +143,7 @@ export async function loadTimeline(
         // first. The record timestamp isn't strictly monotonic with row
         // id, but in the polyfill corpus it is close enough to
         // usefully bound the fetch.
-        const page = await queryRecords(t.connectorId, t.streamName, {
+        const page = await dataSource.queryRecords(t.connectorId, t.streamName, {
           limit: perStreamLimit,
           order: "desc",
         });
