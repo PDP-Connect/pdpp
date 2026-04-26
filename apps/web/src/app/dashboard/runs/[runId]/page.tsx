@@ -71,6 +71,7 @@ export default async function RunDetailPage({ params }: { params: Promise<{ runI
   const stateTone = getRunStateTone({ active, pendingInteraction: Boolean(pendingInteraction), terminalStatus });
   const stateValue = getRunStateValue({ active, pendingInteraction: Boolean(pendingInteraction), terminalStatus });
   const failureRows = summarizeFailure(failure);
+  const bridgeUnavailable = extractBridgeUnavailable(failure);
 
   return (
     <DashboardShell active="runs">
@@ -86,6 +87,7 @@ export default async function RunDetailPage({ params }: { params: Promise<{ runI
       <PendingInteractionSection pendingInteraction={pendingInteraction} runId={runId} />
       <LatestProgressSection active={active} latestProgress={latestProgress} terminalStatus={terminalStatus} />
       <RelatedRunLinks grantIds={grantIds} traceIds={traceIds} />
+      <BridgeUnavailableSection bridgeUnavailable={bridgeUnavailable} />
       <StatsGrid
         checkpoints={checkpoints}
         failure={failure}
@@ -590,6 +592,67 @@ function summarizeFailure(failure: SpineEvent | undefined): [string, string][] {
     ["reason", String(failure.data.reason ?? failure.data.failure_reason ?? "—")],
     ["retryable", String(failure.data.connector_error_retryable ?? "—")],
   ];
+}
+
+// ─── Host browser bridge unavailable ────────────────────────────────────────
+// Surfaced as a distinct deployment-config error state, not a generic failure.
+// The stable error code is `host_browser_bridge_unavailable`; the runtime
+// embeds it in the run.failed event's `data.reason` field.
+
+const HOST_BROWSER_BRIDGE_UNAVAILABLE_CODE = "host_browser_bridge_unavailable";
+
+interface BridgeUnavailableInfo {
+  cause: string;
+  url: string | null;
+}
+
+function extractBridgeUnavailable(failure: SpineEvent | undefined): BridgeUnavailableInfo | null {
+  if (!failure) {
+    return null;
+  }
+  const reason = String(failure.data?.reason ?? failure.data?.failure_reason ?? "");
+  if (!reason.includes(HOST_BROWSER_BRIDGE_UNAVAILABLE_CODE)) {
+    return null;
+  }
+  const url = typeof failure.data?.bridge_url === "string" ? failure.data.bridge_url : null;
+  return { cause: reason, url };
+}
+
+function BridgeUnavailableSection({ bridgeUnavailable }: { bridgeUnavailable: BridgeUnavailableInfo | null }) {
+  if (!bridgeUnavailable) {
+    return null;
+  }
+  return (
+    <section className="mb-6 rounded-md border border-destructive/30 border-l-4 border-l-destructive/60 bg-destructive/5 px-4 py-3">
+      <header className="mb-2 flex flex-wrap items-baseline justify-between gap-2">
+        <h3 className="pdpp-title text-foreground">Host browser bridge unavailable</h3>
+        <span className="pdpp-caption text-muted-foreground">deployment config error</span>
+      </header>
+      <p className="pdpp-caption mb-3 text-muted-foreground">
+        This run requires a visible host browser but the bridge is not reachable. This is a deployment configuration
+        problem, not a connector failure.
+      </p>
+      {bridgeUnavailable.url ? (
+        <dl className="pdpp-caption mb-3 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
+          <dt className="text-muted-foreground">configured URL</dt>
+          <dd className="break-all font-mono">{bridgeUnavailable.url}</dd>
+        </dl>
+      ) : null}
+      <div className="pdpp-caption rounded-md border border-border/60 bg-muted/40 px-3 py-2">
+        <p className="mb-1 font-medium text-foreground">Copy-paste fix</p>
+        <p className="mb-2 text-muted-foreground">
+          Start the host bridge on the machine running Docker, then re-run the connector:
+        </p>
+        <pre className="overflow-x-auto font-mono text-foreground/90">
+          {`# macOS / Windows Docker Desktop\npnpm --dir packages/polyfill-connectors exec tsx \\\n  bin/host-browser-bridge.ts --profile <connector-name>\n\n# Linux Docker (bind to docker bridge IP, e.g. 172.17.0.1)\nDOCKER_BRIDGE_IP=$(ip -4 addr show docker0 | awk '/inet /{print $2}' | cut -d/ -f1)\npnpm --dir packages/polyfill-connectors exec tsx \\\n  bin/host-browser-bridge.ts --profile <connector-name> \\\n  --bind-host="$DOCKER_BRIDGE_IP"`}
+        </pre>
+        <p className="mt-2 text-muted-foreground">
+          Then export the printed <code>PDPP_HOST_BROWSER_BRIDGE_URL</code> and{" "}
+          <code>PDPP_HOST_BROWSER_BRIDGE_TOKEN</code> into your Compose environment and restart.
+        </p>
+      </div>
+    </section>
+  );
 }
 
 function getTerminalRunStatus(events: SpineEvent[]): TerminalRunStatus {
