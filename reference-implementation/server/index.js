@@ -44,6 +44,7 @@ import {
 import { collectDeploymentDiagnostics } from './deployment-diagnostics.ts';
 import { createOwnerAuthPlaceholder, OWNER_AUTH_DEFAULT_SUBJECT_ID } from './owner-auth.ts';
 import { createController } from '../runtime/controller.ts';
+import { isClosedPipeWriteError } from '../runtime/pipe-errors.js';
 import { createApp, buildLogger } from './transport.js';
 import {
   HOSTED_UI_CSS,
@@ -4004,6 +4005,7 @@ export async function startServer(opts = {}) {
 if (process.argv[1] && process.argv[1].endsWith('server/index.js')) {
   const cliLogger = buildLogger();
   let shuttingDown = false;
+  let pipeWarnEmitted = false;
 
   const exitOnFatal = (reason) => (err) => {
     if (shuttingDown) return;
@@ -4012,7 +4014,26 @@ if (process.argv[1] && process.argv[1].endsWith('server/index.js')) {
     // Flush stdout before exit so the fatal line reaches the terminal.
     process.nextTick(() => process.exit(1));
   };
-  process.on('uncaughtException', exitOnFatal('uncaughtException'));
+  // Closed-pipe writes on the CLI's owned stdio (process.stdout /
+  // process.stderr) are an operational condition — Docker Compose log
+  // handoff and `node --watch` restart can both close those pipes
+  // asynchronously while the AS/RS keeps serving requests. Downgrade
+  // those errors to a single warn record and stay alive. Anything else
+  // takes the existing fatal path so real programmer errors still crash
+  // loudly. See:
+  //   openspec/changes/harden-reference-runtime-reliability/design.md
+  const handleUncaught = (err) => {
+    if (isClosedPipeWriteError(err)) {
+      if (!pipeWarnEmitted) {
+        pipeWarnEmitted = true;
+        try { cliLogger.warn({ err }, 'closed-pipe write on owned stdio downgraded'); }
+        catch { /* warn emission may itself EPIPE; swallow once */ }
+      }
+      return;
+    }
+    exitOnFatal('uncaughtException')(err);
+  };
+  process.on('uncaughtException', handleUncaught);
   process.on('unhandledRejection', exitOnFatal('unhandledRejection'));
 
   const server = { asServer: null, rsServer: null };

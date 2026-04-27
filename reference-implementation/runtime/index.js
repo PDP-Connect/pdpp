@@ -8,6 +8,7 @@ import { spawn } from 'child_process';
 import { createInterface } from 'readline';
 import { appendFileSync, mkdirSync } from 'node:fs';
 import { createTraceContext, emitSpineEvent } from '../lib/spine.ts';
+import { isClosedPipeWriteError } from './pipe-errors.js';
 
 function encodeScopeResourceKey(key) {
   return Array.isArray(key) ? JSON.stringify(key) : String(key);
@@ -719,10 +720,28 @@ function validateInteractionMessage(msg, scopeByStream) {
  * @param {function} opts.onProgress - (msg) => void
  * @returns {Promise<{status, records_emitted, state, checkpoint_summary}>}
  */
+// process.stderr write that swallows a single closed-pipe error per
+// process. Used by the default progress logger so that a vanishing log
+// consumer (Docker Compose log handoff, `node --watch` restart) cannot
+// take down a fire-and-forget connector run with an uncaught EPIPE.
+let _stderrPipeClosed = false;
+function safeStderrWrite(line) {
+  if (_stderrPipeClosed) return;
+  try {
+    process.stderr.write(line);
+  } catch (err) {
+    if (isClosedPipeWriteError(err)) {
+      _stderrPipeClosed = true;
+      return;
+    }
+    throw err;
+  }
+}
+
 export async function runConnector(opts) {
   const defaultOnProgress = process.env.PDPP_RUNTIME_QUIET === '1'
     ? () => {}
-    : (msg) => process.stderr.write(`[runtime] ${JSON.stringify(msg)}\n`);
+    : (msg) => safeStderrWrite(`[runtime] ${JSON.stringify(msg)}\n`);
   const {
     connectorPath,
     connectorId,
@@ -774,6 +793,54 @@ export async function runConnector(opts) {
       PDPP_RS_URL: rsUrl,
     },
   });
+
+  // Closed-pipe defenses on the connector child stdio we own. Without
+  // these, an EPIPE on `proc.stdin.write(...)` (child exited early) or on
+  // a stdout/stderr write the child performs surfaces as an unhandled
+  // 'error' event on the parent, which becomes an uncaughtException and
+  // crashes the AS/RS process — the failure mode captured in
+  // openspec/changes/harden-reference-runtime-reliability/
+  //     design-notes/reference-docker-epipe-crash-2026-04-26.md.
+  // Closed-pipe errors are downgraded to operational state on the run;
+  // any other stream error is re-thrown to surface real bugs.
+  let childStdinClosed = false;
+  proc.stdin.on('error', (err) => {
+    if (isClosedPipeWriteError(err)) {
+      childStdinClosed = true;
+      return;
+    }
+    throw err;
+  });
+  proc.stdout.on('error', (err) => {
+    if (isClosedPipeWriteError(err)) return;
+    throw err;
+  });
+  proc.stderr.on('error', (err) => {
+    if (isClosedPipeWriteError(err)) return;
+    throw err;
+  });
+
+  // Wrapped stdin writer: avoids synchronous throws when the child has
+  // already detached its stdin reader. Returns true if the bytes were
+  // accepted, false if stdin is no longer writable (the close handler
+  // owns the failure path; the runtime's existing 'close' listener will
+  // surface a typed terminal record).
+  function writeChildStdin(payload) {
+    if (childStdinClosed || !proc.stdin.writable) {
+      childStdinClosed = true;
+      return false;
+    }
+    try {
+      proc.stdin.write(payload);
+      return true;
+    } catch (err) {
+      if (isClosedPipeWriteError(err)) {
+        childStdinClosed = true;
+        return false;
+      }
+      throw err;
+    }
+  }
 
   const traceContext = opts.traceContext || createTraceContext({ scenarioId: opts.scenarioId });
   const runId = opts.runId || `run_${Date.now()}`;
@@ -843,7 +910,7 @@ export async function runConnector(opts) {
       _traceAppendFile = `${traceDir}/${ts}_${safeId}_${runId}.jsonl`;
       appendFileSync(_traceAppendFile, `# pdpp-runtime-trace connector=${connectorId} run=${runId} started=${new Date().toISOString()}\n`);
     } catch (err) {
-      process.stderr.write(`[runtime] trace open failed: ${err.message}\n`);
+      safeStderrWrite(`[runtime] trace open failed: ${err.message}\n`);
     }
   }
   const writeTrace = (line) => {
@@ -860,7 +927,7 @@ export async function runConnector(opts) {
     state: startState,
     bindings: availableBindings,
   };
-  proc.stdin.write(JSON.stringify(startMsg) + '\n');
+  writeChildStdin(JSON.stringify(startMsg) + '\n');
 
   // Last spine event the runtime successfully persisted for this run.
   // Used by ProtocolViolation.toPublicShape() to give the dashboard an
@@ -1446,7 +1513,7 @@ export async function runConnector(opts) {
           }
 
           pendingInteraction = null;
-          proc.stdin.write(JSON.stringify({ ...response, status: responseStatus }) + '\n');
+          writeChildStdin(JSON.stringify({ ...response, status: responseStatus }) + '\n');
           pendingInteractionViolationReject = null;
           break;
         }

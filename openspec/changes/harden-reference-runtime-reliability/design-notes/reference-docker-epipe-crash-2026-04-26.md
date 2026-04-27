@@ -1,11 +1,10 @@
 # Reference Docker EPIPE Crash During Connector Run
 
-Status: promoted
+Status: captured
 Owner: reference implementation
 Created: 2026-04-26
 Updated: 2026-04-26
 Related: Docker Compose reference deployment, connector run controller, process logging
-Promoted to: `openspec/changes/harden-reference-runtime-reliability/`
 
 ## Question
 
@@ -51,4 +50,3 @@ Promote to OpenSpec before changing reference process-supervision semantics, con
 ## Decision Log
 
 - 2026-04-26: Captured from Docker Compose failure during a Claude Code connector run.
-- 2026-04-26: Promoted into OpenSpec change `harden-reference-runtime-reliability`. The change owns the reference contract for closed-pipe write handling on connector child stdio and CLI-entrypoint owned stdio; this note remains as the captured incident artifact.
