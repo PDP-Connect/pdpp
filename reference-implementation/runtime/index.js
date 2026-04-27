@@ -9,6 +9,7 @@ import { createInterface } from 'readline';
 import { appendFileSync, mkdirSync } from 'node:fs';
 import { createTraceContext, emitSpineEvent } from '../lib/spine.ts';
 import { isClosedPipeWriteError } from './pipe-errors.js';
+import { deriveTerminalReason } from './terminal-reason.js';
 
 function encodeScopeResourceKey(key) {
   return Array.isArray(key) ? JSON.stringify(key) : String(key);
@@ -804,9 +805,23 @@ export async function runConnector(opts) {
   // Closed-pipe errors are downgraded to operational state on the run;
   // any other stream error is re-thrown to surface real bugs.
   let childStdinClosed = false;
+  // Reason recorded when a stdin write to the connector child is rejected
+  // because the far side has closed. Surfaced as terminal_reason on the
+  // run outcome so a Docker/--watch crash mode is observably distinct
+  // from a connector that exited cleanly without DONE. Only set when no
+  // protocol-level terminal record (DONE or violation) has already
+  // claimed the run. See:
+  //   openspec/changes/harden-reference-runtime-reliability/
+  //     specs/reference-implementation-architecture/spec.md
+  let childStdinClosedReason = null;
+  let childStdinClosedAtPhase = null; // 'start' | 'interaction_response'
   proc.stdin.on('error', (err) => {
     if (isClosedPipeWriteError(err)) {
       childStdinClosed = true;
+      if (!childStdinClosedReason) {
+        childStdinClosedReason = 'connector_stdin_closed';
+        childStdinClosedAtPhase = 'unknown';
+      }
       return;
     }
     throw err;
@@ -822,12 +837,17 @@ export async function runConnector(opts) {
 
   // Wrapped stdin writer: avoids synchronous throws when the child has
   // already detached its stdin reader. Returns true if the bytes were
-  // accepted, false if stdin is no longer writable (the close handler
-  // owns the failure path; the runtime's existing 'close' listener will
-  // surface a typed terminal record).
-  function writeChildStdin(payload) {
+  // accepted, false if stdin is no longer writable. On a non-writable
+  // stdin we record `connector_stdin_closed` and the write phase so the
+  // close handler can surface a typed terminal_reason instead of falling
+  // back to the generic `connector_exit_without_done` outcome.
+  function writeChildStdin(payload, phase) {
     if (childStdinClosed || !proc.stdin.writable) {
       childStdinClosed = true;
+      if (!childStdinClosedReason) {
+        childStdinClosedReason = 'connector_stdin_closed';
+        childStdinClosedAtPhase = phase || 'unknown';
+      }
       return false;
     }
     try {
@@ -836,6 +856,10 @@ export async function runConnector(opts) {
     } catch (err) {
       if (isClosedPipeWriteError(err)) {
         childStdinClosed = true;
+        if (!childStdinClosedReason) {
+          childStdinClosedReason = 'connector_stdin_closed';
+          childStdinClosedAtPhase = phase || 'unknown';
+        }
         return false;
       }
       throw err;
@@ -927,7 +951,13 @@ export async function runConnector(opts) {
     state: startState,
     bindings: availableBindings,
   };
-  writeChildStdin(JSON.stringify(startMsg) + '\n');
+  if (!writeChildStdin(JSON.stringify(startMsg) + '\n', 'start')) {
+    onProgress({
+      type: 'connector_stdin_closed',
+      phase: 'start',
+      reason: childStdinClosedReason,
+    });
+  }
 
   // Last spine event the runtime successfully persisted for this run.
   // Used by ProtocolViolation.toPublicShape() to give the dashboard an
@@ -1513,7 +1543,13 @@ export async function runConnector(opts) {
           }
 
           pendingInteraction = null;
-          writeChildStdin(JSON.stringify({ ...response, status: responseStatus }) + '\n');
+          if (!writeChildStdin(JSON.stringify({ ...response, status: responseStatus }) + '\n', 'interaction_response')) {
+            onProgress({
+              type: 'connector_stdin_closed',
+              phase: 'interaction_response',
+              reason: childStdinClosedReason,
+            });
+          }
           pendingInteractionViolationReject = null;
           break;
         }
@@ -1755,6 +1791,17 @@ export async function runConnector(opts) {
             });
             onProgress({ type: 'done', status: doneMessage.status, records_emitted: doneMessage.records_emitted });
           } else {
+            // No DONE was received. If the runtime observed a
+            // closed-stdin write, surface that as the typed terminal
+            // reason; otherwise fall through to the generic "exited
+            // without DONE" reason. Both paths resolve the run as
+            // failed via the existing close handler.
+            const { reason: closeFailureReason } = deriveTerminalReason({
+              doneMessage: null,
+              finalStatus: 'failed',
+              childStdinClosedReason,
+              childStdinClosedAtPhase,
+            });
             await emitSpineEvent({
               event_type: 'run.failed',
               trace_id: traceContext.trace_id,
@@ -1768,36 +1815,43 @@ export async function runConnector(opts) {
               data: buildRunTerminalData({
                 recordsEmitted: totalEmitted,
                 exitCode: code,
-                reason: 'connector_exit_without_done',
+                reason: closeFailureReason,
                 connectorError: null,
               }),
             });
-            onProgress({ type: 'done', status: 'failed', records_emitted: totalEmitted, exit_code: code });
+            onProgress({
+              type: 'done',
+              status: 'failed',
+              records_emitted: totalEmitted,
+              exit_code: code,
+              ...(childStdinClosedReason ? { reason: closeFailureReason, stdin_closed_at_phase: childStdinClosedAtPhase } : {}),
+            });
           }
           terminalEventRecorded = true;
         }
         cleanupChildHandles();
+        const { reason: closeTerminalReason, phase: closeTerminalPhase } = deriveTerminalReason({
+          doneMessage,
+          finalStatus,
+          childStdinClosedReason,
+          childStdinClosedAtPhase,
+        });
         resolve({
           status: finalStatus,
           records_emitted: totalEmitted,
           state: newState,
           checkpoint_summary: buildCheckpointSummary(),
           known_gaps: buildKnownGapsForTerminal(
-            doneMessage
-              ? (doneMessage.status === 'failed'
-                  ? 'connector_reported_failed'
-                  : (doneMessage.status === 'cancelled' ? 'connector_reported_cancelled' : null))
-              : (finalStatus === 'failed' ? 'connector_exit_without_done' : null),
+            closeTerminalReason,
             doneMessage?.error || null,
           ),
           exit_code: code,
           run_id: runId,
           trace_id: traceContext.trace_id,
-          terminal_reason: doneMessage
-            ? (doneMessage.status === 'failed'
-                ? 'connector_reported_failed'
-                : (doneMessage.status === 'cancelled' ? 'connector_reported_cancelled' : null))
-            : (finalStatus === 'failed' ? 'connector_exit_without_done' : null),
+          terminal_reason: closeTerminalReason,
+          ...(closeTerminalReason === 'connector_stdin_closed'
+            ? { stdin_closed_at_phase: closeTerminalPhase }
+            : {}),
           connector_error: doneMessage?.error || null,
         });
       } catch (err) {

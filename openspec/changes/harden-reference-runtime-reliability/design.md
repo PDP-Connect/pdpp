@@ -39,6 +39,8 @@ When `runConnector` spawns a connector, it SHALL attach `error` listeners on the
 
 The `proc.stdin.write` call sites SHALL continue to be the same `.write()` invocations, but the runtime SHALL also check `proc.stdin.writable === true` before calling them, and treat a non-writable stdin as the same `connector_stdin_closed` operational failure rather than a thrown exception.
 
+There is one unavoidable kernel-pipe race in the initial START write. If the child exits before reading START but the kernel accepts the small START payload before the read end closes, the runtime cannot honestly know that stdin was already doomed; the existing typed outcome `connector_exit_without_done` remains correct. If the runtime observes the failed write synchronously, through `proc.stdin.writable === false`, or through a child-stdin `error` event, the typed outcome is `connector_stdin_closed` and the outcome includes the attempted protocol phase (`start`, `interaction_response`, or `unknown` when only an async stream error was observed).
+
 ### D2. Process-level downgrade of EPIPE on owned log pipes
 
 The CLI-entrypoint `uncaughtException` handler SHALL inspect the error before fatal-exiting:
@@ -51,6 +53,12 @@ This is intentionally narrower than a blanket `try { ... } catch {}` over uncaug
 ### D3. Library-mode parity
 
 `runConnector` (library import surface) SHALL not require any global handler to survive closed connector stdio. D1 alone makes the library path safe; D2 is purely a CLI-entrypoint defense.
+
+### D4. Extract `deriveTerminalReason` for direct unit testing
+
+The decision of which terminal_reason to surface (DONE-derived vs. `connector_stdin_closed` vs. `connector_exit_without_done`) is a contract assertion, not an incidental implementation detail. Spawning a real connector child to test the `connector_stdin_closed` branch is racy because of the kernel-pipe race described above; a pure helper is the smallest surface that captures the decision deterministically.
+
+`runtime/terminal-reason.js` exports `deriveTerminalReason({doneMessage, finalStatus, childStdinClosedReason, childStdinClosedAtPhase})` returning `{reason, phase}`. The runtime's close handler is the only production consumer; the unit test asserts every branch including the DONE-wins-over-stdin-close ordering and the missing-phase fallback to `'unknown'`. This is the reason for adding a new file rather than testing the close handler indirectly through a faked child.
 
 ## Alternatives considered
 
@@ -72,6 +80,7 @@ This is intentionally narrower than a blanket `try { ... } catch {}` over uncaug
 2. `openspec validate --all --strict` passes.
 3. `pnpm --dir reference-implementation run verify` passes.
 4. New test `reference-implementation/test/runtime-pipe-resilience.test.js`:
-   - Spawns a stub connector that exits before reading stdin; `runConnector` SHALL resolve with `status === 'failed'` and a typed `failure_reason`/known-gap shape, and the parent process SHALL NOT receive an unhandled EPIPE.
-   - Wraps `process.stderr.write` (or directly emits an `error` event on a fake stderr) with an `EPIPE` synthetic error inside the CLI guard helper; the helper SHALL classify it as a downgradable EPIPE and other error classes SHALL be re-raised.
+   - Spawns a stub connector that exits before reading stdin; `runConnector` SHALL resolve with `status === 'failed'` and a typed `terminal_reason` (`connector_stdin_closed` if the failed write was observed, otherwise `connector_exit_without_done`), and the parent process SHALL NOT receive an unhandled EPIPE.
+   - Unit-tests the closed-pipe classifier.
+   - Unit-tests the pure terminal-reason helper that maps DONE status / child-stdin-close state to the resolved run `terminal_reason`.
 5. Manual verification of the original Docker Compose repro: `docker compose -f docker-compose.dev.yml up`, trigger the Claude Code connector run, observe that the parent reference process keeps serving requests.

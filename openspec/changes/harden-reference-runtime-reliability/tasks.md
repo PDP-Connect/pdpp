@@ -21,8 +21,9 @@
 ## 4. Regression test
 
 - [x] 4.1 Add `reference-implementation/test/runtime-pipe-resilience.test.js`:
-  - Stub-connector path: spawn a child that exits before reading stdin; assert `runConnector` resolves with a typed `failure_reason` and the parent process emits no `uncaughtException`.
-  - Classifier path: feed synthetic errors into the CLI guard classifier and assert EPIPE on owned pipes is `downgradable`, while a generic `TypeError` is `fatal`.
+  - Stub-connector path: spawn a child that exits before reading stdin; assert `runConnector` resolves with a typed `terminal_reason` and the parent process emits no `uncaughtException`.
+  - Classifier path: feed synthetic errors into the shared closed-pipe classifier and assert only write-side closed-pipe errors are downgradable.
+  - Terminal-reason path: unit-test the pure helper that maps DONE status and child-stdin-close state to the resolved run `terminal_reason`.
 - [x] 4.2 Wire the new test into the test suite so `pnpm --dir reference-implementation run test` and `pnpm --dir reference-implementation run verify` exercise it.
 
 ## 5. Validation

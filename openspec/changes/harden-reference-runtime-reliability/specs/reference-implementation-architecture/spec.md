@@ -36,17 +36,37 @@ When the connector runtime spawns a connector child process, it SHALL attach `er
 
 The runtime SHALL also guard `proc.stdin.write` call sites against a non-writable stdin (`proc.stdin.writable === false`) and SHALL surface that condition as the same typed operational outcome rather than as a thrown synchronous exception.
 
-#### Scenario: Connector child exits before reading START
-- **WHEN** the runtime spawns a connector and the child exits before the runtime can write `START` to its stdin
-- **THEN** the runtime SHALL resolve the run with a structured failure outcome whose `failure_reason` indicates the connector terminated before accepting input
+The runtime SHALL distinguish two terminal_reason values for runs that fail without a DONE message, depending on whether the runtime observed the failed write:
+
+- **`connector_stdin_closed`** — the runtime observed a stdin write rejection (the helper either saw `proc.stdin.writable === false` or caught a closed-pipe `error` event on the stdin stream). The outcome SHALL also carry `stdin_closed_at_phase` naming the protocol phase the failed write was attempting (`start` for the initial START message, `interaction_response` for an INTERACTION_RESPONSE delivery).
+- **`connector_exit_without_done`** — the child exited without DONE but the kernel pipe absorbed every parent write before the child closed, so the runtime never observed a write rejection. This is the existing failure shape.
+
+In both cases, the parent process SHALL NOT emit an `uncaughtException`, and the resolved outcome SHALL carry one of these typed terminal_reason values.
+
+#### Scenario: Connector child exits before reading START — runtime observed the EPIPE
+- **WHEN** the runtime spawns a connector and writes START to a stdin whose far side has already closed
+- **AND** the helper sees the failed write (either via `writable === false` or via a closed-pipe `error` event)
+- **THEN** the resolved outcome's `terminal_reason` SHALL be `connector_stdin_closed`
+- **AND** the resolved outcome SHALL include `stdin_closed_at_phase: 'start'`
 - **AND** the parent process SHALL NOT emit an `uncaughtException`
-- **AND** the active-run projection SHALL be cleared so subsequent runs of the same connector are unblocked
+
+#### Scenario: Connector child exits before reading START — kernel absorbed the write
+- **WHEN** the runtime spawns a connector and writes START to a stdin whose kernel pipe accepts the bytes before the child closes
+- **AND** the child then exits without sending DONE
+- **THEN** the resolved outcome's `terminal_reason` SHALL be `connector_exit_without_done`
+- **AND** the parent process SHALL NOT emit an `uncaughtException`
 
 #### Scenario: Connector child closes stdin during INTERACTION_RESPONSE delivery
 - **WHEN** the runtime tries to write an `INTERACTION_RESPONSE` to a connector whose stdin has already closed
-- **THEN** the runtime SHALL record a typed operational failure on the run (not an uncaught exception)
+- **AND** the runtime helper observes the failed write
+- **THEN** the resolved outcome's `terminal_reason` SHALL be `connector_stdin_closed`
+- **AND** the resolved outcome SHALL include `stdin_closed_at_phase: 'interaction_response'`
 - **AND** the run lifecycle SHALL still drain to a terminal record via the existing `'close'` handler
 
 #### Scenario: Non-EPIPE error on connector stdio is not downgraded
 - **WHEN** the runtime's `proc.stdin` listener receives an `error` whose `code` is not in the closed-pipe set (for example a `TypeError` synthesized by Node)
 - **THEN** the runtime SHALL terminate the run via its existing failure path and the error SHALL surface to the run's caller, not be silently swallowed
+
+#### Scenario: A successful DONE outranks any later stdin-close on teardown
+- **WHEN** the connector emits DONE and the runtime later observes a stdin write rejection during cleanup
+- **THEN** the resolved outcome's `terminal_reason` SHALL reflect the DONE status (`connector_reported_failed`, `connector_reported_cancelled`, or null on success), not `connector_stdin_closed`
