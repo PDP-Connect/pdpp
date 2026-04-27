@@ -515,14 +515,18 @@ test('owner-auth placeholder: public OAuth metadata and /oauth/par routes are no
   });
 });
 
-test('owner-auth placeholder: enabled — _ref mutations require owner session while reads remain open', async () => {
+test('owner-auth placeholder: enabled — _ref reads and mutations both require owner session', async () => {
+  // Per gate-ref-reads-when-owner-auth-enabled, both `_ref` reads and
+  // mutations are owner-gated when PDPP_OWNER_PASSWORD is set.
   await withServer({ ownerAuthPassword: TEST_PASSWORD }, async ({ asUrl }) => {
     await startPendingConsent(asUrl);
     const connectorId = SPOTIFY_MANIFEST.connector_id;
 
-    const read = await fetchJson(`${asUrl}/_ref/connectors`);
-    assert.equal(read.status, 200, '_ref read routes remain open');
-    assert.equal(read.body.object, 'list');
+    const unauthenticatedRead = await fetchJson(`${asUrl}/_ref/connectors`, {
+      headers: { Accept: 'application/json' },
+    });
+    assert.equal(unauthenticatedRead.status, 401, '_ref reads now require owner session');
+    assert.equal(unauthenticatedRead.body.error.code, 'owner_session_required');
 
     const unauthenticatedMutation = await fetchJson(
       `${asUrl}/_ref/connectors/${encodeURIComponent(connectorId)}/schedule`,
@@ -539,6 +543,13 @@ test('owner-auth placeholder: enabled — _ref mutations require owner session w
     assert.equal(unauthenticatedMutation.body.error.code, 'owner_session_required');
 
     const { cookie } = await login(asUrl, TEST_PASSWORD);
+
+    const authenticatedRead = await fetchJson(`${asUrl}/_ref/connectors`, {
+      headers: { Accept: 'application/json', Cookie: cookie },
+    });
+    assert.equal(authenticatedRead.status, 200, '_ref read succeeds with owner session');
+    assert.equal(authenticatedRead.body.object, 'list');
+
     const authenticatedMutation = await fetchJson(
       `${asUrl}/_ref/connectors/${encodeURIComponent(connectorId)}/schedule`,
       {

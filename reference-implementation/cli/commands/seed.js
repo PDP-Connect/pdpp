@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { parseArgs } from '../lib/args.js';
 import { resolveAsUrl, resolveRsUrl } from '../lib/common.js';
 import { PdppCliError, PdppUsageError } from '../lib/errors.js';
+import { ownerSessionHeaders } from '../lib/fetch.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REF_ROOT = join(__dirname, '..', '..');
@@ -101,7 +102,9 @@ export async function runSeed(argv) {
   // Dataset summary — so the operator sees exactly what the dashboard will see.
   let summary = null;
   try {
-    const res = await fetch(`${asUrl}/_ref/dataset/summary`);
+    const res = await fetch(`${asUrl}/_ref/dataset/summary`, {
+      headers: { ...ownerSessionHeaders() },
+    });
     if (res.ok) summary = await res.json();
   } catch {
     // non-fatal — server may not expose /_ref yet

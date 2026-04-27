@@ -232,6 +232,7 @@ Routes gated by the placeholder (when enabled):
 - `GET /consent`, `POST /consent/approve`, `POST /consent/deny`
 - `GET /device`, `POST /device/approve`, `POST /device/deny`
 - `/dashboard`, `/dashboard/*` (via the composed web origin)
+- every reference-only `_ref` read (`GET /_ref/*`) and mutation (`POST/PUT /_ref/*`). When `PDPP_OWNER_PASSWORD` is unset, `_ref` routes preserve the open local-dev behavior. When set, callers must present an owner session — the dashboard already forwards the `pdpp_owner_session` cookie, and CLI callers can pass the same value via `PDPP_OWNER_SESSION_COOKIE`.
 
 Stable owner-entry routes:
 
@@ -353,6 +354,8 @@ reference stack. The quickest self-hosted path uses the public GHCR images:
 ```bash
 cp .env.docker.example .env.docker
 # edit .env.docker and set PDPP_OWNER_PASSWORD for a protected dashboard
+# (also gates every `_ref` read + mutation so deployed reference instances
+#  never expose grants/runs/timelines/connectors/diagnostics unauthenticated)
 docker compose --env-file .env.docker pull
 docker compose --env-file .env.docker up -d
 ```

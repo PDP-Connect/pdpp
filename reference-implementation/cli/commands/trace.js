@@ -1,6 +1,6 @@
 import { parseArgs, requirePositional } from '../lib/args.js';
 import { PdppUsageError } from '../lib/errors.js';
-import { fetchJson } from '../lib/fetch.js';
+import { fetchJson, ownerSessionHeaders } from '../lib/fetch.js';
 import { resolveFormat, writeData } from '../lib/output.js';
 import { resolveReferenceAsUrl } from '../lib/reference.js';
 
@@ -20,7 +20,9 @@ export async function runTrace(argv) {
 
   if (subcommand === 'show') {
     const traceId = requirePositional(positionals, 0, 'trace-id');
-    const { body } = await fetchJson(`${asUrl}/_ref/traces/${encodeURIComponent(traceId)}`);
+    const { body } = await fetchJson(`${asUrl}/_ref/traces/${encodeURIComponent(traceId)}`, {
+      headers: { ...ownerSessionHeaders() },
+    });
     writeTimeline(body, format);
     return;
   }

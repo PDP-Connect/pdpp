@@ -2040,7 +2040,7 @@ function buildAsApp(opts = {}) {
     };
   }
 
-  app.get('/_ref/traces', async (req, res) => {
+  app.get('/_ref/traces', ownerAuth.requireOwnerSession, async (req, res) => {
     try {
       const { summaries, hasMore, nextCursor } = await listSpineCorrelations('trace', parseListFilters(req.query));
       const body = {
@@ -2055,7 +2055,7 @@ function buildAsApp(opts = {}) {
     }
   });
 
-  app.get('/_ref/grants', async (req, res) => {
+  app.get('/_ref/grants', ownerAuth.requireOwnerSession, async (req, res) => {
     try {
       const { summaries, hasMore, nextCursor } = await listSpineCorrelations('grant', parseListFilters(req.query));
       const body = {
@@ -2070,7 +2070,7 @@ function buildAsApp(opts = {}) {
     }
   });
 
-  app.get('/_ref/runs', async (req, res) => {
+  app.get('/_ref/runs', ownerAuth.requireOwnerSession, async (req, res) => {
     try {
       const { summaries, hasMore, nextCursor } = await listSpineCorrelations('run', parseListFilters(req.query));
       const body = {
@@ -2090,7 +2090,7 @@ function buildAsApp(opts = {}) {
   // console. The public lexical retrieval contract lives at GET /v1/search;
   // these two routes share neither shape nor backing. See:
   //   openspec/changes/add-lexical-retrieval-extension/specs/lexical-retrieval/spec.md
-  app.get('/_ref/search', { contract: 'refSearch' }, async (req, res) => {
+  app.get('/_ref/search', { contract: 'refSearch' }, ownerAuth.requireOwnerSession, async (req, res) => {
     try {
       const result = await searchSpine(req.query.q || '');
       res.json({
@@ -2105,7 +2105,7 @@ function buildAsApp(opts = {}) {
     }
   });
 
-  app.get('/_ref/traces/:traceId', async (req, res) => {
+  app.get('/_ref/traces/:traceId', ownerAuth.requireOwnerSession, async (req, res) => {
     try {
       const traceId = decodeURIComponent(req.params.traceId);
       const events = await listSpineEvents({ traceId });
@@ -2116,7 +2116,7 @@ function buildAsApp(opts = {}) {
     }
   });
 
-  app.get('/_ref/grants/:grantId/timeline', async (req, res) => {
+  app.get('/_ref/grants/:grantId/timeline', ownerAuth.requireOwnerSession, async (req, res) => {
     try {
       const grantId = decodeURIComponent(req.params.grantId);
       const events = await listSpineEvents({ grantId });
@@ -2127,7 +2127,7 @@ function buildAsApp(opts = {}) {
     }
   });
 
-  app.get('/_ref/runs/:runId/timeline', async (req, res) => {
+  app.get('/_ref/runs/:runId/timeline', ownerAuth.requireOwnerSession, async (req, res) => {
     try {
       const runId = decodeURIComponent(req.params.runId);
       const events = await listSpineEvents({ runId });
@@ -2183,7 +2183,7 @@ function buildAsApp(opts = {}) {
   // Reference-only dataset summary for the operator-console hero band. Returns
   // live aggregate counts and retained-bytes totals across the substrate, plus
   // top connectors by record count. Not a PDPP protocol surface.
-  app.get('/_ref/dataset/summary', { contract: 'refDatasetSummary' }, async (req, res) => {
+  app.get('/_ref/dataset/summary', { contract: 'refDatasetSummary' }, ownerAuth.requireOwnerSession, async (req, res) => {
     try {
       const summary = await getDatasetSummary();
       res.json(summary);
@@ -2192,7 +2192,7 @@ function buildAsApp(opts = {}) {
     }
   });
 
-  app.get('/_ref/connectors', { contract: 'refListConnectors' }, async (req, res) => {
+  app.get('/_ref/connectors', { contract: 'refListConnectors' }, ownerAuth.requireOwnerSession, async (req, res) => {
     try {
       const data = await listConnectorSummaries(controller);
       res.json({ object: 'list', data });
@@ -2201,7 +2201,7 @@ function buildAsApp(opts = {}) {
     }
   });
 
-  app.get('/_ref/connectors/:connectorId', { contract: 'refGetConnector' }, async (req, res) => {
+  app.get('/_ref/connectors/:connectorId', { contract: 'refGetConnector' }, ownerAuth.requireOwnerSession, async (req, res) => {
     try {
       const connectorId = decodeURIComponent(req.params.connectorId);
       const detail = await getConnectorDetail(connectorId, controller);
@@ -2211,7 +2211,7 @@ function buildAsApp(opts = {}) {
     }
   });
 
-  app.get('/_ref/approvals', { contract: 'refListApprovals' }, async (req, res) => {
+  app.get('/_ref/approvals', { contract: 'refListApprovals' }, ownerAuth.requireOwnerSession, async (req, res) => {
     try {
       const data = await listPendingApprovals();
       res.json({ object: 'list', data });
@@ -2220,7 +2220,7 @@ function buildAsApp(opts = {}) {
     }
   });
 
-  app.get('/_ref/records/timeline', { contract: 'refRecordsTimeline' }, async (req, res) => {
+  app.get('/_ref/records/timeline', { contract: 'refRecordsTimeline' }, ownerAuth.requireOwnerSession, async (req, res) => {
     try {
       const limit = req.query.limit == null ? 50 : Number.parseInt(String(req.query.limit), 10);
       const order = req.query.order === 'asc' ? 'asc' : 'desc';
@@ -2244,7 +2244,7 @@ function buildAsApp(opts = {}) {
     }
   });
 
-  app.get('/_ref/schedules', { contract: 'refListSchedules' }, async (req, res) => {
+  app.get('/_ref/schedules', { contract: 'refListSchedules' }, ownerAuth.requireOwnerSession, async (req, res) => {
     try {
       const data = controller ? await controller.listSchedules() : [];
       res.json({ object: 'list', data });
@@ -2253,7 +2253,7 @@ function buildAsApp(opts = {}) {
     }
   });
 
-  app.get('/_ref/connectors/:connectorId/schedule', async (req, res) => {
+  app.get('/_ref/connectors/:connectorId/schedule', ownerAuth.requireOwnerSession, async (req, res) => {
     try {
       const connectorId = decodeURIComponent(req.params.connectorId);
       const schedule = controller ? await controller.getSchedule(connectorId) : null;
@@ -2269,7 +2269,7 @@ function buildAsApp(opts = {}) {
   // /_ref/deployment — reference operator diagnostics. Not a PDPP protocol
   // surface; the dashboard's /dashboard/deployment page reads this. Secret
   // redaction is enforced inside collectDeploymentDiagnostics.
-  app.get('/_ref/deployment', async (req, res) => {
+  app.get('/_ref/deployment', ownerAuth.requireOwnerSession, async (req, res) => {
     try {
       const report = await collectDeploymentDiagnostics(
         {

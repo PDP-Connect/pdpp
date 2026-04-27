@@ -1,7 +1,7 @@
 import { parseArgs, requirePositional } from '../lib/args.js';
 import { readJsonInput } from '../lib/common.js';
 import { PdppUsageError } from '../lib/errors.js';
-import { attachReferenceQueryMetadata, fetchJson } from '../lib/fetch.js';
+import { attachReferenceQueryMetadata, fetchJson, ownerSessionHeaders } from '../lib/fetch.js';
 import { resolveFormat, writeData } from '../lib/output.js';
 import { resolveReferenceAsUrl } from '../lib/reference.js';
 
@@ -47,7 +47,9 @@ export async function runGrant(argv) {
   }
 
   if (subcommand === 'timeline') {
-    const { body } = await fetchJson(`${asUrl}/_ref/grants/${encodeURIComponent(grantId)}/timeline`);
+    const { body } = await fetchJson(`${asUrl}/_ref/grants/${encodeURIComponent(grantId)}/timeline`, {
+      headers: { ...ownerSessionHeaders() },
+    });
     const format = resolveFormat(flags, 'table', 'json');
     writeData(format === 'table' ? (body.data || []) : body, format);
     return;

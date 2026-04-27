@@ -1,6 +1,6 @@
 import { parseArgs, requirePositional } from '../lib/args.js';
 import { PdppUsageError } from '../lib/errors.js';
-import { fetchJson } from '../lib/fetch.js';
+import { fetchJson, ownerSessionHeaders } from '../lib/fetch.js';
 import { resolveFormat, writeData } from '../lib/output.js';
 import { resolveReferenceAsUrl } from '../lib/reference.js';
 
@@ -11,7 +11,9 @@ export async function runRun(argv) {
 
   if (subcommand === 'timeline') {
     const runId = requirePositional(positionals, 0, 'run-id');
-    const { body } = await fetchJson(`${asUrl}/_ref/runs/${encodeURIComponent(runId)}/timeline`);
+    const { body } = await fetchJson(`${asUrl}/_ref/runs/${encodeURIComponent(runId)}/timeline`, {
+      headers: { ...ownerSessionHeaders() },
+    });
     const format = resolveFormat(flags, 'table', 'json');
     writeData(format === 'table' ? (body.data || []) : body, format);
     return;

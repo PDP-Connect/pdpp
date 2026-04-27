@@ -34,6 +34,26 @@ export function bearer(token) {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
+// Headers needed to call `_ref` reads when the reference server has
+// placeholder owner-auth enabled (PDPP_OWNER_PASSWORD set). The owner
+// session is a signed HTTP-only cookie issued by `POST /owner/login`;
+// CLI callers cannot drive a browser flow, so they pass the raw
+// session cookie value via `PDPP_OWNER_SESSION_COOKIE`. When unset the
+// helper is a no-op and local-dev `_ref` reads stay open.
+export function ownerSessionHeaders(opts = {}) {
+  const fromOpts = typeof opts.ownerSessionCookie === 'string' ? opts.ownerSessionCookie : '';
+  const fromEnv = typeof process.env.PDPP_OWNER_SESSION_COOKIE === 'string'
+    ? process.env.PDPP_OWNER_SESSION_COOKIE
+    : '';
+  const value = (fromOpts || fromEnv).trim();
+  if (!value) return {};
+  // Accept either a bare value or a `name=value` pair. The reference
+  // cookie name is `pdpp_owner_session`; if the caller passes only the
+  // value we attach the canonical name.
+  const cookie = value.includes('=') ? value : `pdpp_owner_session=${value}`;
+  return { Cookie: cookie };
+}
+
 export function attachReferenceQueryMetadata(body, headers) {
   if (!body || typeof body !== 'object' || Array.isArray(body)) {
     return body;
