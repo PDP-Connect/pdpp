@@ -179,7 +179,7 @@ This requirement supersedes the prior "P2 follow-up" deferral noted in the origi
 
 #### Scenario: A JSON POST `/owner/login` reaches the password branch without a CSRF token
 - **WHEN** a programmatic JSON caller submits `POST /owner/login` with `Content-Type: application/json` and a JSON body containing `password` but no `_csrf` field
-- **THEN** the request SHALL pass through `requireCsrf` because JSON callers cannot be cross-origin-forged from a browser without a CORS preflight
+- **THEN** the request SHALL not be rejected by the CSRF gate because JSON callers cannot be cross-origin-forged from a browser without a CORS preflight
 - **AND** an incorrect password SHALL produce a `401`
 - **AND** a correct password SHALL produce a `302` redirect to `return_to` and SHALL issue a `pdpp_owner_session` Set-Cookie
 
