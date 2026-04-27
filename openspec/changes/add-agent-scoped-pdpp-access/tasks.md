@@ -38,6 +38,7 @@ Note: The existing consent shell at `server/index.js:renderPendingGrantConsentHt
 - [x] Capture each protocol-candidate field in `design.md` with rationale and migration path. (design-notes/2026-04-25-reference-surface-audit.md lists all candidates with status)
 - [x] Do not claim root PDPP normativity without a separate root-spec review. (agent.js top-level comment explicitly notes the polling gap as protocol-candidate, not normative)
 - [ ] Resolve fast broad consent for high-trust agents. Captured as `design-notes/2026-04-27-fast-broad-agent-consent.md`; do not implement multi-source PAR, grant packages, permission sets, or broad setup UX without a dedicated OpenSpec change and owner review.
+- [ ] Resolve consent-time predicate filters. Captured as `design-notes/2026-04-27-consent-time-filters.md`; do not add arbitrary grant filters, manifest consent-filter fields, consent UI, or RS enforcement without a dedicated OpenSpec change and owner review.
 
 ## 6. Validation
 
