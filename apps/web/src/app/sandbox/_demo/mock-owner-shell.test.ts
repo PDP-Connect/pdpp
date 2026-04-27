@@ -88,6 +88,23 @@ const SANDBOX_PARITY_PAGES = [
 
 const EDUCATIONAL_PAGES = ["api-examples/page.tsx", "walkthrough/page.tsx"];
 
+/**
+ * Every sandbox page that ships in the sandbox tree. Used by the leakage
+ * checks: no sandbox surface should link out to `/dashboard/...` or import
+ * `dashboardRoutes`, because doing so would silently send the unauthenticated
+ * mock-owner visitor into the live operator surface (broken auth, broken
+ * data binding, and the visitor stops being inside the sandbox).
+ */
+const ALL_SANDBOX_PAGES = ["page.tsx", ...PRIMARY_DASHBOARD_PAGES, ...EDUCATIONAL_PAGES];
+
+const DASHBOARD_ROUTES_IMPORT_RE = /\bdashboardRoutes\b/;
+// URL literal heuristic: a string/template that starts with `/dashboard`
+// (e.g. href="/dashboard/grants" or `/dashboard/${id}`). This intentionally
+// does NOT match module specifiers like "@/app/dashboard/..." or freeform
+// prose like "the live /dashboard operator". A leading quote/backtick is
+// required so the next character is the URL's first segment.
+const DASHBOARD_URL_LITERAL_RE = /["'`]\/dashboard(?:\/|\b)/;
+
 test("primary /sandbox dashboard pages render DashboardShell in mock-owner mode", async () => {
   const offenders: string[] = [];
   for (const rel of PRIMARY_DASHBOARD_PAGES) {
@@ -216,5 +233,46 @@ test("DashboardShell passes the mode-specific overview route to CommandPalette",
     src,
     COMMAND_PALETTE_OVERVIEW_RE,
     "command palette Overview must point to /sandbox/overview in mock-owner mode, not the /sandbox launcher"
+  );
+});
+
+test("sandbox pages do not import dashboardRoutes (would link out of the sandbox)", async () => {
+  const offenders: string[] = [];
+  for (const rel of ALL_SANDBOX_PAGES) {
+    const full = join(SANDBOX_DIR, rel);
+    const src = await readFile(full, "utf8");
+    if (DASHBOARD_ROUTES_IMPORT_RE.test(src)) {
+      offenders.push(rel);
+    }
+  }
+  assert.deepEqual(
+    offenders,
+    [],
+    `sandbox pages must use sandboxRoutes, not dashboardRoutes — these reference dashboardRoutes:\n${offenders.join("\n")}`
+  );
+});
+
+test("sandbox pages do not link to /dashboard/* URLs (would link out of the sandbox)", async () => {
+  const offenders: string[] = [];
+  for (const rel of ALL_SANDBOX_PAGES) {
+    const full = join(SANDBOX_DIR, rel);
+    const src = await readFile(full, "utf8");
+    // Skip line/block comments where /dashboard naturally appears in
+    // descriptive prose — we only care about runtime URL literals.
+    const codeOnly = src
+      .split("\n")
+      .filter((line: string) => {
+        const t = line.trimStart();
+        return !(t.startsWith("//") || t.startsWith("*") || t.startsWith("/*"));
+      })
+      .join("\n");
+    if (DASHBOARD_URL_LITERAL_RE.test(codeOnly)) {
+      offenders.push(rel);
+    }
+  }
+  assert.deepEqual(
+    offenders,
+    [],
+    `sandbox pages must not hardcode /dashboard URLs; use sandboxRoutes — offenders:\n${offenders.join("\n")}`
   );
 });
