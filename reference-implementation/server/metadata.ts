@@ -37,6 +37,10 @@ function isLoopbackHost(hostname: string): boolean {
   );
 }
 
+function hostFromOrigin(value: string): string | null {
+  return parseUrl(value)?.hostname ?? null;
+}
+
 function parseUrl(value: string): URL | null {
   try {
     return new URL(value);
@@ -67,9 +71,56 @@ export function resolvePublicUrl(req: ResolvePublicUrlRequest, explicitUrl?: str
     if (forwardedOrigin && parsedExplicit && isLoopbackHost(parsedExplicit.hostname)) {
       return forwardedOrigin;
     }
+    const requestOrigin = resolveRequestPublicUrl(req);
+    const requestHostname = hostFromOrigin(requestOrigin);
+    if (
+      parsedExplicit &&
+      requestHostname &&
+      isLoopbackHost(parsedExplicit.hostname) &&
+      !isLoopbackHost(requestHostname)
+    ) {
+      return requestOrigin;
+    }
     return stripTrailingSlash(explicitUrl);
   }
   return resolveRequestPublicUrl(req);
+}
+
+export function shouldUseDirectRequestOrigin(req: ResolvePublicUrlRequest, explicitUrl?: string | null): boolean {
+  if (!explicitUrl || forwardedPublicOrigin(req)) {
+    return false;
+  }
+  const parsedExplicit = parseUrl(explicitUrl);
+  const requestHostname = hostFromOrigin(resolveRequestPublicUrl(req));
+  return !!(
+    parsedExplicit &&
+    requestHostname &&
+    isLoopbackHost(parsedExplicit.hostname) &&
+    !isLoopbackHost(requestHostname)
+  );
+}
+
+export function resolveSiblingPublicUrl(req: ResolvePublicUrlRequest, explicitUrl?: string | null): string | null {
+  if (!explicitUrl) {
+    return null;
+  }
+  const forwardedOrigin = forwardedPublicOrigin(req);
+  const parsedExplicit = parseUrl(explicitUrl);
+  if (!parsedExplicit) {
+    return stripTrailingSlash(explicitUrl);
+  }
+  if (forwardedOrigin && isLoopbackHost(parsedExplicit.hostname)) {
+    return forwardedOrigin;
+  }
+
+  const requestOrigin = resolveRequestPublicUrl(req);
+  const parsedRequest = parseUrl(requestOrigin);
+  if (parsedRequest && isLoopbackHost(parsedExplicit.hostname) && !isLoopbackHost(parsedRequest.hostname)) {
+    parsedRequest.port = parsedExplicit.port;
+    return stripTrailingSlash(parsedRequest.toString());
+  }
+
+  return stripTrailingSlash(explicitUrl);
 }
 
 // JSON-shape of the OAuth `protected_resource_metadata` document plus

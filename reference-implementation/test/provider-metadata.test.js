@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 
 import { startServer } from '../server/index.js';
+import { resolvePublicUrl, resolveSiblingPublicUrl } from '../server/metadata.ts';
 import { PDPP_REFERENCE_REVISION_HEADER } from '../server/reference-revision.js';
 
 const TEST_DCR_INITIAL_ACCESS_TOKEN = 'pdpp-reference-test-initial-access-token';
@@ -207,6 +208,18 @@ test('proxied composed metadata rebases localhost defaults to the forwarded publ
   } finally {
     await closeServer(server);
   }
+});
+
+test('public URL helpers rebase loopback defaults for direct LAN callers without losing sibling web links', () => {
+  const req = {
+    protocol: 'http',
+    get(name) {
+      return name.toLowerCase() === 'host' ? '192.0.2.10:7663' : undefined;
+    },
+  };
+
+  assert.equal(resolvePublicUrl(req, 'http://localhost:3000'), 'http://192.0.2.10:7663');
+  assert.equal(resolveSiblingPublicUrl(req, 'http://localhost:3000'), 'http://192.0.2.10:3000');
 });
 
 test('provider metadata routes expose current honest capability set', async () => {

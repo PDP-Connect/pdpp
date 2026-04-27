@@ -14,6 +14,8 @@ import {
   buildProtectedResourceMetadata,
   buildSemanticRetrievalCapability,
   resolvePublicUrl,
+  resolveSiblingPublicUrl,
+  shouldUseDirectRequestOrigin,
   stripTrailingSlash,
 } from './metadata.ts';
 import { createTraceContext, emitSpineEvent, generateSpineId, listSpineCorrelations, listSpineEvents, searchSpine } from '../lib/spine.ts';
@@ -2476,7 +2478,7 @@ function buildRsApp(opts = {}) {
     const resource = resolvePublicUrl(req, explicitResource);
     const explicitIssuer = opts.asIssuer || opts.asPublicUrl || (!opts.ignoreAmbientPublicUrls ? (process.env.AS_ISSUER || process.env.AS_PUBLIC_URL) : null);
     const fallbackIssuer = `${req.protocol}://${req.hostname}:${opts.asPort || AS_PORT}`;
-    const issuer = resolvePublicUrl(req, explicitIssuer || fallbackIssuer);
+    const issuer = resolvePublicUrl(req, shouldUseDirectRequestOrigin(req, explicitIssuer) ? fallbackIssuer : explicitIssuer || fallbackIssuer);
 
     // Lexical retrieval extension advertisement. Exposed by default; reference
     // forks or test fixtures can suppress it by passing
@@ -2582,7 +2584,7 @@ function buildRsApp(opts = {}) {
         capabilities,
         discoveryHints,
         agentDiscovery: buildAgentDiscoveryMetadata(
-          opts.agentDiscoveryOrigin ? resolvePublicUrl(req, opts.agentDiscoveryOrigin) : null,
+          opts.agentDiscoveryOrigin ? resolveSiblingPublicUrl(req, opts.agentDiscoveryOrigin) : null,
         ),
       })
     );
