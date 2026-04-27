@@ -150,13 +150,14 @@ export async function toReferencePublicUrl(input: string): Promise<string> {
 }
 
 export async function getOwnerSessionCookieHeader(): Promise<string | null> {
-  if (!ownerSessionController.enabled) {
-    return null;
-  }
-
   try {
     const cookieStore = await cookies();
     const rawCookie = cookieStore.get(OWNER_AUTH_COOKIE_NAME)?.value ?? null;
+    // The web process is not the authority for placeholder owner-auth.
+    // In Docker and composed deployments the reference AS may be the only
+    // process with PDPP_OWNER_PASSWORD, so server components must forward
+    // the browser's AS-issued session cookie even when this process cannot
+    // validate it locally. The AS re-validates on every `/_ref` request.
     return rawCookie ? `${OWNER_AUTH_COOKIE_NAME}=${rawCookie}` : null;
   } catch {
     return null;
