@@ -151,15 +151,61 @@ test("decideContainerHeadedBrowserGate: escape hatch is a no-op when not in cont
   );
 });
 
-test("decideContainerHeadedBrowserGate: undefined headless (caller did not declare) proceeds", () => {
-  // Callers in the runtime always provide a boolean (resolved through the
-  // PDPP_<NAME>_HEADLESS env). A library-direct caller might pass
-  // undefined; treat that as 'not requesting headed' — the launcher's
-  // own default kicks in.
+test("decideContainerHeadedBrowserGate: undefined headless in container fails closed (mirrors acquireIsolatedBrowser default of headless=false)", () => {
+  // Regression for the 2026-04-27 owner review: acquireIsolatedBrowser
+  // destructures `{ headless = false }`, so a library-direct caller
+  // writing `acquireBrowserForConnector({ profileName })` with no
+  // headless field is asking for a visible browser. The gate MUST
+  // mirror the launcher's effective default — anything else lets the
+  // exact silent-headed-in-container failure mode the gate exists to
+  // prevent slip through.
   assert.deepEqual(
     decideContainerHeadedBrowserGate({ headless: undefined, inContainer: true, escapeHatchEnabled: false }),
+    { kind: "fail_closed" }
+  );
+});
+
+test("decideContainerHeadedBrowserGate: undefined headless on host (no container) proceeds", () => {
+  // Defensive: outside a container the gate must not fire regardless of
+  // the headless default — the host-direct launcher is exactly what we
+  // want to reach.
+  assert.deepEqual(
+    decideContainerHeadedBrowserGate({ headless: undefined, inContainer: false, escapeHatchEnabled: false }),
     { kind: "proceed" }
   );
+});
+
+test("decideContainerHeadedBrowserGate: explicit headless: true in container proceeds even when undefined would not", () => {
+  // Explicit headless=true is the legitimate non-interactive workload
+  // (cookie-authenticated scrape, fingerprint-only fetch). It must
+  // remain allowed in container after the undefined-as-headed fix.
+  assert.deepEqual(decideContainerHeadedBrowserGate({ headless: true, inContainer: true, escapeHatchEnabled: false }), {
+    kind: "proceed",
+  });
+});
+
+test("acquireBrowserForConnector fails closed when caller omits 'headless' in container (matches acquireIsolatedBrowser default)", async () => {
+  // 2026-04-27 owner-review regression: a library-direct caller writing
+  // `acquireBrowserForConnector({ profileName })` with NO headless field
+  // is asking for a visible browser (acquireIsolatedBrowser destructures
+  // `{ headless = false }`). The gate MUST fail closed in container;
+  // otherwise the silent-headed-in-container path the gate exists to
+  // close still slips through for that call shape.
+  const restore = withEnv({ PDPP_FORCE_CONTAINER: "1" });
+  try {
+    await assert.rejects(
+      () => acquireBrowserForConnector({ profileName: "test_connector" }),
+      (err: unknown) => {
+        assert.ok(err instanceof HostBrowserBridgeUnavailableError, `got ${String(err)}`);
+        if (err instanceof HostBrowserBridgeUnavailableError) {
+          assert.equal(err.code, HOST_BROWSER_BRIDGE_UNAVAILABLE_CODE);
+        }
+        return true;
+      }
+    );
+  } finally {
+    restore();
+  }
 });
 
 test("acquireBrowserForConnector fails closed for HEADED in container with no bridge (PDPP_REFERENCE_MODE=composed)", async () => {

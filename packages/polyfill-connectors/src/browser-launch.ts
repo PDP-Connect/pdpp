@@ -66,17 +66,30 @@ export class HostBrowserBridgeUnavailableError extends Error {
  * acquire path itself is hard to test without spinning up a real
  * browser).
  *
+ * Headed-vs-headless interpretation MUST mirror `acquireIsolatedBrowser`'s
+ * effective default. That function destructures `{ headless = false }`,
+ * so:
+ *
+ *   - `headless: true`  → headless (allowed in container)
+ *   - `headless: false` → headed   (gate fires in container)
+ *   - `headless: undefined` (caller omitted the field) → headed,
+ *     because the launcher's default kicks in. This is the bug the
+ *     2026-04-27 owner review caught: a library-direct caller writing
+ *     `acquireBrowserForConnector({ profileName })` with no headless
+ *     field is asking for a visible browser, and that must fail closed
+ *     in a container exactly like `headless: false` does.
+ *
  * Returns:
- *   - `{ kind: "fail_closed" }` when the caller is requesting a HEADED
- *     browser inside a container, no bridge URL is set, and the
+ *   - `{ kind: "fail_closed" }` when the effective request is HEADED,
+ *     the runtime is in a container, no bridge URL is set, and the
  *     escape hatch is not asserted. Caller MUST throw
  *     `HostBrowserBridgeUnavailableError` with the stable code.
  *   - `{ kind: "warn_and_proceed" }` when the same conditions hold
  *     except `PDPP_ALLOW_HEADED_CONTAINER_BROWSER=1` is asserted.
  *     Caller SHOULD emit a per-acquisition stderr warning and
  *     proceed with the host-direct launcher.
- *   - `{ kind: "proceed" }` otherwise (host-direct or headless or
- *     bridge-handled).
+ *   - `{ kind: "proceed" }` otherwise (host-direct, explicitly
+ *     headless, or bridge-handled).
  *
  * The decision deliberately does NOT consider bridge configured/
  * misconfigured states — those are owned by the calling routing
@@ -93,8 +106,17 @@ export interface ContainerHeadedBrowserGateInputs {
   readonly inContainer: boolean;
 }
 
+/**
+ * Effective default for the `headless` option, mirroring the
+ * destructured default in `acquireIsolatedBrowser` (`headless = false`).
+ * If this default ever changes there, change it here in lockstep —
+ * keep the gate honest about what the launcher will actually do.
+ */
+const ACQUIRE_ISOLATED_BROWSER_HEADLESS_DEFAULT = false;
+
 export function decideContainerHeadedBrowserGate(inputs: ContainerHeadedBrowserGateInputs): ContainerHeadedBrowserGate {
-  const headedRequested = inputs.headless === false;
+  const effectiveHeadless = inputs.headless ?? ACQUIRE_ISOLATED_BROWSER_HEADLESS_DEFAULT;
+  const headedRequested = effectiveHeadless === false;
   if (!(headedRequested && inputs.inContainer)) {
     return { kind: "proceed" };
   }
@@ -325,10 +347,11 @@ export async function acquireRemoteHostBrowser(args: {
  *     the run fails fast rather than silently launching an invisible
  *     in-container browser.
  *   - If the bridge is unconfigured AND the runtime is in a container
- *     AND the caller requested a HEADED browser (headless === false),
- *     this throws `HostBrowserBridgeUnavailableError` rather than
- *     launching an invisible in-container Chromium. This is the
- *     fail-closed gate required by
+ *     AND the effective request is for a HEADED browser (`headless`
+ *     omitted, or `headless === false`), this throws
+ *     `HostBrowserBridgeUnavailableError` rather than launching an
+ *     invisible in-container Chromium. This is the fail-closed gate
+ *     required by
  *     `openspec/changes/design-host-browser-bridge-for-docker/design.md`
  *     § "Failure Mode When Unavailable". A headed container Chromium
  *     is unusable to the operator; an interactive flow (Cloudflare,

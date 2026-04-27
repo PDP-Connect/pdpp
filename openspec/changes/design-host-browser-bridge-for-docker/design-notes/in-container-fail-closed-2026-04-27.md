@@ -1,8 +1,23 @@
 # In-container fail-closed gate for HEADED browser-backed connectors (P1)
 
-Date: 2026-04-27 (revised post owner-review the same day)
+Date: 2026-04-27 (revised twice the same day post owner-review)
 Status: implemented (code change, no spec delta)
 Author: docker-ops bughunt lane
+
+## Revision history
+
+- **2026-04-27 r1** — initial implementation. Gate fired on every
+  in-container browser acquisition with empty bridge env; over-broad.
+- **2026-04-27 r2** — narrowed to `headless === false` (visible
+  browser). First owner-review pass.
+- **2026-04-27 r3** — fixed `headless: undefined`. The launcher's
+  destructured default is `headless = false`, so an omitted field
+  effectively requests a headed browser. The r2 gate skipped that
+  case and would have let the original silent-headed-in-container
+  path slip through for any library-direct caller writing
+  `acquireBrowserForConnector({ profileName })`. The decision helper
+  now mirrors the launcher's effective default via
+  `ACQUIRE_ISOLATED_BROWSER_HEADLESS_DEFAULT`.
 
 ## Problem
 
@@ -25,14 +40,18 @@ The fix is purely runtime-level. The existing spec text already
 mandates the desired behavior for **headed** Docker runs; we are
 closing the implementation gap for that case only.
 
-**Narrow gate (revised):** the fail-closed branch fires only when
+**Narrow gate (revised twice):** the fail-closed branch fires only when
 ALL of the following are true:
 
 1. `resolveHostBrowserBridgeConfig` returns `mode: "disabled"`
    (bridge env vars are empty), AND
 2. `isRunningInContainer()` returns true (PDPP_REFERENCE_MODE=composed
    OR `/.dockerenv` exists OR PDPP_FORCE_CONTAINER=1), AND
-3. The caller passed `headless === false` (visible browser requested).
+3. The caller's effective `headless` is `false`, where "effective"
+   means the value after applying the same default as
+   `acquireIsolatedBrowser` (which destructures `{ headless = false }`).
+   In practice this means: `headless: false` explicit OR `headless`
+   omitted entirely (undefined).
 
 Headless acquisitions in container (`headless === true`) are
 **intentionally allowed**. They are a legitimate non-interactive
@@ -66,7 +85,7 @@ container browser is not invisible — it is non-interactive by design.
    Pure function; tests inject `fileExists` to control the outcome.
 
 2. `acquireBrowserForConnector` adds a fail-closed branch in the
-   `mode: "disabled"` arm gated on `options.headless === false &&
+   `mode: "disabled"` arm gated on `effectiveHeadless === false &&
    isRunningInContainer()` AND
    `process.env.PDPP_ALLOW_HEADED_CONTAINER_BROWSER !== "1"`.
    Throws `HostBrowserBridgeUnavailableError` with the existing stable
@@ -94,19 +113,28 @@ container browser is not invisible — it is non-interactive by design.
 - `fileExists` throws are treated as "not detected".
 
 `packages/polyfill-connectors/src/browser-launch.test.ts`:
-- HEADED in container (`PDPP_REFERENCE_MODE=composed`,
-  `headless: false`) → rejects with
-  `HostBrowserBridgeUnavailableError`; error carries the stable code,
-  `bridgeUrl: null`, names `PDPP_HOST_BROWSER_BRIDGE_URL`, and
-  explicitly mentions that headless is unaffected.
-- HEADED in container (`PDPP_FORCE_CONTAINER=1`, `headless: false`)
-  → same fail-closed.
-- HEADLESS in container (`PDPP_FORCE_CONTAINER=1`,
-  `headless: true`) → does NOT throw `HostBrowserBridgeUnavailableError`
-  (any other Patchright launch error in the test environment is
-  permitted, but the gate is proven not to fire).
-- Escape hatch (`PDPP_ALLOW_HEADED_CONTAINER_BROWSER=1` +
-  `headless: false`) → does NOT throw `HostBrowserBridgeUnavailableError`.
+- Pure-helper unit tests for `decideContainerHeadedBrowserGate`:
+  - host-direct headed (`headless: false`, not in container) → `proceed`.
+  - host-direct headless (`headless: true`, not in container) → `proceed`.
+  - HEADLESS in container (`headless: true`, in container) → `proceed`
+    (legitimate non-interactive workload).
+  - HEADED in container (`headless: false`, in container) → `fail_closed`.
+  - Escape hatch downgrades HEADED-in-container to `warn_and_proceed`.
+  - Escape hatch is a no-op outside container.
+  - **Undefined `headless` in container → `fail_closed`** (regression
+    for r3 owner review: matches `acquireIsolatedBrowser`'s default of
+    `headless = false`).
+  - Undefined `headless` outside container → `proceed`.
+  - Explicit `headless: true` in container still `proceed`s after the
+    undefined-as-headed fix.
+- Integration tests (short-circuit before launcher work):
+  - `acquireBrowserForConnector({ profileName, headless: false })` in
+    container with no bridge → rejects with the typed error; message
+    names `PDPP_HOST_BROWSER_BRIDGE_URL` and explicitly mentions that
+    headless is unaffected.
+  - `acquireBrowserForConnector({ profileName })` (omitted headless)
+    in container with no bridge → rejects with the typed error
+    (regression for r3).
 
 ## Out of scope
 
