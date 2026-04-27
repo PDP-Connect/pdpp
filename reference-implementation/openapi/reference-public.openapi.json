@@ -74,6 +74,10 @@
                         "core_query_base": {
                           "type": "string",
                           "minLength": 1
+                        },
+                        "connectors": {
+                          "type": "string",
+                          "minLength": 1
                         }
                       }
                     },
@@ -317,13 +321,26 @@
                         },
                         "hybrid_pagination_supported": {
                           "type": "boolean"
+                        },
+                        "connectors_endpoint": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "streams_endpoint_template": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "owner_polyfill_requires_connector_id": {
+                          "type": "boolean"
                         }
                       },
                       "required": [
                         "schema_endpoint",
                         "query_base",
                         "changes_since_bootstrap",
-                        "blob_indirection"
+                        "blob_indirection",
+                        "connectors_endpoint",
+                        "streams_endpoint_template"
                       ]
                     },
                     "pdpp_agent_discovery": {

@@ -2617,6 +2617,7 @@ function buildRsApp(opts = {}) {
         well_known: '/.well-known/oauth-protected-resource',
         schema: '/v1/schema',
         core_query_base: '/v1',
+        connectors: '/v1/connectors',
       },
       reference_revision: referenceRevision,
     });
@@ -2702,6 +2703,8 @@ function buildRsApp(opts = {}) {
     const discoveryHints = {
       schema_endpoint: '/v1/schema',
       query_base: '/v1',
+      connectors_endpoint: '/v1/connectors',
+      streams_endpoint_template: '/v1/streams/{stream}',
       aggregate: {
         endpoint_template: '/v1/streams/{stream}/aggregate',
       },
@@ -2720,6 +2723,14 @@ function buildRsApp(opts = {}) {
     }
     if (capabilities.hybrid_retrieval?.supported === true) {
       discoveryHints.hybrid_pagination_supported = !!capabilities.hybrid_retrieval.cursor_supported;
+    }
+    // Polyfill mode: an owner-token caller must pass `connector_id` on
+    // discovery and read endpoints because there is no single ambient
+    // source. Native single-source mode resolves the connector implicitly
+    // from the manifest, so we omit the hint there rather than emit
+    // `false` and confuse callers reading the absence as a default.
+    if (!resolveNativeManifest(opts)) {
+      discoveryHints.owner_polyfill_requires_connector_id = true;
     }
 
     res.json(

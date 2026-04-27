@@ -1342,6 +1342,14 @@ function parseChangesSinceCursor(str) {
   return decoded;
 }
 
+// Self-teaching error message: when a caller passes something other than the
+// two legal forms (the `beginning` bootstrap sentinel or a `next_changes_since`
+// value returned by a prior changes-feed response), name both forms so the
+// caller can correct the request without reading the spec. Common cold-start
+// mistake: passing an ISO timestamp like `2024-01-01T00:00:00Z`.
+const CHANGES_SINCE_MALFORMED_MESSAGE =
+  'Malformed changes_since cursor; pass `beginning` to bootstrap or the `next_changes_since` value returned by a prior /v1/streams/{stream}/records response';
+
 function parsePageCursor(str) {
   const decoded = decodeCursor(str);
   if (!decoded) return null;
@@ -1443,7 +1451,7 @@ export async function queryRecords(storageTarget, stream, grant, requestParams =
   const paginationCursor = requestParams.cursor ? parsePageCursor(requestParams.cursor) : null;
 
   if (requestParams.changes_since && !changesSince) {
-    const err = new Error('Malformed changes_since cursor');
+    const err = new Error(CHANGES_SINCE_MALFORMED_MESSAGE);
     err.code = 'invalid_cursor';
     throw err;
   }
@@ -1464,7 +1472,7 @@ export async function queryRecords(storageTarget, stream, grant, requestParams =
     const sessionMaxVersion = changesSince ? null : paginationCursor.session_max_version;
 
     if (![sinceVersion, afterVersion].every(Number.isInteger)) {
-      const err = new Error('Malformed changes_since cursor');
+      const err = new Error(CHANGES_SINCE_MALFORMED_MESSAGE);
       err.code = 'invalid_cursor';
       throw err;
     }
@@ -1577,7 +1585,7 @@ export async function queryRecords(storageTarget, stream, grant, requestParams =
   }
 
   if (changesSince !== null) {
-    const err = new Error('Malformed changes_since cursor');
+    const err = new Error(CHANGES_SINCE_MALFORMED_MESSAGE);
     err.code = 'invalid_cursor';
     throw err;
   }

@@ -59,3 +59,35 @@ The resource server's protected-resource metadata document SHALL include a `pdpp
 - **WHEN** the hybrid retrieval extension is advertised on the resource server
 - **THEN** `pdpp_discovery_hints.hybrid_pagination_supported` SHALL match the live `capabilities.hybrid_retrieval.cursor_supported` value
 - **AND** when hybrid retrieval is not advertised, the field SHALL be omitted rather than set to a default.
+
+#### Scenario: Hints name the connector and stream metadata endpoints
+
+- **WHEN** a caller reads the protected-resource metadata
+- **THEN** `pdpp_discovery_hints.connectors_endpoint` SHALL equal `/v1/connectors`
+- **AND** `pdpp_discovery_hints.streams_endpoint_template` SHALL equal `/v1/streams/{stream}`.
+
+#### Scenario: Hints name the owner polyfill connector_id requirement
+
+- **WHEN** the resource server is configured without a native manifest (i.e. owner reads are scoped to polyfilled connectors)
+- **THEN** `pdpp_discovery_hints.owner_polyfill_requires_connector_id` SHALL be `true`
+- **AND** when the resource server is configured with a native manifest (single-source mode), the field SHALL be omitted rather than set to `false`.
+
+### Requirement: The discovery index links to the connector listing
+
+The unauthenticated `GET /` discovery index on the resource server SHALL include a `links.connectors` value pointing to the canonical connector-listing endpoint, so cold-start callers can discover connector identifiers without guessing.
+
+#### Scenario: A cold-start caller probes the RS root and discovers connectors
+
+- **WHEN** an unauthenticated caller requests `GET /` on the resource server
+- **THEN** the response SHALL include `links.connectors` equal to `/v1/connectors`.
+
+### Requirement: Malformed `changes_since` errors SHALL name legal forms
+
+When the resource server rejects a `changes_since` parameter as malformed, the error message SHALL name the two legal forms a caller can use: the `beginning` bootstrap sentinel and the `next_changes_since` cursor returned by a previous changes-feed response. This converts an opaque rejection into a self-teaching error that points the caller at the next valid call.
+
+#### Scenario: Caller passes a non-cursor literal value such as an ISO timestamp
+
+- **WHEN** a caller requests `GET /v1/streams/{stream}/records?changes_since=2024-01-01T00:00:00Z`
+- **THEN** the resource server SHALL return a 400 response with `error.code` `invalid_cursor`
+- **AND** the error message SHALL name `beginning` as the bootstrap sentinel
+- **AND** the error message SHALL name `next_changes_since` as the cursor source returned by a prior changes-feed response.

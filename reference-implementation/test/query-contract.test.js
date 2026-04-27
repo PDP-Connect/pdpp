@@ -1054,6 +1054,12 @@ test('raw timestamp changes_since value is rejected as an invalid cursor', async
     });
     assert.equal(status, 400);
     assert.equal(body.error.code, 'invalid_cursor');
+    // The error message is self-teaching: it names the two legal forms a
+    // cold caller can use to recover (the `beginning` bootstrap sentinel
+    // and the `next_changes_since` cursor returned by a prior changes-feed
+    // response). Avoids a closed-loop "rejection without remedy".
+    assert.match(body.error.message, /\bbeginning\b/);
+    assert.match(body.error.message, /\bnext_changes_since\b/);
   });
 });
 

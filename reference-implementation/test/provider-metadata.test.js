@@ -670,6 +670,10 @@ test('RS root exposes an unauthenticated discovery index pointing at well-known,
     assert.equal(body.links.well_known, '/.well-known/oauth-protected-resource');
     assert.equal(body.links.schema, '/v1/schema');
     assert.equal(body.links.core_query_base, '/v1');
+    // The connector listing is a primary cold-start landing surface — owner
+    // tokens need a connector_id for polyfill reads, and exposing the link
+    // here closes the discovery loop without forcing a well-known round-trip.
+    assert.equal(body.links.connectors, '/v1/connectors');
     assert.equal(body.reference_revision, 'pdpp-reference@test+sentinel');
     expectReferenceRevisionHeader(resp, 'pdpp-reference@test+sentinel');
   } finally {
@@ -719,6 +723,15 @@ test('protected-resource metadata names canonical first-call shapes via pdpp_dis
     assert.equal(hints.aggregate.endpoint_template, '/v1/streams/{stream}/aggregate');
     assert.equal(hints.changes_since_bootstrap, 'beginning');
     assert.equal(hints.blob_indirection, 'data.blob_ref.fetch_url');
+    // Connector and stream metadata locations a cold caller would otherwise
+    // have to guess. /v1/connectors is the canonical connector listing;
+    // /v1/streams/{stream} returns per-stream metadata and schema.
+    assert.equal(hints.connectors_endpoint, '/v1/connectors');
+    assert.equal(hints.streams_endpoint_template, '/v1/streams/{stream}');
+    // Default reference startup is polyfill-mode (no native manifest), so
+    // owner-token reads must pass `connector_id`. The hint surfaces that
+    // requirement without making the caller hit a route and parse a 400.
+    assert.equal(hints.owner_polyfill_requires_connector_id, true);
 
     // Lexical retrieval is advertised by default; the search hints should
     // mirror the canonical streams[] scope and the v1 single-stream filter
@@ -727,6 +740,43 @@ test('protected-resource metadata names canonical first-call shapes via pdpp_dis
     assert.equal(hints.search.endpoint, '/v1/search');
     assert.equal(hints.search.scope_param, 'streams[]');
     assert.equal(hints.search.filter_requires_single_stream, true);
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test('pdpp_discovery_hints omits owner_polyfill_requires_connector_id when a native manifest is configured', async () => {
+  // Native single-source mode resolves the connector implicitly from the
+  // manifest, so the polyfill connector_id requirement does not apply. The
+  // hint should be absent rather than emitted as `false`, matching the
+  // truthful-omission convention used elsewhere in this block (see
+  // hybrid_pagination_supported).
+  const nativeManifest = {
+    provider_id: 'northstar_hr',
+    storage_binding: { connector_id: 'northstar_hr_native' },
+    name: 'Northstar HR',
+    streams: [],
+  };
+  const server = await startServer({
+    quiet: true,
+    asPort: 0,
+    rsPort: 0,
+    dbPath: ':memory:',
+    nativeManifest,
+  });
+  const rsUrl = `http://localhost:${server.rsPort}`;
+
+  try {
+    const { body } = await fetchJsonResponse(`${rsUrl}/.well-known/oauth-protected-resource`);
+    const hints = body.pdpp_discovery_hints;
+    assert.ok(hints);
+    assert.equal(hints.connectors_endpoint, '/v1/connectors');
+    assert.equal(hints.streams_endpoint_template, '/v1/streams/{stream}');
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(hints, 'owner_polyfill_requires_connector_id'),
+      false,
+      'owner_polyfill_requires_connector_id should be omitted in native single-source mode',
+    );
   } finally {
     await closeServer(server);
   }

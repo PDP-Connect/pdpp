@@ -465,8 +465,18 @@ const ProtectedResourceDiscoveryHintsSchema = {
     changes_since_bootstrap: NonEmptyStringSchema,
     blob_indirection: NonEmptyStringSchema,
     hybrid_pagination_supported: { type: "boolean" },
+    connectors_endpoint: NonEmptyStringSchema,
+    streams_endpoint_template: NonEmptyStringSchema,
+    owner_polyfill_requires_connector_id: { type: "boolean" },
   },
-  required: ["schema_endpoint", "query_base", "changes_since_bootstrap", "blob_indirection"],
+  required: [
+    "schema_endpoint",
+    "query_base",
+    "changes_since_bootstrap",
+    "blob_indirection",
+    "connectors_endpoint",
+    "streams_endpoint_template",
+  ],
 };
 
 const ProtectedResourceAgentDiscoverySchema = {
@@ -542,6 +552,7 @@ const DiscoveryIndexResponseSchema = {
         well_known_authorization_server: NonEmptyStringSchema,
         schema: NonEmptyStringSchema,
         core_query_base: NonEmptyStringSchema,
+        connectors: NonEmptyStringSchema,
       },
     },
     reference_revision: NonEmptyStringSchema,

@@ -23,6 +23,14 @@
 
 - [x] Write `design-notes/connector-scoping-and-group-by.md` capturing the deferred work, the affected specs, and the test scenarios a follow-up change should add.
 
+## 4a. Self-Teaching Discovery Follow-Ups
+
+- [x] Extend `ProtectedResourceDiscoveryHints` (and the contract schema) with `connectors_endpoint`, `streams_endpoint_template`, and an optional `owner_polyfill_requires_connector_id` boolean.
+- [x] Emit the new hints from the RS metadata route, gating `owner_polyfill_requires_connector_id` on the absence of a native manifest so it cannot drift from runtime owner-scope behavior.
+- [x] Add a `links.connectors` pointer to the RS root discovery index and the contract type for `getRsDiscoveryIndex`.
+- [x] Improve the `Malformed changes_since cursor` error message at all three throw sites in `server/records.js` so it names `beginning` and `next_changes_since`.
+- [x] Add tests covering: presence of the new hint fields, polyfill vs native gating of `owner_polyfill_requires_connector_id`, presence of `links.connectors` on the RS index, and the new error wording for `changes_since=2024-01-01T00:00:00Z`.
+
 ## 5. Validation
 
 - [x] Run `pnpm --dir reference-implementation exec node --test test/provider-metadata.test.js test/query-contract.test.js`.
