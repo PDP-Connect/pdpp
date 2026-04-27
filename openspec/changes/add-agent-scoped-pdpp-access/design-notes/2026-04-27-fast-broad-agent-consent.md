@@ -1,10 +1,10 @@
 # Fast Broad Agent Consent
 
-Status: sprint-needed
+Status: promoted
 Owner: owner
 Created: 2026-04-27
 Updated: 2026-04-27
-Related: `openspec/changes/add-agent-scoped-pdpp-access/`, `apps/web/content/docs/spec-core.md`
+Related: `openspec/changes/add-agent-scoped-pdpp-access/`, `openspec/changes/design-fast-broad-agent-consent/`, `apps/web/content/docs/spec-core.md`
 
 ## Question
 
@@ -84,3 +84,4 @@ The promoted change should include prior-art review across OAuth RAR/PAR, GitHub
 ## Decision Log
 
 - 2026-04-27: Captured after live agent testing showed the current reference cannot grant all sources quickly, while a maximal single-source continuous grant is easy to stage. Owner feedback: the inability to grant lots of permission fast is itself a user problem; do not rush the normative answer.
+- 2026-04-27: Promoted into `openspec/changes/design-fast-broad-agent-consent/` as a dedicated normative design track. This note remains the intake record; implementation remains blocked until the promoted change reaches an owner-reviewed decision.
