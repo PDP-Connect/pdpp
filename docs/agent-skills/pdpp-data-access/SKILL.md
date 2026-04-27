@@ -138,7 +138,7 @@ See `references/query-cookbook.md`. Quick map:
 
 - "give me the last N items": `GET /v1/streams/<stream>/records?limit=N&order=desc`
 - "show changes since cursor X": `GET /v1/streams/<stream>/records?changes_since=<cursor>` (bootstrap with `changes_since=beginning`)
-- "find records matching free text": `GET /v1/search?q=…` or `GET /v1/search/hybrid?q=…` (when advertised; scope with repeated `streams=` or `streams[]=` values, not CSV)
+- "find records matching free text": `GET /v1/search?q=…` or, when the server advertises it, `GET /v1/search/hybrid?q=…` (experimental hybrid retrieval extension; scope with repeated `streams=` or `streams[]=` values, not CSV)
 - "fetch an attachment": follow `blob_ref.fetch_url` from the record body, never construct it
 - "count or sum": `GET /v1/streams/<stream>/aggregate?metric=count` or `metric=sum&field=<field>` (when advertised)
 

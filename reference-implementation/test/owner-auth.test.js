@@ -84,7 +84,7 @@ async function startPendingConsent(asUrl, overrides = {}) {
           connector_id: SPOTIFY_MANIFEST.connector_id,
           purpose_code: 'test',
           purpose_description: 'test',
-          access_mode: 'one_shot',
+          access_mode: 'single_use',
           streams: [{ name: 'top_artists' }],
         },
       ],

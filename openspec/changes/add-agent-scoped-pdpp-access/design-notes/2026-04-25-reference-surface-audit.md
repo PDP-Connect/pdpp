@@ -124,7 +124,7 @@ Before finalizing the skill or proposing CLI surfaces, this audit was cross-refe
 
 ### OAuth RAR (RFC 9396 — Rich Authorization Requests)
 
-- **Keep:** the reference `authorization_details[]` shape already follows RAR. Each entry has a `type` URI (`https://pdpp.org/data-access`) and source/scope-shaped fields. The skill's grant-design guidance — narrow `streams[]`, narrow `fields`, time-bounded `access_mode`, owner-readable `purpose_description` — is the RAR pattern in practice.
+- **Keep:** the reference `authorization_details[]` shape already follows RAR. Each entry has a `type` URI (`https://pdpp.org/data-access`) and source/scope-shaped fields. The skill's grant-design guidance — narrow `streams[]`, narrow `fields`, narrow `time_range` constraints on streams, owner-readable `purpose_description` — is the RAR pattern in practice. (`access_mode` stays `single_use` or `continuous`; time-boxing is a stream-level constraint, not an access-mode flavor.)
 - **Don't keep:** RAR encourages including `actions[]`, `locations[]`, `datatypes[]`. The reference doesn't accept those today. The skill avoids referencing them so agents don't try to send fields the AS will drop or reject.
 - **Promote candidate:** explicit `actions[]` (e.g., `["read.records", "read.aggregate"]`) as a separable scope axis. Not in this tranche; flagged as protocol-candidate.
 

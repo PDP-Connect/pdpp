@@ -430,7 +430,7 @@ export const DEMO_GRANTS: readonly DemoGrantDef[] = [
         run_id: null,
         object_type: "grant",
         status: "issued",
-        data: { access_mode: "ongoing" },
+        data: { access_mode: "continuous" },
       },
       {
         event_id: "evt_sb_ledger_003",

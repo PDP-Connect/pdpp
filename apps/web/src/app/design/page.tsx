@@ -3796,7 +3796,7 @@ const CONSENT_SPECIMENS: { label: string; axes: string; data: ConsentCardProps }
   },
   {
     // Axes: 2=analytics, 8=since+until, 18=profile used
-    label: "Analytics, time-bounded",
+    label: "Analytics, scoped time window",
     axes: "analytics, single_use, time_range with since+until, profile-based",
     data: {
       requester: { name: "Sleep Insights", monogram: "SI", verified: true },
