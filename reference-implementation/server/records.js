@@ -1902,6 +1902,51 @@ export async function deleteAllRecords(storageTarget, stream) {
 }
 
 /**
+ * Delete every persisted record for a connector across all of its streams.
+ *
+ * Invoked by the polyfill manifest reconciliation loop when it flips a
+ * connector's persisted manifest fingerprint. Records emitted under the
+ * prior-shape manifest are not safe to advertise as fresh data under the
+ * new manifest's declarations, so we drop them and let the next real
+ * connector run repopulate. See
+ * openspec/changes/reconcile-invalidates-stale-records/.
+ *
+ * Returns the number of records deleted plus the list of stream names
+ * that had records, so the caller can produce an informative log line.
+ */
+export async function deleteAllRecordsForConnector(connectorId) {
+  if (typeof connectorId !== 'string' || !connectorId) {
+    return { deletedCount: 0, streams: [] };
+  }
+  const db = getDb();
+  const streamRows = db.prepare(`
+    SELECT DISTINCT stream
+    FROM records
+    WHERE connector_id = ?
+    ORDER BY stream ASC
+  `).all(connectorId);
+  const streams = streamRows.map((row) => row.stream);
+  const countRow = db.prepare(`
+    SELECT COUNT(*) AS count
+    FROM records
+    WHERE connector_id = ?
+  `).get(connectorId);
+  const deletedCount = countRow?.count || 0;
+
+  db.prepare('DELETE FROM records WHERE connector_id = ?').run(connectorId);
+  db.prepare('DELETE FROM record_changes WHERE connector_id = ?').run(connectorId);
+  db.prepare('DELETE FROM version_counter WHERE connector_id = ?').run(connectorId);
+  db.prepare('DELETE FROM blob_bindings WHERE connector_id = ?').run(connectorId);
+
+  for (const stream of streams) {
+    await lexicalIndexDeleteByConnectorStream({ connectorId, stream });
+    await semanticIndexDeleteByConnectorStream({ connectorId, stream });
+  }
+
+  return { deletedCount, streams };
+}
+
+/**
  * List streams available under a grant, with record counts
  */
 export async function listStreams(storageTarget, grant, manifest = null) {
