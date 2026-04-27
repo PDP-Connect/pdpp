@@ -1,5 +1,5 @@
 import Link from "next/link";
-import type { ReactNode } from "react";
+import { cache, type ReactNode } from "react";
 import { PdppLogo } from "@/components/pdpp-logo.tsx";
 import { ThemeToggle } from "@/components/theme/theme-toggle.tsx";
 import { getAsInternalUrl, getOwnerLoginPath, getReferencePublicOrigin, getRsInternalUrl } from "../lib/owner-token.ts";
@@ -264,14 +264,15 @@ function StatusDot({ online, label }: { online: boolean; label: string }) {
 }
 
 const PROBE_TIMEOUT_MS = 900;
+const PROBE_REVALIDATE_S = 15;
 
-async function probeJson(url: string): Promise<Record<string, unknown> | null> {
+const probeJson = cache(async (url: string): Promise<Record<string, unknown> | null> => {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS);
   try {
     const res = await fetch(url, {
-      cache: "no-store",
       headers: { accept: "application/json" },
+      next: { revalidate: PROBE_REVALIDATE_S },
       signal: controller.signal,
     });
     if (!res.ok) {
@@ -284,7 +285,7 @@ async function probeJson(url: string): Promise<Record<string, unknown> | null> {
   } finally {
     clearTimeout(timer);
   }
-}
+});
 
 async function probeAs(baseUrl: string): Promise<boolean> {
   const body = await probeJson(`${baseUrl}/.well-known/oauth-authorization-server`);
