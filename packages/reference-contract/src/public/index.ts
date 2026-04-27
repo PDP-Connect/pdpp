@@ -1126,6 +1126,34 @@ export const publicManifests = [
     },
   },
   {
+    id: "exchangeConsentCode",
+    method: "POST",
+    path: "/consent/exchange",
+    surface: "public",
+    tags: ["grants"],
+    summary:
+      "Redeem a short-lived single-use consent exchange code from the hosted HTML consent flow for the client token.",
+    request: {
+      body: {
+        contentType: "application/json",
+        schema: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            code: NonEmptyStringSchema,
+          },
+          required: ["code"],
+        },
+      },
+    },
+    responses: {
+      200: { schema: GrantApprovalResponseSchema, description: "Exchange code redeemed and client token issued" },
+      400: { schema: ErrorObjectSchema, description: "Invalid request" },
+      404: { schema: ErrorObjectSchema, description: "Unknown exchange code" },
+      410: { schema: ErrorObjectSchema, description: "Exchange code expired or already redeemed" },
+    },
+  },
+  {
     id: "startOwnerDeviceAuthorization",
     method: "POST",
     path: "/oauth/device_authorization",

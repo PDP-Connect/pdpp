@@ -2068,6 +2068,76 @@ export async function approveGrant(deviceCode, subjectId = 'owner_local', opts =
 }
 
 /**
+ * Consent exchange-code store.
+ *
+ * The HTML branch of `POST /consent/approve` SHALL NOT render the live client
+ * bearer to the browser; instead it mints a single-use opaque exchange code,
+ * stores `{ code -> { grantId, token, grant, expiresAt, consumed } }` here,
+ * and tells the caller to redeem the code at `POST /consent/exchange`.
+ *
+ * In-memory by design: the reference is single-process, the codes are
+ * short-lived, and a code that survives a process restart would weaken the
+ * "short-lived single-use ticket" property. See
+ * openspec/changes/harden-consent-token-handoff/design.md.
+ */
+const consentExchangeCodes = new Map();
+const CONSENT_EXCHANGE_CODE_TTL_MS = 5 * 60 * 1000;
+
+function pruneExpiredConsentExchangeCodes(now = Date.now()) {
+  for (const [code, entry] of consentExchangeCodes) {
+    if (entry.consumed || entry.expiresAt <= now) {
+      consentExchangeCodes.delete(code);
+    }
+  }
+}
+
+export function createConsentExchangeCode({ grantId, token, grant, ttlMs = CONSENT_EXCHANGE_CODE_TTL_MS }) {
+  if (!grantId || !token || !grant) {
+    throw new Error('createConsentExchangeCode requires grantId, token, and grant');
+  }
+  pruneExpiredConsentExchangeCodes();
+  const code = `cex_${randomBytes(32).toString('hex')}`;
+  consentExchangeCodes.set(code, {
+    grantId,
+    token,
+    grant,
+    expiresAt: Date.now() + ttlMs,
+    consumed: false,
+  });
+  return code;
+}
+
+export function consumeConsentExchangeCode(code) {
+  if (typeof code !== 'string' || code.length === 0) {
+    return { ok: false, reason: 'unknown' };
+  }
+  const entry = consentExchangeCodes.get(code);
+  if (!entry) {
+    return { ok: false, reason: 'unknown' };
+  }
+  if (entry.consumed) {
+    return { ok: false, reason: 'consumed' };
+  }
+  if (entry.expiresAt <= Date.now()) {
+    consentExchangeCodes.delete(code);
+    return { ok: false, reason: 'expired' };
+  }
+  entry.consumed = true;
+  consentExchangeCodes.delete(code);
+  return {
+    ok: true,
+    grantId: entry.grantId,
+    token: entry.token,
+    grant: entry.grant,
+  };
+}
+
+/** Test-only escape hatch: clear the in-memory exchange-code store. */
+export function _resetConsentExchangeCodes() {
+  consentExchangeCodes.clear();
+}
+
+/**
  * Deny and clear a pending grant request
  */
 export async function denyGrant(deviceCode) {

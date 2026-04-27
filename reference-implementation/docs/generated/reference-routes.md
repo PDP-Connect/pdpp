@@ -11,6 +11,7 @@ Generated from `packages/reference-contract/src/public/`. Do not edit by hand.
 | **POST** | `/oauth/register` | `registerDynamicClient` | Register a public client through the reference dynamic client registration profile. |
 | **POST** | `/oauth/par` | `createPushedAuthorizationRequest` | Stage a PDPP data-access request and receive a pending-consent request_uri plus authorization URL. |
 | **POST** | `/consent/approve` | `approveConsent` | Approve a pending data-access request through the JSON consent surface used by tests and automation. |
+| **POST** | `/consent/exchange` | `exchangeConsentCode` | Redeem a short-lived single-use consent exchange code from the hosted HTML consent flow for the client token. |
 | **POST** | `/oauth/device_authorization` | `startOwnerDeviceAuthorization` | Start the owner device flow used for owner-self-export and dashboard bootstrap. |
 | **POST** | `/oauth/token` | `exchangeOwnerDeviceToken` | Exchange an approved owner device_code for an owner bearer token. |
 | **POST** | `/introspect` | `introspectToken` | Inspect token activity and, for active client tokens, the bound grant projection. |
@@ -134,6 +135,24 @@ Approve a pending data-access request through the JSON consent surface used by t
 - `400` — Invalid request
 - `403` — Grant is malformed or no longer valid
 - `404` — Pending consent request not found
+
+## exchangeConsentCode
+
+`POST /consent/exchange`
+
+Redeem a short-lived single-use consent exchange code from the hosted HTML consent flow for the client token.
+
+### Request body
+
+`application/json`
+- `code` (required) — string
+
+### Responses
+
+- `200` — Exchange code redeemed and client token issued
+- `400` — Invalid request
+- `404` — Unknown exchange code
+- `410` — Exchange code expired or already redeemed
 
 ## startOwnerDeviceAuthorization
 

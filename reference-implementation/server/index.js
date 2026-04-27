@@ -22,6 +22,7 @@ import { createTraceContext, emitSpineEvent, generateSpineId, listSpineCorrelati
 import {
   registerConnector, getConnectorManifest, getConfiguredNativeManifest, getManifestForStorageBinding, initiateGrant, getPendingConsent,
   approveGrant, introspect, revokeGrant, denyGrant,
+  createConsentExchangeCode, consumeConsentExchangeCode,
   initiateOwnerDeviceAuthorization, getOwnerDeviceAuthorizationByUserCode,
   approveOwnerDeviceAuthorization, denyOwnerDeviceAuthorization, exchangeOwnerDeviceCode, configureNativeManifest,
   listRegisteredConnectorIds,
@@ -2438,6 +2439,19 @@ function buildAsApp(opts = {}) {
       if (wantsJson) {
         return res.json({ grant_id: grant.grant_id, token, grant });
       }
+      // The HTML approval surface is the human-hosted owner consent page. The
+      // bearer SHALL NOT appear anywhere in this response (browser history,
+      // screenshots, screen-shares, password-manager autofill, chat
+      // transcripts that paste the rendered page). Mint a single-use opaque
+      // exchange code for the cold-agent handoff path; the client redeems it
+      // at POST /consent/exchange to receive the bearer in a JSON body.
+      // Spec: openspec/changes/harden-consent-token-handoff/specs/
+      //       reference-implementation-architecture/spec.md
+      const exchangeCode = createConsentExchangeCode({
+        grantId: grant.grant_id,
+        token,
+        grant,
+      });
       res.send(renderHostedDocument({
         title: `${providerName} — Access approved`,
         providerName,
@@ -2445,14 +2459,14 @@ function buildAsApp(opts = {}) {
           renderPageIntro({
             eyebrow: 'Consent result',
             title: 'Access approved',
-            lede: 'A grant was issued for this request. The client can now call your resource server with the token below.',
+            lede: 'A grant was issued for this request. Hand the exchange code below to the client that requested access; it will redeem the code for an access token over a fresh JSON request.',
           }),
           renderSurface({
             surface: 'human',
             children: renderResultState({
               tone: 'success',
               title: 'Grant issued',
-              body: 'You can revoke this access any time from the grants dashboard.',
+              body: 'You can revoke this access any time from the grants dashboard. The exchange code is single-use and expires shortly.',
             }),
           }),
           renderSurface({
@@ -2460,7 +2474,8 @@ function buildAsApp(opts = {}) {
             ariaLabel: 'Technical grant details',
             children: renderKeyValueList([
               { label: 'Grant ID', html: `<code>${hostedEscape(grant.grant_id)}</code>` },
-              { label: 'Token', html: `<code>${hostedEscape(token)}</code>` },
+              { label: 'Consent exchange code', html: `<code>${hostedEscape(exchangeCode)}</code>` },
+              { label: 'Redeem at', html: `<code>POST /consent/exchange</code>` },
             ]),
           }),
         ].join('\n'),
@@ -2504,6 +2519,35 @@ function buildAsApp(opts = {}) {
     }
   });
 
+
+  // Reference-only redemption surface for the human-hosted approval flow.
+  // The HTML branch of POST /consent/approve embeds an opaque single-use code
+  // instead of the live bearer; the client (or human relaying for the client)
+  // redeems the code here to receive the same JSON body the JSON branch of
+  // POST /consent/approve already returns. Spec:
+  //   openspec/changes/harden-consent-token-handoff/specs/
+  //     reference-implementation-architecture/spec.md
+  app.post('/consent/exchange', { contract: 'exchangeConsentCode' }, async (req, res) => {
+    try {
+      const code = typeof req.body?.code === 'string' ? req.body.code : null;
+      if (!code) {
+        return pdppError(res, 400, 'invalid_request', 'code is required');
+      }
+      const result = consumeConsentExchangeCode(code);
+      if (!result.ok) {
+        if (result.reason === 'expired') {
+          return pdppError(res, 410, 'invalid_grant', 'Consent exchange code has expired');
+        }
+        if (result.reason === 'consumed') {
+          return pdppError(res, 410, 'invalid_grant', 'Consent exchange code has already been redeemed');
+        }
+        return pdppError(res, 404, 'not_found', 'Unknown consent exchange code');
+      }
+      return res.json({ grant_id: result.grantId, token: result.token, grant: result.grant });
+    } catch (err) {
+      handleError(res, err);
+    }
+  });
 
 
   // Primary reference surface.

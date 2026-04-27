@@ -1,6 +1,6 @@
 # Consent-result token rendering — followup
 
-- Status: deferred (out of scope for `harden-reference-auth-surfaces`).
+- Status: decided-promote (absorbed by `harden-consent-token-handoff`).
 - Captured: 2026-04-27.
 - Origin: bug-hunt audit, finding P1 #4.
 
@@ -22,7 +22,7 @@ Replace the HTML token-copy UX with an exchange-code flow:
 
 - on approve, the AS issues a one-time-use, short-lived exchange code (e.g. `code_<random>`) and stores `{ code -> token, single_use: true, expires_in: 60s }` in memory.
 - the HTML response shows the code, not the token, plus a "use this code at `/consent/exchange?code=…`" pointer or a copy button.
-- the dashboard / agent calls `POST /consent/exchange` with the code over a fresh request and gets the token in the JSON body, using the standard `requireToken`-shaped client identity.
+- the dashboard / agent calls `POST /consent/exchange` with the code over a fresh request and gets the token in the JSON body; possession of the single-use code is the redemption authority.
 
 That keeps the human-visible artifact a non-credential (the code) and routes the actual bearer through a normal HTTPS JSON body.
 
@@ -35,7 +35,7 @@ That keeps the human-visible artifact a non-credential (the code) and routes the
 
 ## Suggested next packet
 
-Open a fresh OpenSpec change `add-consent-exchange-code`. It SHALL:
+Absorbed by `openspec/changes/harden-consent-token-handoff/`. The promoted change SHALL:
 
 - decide reference-only vs PDPP-Core scope.
 - spec the code shape, TTL, single-use semantics, and revocation-on-failure.
