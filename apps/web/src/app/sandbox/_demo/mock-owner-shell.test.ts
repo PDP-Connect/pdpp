@@ -35,6 +35,9 @@ const COMMAND_PALETTE_OVERVIEW_RE =
   /<CommandPalette\s+basePath=\{routes\.basePath\}\s+overviewHref=\{routes\.section\.overview\}\s*\/>/;
 const SITE_HEADER_RE = /SiteHeader|currentLabel=["']Sandbox["']/;
 const FORCE_DYNAMIC_RE = /export\s+const\s+dynamic\s*=\s*["']force-dynamic["']/;
+const BUTTON_VARIANTS_IMPORT_RE = /from\s+["']@\/components\/ui\/button\.tsx["']/;
+const PRIMARY_CTA_RE = /buttonVariants\(\{\s*variant:\s*["']default["'],\s*size:\s*["']lg["']\s*\}\)/;
+const HAND_ROLLED_PRIMARY_RE = /bg-foreground|text-background/;
 
 const PRIMARY_DASHBOARD_PAGES = [
   "overview/page.tsx",
@@ -141,6 +144,17 @@ test("/sandbox launcher is not DashboardShell-rendered", async () => {
     "the /sandbox launcher must not render DashboardShell — it is the entrypoint, not the dashboard"
   );
   assert.match(src, SANDBOX_OVERVIEW_LINK_RE, "the launcher must link into /sandbox/overview");
+});
+
+test("/sandbox launcher uses shared button variants for CTA contrast", async () => {
+  const src = await readFile(join(SANDBOX_DIR, "page.tsx"), "utf8");
+  assert.match(src, BUTTON_VARIANTS_IMPORT_RE);
+  assert.match(src, PRIMARY_CTA_RE, "launcher primary CTA must use the design-system default button");
+  assert.equal(
+    HAND_ROLLED_PRIMARY_RE.test(src),
+    false,
+    "launcher must not hand-roll primary CTA foreground/background colors"
+  );
 });
 
 test("/sandbox layout does not render global site chrome around mock-owner dashboard pages", async () => {

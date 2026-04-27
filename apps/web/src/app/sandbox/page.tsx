@@ -16,6 +16,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { PdppLogo } from "@/components/pdpp-logo.tsx";
 import { SiteHeader } from "@/components/site-header.tsx";
+import { buttonVariants } from "@/components/ui/button.tsx";
 
 export const metadata: Metadata = {
   title: "PDPP reference instance · Sandbox",
@@ -67,22 +68,13 @@ export default function SandboxLauncherPage() {
         </p>
 
         <div className="mt-8 flex flex-wrap items-center gap-3">
-          <Link
-            className="pdpp-body inline-flex items-center gap-2 rounded-md bg-foreground px-4 py-2 font-medium text-background transition-colors hover:bg-foreground/90"
-            href="/sandbox/overview"
-          >
-            Enter mock-owner dashboard →
+          <Link className={buttonVariants({ variant: "default", size: "lg" })} href="/sandbox/overview">
+            Enter reference dashboard →
           </Link>
-          <Link
-            className="pdpp-body inline-flex items-center rounded-md border border-border px-4 py-2 text-foreground hover:bg-muted/60"
-            href="/sandbox/api-examples"
-          >
+          <Link className={buttonVariants({ variant: "outline", size: "lg" })} href="/sandbox/api-examples">
             API examples
           </Link>
-          <Link
-            className="pdpp-body inline-flex items-center rounded-md border border-border px-4 py-2 text-foreground hover:bg-muted/60"
-            href="/sandbox/walkthrough"
-          >
+          <Link className={buttonVariants({ variant: "outline", size: "lg" })} href="/sandbox/walkthrough">
             Guided walkthrough
           </Link>
         </div>
