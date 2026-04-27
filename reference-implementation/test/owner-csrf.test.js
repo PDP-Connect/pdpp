@@ -498,6 +498,42 @@ test('CSRF: ownerAuthForceSecureCookies=true marks session and CSRF cookies Secu
   );
 });
 
+// ── Regression: owner-auth disabled + form-encoded POST /owner/logout ──────
+// The prior contract for the placeholder gate is that, with no
+// PDPP_OWNER_PASSWORD set, owner-auth is a no-op and hosted routes stay
+// open. A form-encoded logout POST in that mode SHALL NOT 403 just
+// because there is no CSRF token to verify.
+test('CSRF: owner-auth disabled — form-encoded POST /owner/logout does not 403 (no-op)', async () => {
+  await withServer({}, async ({ asUrl }) => {
+    // text/html caller: prior behavior is a redirect to /owner/login.
+    const htmlResp = await fetch(`${asUrl}/owner/logout`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        Accept: 'text/html',
+      },
+      body: '',
+      redirect: 'manual',
+    });
+    assert.notEqual(htmlResp.status, 403, 'form-encoded logout SHALL NOT 403 when owner-auth is disabled');
+    assert.equal(htmlResp.status, 302, 'HTML caller SHALL be redirected to /owner/login');
+    assert.equal(htmlResp.headers.get('location'), '/owner/login');
+
+    // JSON caller: prior behavior is a 204.
+    const jsonResp = await fetch(`${asUrl}/owner/logout`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        Accept: 'application/json',
+      },
+      body: '',
+      redirect: 'manual',
+    });
+    assert.notEqual(jsonResp.status, 403);
+    assert.equal(jsonResp.status, 204, 'JSON caller SHALL receive 204 even with form content-type when owner-auth is disabled');
+  });
+});
+
 // ── Default local HTTP development still works (no Secure required) ─────────
 test('CSRF: default local HTTP development does not require Secure on cookies', async () => {
   await withServer({ ownerAuthPassword: TEST_PASSWORD }, async ({ asUrl }) => {

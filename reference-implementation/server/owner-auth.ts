@@ -681,9 +681,13 @@ export function createOwnerAuthPlaceholder({
     });
 
     app.post("/owner/logout", (req, res) => {
+      // CSRF only applies when owner-auth is enabled. With placeholder
+      // auth disabled (no PDPP_OWNER_PASSWORD), there is no session and
+      // no CSRF surface to protect; preserve the prior open local-dev
+      // behavior so a form-encoded logout POST does not 403.
       // Only browser form submissions need CSRF protection on logout.
       // JSON callers cannot be cross-origin-forged without CORS preflight.
-      if (isFormEncodedRequest(req) && !csrfPairValid(req)) {
+      if (enabled && isFormEncodedRequest(req) && !csrfPairValid(req)) {
         replyLogoutCsrfFailure(req, res);
         return;
       }
