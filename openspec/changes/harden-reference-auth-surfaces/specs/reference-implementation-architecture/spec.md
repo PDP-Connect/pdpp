@@ -172,6 +172,17 @@ This requirement supersedes the prior "P2 follow-up" deferral noted in the origi
 - **AND** the response SHALL NOT issue a `pdpp_owner_session` Set-Cookie
 - **AND** the response body SHALL NOT leak whether the submitted password would have been correct
 
+#### Scenario: A text/plain POST `/owner/login` is rejected before the password check
+- **WHEN** a caller submits `POST /owner/login` with `Content-Type: text/plain` and no CSRF pair
+- **THEN** the response status SHALL be `403`
+- **AND** the response SHALL NOT issue a `pdpp_owner_session` Set-Cookie even when the body would have carried a correct password
+
+#### Scenario: A JSON POST `/owner/login` reaches the password branch without a CSRF token
+- **WHEN** a programmatic JSON caller submits `POST /owner/login` with `Content-Type: application/json` and a JSON body containing `password` but no `_csrf` field
+- **THEN** the request SHALL pass through `requireCsrf` because JSON callers cannot be cross-origin-forged from a browser without a CORS preflight
+- **AND** an incorrect password SHALL produce a `401`
+- **AND** a correct password SHALL produce a `302` redirect to `return_to` and SHALL issue a `pdpp_owner_session` Set-Cookie
+
 #### Scenario: A browser-form POST `/owner/login` arrives with a valid CSRF pair and a wrong password
 - **WHEN** a browser submits `POST /owner/login` with a `pdpp_owner_csrf` cookie and matching `_csrf` field that both verify against the server secret, but the submitted password is incorrect
 - **THEN** the response status SHALL be `401`

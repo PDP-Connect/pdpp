@@ -685,7 +685,13 @@ export function createOwnerAuthPlaceholder({
       // password validity over a forged cross-origin POST. We render the
       // CSRF failure page rather than re-rendering the login form so we
       // don't leak whether the password attempt would have succeeded.
-      if (!csrfPairValid(req)) {
+      //
+      // Pure JSON callers stay exempt for the same reason as the rest
+      // of the hosted-form CSRF surface: a cross-origin browser POST
+      // with `Content-Type: application/json` requires a CORS preflight
+      // and cannot be silently forged, so JSON `/owner/login` keeps
+      // its programmatic contract and reaches the password branch.
+      if (shouldRequireCsrf(req) && !csrfPairValid(req)) {
         const csrfToken = ensureCsrfToken(req, res);
         res.setHeader("Content-Type", "text/html; charset=utf-8");
         res.status(403).send(

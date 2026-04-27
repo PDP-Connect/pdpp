@@ -521,6 +521,110 @@ test('CSRF: POST /consent/approve with no Content-Type is rejected (browser-fetc
   });
 });
 
+// ── JSON /owner/login is CSRF-exempt and reaches the password branch ───────
+// The hosted owner-auth surface exempts pure JSON callers from CSRF on
+// every other state-changing route. /owner/login SHALL be consistent
+// with that rule: a JSON caller without _csrf SHALL reach the password
+// branch (wrong password → 401, correct password → 302 + session
+// cookie). Browser-submittable POSTs (form-encoded, text/plain, no
+// Content-Type) SHALL still fail CSRF *before* the password is
+// checked so a forged cross-origin POST cannot probe password validity.
+test('CSRF: JSON POST /owner/login without _csrf reaches the password branch (wrong → 401)', async () => {
+  await withServer({ ownerAuthPassword: TEST_PASSWORD }, async ({ asUrl }) => {
+    const resp = await fetch(`${asUrl}/owner/login`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
+      body: JSON.stringify({ password: 'definitely-not-the-password', return_to: '/consent' }),
+      redirect: 'manual',
+    });
+    assert.equal(resp.status, 401, 'JSON wrong-password SHALL reach the password branch and return 401');
+    const setCookies = getRawSetCookieList(resp);
+    assert.ok(
+      !findSetCookiePair(setCookies, 'pdpp_owner_session'),
+      'no session cookie on wrong password',
+    );
+  });
+});
+
+test('CSRF: JSON POST /owner/login without _csrf reaches the password branch (correct → 302 + session)', async () => {
+  await withServer({ ownerAuthPassword: TEST_PASSWORD }, async ({ asUrl }) => {
+    const resp = await fetch(`${asUrl}/owner/login`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
+      body: JSON.stringify({ password: TEST_PASSWORD, return_to: '/consent' }),
+      redirect: 'manual',
+    });
+    assert.equal(resp.status, 302, 'JSON correct-password SHALL succeed without CSRF');
+    assert.equal(resp.headers.get('location'), '/consent');
+    const setCookies = getRawSetCookieList(resp);
+    assert.ok(
+      findSetCookiePair(setCookies, 'pdpp_owner_session'),
+      'session cookie SHALL be set on JSON login success',
+    );
+  });
+});
+
+test('CSRF: text/plain POST /owner/login without _csrf is rejected before the password check', async () => {
+  await withServer({ ownerAuthPassword: TEST_PASSWORD }, async ({ asUrl }) => {
+    const resp = await fetch(`${asUrl}/owner/login`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'text/plain',
+        Accept: 'text/html',
+      },
+      body: 'password=' + TEST_PASSWORD,
+      redirect: 'manual',
+    });
+    assert.equal(resp.status, 403, 'text/plain login bypass SHALL be blocked by CSRF');
+    const setCookies = getRawSetCookieList(resp);
+    assert.ok(
+      !findSetCookiePair(setCookies, 'pdpp_owner_session'),
+      'CSRF failure SHALL NOT issue a session even if the password would have been correct',
+    );
+  });
+});
+
+test('CSRF: POST /owner/login with no Content-Type is rejected before the password check', async () => {
+  await withServer({ ownerAuthPassword: TEST_PASSWORD }, async ({ asUrl }) => {
+    const resp = await fetch(`${asUrl}/owner/login`, {
+      method: 'POST',
+      headers: { Accept: 'text/html' },
+      // No body, no Content-Type — the "browser POST without payload"
+      // shape that an attacker page can produce cross-origin.
+      redirect: 'manual',
+    });
+    assert.equal(resp.status, 403);
+  });
+});
+
+test('CSRF: form-encoded POST /owner/login without _csrf still fails CSRF before password', async () => {
+  // Regression for the original P1: a form-encoded login post WITHOUT
+  // a CSRF pair SHALL still 403 before the password check, even though
+  // /owner/login is now consistent with the JSON exemption rule.
+  await withServer({ ownerAuthPassword: TEST_PASSWORD }, async ({ asUrl }) => {
+    const resp = await fetch(`${asUrl}/owner/login`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        Accept: 'text/html',
+      },
+      body: new URLSearchParams({ password: TEST_PASSWORD, return_to: '/consent' }).toString(),
+      redirect: 'manual',
+    });
+    assert.equal(resp.status, 403);
+    const setCookies = getRawSetCookieList(resp);
+    assert.ok(!findSetCookiePair(setCookies, 'pdpp_owner_session'));
+    const text = await resp.text();
+    assert.ok(!text.includes('Incorrect password'), 'CSRF failure SHALL NOT leak password validity');
+  });
+});
+
 // ── runtime CSRF secret SHALL NOT be derived from the owner password ───────
 // Pre-merge regression: the v2 spike derived the CSRF HMAC secret from
 // PDPP_OWNER_PASSWORD. Because GET /owner/login is unauthenticated and
