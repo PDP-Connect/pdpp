@@ -4,7 +4,7 @@ Status: sprint-needed
 Owner: reference-implementation
 Created: 2026-04-27
 Updated: 2026-04-27
-Related: `openspec/specs/reference-implementation-architecture/spec.md` (Reference-only surfaces are explicit; Reference control-plane mutations require owner session when enabled), `openspec/changes/harden-reference-auth-surfaces/` (sibling change deliberately scoped *out* of this question), `tmp/workstreams/worktree-bughunt-security-privacy-report.md`
+Related: `openspec/specs/reference-implementation-architecture/spec.md` (Reference-only surfaces are explicit; Reference control-plane mutations require owner session when enabled), `openspec/changes/harden-reference-auth-surfaces/` (sibling change deliberately scoped *out* of this question), bug-hunt v2 security/privacy audit
 
 ## Question
 
