@@ -108,11 +108,17 @@ server under Node watch mode, and run the web app with Next dev on `:3000`.
 Use the default Compose command above or `pnpm docker:smoke` when you want the
 production-style Docker path instead.
 
+For host-based development with `pnpm run dev`, the web app starts Next dev on
+`0.0.0.0:3000` and auto-allows loopback, private LAN, link-local, and CGNAT
+IPv4 interface addresses reported by the OS. If you access the dev server
+through a custom DNS name or reverse proxy, set `PDPP_WEB_ALLOWED_DEV_ORIGINS`
+explicitly.
+
 When accessing Docker dev through a LAN IP or reverse proxy, add the browser
 hostnames to `PDPP_WEB_ALLOWED_DEV_ORIGINS` in `.env.docker`, for example:
 
 ```bash
-PDPP_WEB_ALLOWED_DEV_ORIGINS=peregrine-dev.vivid.fish,192.168.1.180
+PDPP_WEB_ALLOWED_DEV_ORIGINS=pdpp-dev.example.test,192.168.0.2
 ```
 
 Reverse proxies must also forward WebSocket upgrade traffic for

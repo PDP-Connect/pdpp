@@ -1,31 +1,12 @@
 import { createMDX } from 'fumadocs-mdx/next';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { collectAllowedDevOrigins } from './scripts/dev-origins.mjs';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const withMDX = createMDX();
 
-function parseAllowedDevOrigins(value) {
-  if (!value) {
-    return [];
-  }
-  return value
-    .split(',')
-    .map((origin) => origin.trim())
-    .filter(Boolean)
-    .map((origin) => {
-      if (origin.startsWith('*.')) {
-        return origin.toLowerCase();
-      }
-      try {
-        return new URL(origin.includes('://') ? origin : `http://${origin}`).hostname.toLowerCase();
-      } catch {
-        return origin.toLowerCase();
-      }
-    });
-}
-
-const allowedDevOrigins = parseAllowedDevOrigins(process.env.PDPP_WEB_ALLOWED_DEV_ORIGINS);
+const allowedDevOrigins = process.env.NODE_ENV === 'production' ? [] : collectAllowedDevOrigins();
 
 function parseBuildWorkers(value) {
   if (!value) {

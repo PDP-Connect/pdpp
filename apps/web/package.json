@@ -6,7 +6,7 @@
   "//build": "TEMPORARY: --webpack keeps local/CI builds off Turbopack after repeated native SIGSEGV during static page generation on Next 16.2.x.",
   "scripts": {
     "openspec:git-metadata": "node ./scripts/generate-openspec-git-metadata.mjs",
-    "dev": "pnpm openspec:git-metadata && next dev --webpack",
+    "dev": "pnpm openspec:git-metadata && next dev --webpack --hostname 0.0.0.0 --port 3000",
     "build": "pnpm openspec:git-metadata && next build --webpack",
     "start": "next start",
     "types:check": "fumadocs-mdx && next typegen && tsc --noEmit",
