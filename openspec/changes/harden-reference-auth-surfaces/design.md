@@ -61,7 +61,13 @@ The signed half is what defends against cookie injection: an attacker on a sibli
 
 We deliberately keep the CSRF cookie *separate* from the owner session cookie so we can rotate the CSRF cookie on auth-state change (login success, logout) without disturbing the session, and so the same mechanism works pre- and post-login — `/owner/login` is the form most worth protecting and there is no session yet at that point.
 
-**JSON exemption.** Pure JSON POSTs (`Content-Type: application/json`) skip the CSRF check. Browsers cannot forge a cross-origin JSON POST without a CORS preflight, so the existing programmatic contract (CLIs, dashboard fetches, server-to-server) is preserved. The `requireCsrf` middleware tests `Content-Type` for `application/x-www-form-urlencoded` or `multipart/form-data` and otherwise calls `next()` immediately.
+**JSON exemption (P1 owner-review correction, 2026-04-27).** The first cut of `requireCsrf` exempted everything that wasn't `application/x-www-form-urlencoded` or `multipart/form-data`. That left a real bypass: HTML forms accept `text/plain` as a third valid `enctype` and a browser can submit it cross-origin without a CORS preflight. An attacker could craft `<form enctype="text/plain" action="…/consent/approve?request_uri=…" method="POST"><input name="x" value="x"></form>` on an attacker site and bypass CSRF entirely.
+
+The corrected rule inverts the heuristic: `requireCsrf` exempts a request only when its `Content-Type` is exactly `application/json` (with optional `; charset=…` parameters). Every other content-type — including `text/plain`, `application/x-www-form-urlencoded`, `multipart/form-data`, an empty `Content-Type` header, a Buffer-shaped body, or anything else a browser can send cross-origin — requires a valid CSRF pair when owner-auth is enabled. The same `shouldRequireCsrf(req)` helper drives the `requireCsrf` middleware on the `/consent/*` and `/device/*` routes *and* the inline check on `/owner/logout`, so the rule is unified.
+
+We deliberately do **not** extend the JSON exemption to `+json` structured-syntax variants (e.g. `application/problem+json`). The reference's Fastify body parser only decodes `application/json`; exempting `+json` from CSRF would mean the security gate accepts a content-type that the route handler does not actually parse as JSON, which is a divergence we do not want. If a future change adds `+json` parsing, the exemption can widen at the same time.
+
+Pure JSON callers stay exempt because browsers cannot forge a cross-origin JSON POST without a CORS preflight, so CLIs and server-to-server clients keep their existing programmatic contract.
 
 **Cookie posture knobs.** Two new env knobs make the existing P1 cookie concerns operable without code changes:
 

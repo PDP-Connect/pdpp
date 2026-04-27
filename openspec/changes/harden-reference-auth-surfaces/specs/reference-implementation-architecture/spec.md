@@ -150,13 +150,17 @@ The CSRF cookie SHALL be marked `HttpOnly`, `Path=/`, `SameSite=Lax` (or `Strict
 The protected POST surfaces SHALL include at least:
 
 - `POST /owner/login`
-- `POST /owner/logout` when the request is form-encoded
-- `POST /consent/approve` when the request is form-encoded
-- `POST /consent/deny` when the request is form-encoded
-- `POST /device/approve` when the request is form-encoded
-- `POST /device/deny` when the request is form-encoded
+- `POST /owner/logout`
+- `POST /consent/approve`
+- `POST /consent/deny`
+- `POST /device/approve`
+- `POST /device/deny`
 
-Pure JSON callers (Content-Type `application/json`) SHALL remain exempt because browsers cannot forge a cross-origin JSON POST without a CORS preflight; CLIs and server-to-server clients keep their existing programmatic contract. The CSRF cookie SHALL be rotated on auth-state change (login success and logout) so a token captured before sign-in cannot be reused after it.
+Pure JSON callers SHALL remain exempt: a request whose `Content-Type` is exactly `application/json` (parameters such as `; charset=utf-8` permitted) SHALL pass through `requireCsrf` without a CSRF check, because browsers cannot forge a cross-origin JSON POST without a CORS preflight. The exemption SHALL NOT extend to structured-syntax variants such as `application/problem+json` until the reference body parser actually decodes them as JSON. CLIs and server-to-server clients keep their existing programmatic contract.
+
+Every other browser-submittable POST — including `application/x-www-form-urlencoded`, `multipart/form-data`, `text/plain`, and a request with no `Content-Type` header — SHALL require a valid CSRF pair when owner-auth is enabled. The exemption SHALL NOT be defined as "form-encoded only," because the HTML form spec admits `text/plain` as a third valid `enctype`, which a browser can submit cross-origin without a CORS preflight; exempting only the two strict form encodings would leave a `text/plain` bypass.
+
+The CSRF cookie SHALL be rotated on auth-state change (login success and logout) so a token captured before sign-in cannot be reused after it.
 
 The owner session cookie (`pdpp_owner_session`) SHALL also honor the `PDPP_OWNER_SAMESITE` and `PDPP_OWNER_FORCE_SECURE_COOKIES` knobs so deployments behind TLS-terminating proxies can force `Secure` and stricter SameSite without code changes.
 
@@ -188,6 +192,20 @@ This requirement supersedes the prior "P2 follow-up" deferral noted in the origi
 - **WHEN** an authenticated owner submits `POST /device/approve` with `Content-Type: application/x-www-form-urlencoded` and no verifying CSRF pair
 - **THEN** the response status SHALL be `403`
 - **AND** the device authorization SHALL remain pending
+
+#### Scenario: A text/plain POST `/consent/approve` arrives from an authenticated owner without a CSRF token
+- **WHEN** an authenticated owner submits `POST /consent/approve?request_uri=…` with `Content-Type: text/plain`, `Accept: text/html`, a session cookie, a non-empty body, and no `pdpp_owner_csrf` cookie or `_csrf` field
+- **THEN** the response status SHALL be `403`
+- **AND** the pending consent request SHALL remain pending (a subsequent JSON `POST /consent/approve` for the same `request_uri` SHALL still succeed)
+
+#### Scenario: A text/plain POST `/device/approve` arrives from an authenticated owner without a CSRF token
+- **WHEN** an authenticated owner submits `POST /device/approve` with `Content-Type: text/plain`, a session cookie, and no CSRF token
+- **THEN** the response status SHALL be `403`
+- **AND** the device authorization SHALL remain pending
+
+#### Scenario: A POST with no Content-Type arrives from an authenticated owner without a CSRF token
+- **WHEN** an authenticated owner submits a state-changing POST with a session cookie, no `Content-Type` header (a "browser fetch with no body" shape), and no CSRF token
+- **THEN** the response status SHALL be `403`
 
 #### Scenario: A JSON POST `/consent/approve` arrives from an authenticated owner without a CSRF token
 - **WHEN** an authenticated owner submits `POST /consent/approve` with `Content-Type: application/json` and no `_csrf` field

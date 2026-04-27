@@ -428,6 +428,99 @@ test('CSRF: signed double-submit rejects a forged cookie value paired with the s
   });
 });
 
+// ── text/plain is a third browser-submittable form enctype: SHALL require CSRF ──
+// Pre-merge regression: HTML forms accept three enctypes —
+// `application/x-www-form-urlencoded`, `multipart/form-data`, and
+// `text/plain`. The third can be sent cross-origin without a CORS
+// preflight, so a CSRF gate that exempts everything except the first
+// two is bypassable. We require CSRF for every non-JSON state-
+// changing POST when owner-auth is enabled.
+test('CSRF: text/plain POST /consent/approve without _csrf is rejected with 403 even when authenticated', async () => {
+  await withServer({ ownerAuthPassword: TEST_PASSWORD }, async ({ asUrl }) => {
+    const { sessionCookie } = await login(asUrl, TEST_PASSWORD);
+    const requestUri = await startPendingConsent(asUrl);
+
+    // Mirror the owner-supplied repro exactly: text/plain content-type,
+    // request_uri carried in the query string (so the server still
+    // resolves the pending grant), session cookie present, dummy
+    // body, no CSRF cookie/field.
+    const resp = await fetch(
+      `${asUrl}/consent/approve?request_uri=${encodeURIComponent(requestUri)}`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'text/plain',
+          Accept: 'text/html',
+          Cookie: sessionCookie,
+        },
+        body: 'x',
+        redirect: 'manual',
+      },
+    );
+    assert.equal(resp.status, 403, 'text/plain form bypass SHALL be blocked by CSRF');
+
+    // Confirm no grant was actually issued: a fresh approval through
+    // the JSON branch with the same pending request SHALL still
+    // succeed (the pending row was not consumed).
+    const recover = await fetch(`${asUrl}/consent/approve`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+        Cookie: sessionCookie,
+      },
+      body: JSON.stringify({ request_uri: requestUri }),
+    });
+    assert.equal(recover.status, 200, 'pending request SHALL still be approvable; the text/plain attempt did not consume it');
+    const body = await recover.json();
+    assert.ok(body.grant_id);
+    assert.ok(body.token);
+  });
+});
+
+test('CSRF: text/plain POST /device/approve without _csrf is rejected with 403 and remains pending', async () => {
+  await withServer({ ownerAuthPassword: TEST_PASSWORD }, async ({ asUrl }) => {
+    const { sessionCookie } = await login(asUrl, TEST_PASSWORD);
+    const device = await initiateOwnerDeviceAuthorization('longview', { baseUrl: asUrl });
+
+    const resp = await fetch(`${asUrl}/device/approve`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'text/plain',
+        Accept: 'text/html',
+        Cookie: sessionCookie,
+      },
+      body: `user_code=${device.user_code}`,
+      redirect: 'manual',
+    });
+    assert.equal(resp.status, 403);
+
+    const stillPending = await getOwnerDeviceAuthorizationByUserCode(device.user_code);
+    assert.ok(stillPending, 'device authorization SHALL remain pending after the text/plain bypass attempt');
+  });
+});
+
+// ── empty Content-Type is treated as non-JSON: SHALL require CSRF ───────────
+test('CSRF: POST /consent/approve with no Content-Type is rejected (browser-fetch shape)', async () => {
+  await withServer({ ownerAuthPassword: TEST_PASSWORD }, async ({ asUrl }) => {
+    const { sessionCookie } = await login(asUrl, TEST_PASSWORD);
+    const requestUri = await startPendingConsent(asUrl);
+
+    const resp = await fetch(
+      `${asUrl}/consent/approve?request_uri=${encodeURIComponent(requestUri)}`,
+      {
+        method: 'POST',
+        headers: { Accept: 'text/html', Cookie: sessionCookie },
+        redirect: 'manual',
+      },
+    );
+    // fetch() may add a default Content-Type when there's a body; with
+    // no body it sends none. Either way the request is *not* JSON, so
+    // it SHALL require CSRF.
+    assert.equal(resp.status, 403);
+  });
+});
+
 // ── runtime CSRF secret SHALL NOT be derived from the owner password ───────
 // Pre-merge regression: the v2 spike derived the CSRF HMAC secret from
 // PDPP_OWNER_PASSWORD. Because GET /owner/login is unauthenticated and

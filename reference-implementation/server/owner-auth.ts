@@ -497,16 +497,36 @@ export function createOwnerAuthPlaceholder({
     );
   }
 
-  function isFormEncodedRequest(req: AuthRequest): boolean {
-    // Only browser-originated form submissions need CSRF protection.
-    // JSON callers (CLIs, server-to-server) cannot be forged into a
-    // browser POST without a CORS preflight, so we exempt them and
-    // preserve existing JSON API behavior.
+  function isJsonRequest(req: AuthRequest): boolean {
+    // Pure JSON callers (CLIs, server-to-server, dashboards using
+    // `fetch` with `Content-Type: application/json`) cannot be forged
+    // into a cross-origin browser POST without a CORS preflight, so
+    // we exempt them from CSRF and preserve existing JSON API
+    // behavior. The exemption is intentionally limited to exactly
+    // `application/json`: the reference's Fastify body parser only
+    // parses `application/json`, so accepting structured-syntax
+    // variants like `application/problem+json` for CSRF purposes
+    // would diverge from what the route handlers actually decode.
     const contentType =
       typeof (req.headers as Record<string, unknown>)["content-type"] === "string"
         ? ((req.headers as Record<string, string>)["content-type"] as string).toLowerCase()
         : "";
-    return contentType.startsWith("application/x-www-form-urlencoded") || contentType.startsWith("multipart/form-data");
+    if (!contentType) {
+      return false;
+    }
+    const mediaType = contentType.split(";")[0]?.trim() ?? "";
+    return mediaType === "application/json";
+  }
+
+  function shouldRequireCsrf(req: AuthRequest): boolean {
+    // Every browser-submittable POST that is *not* JSON needs CSRF.
+    // That includes the obvious form encodings
+    // (`application/x-www-form-urlencoded`, `multipart/form-data`)
+    // *and* `text/plain`, which the HTML form spec accepts as a third
+    // valid `enctype` and which a browser can send cross-origin
+    // without a CORS preflight. Exempting only the two form encodings
+    // (the prior heuristic) left a `text/plain` bypass.
+    return !isJsonRequest(req);
   }
 
   function requireCsrf(req: AuthRequest, res: AuthResponse, next: AuthNextFunction): void {
@@ -515,7 +535,7 @@ export function createOwnerAuthPlaceholder({
       next();
       return;
     }
-    if (!isFormEncodedRequest(req)) {
+    if (!shouldRequireCsrf(req)) {
       next();
       return;
     }
@@ -702,12 +722,14 @@ export function createOwnerAuthPlaceholder({
 
     app.post("/owner/logout", (req, res) => {
       // CSRF only applies when owner-auth is enabled. With placeholder
-      // auth disabled (no PDPP_OWNER_PASSWORD), there is no session and
-      // no CSRF surface to protect; preserve the prior open local-dev
-      // behavior so a form-encoded logout POST does not 403.
-      // Only browser form submissions need CSRF protection on logout.
-      // JSON callers cannot be cross-origin-forged without CORS preflight.
-      if (enabled && isFormEncodedRequest(req) && !csrfPairValid(req)) {
+      // auth disabled (no PDPP_OWNER_PASSWORD), there is no session
+      // and no CSRF surface to protect; preserve the prior open
+      // local-dev behavior so a form-encoded logout POST does not 403.
+      // Pure JSON callers stay exempt because they cannot be
+      // cross-origin-forged without a CORS preflight; every other
+      // browser-submittable POST (form-encoded, multipart, text/plain)
+      // requires a valid CSRF pair.
+      if (enabled && shouldRequireCsrf(req) && !csrfPairValid(req)) {
         replyLogoutCsrfFailure(req, res);
         return;
       }

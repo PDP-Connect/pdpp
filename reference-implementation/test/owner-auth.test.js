@@ -561,9 +561,18 @@ test('owner-auth placeholder: enabled — _ref mutations require owner session w
 test('owner-auth placeholder: logout clears the session cookie', async () => {
   await withServer({ ownerAuthPassword: TEST_PASSWORD }, async ({ asUrl }) => {
     const { cookie } = await login(asUrl, TEST_PASSWORD);
+    // JSON callers logout with `Content-Type: application/json` to
+    // signal "programmatic, not a browser form post." That is what
+    // exempts the request from CSRF; an empty body with no
+    // Content-Type would otherwise look indistinguishable from a
+    // cross-origin browser POST and would now be rejected.
     const resp = await fetch(`${asUrl}/owner/logout`, {
       method: 'POST',
-      headers: { Cookie: cookie, Accept: 'application/json' },
+      headers: {
+        Cookie: cookie,
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+      },
       redirect: 'manual',
     });
     assert.equal(resp.status, 204);
