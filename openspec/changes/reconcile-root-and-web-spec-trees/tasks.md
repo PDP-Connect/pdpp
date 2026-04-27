@@ -1,11 +1,11 @@
 # Tasks: Reconcile Root And Web Spec Trees
 
-This change is governance + first detection slice. The actual content reconciliation is intentionally deferred to a follow-up implementation change so the gate lands first and the corpus has a passing target.
+This change is governance only: it designs the canonical-source strategy, the publication contract, the web-only extension allowlist, and the drift-check requirement. It does NOT land the detection slice. Building `pnpm spec:check`, wiring it into lefthook/CI, and reconciling the corpus are all deferred to a follow-up implementation change so the gate lands first and the corpus has a passing target.
 
 ## 1. Validate the OpenSpec change
 
-- [ ] 1.1 Run `openspec validate reconcile-root-and-web-spec-trees --strict` — must pass.
-- [ ] 1.2 Run `openspec validate --all --strict` — must remain at 33 passed / 0 failed (32 prior + this one).
+- [x] 1.1 Run `openspec validate reconcile-root-and-web-spec-trees --strict` — must pass.
+- [x] 1.2 Run `openspec validate --all --strict` — must report 34 passed / 0 failed (33 prior + this one).
 
 ## 2. Land the drift-check gate (implementation change — deferred)
 

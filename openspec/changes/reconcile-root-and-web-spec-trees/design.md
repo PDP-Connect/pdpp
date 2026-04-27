@@ -56,7 +56,7 @@ Concretely: the first non-frontmatter element of any web copy of a canonical-roo
 
 ## Decision: Drift-Check Mechanism
 
-The first implementation slice ships a `pnpm spec:check` script that:
+The follow-up implementation change will ship a `pnpm spec:check` script that:
 
 1. Reads every `spec-*.md` at the repo root.
 2. For each, locates the corresponding `apps/web/content/docs/<basename>.md`.

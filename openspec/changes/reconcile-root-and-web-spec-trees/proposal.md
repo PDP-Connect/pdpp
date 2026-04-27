@@ -15,7 +15,7 @@ Concrete drift observed in the `worktree-bughunt2-docs-spec-drift` audit:
 
 The README still asserts a strict authority order ("Root PDPP specs define normative protocol semantics"), but in practice the public site is what most readers consume, and there is no mechanical guard preventing the two trees from drifting again. Manual fixes (like `464e314`) are necessary but not sufficient.
 
-This change picks a canonical-source strategy, captures it in `reference-implementation-governance`, and lays out a first implementation slice that catches drift mechanically without rewriting the spec corpus in the same lane.
+This change picks a canonical-source strategy, captures it in `reference-implementation-governance`, and specifies the drift-check gate that a follow-up implementation change will build. It does not land the gate or rewrite the corpus in this lane.
 
 ## What Changes
 
@@ -24,7 +24,7 @@ This change picks a canonical-source strategy, captures it in `reference-impleme
 - Require a `pnpm spec:check` script and a corresponding lefthook/CI gate that fails when any root `spec-*.md` listed as canonical drifts from its `apps/web/content/docs/<same-name>.md` counterpart in the parts that must match (body content normalised for the web's frontmatter and Status/Date callouts).
 - Require the web copy of a canonical-root spec to surface the root's `Status:` and `Date:` (e.g. via a Fumadocs callout) so a public reader sees the same normative posture a forking implementer sees.
 - Require any new spec proposal to declare its canonical home (`root`, `web-only-extension`, or `reference-only`) in `proposal.md`, so the gate knows where to look.
-- Defer the actual content reconciliation (line-level merge of the diverged copies) and the `pnpm spec:sync` generator to a follow-up implementation change. This change is governance + a first detection slice only.
+- Defer the gate implementation (`pnpm spec:check`, lefthook/CI wiring), the line-level corpus reconciliation, and any optional `pnpm spec:sync` generator to a follow-up implementation change. This change is governance only — it specifies the gate, it does not build it.
 
 ## Capabilities
 
