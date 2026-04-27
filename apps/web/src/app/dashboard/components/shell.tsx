@@ -5,7 +5,7 @@ import { ThemeToggle } from "@/components/theme/theme-toggle.tsx";
 import { getAsInternalUrl, getOwnerLoginPath, getReferencePublicOrigin, getRsInternalUrl } from "../lib/owner-token.ts";
 import { CommandPalette, CommandPaletteTrigger } from "./command-palette.tsx";
 import { CopyButton } from "./copy-button.tsx";
-import { MobileDrawer, MobileDrawerTrigger } from "./mobile-drawer.tsx";
+import { MobileDrawer, MobileDrawerProvider, MobileDrawerTrigger } from "./mobile-drawer.tsx";
 import { dashboardRoutes, type Routes, sandboxRoutes } from "./views/routes.ts";
 
 interface NavItem {
@@ -69,16 +69,18 @@ export function DashboardShell({
   const routes = resolveRoutes(mode);
   return (
     <div className="min-h-screen">
-      <div className="grid min-h-screen md:grid-cols-[15rem_minmax(0,1fr)]">
-        <DesktopSidebar active={active} mode={mode} routes={routes} />
-        <div className="min-w-0 border-border/80 border-l bg-background md:border-l">
-          <Topbar overviewHref={routes.section.overview} />
-          <main className="mx-auto w-full max-w-[1400px] px-6 py-8 sm:px-8 md:px-10">{children}</main>
+      <MobileDrawerProvider>
+        <div className="grid min-h-screen md:grid-cols-[15rem_minmax(0,1fr)]">
+          <DesktopSidebar active={active} mode={mode} routes={routes} />
+          <div className="min-w-0 border-border/80 border-l bg-background md:border-l">
+            <Topbar overviewHref={routes.section.overview} />
+            <main className="mx-auto w-full max-w-[1400px] px-6 py-8 sm:px-8 md:px-10">{children}</main>
+          </div>
         </div>
-      </div>
-      <MobileDrawer>
-        <SidebarContent active={active} mode={mode} routes={routes} />
-      </MobileDrawer>
+        <MobileDrawer>
+          <SidebarContent active={active} mode={mode} routes={routes} />
+        </MobileDrawer>
+      </MobileDrawerProvider>
       <CommandPalette basePath={routes.basePath} overviewHref={routes.section.overview} />
     </div>
   );

@@ -1,24 +1,64 @@
 "use client";
 
-import type { ReactNode } from "react";
-import { useEffect, useRef, useState } from "react";
+import { createContext, type ReactNode, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button.tsx";
 import { Dialog, DialogBackdrop, DialogPopup, DialogPortal } from "@/components/ui/dialog.tsx";
 
-// Shared open/close handle so the trigger button (in the topbar) and the drawer
-// itself can live in different subtrees of the server-rendered shell without
-// needing a full React Context for a single boolean flag.
-function noopSetOpen(_open: boolean): void {
-  // Placeholder until <MobileDrawer /> mounts and installs the real setter.
+interface MobileDrawerContextValue {
+  close: () => void;
+  isOpen: boolean;
+  open: () => void;
+  setOpen: (open: boolean) => void;
 }
-let setOpenRef: (open: boolean) => void = noopSetOpen;
+
+const MobileDrawerContext = createContext<MobileDrawerContextValue | null>(null);
+
+function useMobileDrawer(): MobileDrawerContextValue {
+  const context = useContext(MobileDrawerContext);
+  if (!context) {
+    throw new Error("Mobile drawer components must be rendered inside <MobileDrawerProvider>");
+  }
+  return context;
+}
+
+export function MobileDrawerProvider({ children }: { children: ReactNode }) {
+  const [isOpen, setOpen] = useState(false);
+
+  // Auto-close once we cross back above the `md` breakpoint.
+  useEffect(() => {
+    const mql = window.matchMedia("(min-width: 768px)");
+    if (mql.matches) {
+      setOpen(false);
+    }
+    function onChange(event: MediaQueryListEvent) {
+      if (event.matches) {
+        setOpen(false);
+      }
+    }
+    mql.addEventListener("change", onChange);
+    return () => mql.removeEventListener("change", onChange);
+  }, []);
+
+  const value = useMemo<MobileDrawerContextValue>(
+    () => ({
+      close: () => setOpen(false),
+      isOpen,
+      open: () => setOpen(true),
+      setOpen,
+    }),
+    [isOpen]
+  );
+
+  return <MobileDrawerContext.Provider value={value}>{children}</MobileDrawerContext.Provider>;
+}
 
 export function MobileDrawerTrigger() {
+  const drawer = useMobileDrawer();
   return (
     <Button
       aria-label="Open navigation"
       className="md:hidden"
-      onClick={() => setOpenRef(true)}
+      onClick={drawer.open}
       size="icon-sm"
       type="button"
       variant="outline"
@@ -41,30 +81,8 @@ export function MobileDrawerTrigger() {
 }
 
 export function MobileDrawer({ children }: { children: ReactNode }) {
-  const [open, setOpen] = useState(false);
+  const drawer = useMobileDrawer();
   const contentRef = useRef<HTMLDivElement | null>(null);
-
-  useEffect(() => {
-    setOpenRef = setOpen;
-    return () => {
-      setOpenRef = noopSetOpen;
-    };
-  }, []);
-
-  // Auto-close once we cross back above the `md` breakpoint.
-  useEffect(() => {
-    const mql = window.matchMedia("(min-width: 768px)");
-    if (mql.matches) {
-      setOpen(false);
-    }
-    function onChange(event: MediaQueryListEvent) {
-      if (event.matches) {
-        setOpen(false);
-      }
-    }
-    mql.addEventListener("change", onChange);
-    return () => mql.removeEventListener("change", onChange);
-  }, []);
 
   useEffect(() => {
     const content = contentRef.current;
@@ -74,15 +92,15 @@ export function MobileDrawer({ children }: { children: ReactNode }) {
     function closeOnLinkClick(event: MouseEvent) {
       const target = event.target as HTMLElement | null;
       if (target?.closest("a")) {
-        setOpen(false);
+        drawer.close();
       }
     }
     content.addEventListener("click", closeOnLinkClick);
     return () => content.removeEventListener("click", closeOnLinkClick);
-  }, []);
+  }, [drawer]);
 
   return (
-    <Dialog modal onOpenChange={setOpen} open={open}>
+    <Dialog modal onOpenChange={drawer.setOpen} open={drawer.isOpen}>
       <DialogPortal>
         <DialogBackdrop />
         <DialogPopup
@@ -91,13 +109,7 @@ export function MobileDrawer({ children }: { children: ReactNode }) {
         >
           <div className="flex items-center justify-between border-border/70 border-b px-5 py-3">
             <span className="pdpp-eyebrow">Navigation</span>
-            <Button
-              aria-label="Close navigation"
-              onClick={() => setOpen(false)}
-              size="icon-xs"
-              type="button"
-              variant="ghost"
-            >
+            <Button aria-label="Close navigation" onClick={drawer.close} size="icon-xs" type="button" variant="ghost">
               ×
             </Button>
           </div>
