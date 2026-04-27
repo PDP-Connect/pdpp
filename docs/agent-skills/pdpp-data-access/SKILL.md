@@ -36,25 +36,16 @@ The patterns in this skill are derived from PAR (RFC 9126), RAR (RFC 9396), DCR 
 
 ## Core workflow
 
-### 1. Discover before you do anything else
+### 1. Prefer the reference CLI
 
-You need an AS URL and an RS URL. The user provides at least one. Resolve both via metadata:
+Use the `pdpp agent` command group when it is available. It handles discovery, dynamic client registration, project-local cache layout, `.gitignore` hygiene, approval URL printing, token storage, and token-use checks. Raw HTTP is a fallback, not the happy path.
 
 ```bash
-# Given an RS URL:
-curl -fsS "$RS_URL/.well-known/oauth-protected-resource" | jq .
-# This returns the authorization-server URL and capability flags.
-
-# Given an AS URL:
-curl -fsS "$AS_URL/.well-known/oauth-authorization-server" | jq .
-# This returns token, par, registration, device-authorization, and introspection endpoints.
+pdpp agent bootstrap --as-url "$AS_URL" --rs-url "$RS_URL"
+pdpp agent status
 ```
 
-Check `pdpp_token_kinds_supported` and the `pdpp_provider_connect_capabilities` array. If `cli_device_connect` or the registration endpoint is missing, fall back to `references/troubleshooting.md`.
-
-### 2. Check the project cache before requesting a new grant
-
-The project keeps an agent-scoped cache at `<repo>/.pdpp/`:
+`bootstrap` creates an agent-scoped cache at `<repo>/.pdpp/`:
 
 ```text
 .pdpp/
@@ -64,53 +55,26 @@ The project keeps an agent-scoped cache at `<repo>/.pdpp/`:
   tokens/<grant-id>.token    # secret: opaque client token, mode 0600
 ```
 
-If a `grants/*.json` exists whose `source`, `streams`, and `expiry` cover the current task, reuse it. Read the corresponding `tokens/<grant-id>.token` only when you make the actual HTTP call. Do not read it for any other reason.
-
-If no usable grant exists, continue.
-
-### 3. Register a project-local client (one-time per project)
-
-If `clients/` is empty, register:
+If `pdpp agent status` shows a usable grant whose source, streams, and expiry cover the current task, reuse it. Read the token only at call time:
 
 ```bash
-curl -fsS -X POST "$AS_URL/oauth/register" \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $PDPP_INITIAL_ACCESS_TOKEN" \
-  -d '{
-    "client_name": "Claude Code · myproject",
-    "token_endpoint_auth_method": "none"
-  }'
+TOKEN="$(pdpp agent use <grant-id>)"
+curl -fsS "$RS_URL/v1/schema" -H "Authorization: Bearer $TOKEN" | jq .
+unset TOKEN
 ```
 
-`PDPP_INITIAL_ACCESS_TOKEN` is required only when the AS is configured to protect registration. Personal-deployment ASes often allow open registration; if the AS rejects with `invalid_request`, ask the owner once for an initial access token rather than escalating to an owner bearer token.
+`pdpp agent use` rejects missing, expired, and locally revoked grants. Do not bypass that by reading `.pdpp/tokens/` directly unless you are debugging the CLI itself.
 
-Save the `client_id` and the full registration response into `clients/<client_id>.json` (chmod 0600 the file). **Do not save any owner credential.** The registration response does not contain one.
+### 2. Request the narrowest grant that can answer the task
 
-### 4. Build a narrow grant request
+If no usable grant exists, request one with an owner-readable purpose:
 
-A grant request goes to `POST /oauth/par`. It must say, in owner-readable language: which source, which streams, what fields/views, what time range, what retention, and *why*. See `references/grant-design.md` for how to choose each field. Minimum viable request:
-
-```json
-{
-  "client_id": "<your-registered-client-id>",
-  "client_display": {
-    "name": "Claude Code · myproject",
-    "context": "Reading the user's last 30 days of GitHub issues and pull requests to draft a status update."
-  },
-  "authorization_details": [
-    {
-      "type": "https://pdpp.org/data-access",
-      "connector_id": "https://registry.pdpp.org/connectors/github",
-      "purpose_code": "assist.summarize",
-      "purpose_description": "Summarize recent GitHub issues and pull requests for the user.",
-      "access_mode": "time_bounded",
-      "streams": [
-        { "name": "issues" },
-        { "name": "pull_requests" }
-      ]
-    }
-  ]
-}
+```bash
+pdpp agent request \
+  --connector-id "https://registry.pdpp.org/connectors/github" \
+  --streams "issues,pull_requests" \
+  --purpose "Read your recent GitHub issues and pull requests so I can draft a status update." \
+  --access-mode time_bounded
 ```
 
 Notes:
@@ -120,18 +84,9 @@ Notes:
 - `access_mode` should be `single_use` or `time_bounded` for one-shot tasks. Long-lived agents use `continuous` only when the user has explicitly asked for it.
 - Pick `connector_id` (polyfill-style providers) **or** `provider_id` (native PDPP providers), never both. Use the exact connector id from `/v1/schema` or `/v1/connectors` (for example `https://registry.pdpp.org/connectors/github`), not a guessed short name.
 
-Send it:
+The command prints an approval URL and access summary. You cannot approve for the owner. Do not try.
 
-```bash
-PAR_RESPONSE=$(curl -fsS -X POST "$AS_URL/oauth/par" \
-  -H "Content-Type: application/json" \
-  --data-binary @grant-request.json)
-echo "$PAR_RESPONSE" | jq -r '.authorization_url'
-```
-
-You get back `{ request_uri, authorization_url, expires_in }`. Print the `authorization_url` to the user. **You cannot approve for them. Do not try.**
-
-### 5. Relay the approval URL to the owner
+### 3. Relay the approval URL to the owner
 
 Print the URL prominently. Examples of acceptable phrasing:
 
@@ -139,36 +94,43 @@ Print the URL prominently. Examples of acceptable phrasing:
 
 Acceptable channels: terminal output, tmux pane, chat reply, your tool's UI surface. Never: shell history that contains the request_uri alone, log files, third-party services, anywhere the URL would persist past the owner's session.
 
-### 6. Get the issued token after approval
+### 4. Store the approved token
 
-The reference does not yet expose a public polling endpoint for PAR-staged grants. After the owner approves, get the token by either:
+The current reference has no public AS polling endpoint for PAR-staged client grants. `pdpp agent wait` deliberately polls only the local cache; it does **not** contact the AS.
 
-- (Preferred when available) Checking the cache the user's CLI wrote — many environments run a helper that captures the token at approval time and drops it at `tokens/<grant-id>.token`.
-- (Fallback) Asking the user to paste the token once. Receive it via a single-message channel, write it to `tokens/<grant-id>.token` with mode 0600, and never repeat it.
-
-If neither works, stop and report. Do not fall back to an owner bearer token.
-
-### 7. Verify the grant before relying on it
-
-Before issuing the first data call, introspect:
+After the owner approves, either another trusted local helper writes the token into `.pdpp/`, or the owner provides the token shown on the consent page once. Prefer stdin/env over putting the token in shell history:
 
 ```bash
-curl -fsS -X POST "$AS_URL/introspect" \
-  -H "Content-Type: application/json" \
-  -d "{\"token\": \"$(cat .pdpp/tokens/<grant-id>.token)\"}"
+PDPP_CLIENT_TOKEN="$(cat)" pdpp agent store --grant-id <grant-id>
+# paste token, then Ctrl-D
 ```
 
-Confirm `active=true`, `pdpp_token_kind=client`, and that `scope`/`grant_json` matches what you requested. Persist the non-secret fields into `grants/<grant-id>.json`.
-
-Then call `/v1/schema`:
+If you are waiting in another pane:
 
 ```bash
-curl -fsS "$RS_URL/v1/schema" -H "Authorization: Bearer $TOKEN"
+pdpp agent wait --grant-id <grant-id> --timeout-seconds 300
+```
+
+If neither path produces a token, stop and report. Do not fall back to an owner bearer token.
+
+### 5. Verify the grant before relying on it
+
+Before issuing the first data call, use the CLI status and schema surface:
+
+```bash
+pdpp agent status
+TOKEN="$(pdpp agent use <grant-id>)"
+curl -fsS "$RS_URL/v1/schema" -H "Authorization: Bearer $TOKEN" | jq .
+unset TOKEN
 ```
 
 This returns the connectors, streams, fields, and capabilities **this specific grant** can see. Build all subsequent queries off this response, not off memory.
 
-### 8. Use the data efficiently
+### 6. Raw HTTP fallback when the CLI is unavailable
+
+If `pdpp agent` is unavailable, follow the same workflow manually: discover AS/RS metadata, register a public client, stage a PAR request, relay the `authorization_url`, store the approved client token under `.pdpp/`, introspect it, then call `/v1/schema`. Do not use raw HTTP to widen scope, skip approval, or cache owner tokens. See `references/troubleshooting.md` before attempting this path.
+
+### 7. Use the data efficiently
 
 See `references/query-cookbook.md`. Quick map:
 
@@ -180,7 +142,7 @@ See `references/query-cookbook.md`. Quick map:
 
 Default to filtered queries over full-table scans. If `/v1/schema` declares a filter or `expand[]` that answers the task, prefer it.
 
-### 9. Renew, revoke, or forget when done
+### 8. Renew, revoke, or forget when done
 
 - Token near expiry and the task continues → request a fresh grant. Do not introspect-then-extend; client tokens are not refreshable in the current reference.
 - Task complete → revoke: `POST $AS_URL/grants/<grant-id>/revoke`.

@@ -72,6 +72,27 @@ The approval page should show:
 
 Do not default to perpetual broad access. Long-lived access can exist, but must be explicit and visible.
 
+### Skill distribution channels
+
+The canonical source remains `docs/agent-skills/pdpp-data-access/`. That path avoids the repo-root `skills/` collision with local agent installer state while keeping the skill reviewable in the docs tree.
+
+This tranche publishes two low-drift channels from that source:
+
+1. `/.well-known/skills/index.json` lists the `pdpp-data-access` skill, every served file, byte length, SHA-256, media type, repository path, and absolute URL. File serving is allowlist-only; the route does not expose arbitrary repository files.
+2. `/llms.txt` points agents at the catalog and primary `SKILL.md`; `/llms-full.txt` includes the full skill and reference content for crawler/search workflows.
+
+The skill itself is CLI-first. It teaches `pdpp agent bootstrap`, `pdpp agent request`, `pdpp agent wait`, `pdpp agent store`, `pdpp agent use`, and `pdpp agent status` as the happy path. Raw HTTP remains documented only as a fallback when the CLI is unavailable.
+
+Deferred channels:
+
+- `npx skills` repo-root layout: deferred because `skills/` is intentionally ignored for consumer-side installer state, and the installer is still pre-1.0.
+- CLI-package bundling: deferred until the reference CLI package publishing story is settled.
+- Claude plugin marketplace: deferred because it is currently single-harness and lower leverage than web discovery.
+
+Rejected channel:
+
+- npm `postinstall` copying into user skill directories. It is too surprising for a credential-adjacent integration and is commonly disabled in security-conscious environments.
+
 ## Protocol posture
 
 This change is reference-first. It may expose gaps in the root PDPP authorization profile, but it does not finalize them.

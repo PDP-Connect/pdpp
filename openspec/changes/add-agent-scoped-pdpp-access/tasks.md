@@ -45,3 +45,12 @@ Note: The existing consent shell at `server/index.js:renderPendingGrantConsentHt
 - [x] Run relevant reference CLI/auth tests. (37 tests in `example-client.test.js`, `owner-auth.test.js`, `provider-metadata.test.js` all pass)
 - [x] Run `openspec validate add-agent-scoped-pdpp-access --strict`. (passes)
 - [x] Run `openspec validate --all --strict`. (27/27 pass)
+
+## 7. Skill Distribution Channels
+
+- [x] Promote the skill-distribution inbox note into this OpenSpec change as a decided design note.
+- [x] Keep the canonical skill source at `docs/agent-skills/pdpp-data-access/` rather than claiming repo-root `skills/`.
+- [x] Publish `/.well-known/skills/index.json` plus explicit allowlisted skill-file URLs.
+- [x] Add `pdpp-data-access` pointers to `/llms.txt` and the full skill body to `/llms-full.txt`.
+- [x] Rewrite the skill happy path around `pdpp agent bootstrap/request/wait/store/use/status`, with raw HTTP documented only as a fallback.
+- [x] Add catalog tests that pin the served file list and reject path traversal/missing files.

@@ -57,6 +57,28 @@ The repository SHALL provide an agent-facing skill that teaches agents how to di
 - **THEN** the skill SHALL prefer declared capabilities such as filtered retrieval, `changes_since`, record pagination, blobs via `blob_ref.fetch_url`, and aggregations
 - **AND** it SHALL warn against broad unbounded scans when narrower capability-backed queries can answer the task
 
+### Requirement: The reference SHALL publish agent skill discovery surfaces
+
+The reference web app SHALL expose stable, machine-readable discovery surfaces for the `pdpp-data-access` skill so third-party coding agents can find the skill without receiving an owner bearer token or guessing repo paths.
+
+#### Scenario: Agent discovers the skill catalog
+- **WHEN** an agent fetches `/.well-known/skills/index.json`
+- **THEN** the response SHALL list the `pdpp-data-access` skill and every served skill file
+- **AND** each file entry SHALL include an allowlisted path, repository path, media type, byte length, SHA-256 digest, and absolute URL
+- **AND** the file-serving route SHALL NOT expose arbitrary repository files outside the allowlist
+
+#### Scenario: Agent reads LLM discovery files
+- **WHEN** an agent fetches `/llms.txt`
+- **THEN** the response SHALL point at the skill catalog and primary `SKILL.md`
+- **AND** when an agent fetches `/llms-full.txt`
+- **THEN** the response SHALL include the full `pdpp-data-access` skill and reference content
+
+#### Scenario: Agent follows the distributed skill
+- **WHEN** an agent uses the distributed `pdpp-data-access` skill
+- **THEN** the skill SHALL prefer the `pdpp agent` CLI workflow over raw HTTP
+- **AND** it SHALL describe that `pdpp agent wait` polls only the local cache and does not contact the AS
+- **AND** it SHALL describe that `pdpp agent use` rejects missing, expired, and locally revoked grants
+
 ### Requirement: Protocol-candidate semantics SHALL remain explicitly proposed
 
 Agent access workflow behavior that would change PDPP core authorization, grant semantics, or any companion spec SHALL be labeled proposed or experimental until separately accepted by the normative spec process.

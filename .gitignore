@@ -40,6 +40,9 @@ reference-implementation/report.*.json
 .impeccable.md
 skills-lock.json
 skills/
+!apps/web/src/app/.well-known/skills/
+!apps/web/src/app/.well-known/skills/[...path]/
+!apps/web/src/app/.well-known/skills/[...path]/route.ts
 
 # Agent config dirs (from skills installer)
 .adal/
