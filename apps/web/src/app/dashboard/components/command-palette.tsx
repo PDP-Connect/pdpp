@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { createContext, type ReactNode, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { createContext, type ReactNode, useContext, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button.tsx";
 import { Input } from "@/components/ui/input.tsx";
 
@@ -9,7 +9,6 @@ interface CommandPaletteContextValue {
   close: () => void;
   isOpen: boolean;
   open: () => void;
-  toggle: () => void;
 }
 
 const CommandPaletteContext = createContext<CommandPaletteContextValue | null>(null);
@@ -38,15 +37,11 @@ export function CommandPaletteProvider({ children }: { children: ReactNode }) {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  const value = useMemo<CommandPaletteContextValue>(
-    () => ({
-      close: () => setOpen(false),
-      isOpen,
-      open: () => setOpen(true),
-      toggle: () => setOpen((o) => !o),
-    }),
-    [isOpen]
-  );
+  const value: CommandPaletteContextValue = {
+    close: () => setOpen(false),
+    isOpen,
+    open: () => setOpen(true),
+  };
 
   return <CommandPaletteContext.Provider value={value}>{children}</CommandPaletteContext.Provider>;
 }
