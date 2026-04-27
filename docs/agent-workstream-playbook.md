@@ -42,6 +42,47 @@ that toolchain.
 
 ## Communication Model
 
+### Mandatory Owner Checkpoint
+
+Codex must not coordinate from memory. Before answering status, launching worker
+lanes, sending merge/closeout instructions, merging to `main`, pushing, or
+declaring a multi-agent pass complete, the owner agent must run:
+
+```bash
+pnpm workstreams:status
+```
+
+The command inventories tmux Claude panes, git worktrees, dirty paths,
+ahead/behind state, unmerged branch commits, recent `tmp/workstreams/*.md`
+reports, local merge-queue entries, blockers, and active OpenSpec changes.
+It exits non-zero when action-blocking risks are present. Use
+`pnpm workstreams:status -- --no-fail` only when you need a readable snapshot
+without failing a larger command; do not use `--no-fail` to bypass owner
+reconciliation.
+
+If the command reports risks, reconcile them before acting:
+
+- dirty worktree: inspect or ask the worker to finish/commit/revert its own
+  changes;
+- branch ahead of upstream: decide whether it is merge-ready, blocked,
+  abandoned, or intentionally held;
+- active Claude pane without a known workstream: inspect the pane before
+  launching more workers or reporting "no active workers";
+- merge-queue entry: owner-review the diff and evidence before merging;
+- blocker file: resolve or explicitly leave blocked;
+- local `main` ahead of `origin/main`: validate and push or state why it is
+  intentionally unpushed.
+
+Old/stale worktrees and branches with commits not in `main` are still listed as
+inventory, but they are not automatically risks. Otherwise long-lived parked
+worktrees make the checkpoint permanently red and train the owner to ignore it.
+Treat those inventory lines as prompts for cleanup when they are relevant to the
+current decision.
+
+This checkpoint is the source of truth for local orchestration. The playbook,
+cards, and worker reports support the decision; they do not replace the status
+command.
+
 Use GitHub pull requests when a branch is pushed and intended to merge. A draft
 PR is the best branch-scoped communication channel: it has a diff, status,
 review, comments, CI, and a durable merge record.
