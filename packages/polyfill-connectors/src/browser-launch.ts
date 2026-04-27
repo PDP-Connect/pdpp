@@ -60,6 +60,50 @@ export class HostBrowserBridgeUnavailableError extends Error {
   }
 }
 
+/**
+ * Pure decision helper for the in-container fail-closed gate. Exported
+ * so tests can exercise the policy without launching Patchright (the
+ * acquire path itself is hard to test without spinning up a real
+ * browser).
+ *
+ * Returns:
+ *   - `{ kind: "fail_closed" }` when the caller is requesting a HEADED
+ *     browser inside a container, no bridge URL is set, and the
+ *     escape hatch is not asserted. Caller MUST throw
+ *     `HostBrowserBridgeUnavailableError` with the stable code.
+ *   - `{ kind: "warn_and_proceed" }` when the same conditions hold
+ *     except `PDPP_ALLOW_HEADED_CONTAINER_BROWSER=1` is asserted.
+ *     Caller SHOULD emit a per-acquisition stderr warning and
+ *     proceed with the host-direct launcher.
+ *   - `{ kind: "proceed" }` otherwise (host-direct or headless or
+ *     bridge-handled).
+ *
+ * The decision deliberately does NOT consider bridge configured/
+ * misconfigured states — those are owned by the calling routing
+ * function before this helper is consulted.
+ */
+export type ContainerHeadedBrowserGate =
+  | { readonly kind: "fail_closed" }
+  | { readonly kind: "warn_and_proceed" }
+  | { readonly kind: "proceed" };
+
+export interface ContainerHeadedBrowserGateInputs {
+  readonly escapeHatchEnabled: boolean;
+  readonly headless: boolean | undefined;
+  readonly inContainer: boolean;
+}
+
+export function decideContainerHeadedBrowserGate(inputs: ContainerHeadedBrowserGateInputs): ContainerHeadedBrowserGate {
+  const headedRequested = inputs.headless === false;
+  if (!(headedRequested && inputs.inContainer)) {
+    return { kind: "proceed" };
+  }
+  if (inputs.escapeHatchEnabled) {
+    return { kind: "warn_and_proceed" };
+  }
+  return { kind: "fail_closed" };
+}
+
 function configuredBrowserChannel(): string | undefined {
   const raw = process.env.PDPP_BROWSER_CHANNEL;
   if (raw === undefined) {
@@ -280,16 +324,30 @@ export async function acquireRemoteHostBrowser(args: {
  *     non-ws URL), this throws `HostBrowserBridgeUnavailableError` so
  *     the run fails fast rather than silently launching an invisible
  *     in-container browser.
- *   - If the bridge is unconfigured AND the runtime is in a container,
+ *   - If the bridge is unconfigured AND the runtime is in a container
+ *     AND the caller requested a HEADED browser (headless === false),
  *     this throws `HostBrowserBridgeUnavailableError` rather than
  *     launching an invisible in-container Chromium. This is the
  *     fail-closed gate required by
  *     `openspec/changes/design-host-browser-bridge-for-docker/design.md`
- *     § "Failure Mode When Unavailable". The host-direct path is
- *     unaffected — without any container signal, the runtime still
- *     uses `acquireIsolatedBrowser` against `~/.pdpp/profiles/<name>/`.
- *   - Otherwise, the runtime uses `acquireIsolatedBrowser` against
- *     `~/.pdpp/profiles/<profileName>/` exactly as before.
+ *     § "Failure Mode When Unavailable". A headed container Chromium
+ *     is unusable to the operator; an interactive flow (Cloudflare,
+ *     OTP) blocks indefinitely on the `auto-login` INTERACTION
+ *     handshake with no visible signal.
+ *   - Headless container acquisitions (`headless: true`) are
+ *     intentionally allowed — non-interactive scrapes (cookie-based
+ *     authenticated GETs that already have a stored session, headless
+ *     fetches against public APIs that need a Chromium-backed
+ *     fingerprint) have no operator interaction surface and are a
+ *     legitimate Docker workload.
+ *   - Operators who need to escape the gate (e.g., debugging a
+ *     headed container browser locally with X11 forwarding) can set
+ *     `PDPP_ALLOW_HEADED_CONTAINER_BROWSER=1`. The runtime emits a
+ *     loud per-acquisition warning so the override is visible in
+ *     logs.
+ *   - The host-direct path is unaffected — without any container
+ *     signal, the runtime still uses `acquireIsolatedBrowser` against
+ *     `~/.pdpp/profiles/<name>/`.
  */
 export async function acquireBrowserForConnector(options: AcquireIsolatedBrowserOptions): Promise<IsolatedBrowser> {
   const resolution = resolveHostBrowserBridgeConfig(process.env);
@@ -320,23 +378,41 @@ export async function acquireBrowserForConnector(options: AcquireIsolatedBrowser
 
   // resolution.mode === "disabled" — bridge env vars are empty.
   //
-  // When the runtime is in a container, an empty bridge URL is the
-  // silent-fallback path that produces an invisible headed Chromium
-  // inside the container. Fail closed with the same typed error code
-  // the dashboard already renders for misconfigured/unreachable
-  // bridges, so an operator gets one consistent diagnostic across all
-  // bridge-failure modes instead of a multi-minute hang on the
-  // `auto-login` interaction handshake.
-  if (isRunningInContainer()) {
+  // Narrow gate: only fail closed for HEADED in-container acquisitions.
+  // A headed browser inside a container is invisible to the operator;
+  // an interactive flow (Cloudflare/OTP) silently hangs forever on the
+  // `auto-login` INTERACTION handshake. Headless acquisitions have no
+  // such failure mode and are a legitimate non-interactive workload
+  // (cookie-authenticated scrapes, fingerprint-only fetches), so we
+  // leave the existing host-direct routing alone for those.
+  //
+  // The escape hatch (`PDPP_ALLOW_HEADED_CONTAINER_BROWSER=1`) exists
+  // for operators doing local X11/VNC debugging of a headed container
+  // browser. It is loud — every acquisition emits a stderr warning —
+  // and intentionally not promoted in operator-facing docs.
+  const gate = decideContainerHeadedBrowserGate({
+    headless: options.headless,
+    inContainer: isRunningInContainer(),
+    escapeHatchEnabled: process.env.PDPP_ALLOW_HEADED_CONTAINER_BROWSER === "1",
+  });
+  if (gate.kind === "fail_closed") {
     throw new HostBrowserBridgeUnavailableError({
       bridgeUrl: null,
       message:
-        "Browser-backed connector requested in a container with no host browser bridge configured. " +
+        "Headed (visible) browser-backed connector requested in a container with no host browser bridge configured. " +
         "Set PDPP_HOST_BROWSER_BRIDGE_URL and PDPP_HOST_BROWSER_BRIDGE_TOKEN to point at a running host bridge " +
         "(`pnpm --dir packages/polyfill-connectors exec tsx bin/host-browser-bridge.ts --profile <name>`), " +
         "or run the connector outside the container so the host-direct launcher can open a visible browser. " +
+        "Headless container browsers are unaffected; interactive flows must use the bridge so the operator can complete login/OTP/Cloudflare. " +
         "See README.md § 'Browser-backed connectors in Docker' for the platform-specific setup.",
     });
+  }
+  if (gate.kind === "warn_and_proceed") {
+    process.stderr.write(
+      "[browser-launch] PDPP_ALLOW_HEADED_CONTAINER_BROWSER=1 — bypassing the in-container fail-closed gate. " +
+        "A headed Chromium in a container is invisible to the operator unless an X11/VNC bridge is in place; " +
+        "interactive flows will hang silently if the operator cannot reach the browser window.\n"
+    );
   }
 
   return await acquireIsolatedBrowser(options);
