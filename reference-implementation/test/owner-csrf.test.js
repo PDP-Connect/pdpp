@@ -428,6 +428,55 @@ test('CSRF: signed double-submit rejects a forged cookie value paired with the s
   });
 });
 
+// ── runtime CSRF secret SHALL NOT be derived from the owner password ───────
+// Pre-merge regression: the v2 spike derived the CSRF HMAC secret from
+// PDPP_OWNER_PASSWORD. Because GET /owner/login is unauthenticated and
+// returns one signed (nonce, sig) sample in the hidden field, any
+// anonymous fetcher could brute-force a weak password offline. The
+// runtime default now uses a random per-process secret; this test
+// proves a token forged with a password-derived secret is NOT accepted.
+test('CSRF: runtime SHALL NOT accept a token signed with deriveOwnerCsrfSecret(PDPP_OWNER_PASSWORD)', async () => {
+  await withServer({ ownerAuthPassword: TEST_PASSWORD }, async ({ asUrl }) => {
+    const { sessionCookie } = await login(asUrl, TEST_PASSWORD);
+    const requestUri = await startPendingConsent(asUrl);
+
+    // Forge a CSRF token using the password-derived secret the prior
+    // implementation exposed. This SHALL be rejected because the
+    // runtime now signs tokens with a random per-process secret.
+    const passwordDerivedSecret = deriveOwnerCsrfSecret(TEST_PASSWORD);
+    const passwordDerivedToken = issueOwnerCsrfToken(passwordDerivedSecret);
+
+    const resp = await fetch(`${asUrl}/consent/approve`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        Accept: 'text/html',
+        Cookie: `${sessionCookie}; pdpp_owner_csrf=${passwordDerivedToken}`,
+      },
+      body: new URLSearchParams({
+        request_uri: requestUri,
+        _csrf: passwordDerivedToken,
+      }).toString(),
+      redirect: 'manual',
+    });
+    assert.equal(resp.status, 403, 'password-derived CSRF token SHALL be rejected by the running server');
+
+    // And the CSRF token actually rendered into the consent page is
+    // NOT the password-derived token — fetching /consent and checking
+    // the embedded _csrf SHALL produce a different value.
+    const csrf = await fetchCsrfFromForm(
+      asUrl,
+      `/consent?request_uri=${encodeURIComponent(requestUri)}`,
+      sessionCookie,
+    );
+    assert.notEqual(
+      csrf.csrfField,
+      passwordDerivedToken,
+      'rendered CSRF token SHALL NOT equal a token forged from the owner password',
+    );
+  });
+});
+
 // ── signed token from a different password's secret does not validate ───────
 test('CSRF: a token signed with a different secret does not validate against the running server', async () => {
   await withServer({ ownerAuthPassword: TEST_PASSWORD }, async ({ asUrl }) => {

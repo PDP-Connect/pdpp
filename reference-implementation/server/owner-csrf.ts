@@ -45,9 +45,43 @@ export interface OwnerCsrfCookieOptions {
   readonly secure?: boolean;
 }
 
-export function deriveOwnerCsrfSecret(password: string): Buffer {
-  return crypto.createHash("sha256").update(`pdpp-owner-csrf:${password}`).digest();
+/**
+ * Generate a fresh random CSRF HMAC secret. This is the runtime default
+ * — `createOwnerAuthPlaceholder` calls it once per process when owner-
+ * auth is enabled. The secret never leaves the server and is not
+ * derived from any user-supplied input, so a captured token leaks
+ * nothing about the owner password.
+ */
+export function generateOwnerCsrfSecret(): Buffer {
+  return crypto.randomBytes(32);
 }
+
+/**
+ * Derive a CSRF secret deterministically from a string. **Not the
+ * runtime default.** Kept exported only for tests that need to forge a
+ * token with a known secret and prove the running server rejects it,
+ * and for the rare deployment that wants a stable secret across
+ * restarts (in which case the operator SHOULD pass a high-entropy
+ * value unrelated to any password — the server-derived random secret
+ * is the better default).
+ *
+ * Never call this with `PDPP_OWNER_PASSWORD`: a CSRF token rendered
+ * into an unauthenticated `GET /owner/login` exposes one HMAC sample
+ * to any anonymous fetcher, which would let them brute-force a weak
+ * password offline.
+ */
+export function deriveOwnerCsrfSecretFromString(input: string): Buffer {
+  return crypto.createHash("sha256").update(`pdpp-owner-csrf:${input}`).digest();
+}
+
+/**
+ * @deprecated Not the runtime default. Use {@link generateOwnerCsrfSecret}.
+ *
+ * Retained as an alias for tests and forging helpers. Callers SHALL
+ * NOT feed `PDPP_OWNER_PASSWORD` here — see the docstring on
+ * `deriveOwnerCsrfSecretFromString`.
+ */
+export const deriveOwnerCsrfSecret = deriveOwnerCsrfSecretFromString;
 
 function timingSafeEqualString(a: string, b: string): boolean {
   if (typeof a !== "string" || typeof b !== "string") {

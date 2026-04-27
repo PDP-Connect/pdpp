@@ -28,10 +28,11 @@ import {
 import {
   buildOwnerCsrfClearCookie,
   buildOwnerCsrfSetCookie,
-  deriveOwnerCsrfSecret,
+  generateOwnerCsrfSecret,
   issueOwnerCsrfToken,
   OWNER_CSRF_COOKIE_NAME,
   OWNER_CSRF_FIELD_NAME,
+  type OwnerCsrfSecret,
   readCsrfTokenFromCookieHeader,
   renderCsrfHiddenField,
   validateOwnerCsrfPair,
@@ -109,6 +110,15 @@ interface SignedInPageOptions {
 }
 
 export interface OwnerAuthPlaceholderOptions {
+  /**
+   * Optional explicit CSRF HMAC secret. Defaults to a fresh random
+   * 32-byte buffer minted per process. The default is the right
+   * answer for almost everyone — explicit override exists only for
+   * tests, deterministic fixtures, and the rare deployment that needs
+   * a stable secret across restarts. Operators SHALL NOT set this to
+   * a password-derived value.
+   */
+  csrfSecret?: OwnerCsrfSecret | null;
   forceSecureCookies?: boolean;
   password?: string | null;
   providerName?: string;
@@ -421,6 +431,7 @@ export function createOwnerAuthPlaceholder({
   sessionTtlSeconds = OWNER_SESSION_DEFAULT_TTL_SECONDS,
   sameSite = "lax",
   forceSecureCookies = false,
+  csrfSecret: csrfSecretOverride = null,
 }: OwnerAuthPlaceholderOptions = {}): OwnerAuthPlaceholder {
   // `exactOptionalPropertyTypes` won't accept `undefined` in these fields,
   // so we fall back to the declared `null` sentinel the controller already
@@ -435,9 +446,18 @@ export function createOwnerAuthPlaceholder({
   const { enabled, subjectId: resolvedSubjectId } = sessionController;
   const session = buildSessionHelpers(sessionController);
   // CSRF protection is only meaningful when owner-auth is enabled (the
-  // password gates everything). When disabled, the helpers no-op and the
-  // routes stay open as before.
-  const csrfSecret = enabled && typeof password === "string" && password ? deriveOwnerCsrfSecret(password) : null;
+  // password gates everything). When disabled, the helpers no-op and
+  // the routes stay open as before.
+  //
+  // The CSRF HMAC secret is **not** derived from the owner password.
+  // GET /owner/login is unauthenticated and returns a signed token in
+  // the hidden field, so any password-derived secret would expose one
+  // HMAC sample to every anonymous fetcher and let them brute-force a
+  // weak password offline. We mint a random 32-byte secret per process
+  // instead. An operator who needs a stable secret across restarts
+  // SHOULD pass an explicit `csrfSecret` (high-entropy, unrelated to
+  // any user input) — but the default is the random secret.
+  const csrfSecret: OwnerCsrfSecret | null = enabled ? (csrfSecretOverride ?? generateOwnerCsrfSecret()) : null;
 
   function ensureCsrfToken(req: AuthRequest, res: AuthResponse): string {
     if (!csrfSecret) {

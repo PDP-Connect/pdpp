@@ -143,6 +143,8 @@ When the reference owner-auth placeholder is enabled (`PDPP_OWNER_PASSWORD` set)
 2. has a valid HMAC signature over its nonce when verified with the server-side CSRF secret;
 3. matches the cookie value byte-for-byte under a constant-time comparison.
 
+The server-side CSRF secret SHALL NOT be derived from `PDPP_OWNER_PASSWORD` or any other user-supplied authentication credential. The reference SHALL default to a fresh random 32-byte secret minted per process when owner-auth is enabled. Implementations MAY accept an explicit deployment-supplied CSRF secret (high-entropy and unrelated to any password) for use cases that require a stable secret across restarts, but SHALL NOT use a password-derived value.
+
 The CSRF cookie SHALL be marked `HttpOnly`, `Path=/`, `SameSite=Lax` (or `Strict` when `PDPP_OWNER_SAMESITE=strict`), and `Secure` whenever the request is observed over TLS (`req.secure` or `X-Forwarded-Proto: https`) **or** when `PDPP_OWNER_FORCE_SECURE_COOKIES=1` is set. The hidden field name is `_csrf`. Tokens have the shape `<base64url-nonce>.<base64url-hmac>` and are issued on every hosted-form GET that does not already carry a verifying cookie.
 
 The protected POST surfaces SHALL include at least:
@@ -192,6 +194,11 @@ This requirement supersedes the prior "P2 follow-up" deferral noted in the origi
 - **THEN** the response SHALL be processed as before
 - **AND** the response status SHALL be `200`
 - **AND** the response body SHALL still return `{ grant_id, token, grant }`
+
+#### Scenario: A CSRF token signed with a password-derived secret is rejected
+- **WHEN** an attacker fetches `GET /owner/login` to capture one (nonce, signature) sample, derives `sha256("pdpp-owner-csrf:" + PDPP_OWNER_PASSWORD)` (or any other password-derived helper), forges a `<nonce>.<sig>` token with that secret, and submits it as both the `pdpp_owner_csrf` cookie and the `_csrf` form field on an authenticated POST `/consent/approve`
+- **THEN** the response status SHALL be `403`
+- **AND** the rendered CSRF token in `GET /consent` SHALL NOT equal the password-derived token
 
 #### Scenario: A forged CSRF cookie/field pair without a valid signature is rejected
 - **WHEN** a caller submits `POST /consent/approve` (form-encoded) with a `pdpp_owner_csrf` cookie and `_csrf` form field that match each other byte-for-byte but whose signature does not verify against the server secret
