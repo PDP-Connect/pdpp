@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { GET } from "./[[...path]]/route.ts";
+import { GET } from "./[...path]/route.ts";
 
 const APPLICATION_JSON = /^application\/json/;
 const PDPP_SKILL_FRONTMATTER = /name: pdpp-data-access/;
@@ -17,7 +17,7 @@ async function jsonOf(response: Response): Promise<Record<string, unknown>> {
   return JSON.parse(await response.text()) as Record<string, unknown>;
 }
 
-test("agent skill well-known route serves the catalog", async () => {
+test("agent skill .well-known route serves the catalog with forwarded origin", async () => {
   const response = await callSkillsRoute(["index.json"], {
     "x-forwarded-host": "pdpp.dev",
     "x-forwarded-proto": "https",
@@ -34,10 +34,11 @@ test("agent skill well-known route serves the catalog", async () => {
   );
 });
 
-test("agent skill well-known route serves only allowlisted files", async () => {
+test("agent skill .well-known route serves only allowlisted files", async () => {
   const skill = await callSkillsRoute(["pdpp-data-access", "SKILL.md"]);
   assert.equal(skill.status, 200);
   assert.match(skill.headers.get("content-type") ?? "", TEXT_MARKDOWN);
+  assert.equal(skill.headers.get("x-content-type-options"), "nosniff");
   assert.match(await skill.text(), PDPP_SKILL_FRONTMATTER);
 
   const reference = await callSkillsRoute(["pdpp-data-access", "references", "troubleshooting.md"]);
@@ -47,4 +48,13 @@ test("agent skill well-known route serves only allowlisted files", async () => {
 
   const traversal = await callSkillsRoute(["pdpp-data-access", "..", "..", "package.json"]);
   assert.equal(traversal.status, 404);
+  assert.match(traversal.headers.get("content-type") ?? "", APPLICATION_JSON);
+  const traversalBody = await jsonOf(traversal);
+  assert.deepEqual(traversalBody, {
+    error: {
+      type: "not_found_error",
+      code: "not_found",
+      message: "Skill file not found",
+    },
+  });
 });

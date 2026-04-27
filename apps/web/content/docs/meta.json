@@ -5,7 +5,6 @@
     "index",
     "---Core Protocol---",
     "spec-core",
-    "spec-data-query-api",
     "spec-lexical-retrieval-extension",
     "spec-semantic-retrieval-extension",
     "spec-auth-design",
@@ -19,6 +18,8 @@
     "spec-architecture",
     "spec-connector-ecosystem",
     "reference-implementation",
-    "reference-implementation-examples"
+    "reference-implementation-examples",
+    "---Historical / Superseded---",
+    "spec-data-query-api"
   ]
 }

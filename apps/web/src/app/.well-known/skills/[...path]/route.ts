@@ -2,31 +2,66 @@ import { buildAgentSkillCatalog, readAgentSkillFile } from "@/lib/agent-skills/c
 
 export const revalidate = false;
 
-interface RouteContext {
-  params: Promise<{ path?: string[] }>;
+const TRAILING_COLON = /:$/;
+
+interface SkillRouteContext {
+  params: Promise<{
+    path?: string[];
+  }>;
 }
 
-export async function GET(request: Request, context: RouteContext) {
+function jsonResponse(body: unknown, init: ResponseInit = {}): Response {
+  return new Response(JSON.stringify(body, null, 2), {
+    ...init,
+    headers: {
+      "content-type": "application/json; charset=utf-8",
+      ...init.headers,
+    },
+  });
+}
+
+function notFound(): Response {
+  return jsonResponse(
+    {
+      error: {
+        type: "not_found_error",
+        code: "not_found",
+        message: "Skill file not found",
+      },
+    },
+    { status: 404 }
+  );
+}
+
+function resolvePublicOrigin(request: Request): string {
+  const url = new URL(request.url);
+  const forwardedHost = request.headers.get("x-forwarded-host");
+  const host = forwardedHost || request.headers.get("host");
+  if (!host) {
+    return url.origin;
+  }
+  const forwardedProto = request.headers.get("x-forwarded-proto");
+  const protocol = forwardedProto || url.protocol.replace(TRAILING_COLON, "");
+  return `${protocol}://${host}`;
+}
+
+export async function GET(request: Request, context: SkillRouteContext): Promise<Response> {
   const { path = [] } = await context.params;
   const routePath = path.join("/");
 
   if (routePath === "index.json") {
-    return Response.json(await buildAgentSkillCatalog(new URL(request.url).origin), {
-      headers: {
-        "cache-control": "public, max-age=300",
-      },
-    });
+    return jsonResponse(await buildAgentSkillCatalog(resolvePublicOrigin(request)));
   }
 
   const file = await readAgentSkillFile(routePath);
   if (!file) {
-    return new Response("Not found", { status: 404 });
+    return notFound();
   }
 
-  return new Response(file.body.toString("utf8"), {
+  return new Response(new Uint8Array(file.body), {
     headers: {
-      "cache-control": "public, max-age=300",
       "content-type": file.definition.mediaType,
+      "x-content-type-options": "nosniff",
     },
   });
 }

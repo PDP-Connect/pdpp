@@ -46,7 +46,7 @@ It renders:
 
 - `/docs` for protocol docs plus clearly labeled reference notes
 - `/reference` for the public reference-implementation explainer and coverage matrix
-- `/sandbox` for the mock-backed sandbox placeholder
+- `/sandbox` for the mock-owner reference dashboard backed by deterministic fictional data
 - `/planning` for OpenSpec project planning artifacts
 - `/dashboard` for a running local or self-hosted reference instance
 - `/design` and `/palette` for local contributor workbench surfaces

@@ -1,7 +1,15 @@
 ---
-title: "Data Query API"
-description: "Companion to the Personal Data Portability Protocol (PDPP) core spec."
+title: "Data Query API (Superseded)"
+description: "Historical companion spec — Core spec Section 8 is now authoritative for the RS query interface."
 ---
+
+<Callout type="warn" title="Superseded">
+  Status: **Superseded** — Core spec Section 8 is now authoritative for the RS query interface.
+
+  Date: 2026-03-28 (original); superseded 2026-04-12.
+
+  This document was written before Core Section 8 was expanded to normatively define the RS query interface. The Core spec is authoritative. This file is retained for historical reference but should not be used for implementation. Where this document disagrees with Core Section 8, Core Section 8 prevails.
+</Callout>
 
 ## Overview
 
