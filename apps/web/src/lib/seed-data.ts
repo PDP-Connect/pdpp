@@ -13,7 +13,7 @@ export interface SeedAccount {
 }
 
 export interface SeedPost {
-  caption: string;
+  caption: string | null;
   comment_count: number;
   id: string;
   like_count: number;
@@ -177,7 +177,7 @@ export const SEED_POSTS: SeedPost[] = [
   {
     id: "p004",
     shortcode: "CxD4e5f6g7",
-    caption: null as unknown as string,
+    caption: null,
     like_count: 445,
     comment_count: 12,
     taken_at: daysAgo(154),
@@ -213,7 +213,7 @@ export const SEED_POSTS: SeedPost[] = [
   {
     id: "p008",
     shortcode: "CxH8i9j0k1",
-    caption: null as unknown as string,
+    caption: null,
     like_count: 672,
     comment_count: 28,
     taken_at: daysAgo(113),
@@ -240,7 +240,7 @@ export const SEED_POSTS: SeedPost[] = [
   {
     id: "p011",
     shortcode: "CxK1l2m3n4",
-    caption: null as unknown as string,
+    caption: null,
     like_count: 523,
     comment_count: 19,
     taken_at: daysAgo(87),
@@ -276,7 +276,7 @@ export const SEED_POSTS: SeedPost[] = [
   {
     id: "p015",
     shortcode: "CxO5p6q7r8",
-    caption: null as unknown as string,
+    caption: null,
     like_count: 891,
     comment_count: 34,
     taken_at: daysAgo(55),
@@ -303,7 +303,7 @@ export const SEED_POSTS: SeedPost[] = [
   {
     id: "p018",
     shortcode: "CxR8s9t0u1",
-    caption: null as unknown as string,
+    caption: null,
     like_count: 734,
     comment_count: 22,
     taken_at: daysAgo(31),
@@ -330,7 +330,7 @@ export const SEED_POSTS: SeedPost[] = [
   {
     id: "p021",
     shortcode: "CxU1v2w3x4",
-    caption: null as unknown as string,
+    caption: null,
     like_count: 912,
     comment_count: 41,
     taken_at: daysAgo(8),

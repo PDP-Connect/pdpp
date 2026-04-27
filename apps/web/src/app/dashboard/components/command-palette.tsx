@@ -1,9 +1,55 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
+import { createContext, type ReactNode, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button.tsx";
 import { Input } from "@/components/ui/input.tsx";
+
+interface CommandPaletteContextValue {
+  close: () => void;
+  isOpen: boolean;
+  open: () => void;
+  toggle: () => void;
+}
+
+const CommandPaletteContext = createContext<CommandPaletteContextValue | null>(null);
+
+function useCommandPalette(): CommandPaletteContextValue {
+  const context = useContext(CommandPaletteContext);
+  if (!context) {
+    throw new Error("Command palette components must be rendered inside <CommandPaletteProvider>");
+  }
+  return context;
+}
+
+export function CommandPaletteProvider({ children }: { children: ReactNode }) {
+  const [isOpen, setOpen] = useState(false);
+
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setOpen((o) => !o);
+      } else if (e.key === "Escape") {
+        setOpen(false);
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  const value = useMemo<CommandPaletteContextValue>(
+    () => ({
+      close: () => setOpen(false),
+      isOpen,
+      open: () => setOpen(true),
+      toggle: () => setOpen((o) => !o),
+    }),
+    [isOpen]
+  );
+
+  return <CommandPaletteContext.Provider value={value}>{children}</CommandPaletteContext.Provider>;
+}
 
 function buildShortcuts({ basePath, overviewHref }: { basePath: string; overviewHref: string }) {
   return [
@@ -16,17 +62,13 @@ function buildShortcuts({ basePath, overviewHref }: { basePath: string; overview
   ];
 }
 
-function noopOpen(): void {
-  // Placeholder until <CommandPalette /> mounts and installs the real opener.
-}
-let openRef: { open: () => void } = { open: noopOpen };
-
 export function CommandPaletteTrigger() {
+  const palette = useCommandPalette();
   return (
     <Button
       aria-label="Open command palette"
       className="gap-3 font-normal text-muted-foreground"
-      onClick={() => openRef.open()}
+      onClick={palette.open}
       size="sm"
       type="button"
       variant="outline"
@@ -47,39 +89,19 @@ export function CommandPalette({
   overviewHref?: string;
 } = {}) {
   const router = useRouter();
-  const [open, setOpen] = useState(false);
+  const palette = useCommandPalette();
   const [query, setQuery] = useState("");
   const inputRef = useRef<HTMLInputElement | null>(null);
   const shortcuts = buildShortcuts({ basePath, overviewHref });
 
   useEffect(() => {
-    openRef = { open: () => setOpen(true) };
-    return () => {
-      openRef = { open: noopOpen };
-    };
-  }, []);
-
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
-        e.preventDefault();
-        setOpen((o) => !o);
-      } else if (e.key === "Escape") {
-        setOpen(false);
-      }
-    }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, []);
-
-  useEffect(() => {
-    if (open) {
+    if (palette.isOpen) {
       setQuery("");
       queueMicrotask(() => inputRef.current?.focus());
     }
-  }, [open]);
+  }, [palette.isOpen]);
 
-  if (!open) {
+  if (!palette.isOpen) {
     return null;
   }
 
@@ -89,7 +111,7 @@ export function CommandPalette({
     if (!trimmed) {
       return;
     }
-    setOpen(false);
+    palette.close();
     router.push(`${basePath}/search?q=${encodeURIComponent(trimmed)}&jump=1`);
   }
 
@@ -98,7 +120,7 @@ export function CommandPalette({
       <button
         aria-label="Close command palette"
         className="absolute inset-0 cursor-default"
-        onClick={() => setOpen(false)}
+        onClick={palette.close}
         type="button"
       />
       <div
@@ -122,7 +144,7 @@ export function CommandPalette({
               <Button
                 key={s.href}
                 onClick={() => {
-                  setOpen(false);
+                  palette.close();
                   router.push(s.href);
                 }}
                 size="xs"
