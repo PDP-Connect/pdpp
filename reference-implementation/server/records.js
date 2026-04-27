@@ -3,6 +3,15 @@
  */
 import { getDb } from './db.js';
 import {
+  allowUnboundedReadAcknowledged,
+  exec,
+  getMany,
+  getOne,
+  iterate,
+  iterateDynamicSqlAcknowledged,
+  referenceQueries,
+} from '../lib/db.ts';
+import {
   lexicalIndexDelete,
   lexicalIndexDeleteByConnectorStream,
   lexicalIndexUpsert,
@@ -62,7 +71,6 @@ export function decodeKey(keyStr) {
  */
 export async function ingestRecord(storageTarget, record) {
   const connectorId = resolveStorageConnectorId(storageTarget);
-  const db = getDb();
   const { stream, key, data, emitted_at, op = 'upsert' } = record;
   const recordKey = encodeKey(key);
   const recordJson = data ? JSON.stringify(data) : null;
@@ -80,11 +88,10 @@ export async function ingestRecord(storageTarget, record) {
     throw err;
   }
 
-  const current = db.prepare(`
-    SELECT record_json, deleted
-    FROM records
-    WHERE connector_id = ? AND stream = ? AND record_key = ?
-  `).get(connectorId, stream, recordKey) || null;
+  const current = getOne(
+    referenceQueries.recordsIngestGetCurrentRecordState,
+    [connectorId, stream, recordKey],
+  );
 
   if (op === 'delete' && (!current || current.deleted)) {
     return { accepted: true, changed: false };
@@ -95,59 +102,50 @@ export async function ingestRecord(storageTarget, record) {
   }
 
   // Get next version
-  const vcRow = db.prepare(
-    'SELECT max_version FROM version_counter WHERE connector_id = ? AND stream = ?'
-  ).get(connectorId, stream);
+  const vcRow = getOne(
+    referenceQueries.recordsIngestGetVersionCounter,
+    [connectorId, stream],
+  );
   const nextVersion = vcRow ? vcRow.max_version + 1 : 1;
 
   const effectiveEmittedAt = emitted_at || nowIso();
 
   if (op === 'delete') {
-    db.prepare(`
-      UPDATE records
-      SET deleted = 1, deleted_at = ?, version = ?
-      WHERE connector_id = ? AND stream = ? AND record_key = ?
-    `).run(effectiveEmittedAt, nextVersion, connectorId, stream, recordKey);
-    db.prepare(`
-      INSERT INTO record_changes(connector_id, stream, record_key, version, record_json, emitted_at, deleted, deleted_at)
-      VALUES(?, ?, ?, ?, ?, ?, 1, ?)
-    `).run(connectorId, stream, recordKey, nextVersion, current.record_json, effectiveEmittedAt, effectiveEmittedAt);
+    exec(
+      referenceQueries.recordsIngestMarkRecordDeleted,
+      [effectiveEmittedAt, nextVersion, connectorId, stream, recordKey],
+    );
+    exec(
+      referenceQueries.recordsIngestInsertRecordChangeDeleted,
+      [connectorId, stream, recordKey, nextVersion, current.record_json, effectiveEmittedAt, effectiveEmittedAt],
+    );
     await lexicalIndexDelete({ connectorId, stream, recordKey });
     await semanticIndexDelete({ connectorId, stream, recordKey });
   } else {
-    db.prepare(`
-      INSERT INTO records(connector_id, stream, record_key, record_json, emitted_at, version)
-      VALUES(?, ?, ?, ?, ?, ?)
-      ON CONFLICT(connector_id, stream, record_key) DO UPDATE SET
-        record_json = excluded.record_json,
-        emitted_at = excluded.emitted_at,
-        version = excluded.version,
-        deleted = 0,
-        deleted_at = NULL
-    `).run(connectorId, stream, recordKey, recordJson, effectiveEmittedAt, nextVersion);
-    db.prepare(`
-      INSERT INTO record_changes(connector_id, stream, record_key, version, record_json, emitted_at, deleted, deleted_at)
-      VALUES(?, ?, ?, ?, ?, ?, 0, NULL)
-    `).run(connectorId, stream, recordKey, nextVersion, recordJson, effectiveEmittedAt);
+    exec(
+      referenceQueries.recordsIngestUpsertRecord,
+      [connectorId, stream, recordKey, recordJson, effectiveEmittedAt, nextVersion],
+    );
+    exec(
+      referenceQueries.recordsIngestInsertRecordChangeUpsert,
+      [connectorId, stream, recordKey, nextVersion, recordJson, effectiveEmittedAt],
+    );
     await lexicalIndexUpsert({ connectorId, stream, recordKey, data });
     await semanticIndexUpsert({ connectorId, stream, recordKey, data });
   }
 
   // Advance version counter
-  db.prepare(`
-    INSERT INTO version_counter(connector_id, stream, max_version)
-    VALUES(?, ?, ?)
-    ON CONFLICT(connector_id, stream) DO UPDATE SET max_version = excluded.max_version
-  `).run(connectorId, stream, nextVersion);
+  exec(
+    referenceQueries.recordsIngestUpsertVersionCounter,
+    [connectorId, stream, nextVersion],
+  );
 
   const changeHistoryLimit = getChangeHistoryLimit();
   if (changeHistoryLimit > 0) {
-    db.prepare(`
-      DELETE FROM record_changes
-      WHERE connector_id = ?
-        AND stream = ?
-        AND version <= ?
-    `).run(connectorId, stream, nextVersion - changeHistoryLimit);
+    exec(
+      referenceQueries.recordsIngestPruneRecordChanges,
+      [connectorId, stream, nextVersion - changeHistoryLimit],
+    );
   }
 
   return { accepted: true, changed: true };
@@ -853,9 +851,11 @@ function fetchVisibleRecordRowsInMemory({
     WHERE ${whereParts.join(' AND ')}
   `;
 
-  const stmt = db.prepare(sql);
+  // REVIEWED-DYNAMIC: in-memory fallback for streams whose cursor_field is
+  // not SQL-safe; WHERE clause varies with grant time_range / resources;
+  // intentionally no LIMIT — JS sort/seek needs the full visible set.
   const visible = [];
-  for (const row of stmt.iterate(...whereBinds)) {
+  for (const row of iterateDynamicSqlAcknowledged(sql, whereBinds)) {
     const rawData = JSON.parse(row.record_json);
     if (compiledFilters.length && !passesRequestFilters(rawData, compiledFilters)) continue;
     visible.push({
@@ -1007,11 +1007,12 @@ function fetchVisibleRecordRowsPaginated({
     LIMIT ?
   `;
 
-  const stmt = db.prepare(sql);
+  // REVIEWED-DYNAMIC: WHERE clause varies with grant time_range / resources
+  // / cursor seek; SQL composed in JS as today; LIMIT N+1 included.
   const collected = [];
   let scanned = 0;
 
-  for (const row of stmt.iterate(...whereBinds, ...seekBinds, sqlLimit)) {
+  for (const row of iterateDynamicSqlAcknowledged(sql, [...whereBinds, ...seekBinds, sqlLimit])) {
     scanned += 1;
     const rawData = JSON.parse(row.record_json);
     if (compiledFilters.length && !passesRequestFilters(rawData, compiledFilters)) continue;
@@ -1170,10 +1171,14 @@ function fetchExpansionChildrenGroupedByForeignKeyInMemory({
     WHERE ${whereParts.join(' AND ')}
   `;
 
-  const stmt = db.prepare(sql);
+  // REVIEWED-DYNAMIC: in-memory expansion fallback for child streams whose
+  // cursor_field is not SQL-safe; WHERE clause varies with child grant
+  // time_range / resources and parent foreign-key IN-list; intentionally no
+  // LIMIT — JS sort/per-parent slice needs the full visible child set for
+  // the parent page.
   const rankBound = cardinality === 'has_one' ? 1 : limit + 1;
   const buckets = new Map();
-  for (const row of stmt.iterate(...whereBinds, ...parentKeys)) {
+  for (const row of iterateDynamicSqlAcknowledged(sql, [...whereBinds, ...parentKeys])) {
     const rawData = JSON.parse(row.record_json);
     const relationKey = encodeKey(row.__fk);
     const childRow = {
@@ -1307,8 +1312,12 @@ function fetchExpansionChildrenGroupedByForeignKey({
     WHERE __rn <= ?
   `;
 
-  const stmt = db.prepare(sql);
-  for (const row of stmt.iterate(...whereBinds, ...parentKeys, rankBound)) {
+  // REVIEWED-DYNAMIC: SQL-pushdown expansion; WHERE clause varies with
+  // child grant time_range / resources and parent foreign-key IN-list;
+  // ORDER BY varies with the child manifest's cursor_field /
+  // primary_key; per-partition rank bound (__rn <= ?) caps each parent's
+  // child set instead of a top-level LIMIT.
+  for (const row of iterateDynamicSqlAcknowledged(sql, [...whereBinds, ...parentKeys, rankBound])) {
     const rawData = JSON.parse(row.record_json);
     const relationKey = encodeKey(row.__fk);
     const childRow = {
@@ -1381,18 +1390,12 @@ function encodeChangesSinceCursor(version) {
   return encodeCursor({ kind: 'changes_since', version });
 }
 
-async function getSnapshotAtVersion(db, connectorId, stream, recordKey, version) {
+async function getSnapshotAtVersion(connectorId, stream, recordKey, version) {
   if (!Number.isInteger(version) || version < 0) return null;
-  const row = db.prepare(`
-    SELECT record_json, emitted_at, deleted, deleted_at, version
-    FROM record_changes
-    WHERE connector_id = ?
-      AND stream = ?
-      AND record_key = ?
-      AND version <= ?
-    ORDER BY version DESC
-    LIMIT 1
-  `).get(connectorId, stream, recordKey, version);
+  const row = getOne(
+    referenceQueries.recordsSnapshotsGetSnapshotAtVersion,
+    [connectorId, stream, recordKey, version],
+  );
 
   if (!row) return null;
 
@@ -1477,15 +1480,17 @@ export async function queryRecords(storageTarget, stream, grant, requestParams =
       throw err;
     }
 
-    const vcRow = db.prepare(
-      'SELECT max_version FROM version_counter WHERE connector_id = ? AND stream = ?'
-    ).get(connectorId, stream);
+    const vcRow = getOne(
+      referenceQueries.recordsIngestGetVersionCounter,
+      [connectorId, stream],
+    );
     const currentMaxVersion = vcRow ? vcRow.max_version : 0;
     const effectiveSessionMaxVersion = changesSince ? currentMaxVersion : sessionMaxVersion;
 
-    const minChangeRow = db.prepare(
-      'SELECT MIN(version) as min_version FROM record_changes WHERE connector_id = ? AND stream = ?'
-    ).get(connectorId, stream);
+    const minChangeRow = getOne(
+      referenceQueries.recordsSnapshotsGetMinRecordChangeVersion,
+      [connectorId, stream],
+    );
     const minVersion = minChangeRow?.min_version ?? null;
     if (minVersion !== null && sinceVersion < (minVersion - 1)) {
       const err = new Error('changes_since cursor is too old; full re-sync required');
@@ -1498,23 +1503,24 @@ export async function queryRecords(storageTarget, stream, grant, requestParams =
     const batchSize = limit + 1;
 
     while (visibleChanges.length <= limit) {
-      const changeGroups = db.prepare(`
-        SELECT record_key, MAX(version) as latest_version
-        FROM record_changes
-        WHERE connector_id = ?
-          AND stream = ?
-          AND version > ?
-          AND version <= ?
-        GROUP BY record_key
-        ORDER BY latest_version ASC
-        LIMIT ?
-      `).all(connectorId, stream, pageAfterVersion, effectiveSessionMaxVersion, batchSize);
+      // Stream change-groups for the (after, max] window in ascending
+      // version order; collect at most `batchSize` per pass so we
+      // mirror the prior batched LIMIT semantics on top of the
+      // wrapper's iterate primitive.
+      const changeGroups = [];
+      for (const row of iterate(
+        referenceQueries.recordsSnapshotsListChangeGroups,
+        [connectorId, stream, pageAfterVersion, effectiveSessionMaxVersion],
+      )) {
+        changeGroups.push(row);
+        if (changeGroups.length >= batchSize) break;
+      }
 
       if (!changeGroups.length) break;
 
       for (const group of changeGroups) {
-        const previous = await getSnapshotAtVersion(db, connectorId, stream, group.record_key, sinceVersion);
-        const current = await getSnapshotAtVersion(db, connectorId, stream, group.record_key, group.latest_version);
+        const previous = await getSnapshotAtVersion(connectorId, stream, group.record_key, sinceVersion);
+        const current = await getSnapshotAtVersion(connectorId, stream, group.record_key, group.latest_version);
 
         const previousVisible = isVisibleSnapshot(previous, effective, consentTimeField);
         const currentVisible = isVisibleSnapshot(current, effective, consentTimeField);
@@ -1637,7 +1643,6 @@ export async function queryRecords(storageTarget, stream, grant, requestParams =
  */
 export async function aggregateRecords(storageTarget, stream, grant, requestParams = {}, manifest = null) {
   const connectorId = resolveStorageConnectorId(storageTarget);
-  const db = getDb();
 
   const streamGrant = grant.streams.find((entry) => entry.name === stream);
   if (!streamGrant) {
@@ -1658,14 +1663,10 @@ export async function aggregateRecords(storageTarget, stream, grant, requestPara
   const effective = buildEffectiveFilter(streamGrant, {});
   const consentTimeField = manifestStream?.consent_time_field || null;
 
-  const rows = db.prepare(`
-    SELECT record_key, record_json
-    FROM records
-    WHERE connector_id = ?
-      AND stream = ?
-      AND deleted = 0
-    ORDER BY record_key ASC
-  `).all(connectorId, stream);
+  const rows = iterate(
+    referenceQueries.recordsAggregateIterateStreamRecordsForAggregation,
+    [connectorId, stream],
+  );
 
   let visibleCount = 0;
   let sum = 0;
@@ -1756,14 +1757,10 @@ export async function getRecord(storageTarget, stream, recordId, grant, manifest
     throw err;
   }
 
-  const row = db.prepare(`
-    SELECT record_key, record_json, emitted_at
-    FROM records
-    WHERE connector_id = ?
-      AND stream = ?
-      AND record_key = ?
-      AND deleted = 0
-  `).get(connectorId, stream, recordId);
+  const row = getOne(
+    referenceQueries.recordsGetLiveRecordByKey,
+    [connectorId, stream, recordId],
+  );
 
   if (!row) {
     const err = new Error('Record not found');
@@ -1824,48 +1821,43 @@ export async function getRecord(storageTarget, stream, recordId, grant, manifest
  */
 export async function deleteRecord(storageTarget, stream, recordId) {
   const connectorId = resolveStorageConnectorId(storageTarget);
-  const db = getDb();
   const now = nowIso();
-  const current = db.prepare(`
-    SELECT record_json, deleted
-    FROM records
-    WHERE connector_id = ? AND stream = ? AND record_key = ?
-  `).get(connectorId, stream, recordId);
+  const current = getOne(
+    referenceQueries.recordsIngestGetCurrentRecordState,
+    [connectorId, stream, recordId],
+  );
   if (!current || current.deleted) return 0;
 
-  const vcRow = db.prepare(
-    'SELECT max_version FROM version_counter WHERE connector_id = ? AND stream = ?'
-  ).get(connectorId, stream);
+  const vcRow = getOne(
+    referenceQueries.recordsIngestGetVersionCounter,
+    [connectorId, stream],
+  );
   const nextVersion = vcRow ? vcRow.max_version + 1 : 1;
 
-  db.prepare(`
-    UPDATE records
-    SET deleted = 1, deleted_at = ?, version = ?
-    WHERE connector_id = ? AND stream = ? AND record_key = ?
-  `).run(now, nextVersion, connectorId, stream, recordId);
+  exec(
+    referenceQueries.recordsIngestMarkRecordDeleted,
+    [now, nextVersion, connectorId, stream, recordId],
+  );
 
-  db.prepare(`
-    INSERT INTO record_changes(connector_id, stream, record_key, version, record_json, emitted_at, deleted, deleted_at)
-    VALUES(?, ?, ?, ?, ?, ?, 1, ?)
-  `).run(connectorId, stream, recordId, nextVersion, current.record_json, now, now);
+  exec(
+    referenceQueries.recordsIngestInsertRecordChangeDeleted,
+    [connectorId, stream, recordId, nextVersion, current.record_json, now, now],
+  );
 
-  db.prepare(`
-    INSERT INTO version_counter(connector_id, stream, max_version)
-    VALUES(?, ?, ?)
-    ON CONFLICT(connector_id, stream) DO UPDATE SET max_version = excluded.max_version
-  `).run(connectorId, stream, nextVersion);
+  exec(
+    referenceQueries.recordsIngestUpsertVersionCounter,
+    [connectorId, stream, nextVersion],
+  );
 
   await lexicalIndexDelete({ connectorId, stream, recordKey: recordId });
   await semanticIndexDelete({ connectorId, stream, recordKey: recordId });
 
   const changeHistoryLimit = getChangeHistoryLimit();
   if (changeHistoryLimit > 0) {
-    db.prepare(`
-      DELETE FROM record_changes
-      WHERE connector_id = ?
-        AND stream = ?
-        AND version <= ?
-    `).run(connectorId, stream, nextVersion - changeHistoryLimit);
+    exec(
+      referenceQueries.recordsIngestPruneRecordChanges,
+      [connectorId, stream, nextVersion - changeHistoryLimit],
+    );
   }
 
   return 1;
@@ -1873,18 +1865,18 @@ export async function deleteRecord(storageTarget, stream, recordId) {
 
 export async function listAllStreams(storageTarget) {
   const connectorId = resolveStorageConnectorId(storageTarget);
-  const rows = getDb().prepare(`
-    SELECT stream, COUNT(*) as count, MAX(emitted_at) as last_updated
-    FROM records
-    WHERE connector_id = ? AND deleted = 0
-    GROUP BY stream
-    ORDER BY stream ASC
-  `).all(connectorId);
+  // REVIEWED-BOUNDED: rows are one per (connector, stream) pair; a single
+  // connector's manifest declares at most a few dozen streams, well under
+  // the registry's @max_rows=256 cap on the records table read.
+  const rows = allowUnboundedReadAcknowledged(
+    referenceQueries.recordsAggregateStreamsByConnector,
+    [connectorId],
+  );
 
   return rows.map((row) => ({
     object: 'stream',
     name: row.stream,
-    record_count: row.count || 0,
+    record_count: row.record_count || 0,
     last_updated: row.last_updated || null,
   }));
 }
@@ -1894,16 +1886,14 @@ export async function listAllStreams(storageTarget) {
  */
 export async function deleteAllRecords(storageTarget, stream) {
   const connectorId = resolveStorageConnectorId(storageTarget);
-  const db = getDb();
-  const countRow = db.prepare(`
-    SELECT COUNT(*) AS count
-    FROM records
-    WHERE connector_id = ? AND stream = ?
-  `).get(connectorId, stream);
+  const countRow = getOne(
+    referenceQueries.recordsDeleteCountRecordsByStream,
+    [connectorId, stream],
+  );
   const deletedRecordCount = countRow?.count || 0;
-  db.prepare('DELETE FROM records WHERE connector_id = ? AND stream = ?').run(connectorId, stream);
-  db.prepare('DELETE FROM record_changes WHERE connector_id = ? AND stream = ?').run(connectorId, stream);
-  db.prepare('DELETE FROM version_counter WHERE connector_id = ? AND stream = ?').run(connectorId, stream);
+  exec(referenceQueries.recordsDeleteDeleteRecordsByStream, [connectorId, stream]);
+  exec(referenceQueries.recordsDeleteDeleteRecordChangesByStream, [connectorId, stream]);
+  exec(referenceQueries.recordsDeleteDeleteVersionCounterByStream, [connectorId, stream]);
   await lexicalIndexDeleteByConnectorStream({ connectorId, stream });
   await semanticIndexDeleteByConnectorStream({ connectorId, stream });
   return deletedRecordCount;
@@ -1926,25 +1916,24 @@ export async function deleteAllRecordsForConnector(connectorId) {
   if (typeof connectorId !== 'string' || !connectorId) {
     return { deletedCount: 0, streams: [] };
   }
-  const db = getDb();
-  const streamRows = db.prepare(`
-    SELECT DISTINCT stream
-    FROM records
-    WHERE connector_id = ?
-    ORDER BY stream ASC
-  `).all(connectorId);
+  // REVIEWED-BOUNDED: rows are one per distinct stream a connector has ever
+  // produced; manifests declare at most a few dozen streams, well under
+  // the registry's @max_rows=256 cap.
+  const streamRows = allowUnboundedReadAcknowledged(
+    referenceQueries.recordsDeleteListDistinctStreamsByConnector,
+    [connectorId],
+  );
   const streams = streamRows.map((row) => row.stream);
-  const countRow = db.prepare(`
-    SELECT COUNT(*) AS count
-    FROM records
-    WHERE connector_id = ?
-  `).get(connectorId);
+  const countRow = getOne(
+    referenceQueries.recordsDeleteCountRecordsByConnector,
+    [connectorId],
+  );
   const deletedCount = countRow?.count || 0;
 
-  db.prepare('DELETE FROM records WHERE connector_id = ?').run(connectorId);
-  db.prepare('DELETE FROM record_changes WHERE connector_id = ?').run(connectorId);
-  db.prepare('DELETE FROM version_counter WHERE connector_id = ?').run(connectorId);
-  db.prepare('DELETE FROM blob_bindings WHERE connector_id = ?').run(connectorId);
+  exec(referenceQueries.recordsDeleteDeleteRecordsByConnector, [connectorId]);
+  exec(referenceQueries.recordsDeleteDeleteRecordChangesByConnector, [connectorId]);
+  exec(referenceQueries.recordsDeleteDeleteVersionCounterByConnector, [connectorId]);
+  exec(referenceQueries.recordsDeleteDeleteBlobBindingsByConnector, [connectorId]);
 
   for (const stream of streams) {
     await lexicalIndexDeleteByConnectorStream({ connectorId, stream });
@@ -2002,18 +1991,22 @@ export async function listStreams(storageTarget, grant, manifest = null) {
  */
 export async function getSyncState(storageTarget, opts = {}) {
   const connectorId = resolveStorageConnectorId(storageTarget);
-  const db = getDb();
   const { grantId = null, allowedStreams = null } = opts;
   const allowedStreamSet = allowedStreams instanceof Set
     ? allowedStreams
     : (Array.isArray(allowedStreams) ? new Set(allowedStreams) : null);
+  // REVIEWED-BOUNDED: rows are one per (connector, [grant], stream); a
+  // connector's manifest declares at most a few dozen streams, so the
+  // result fits comfortably under the registry's @max_rows=256 cap.
   const rows = grantId
-    ? db.prepare(
-        'SELECT stream, state_json, updated_at FROM grant_connector_state WHERE connector_id = ? AND grant_id = ?'
-      ).all(connectorId, grantId)
-    : db.prepare(
-        'SELECT stream, state_json, updated_at FROM connector_state WHERE connector_id = ?'
-      ).all(connectorId);
+    ? allowUnboundedReadAcknowledged(
+        referenceQueries.recordsSyncStateListGrantConnectorState,
+        [connectorId, grantId],
+      )
+    : allowUnboundedReadAcknowledged(
+        referenceQueries.recordsSyncStateListConnectorState,
+        [connectorId],
+      );
   const state = {};
   let updatedAt = null;
   for (const row of rows) {
@@ -2032,28 +2025,21 @@ export async function getSyncState(storageTarget, opts = {}) {
 
 export async function putSyncState(storageTarget, stateMap, opts = {}) {
   const connectorId = resolveStorageConnectorId(storageTarget);
-  const db = getDb();
   const { grantId = null, allowedStreams = null } = opts;
   const now = nowIso();
   for (const [stream, cursor] of Object.entries(stateMap)) {
     if (grantId) {
-      db.prepare(`
-        INSERT INTO grant_connector_state(grant_id, connector_id, stream, state_json, updated_at)
-        VALUES(?, ?, ?, ?, ?)
-        ON CONFLICT(grant_id, connector_id, stream) DO UPDATE SET
-          state_json = excluded.state_json,
-          updated_at = excluded.updated_at
-      `).run(grantId, connectorId, stream, JSON.stringify(cursor), now);
+      exec(
+        referenceQueries.recordsSyncStateUpsertGrantConnectorState,
+        [grantId, connectorId, stream, JSON.stringify(cursor), now],
+      );
       continue;
     }
 
-    db.prepare(`
-      INSERT INTO connector_state(connector_id, stream, state_json, updated_at)
-      VALUES(?, ?, ?, ?)
-      ON CONFLICT(connector_id, stream) DO UPDATE SET
-        state_json = excluded.state_json,
-        updated_at = excluded.updated_at
-    `).run(connectorId, stream, JSON.stringify(cursor), now);
+    exec(
+      referenceQueries.recordsSyncStateUpsertConnectorState,
+      [connectorId, stream, JSON.stringify(cursor), now],
+    );
   }
   return getSyncState(connectorId, { grantId, allowedStreams });
 }
@@ -2089,29 +2075,9 @@ export async function putSyncState(storageTarget, stateMap, opts = {}) {
  *   age of the data.
  */
 export async function getDatasetSummary() {
-  const db = getDb();
-
-  const recordAgg = db.prepare(`
-    SELECT
-      COUNT(*)                                         AS record_count,
-      COALESCE(SUM(LENGTH(CAST(record_json AS BLOB))), 0) AS record_json_bytes,
-      MIN(emitted_at)                                  AS earliest_ingested_at,
-      MAX(emitted_at)                                  AS latest_ingested_at,
-      COUNT(DISTINCT connector_id)                     AS connector_count,
-      COUNT(DISTINCT connector_id || char(10) || stream) AS stream_count
-    FROM records
-    WHERE deleted = 0
-  `).get();
-
-  const changeAgg = db.prepare(`
-    SELECT COALESCE(SUM(LENGTH(CAST(record_json AS BLOB))), 0) AS record_changes_json_bytes
-    FROM record_changes
-    WHERE record_json IS NOT NULL
-  `).get();
-
-  const blobAgg = db.prepare(
-    'SELECT COALESCE(SUM(size_bytes), 0) AS blob_bytes FROM blobs'
-  ).get();
+  const recordAgg = getOne(referenceQueries.recordsDatasetGetRecordsAggregate);
+  const changeAgg = getOne(referenceQueries.recordsDatasetGetRecordChangesBytes);
+  const blobAgg = getOne(referenceQueries.recordsDatasetGetBlobBytes);
 
   const recordCount = Number(recordAgg?.record_count || 0);
   const connectorCount = Number(recordAgg?.connector_count || 0);
@@ -2153,9 +2119,12 @@ export async function getDatasetSummary() {
  * time. Measured at ~210ms for the largest populated stream on a 772k-row DB.
  */
 async function getRealWorldTimeBounds() {
-  const db = getDb();
-
-  const connectors = db.prepare('SELECT connector_id, manifest FROM connectors').all();
+  // REVIEWED-BOUNDED: rows are one per registered connector; the corpus is
+  // tens of connectors at most, well under the registry's @max_rows=256
+  // cap on the connectors table.
+  const connectors = allowUnboundedReadAcknowledged(
+    referenceQueries.listRegisteredConnectors,
+  );
 
   let earliest = null;
   let latest = null;
@@ -2182,15 +2151,10 @@ async function getRealWorldTimeBounds() {
       if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(field)) continue;
 
       const jsonPath = `$.${field}`;
-      const result = db.prepare(`
-        SELECT
-          MIN(json_extract(record_json, ?)) AS min_time,
-          MAX(json_extract(record_json, ?)) AS max_time
-        FROM records
-        WHERE connector_id = ?
-          AND stream = ?
-          AND deleted = 0
-      `).get(jsonPath, jsonPath, row.connector_id, streamName);
+      const result = getOne(
+        referenceQueries.recordsDatasetGetStreamTimeBounds,
+        [jsonPath, jsonPath, row.connector_id, streamName],
+      );
       if (!result) continue;
       const minTime = typeof result.min_time === 'string' ? result.min_time : null;
       const maxTime = typeof result.max_time === 'string' ? result.max_time : null;
@@ -2208,19 +2172,18 @@ async function getRealWorldTimeBounds() {
  * record_count descending. Excludes soft-deleted rows.
  */
 async function getTopConnectorsByRecordCount(limit) {
-  const rows = getDb().prepare(`
-    SELECT connector_id, COUNT(*) AS record_count
-    FROM records
-    WHERE deleted = 0
-    GROUP BY connector_id
-    ORDER BY record_count DESC, connector_id ASC
-    LIMIT ?
-  `).all(limit);
-  return rows.map((row) => ({
-    object: 'dataset_connector_summary',
-    connector_id: row.connector_id,
-    record_count: Number(row.record_count || 0),
-  }));
+  const result = [];
+  for (const row of iterate(
+    referenceQueries.recordsDatasetGetTopConnectorsByRecordCount,
+  )) {
+    result.push({
+      object: 'dataset_connector_summary',
+      connector_id: row.connector_id,
+      record_count: Number(row.record_count || 0),
+    });
+    if (result.length >= limit) break;
+  }
+  return result;
 }
 
 // --- Cursor encoding ---

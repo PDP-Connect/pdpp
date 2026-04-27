@@ -8,7 +8,14 @@
  * - Implements RFC 7662-style introspection with PDPP extensions
  */
 import { randomBytes } from 'crypto';
-import { getDb, runWithSqliteBusyRetry } from './db.js';
+import { runWithSqliteBusyRetry } from './db.js';
+import {
+  allowUnboundedReadAcknowledged,
+  exec,
+  getOne,
+  referenceQueries,
+  transaction,
+} from '../lib/db.ts';
 import { createTraceContext, emitSpineEvent } from '../lib/spine.ts';
 
 function generateToken() {
@@ -1022,20 +1029,13 @@ export async function requireResolvedPersistedGrantState(row = {}, opts = {}) {
 }
 
 async function getPendingConsentRow(deviceCode) {
-  return getDb().prepare(
-    'SELECT * FROM pending_consents WHERE device_code = ?'
-  ).get(deviceCode) || null;
+  return getOne(referenceQueries.authPendingConsentsGetByDeviceCode, [deviceCode]);
 }
 
 async function createPendingConsent(deviceCode, userCode, params, expiresAt) {
   const createdAt = nowIso();
   const traceContext = getRequestTraceContext(params);
-  getDb().prepare(`
-    INSERT INTO pending_consents(
-      device_code, user_code, params_json, status,
-      request_id, trace_id, scenario_id, created_at, expires_at
-    ) VALUES(?, ?, ?, 'pending', ?, ?, ?, ?, ?)
-  `).run(
+  exec(referenceQueries.authPendingConsentsInsert, [
     deviceCode,
     userCode,
     JSON.stringify(params),
@@ -1044,48 +1044,34 @@ async function createPendingConsent(deviceCode, userCode, params, expiresAt) {
     traceContext.scenario_id || null,
     createdAt,
     expiresAt,
-  );
+  ]);
 }
 
 async function markPendingConsentApproved(deviceCode, { subjectId, grantId, tokenId, aiTrainingConsented }) {
-  getDb().prepare(`
-    UPDATE pending_consents
-    SET status = 'approved',
-        subject_id = ?,
-        grant_id = ?,
-        token_id = ?,
-        ai_training_consented = ?,
-        approved_at = ?
-    WHERE device_code = ?
-  `).run(subjectId, grantId, tokenId, aiTrainingConsented ? 1 : null, nowIso(), deviceCode);
+  exec(referenceQueries.authPendingConsentsMarkApproved, [
+    subjectId,
+    grantId,
+    tokenId,
+    aiTrainingConsented ? 1 : null,
+    nowIso(),
+    deviceCode,
+  ]);
 }
 
 async function markPendingConsentDenied(deviceCode) {
-  getDb().prepare(`
-    UPDATE pending_consents
-    SET status = 'denied', denied_at = ?
-    WHERE device_code = ? AND status = 'pending'
-  `).run(nowIso(), deviceCode);
+  exec(referenceQueries.authPendingConsentsMarkDenied, [nowIso(), deviceCode]);
 }
 
 async function markPendingConsentExpired(deviceCode) {
-  getDb().prepare(`
-    UPDATE pending_consents
-    SET status = 'expired'
-    WHERE device_code = ? AND status = 'pending'
-  `).run(deviceCode);
+  exec(referenceQueries.authPendingConsentsMarkExpired, [deviceCode]);
 }
 
 async function getOwnerDeviceAuthRow(deviceCode) {
-  return getDb().prepare(
-    'SELECT * FROM owner_device_auth WHERE device_code = ?'
-  ).get(deviceCode) || null;
+  return getOne(referenceQueries.authOwnerDeviceAuthGetByDeviceCode, [deviceCode]);
 }
 
 async function getOwnerDeviceAuthRowByUserCode(userCode) {
-  return getDb().prepare(
-    'SELECT * FROM owner_device_auth WHERE user_code = ?'
-  ).get(userCode) || null;
+  return getOne(referenceQueries.authOwnerDeviceAuthGetByUserCode, [userCode]);
 }
 
 async function createOwnerDeviceAuth({
@@ -1098,47 +1084,38 @@ async function createOwnerDeviceAuth({
   traceId = null,
   scenarioId = null,
 }) {
-  getDb().prepare(`
-    INSERT INTO owner_device_auth(
-      device_code, user_code, client_id, status, interval_seconds,
-      created_at, expires_at, request_id, trace_id, scenario_id
-    ) VALUES(?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?)
-  `).run(deviceCode, userCode, clientId, intervalSeconds, nowIso(), expiresAt, requestId, traceId, scenarioId);
+  exec(referenceQueries.authOwnerDeviceAuthInsert, [
+    deviceCode,
+    userCode,
+    clientId,
+    intervalSeconds,
+    nowIso(),
+    expiresAt,
+    requestId,
+    traceId,
+    scenarioId,
+  ]);
 }
 
 async function markOwnerDeviceAuthApproved(deviceCode, { subjectId, tokenId }) {
-  getDb().prepare(`
-    UPDATE owner_device_auth
-    SET status = 'approved',
-        subject_id = ?,
-        token_id = ?,
-        approved_at = ?
-    WHERE device_code = ?
-  `).run(subjectId, tokenId, nowIso(), deviceCode);
+  exec(referenceQueries.authOwnerDeviceAuthMarkApproved, [
+    subjectId,
+    tokenId,
+    nowIso(),
+    deviceCode,
+  ]);
 }
 
 async function markOwnerDeviceAuthDenied(deviceCode) {
-  getDb().prepare(`
-    UPDATE owner_device_auth
-    SET status = 'denied', denied_at = ?
-    WHERE device_code = ? AND status = 'pending'
-  `).run(nowIso(), deviceCode);
+  exec(referenceQueries.authOwnerDeviceAuthMarkDenied, [nowIso(), deviceCode]);
 }
 
 async function markOwnerDeviceAuthExpired(deviceCode) {
-  getDb().prepare(`
-    UPDATE owner_device_auth
-    SET status = 'expired'
-    WHERE device_code = ? AND status = 'pending'
-  `).run(deviceCode);
+  exec(referenceQueries.authOwnerDeviceAuthMarkExpired, [deviceCode]);
 }
 
 async function updateOwnerDeviceAuthLastPolled(deviceCode) {
-  getDb().prepare(`
-    UPDATE owner_device_auth
-    SET last_polled_at = ?
-    WHERE device_code = ?
-  `).run(nowIso(), deviceCode);
+  exec(referenceQueries.authOwnerDeviceAuthUpdateLastPolled, [nowIso(), deviceCode]);
 }
 
 function buildInvalidRegisteredClientError(clientId) {
@@ -1197,18 +1174,7 @@ async function upsertRegisteredClient({
 
   const normalizedMetadata = normalizeClientRegistrationMetadata(metadata);
   const timestamp = nowIso();
-  getDb().prepare(`
-    INSERT INTO oauth_clients(
-      client_id, registration_mode, token_endpoint_auth_method,
-      client_secret, metadata_json, created_at, updated_at
-    ) VALUES(?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(client_id) DO UPDATE SET
-      registration_mode = excluded.registration_mode,
-      token_endpoint_auth_method = excluded.token_endpoint_auth_method,
-      client_secret = excluded.client_secret,
-      metadata_json = excluded.metadata_json,
-      updated_at = excluded.updated_at
-  `).run(
+  exec(referenceQueries.authOauthClientsUpsert, [
     clientId,
     registrationMode,
     normalizedMetadata.token_endpoint_auth_method,
@@ -1216,7 +1182,7 @@ async function upsertRegisteredClient({
     JSON.stringify(normalizedMetadata),
     timestamp,
     timestamp,
-  );
+  ]);
 }
 
 export async function seedPreRegisteredClients(clients = [], opts = {}) {
@@ -1247,11 +1213,7 @@ export async function seedPreRegisteredClients(clients = [], opts = {}) {
 
 export async function getRegisteredClient(clientId) {
   if (!clientId) return null;
-  const row = getDb().prepare(`
-    SELECT client_id, registration_mode, token_endpoint_auth_method, client_secret, metadata_json, created_at, updated_at
-    FROM oauth_clients
-    WHERE client_id = ?
-  `).get(clientId);
+  const row = getOne(referenceQueries.authOauthClientsGetByClientId, [clientId]);
   return mapRegisteredClientRow(row || null);
 }
 
@@ -1705,11 +1667,10 @@ function validateConnectorManifest(manifest = {}, code = 'invalid_request', opts
  */
 export async function registerConnector(manifest) {
   validateConnectorManifest(manifest);
-  getDb().prepare(`
-    INSERT INTO connectors(connector_id, manifest)
-    VALUES(?, ?)
-    ON CONFLICT(connector_id) DO UPDATE SET manifest = excluded.manifest
-  `).run(manifest.connector_id, JSON.stringify(manifest));
+  exec(referenceQueries.authConnectorsUpsert, [
+    manifest.connector_id,
+    JSON.stringify(manifest),
+  ]);
   // Lexical retrieval index drift-detect + backfill. Handles three cases
   // the write-path maintenance (search.js#lexicalIndexUpsert) cannot:
   //   1. A connector is registered for the first time on a DB that already
@@ -1742,9 +1703,8 @@ export async function registerConnector(manifest) {
  * fan-out) get deterministic enumeration.
  */
 export async function listRegisteredConnectorIds() {
-  const rows = getDb().prepare(
-    'SELECT connector_id FROM connectors ORDER BY connector_id ASC'
-  ).all();
+  // REVIEWED-BOUNDED: connectors table is O(registered providers); whole-table scan is acceptable.
+  const rows = allowUnboundedReadAcknowledged(referenceQueries.authConnectorsListIds);
   return rows.map((row) => row.connector_id);
 }
 
@@ -1754,9 +1714,7 @@ export async function listRegisteredConnectorIds() {
 export async function getConnectorManifest(connectorId) {
   if (!connectorId) return null;
 
-  const row = getDb().prepare(
-    'SELECT manifest FROM connectors WHERE connector_id = ?'
-  ).get(connectorId);
+  const row = getOne(referenceQueries.authConnectorsGetManifestById, [connectorId]);
   if (!row) return null;
   try {
     const manifest = JSON.parse(row.manifest);
@@ -1929,7 +1887,6 @@ export async function approveGrant(deviceCode, subjectId = 'owner_local', opts =
     throw err;
   }
 
-  const db = getDb();
   const request = JSON.parse(pending.params_json);
   const traceContext = requirePersistedPendingTraceContext(pending);
   request.trace_context = traceContext;
@@ -1989,12 +1946,7 @@ export async function approveGrant(deviceCode, subjectId = 'owner_local', opts =
     expires_at: expiresAt,
   };
 
-  db.prepare(`
-    INSERT INTO grants(
-      grant_id, subject_id, client_id, storage_binding_json, grant_json,
-      access_mode, issued_at, expires_at, trace_id, scenario_id
-    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(
+  exec(referenceQueries.authGrantsInsert, [
     grantId,
     subjectId,
     registeredClient.client_id,
@@ -2005,7 +1957,7 @@ export async function approveGrant(deviceCode, subjectId = 'owner_local', opts =
     expiresAt,
     traceContext.trace_id,
     traceContext.scenario_id,
-  );
+  ]);
 
   await emitSpineEvent({
     event_type: 'consent.approved',
@@ -2517,16 +2469,11 @@ export async function exchangeOwnerDeviceCode({ clientId, deviceCode }) {
  * Issue an access token bound to a grant
  */
 export async function issueToken(grantId, subjectId, clientId, expiresAt, meta = {}) {
-  const db = getDb();
   // better-sqlite3 transactions must be synchronous. We prepare the body as a
   // synchronous function and wrap it; the public export stays `async` because
   // external callers `await issueToken(...)`.
-  const issue = db.transaction(() => {
-    const grantRow = db.prepare(`
-      SELECT access_mode, consumed, status, trace_id, scenario_id, grant_json, storage_binding_json
-      FROM grants
-      WHERE grant_id = ?
-    `).get(grantId);
+  return transaction(() => {
+    const grantRow = getOne(referenceQueries.authGrantsGetForIssuance, [grantId]);
 
     if (!grantRow) {
       const err = new Error(`Unknown grant: ${grantId}`);
@@ -2550,14 +2497,17 @@ export async function issueToken(grantId, subjectId, clientId, expiresAt, meta =
         err.code = 'grant_consumed';
         throw err;
       }
-      db.prepare('UPDATE grants SET consumed = 1 WHERE grant_id = ?').run(grantId);
+      exec(referenceQueries.authGrantsMarkConsumed, [grantId]);
     }
 
     const tokenId = generateToken();
-    db.prepare(`
-      INSERT INTO tokens(token_id, grant_id, subject_id, client_id, token_kind, expires_at)
-      VALUES(?, ?, ?, ?, 'client', ?)
-    `).run(tokenId, grantId, subjectId, clientId, expiresAt);
+    exec(referenceQueries.authTokensInsertClient, [
+      tokenId,
+      grantId,
+      subjectId,
+      clientId,
+      expiresAt,
+    ]);
 
     const { grant: persistedGrant } = requirePersistedGrantState(grantRow);
     // emitSpineEvent is sync internally; calling without await is fine
@@ -2586,15 +2536,11 @@ export async function issueToken(grantId, subjectId, clientId, expiresAt, meta =
 
     return tokenId;
   });
-  return issue();
 }
 async function issueOwnerTokenRecord(subjectId, meta = {}) {
   const tokenId = generateToken();
   const expiresAt = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString();
-  getDb().prepare(`
-    INSERT INTO tokens(token_id, grant_id, subject_id, client_id, token_kind, expires_at)
-    VALUES(?, NULL, ?, NULL, 'owner', ?)
-  `).run(tokenId, subjectId, expiresAt);
+  exec(referenceQueries.authTokensInsertOwner, [tokenId, subjectId, expiresAt]);
   await emitSpineEvent({
     event_type: 'token.issued',
     trace_id: meta.traceContext?.trace_id || undefined,
@@ -2631,14 +2577,7 @@ export async function issueOwnerToken(subjectId, meta = {}) {
  * RFC 7662-style introspection with PDPP extensions
  */
 export async function introspect(token) {
-  const row = getDb().prepare(`
-    SELECT t.token_id, t.grant_id, t.subject_id, t.client_id, t.token_kind, t.expires_at, t.revoked,
-           g.status as grant_status, g.grant_json, g.trace_id, g.scenario_id,
-           g.storage_binding_json
-    FROM tokens t
-    LEFT JOIN grants g ON t.grant_id = g.grant_id
-    WHERE t.token_id = ?
-  `).get(token);
+  const row = getOne(referenceQueries.authTokensGetIntrospection, [token]);
 
   if (!row) return { active: false };
 
@@ -2745,12 +2684,7 @@ export async function introspect(token) {
  * Revoke a grant
  */
 export async function revokeGrant(grantId, context = {}) {
-  const db = getDb();
-  const row0 = db.prepare(`
-    SELECT client_id, subject_id, trace_id, scenario_id, grant_json, storage_binding_json
-    FROM grants
-    WHERE grant_id = ?
-  `).get(grantId);
+  const row0 = getOne(referenceQueries.authGrantsGetForRevocation, [grantId]);
 
   let parsedGrant = null;
   if (row0) {
@@ -2799,9 +2733,9 @@ export async function revokeGrant(grantId, context = {}) {
     }
   }
 
-  db.prepare("UPDATE grants SET status = 'revoked' WHERE grant_id = ?").run(grantId);
+  exec(referenceQueries.authGrantsMarkRevoked, [grantId]);
   // Also revoke all tokens for this grant
-  db.prepare('UPDATE tokens SET revoked = 1 WHERE grant_id = ?').run(grantId);
+  exec(referenceQueries.authTokensRevokeByGrant, [grantId]);
 
   if (row0 && parsedGrant) {
     const row = row0;

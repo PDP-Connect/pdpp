@@ -18,13 +18,13 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { createTraceContext, emitSpineEvent, type SpineDatabase, type SpineTraceContext } from "../lib/spine.ts";
+import { allowUnboundedReadAcknowledged, exec, getOne, referenceQueries, transaction } from "../lib/db.ts";
+import { createTraceContext, emitSpineEvent, type SpineTraceContext } from "../lib/spine.ts";
 import {
   approveOwnerDeviceAuthorization,
   getConnectorManifest,
   initiateOwnerDeviceAuthorization,
 } from "../server/auth.js";
-import { getDb } from "../server/db.js";
 import { getSyncState } from "../server/records.js";
 import { runConnector } from "./index.js";
 
@@ -171,20 +171,6 @@ export type ConnectorPathResolver = (
   options?: RunNowOptions
 ) => Promise<string | null> | string | null;
 
-// Minimal structural interface for the better-sqlite3 handle the controller
-// touches. We don't import the better-sqlite3 type here so tests can
-// fabricate a small in-memory shim without bringing its type tree in.
-interface PreparedStatement {
-  all<T = unknown>(...params: unknown[]): T[];
-  get<T = unknown>(...params: unknown[]): T | undefined;
-  run(...params: unknown[]): unknown;
-}
-
-interface ControllerDatabase {
-  prepare(sql: string): PreparedStatement;
-  transaction<TArgs extends unknown[], TResult>(fn: (...args: TArgs) => TResult): (...args: TArgs) => TResult;
-}
-
 interface ControllerLogger {
   error?: (message: string) => void;
   warn?: (message: string) => void;
@@ -193,7 +179,6 @@ interface ControllerLogger {
 export interface ControllerOptions {
   asPublicUrl?: string;
   connectorPathResolver?: ConnectorPathResolver;
-  db?: ControllerDatabase;
   logger?: ControllerLogger;
   ownerClientId?: string;
   ownerSubjectId?: string;
@@ -626,7 +611,6 @@ function scheduleRowToApi(
  * Create a new controller instance.
  */
 export function createController(opts: ControllerOptions = {}): Controller {
-  const db: ControllerDatabase = opts.db || (getDb() as ControllerDatabase);
   const log: ControllerLogger = opts.logger || console;
   const resolveConnectorPath = opts.connectorPathResolver || resolveDefaultConnectorPath;
   const ownerClientId = opts.ownerClientId || "cli_longview";
@@ -637,54 +621,28 @@ export function createController(opts: ControllerOptions = {}): Controller {
   // projections (next_due_at, last_finished_at, last_error_code). Until
   // then we accept them in the type but don't read them here.
 
-  function listPersistedActiveRuns(): PersistedActiveRunRow[] {
-    return db
-      .prepare(
-        `
-      SELECT connector_id, run_id, trace_id, scenario_id, started_at
-      FROM controller_active_runs
-      ORDER BY started_at ASC, connector_id ASC
-    `
-      )
-      .all<PersistedActiveRunRow>();
+  function listPersistedActiveRuns(): readonly PersistedActiveRunRow[] {
+    // REVIEWED-BOUNDED: controller_active_runs holds at most one row per
+    // registered connector; whole-table scan is bounded by the connector count.
+    return allowUnboundedReadAcknowledged<PersistedActiveRunRow>(referenceQueries.controllerListActiveRuns);
   }
 
   function persistActiveRun(row: PersistedActiveRunRow): void {
-    db.prepare(
-      `
-      INSERT INTO controller_active_runs(connector_id, run_id, trace_id, scenario_id, started_at)
-      VALUES(?, ?, ?, ?, ?)
-      ON CONFLICT(connector_id) DO UPDATE SET
-        run_id = excluded.run_id,
-        trace_id = excluded.trace_id,
-        scenario_id = excluded.scenario_id,
-        started_at = excluded.started_at
-    `
-    ).run(row.connector_id, row.run_id, row.trace_id, row.scenario_id, row.started_at);
+    exec(referenceQueries.controllerUpsertActiveRun, [
+      row.connector_id,
+      row.run_id,
+      row.trace_id,
+      row.scenario_id,
+      row.started_at,
+    ]);
   }
 
   function clearPersistedActiveRun(connectorId: string, runId: string): void {
-    db.prepare(
-      `
-      DELETE FROM controller_active_runs
-      WHERE connector_id = ?
-        AND run_id = ?
-    `
-    ).run(connectorId, runId);
+    exec(referenceQueries.controllerDeleteActiveRun, [connectorId, runId]);
   }
 
   function runAlreadyTerminal(runId: string): boolean {
-    const row = db
-      .prepare(
-        `
-      SELECT 1 AS present
-      FROM spine_events
-      WHERE run_id = ?
-        AND event_type IN ('run.completed', 'run.failed')
-      LIMIT 1
-    `
-      )
-      .get<TerminalRunRow>(runId);
+    const row = getOne<TerminalRunRow>(referenceQueries.spineCheckRunTerminal, [runId]);
     return Boolean(row);
   }
 
@@ -694,29 +652,26 @@ export function createController(opts: ControllerOptions = {}): Controller {
       return;
     }
 
-    const reconcileRows = db.transaction((staleRows: PersistedActiveRunRow[]) => {
-      for (const row of staleRows) {
+    transaction(() => {
+      for (const row of rows) {
         if (!runAlreadyTerminal(row.run_id)) {
-          const emitted = emitSpineEvent(
-            {
-              event_type: "run.failed",
-              trace_id: row.trace_id,
-              scenario_id: row.scenario_id,
-              actor_type: "runtime",
-              actor_id: row.connector_id,
-              object_type: "run",
-              object_id: row.run_id,
-              status: "failed",
-              run_id: row.run_id,
-              data: {
-                source: buildRunSource(row.connector_id),
-                reason: ABANDONED_CONTROLLER_RUN_REASON,
-                failure_reason: ABANDONED_CONTROLLER_RUN_REASON,
-                message: "Reference server restarted while a controller-managed run was still active.",
-              },
+          const emitted = emitSpineEvent({
+            event_type: "run.failed",
+            trace_id: row.trace_id,
+            scenario_id: row.scenario_id,
+            actor_type: "runtime",
+            actor_id: row.connector_id,
+            object_type: "run",
+            object_id: row.run_id,
+            status: "failed",
+            run_id: row.run_id,
+            data: {
+              source: buildRunSource(row.connector_id),
+              reason: ABANDONED_CONTROLLER_RUN_REASON,
+              failure_reason: ABANDONED_CONTROLLER_RUN_REASON,
+              message: "Reference server restarted while a controller-managed run was still active.",
             },
-            db as SpineDatabase
-          );
+          });
           emitted.catch((err: unknown) => {
             const message = err instanceof Error ? err.message : String(err);
             log.warn?.(`[controller] failed to emit restart reconciliation event for ${row.run_id}: ${message}`);
@@ -726,8 +681,6 @@ export function createController(opts: ControllerOptions = {}): Controller {
       }
     });
 
-    reconcileRows(rows);
-
     for (const row of rows) {
       log.warn?.(`[controller] reconciled abandoned controller-managed run ${row.run_id} for ${row.connector_id}`);
     }
@@ -736,16 +689,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
   reconcileAbandonedControllerRuns();
 
   function getScheduleRow(connectorId: string): ScheduleRow | null {
-    const row = db
-      .prepare(
-        `
-      SELECT connector_id, interval_seconds, jitter_seconds, enabled, created_at, updated_at
-      FROM connector_schedules
-      WHERE connector_id = ?
-    `
-      )
-      .get<ScheduleRow>(connectorId);
-    return row ?? null;
+    return getOne<ScheduleRow>(referenceQueries.controllerGetScheduleByConnector, [connectorId]);
   }
 
   function currentRsUrl(override: string | undefined): string {
@@ -794,15 +738,9 @@ export function createController(opts: ControllerOptions = {}): Controller {
   // keep the controller surface async so future slices can add I/O (e.g.
   // mirroring to a remote control plane) without a signature break.
   async function listSchedules(): Promise<ScheduleApi[]> {
-    const rows = db
-      .prepare(
-        `
-      SELECT connector_id, interval_seconds, jitter_seconds, enabled, created_at, updated_at
-      FROM connector_schedules
-      ORDER BY connector_id ASC
-    `
-      )
-      .all<ScheduleRow>();
+    // REVIEWED-BOUNDED: connector_schedules holds at most one row per registered
+    // connector; the schedule registry is bounded by the connector count.
+    const rows = allowUnboundedReadAcknowledged<ScheduleRow>(referenceQueries.controllerListSchedules);
     const apis = await Promise.all(
       rows.map(async (row) => {
         const policy = await getConnectorRefreshPolicy(row.connector_id);
@@ -827,20 +765,22 @@ export function createController(opts: ControllerOptions = {}): Controller {
     const validated = validateScheduleInput(input);
     const existing = getScheduleRow(connectorId);
     if (existing) {
-      db.prepare(
-        `
-        UPDATE connector_schedules
-        SET interval_seconds = ?, jitter_seconds = ?, enabled = ?, updated_at = ?
-        WHERE connector_id = ?
-      `
-      ).run(validated.interval_seconds, validated.jitter_seconds, validated.enabled ? 1 : 0, now, connectorId);
+      exec(referenceQueries.controllerUpdateSchedule, [
+        validated.interval_seconds,
+        validated.jitter_seconds,
+        validated.enabled ? 1 : 0,
+        now,
+        connectorId,
+      ]);
     } else {
-      db.prepare(
-        `
-        INSERT INTO connector_schedules(connector_id, interval_seconds, jitter_seconds, enabled, created_at, updated_at)
-        VALUES(?, ?, ?, ?, ?, ?)
-      `
-      ).run(connectorId, validated.interval_seconds, validated.jitter_seconds, validated.enabled ? 1 : 0, now, now);
+      exec(referenceQueries.controllerInsertSchedule, [
+        connectorId,
+        validated.interval_seconds,
+        validated.jitter_seconds,
+        validated.enabled ? 1 : 0,
+        now,
+        now,
+      ]);
     }
     const policy = await getConnectorRefreshPolicy(connectorId);
     const schedule = scheduleRowToApi(getScheduleRow(connectorId), getRuntimeProjection(connectorId), policy);
@@ -856,13 +796,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
     if (!existing) {
       throw new ControllerError(`Schedule not found for connector: ${connectorId}`, "not_found");
     }
-    db.prepare(
-      `
-      UPDATE connector_schedules
-      SET enabled = ?, updated_at = ?
-      WHERE connector_id = ?
-    `
-    ).run(enabled ? 1 : 0, nowIso(), connectorId);
+    exec(referenceQueries.controllerUpdateScheduleEnabled, [enabled ? 1 : 0, nowIso(), connectorId]);
     const policy = await getConnectorRefreshPolicy(connectorId);
     return scheduleRowToApi(getScheduleRow(connectorId), getRuntimeProjection(connectorId), policy);
   }
@@ -880,7 +814,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
     if (!existing) {
       return Promise.resolve(false);
     }
-    db.prepare("DELETE FROM connector_schedules WHERE connector_id = ?").run(connectorId);
+    exec(referenceQueries.controllerDeleteSchedule, [connectorId]);
     return Promise.resolve(true);
   }
 

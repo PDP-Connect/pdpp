@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { getDb } from "../server/db.js";
+import { getMany, type Page, referenceQueries, decodeCursor as wrapperDecodeCursor } from "./db.ts";
 
 /**
  * Narrow shape of the `better-sqlite3` database the spine module actually
@@ -359,55 +360,110 @@ function hydrateRows(rows: readonly SpineEventRow[]): SpineEventRecord[] {
   }));
 }
 
-function listSpineEventsSync(db: SpineDatabase, filters: SpineEventFilters): SpineEventRecord[] {
-  let rows: SpineEventRow[];
-  if (filters.traceId) {
-    rows = db
-      .prepare("SELECT * FROM spine_events WHERE trace_id = ? ORDER BY rowid")
-      .all(filters.traceId) as SpineEventRow[];
-  } else if (filters.grantId) {
-    rows = db
-      .prepare("SELECT * FROM spine_events WHERE grant_id = ? ORDER BY rowid")
-      .all(filters.grantId) as SpineEventRow[];
-  } else if (filters.runId) {
-    rows = db
-      .prepare("SELECT * FROM spine_events WHERE run_id = ? ORDER BY rowid")
-      .all(filters.runId) as SpineEventRow[];
-  } else {
-    rows = [];
-  }
-  return hydrateRows(rows);
+/**
+ * Spine event list, paginated. The triple `(kind, id)` selects which
+ * correlation column is queried; `opts.limit` and `opts.cursor` thread
+ * through the bounded-statement wrapper. `cursor` is opaque (produced
+ * by a prior call's `nextCursor`). Used by the public `_ref` timeline
+ * routes and by the per-correlation summarizers.
+ *
+ * The legacy `eventType` and bare-else (full-table) filters from the
+ * pre-bounded `listSpineEvents` are intentionally not supported here:
+ * neither had a non-test production caller, and both are unbounded
+ * scans of the spine.
+ *
+ * The query lives in `server/queries/spine/list-events-by-{kind}-id.sql`
+ * and is enforced by the registry's `LIMIT ?`-or-`@bounded_by` check.
+ */
+export type SpineCorrelationKind = "trace" | "grant" | "run";
+
+export interface SpineEventPageOptions {
+  readonly cursor?: string | null;
+  readonly limit: number;
 }
 
-// biome-ignore lint/suspicious/useAwait: historical async signature kept for call-site compatibility.
-export async function listSpineEvents(filters: SpineEventFilters = {}): Promise<SpineEventRecord[]> {
-  const db = getDb() as SpineDatabase | undefined;
-  if (!db) {
-    return [];
-  }
+export interface SpineEventPage {
+  readonly events: readonly SpineEventRecord[];
+  readonly limit: number;
+  readonly next_cursor: string | null;
+  readonly truncated: boolean;
+}
 
-  let rows: SpineEventRow[];
-  if (filters.traceId) {
-    rows = db
-      .prepare("SELECT * FROM spine_events WHERE trace_id = ? ORDER BY rowid")
-      .all(filters.traceId) as SpineEventRow[];
-  } else if (filters.grantId) {
-    rows = db
-      .prepare("SELECT * FROM spine_events WHERE grant_id = ? ORDER BY rowid")
-      .all(filters.grantId) as SpineEventRow[];
-  } else if (filters.runId) {
-    rows = db
-      .prepare("SELECT * FROM spine_events WHERE run_id = ? ORDER BY rowid")
-      .all(filters.runId) as SpineEventRow[];
-  } else if (filters.eventType) {
-    rows = db
-      .prepare("SELECT * FROM spine_events WHERE event_type = ? ORDER BY rowid")
-      .all(filters.eventType) as SpineEventRow[];
-  } else {
-    rows = db.prepare("SELECT * FROM spine_events ORDER BY rowid").all() as SpineEventRow[];
-  }
+const PER_KIND_QUERY = {
+  trace: referenceQueries.spineListEventsByTraceId,
+  grant: referenceQueries.spineListEventsByGrantId,
+  run: referenceQueries.spineListEventsByRunId,
+} as const;
 
-  return hydrateRows(rows);
+function decodeRowidFromCursor(cursor: string | null | undefined): number {
+  // First page: rowid > 0 returns every row. Cursors carry the last
+  // observed rowid so the next page picks up where we left off.
+  if (!cursor) {
+    return 0;
+  }
+  const decoded = wrapperDecodeCursor(cursor);
+  return decoded.r;
+}
+
+/**
+ * `getMany` returns rows as `Record<string, unknown>` because the
+ * wrapper's generic only constrains "the shape has indexable string
+ * keys." better-sqlite3 hands back plain objects whose keys are the
+ * SELECTed columns; for `SELECT rowid, *` against `spine_events`,
+ * those columns are exactly the `SpineEventRow` shape plus a `rowid`.
+ * The cast here is structural, not lossy.
+ */
+// The wrapper's `Page<R extends Record<string, unknown>>` generic can't
+// know that this specific query selects the SpineEventRow shape; the
+// SELECT is fixed in the .sql artifact. Reinterpret here at the
+// boundary, cast through `unknown` to keep TS structurally honest.
+type SpineEventRowProjection = readonly Record<string, unknown>[];
+const asSpineEventRows = (rows: SpineEventRowProjection): SpineEventRow[] => rows as unknown as SpineEventRow[];
+
+export function listSpineEventsPage(
+  kind: SpineCorrelationKind,
+  id: string,
+  opts: SpineEventPageOptions
+): SpineEventPage {
+  const cursorRowid = decodeRowidFromCursor(opts.cursor ?? null);
+  const query = PER_KIND_QUERY[kind];
+  const page: Page<Record<string, unknown>> = getMany(query, [id, cursorRowid], {
+    limit: opts.limit,
+  });
+  return {
+    events: hydrateRows(asSpineEventRows(page.rows)),
+    truncated: page.truncated,
+    next_cursor: page.nextCursor,
+    limit: opts.limit,
+  };
+}
+
+/**
+ * Summary cap. Internal callers (`listSpineCorrelations`, `searchSpine`)
+ * fetch up to this many events per correlation row to compute summaries.
+ * The number is generous enough to fit every current real-world run
+ * (largest observed: 2,542 events) and bounded enough to prevent the
+ * archived V8-scavenger pathology from re-emerging via a per-row scan.
+ *
+ * If a correlation's true event count exceeds this cap, summaries
+ * computed from the truncated sample may miss connector_id, terminal
+ * failure label, or interaction state that lives beyond the window.
+ * The SQL aggregate's `event_count` remains accurate; only the
+ * derived-from-events fields can degrade. A future change should
+ * replace per-row hydration with two bounded queries (first events +
+ * last events) feeding a refactored `summarizeEventsBounded`. Tracked
+ * in `bound-spine-and-record-read-paths/tasks.md` § Deferred follow-up.
+ */
+const SUMMARY_EVENT_CAP = 5000;
+
+function loadEventsForSummary(kind: SpineCorrelationKind, id: string): SpineEventRecord[] {
+  // First page only; the wrapper's MAX_PAGE_LIMIT bounds the read at
+  // `SUMMARY_EVENT_CAP`. We deliberately do NOT page through additional
+  // events here — a correlation that overflows the cap is already
+  // pathological and should be inspected via the paginated timeline
+  // surface, not summarized synchronously.
+  const page = listSpineEventsPage(kind, id, { limit: SUMMARY_EVENT_CAP });
+  return [...page.events];
 }
 
 /**
@@ -632,10 +688,10 @@ const CORRELATION_COLUMN: Record<SpineCorrelationKey, "trace_id" | "grant_id" | 
   run: "run_id",
 };
 
-const CORRELATION_FILTER_KEY: Record<"trace_id" | "grant_id" | "run_id", keyof SpineEventFilters> = {
-  trace_id: "traceId",
-  grant_id: "grantId",
-  run_id: "runId",
+const CORRELATION_KIND_FOR_COLUMN: Record<"trace_id" | "grant_id" | "run_id", SpineCorrelationKind> = {
+  trace_id: "trace",
+  grant_id: "grant",
+  run_id: "run",
 };
 
 interface CorrelationAggregateRow {
@@ -771,11 +827,11 @@ export async function listSpineCorrelations(
 
   const aggRows = db.prepare(sql).all(...whereBinds, ...havingBinds, sqlLimit) as CorrelationAggregateRow[];
 
-  const filterKey = CORRELATION_FILTER_KEY[column];
+  const correlationKind = CORRELATION_KIND_FOR_COLUMN[column];
   const summaries: SpineSummary[] = [];
 
   for (const aggRow of aggRows) {
-    const events = listSpineEventsSync(db, { [filterKey]: aggRow.id });
+    const events = loadEventsForSummary(correlationKind, aggRow.id);
     if (events.length === 0) {
       continue;
     }
@@ -890,10 +946,10 @@ function summariesForLike(db: SpineDatabase, column: "trace_id" | "grant_id" | "
     )
     .all(like) as SpineSearchLikeRow[];
 
-  const filterKey = CORRELATION_FILTER_KEY[column];
+  const correlationKind = CORRELATION_KIND_FOR_COLUMN[column];
   const out: SpineSummary[] = [];
   for (const { id } of idRows) {
-    const events = listSpineEventsSync(db, { [filterKey]: id });
+    const events = loadEventsForSummary(correlationKind, id);
     if (events.length === 0) {
       continue;
     }

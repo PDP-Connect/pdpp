@@ -19,6 +19,15 @@
 
 import { randomBytes } from 'crypto';
 import { setImmediate as yieldImmediate } from 'node:timers/promises';
+import {
+  allowUnboundedReadAcknowledged,
+  exec,
+  getMany,
+  getOne,
+  iterateDynamicSqlAcknowledged,
+  referenceQueries,
+  transaction,
+} from '../lib/db.ts';
 import { getConnectorManifest } from './auth.js';
 import { getDb } from './db.js';
 import {
@@ -110,19 +119,12 @@ export async function lexicalIndexUpsert({ connectorId, stream, recordKey, data 
   const declared = await getStreamLexicalFields(connectorId, stream);
   if (!declared) return;
 
-  const db = getDb();
-  db.prepare(`
-    DELETE FROM lexical_search_index
-    WHERE connector_id = ? AND stream = ? AND record_key = ?
-  `).run(connectorId, stream, recordKey);
+  exec(referenceQueries.searchIndexDeleteByRecordKey, [connectorId, stream, recordKey]);
 
   for (const field of declared) {
     const value = data?.[field];
     if (typeof value !== 'string' || value.length === 0) continue;
-    db.prepare(`
-      INSERT INTO lexical_search_index(connector_id, stream, record_key, field, text)
-      VALUES(?, ?, ?, ?, ?)
-    `).run(connectorId, stream, recordKey, field, value);
+    exec(referenceQueries.searchIndexInsertRow, [connectorId, stream, recordKey, field, value]);
   }
 }
 
@@ -130,11 +132,7 @@ export async function lexicalIndexUpsert({ connectorId, stream, recordKey, data 
  * Delete all FTS rows for a single record. Called on hard or soft delete.
  */
 export async function lexicalIndexDelete({ connectorId, stream, recordKey }) {
-  const db = getDb();
-  db.prepare(`
-    DELETE FROM lexical_search_index
-    WHERE connector_id = ? AND stream = ? AND record_key = ?
-  `).run(connectorId, stream, recordKey);
+  exec(referenceQueries.searchIndexDeleteByRecordKey, [connectorId, stream, recordKey]);
 }
 
 /**
@@ -142,11 +140,7 @@ export async function lexicalIndexDelete({ connectorId, stream, recordKey }) {
  * deleteAllRecords (the owner-authenticated reset path).
  */
 export async function lexicalIndexDeleteByConnectorStream({ connectorId, stream }) {
-  const db = getDb();
-  db.prepare(`
-    DELETE FROM lexical_search_index
-    WHERE connector_id = ? AND stream = ?
-  `).run(connectorId, stream);
+  exec(referenceQueries.searchIndexDeleteByStream, [connectorId, stream]);
 }
 
 // ─── Drift-detect + backfill ───────────────────────────────────────────────
@@ -160,21 +154,7 @@ export async function lexicalIndexDeleteByConnectorStream({ connectorId, stream 
  * and the drift check that decides whether a rebuild is needed at all.
  */
 async function rebuildLexicalIndexForStream({ connectorId, stream, declaredFields, recordsToScan = null, progressJob = null, signal = null }) {
-  const db = getDb();
-  db.prepare(`
-    DELETE FROM lexical_search_index
-    WHERE connector_id = ? AND stream = ?
-  `).run(connectorId, stream);
-
-  const insertStmt = db.prepare(`
-    INSERT INTO lexical_search_index(connector_id, stream, record_key, field, text)
-    VALUES(?, ?, ?, ?, ?)
-  `);
-  const insertRows = db.transaction((entries) => {
-    for (const entry of entries) {
-      insertStmt.run(connectorId, stream, entry.recordKey, entry.field, entry.text);
-    }
-  });
+  exec(referenceQueries.searchIndexDeleteByStream, [connectorId, stream]);
 
   // Stream the records page-by-page so we don't pull the whole table into
   // memory on big stores.
@@ -192,16 +172,12 @@ async function rebuildLexicalIndexForStream({ connectorId, stream, declaredField
     if (signal?.aborted) {
       throw signal.reason instanceof Error ? signal.reason : new Error('lexical backfill aborted');
     }
-    const rows = db.prepare(`
-      SELECT id, record_key, record_json
-      FROM records
-      WHERE connector_id = ?
-        AND stream = ?
-        AND deleted = 0
-        AND id > ?
-      ORDER BY id ASC
-      LIMIT ?
-    `).all(connectorId, stream, lastId, PAGE);
+    const page = getMany(
+      referenceQueries.searchRecordsPageNonDeleted,
+      [connectorId, stream, lastId],
+      { limit: PAGE },
+    );
+    const rows = page.rows;
     if (rows.length === 0) break;
     const entries = [];
     for (const row of rows) {
@@ -222,7 +198,11 @@ async function rebuildLexicalIndexForStream({ connectorId, stream, declaredField
       }
     }
     if (entries.length > 0) {
-      insertRows(entries);
+      transaction(() => {
+        for (const entry of entries) {
+          exec(referenceQueries.searchIndexInsertRow, [connectorId, stream, entry.recordKey, entry.field, entry.text]);
+        }
+      });
       indexed += entries.length;
     }
     if (progressJob) {
@@ -233,7 +213,7 @@ async function rebuildLexicalIndexForStream({ connectorId, stream, declaredField
       });
     }
     await yieldImmediate();
-    if (rows.length < PAGE) break;
+    if (!page.truncated) break;
   }
   return indexed;
 }
@@ -259,20 +239,12 @@ function jsonPathForTopLevelField(field) {
   return `$."${String(field).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
 }
 
-function countIndexableTextValues({ db, connectorId, stream, declaredFields }) {
-  const stmt = db.prepare(`
-    SELECT COUNT(*) AS n
-    FROM records
-    WHERE connector_id = ?
-      AND stream = ?
-      AND deleted = 0
-      AND json_type(record_json, ?) = 'text'
-      AND length(json_extract(record_json, ?)) > 0
-  `);
+function countIndexableTextValues({ connectorId, stream, declaredFields }) {
   let total = 0;
   for (const field of declaredFields) {
     const path = jsonPathForTopLevelField(field);
-    total += Number(stmt.get(connectorId, stream, path, path)?.n || 0);
+    const row = getOne(referenceQueries.searchRecordsCountIndexableTextValues, [connectorId, stream, path, path]);
+    total += Number(row?.n || 0);
   }
   return total;
 }
@@ -338,7 +310,6 @@ export async function lexicalIndexBackfillForManifest({ manifest, log = () => {}
   lexicalBackfillJobs.set(progressJob.id, progressJob);
   try {
   const connectorId = manifest.connector_id;
-  const db = getDb();
 
   // Track which streams we visited so we can detect "previously
   // participated, no longer participates" — those need their stale index
@@ -361,21 +332,12 @@ export async function lexicalIndexBackfillForManifest({ manifest, log = () => {}
       // version declared lexical_fields for it, drop the stale index +
       // meta so historical data doesn't keep matching against a field set
       // that's no longer declared.
-      const metaRows = db.prepare(`
-        SELECT 1 FROM lexical_search_meta
-        WHERE connector_id = ? AND stream = ?
-      `).all(connectorId, stream);
-      if (metaRows.length > 0) {
+      const metaExists = getOne(referenceQueries.searchMetaExistsByStream, [connectorId, stream]);
+      if (metaExists) {
         log(`[PDPP] Lexical index: stream='${stream}' connector='${connectorId}' ` +
             `no longer declares lexical_fields — dropping stale index + meta`);
-        db.prepare(`
-          DELETE FROM lexical_search_index
-          WHERE connector_id = ? AND stream = ?
-        `).run(connectorId, stream);
-        db.prepare(`
-          DELETE FROM lexical_search_meta
-          WHERE connector_id = ? AND stream = ?
-        `).run(connectorId, stream);
+        exec(referenceQueries.searchIndexDeleteByStream, [connectorId, stream]);
+        exec(referenceQueries.searchMetaDeleteByStream, [connectorId, stream]);
       }
       continue;
     }
@@ -390,12 +352,8 @@ export async function lexicalIndexBackfillForManifest({ manifest, log = () => {}
 
     const newFingerprint = fingerprintLexicalFields(declaredFields);
 
-    const metaRows = db.prepare(`
-      SELECT fields_fingerprint
-      FROM lexical_search_meta
-      WHERE connector_id = ? AND stream = ?
-    `).all(connectorId, stream);
-    const persistedFingerprint = metaRows[0]?.fields_fingerprint ?? null;
+    const fingerprintRow = getOne(referenceQueries.searchMetaGetFingerprintByStream, [connectorId, stream]);
+    const persistedFingerprint = fingerprintRow?.fields_fingerprint ?? null;
     const fingerprintChanged = persistedFingerprint !== newFingerprint;
 
     let needsRebuild = fingerprintChanged;
@@ -404,11 +362,7 @@ export async function lexicalIndexBackfillForManifest({ manifest, log = () => {}
     let expectedIndexRows = 0;
 
     const countRecords = () => {
-      const row = db.prepare(`
-        SELECT COUNT(*) AS n
-        FROM records
-        WHERE connector_id = ? AND stream = ? AND deleted = 0
-      `).get(connectorId, stream);
+      const row = getOne(referenceQueries.searchRecordsCountNonDeleted, [connectorId, stream]);
       return Number(row?.n || 0);
     };
 
@@ -418,16 +372,12 @@ export async function lexicalIndexBackfillForManifest({ manifest, log = () => {}
       // streams have records but no lexical text for the declared fields.
       recordCount = countRecords();
 
-      const indexCountRows = db.prepare(`
-        SELECT COUNT(*) AS n
-        FROM lexical_search_index
-        WHERE connector_id = ? AND stream = ?
-      `).all(connectorId, stream);
-      indexCount = Number(indexCountRows[0]?.n || 0);
+      const indexCountRow = getOne(referenceQueries.searchIndexCountByStream, [connectorId, stream]);
+      indexCount = Number(indexCountRow?.n || 0);
 
       const maxIndexRows = recordCount * declaredFields.length;
       expectedIndexRows = indexCount === 0 || indexCount > maxIndexRows
-        ? countIndexableTextValues({ db, connectorId, stream, declaredFields })
+        ? countIndexableTextValues({ connectorId, stream, declaredFields })
         : null;
       const inSync = indexCount > 0
         ? indexCount <= maxIndexRows
@@ -467,13 +417,7 @@ export async function lexicalIndexBackfillForManifest({ manifest, log = () => {}
         `(records=${recordCount}, indexed_rows=${indexedRows})`);
 
     // Persist the new fingerprint so subsequent backfill calls can skip.
-    db.prepare(`
-      INSERT INTO lexical_search_meta(connector_id, stream, fields_fingerprint, updated_at)
-      VALUES(?, ?, ?, ?)
-      ON CONFLICT(connector_id, stream) DO UPDATE SET
-        fields_fingerprint = excluded.fields_fingerprint,
-        updated_at = excluded.updated_at
-    `).run(connectorId, stream, newFingerprint, new Date().toISOString());
+    exec(referenceQueries.searchMetaUpsertFingerprint, [connectorId, stream, newFingerprint, new Date().toISOString()]);
   }
   progressJob = updateLexicalBackfillJob(progressJob, {
     stream: null,
@@ -486,23 +430,19 @@ export async function lexicalIndexBackfillForManifest({ manifest, log = () => {}
   // Streams that previously had a meta row but are no longer in the
   // manifest at all (entire stream removed). Same cleanup as the
   // "no-longer-participating" case above.
-  const orphanRows = db.prepare(`
-    SELECT stream
-    FROM lexical_search_meta
-    WHERE connector_id = ?
-  `).all(connectorId);
+  // REVIEWED-BOUNDED: lexical_search_meta is keyed by (connector_id, stream)
+  // and the stream count per connector is a small enumeration bounded by the
+  // manifest, well below the @max_rows=1024 declared in the artifact.
+  const orphanRows = allowUnboundedReadAcknowledged(
+    referenceQueries.searchMetaListStreamsForConnector,
+    [connectorId],
+  );
   for (const row of orphanRows) {
     if (visitedStreams.has(row.stream)) continue;
     log(`[PDPP] Lexical index: stream='${row.stream}' connector='${connectorId}' ` +
         `no longer in manifest — dropping stale index + meta`);
-    db.prepare(`
-      DELETE FROM lexical_search_index
-      WHERE connector_id = ? AND stream = ?
-    `).run(connectorId, row.stream);
-    db.prepare(`
-      DELETE FROM lexical_search_meta
-      WHERE connector_id = ? AND stream = ?
-    `).run(connectorId, row.stream);
+    exec(referenceQueries.searchIndexDeleteByStream, [connectorId, row.stream]);
+    exec(referenceQueries.searchMetaDeleteByStream, [connectorId, row.stream]);
   }
   } finally {
     activeLexicalBackfillCount = Math.max(0, activeLexicalBackfillCount - 1);
@@ -931,7 +871,6 @@ async function buildSnapshot({ q, perConnectorPlans, isOwner }) {
  * highest-ranked field match.
  */
 async function runFtsQueryForConnector({ connectorId, planEntries, q, allowsSnippets }) {
-  const db = getDb();
   const ftsQuery = buildFtsUserTextQuery(q);
   // Build one query per stream-field plan entry, scoped to this connector
   // and the (stream, field) pair. This guarantees the index is only ever
@@ -956,7 +895,9 @@ async function runFtsQueryForConnector({ connectorId, planEntries, q, allowsSnip
       const recordKeyConstraint = Array.isArray(entry.candidateRecordKeys)
         ? `AND r.record_key IN (${entry.candidateRecordKeys.map(() => '?').join(',')})`
         : '';
-      const rows = db.prepare(`
+      // REVIEWED-DYNAMIC: FTS query has conditional snippet/candidate
+      // predicates; SQL composed at call time; LIMIT 200 included.
+      const sql = `
         SELECT
           lsi.record_key                          AS record_key,
           ${snippetExpr}                          AS snippet_text,
@@ -976,7 +917,14 @@ async function runFtsQueryForConnector({ connectorId, planEntries, q, allowsSnip
           ${recordKeyConstraint}
         ORDER BY score ASC
         LIMIT 200
-      `).all(connectorId, entry.streamName, field, ftsQuery, ...(entry.candidateRecordKeys || []));
+      `;
+      const rows = [];
+      for (const row of iterateDynamicSqlAcknowledged(
+        sql,
+        [connectorId, entry.streamName, field, ftsQuery, ...(entry.candidateRecordKeys || [])],
+      )) {
+        rows.push(row);
+      }
       for (const row of rows) {
         const key = `${entry.streamName}:${row.record_key}`;
         const existing = collapsed.get(key);
@@ -1083,22 +1031,15 @@ function hashPlan({ perConnectorPlans, isOwner }) {
 }
 
 async function persistSnapshot(snapshot) {
-  const db = getDb();
-  db.prepare(`
-    INSERT INTO lexical_search_snapshots(snapshot_id, query, plan_hash, results_json)
-    VALUES(?, ?, ?, ?)
-  `).run(snapshot.snapshot_id, snapshot.query, snapshot.plan_hash, JSON.stringify(snapshot.results));
+  exec(
+    referenceQueries.searchSnapshotsInsert,
+    [snapshot.snapshot_id, snapshot.query, snapshot.plan_hash, JSON.stringify(snapshot.results)],
+  );
 }
 
 async function loadSnapshot(snapshotId) {
-  const db = getDb();
-  const rows = db.prepare(`
-    SELECT snapshot_id, query, plan_hash, results_json, created_at
-    FROM lexical_search_snapshots
-    WHERE snapshot_id = ?
-  `).all(snapshotId);
-  if (rows.length === 0) return null;
-  const row = rows[0];
+  const row = getOne(referenceQueries.searchSnapshotsGetById, [snapshotId]);
+  if (!row) return null;
   const createdAt = new Date(row.created_at + 'Z').getTime();
   if (Number.isFinite(createdAt) && Date.now() - createdAt > SNAPSHOT_TTL_MS) {
     return null;

@@ -10,10 +10,9 @@
 // reference implementation exposes for its own dashboard. Clients must
 // not depend on the response shape.
 
-import { listSpineCorrelations, listSpineEvents, type SpineEventRecord, type SpineSummary } from "../lib/spine.ts";
+import { allowUnboundedReadAcknowledged, getOne, iterateDynamicSqlAcknowledged, referenceQueries } from "../lib/db.ts";
+import { listSpineCorrelations, type SpineSummary } from "../lib/spine.ts";
 import { buildPendingConsentRequestUri, getConnectorManifest } from "./auth.js";
-import { getDb } from "./db.js";
-import { referenceQueries } from "./queries/index.ts";
 import {
   chooseDisplayTimestamp,
   compareTimestampValues,
@@ -231,17 +230,6 @@ export interface TimelineResponse {
   readonly object: "list";
 }
 
-// Minimal structural interface for better-sqlite3 statements; keeps the
-// test shim story the same as in controller.ts.
-interface PreparedStatement {
-  all<T = unknown>(...params: unknown[]): T[];
-  iterate<T = unknown>(...params: unknown[]): Iterable<T>;
-}
-
-interface RefControlDatabase {
-  prepare(sql: string): PreparedStatement;
-}
-
 // ─── Named controller-plane errors ──────────────────────────────────────────
 
 export class RefControlError extends Error {
@@ -275,27 +263,41 @@ function buildFreshness(lastUpdated: string | null = null): Freshness {
   };
 }
 
-function extractKnownGaps(events: readonly SpineEventRecord[]): unknown[] {
-  for (let i = events.length - 1; i >= 0; i -= 1) {
-    const event = events[i];
-    if (!event || (event.event_type !== "run.completed" && event.event_type !== "run.failed")) {
-      continue;
-    }
-    const data = event.data;
-    if (data && typeof data === "object" && Array.isArray((data as Record<string, unknown>).known_gaps)) {
-      return (data as { known_gaps: unknown[] }).known_gaps;
-    }
+interface RunTerminalEventRow {
+  readonly data_json: string | null;
+  readonly event_type: string;
+  readonly occurred_at: string;
+  readonly status: string;
+}
+
+/**
+ * Extract `known_gaps` from a run's terminal event without scanning the
+ * run's full event list. The single SQL lookup is bounded by the SQL
+ * `LIMIT 1` clause; for runs without a terminal event yet (still in
+ * progress, or controller_restarted), returns an empty list.
+ */
+function extractKnownGapsForRun(runId: string): unknown[] {
+  const row = getOne<RunTerminalEventRow>(referenceQueries.spineGetRunTerminalEvent, [runId]);
+  if (!row?.data_json) {
     return [];
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(row.data_json);
+  } catch {
+    return [];
+  }
+  if (parsed && typeof parsed === "object" && Array.isArray((parsed as Record<string, unknown>).known_gaps)) {
+    return (parsed as { known_gaps: unknown[] }).known_gaps;
   }
   return [];
 }
 
-async function toConnectorRunSummary(summary: SpineSummary | null): Promise<ConnectorRunSummary | null> {
+function toConnectorRunSummary(summary: SpineSummary | null): ConnectorRunSummary | null {
   if (!summary) {
     return null;
   }
   const runId = summary.id || summary.run_id || null;
-  const events = runId ? await listSpineEvents({ runId }) : [];
   return {
     run_id: runId || undefined,
     status: summary.status,
@@ -305,7 +307,7 @@ async function toConnectorRunSummary(summary: SpineSummary | null): Promise<Conn
     last_at: summary.last_at,
     event_count: summary.event_count,
     failure_reason: summary.failure?.reason || null,
-    known_gaps: extractKnownGaps(events),
+    known_gaps: runId ? extractKnownGapsForRun(runId) : [],
   };
 }
 
@@ -319,21 +321,11 @@ async function getLatestRunSummary(
 }
 
 function getConnectorRecordProjection(connectorId: string): RecordProjection {
-  const db = getDb() as RefControlDatabase;
-  const rows = db
-    .prepare(
-      `
-    SELECT
-      stream,
-      COUNT(*) AS record_count,
-      MAX(emitted_at) AS last_updated
-    FROM records
-    WHERE connector_id = ?
-      AND deleted = 0
-    GROUP BY stream
-  `
-    )
-    .all<StreamAggregateRow>(connectorId);
+  // REVIEWED-BOUNDED: GROUP BY stream collapses the records-table scan to one
+  // row per stream declared by this connector's manifest (dozens at most).
+  const rows = allowUnboundedReadAcknowledged<StreamAggregateRow>(referenceQueries.recordsAggregateStreamsByConnector, [
+    connectorId,
+  ]);
   const byStream = new Map<string, StreamProjection>();
   let latest: string | null = null;
   for (const row of rows) {
@@ -379,9 +371,9 @@ function buildStreamSummary(
   };
 }
 
-function listRegisteredConnectorRows(): ConnectorRow[] {
-  const db = getDb() as RefControlDatabase;
-  return db.prepare(referenceQueries.listRegisteredConnectors.sql).all<ConnectorRow>();
+function listRegisteredConnectorRows(): readonly ConnectorRow[] {
+  // REVIEWED-BOUNDED: connectors table is O(registered providers); whole-table scan is acceptable.
+  return allowUnboundedReadAcknowledged<ConnectorRow>(referenceQueries.listRegisteredConnectors);
 }
 
 function getScheduleFrom(controller: ControllerLike | null | undefined, connectorId: string): Promise<unknown> {
@@ -493,30 +485,20 @@ function buildOwnerDeviceApproval(row: PendingOwnerDeviceRow): OwnerDeviceApprov
 }
 
 export function listPendingApprovals(): Promise<Approval[]> {
-  const db = getDb() as RefControlDatabase;
   const now = new Date().toISOString();
-  const pendingConsents = db
-    .prepare(
-      `
-    SELECT device_code, user_code, params_json, created_at
-    FROM pending_consents
-    WHERE status = 'pending'
-      AND expires_at > ?
-    ORDER BY created_at DESC
-  `
-    )
-    .all<PendingConsentRow>(now);
-  const pendingDevices = db
-    .prepare(
-      `
-    SELECT device_code, user_code, client_id, created_at
-    FROM owner_device_auth
-    WHERE status = 'pending'
-      AND expires_at > ?
-    ORDER BY created_at DESC
-  `
-    )
-    .all<PendingOwnerDeviceRow>(now);
+  // REVIEWED-BOUNDED: pending consents form a human-driven queue trimmed by the
+  // expires_at predicate; the table cannot meaningfully exceed dozens of rows.
+  const pendingConsents = allowUnboundedReadAcknowledged<PendingConsentRow>(
+    referenceQueries.approvalsListPendingConsents,
+    [now]
+  );
+  // REVIEWED-BOUNDED: in-flight owner CLI device flows form a human-driven queue
+  // trimmed by the expires_at predicate; the table cannot meaningfully exceed
+  // dozens of rows.
+  const pendingDevices = allowUnboundedReadAcknowledged<PendingOwnerDeviceRow>(
+    referenceQueries.approvalsListPendingOwnerDevices,
+    [now]
+  );
   const approvals: Approval[] = [
     ...pendingConsents.map(buildConsentApproval),
     ...pendingDevices.map(buildOwnerDeviceApproval),
@@ -570,13 +552,14 @@ interface PairRow {
  * and the count of pairs is on the order of (registered connectors × streams
  * per connector) — dozens, not thousands.
  */
+const TIMELINE_PAIR_ENUMERATION_LIMIT = 1024;
+
 function enumerateCandidatePairs(
-  db: RefControlDatabase,
   connectorId: string | null,
   stream: string | null
 ): { connectorId: string; stream: string }[] {
   const where: string[] = ["deleted = 0"];
-  const binds: string[] = [];
+  const binds: (number | string)[] = [];
   if (connectorId) {
     where.push("connector_id = ?");
     binds.push(connectorId);
@@ -585,16 +568,21 @@ function enumerateCandidatePairs(
     where.push("stream = ?");
     binds.push(stream);
   }
-  const rows = db
-    .prepare(
-      `
+  // REVIEWED-DYNAMIC: WHERE clause varies with caller-supplied connectorId/stream
+  // filters, so the artifact registry cannot validate a fixed SQL string here.
+  // The LIMIT ? guard caps the worst case at TIMELINE_PAIR_ENUMERATION_LIMIT
+  // distinct (connector_id, stream) pairs; realistic load is dozens.
+  const sql = `
     SELECT DISTINCT connector_id, stream
     FROM records
     WHERE ${where.join(" AND ")}
-  `
-    )
-    .all<PairRow>(...binds);
-  return rows.map((row) => ({ connectorId: row.connector_id, stream: row.stream }));
+    LIMIT ?
+  `;
+  const pairs: { connectorId: string; stream: string }[] = [];
+  for (const row of iterateDynamicSqlAcknowledged<PairRow>(sql, [...binds, TIMELINE_PAIR_ENUMERATION_LIMIT])) {
+    pairs.push({ connectorId: row.connector_id, stream: row.stream });
+  }
+  return pairs;
 }
 
 interface TimelineQueryRow {
@@ -728,7 +716,6 @@ function buildTimelineEntry(
 }
 
 async function collectPairEntries(
-  db: RefControlDatabase,
   pair: { connectorId: string; stream: string },
   opts: {
     orderDir: "ASC" | "DESC";
@@ -749,9 +736,18 @@ async function collectPairEntries(
     orderDir: opts.orderDir,
   });
 
-  const stmt = db.prepare(sql);
   const entries: TimelineEntry[] = [];
-  for (const row of stmt.iterate<TimelineQueryRow>(pair.connectorId, pair.stream, ...binds, opts.perPairLimit)) {
+  // REVIEWED-DYNAMIC: WHERE/ORDER BY shape is selected by buildTimelineSql from
+  // manifest-driven timestamp expressions and caller-supplied since/until/order
+  // values, so the artifact registry cannot validate this SQL up front. The
+  // statement embeds a trailing LIMIT ? bound by perPairLimit, which the caller
+  // derives from the request's `limit` field.
+  for (const row of iterateDynamicSqlAcknowledged<TimelineQueryRow>(sql, [
+    pair.connectorId,
+    pair.stream,
+    ...binds,
+    opts.perPairLimit,
+  ])) {
     const entry = buildTimelineEntry(row, manifestStream, opts.timestampMode);
     if (!entry) {
       continue;
@@ -773,13 +769,12 @@ export async function listRecordsTimeline({
   order = "desc",
   timestampMode = "native",
 }: TimelineOptions = {}): Promise<TimelineResponse> {
-  const db = getDb() as RefControlDatabase;
-  const pairs = enumerateCandidatePairs(db, connectorId, stream);
+  const pairs = enumerateCandidatePairs(connectorId, stream);
   const perPairLimit = Math.max(limit * 2, 10);
   const orderDir: "ASC" | "DESC" = order === "asc" ? "ASC" : "DESC";
 
   const perPair = await Promise.all(
-    pairs.map((pair) => collectPairEntries(db, pair, { orderDir, perPairLimit, since, timestampMode, until }))
+    pairs.map((pair) => collectPairEntries(pair, { orderDir, perPairLimit, since, timestampMode, until }))
   );
   const collected = perPair.flat();
 

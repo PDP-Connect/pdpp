@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "pnpm -r --parallel --stream --filter pdpp-reference-implementation --filter pdpp-web run dev",
+    "dev:stop": "npx --yes kill-port 7662 7663 3000 || true",
     "build": "pnpm web:build",
     "preview": "pnpm web:start",
     "start": "pnpm web:start",

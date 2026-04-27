@@ -18,7 +18,8 @@ import {
   shouldUseDirectRequestOrigin,
   stripTrailingSlash,
 } from './metadata.ts';
-import { createTraceContext, emitSpineEvent, generateSpineId, listSpineCorrelations, listSpineEvents, searchSpine } from '../lib/spine.ts';
+import { createTraceContext, emitSpineEvent, generateSpineId, listSpineCorrelations, listSpineEventsPage, searchSpine } from '../lib/spine.ts';
+import { exec, getOne, InvalidCursorError, referenceQueries, transaction } from '../lib/db.ts';
 import {
   registerConnector, getConnectorManifest, getConfiguredNativeManifest, getManifestForStorageBinding, initiateGrant, getPendingConsent,
   approveGrant, introspect, revokeGrant, denyGrant,
@@ -627,15 +628,45 @@ function redactSpineEventForPublic(event) {
   return rest;
 }
 
-function buildTimelineEnvelope(object, idKey, idValue, events) {
+function buildTimelineEnvelope(object, idKey, idValue, events, pagination = null) {
   const traceId = events.find((event) => event.trace_id)?.trace_id || null;
-  return {
+  const envelope = {
     object,
     [idKey]: idValue,
     trace_id: traceId,
     event_count: events.length,
     data: events.map(redactSpineEventForPublic),
   };
+  if (pagination) {
+    envelope.truncated = pagination.truncated;
+    envelope.next_cursor = pagination.next_cursor;
+    envelope.limit = pagination.limit;
+  }
+  return envelope;
+}
+
+const TIMELINE_DEFAULT_LIMIT = 2_000;
+const TIMELINE_MAX_LIMIT = 5_000;
+
+function parseTimelinePageOptions(req, res) {
+  const rawLimit = req.query?.limit;
+  let limit = TIMELINE_DEFAULT_LIMIT;
+  if (rawLimit !== undefined && rawLimit !== null && rawLimit !== '') {
+    const parsed = Number(rawLimit);
+    if (!Number.isFinite(parsed) || !Number.isInteger(parsed) || parsed <= 0) {
+      pdppError(res, 400, 'invalid_request', `limit must be a positive integer (got "${rawLimit}")`, 'limit');
+      return null;
+    }
+    if (parsed > TIMELINE_MAX_LIMIT) {
+      pdppError(res, 400, 'invalid_request', `limit ${parsed} exceeds maximum ${TIMELINE_MAX_LIMIT}`, 'limit');
+      return null;
+    }
+    limit = parsed;
+  }
+  const cursor = typeof req.query?.cursor === 'string' && req.query.cursor.length > 0
+    ? req.query.cursor
+    : null;
+  return { limit, cursor };
 }
 
 // ─── Auth middleware ─────────────────────────────────────────────────────────
@@ -992,31 +1023,27 @@ function buildGrantInvalidError() {
 }
 
 async function resolveGrantScopedStateGrant(connectorId, grantId) {
-  const rows = getDb().prepare(`
-    SELECT grant_json, storage_binding_json, trace_id, scenario_id
-    FROM grants
-    WHERE grant_id = ?
-  `).all(grantId);
-  if (!rows.length) {
+  const row = getOne(referenceQueries.grantsGetScopedStateById, [grantId]);
+  if (!row) {
     const err = new Error(`Unknown grant: ${grantId}`);
     err.code = 'not_found';
     throw err;
   }
 
   try {
-    const resolved = await requireResolvedPersistedGrantState(rows[0]);
+    const resolved = await requireResolvedPersistedGrantState(row);
     if (resolved.grant.access_mode !== 'continuous') {
       const err = new Error(`Grant '${grantId}' does not support grant-scoped state because access_mode is ${resolved.grant.access_mode || 'unknown'}`);
       err.code = 'invalid_request';
-      err.trace_id = rows[0].trace_id || null;
-      err.scenario_id = rows[0].scenario_id || undefined;
+      err.trace_id = row.trace_id || null;
+      err.scenario_id = row.scenario_id || undefined;
       throw err;
     }
     if (resolved.storageBinding.connector_id !== connectorId) {
       const err = new Error(`Grant '${grantId}' is not scoped to connector ${connectorId}`);
       err.code = 'invalid_request';
-      err.trace_id = rows[0].trace_id || null;
-      err.scenario_id = rows[0].scenario_id || undefined;
+      err.trace_id = row.trace_id || null;
+      err.scenario_id = row.scenario_id || undefined;
       throw err;
     }
     return {
@@ -1024,18 +1051,18 @@ async function resolveGrantScopedStateGrant(connectorId, grantId) {
       grant: resolved.grant,
       storageBinding: resolved.storageBinding,
       grantedStreams: new Set(resolved.grant.streams.map((stream) => stream.name)),
-      traceId: rows[0].trace_id || null,
-      scenarioId: rows[0].scenario_id || undefined,
+      traceId: row.trace_id || null,
+      scenarioId: row.scenario_id || undefined,
     };
   } catch (err) {
     if (err?.code === 'invalid_request' || err?.code === 'not_found') {
-      err.trace_id = rows[0].trace_id || null;
-      err.scenario_id = rows[0].scenario_id || undefined;
+      err.trace_id = row.trace_id || null;
+      err.scenario_id = row.scenario_id || undefined;
       throw err;
     }
     const invalidErr = buildGrantInvalidError();
-    invalidErr.trace_id = rows[0].trace_id || null;
-    invalidErr.scenario_id = rows[0].scenario_id || undefined;
+    invalidErr.trace_id = row.trace_id || null;
+    invalidErr.scenario_id = row.scenario_id || undefined;
     throw invalidErr;
   }
 }
@@ -1388,33 +1415,22 @@ function persistContentAddressedBlob({ connectorId, stream, recordKey, mimeType,
   const sha256 = createHash('sha256').update(data).digest('hex');
   const blobId = `blob_sha256_${sha256}`;
   const sizeBytes = data.byteLength;
-  const db = getDb();
-  const tx = db.transaction(() => {
-    db.prepare(`
-      INSERT OR IGNORE INTO blobs(blob_id, connector_id, stream, record_key, mime_type, size_bytes, sha256, data)
-      VALUES(?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(blobId, connectorId, stream, recordKey, mimeType, sizeBytes, sha256, data);
+  const stored = transaction(() => {
+    exec(referenceQueries.blobsInsertBlob, [
+      blobId, connectorId, stream, recordKey, mimeType, sizeBytes, sha256, data,
+    ]);
 
-    const stored = db.prepare(`
-      SELECT blob_id, mime_type, size_bytes, sha256
-      FROM blobs
-      WHERE blob_id = ?
-      LIMIT 1
-    `).get(blobId);
-    if (!stored || stored.sha256 !== sha256 || Number(stored.size_bytes) !== sizeBytes) {
+    const row = getOne(referenceQueries.blobsGetStoredById, [blobId]);
+    if (!row || row.sha256 !== sha256 || Number(row.size_bytes) !== sizeBytes) {
       const err = new Error('Blob storage collision');
       err.code = 'api_error';
       throw err;
     }
 
-    db.prepare(`
-      INSERT OR IGNORE INTO blob_bindings(blob_id, connector_id, stream, record_key)
-      VALUES(?, ?, ?, ?)
-    `).run(blobId, connectorId, stream, recordKey);
+    exec(referenceQueries.blobsInsertBinding, [blobId, connectorId, stream, recordKey]);
 
-    return stored;
+    return row;
   });
-  const stored = tx();
   return {
     blob_id: blobId,
     sha256,
@@ -2108,10 +2124,15 @@ function buildAsApp(opts = {}) {
   app.get('/_ref/traces/:traceId', ownerAuth.requireOwnerSession, async (req, res) => {
     try {
       const traceId = decodeURIComponent(req.params.traceId);
-      const events = await listSpineEvents({ traceId });
-      if (!events.length) return pdppError(res, 404, 'not_found', 'Trace not found');
-      res.json(buildTimelineEnvelope('trace', 'trace_id', traceId, events));
+      const opts = parseTimelinePageOptions(req, res);
+      if (!opts) return;
+      const page = listSpineEventsPage('trace', traceId, opts);
+      if (!page.events.length && !opts.cursor) return pdppError(res, 404, 'not_found', 'Trace not found');
+      res.json(buildTimelineEnvelope('trace', 'trace_id', traceId, page.events, page));
     } catch (err) {
+      if (err instanceof InvalidCursorError) {
+        return pdppError(res, 400, 'invalid_cursor', err.message, 'cursor');
+      }
       handleError(res, err);
     }
   });
@@ -2119,10 +2140,15 @@ function buildAsApp(opts = {}) {
   app.get('/_ref/grants/:grantId/timeline', ownerAuth.requireOwnerSession, async (req, res) => {
     try {
       const grantId = decodeURIComponent(req.params.grantId);
-      const events = await listSpineEvents({ grantId });
-      if (!events.length) return pdppError(res, 404, 'not_found', 'Grant timeline not found');
-      res.json(buildTimelineEnvelope('grant_timeline', 'grant_id', grantId, events));
+      const opts = parseTimelinePageOptions(req, res);
+      if (!opts) return;
+      const page = listSpineEventsPage('grant', grantId, opts);
+      if (!page.events.length && !opts.cursor) return pdppError(res, 404, 'not_found', 'Grant timeline not found');
+      res.json(buildTimelineEnvelope('grant_timeline', 'grant_id', grantId, page.events, page));
     } catch (err) {
+      if (err instanceof InvalidCursorError) {
+        return pdppError(res, 400, 'invalid_cursor', err.message, 'cursor');
+      }
       handleError(res, err);
     }
   });
@@ -2130,10 +2156,15 @@ function buildAsApp(opts = {}) {
   app.get('/_ref/runs/:runId/timeline', ownerAuth.requireOwnerSession, async (req, res) => {
     try {
       const runId = decodeURIComponent(req.params.runId);
-      const events = await listSpineEvents({ runId });
-      if (!events.length) return pdppError(res, 404, 'not_found', 'Run timeline not found');
-      res.json(buildTimelineEnvelope('run_timeline', 'run_id', runId, events));
+      const opts = parseTimelinePageOptions(req, res);
+      if (!opts) return;
+      const page = listSpineEventsPage('run', runId, opts);
+      if (!page.events.length && !opts.cursor) return pdppError(res, 404, 'not_found', 'Run timeline not found');
+      res.json(buildTimelineEnvelope('run_timeline', 'run_id', runId, page.events, page));
     } catch (err) {
+      if (err instanceof InvalidCursorError) {
+        return pdppError(res, 400, 'invalid_cursor', err.message, 'cursor');
+      }
       handleError(res, err);
     }
   });
@@ -4133,7 +4164,6 @@ export async function startServer(opts = {}) {
     rsUrl: configuredRsPublicUrl || null,
   };
   const controller = createController({
-    db: getDb(),
     asPublicUrl: configuredAsPublicUrl,
     ownerSubjectId: opts.ownerAuthSubjectId,
     connectorPathResolver: opts.connectorPathResolver,

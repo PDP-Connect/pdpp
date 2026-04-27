@@ -44,3 +44,57 @@ pre-commit:
           echo "✗ Found 'as unknown as X' double-cast — narrow the type properly instead."
           exit 1
         fi
+
+    # Bounded-statement wrapper enforcement.
+    # Spec: openspec/changes/bound-spine-and-record-read-paths/specs/
+    #       reference-implementation-architecture/spec.md
+    #       Requirement: "Reference RS read paths SHALL be bounded by construction"
+    #
+    # Three gates, all grep-based per the codebase precedent above. They
+    # fire on staged-file diffs, so existing call sites that have not yet
+    # been migrated are not flagged retroactively — only new introductions
+    # are blocked. The bulk migration of pre-existing sites moved through
+    # the wrapper in a separate commit; from that commit forward, every
+    # new DB read SHALL flow through `lib/db.ts`.
+
+    - name: reference-implementation:no-direct-prepare
+      # Direct `db.prepare(sql)` is forbidden outside three legitimate
+      # locations:
+      #   - `reference-implementation/lib/db.ts` (the wrapper itself)
+      #   - `reference-implementation/server/db.js` (engine bootstrap)
+      #   - `reference-implementation/server/queries/index.ts` (the
+      #     registry, which calls `db.prepare(query.sql)` at boot to
+      #     validate every loaded artifact against the live schema)
+      # Everywhere else, use the typed wrapper primitives (`getOne` /
+      # `getMany` / `iterate` / `exec` / `allowUnboundedReadAcknowledged` /
+      # `iterateDynamicSqlAcknowledged`) exported from `lib/db.ts`.
+      glob: "reference-implementation/{lib,server,runtime,cli}/**/*.{ts,js}"
+      run: |
+        offending=$(echo "{staged_files}" | tr ' ' '\n' \
+          | grep -v '^reference-implementation/lib/db\.ts$' \
+          | grep -v '^reference-implementation/server/db\.js$' \
+          | grep -v '^reference-implementation/server/queries/index\.ts$' \
+          | grep -v '^$')
+        if [ -z "$offending" ]; then exit 0; fi
+        if echo "$offending" | xargs grep -nE '(^|[^a-zA-Z_])(db|getDb\(\))\.prepare\(' 2>/dev/null; then
+          echo "✗ Direct .prepare(...) is forbidden outside the wrapper."
+          echo "  Use the typed wrapper primitives from lib/db.ts:"
+          echo "    getOne, getMany, iterate, exec,"
+          echo "    allowUnboundedReadAcknowledged, iterateDynamicSqlAcknowledged."
+          echo "  Spec: openspec/specs/reference-implementation-architecture/spec.md"
+          echo "  Requirement: 'Reference RS read paths SHALL be bounded by construction'"
+          exit 1
+        fi
+
+    # The escape hatches `allowUnboundedReadAcknowledged` and
+    # `iterateDynamicSqlAcknowledged` are intentionally long and grep-
+    # friendly. Their function names ARE the review trigger — any reader
+    # encountering a call site sees the loud name and reads the
+    # surrounding code to understand why the escape hatch was used.
+    # Per-call comment-proximity enforcement was considered and rejected
+    # because (a) it produces ceremony rather than substance — a wall of
+    # `REVIEWED-*` comments becomes noise reviewers learn to skip, and
+    # (b) it false-positives on legitimate patterns where one comment
+    # block at function entry covers multiple calls in the body. PR
+    # review is the right tool for "is this escape hatch justified?";
+    # lefthook is the right tool for "did you bypass the wrapper?".
