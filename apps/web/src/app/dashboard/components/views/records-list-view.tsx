@@ -43,6 +43,7 @@ export function RecordsListView({
   routes,
   interactive,
   pollerSlot,
+  now: nowOverride,
 }: {
   overviews: ConnectorOverview[];
   routes: Routes;
@@ -50,6 +51,13 @@ export function RecordsListView({
   interactive: boolean;
   /** Optional client-side poller; live dashboard injects RecordsPagePoller. */
   pollerSlot?: ReactNode;
+  /**
+   * Reference "now" in epoch ms for the freshness/staleness labels. The live
+   * dashboard wants wall-clock time; the sandbox wants its frozen demo clock
+   * so seeded `last_at` values do not drift into "Stale" as wall-clock time
+   * advances.
+   */
+  now?: number;
 }) {
   const withData = overviews.filter((o) => o.totalRecords > 0 || o.lastRun);
   const empty = overviews.filter((o) => o.totalRecords === 0 && !o.lastRun && !o.error);
@@ -68,7 +76,7 @@ export function RecordsListView({
   const totalRecords = withData.reduce((sum, o) => sum + o.totalRecords, 0);
   const totalStreams = withData.reduce((sum, o) => sum + o.streams.length, 0);
 
-  const now = Date.now();
+  const now = nowOverride ?? Date.now();
   const runningCount = withData.filter((o) => o.isRunning).length;
   const failedCount = withData.filter((o) => o.lastRun?.status === "failed").length;
   const syncedRecently = withData.filter((o) => {

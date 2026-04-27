@@ -4,6 +4,7 @@ import { sandboxRoutes } from "@/app/dashboard/components/views/routes.ts";
 import type { RefConnectorRunSummary, RefConnectorSummary } from "@/app/dashboard/lib/ref-client.ts";
 import type { ConnectorOverview } from "@/app/dashboard/lib/rs-client.ts";
 import { sandboxDashboardDataSource } from "../_demo/data-source.ts";
+import { DEMO_NOW } from "../_demo/dataset.ts";
 
 export const dynamic = "force-static";
 
@@ -50,7 +51,7 @@ export default async function SandboxRecordsPage() {
   const overviews = response.data.map(toConnectorOverview);
   return (
     <DashboardShell active="records" mode="mock-owner">
-      <RecordsListView interactive={false} overviews={overviews} routes={sandboxRoutes} />
+      <RecordsListView interactive={false} now={Date.parse(DEMO_NOW)} overviews={overviews} routes={sandboxRoutes} />
     </DashboardShell>
   );
 }

@@ -50,6 +50,36 @@ const PRIMARY_DASHBOARD_PAGES = [
   "runs/[runId]/page.tsx",
   "traces/page.tsx",
   "traces/[traceId]/page.tsx",
+  "schedules/page.tsx",
+  "deployment/page.tsx",
+];
+
+/**
+ * Routes that must exist on both /dashboard and /sandbox so the two surfaces
+ * stay in lockstep. The check is a presence check rather than a behavior
+ * check — its job is to trip when one side gets renamed or deleted without
+ * the other.
+ */
+const DASHBOARD_DIR = join(SANDBOX_DIR, "..", "dashboard");
+const PARITY_PAGES = [
+  "page.tsx",
+  "records/page.tsx",
+  "schedules/page.tsx",
+  "search/page.tsx",
+  "grants/page.tsx",
+  "runs/page.tsx",
+  "traces/page.tsx",
+  "deployment/page.tsx",
+];
+
+const SANDBOX_PARITY_PAGES = [
+  "overview/page.tsx",
+  "records/page.tsx",
+  "schedules/page.tsx",
+  "search/page.tsx",
+  "grants/page.tsx",
+  "runs/page.tsx",
+  "traces/page.tsx",
   "deployment/page.tsx",
 ];
 
@@ -141,6 +171,29 @@ test("DashboardShell in mock-owner mode swaps in the mock-owner footer (no live 
 test("sandboxRoutes overview is `/sandbox/overview`, distinct from the launcher", async () => {
   const src = await readFile(join(SANDBOX_DIR, "..", "dashboard", "components", "views", "routes.ts"), "utf8");
   assert.match(src, SANDBOX_OVERVIEW_ROUTE_RE);
+});
+
+test("/dashboard and /sandbox have parity for the core dashboard routes", async () => {
+  const missing: string[] = [];
+  for (const rel of PARITY_PAGES) {
+    try {
+      await readFile(join(DASHBOARD_DIR, rel), "utf8");
+    } catch {
+      missing.push(`/dashboard/${rel}`);
+    }
+  }
+  for (const rel of SANDBOX_PARITY_PAGES) {
+    try {
+      await readFile(join(SANDBOX_DIR, rel), "utf8");
+    } catch {
+      missing.push(`/sandbox/${rel}`);
+    }
+  }
+  assert.deepEqual(
+    missing,
+    [],
+    `dashboard/sandbox parity violated — these route files are missing:\n${missing.join("\n")}`
+  );
 });
 
 test("DashboardShell passes the mode-specific overview route to CommandPalette", async () => {
