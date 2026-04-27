@@ -124,7 +124,7 @@ async function collectRetrievalStartupBackfillManifests({ nativeManifest, logger
   return manifests;
 }
 
-async function runRetrievalStartupBackfill({ manifests, logger }) {
+async function runRetrievalStartupBackfill({ manifests, logger, signal = null }) {
   if (manifests.length === 0) {
     return;
   }
@@ -133,22 +133,37 @@ async function runRetrievalStartupBackfill({ manifests, logger }) {
   logger.info({ connectorCount: manifests.length }, 'retrieval startup backfill started');
 
   for (const manifest of manifests) {
+    if (signal?.aborted) {
+      logger.info({ reason: 'shutdown' }, 'retrieval startup backfill aborted between connectors');
+      return;
+    }
     const connectorId = manifest.connector_id;
     try {
       logger.info({ connectorId }, 'retrieval startup backfill connector started');
       await lexicalIndexBackfillForManifest({
         manifest,
         log: (msg) => logger.info(msg),
+        signal,
       });
       const semanticBackend = getSemanticBackend();
       if (semanticBackend?.available()) {
         await semanticIndexBackfillForManifest({
           manifest,
           log: (msg) => logger.info(msg),
+          signal,
         });
       }
       logger.info({ connectorId }, 'retrieval startup backfill connector completed');
     } catch (err) {
+      // If the abort is the cause, log at info — this is an expected
+      // shutdown path, not an operator-visible failure.
+      if (signal?.aborted) {
+        logger.info(
+          { connectorId, reason: 'shutdown' },
+          'retrieval startup backfill connector aborted',
+        );
+        return;
+      }
       logger.warn(
         { err, connectorId },
         'retrieval startup backfill failed for connector',
@@ -162,7 +177,7 @@ async function runRetrievalStartupBackfill({ manifests, logger }) {
   );
 }
 
-function scheduleRetrievalStartupBackfill({ manifests, logger }) {
+function scheduleRetrievalStartupBackfill({ manifests, logger, signal = null }) {
   if (manifests.length === 0) {
     return Promise.resolve();
   }
@@ -173,8 +188,15 @@ function scheduleRetrievalStartupBackfill({ manifests, logger }) {
   );
 
   return new Promise((resolve) => setImmediate(resolve))
-    .then(() => runRetrievalStartupBackfill({ manifests, logger }))
+    .then(() => runRetrievalStartupBackfill({ manifests, logger, signal }))
     .catch((err) => {
+      // Abort-driven exits travel through this catch when the loop
+      // re-throws an AbortError-like value before reaching the inner
+      // try/catch (e.g., between connectors). Treat as a clean shutdown.
+      if (signal?.aborted) {
+        logger.info({ reason: 'shutdown' }, 'retrieval startup backfill aborted');
+        return;
+      }
       logger.warn({ err }, 'retrieval startup backfill crashed');
     });
 }
@@ -3904,7 +3926,15 @@ function buildRsApp(opts = {}) {
 export async function startServer(opts = {}) {
   const logger = opts.logger ?? buildLogger({ quiet: !!opts.quiet });
   const nativeConfig = validateNativeConfiguration(opts);
-  await initDb(opts.dbPath || DB_PATH, { busyTimeoutMs: opts.sqliteBusyTimeoutMs });
+  await initDb(opts.dbPath || DB_PATH, {
+    busyTimeoutMs: opts.sqliteBusyTimeoutMs,
+    onSchemaRetry: ({ attempt, delay, err }) => {
+      logger.warn(
+        { attempt, delayMs: delay, code: err?.code, msg: err?.message },
+        'startup schema exec contended with sqlite lock; retrying',
+      );
+    },
+  });
   await seedPreRegisteredClients(
     resolvePreRegisteredPublicClients(opts),
     {
@@ -4089,14 +4119,24 @@ export async function startServer(opts = {}) {
   // than routing large NDJSON payloads through the browser-facing web origin.
   runtimeContext.rsUrl = `http://localhost:${rsPort}`;
   logger.info({ port: rsPort, url: `http://localhost:${rsPort}` }, 'resource server listening');
+  const startupBackfillAbortController = new AbortController();
   const startupBackfillDone = scheduleRetrievalStartupBackfill({
     manifests: startupBackfillManifests,
     logger,
+    signal: startupBackfillAbortController.signal,
   });
   if (opts.awaitStartupBackfill === true) {
     await startupBackfillDone;
   }
-  return { asServer, rsServer, asPort, rsPort, logger, startupBackfillDone };
+  return {
+    asServer,
+    rsServer,
+    asPort,
+    rsPort,
+    logger,
+    startupBackfillDone,
+    abortStartupBackfill: (reason) => startupBackfillAbortController.abort(reason),
+  };
 }
 
 // ─── CLI entrypoint ──────────────────────────────────────────────────────────
@@ -4142,7 +4182,7 @@ if (process.argv[1] && process.argv[1].endsWith('server/index.js')) {
   process.on('uncaughtException', handleUncaught);
   process.on('unhandledRejection', exitOnFatal('unhandledRejection'));
 
-  const server = { asServer: null, rsServer: null };
+  const server = { asServer: null, rsServer: null, abortStartupBackfill: null, startupBackfillDone: null };
   const exitOnSignal = (signal) => async () => {
     if (shuttingDown) return;
     shuttingDown = true;
@@ -4170,9 +4210,24 @@ if (process.argv[1] && process.argv[1].endsWith('server/index.js')) {
       try { srv.closeIdleConnections?.(); } catch {}
       try { srv.close(finish); } catch { finish(); }
     });
+    // Signal the startup retrieval backfill to wind down ALONGSIDE the
+    // HTTP drain. Without this, a backfill mid-`upsertMany` keeps the
+    // SQLite writer slot held while we proceed to `closeDb()`, and a
+    // sibling process re-opening the same WAL DB (e.g. `node --watch`
+    // restart, `docker compose restart reference`) sees a stale lock
+    // and trips `SQLITE_BUSY database is locked`. The backfill loop
+    // checks the abort flag between page transactions and at the
+    // top of each connector iteration, so this releases on a clean
+    // boundary. Bounded await with a 2s timeout matches the HTTP drain.
+    try { server.abortStartupBackfill?.('shutdown'); } catch {}
+    const backfillDeadline = new Promise((resolve) => setTimeout(resolve, 2000));
+    const awaitBackfill = server.startupBackfillDone
+      ? Promise.resolve(server.startupBackfillDone).catch(() => {})
+      : Promise.resolve();
     await Promise.allSettled([
       closeTimeout(server.asServer),
       closeTimeout(server.rsServer),
+      Promise.race([awaitBackfill, backfillDeadline]),
     ]);
     closeDb();
     process.exit(0);
@@ -4183,6 +4238,8 @@ if (process.argv[1] && process.argv[1].endsWith('server/index.js')) {
   startServer({ logger: cliLogger }).then((result) => {
     server.asServer = result.asServer;
     server.rsServer = result.rsServer;
+    server.abortStartupBackfill = result.abortStartupBackfill;
+    server.startupBackfillDone = result.startupBackfillDone;
   }).catch(err => {
     closeDb();
     cliLogger.fatal({ err }, 'startup failed');

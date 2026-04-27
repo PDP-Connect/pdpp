@@ -80,6 +80,55 @@ export function isTransientSqliteLockError(err) {
   return message.includes('database is locked') || message.includes('database table is locked');
 }
 
+/**
+ * Synchronous sibling of `runWithSqliteBusyRetry` for the boot path.
+ *
+ * `initDb` runs synchronously (better-sqlite3 is sync; the surrounding
+ * `await initDb(...)` call site only awaits the Promise wrapper) and the
+ * very first write after opening the DB is `raw.exec(SCHEMA)`. On Docker
+ * dev restart (`node --watch` or `docker compose restart reference`),
+ * the new process can race the old process's still-closing WAL writer.
+ * `seedPreRegisteredClients` is already wrapped in the async retry
+ * helper, but the SCHEMA exec runs BEFORE that — so a transient lock
+ * surfaces as `SQLITE_BUSY` from the boot itself. This helper applies
+ * the same bounded retry policy without going async.
+ *
+ * Uses a busy-wait spin to back off because we are intentionally on the
+ * synchronous path; the retry budget is small (5 attempts capped at
+ * 1.5s each) and only fires on a transient lock, so the worst case is
+ * ~5s of boot delay before we surface the original error.
+ */
+export function runWithSqliteBusyRetrySync(fn, opts = {}) {
+  const maxAttempts = Number.isFinite(opts.maxAttempts) ? Math.max(1, opts.maxAttempts) : 5;
+  const initialDelayMs = Number.isFinite(opts.initialDelayMs) ? Math.max(0, opts.initialDelayMs) : 100;
+  const maxDelayMs = Number.isFinite(opts.maxDelayMs) ? Math.max(initialDelayMs, opts.maxDelayMs) : 1500;
+  const onRetry = typeof opts.onRetry === 'function' ? opts.onRetry : null;
+
+  const sleepSync = typeof opts.sleepSync === 'function'
+    ? opts.sleepSync
+    : (ms) => {
+        const deadline = Date.now() + ms;
+        while (Date.now() < deadline) { /* busy-wait */ }
+      };
+
+  let attempt = 0;
+  let lastErr;
+  while (attempt < maxAttempts) {
+    try {
+      return fn();
+    } catch (err) {
+      lastErr = err;
+      if (!isTransientSqliteLockError(err)) throw err;
+      attempt += 1;
+      if (attempt >= maxAttempts) break;
+      const delay = Math.min(maxDelayMs, initialDelayMs * 2 ** (attempt - 1));
+      if (onRetry) onRetry({ err, attempt, delay });
+      sleepSync(delay);
+    }
+  }
+  throw lastErr;
+}
+
 export async function runWithSqliteBusyRetry(fn, opts = {}) {
   const maxAttempts = Number.isFinite(opts.maxAttempts) ? Math.max(1, opts.maxAttempts) : 5;
   const initialDelayMs = Number.isFinite(opts.initialDelayMs) ? Math.max(0, opts.initialDelayMs) : 100;
@@ -532,7 +581,14 @@ export function initDb(path = ':memory:', opts = {}) {
 
   const vectorIndexKind = loadVectorExtension(raw);
 
-  raw.exec(SCHEMA);
+  // The first non-trivial write on the freshly opened DB. On Docker dev
+  // restart the previous process may still be closing its WAL writer;
+  // wrap with the same bounded retry policy used by
+  // `seedPreRegisteredClients` so a single SQLITE_BUSY at boot doesn't
+  // crash the new process. Sync because better-sqlite3 / initDb are sync.
+  runWithSqliteBusyRetrySync(() => raw.exec(SCHEMA), {
+    onRetry: opts.onSchemaRetry,
+  });
   db = withCachedPrepare(raw);
   // Stamp the chosen vector-index backend onto the wrapped db so
   // search-semantic.js can select without re-probing. The Proxy's

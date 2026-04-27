@@ -883,6 +883,7 @@ async function rebuildSemanticIndexForStream({
   recordsToScan = null,
   progressJob = null,
   existingKeys = null,
+  signal = null,
 }) {
   const index = ensureVectorIndex();
   if (!index || !backend) return 0;
@@ -893,6 +894,12 @@ async function rebuildSemanticIndexForStream({
   let indexed = 0;
   let scanned = 0;
   for (;;) {
+    // Cancellation hook (see lexical counterpart in search.js): the CLI
+    // shutdown handler aborts the signal before closing the DB so the
+    // embed/upsert loop releases the WAL writer cleanly.
+    if (signal?.aborted) {
+      throw signal.reason instanceof Error ? signal.reason : new Error('semantic backfill aborted');
+    }
     const rows = db.prepare(`
       SELECT id, record_key, record_json
       FROM records
@@ -993,7 +1000,7 @@ function deleteBackfillProgress(db, { connectorId, stream }) {
  *   - startServer (native mode)
  *   - registerConnector (polyfill mode)
  */
-export async function semanticIndexBackfillForManifest({ manifest, log = () => {} } = {}) {
+export async function semanticIndexBackfillForManifest({ manifest, log = () => {}, signal = null } = {}) {
   if (!manifest?.connector_id || !Array.isArray(manifest?.streams)) return;
   if (!backend) return;
   activeBackfillCount += 1;
@@ -1028,6 +1035,9 @@ export async function semanticIndexBackfillForManifest({ manifest, log = () => {
   const visitedStreams = new Set();
 
   for (const mStream of manifest.streams) {
+    if (signal?.aborted) {
+      throw signal.reason instanceof Error ? signal.reason : new Error('semantic backfill aborted');
+    }
     const stream = mStream?.name;
     if (typeof stream !== 'string' || stream.length === 0) continue;
     visitedStreams.add(stream);
@@ -1169,6 +1179,7 @@ export async function semanticIndexBackfillForManifest({ manifest, log = () => {
       recordsToScan,
       progressJob,
       existingKeys,
+      signal,
     });
     log(`[PDPP] Semantic index rebuild completed for ${connectorId} stream='${stream}' ` +
         `(records=${recordsToScan}, indexed=${indexed})`);

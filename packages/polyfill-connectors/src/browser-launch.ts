@@ -25,6 +25,7 @@ import {
   hostBrowserBridgeUnavailableMessage,
   resolveHostBrowserBridgeConfig,
 } from "./host-browser-bridge-config.ts";
+import { isRunningInContainer } from "./runtime-environment.ts";
 
 const PROFILE_NAME_RE = /^[A-Za-z0-9_-]+$/;
 
@@ -279,6 +280,14 @@ export async function acquireRemoteHostBrowser(args: {
  *     non-ws URL), this throws `HostBrowserBridgeUnavailableError` so
  *     the run fails fast rather than silently launching an invisible
  *     in-container browser.
+ *   - If the bridge is unconfigured AND the runtime is in a container,
+ *     this throws `HostBrowserBridgeUnavailableError` rather than
+ *     launching an invisible in-container Chromium. This is the
+ *     fail-closed gate required by
+ *     `openspec/changes/design-host-browser-bridge-for-docker/design.md`
+ *     § "Failure Mode When Unavailable". The host-direct path is
+ *     unaffected — without any container signal, the runtime still
+ *     uses `acquireIsolatedBrowser` against `~/.pdpp/profiles/<name>/`.
  *   - Otherwise, the runtime uses `acquireIsolatedBrowser` against
  *     `~/.pdpp/profiles/<profileName>/` exactly as before.
  */
@@ -306,6 +315,27 @@ export async function acquireBrowserForConnector(options: AcquireIsolatedBrowser
     return await acquireRemoteHostBrowser({
       bridgeUrl: resolution.config.url,
       bridgeToken: resolution.config.token,
+    });
+  }
+
+  // resolution.mode === "disabled" — bridge env vars are empty.
+  //
+  // When the runtime is in a container, an empty bridge URL is the
+  // silent-fallback path that produces an invisible headed Chromium
+  // inside the container. Fail closed with the same typed error code
+  // the dashboard already renders for misconfigured/unreachable
+  // bridges, so an operator gets one consistent diagnostic across all
+  // bridge-failure modes instead of a multi-minute hang on the
+  // `auto-login` interaction handshake.
+  if (isRunningInContainer()) {
+    throw new HostBrowserBridgeUnavailableError({
+      bridgeUrl: null,
+      message:
+        "Browser-backed connector requested in a container with no host browser bridge configured. " +
+        "Set PDPP_HOST_BROWSER_BRIDGE_URL and PDPP_HOST_BROWSER_BRIDGE_TOKEN to point at a running host bridge " +
+        "(`pnpm --dir packages/polyfill-connectors exec tsx bin/host-browser-bridge.ts --profile <name>`), " +
+        "or run the connector outside the container so the host-direct launcher can open a visible browser. " +
+        "See README.md § 'Browser-backed connectors in Docker' for the platform-specific setup.",
     });
   }
 

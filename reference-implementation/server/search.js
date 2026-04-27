@@ -159,7 +159,7 @@ export async function lexicalIndexDeleteByConnectorStream({ connectorId, stream 
  * which handles the per-stream loop, the manifest lookup of declared fields,
  * and the drift check that decides whether a rebuild is needed at all.
  */
-async function rebuildLexicalIndexForStream({ connectorId, stream, declaredFields, recordsToScan = null, progressJob = null }) {
+async function rebuildLexicalIndexForStream({ connectorId, stream, declaredFields, recordsToScan = null, progressJob = null, signal = null }) {
   const db = getDb();
   db.prepare(`
     DELETE FROM lexical_search_index
@@ -183,6 +183,15 @@ async function rebuildLexicalIndexForStream({ connectorId, stream, declaredField
   let scanned = 0;
   let indexed = 0;
   for (;;) {
+    // Cancellation hook: signaled when the CLI is shutting down so the
+    // backfill releases the WAL writer before `closeDb()` runs. Checked
+    // between page transactions only — interrupting mid-transaction would
+    // leave SQLite to roll the whole page back, which is what we want
+    // anyway, but releasing on a clean page boundary keeps progress
+    // restartable.
+    if (signal?.aborted) {
+      throw signal.reason instanceof Error ? signal.reason : new Error('lexical backfill aborted');
+    }
     const rows = db.prepare(`
       SELECT id, record_key, record_json
       FROM records
@@ -306,7 +315,7 @@ function countIndexableTextValues({ db, connectorId, stream, declaredFields }) {
  *
  * Logging is via the optional `log` callback so tests can stay quiet.
  */
-export async function lexicalIndexBackfillForManifest({ manifest, log = () => {} } = {}) {
+export async function lexicalIndexBackfillForManifest({ manifest, log = () => {}, signal = null } = {}) {
   if (!manifest?.connector_id || !Array.isArray(manifest?.streams)) return;
   activeLexicalBackfillCount += 1;
   const participatingStreams = manifest.streams.filter((mStream) => {
@@ -337,6 +346,9 @@ export async function lexicalIndexBackfillForManifest({ manifest, log = () => {}
   const visitedStreams = new Set();
 
   for (const mStream of manifest.streams) {
+    if (signal?.aborted) {
+      throw signal.reason instanceof Error ? signal.reason : new Error('lexical backfill aborted');
+    }
     const stream = mStream?.name;
     if (typeof stream !== 'string' || stream.length === 0) continue;
     visitedStreams.add(stream);
@@ -449,6 +461,7 @@ export async function lexicalIndexBackfillForManifest({ manifest, log = () => {}
       declaredFields,
       recordsToScan: recordCount,
       progressJob,
+      signal,
     });
     log(`[PDPP] Lexical index rebuild completed for ${connectorId} stream='${stream}' ` +
         `(records=${recordCount}, indexed_rows=${indexedRows})`);

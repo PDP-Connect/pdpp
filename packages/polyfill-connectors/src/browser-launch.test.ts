@@ -11,6 +11,8 @@ const BRIDGE_ENV_VARS = [
   "PDPP_HOST_BROWSER_BRIDGE_URL",
   "PDPP_HOST_BROWSER_BRIDGE_TOKEN",
   "PDPP_HOST_BROWSER_BRIDGE_DAILY_CHROME",
+  "PDPP_REFERENCE_MODE",
+  "PDPP_FORCE_CONTAINER",
 ] as const;
 
 function withEnv(values: Partial<Record<(typeof BRIDGE_ENV_VARS)[number], string>>) {
@@ -92,6 +94,47 @@ test("acquireRemoteHostBrowser surfaces HostBrowserBridgeUnavailableError when t
       return true;
     }
   );
+});
+
+test("acquireBrowserForConnector fails closed when in container with no bridge configured (PDPP_REFERENCE_MODE=composed)", async () => {
+  // Compose stacks export PDPP_REFERENCE_MODE=composed; without a bridge URL,
+  // the runtime would otherwise launch an invisible in-container Chromium.
+  // Fail-closed gate per design-host-browser-bridge-for-docker design.md
+  // § "Failure Mode When Unavailable".
+  const restore = withEnv({
+    PDPP_REFERENCE_MODE: "composed",
+  });
+  try {
+    await assert.rejects(
+      () => acquireBrowserForConnector({ profileName: "test_connector" }),
+      (err: unknown) => {
+        assert.ok(err instanceof HostBrowserBridgeUnavailableError, `got ${String(err)}`);
+        if (err instanceof HostBrowserBridgeUnavailableError) {
+          assert.equal(err.code, HOST_BROWSER_BRIDGE_UNAVAILABLE_CODE);
+          assert.equal(err.bridgeUrl, null);
+          assert.match(err.message, /container/i);
+          assert.match(err.message, /PDPP_HOST_BROWSER_BRIDGE_URL/);
+        }
+        return true;
+      }
+    );
+  } finally {
+    restore();
+  }
+});
+
+test("acquireBrowserForConnector fails closed when PDPP_FORCE_CONTAINER=1 with no bridge configured", async () => {
+  const restore = withEnv({
+    PDPP_FORCE_CONTAINER: "1",
+  });
+  try {
+    await assert.rejects(
+      () => acquireBrowserForConnector({ profileName: "test_connector" }),
+      (err: unknown) => err instanceof HostBrowserBridgeUnavailableError
+    );
+  } finally {
+    restore();
+  }
 });
 
 test("HostBrowserBridgeUnavailableError carries the stable code", () => {
