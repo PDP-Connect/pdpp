@@ -36,7 +36,7 @@ export function OverviewView({
   return (
     <>
       <PageHeader description={description} title="Overview" />
-      <OverviewHero summary={data.summary} />
+      <OverviewHero recordsHref={routes.section.records} summary={data.summary} />
       <StatusStrip actionNeeded={data.actionNeeded} hasFailures={hasFailures} routes={routes} />
       <div className="grid gap-8 lg:grid-cols-2">
         <Section

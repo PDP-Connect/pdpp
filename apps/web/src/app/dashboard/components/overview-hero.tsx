@@ -17,7 +17,7 @@ import type { DatasetSummary } from "../lib/ref-client.ts";
  * `GET /_ref/dataset/summary`. Degrades to an honest empty state when the
  * substrate holds no records yet.
  */
-export function OverviewHero({ summary }: { summary: DatasetSummary }) {
+export function OverviewHero({ summary, recordsHref }: { summary: DatasetSummary; recordsHref: string }) {
   if (summary.record_count === 0) {
     return <EmptyHero />;
   }
@@ -41,13 +41,17 @@ export function OverviewHero({ summary }: { summary: DatasetSummary }) {
         ) : null}
       </p>
 
-      <BreadthRow connectors={summary.top_connectors} totalConnectors={summary.connector_count} />
+      <BreadthRow
+        connectors={summary.top_connectors}
+        recordsHref={recordsHref}
+        totalConnectors={summary.connector_count}
+      />
 
       <p className="pdpp-body mt-3 text-muted-foreground">
         Each approved grant issues runs that write records into streams —{" "}
         <Link
           className="text-muted-foreground decoration-muted-foreground/50 underline-offset-2 hover:text-foreground hover:underline"
-          href="/dashboard/records"
+          href={recordsHref}
         >
           every record is inspectable
         </Link>{" "}
@@ -75,9 +79,11 @@ function EmptyHero() {
 function BreadthRow({
   connectors,
   totalConnectors,
+  recordsHref,
 }: {
   connectors: DatasetSummary["top_connectors"];
   totalConnectors: number;
+  recordsHref: string;
 }) {
   if (connectors.length === 0) {
     return null;
@@ -101,7 +107,7 @@ function BreadthRow({
       {extra > 0 ? (
         <Link
           className="text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
-          href="/dashboard/records"
+          href={recordsHref}
         >
           +{extra} more
         </Link>
