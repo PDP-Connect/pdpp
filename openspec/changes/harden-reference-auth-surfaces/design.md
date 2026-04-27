@@ -43,9 +43,30 @@ We set `X-Frame-Options: DENY` and `Content-Security-Policy: frame-ancestors 'no
 
 ### Scope guards we keep
 
-- We do **not** add CSRF tokens on POST forms in this patch. The cookie is already `SameSite=Lax`. The audit rates that P2; we capture it as a follow-up.
+- ~~We do **not** add CSRF tokens on POST forms in this patch.~~ **Status (2026-04-27, follow-up):** the P2 CSRF follow-up has now landed in this same change as a signed double-submit token (`pdpp_owner_csrf` cookie + `_csrf` form field, both `<nonce>.<hmac>` over the owner-auth-derived secret). See "CSRF for hosted owner forms (P2 follow-up, now implemented)" below.
 - We do **not** narrow `_ref/*` reads beyond the two timeline routes. The current spec explicitly says reads stay open. Touching that is a wider conversation about whether `_ref` is operator-only.
 - We do **not** extend `requireRevokeAuth` semantics to other AS endpoints in this patch. It is built as a private helper in `server/index.js`; if other routes need it, the caller chooses.
+
+### CSRF for hosted owner forms (P2 follow-up, now implemented)
+
+The original change deferred CSRF as a P2 follow-up because the session cookie carried `SameSite=Lax`. SameSite-only is a partial defense — it does not protect against subdomain cookie injection, it does not bind the form submission to a specific render, and it does nothing for top-level POSTs from `<form target="_top">` on attacker pages with the same eTLD+1 in some browsers. Owner review of the v1 attempt asked for the higher-confidence default, so this change adds the fix here rather than spinning a new OpenSpec change for a tightly related scope.
+
+**Mechanism: signed double-submit.** On every hosted-form GET (`/owner/login`, `/consent`, `/device`) the server mints a token `<base64url-nonce>.<base64url-hmac>` where the HMAC is computed over the nonce with a secret derived from `PDPP_OWNER_PASSWORD` (`sha256("pdpp-owner-csrf:" + password)`). The token is set in a `pdpp_owner_csrf` cookie (`HttpOnly`, `SameSite=Lax|Strict`, `Path=/`, `Secure` per posture) and embedded as a hidden `_csrf` field. On every form-encoded POST we require both copies to be present, both signatures to verify, and the cookie value to match the field byte-for-byte under a constant-time comparison.
+
+The signed half is what defends against cookie injection: an attacker on a sibling subdomain (or any party that can write the cookie via a `Set-Cookie` from an unrelated origin) cannot compute a valid HMAC without the password, so any "matching pair" they fabricate is rejected. A naive double-submit-without-signature would accept that pair.
+
+We deliberately keep the CSRF cookie *separate* from the owner session cookie so we can rotate the CSRF cookie on auth-state change (login success, logout) without disturbing the session, and so the same mechanism works pre- and post-login — `/owner/login` is the form most worth protecting and there is no session yet at that point.
+
+**JSON exemption.** Pure JSON POSTs (`Content-Type: application/json`) skip the CSRF check. Browsers cannot forge a cross-origin JSON POST without a CORS preflight, so the existing programmatic contract (CLIs, dashboard fetches, server-to-server) is preserved. The `requireCsrf` middleware tests `Content-Type` for `application/x-www-form-urlencoded` or `multipart/form-data` and otherwise calls `next()` immediately.
+
+**Cookie posture knobs.** Two new env knobs make the existing P1 cookie concerns operable without code changes:
+
+- `PDPP_OWNER_FORCE_SECURE_COOKIES=1` adds `Secure` to every owner cookie even when the Node process sees plain HTTP. Behind a TLS-terminating proxy the proxy is responsible for enforcing TLS; this knob lets the operator declare that posture without trusting `req.secure` or `X-Forwarded-Proto` introspection.
+- `PDPP_OWNER_SAMESITE=strict` upgrades both the session and CSRF cookies to `SameSite=Strict`. Default stays `Lax` because the placeholder login flow redirects from `/owner/login` back to `/consent`, and SameSite=Strict drops cookies on cross-site top-level navigation in some flows; opt-in keeps existing local-dev navigation patterns working.
+
+**Local HTTP development.** None of the above breaks plain-HTTP local dev. With `PDPP_OWNER_PASSWORD` unset, owner-auth is disabled and CSRF middleware is a no-op (`requireCsrf` calls `next()` when disabled). With `PDPP_OWNER_PASSWORD` set, cookies omit `Secure` by default unless `PDPP_OWNER_FORCE_SECURE_COOKIES=1` is also set, so the browser still accepts and sends them on `http://localhost:*`.
+
+**Set-Cookie multiplexing.** Login responses set both the session cookie and a clear-out for the prior pre-login CSRF cookie. The `appendSetCookie` helper preserves prior `Set-Cookie` values on the Fastify reply so both headers reach the client, and there is an explicit regression test asserting that.
 
 ## Alternatives considered
 

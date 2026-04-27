@@ -26,12 +26,25 @@ import {
   renderSurface,
 } from "./hosted-ui.js";
 import {
+  buildOwnerCsrfClearCookie,
+  buildOwnerCsrfSetCookie,
+  deriveOwnerCsrfSecret,
+  issueOwnerCsrfToken,
+  OWNER_CSRF_COOKIE_NAME,
+  OWNER_CSRF_FIELD_NAME,
+  readCsrfTokenFromCookieHeader,
+  renderCsrfHiddenField,
+  validateOwnerCsrfPair,
+  verifyOwnerCsrfToken,
+} from "./owner-csrf.ts";
+import {
   createOwnerSessionController,
   OWNER_SESSION_COOKIE_NAME,
   OWNER_SESSION_DEFAULT_SUBJECT_ID,
   OWNER_SESSION_DEFAULT_TTL_SECONDS,
   type OwnerSessionController,
   type OwnerSessionPayload,
+  type OwnerSessionSameSite,
 } from "./owner-session.ts";
 
 const DEFAULT_RETURN_TO = "/owner/login";
@@ -63,10 +76,11 @@ interface AuthRequest {
 
 interface AuthResponse {
   end(): void;
+  getHeader?(name: string): unknown;
   json(body: unknown): AuthResponse;
   redirect(url: string): void;
   send(body: string): AuthResponse;
-  setHeader(name: string, value: string): AuthResponse;
+  setHeader(name: string, value: string | string[]): AuthResponse;
   status(code: number): AuthResponse;
 }
 
@@ -78,6 +92,7 @@ interface AuthAppLike {
 }
 
 interface LoginPageOptions {
+  csrfToken: string;
   error: string | null;
   providerName: string;
   returnTo: string;
@@ -88,20 +103,28 @@ interface DisabledPageOptions {
 }
 
 interface SignedInPageOptions {
+  csrfToken: string;
   providerName: string;
   subjectId: string;
 }
 
 export interface OwnerAuthPlaceholderOptions {
+  forceSecureCookies?: boolean;
   password?: string | null;
   providerName?: string;
+  sameSite?: OwnerSessionSameSite;
   sessionTtlSeconds?: number;
   subjectId?: string | null;
 }
 
 export interface OwnerAuthPlaceholder {
   attachRoutes(app: AuthAppLike): void;
+  readonly csrfCookieName: string;
+  readonly csrfFieldName: string;
   readonly enabled: boolean;
+  ensureCsrfToken(req: AuthRequest, res: AuthResponse): string;
+  renderCsrfField(token: string): string;
+  requireCsrf(req: AuthRequest, res: AuthResponse, next: AuthNextFunction): void;
   requireOwnerSession(req: AuthRequest, res: AuthResponse, next: AuthNextFunction): void;
   readonly subjectId: string;
 }
@@ -139,10 +162,11 @@ function wantsHtml(req: AuthRequest): boolean {
   return accept.includes("text/html");
 }
 
-function renderLoginPage({ providerName, error, returnTo }: LoginPageOptions): string {
+function renderLoginPage({ providerName, error, returnTo, csrfToken }: LoginPageOptions): string {
   const safeReturnTo = typeof returnTo === "string" ? returnTo : "";
   const errorBlock = error ? `<div class="hosted-ui-error" role="alert">${hostedEscape(error)}</div>` : "";
   const form = `<form class="hosted-ui-surface" method="POST" action="/owner/login" data-surface="human" aria-label="Owner sign-in">
+  ${renderCsrfHiddenField(csrfToken)}
   <input type="hidden" name="return_to" value="${hostedEscape(safeReturnTo)}" />
   ${errorBlock}
   <div class="hosted-ui-field">
@@ -211,7 +235,7 @@ function renderOwnerAuthDisabledPage({ providerName }: DisabledPageOptions): str
   });
 }
 
-function renderSignedInOwnerPage({ providerName, subjectId }: SignedInPageOptions): string {
+function renderSignedInOwnerPage({ providerName, subjectId, csrfToken }: SignedInPageOptions): string {
   const body = [
     renderPageIntro({
       eyebrow: "Owner approval UI",
@@ -233,7 +257,11 @@ function renderSignedInOwnerPage({ providerName, subjectId }: SignedInPageOption
     }),
     renderActionRow([
       { href: "/device", label: "Open device approval UI", variant: "primary" },
-      { action: "/owner/logout", label: "Sign out" },
+      {
+        action: "/owner/logout",
+        label: "Sign out",
+        hidden: [{ name: OWNER_CSRF_FIELD_NAME, value: csrfToken }],
+      },
     ]),
   ].join("\n");
 
@@ -344,16 +372,32 @@ interface SessionHelpers {
   readSession(req: AuthRequest): OwnerSessionPayload | null;
 }
 
+function appendSetCookie(res: AuthResponse, value: string): void {
+  // Preserve any prior Set-Cookie headers (we may set both the session
+  // cookie and the CSRF cookie on the same response). `res.setHeader`
+  // overwrites; passing an array preserves all values for Node/Express.
+  const existing = typeof res.getHeader === "function" ? res.getHeader("Set-Cookie") : undefined;
+  if (Array.isArray(existing)) {
+    res.setHeader("Set-Cookie", [...existing.map(String), value]);
+    return;
+  }
+  if (typeof existing === "string" && existing) {
+    res.setHeader("Set-Cookie", [existing, value]);
+    return;
+  }
+  res.setHeader("Set-Cookie", value);
+}
+
 function buildSessionHelpers(controller: OwnerSessionController): SessionHelpers {
   return {
     issueSession(res: AuthResponse, req: AuthRequest): void {
       const cookieHeader = controller.issueSessionCookieHeader({ secure: isSecureRequest(req) });
       if (cookieHeader) {
-        res.setHeader("Set-Cookie", cookieHeader);
+        appendSetCookie(res, cookieHeader);
       }
     },
     clearSession(res: AuthResponse, req: AuthRequest): void {
-      res.setHeader("Set-Cookie", controller.clearSessionCookieHeader({ secure: isSecureRequest(req) }));
+      appendSetCookie(res, controller.clearSessionCookieHeader({ secure: isSecureRequest(req) }));
     },
     readSession(req: AuthRequest): OwnerSessionPayload | null {
       return controller.readSessionFromCookieHeader(req.headers.cookie);
@@ -375,6 +419,8 @@ export function createOwnerAuthPlaceholder({
   subjectId,
   providerName = "PDPP Reference Provider",
   sessionTtlSeconds = OWNER_SESSION_DEFAULT_TTL_SECONDS,
+  sameSite = "lax",
+  forceSecureCookies = false,
 }: OwnerAuthPlaceholderOptions = {}): OwnerAuthPlaceholder {
   // `exactOptionalPropertyTypes` won't accept `undefined` in these fields,
   // so we fall back to the declared `null` sentinel the controller already
@@ -383,9 +429,183 @@ export function createOwnerAuthPlaceholder({
     password: password ?? null,
     subjectId: subjectId ?? null,
     sessionTtlSeconds,
+    sameSite,
+    forceSecureCookies,
   });
   const { enabled, subjectId: resolvedSubjectId } = sessionController;
   const session = buildSessionHelpers(sessionController);
+  // CSRF protection is only meaningful when owner-auth is enabled (the
+  // password gates everything). When disabled, the helpers no-op and the
+  // routes stay open as before.
+  const csrfSecret = enabled && typeof password === "string" && password ? deriveOwnerCsrfSecret(password) : null;
+
+  function ensureCsrfToken(req: AuthRequest, res: AuthResponse): string {
+    if (!csrfSecret) {
+      return "";
+    }
+    const fromCookie = readCsrfTokenFromCookieHeader(req.headers.cookie);
+    // Reuse the cookie value only if the signature still verifies; an
+    // injected/forged cookie would fail verification and is rotated out.
+    if (fromCookie && verifyOwnerCsrfToken(fromCookie, csrfSecret)) {
+      return fromCookie;
+    }
+    const token = issueOwnerCsrfToken(csrfSecret);
+    appendSetCookie(
+      res,
+      buildOwnerCsrfSetCookie(token, {
+        secure: forceSecureCookies || isSecureRequest(req),
+        sameSite,
+        maxAgeSeconds: sessionTtlSeconds,
+      })
+    );
+    // Ensure subsequent reads in the same request see the freshly minted
+    // token via the request cookie header.
+    const nextHeader = req.headers.cookie
+      ? `${req.headers.cookie}; ${OWNER_CSRF_COOKIE_NAME}=${token}`
+      : `${OWNER_CSRF_COOKIE_NAME}=${token}`;
+    (req as unknown as { headers: Record<string, string> }).headers.cookie = nextHeader;
+    return token;
+  }
+
+  function rotateCsrfCookie(req: AuthRequest, res: AuthResponse): void {
+    appendSetCookie(
+      res,
+      buildOwnerCsrfClearCookie({
+        secure: forceSecureCookies || isSecureRequest(req),
+        sameSite,
+      })
+    );
+  }
+
+  function isFormEncodedRequest(req: AuthRequest): boolean {
+    // Only browser-originated form submissions need CSRF protection.
+    // JSON callers (CLIs, server-to-server) cannot be forged into a
+    // browser POST without a CORS preflight, so we exempt them and
+    // preserve existing JSON API behavior.
+    const contentType =
+      typeof (req.headers as Record<string, unknown>)["content-type"] === "string"
+        ? ((req.headers as Record<string, string>)["content-type"] as string).toLowerCase()
+        : "";
+    return contentType.startsWith("application/x-www-form-urlencoded") || contentType.startsWith("multipart/form-data");
+  }
+
+  function requireCsrf(req: AuthRequest, res: AuthResponse, next: AuthNextFunction): void {
+    if (!(enabled && csrfSecret)) {
+      // Owner-auth disabled — no session, no CSRF surface to protect.
+      next();
+      return;
+    }
+    if (!isFormEncodedRequest(req)) {
+      next();
+      return;
+    }
+    const cookieToken = readCsrfTokenFromCookieHeader(req.headers.cookie);
+    const formToken =
+      (req.body && typeof (req.body as Record<string, unknown>)[OWNER_CSRF_FIELD_NAME] === "string"
+        ? ((req.body as Record<string, unknown>)[OWNER_CSRF_FIELD_NAME] as string)
+        : "") || "";
+    if (!(csrfSecret && validateOwnerCsrfPair(cookieToken, formToken, csrfSecret))) {
+      if (wantsHtml(req)) {
+        res.setHeader("Content-Type", "text/html; charset=utf-8");
+        res.status(403).send(
+          renderHostedDocument({
+            title: `${providerName} — Request blocked`,
+            providerName,
+            body: [
+              renderPageIntro({
+                eyebrow: "Owner approval UI",
+                title: "Request blocked",
+                lede: "The form submission is missing a valid CSRF token. Reload the page and try again from a freshly rendered owner-hosted form.",
+              }),
+            ].join("\n"),
+          })
+        );
+        return;
+      }
+      res
+        .status(403)
+        .setHeader("Content-Type", "application/json")
+        .json({
+          error: {
+            type: "invalid_request",
+            code: "csrf_token_invalid",
+            message: "CSRF token missing or invalid for hosted owner form POST.",
+          },
+        });
+      return;
+    }
+    next();
+  }
+
+  function extractCsrfFormToken(req: AuthRequest): string {
+    if (!req.body) {
+      return "";
+    }
+    const value = (req.body as Record<string, unknown>)[OWNER_CSRF_FIELD_NAME];
+    return typeof value === "string" ? value : "";
+  }
+
+  function csrfPairValid(req: AuthRequest): boolean {
+    if (!csrfSecret) {
+      return false;
+    }
+    const cookieToken = readCsrfTokenFromCookieHeader(req.headers.cookie);
+    const formToken = extractCsrfFormToken(req);
+    return validateOwnerCsrfPair(cookieToken, formToken, csrfSecret);
+  }
+
+  function passwordMatches(submitted: string): boolean {
+    if (!submitted || typeof password !== "string" || !password) {
+      return false;
+    }
+    return timingSafeEqualString(submitted, password);
+  }
+
+  function replyDisabledLogin(req: AuthRequest, res: AuthResponse): void {
+    if (wantsHtml(req)) {
+      res.setHeader("Content-Type", "text/html; charset=utf-8");
+      res.status(400).send(renderOwnerAuthDisabledPage({ providerName }));
+      return;
+    }
+    res
+      .status(400)
+      .setHeader("Content-Type", "application/json")
+      .json({
+        error: {
+          type: "invalid_request",
+          code: "owner_auth_disabled",
+          message: "Owner placeholder auth is disabled on this reference instance.",
+        },
+      });
+  }
+
+  function replyLogoutCsrfFailure(req: AuthRequest, res: AuthResponse): void {
+    if (wantsHtml(req)) {
+      res.setHeader("Content-Type", "text/html; charset=utf-8");
+      res.status(403).send(
+        renderHostedDocument({
+          title: `${providerName} — Request blocked`,
+          providerName,
+          body: renderPageIntro({
+            eyebrow: "Owner approval UI",
+            title: "Request blocked",
+            lede: "The sign-out submission is missing a valid CSRF token. Reload the page and try again.",
+          }),
+        })
+      );
+      return;
+    }
+    res
+      .status(403)
+      .setHeader("Content-Type", "application/json")
+      .json({
+        error: {
+          type: "invalid_request",
+          code: "csrf_token_invalid",
+          message: "CSRF token missing or invalid for /owner/logout.",
+        },
+      });
+  }
 
   function attachRoutes(app: AuthAppLike): void {
     app.get("/owner/login", (req, res) => {
@@ -404,53 +624,71 @@ export function createOwnerAuthPlaceholder({
           res.redirect(returnTo);
           return;
         }
-        res.status(200).send(renderSignedInOwnerPage({ providerName, subjectId: resolvedSubjectId }));
+        const csrfToken = ensureCsrfToken(req, res);
+        res.status(200).send(renderSignedInOwnerPage({ providerName, subjectId: resolvedSubjectId, csrfToken }));
         return;
       }
 
-      res.status(200).send(renderLoginPage({ providerName, error: null, returnTo }));
+      const csrfToken = ensureCsrfToken(req, res);
+      res.status(200).send(renderLoginPage({ providerName, error: null, returnTo, csrfToken }));
     });
 
     app.post("/owner/login", (req, res) => {
       const returnTo = readReturnToFromBodyOrQuery(req);
 
       if (!enabled) {
-        if (wantsHtml(req)) {
-          res.setHeader("Content-Type", "text/html; charset=utf-8");
-          res.status(400).send(renderOwnerAuthDisabledPage({ providerName }));
-          return;
-        }
-        res
-          .status(400)
-          .setHeader("Content-Type", "application/json")
-          .json({
-            error: {
-              type: "invalid_request",
-              code: "owner_auth_disabled",
-              message: "Owner placeholder auth is disabled on this reference instance.",
-            },
-          });
+        replyDisabledLogin(req, res);
+        return;
+      }
+
+      // Enforce CSRF before any password check so attackers can't probe
+      // password validity over a forged cross-origin POST. We render the
+      // CSRF failure page rather than re-rendering the login form so we
+      // don't leak whether the password attempt would have succeeded.
+      if (!csrfPairValid(req)) {
+        const csrfToken = ensureCsrfToken(req, res);
+        res.setHeader("Content-Type", "text/html; charset=utf-8");
+        res.status(403).send(
+          renderLoginPage({
+            providerName,
+            error: "Session expired or form replay detected. Please try again.",
+            returnTo,
+            csrfToken,
+          })
+        );
         return;
       }
 
       const submitted = req.body && typeof req.body.password === "string" ? req.body.password : "";
-      if (!submitted || typeof password !== "string" || !timingSafeEqualString(submitted, password)) {
+      if (!passwordMatches(submitted)) {
+        const csrfToken = ensureCsrfToken(req, res);
         res.setHeader("Content-Type", "text/html; charset=utf-8");
         res.status(401).send(
           renderLoginPage({
             providerName,
             error: "Incorrect password.",
             returnTo,
+            csrfToken,
           })
         );
         return;
       }
       session.issueSession(res, req);
+      // Rotate the CSRF cookie on auth-state change so a token captured
+      // from a pre-login response cannot be reused after sign-in.
+      rotateCsrfCookie(req, res);
       res.redirect(returnTo);
     });
 
     app.post("/owner/logout", (req, res) => {
+      // Only browser form submissions need CSRF protection on logout.
+      // JSON callers cannot be cross-origin-forged without CORS preflight.
+      if (isFormEncodedRequest(req) && !csrfPairValid(req)) {
+        replyLogoutCsrfFailure(req, res);
+        return;
+      }
       session.clearSession(res, req);
+      rotateCsrfCookie(req, res);
       if (wantsHtml(req)) {
         res.redirect("/owner/login");
         return;
@@ -496,6 +734,11 @@ export function createOwnerAuthPlaceholder({
     subjectId: resolvedSubjectId,
     attachRoutes,
     requireOwnerSession,
+    requireCsrf,
+    ensureCsrfToken,
+    renderCsrfField: renderCsrfHiddenField,
+    csrfFieldName: OWNER_CSRF_FIELD_NAME,
+    csrfCookieName: OWNER_CSRF_COOKIE_NAME,
   };
 }
 

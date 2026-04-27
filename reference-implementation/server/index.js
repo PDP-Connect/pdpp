@@ -900,7 +900,23 @@ function resolveOwnerAuthPlaceholderConfig(opts = {}) {
     (typeof process.env.PDPP_OWNER_SUBJECT_ID === 'string' && process.env.PDPP_OWNER_SUBJECT_ID
       ? process.env.PDPP_OWNER_SUBJECT_ID
       : null);
-  return { password, subjectId };
+  // Force `Secure` on owner cookies behind a TLS-terminating proxy where
+  // `req.secure` and `X-Forwarded-Proto` cannot be relied on. Default off
+  // so plain-HTTP local development continues to issue usable cookies.
+  const forceSecureCookies =
+    opts.ownerAuthForceSecureCookies ??
+    (process.env.PDPP_OWNER_FORCE_SECURE_COOKIES === '1' ||
+      process.env.PDPP_OWNER_FORCE_SECURE_COOKIES === 'true');
+  // SameSite mode for the owner session and CSRF cookies. `lax` keeps the
+  // existing flow (login redirects from /owner/login back to /consent)
+  // working. `strict` is opt-in for deployments that don't rely on
+  // top-level navigation following a redirect.
+  const sameSiteRaw =
+    typeof opts.ownerAuthSameSite === 'string'
+      ? opts.ownerAuthSameSite
+      : process.env.PDPP_OWNER_SAMESITE;
+  const sameSite = sameSiteRaw === 'strict' ? 'strict' : 'lax';
+  return { password, subjectId, forceSecureCookies: Boolean(forceSecureCookies), sameSite };
 }
 
 function buildSourceDescriptor(sourceBinding = null) {
@@ -1498,6 +1514,8 @@ function buildAsApp(opts = {}) {
   const ownerAuth = createOwnerAuthPlaceholder({
     password: ownerAuthConfig.password,
     subjectId: ownerAuthConfig.subjectId,
+    forceSecureCookies: ownerAuthConfig.forceSecureCookies,
+    sameSite: ownerAuthConfig.sameSite,
     providerName,
   });
   app.use((req, res, next) => {
@@ -1546,7 +1564,7 @@ function buildAsApp(opts = {}) {
   // `reference-implementation/server/owner-auth.js`.
   ownerAuth.attachRoutes(app);
 
-  function renderPendingGrantConsentHtml(pending, requestUri) {
+  function renderPendingGrantConsentHtml(pending, requestUri, csrfToken) {
     const request = pending.request;
     const client = request.client || {};
     const selection = request.selection || {};
@@ -1592,20 +1610,23 @@ function buildAsApp(opts = {}) {
       ? `<div><span class="pdpp-eyebrow">Verification code</span><div class="hosted-ui-code">${hostedEscape(pending.userCode)}</div></div>`
       : '';
 
+    const csrfHidden = csrfToken
+      ? [{ name: ownerAuth.csrfFieldName, value: csrfToken }]
+      : [];
     const actions = renderActionRow([
       {
         label: 'Allow access',
         variant: 'primary',
         method: 'POST',
         action: '/consent/approve',
-        hidden: [{ name: 'request_uri', value: requestUri }],
+        hidden: [...csrfHidden, { name: 'request_uri', value: requestUri }],
       },
       {
         label: 'Deny',
         variant: 'danger',
         method: 'POST',
         action: '/consent/deny',
-        hidden: [{ name: 'request_uri', value: requestUri }],
+        hidden: [...csrfHidden, { name: 'request_uri', value: requestUri }],
       },
     ]);
 
@@ -1838,7 +1859,10 @@ function buildAsApp(opts = {}) {
   <input id="hosted-ui-subject_id" name="subject_id" value="owner_local" type="text" />
 </div>`;
 
+    const csrfToken = ownerAuth.ensureCsrfToken(req, res);
+    const csrfField = ownerAuth.renderCsrfField(csrfToken);
     const formOpen = `<form class="hosted-ui-surface" method="POST" action="/device/approve" data-surface="human" aria-label="Approve CLI access">
+  ${csrfField}
   <input type="hidden" name="user_code" value="${hostedEscape(pending.user_code)}" />
   ${facts}
   ${ownerBlock}
@@ -1864,7 +1888,7 @@ function buildAsApp(opts = {}) {
     }));
   });
 
-  app.post('/device/approve', ownerAuth.requireOwnerSession, async (req, res) => {
+  app.post('/device/approve', ownerAuth.requireOwnerSession, ownerAuth.requireCsrf, async (req, res) => {
     try {
       const userCode = req.body.user_code;
       const subjectId = ownerAuth.enabled
@@ -1901,7 +1925,7 @@ function buildAsApp(opts = {}) {
     }
   });
 
-  app.post('/device/deny', ownerAuth.requireOwnerSession, async (req, res) => {
+  app.post('/device/deny', ownerAuth.requireOwnerSession, ownerAuth.requireCsrf, async (req, res) => {
     try {
       const userCode = req.body.user_code;
       const subjectId = ownerAuth.enabled
@@ -2410,7 +2434,8 @@ function buildAsApp(opts = {}) {
       if (!requestUri) return pdppError(res, 400, 'invalid_request', 'request_uri is required');
       const { pending } = await getPendingGrantFromRequestUri(requestUri);
       if (!pending) return res.status(404).send('Not found');
-      res.send(renderPendingGrantConsentHtml(pending, requestUri));
+      const csrfToken = ownerAuth.ensureCsrfToken(req, res);
+      res.send(renderPendingGrantConsentHtml(pending, requestUri, csrfToken));
     } catch (err) {
       handleError(res, err);
     }
@@ -2418,7 +2443,7 @@ function buildAsApp(opts = {}) {
 
 
   // Primary approval surface for the current provider-connect request/approval profile.
-  app.post('/consent/approve', { contract: 'approveConsent' }, ownerAuth.requireOwnerSession, async (req, res) => {
+  app.post('/consent/approve', { contract: 'approveConsent' }, ownerAuth.requireOwnerSession, ownerAuth.requireCsrf, async (req, res) => {
     try {
       const requestUri = req.body?.request_uri || req.query?.request_uri;
       const { deviceCode, pending } = await getPendingGrantFromRequestUri(requestUri);
@@ -2486,7 +2511,7 @@ function buildAsApp(opts = {}) {
   });
 
 
-  app.post('/consent/deny', ownerAuth.requireOwnerSession, async (req, res) => {
+  app.post('/consent/deny', ownerAuth.requireOwnerSession, ownerAuth.requireCsrf, async (req, res) => {
     try {
       const requestUri = req.body?.request_uri || req.query?.request_uri;
       const { deviceCode, pending } = await getPendingGrantFromRequestUri(requestUri);
@@ -4126,6 +4151,8 @@ export async function startServer(opts = {}) {
     ignoreAmbientPublicUrls,
     ownerAuthPassword: opts.ownerAuthPassword,
     ownerAuthSubjectId: opts.ownerAuthSubjectId,
+    ownerAuthForceSecureCookies: opts.ownerAuthForceSecureCookies,
+    ownerAuthSameSite: opts.ownerAuthSameSite,
     referenceRevision: opts.referenceRevision,
     logger,
   });

@@ -100,29 +100,94 @@ async function startPendingConsent(asUrl, overrides = {}) {
   return body.request_uri;
 }
 
-function extractSessionCookie(setCookieHeader) {
-  if (!setCookieHeader) return null;
-  const header = Array.isArray(setCookieHeader) ? setCookieHeader[0] : setCookieHeader;
-  const firstPair = header.split(';')[0];
-  return firstPair;
+function getRawSetCookieList(resp) {
+  // node:fetch's Headers.getSetCookie() returns the full per-cookie list
+  // (each value as a separate string) instead of the joined comma-list
+  // that .get('set-cookie') yields.
+  if (typeof resp.headers.getSetCookie === 'function') {
+    return resp.headers.getSetCookie();
+  }
+  const raw = resp.headers.raw?.()?.['set-cookie'];
+  if (Array.isArray(raw)) return raw;
+  const single = resp.headers.get('set-cookie');
+  return single ? [single] : [];
 }
 
-async function login(asUrl, password) {
-  const body = new URLSearchParams({ password, return_to: '/consent' });
+function findSetCookiePair(setCookies, name) {
+  for (const header of setCookies) {
+    const firstPair = header.split(';')[0];
+    if (firstPair.startsWith(`${name}=`)) {
+      return firstPair;
+    }
+  }
+  return null;
+}
+
+function extractSessionCookie(setCookieList) {
+  if (!setCookieList) return null;
+  const list = Array.isArray(setCookieList) ? setCookieList : [setCookieList];
+  return findSetCookiePair(list, 'pdpp_owner_session');
+}
+
+function extractCsrfFieldValue(html) {
+  // The hidden field renderer in owner-csrf.ts emits exactly:
+  //   <input type="hidden" name="_csrf" value="..." />
+  const match = html.match(/<input type="hidden" name="_csrf" value="([^"]+)"\s*\/>/);
+  return match ? match[1] : null;
+}
+
+async function fetchCsrf(asUrl, path = '/owner/login') {
+  const resp = await fetch(`${asUrl}${path}`, {
+    headers: { Accept: 'text/html' },
+    redirect: 'manual',
+  });
+  const setCookies = getRawSetCookieList(resp);
+  const csrfCookie = findSetCookiePair(setCookies, 'pdpp_owner_csrf');
+  const html = await resp.text();
+  const csrfField = extractCsrfFieldValue(html);
+  return {
+    status: resp.status,
+    csrfCookie,
+    csrfField,
+    html,
+  };
+}
+
+async function login(asUrl, password, { returnTo = '/consent' } = {}) {
+  const csrf = await fetchCsrf(asUrl, '/owner/login');
+  const body = new URLSearchParams({ password, return_to: returnTo, _csrf: csrf.csrfField || '' });
   const resp = await fetch(`${asUrl}/owner/login`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/x-www-form-urlencoded',
       Accept: 'text/html',
+      Cookie: csrf.csrfCookie || '',
     },
     body: body.toString(),
     redirect: 'manual',
   });
+  const setCookies = getRawSetCookieList(resp);
+  const sessionCookie = extractSessionCookie(setCookies);
   return {
     status: resp.status,
-    cookie: extractSessionCookie(resp.headers.get('set-cookie')),
+    cookie: sessionCookie,
+    csrfCookie: csrf.csrfCookie,
+    csrfField: csrf.csrfField,
     location: resp.headers.get('location'),
+    setCookies,
   };
+}
+
+async function fetchHostedFormCsrf(asUrl, path, sessionCookie) {
+  const resp = await fetch(`${asUrl}${path}`, {
+    headers: { Accept: 'text/html', Cookie: sessionCookie || '' },
+    redirect: 'manual',
+  });
+  const setCookies = getRawSetCookieList(resp);
+  const csrfCookie = findSetCookiePair(setCookies, 'pdpp_owner_csrf');
+  const html = await resp.text();
+  const csrfField = extractCsrfFieldValue(html);
+  return { status: resp.status, csrfCookie, csrfField, html, setCookies };
 }
 
 async function fetchJson(url, opts = {}) {
@@ -223,20 +288,32 @@ test('owner-auth placeholder: enabled — unauthenticated /consent and /device r
 });
 
 // ── 3. wrong password does not issue a session ───────────────────────────────
-test('owner-auth placeholder: wrong password returns 401 and issues no cookie', async () => {
+test('owner-auth placeholder: wrong password with valid CSRF returns 401 and issues no cookie', async () => {
   await withServer({ ownerAuthPassword: TEST_PASSWORD }, async ({ asUrl }) => {
+    const csrf = await fetchCsrf(asUrl, '/owner/login');
+    assert.ok(csrf.csrfField, 'login GET embeds a CSRF token field');
+    assert.ok(csrf.csrfCookie?.startsWith('pdpp_owner_csrf='), 'login GET sets a CSRF cookie');
+
     const resp = await fetch(`${asUrl}/owner/login`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/x-www-form-urlencoded',
         Accept: 'text/html',
+        Cookie: csrf.csrfCookie,
       },
-      body: new URLSearchParams({ password: 'wrong', return_to: '/consent' }).toString(),
+      body: new URLSearchParams({
+        password: 'wrong',
+        return_to: '/consent',
+        _csrf: csrf.csrfField,
+      }).toString(),
       redirect: 'manual',
     });
     assert.equal(resp.status, 401);
-    const setCookie = resp.headers.get('set-cookie');
-    assert.ok(!setCookie || !setCookie.includes('pdpp_owner_session='), 'no session cookie on wrong password');
+    const setCookies = getRawSetCookieList(resp);
+    assert.ok(
+      !findSetCookiePair(setCookies, 'pdpp_owner_session'),
+      'no session cookie on wrong password',
+    );
     const text = await resp.text();
     assert.ok(text.includes('Incorrect password'), 'login page shows error');
   });
@@ -324,14 +401,25 @@ test('owner-auth placeholder: authenticated /consent/approve issues a grant and 
     const { cookie } = await login(asUrl, TEST_PASSWORD);
     const device = await initiateOwnerDeviceAuthorization('longview', { baseUrl: asUrl });
 
+    // Fetch the device approval page to capture the rendered CSRF token
+    // and matching cookie. The signed token must be paired with the
+    // matching cookie or the form POST is rejected.
+    const csrf = await fetchHostedFormCsrf(
+      asUrl,
+      `/device?user_code=${encodeURIComponent(device.user_code)}`,
+      cookie,
+    );
+    assert.ok(csrf.csrfField, '/device GET embeds a CSRF token');
+    assert.ok(csrf.csrfCookie?.startsWith('pdpp_owner_csrf='), '/device GET sets a CSRF cookie');
+
     const approveDeviceResp = await fetch(`${asUrl}/device/approve`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/x-www-form-urlencoded',
         Accept: 'text/html',
-        Cookie: cookie,
+        Cookie: `${cookie}; ${csrf.csrfCookie}`,
       },
-      body: new URLSearchParams({ user_code: device.user_code }).toString(),
+      body: new URLSearchParams({ user_code: device.user_code, _csrf: csrf.csrfField }).toString(),
       redirect: 'manual',
     });
     assert.equal(approveDeviceResp.status, 200);
@@ -381,16 +469,22 @@ test('owner-auth placeholder: enabled — submitted subject_id is ignored on app
       const { cookie } = await login(asUrl, TEST_PASSWORD);
       const device = await initiateOwnerDeviceAuthorization('longview', { baseUrl: asUrl });
 
+      const csrf = await fetchHostedFormCsrf(
+        asUrl,
+        `/device?user_code=${encodeURIComponent(device.user_code)}`,
+        cookie,
+      );
       const approveDeviceResp = await fetch(`${asUrl}/device/approve`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/x-www-form-urlencoded',
           Accept: 'text/html',
-          Cookie: cookie,
+          Cookie: `${cookie}; ${csrf.csrfCookie}`,
         },
         body: new URLSearchParams({
           user_code: device.user_code,
           subject_id: 'attacker_injected_subject',
+          _csrf: csrf.csrfField,
         }).toString(),
         redirect: 'manual',
       });

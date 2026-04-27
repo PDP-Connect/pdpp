@@ -35,10 +35,24 @@
 - [x] 5.1 `design-notes/spine-token-id-storage-2026-04-27.md` — propose hashing or removing `token_id` from `spine_events` storage.
 - [x] 5.2 `design-notes/consent-result-token-rendering-2026-04-27.md` — propose an exchange-code flow to replace HTML token-copy on `/consent/approve`.
 
+## 6. P2 follow-up: CSRF + cookie posture for hosted owner forms (2026-04-27)
+
+The original change deferred CSRF as a P2. Owner review of v1 asked for the higher-confidence default before moving on. The follow-up lands here rather than in a new change because the surface (hosted owner forms) and threat model (browser cross-origin POSTs at the AS) are tightly co-located with the surfaces this change already covers.
+
+- [x] 6.1 Add `reference-implementation/server/owner-csrf.ts` with a signed double-submit token (`<base64url-nonce>.<base64url-hmac>` over an HKDF-style password-derived secret). HMAC-SHA256 over the nonce; `validateOwnerCsrfPair` verifies cookie signature, field signature, and constant-time equality.
+- [x] 6.2 Wire CSRF issue/verify into `owner-auth.ts`: `ensureCsrfToken` on every hosted-form GET; `requireCsrf` middleware (no-op when owner-auth disabled or when `Content-Type` is not form-encoded); inline checks at `POST /owner/login` (CSRF-before-password) and `POST /owner/logout` (form-only). Rotate the CSRF cookie on auth-state change.
+- [x] 6.3 Embed the hidden `_csrf` field in the rendered consent (`renderPendingGrantConsentHtml`), device approval, owner login, and signed-in-owner pages. Add CSRF middleware to `POST /consent/approve`, `POST /consent/deny`, `POST /device/approve`, `POST /device/deny`.
+- [x] 6.4 Add `OwnerSessionSameSite` mode to `owner-session.ts` (`lax`|`strict`) and a `forceSecureCookies` controller option. Wire `PDPP_OWNER_SAMESITE` and `PDPP_OWNER_FORCE_SECURE_COOKIES=1` env knobs through `resolveOwnerAuthPlaceholderConfig` so deployments behind TLS-terminating proxies can enforce `Secure` and `SameSite=Strict` without code changes.
+- [x] 6.5 Implement `appendSetCookie` so login responses can carry both the session Set-Cookie and the CSRF rotation Set-Cookie through the Fastify transport without one overwriting the other.
+- [x] 6.6 New `reference-implementation/test/owner-csrf.test.js` covering: form POST without CSRF → 403 + no session; valid CSRF + wrong password → 401 + no session; valid CSRF + correct password → 302 + session; consent/approve, consent/deny, device/approve, device/deny form POST without CSRF → 403; matching CSRF from rendered consent/device pages allows the positive path; JSON `/consent/approve` remains compatible without CSRF; forged cookie/field pair without valid signature is rejected; token signed with a different secret is rejected; GET `/owner/login` issues exactly one CSRF Set-Cookie; `ownerAuthSameSite='strict'` produces `SameSite=Strict`; `ownerAuthForceSecureCookies=true` adds `Secure` even on plain HTTP; default plain HTTP omits `Secure` and still works.
+- [x] 6.7 Update existing helpers in `test/owner-auth.test.js` to fetch a CSRF token from `GET /owner/login` (and from `GET /device?...`) before submitting form-encoded POSTs. Tighten the wrong-password test to assert "valid CSRF + wrong password → 401" rather than the prior pattern that accidentally probed both checks together.
+- [x] 6.8 Add CSRF + cookie-posture requirements and scenarios to `specs/reference-implementation-architecture/spec.md` so the OpenSpec delta reflects the implemented behavior.
+
 ## Acceptance checks
 
 - [x] `openspec validate harden-reference-auth-surfaces --strict`
 - [x] `openspec validate --all --strict`
 - [x] `node --test reference-implementation/test/security-auth-surfaces.test.js` (added file)
+- [x] `node --test reference-implementation/test/owner-auth.test.js test/owner-csrf.test.js test/owner-session.test.js test/security-consent-token-handoff.test.js` (CSRF follow-up)
 - [x] `git grep -nE '"the owner"' apps/ packages/ reference-implementation/ openspec/specs/` — empty (excluding archive)
 - [x] Targeted re-run of every test that touches `/grants/<id>/revoke`.

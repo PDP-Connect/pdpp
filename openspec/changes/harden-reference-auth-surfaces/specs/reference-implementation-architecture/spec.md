@@ -134,3 +134,79 @@ Every response from the reference Authorization Server's HTTP application SHALL 
 - **WHEN** a caller issues a JSON request such as `POST /introspect`
 - **THEN** the response SHALL still carry both clickjacking-defense headers
 - **AND** the headers SHALL NOT change the response body or content type
+
+### Requirement: Hosted owner forms SHALL be protected by a signed double-submit CSRF token
+
+When the reference owner-auth placeholder is enabled (`PDPP_OWNER_PASSWORD` set), every state-changing form POST originating from a server-rendered hosted owner page SHALL be rejected unless the caller submits a CSRF token that:
+
+1. is present both in the `pdpp_owner_csrf` cookie and in an `_csrf` form field;
+2. has a valid HMAC signature over its nonce when verified with the server-side CSRF secret;
+3. matches the cookie value byte-for-byte under a constant-time comparison.
+
+The CSRF cookie SHALL be marked `HttpOnly`, `Path=/`, `SameSite=Lax` (or `Strict` when `PDPP_OWNER_SAMESITE=strict`), and `Secure` whenever the request is observed over TLS (`req.secure` or `X-Forwarded-Proto: https`) **or** when `PDPP_OWNER_FORCE_SECURE_COOKIES=1` is set. The hidden field name is `_csrf`. Tokens have the shape `<base64url-nonce>.<base64url-hmac>` and are issued on every hosted-form GET that does not already carry a verifying cookie.
+
+The protected POST surfaces SHALL include at least:
+
+- `POST /owner/login`
+- `POST /owner/logout` when the request is form-encoded
+- `POST /consent/approve` when the request is form-encoded
+- `POST /consent/deny` when the request is form-encoded
+- `POST /device/approve` when the request is form-encoded
+- `POST /device/deny` when the request is form-encoded
+
+Pure JSON callers (Content-Type `application/json`) SHALL remain exempt because browsers cannot forge a cross-origin JSON POST without a CORS preflight; CLIs and server-to-server clients keep their existing programmatic contract. The CSRF cookie SHALL be rotated on auth-state change (login success and logout) so a token captured before sign-in cannot be reused after it.
+
+The owner session cookie (`pdpp_owner_session`) SHALL also honor the `PDPP_OWNER_SAMESITE` and `PDPP_OWNER_FORCE_SECURE_COOKIES` knobs so deployments behind TLS-terminating proxies can force `Secure` and stricter SameSite without code changes.
+
+This requirement supersedes the prior "P2 follow-up" deferral noted in the original `harden-reference-auth-surfaces` design.
+
+#### Scenario: A browser-form POST `/owner/login` arrives without a CSRF cookie or `_csrf` field
+- **WHEN** a browser submits `POST /owner/login` with `Content-Type: application/x-www-form-urlencoded` and no `pdpp_owner_csrf` cookie or `_csrf` body field
+- **THEN** the response status SHALL be `403`
+- **AND** the response SHALL NOT issue a `pdpp_owner_session` Set-Cookie
+- **AND** the response body SHALL NOT leak whether the submitted password would have been correct
+
+#### Scenario: A browser-form POST `/owner/login` arrives with a valid CSRF pair and a wrong password
+- **WHEN** a browser submits `POST /owner/login` with a `pdpp_owner_csrf` cookie and matching `_csrf` field that both verify against the server secret, but the submitted password is incorrect
+- **THEN** the response status SHALL be `401`
+- **AND** the response SHALL NOT issue a `pdpp_owner_session` Set-Cookie
+
+#### Scenario: A browser-form POST `/owner/login` arrives with a valid CSRF pair and the correct password
+- **WHEN** a browser submits `POST /owner/login` with a verifying CSRF pair and the correct password
+- **THEN** the response status SHALL be `302`
+- **AND** the response SHALL issue a `pdpp_owner_session` Set-Cookie
+- **AND** the response SHALL also issue a rotation Set-Cookie that clears the prior `pdpp_owner_csrf` cookie
+
+#### Scenario: A browser-form POST `/consent/approve` arrives from an authenticated owner without a CSRF token
+- **WHEN** an authenticated owner submits `POST /consent/approve` with `Content-Type: application/x-www-form-urlencoded` and no verifying CSRF pair
+- **THEN** the response status SHALL be `403`
+- **AND** the pending consent request SHALL remain pending
+
+#### Scenario: A browser-form POST `/device/approve` arrives from an authenticated owner without a CSRF token
+- **WHEN** an authenticated owner submits `POST /device/approve` with `Content-Type: application/x-www-form-urlencoded` and no verifying CSRF pair
+- **THEN** the response status SHALL be `403`
+- **AND** the device authorization SHALL remain pending
+
+#### Scenario: A JSON POST `/consent/approve` arrives from an authenticated owner without a CSRF token
+- **WHEN** an authenticated owner submits `POST /consent/approve` with `Content-Type: application/json` and no `_csrf` field
+- **THEN** the response SHALL be processed as before
+- **AND** the response status SHALL be `200`
+- **AND** the response body SHALL still return `{ grant_id, token, grant }`
+
+#### Scenario: A forged CSRF cookie/field pair without a valid signature is rejected
+- **WHEN** a caller submits `POST /consent/approve` (form-encoded) with a `pdpp_owner_csrf` cookie and `_csrf` form field that match each other byte-for-byte but whose signature does not verify against the server secret
+- **THEN** the response status SHALL be `403`
+- **AND** no grant SHALL be issued
+
+#### Scenario: An operator opts into stricter cookie posture
+- **WHEN** the server starts with `PDPP_OWNER_SAMESITE=strict`
+- **THEN** every owner session and CSRF Set-Cookie SHALL carry `SameSite=Strict`
+
+#### Scenario: An operator forces `Secure` cookies behind a TLS-terminating proxy
+- **WHEN** the server starts with `PDPP_OWNER_FORCE_SECURE_COOKIES=1`
+- **THEN** every owner session and CSRF Set-Cookie SHALL carry `Secure` even when the inbound request appears as plain HTTP to the Node process
+
+#### Scenario: Local plain-HTTP development still works without configuration
+- **WHEN** the server runs over plain HTTP without `PDPP_OWNER_FORCE_SECURE_COOKIES`
+- **THEN** owner cookies SHALL omit `Secure` so a browser will accept and send them
+- **AND** the hosted owner form flows SHALL still issue and validate CSRF tokens normally

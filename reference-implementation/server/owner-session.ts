@@ -16,13 +16,18 @@ export interface OwnerSessionPayload {
   readonly sub: string;
 }
 
+export type OwnerSessionSameSite = "lax" | "strict";
+
 export interface OwnerSessionControllerOptions {
+  readonly forceSecureCookies?: boolean;
   readonly password?: string | null;
+  readonly sameSite?: OwnerSessionSameSite;
   readonly sessionTtlSeconds?: number;
   readonly subjectId?: string | null;
 }
 
 export interface OwnerSessionCookieOptions {
+  readonly sameSite?: OwnerSessionSameSite;
   readonly secure?: boolean;
 }
 
@@ -158,13 +163,17 @@ export function readOwnerSessionFromCookieHeader(
   return readOwnerSessionFromCookieValue(raw ?? null, secret);
 }
 
+function sameSiteAttribute(mode: OwnerSessionSameSite | undefined): string {
+  return mode === "strict" ? "SameSite=Strict" : "SameSite=Lax";
+}
+
 export function buildOwnerSessionSetCookie(
   value: string,
-  { maxAgeSeconds, secure = false }: OwnerSessionSetCookieOptions = {}
+  { maxAgeSeconds, sameSite = "lax", secure = false }: OwnerSessionSetCookieOptions = {}
 ): string {
   const parts = [`${OWNER_SESSION_COOKIE_NAME}=${value}`];
   parts.push("HttpOnly");
-  parts.push("SameSite=Lax");
+  parts.push(sameSiteAttribute(sameSite));
   parts.push("Path=/");
   if (secure) {
     parts.push("Secure");
@@ -175,10 +184,13 @@ export function buildOwnerSessionSetCookie(
   return parts.join("; ");
 }
 
-export function buildOwnerSessionClearCookie({ secure = false }: OwnerSessionCookieOptions = {}): string {
+export function buildOwnerSessionClearCookie({
+  sameSite = "lax",
+  secure = false,
+}: OwnerSessionCookieOptions = {}): string {
   const parts = [`${OWNER_SESSION_COOKIE_NAME}=`];
   parts.push("HttpOnly");
-  parts.push("SameSite=Lax");
+  parts.push(sameSiteAttribute(sameSite));
   parts.push("Path=/");
   if (secure) {
     parts.push("Secure");
@@ -191,10 +203,22 @@ export function createOwnerSessionController({
   password,
   subjectId,
   sessionTtlSeconds = OWNER_SESSION_DEFAULT_TTL_SECONDS,
+  sameSite = "lax",
+  forceSecureCookies = false,
 }: OwnerSessionControllerOptions = {}): OwnerSessionController {
   const enabled = typeof password === "string" && password.length > 0;
   const resolvedSubjectId = typeof subjectId === "string" && subjectId ? subjectId : OWNER_SESSION_DEFAULT_SUBJECT_ID;
   const secret = enabled && password ? deriveOwnerSessionSecret(password) : null;
+
+  function resolveCookieFlags({ secure, sameSite: callerSameSite }: OwnerSessionCookieOptions): {
+    secure: boolean;
+    sameSite: OwnerSessionSameSite;
+  } {
+    return {
+      secure: forceSecureCookies || Boolean(secure),
+      sameSite: callerSameSite ?? sameSite,
+    };
+  }
 
   function readSessionFromCookieValue(raw?: string | null): OwnerSessionPayload | null {
     if (!(enabled && secret)) {
@@ -210,7 +234,7 @@ export function createOwnerSessionController({
     return readOwnerSessionFromCookieHeader(header ?? null, secret);
   }
 
-  function issueSessionCookieHeader({ secure = false }: OwnerSessionCookieOptions = {}): string | null {
+  function issueSessionCookieHeader(opts: OwnerSessionCookieOptions = {}): string | null {
     if (!(enabled && secret)) {
       return null;
     }
@@ -221,14 +245,17 @@ export function createOwnerSessionController({
       exp: now + sessionTtlSeconds,
     };
     const token = encodeOwnerSession(payload, secret);
+    const flags = resolveCookieFlags(opts);
     return buildOwnerSessionSetCookie(token, {
       maxAgeSeconds: sessionTtlSeconds,
-      secure,
+      secure: flags.secure,
+      sameSite: flags.sameSite,
     });
   }
 
-  function clearSessionCookieHeader({ secure = false }: OwnerSessionCookieOptions = {}): string {
-    return buildOwnerSessionClearCookie({ secure });
+  function clearSessionCookieHeader(opts: OwnerSessionCookieOptions = {}): string {
+    const flags = resolveCookieFlags(opts);
+    return buildOwnerSessionClearCookie({ secure: flags.secure, sameSite: flags.sameSite });
   }
 
   return {
