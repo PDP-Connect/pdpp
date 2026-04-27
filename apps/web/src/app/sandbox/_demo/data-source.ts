@@ -396,6 +396,14 @@ function buildSandboxDeploymentDiagnostics(): DeploymentDiagnostics {
   const semanticCapability = DEMO_CAPABILITIES.find((c) => c.capability === "semantic_search");
   return {
     database: { path: "(sandbox: in-memory deterministic dataset)" },
+    host_browser_bridge: {
+      mode: "disabled",
+      url: null,
+      token_configured: false,
+      daily_chrome_acknowledged: false,
+      misconfigured_reason: null,
+      reachability: { status: "not_checked", reason: "Sandbox does not run a host browser bridge." },
+    },
     environment: [
       { name: "PDPP_REFERENCE_MODE", value: "sandbox", provenance: "present", secret: false },
       { name: "PDPP_DB_PATH", value: null, provenance: "absent", secret: false },

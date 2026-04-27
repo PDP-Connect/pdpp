@@ -45,6 +45,7 @@ export default async function DeploymentPage() {
       />
 
       <WarningsSection warnings={report.warnings} />
+      <HostBrowserBridgeSection bridge={report.host_browser_bridge} />
       <LexicalSection report={report} />
       <SemanticSection report={report} />
       <ParticipationSection participation={report.semantic.participation} />
@@ -74,6 +75,9 @@ const WARNING_TITLES: Record<DeploymentDiagnostics["warnings"][number]["code"], 
   missing_model_cache: "Embedding model cache missing",
   download_disabled: "Model download disabled",
   vector_index_fallback: "Using blob-flat vector fallback",
+  host_browser_bridge_misconfigured: "Host browser bridge misconfigured",
+  host_browser_bridge_unreachable: "Host browser bridge unreachable",
+  host_browser_bridge_daily_chrome: "Host browser bridge using daily Chrome",
 };
 
 function WarningsSection({ warnings }: { warnings: DeploymentDiagnostics["warnings"] }) {
@@ -98,6 +102,59 @@ function WarningsSection({ warnings }: { warnings: DeploymentDiagnostics["warnin
       </div>
     </Section>
   );
+}
+
+// ─── Host browser bridge posture ───────────────────────────────────────────
+//
+// The bridge is opt-in; an unset bridge renders a one-line "disabled" note
+// rather than scary copy. When configured we show URL + token-configured +
+// daily-Chrome flag + reachability so the operator can see exactly which
+// piece is wrong before starting a browser-backed connector run.
+//
+// Spec: openspec/changes/design-host-browser-bridge-for-docker/design.md
+
+function HostBrowserBridgeSection({ bridge }: { bridge: DeploymentDiagnostics["host_browser_bridge"] }) {
+  if (bridge.mode === "disabled") {
+    return (
+      <Section
+        description="Optional bridge that lets Dockerized browser-backed connectors drive a browser running on the host. Unset by default — only required for ChatGPT and other connectors that need a real browser session."
+        title="Host browser bridge"
+      >
+        <p className="pdpp-body text-muted-foreground">
+          Disabled. <code className="font-mono text-xs">PDPP_HOST_BROWSER_BRIDGE_URL</code> is not set; browser-backed
+          connectors will use the container's native isolated launcher.
+        </p>
+      </Section>
+    );
+  }
+
+  return (
+    <Section
+      description="Optional bridge that lets Dockerized browser-backed connectors drive a browser running on the host."
+      title="Host browser bridge"
+    >
+      <dl className="grid grid-cols-1 gap-x-6 gap-y-2 sm:grid-cols-2">
+        <Field label="Mode" value={bridge.mode} />
+        <Field label="Bridge URL" value={bridge.url ?? "—"} />
+        <Field label="Token configured" value={yesNo(bridge.token_configured)} />
+        <Field label="Daily Chrome opt-in" value={yesNo(bridge.daily_chrome_acknowledged)} />
+        <Field label="Reachability" value={formatReachability(bridge.reachability)} />
+      </dl>
+      {bridge.misconfigured_reason ? (
+        <p className="pdpp-caption mt-3 text-muted-foreground">{bridge.misconfigured_reason}</p>
+      ) : null}
+    </Section>
+  );
+}
+
+function formatReachability(reachability: DeploymentDiagnostics["host_browser_bridge"]["reachability"]): string {
+  if (reachability.status === "ok") {
+    return "ok";
+  }
+  if (reachability.status === "unreachable") {
+    return `unreachable — ${reachability.reason}`;
+  }
+  return `not checked — ${reachability.reason}`;
 }
 
 // ─── Retrieval indexes ─────────────────────────────────────────────────────

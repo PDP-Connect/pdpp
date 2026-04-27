@@ -346,6 +346,17 @@ export interface DeploymentDiagnostics {
     provenance: "absent" | "present" | "redacted";
     secret: boolean;
   }>;
+  host_browser_bridge: {
+    mode: "disabled" | "configured" | "misconfigured";
+    url: string | null;
+    token_configured: boolean;
+    daily_chrome_acknowledged: boolean;
+    misconfigured_reason: string | null;
+    reachability:
+      | { status: "not_checked"; reason: string }
+      | { status: "ok" }
+      | { status: "unreachable"; reason: string };
+  };
   lexical: {
     index: {
       state: "built" | "building";
@@ -424,7 +435,10 @@ export interface DeploymentDiagnostics {
       | "backend_unavailable"
       | "missing_model_cache"
       | "download_disabled"
-      | "vector_index_fallback";
+      | "vector_index_fallback"
+      | "host_browser_bridge_misconfigured"
+      | "host_browser_bridge_unreachable"
+      | "host_browser_bridge_daily_chrome";
     message: string;
   }>;
 }

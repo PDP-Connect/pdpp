@@ -101,9 +101,60 @@ export interface DeploymentDiagnosticsInput {
   readonly db: DiagnosticsDb | null;
   readonly dbPath: string;
   readonly env: DiagnosticsEnv;
+  readonly hostBrowserBridge?: HostBrowserBridgePostureInput | null;
   readonly indexState: SemanticIndexState | null;
   readonly lexicalBackfillProgress?: LexicalBackfillProgress | null;
   readonly manifests: readonly DiagnosticsManifestEntry[];
+}
+
+// Container-side host-browser bridge posture, derived from env and an
+// optional cheap reachability probe. The runtime adapter resolves these
+// inputs; the pure builder only formats and warns.
+//
+// We intentionally do NOT take the raw token here. Diagnostics receives
+// only "token configured yes/no" so the redacted token can never be
+// re-assembled out of this report.
+//
+// Spec: openspec/changes/design-host-browser-bridge-for-docker/design.md
+export interface HostBrowserBridgePostureInput {
+  // Operator opted into "drive my real Chrome" by setting
+  // PDPP_HOST_BROWSER_BRIDGE_DAILY_CHROME=1.
+  readonly dailyChromeAcknowledged: boolean;
+  // Reason from the bridge config resolver when `mode === "misconfigured"`.
+  readonly misconfiguredReason: string | null;
+  // From resolveHostBrowserBridgeConfig() — three-state; `disabled` means
+  // PDPP_HOST_BROWSER_BRIDGE_URL is unset.
+  readonly mode: "disabled" | "configured" | "misconfigured";
+  // Optional cheap reachability probe. The probe is HTTP GET against
+  // the bridge URL's host:port — the bridge serves a small status string
+  // for plain HTTP requests (see bin/host-browser-bridge.ts), which is
+  // exactly the cheap probe path the spec calls out.
+  // `not_checked` is the honest answer when probing is disabled or the
+  // mode is `disabled`/`misconfigured` (no point probing a URL we know
+  // is wrong).
+  readonly reachability:
+    | { readonly status: "not_checked"; readonly reason: string }
+    | { readonly status: "ok" }
+    | { readonly status: "unreachable"; readonly reason: string };
+  // True iff PDPP_HOST_BROWSER_BRIDGE_TOKEN was non-empty after trim.
+  // The raw token MUST NOT cross this boundary.
+  readonly tokenConfigured: boolean;
+  // The configured WS URL when the operator set it. Even in the
+  // `misconfigured` case we surface the value the operator typed so they
+  // can see what's wrong. Never includes the token.
+  readonly url: string | null;
+}
+
+export interface HostBrowserBridgePostureReport {
+  readonly daily_chrome_acknowledged: boolean;
+  readonly misconfigured_reason: string | null;
+  readonly mode: HostBrowserBridgePostureInput["mode"];
+  readonly reachability:
+    | { readonly status: "not_checked"; readonly reason: string }
+    | { readonly status: "ok" }
+    | { readonly status: "unreachable"; readonly reason: string };
+  readonly token_configured: boolean;
+  readonly url: string | null;
 }
 
 export interface ParticipationTuple {
@@ -128,7 +179,10 @@ export type DiagnosticsWarningCode =
   | "backend_unavailable"
   | "missing_model_cache"
   | "download_disabled"
-  | "vector_index_fallback";
+  | "vector_index_fallback"
+  | "host_browser_bridge_misconfigured"
+  | "host_browser_bridge_unreachable"
+  | "host_browser_bridge_daily_chrome";
 
 export interface DiagnosticsWarning {
   readonly code: DiagnosticsWarningCode;
@@ -149,6 +203,7 @@ export interface DeploymentDiagnosticsReport {
     readonly path: string;
   };
   readonly environment: readonly EnvValueReport[];
+  readonly host_browser_bridge: HostBrowserBridgePostureReport;
   readonly lexical: {
     readonly index: {
       readonly state: "built" | "building";
@@ -218,6 +273,9 @@ const ENV_ALLOWLIST: ReadonlyArray<{ readonly name: string; readonly secret?: bo
   { name: "PDPP_EMBEDDING_CACHE_DIR" },
   { name: "PDPP_EMBEDDING_DOWNLOAD_ALLOWED" },
   { name: "PDPP_DCR_INITIAL_ACCESS_TOKENS", secret: true },
+  { name: "PDPP_HOST_BROWSER_BRIDGE_URL" },
+  { name: "PDPP_HOST_BROWSER_BRIDGE_TOKEN", secret: true },
+  { name: "PDPP_HOST_BROWSER_BRIDGE_DAILY_CHROME" },
   { name: "NODE_ENV" },
 ];
 
@@ -376,6 +434,11 @@ function buildWarnings(
     });
   }
 
+  // Host-browser bridge posture warnings. The bridge is opt-in, so an
+  // unconfigured bridge is not itself a warning — operators who do not
+  // run browser-backed connectors in Docker should see no noise.
+  warnings.push(...buildBridgeWarnings(input.hostBrowserBridge ?? null));
+
   // Backend-specific cache/download warnings. Only surfaced when the
   // backend reports these fields — the stub backend does not.
   if (input.backend?.modelCachePresent && input.backend.modelCachePresent() === false) {
@@ -396,6 +459,68 @@ function buildWarnings(
   }
 
   return warnings;
+}
+
+function buildBridgeWarnings(bridge: HostBrowserBridgePostureInput | null): readonly DiagnosticsWarning[] {
+  if (!bridge) {
+    return [];
+  }
+  const out: DiagnosticsWarning[] = [];
+  if (bridge.mode === "misconfigured") {
+    out.push({
+      code: "host_browser_bridge_misconfigured",
+      message: bridge.misconfiguredReason
+        ? `Host browser bridge is misconfigured: ${bridge.misconfiguredReason}`
+        : "Host browser bridge is misconfigured.",
+    });
+  }
+  if (bridge.mode === "configured" && bridge.reachability.status === "unreachable") {
+    out.push({
+      code: "host_browser_bridge_unreachable",
+      message:
+        `Host browser bridge configured but unreachable at ${bridge.url ?? "(unknown)"}: ${bridge.reachability.reason}. ` +
+        "Browser-backed connector runs will fail with host_browser_bridge_unavailable until the bridge is started on the host.",
+    });
+  }
+  if (bridge.mode === "configured" && bridge.dailyChromeAcknowledged) {
+    out.push({
+      code: "host_browser_bridge_daily_chrome",
+      message:
+        "PDPP_HOST_BROWSER_BRIDGE_DAILY_CHROME is set. The bridge is allowed to drive the operator's daily Chrome profile, " +
+        "which broadens the trust boundary. Disable it unless you are debugging a one-off bootstrap.",
+    });
+  }
+  return out;
+}
+
+// ─── Host-browser bridge posture ───────────────────────────────────────────
+//
+// Pure formatter: takes the resolved input (env-derived plus optional
+// reachability probe) and returns the report shape the dashboard renders.
+// The token never crosses this boundary in raw form.
+
+function buildHostBrowserBridgeReport(input: HostBrowserBridgePostureInput | null): HostBrowserBridgePostureReport {
+  if (!input) {
+    return {
+      mode: "disabled",
+      url: null,
+      token_configured: false,
+      daily_chrome_acknowledged: false,
+      misconfigured_reason: null,
+      reachability: {
+        status: "not_checked",
+        reason: "host browser bridge posture not collected",
+      },
+    };
+  }
+  return {
+    mode: input.mode,
+    url: input.url,
+    token_configured: input.tokenConfigured,
+    daily_chrome_acknowledged: input.dailyChromeAcknowledged,
+    misconfigured_reason: input.misconfiguredReason,
+    reachability: input.reachability,
+  };
 }
 
 // ─── Top-level report builder ──────────────────────────────────────────────
@@ -450,6 +575,13 @@ export function shouldAttemptSemanticUplift(gate: SemanticUpliftGate): boolean {
 export interface CollectDeploymentDiagnosticsOptions {
   readonly dbPath: string;
   readonly env?: DiagnosticsEnv;
+  // Per-probe timeout. Defaults to ~750ms — short enough that a stalled
+  // probe cannot block the operator-facing page.
+  readonly hostBrowserBridgeProbeTimeoutMs?: number;
+  // When false, skip the cheap reachability probe and report
+  // `not_checked`. Useful in tests so we never reach a real socket.
+  // Defaults to true.
+  readonly probeHostBrowserBridge?: boolean;
 }
 
 export interface DeploymentDiagnosticsRuntimeDeps {
@@ -494,6 +626,11 @@ export async function collectDeploymentDiagnostics(
   // Index state is only meaningful when a backend is configured.
   const indexState: SemanticIndexState | null = backend === null ? null : deps.computeIndexState();
 
+  const hostBrowserBridge = await collectHostBrowserBridgePosture(env, {
+    probe: opts.probeHostBrowserBridge !== false,
+    timeoutMs: opts.hostBrowserBridgeProbeTimeoutMs ?? 750,
+  });
+
   return buildDeploymentDiagnostics({
     backend,
     db,
@@ -502,8 +639,170 @@ export async function collectDeploymentDiagnostics(
     lexicalBackfillProgress: deps.getLexicalBackfillProgress ? deps.getLexicalBackfillProgress() : null,
     manifests,
     indexState,
+    hostBrowserBridge,
     env,
   });
+}
+
+// ─── Host browser bridge runtime collector ────────────────────────────────
+//
+// Mirrors the parsing rules in
+// packages/polyfill-connectors/src/host-browser-bridge-config.ts. The
+// runtime contract belongs to that file; we re-parse here so this module
+// stays inside the reference-implementation tsconfig graph and does not
+// require a workspace dependency on @pdpp/polyfill-connectors. The two
+// readers MUST stay in sync.
+
+const BRIDGE_URL_RE = /^wss?:\/\/[^\s]+$/i;
+const URL_VAR = "PDPP_HOST_BROWSER_BRIDGE_URL";
+const TOKEN_VAR = "PDPP_HOST_BROWSER_BRIDGE_TOKEN";
+const DAILY_CHROME_VAR = "PDPP_HOST_BROWSER_BRIDGE_DAILY_CHROME";
+
+function readNonEmpty(env: DiagnosticsEnv, name: string): string | undefined {
+  const raw = env[name];
+  if (raw === undefined) {
+    return;
+  }
+  const trimmed = raw.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+async function collectHostBrowserBridgePosture(
+  env: DiagnosticsEnv,
+  options: { probe: boolean; timeoutMs: number }
+): Promise<HostBrowserBridgePostureInput> {
+  const url = readNonEmpty(env, URL_VAR) ?? null;
+  const token = readNonEmpty(env, TOKEN_VAR);
+  const tokenConfigured = token !== undefined;
+  const dailyChromeAcknowledged = readNonEmpty(env, DAILY_CHROME_VAR) === "1";
+
+  if (!url) {
+    if (tokenConfigured || readNonEmpty(env, DAILY_CHROME_VAR) !== undefined) {
+      return {
+        mode: "misconfigured",
+        url: null,
+        tokenConfigured,
+        dailyChromeAcknowledged,
+        misconfiguredReason: `${TOKEN_VAR} or ${DAILY_CHROME_VAR} is set but ${URL_VAR} is empty; either set ${URL_VAR} or unset the others.`,
+        reachability: {
+          status: "not_checked",
+          reason: "Skipped because the bridge config is invalid.",
+        },
+      };
+    }
+    return {
+      mode: "disabled",
+      url: null,
+      tokenConfigured: false,
+      dailyChromeAcknowledged,
+      misconfiguredReason: null,
+      reachability: {
+        status: "not_checked",
+        reason: `${URL_VAR} is not set; bridge is opt-in.`,
+      },
+    };
+  }
+
+  if (!BRIDGE_URL_RE.test(url)) {
+    return {
+      mode: "misconfigured",
+      url,
+      tokenConfigured,
+      dailyChromeAcknowledged,
+      misconfiguredReason: `${URL_VAR}=${url} must be a ws:// or wss:// URL.`,
+      reachability: {
+        status: "not_checked",
+        reason: "Skipped because the bridge URL is invalid.",
+      },
+    };
+  }
+
+  if (!tokenConfigured) {
+    return {
+      mode: "misconfigured",
+      url,
+      tokenConfigured: false,
+      dailyChromeAcknowledged,
+      misconfiguredReason: `${URL_VAR} is set but ${TOKEN_VAR} is empty; refusing to connect unauthenticated.`,
+      reachability: {
+        status: "not_checked",
+        reason: "Skipped because no token is configured.",
+      },
+    };
+  }
+
+  const reachability = options.probe
+    ? await probeHostBrowserBridge(url, options.timeoutMs)
+    : {
+        status: "not_checked" as const,
+        reason: "Reachability probe disabled by caller.",
+      };
+
+  return {
+    mode: "configured",
+    url,
+    tokenConfigured: true,
+    dailyChromeAcknowledged,
+    misconfiguredReason: null,
+    reachability,
+  };
+}
+
+// Cheap probe: HTTP GET against the WS URL's host:port. The bridge's
+// HTTP layer responds with a small status string for non-upgrade
+// requests (see bin/host-browser-bridge.ts). Returns `unreachable` on
+// connect/timeout/HTTP error, otherwise `ok`. Never sends the token.
+async function probeHostBrowserBridge(
+  wsUrl: string,
+  timeoutMs: number
+): Promise<HostBrowserBridgePostureInput["reachability"]> {
+  let httpUrl: URL;
+  try {
+    httpUrl = new URL(wsUrl);
+  } catch (err) {
+    return { status: "unreachable", reason: `invalid URL: ${describeError(err)}` };
+  }
+  // ws → http, wss → https. Anything else has already been rejected by
+  // resolveHostBrowserBridgeConfig, but be defensive.
+  if (httpUrl.protocol === "ws:") {
+    httpUrl.protocol = "http:";
+  } else if (httpUrl.protocol === "wss:") {
+    httpUrl.protocol = "https:";
+  } else {
+    return { status: "unreachable", reason: `unsupported protocol ${httpUrl.protocol}` };
+  }
+  // Discard any path/query — we only probe the bridge's root.
+  httpUrl.pathname = "/";
+  httpUrl.search = "";
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const resp = await fetch(httpUrl.toString(), {
+      method: "GET",
+      signal: controller.signal,
+      // The bridge does not require auth on the plain HTTP path — it is
+      // the WS upgrade that requires the token. We send no headers.
+    });
+    if (!resp.ok) {
+      return { status: "unreachable", reason: `HTTP ${resp.status}` };
+    }
+    return { status: "ok" };
+  } catch (err) {
+    return { status: "unreachable", reason: describeError(err) };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function describeError(err: unknown): string {
+  if (err instanceof Error) {
+    if (err.name === "AbortError") {
+      return "probe timed out";
+    }
+    return err.message || err.name;
+  }
+  return String(err);
 }
 
 export function buildDeploymentDiagnostics(input: DeploymentDiagnosticsInput): DeploymentDiagnosticsReport {
@@ -515,6 +814,7 @@ export function buildDeploymentDiagnostics(input: DeploymentDiagnosticsInput): D
   const warnings = buildWarnings(input, participation, backendAvailable);
 
   return {
+    host_browser_bridge: buildHostBrowserBridgeReport(input.hostBrowserBridge ?? null),
     lexical: {
       index: {
         state: input.lexicalBackfillProgress ? "building" : "built",
