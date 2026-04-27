@@ -1,9 +1,9 @@
 # Skill Distribution Prior Art
 
-Status: captured
+Status: captured; updated by implementation
 Owner: agent-scoped-pdpp-access worker
 Created: 2026-04-26
-Updated: 2026-04-26
+Updated: 2026-04-27
 Related: `openspec/changes/add-agent-scoped-pdpp-access/`, `docs/agent-skills/pdpp-data-access/`, `2026-04-25-reference-surface-audit.md`
 
 ## Question
@@ -90,6 +90,7 @@ There is a de-facto leaderboard at `skills.sh` (~91k skills indexed, populated f
 ## Decision Log
 
 - 2026-04-26: Captured. No channel selection made; see sibling memo `docs/inbox/skill-distribution-channels-2026-04-26.md` for an unopinionated tradeoff write-up that this note feeds into.
+- 2026-04-27: Owner selected a narrow `npx skills` path after testing the official CLI. `skills/pdpp-data-access/` is a checked distribution copy generated from `docs/agent-skills/pdpp-data-access/`, with `pnpm agent-skill:check` as the drift gate. Existing repo-local development skills under `.agents/skills/` and `.codex/skills/` remain visible to `npx skills add . --list`; that is tolerated for now rather than risking local agent skill loading by marking them internal.
 
 ## Sources
 

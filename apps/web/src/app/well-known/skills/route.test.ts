@@ -4,6 +4,7 @@ import { GET } from "./[[...path]]/route.ts";
 
 const APPLICATION_JSON = /^application\/json/;
 const PDPP_SKILL_FRONTMATTER = /name: pdpp-data-access/;
+const TROUBLESHOOTING_HEADING = /# Troubleshooting/;
 const TEXT_MARKDOWN = /^text\/markdown/;
 
 function callSkillsRoute(path: string[], headers?: HeadersInit): Promise<Response> {
@@ -38,6 +39,11 @@ test("agent skill well-known route serves only allowlisted files", async () => {
   assert.equal(skill.status, 200);
   assert.match(skill.headers.get("content-type") ?? "", TEXT_MARKDOWN);
   assert.match(await skill.text(), PDPP_SKILL_FRONTMATTER);
+
+  const reference = await callSkillsRoute(["pdpp-data-access", "references", "troubleshooting.md"]);
+  assert.equal(reference.status, 200);
+  assert.match(reference.headers.get("content-type") ?? "", TEXT_MARKDOWN);
+  assert.match(await reference.text(), TROUBLESHOOTING_HEADING);
 
   const traversal = await callSkillsRoute(["pdpp-data-access", "..", "..", "package.json"]);
   assert.equal(traversal.status, 404);

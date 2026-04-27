@@ -76,10 +76,11 @@ Do not default to perpetual broad access. Long-lived access can exist, but must 
 
 The canonical source remains `docs/agent-skills/pdpp-data-access/`. That path avoids the repo-root `skills/` collision with local agent installer state while keeping the skill reviewable in the docs tree.
 
-This tranche publishes two low-drift channels from that source:
+This tranche publishes three low-drift channels from that source:
 
 1. `/.well-known/skills/index.json` lists the `pdpp-data-access` skill, every served file, byte length, SHA-256, media type, repository path, and absolute URL. File serving is allowlist-only; the route does not expose arbitrary repository files.
 2. `/llms.txt` points agents at the catalog and primary `SKILL.md`; `/llms-full.txt` includes the full skill and reference content for crawler/search workflows.
+3. `skills/pdpp-data-access/` is a checked distribution copy for `npx skills add <repo-url> --skill pdpp-data-access`. The copy is generated from `docs/agent-skills/pdpp-data-access/` and verified by `pnpm agent-skill:check` so the installable `npx skills` surface cannot drift silently from the canonical web-distributed source.
 
 In composed reference deployments, the RS protected-resource metadata also carries a `pdpp_agent_discovery` block with advisory links to those browser-hosted surfaces. The block is intentionally descriptive rather than authoritative PDPP protocol semantics: it tells a cold-start agent where to learn the recommended `pdpp agent` workflow, but data access still requires an owner-approved client grant. Direct AS/RS-only deployments omit the block because they do not serve the web skill and LLM routes.
 
@@ -87,9 +88,8 @@ The skill itself is CLI-first. It teaches `pdpp agent bootstrap`, `pdpp agent re
 
 Deferred channels:
 
-- `npx skills` repo-root layout: deferred because `skills/` is intentionally ignored for consumer-side installer state, and the installer is still pre-1.0.
 - CLI-package bundling: deferred until the reference CLI package publishing story is settled.
-- Claude plugin marketplace: deferred because it is currently single-harness and lower leverage than web discovery.
+- Claude plugin marketplace: deferred because it is currently single-harness and lower leverage than web discovery plus `npx skills`.
 
 Rejected channel:
 

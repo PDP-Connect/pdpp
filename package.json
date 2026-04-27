@@ -10,6 +10,8 @@
     "start": "pnpm web:start",
     "docker:dev": "docker compose --env-file .env.docker -f docker-compose.yml -f docker-compose.dev.yml up --build",
     "docker:smoke": "bash scripts/docker-smoke.sh",
+    "agent-skill:check": "node scripts/sync-agent-skill.mjs --check",
+    "agent-skill:sync": "node scripts/sync-agent-skill.mjs --write",
     "reference-contract:generate": "pnpm --filter @pdpp/reference-contract run generate:all",
     "reference-contract:check-generated": "pnpm --filter @pdpp/reference-contract run check:generated",
     "release": "semantic-release",

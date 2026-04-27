@@ -55,3 +55,4 @@ Note: The existing consent shell at `server/index.js:renderPendingGrantConsentHt
 - [x] Advertise those skill and LLM surfaces from composed RS protected-resource metadata as advisory links.
 - [x] Rewrite the skill happy path around `pdpp agent bootstrap/request/wait/store/use/status`, with raw HTTP documented only as a fallback.
 - [x] Add catalog tests that pin the served file list and reject path traversal/missing files.
+- [x] Publish `skills/pdpp-data-access/` as the `npx skills add <repo-url> --skill pdpp-data-access` distribution copy, with `pnpm agent-skill:check` preventing drift from the canonical `docs/agent-skills` source.

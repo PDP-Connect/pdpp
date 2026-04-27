@@ -85,6 +85,11 @@ The reference web app SHALL expose stable, machine-readable discovery surfaces f
 - **AND** it SHALL describe that `pdpp agent wait` polls only the local cache and does not contact the AS
 - **AND** it SHALL describe that `pdpp agent use` rejects missing, expired, and locally revoked grants
 
+#### Scenario: Agent installs the skill from a repository
+- **WHEN** `npx skills add <repo-url> --list` scans the repository
+- **THEN** it SHALL discover `pdpp-data-access` in a standard skill discovery location
+- **AND** the installable copy SHALL be kept synchronized with the canonical `docs/agent-skills/pdpp-data-access/` source by a repository check
+
 ### Requirement: Protocol-candidate semantics SHALL remain explicitly proposed
 
 Agent access workflow behavior that would change PDPP core authorization, grant semantics, or any companion spec SHALL be labeled proposed or experimental until separately accepted by the normative spec process.
