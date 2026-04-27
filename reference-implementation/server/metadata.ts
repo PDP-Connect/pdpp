@@ -20,16 +20,56 @@ export interface ResolvePublicUrlRequest {
 // Hoisted to module scope: Biome's `useTopLevelRegex` rule (and the
 // matching V8 perf characteristic) prefers the literal compiled once.
 const TRAILING_SLASH_RE = /\/+$/;
+const HEADER_LIST_SEPARATOR_RE = /\s*,\s*/;
 
 export function stripTrailingSlash(value: string): string {
   return value.replace(TRAILING_SLASH_RE, "");
 }
 
+function firstHeaderValue(value: string | undefined): string | undefined {
+  return value?.split(HEADER_LIST_SEPARATOR_RE, 1)[0]?.trim() || undefined;
+}
+
+function isLoopbackHost(hostname: string): boolean {
+  const normalized = hostname.toLowerCase();
+  return (
+    normalized === "localhost" || normalized === "0.0.0.0" || normalized === "::1" || normalized.startsWith("127.")
+  );
+}
+
+function parseUrl(value: string): URL | null {
+  try {
+    return new URL(value);
+  } catch {
+    return null;
+  }
+}
+
+function forwardedPublicOrigin(req: ResolvePublicUrlRequest): string | null {
+  const forwardedHost = firstHeaderValue(req.get("x-forwarded-host"));
+  if (!forwardedHost) {
+    return null;
+  }
+  const forwardedProto = firstHeaderValue(req.get("x-forwarded-proto")) ?? req.protocol;
+  return stripTrailingSlash(`${forwardedProto}://${forwardedHost}`);
+}
+
+export function resolveRequestPublicUrl(req: ResolvePublicUrlRequest): string {
+  const host = firstHeaderValue(req.get("x-forwarded-host")) ?? req.get("host") ?? "";
+  const protocol = firstHeaderValue(req.get("x-forwarded-proto")) ?? req.protocol;
+  return stripTrailingSlash(`${protocol}://${host}`);
+}
+
 export function resolvePublicUrl(req: ResolvePublicUrlRequest, explicitUrl?: string | null): string {
+  const forwardedOrigin = forwardedPublicOrigin(req);
   if (explicitUrl) {
+    const parsedExplicit = parseUrl(explicitUrl);
+    if (forwardedOrigin && parsedExplicit && isLoopbackHost(parsedExplicit.hostname)) {
+      return forwardedOrigin;
+    }
     return stripTrailingSlash(explicitUrl);
   }
-  return stripTrailingSlash(`${req.protocol}://${req.get("host") ?? ""}`);
+  return resolveRequestPublicUrl(req);
 }
 
 // JSON-shape of the OAuth `protected_resource_metadata` document plus

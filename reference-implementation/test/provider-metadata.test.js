@@ -164,6 +164,51 @@ test('composed mode env drives browser-facing metadata when explicit public urls
   }
 });
 
+test('proxied composed metadata rebases localhost defaults to the forwarded public origin', async () => {
+  const publicOrigin = 'https://peregrine-dev.example';
+  const localOrigin = 'http://localhost:3000';
+  const server = await startServer({
+    quiet: true,
+    asPort: 0,
+    rsPort: 0,
+    dbPath: ':memory:',
+    referenceMode: 'composed',
+    referenceOrigin: localOrigin,
+    asPublicUrl: localOrigin,
+    rsPublicUrl: localOrigin,
+  });
+  const asUrl = `http://localhost:${server.asPort}`;
+  const rsUrl = `http://localhost:${server.rsPort}`;
+  const forwardedHeaders = {
+    'x-forwarded-host': 'peregrine-dev.example',
+    'x-forwarded-proto': 'https',
+  };
+
+  try {
+    const protectedResource = await fetchJson(`${rsUrl}/.well-known/oauth-protected-resource`, {
+      headers: forwardedHeaders,
+    });
+    assert.equal(protectedResource.status, 200);
+    assert.equal(protectedResource.body.resource, publicOrigin);
+    assert.deepEqual(protectedResource.body.authorization_servers, [publicOrigin]);
+    assert.equal(protectedResource.body.pdpp_core_query_base, `${publicOrigin}/v1`);
+    assert.equal(
+      protectedResource.body.pdpp_agent_discovery.skill,
+      `${publicOrigin}/.well-known/skills/pdpp-data-access/SKILL.md`,
+    );
+
+    const authorizationServer = await fetchJson(`${asUrl}/.well-known/oauth-authorization-server`, {
+      headers: forwardedHeaders,
+    });
+    assert.equal(authorizationServer.status, 200);
+    assert.equal(authorizationServer.body.issuer, publicOrigin);
+    assert.equal(authorizationServer.body.registration_endpoint, `${publicOrigin}/oauth/register`);
+    assert.equal(authorizationServer.body.device_authorization_endpoint, `${publicOrigin}/oauth/device_authorization`);
+  } finally {
+    await closeServer(server);
+  }
+});
+
 test('provider metadata routes expose current honest capability set', async () => {
   const server = await startServer({
     quiet: true,

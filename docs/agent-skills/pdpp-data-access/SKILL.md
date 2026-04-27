@@ -40,6 +40,7 @@ The patterns in this skill are derived from PAR (RFC 9126), RAR (RFC 9396), DCR 
 ### 1. Prefer the reference CLI
 
 Use the `pdpp agent` command group when it is available. It handles discovery, dynamic client registration, project-local cache layout, `.gitignore` hygiene, approval URL printing, token storage, and token-use checks. Raw HTTP is a fallback, not the happy path.
+The CLI automatically tries the reference-local DCR default when the server is an out-of-the-box reference deployment; if bootstrap still asks for an initial-access token, stop and ask the owner rather than switching to an owner bearer token.
 
 ```bash
 pdpp agent bootstrap --as-url "$AS_URL" --rs-url "$RS_URL"

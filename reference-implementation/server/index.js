@@ -1629,7 +1629,7 @@ function buildAsApp(opts = {}) {
 
       const explicitBaseUrl = opts.asPublicUrl || (!opts.ignoreAmbientPublicUrls ? process.env.AS_PUBLIC_URL : null);
       const result = await initiateOwnerDeviceAuthorization(clientId, {
-        baseUrl: explicitBaseUrl || `${req.protocol}://${req.get('host')}`,
+        baseUrl: resolvePublicUrl(req, explicitBaseUrl),
       });
       const traceContext = result.trace_context || null;
       if (traceContext?.request_id) {
@@ -2272,7 +2272,7 @@ function buildAsApp(opts = {}) {
     try {
       const explicitBaseUrl = opts.asPublicUrl || (!opts.ignoreAmbientPublicUrls ? process.env.AS_PUBLIC_URL : null);
       const result = await initiateGrant(req.body, {
-        baseUrl: explicitBaseUrl || `${req.protocol}://${req.get('host')}`,
+        baseUrl: resolvePublicUrl(req, explicitBaseUrl),
         nativeManifest: resolveNativeManifest(opts),
       });
       const traceContext = result.trace_context || null;
@@ -2476,7 +2476,7 @@ function buildRsApp(opts = {}) {
     const resource = resolvePublicUrl(req, explicitResource);
     const explicitIssuer = opts.asIssuer || opts.asPublicUrl || (!opts.ignoreAmbientPublicUrls ? (process.env.AS_ISSUER || process.env.AS_PUBLIC_URL) : null);
     const fallbackIssuer = `${req.protocol}://${req.hostname}:${opts.asPort || AS_PORT}`;
-    const issuer = stripTrailingSlash(explicitIssuer || fallbackIssuer);
+    const issuer = resolvePublicUrl(req, explicitIssuer || fallbackIssuer);
 
     // Lexical retrieval extension advertisement. Exposed by default; reference
     // forks or test fixtures can suppress it by passing
@@ -2581,7 +2581,9 @@ function buildRsApp(opts = {}) {
         tokenKindsSupported: ['owner', 'client'],
         capabilities,
         discoveryHints,
-        agentDiscovery: buildAgentDiscoveryMetadata(opts.agentDiscoveryOrigin),
+        agentDiscovery: buildAgentDiscoveryMetadata(
+          opts.agentDiscoveryOrigin ? resolvePublicUrl(req, opts.agentDiscoveryOrigin) : null,
+        ),
       })
     );
   });

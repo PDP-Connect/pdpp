@@ -79,11 +79,21 @@ The reference web app SHALL expose stable, machine-readable discovery surfaces f
 - **AND** the advisory block SHALL identify `pdpp agent` as the recommended flow
 - **AND** direct AS/RS-only deployments that do not serve those web routes SHALL omit the advisory block
 
+#### Scenario: Agent starts through a proxy or LAN hostname
+- **WHEN** a composed reference deployment proxies AS/RS discovery through a browser-facing origin
+- **THEN** the AS and RS metadata SHALL advertise the caller-visible forwarded public origin rather than a loopback development default
+- **AND** skill, authorization, token, device, and PAR URLs in those metadata documents SHALL be usable by a remote caller that cannot resolve the server's `localhost`
+
 #### Scenario: Agent follows the distributed skill
 - **WHEN** an agent uses the distributed `pdpp-data-access` skill
 - **THEN** the skill SHALL prefer the `pdpp agent` CLI workflow over raw HTTP
 - **AND** it SHALL describe that `pdpp agent wait` polls only the local cache and does not contact the AS
 - **AND** it SHALL describe that `pdpp agent use` rejects missing, expired, and locally revoked grants
+
+#### Scenario: Agent bootstraps against an out-of-the-box local reference
+- **WHEN** `pdpp agent bootstrap` targets a reference AS that accepts the documented reference-local DCR initial-access token
+- **THEN** the CLI SHALL try that reference-local default automatically when the caller did not pass an explicit initial-access token
+- **AND** it SHALL still fail closed and ask for an explicit initial-access token when the AS rejects the reference-local default
 
 #### Scenario: Agent installs the skill from a repository
 - **WHEN** `npx skills add <repo-url> --list` scans the repository

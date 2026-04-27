@@ -2497,6 +2497,37 @@ test('PDPP CLI smoke', async (t) => {
     });
   });
 
+  await t.test('agent bootstrap uses the reference-local DCR default without an explicit token', async () => {
+    const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
+    const asUrl = `http://localhost:${server.asPort}`;
+    const rsUrl = `http://localhost:${server.rsPort}`;
+    const cacheRoot = mkdtempSync(join(tmpdir(), 'pdpp-agent-bootstrap-'));
+
+    try {
+      const result = await runCli([
+        'agent',
+        'bootstrap',
+        '--as-url',
+        asUrl,
+        '--rs-url',
+        rsUrl,
+        '--cache-root',
+        cacheRoot,
+        '--format',
+        'json',
+      ]);
+
+      assert.equal(result.json.bootstrapped, true);
+      assert.equal(result.json.as_url, asUrl);
+      assert.equal(result.json.rs_url, rsUrl);
+      assert.equal(typeof result.json.client_id, 'string');
+      assert.match(result.stderr, /Registered client:/);
+    } finally {
+      rmSync(cacheRoot, { recursive: true, force: true });
+      await closeServer(server);
+    }
+  });
+
   await t.test('discovery-based login can immediately export owner data', async () => {
     await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
       const bootstrapOwnerToken = await issueOwnerToken(asUrl, 'cli_owner');

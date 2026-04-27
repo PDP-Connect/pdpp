@@ -92,7 +92,14 @@ export default function proxy(request: NextRequest) {
 
   const proxyTarget = resolveReferenceProxyTarget(request.nextUrl.pathname);
   if (proxyTarget) {
-    return NextResponse.rewrite(new URL(`${request.nextUrl.pathname}${request.nextUrl.search}`, proxyTarget));
+    const requestHeaders = new Headers(request.headers);
+    requestHeaders.set("x-forwarded-host", request.headers.get("host") ?? request.nextUrl.host);
+    requestHeaders.set("x-forwarded-proto", request.nextUrl.protocol.replace(":", ""));
+    return NextResponse.rewrite(new URL(`${request.nextUrl.pathname}${request.nextUrl.search}`, proxyTarget), {
+      request: {
+        headers: requestHeaders,
+      },
+    });
   }
 
   return NextResponse.next();

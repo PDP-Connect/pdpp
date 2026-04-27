@@ -56,3 +56,5 @@ Note: The existing consent shell at `server/index.js:renderPendingGrantConsentHt
 - [x] Rewrite the skill happy path around `pdpp agent bootstrap/request/wait/store/use/status`, with raw HTTP documented only as a fallback.
 - [x] Add catalog tests that pin the served file list and reject path traversal/missing files.
 - [x] Publish `skills/pdpp-data-access/` as the `npx skills add <repo-url> --skill pdpp-data-access` distribution copy, with `pnpm agent-skill:check` preventing drift from the canonical `docs/agent-skills` source.
+- [x] Preserve the caller-visible public origin across the Next proxy so cold-start agents do not receive `localhost` metadata from LAN or reverse-proxy entrypoints.
+- [x] Let `pdpp agent bootstrap` try the reference-local DCR default automatically before asking the owner for an initial-access token.
