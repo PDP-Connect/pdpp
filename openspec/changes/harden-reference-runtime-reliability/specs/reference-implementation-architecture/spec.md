@@ -38,7 +38,7 @@ The runtime SHALL also guard `proc.stdin.write` call sites against a non-writabl
 
 The runtime SHALL distinguish two terminal_reason values for runs that fail without a DONE message, depending on whether the runtime observed the failed write:
 
-- **`connector_stdin_closed`** — the runtime observed a stdin write rejection (the helper either saw `proc.stdin.writable === false` or caught a closed-pipe `error` event on the stdin stream). The outcome SHALL also carry `stdin_closed_at_phase` naming the protocol phase the failed write was attempting (`start` for the initial START message, `interaction_response` for an INTERACTION_RESPONSE delivery).
+- **`connector_stdin_closed`** — the runtime observed a stdin write rejection (the helper either saw `proc.stdin.writable === false` or caught a closed-pipe `error` event on the stdin stream). The resolved outcome and persisted `run.failed` data SHALL also carry `stdin_closed_at_phase` naming the protocol phase the failed write was attempting (`start` for the initial START message, `interaction_response` for an INTERACTION_RESPONSE delivery, or `unknown` when the runtime only observed an asynchronous stream error).
 - **`connector_exit_without_done`** — the child exited without DONE but the kernel pipe absorbed every parent write before the child closed, so the runtime never observed a write rejection. This is the existing failure shape.
 
 In both cases, the parent process SHALL NOT emit an `uncaughtException`, and the resolved outcome SHALL carry one of these typed terminal_reason values.

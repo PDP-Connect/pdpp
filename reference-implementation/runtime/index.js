@@ -1068,6 +1068,7 @@ export async function runConnector(opts) {
     connectorError = null,
     ingestFailure = null,
     violation = null,
+    stdinClosedAtPhase = null,
   } = {}) {
     const stateStreamsStaged = countStagedStateStreams();
     const stateStreamsCommitted = committedStateStreams.size;
@@ -1086,6 +1087,9 @@ export async function runConnector(opts) {
       state_streams_staged: stateStreamsStaged,
       state_streams_committed: stateStreamsCommitted,
       ...(reason ? { reason } : {}),
+      ...(reason === 'connector_stdin_closed'
+        ? { stdin_closed_at_phase: stdinClosedAtPhase || 'unknown' }
+        : {}),
       ...(exitCode === null || exitCode === undefined ? {} : { exit_code: exitCode }),
       ...(reportedRecordsEmitted === null || reportedRecordsEmitted === undefined
         ? {}
@@ -1796,7 +1800,7 @@ export async function runConnector(opts) {
             // reason; otherwise fall through to the generic "exited
             // without DONE" reason. Both paths resolve the run as
             // failed via the existing close handler.
-            const { reason: closeFailureReason } = deriveTerminalReason({
+            const { reason: closeFailureReason, phase: closeFailurePhase } = deriveTerminalReason({
               doneMessage: null,
               finalStatus: 'failed',
               childStdinClosedReason,
@@ -1816,6 +1820,7 @@ export async function runConnector(opts) {
                 recordsEmitted: totalEmitted,
                 exitCode: code,
                 reason: closeFailureReason,
+                stdinClosedAtPhase: closeFailurePhase,
                 connectorError: null,
               }),
             });
@@ -1824,7 +1829,10 @@ export async function runConnector(opts) {
               status: 'failed',
               records_emitted: totalEmitted,
               exit_code: code,
-              ...(childStdinClosedReason ? { reason: closeFailureReason, stdin_closed_at_phase: childStdinClosedAtPhase } : {}),
+              reason: closeFailureReason,
+              ...(closeFailureReason === 'connector_stdin_closed'
+                ? { stdin_closed_at_phase: closeFailurePhase }
+                : {}),
             });
           }
           terminalEventRecorded = true;
