@@ -96,31 +96,35 @@ Cons:
 
 ## Current Leaning
 
-Prefer **Option B as the first implementation candidate**, constrained by source-bounded issued grants, and evaluate **Option C** as the safer long-term owner-controlled abstraction.
+Prefer **Option B as the first implementation candidate**, constrained by source-bounded issued grants, and **Option C as the next OpenSpec change after B lands** rather than a parallel track. **Option D is out of scope for this design track** based on prior-art review (see `design-notes/2026-04-27-prior-art-review.md`): no surveyed system ships anything close to agent-role policy as a first-class consent primitive, so it should not block fast setup.
 
 The likely shape:
 
 1. A client may stage a batch consent request containing multiple source-bounded grant requests.
 2. The AS renders a grouped consent ceremony.
-3. The owner can approve all, deny all, or toggle individual sources/streams.
+3. The owner can approve, deny, or toggle individual sources/streams. An "approve all" affordance is gated by risk: it SHALL NOT appear when the staged request combines high-risk dimensions (continuous + all streams, no time bound + sensitive source, or several sensitive sources in one batch). Default presentation requires per-source confirmation.
 4. Approval issues multiple independent grants, one per source.
-5. The AS records a package/session id for audit, timeline grouping, and optional "revoke package" convenience.
+5. The AS records a package/session id for audit and timeline grouping. A "revoke package" affordance is optional convenience and never replaces per-grant revocation.
 6. RS enforcement remains unchanged: each token/grant is still source-scoped.
 7. High-risk items require explicit confirmation: continuous access, all streams, no time bound, sensitive connectors, and no field projection.
+8. The AS SHALL NOT enrich, widen, or otherwise modify the staged `authorization_details` beyond what the owner reviewed in this ceremony, even though RFC 9396 permits AS-side enrichment in the abstract.
 
-This leaning is not final. It must survive prior-art review and owner review before implementation.
+Prior art validates this shape. RFC 9396 already supports multi-entry staged requests with partial approval. Plaid Multi-Item Link, Slack optional scopes, GitHub App installation, and Google granular consent all ship per-entry toggling against independent per-source credentials. The novel piece PDPP would invent — and must not underestimate — is **cumulative cross-source risk legibility**: none of the surveyed systems show an aggregated picture of risk across the bundle being approved.
 
-## Prior Art To Review
+This leaning is not final. It must survive owner review before implementation.
 
-- OAuth RAR (RFC 9396): multiple `authorization_details[]`, rich scoped requests, and typed authorization details.
-- OAuth PAR (RFC 9126): pushed request integrity and short-lived staged authorization requests.
-- Google OAuth consent: multi-scope grouping, sensitive/restricted scopes, and incremental auth.
-- GitHub fine-grained personal access tokens and GitHub App installation: resource selection, permission grouping, repository toggles.
-- Slack app scopes: app installation as a bundled permission ceremony with per-scope review.
-- Plaid Link: institution/source selection, product scopes, account filtering, and consent copy.
-- Apple/Android permissions: grouped permission prompts, progressive disclosure, and high-risk permission friction.
-- AWS IAM Identity Center / permission sets: owner/admin-authored reusable access bundles.
-- GitLab/GitHub organization app installation: approve many resources while preserving resource-level control.
+## Prior Art
+
+Reviewed in detail in `design-notes/2026-04-27-prior-art-review.md`. Headline findings:
+
+- **OAuth RAR (RFC 9396).** Multi-entry `authorization_details[]` with partial approval is already normative. The reference's `authorization_details.maxItems = 1` is a PDPP policy choice, not an RFC requirement. AS-side enrichment is permitted by RAR but PDPP should forbid it because owners must see exactly what they approve.
+- **OAuth PAR (RFC 9126).** Short-lived (5–600 s), client-bound staged requests. PAR says nothing about consent UI or batch semantics; the pushed payload shape is a separate decision.
+- **Google OAuth.** Granular consent (user can grant a subset) and incremental authorization (`include_granted_scopes`) are precedents for selective per-source approval and "add a source later without re-approving previous sources." Domain-wide delegation is the antipattern PDPP must not recreate.
+- **GitHub fine-grained PATs and Apps.** Repository-level toggles, mandatory expiration, per-permission read/write granularity, and "cannot span multiple organizations" structurally enforce source boundaries. App installation is closer to all-or-nothing per app — PDPP must be more granular than that.
+- **Slack OAuth v2 + optional scopes (March 2026).** Production validation of per-source toggle inside one consent screen, with workspace admins able to pre-approve which optional scopes are even offered (an Option C precedent). Slack also documents the failure mode PDPP fears: "avoid requesting excessive permissions that could cause installations to be rejected."
+- **Plaid Multi-Item Link.** One Link session, multiple institutions, one independent Item per institution. Strongest production precedent for "one ceremony, N independent per-source credentials."
+- **Apple HIG and Android.** Strongest cautionary signal. Both treat bundling as a smell and ship granular subsets ("Selected Photos", "Approximate Location") under user control rather than client control. The closest PDPP analog to Apple's system-defined permission groups is Option C (owner-authored permission sets), not client-authored bundles.
+- **AWS IAM Identity Center permission sets.** Admin-authored, reusable, multi-target. Strong precedent for Option C: owners pre-define bundles instead of letting the requesting client author "all data" packages at consent time.
 
 ## Non-Goals
 

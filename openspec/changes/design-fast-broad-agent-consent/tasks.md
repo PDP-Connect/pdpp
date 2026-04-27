@@ -1,13 +1,15 @@
 ## 1. Prior-Art Review
 
-- [ ] Review OAuth RAR (RFC 9396) for multiple `authorization_details[]` entries and typed authorization details.
-- [ ] Review OAuth PAR (RFC 9126) for staged request integrity and pending-request lifetime.
-- [ ] Review Google OAuth consent and incremental auth for multi-scope risk presentation.
-- [ ] Review GitHub fine-grained PATs and GitHub App installation for resource toggles and permission grouping.
-- [ ] Review Slack app scopes and app installation consent for bundled source capability review.
-- [ ] Review Plaid Link for institution/account/product selection and consent filtering.
-- [ ] Review Apple/Android permission grouping for high-risk prompt friction and progressive disclosure.
-- [ ] Review AWS IAM Identity Center permission sets and GitHub/GitLab organization app installs for reusable owner/admin-authored bundles.
+Findings consolidated in `design-notes/2026-04-27-prior-art-review.md`.
+
+- [x] Review OAuth RAR (RFC 9396) for multiple `authorization_details[]` entries and typed authorization details.
+- [x] Review OAuth PAR (RFC 9126) for staged request integrity and pending-request lifetime.
+- [x] Review Google OAuth consent and incremental auth for multi-scope risk presentation.
+- [x] Review GitHub fine-grained PATs and GitHub App installation for resource toggles and permission grouping.
+- [x] Review Slack app scopes and app installation consent for bundled source capability review.
+- [x] Review Plaid Link for institution/account/product selection and consent filtering.
+- [x] Review Apple/Android permission grouping for high-risk prompt friction and progressive disclosure.
+- [x] Review AWS IAM Identity Center permission sets and GitHub/GitLab organization app installs for reusable owner/admin-authored bundles.
 
 ## 2. Current-State Audit
 
@@ -18,12 +20,18 @@
 
 ## 3. Design Decisions
 
-- [ ] Decide whether issued grants remain source-bounded in all near-term designs.
-- [ ] Decide whether the first fast setup primitive is client-authored batch consent, owner-authored permission sets, agent roles, or no change.
-- [ ] Decide whether "approve all" is allowed for mixed-source requests and what risk conditions disable it.
-- [ ] Decide how package-level audit works: package id, timeline grouping, dashboard display, and optional revoke-package affordance.
-- [ ] Decide how high-risk source/scope combinations are classified and rendered.
-- [ ] Decide how this interacts with project-local agent token caches and incremental grant upgrades.
+Open owner decisions are detailed in `design-notes/2026-04-27-prior-art-review.md` "Owner Decisions Still Required."
+
+- [ ] Decide whether issued grants remain source-bounded in all near-term designs. (Recommendation: yes — consistent across every surveyed system.)
+- [ ] Decide whether the first fast setup primitive is client-authored batch consent (Option B), owner-authored permission sets (Option C), agent roles (Option D), or no change. (Recommendation: B first, then C as the next OpenSpec change. D out of scope.)
+- [ ] Decide whether both Option B and Option C are on the roadmap, or only B with C deferred.
+- [ ] Decide a soft cap or warning threshold on `authorization_details[]` entries per staged request.
+- [ ] Decide whether "approve all" is allowed for mixed-source requests and what risk conditions disable it. (Recommendation in design.md: never when continuous + all streams, no time bound + sensitive source, or N≥3 sensitive sources.)
+- [ ] Decide which connectors/sources count as "sensitive" for risk classification, and whether that list lives in config or a manifest field.
+- [ ] Decide how package-level audit works: package id, timeline grouping, dashboard display, and whether a revoke-package affordance is offered.
+- [ ] Decide whether incremental "add a source later" produces a new package linked via `parent_package_id` or stands alone, and how the dashboard renders the cumulative picture per agent identity.
+- [ ] Decide where owner-authored permission sets are stored when Option C lands (owner-local, manifest, or both) and how they affect client registration.
+- [ ] Confirm any first implementation of Option B is labeled reference-experimental in UI and docs until promoted by a follow-up OpenSpec change.
 
 ## 4. Implementation Planning Gate
 
