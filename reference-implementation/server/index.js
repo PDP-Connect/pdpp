@@ -2416,6 +2416,22 @@ function buildAsApp(opts = {}) {
 
 // ─── RS App ─────────────────────────────────────────────────────────────────
 
+function buildAgentDiscoveryMetadata(origin) {
+  if (!origin) {
+    return null;
+  }
+  const base = stripTrailingSlash(origin);
+  return {
+    advisory: true,
+    skill_name: 'pdpp-data-access',
+    recommended_flow: 'pdpp agent',
+    skill_catalog: `${base}/.well-known/skills/index.json`,
+    skill: `${base}/.well-known/skills/pdpp-data-access/SKILL.md`,
+    llms_txt: `${base}/llms.txt`,
+    llms_full_txt: `${base}/llms-full.txt`,
+  };
+}
+
 function buildRsApp(opts = {}) {
   const app = createApp({ logger: opts.logger });
   const nativeMode = !!resolveNativeManifest(opts);
@@ -2565,6 +2581,7 @@ function buildRsApp(opts = {}) {
         tokenKindsSupported: ['owner', 'client'],
         capabilities,
         discoveryHints,
+        agentDiscovery: buildAgentDiscoveryMetadata(opts.agentDiscoveryOrigin),
       })
     );
   });
@@ -3975,6 +3992,7 @@ export async function startServer(opts = {}) {
     hybridRetrievalSupported: opts.hybridRetrievalSupported,
     hybridRetrievalCapability: opts.hybridRetrievalCapability,
     referenceRevision: opts.referenceRevision,
+    agentDiscoveryOrigin: referenceTopology.browserOrigin,
   });
   const rsServer = await rsApp.listen(requestedRsPort, bindHost);
   const rsPort = rsServer.address().port;

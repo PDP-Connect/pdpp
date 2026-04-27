@@ -1543,6 +1543,15 @@ export interface LiveProtectedResourceMetadata {
   authorization_servers: string[];
   bearer_methods_supported: string[];
   capabilities?: Record<string, unknown>;
+  pdpp_agent_discovery?: {
+    advisory: true;
+    llms_full_txt: string;
+    llms_txt: string;
+    recommended_flow: "pdpp agent";
+    skill: string;
+    skill_catalog: string;
+    skill_name: "pdpp-data-access";
+  };
   pdpp_core_query_base: string;
   pdpp_discovery_hints?: {
     aggregate: { endpoint_template: string };
@@ -1563,6 +1572,19 @@ export interface LiveProtectedResourceMetadata {
   resource_name: string;
 }
 
+function buildLiveAgentDiscovery(issuer: string): NonNullable<LiveProtectedResourceMetadata["pdpp_agent_discovery"]> {
+  const siteOrigin = new URL(issuer).origin;
+  return {
+    advisory: true,
+    skill_name: "pdpp-data-access",
+    recommended_flow: "pdpp agent",
+    skill_catalog: `${siteOrigin}/.well-known/skills/index.json`,
+    skill: `${siteOrigin}/.well-known/skills/pdpp-data-access/SKILL.md`,
+    llms_txt: `${siteOrigin}/llms.txt`,
+    llms_full_txt: `${siteOrigin}/llms-full.txt`,
+  };
+}
+
 export function buildLiveProtectedResourceMetadata(issuer: string): LiveProtectedResourceMetadata {
   // The sandbox advertises lexical retrieval because the route
   // /sandbox/v1/search is implemented. Semantic and hybrid retrieval are
@@ -1578,6 +1600,7 @@ export function buildLiveProtectedResourceMetadata(issuer: string): LiveProtecte
     pdpp_self_export_supported: true,
     pdpp_token_kinds_supported: ["owner", "client"],
     pdpp_core_query_base: queryBase,
+    pdpp_agent_discovery: buildLiveAgentDiscovery(issuer),
     capabilities: {
       lexical_retrieval: {
         supported: true,

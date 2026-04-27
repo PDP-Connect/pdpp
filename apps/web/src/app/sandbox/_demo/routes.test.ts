@@ -408,6 +408,15 @@ test("/sandbox/.well-known/oauth-protected-resource returns the live RS metadata
   const hints = body.pdpp_discovery_hints as Record<string, unknown>;
   assert.equal(typeof hints.schema_endpoint, "string");
   assert.equal(typeof hints.query_base, "string");
+  assert.deepEqual(body.pdpp_agent_discovery, {
+    advisory: true,
+    skill_name: "pdpp-data-access",
+    recommended_flow: "pdpp agent",
+    skill_catalog: "https://example.invalid/.well-known/skills/index.json",
+    skill: "https://example.invalid/.well-known/skills/pdpp-data-access/SKILL.md",
+    llms_txt: "https://example.invalid/llms.txt",
+    llms_full_txt: "https://example.invalid/llms-full.txt",
+  });
   // Lexical retrieval must be advertised because the route is implemented.
   const caps = body.capabilities as { lexical_retrieval?: { supported?: boolean; endpoint?: string } } | undefined;
   assert.equal(caps?.lexical_retrieval?.supported, true);

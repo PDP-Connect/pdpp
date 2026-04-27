@@ -60,7 +60,18 @@ export interface ProtectedResourceDiscoveryHints {
   };
 }
 
+export interface ProtectedResourceAgentDiscovery {
+  advisory: true;
+  llms_full_txt: string;
+  llms_txt: string;
+  recommended_flow: "pdpp agent";
+  skill: string;
+  skill_catalog: string;
+  skill_name: "pdpp-data-access";
+}
+
 export interface ProtectedResourceMetadataInput {
+  agentDiscovery?: ProtectedResourceAgentDiscovery | null;
   authorizationServers: readonly string[];
   capabilities?: Record<string, unknown> | null;
   discoveryHints?: ProtectedResourceDiscoveryHints | null;
@@ -76,6 +87,7 @@ export interface ProtectedResourceMetadata {
   authorization_servers: readonly string[];
   bearer_methods_supported: readonly string[];
   capabilities?: Record<string, unknown>;
+  pdpp_agent_discovery?: ProtectedResourceAgentDiscovery;
   pdpp_core_query_base: string;
   pdpp_discovery_hints?: ProtectedResourceDiscoveryHints;
   pdpp_provider_connect_version: string;
@@ -93,6 +105,7 @@ export function buildProtectedResourceMetadata({
   providerConnectVersion,
   selfExportSupported,
   tokenKindsSupported,
+  agentDiscovery,
   capabilities,
   discoveryHints,
 }: ProtectedResourceMetadataInput): ProtectedResourceMetadata {
@@ -108,6 +121,9 @@ export function buildProtectedResourceMetadata({
   };
   if (discoveryHints) {
     metadata.pdpp_discovery_hints = discoveryHints;
+  }
+  if (agentDiscovery) {
+    metadata.pdpp_agent_discovery = agentDiscovery;
   }
   if (capabilities && typeof capabilities === "object" && Object.keys(capabilities).length > 0) {
     metadata.capabilities = capabilities;

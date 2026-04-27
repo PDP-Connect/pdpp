@@ -52,5 +52,6 @@ Note: The existing consent shell at `server/index.js:renderPendingGrantConsentHt
 - [x] Keep the canonical skill source at `docs/agent-skills/pdpp-data-access/` rather than claiming repo-root `skills/`.
 - [x] Publish `/.well-known/skills/index.json` plus explicit allowlisted skill-file URLs.
 - [x] Add `pdpp-data-access` pointers to `/llms.txt` and the full skill body to `/llms-full.txt`.
+- [x] Advertise those skill and LLM surfaces from composed RS protected-resource metadata as advisory links.
 - [x] Rewrite the skill happy path around `pdpp agent bootstrap/request/wait/store/use/status`, with raw HTTP documented only as a fallback.
 - [x] Add catalog tests that pin the served file list and reject path traversal/missing files.

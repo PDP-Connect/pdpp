@@ -73,6 +73,12 @@ The reference web app SHALL expose stable, machine-readable discovery surfaces f
 - **AND** when an agent fetches `/llms-full.txt`
 - **THEN** the response SHALL include the full `pdpp-data-access` skill and reference content
 
+#### Scenario: Agent starts from protected-resource metadata
+- **WHEN** an agent fetches `/.well-known/oauth-protected-resource` from a composed reference deployment
+- **THEN** the response SHALL include advisory `pdpp_agent_discovery` links to the skill catalog, primary `SKILL.md`, `/llms.txt`, and `/llms-full.txt`
+- **AND** the advisory block SHALL identify `pdpp agent` as the recommended flow
+- **AND** direct AS/RS-only deployments that do not serve those web routes SHALL omit the advisory block
+
 #### Scenario: Agent follows the distributed skill
 - **WHEN** an agent uses the distributed `pdpp-data-access` skill
 - **THEN** the skill SHALL prefer the `pdpp agent` CLI workflow over raw HTTP

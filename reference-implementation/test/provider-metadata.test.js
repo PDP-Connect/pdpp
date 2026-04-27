@@ -81,6 +81,11 @@ test('ephemeral local servers ignore leaked public-url env when computing metada
     assert.equal(protectedResource.status, 200);
     assert.equal(protectedResource.body.resource, rsUrl);
     assert.deepEqual(protectedResource.body.authorization_servers, [asUrl]);
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(protectedResource.body, 'pdpp_agent_discovery'),
+      false,
+      'direct ephemeral RS must not advertise browser-hosted agent discovery URLs',
+    );
 
     const authorizationServer = await fetchJson(`${asUrl}/.well-known/oauth-authorization-server`);
     assert.equal(authorizationServer.status, 200);
@@ -126,6 +131,15 @@ test('composed mode env drives browser-facing metadata when explicit public urls
     assert.equal(protectedResource.body.resource, 'http://localhost:3200');
     assert.deepEqual(protectedResource.body.authorization_servers, ['http://localhost:3200']);
     assert.equal(protectedResource.body.pdpp_core_query_base, 'http://localhost:3200/v1');
+    assert.deepEqual(protectedResource.body.pdpp_agent_discovery, {
+      advisory: true,
+      skill_name: 'pdpp-data-access',
+      recommended_flow: 'pdpp agent',
+      skill_catalog: 'http://localhost:3200/.well-known/skills/index.json',
+      skill: 'http://localhost:3200/.well-known/skills/pdpp-data-access/SKILL.md',
+      llms_txt: 'http://localhost:3200/llms.txt',
+      llms_full_txt: 'http://localhost:3200/llms-full.txt',
+    });
 
     const authorizationServer = await fetchJson(`${asUrl}/.well-known/oauth-authorization-server`);
     assert.equal(authorizationServer.status, 200);

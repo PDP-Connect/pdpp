@@ -338,6 +338,46 @@
                         "blob_indirection"
                       ]
                     },
+                    "pdpp_agent_discovery": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "advisory": {
+                          "const": true
+                        },
+                        "skill_name": {
+                          "const": "pdpp-data-access"
+                        },
+                        "recommended_flow": {
+                          "const": "pdpp agent"
+                        },
+                        "skill_catalog": {
+                          "type": "string",
+                          "format": "uri"
+                        },
+                        "skill": {
+                          "type": "string",
+                          "format": "uri"
+                        },
+                        "llms_txt": {
+                          "type": "string",
+                          "format": "uri"
+                        },
+                        "llms_full_txt": {
+                          "type": "string",
+                          "format": "uri"
+                        }
+                      },
+                      "required": [
+                        "advisory",
+                        "skill_name",
+                        "recommended_flow",
+                        "skill_catalog",
+                        "skill",
+                        "llms_txt",
+                        "llms_full_txt"
+                      ]
+                    },
                     "capabilities": {
                       "type": "object",
                       "additionalProperties": true,

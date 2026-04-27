@@ -469,6 +469,21 @@ const ProtectedResourceDiscoveryHintsSchema = {
   required: ["schema_endpoint", "query_base", "changes_since_bootstrap", "blob_indirection"],
 };
 
+const ProtectedResourceAgentDiscoverySchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    advisory: { const: true },
+    skill_name: { const: "pdpp-data-access" },
+    recommended_flow: { const: "pdpp agent" },
+    skill_catalog: UriSchema,
+    skill: UriSchema,
+    llms_txt: UriSchema,
+    llms_full_txt: UriSchema,
+  },
+  required: ["advisory", "skill_name", "recommended_flow", "skill_catalog", "skill", "llms_txt", "llms_full_txt"],
+};
+
 const ProtectedResourceMetadataSchema = {
   type: "object",
   additionalProperties: false,
@@ -494,6 +509,7 @@ const ProtectedResourceMetadataSchema = {
     },
     pdpp_core_query_base: UriSchema,
     pdpp_discovery_hints: ProtectedResourceDiscoveryHintsSchema,
+    pdpp_agent_discovery: ProtectedResourceAgentDiscoverySchema,
     capabilities: ServerCapabilitiesSchema,
   },
   required: [

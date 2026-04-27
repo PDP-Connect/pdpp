@@ -81,6 +81,8 @@ This tranche publishes two low-drift channels from that source:
 1. `/.well-known/skills/index.json` lists the `pdpp-data-access` skill, every served file, byte length, SHA-256, media type, repository path, and absolute URL. File serving is allowlist-only; the route does not expose arbitrary repository files.
 2. `/llms.txt` points agents at the catalog and primary `SKILL.md`; `/llms-full.txt` includes the full skill and reference content for crawler/search workflows.
 
+In composed reference deployments, the RS protected-resource metadata also carries a `pdpp_agent_discovery` block with advisory links to those browser-hosted surfaces. The block is intentionally descriptive rather than authoritative PDPP protocol semantics: it tells a cold-start agent where to learn the recommended `pdpp agent` workflow, but data access still requires an owner-approved client grant. Direct AS/RS-only deployments omit the block because they do not serve the web skill and LLM routes.
+
 The skill itself is CLI-first. It teaches `pdpp agent bootstrap`, `pdpp agent request`, `pdpp agent wait`, `pdpp agent store`, `pdpp agent use`, and `pdpp agent status` as the happy path. Raw HTTP remains documented only as a fallback when the CLI is unavailable.
 
 Deferred channels:
