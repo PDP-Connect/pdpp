@@ -86,6 +86,7 @@ const SUPPORTED_PENDING_CLIENT_FIELDS = new Set([
   'client_display',
   'client_id',
 ]);
+const SUPPORTED_ACCESS_MODES = new Set(['single_use', 'continuous']);
 const SUPPORTED_PENDING_SELECTION_FIELDS = new Set([
   'access_mode',
   'purpose_code',
@@ -407,6 +408,9 @@ function normalizePendingGrantRequest(input, opts = {}) {
   }
   if (detail.connector_id && detail.provider_id) {
     invalidRequest('authorization_details must not include both connector_id and provider_id');
+  }
+  if (!SUPPORTED_ACCESS_MODES.has(detail.access_mode)) {
+    invalidRequest('authorization_details[0].access_mode must be "single_use" or "continuous"');
   }
   for (const stream of detail.streams) {
     if (!stream || typeof stream !== 'object') {
@@ -864,6 +868,9 @@ function hasExactFieldSet(fields = [], expectedFields = []) {
 export function requireGrantContractAgainstManifest(grant = {}, manifest = {}) {
   if (!isNonEmptyString(grant?.manifest_version)) {
     throw bindingError('grant_invalid', 'grant.manifest_version is required');
+  }
+  if (!SUPPORTED_ACCESS_MODES.has(grant?.access_mode)) {
+    throw bindingError('grant_invalid', 'grant.access_mode must be "single_use" or "continuous"');
   }
   if (!isNonEmptyString(manifest?.version) || grant.manifest_version !== manifest.version) {
     throw bindingError(

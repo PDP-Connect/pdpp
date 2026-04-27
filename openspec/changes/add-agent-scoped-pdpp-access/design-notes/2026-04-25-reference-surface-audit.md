@@ -95,7 +95,7 @@ Rules:
 
 - A request-status endpoint for PAR-staged client grants (gap above). Reference-only candidate.
 - A "purpose context" field that carries project path and agent identity into the consent UI. The consent renderer already shows `client_display.name` from registration; carrying a richer `client_display.context` block is optional and reference-only until proposed.
-- A retention/lifetime field on `authorization_details[]`. The current schema accepts `access_mode` (`single_use`, `time_bounded`, etc.); explicit `retention_days` and `renewable` would help agents request narrowly. Treat as candidate, not as part of this slice.
+- A retention/lifetime field on `authorization_details[]`. The current PDPP core access modes are `single_use` and `continuous`; explicit `retention_days`, `renewable`, or grant-expiry request fields would help agents request narrowly without inventing a third access-mode value. Treat as candidate, not as part of this slice.
 
 ## Conclusion
 
@@ -149,7 +149,7 @@ Before finalizing the skill or proposing CLI surfaces, this audit was cross-refe
 
 - **Keep:** MCP's posture for local agent clients is the right posture here: dynamic client registration on first use, public client (`token_endpoint_auth_method: "none"`), PKCE-where-applicable, ephemeral storage scoped to the project. The skill matches this.
 - **Don't keep:** PKCE in the immediate flow. Today's reference flow uses PAR + hosted approval, not the authorization-code redirect that PKCE protects. **If** the reference later adds an authorization-code path for browser-based agent UIs (likely for web operator UIs), PKCE becomes mandatory. Captured as a protocol-affecting candidate, not part of this slice.
-- **Notes:** MCP also pushes for short-lived tokens. The skill defaults `access_mode` to `time_bounded` partly for that reason.
+- **Notes:** MCP also pushes for short-lived tokens. The skill defaults one-shot tasks to `single_use` until PDPP has an accepted short-lived continuous-grant request field.
 
 ### GitHub fine-grained tokens — UX
 

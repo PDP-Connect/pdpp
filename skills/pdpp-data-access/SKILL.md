@@ -76,14 +76,14 @@ pdpp agent request \
   --connector-id "https://registry.pdpp.org/connectors/github" \
   --streams "issues,pull_requests" \
   --purpose "Read your recent GitHub issues and pull requests so I can draft a status update." \
-  --access-mode time_bounded
+  --access-mode single_use
 ```
 
 Notes:
 
 - `purpose_description` is read by the owner. Write it as one sentence the owner would accept on a consent screen.
 - Pick the smallest set of streams that can answer the current task. Adding fields later is cheap; explaining why you grabbed extra is expensive.
-- `access_mode` should be `single_use` or `time_bounded` for one-shot tasks. Long-lived agents use `continuous` only when the user has explicitly asked for it.
+- `access_mode` should be `single_use` for one-shot tasks. The reference consumes the grant at first token issuance, but the issued token remains usable for pagination and retries until token expiry or revocation. Long-lived agents use `continuous` only when the user has explicitly asked for it.
 - Pick `connector_id` (polyfill-style providers) **or** `provider_id` (native PDPP providers), never both. Use the exact connector id from `/v1/schema` or `/v1/connectors` (for example `https://registry.pdpp.org/connectors/github`), not a guessed short name.
 
 The command prints an approval URL and access summary. You cannot approve for the owner. Do not try.
@@ -186,7 +186,7 @@ After approval, query `/v1/streams/messages/records?filter[from_email]=<sender>&
 
 User: "Did anything weird hit my checking account this month?"
 
-Use the exact finance connector id from `/v1/schema` (for example `https://registry.pdpp.org/connectors/ynab` or `https://registry.pdpp.org/connectors/usaa`), stream `transactions`, fields such as `date`, `amount`, `payee_name`/`description`, and `category_name`, time-bounded to the current month. `purpose_code: "assist.review"`, `access_mode: time_bounded`. Don't request account numbers, routing numbers, or any field not needed for the answer.
+Use the exact finance connector id from `/v1/schema` (for example `https://registry.pdpp.org/connectors/ynab` or `https://registry.pdpp.org/connectors/usaa`), stream `transactions`, fields such as `date`, `amount`, `payee_name`/`description`, and `category_name`, scoped to the current month with stream `time_range` when the stream supports it. `purpose_code: "assist.review"`, `access_mode: "single_use"`. Don't request account numbers, routing numbers, or any field not needed for the answer.
 
 ### Coding history
 

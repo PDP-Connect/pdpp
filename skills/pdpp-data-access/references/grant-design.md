@@ -12,7 +12,7 @@ Each entry binds the grant to one source. Cross-source tasks need multiple entri
 | `connector_id` *or* `provider_id` | Which source | Exact connector id from discovery, e.g. `"https://registry.pdpp.org/connectors/github"`, or a registered provider id (native) |
 | `purpose_code` | Coarse intent | `assist.summarize`, `assist.review`, `assist.search`, `assist.draft`, `assist.export` |
 | `purpose_description` | Owner-readable why | One sentence, plain English, scoped to the task |
-| `access_mode` | Lifetime/use shape | `single_use`, `time_bounded`, `continuous` |
+| `access_mode` | Access pattern | `single_use`, `continuous` |
 | `streams[]` | Streams + fields | `[{ "name": "pull_requests", "fields": ["repository_full_name","title","updated_at"] }]` |
 | `streams[].time_range` | When applicable | `{ "since": "2026-04-01T00:00:00Z" }` or relative window |
 
@@ -51,11 +51,10 @@ Read like a UI label. One sentence. Concrete subject. Concrete time bound. Concr
 
 | Mode | Use when | Notes |
 | --- | --- | --- |
-| `single_use` | One call, one task, no retry | Token is consumed on first use. Safest. |
-| `time_bounded` | Multi-step task within a session | Honors `expires_at`; expires on the wall clock. |
-| `continuous` | The user explicitly asked for an ongoing assistant | Long-lived; the consent UI must show this clearly. Default to `time_bounded` unless asked. |
+| `single_use` | One task, bounded retrieval session | The grant is consumed at first token issuance. The issued token remains usable for pagination, retries, and resumable reads until token expiry or revocation. Safest default. |
+| `continuous` | The user explicitly asked for an ongoing assistant | Long-lived or recurring access until expiry or revocation. The consent UI must show this clearly. |
 
-If you don't know, pick `time_bounded` with a short window (e.g., a few hours). It's the least-surprising default for an interactive assistant session.
+If you don't know, pick `single_use`. Current PDPP core keeps grant lifetime (`expires_at`) separate from access pattern (`access_mode`); do not invent a `time_bounded` access mode. A short-lived non-single-use grant is a protocol-candidate feature, not the reference happy path.
 
 ### `streams[]`
 
@@ -86,7 +85,7 @@ GitHub issues + PRs:
     "connector_id": "https://registry.pdpp.org/connectors/github",
     "purpose_code": "assist.summarize",
     "purpose_description": "Summarize my last 7 days of GitHub issues and pull requests on acme/api.",
-    "access_mode": "time_bounded",
+    "access_mode": "single_use",
     "streams": [
       { "name": "issues", "fields": ["number","repository_full_name","title","state","updated_at"], "time_range": { "since": "<7d>" } },
       { "name": "pull_requests", "fields": ["number","repository_full_name","title","merged_at","state","updated_at"], "time_range": { "since": "<7d>" } }
@@ -121,7 +120,7 @@ Two grants now exist, the user can revoke the upgrade alone, and the audit trail
 Quick sniff test before you POST:
 
 - Could a careful user explain in their own words what you'll see? If not, the request is unclear.
-- Would the user expect to need to revoke this? If yes, `access_mode` should be `single_use` or `time_bounded`.
+- Would the user expect to need to revoke this? If yes, prefer `single_use`. Use `continuous` only when ongoing access is part of the user’s explicit request.
 - Does the request name fields you won't use? Drop them.
 - Does the time range reach further back than the task needs? Tighten it.
 - Would you be comfortable if the user shared this consent screen with a friend? If not, narrow it.

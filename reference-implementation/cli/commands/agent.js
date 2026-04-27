@@ -66,7 +66,7 @@ Grant request options (pdpp agent request):
   --streams <s1,s2,...>  Comma-separated stream names
   --purpose <text>       Owner-readable one-sentence purpose description
   --purpose-code <code>  Machine-readable purpose code (default: assist.general)
-  --access-mode <mode>   single_use | time_bounded | continuous (default: time_bounded)
+  --access-mode <mode>   single_use | continuous (default: single_use)
   --client-id <id>       Use a specific registered client id (default: first cached client)
   --initial-access-token <token>  Initial access token for DCR (default: $PDPP_INITIAL_ACCESS_TOKEN, then reference-local default)
 
@@ -276,7 +276,7 @@ async function runRequest(flags, cacheRoot) {
   }
 
   const purposeCode = flags['purpose-code'] || 'assist.general';
-  const accessMode = flags['access-mode'] || 'time_bounded';
+  const accessMode = flags['access-mode'] || 'single_use';
 
   const context = flags.context || process.cwd();
 

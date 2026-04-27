@@ -394,7 +394,7 @@ test('agent-flow: status output shape contains no token material', async () => {
     grant_id: 'grant_status',
     connector_id: 'https://registry.pdpp.org/connectors/spotify',
     streams: [{ name: 'listening_history' }],
-    access_mode: 'time_bounded',
+    access_mode: 'single_use',
     purpose_description: 'Status test purpose',
     expires_at: new Date(Date.now() + 3600 * 1000).toISOString(),
     revoked: false,

@@ -715,6 +715,27 @@ test('PDPP reference implementation integration', async (t) => {
       assert.equal(badTypeBody.error.code, 'invalid_request');
       assert.match(badTypeBody.error.message, /Unsupported authorization_details type/);
 
+      const unsupportedAccessModeResp = await fetch(`${asUrl}/oauth/par`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          client_id: 'longview',
+          authorization_details: [
+            {
+              type: 'https://pdpp.org/data-access',
+              connector_id: spotifyManifest.connector_id,
+              purpose_code: 'https://pdpp.org/purpose/personalization',
+              access_mode: 'time_bounded',
+              streams: [{ name: 'top_artists' }],
+            },
+          ],
+        }),
+      });
+      assert.equal(unsupportedAccessModeResp.status, 400);
+      const unsupportedAccessModeBody = await unsupportedAccessModeResp.json();
+      assert.equal(unsupportedAccessModeBody.error.code, 'invalid_request');
+      assert.match(unsupportedAccessModeBody.error.message, /access_mode must be "single_use" or "continuous"/);
+
       const emptyStreamsResp = await fetch(`${asUrl}/oauth/par`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
