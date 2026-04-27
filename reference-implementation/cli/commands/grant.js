@@ -26,8 +26,20 @@ export async function runGrant(argv) {
   const grantId = requirePositional(positionals, 0, 'grant-id');
 
   if (subcommand === 'revoke') {
+    // The reference revoke endpoint requires an owner bearer or the grant's
+    // own client bearer. See
+    // openspec/changes/harden-reference-auth-surfaces/specs/
+    //   reference-implementation-architecture/spec.md
+    const token = flags.token || process.env.PDPP_OWNER_TOKEN || process.env.PDPP_CLIENT_TOKEN;
+    if (!token) {
+      throw new PdppUsageError(
+        'Missing required token. Use --token, PDPP_OWNER_TOKEN, or PDPP_CLIENT_TOKEN. ' +
+        'Owner bearer revokes any grant; a client bearer only revokes the grant it is bound to.'
+      );
+    }
     const { body, headers } = await fetchJson(`${asUrl}/grants/${encodeURIComponent(grantId)}/revoke`, {
       method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
     });
     const format = resolveFormat(flags, 'json', 'json');
     writeData(format === 'json' ? attachReferenceQueryMetadata(body, headers) : body, format);

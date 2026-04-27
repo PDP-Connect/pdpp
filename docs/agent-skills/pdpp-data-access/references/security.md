@@ -89,7 +89,16 @@ Print "(token cached)" or "(no token cached)" — never the token value.
 
 If a token has appeared anywhere it shouldn't have (chat history, log, commit, screenshot, third-party tool):
 
-1. Immediately revoke: `curl -fsS -X POST "$AS_URL/grants/<grant-id>/revoke"`. No token required for the reference revoke endpoint.
+1. Immediately revoke. The reference revoke endpoint requires the grant's own bearer (or an owner bearer) — read the cached token from `.pdpp/tokens/<grant-id>.token` for this single call, even if the token is the one that leaked. Revoking it is the goal.
+
+   ```bash
+   TOKEN=$(cat .pdpp/tokens/<grant-id>.token); \
+     curl -fsS -X POST "$AS_URL/grants/<grant-id>/revoke" \
+       -H "Authorization: Bearer $TOKEN"; \
+     unset TOKEN
+   ```
+
+   If the token file is already gone (the leak prompted a hand-deletion) and you do not have an owner bearer, tell the user: the reference revoke endpoint will reject unauthenticated calls. Operators can revoke from the dashboard or via an owner-bound CLI session.
 2. Delete `.pdpp/tokens/<grant-id>.token` and `.pdpp/grants/<grant-id>.json`.
 3. Tell the user what leaked, where, and that you've revoked.
 4. Do not silently re-request a replacement grant. The user decides whether to grant again.

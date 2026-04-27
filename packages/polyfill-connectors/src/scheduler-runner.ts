@@ -95,7 +95,7 @@ export async function startPolyfillScheduler({
   asUrl,
   rsUrl,
   connectors,
-  subjectId = "the owner",
+  subjectId = "owner_local",
   inboxHandler,
 }: StartPolyfillSchedulerOptions): Promise<PolyfillSchedulerHandle> {
   const { createScheduler } = (await import(join(REFERENCE_IMPL_DIR, "runtime/scheduler.js"))) as {

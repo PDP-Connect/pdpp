@@ -586,6 +586,24 @@ async function rejectMutation(res, req, context, err) {
   return pdppError(res, status, code, err.message);
 }
 
+// Strip live-bearer-shaped fields from a spine event before it leaves the
+// reference. `token_id` on `spine_events` is the literal opaque bearer in the
+// reference's introspection table — see auth.js::issueToken — so a public
+// `_ref` timeline read MUST NOT echo it back. `token.issued` events also use
+// the bearer string as their `object_id` (because `object_type === 'token'`),
+// so we redact that too. The schema-level fix lives in
+// `openspec/changes/harden-reference-auth-surfaces/design-notes/
+// spine-token-id-storage-2026-04-27.md`; this projection is the read-time
+// guarantee we ship today.
+function redactSpineEventForPublic(event) {
+  if (!event || typeof event !== 'object') return event;
+  const { token_id: _token_id, ...rest } = event;
+  if (rest.object_type === 'token' && typeof rest.object_id === 'string') {
+    rest.object_id = '<redacted-token-id>';
+  }
+  return rest;
+}
+
 function buildTimelineEnvelope(object, idKey, idValue, events) {
   const traceId = events.find((event) => event.trace_id)?.trace_id || null;
   return {
@@ -593,7 +611,7 @@ function buildTimelineEnvelope(object, idKey, idValue, events) {
     [idKey]: idValue,
     trace_id: traceId,
     event_count: events.length,
-    data: events,
+    data: events.map(redactSpineEventForPublic),
   };
 }
 
@@ -674,6 +692,65 @@ function requireClient(req, res, next) {
     return pdppError(res, 403, 'permission_error', 'Client token required');
   }
   next();
+}
+
+// Auth gate for `POST /grants/:grantId/revoke`. Accepts:
+//   - any owner bearer whose token row is real and not token-level-revoked or
+//     token-level-expired. (A still-good owner bearer SHALL be able to revoke
+//     any grant. We do not require introspection's `active === true` because
+//     owner tokens have no grant binding to invalidate.)
+//   - a client bearer whose token row is real, not token-level-revoked or
+//     token-level-expired, and whose row's `grant_id` matches the URL
+//     `:grantId`. We deliberately allow `grant_invalid`/`grant_revoked`/
+//     `grant_expired` introspection here because the bearer string itself is
+//     authentic and the legitimate use of a client token whose grant is
+//     malformed-or-expired-or-already-revoked is to revoke the grant the
+//     client holds.
+// Anything else fails before any state mutation. See spec at
+// openspec/changes/harden-reference-auth-surfaces/specs/
+//   reference-implementation-architecture/spec.md
+async function requireRevokeAuth(req, res, next) {
+  const auth = req.headers.authorization;
+  if (!auth || !auth.startsWith('Bearer ')) {
+    return pdppError(res, 401, 'authentication_error', 'Missing Bearer token');
+  }
+  const token = auth.slice(7);
+  let info;
+  try {
+    info = await introspect(token);
+  } catch {
+    return pdppError(res, 401, 'authentication_error', 'Invalid or expired token');
+  }
+  // No introspection row at all (unknown bearer) → 401.
+  if (!info || (info.active === false && !info.inactive_reason)) {
+    return pdppError(res, 401, 'authentication_error', 'Invalid or expired token');
+  }
+  // Token-level inactive reasons (the token itself, not the grant, is bad).
+  // We reject these because the bearer's authenticity is in question.
+  const tokenLevelInactive = new Set(['token_revoked', 'token_expired']);
+  if (info.active === false && tokenLevelInactive.has(info.inactive_reason)) {
+    return pdppError(res, 401, 'authentication_error', 'Invalid or expired token');
+  }
+  // Token kind: owner tokens have no grant binding so introspection
+  // signals their kind via `pdpp_token_kind`. Inactive owner introspection
+  // (`token_revoked` / `token_expired`) is already handled above. If the
+  // active introspection lacks `pdpp_token_kind`, treat as not-permitted.
+  const grantId = req.params.grantId;
+  if (info.pdpp_token_kind === 'owner') {
+    req.tokenInfo = info;
+    return next();
+  }
+  // Client bearer path: accept iff the row's grant_id matches the URL.
+  // `grant_id` is populated even on inactive client introspections that
+  // carry a grant-state inactive_reason.
+  if (info.pdpp_token_kind === 'client' || (info.active === false && info.grant_id)) {
+    if (info.grant_id && info.grant_id === grantId) {
+      req.tokenInfo = info;
+      return next();
+    }
+    return pdppError(res, 403, 'permission_error', 'Client token is not bound to this grant');
+  }
+  return pdppError(res, 403, 'permission_error', 'Token kind not permitted to revoke');
 }
 
 function resolveNativeStorageBinding(opts = {}) {
@@ -1403,6 +1480,13 @@ function buildAsApp(opts = {}) {
   app.use((req, res, next) => {
     res.setHeader('Request-Id', req.get('Request-Id') || generateSpineId('req'));
     setReferenceRevisionHeader(res, referenceRevision);
+    // Clickjacking defense for reference hosted-UI pages (consent, device,
+    // owner-login, approval results). The headers are harmless on JSON
+    // responses, so we set them on every AS response. See
+    // openspec/changes/harden-reference-auth-surfaces/specs/
+    //   reference-implementation-architecture/spec.md
+    res.setHeader('X-Frame-Options', 'DENY');
+    res.setHeader('Content-Security-Policy', "frame-ancestors 'none'");
     next();
   });
 
@@ -2401,7 +2485,7 @@ function buildAsApp(opts = {}) {
 
 
   // Primary reference surface.
-  app.post('/grants/:grantId/revoke', { contract: 'revokeGrant' }, async (req, res) => {
+  app.post('/grants/:grantId/revoke', { contract: 'revokeGrant' }, requireRevokeAuth, async (req, res) => {
     try {
       const requestId = ensureRequestId(res);
       const result = await revokeGrant(req.params.grantId, { request_id: requestId });

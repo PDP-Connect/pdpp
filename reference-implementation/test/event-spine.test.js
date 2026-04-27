@@ -284,7 +284,10 @@ test('event spine', async (t) => {
 
       const revokeResp = await fetch(`${asUrl}/grants/${approval.grant.grant_id}/revoke`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${approval.token}`,
+        },
       });
       assert.equal(revokeResp.status, 200);
       const revokeRequestId = revokeResp.headers.get('Request-Id');

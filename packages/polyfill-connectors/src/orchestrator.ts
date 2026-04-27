@@ -16,7 +16,7 @@ const REFERENCE_IMPL_DIR = join(PACKAGE_ROOT, "..", "..", "reference-implementat
 
 export const DEFAULT_AS_URL = process.env.AS_URL || "http://localhost:7662";
 export const DEFAULT_RS_URL = process.env.RS_URL || "http://localhost:7663";
-export const DEFAULT_SUBJECT_ID = process.env.PDPP_SUBJECT_ID || "the owner";
+export const DEFAULT_SUBJECT_ID = process.env.PDPP_SUBJECT_ID || "owner_local";
 const OWNER_BOOTSTRAP_CLIENT = "pdpp-polyfill-owner-bootstrap";
 
 export const MANIFEST_DIR = join(PACKAGE_ROOT, "manifests");

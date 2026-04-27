@@ -576,7 +576,10 @@ test('PDPP reference implementation integration', async (t) => {
 
       const revokeResp = await fetch(`${asUrl}/grants/${approved.grant.grant_id}/revoke`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${approved.token}`,
+        },
       });
       assert.equal(revokeResp.status, 403);
       const revokeRequestId = revokeResp.headers.get('Request-Id');
@@ -617,7 +620,10 @@ test('PDPP reference implementation integration', async (t) => {
 
       const revokeResp = await fetch(`${asUrl}/grants/${approved.grant.grant_id}/revoke`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${approved.token}`,
+        },
       });
       assert.equal(revokeResp.status, 403);
       const revokeRequestId = revokeResp.headers.get('Request-Id');
@@ -2967,7 +2973,10 @@ test('PDPP reference implementation integration', async (t) => {
 
       const revokeResp = await fetchJson(`${asUrl}/grants/${approved.grant.grant_id}/revoke`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${approved.token}`,
+        },
       });
       assert.equal(revokeResp.status, 200);
 
@@ -3016,7 +3025,10 @@ test('PDPP reference implementation integration', async (t) => {
 
       const revokeResp = await fetchJson(`${asUrl}/grants/${approved.grant.grant_id}/revoke`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${approved.token}`,
+        },
       });
       assert.equal(revokeResp.status, 403);
       assert.equal(revokeResp.body.error.code, 'grant_invalid');
@@ -3048,7 +3060,10 @@ test('PDPP reference implementation integration', async (t) => {
 
       const revokeResp = await fetch(`${asUrl}/grants/${approved.grant.grant_id}/revoke`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${approved.token}`,
+        },
       });
       assert.equal(revokeResp.status, 403);
       const revokeRequestId = revokeResp.headers.get('Request-Id');
@@ -3409,7 +3424,10 @@ test('PDPP reference implementation integration', async (t) => {
 
       const revokeResp = await fetchJson(`${asUrl}/grants/${approved.grant.grant_id}/revoke`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${approved.token}`,
+        },
       });
       assert.equal(revokeResp.status, 403);
       assert.equal(revokeResp.body.error.code, 'grant_invalid');
@@ -3505,7 +3523,10 @@ test('PDPP reference implementation integration', async (t) => {
 
       const revokeResp = await fetchJson(`${asUrl}/grants/${approved.grant.grant_id}/revoke`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${approved.token}`,
+        },
       });
       assert.equal(revokeResp.status, 403);
       assert.equal(revokeResp.body.error.code, 'grant_invalid');
@@ -3591,7 +3612,10 @@ test('PDPP reference implementation integration', async (t) => {
 
       const revokeResp = await fetchJson(`${asUrl}/grants/${approved.grant.grant_id}/revoke`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${approved.token}`,
+        },
       });
       assert.equal(revokeResp.status, 403);
       assert.equal(revokeResp.body.error.code, 'grant_invalid');
@@ -3677,7 +3701,10 @@ test('PDPP reference implementation integration', async (t) => {
 
       const revokeResp = await fetchJson(`${asUrl}/grants/${approved.grant.grant_id}/revoke`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${approved.token}`,
+        },
       });
       assert.equal(revokeResp.status, 403);
       assert.equal(revokeResp.body.error.code, 'grant_invalid');
@@ -3744,7 +3771,10 @@ test('PDPP reference implementation integration', async (t) => {
 
       const revokeResp = await fetchJson(`${asUrl}/grants/${approved.grant.grant_id}/revoke`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${approved.token}`,
+        },
       });
       assert.equal(revokeResp.status, 403);
       assert.equal(revokeResp.body.error.code, 'grant_invalid');
@@ -3808,7 +3838,10 @@ test('PDPP reference implementation integration', async (t) => {
 
       const revokeResp = await fetchJson(`${asUrl}/grants/${approved.grant.grant_id}/revoke`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${approved.token}`,
+        },
       });
       assert.equal(revokeResp.status, 403);
       assert.equal(revokeResp.body.error.code, 'grant_invalid');
@@ -6735,7 +6768,10 @@ test('PDPP reference implementation integration', async (t) => {
 
       await fetchJson(`${asUrl}/grants/${approved.grant.grant_id}/revoke`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${approved.token}`,
+        },
       });
 
       const { body: timeline } = await fetchJson(
@@ -6807,7 +6843,10 @@ test('PDPP reference implementation integration', async (t) => {
           mutate: async (approved) => {
             await fetchJson(`${asUrl}/grants/${approved.grant.grant_id}/revoke`, {
               method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${approved.token}`,
+        },
             });
           },
         },

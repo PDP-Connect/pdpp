@@ -609,7 +609,10 @@ test('PDPP CLI smoke', async (t) => {
 
       await fetchJson(`${asUrl}/grants/${approved.grant.grant_id}/revoke`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${approved.token}`,
+        },
       });
 
       const result = await runCli(
@@ -2280,6 +2283,7 @@ test('PDPP CLI smoke', async (t) => {
 
       const result = await runCli(
         ['grant', 'revoke', approved.grant.grant_id, '--rs-url', rsUrl, '--format', 'json'],
+        { PDPP_CLIENT_TOKEN: approved.token },
       );
 
       assert.equal(result.json.revoked, true);
@@ -2326,6 +2330,7 @@ test('PDPP CLI smoke', async (t) => {
 
       const result = await runCliExpectFailure(
         ['grant', 'revoke', approved.grant.grant_id, '--as-url', asUrl, '--format', 'json'],
+        { PDPP_CLIENT_TOKEN: approved.token },
       );
 
       assert.notEqual(result.code, 0);
@@ -2691,7 +2696,10 @@ test('PDPP CLI smoke', async (t) => {
 
       const revokeResp = await fetchJson(`${asUrl}/grants/${approved.grant.grant_id}/revoke`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${approved.token}`,
+        },
       });
       assert.equal(revokeResp.status, 200);
 
@@ -2727,6 +2735,7 @@ test('PDPP CLI smoke', async (t) => {
 
       const result = await runCliExpectFailure(
         ['grant', 'revoke', approved.grant.grant_id, '--as-url', asUrl, '--format', 'json'],
+        { PDPP_CLIENT_TOKEN: approved.token },
       );
 
       assert.notEqual(result.code, 0);
@@ -6094,7 +6103,10 @@ rl.on('line', (line) => {
 
       await fetchJson(`${asUrl}/grants/${approved.grant.grant_id}/revoke`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${approved.token}`,
+        },
       });
 
       const result = await runCliExpectFailure(
@@ -6168,7 +6180,10 @@ rl.on('line', (line) => {
         prepare: async ({ asUrl, approved, server }) => {
           await fetchJson(`${asUrl}/grants/${approved.grant.grant_id}/revoke`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${approved.token}`,
+            },
           });
           return server;
         },
@@ -6272,7 +6287,10 @@ rl.on('line', (line) => {
         prepare: async ({ asUrl, approved, server }) => {
           await fetchJson(`${asUrl}/grants/${approved.grant.grant_id}/revoke`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${approved.token}`,
+            },
           });
           return server;
         },

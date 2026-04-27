@@ -9,14 +9,18 @@ import "server-only";
 
 import { cookies, headers } from "next/headers";
 import { redirect } from "next/navigation";
-import { createOwnerSessionController, OWNER_AUTH_COOKIE_NAME } from "pdpp-reference-implementation/owner-session";
+import {
+  createOwnerSessionController,
+  OWNER_AUTH_COOKIE_NAME,
+  OWNER_SESSION_DEFAULT_SUBJECT_ID,
+} from "pdpp-reference-implementation/owner-session";
 import {
   resolveReferenceBrowserOrigin,
   resolveReferenceTopology,
   stripTrailingSlash,
 } from "pdpp-reference-implementation/reference-topology";
 
-const SUBJECT_ID = process.env.PDPP_SUBJECT_ID || "the owner";
+const SUBJECT_ID = process.env.PDPP_SUBJECT_ID || OWNER_SESSION_DEFAULT_SUBJECT_ID;
 const CLIENT_ID = "pdpp-polyfill-owner-bootstrap";
 const C0_CONTROL_END = 0x1f;
 const DEL = 0x7f;

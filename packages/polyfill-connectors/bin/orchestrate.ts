@@ -98,7 +98,7 @@ async function cmdRun(name: string): Promise<{ ok: boolean; result: RunResult }>
     await registerManifest(asUrl, manifest);
 
     console.error("[orchestrate] minting owner token...");
-    const ownerToken = await issueOwnerToken(asUrl, process.env.PDPP_SUBJECT_ID || "the owner");
+    const ownerToken = await issueOwnerToken(asUrl, process.env.PDPP_SUBJECT_ID || "owner_local");
 
     console.error("[orchestrate] loading prior sync state...");
     const runtime = (await import(join(REFERENCE_IMPL_DIR, "runtime/index.js"))) as RuntimeModule;
@@ -175,7 +175,7 @@ async function cmdRun(name: string): Promise<{ ok: boolean; result: RunResult }>
 async function cmdQuery(stream: string): Promise<void> {
   const asUrl = DEFAULT_AS_URL;
   const rsUrl = DEFAULT_RS_URL;
-  const ownerToken = await issueOwnerToken(asUrl, process.env.PDPP_SUBJECT_ID || "the owner");
+  const ownerToken = await issueOwnerToken(asUrl, process.env.PDPP_SUBJECT_ID || "owner_local");
   const q = await queryStream(rsUrl, ownerToken, stream, { limit: 10 });
   console.log(JSON.stringify(q.body, null, 2));
 }
