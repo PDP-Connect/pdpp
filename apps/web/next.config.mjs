@@ -160,9 +160,14 @@ const nextConfig = {
         source: '/docs/:path*.mdx',
         destination: '/llms.mdx/docs/:path*',
       },
-      // Sandbox demo well-known metadata. Next.js cannot route a path
-      // segment that starts with a dot directly, so the handlers live
-      // under `well-known/**` and we expose them at `/.well-known/**`.
+      // Root agent skill discovery. Keep handlers under a filesystem-safe
+      // internal path and expose the standards-shaped public .well-known URL.
+      {
+        source: '/.well-known/skills/:path*',
+        destination: '/well-known/skills/:path*',
+      },
+      // Sandbox demo well-known metadata uses the same internal-path adapter:
+      // handlers live under `well-known/**`; public URLs stay .well-known.
       {
         source: '/sandbox/.well-known/oauth-authorization-server',
         destination: '/sandbox/well-known/oauth-authorization-server',

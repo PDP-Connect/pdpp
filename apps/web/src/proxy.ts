@@ -11,7 +11,7 @@ function resolveReferenceProxyTarget(pathname: string): string | null {
   if (pathname === "/.well-known/oauth-protected-resource") {
     return RS_PROXY_TARGET;
   }
-  if (pathname.startsWith("/.well-known/")) {
+  if (pathname === "/.well-known/oauth-authorization-server") {
     return AS_PROXY_TARGET;
   }
   if (pathname.startsWith("/oauth/")) {
