@@ -1,11 +1,27 @@
 import { isMarkdownPreferred, rewritePath } from "fumadocs-core/negotiation";
 import { type NextRequest, NextResponse } from "next/server";
+import { OWNER_AUTH_COOKIE_NAME } from "pdpp-reference-implementation/owner-session";
 import { resolveReferenceTopology } from "pdpp-reference-implementation/reference-topology";
+import { normalizeDashboardReturnTo } from "@/app/dashboard/lib/return-to.ts";
 
 const { rewrite: rewriteLLM } = rewritePath("/docs{/*path}", "/llms.mdx/docs{/*path}");
 const referenceTopology = resolveReferenceTopology();
 const AS_PROXY_TARGET = referenceTopology.asInternalUrl;
 const RS_PROXY_TARGET = referenceTopology.rsInternalUrl;
+
+// Optimistic auth gate at the proxy layer (Next.js 16 BFF pattern). When
+// owner-auth is on and the BFF process holds the password, we could HMAC-
+// verify here too — but the documented topology allows split deployments
+// where only the AS holds the password. So proxy does cookie-presence-only
+// for the redirect UX; the DAL (dashboard/lib/verify-session.ts) is the
+// authoritative gate that runs before any data leaves the AS.
+//
+// We only redirect when owner-auth is plausibly enabled in this process. When
+// `PDPP_OWNER_PASSWORD` is unset, the local-dev open path stays open and the
+// AS remains authoritative for downstream `_ref` / `/v1` requests. This
+// matches the behavior pinned by `gate-ref-reads-when-owner-auth-enabled`.
+const OWNER_AUTH_PROBABLY_ENABLED =
+  typeof process.env.PDPP_OWNER_PASSWORD === "string" && process.env.PDPP_OWNER_PASSWORD.length > 0;
 
 function resolveReferenceProxyTarget(pathname: string): string | null {
   if (pathname === "/.well-known/oauth-protected-resource") {
@@ -77,6 +93,24 @@ export default function proxy(request: NextRequest) {
   }
 
   if (request.nextUrl.pathname === "/dashboard" || request.nextUrl.pathname.startsWith("/dashboard/")) {
+    // Optimistic auth-redirect: if owner-auth might be enabled and the
+    // session cookie is missing, bounce to /owner/login *before* any
+    // server component renders. This eliminates the layout-vs-page
+    // render race that previously surfaced raw 401s on logged-out
+    // /dashboard hits. The DAL (dashboard/lib/verify-session.ts) is
+    // the authoritative gate; this is purely UX.
+    if (OWNER_AUTH_PROBABLY_ENABLED) {
+      const sessionCookie = request.cookies.get(OWNER_AUTH_COOKIE_NAME);
+      if (!sessionCookie?.value) {
+        const returnTo = normalizeDashboardReturnTo(`${request.nextUrl.pathname}${request.nextUrl.search}`);
+        const loginUrl = new URL("/owner/login", request.nextUrl);
+        loginUrl.searchParams.set("return_to", returnTo);
+        const redirect = NextResponse.redirect(loginUrl, 307);
+        redirect.headers.set("X-Robots-Tag", "noindex, nofollow");
+        return redirect;
+      }
+    }
+
     const requestHeaders = new Headers(request.headers);
     requestHeaders.set("x-pdpp-return-to", `${request.nextUrl.pathname}${request.nextUrl.search}`);
     // Live operator surface — never indexable, regardless of which layout renders

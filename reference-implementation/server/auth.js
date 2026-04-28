@@ -1142,7 +1142,19 @@ function mapRegisteredClientRow(row) {
   }
   let metadata;
   try {
-    metadata = normalizeClientRegistrationMetadata(rawMetadata);
+    // Strip the spec-only client metadata to its supported field set, but
+    // re-attach reference-only stamps the route layer added (e.g.
+    // `issuer_subject_id` from owner-session-authed DCR). The normalizer
+    // strict-rejects unknown fields, so we hold these aside, normalize,
+    // then merge them back in.
+    const referenceOnlyStamps = {};
+    if (typeof rawMetadata?.issuer_subject_id === 'string' && rawMetadata.issuer_subject_id) {
+      referenceOnlyStamps.issuer_subject_id = rawMetadata.issuer_subject_id;
+    }
+    const stripped = { ...rawMetadata };
+    delete stripped.issuer_subject_id;
+    metadata = normalizeClientRegistrationMetadata(stripped);
+    Object.assign(metadata, referenceOnlyStamps);
   } catch {
     throw buildInvalidRegisteredClientError(row.client_id);
   }
@@ -1172,14 +1184,26 @@ async function upsertRegisteredClient({
     throw err;
   }
 
-  const normalizedMetadata = normalizeClientRegistrationMetadata(metadata);
+  // Hold reference-only stamps (e.g. `issuer_subject_id` injected by the
+  // owner-session-authed DCR route) aside; the spec normalizer rejects
+  // unknown fields, but these stamps must round-trip to disk so downstream
+  // listings/deletions can scope by operator. Strip before normalization,
+  // re-attach after, persist the merged JSON.
+  const referenceOnlyStamps = {};
+  if (metadata && typeof metadata.issuer_subject_id === 'string' && metadata.issuer_subject_id) {
+    referenceOnlyStamps.issuer_subject_id = metadata.issuer_subject_id;
+  }
+  const inputForSpecNormalize = { ...metadata };
+  delete inputForSpecNormalize.issuer_subject_id;
+  const normalizedMetadata = normalizeClientRegistrationMetadata(inputForSpecNormalize);
+  const persistedMetadata = { ...normalizedMetadata, ...referenceOnlyStamps };
   const timestamp = nowIso();
   exec(referenceQueries.authOauthClientsUpsert, [
     clientId,
     registrationMode,
     normalizedMetadata.token_endpoint_auth_method,
     clientSecret,
-    JSON.stringify(normalizedMetadata),
+    JSON.stringify(persistedMetadata),
     timestamp,
     timestamp,
   ]);
@@ -1217,8 +1241,138 @@ export async function getRegisteredClient(clientId) {
   return mapRegisteredClientRow(row || null);
 }
 
-export async function registerDynamicClient(input = {}) {
+/**
+ * Operator-scoped listing of dynamic clients the dashboard registered on
+ * behalf of a particular owner-session subject. Backs `GET /_ref/clients?owner=true`.
+ * Returns `[{ client_id, client_name, created_at, active_token_count }]`.
+ *
+ * Spec: openspec/changes/dcr-per-owner-token-with-revoke/specs/
+ *       reference-implementation-architecture/spec.md
+ */
+export async function listOwnerIssuedClients(subjectId) {
+  if (!subjectId) return [];
+  // REVIEWED-BOUNDED: per-operator dashboard-issued tokens are operator-scale
+  // (small in practice). The query's @max_rows=256 caps pathological growth.
+  const rows = allowUnboundedReadAcknowledged(referenceQueries.authOauthClientsListByIssuerSubject, [subjectId]);
+  return rows.map((row) => {
+    const mapped = mapRegisteredClientRow(row);
+    if (!mapped) return null;
+    const countRow = getOne(referenceQueries.authTokensCountActiveByClientId, [mapped.client_id]);
+    return {
+      client_id: mapped.client_id,
+      client_name: mapped.metadata.client_name || null,
+      created_at: mapped.created_at,
+      active_token_count: countRow ? Number(countRow.active_token_count) || 0 : 0,
+    };
+  }).filter(Boolean);
+}
+
+/**
+ * RFC 7592 client deletion, owner-session-gated by the route.
+ * - Refuses non-dynamic clients (protects pre-registered seeds).
+ * - Refuses if the acting subject doesn't match the registered
+ *   `metadata.issuer_subject_id` (stops cross-operator deletes).
+ * - Cascade-revokes every active grant tied to the client via the existing
+ *   `revokeGrant` codepath so spine events fire.
+ * - Idempotent on subsequent calls (returns `not_found`).
+ *
+ * Returns `{ revokedGrantIds: string[] }` on success. Throws an error with
+ * a `code` of `not_found` | `forbidden` otherwise.
+ */
+export async function deleteRegisteredClient(clientId, { actingSubjectId, requestId, traceId } = {}) {
+  if (!clientId) {
+    const err = new Error('client_id is required');
+    err.code = 'invalid_request';
+    throw err;
+  }
+
+  const client = await getRegisteredClient(clientId);
+  if (!client) {
+    const err = new Error(`Unknown client_id: ${clientId}`);
+    err.code = 'not_found';
+    throw err;
+  }
+  if (client.registration_mode !== 'dynamic') {
+    const err = new Error('Pre-registered clients cannot be deleted via the registration management API');
+    err.code = 'forbidden';
+    throw err;
+  }
+  const ownerSubject = client.metadata.issuer_subject_id || null;
+  if (!ownerSubject || ownerSubject !== actingSubjectId) {
+    const err = new Error('Caller is not the operator who registered this client');
+    err.code = 'forbidden';
+    throw err;
+  }
+
+  // Cascade-revoke any client-token grants tied to this client. Owner self-
+  // export tokens (via the device flow) live in `tokens` directly with
+  // grant_id=NULL, so they don't show up here — they're handled by the
+  // separate token-cascade below.
+  // REVIEWED-BOUNDED: per-token clients in operator usage have at most a few
+  // active grants. The query's @max_rows=1024 bounds pathological cases.
+  const grantRows = allowUnboundedReadAcknowledged(referenceQueries.authGrantsListActiveIdsByClientId, [clientId]);
+  const revokedGrantIds = [];
+  for (const row of grantRows) {
+    try {
+      await revokeGrant(row.grant_id, { request_id: requestId, trace_id: traceId });
+      revokedGrantIds.push(row.grant_id);
+    } catch (err) {
+      // Best-effort revoke: a grant that's already revoked / consumed is
+      // not an error for the client-delete cascade. Anything else
+      // propagates and aborts the delete (we'd rather leave the client
+      // row in place than lie about cascade completeness).
+      if (err?.code === 'grant_invalid' || err?.code === 'not_found') {
+        continue;
+      }
+      throw err;
+    }
+  }
+
+  // Cascade-revoke any owner self-export tokens issued against this client.
+  // This is what makes per-token DCR's "Revoke" button cascade to the bearer
+  // for owner tokens (which never have a grant row).
+  const tokenRevoke = exec(referenceQueries.authTokensRevokeByClientId, [clientId]);
+  const revokedOwnerTokenCount = tokenRevoke?.changes ?? 0;
+
+  exec(referenceQueries.authOauthClientsDeleteByClientId, [clientId]);
+
+  await emitSpineEvent({
+    event_type: 'client.deleted',
+    trace_id: traceId,
+    scenario_id: undefined,
+    request_id: requestId,
+    actor_type: 'subject',
+    actor_id: actingSubjectId,
+    subject_type: 'subject',
+    subject_id: actingSubjectId,
+    object_type: 'client',
+    object_id: clientId,
+    status: 'succeeded',
+    client_id: clientId,
+    data: {
+      registration_mode: 'dynamic',
+      revoked_grant_count: revokedGrantIds.length,
+      revoked_owner_token_count: revokedOwnerTokenCount,
+    },
+  });
+
+  return { revokedGrantIds, revokedOwnerTokenCount };
+}
+
+export async function registerDynamicClient(input = {}, extraMetadata = {}) {
   const metadata = normalizeClientRegistrationMetadata(input);
+
+  // Optional reference-only stamps the route layer can pass through after
+  // strict spec-field normalization. Today only `issuer_subject_id` is used
+  // — the dashboard injects the operator's signed-in subject so
+  // `_ref/clients?owner=true` can scope listings/deletions to that operator.
+  // Anonymous callers cannot set this because the route never reads the
+  // field from the request body — it only honors the owner-session subject.
+  // See openspec/changes/dcr-per-owner-token-with-revoke/.
+  if (typeof extraMetadata.issuer_subject_id === 'string' && extraMetadata.issuer_subject_id) {
+    metadata.issuer_subject_id = extraMetadata.issuer_subject_id;
+  }
+
   const clientId = generateId('cli');
   await upsertRegisteredClient({
     clientId,
@@ -2540,7 +2694,10 @@ export async function issueToken(grantId, subjectId, clientId, expiresAt, meta =
 async function issueOwnerTokenRecord(subjectId, meta = {}) {
   const tokenId = generateToken();
   const expiresAt = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString();
-  exec(referenceQueries.authTokensInsertOwner, [tokenId, subjectId, expiresAt]);
+  // Record the issuing client_id when the caller knows it (per-token DCR
+  // path). Pre-DCR callers pass NULL and the row stays as before.
+  // See openspec/changes/dcr-per-owner-token-with-revoke/.
+  exec(referenceQueries.authTokensInsertOwner, [tokenId, subjectId, meta.clientId || null, expiresAt]);
   await emitSpineEvent({
     event_type: 'token.issued',
     trace_id: meta.traceContext?.trace_id || undefined,
@@ -2633,6 +2790,10 @@ export async function introspect(token) {
     subject_id: row.subject_id,
     exp: row.expires_at ? Math.floor(new Date(row.expires_at).getTime() / 1000) : null,
   };
+
+  if (row.token_kind === 'owner' && row.client_id) {
+    result.client_id = row.client_id;
+  }
 
   if (row.token_kind === 'client') {
     try {

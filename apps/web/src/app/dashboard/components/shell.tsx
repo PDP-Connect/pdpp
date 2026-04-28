@@ -141,10 +141,11 @@ function SidebarContent({ active, mode, routes }: { active: DashboardSection; mo
 
 function GrantsSubnav() {
   // Owner-only flows; never rendered in mock-owner mode.
+  // Note: owner-token issuance lives under /dashboard/deployment/tokens, not
+  // here — tokens are an operator/developer concern, not a grants concern.
   const items = [
     { href: "/dashboard/grants#pending-approvals", label: "Pending approvals" },
     { href: "/dashboard/grants/request", label: "Grant request" },
-    { href: "/dashboard/grants/bootstrap", label: "Owner device flow" },
   ];
   return <SidebarSubnav items={items} label="Grants workspace" />;
 }
@@ -354,9 +355,9 @@ export function OwnerTokenRequired() {
       <div className="mt-3 flex flex-wrap gap-2">
         <Link
           className="pdpp-label inline-flex items-center rounded-md border border-border px-3 py-1.5 hover:bg-muted/60"
-          href="/dashboard/grants/bootstrap"
+          href="/dashboard/deployment/tokens"
         >
-          Open owner device flow →
+          Issue owner token →
         </Link>
         <a
           className="pdpp-label inline-flex items-center rounded-md border border-border px-3 py-1.5 hover:bg-muted/60"

@@ -1,3 +1,5 @@
+import Link from "next/link";
+import { buttonVariants } from "@/components/ui/button.tsx";
 import { Timestamp } from "@/components/ui/timestamp.tsx";
 import { LivePoller } from "../components/live-poller.tsx";
 import { Callout, PageHeader, Section } from "../components/primitives.tsx";
@@ -39,6 +41,11 @@ export default async function DeploymentPage() {
     <DashboardShell active="deployment">
       <LivePoller enabled={isDeploymentIndexing(report)} />
       <PageHeader
+        actions={
+          <Link className={buttonVariants({ variant: "outline", size: "sm" })} href="/dashboard/deployment/tokens">
+            Tokens
+          </Link>
+        }
         breadcrumbs={[{ href: "/dashboard", label: "Dashboard" }, { label: "Deployment" }]}
         description="Operator diagnostics for the reference retrieval surfaces. Read-only. Secret environment values are redacted before reaching this page."
         title="Deployment"

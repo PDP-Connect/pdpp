@@ -37,9 +37,6 @@ function HeaderActions({ ownerLoginUrl }: { ownerLoginUrl: string }) {
       <Link className={buttonVariants({ variant: "outline", size: "sm" })} href="/dashboard/grants#pending-approvals">
         Pending approvals
       </Link>
-      <Link className={buttonVariants({ variant: "outline", size: "sm" })} href="/dashboard/grants/bootstrap">
-        Owner device flow
-      </Link>
       <a className={buttonVariants({ variant: "outline", size: "sm" })} href={ownerLoginUrl}>
         Owner access
       </a>

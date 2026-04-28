@@ -6,7 +6,10 @@
  *
  * Server-only: do not import from client components.
  */
+import { isOwnerSessionRequiredBody } from "./auth-errors.ts";
+import { redirectToOwnerLogin } from "./login-redirect.ts";
 import { getAsInternalUrl, ReferenceServerUnreachableError, withOwnerSessionCookie } from "./owner-token.ts";
+import { verifyDashboardSession } from "./verify-session.ts";
 
 export interface SpineEvent {
   actor_id: string | null;
@@ -193,6 +196,11 @@ class RefNotFoundError extends Error {
 }
 
 async function refFetch(path: string, params?: Record<string, string | number | undefined>) {
+  // DAL gate: verify owner session before any AS read. The proxy already
+  // redirects unauthenticated browser navigations; this catches programmatic
+  // / proxy-bypass paths (CVE-2025-29927 class) before any data leaves the AS.
+  await verifyDashboardSession();
+
   const url = new URL(`${getAsInternalUrl()}${path}`);
   if (params) {
     for (const [k, v] of Object.entries(params)) {
@@ -212,6 +220,9 @@ async function refFetch(path: string, params?: Record<string, string | number | 
   }
   if (!res.ok) {
     const body = await res.text();
+    if (res.status === 401 && isOwnerSessionRequiredBody(body)) {
+      await redirectToOwnerLogin();
+    }
     throw new Error(`_ref ${path} failed (${res.status}): ${body}`);
   }
   return res.json();
@@ -479,4 +490,24 @@ export interface PendingApproval {
 
 export async function listPendingApprovals(): Promise<ListResponse<PendingApproval>> {
   return (await refFetch("/_ref/approvals")) as ListResponse<PendingApproval>;
+}
+
+/** Operator-issued OAuth client (one per dashboard-issued bearer). */
+export interface OwnerIssuedClient {
+  active_token_count: number;
+  client_id: string;
+  client_name: string | null;
+  created_at: string;
+}
+
+/**
+ * Operator-scoped listing of dynamic clients the dashboard registered for the
+ * signed-in operator (one per issued owner self-export bearer). Backs the
+ * Tokens page list + Revoke UX.
+ *
+ * Spec: openspec/changes/dcr-per-owner-token-with-revoke/specs/
+ *       reference-implementation-architecture/spec.md
+ */
+export async function listOwnerIssuedClients(): Promise<ListResponse<OwnerIssuedClient>> {
+  return (await refFetch("/_ref/clients", { owner: "true" })) as ListResponse<OwnerIssuedClient>;
 }

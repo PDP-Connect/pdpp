@@ -34,6 +34,10 @@ const TS_FILE_RE = /\.(ts|tsx)$/;
 const LIVE_KIND_RE = /kind:\s*"live"/;
 const SANDBOX_FROM_IMPORT_RE = /\bfrom\s+["'][^"']*\/sandbox(?:\/|["'])/m;
 const SANDBOX_DYNAMIC_IMPORT_RE = /\bimport\s*\(\s*["'][^"']*\/sandbox(?:\/|["'])/m;
+const VERIFY_DASHBOARD_SESSION_RE = /verifyDashboardSession/;
+const VERIFY_DASHBOARD_SESSION_CALL_RE = /verifyDashboardSession\s*\(/g;
+const OWNER_LOGIN_REDIRECT_RE = /redirectToOwnerLogin/;
+const DASHBOARD_RETURN_TO_LOGIN_RE = /owner\/login\?return_to=%2Fdashboard/;
 
 async function walk(dir: string, files: string[] = []): Promise<string[]> {
   const entries = await readdir(dir, { withFileTypes: true });
@@ -122,6 +126,59 @@ test("/dashboard/** never imports from /sandbox/**", async () => {
     [],
     `dashboard files must not import from /sandbox/**. Offenders:\n${offenders.join("\n")}`
   );
+});
+
+test("ref-client and rs-client gate every fetch through verifyDashboardSession", async () => {
+  // Architectural invariant: the dashboard's two fetch wrappers
+  // (refFetch in ref-client.ts; authedFetch + the three search functions in
+  // rs-client.ts) MUST call `verifyDashboardSession` before issuing the
+  // network request. This is the DAL boundary per Next.js 16 official
+  // guidance and survives a CVE-2025-29927-style middleware bypass. If
+  // someone adds a new fetch wrapper, this test fails until they wire the
+  // DAL gate.
+  const refClient = await readFile(join(HERE, "ref-client.ts"), "utf8");
+  const rsClient = await readFile(join(HERE, "rs-client.ts"), "utf8");
+
+  // Both files must import the helper.
+  assert.match(refClient, VERIFY_DASHBOARD_SESSION_RE);
+  assert.match(rsClient, VERIFY_DASHBOARD_SESSION_RE);
+
+  // Every body that issues a `fetch(...)` against the AS or RS internal URLs
+  // must call verifyDashboardSession before that fetch. We check this by
+  // counting fetch call sites and verify-session call sites; the latter
+  // must be at least equal to the former for the request-issuing sites.
+  function fetchSitesAgainstInternalUrl(src: string, urlGetter: string): number {
+    // Match `fetch(<expr containing urlGetter>` constructs (one per call site).
+    const re = new RegExp(`\\bfetch\\([^)]*${urlGetter}\\b`, "g");
+    return (src.match(re) ?? []).length;
+  }
+  function verifyCalls(src: string): number {
+    return (src.match(VERIFY_DASHBOARD_SESSION_CALL_RE) ?? []).length;
+  }
+
+  const refFetchSites = fetchSitesAgainstInternalUrl(refClient, "getAsInternalUrl");
+  const rsFetchSites = fetchSitesAgainstInternalUrl(rsClient, "getRsInternalUrl");
+  const refVerifyCalls = verifyCalls(refClient);
+  const rsVerifyCalls = verifyCalls(rsClient);
+
+  assert.ok(
+    refVerifyCalls >= refFetchSites,
+    `ref-client.ts has ${refFetchSites} AS-internal fetch sites but only ${refVerifyCalls} verifyDashboardSession calls — every AS read must be DAL-gated.`
+  );
+  assert.ok(
+    rsVerifyCalls >= rsFetchSites,
+    `rs-client.ts has ${rsFetchSites} RS-internal fetch sites but only ${rsVerifyCalls} verifyDashboardSession calls — every RS read must be DAL-gated.`
+  );
+});
+
+test("dashboard owner-session 401s resolve back through owner login", async () => {
+  const refClient = await readFile(join(HERE, "ref-client.ts"), "utf8");
+  const ownerToken = await readFile(join(HERE, "owner-token.ts"), "utf8");
+  const dashboardError = await readFile(join(HERE, "..", "error.tsx"), "utf8");
+
+  assert.match(refClient, OWNER_LOGIN_REDIRECT_RE);
+  assert.match(ownerToken, OWNER_LOGIN_REDIRECT_RE);
+  assert.match(dashboardError, DASHBOARD_RETURN_TO_LOGIN_RE);
 });
 
 test("/dashboard/** never references the sandbox data source binding", async () => {

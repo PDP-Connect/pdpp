@@ -2,42 +2,27 @@
  * Server-only dashboard helpers for:
  * - internal AS/RS fetch targets
  * - browser-facing reference URLs on the composed Next origin
- * - owner-session forwarding and dashboard gating
- * - owner self-export token minting
+ * - owner-session forwarding (BFF cookie → AS)
+ * - owner self-export token minting (via the AS back-channel endpoint)
+ *
+ * Auth gating lives in two layers per the BFF / token-handler pattern:
+ *   1. `proxy.ts` — optimistic UX redirect when the session cookie is absent.
+ *   2. `verify-session.ts` (DAL) — authoritative HMAC check before any fetch.
+ * This module is the BFF's outbound-call helper, not an auth gate.
  */
 import "server-only";
 
 import { cookies, headers } from "next/headers";
-import { redirect } from "next/navigation";
-import {
-  createOwnerSessionController,
-  OWNER_AUTH_COOKIE_NAME,
-  OWNER_SESSION_DEFAULT_SUBJECT_ID,
-} from "pdpp-reference-implementation/owner-session";
+import { createOwnerSessionController, OWNER_AUTH_COOKIE_NAME } from "pdpp-reference-implementation/owner-session";
 import {
   resolveReferenceBrowserOrigin,
   resolveReferenceTopology,
   stripTrailingSlash,
 } from "pdpp-reference-implementation/reference-topology";
+import { isOwnerSessionRequiredBody } from "./auth-errors.ts";
+import { redirectToOwnerLogin } from "./login-redirect.ts";
 
-const SUBJECT_ID = process.env.PDPP_SUBJECT_ID || OWNER_SESSION_DEFAULT_SUBJECT_ID;
 const CLIENT_ID = "pdpp-polyfill-owner-bootstrap";
-const C0_CONTROL_END = 0x1f;
-const DEL = 0x7f;
-
-// Character-code scan instead of a regex literal. A regex form with
-// C0 or DEL escapes trips Biome's noControlCharactersInRegex, and the
-// RegExp-constructor workaround trips useRegexLiterals. This explicit
-// loop matches the same rejection set (C0: 0x00-0x1F, DEL: 0x7F).
-function containsControlChar(value: string): boolean {
-  for (let i = 0; i < value.length; i++) {
-    const code = value.charCodeAt(i);
-    if (code <= C0_CONTROL_END || code === DEL) {
-      return true;
-    }
-  }
-  return false;
-}
 
 let cachedToken: string | null = null;
 let inFlight: Promise<string> | null = null;
@@ -70,25 +55,6 @@ function resolveConfiguredReferenceOrigin(): string | null {
 }
 
 const referenceTopology = resolveReferenceTopology();
-
-function normalizeDashboardReturnTo(input: string | null | undefined): string {
-  if (typeof input !== "string" || !input) {
-    return "/dashboard";
-  }
-  if (!input.startsWith("/dashboard")) {
-    return "/dashboard";
-  }
-  if (input.startsWith("//")) {
-    return "/dashboard";
-  }
-  if (input.includes("\\")) {
-    return "/dashboard";
-  }
-  if (containsControlChar(input)) {
-    return "/dashboard";
-  }
-  return input;
-}
 
 const ownerSessionController = createOwnerSessionController({
   password: process.env.PDPP_OWNER_PASSWORD,
@@ -184,25 +150,22 @@ export function isOwnerSessionGateEnabled(): boolean {
   return ownerSessionController.enabled;
 }
 
-export async function requireDashboardOwnerSession(explicitReturnTo?: string) {
+/**
+ * Read the validated owner session payload from the request cookie, or `null`
+ * if owner-auth is disabled in this process or the cookie is absent / invalid.
+ *
+ * Authoritative validation when this process holds `PDPP_OWNER_PASSWORD`. In
+ * split deployments (AS holds password, web does not), the controller's
+ * `readSessionFromCookieValue` returns `null` and callers fall back to
+ * forwarding the cookie to the AS for revalidation.
+ */
+export async function readDashboardOwnerSession() {
   if (!ownerSessionController.enabled) {
     return null;
   }
-
   const cookieStore = await cookies();
   const rawCookie = cookieStore.get(OWNER_AUTH_COOKIE_NAME)?.value ?? null;
-  const session = ownerSessionController.readSessionFromCookieValue(rawCookie);
-  if (session) {
-    return session;
-  }
-
-  let returnTo = explicitReturnTo;
-  if (!returnTo) {
-    const headerList = await headers();
-    returnTo = headerList.get("x-pdpp-return-to") ?? "/dashboard";
-  }
-
-  redirect(`${getOwnerLoginPath()}?return_to=${encodeURIComponent(normalizeDashboardReturnTo(returnTo))}`);
+  return ownerSessionController.readSessionFromCookieValue(rawCookie);
 }
 
 export class ReferenceServerUnreachableError extends Error {
@@ -215,50 +178,81 @@ export class ReferenceServerUnreachableError extends Error {
   }
 }
 
+/**
+ * Mint an owner-scoped self-export bearer for `/v1/*` reads by driving the
+ * canonical RFC 8628 device flow against the AS, server-to-server.
+ *
+ * Why device flow specifically:
+ *   - There is no IETF-standardized "personal access token" primitive. PATs
+ *     are a vendor convention (GitHub/Linear/Vercel/Stripe each invented one).
+ *   - OAuth 2.1 (draft-ietf-oauth-v2-1) deletes ROPC and offers no first-party
+ *     exception. Authorization Code + PKCE assumes a redirect; Client
+ *     Credentials assumes no user identity. For "operator at a browser issuing
+ *     a bearer for their own CLI" the IETF-blessed primitive is Device Flow.
+ *   - RFC 8628 §5.6 explicitly contemplates the operator-runs-the-flow-against-
+ *     themselves case: "the user in possession of the client credentials can
+ *     already impersonate the client and create a new authorization grant."
+ *
+ * The three POSTs (`/oauth/device_authorization`, `/device/approve`,
+ * `/oauth/token`) use `Content-Type: application/json` to use the documented
+ * CSRF exemption (server/owner-auth.ts isJsonRequest). Form-encoded POSTs
+ * would require a hosted-form CSRF token that this server-to-server caller
+ * never has — and shouldn't need, because cross-origin JSON POSTs require a
+ * CORS preflight and aren't browser-forgeable.
+ *
+ * The session cookie is forwarded so requireOwnerSession (on /device/approve)
+ * sees the operator's signed-in subject; the AS is the authority on subject
+ * binding regardless of what we send in the body.
+ */
 async function mintOwnerToken(): Promise<string> {
-  const form = (obj: Record<string, string>) => new URLSearchParams(obj).toString();
+  const asUrl = getAsInternalUrl();
 
   let deviceRes: Response;
   try {
     deviceRes = await fetch(
-      `${getAsInternalUrl()}/oauth/device_authorization`,
+      `${asUrl}/oauth/device_authorization`,
       await withOwnerSessionCookie({
         method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: form({ client_id: CLIENT_ID }),
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ client_id: CLIENT_ID }),
         cache: "no-store",
       })
     );
   } catch (err) {
-    throw new ReferenceServerUnreachableError(`Cannot reach authorization server at ${getAsInternalUrl()}`, err);
+    throw new ReferenceServerUnreachableError(`Cannot reach authorization server at ${asUrl}`, err);
   }
   if (!deviceRes.ok) {
-    throw new Error(`device_authorization failed (${deviceRes.status}): ${await deviceRes.text()}`);
+    const body = await deviceRes.text();
+    if (deviceRes.status === 401 && isOwnerSessionRequiredBody(body)) {
+      await redirectToOwnerLogin();
+    }
+    throw new Error(`device_authorization failed (${deviceRes.status}): ${body}`);
   }
-  const device = (await deviceRes.json()) as {
-    device_code: string;
-    user_code: string;
-  };
+  const device = (await deviceRes.json()) as { device_code: string; user_code: string };
 
   const approveRes = await fetch(
-    `${getAsInternalUrl()}/device/approve`,
+    `${asUrl}/device/approve`,
     await withOwnerSessionCookie({
       method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: form({ user_code: device.user_code, subject_id: SUBJECT_ID }),
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ user_code: device.user_code }),
       cache: "no-store",
     })
   );
   if (!approveRes.ok) {
-    throw new Error(`device/approve failed (${approveRes.status}): ${await approveRes.text()}`);
+    const body = await approveRes.text();
+    if (approveRes.status === 401 && isOwnerSessionRequiredBody(body)) {
+      await redirectToOwnerLogin();
+    }
+    throw new Error(`device/approve failed (${approveRes.status}): ${body}`);
   }
 
   const tokenRes = await fetch(
-    `${getAsInternalUrl()}/oauth/token`,
+    `${asUrl}/oauth/token`,
     await withOwnerSessionCookie({
       method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: form({
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
         grant_type: "urn:ietf:params:oauth:grant-type:device_code",
         device_code: device.device_code,
         client_id: CLIENT_ID,
@@ -267,7 +261,11 @@ async function mintOwnerToken(): Promise<string> {
     })
   );
   if (!tokenRes.ok) {
-    throw new Error(`/oauth/token failed (${tokenRes.status}): ${await tokenRes.text()}`);
+    const body = await tokenRes.text();
+    if (tokenRes.status === 401 && isOwnerSessionRequiredBody(body)) {
+      await redirectToOwnerLogin();
+    }
+    throw new Error(`/oauth/token failed (${tokenRes.status}): ${body}`);
   }
   const { access_token } = (await tokenRes.json()) as { access_token: string };
   return access_token;

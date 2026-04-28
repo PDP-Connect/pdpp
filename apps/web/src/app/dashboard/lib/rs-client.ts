@@ -13,6 +13,7 @@
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { getOwnerToken, getRsInternalUrl, ReferenceServerUnreachableError } from "./owner-token.ts";
+import { verifyDashboardSession } from "./verify-session.ts";
 
 export interface StreamSummary {
   last_updated: string | null;
@@ -48,6 +49,9 @@ const MANIFESTS_DIR = join(process.cwd(), "..", "..", "packages", "polyfill-conn
 const FRACTIONAL_SECONDS_RE = /\.\d+Z$/;
 
 async function authedFetch(path: string, params?: Record<string, string | number | undefined>) {
+  // DAL gate. Memoized via React.cache, so fanned-out sibling fetches verify
+  // exactly once per render — see ./verify-session.ts.
+  await verifyDashboardSession();
   const token = await getOwnerToken();
   const url = new URL(`${getRsInternalUrl()}${path}`);
   if (params) {
@@ -159,6 +163,7 @@ export async function searchRecordsLexical(
   query: string,
   opts: { streams?: string[]; limit?: number; cursor?: string } = {}
 ): Promise<SearchResultPage> {
+  await verifyDashboardSession();
   const token = await getOwnerToken();
   const url = new URL(`${getRsInternalUrl()}/v1/search`);
   url.searchParams.set("q", query);
@@ -217,6 +222,7 @@ export async function searchRecordsSemantic(
   query: string,
   opts: { streams?: string[]; limit?: number; cursor?: string } = {}
 ): Promise<SearchResultPage> {
+  await verifyDashboardSession();
   const token = await getOwnerToken();
   const url = new URL(`${getRsInternalUrl()}/v1/search/semantic`);
   url.searchParams.set("q", query);
@@ -304,6 +310,7 @@ export async function searchRecordsHybrid(
   query: string,
   opts: { streams?: string[]; limit?: number } = {}
 ): Promise<SearchResultPage> {
+  await verifyDashboardSession();
   const token = await getOwnerToken();
   const url = new URL(`${getRsInternalUrl()}/v1/search/hybrid`);
   url.searchParams.set("q", query);

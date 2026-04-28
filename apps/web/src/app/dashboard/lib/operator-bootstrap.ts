@@ -5,6 +5,7 @@
  * ephemeral dashboard state in memory so the UI can step through the flow
  * without inventing a second token minting surface.
  */
+import { DEFAULT_DCR_INITIAL_ACCESS_TOKEN } from "./operator-grant-request.ts";
 import {
   getAsInternalUrl,
   getReferencePublicOrigin,
@@ -24,6 +25,10 @@ export interface OwnerBootstrapFlow {
   introspectedAt: string | null;
   introspection: Record<string, unknown> | null;
   lastError: string | null;
+  // Operator-supplied label so the issued bearer is recognizable later.
+  // Doesn't change the protocol — bearers are still RFC 8628 device-flow
+  // tokens. The name is dashboard-only metadata.
+  name: string | null;
   startedAt: string;
   status: "pending_approval" | "approved" | "denied" | "token_issued";
   subjectId: string | null;
@@ -45,10 +50,6 @@ function getFlowStore(): OwnerBootstrapStore {
     state.__pdppOwnerBootstrapFlows = new Map();
   }
   return state.__pdppOwnerBootstrapFlows;
-}
-
-function asForm(body: Record<string, string>): string {
-  return new URLSearchParams(body).toString();
 }
 
 function readBody(res: Response): Promise<unknown> {
@@ -128,11 +129,57 @@ export function setOwnerBootstrapFlowError(flowId: string, message: string): Own
   });
 }
 
-export async function startOwnerBootstrapFlow(clientId = DASHBOARD_BOOTSTRAP_CLIENT_ID): Promise<OwnerBootstrapFlow> {
+/**
+ * Issue an owner self-export bearer by:
+ *   1. Registering a fresh OAuth client (RFC 7591 DCR) with the operator-
+ *      supplied name. The AS stamps `metadata.issuer_subject_id` from the
+ *      forwarded owner-session cookie so the client is scoped to this
+ *      operator and shows up in `/_ref/clients?owner=true`.
+ *   2. Running the canonical RFC 8628 device flow against the freshly-
+ *      registered client_id (not the shared bootstrap client).
+ *
+ * Per-token DCR is the standards-grounded alternative to PAT-style per-token
+ * database labels: the credential's identity (and its name) lives where the
+ * IETF spec puts it. Revocation is `DELETE /oauth/register/{client_id}` (RFC
+ * 7592), which cascade-revokes the bearer.
+ *
+ * Spec: openspec/changes/dcr-per-owner-token-with-revoke/
+ */
+export async function startOwnerBootstrapFlow(
+  _legacyClientId: string = DASHBOARD_BOOTSTRAP_CLIENT_ID,
+  name: string | null = null
+): Promise<OwnerBootstrapFlow> {
+  const label = name?.trim();
+  if (!label) {
+    throw new Error("Token name is required");
+  }
+  const registerResp = await fetchAs("/oauth/register", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${DEFAULT_DCR_INITIAL_ACCESS_TOKEN}`,
+    },
+    body: JSON.stringify({
+      client_name: label,
+      token_endpoint_auth_method: "none",
+    }),
+  });
+  const registerBody = await readBody(registerResp);
+  if (!(registerResp.ok && registerBody) || typeof registerBody !== "object") {
+    throw new Error(describeError(registerBody, `oauth/register failed (${registerResp.status})`));
+  }
+  const registered = registerBody as { client_id?: string; client_name?: string };
+  if (typeof registered.client_id !== "string" || !registered.client_id) {
+    throw new Error("oauth/register succeeded without a client_id");
+  }
+  const clientId = registered.client_id;
+
+  // JSON content-type uses the documented CSRF exemption, like every other
+  // server-to-server BFF call from the dashboard.
   const response = await fetchAs("/oauth/device_authorization", {
     method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: asForm({ client_id: clientId }),
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ client_id: clientId }),
   });
   const body = await readBody(response);
   if (!(response.ok && body) || typeof body !== "object") {
@@ -159,6 +206,7 @@ export async function startOwnerBootstrapFlow(clientId = DASHBOARD_BOOTSTRAP_CLI
   const flow: OwnerBootstrapFlow = {
     flowId: crypto.randomUUID(),
     clientId,
+    name: label,
     subjectId: null,
     status: "pending_approval",
     startedAt: new Date().toISOString(),
@@ -183,10 +231,16 @@ export async function startOwnerBootstrapFlow(clientId = DASHBOARD_BOOTSTRAP_CLI
 
 export async function approveOwnerBootstrapFlow(flowId: string, subjectId: string): Promise<OwnerBootstrapFlow> {
   const flow = requireFlow(flowId);
+  // JSON content-type uses the documented CSRF exemption (server/owner-auth.ts
+  // isJsonRequest). Form-encoded bodies require a hosted-form CSRF token that
+  // the dashboard never has — and never should fetch, since this is a
+  // server-to-server call from the BFF, not a hosted browser form. The AS
+  // derives the approved subject from the owner session when owner-auth is on;
+  // `subjectId` here is retained only for the local UI transcript state.
   const response = await fetchAs("/device/approve", {
     method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: asForm({ user_code: flow.userCode, subject_id: subjectId }),
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ user_code: flow.userCode }),
   });
   const body = await readBody(response);
   if (!response.ok) {
@@ -203,10 +257,12 @@ export async function approveOwnerBootstrapFlow(flowId: string, subjectId: strin
 
 export async function denyOwnerBootstrapFlow(flowId: string, subjectId: string): Promise<OwnerBootstrapFlow> {
   const flow = requireFlow(flowId);
+  // See approveOwnerBootstrapFlow: JSON content-type uses the documented CSRF
+  // exemption for server-to-server BFF callers.
   const response = await fetchAs("/device/deny", {
     method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: asForm({ user_code: flow.userCode, subject_id: subjectId }),
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ user_code: flow.userCode }),
   });
   const body = await readBody(response);
   if (!response.ok) {
@@ -229,8 +285,8 @@ export async function exchangeOwnerBootstrapToken(flowId: string): Promise<Owner
   const flow = requireFlow(flowId);
   const response = await fetchAs("/oauth/token", {
     method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: asForm({
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
       grant_type: "urn:ietf:params:oauth:grant-type:device_code",
       device_code: flow.deviceCode,
       client_id: flow.clientId,
@@ -287,10 +343,14 @@ export async function buildOwnerBootstrapExamples(flow: OwnerBootstrapFlow) {
     cliIntrospect: flow.token
       ? `pdpp auth introspect --as-url ${shellQuote(asUrl)} --token ${shellQuote(flow.token)} --format json`
       : "pdpp auth introspect --as-url <as-url> --token <token> --format json",
-    startCurl: `curl -sS -X POST ${shellQuote(`${asUrl}/oauth/device_authorization`)} \\\n  -H 'Content-Type: application/x-www-form-urlencoded' \\\n  --data ${shellQuote(asForm({ client_id: flow.clientId }))}`,
-    approveCurl: `curl -sS -X POST ${shellQuote(`${asUrl}/device/approve`)} \\\n  -H 'Content-Type: application/x-www-form-urlencoded' \\\n  --data ${shellQuote(asForm({ user_code: flow.userCode, subject_id: flow.subjectId ?? "owner_local" }))}`,
-    exchangeCurl: `curl -sS -X POST ${shellQuote(`${asUrl}/oauth/token`)} \\\n  -H 'Content-Type: application/x-www-form-urlencoded' \\\n  --data ${shellQuote(
-      asForm({
+    // Curl examples mirror what the BFF actually sends on the wire:
+    // application/json bodies with the owner-session cookie, using the
+    // documented isJsonRequest CSRF exemption. /device/approve does not
+    // accept subject_id from the body — the AS derives it from the session.
+    startCurl: `curl -sS -X POST ${shellQuote(`${asUrl}/oauth/device_authorization`)} \\\n  -H 'Content-Type: application/json' \\\n  --data ${shellQuote(JSON.stringify({ client_id: flow.clientId }))}`,
+    approveCurl: `curl -sS -X POST ${shellQuote(`${asUrl}/device/approve`)} \\\n  -H 'Content-Type: application/json' \\\n  -H 'Cookie: pdpp_owner_session=<your-session>' \\\n  --data ${shellQuote(JSON.stringify({ user_code: flow.userCode }))}`,
+    exchangeCurl: `curl -sS -X POST ${shellQuote(`${asUrl}/oauth/token`)} \\\n  -H 'Content-Type: application/json' \\\n  --data ${shellQuote(
+      JSON.stringify({
         grant_type: "urn:ietf:params:oauth:grant-type:device_code",
         device_code: flow.deviceCode,
         client_id: flow.clientId,

@@ -32,7 +32,7 @@
  *
  * Spec: openspec/changes/bound-spine-and-record-read-paths/specs/
  *       reference-implementation-architecture/spec.md
- *       Requirement: "Reference RS read paths SHALL be bounded by construction"
+ *       Requirement: "Reference SQL wrapper SHALL make bounded reads explicit"
  */
 
 import { readdirSync, readFileSync } from "node:fs";
@@ -121,9 +121,12 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   readonly authGrantsGetForRevocation: ReadOneQuery;
   // Auth — grants
   readonly authGrantsInsert: MutationQuery;
+  readonly authGrantsListActiveIdsByClientId: SmallEnumerationQuery;
   readonly authGrantsMarkConsumed: MutationQuery;
   readonly authGrantsMarkRevoked: MutationQuery;
+  readonly authOauthClientsDeleteByClientId: MutationQuery;
   readonly authOauthClientsGetByClientId: ReadOneQuery;
+  readonly authOauthClientsListByIssuerSubject: SmallEnumerationQuery;
   // Auth — oauth_clients (registered OAuth clients)
   readonly authOauthClientsUpsert: MutationQuery;
   // Auth — owner_device_auth (owner CLI device-flow authentication)
@@ -140,10 +143,12 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   readonly authPendingConsentsMarkApproved: MutationQuery;
   readonly authPendingConsentsMarkDenied: MutationQuery;
   readonly authPendingConsentsMarkExpired: MutationQuery;
-  readonly authTokensGetIntrospection: ReadOneQuery;
   // Auth — tokens
+  readonly authTokensCountActiveByClientId: ReadOneQuery;
+  readonly authTokensGetIntrospection: ReadOneQuery;
   readonly authTokensInsertClient: MutationQuery;
   readonly authTokensInsertOwner: MutationQuery;
+  readonly authTokensRevokeByClientId: MutationQuery;
   readonly authTokensRevokeByGrant: MutationQuery;
   readonly blobsGetStoredById: ReadOneQuery;
   readonly blobsInsertBinding: MutationQuery;
@@ -504,6 +509,8 @@ export function loadReferenceQueries(queryDir = QUERIES_DIR): ReferenceQueryRegi
     // Auth — oauth_clients
     "authOauthClientsUpsert",
     "authOauthClientsGetByClientId",
+    "authOauthClientsListByIssuerSubject",
+    "authOauthClientsDeleteByClientId",
     // Auth — connectors
     "authConnectorsUpsert",
     "authConnectorsListIds",
@@ -514,11 +521,14 @@ export function loadReferenceQueries(queryDir = QUERIES_DIR): ReferenceQueryRegi
     "authGrantsMarkConsumed",
     "authGrantsGetForRevocation",
     "authGrantsMarkRevoked",
+    "authGrantsListActiveIdsByClientId",
     // Auth — tokens
     "authTokensInsertClient",
     "authTokensInsertOwner",
+    "authTokensCountActiveByClientId",
     "authTokensGetIntrospection",
     "authTokensRevokeByGrant",
+    "authTokensRevokeByClientId",
     // Grants — runtime hydration of persisted grant rows.
     "grantsGetScopedStateById",
     // Blobs — content-addressed blob persistence + binding maintenance.

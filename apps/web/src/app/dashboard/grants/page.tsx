@@ -126,14 +126,9 @@ export default async function GrantsPage({ searchParams }: { searchParams: Promi
     <DashboardShell active="grants">
       <PageHeader
         actions={
-          <>
-            <Link className={buttonVariants({ variant: "outline", size: "sm" })} href="/dashboard/grants/request">
-              Grant request workspace
-            </Link>
-            <Link className={buttonVariants({ variant: "outline", size: "sm" })} href="/dashboard/grants/bootstrap">
-              Owner device flow
-            </Link>
-          </>
+          <Link className={buttonVariants({ variant: "outline", size: "sm" })} href="/dashboard/grants/request">
+            Grant request workspace
+          </Link>
         }
         count={`${result.data.length}${result.has_more ? "+" : ""}`}
         description="Issued authorizations and lifecycle decisions for client access to owner data."

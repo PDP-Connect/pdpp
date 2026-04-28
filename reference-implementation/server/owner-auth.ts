@@ -133,6 +133,15 @@ export interface OwnerAuthPlaceholder {
   readonly csrfFieldName: string;
   readonly enabled: boolean;
   ensureCsrfToken(req: AuthRequest, res: AuthResponse): string;
+  /**
+   * Soft session reader — returns the validated owner session payload when
+   * the request carries one, or null when it doesn't. Unlike
+   * `requireOwnerSession`, this never sends a response. Use from routes that
+   * accept anonymous traffic but want to behave differently when an owner
+   * happens to be signed in (e.g. `/oauth/register` stamping
+   * `issuer_subject_id`).
+   */
+  readOwnerSession(req: AuthRequest): OwnerSessionPayload | null;
   renderCsrfField(token: string): string;
   requireCsrf(req: AuthRequest, res: AuthResponse, next: AuthNextFunction): void;
   requireOwnerSession(req: AuthRequest, res: AuthResponse, next: AuthNextFunction): void;
@@ -266,7 +275,8 @@ function renderSignedInOwnerPage({ providerName, subjectId, csrfToken }: SignedI
       ].join("\n"),
     }),
     renderActionRow([
-      { href: "/device", label: "Open device approval UI", variant: "primary" },
+      { href: "/dashboard", label: "Open dashboard", variant: "primary" },
+      { href: "/device", label: "Open device approval UI" },
       {
         action: "/owner/logout",
         label: "Sign out",
@@ -786,6 +796,7 @@ export function createOwnerAuthPlaceholder({
     subjectId: resolvedSubjectId,
     attachRoutes,
     requireOwnerSession,
+    readOwnerSession: (req) => session.readSession(req),
     requireCsrf,
     ensureCsrfToken,
     renderCsrfField: renderCsrfHiddenField,

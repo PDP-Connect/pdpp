@@ -789,3 +789,92 @@ test('CSRF: default local HTTP development does not require Secure on cookies', 
     assert.ok(!sessionEntry?.includes('Secure'), 'session cookie omits Secure on plain HTTP by default');
   });
 });
+
+// ── BFF can drive the canonical RFC 8628 device flow end-to-end via JSON ────
+// The dashboard issues owner self-export bearers by running the real public
+// device flow against the AS — there is no hidden mint endpoint. Form-encoded
+// `/device/approve` requires a hosted-form CSRF token that the server-to-
+// server BFF caller doesn't have; JSON content-type uses the documented
+// isJsonRequest exemption (server/owner-auth.ts). Pin both the positive JSON
+// path and the negative form-encoded-without-CSRF path so a future tightening
+// can't silently re-break the dashboard.
+test('BFF device flow: JSON-encoded /device/approve with owner session succeeds (no CSRF token)', async () => {
+  await withServer({ ownerAuthPassword: TEST_PASSWORD }, async ({ asUrl }) => {
+    const session = await login(asUrl, TEST_PASSWORD);
+    assert.equal(session.status, 302);
+    assert.ok(session.sessionCookie);
+
+    const deviceRes = await fetch(`${asUrl}/oauth/device_authorization`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ client_id: 'pdpp-polyfill-owner-bootstrap' }),
+    });
+    assert.equal(deviceRes.status, 200);
+    const device = await deviceRes.json();
+    assert.equal(typeof device.user_code, 'string');
+    assert.equal(typeof device.device_code, 'string');
+
+    const approveRes = await fetch(`${asUrl}/device/approve`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: session.sessionCookie },
+      body: JSON.stringify({ user_code: device.user_code }),
+    });
+    assert.equal(approveRes.status, 200, 'JSON content-type SHALL bypass hosted-form CSRF for cookie-authed BFF callers');
+
+    const tokenRes = await fetch(`${asUrl}/oauth/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
+        device_code: device.device_code,
+        client_id: 'pdpp-polyfill-owner-bootstrap',
+      }),
+    });
+    assert.equal(tokenRes.status, 200);
+    const token = await tokenRes.json();
+    assert.equal(typeof token.access_token, 'string');
+    assert.ok(token.access_token.length > 0);
+    assert.equal(token.token_type, 'Bearer');
+  });
+});
+
+test('BFF device flow: form-encoded /device/approve without CSRF token still 403s (negative pin)', async () => {
+  await withServer({ ownerAuthPassword: TEST_PASSWORD }, async ({ asUrl }) => {
+    const session = await login(asUrl, TEST_PASSWORD);
+    assert.ok(session.sessionCookie);
+    const deviceRes = await fetch(`${asUrl}/oauth/device_authorization`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ client_id: 'pdpp-polyfill-owner-bootstrap' }),
+    });
+    const device = await deviceRes.json();
+
+    const approveRes = await fetch(`${asUrl}/device/approve`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        Cookie: session.sessionCookie,
+      },
+      body: new URLSearchParams({ user_code: device.user_code }).toString(),
+    });
+    assert.equal(approveRes.status, 403, 'form-encoded POSTs SHALL still require a hosted-form CSRF token');
+  });
+});
+
+test('BFF device flow: /device/approve without owner session is rejected with 401', async () => {
+  await withServer({ ownerAuthPassword: TEST_PASSWORD }, async ({ asUrl }) => {
+    const deviceRes = await fetch(`${asUrl}/oauth/device_authorization`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ client_id: 'pdpp-polyfill-owner-bootstrap' }),
+    });
+    const device = await deviceRes.json();
+
+    const approveRes = await fetch(`${asUrl}/device/approve`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user_code: device.user_code }),
+    });
+    assert.equal(approveRes.status, 401);
+  });
+});

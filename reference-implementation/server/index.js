@@ -26,7 +26,7 @@ import {
   createConsentExchangeCode, consumeConsentExchangeCode,
   initiateOwnerDeviceAuthorization, getOwnerDeviceAuthorizationByUserCode,
   approveOwnerDeviceAuthorization, denyOwnerDeviceAuthorization, exchangeOwnerDeviceCode, configureNativeManifest,
-  listRegisteredConnectorIds,
+  deleteRegisteredClient, listOwnerIssuedClients, listRegisteredConnectorIds,
   parsePendingConsentRequestUri, registerDynamicClient, requireGrantContractAgainstManifest, requireResolvedPersistedGrantState, seedPreRegisteredClients,
 } from './auth.js';
 import {
@@ -1720,7 +1720,19 @@ function buildAsApp(opts = {}) {
         throw err;
       }
 
-      const registered = await registerDynamicClient(req.body || {});
+      // Owner-session-authed callers (the dashboard issuing a per-token
+      // client) get their session subject stamped onto the registration so
+      // _ref/clients?owner=true can scope listings/deletions to that
+      // operator. Anonymous callers cannot tag themselves to a subject —
+      // we never read the field from the request body.
+      const ownerSession = ownerAuth.readOwnerSession(req);
+      const extraMetadata = ownerSession?.sub ? { issuer_subject_id: ownerSession.sub } : {};
+      const registrationInput = req.body && typeof req.body === 'object' ? { ...req.body } : {};
+      // `issuer_subject_id` is a reference-only stamp owned by the AS route
+      // layer. Anonymous DCR callers cannot tag themselves to an owner, and
+      // owner-authed callers get the session subject, not the body value.
+      delete registrationInput.issuer_subject_id;
+      const registered = await registerDynamicClient(registrationInput, extraMetadata);
       await emitSpineEvent({
         event_type: 'client.registered',
         trace_id: traceContext.trace_id,
@@ -1763,6 +1775,31 @@ function buildAsApp(opts = {}) {
         ? 401
         : (err.code === 'invalid_request' ? 404 : 400);
       oauthError(res, status, err.code || 'invalid_client_metadata', err.message);
+    }
+  });
+
+  // RFC 7592 client deletion. Owner-session-gated rather than registration-
+  // access-token-gated by deliberate design choice — see the rationale in
+  // openspec/changes/dcr-per-owner-token-with-revoke/design.md. Cascades to
+  // revoke every active grant tied to the client; refuses pre-registered
+  // clients and cross-operator deletes. Idempotent: a second call returns
+  // 404 not_found.
+  app.delete('/oauth/register/:clientId', ownerAuth.requireOwnerSession, async (req, res) => {
+    const traceContext = createTraceContext();
+    res.setHeader('Request-Id', traceContext.request_id);
+    setReferenceTraceId(res, traceContext.trace_id);
+    try {
+      const clientId = decodeURIComponent(req.params.clientId);
+      const actingSubjectId = req.ownerSession?.sub || ownerAuth.subjectId || OWNER_AUTH_DEFAULT_SUBJECT_ID;
+      await deleteRegisteredClient(clientId, {
+        actingSubjectId,
+        requestId: traceContext.request_id,
+        traceId: traceContext.trace_id,
+      });
+      res.status(204).end();
+    } catch (err) {
+      const status = err.code === 'not_found' ? 404 : (err.code === 'forbidden' ? 403 : 400);
+      pdppError(res, status, err.code || 'invalid_request', err.message);
     }
   });
 
@@ -2316,6 +2353,27 @@ function buildAsApp(opts = {}) {
         { dbPath: opts.dbPath || DB_PATH }
       );
       res.json(report);
+    } catch (err) {
+      handleError(res, err);
+    }
+  });
+
+  // Operator-issued client listing. Backs the dashboard Tokens page so an
+  // operator can see and revoke the credentials they registered. Returns
+  // only dynamic clients whose `metadata.issuer_subject_id` matches the
+  // requesting owner-session subject — so the listing is per-operator and
+  // pre-registered seeds (`pdpp-web-dashboard`, `cli_longview`, ...) never
+  // appear here. Spec: openspec/changes/dcr-per-owner-token-with-revoke/.
+  app.get('/_ref/clients', ownerAuth.requireOwnerSession, async (req, res) => {
+    try {
+      const subjectId = req.ownerSession?.sub || ownerAuth.subjectId || OWNER_AUTH_DEFAULT_SUBJECT_ID;
+      // ?owner=true reserves room for future filters (e.g. `?registered_by=anyone`
+      // for an admin view). Today only owner=true is meaningful.
+      if (req.query?.owner !== 'true') {
+        return pdppError(res, 400, 'invalid_request', "owner=true query parameter is required");
+      }
+      const data = await listOwnerIssuedClients(subjectId);
+      res.json({ object: 'list', data });
     } catch (err) {
       handleError(res, err);
     }
