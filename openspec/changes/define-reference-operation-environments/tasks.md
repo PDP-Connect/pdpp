@@ -22,8 +22,16 @@
 - [ ] 3.5 Define conformance/equivalence tests that must pass against the existing local server and the candidate sandbox/test host.
 - [ ] 3.6 Identify rollback criteria and stop conditions for each proof slice.
 
+## 4. Records/Search Feasibility Gate
+
+- [ ] 4.1 Audit `records.list`, `records.get`, `changes_since`, range filters, field projection, ordering, cursors, and `expand[]` for SQLite-specific obligations and credible Postgres mappings.
+- [ ] 4.2 Audit record ingestion, record version allocation, `record_changes`, disclosure-spine writes, timeline listing, and spine correlation aggregates for atomicity and cursor semantics.
+- [ ] 4.3 Audit lexical retrieval for filter semantics, tokenizer/backend identity, score direction, snippet semantics, ordering stability, and credible Postgres full-text/trigram mapping.
+- [ ] 4.4 Audit semantic and hybrid retrieval for index state, model/profile identity, distance semantics, filtered retrieval, backfill/resume semantics, and credible `pgvector` mapping.
+- [ ] 4.5 Update this design with a go/no-go recommendation: viable as specified, viable only with contract changes, or not viable without weakening PDPP.
+
 ## 4. Validation
 
-- [x] 4.1 Run `openspec validate define-reference-operation-environments --strict`.
-- [x] 4.2 Run `openspec validate --all --strict`.
-- [x] 4.3 Run `pnpm workstreams:status -- --no-fail` and reconcile any active worker reports before declaring this design ready for implementation.
+- [x] 5.1 Run `openspec validate define-reference-operation-environments --strict`.
+- [x] 5.2 Run `openspec validate --all --strict`.
+- [x] 5.3 Run `pnpm workstreams:status -- --no-fail` and reconcile any active worker reports before declaring this design ready for implementation.

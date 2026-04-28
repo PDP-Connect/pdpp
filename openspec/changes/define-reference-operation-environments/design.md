@@ -146,7 +146,10 @@ Recommended proof sequence:
 2. **Postgres-oriented storage proof:** `ConnectorStateStore` + `SchedulerStore`, because those tables exercise upsert/active-run semantics without record/search complexity.
 3. **Sandbox operation proof:** `rs.streams.list` mounted through both Fastify and Next sandbox over the same operation implementation, deleting `buildLiveStreamsList` in the same change.
 4. **Operation-only schema proof:** `rs.schema.get` after connector manifest store shape is settled.
-5. **Records/search later:** only after cursor comparison, version allocation, spine aggregate, lexical backend identity, and semantic backend identity corrections are formalized and tested.
+5. **Records/search feasibility gate:** before implementation broadens beyond the first low-risk proof slices, run focused contract audits for record reads, record writes/versioning, disclosure spine listing/correlation, lexical retrieval, semantic retrieval, and hybrid retrieval. If any of these cannot be expressed as truthful capability contracts with equivalent SQLite behavior and a credible Postgres mapping, the storage/search abstraction plan is not viable and the project should stop rather than migrate around the hard part.
+6. **Records/search implementation later:** only after the feasibility gate produces specific contract obligations, conformance tests, and stop conditions for cursor comparison, version allocation, spine aggregate, lexical backend identity, and semantic backend identity.
+
+This distinction matters: records/search are not deferred as an assumption. They are deferred as implementation work because they are the hardest proof. Their feasibility is a go/no-go condition for the architecture.
 
 ## Risks / Trade-offs
 
