@@ -84,3 +84,17 @@ The fix lives inside this change because the surface (live-bearer redaction at t
   - `/_ref/traces/:traceId` for an owner_device flow does not echo the device_code, user_code, or request_uri.
   - The dashboard approve flow with `approval_id` succeeds end-to-end and the device_code is not redeemable from any public read surface during the flow.
 - [x] 7.7 Append the §7 scenarios to `specs/reference-implementation-architecture/spec.md` so the redactor's new coverage and the `/_ref/approvals` shape are pinned.
+
+## 8. P1 follow-up: consent-risk disclosure invariants (2026-04-28)
+
+The owner bug-hunt reconciliation found three remaining P1 consent-surface issues on current main:
+
+- wildcard stream requests render as a literal `*`, hiding the effective stream set;
+- `continuous` grants render as a plain key/value row, without an explicit long-lived-access warning;
+- `ai_training` requests without affirmative consent throw an untyped `Error`, which can surface as a generic server failure rather than a typed PDPP error.
+
+- [ ] 8.1 Render wildcard stream requests as an explicit "all streams" disclosure with the resolved stream names/count for the requested source.
+- [ ] 8.2 Add a distinct continuous-access risk affordance, including the missing-expiry/no-retention case.
+- [ ] 8.3 Replace the untyped AI-training consent failure with a typed PDPP error envelope.
+- [ ] 8.4 Add black-box tests for wildcard rendering, continuous-risk copy, and AI-training error shape.
+- [ ] 8.5 Validate `harden-reference-auth-surfaces` and `--all` strictly.

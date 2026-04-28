@@ -288,3 +288,25 @@ This requirement supersedes the prior "P2 follow-up" deferral noted in the origi
 - **WHEN** the server runs over plain HTTP without `PDPP_OWNER_FORCE_SECURE_COOKIES`
 - **THEN** owner cookies SHALL omit `Secure` so a browser will accept and send them
 - **AND** the hosted owner form flows SHALL still issue and validate CSRF tokens normally
+
+### Requirement: Hosted consent UI SHALL disclose effective access risk
+
+The reference Authorization Server's hosted consent UI SHALL render authorization requests in terms of the effective access the owner is approving, not only in terms of request shorthand. A stream wildcard SHALL NOT be rendered as a bare `*`; the UI SHALL disclose that all streams for the requested source are in scope and SHALL show the resolved stream count and names when the source manifest is available. Long-lived `continuous` access SHALL receive a distinct risk affordance, especially when no expiry or retention bound is present.
+
+Requests for `purpose_category: "ai_training"` SHALL require explicit affirmative consent. When that consent is missing, the AS SHALL reject the request with a typed PDPP error envelope rather than an untyped internal server error.
+
+#### Scenario: Hosted consent receives a wildcard stream request
+- **WHEN** the AS renders `GET /consent?request_uri=...` for a pending request whose authorization details include a stream selection of `*`
+- **THEN** the HTML SHALL NOT render a bare `*` as the stream name
+- **AND** the HTML SHALL indicate that all streams for the requested source are in scope
+- **AND** when the source manifest is known, the HTML SHALL include the resolved stream count and resolved stream names
+
+#### Scenario: Hosted consent receives a continuous grant request
+- **WHEN** the AS renders hosted consent for a request whose effective `access_mode` is `continuous`
+- **THEN** the HTML SHALL include a distinct long-lived-access warning
+- **AND** when no expiry or retention bound is present, the warning SHALL state that the requested access has no explicit expiry
+
+#### Scenario: AI-training request lacks affirmative consent
+- **WHEN** a caller submits an authorization request for `purpose_category: "ai_training"` without the reference's explicit affirmative consent marker
+- **THEN** the AS SHALL reject the request with a typed PDPP error envelope
+- **AND** the response SHALL NOT be a generic `500` internal server error

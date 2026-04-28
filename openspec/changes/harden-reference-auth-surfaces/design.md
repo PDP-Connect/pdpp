@@ -78,6 +78,18 @@ Pure JSON callers stay exempt because browsers cannot forge a cross-origin JSON 
 
 **Set-Cookie multiplexing.** Login responses set both the session cookie and a clear-out for the prior pre-login CSRF cookie. The `appendSetCookie` helper preserves prior `Set-Cookie` values on the Fastify reply so both headers reach the client, and there is an explicit regression test asserting that.
 
+### Consent risk disclosure invariants (P1 follow-up, 2026-04-28)
+
+The consent page is the owner-trust boundary for third-party access. The 2026-04-28 ledger reconciliation found three remaining P1 bugs with the same root: the hosted UI renders requested authorization details too literally, without showing what the owner is actually approving.
+
+**Wildcard streams.** A wildcard stream request (`streams: [{ name: "*" }]`) must not render as a bare `*`. The page must expand it against the requested source manifest, or at minimum render an explicit "all streams" disclosure with the resolved count and stream names. The owner must see the effective scope, not the protocol shorthand.
+
+**Continuous grants.** `access_mode: "continuous"` must receive a distinct risk affordance, especially when no expiry or retention bound is present. A neutral `Access mode: continuous` metadata row is not enough for long-lived owner data access.
+
+**AI-training consent failures.** An `ai_training` request that lacks explicit affirmative consent must fail with a typed PDPP error envelope. A generic thrown `Error` makes a consent-policy rejection look like an internal server fault.
+
+This follow-up does not change the authorization-details format, token issuance, grant storage, revocation semantics, or the broader question of fast/broad multi-source consent.
+
 ## Alternatives considered
 
 - **Hash `token_id` in storage now.** Rejected: out-of-scope schema/migration churn. Captured as `design-notes/spine-token-id-storage-2026-04-27.md`.
