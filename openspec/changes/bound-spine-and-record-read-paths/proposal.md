@@ -1,58 +1,66 @@
 ## Why
 
-The architecture spec's requirement *"The RS read-path for enumerated routes SHALL not materialize unbounded result arrays"* (`openspec/specs/reference-implementation-architecture/spec.md:242-300`) was introduced by `archive/2026-04-24-fix-rs-query-memory-pressure` to close a confirmed V8-scavenger SIGSEGV under concurrent dashboard load. That requirement enumerates a specific, finite set of read paths and explicitly invites follow-ups: *"Other read paths (if any) are out of scope for this change; bringing them under the same invariant is a follow-up."* (line 260).
+The archived `fix-rs-query-memory-pressure` change fixed the read paths that
+were proven to trigger a V8 scavenger crash under dashboard load. A later
+operator run reproduced the same failure class through a different path:
+reference spine timeline rendering could still materialize every event for a
+long-running correlation before responding.
 
-The follow-up is now necessary. On 2026-04-27 the apps/web Next.js dev server segfaulted while rendering `/dashboard/runs?peek=run_1777231731305`. The 9.5 GB core dump produced an identical V8-scavenger frame-for-frame backtrace to the one the archived change diagnosed. The trigger was `listSpineEvents({ runId })` at `lib/spine.ts:401` — an `.all()` of `WHERE run_id = ?` against `spine_events`, hit through the public `_ref` timeline endpoints. The original archived change rewrote the four sites observed in its repro harness; `listSpineEvents` was not in that scope, and the same pathology re-emerged in the next consumer that exercised the un-fixed call site under realistic fan-out load. A full memo describing the regression sits in `design-notes/run-timeline-memory-regression-memo-2026-04-27.md`.
-
-A 177-call-site audit of every `db.prepare(...)` chain in `reference-implementation/{lib,server,runtime,cli}/` surfaced **fifteen** unbounded-pathological call sites still using `.all()` on tables whose row counts scale with usage (`spine_events`, `records`, `record_changes`, `blob_bindings`, `lexical_search_index`, `semantic_search_blob`, `semantic_search_rowid`). It also surfaced a **hidden quadratic** at `lib/spine.ts:778`: even after the archived fix bounded `listSpineCorrelations`'s outer aggregate to `LIMIT ?`, the inner per-row hydration still calls `listSpineEventsSync` (an unbounded scan) once per page item, so a 50-row run-summary page issues 50 unbounded scans against the same large table.
-
-The audit also surfaced that 162 of the 177 call sites are correct today (mutations, single-row PK lookups, small-enumeration reads, and the four already-streaming sites the archived change rewrote), but they are *bounded by reviewer discipline*, not by construction. There is no enforcement layer that prevents the next contributor from re-introducing the same pathology in a new file. A grep-based pre-commit gate in this codebase already exists for similar reasons (`lefthook.yml`'s `polyfill-connectors:no-double-cast` job): "Biome/Ultracite has no equivalent ... yet. Grep ... as a stop-gap until that rule lands upstream."
-
-This change extends the existing read-path invariant to all spine-event and record-table read paths, introduces a typed bounded-statement wrapper that makes the unbounded shape inexpressible without an explicit, grep-able opt-in, migrates every `db.prepare(...)` call site through the wrapper, and adds a lefthook gate banning direct `db.prepare(...)` outside the wrapper module. The result is a structural prevention, not a one-fix patch.
+This change closes that specific regression and adds a durable wrapper/registry
+foundation so new database reads are harder to author unsafely. Owner review
+found that the first draft overclaimed a total migration of every historical
+`db.prepare(...)` call site. This proposal is intentionally narrower: it makes
+the implemented guarantees explicit and records the remaining broad migration
+as follow-up work rather than implied truth.
 
 ## What Changes
 
-- **Extend the canonical read-path invariant** to cover `lib/spine.ts::listSpineEvents`, `lib/spine.ts::listSpineEventsSync`, `lib/spine.ts::listSpineCorrelations`'s per-row hydration, and the public `_ref` timeline routes that consume them (`GET /_ref/traces/:traceId`, `GET /_ref/grants/:grantId/timeline`, `GET /_ref/runs/:runId/timeline`). The current enumerated set in `reference-implementation-architecture/spec.md:242-300` is replaced with a generalized requirement: *all* RS read paths are bounded by construction, with the wrapper API as the enforcement surface.
-- **Introduce a typed bounded-statement wrapper** at `reference-implementation/lib/db.ts`. The wrapper owns DB engine bootstrap, the existing `referenceQueries` registry (extended to accept any first-party query, not just `listRegisteredConnectors`), and three primitives:
-  - `getOne<R>(query, params): R | null` — single-row read.
-  - `getMany<R>(query, params, { limit, cursor }): { rows, truncated, nextCursor }` — bounded multi-row read with explicit limit.
-  - `iterate<R>(query, params): Generator<R>` — streaming for handlers that consume row-by-row and break early.
-  - `exec(query, params): RunResult` — mutations.
-  - `allowUnboundedReadAcknowledged<R>(query, params): R[]` — explicit escape hatch named loud enough to catch in review and grep, required for genuinely-bounded-by-domain reads of small enumeration tables.
-- **Layer the wrapper above the existing engine.** `server/db.js` keeps engine bootstrap (schema text, busy-retry helpers, `sqlite-vec` probe, cached-prepare Proxy). `lib/db.ts` imports `getDb()` from `server/db.js` and exposes the bounded primitives on top. The lefthook gate's allow-list covers both files; everywhere else uses the wrapper.
-- **Migrate the 8 spine-half pathological call sites** through the wrapper, with explicit `limit` + cursor pagination on each public `_ref` timeline route: the four `listSpineEvents`/`listSpineEventsSync` callers in `lib/spine.ts`, the inner per-row hydration at `lib/spine.ts:778` inside `listSpineCorrelations`, the run-timeline endpoint at `server/index.js:2133`, the grant-timeline endpoint at `server/index.js:2122`, the trace-timeline endpoint at `server/index.js:2111`, the run-summary helper at `server/ref-control.ts:298`. These were the actual sites whose unbounded reads caused the 2026-04-27 9.5 GB Next.js dev SIGSEGV.
-- **Defer the 7 remaining pathological sites to a follow-up change.** The search candidate builders at `server/search.js:803` and `server/search-semantic.js:1392`, the `listStreams` per-stream scan at `server/records.js:1966`, the blob-binding read at `server/index.js:1503`, the `deleteAllRecords` distinct-stream scan at `server/records.js:1930`, the `getTopConnectorsByRecordCount` already-bounded read at `server/records.js:2218`, and the `deleteAllRecords` mutation cluster at `server/records.js:1944-1947`. Each touches a public spec surface (the lexical-retrieval extension contract, the semantic-retrieval extension contract, the `/v1/streams` discovery floor) and warrants a focused change with parity-test infrastructure. The spine half closes the actual OOM regression; these follow-ups close the structural-prevention coverage gap.
-- **Migrate the remaining 162 correct-by-discipline call sites in this same change.** Mutations move to registered `.sql` artifacts and are called via `db.exec(...)`. Single-row PK lookups move to registered queries with `LIMIT 1` and are called via `db.getOne(...)`. Small-enumeration reads move to registered queries marked `@bounded_by: small_enumeration_table` and called via `db.allowUnboundedReadAcknowledged(...)` with adjacent `// REVIEWED-BOUNDED:` comments. Already-streaming `.iterate()` sites move through `db.iterate(...)` with no semantic change.
-- **Add a dynamic-SQL escape hatch** at `lib/db.ts::iterateDynamicSqlAcknowledged` for read paths whose SQL shape varies with caller-supplied predicates (the existing `fetchVisibleRecordRowsPaginated` and the deferred search candidate builders). The escape hatch is a typed wrapper primitive, not a bypass — every call site SHALL include a `LIMIT ?` clause and an adjacent `// REVIEWED-DYNAMIC: <reason>` comment. The lefthook pre-commit gate enforces both the comment and the `LIMIT` placeholder presence. This keeps every database read flowing through one chokepoint while honestly admitting that some reads cannot be expressed as static `.sql` artifacts.
-- **Add a lefthook pre-commit gate** that fails any commit introducing a `db.prepare(`, `getDb().prepare(`, or equivalent outside `reference-implementation/lib/db.ts` itself, modeled on the existing `polyfill-connectors:no-double-cast` job.
-- **Extend the `referenceQueries` registry** at `server/queries/index.ts` to require every read query (`SELECT`-shaped artifact) either contain a `LIMIT ?` placeholder OR be tagged in a sibling JSON manifest as `bounded_by: { kind: 'small_enumeration_table', table: '<name>' }`. The check runs at server startup; a query without a bound fails the boot.
-- **Defer**, with explicit acknowledgement: the standing-defenses follow-ups already deferred by the archived change (per-route concurrency cap, response-size budget, supervisor mandate). The wrapper-based prevention closes the same window of regression risk those defenses would mitigate, but they remain useful in a future change. The `apps/web` SSR-amplification angle (the Next.js dev server's source-map and module-graph allocation pressure) is observably reduced when the source envelopes shrink, but is not directly addressed by this change.
+- Add a typed SQL wrapper at `reference-implementation/lib/db.ts` with explicit
+  primitives for single-row reads, bounded page reads, iterators, mutations,
+  transactions, and acknowledged small-enumeration scans.
+- Extend the query registry under `reference-implementation/server/queries/` so
+  static SQL artifacts declare their terminator and, for multi-row reads, either
+  a `LIMIT ?` placeholder or a `small_enumeration_table` bound.
+- Migrate the reference spine timeline endpoints to SQL-paginated reads with
+  caller-visible `limit`, `cursor`, `truncated`, and `next_cursor` fields.
+- Bound correlation summary hydration and use SQL aggregate values for
+  `first_at`, `last_at`, and `event_count` so capped hydration does not
+  underreport the full correlation extent.
+- Add a staged-file pre-commit gate that blocks newly introduced direct
+  `db.prepare(...)` / `getDb().prepare(...)` calls outside the wrapper,
+  registry, and database engine internals.
+- Leave remaining grandfathered direct-prepare and dynamic-SQL call sites
+  auditable but not yet fully eliminated. Those are tracked as follow-ups.
 
 ## Capabilities
 
-### New Capabilities
+### Modified Capabilities
+
+- `reference-implementation-architecture`: narrows the memory-pressure
+  invariant to the implemented spine timeline pagination and wrapper foundation,
+  adds the staged-file direct-prepare prevention requirement, and documents the
+  correlation-summary aggregate extent guarantee.
+
+### Added Capabilities
 
 None.
 
-### Modified Capabilities
+### Removed Capabilities
 
-- `reference-implementation-architecture`: replace the existing enumerated read-path invariant with a generalized one that applies to all RS read paths, names the bounded-statement wrapper as the enforcement surface, and folds in scenarios for the spine-event timeline endpoints, the per-row hydration in `listSpineCorrelations`, and the lefthook gate.
+None.
 
 ## Impact
 
-- `reference-implementation/lib/db.ts` — new module exposing the bounded-statement primitives (`getOne`, `getMany`, `iterate`, `exec`, `allowUnboundedReadAcknowledged`, `transaction`). Imports `getDb` from `server/db.js`. Re-exports the registered query handle types and `referenceQueries` so call sites import everything they need from `lib/db.ts`.
-- `reference-implementation/server/db.js` — unchanged; continues to own engine bootstrap and the cached-prepare Proxy.
-- `reference-implementation/server/queries/` — extended with one `.sql` artifact per migrated query (~150 new files at ~3 lines each). A sibling `registry.json` (or in-file frontmatter, to be decided in `design.md`) records the `bounded_by` annotation for small-enumeration reads. The loader at `server/queries/index.ts` is extended to enforce the `LIMIT ?`-or-`bounded_by`-annotation invariant at startup.
-- `reference-implementation/lib/spine.ts` — `listSpineEvents` rewrites: `WHERE trace_id = ?`, `WHERE grant_id = ?`, `WHERE run_id = ?`, `WHERE event_type = ?` branches all take a required `limit` and return `{ rows, truncated, nextCursor }`. The bare-`else` branch is removed (no caller needs an unbounded scan; the `_ref/search` surface already covers cross-correlation lookup). `listSpineEventsSync` is preserved for the synchronous controller path with the same bounded shape.
-- `reference-implementation/lib/spine.ts:778` — `listSpineCorrelations`'s inner hydration changes from `listSpineEventsSync(db, { [filterKey]: aggRow.id })` (full unbounded scan) to a bounded `listSpineEventsSync` call with a per-row event cap derived from `summarizeEvents`'s actual needs (the timeline summary uses first/last timestamps and a count, neither of which requires materializing every event).
-- `reference-implementation/server/index.js:2111, 2122, 2133` — the three `_ref` timeline routes accept `limit` and `cursor` query parameters (with documented defaults), forward them to `listSpineEvents`, and return a `{ list_envelope, truncated, next_cursor }` shape additively (existing callers that don't paginate still work for the bounded default page).
-- `reference-implementation/server/ref-control.ts:298` — `toConnectorRunSummary` no longer hydrates the full event list; it calls a new bounded helper that extracts `known_gaps` directly from the run's terminal `run.failed`/`run.completed` event(s), which is O(1) per run.
-- `reference-implementation/server/records.js`, `server/search.js`, `server/search-semantic.js` — the record-scan dynamics (the dynamic WHERE-clause builders) move to bounded `.iterate()` with explicit early-break conditions; the connector-wide deletion paths (`deleteAllRecords`, `deleteAllRecordsByConnector`) move to the wrapper without behavior change.
-- `reference-implementation/runtime/controller.ts` — the three `db.prepare(...)` sites at lines 642, 798, and the schedule-mutation sites move through `db.exec(...)` / `db.getOne(...)` with no behavior change.
-- `reference-implementation/cli/`, `reference-implementation/runtime/scheduler.ts`, and other indirect db consumers — re-import from `lib/db.ts` at the end of the migration.
-- `apps/web/src/app/dashboard/lib/ref-client.ts` — `normalizeTimeline` is extended to surface `truncated` and `next_cursor` so dashboard pages can render a "more events available" state honestly.
-- `apps/web/src/app/dashboard/runs/[runId]/page.tsx`, `apps/web/src/app/dashboard/grants/[grantId]/page.tsx`, `apps/web/src/app/dashboard/traces/[traceId]/page.tsx` — render the new pagination shape additively.
-- `lefthook.yml` — new pre-commit job `reference-implementation:no-direct-prepare` that fails any staged-file diff introducing `db.prepare(` or `getDb().prepare(` outside `reference-implementation/lib/db.ts`. Modeled on the existing `polyfill-connectors:no-double-cast` job.
-- `repro-crash.sh` — extended with an additional URL set (`/dashboard/runs?peek=...`, `/dashboard/grants/<id>`, `/dashboard/traces/<id>`) so the existing N-run harness exercises the timeline endpoints and would catch the 2026-04-27 regression class on a future run.
-- `tmp/run-timeline-memory-regression-memo-2026-04-27.md` — promoted into this change's `design-notes/` directory so the investigation is durable.
-- `openspec/specs/reference-implementation-architecture/spec.md` — the existing requirement at lines 242-300 is replaced with a generalized version per `specs/reference-implementation-architecture/spec.md`.
+- `reference-implementation/lib/db.ts` — new wrapper and cursor/error helpers.
+- `reference-implementation/server/queries/**` — registered SQL artifacts and
+  loader validation.
+- `reference-implementation/lib/spine.ts` — paginated event reads, bounded
+  summary hydration, aggregate extent preservation.
+- `reference-implementation/server/index.js` and control-plane helpers —
+  `_ref` timeline and summary consumers use the paginated/wrapper path.
+- `apps/web/src/app/dashboard/**` — dashboard consumers understand additive
+  pagination metadata.
+- `lefthook.yml` — new staged-file guard against newly introduced direct
+  prepares.
+- `openspec/changes/bound-spine-and-record-read-paths/design-notes/` — durable
+  memory-regression and DB-call-site audit notes.

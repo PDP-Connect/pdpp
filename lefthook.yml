@@ -48,14 +48,12 @@ pre-commit:
     # Bounded-statement wrapper enforcement.
     # Spec: openspec/changes/bound-spine-and-record-read-paths/specs/
     #       reference-implementation-architecture/spec.md
-    #       Requirement: "Reference RS read paths SHALL be bounded by construction"
+    #       Requirement: "New direct DB prepare usage SHALL be blocked at the staged-file boundary"
     #
     # Three gates, all grep-based per the codebase precedent above. They
     # fire on staged-file diffs, so existing call sites that have not yet
     # been migrated are not flagged retroactively — only new introductions
-    # are blocked. The bulk migration of pre-existing sites moved through
-    # the wrapper in a separate commit; from that commit forward, every
-    # new DB read SHALL flow through `lib/db.ts`.
+    # are blocked. Grandfathered call sites remain tracked by OpenSpec.
 
     - name: reference-implementation:no-direct-prepare
       # Direct `db.prepare(sql)` is forbidden outside three legitimate
@@ -82,7 +80,7 @@ pre-commit:
           echo "    getOne, getMany, iterate, exec,"
           echo "    allowUnboundedReadAcknowledged, iterateDynamicSqlAcknowledged."
           echo "  Spec: openspec/specs/reference-implementation-architecture/spec.md"
-          echo "  Requirement: 'Reference RS read paths SHALL be bounded by construction'"
+          echo "  Requirement: 'New direct DB prepare usage SHALL be blocked at the staged-file boundary'"
           exit 1
         fi
 

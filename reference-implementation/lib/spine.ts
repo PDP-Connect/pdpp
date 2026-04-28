@@ -840,6 +840,11 @@ export async function listSpineCorrelations(
       continue;
     }
     s.id = aggRow.id;
+    // The hydration sample is capped; the aggregate row carries the full
+    // correlation extent computed by SQL.
+    s.first_at = aggRow.first_at;
+    s.last_at = aggRow.last_at;
+    s.event_count = aggRow.event_count;
     if (key === "grant") {
       s.status = deriveGrantLifecycleStatus(events);
     }

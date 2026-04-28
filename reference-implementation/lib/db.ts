@@ -1,15 +1,16 @@
 /**
  * Bounded-statement wrapper for the reference RS database.
  *
- * Every database read in the reference implementation flows through one
- * of the primitives exported here. Direct `db.prepare(...)` calls are
- * banned outside this module and `server/db.js` (the engine itself).
- * The lefthook pre-commit gate enforces the ban; the wrapper enforces
- * the bounds.
+ * New migrated database reads in the reference implementation should flow
+ * through one of the primitives exported here. A staged-file lefthook gate
+ * prevents newly-introduced direct `db.prepare(...)` calls outside this module,
+ * `server/db.js` (the engine itself), and `server/queries/index.ts` (registry
+ * validation). Some older/read-specialized call sites remain grandfathered and
+ * are tracked by the OpenSpec change.
  *
  * Spec: openspec/changes/bound-spine-and-record-read-paths/specs/
  *       reference-implementation-architecture/spec.md
- *       Requirement: "Reference RS read paths SHALL be bounded by construction"
+ *       Requirement: "Reference SQL wrapper SHALL make bounded reads explicit"
  *
  * The five primitives:
  *
@@ -38,8 +39,7 @@
  *     a `terminator: 'many'` query annotated `@bounded_by:
  *     small_enumeration_table` with a declared `@max_rows`. The wrapper
  *     checks that the row count does not exceed the declared bound and
- *     throws if it does. Every call site SHALL carry an adjacent
- *     `// REVIEWED-BOUNDED: <reason>` comment, enforced by lefthook.
+ *     throws if it does.
  *
  *   transaction(fn)
  *     Better-sqlite3 transaction wrapper, unchanged.
@@ -59,7 +59,6 @@ import type {
 // barrel file in the perf-concerning sense — `db.ts` owns substantive
 // exports (primitives, errors, cursor utilities) and these re-exports
 // pin the wrapper's public surface to one module.
-// biome-ignore lint/performance/noBarrelFile: lib/db.ts is the wrapper's public surface; re-exporting registry handles is intentional.
 export type {
   IterateQuery,
   MutationQuery,
@@ -316,8 +315,8 @@ export function exec(query: MutationQuery, params: BindParams = []): ExecResult 
  * `@max_rows`. The wrapper asserts that the observed row count does
  * not exceed the declared maximum and throws otherwise.
  *
- * Every call site SHALL carry an adjacent `// REVIEWED-BOUNDED: <reason>`
- * comment. The lefthook pre-commit gate enforces the comment.
+ * The deliberately loud function name is the review trigger. The current
+ * lefthook gate does not enforce comment adjacency.
  */
 export function allowUnboundedReadAcknowledged<R>(query: SmallEnumerationQuery, params: BindParams = []): readonly R[] {
   const db = requireDb();
@@ -349,11 +348,11 @@ export function allowUnboundedReadAcknowledged<R>(query: SmallEnumerationQuery, 
  *
  *   - Build the SQL string from a fixed set of fragments (no user
  *     input concatenation; placeholders only for values).
- *   - Include a SQL `LIMIT ?` clause so the read is bounded; the
- *     caller is responsible for binding a sane limit.
- *   - Carry an adjacent `// REVIEWED-DYNAMIC: <reason>` comment
- *     explaining why static SQL does not fit. The lefthook pre-commit
- *     gate enforces the comment.
+ *   - Prefer a SQL `LIMIT ?` clause so the read is bounded whenever the
+ *     dynamic path can page in SQL.
+ *   - Prefer an adjacent `// REVIEWED-DYNAMIC: <reason>` comment explaining
+ *     why static SQL does not fit. The current lefthook gate does not enforce
+ *     comment adjacency or LIMIT presence.
  *
  * Returns a streaming iterator. The caller is responsible for breaking
  * out at a bounded point — typically once `LIMIT ?` rows have been
