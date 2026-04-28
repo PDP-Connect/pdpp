@@ -25,3 +25,13 @@ Each operation migrated into the operation-owned runtime architecture SHALL incl
 - **WHEN** an operation is mounted through both the local server host and the sandbox host
 - **THEN** the same conformance scenarios SHALL pass against both hosts
 - **AND** any profile-specific limitation SHALL be disclosed in the environment capability matrix
+
+### Requirement: Sandbox AS/RS parity SHALL be proven by deletion of parallel builders
+
+When a sandbox API route is migrated to a reference operation mount, any website-local response builder for the same AS/RS behavior SHALL be deleted or demoted to a fixture-only test helper in the same change.
+
+#### Scenario: Sandbox streams list route is migrated
+
+- **WHEN** `/sandbox/v1/streams` is mounted through the canonical `rs.streams.list` operation
+- **THEN** the website-local builder that previously constructed the public streams-list response SHALL be removed from public route reachability
+- **AND** the migration SHALL include a regression test proving the sandbox route still returns the expected fixture-profile response

@@ -95,6 +95,35 @@ Kysely is a strong candidate for future SQLite/Postgres adapters because it can 
 
 The current Fastify transport already isolates framework mechanics more than a raw Express route file would. Hono may become attractive if Web-standard `Request`/`Response` mounting materially simplifies Next/Vercel hosting, but replacing Fastify is not a prerequisite for the target architecture.
 
+## Worker Audit Synthesis
+
+Three focused read-only audits were run against this design:
+
+- SQLite obligation inventory: `tmp/workstreams/ref-env-sqlite-obligations-report.md`
+- Postgres/Kysely feasibility: `tmp/workstreams/ref-env-postgres-feasibility-report.md`
+- Sandbox/operation drift: `tmp/workstreams/ref-env-sandbox-drift-report.md`
+
+Owner synthesis:
+
+- The architecture direction is sound, but the initial draft understated the SQLite-specific obligations in records, spine aggregates, lexical retrieval, and semantic retrieval.
+- Postgres is feasible, but not if operation code continues to depend on implicit SQLite `rowid`, SQLite JSON affinity, FTS5 score direction, vec0 partition semantics, or inline relational blob bytes.
+- The current sandbox has high shape fidelity but no semantic ownership transfer. All public `/sandbox/v1/**`, `/sandbox/_ref/**`, and `/sandbox/.well-known/**` routes are parallel AS/RS behavior and must move behind reference operations.
+- The proof sequence must be staged. Records/search are the wrong first extraction despite being the most important long-term targets.
+
+## Contract Corrections From Audits
+
+These corrections refine the Decisions above and are required before implementation:
+
+1. Paginated contracts use adapter-owned opaque cursors and explicit tiebreakers. `rowid` is never a reference-runtime contract.
+2. `RecordStore` owns cursor comparison semantics. It must distinguish numeric, ISO-string, text, null, and empty-string missing-bucket behavior rather than relying on SQLite `json_extract` affinity or collation.
+3. `RecordStore` owns version allocation. For each `(connector_id, stream)`, `next_version = current + 1` must be computed in the same atomic unit that writes `records`, `record_changes`, and `version_counter`.
+4. `record_json_bytes` is adapter-native. If kept in operator diagnostics, it must be labeled as native storage bytes, not a PDPP-stable metric.
+5. `LexicalIndex` exposes score direction, backend/tokenizer identity, and plain-text snippet semantics. FTS5 `bm25` and Postgres `ts_rank` are not interchangeable hidden details.
+6. `SemanticIndex` exposes backend identity, index kind, distance metric, model identity, and recall determinism. Approximate vector indexes must not masquerade as exact recall.
+7. `BlobStore` separates metadata/bindings from byte storage. SQLite may inline bytes; a Postgres profile may put bytes in object storage while preserving content-addressed semantics.
+8. `DisclosureSpineStore` exposes explicit sequence/tiebreaker semantics for event listing and correlation aggregates. Aggregate listing is a first-class semantic operation, not a generic SQL wrapper.
+9. Kysely remains optional and adapter-internal. It is useful for dynamic SQL and cross-dialect `ON CONFLICT`, but not for FTS, vector, DDL, or operation semantics.
+
 ## Evidence Standard
 
 Before recommending these abstractions with high confidence, the project needs evidence in this order:
@@ -108,8 +137,16 @@ Before recommending these abstractions with high confidence, the project needs e
 
 High-confidence recommendation threshold:
 
-- 90%+ concept confidence only after the obligation inventory, Postgres feasibility memo, and one two-adapter proof agree.
-- 75-80% migration confidence only after a low-risk operation family, likely `rs.schema.get` or `rs.streams.list`, is mounted through both Fastify and Next over the same operation implementation.
+- 90%+ concept confidence only after the obligation inventory, Postgres feasibility memo, sandbox drift audit, and one two-adapter proof agree.
+- 75-80% migration confidence only after a low-risk operation family is mounted through both Fastify and Next over the same operation implementation.
+
+Recommended proof sequence:
+
+1. **Storage-only security proof:** `ConsentStore` + `OwnerDeviceAuthStore` with SQLite and memory adapters, because approval-id/device-code secrecy is security-meaningful and the current paths avoid JSON/FTS/vector complexity.
+2. **Postgres-oriented storage proof:** `ConnectorStateStore` + `SchedulerStore`, because those tables exercise upsert/active-run semantics without record/search complexity.
+3. **Sandbox operation proof:** `rs.streams.list` mounted through both Fastify and Next sandbox over the same operation implementation, deleting `buildLiveStreamsList` in the same change.
+4. **Operation-only schema proof:** `rs.schema.get` after connector manifest store shape is settled.
+5. **Records/search later:** only after cursor comparison, version allocation, spine aggregate, lexical backend identity, and semantic backend identity corrections are formalized and tested.
 
 ## Risks / Trade-offs
 
