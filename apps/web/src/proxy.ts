@@ -3,6 +3,7 @@ import { type NextRequest, NextResponse } from "next/server";
 import { OWNER_AUTH_COOKIE_NAME } from "pdpp-reference-implementation/owner-session";
 import { resolveReferenceTopology } from "pdpp-reference-implementation/reference-topology";
 import { normalizeDashboardReturnTo } from "@/app/dashboard/lib/return-to.ts";
+import { isSandboxInternalAlias, rewriteSandboxCanonicalPath } from "./proxy-paths.ts";
 
 const { rewrite: rewriteLLM } = rewritePath("/docs{/*path}", "/llms.mdx/docs{/*path}");
 const referenceTopology = resolveReferenceTopology();
@@ -63,15 +64,6 @@ function resolveReferenceProxyTarget(pathname: string): string | null {
   return null;
 }
 
-function isSandboxInternalAlias(pathname: string): boolean {
-  return (
-    pathname === "/sandbox/ref" ||
-    pathname.startsWith("/sandbox/ref/") ||
-    pathname === "/sandbox/well-known" ||
-    pathname.startsWith("/sandbox/well-known/")
-  );
-}
-
 export default function proxy(request: NextRequest) {
   if (isMarkdownPreferred(request)) {
     const result = rewriteLLM(request.nextUrl.pathname);
@@ -79,6 +71,11 @@ export default function proxy(request: NextRequest) {
     if (result) {
       return NextResponse.rewrite(new URL(result, request.nextUrl));
     }
+  }
+
+  const canonicalRewrite = rewriteSandboxCanonicalPath(request.nextUrl.pathname);
+  if (canonicalRewrite) {
+    return NextResponse.rewrite(new URL(`${canonicalRewrite}${request.nextUrl.search}`, request.nextUrl));
   }
 
   if (isSandboxInternalAlias(request.nextUrl.pathname)) {
@@ -145,6 +142,10 @@ export const config = {
     "/docs/:path*",
     "/dashboard",
     "/dashboard/:path*",
+    "/sandbox/_ref",
+    "/sandbox/_ref/:path*",
+    "/sandbox/.well-known",
+    "/sandbox/.well-known/:path*",
     "/sandbox/ref",
     "/sandbox/ref/:path*",
     "/sandbox/well-known",
