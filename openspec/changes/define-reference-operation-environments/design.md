@@ -151,6 +151,25 @@ Recommended proof sequence:
 
 This distinction matters: records/search are not deferred as an assumption. They are deferred as implementation work because they are the hardest proof. Their feasibility is a go/no-go condition for the architecture.
 
+## Records/Search Feasibility Gate Result
+
+Focused audits were run for record reads, record writes/spine, lexical retrieval, and semantic/hybrid retrieval after the initial design was pushed.
+
+Owner verdict: **viable only with contract corrections**. No audit found evidence that Postgres support is impossible without weakening PDPP, but records/search cannot be treated as routine adapter work. The abstraction plan remains viable only if the following findings become hard requirements before implementation:
+
+1. **Record read semantics are contract-sized but must be explicit.** `RecordStore` must own cursor comparison semantics, missing-value bucket placement, field projection, `changes_since` projection equality, range-filter behavior, expand shape, and cursor invalidation. Postgres mapping is credible with `jsonb`, typed comparison casts, declared collation, and adapter-owned opaque cursors; it is not credible if operation code continues to rely on SQLite JSON affinity or `rowid`.
+2. **Record write semantics expose a current correctness bug.** Per-stream version allocation is currently read-then-write and not protected by an explicit ingest transaction. A Postgres adapter must not preserve that shape. `RecordStore.ingest` must make current-state read, no-op detection, version allocation, record upsert/delete, `record_changes` append, and `version_counter` advance one atomic writer-serialized unit. SQLite should prove this with `BEGIN IMMEDIATE` or equivalent; Postgres should prove it with `INSERT ... ON CONFLICT ... RETURNING` or `SELECT ... FOR UPDATE`.
+3. **Disclosure spine cannot expose `rowid`.** Spine listing and terminal-event lookup need an explicit `event_seq`/tiebreaker contract. Correlation summary aggregation is portable, but it is a first-class semantic operation with stable ordering and cursor semantics, not a generic SQL escape hatch.
+4. **Lexical retrieval is feasible if backend identity is advertised.** The current spec already avoids portable score claims. A `LexicalIndex` contract can map SQLite FTS5 to Postgres full-text or trigram search only if capability metadata discloses backend kind, tokenizer/dictionary, score kind, score direction, and score value semantics. Candidate record narrowing belongs in operation-layer composition with `RecordStore`, not inside `LexicalIndex`.
+5. **Semantic/hybrid retrieval is feasible if recall and identity are honest.** `SemanticIndex` must expose profile/model/dtype/dimensions/metric/index kind plus recall determinism. A pgvector adapter is credible, but approximate indexes must advertise approximate recall and must not masquerade as the exact sqlite-vec/blob-flat reference behavior. Hybrid retrieval remains operation-level fusion with separate lexical and semantic score metadata; it should stay cursorless until snapshot fusion is proven.
+
+Feasibility confidence after these audits:
+
+- Concept confidence: 90% for capability-specific contracts, conditional on the requirements above.
+- Migration confidence: still below implementation threshold for records/search until conformance tests exist and at least one two-adapter proof passes.
+
+The first records/search implementation work is therefore not "write a Postgres adapter." It is a conformance-harness tranche that makes the hard semantics executable against the current SQLite behavior and a second adapter or memory fixture.
+
 ## Risks / Trade-offs
 
 - **Risk: Abstraction hides semantics** -> Use capability-specific contracts derived from tests, not generic repositories.
