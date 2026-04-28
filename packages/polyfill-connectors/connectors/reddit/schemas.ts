@@ -18,7 +18,7 @@ import { TEXT_MAX_CHARS } from "./parsers.ts";
 const FULLNAME_POST_RE = /^t3_[a-z0-9]+$/;
 const FULLNAME_COMMENT_RE = /^t1_[a-z0-9]+$/;
 const FULLNAME_POST_OR_COMMENT_RE = /^t[13]_[a-z0-9]+$/;
-const SUBREDDIT_RE = /^[A-Za-z0-9_]{1,21}$/;
+const SUBREDDIT_RE = /^(?:[A-Za-z0-9_]{1,21}|reddit\.com)$/;
 const PERMALINK_RE = /^https:\/\/reddit\.com\/(r|user)\//;
 const PARENT_ID_RE = /^t[1-6]_[a-z0-9]+$/;
 const ISO_Z_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
@@ -81,7 +81,7 @@ export const savedSchema = z.object({
   fetched_at: isoDateTimeSchema,
 });
 
-// upvoted/downvoted/hidden/gilded share one shape — the same mix of t1/t3.
+// upvoted/downvoted/hidden share one shape — the same mix of t1/t3.
 export const voteSchema = z.object({
   id: z.string().regex(FULLNAME_POST_OR_COMMENT_RE, "vote id must be t1_* or t3_*"),
   kind: z.enum(["t1", "t3"]),
@@ -108,7 +108,6 @@ export const SCHEMAS: Record<string, z.ZodTypeAny> = {
   upvoted: voteSchema,
   downvoted: voteSchema,
   hidden: voteSchema,
-  gilded: voteSchema,
 };
 
 export const validateRecord = makeValidateRecord(SCHEMAS);

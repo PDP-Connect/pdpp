@@ -299,6 +299,39 @@ test("voteRecord: upvoted post preserves score + num_comments", () => {
   assert.ok(validateRecord("hidden", r).ok);
 });
 
+test("voteRecord: accepts Reddit's archived legacy reddit.com subreddit", () => {
+  const c: RedditChild = {
+    kind: "t3",
+    data: {
+      name: "t3_legacy",
+      subreddit: "reddit.com",
+      title: "Legacy front-page post",
+      permalink: "/r/reddit.com/comments/legacy/legacy_front_page_post/",
+      created_utc: 1_302_000_000,
+    },
+  };
+  const r = voteRecord(c, FETCHED_AT);
+  assert.equal(r.subreddit, "reddit.com");
+  const v = validateRecord("upvoted", r);
+  assert.ok(v.ok, `schema failed: ${v.ok ? "" : JSON.stringify(v.issues)}`);
+});
+
+test("voteRecord: rejects unverified dotted subreddit names", () => {
+  const c: RedditChild = {
+    kind: "t3",
+    data: {
+      name: "t3_unverified",
+      subreddit: "not.a.real.sub",
+      title: "Unexpected dotted subreddit",
+      permalink: "/r/not.a.real.sub/comments/unverified/unexpected_dotted_subreddit/",
+      created_utc: 1_712_055_174,
+    },
+  };
+  const r = voteRecord(c, FETCHED_AT);
+  const v = validateRecord("upvoted", r);
+  assert.equal(v.ok, false, "only the observed legacy reddit.com subreddit should pass");
+});
+
 // ─── Pagination helpers ─────────────────────────────────────────────────
 
 test("pagePath: builds URL with limit, encodes 'after'", () => {

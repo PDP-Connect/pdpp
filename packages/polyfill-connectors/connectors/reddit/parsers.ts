@@ -168,8 +168,8 @@ export function savedRecord(c: RedditChild, fetchedAt: string): SavedRecord {
   };
 }
 
-/** Shared builder for vote-like streams (upvoted, downvoted, hidden,
- *  gilded). Reddit returns posts (t3) and comments (t1) interleaved, and
+/** Shared builder for vote-like streams (upvoted, downvoted, hidden).
+ *  Reddit returns posts (t3) and comments (t1) interleaved, and
  *  we preserve the kind + is_post discriminator so downstream queries
  *  can filter by content type. */
 export function voteRecord(c: RedditChild, fetchedAt: string): VoteRecord {

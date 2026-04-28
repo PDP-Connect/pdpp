@@ -10,7 +10,7 @@ Committing a reviewed Reddit pilot fixture would (a) lock the v0.2.0 emitted-rec
 
 - Capture a fresh real Reddit run with the v0.2.0 connector (`PDPP_CAPTURE_FIXTURES=1`).
 - Author an LLM redaction plan covering every raw `records/*.jsonl` row — every free-form `title`, `body`, `selftext`, `url`, and any `permalink` whose slug carries identifying text.
-- Run the scrubber with `--llm-redactions-dir` to produce `fixtures/reddit/scrubbed/pilot-real-shape/records/{submitted,comments,saved,upvoted,downvoted,hidden,gilded}.jsonl`.
+- Run the scrubber with `--llm-redactions-dir` to produce `fixtures/reddit/scrubbed/pilot-real-shape/records/{submitted,comments,saved,upvoted,downvoted,hidden}.jsonl`.
 - Review the scrubbed output by eye; commit only after reviewer sign-off.
 - Add a `pilot-real-shape` integration test that reads the committed JSONL and asserts every row passes `validateRecord()` for its stream.
 - Document the Reddit pilot in the connector authoring guide alongside the Amazon and GitHub pilots, so future connectors have a records-stream reference.

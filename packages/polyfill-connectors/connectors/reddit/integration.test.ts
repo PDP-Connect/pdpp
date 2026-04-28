@@ -289,7 +289,6 @@ test("buildStreamTable: records from every stream pass their zod schema", async 
     [`${USER_PATH}/upvoted.json`]: [okResult(listing([post, comment]))],
     [`${USER_PATH}/downvoted.json`]: [okResult(listing([post]))],
     [`${USER_PATH}/hidden.json`]: [okResult(listing([post]))],
-    [`${USER_PATH}/gilded.json`]: [okResult(listing([comment]))],
   };
   const { fetch } = makeScriptedFetch(script);
 
@@ -317,7 +316,6 @@ test("buildStreamTable: records from every stream pass their zod schema", async 
   assert.equal(streamCounts.upvoted, 2);
   assert.equal(streamCounts.downvoted, 1);
   assert.equal(streamCounts.hidden, 1);
-  assert.equal(streamCounts.gilded, 1);
 });
 
 // ─── Invariant 8: no emit when stream isn't requested ───────────────────

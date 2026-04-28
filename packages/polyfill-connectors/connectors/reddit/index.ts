@@ -16,7 +16,6 @@
  *   upvoted       /user/{u}/upvoted.json     — posts/comments the owner upvoted (owner-only)
  *   downvoted     /user/{u}/downvoted.json   — posts/comments the owner downvoted (owner-only)
  *   hidden        /user/{u}/hidden.json      — posts the owner hid (owner-only)
- *   gilded        /user/{u}/gilded.json      — content that received awards
  *
  * The owner-only streams are the biggest reason to use a logged-in
  * connector over the public API — they capture preference signal
@@ -32,7 +31,7 @@
  *
  * CHANGES
  *   v0.2.0 (2026-04-24) — extracted parsers.ts / schemas.ts / types.ts;
- *     added zod shape-check; added upvoted/downvoted/hidden/gilded streams;
+ *     added zod shape-check; added upvoted/downvoted/hidden streams;
  *     enriched records with domain, *_len, is_top_level, is_post,
  *     over_18, gilded, fetched_at.
  *   v0.1.0 — initial browser-session implementation.
@@ -240,12 +239,6 @@ export function buildStreamTable(userPath: string, emittedAt: string): RedditStr
       name: "hidden",
       endpoint: `${userPath}/hidden.json`,
       progressMessage: "Fetching hidden items",
-      toRecord: (c) => voteRecord(c, emittedAt),
-    },
-    {
-      name: "gilded",
-      endpoint: `${userPath}/gilded.json`,
-      progressMessage: "Fetching gilded items",
       toRecord: (c) => voteRecord(c, emittedAt),
     },
   ];
