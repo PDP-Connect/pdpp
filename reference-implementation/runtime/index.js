@@ -10,6 +10,8 @@ import { appendFileSync, mkdirSync } from 'node:fs';
 import { createTraceContext, emitSpineEvent } from '../lib/spine.ts';
 import { isClosedPipeWriteError } from './pipe-errors.js';
 import { deriveTerminalReason } from './terminal-reason.js';
+import { createStderrTailBuffer } from './stderr-tail.js';
+import { redactStderrTail } from './stderr-redact.js';
 
 function encodeScopeResourceKey(key) {
   return Array.isArray(key) ? JSON.stringify(key) : String(key);
@@ -217,6 +219,50 @@ const RECOVERY_ACTIONS = new Set([
   'not_retriable',
   'unknown',
 ]);
+
+// Connector stderr-tail diagnostic. `tail` is the {text, bytes_observed,
+// bytes_captured, truncated} object returned by the bounded stderr tail
+// buffer. Returns the persistable shape:
+//
+//   {
+//     object: 'connector_stderr_tail',
+//     encoding: 'utf-8',
+//     text: <redacted excerpt>,
+//     bytes_observed: <int>,
+//     bytes_captured: <int>,
+//     truncated: <bool>,
+//     redacted: <bool>,
+//   }
+//
+// or null when the connector wrote no stderr.
+// Concise runtime-authored failure_message for connector exits before DONE.
+// Owner UI uses this as the authoritative line; the connector-authored
+// stderr tail is supplementary, untrusted evidence.
+function buildConnectorExitFailureMessage({ code, reason, phase }) {
+  if (reason === 'connector_stdin_closed') {
+    const phaseLabel = phase && phase !== 'unknown' ? ` during ${phase}` : '';
+    return `Connector closed its stdin${phaseLabel} before emitting DONE.`;
+  }
+  if (typeof code === 'number' && Number.isFinite(code)) {
+    return `Connector exited with code ${code} before emitting DONE.`;
+  }
+  return 'Connector exited before emitting DONE.';
+}
+
+function buildStderrTailDiagnostic(tail) {
+  if (!tail || typeof tail !== 'object') return null;
+  if (!tail.text || tail.bytes_captured === 0) return null;
+  const { text: redactedText, redacted } = redactStderrTail(tail.text);
+  return {
+    object: 'connector_stderr_tail',
+    encoding: 'utf-8',
+    text: redactedText,
+    bytes_observed: tail.bytes_observed,
+    bytes_captured: tail.bytes_captured,
+    truncated: Boolean(tail.truncated),
+    redacted,
+  };
+}
 
 function boundString(value) {
   if (typeof value !== 'string') return null;
@@ -883,8 +929,15 @@ export async function runConnector(opts) {
   //
   // See openspec/changes/add-polyfill-connector-system/design-notes/
   //     gmail-jsonl-truncation-bug.md
-  const stderrChunks = [];
-  proc.stderr.on('data', d => stderrChunks.push(d));
+  // Bounded UTF-8 stderr tail. The runtime previously accumulated every
+  // chunk for the lifetime of the run (memory grew with stderr volume) and
+  // then discarded the result before the terminal `run.failed` event was
+  // persisted. The tail buffer keeps only the last N bytes the connector
+  // wrote and tracks `bytes_observed` so the owner can tell whether
+  // evidence was truncated. See
+  // openspec/changes/persist-connector-failure-diagnostics.
+  const stderrTail = createStderrTailBuffer();
+  proc.stderr.on('data', (d) => stderrTail.append(d));
 
   // Byte-level buffer; split only on LF. Each chunk from proc.stdout is a
   // Buffer (no encoding set) so multi-byte UTF-8 characters are preserved
@@ -1069,6 +1122,9 @@ export async function runConnector(opts) {
     ingestFailure = null,
     violation = null,
     stdinClosedAtPhase = null,
+    failureOrigin = null,
+    failureMessage = null,
+    connectorDiagnostics = null,
   } = {}) {
     const stateStreamsStaged = countStagedStateStreams();
     const stateStreamsCommitted = committedStateStreams.size;
@@ -1107,6 +1163,21 @@ export async function runConnector(opts) {
         : {}),
       ...(violation instanceof ProtocolViolation
         ? { violation: violation.toPublicShape({ lastValidSpineEvent }) }
+        : {}),
+      // Additive runtime-authored failure classification + connector
+      // diagnostic evidence. See
+      // openspec/changes/persist-connector-failure-diagnostics.
+      // `failure_origin` distinguishes runtime-authored classification
+      // (connector|runtime|transport|storage); `failure_message` is a
+      // concise runtime-authored explanation; `connector_diagnostics`
+      // carries connector-authored, untrusted excerpts (currently just
+      // a bounded redacted stderr tail).
+      ...(failureOrigin ? { failure_origin: failureOrigin } : {}),
+      ...(failureMessage ? { failure_message: failureMessage } : {}),
+      ...(connectorDiagnostics
+        && typeof connectorDiagnostics === 'object'
+        && Object.keys(connectorDiagnostics).length > 0
+        ? { connector_diagnostics: connectorDiagnostics }
         : {}),
     };
   }
@@ -1673,8 +1744,16 @@ export async function runConnector(opts) {
 
     proc.on('close', async (code) => {
       clearTerminateTimer();
-      const stderr = Buffer.concat(stderrChunks).toString();
-      if (stderr) onProgress({ type: 'stderr', text: stderr });
+      const stderrTailRaw = stderrTail.finalize();
+      if (stderrTailRaw.text) {
+        onProgress({ type: 'stderr', text: stderrTailRaw.text });
+      }
+      // Build the persisted diagnostic excerpt. Connector stderr is
+      // connector-authored and untrusted, so we redact recognized secret
+      // markers before persistence and label the result as such. The
+      // diagnostic is owner/control-plane evidence only — it MUST NOT be
+      // exposed through grant-scoped /v1 surfaces.
+      const stderrTailDiagnostic = buildStderrTailDiagnostic(stderrTailRaw);
 
       try {
         await waitForQueueDrain();
@@ -1806,6 +1885,14 @@ export async function runConnector(opts) {
               childStdinClosedReason,
               childStdinClosedAtPhase,
             });
+            const closeFailureMessage = buildConnectorExitFailureMessage({
+              code,
+              reason: closeFailureReason,
+              phase: closeFailurePhase,
+            });
+            const connectorDiagnostics = stderrTailDiagnostic
+              ? { stderr_tail: stderrTailDiagnostic }
+              : null;
             await emitSpineEvent({
               event_type: 'run.failed',
               trace_id: traceContext.trace_id,
@@ -1822,6 +1909,9 @@ export async function runConnector(opts) {
                 reason: closeFailureReason,
                 stdinClosedAtPhase: closeFailurePhase,
                 connectorError: null,
+                failureOrigin: 'connector',
+                failureMessage: closeFailureMessage,
+                connectorDiagnostics,
               }),
             });
             onProgress({
@@ -1844,6 +1934,18 @@ export async function runConnector(opts) {
           childStdinClosedReason,
           childStdinClosedAtPhase,
         });
+        // Surface the additive diagnostic fields on the resolved result
+        // for failed connector exits before DONE so callers don't have
+        // to parse the spine event back out.
+        const exposeConnectorExitDiagnostic =
+          finalStatus === 'failed' && !doneMessage;
+        const resolvedFailureMessage = exposeConnectorExitDiagnostic
+          ? buildConnectorExitFailureMessage({
+              code,
+              reason: closeTerminalReason,
+              phase: closeTerminalPhase,
+            })
+          : null;
         resolve({
           status: finalStatus,
           records_emitted: totalEmitted,
@@ -1861,6 +1963,15 @@ export async function runConnector(opts) {
             ? { stdin_closed_at_phase: closeTerminalPhase }
             : {}),
           connector_error: doneMessage?.error || null,
+          ...(exposeConnectorExitDiagnostic
+            ? {
+                failure_origin: 'connector',
+                failure_message: resolvedFailureMessage,
+                ...(stderrTailDiagnostic
+                  ? { connector_diagnostics: { stderr_tail: stderrTailDiagnostic } }
+                  : {}),
+              }
+            : {}),
         });
       } catch (err) {
         finalStatus = 'failed';

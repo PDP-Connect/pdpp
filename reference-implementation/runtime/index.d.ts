@@ -35,9 +35,37 @@ export interface RuntimeRunConnectorOptions {
   traceContext?: RuntimeTraceContext;
 }
 
+/**
+ * Bounded, redacted excerpt of connector-authored stderr captured for
+ * connector exits before DONE. See
+ * openspec/changes/persist-connector-failure-diagnostics.
+ *
+ * The text is connector-authored and untrusted — owner UI MUST label it
+ * as such and SHOULD render it as a collapsed/preformatted diagnostic
+ * panel rather than presenting it as a runtime-verified PDPP error.
+ */
+export interface ConnectorStderrTailDiagnostic {
+  readonly bytes_captured: number;
+  readonly bytes_observed: number;
+  readonly encoding: "utf-8";
+  readonly object: "connector_stderr_tail";
+  readonly redacted: boolean;
+  readonly text: string;
+  readonly truncated: boolean;
+}
+
+export interface ConnectorRunDiagnostics {
+  readonly stderr_tail?: ConnectorStderrTailDiagnostic;
+}
+
+export type RuntimeFailureOrigin = "connector" | "runtime" | "transport" | "storage";
+
 export interface RuntimeRunConnectorResult {
   checkpoint_summary?: Record<string, unknown> | null;
+  connector_diagnostics?: ConnectorRunDiagnostics;
   connector_error?: { message?: string; retryable?: boolean | null } | null;
+  failure_message?: string;
+  failure_origin?: RuntimeFailureOrigin;
   known_gaps?: Record<string, unknown>[] | null;
   message?: string;
   records_emitted?: number;

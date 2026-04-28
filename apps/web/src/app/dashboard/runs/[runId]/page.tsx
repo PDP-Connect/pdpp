@@ -103,6 +103,7 @@ export default async function RunDetailPage({ params }: { params: Promise<{ runI
         summary={terminalKnownGaps.summary ?? gapClassification.summary}
       />
       <ViolationDiagnosis failure={failure} />
+      <ConnectorStderrTailSection failure={failure} />
       <Section title="Timeline">
         <TimelineView events={events} />
       </Section>
@@ -499,6 +500,102 @@ function ViolationDiagnosis({ failure }: { failure: SpineEvent | undefined }) {
   );
 }
 
+/**
+ * Connector-authored stderr tail diagnostic.
+ *
+ * Owner-only evidence rendered as a collapsed `<details>` panel by
+ * default. The text is connector-authored (not runtime-verified) and
+ * therefore must be visibly labelled as such — the runtime-authored
+ * `failure_message` already surfaces in the Failure stat.
+ *
+ * See openspec/changes/persist-connector-failure-diagnostics.
+ */
+interface StderrTailDiagnostic {
+  bytes_captured: number;
+  bytes_observed: number;
+  encoding?: string;
+  object?: string;
+  redacted: boolean;
+  text: string;
+  truncated: boolean;
+}
+
+function extractStderrTail(failure: SpineEvent | undefined): StderrTailDiagnostic | null {
+  const diagnostics = (failure?.data as { connector_diagnostics?: unknown } | undefined)?.connector_diagnostics;
+  if (!diagnostics || typeof diagnostics !== "object") {
+    return null;
+  }
+  const raw = (diagnostics as { stderr_tail?: unknown }).stderr_tail;
+  if (!raw || typeof raw !== "object") {
+    return null;
+  }
+  const candidate = raw as Record<string, unknown>;
+  const text = typeof candidate.text === "string" ? candidate.text : null;
+  if (text === null) {
+    return null;
+  }
+  return {
+    text,
+    bytes_observed: typeof candidate.bytes_observed === "number" ? candidate.bytes_observed : text.length,
+    bytes_captured: typeof candidate.bytes_captured === "number" ? candidate.bytes_captured : text.length,
+    truncated: candidate.truncated === true,
+    redacted: candidate.redacted === true,
+    encoding: typeof candidate.encoding === "string" ? candidate.encoding : undefined,
+    object: typeof candidate.object === "string" ? candidate.object : undefined,
+  };
+}
+
+function ConnectorStderrTailSection({ failure }: { failure: SpineEvent | undefined }) {
+  const tail = extractStderrTail(failure);
+  if (!tail) {
+    return null;
+  }
+  const metaPills: { label: string; value: string }[] = [
+    { label: "bytes captured", value: tail.bytes_captured.toLocaleString() },
+    { label: "bytes observed", value: tail.bytes_observed.toLocaleString() },
+  ];
+  if (tail.truncated) {
+    metaPills.push({ label: "truncated", value: "yes" });
+  }
+  if (tail.redacted) {
+    metaPills.push({ label: "redacted", value: "yes" });
+  }
+  return (
+    <section className="mb-8 rounded-md border border-border/70 bg-muted/20 px-4 py-3">
+      <details>
+        <summary className="cursor-pointer list-none">
+          <header className="flex flex-wrap items-baseline justify-between gap-2">
+            <div>
+              <h3 className="pdpp-eyebrow">Connector stderr (diagnostic)</h3>
+              <p className="pdpp-caption text-muted-foreground">
+                Connector-authored output captured before exit. This is untrusted evidence — not a verified PDPP error.
+                Use it as a hint for what the connector was doing, not as the authoritative failure reason.
+              </p>
+            </div>
+            <span className="pdpp-caption text-muted-foreground">click to expand</span>
+          </header>
+          <ul className="mt-2 flex flex-wrap gap-x-3 gap-y-1">
+            {metaPills.map((pill) => (
+              <li className="pdpp-caption text-muted-foreground" key={pill.label}>
+                {pill.label}: <span className="text-foreground tabular-nums">{pill.value}</span>
+              </li>
+            ))}
+          </ul>
+        </summary>
+        <pre className="pdpp-caption mt-3 max-h-96 overflow-auto whitespace-pre-wrap break-all rounded-md border border-border/60 bg-background/70 p-3 font-mono text-foreground/90">
+          {tail.text}
+        </pre>
+        {tail.truncated ? (
+          <p className="pdpp-caption mt-2 text-muted-foreground">
+            Showing the last {tail.bytes_captured.toLocaleString()} bytes of {tail.bytes_observed.toLocaleString()}{" "}
+            bytes the connector wrote.
+          </p>
+        ) : null}
+      </details>
+    </section>
+  );
+}
+
 function Stat({ title, rows, emphasis }: { title: string; rows: [string, string][]; emphasis?: boolean }) {
   const className = emphasis
     ? "rounded-md border border-destructive/30 border-l-4 border-l-destructive/60 bg-destructive/5 px-3 py-2.5"
@@ -589,9 +686,13 @@ function summarizeFailure(failure: SpineEvent | undefined): [string, string][] {
   if (!failure) {
     return [["status", "no failure"]];
   }
+  const failureOrigin = typeof failure.data.failure_origin === "string" ? failure.data.failure_origin : null;
+  const failureMessage = typeof failure.data.failure_message === "string" ? failure.data.failure_message : null;
   return [
     ["reason", String(failure.data.reason ?? failure.data.failure_reason ?? "—")],
     ["retryable", String(failure.data.connector_error_retryable ?? "—")],
+    ...(failureOrigin ? [["origin", failureOrigin] as [string, string]] : []),
+    ...(failureMessage ? [["message", failureMessage] as [string, string]] : []),
   ];
 }
 
