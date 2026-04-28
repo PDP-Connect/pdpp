@@ -2,7 +2,7 @@
 set -euo pipefail
 
 PROJECT_NAME="${COMPOSE_PROJECT_NAME:-pdpp-docker-smoke}"
-ORIGIN="${PDPP_REFERENCE_ORIGIN:-http://localhost:3000}"
+ORIGIN="${PDPP_REFERENCE_ORIGIN:-http://localhost:3002}"
 OWNER_PASSWORD="${PDPP_OWNER_PASSWORD:-$(node -e "console.log(require('node:crypto').randomBytes(24).toString('base64url'))")}"
 
 export COMPOSE_PROJECT_NAME="$PROJECT_NAME"

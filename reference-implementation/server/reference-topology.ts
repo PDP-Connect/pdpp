@@ -13,7 +13,7 @@
 export const REFERENCE_MODE_DIRECT = "direct";
 export const REFERENCE_MODE_COMPOSED = "composed";
 
-export const DEFAULT_REFERENCE_BROWSER_ORIGIN = "http://localhost:3000";
+export const DEFAULT_REFERENCE_BROWSER_ORIGIN = "http://localhost:3002";
 export const DEFAULT_AS_INTERNAL_URL = "http://localhost:7662";
 export const DEFAULT_RS_INTERNAL_URL = "http://localhost:7663";
 

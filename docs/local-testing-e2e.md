@@ -193,7 +193,7 @@ export PDPP_DB_PATH="$HOME/.pdpp/local-test.sqlite"
 pnpm dev
 ```
 
-Next.js starts on `http://localhost:3000`. Open `http://localhost:3000/dashboard` in your browser.
+Next.js starts on `http://localhost:3002`. Open `http://localhost:3002/dashboard` in your browser.
 
 The dashboard reads from the same PDPP server you started earlier (at 7662/7663) and shows your connector runs, stream inventory, and record samples.
 

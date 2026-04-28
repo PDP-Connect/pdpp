@@ -9,7 +9,7 @@ services:
       AS_PORT: "7662"
       RS_PORT: "7663"
       PDPP_REFERENCE_MODE: composed
-      PDPP_REFERENCE_ORIGIN: ${PDPP_REFERENCE_ORIGIN:-http://localhost:3000}
+      PDPP_REFERENCE_ORIGIN: ${PDPP_REFERENCE_ORIGIN:-http://localhost:3002}
       PDPP_DB_PATH: ${PDPP_DB_PATH:-/var/lib/pdpp/pdpp.sqlite}
       PDPP_EMBEDDING_CACHE_DIR: ${PDPP_EMBEDDING_CACHE_DIR:-/var/cache/pdpp/transformers}
       PDPP_EMBEDDING_DOWNLOAD_ALLOWED: ${PDPP_EMBEDDING_DOWNLOAD_ALLOWED:-1}
@@ -37,6 +37,19 @@ services:
       - ./packages/polyfill-connectors/.pdpp-data:/var/lib/pdpp
       - pdpp-transformers:/var/cache/pdpp/transformers
       - pdpp-home:/root/.pdpp
+    # Health = AS and RS are both listening and serving public metadata.
+    # Embedding-model download and semantic backfill run in the background
+    # after listen and are intentionally NOT part of "healthy".
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "curl -fsS http://localhost:7662/.well-known/oauth-authorization-server >/dev/null && curl -fsS http://localhost:7663/.well-known/oauth-protected-resource >/dev/null",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 30s
 
   web:
     image: ${PDPP_WEB_IMAGE:-ghcr.io/vana-com/pdpp/web:main}
@@ -45,17 +58,18 @@ services:
       dockerfile: Dockerfile
       target: web
     depends_on:
-      - reference
+      reference:
+        condition: service_healthy
     environment:
       PDPP_REFERENCE_MODE: composed
-      PDPP_REFERENCE_ORIGIN: ${PDPP_REFERENCE_ORIGIN:-http://localhost:3000}
+      PDPP_REFERENCE_ORIGIN: ${PDPP_REFERENCE_ORIGIN:-http://localhost:3002}
       PDPP_AS_URL: http://reference:7662
       PDPP_RS_URL: http://reference:7663
       PDPP_OWNER_PASSWORD: ${PDPP_OWNER_PASSWORD:-}
       PDPP_OWNER_SUBJECT_ID: ${PDPP_OWNER_SUBJECT_ID:-owner_local}
       PDPP_ENABLE_DASHBOARD: ${PDPP_ENABLE_DASHBOARD:-1}
     ports:
-      - "3000:3000"
+      - "${PDPP_WEB_PORT:-3002}:3000"
 
 volumes:
   pdpp-transformers:

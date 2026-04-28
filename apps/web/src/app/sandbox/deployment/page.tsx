@@ -191,7 +191,7 @@ function yesNo(v: boolean): string {
 
 async function getRequestOrigin(): Promise<string> {
   const headerList = await headers();
-  const host = headerList.get("x-forwarded-host") ?? headerList.get("host") ?? "localhost:3000";
+  const host = headerList.get("x-forwarded-host") ?? headerList.get("host") ?? "localhost:3002";
   const protocol =
     headerList.get("x-forwarded-proto")?.split(",")[0]?.trim() ||
     (host.startsWith("localhost") || host.startsWith("127.0.0.1") ? "http" : "https");

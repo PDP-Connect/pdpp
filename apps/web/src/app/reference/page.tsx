@@ -138,7 +138,7 @@ export default function ReferencePage() {
           <aside className="rounded-2xl border bg-card/80 p-4 shadow-sm backdrop-blur">
             <div className="pdpp-eyebrow text-muted-foreground">Run posture</div>
             <div className="mt-4 space-y-4">
-              <CalloutMetric label="Local app" value="http://localhost:3000" />
+              <CalloutMetric label="Local app" value="http://localhost:3002" />
               <CalloutMetric label="Operator surface" value="/dashboard" />
               <CalloutMetric label="Hosted demo" tone="warning" value="Not promised" />
             </div>

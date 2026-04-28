@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "pnpm -r --parallel --stream --filter pdpp-reference-implementation --filter pdpp-web run dev",
-    "dev:stop": "npx --yes kill-port 7662 7663 3000 || true",
+    "dev:stop": "fuser -k 3002/tcp 7662/tcp 7663/tcp 2>/dev/null; npx --yes kill-port 7662 7663 3002 2>/dev/null; true",
     "build": "pnpm web:build",
     "preview": "pnpm web:start",
     "start": "pnpm web:start",

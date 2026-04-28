@@ -262,7 +262,7 @@ This hosted-UI layer is **reference-only** implementation support. It is **not**
 The reference now supports two deliberate local hosting modes:
 
 - `direct` — AS on `:7662`, RS on `:7663`; best for protocol debugging, conformance-style testing, CLI, and agents
-- `composed` — one browser-facing origin (default `http://localhost:3000`) proxying the internal AS/RS; best for the dashboard, owner flows, and demos
+- `composed` — one browser-facing origin (default `http://localhost:3002`) proxying the internal AS/RS; best for the dashboard, owner flows, and demos
 
 The shared topology inputs are:
 
@@ -274,7 +274,7 @@ Legacy `AS_PUBLIC_URL` / `RS_PUBLIC_URL` overrides still work, but the preferred
 ### Same-origin local reference composition
 
 The preferred local reference-product entrypoint is now the composed browser
-origin at `http://localhost:3000`.
+origin at `http://localhost:3002`.
 
 Run the full local stack from the repo root:
 
@@ -284,7 +284,7 @@ pnpm dev
 
 In that mode:
 
-- the Next app serves the browser-facing origin on `http://localhost:3000`
+- the Next app serves the browser-facing origin on `http://localhost:3002`
 - the internal AS/RS still listen on `:7662` / `:7663`
 - the browser-facing origin proxies the reference namespaces:
   - `/.well-known/*`
@@ -306,7 +306,7 @@ pnpm --dir reference-implementation dev
 ```
 
 That mode sets `PDPP_REFERENCE_MODE=composed` and defaults
-`PDPP_REFERENCE_ORIGIN` to `http://localhost:3000`, so the internal AS/RS
+`PDPP_REFERENCE_ORIGIN` to `http://localhost:3002`, so the internal AS/RS
 still listen on `:7662/:7663` while advertising the browser-facing origin in
 metadata, device verification URLs, and PAR authorization URLs.
 
@@ -360,11 +360,12 @@ docker compose --env-file .env.docker pull
 docker compose --env-file .env.docker up -d
 ```
 
-Open `http://localhost:3000` for the browser-facing reference origin. The
+Open `http://localhost:3002` for the browser-facing reference origin. The
 Compose stack runs:
 
 - `reference` — one AS/RS process, AS on `:7662`, RS on `:7663`
-- `web` — the Next app on `:3000`, proxying the AS/RS in composed mode
+- `web` — the Next app on container `:3000`, mapped to host `:3002` by default,
+  proxying the AS/RS in composed mode
 
 Default public images:
 
@@ -386,7 +387,7 @@ browser uses, while `PDPP_AS_URL` and `PDPP_RS_URL` are container-internal
 service URLs. The default Compose values are:
 
 ```bash
-PDPP_REFERENCE_ORIGIN=http://localhost:3000
+PDPP_REFERENCE_ORIGIN=http://localhost:3002
 PDPP_AS_URL=http://reference:7662
 PDPP_RS_URL=http://reference:7663
 ```
