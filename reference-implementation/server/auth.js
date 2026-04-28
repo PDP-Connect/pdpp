@@ -1035,6 +1035,10 @@ async function getPendingConsentRow(deviceCode) {
 async function createPendingConsent(deviceCode, userCode, params, expiresAt) {
   const createdAt = nowIso();
   const traceContext = getRequestTraceContext(params);
+  // approval_id is the non-redeemable opaque public id for `_ref/approvals`
+  // projections. Generated alongside the row so every public read surface
+  // has a stable id without exposing the live device_code.
+  const approvalId = generateId('appr');
   exec(referenceQueries.authPendingConsentsInsert, [
     deviceCode,
     userCode,
@@ -1044,7 +1048,13 @@ async function createPendingConsent(deviceCode, userCode, params, expiresAt) {
     traceContext.scenario_id || null,
     createdAt,
     expiresAt,
+    approvalId,
   ]);
+}
+
+export async function getPendingConsentRowByApprovalId(approvalId) {
+  if (typeof approvalId !== 'string' || !approvalId) return null;
+  return getOne(referenceQueries.authPendingConsentsGetByApprovalId, [approvalId]);
 }
 
 async function markPendingConsentApproved(deviceCode, { subjectId, grantId, tokenId, aiTrainingConsented }) {
@@ -1084,6 +1094,9 @@ async function createOwnerDeviceAuth({
   traceId = null,
   scenarioId = null,
 }) {
+  // approval_id mirrors `pending_consents.approval_id` — see
+  // createPendingConsent for rationale.
+  const approvalId = generateId('appr');
   exec(referenceQueries.authOwnerDeviceAuthInsert, [
     deviceCode,
     userCode,
@@ -1094,7 +1107,13 @@ async function createOwnerDeviceAuth({
     requestId,
     traceId,
     scenarioId,
+    approvalId,
   ]);
+}
+
+export async function getOwnerDeviceAuthRowByApprovalId(approvalId) {
+  if (typeof approvalId !== 'string' || !approvalId) return null;
+  return getOne(referenceQueries.authOwnerDeviceAuthGetByApprovalId, [approvalId]);
 }
 
 async function markOwnerDeviceAuthApproved(deviceCode, { subjectId, tokenId }) {

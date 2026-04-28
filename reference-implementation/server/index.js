@@ -28,6 +28,8 @@ import {
   approveOwnerDeviceAuthorization, denyOwnerDeviceAuthorization, exchangeOwnerDeviceCode, configureNativeManifest,
   deleteRegisteredClient, listOwnerIssuedClients, listRegisteredConnectorIds,
   parsePendingConsentRequestUri, registerDynamicClient, requireGrantContractAgainstManifest, requireResolvedPersistedGrantState, seedPreRegisteredClients,
+  getPendingConsentRowByApprovalId, getOwnerDeviceAuthRowByApprovalId,
+  buildPendingConsentRequestUri,
 } from './auth.js';
 import {
   ingestRecord, queryRecords, aggregateRecords, getRecord, deleteRecord, deleteAllRecords,
@@ -615,15 +617,42 @@ async function rejectMutation(res, req, context, err) {
 // reference's introspection table — see auth.js::issueToken — so a public
 // `_ref` timeline read MUST NOT echo it back. `token.issued` events also use
 // the bearer string as their `object_id` (because `object_type === 'token'`),
-// so we redact that too. The schema-level fix lives in
-// `openspec/changes/harden-reference-auth-surfaces/design-notes/
+// so we redact that too.
+//
+// `pending_consent` and `owner_device_auth` events use the live `device_code`
+// as their `object_id`, and `request.submitted` for `owner_device_auth`
+// carries `data.user_code` — both are bearer-equivalent in the takeover
+// chain (the device_code redeems for an owner bearer at /oauth/token; the
+// user_code is the human verifier that completes the device flow). We
+// redact both here so trace/timeline reads cannot leak them.
+//
+// The schema-level fix lives in `openspec/changes/
+// harden-reference-auth-surfaces/design-notes/
 // spine-token-id-storage-2026-04-27.md`; this projection is the read-time
 // guarantee we ship today.
+const REDACTED_OBJECT_ID_LITERAL_BY_TYPE = {
+  token: '<redacted-token-id>',
+  pending_consent: '<redacted-device-code>',
+  owner_device_auth: '<redacted-device-code>',
+};
+const REDACTED_BEARER_DATA_KEYS = new Set(['device_code', 'user_code', 'request_uri']);
+
 function redactSpineEventForPublic(event) {
   if (!event || typeof event !== 'object') return event;
   const { token_id: _token_id, ...rest } = event;
-  if (rest.object_type === 'token' && typeof rest.object_id === 'string') {
-    rest.object_id = '<redacted-token-id>';
+  const objectIdLiteral = REDACTED_OBJECT_ID_LITERAL_BY_TYPE[rest.object_type];
+  if (objectIdLiteral && typeof rest.object_id === 'string') {
+    rest.object_id = objectIdLiteral;
+  }
+  if (rest.data && typeof rest.data === 'object' && !Array.isArray(rest.data)) {
+    let cloned = null;
+    for (const key of REDACTED_BEARER_DATA_KEYS) {
+      if (key in rest.data) {
+        if (!cloned) cloned = { ...rest.data };
+        cloned[key] = '<redacted-bearer>';
+      }
+    }
+    if (cloned) rest.data = cloned;
   }
   return rest;
 }
@@ -1943,12 +1972,25 @@ function buildAsApp(opts = {}) {
 
   app.post('/device/approve', ownerAuth.requireOwnerSession, ownerAuth.requireCsrf, async (req, res) => {
     try {
-      const userCode = req.body.user_code;
+      // approval_id is the non-redeemable opaque public id projected by
+      // /_ref/approvals; the operator dashboard sends it instead of the
+      // user_code so the user_code stays off public read surfaces.
+      // We resolve approval_id -> user_code here, on the AS side, behind
+      // the existing owner-session + CSRF gate.
+      const approvalId = req.body.approval_id;
+      let userCode = req.body.user_code;
+      if (!userCode && approvalId) {
+        const row = await getOwnerDeviceAuthRowByApprovalId(approvalId);
+        if (!row || row.status !== 'pending') {
+          return oauthError(res, 404, 'not_found', 'No pending device authorization for approval_id');
+        }
+        userCode = row.user_code;
+      }
       const subjectId = ownerAuth.enabled
         ? ownerAuth.subjectId
         : (req.body.subject_id || OWNER_AUTH_DEFAULT_SUBJECT_ID);
       if (!userCode) {
-        return oauthError(res, 400, 'invalid_request', 'user_code is required');
+        return oauthError(res, 400, 'invalid_request', 'user_code or approval_id is required');
       }
 
       await approveOwnerDeviceAuthorization(userCode, subjectId);
@@ -1980,12 +2022,20 @@ function buildAsApp(opts = {}) {
 
   app.post('/device/deny', ownerAuth.requireOwnerSession, ownerAuth.requireCsrf, async (req, res) => {
     try {
-      const userCode = req.body.user_code;
+      const approvalId = req.body.approval_id;
+      let userCode = req.body.user_code;
+      if (!userCode && approvalId) {
+        const row = await getOwnerDeviceAuthRowByApprovalId(approvalId);
+        if (!row || row.status !== 'pending') {
+          return oauthError(res, 404, 'not_found', 'No pending device authorization for approval_id');
+        }
+        userCode = row.user_code;
+      }
       const subjectId = ownerAuth.enabled
         ? ownerAuth.subjectId
         : (req.body.subject_id || OWNER_AUTH_DEFAULT_SUBJECT_ID);
       if (!userCode) {
-        return oauthError(res, 400, 'invalid_request', 'user_code is required');
+        return oauthError(res, 400, 'invalid_request', 'user_code or approval_id is required');
       }
 
       await denyOwnerDeviceAuthorization(userCode, subjectId);
@@ -2534,9 +2584,20 @@ function buildAsApp(opts = {}) {
   // Primary approval surface for the current provider-connect request/approval profile.
   app.post('/consent/approve', { contract: 'approveConsent' }, ownerAuth.requireOwnerSession, ownerAuth.requireCsrf, async (req, res) => {
     try {
-      const requestUri = req.body?.request_uri || req.query?.request_uri;
+      // approval_id (from the operator dashboard) resolves on the AS side
+      // to the canonical request_uri so the live device_code never leaves
+      // the AS through a public read surface.
+      let requestUri = req.body?.request_uri || req.query?.request_uri;
+      const approvalId = req.body?.approval_id || req.query?.approval_id;
+      if (!requestUri && approvalId) {
+        const row = await getPendingConsentRowByApprovalId(approvalId);
+        if (!row || row.status !== 'pending') {
+          return pdppError(res, 404, 'not_found', 'No pending consent for approval_id');
+        }
+        requestUri = buildPendingConsentRequestUri(row.device_code);
+      }
       const { deviceCode, pending } = await getPendingGrantFromRequestUri(requestUri);
-      if (!deviceCode) return pdppError(res, 400, 'invalid_request', 'request_uri is required');
+      if (!deviceCode) return pdppError(res, 400, 'invalid_request', 'request_uri or approval_id is required');
       const traceContext = pending?.request?.trace_context || null;
       if (traceContext?.request_id) {
         res.setHeader('Request-Id', traceContext.request_id);
@@ -2602,9 +2663,17 @@ function buildAsApp(opts = {}) {
 
   app.post('/consent/deny', ownerAuth.requireOwnerSession, ownerAuth.requireCsrf, async (req, res) => {
     try {
-      const requestUri = req.body?.request_uri || req.query?.request_uri;
+      let requestUri = req.body?.request_uri || req.query?.request_uri;
+      const approvalId = req.body?.approval_id || req.query?.approval_id;
+      if (!requestUri && approvalId) {
+        const row = await getPendingConsentRowByApprovalId(approvalId);
+        if (!row || row.status !== 'pending') {
+          return pdppError(res, 404, 'not_found', 'No pending consent for approval_id');
+        }
+        requestUri = buildPendingConsentRequestUri(row.device_code);
+      }
       const { deviceCode, pending } = await getPendingGrantFromRequestUri(requestUri);
-      if (!deviceCode) return pdppError(res, 400, 'invalid_request', 'request_uri is required');
+      if (!deviceCode) return pdppError(res, 400, 'invalid_request', 'request_uri or approval_id is required');
       const traceContext = pending?.request?.trace_context || null;
       if (traceContext?.request_id) {
         res.setHeader('Request-Id', traceContext.request_id);

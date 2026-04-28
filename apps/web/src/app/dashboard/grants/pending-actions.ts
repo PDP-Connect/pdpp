@@ -24,7 +24,6 @@ export async function approvePendingApprovalAction(formData: FormData) {
   await requireDashboardAccess("/dashboard/grants#pending-approvals");
   const kind = asString(formData.get("kind")) as "consent" | "owner_device";
   const approvalId = asString(formData.get("approval_id"));
-  const userCode = asString(formData.get("user_code")) || undefined;
   const subjectId = asString(formData.get("subject_id")) || undefined;
   let error: string | undefined;
 
@@ -32,7 +31,6 @@ export async function approvePendingApprovalAction(formData: FormData) {
     await approvePendingApproval({
       kind,
       approvalId,
-      userCode,
       subjectId,
     });
   } catch (err) {
@@ -46,7 +44,6 @@ export async function denyPendingApprovalAction(formData: FormData) {
   await requireDashboardAccess("/dashboard/grants#pending-approvals");
   const kind = asString(formData.get("kind")) as "consent" | "owner_device";
   const approvalId = asString(formData.get("approval_id"));
-  const userCode = asString(formData.get("user_code")) || undefined;
   const subjectId = asString(formData.get("subject_id")) || undefined;
   let error: string | undefined;
 
@@ -54,7 +51,6 @@ export async function denyPendingApprovalAction(formData: FormData) {
     await denyPendingApproval({
       kind,
       approvalId,
-      userCode,
       subjectId,
     });
   } catch (err) {

@@ -12,7 +12,7 @@
 
 import { allowUnboundedReadAcknowledged, getOne, iterateDynamicSqlAcknowledged, referenceQueries } from "../lib/db.ts";
 import { listSpineCorrelations, type SpineSummary } from "../lib/spine.ts";
-import { buildPendingConsentRequestUri, getConnectorManifest } from "./auth.js";
+import { getConnectorManifest } from "./auth.js";
 import {
   chooseDisplayTimestamp,
   compareTimestampValues,
@@ -135,6 +135,7 @@ export interface ConnectorDetail {
 }
 
 interface PendingConsentRow {
+  readonly approval_id: string | null;
   readonly created_at: string;
   readonly device_code: string;
   readonly params_json: string;
@@ -142,6 +143,7 @@ interface PendingConsentRow {
 }
 
 interface PendingOwnerDeviceRow {
+  readonly approval_id: string | null;
   readonly client_id: string;
   readonly created_at: string;
   readonly device_code: string;
@@ -174,8 +176,16 @@ interface ConsentApproval {
   };
   readonly kind: "consent";
   readonly object: "approval";
-  readonly request_uri: string;
-  readonly user_code: string;
+  // request_uri is intentionally projected as null on the operator console.
+  // The canonical request_uri embeds the live device_code, which (via
+  // `/consent/approve`) is bearer-equivalent. Owner approve/deny flows
+  // resolve approval_id -> device_code on the AS side.
+  readonly request_uri: null;
+  // user_code is intentionally NOT projected. It is the human verifier
+  // shown during the device flow and combined with owner-session auth
+  // becomes part of the takeover chain. The dashboard's owner approve/deny
+  // path uses approval_id instead.
+  readonly user_code: null;
 }
 
 interface OwnerDeviceApproval {
@@ -186,7 +196,7 @@ interface OwnerDeviceApproval {
   readonly kind: "owner_device";
   readonly object: "approval";
   readonly request_uri: null;
-  readonly user_code: string;
+  readonly user_code: null;
 }
 
 type Approval = ConsentApproval | OwnerDeviceApproval;
@@ -450,15 +460,23 @@ export async function getConnectorDetail(
   };
 }
 
-function buildConsentApproval(row: PendingConsentRow): ConsentApproval {
-  const request = parseManifest(row.params_json, `pending consent ${row.device_code}`) as ConsentRequestEnvelope;
+function buildConsentApproval(row: PendingConsentRow): ConsentApproval | null {
+  // approval_id is populated for every row created after the
+  // device-code-exposure fix. Pre-existing rows from an older DB schema
+  // have approval_id = NULL; we drop those from the projection rather
+  // than fall back to device_code, because device_code on this surface
+  // is the security defect we are fixing.
+  if (!row.approval_id) {
+    return null;
+  }
+  const request = parseManifest(row.params_json, `pending consent ${row.approval_id}`) as ConsentRequestEnvelope;
   return {
     object: "approval",
-    approval_id: row.device_code,
+    approval_id: row.approval_id,
     kind: "consent",
     client_id: request.client?.client_id || null,
-    request_uri: buildPendingConsentRequestUri(row.device_code),
-    user_code: row.user_code,
+    request_uri: null,
+    user_code: null,
     created_at: row.created_at,
     grant_preview: {
       connector_id: request.source_binding?.connector_id || request.storage_binding?.connector_id || null,
@@ -471,14 +489,17 @@ function buildConsentApproval(row: PendingConsentRow): ConsentApproval {
   };
 }
 
-function buildOwnerDeviceApproval(row: PendingOwnerDeviceRow): OwnerDeviceApproval {
+function buildOwnerDeviceApproval(row: PendingOwnerDeviceRow): OwnerDeviceApproval | null {
+  if (!row.approval_id) {
+    return null;
+  }
   return {
     object: "approval",
-    approval_id: row.device_code,
+    approval_id: row.approval_id,
     kind: "owner_device",
     client_id: row.client_id,
     request_uri: null,
-    user_code: row.user_code,
+    user_code: null,
     created_at: row.created_at,
     grant_preview: null,
   };
@@ -500,8 +521,8 @@ export function listPendingApprovals(): Promise<Approval[]> {
     [now]
   );
   const approvals: Approval[] = [
-    ...pendingConsents.map(buildConsentApproval),
-    ...pendingDevices.map(buildOwnerDeviceApproval),
+    ...pendingConsents.map(buildConsentApproval).filter((a): a is ConsentApproval => a !== null),
+    ...pendingDevices.map(buildOwnerDeviceApproval).filter((a): a is OwnerDeviceApproval => a !== null),
   ];
   approvals.sort((left, right) => {
     if (left.created_at === right.created_at) {

@@ -822,17 +822,20 @@ test('PDPP CLI smoke', async (t) => {
       assert.ok(requestSubmitted, 'trace show should include owner-device request.submitted');
       assert.equal(requestSubmitted.request_id, requestId);
       assert.equal(requestSubmitted.client_id, 'cli_longview');
-      assert.equal(requestSubmitted.object_id, device.device_code);
-      assert.equal(requestSubmitted.data?.user_code, device.user_code);
+      // Public _ref redacts bearer-equivalent device_code / user_code on
+      // owner_device_auth (harden-reference-auth-surfaces §7).
+      assert.equal(requestSubmitted.object_id, '<redacted-device-code>');
+      assert.equal(requestSubmitted.data?.user_code, '<redacted-bearer>');
 
       const approved = (result.json.data || []).find((event) =>
         event.event_type === 'consent.approved'
-        && event.object_id === device.device_code
+        && event.object_type === 'owner_device_auth'
       );
       assert.ok(approved, 'trace show should include owner-device consent.approved');
       assert.equal(approved.request_id, requestId);
       assert.equal(approved.client_id, 'cli_longview');
-      assert.equal(approved.data?.user_code, device.user_code);
+      assert.equal(approved.object_id, '<redacted-device-code>');
+      assert.equal(approved.data?.user_code, '<redacted-bearer>');
 
       const tokenIssued = (result.json.data || []).find((event) =>
         event.event_type === 'token.issued'
@@ -841,7 +844,7 @@ test('PDPP CLI smoke', async (t) => {
       assert.ok(tokenIssued, 'trace show should include owner-device token.issued');
       assert.equal(tokenIssued.request_id, requestId);
       assert.equal(tokenIssued.client_id, 'cli_longview');
-      assert.equal(tokenIssued.data?.user_code, device.user_code);
+      assert.equal(tokenIssued.data?.user_code, '<redacted-bearer>');
       assert.equal(result.stderr, '');
     });
   });
@@ -894,9 +897,9 @@ test('PDPP CLI smoke', async (t) => {
       );
       assert.ok(rejected, 'trace show should include request.rejected for owner-device denial');
       assert.equal(rejected.client_id, 'cli_longview');
-      assert.equal(rejected.object_id, device.device_code);
+      assert.equal(rejected.object_id, '<redacted-device-code>');
       assert.equal(rejected.data?.issuance_path, 'owner_device_flow');
-      assert.equal(rejected.data?.user_code, device.user_code);
+      assert.equal(rejected.data?.user_code, '<redacted-bearer>');
       assert.equal(rejected.data?.error?.code, 'access_denied');
       assert.match(rejected.data?.error?.message || '', /denied the request/);
       assert.equal(result.stderr, '');

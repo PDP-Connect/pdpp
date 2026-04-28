@@ -1,10 +1,14 @@
 /**
  * Server-only helpers for acting on pending approvals through the existing
  * public approval routes.
+ *
+ * Both consent and owner-device approve/deny POST `approval_id`, the
+ * non-redeemable opaque public id projected by `/_ref/approvals`. The AS
+ * resolves it to the live `device_code` / `user_code` internally behind
+ * the existing owner-session + CSRF gate; the dashboard never sees those
+ * bearer-equivalent values.
  */
 import { getAsInternalUrl, ReferenceServerUnreachableError, withOwnerSessionCookie } from "./owner-token.ts";
-
-const PENDING_CONSENT_REQUEST_URI_PREFIX = "urn:pdpp:pending-consent:";
 
 function asForm(body: Record<string, string>): string {
   return new URLSearchParams(body).toString();
@@ -59,10 +63,12 @@ async function fetchAs(path: string, init: RequestInit): Promise<Response> {
   }
 }
 
-function buildPendingConsentRequestUri(approvalId: string): string {
-  return `${PENDING_CONSENT_REQUEST_URI_PREFIX}${approvalId}`;
-}
-
+/**
+ * Used by the staged-request workspace (operator-grant-request) where the
+ * dashboard itself initiated a PAR call and already holds the canonical
+ * `request_uri` it received back. Distinct from the /_ref/approvals path,
+ * which projects only the opaque `approval_id`.
+ */
 export async function approveConsentRequest(requestUri: string, subjectId = "owner_local") {
   const response = await fetchAs("/consent/approve", {
     method: "POST",
@@ -100,20 +106,33 @@ export async function approvePendingApproval(input: {
   userCode?: string | null;
   subjectId?: string;
 }) {
-  if (input.kind === "consent") {
-    return approveConsentRequest(buildPendingConsentRequestUri(input.approvalId), input.subjectId || "owner_local");
+  if (!input.approvalId) {
+    throw new Error(`${input.kind} approval requires approval_id`);
   }
+  const subjectId = input.subjectId || "owner_local";
 
-  if (!input.userCode) {
-    throw new Error("owner-device approval requires user_code");
+  if (input.kind === "consent") {
+    const response = await fetchAs("/consent/approve", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        approval_id: input.approvalId,
+        subject_id: subjectId,
+      }),
+    });
+    const body = await readBody(response);
+    if (!response.ok) {
+      throw new Error(describeError(body, `consent approval failed (${response.status})`));
+    }
+    return body;
   }
 
   const response = await fetchAs("/device/approve", {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: asForm({
-      user_code: input.userCode,
-      subject_id: input.subjectId || "owner_local",
+      approval_id: input.approvalId,
+      subject_id: subjectId,
     }),
   });
   const body = await readBody(response);
@@ -129,20 +148,32 @@ export async function denyPendingApproval(input: {
   userCode?: string | null;
   subjectId?: string;
 }) {
-  if (input.kind === "consent") {
-    return denyConsentRequest(buildPendingConsentRequestUri(input.approvalId));
+  if (!input.approvalId) {
+    throw new Error(`${input.kind} denial requires approval_id`);
   }
+  const subjectId = input.subjectId || "owner_local";
 
-  if (!input.userCode) {
-    throw new Error("owner-device denial requires user_code");
+  if (input.kind === "consent") {
+    const response = await fetchAs("/consent/deny", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        approval_id: input.approvalId,
+      }),
+    });
+    const body = await readBody(response);
+    if (!response.ok) {
+      throw new Error(describeError(body, `consent denial failed (${response.status})`));
+    }
+    return body;
   }
 
   const response = await fetchAs("/device/deny", {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: asForm({
-      user_code: input.userCode,
-      subject_id: input.subjectId || "owner_local",
+      approval_id: input.approvalId,
+      subject_id: subjectId,
     }),
   });
   const body = await readBody(response);

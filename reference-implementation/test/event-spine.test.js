@@ -461,25 +461,31 @@ test('event spine', async (t) => {
 
       const { body: traceTimeline } = await fetchJson(`${asUrl}/_ref/traces/${encodeURIComponent(traceId)}`);
 
+      // device_code / user_code are bearer-equivalent on owner_device_auth
+      // (harden-reference-auth-surfaces §7) and are redacted on public _ref
+      // reads. Internal correlation by request_id, client_id, and
+      // issuance_path remains intact.
       const submittedEvent = (traceTimeline.data || []).find((event) =>
         event.event_type === 'request.submitted'
-        && event.object_id === deviceBody.device_code
+        && event.object_type === 'owner_device_auth'
         && event.data?.issuance_path === 'owner_device_flow'
       );
       assert.ok(submittedEvent, 'expected request.submitted for owner device start');
       assert.equal(submittedEvent.request_id, requestId);
       assert.equal(submittedEvent.client_id, 'cli_longview');
       assert.equal(submittedEvent.object_type, 'owner_device_auth');
-      assert.equal(submittedEvent.data?.user_code, deviceBody.user_code);
+      assert.equal(submittedEvent.object_id, '<redacted-device-code>');
+      assert.equal(submittedEvent.data?.user_code, '<redacted-bearer>');
 
       const approvedEvent = (traceTimeline.data || []).find((event) =>
         event.event_type === 'consent.approved'
-        && event.object_id === deviceBody.device_code
+        && event.object_type === 'owner_device_auth'
       );
       assert.ok(approvedEvent, 'expected consent.approved for owner device approval');
       assert.equal(approvedEvent.request_id, requestId);
       assert.equal(approvedEvent.client_id, 'cli_longview');
-      assert.equal(approvedEvent.data?.user_code, deviceBody.user_code);
+      assert.equal(approvedEvent.object_id, '<redacted-device-code>');
+      assert.equal(approvedEvent.data?.user_code, '<redacted-bearer>');
 
       const tokenIssuedEvent = (traceTimeline.data || []).find((event) =>
         event.event_type === 'token.issued'
@@ -488,7 +494,7 @@ test('event spine', async (t) => {
       assert.ok(tokenIssuedEvent, 'expected token.issued for owner device exchange');
       assert.equal(tokenIssuedEvent.request_id, requestId);
       assert.equal(tokenIssuedEvent.client_id, 'cli_longview');
-      assert.equal(tokenIssuedEvent.data?.user_code, deviceBody.user_code);
+      assert.equal(tokenIssuedEvent.data?.user_code, '<redacted-bearer>');
     });
   });
 
@@ -537,13 +543,14 @@ test('event spine', async (t) => {
 
       const submittedEvent = (traceTimeline.data || []).find((event) =>
         event.event_type === 'request.submitted'
-        && event.object_id === deviceBody.device_code
+        && event.object_type === 'owner_device_auth'
         && event.data?.issuance_path === 'owner_device_flow'
       );
       assert.ok(submittedEvent, 'expected request.submitted for owner device start');
       assert.equal(submittedEvent.request_id, requestId);
       assert.equal(submittedEvent.client_id, 'cli_longview');
-      assert.equal(submittedEvent.data?.user_code, deviceBody.user_code);
+      assert.equal(submittedEvent.object_id, '<redacted-device-code>');
+      assert.equal(submittedEvent.data?.user_code, '<redacted-bearer>');
 
       const rejectedEvent = (traceTimeline.data || []).find((event) =>
         event.event_type === 'request.rejected'
@@ -552,9 +559,9 @@ test('event spine', async (t) => {
       assert.ok(rejectedEvent, 'expected request.rejected for owner device denial');
       assert.equal(rejectedEvent.client_id, 'cli_longview');
       assert.equal(rejectedEvent.object_type, 'owner_device_auth');
-      assert.equal(rejectedEvent.object_id, deviceBody.device_code);
+      assert.equal(rejectedEvent.object_id, '<redacted-device-code>');
       assert.equal(rejectedEvent.data?.issuance_path, 'owner_device_flow');
-      assert.equal(rejectedEvent.data?.user_code, deviceBody.user_code);
+      assert.equal(rejectedEvent.data?.user_code, '<redacted-bearer>');
       assert.equal(rejectedEvent.data?.error?.code, 'access_denied');
       assert.match(rejectedEvent.data?.error?.message || '', /denied the request/);
     });

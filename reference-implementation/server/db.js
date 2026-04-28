@@ -204,7 +204,14 @@ CREATE TABLE IF NOT EXISTS pending_consents (
   created_at               TEXT NOT NULL,
   expires_at               TEXT NOT NULL,
   approved_at              TEXT,
-  denied_at                TEXT
+  denied_at                TEXT,
+  -- approval_id is a non-redeemable opaque public id projected to operator
+  -- read surfaces (/_ref/approvals) so callers cannot lift the live
+  -- device_code (which is bearer-equivalent in the consent flow when
+  -- combined with /consent/approve) from a public projection. The
+  -- internal device_code remains the authoritative join key for the form
+  -- approve/deny POSTs and the request_uri.
+  approval_id              TEXT UNIQUE
 );
 
 CREATE INDEX IF NOT EXISTS idx_pending_consents_status_expires
@@ -225,7 +232,12 @@ CREATE TABLE IF NOT EXISTS owner_device_auth (
   denied_at          TEXT,
   request_id         TEXT,
   trace_id           TEXT,
-  scenario_id        TEXT
+  scenario_id        TEXT,
+  -- approval_id mirrors the column on pending_consents — see comment there.
+  -- The owner-device flow's device_code is the literal bearer for
+  -- POST /oauth/token; projecting it to operator surfaces is a
+  -- direct credential leak.
+  approval_id        TEXT UNIQUE
 );
 
 CREATE INDEX IF NOT EXISTS idx_owner_device_auth_status_expires
@@ -548,6 +560,12 @@ function withCachedPrepare(raw) {
  *       ("The reference's default semantic index SHALL persist across
  *        process restarts")
  */
+function addColumnIfMissing(raw, table, column, type) {
+  const cols = raw.prepare(`PRAGMA table_info(${table})`).all();
+  if (cols.some((c) => c.name === column)) return;
+  raw.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+}
+
 function loadVectorExtension(raw) {
   try {
     sqliteVec.load(raw);
@@ -589,6 +607,20 @@ export function initDb(path = ':memory:', opts = {}) {
   runWithSqliteBusyRetrySync(() => raw.exec(SCHEMA), {
     onRetry: opts.onSchemaRetry,
   });
+  // Idempotent column additions for tables that pre-existed before the
+  // column was introduced. SQLite has no `ADD COLUMN IF NOT EXISTS`, so
+  // we probe pragma table_info and only ALTER when the column is missing.
+  // Adds the non-redeemable `approval_id` column on the consent + device
+  // auth tables; see SCHEMA comment for rationale.
+  runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'pending_consents', 'approval_id', 'TEXT'));
+  runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'owner_device_auth', 'approval_id', 'TEXT'));
+  // Index gives us a fast lookup-by-approval-id and approximates the
+  // UNIQUE constraint on the column (the inline CREATE TABLE form
+  // declares it UNIQUE; SQLite's ALTER TABLE ADD COLUMN does not
+  // accept UNIQUE inline, so a partial unique index is the equivalent
+  // for pre-existing DBs).
+  raw.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_pending_consents_approval_id ON pending_consents(approval_id) WHERE approval_id IS NOT NULL`);
+  raw.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_owner_device_auth_approval_id ON owner_device_auth(approval_id) WHERE approval_id IS NOT NULL`);
   db = withCachedPrepare(raw);
   // Stamp the chosen vector-index backend onto the wrapped db so
   // search-semantic.js can select without re-probing. The Proxy's

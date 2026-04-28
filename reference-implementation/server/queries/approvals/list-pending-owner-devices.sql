@@ -6,7 +6,7 @@
 -- alongside list-pending-consents.sql by `/_ref/approvals`. Bounded by
 -- the count of in-flight CLI logins; the `expires_at > ?` predicate
 -- prevents long-uptime drift.
-SELECT device_code, user_code, client_id, created_at
+SELECT device_code, user_code, client_id, created_at, approval_id
 FROM owner_device_auth
 WHERE status = 'pending'
   AND expires_at > ?

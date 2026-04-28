@@ -261,7 +261,6 @@ function PendingApprovalRow({ approval }: { approval: PendingApproval }) {
       <form className="flex flex-wrap gap-2">
         <input name="kind" type="hidden" value={approval.kind} />
         <input name="approval_id" type="hidden" value={approval.approval_id} />
-        {approval.user_code ? <input name="user_code" type="hidden" value={approval.user_code} /> : null}
         <Button formAction={approvePendingApprovalAction} size="sm" type="submit">
           Approve
         </Button>

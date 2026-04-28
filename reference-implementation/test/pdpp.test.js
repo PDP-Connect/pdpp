@@ -1664,9 +1664,14 @@ test('PDPP reference implementation integration', async (t) => {
       assert.equal(submittedEvent.request_id, requestId);
       assert.equal(submittedEvent.client_id, 'cli_longview');
       assert.equal(submittedEvent.object_type, 'owner_device_auth');
-      assert.equal(submittedEvent.object_id, deviceBody.device_code);
+      // The live device_code is bearer-equivalent for owner_device_auth
+      // (it redeems for an owner bearer at /oauth/token), so the public
+      // _ref read surface SHALL replace object_id with a redaction
+      // literal. Spec: harden-reference-auth-surfaces §7.
+      assert.equal(submittedEvent.object_id, '<redacted-device-code>');
       assert.equal(submittedEvent.data?.issuance_path, 'owner_device_flow');
-      assert.equal(submittedEvent.data?.user_code, deviceBody.user_code);
+      // user_code is part of the takeover chain; redacted on public reads.
+      assert.equal(submittedEvent.data?.user_code, '<redacted-bearer>');
 
       const pendingResp = await fetch(`${asUrl}/oauth/token`, {
         method: 'POST',
@@ -1713,7 +1718,8 @@ test('PDPP reference implementation integration', async (t) => {
       assert.ok(ownerTokenEvent, 'trace should include owner token issuance');
       assert.equal(ownerTokenEvent.request_id, requestId);
       assert.equal(ownerTokenEvent.client_id, 'cli_longview');
-      assert.equal(ownerTokenEvent.data?.user_code, deviceBody.user_code);
+      // user_code redacted on public _ref read.
+      assert.equal(ownerTokenEvent.data?.user_code, '<redacted-bearer>');
     });
   });
 
@@ -1765,9 +1771,12 @@ test('PDPP reference implementation integration', async (t) => {
       );
       assert.ok(rejectedEvent, 'trace should include request.rejected for owner-device denial');
       assert.equal(rejectedEvent.client_id, 'cli_longview');
-      assert.equal(rejectedEvent.object_id, deviceBody.device_code);
+      // device_code / user_code redacted on public _ref read surfaces
+      // (harden-reference-auth-surfaces §7). The internal correlation
+      // by request_id and client_id remains intact.
+      assert.equal(rejectedEvent.object_id, '<redacted-device-code>');
       assert.equal(rejectedEvent.data?.issuance_path, 'owner_device_flow');
-      assert.equal(rejectedEvent.data?.user_code, deviceBody.user_code);
+      assert.equal(rejectedEvent.data?.user_code, '<redacted-bearer>');
       assert.equal(rejectedEvent.data?.error?.code, 'access_denied');
       assert.match(rejectedEvent.data?.error?.message || '', /denied the request/);
     });

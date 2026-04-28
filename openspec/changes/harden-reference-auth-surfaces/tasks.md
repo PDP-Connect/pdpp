@@ -59,3 +59,28 @@ The original change deferred CSRF as a P2. Owner review of v1 asked for the high
 - [x] `node --test reference-implementation/test/owner-auth.test.js test/owner-csrf.test.js test/owner-session.test.js test/security-consent-token-handoff.test.js` (CSRF follow-up)
 - [x] `git grep -nE '"the owner"' apps/ packages/ reference-implementation/ openspec/specs/` — empty (excluding archive)
 - [x] Targeted re-run of every test that touches `/grants/<id>/revoke`.
+
+## 7. P0 follow-up: device-code / user-code exposure on read surfaces (2026-04-27)
+
+The 2026-04-27 P0/P1 audit identified two P0 leaks the §2 redactor and the in-flight owner-auth gating do not close:
+
+- P0-1: `/_ref/approvals` projects the live `device_code` as `approval_id`, and the consent entry's `request_uri` embeds the device_code verbatim. The owner-device flow's `device_code` is the literal bearer for `POST /oauth/token`. Owner-gating reduces the blast radius but the operator console still SHALL NOT see the live bearer.
+- P0-2: The §2 redactor whitelists `object_type === 'token'` but the `request.submitted` events for `pending_consent` and `owner_device_auth` carry the `device_code` as `object_id` and the `user_code` in `data`. Spine timeline reads echoed those bearer-equivalents back.
+
+The fix lives inside this change because the surface (live-bearer redaction at the `_ref` read boundary) and the rationale ("the projection is the read-time guarantee") are the ones already covered by §2.
+
+- [x] 7.1 Add an `approval_id` column to `pending_consents` and `owner_device_auth` (random opaque, generated per row at create time). Idempotent `ALTER TABLE ADD COLUMN` migration in `db.js::initDb` covers pre-existing DBs.
+- [x] 7.2 Project `approval_id` on `/_ref/approvals` instead of `device_code`. `request_uri` is `null` for both kinds (the canonical request_uri embeds the device_code; clients that legitimately hold a request_uri got it from PAR, not from the operator console). `user_code` is `null` on both kinds.
+- [x] 7.3 Extend `redactSpineEventForPublic` to also redact:
+  - `object_id` when `object_type` is `pending_consent` or `owner_device_auth` (literal `<redacted-device-code>`)
+  - `data.device_code`, `data.user_code`, `data.request_uri` keys (literal `<redacted-bearer>`) when present in the event's top-level `data` object
+  Stays narrow: still doesn't traverse arrays or nested objects, still doesn't pattern-match by string shape.
+- [x] 7.4 Accept `approval_id` (alongside `request_uri`/`user_code`) on `POST /consent/approve`, `POST /consent/deny`, `POST /device/approve`, `POST /device/deny`. The AS resolves the approval_id to the device_code/user_code internally behind the existing owner-session + CSRF gate.
+- [x] 7.5 Update the dashboard's `operator-approvals.ts` to send `approval_id` for both consent and owner-device approve/deny. Drop the user_code hidden form field from the pending-approvals row.
+- [x] 7.6 New file `reference-implementation/test/security-device-code-exposure.test.js` pinning:
+  - `/_ref/approvals` does not include `device_code` or `user_code` for any kind.
+  - `/_ref/approvals` consent entries have `request_uri: null`.
+  - `/_ref/traces/:traceId` for a pending consent does not echo the device_code as `object_id` or in `data`.
+  - `/_ref/traces/:traceId` for an owner_device flow does not echo the device_code, user_code, or request_uri.
+  - The dashboard approve flow with `approval_id` succeeds end-to-end and the device_code is not redeemable from any public read surface during the flow.
+- [x] 7.7 Append the §7 scenarios to `specs/reference-implementation-architecture/spec.md` so the redactor's new coverage and the `/_ref/approvals` shape are pinned.

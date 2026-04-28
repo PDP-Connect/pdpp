@@ -3,12 +3,20 @@
 ### Requirement: Reference-only surfaces are explicit
 Debugging, replay, trace, and operator-control surfaces that are useful for the reference implementation but are not part of core PDPP SHALL be explicitly marked as reference-only.
 
-The reference implementation SHALL NOT expose live bearer-token material on any reference-only read surface, even when that surface is otherwise unauthenticated. Every event projected from `spine_events` onto `_ref` timeline responses SHALL satisfy two narrow projection rules before the response is serialized:
+The reference implementation SHALL NOT expose live bearer-token material on any reference-only read surface, even when that surface is otherwise unauthenticated. Every event projected from `spine_events` onto `_ref` timeline responses SHALL satisfy these narrow projection rules before the response is serialized:
 
 1. The top-level `token_id` field SHALL be removed from the event.
 2. When the event's `object_type` equals `'token'`, the event's `object_id` SHALL be replaced with the literal string `<redacted-token-id>` (because `token.issued` events use the bearer string as both `token_id` and `object_id`).
+3. When the event's `object_type` equals `'pending_consent'` or `'owner_device_auth'`, the event's `object_id` SHALL be replaced with the literal string `<redacted-device-code>` (because those events use the live `device_code` as `object_id`, and the device_code is bearer-equivalent — it redeems for an owner bearer at `POST /oauth/token` and resolves to a request_uri that, when paired with `/consent/approve`, issues a client bearer).
+4. The event's top-level `data` object, if present and not an array, SHALL have any of the keys `device_code`, `user_code`, or `request_uri` replaced with the literal string `<redacted-bearer>`. The projection SHALL NOT traverse arrays inside `data` and SHALL NOT recurse into nested objects.
 
-The projection SHALL NOT traverse the event's `data` payload, SHALL NOT pattern-match field names, and SHALL NOT redact by value shape. Storage of `token_id` and `object_id` in `spine_events` is unchanged by this requirement; the projection is a read-time guarantee. A wider name- or shape-based projection, and removal of the bearer from spine storage entirely, are deferred to a separate change.
+The projection SHALL NOT pattern-match field names beyond the explicit allowlist above, SHALL NOT redact by value shape, and SHALL NOT recurse into nested data objects. Storage of `token_id`, `object_id`, and `data` in `spine_events` is unchanged by this requirement; the projection is a read-time guarantee. A wider name- or shape-based projection, and removal of the bearer from spine storage entirely, are deferred to a separate change.
+
+The operator console projection of pending approvals (`GET /_ref/approvals`) SHALL also satisfy:
+
+1. `approval_id` SHALL be the row's stored opaque `approval_id` (a non-redeemable id minted at row creation), NOT the row's `device_code`.
+2. `request_uri` SHALL be `null` for every entry. The canonical `request_uri` (`urn:pdpp:pending-consent:<device_code>`) embeds the live device_code; clients that legitimately need it receive it as the response of `POST /oauth/par` and SHALL NOT pick it up from the operator console.
+3. `user_code` SHALL be `null` for every entry. The dashboard's owner approve/deny path SHALL POST `approval_id` (not `user_code`) and the AS SHALL resolve `approval_id` to the matching pending row internally behind the existing owner-session + CSRF gate.
 
 #### Scenario: A trace or timeline endpoint is exposed
 - **WHEN** the implementation exposes trace, timeline, or similar introspection surfaces
@@ -60,10 +68,44 @@ The projection SHALL NOT traverse the event's `data` payload, SHALL NOT pattern-
 - **WHEN** a caller requests `GET /_ref/runs/:runId/timeline` for a run whose stored spine events carry `token_id` values
 - **THEN** the response payload SHALL NOT contain a `token_id` field on any event
 
+#### Scenario: The projection redacts the device_code on pending_consent events
+- **WHEN** a caller requests `GET /_ref/traces/:traceId` for a trace whose `request.submitted` event has `object_type === 'pending_consent'` and `object_id` equal to the live `device_code`
+- **THEN** the response payload SHALL replace that event's `object_id` with the literal string `<redacted-device-code>`
+- **AND** the live device_code value SHALL NOT appear anywhere in the serialized response body
+
+#### Scenario: The projection redacts the device_code on owner_device_auth events
+- **WHEN** a caller requests `GET /_ref/traces/:traceId` for a trace whose `request.submitted` event has `object_type === 'owner_device_auth'` and `object_id` equal to the live `device_code`
+- **THEN** the response payload SHALL replace that event's `object_id` with the literal string `<redacted-device-code>`
+- **AND** the live device_code value SHALL NOT appear anywhere in the serialized response body
+
+#### Scenario: The projection redacts bearer-equivalent keys in event data
+- **WHEN** a stored spine event's top-level `data` object contains any of the keys `device_code`, `user_code`, or `request_uri`
+- **THEN** the projection SHALL replace each such key's value with the literal string `<redacted-bearer>`
+- **AND** other keys inside `data` SHALL pass through unchanged
+
+#### Scenario: `_ref/approvals` does not expose the live device_code
+- **WHEN** a caller (with owner session, when owner-auth is enabled, or any caller in open local-dev mode) requests `GET /_ref/approvals` while a `pending_consents` row and an `owner_device_auth` row are pending
+- **THEN** the response data array SHALL contain entries whose `approval_id` is the row's stored opaque `approval_id`, NOT the row's `device_code`
+- **AND** the live `device_code` value of either row SHALL NOT appear anywhere in the serialized response body
+- **AND** every consent entry's `request_uri` SHALL be `null`
+- **AND** every entry's `user_code` SHALL be `null`
+
+#### Scenario: The dashboard approves a pending consent by approval_id
+- **WHEN** an authenticated owner submits `POST /consent/approve` with `Content-Type: application/json` and a JSON body of `{ "approval_id": "<row-approval-id>", "subject_id": "owner_local" }`
+- **THEN** the AS SHALL resolve the `approval_id` to the matching pending consent row, derive the canonical `request_uri` from its `device_code` internally, and complete the approval
+- **AND** the response status SHALL be `200`
+- **AND** the response body SHALL be the existing `{ grant_id, token, grant }` envelope
+
+#### Scenario: The dashboard approves a pending owner-device flow by approval_id
+- **WHEN** an authenticated owner submits `POST /device/approve` with `Content-Type: application/x-www-form-urlencoded` and `approval_id=<row-approval-id>&subject_id=owner_local`
+- **THEN** the AS SHALL resolve the `approval_id` to the matching pending owner_device_auth row, derive the `user_code` internally, and complete the approval
+- **AND** the response SHALL be the existing rendered "device access approved" hosted page
+
 #### Scenario: The projection does not traverse `data` payloads or match by field-name shape
-- **WHEN** a stored spine event carries fields other than `token_id` and the `object_type === 'token'` ⇒ `object_id` pair (for example, application-level keys inside `data`)
+- **WHEN** a stored spine event carries fields other than the explicitly-redacted set (`token_id`, `object_id` for the listed object_types, and the three top-level `data` keys), for example application-level keys inside `data` or values nested in arrays
 - **THEN** the projection SHALL NOT remove or rename those other fields
 - **AND** the projection SHALL NOT inspect string values for bearer-like shape
+- **AND** the projection SHALL NOT recurse into nested objects or arrays inside `data`
 
 ## ADDED Requirements
 

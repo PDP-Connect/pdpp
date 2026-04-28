@@ -129,6 +129,7 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   readonly authOauthClientsListByIssuerSubject: SmallEnumerationQuery;
   // Auth — oauth_clients (registered OAuth clients)
   readonly authOauthClientsUpsert: MutationQuery;
+  readonly authOwnerDeviceAuthGetByApprovalId: ReadOneQuery;
   // Auth — owner_device_auth (owner CLI device-flow authentication)
   readonly authOwnerDeviceAuthGetByDeviceCode: ReadOneQuery;
   readonly authOwnerDeviceAuthGetByUserCode: ReadOneQuery;
@@ -137,6 +138,7 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   readonly authOwnerDeviceAuthMarkDenied: MutationQuery;
   readonly authOwnerDeviceAuthMarkExpired: MutationQuery;
   readonly authOwnerDeviceAuthUpdateLastPolled: MutationQuery;
+  readonly authPendingConsentsGetByApprovalId: ReadOneQuery;
   // Auth — pending_consents (device-flow staged consent records)
   readonly authPendingConsentsGetByDeviceCode: ReadOneQuery;
   readonly authPendingConsentsInsert: MutationQuery;
@@ -494,12 +496,14 @@ export function loadReferenceQueries(queryDir = QUERIES_DIR): ReferenceQueryRegi
     "spineGetRunTerminalEvent",
     // Auth — pending_consents
     "authPendingConsentsGetByDeviceCode",
+    "authPendingConsentsGetByApprovalId",
     "authPendingConsentsInsert",
     "authPendingConsentsMarkApproved",
     "authPendingConsentsMarkDenied",
     "authPendingConsentsMarkExpired",
     // Auth — owner_device_auth
     "authOwnerDeviceAuthGetByDeviceCode",
+    "authOwnerDeviceAuthGetByApprovalId",
     "authOwnerDeviceAuthGetByUserCode",
     "authOwnerDeviceAuthInsert",
     "authOwnerDeviceAuthMarkApproved",
