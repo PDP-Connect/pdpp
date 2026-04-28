@@ -337,6 +337,28 @@ code, pre, kbd, samp { font-family: var(--font-mono); }
   font-size: 0.875rem;
 }
 
+.hosted-ui-warning {
+  border: 1px solid oklch(0.78 0.16 78 / 0.45);
+  background: oklch(0.78 0.16 78 / 0.08);
+  color: var(--foreground);
+  padding: 0.75rem 0.875rem;
+  border-radius: 0.5rem;
+  font-size: 0.875rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+.hosted-ui-warning-title {
+  font-weight: 600;
+  font-size: 0.8125rem;
+  letter-spacing: 0.025em;
+  text-transform: uppercase;
+  color: oklch(0.45 0.12 60);
+}
+.hosted-ui-warning-body {
+  color: var(--foreground);
+}
+
 .hosted-ui-result {
   display: flex;
   align-items: flex-start;

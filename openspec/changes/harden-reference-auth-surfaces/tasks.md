@@ -93,8 +93,8 @@ The owner bug-hunt reconciliation found three remaining P1 consent-surface issue
 - `continuous` grants render as a plain key/value row, without an explicit long-lived-access warning;
 - `ai_training` requests without affirmative consent throw an untyped `Error`, which can surface as a generic server failure rather than a typed PDPP error.
 
-- [ ] 8.1 Render wildcard stream requests as an explicit "all streams" disclosure with the resolved stream names/count for the requested source.
-- [ ] 8.2 Add a distinct continuous-access risk affordance, including the missing-expiry/no-retention case.
-- [ ] 8.3 Replace the untyped AI-training consent failure with a typed PDPP error envelope.
-- [ ] 8.4 Add black-box tests for wildcard rendering, continuous-risk copy, and AI-training error shape.
-- [ ] 8.5 Validate `harden-reference-auth-surfaces` and `--all` strictly.
+- [x] 8.1 Render wildcard stream requests as an explicit "all streams" disclosure with the resolved stream names/count for the requested source.
+- [x] 8.2 Add a distinct continuous-access risk affordance, including the missing-expiry/no-retention case.
+- [x] 8.3 Replace the untyped AI-training consent failure with a typed PDPP error envelope.
+- [x] 8.4 Add black-box tests for wildcard rendering, continuous-risk copy, and AI-training error shape.
+- [x] 8.5 Validate `harden-reference-auth-surfaces` and `--all` strictly.

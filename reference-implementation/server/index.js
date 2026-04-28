@@ -259,7 +259,7 @@ function handleError(res, err) {
   if (err.trace_id) {
     setReferenceTraceId(res, err.trace_id);
   }
-  pdppError(res, status, code, err.message);
+  pdppError(res, status, code, err.message, err.param || null);
 }
 
 function oauthError(res, status, code, description) {
@@ -1618,21 +1618,77 @@ function buildAsApp(opts = {}) {
     const connectorId = sourceBinding?.connector_id;
     const providerId = sourceBinding?.provider_id;
     const showConnectorLabel = sourceBinding?.binding_kind !== 'provider_native';
+    const sourceLabel = showConnectorLabel
+      ? (connectorId || 'this source')
+      : (providerId || 'this source');
 
-    const streamItems = (selection.streams || [])
-      .map((s) => {
-        const fragments = [
-          s.time_range ? `since ${s.time_range.since || 'any'}` : null,
-          s.fields ? `fields: ${s.fields.join(', ')}` : null,
-          s.view ? `view: ${s.view}` : null,
-          s.necessity === 'optional' ? 'optional' : null,
-        ].filter(Boolean);
-        const meta = fragments.length
-          ? ` <span class="hosted-ui-stream-meta">${hostedEscape(fragments.join(' · '))}</span>`
-          : '';
-        return `<li><span class="hosted-ui-stream-name">${hostedEscape(s.name)}</span>${meta}</li>`;
-      })
-      .join('');
+    const requestedStreams = Array.isArray(selection.streams) ? selection.streams : [];
+    const isWildcardRequest = requestedStreams.length === 1 && requestedStreams[0]?.name === '*';
+    const manifestStreamNames = Array.isArray(pending.manifestStreamNames)
+      ? pending.manifestStreamNames
+      : null;
+
+    let streamsBlock;
+    if (isWildcardRequest) {
+      // The owner must see effective scope, not the protocol shorthand `*`.
+      const resolvedNames = manifestStreamNames && manifestStreamNames.length > 0
+        ? manifestStreamNames
+        : null;
+      const countSummary = resolvedNames
+        ? `All streams for ${sourceLabel} (${resolvedNames.length}) are in scope.`
+        : `All streams for ${sourceLabel} are in scope.`;
+      const resolvedList = resolvedNames
+        ? `<ul class="hosted-ui-streams">${
+            resolvedNames
+              .map((name) => `<li><span class="hosted-ui-stream-name">${hostedEscape(name)}</span></li>`)
+              .join('')
+          }</ul>`
+        : '';
+      streamsBlock = `
+      <div>
+        <span class="pdpp-title">Streams requested</span>
+        <div class="hosted-ui-warning" role="note">
+          <span class="hosted-ui-warning-title">All streams</span>
+          <span class="hosted-ui-warning-body">${hostedEscape(countSummary)}</span>
+        </div>
+        ${resolvedList}
+      </div>`;
+    } else {
+      const streamItems = requestedStreams
+        .map((s) => {
+          const fragments = [
+            s.time_range ? `since ${s.time_range.since || 'any'}` : null,
+            s.fields ? `fields: ${s.fields.join(', ')}` : null,
+            s.view ? `view: ${s.view}` : null,
+            s.necessity === 'optional' ? 'optional' : null,
+          ].filter(Boolean);
+          const meta = fragments.length
+            ? ` <span class="hosted-ui-stream-meta">${hostedEscape(fragments.join(' · '))}</span>`
+            : '';
+          return `<li><span class="hosted-ui-stream-name">${hostedEscape(s.name)}</span>${meta}</li>`;
+        })
+        .join('');
+      streamsBlock = `
+      <div>
+        <span class="pdpp-title">Streams requested</span>
+        <ul class="hosted-ui-streams">${streamItems}</ul>
+      </div>`;
+    }
+
+    const isContinuous = selection.access_mode === 'continuous';
+    const hasRetentionBound = Boolean(selection.retention?.max_duration);
+
+    let continuousBlock = '';
+    if (isContinuous) {
+      const continuousBody = hasRetentionBound
+        ? 'This is long-lived access — the client may keep reading until the grant is revoked or its retention bound is reached.'
+        : 'This is long-lived access with no explicit expiry. The client may keep reading until you revoke the grant.';
+      continuousBlock = `
+      <div class="hosted-ui-warning" role="note">
+        <span class="hosted-ui-warning-title">Continuous access</span>
+        <span class="hosted-ui-warning-body">${hostedEscape(continuousBody)}</span>
+      </div>`;
+    }
 
     const facts = renderKeyValueList([
       { label: 'Requesting app', value: clientName },
@@ -1644,12 +1700,6 @@ function buildAsApp(opts = {}) {
         ? { label: 'Retention', value: `${selection.retention.on_expiry} after ${selection.retention.max_duration}` }
         : null,
     ].filter(Boolean));
-
-    const streamsBlock = `
-      <div>
-        <span class="pdpp-title">Streams requested</span>
-        <ul class="hosted-ui-streams">${streamItems}</ul>
-      </div>`;
 
     const codeBlock = pending.userCode
       ? `<div><span class="pdpp-eyebrow">Verification code</span><div class="hosted-ui-code">${hostedEscape(pending.userCode)}</div></div>`
@@ -1681,7 +1731,7 @@ function buildAsApp(opts = {}) {
         title: `${clientName} wants access to your data`,
         lede: 'Review what this app is asking for. Your server will only release what you allow here.',
       }),
-      renderSurface({ surface: 'human', children: [codeBlock, facts, streamsBlock, actions].filter(Boolean).join('\n'), ariaLabel: 'Consent request' }),
+      renderSurface({ surface: 'human', children: [codeBlock, facts, streamsBlock, continuousBlock, actions].filter(Boolean).join('\n'), ariaLabel: 'Consent request' }),
     ].join('\n');
 
     return renderHostedDocument({

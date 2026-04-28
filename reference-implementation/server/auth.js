@@ -2016,6 +2016,8 @@ export async function getPendingConsent(deviceCode) {
   }
   const request = JSON.parse(row.params_json);
   request.trace_context = requirePersistedPendingTraceContext(row);
+  let resolvedStreams = null;
+  let manifestStreamNames = null;
   try {
     requireStructuredPendingRequestShape(request);
     await requirePendingRequestClientRegistration(request);
@@ -2023,7 +2025,10 @@ export async function getPendingConsent(deviceCode) {
     request.source_binding = describeSourceBinding(sourceBinding);
     request.storage_binding = normalizeStorageBinding(storageBinding);
     const manifest = await requireGrantManifestForBindings(sourceBinding, storageBinding);
-    requirePendingRequestContractAgainstManifest(request, manifest);
+    resolvedStreams = requirePendingRequestContractAgainstManifest(request, manifest);
+    manifestStreamNames = Array.isArray(manifest?.streams)
+      ? manifest.streams.map((stream) => stream.name).filter((name) => typeof name === 'string')
+      : null;
   } catch (err) {
     await emitPendingConsentRejected(request, row, err);
     throw err;
@@ -2033,6 +2038,8 @@ export async function getPendingConsent(deviceCode) {
     userCode: row.user_code,
     createdAt: row.created_at,
     expiresAt: row.expires_at,
+    resolvedStreams,
+    manifestStreamNames,
   };
 }
 
@@ -2086,9 +2093,15 @@ export async function approveGrant(deviceCode, subjectId = 'owner_local', opts =
   const client = request.client || {};
 
   // The AS MUST obtain explicit affirmative consent before issuing ai_training grants.
+  // A missing affirmation is a consent-policy rejection, not an internal failure;
+  // surface it as a typed PDPP error envelope (status 400, code `invalid_request`)
+  // so callers do not see it as a generic 500.
   const { ai_training_consented } = opts;
   if (selection.purpose_code === 'https://pdpp.org/purpose/ai_training' && !ai_training_consented) {
-    throw new Error('Explicit affirmative consent required for ai_training purpose');
+    const err = new Error('Explicit affirmative consent required for ai_training purpose');
+    err.code = 'invalid_request';
+    err.param = 'ai_training_consented';
+    throw err;
   }
 
   const grantId = generateId('grt');
