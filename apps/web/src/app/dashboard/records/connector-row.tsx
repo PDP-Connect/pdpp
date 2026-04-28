@@ -52,8 +52,23 @@ export function ConnectorRow({ overview, runsHref }: RowProps) {
   // the PREVIOUS run). Clamp to "now" for the optimistic window; once
   // the server confirms the real active run, lastRun.first_at is the
   // fresh run's timestamp and we use it.
-  const [optimisticStart] = useState(() => Date.now());
-  const effectiveStartIso = isRunning && lastRun ? lastRun.first_at : new Date(optimisticStart).toISOString();
+  //
+  // SSR-safe: we initialize `optimisticStart` lazily via an effect so the
+  // server render and first client render agree on `null`. The optimistic
+  // branch never fires during SSR (the user-click path that triggers it is
+  // client-only), so the visible behavior is unchanged.
+  const [optimisticStart, setOptimisticStart] = useState<number | null>(null);
+  useEffect(() => {
+    if (optimisticStart === null) {
+      setOptimisticStart(Date.now());
+    }
+  }, [optimisticStart]);
+  let effectiveStartIso: string | undefined;
+  if (isRunning && lastRun) {
+    effectiveStartIso = lastRun.first_at;
+  } else if (optimisticStart !== null) {
+    effectiveStartIso = new Date(optimisticStart).toISOString();
+  }
 
   // Auto-clear non-error toasts after a few seconds.
   useEffect(() => {
@@ -309,27 +324,33 @@ function RunningBadge({ startedAt, href }: { startedAt: string | undefined; href
   // Elapsed-time ticker. Only active while this component is mounted —
   // mount happens only when the row is in a running state, so the
   // interval is cheap.
+  //
+  // Hydration note: `Date.now()` differs between server render and client
+  // hydration (the wall clock advances in between), which would mismatch
+  // the rendered `title` and elapsed text. We render an SSR-safe placeholder
+  // ("Running") with no clock-derived attributes, then enrich on mount.
   const startedMs = useMemo(() => {
     if (!startedAt) {
-      return Date.now();
+      return null;
     }
     const t = Date.parse(startedAt);
-    return Number.isFinite(t) ? t : Date.now();
+    return Number.isFinite(t) ? t : null;
   }, [startedAt]);
-  const [now, setNow] = useState(() => Date.now());
+  const [now, setNow] = useState<number | null>(null);
   useEffect(() => {
+    setNow(Date.now());
     const id = setInterval(() => setNow(Date.now()), ELAPSED_TICK_MS);
     return () => clearInterval(id);
   }, []);
-  const secs = Math.max(0, Math.floor((now - startedMs) / 1000));
+  const secs = now !== null && startedMs !== null ? Math.max(0, Math.floor((now - startedMs) / 1000)) : null;
   const content = (
     <span
       aria-live="polite"
       className="pdpp-caption inline-flex items-center gap-1 text-foreground"
-      title={`running for ${secs} seconds`}
+      title={secs === null ? "running" : `running for ${secs} seconds`}
     >
       <StatusDot tone="running" />
-      Running · {formatElapsed(secs)}
+      {secs === null ? "Running" : `Running · ${formatElapsed(secs)}`}
     </span>
   );
   if (!href) {

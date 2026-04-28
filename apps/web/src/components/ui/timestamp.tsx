@@ -191,8 +191,11 @@ function subscribeToTick(cb: () => void): () => void {
   };
 }
 
-function useNowTick(enabled: boolean): number {
-  const [now, setNow] = useState(() => Date.now());
+function useNowTick(enabled: boolean): number | null {
+  // SSR-safe initial null; we read the wall clock only after mount, so the
+  // server-rendered HTML and the first client render agree (both render with
+  // `now=null`). Consumers gate clock-derived output on a non-null value.
+  const [now, setNow] = useState<number | null>(null);
   useEffect(() => {
     if (!enabled) {
       return;
@@ -242,7 +245,10 @@ export function Timestamp({
   const useRelative = mode === "relative" || (mode === "auto" && mounted && ageMs < RELATIVE_CUTOFF);
 
   let label = formatInstantAbsolute(parsed.date, precision, mounted);
-  if (mounted && useRelative) {
+  // `now` is only populated after mount via `useNowTick`. Both gates
+  // (`mounted`, `now !== null`) are enforced together to keep SSR HTML and
+  // first-client-render output identical (relative formatting is post-mount).
+  if (mounted && useRelative && now !== null) {
     label = formatRelative(parsed.date, now);
   }
 
