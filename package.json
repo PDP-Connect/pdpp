@@ -4,8 +4,8 @@
   "description": "PDPP protocol specs, reference implementation, docs site, and design workbench.",
   "type": "module",
   "scripts": {
-    "dev": "pnpm -r --parallel --stream --filter pdpp-reference-implementation --filter pdpp-web run dev",
-    "dev:stop": "fuser -k 3002/tcp 7662/tcp 7663/tcp 2>/dev/null; npx --yes kill-port 7662 7663 3002 2>/dev/null; true",
+    "dev": "node scripts/dev.mjs",
+    "dev:stop": "sh -c 'WEB_PORT=${PDPP_WEB_PORT:-3000}; fuser -k \"$WEB_PORT/tcp\" 3002/tcp 7662/tcp 7663/tcp 2>/dev/null; npx --yes kill-port 7662 7663 \"$WEB_PORT\" 3002 2>/dev/null; true'",
     "build": "pnpm web:build",
     "preview": "pnpm web:start",
     "start": "pnpm web:start",
