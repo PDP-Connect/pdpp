@@ -4,11 +4,12 @@
  *
  * The current consumer is `acquireBrowserForConnector` in
  * `browser-launch.ts`: when the connector runs inside a container AND
- * requests a browser, the runtime must fail closed if no host browser
- * bridge is configured. Launching an invisible in-container Chromium is
- * the silent-failure path we explicitly want to avoid (an interactive
- * connector — Cloudflare/OTP — would block on an `auto-login`
- * INTERACTION handshake forever with no operator-visible signal).
+ * requests a headed browser, the runtime must fail closed if no host
+ * browser bridge is configured. Launching an invisible in-container
+ * Chromium is the silent-failure path we explicitly want to avoid (an
+ * interactive connector — Cloudflare/OTP — would block on an
+ * `auto-login` INTERACTION handshake forever with no operator-visible
+ * signal).
  *
  * Spec reference:
  *   openspec/changes/design-host-browser-bridge-for-docker/design.md
@@ -17,23 +18,28 @@
  *
  * Detection signals (any one is sufficient):
  *
- *   1. `PDPP_REFERENCE_MODE === "composed"` — the dev/prod compose
- *      stacks export this from `docker-compose.yml`. This is the
- *      authoritative signal: a developer running `node --watch` outside
- *      Docker will not have it set.
+ *   1. `/.dockerenv` exists — Docker writes this sentinel inside every
+ *      container image. Catches Compose runs, plain `docker run`, and
+ *      Podman in Docker-compat mode.
  *
- *   2. `/.dockerenv` exists — Docker writes this sentinel inside every
- *      container image. Catches Compose runs that happened to omit the
- *      MODE env, plain `docker run`, and Podman in Docker-compat mode.
- *
- *   3. `PDPP_FORCE_CONTAINER` — explicit override for tests or for
+ *   2. `PDPP_FORCE_CONTAINER` — explicit override for tests or for
  *      Kubernetes/non-Docker container runtimes that don't set
  *      `/.dockerenv`. Set to "1" to count as in-container.
  *
- * The detector is intentionally biased toward false-positive (declares
- * "in container" when uncertain) only when at least one signal is
- * present. An untouched host process won't match any signal and will
- * keep the existing host-direct behavior.
+ * Historical note: an earlier version also treated
+ * `PDPP_REFERENCE_MODE=composed` as a container signal, on the
+ * assumption that composed mode was only set inside Docker compose. That
+ * assumption became stale once host-side dev scripts adopted composed
+ * mode for single-origin development against a Next.js BFF. The signals
+ * are now disjoint: `PDPP_REFERENCE_MODE` describes the *origin layout*
+ * (one composed origin vs. direct AS/RS ports), and the container
+ * detector consults only signals that are about the actual runtime
+ * environment.
+ *
+ * The detector is biased toward false-positive (declares "in container"
+ * when uncertain) only when at least one signal is present. An untouched
+ * host process won't match any signal and will keep the existing
+ * host-direct behavior.
  */
 
 import { existsSync } from "node:fs";
@@ -42,7 +48,6 @@ const DOCKER_ENV_SENTINEL = "/.dockerenv";
 
 export interface ContainerDetectionEnv {
   PDPP_FORCE_CONTAINER?: string;
-  PDPP_REFERENCE_MODE?: string;
 }
 
 export interface ContainerDetectionDeps {
@@ -67,9 +72,6 @@ export function isRunningInContainer(
   deps: ContainerDetectionDeps = {}
 ): boolean {
   if (readFlag(env.PDPP_FORCE_CONTAINER, "1")) {
-    return true;
-  }
-  if (readFlag(env.PDPP_REFERENCE_MODE, "composed")) {
     return true;
   }
   const fileExists = deps.fileExists ?? existsSync;

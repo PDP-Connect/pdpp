@@ -208,15 +208,17 @@ test("acquireBrowserForConnector fails closed when caller omits 'headless' in co
   }
 });
 
-test("acquireBrowserForConnector fails closed for HEADED in container with no bridge (PDPP_REFERENCE_MODE=composed)", async () => {
+test("acquireBrowserForConnector fails closed for HEADED in container with no bridge (PDPP_FORCE_CONTAINER=1)", async () => {
   // Integration test — the fail-closed branch short-circuits before any
-  // launcher work, so this is fast and deterministic. Compose stacks
-  // export PDPP_REFERENCE_MODE=composed. Without a bridge URL, the
-  // runtime would otherwise launch an invisible in-container Chromium.
-  // Per design-host-browser-bridge-for-docker design.md § "Failure Mode
-  // When Unavailable".
+  // launcher work, so this is fast and deterministic. `PDPP_FORCE_CONTAINER`
+  // is the explicit test/Kubernetes signal; Docker/Compose is normally
+  // detected through `/.dockerenv`. `PDPP_REFERENCE_MODE=composed` describes
+  // origin layout, not runtime placement. Without a bridge URL, the runtime
+  // would otherwise launch an invisible in-container Chromium. Per
+  // design-host-browser-bridge-for-docker design.md § "Failure Mode When
+  // Unavailable".
   const restore = withEnv({
-    PDPP_REFERENCE_MODE: "composed",
+    PDPP_FORCE_CONTAINER: "1",
   });
   try {
     await assert.rejects(

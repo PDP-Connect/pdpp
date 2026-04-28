@@ -3,17 +3,7 @@ import test from "node:test";
 import { isRunningInContainer } from "./runtime-environment.ts";
 
 test("isRunningInContainer returns false on a clean host", () => {
-  assert.equal(
-    isRunningInContainer(
-      { PDPP_REFERENCE_MODE: undefined, PDPP_FORCE_CONTAINER: undefined },
-      { fileExists: () => false }
-    ),
-    false
-  );
-});
-
-test("isRunningInContainer detects PDPP_REFERENCE_MODE=composed", () => {
-  assert.equal(isRunningInContainer({ PDPP_REFERENCE_MODE: "composed" }, { fileExists: () => false }), true);
+  assert.equal(isRunningInContainer({ PDPP_FORCE_CONTAINER: undefined }, { fileExists: () => false }), false);
 });
 
 test("isRunningInContainer detects /.dockerenv presence", () => {
@@ -24,12 +14,23 @@ test("isRunningInContainer honors PDPP_FORCE_CONTAINER=1", () => {
   assert.equal(isRunningInContainer({ PDPP_FORCE_CONTAINER: "1" }, { fileExists: () => false }), true);
 });
 
-test("isRunningInContainer ignores arbitrary PDPP_REFERENCE_MODE values", () => {
-  assert.equal(isRunningInContainer({ PDPP_REFERENCE_MODE: "host" }, { fileExists: () => false }), false);
+test("isRunningInContainer ignores PDPP_REFERENCE_MODE entirely (composed is an origin-layout signal, not a container signal)", () => {
+  // Regression: prior to 2026-04-27 the detector treated
+  // PDPP_REFERENCE_MODE=composed as a container signal. That was a
+  // category error — composed mode describes the BFF/AS/RS origin
+  // layout, not container-vs-host — and false-tripped the headed-
+  // browser fail-closed gate for native dev sessions.
+  assert.equal(
+    isRunningInContainer(
+      { PDPP_REFERENCE_MODE: "composed", PDPP_FORCE_CONTAINER: undefined } as Record<string, string | undefined>,
+      { fileExists: () => false }
+    ),
+    false
+  );
 });
 
-test("isRunningInContainer trims whitespace before matching", () => {
-  assert.equal(isRunningInContainer({ PDPP_REFERENCE_MODE: "  composed  " }, { fileExists: () => false }), true);
+test("isRunningInContainer trims whitespace before matching PDPP_FORCE_CONTAINER", () => {
+  assert.equal(isRunningInContainer({ PDPP_FORCE_CONTAINER: "  1  " }, { fileExists: () => false }), true);
 });
 
 test("isRunningInContainer treats fileExists throw as 'not detected'", () => {
