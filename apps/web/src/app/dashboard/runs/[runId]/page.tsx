@@ -560,28 +560,40 @@ function ConnectorStderrTailSection({ failure }: { failure: SpineEvent | undefin
   if (tail.redacted) {
     metaPills.push({ label: "redacted", value: "yes" });
   }
+  // <summary> may contain only phrasing content per the HTML spec, so the
+  // descriptive paragraph, meta list, and stderr <pre> live in the
+  // details body. The summary keeps an inline title plus compact
+  // metadata, and the body re-states the untrusted-evidence label so it
+  // is visible whenever the panel is expanded.
   return (
     <section className="mb-8 rounded-md border border-border/70 bg-muted/20 px-4 py-3">
       <details>
         <summary className="cursor-pointer list-none">
-          <header className="flex flex-wrap items-baseline justify-between gap-2">
-            <div>
-              <h3 className="pdpp-eyebrow">Connector stderr (diagnostic)</h3>
-              <p className="pdpp-caption text-muted-foreground">
-                Connector-authored output captured before exit. This is untrusted evidence — not a verified PDPP error.
-                Use it as a hint for what the connector was doing, not as the authoritative failure reason.
-              </p>
-            </div>
-            <span className="pdpp-caption text-muted-foreground">click to expand</span>
-          </header>
-          <ul className="mt-2 flex flex-wrap gap-x-3 gap-y-1">
-            {metaPills.map((pill) => (
-              <li className="pdpp-caption text-muted-foreground" key={pill.label}>
-                {pill.label}: <span className="text-foreground tabular-nums">{pill.value}</span>
-              </li>
+          <span className="pdpp-eyebrow mr-3">Connector stderr (diagnostic)</span>
+          <span className="pdpp-caption text-muted-foreground">
+            {metaPills.map((pill, index) => (
+              <span key={pill.label}>
+                {index > 0 ? <span aria-hidden="true"> · </span> : null}
+                <span>{pill.label}: </span>
+                <span className="text-foreground tabular-nums">{pill.value}</span>
+              </span>
             ))}
-          </ul>
+            <span aria-hidden="true"> · </span>
+            <span>click to expand</span>
+          </span>
         </summary>
+        <p className="pdpp-caption mt-3 text-muted-foreground">
+          Connector-authored output captured before exit. This is untrusted evidence — not a verified PDPP error. Use it
+          as a hint for what the connector was doing, not as the authoritative failure reason.
+        </p>
+        <dl className="pdpp-caption mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
+          {metaPills.map((pill) => (
+            <Fragment key={pill.label}>
+              <dt className="text-muted-foreground">{pill.label}</dt>
+              <dd className="tabular-nums">{pill.value}</dd>
+            </Fragment>
+          ))}
+        </dl>
         <pre className="pdpp-caption mt-3 max-h-96 overflow-auto whitespace-pre-wrap break-all rounded-md border border-border/60 bg-background/70 p-3 font-mono text-foreground/90">
           {tail.text}
         </pre>
