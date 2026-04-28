@@ -26,4 +26,4 @@
 
 - [x] 4.1 Run `openspec validate define-reference-operation-environments --strict`.
 - [x] 4.2 Run `openspec validate --all --strict`.
-- [ ] 4.3 Run `pnpm workstreams:status -- --no-fail` and reconcile any active worker reports before declaring this design ready for implementation.
+- [x] 4.3 Run `pnpm workstreams:status -- --no-fail` and reconcile any active worker reports before declaring this design ready for implementation.
