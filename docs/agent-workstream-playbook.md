@@ -23,6 +23,31 @@ reverses it, this section can be updated. Until then, worker task packets should
 be written for Claude Code, and the owner agent should not call Codex sub-agent
 delegation tools.
 
+Claude Code workers may use their own lower-cost sub-agents for bounded,
+mechanical work. This is encouraged when it saves context without delegating
+authority.
+
+Good worker-internal sub-agent tasks:
+
+- read-only inventory of call sites, imports, routes, tests, and fixtures;
+- grep sweeps for old names, forbidden imports, or duplicated behavior;
+- route/API parity probes with reproducible commands;
+- fixture generation or replay against an already-defined schema;
+- mechanical edits after the Claude worker has chosen the exact target shape;
+- docs synchronization that records already-proven facts.
+
+Bad worker-internal sub-agent tasks:
+
+- designing operation, storage, search, grant, cursor, version, or spine
+  semantics;
+- choosing protocol wording or OpenSpec normative requirements;
+- broad cleanup outside the assigned scope;
+- deciding merge readiness.
+
+The Claude worker remains responsible for integrating and verifying every
+sub-agent result before reporting. The owner reviews the worker's branch, not
+the sub-agents' raw claims.
+
 ### Owner Agent
 
 The owner agent is the integration gatekeeper. The owner:
@@ -238,6 +263,13 @@ owner for the current toolchain.
 
 The owner reviews merge-queue entries in dependency order, not arrival order.
 
+Owner feedback should be batched by default. After a worker reports, the owner
+does one review pass over the diff, OpenSpec alignment, validation evidence, and
+old-pattern greps, then sends one consolidated revision batch. Do not drip-feed
+style nits while the worker is still making progress. Interrupt immediately only
+for P0/P1 issues, unsafe Git state, data-loss risk, or an imminent protocol
+decision that the worker must not make.
+
 ### Decisions Log
 
 Use `decisions.md` only for cross-lane decisions, such as:
@@ -362,6 +394,11 @@ Implementation requirements:
 - <specific behavior>
 - <tests that must be added or updated>
 - <docs/OpenSpec updates if required>
+- Use your own lower-cost sub-agents aggressively for read-only inventory,
+  grep sweeps, route probes, fixture generation, and mechanical edits after you
+  define the exact target shape. Do not delegate semantic design, protocol
+  decisions, or merge readiness. Verify every sub-agent result with concrete
+  commands before reporting.
 
 Validation:
 - <commands to run>
