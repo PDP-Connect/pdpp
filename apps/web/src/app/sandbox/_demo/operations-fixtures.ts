@@ -14,6 +14,7 @@
  *   operations (e.g. the deleted `buildLiveStreamsList`).
  */
 
+import type { RefDatasetSummaryDependencies } from "pdpp-reference-implementation/operations/ref-dataset-summary";
 import type {
   RecordDetailDependencies,
   RecordDetailGrant,
@@ -677,5 +678,88 @@ export function createSandboxSearchLexicalDependencies(): SearchLexicalDependenc
     loadSnapshot: (snapshotId) => snapshotCache.get(snapshotId) ?? null,
     formatRecordUrl: ({ stream, recordKey }) =>
       `/sandbox/v1/streams/${encodeURIComponent(stream)}/records/${encodeURIComponent(recordKey)}`,
+  };
+}
+
+// ─── ref.dataset.summary ──────────────────────────────────────────────────
+//
+// Sandbox dataset-summary fixture for the operator-console hero band shape.
+// The canonical operation owns envelope assembly (`object`,
+// `total_retained_bytes`, top-connector sort/limit, empty-corpus collapse);
+// only the raw aggregate inputs are wired here.
+//
+// Arithmetic preserved from the previous `buildLiveDatasetSummary` builder:
+//   - counts come from `DEMO_*.length` (the previous sandbox semantics);
+//   - record JSON bytes come from
+//     `DEMO_RECORDS.reduce((sum, r) => sum + JSON.stringify(r.fields).length, 0)`;
+//   - `record_changes_json_bytes` and `blob_bytes` are 0 (the sandbox has
+//     no record-changes table or blob storage);
+//   - record-time bounds and ingested-time bounds come from sorted record
+//     arrays;
+//   - top-connector candidates come from a per-connector `record_count`
+//     map. The operation owns the sort, tiebreak, and limit so both
+//     adapters cannot drift.
+//
+// The empty-corpus collapse rule (time bounds `null` when `record_count
+// === 0`) is enforced by the operation, so the time-bound fixtures here
+// don't have to short-circuit themselves — but they happen to return
+// `{earliest: null, latest: null}` on an empty dataset anyway, which keeps
+// behavior identical even if the operation gate were removed.
+
+function sandboxDatasetCounts() {
+  return {
+    connector_count: DEMO_CONNECTORS.length,
+    stream_count: DEMO_STREAMS.length,
+    record_count: DEMO_RECORDS.length,
+  };
+}
+
+function sandboxDatasetRetainedBytes() {
+  const recordJsonBytes = DEMO_RECORDS.reduce((sum, r) => sum + JSON.stringify(r.fields).length, 0);
+  return {
+    record_json_bytes: recordJsonBytes,
+    record_changes_json_bytes: 0,
+    blob_bytes: 0,
+  };
+}
+
+function sandboxDatasetTimeBounds(values: readonly string[]): {
+  earliest: string | null;
+  latest: string | null;
+} {
+  if (values.length === 0) {
+    return { earliest: null, latest: null };
+  }
+  const sorted = [...values].sort();
+  return { earliest: sorted[0] ?? null, latest: sorted.at(-1) ?? null };
+}
+
+function sandboxDatasetTopConnectorCandidates(): Array<{
+  connector_id: string;
+  record_count: number;
+}> {
+  const counts = new Map<string, number>();
+  for (const record of DEMO_RECORDS) {
+    counts.set(record.connector_id, (counts.get(record.connector_id) ?? 0) + 1);
+  }
+  return [...counts.entries()].map(([connector_id, record_count]) => ({
+    connector_id,
+    record_count,
+  }));
+}
+
+/**
+ * Build dependencies for `ref.dataset.summary` against the sandbox demo
+ * dataset. Mirrors the previous `buildLiveDatasetSummary` arithmetic; the
+ * canonical operation owns envelope assembly, top-connector sort/limit,
+ * and the empty-corpus collapse.
+ */
+export function createSandboxRefDatasetSummaryDependencies(): RefDatasetSummaryDependencies {
+  return {
+    getCounts: () => sandboxDatasetCounts(),
+    getRetainedBytes: () => sandboxDatasetRetainedBytes(),
+    getRecordTimeBounds: () => sandboxDatasetTimeBounds(DEMO_RECORDS.map((r) => r.record_time)),
+    getIngestedTimeBounds: () => sandboxDatasetTimeBounds(DEMO_RECORDS.map((r) => r.ingested_at)),
+    listTopConnectorCandidates: () => sandboxDatasetTopConnectorCandidates(),
   };
 }

@@ -16,7 +16,8 @@
     "./operations/rs-schema-get": "./operations/rs-schema-get/index.ts",
     "./operations/rs-records-list": "./operations/rs-records-list/index.ts",
     "./operations/rs-records-detail": "./operations/rs-records-detail/index.ts",
-    "./operations/rs-search-lexical": "./operations/rs-search-lexical/index.ts"
+    "./operations/rs-search-lexical": "./operations/rs-search-lexical/index.ts",
+    "./operations/ref-dataset-summary": "./operations/ref-dataset-summary/index.ts"
   },
   "scripts": {
     "//dev": "Default dev is quiet again. Use `pnpm dev:trace-gc` only when investigating native/V8 crash behavior under load. Diagnostic reports go to ../tmp/node-reports/ and exclude env/network sections so connector credentials are not persisted.",

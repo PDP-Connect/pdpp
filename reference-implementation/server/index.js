@@ -33,7 +33,9 @@ import {
 } from './auth.js';
 import {
   ingestRecord, queryRecords, aggregateRecords, getRecord, deleteRecord, deleteAllRecords,
-  listStreams, listAllStreams, getSyncState, putSyncState, getDatasetSummary,
+  listStreams, listAllStreams, getSyncState, putSyncState,
+  getDatasetRecordsAggregate, getDatasetRecordChangesBytes, getDatasetBlobBytes,
+  getDatasetRecordTimeBounds, listDatasetTopConnectorCandidates,
 } from './records.js';
 import { getLexicalIndexBackfillProgress, lexicalIndexBackfillForManifest, runLexicalSearch } from './search.js';
 import { runHybridSearch } from './search-hybrid.js';
@@ -93,6 +95,7 @@ import {
   RecordDetailVisibilityError,
   executeRecordDetail,
 } from '../operations/rs-records-detail/index.ts';
+import { executeRefDatasetSummary } from '../operations/ref-dataset-summary/index.ts';
 
 const AS_PORT = parseInt(process.env.AS_PORT || '7662');
 const RS_PORT = parseInt(process.env.RS_PORT || '7663');
@@ -2362,12 +2365,56 @@ function buildAsApp(opts = {}) {
     }
   );
 
-  // Reference-only dataset summary for the operator-console hero band. Returns
-  // live aggregate counts and retained-bytes totals across the substrate, plus
-  // top connectors by record count. Not a PDPP protocol surface.
+  // Reference-only dataset summary for the operator-console hero band. Envelope
+  // assembly lives in the canonical `ref.dataset.summary` operation
+  // (operations/ref-dataset-summary). This route is a Fastify host adapter:
+  // it owns owner auth and response writing, and wires native capability
+  // helpers (split out of the previous `getDatasetSummary` in
+  // server/records.js) into the operation's dependency contract. Not a PDPP
+  // protocol surface — `record_json_bytes` remains an adapter-native operator
+  // diagnostic per `define-reference-operation-environments` contract
+  // correction (4); the operation preserves that constraint.
   app.get('/_ref/dataset/summary', { contract: 'refDatasetSummary' }, ownerAuth.requireOwnerSession, async (req, res) => {
     try {
-      const summary = await getDatasetSummary();
+      // Cache the records aggregate so `record_count` and `*_ingested_at`
+      // come from the same SQL snapshot — the operation calls `getCounts`
+      // and `getIngestedTimeBounds` independently, but the previous native
+      // helper used one aggregate row for both.
+      let cachedAggregate = null;
+      const aggregate = () => {
+        if (cachedAggregate === null) {
+          cachedAggregate = getDatasetRecordsAggregate();
+        }
+        return cachedAggregate;
+      };
+
+      const summary = await executeRefDatasetSummary({
+        getCounts: () => {
+          const agg = aggregate();
+          return {
+            connector_count: agg.connector_count,
+            stream_count: agg.stream_count,
+            record_count: agg.record_count,
+          };
+        },
+        getRetainedBytes: () => {
+          const agg = aggregate();
+          return {
+            record_json_bytes: agg.record_json_bytes,
+            record_changes_json_bytes: getDatasetRecordChangesBytes(),
+            blob_bytes: getDatasetBlobBytes(),
+          };
+        },
+        getRecordTimeBounds: () => getDatasetRecordTimeBounds(),
+        getIngestedTimeBounds: () => {
+          const agg = aggregate();
+          return {
+            earliest: agg.earliest_ingested_at,
+            latest: agg.latest_ingested_at,
+          };
+        },
+        listTopConnectorCandidates: () => listDatasetTopConnectorCandidates(),
+      });
       res.json(summary);
     } catch (err) {
       handleError(res, err);

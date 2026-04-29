@@ -899,14 +899,6 @@ function recordTimesSorted(): { earliest: string | null; latest: string | null }
   return { earliest: sorted[0] ?? null, latest: sorted.at(-1) ?? null };
 }
 
-function ingestedTimesSorted(): { earliest: string | null; latest: string | null } {
-  if (DEMO_RECORDS.length === 0) {
-    return { earliest: null, latest: null };
-  }
-  const sorted = DEMO_RECORDS.map((r) => r.ingested_at).sort();
-  return { earliest: sorted[0] ?? null, latest: sorted.at(-1) ?? null };
-}
-
 function countConnectorRecords(): Map<string, number> {
   const counts = new Map<string, number>();
   for (const record of DEMO_RECORDS) {
@@ -1291,54 +1283,14 @@ export function buildLiveTraceTimeline(traceId: string): LiveTimelineEnvelope | 
   };
 }
 
-// Dataset summary: live shape from reference-implementation/server/records.js
-// `getDatasetSummary` plus `getTopConnectorsByRecordCount`.
-
-export interface LiveDatasetSummary {
-  blob_bytes: number;
-  connector_count: number;
-  earliest_ingested_at: string | null;
-  earliest_record_time: string | null;
-  latest_ingested_at: string | null;
-  latest_record_time: string | null;
-  object: "dataset_summary";
-  record_changes_json_bytes: number;
-  record_count: number;
-  record_json_bytes: number;
-  stream_count: number;
-  top_connectors: Array<{ connector_id: string; object: "dataset_connector_summary"; record_count: number }>;
-  total_retained_bytes: number;
-}
-
-export function buildLiveDatasetSummary(): LiveDatasetSummary {
-  const counts = countConnectorRecords();
-  const topConnectors = [...counts.entries()]
-    .map(([connector_id, record_count]) => ({
-      object: "dataset_connector_summary" as const,
-      connector_id,
-      record_count,
-    }))
-    .sort((a, b) => b.record_count - a.record_count || a.connector_id.localeCompare(b.connector_id))
-    .slice(0, 3);
-  const recordJsonBytes = approximateRetainedBytes();
-  const recordTimes = recordTimesSorted();
-  const ingestedTimes = ingestedTimesSorted();
-  return {
-    object: "dataset_summary",
-    connector_count: DEMO_CONNECTORS.length,
-    stream_count: DEMO_STREAMS.length,
-    record_count: DEMO_RECORDS.length,
-    record_json_bytes: recordJsonBytes,
-    record_changes_json_bytes: 0,
-    blob_bytes: 0,
-    total_retained_bytes: recordJsonBytes,
-    earliest_record_time: recordTimes.earliest,
-    latest_record_time: recordTimes.latest,
-    earliest_ingested_at: ingestedTimes.earliest,
-    latest_ingested_at: ingestedTimes.latest,
-    top_connectors: topConnectors,
-  };
-}
+// Dataset summary: the previous `buildLiveDatasetSummary` /
+// `LiveDatasetSummary` exports lived here until the `ref.dataset.summary`
+// operation migration. They mirrored the live `dataset_summary` envelope
+// inside this builder module, which made `/sandbox/_ref/dataset/summary` a
+// parallel operator-console envelope writer. That route now mounts the
+// canonical `ref.dataset.summary` operation with sandbox fixture
+// dependencies; see `./operations-fixtures.ts` and the sandbox route. Do not
+// reintroduce a public dataset-summary builder here.
 
 // Well-known: live builders from
 //   reference-implementation/server/metadata.ts
