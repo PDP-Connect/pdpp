@@ -271,19 +271,21 @@ export function runDisclosureSpineConformance({ label, test, makeDriver }) {
   //    hydration window. This is the invariant that protects the SQL
   //    `GROUP BY` extent against degradation when a correlation overflows the
   //    summarizer's per-row hydration cap.
-  t('correlation summary reports full extent even when timeline is large', async () => {
+  t('correlation summary reports full extent even when timeline is large and non-monotonic', async () => {
     const driver = await makeDriver();
     await driver.setup();
     try {
       const grantId = 'grnt_extent';
-      const total = 12;
       const baseTs = Date.parse('2026-04-04T00:00:00.000Z');
-      let firstIso = null;
-      let lastIso = null;
-      for (let i = 0; i < total; i += 1) {
-        const occurred = new Date(baseTs + i * 1000).toISOString();
-        if (i === 0) firstIso = occurred;
-        if (i === total - 1) lastIso = occurred;
+      // Deliberately non-monotonic in append order. Summary extent is a
+      // wall-clock aggregate (MIN/MAX occurred_at), while timeline listing and
+      // terminal lookup remain append-order obligations.
+      const offsets = [5000, 1000, 9000, 3000, 11000, 0, 7000, 2000, 10000, 4000, 8000, 6000];
+      const occurredValues = offsets.map((offset) => new Date(baseTs + offset).toISOString());
+      const firstIso = occurredValues.reduce((min, value) => (value < min ? value : min));
+      const lastIso = occurredValues.reduce((max, value) => (value > max ? value : max));
+      for (let i = 0; i < occurredValues.length; i += 1) {
+        const occurred = occurredValues[i];
         await driver.append(evt({
           grant_id: grantId,
           event_type: i === 0 ? 'grant.issued' : 'grant.event',
@@ -295,7 +297,7 @@ export function runDisclosureSpineConformance({ label, test, makeDriver }) {
       const { summaries } = await driver.listSummaries('grant');
       const row = summaries.find((s) => s.id === grantId);
       assert.ok(row, `summary for ${grantId} not found in ${JSON.stringify(summaries.map((s) => s.id))}`);
-      assert.equal(row.event_count, total,
+      assert.equal(row.event_count, occurredValues.length,
         'summary event_count must equal the full correlation extent');
       assert.equal(row.first_at, firstIso,
         'summary first_at must equal the earliest event');

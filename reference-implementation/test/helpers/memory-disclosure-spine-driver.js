@@ -257,8 +257,6 @@ export function createMemoryDisclosureSpineDriver() {
         // from a SQL aggregate; this driver preserves the same invariant by
         // construction by walking every indexed seq.
         const events = seqs.map((s) => log[s].ev);
-        const first = events[0];
-        const last = events.at(-1);
         const status =
           kind === 'grant'
             ? deriveGrantLifecycleStatus(events)
@@ -271,12 +269,18 @@ export function createMemoryDisclosureSpineDriver() {
         const summary = {
           id,
           event_count: events.length,
-          first_at: first.occurred_at,
-          last_at: last.occurred_at,
+          first_at: events.reduce(
+            (min, event) => (event.occurred_at < min ? event.occurred_at : min),
+            events[0].occurred_at,
+          ),
+          last_at: events.reduce(
+            (max, event) => (event.occurred_at > max ? event.occurred_at : max),
+            events[0].occurred_at,
+          ),
           status,
           kinds: Array.from(new Set(events.map((e) => e.event_type))).slice(0, 16),
-          actor_type: first.actor_type,
-          actor_id: first.actor_id,
+          actor_type: events[0].actor_type,
+          actor_id: events[0].actor_id,
           trace_id: pickFirstNonNull(events, 'trace_id'),
           grant_id: pickFirstNonNull(events, 'grant_id'),
           run_id: pickFirstNonNull(events, 'run_id'),
