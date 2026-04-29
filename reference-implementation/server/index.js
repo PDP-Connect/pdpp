@@ -102,6 +102,11 @@ import {
   executeRefConnectorDetail,
 } from '../operations/ref-connectors-detail/index.ts';
 import { executeRefApprovalsList } from '../operations/ref-approvals-list/index.ts';
+import { executeRefSchedulesList } from '../operations/ref-schedules-list/index.ts';
+import {
+  RefConnectorScheduleGetNotFoundError,
+  executeRefConnectorScheduleGet,
+} from '../operations/ref-connector-schedule-get/index.ts';
 
 const AS_PORT = parseInt(process.env.AS_PORT || '7662');
 const RS_PORT = parseInt(process.env.RS_PORT || '7663');
@@ -2525,24 +2530,40 @@ function buildAsApp(opts = {}) {
     }
   });
 
+  // Reference-only schedule listing. The canonical `ref.schedules.list`
+  // operation owns the `{object: 'list', data}` envelope; the host adapter
+  // owns owner auth and response writing only. Schedule reads flow through
+  // the controller's capability-shaped `listSchedules` so the operation
+  // never sees the runtime controller or scheduler store directly.
   app.get('/_ref/schedules', { contract: 'refListSchedules' }, ownerAuth.requireOwnerSession, async (req, res) => {
     try {
-      const data = controller ? await controller.listSchedules() : [];
-      res.json({ object: 'list', data });
+      const envelope = await executeRefSchedulesList({
+        listSchedules: async () => (controller ? await controller.listSchedules() : []),
+      });
+      res.json(envelope);
     } catch (err) {
       handleError(res, err);
     }
   });
 
+  // Reference-only per-connector schedule view. The canonical
+  // `ref.connector-schedule.get` operation owns the success projection and
+  // the typed not-found failure shape; the host adapter translates the
+  // typed error into the existing PDPP 404 `not_found` envelope.
   app.get('/_ref/connectors/:connectorId/schedule', ownerAuth.requireOwnerSession, async (req, res) => {
+    const connectorId = decodeURIComponent(req.params.connectorId);
     try {
-      const connectorId = decodeURIComponent(req.params.connectorId);
-      const schedule = controller ? await controller.getSchedule(connectorId) : null;
-      if (!schedule) {
-        return pdppError(res, 404, 'not_found', `No schedule for connector: ${connectorId}`);
-      }
+      const schedule = await executeRefConnectorScheduleGet(
+        { connectorId },
+        {
+          getConnectorSchedule: async (id) => (controller ? await controller.getSchedule(id) : null),
+        },
+      );
       res.json(schedule);
     } catch (err) {
+      if (err instanceof RefConnectorScheduleGetNotFoundError) {
+        return pdppError(res, 404, 'not_found', err.message);
+      }
       handleError(res, err);
     }
   });
