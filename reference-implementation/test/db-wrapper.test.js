@@ -17,6 +17,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
+import Database from "better-sqlite3";
+
 import { closeDb, getDb, initDb } from "../server/db.js";
 import {
   decodeCursor,
@@ -32,6 +34,7 @@ import {
   transaction,
   UnboundedReadError,
   allowUnboundedReadAcknowledged,
+  writeTransaction,
 } from "../lib/db.ts";
 import { loadReferenceQueries } from "../server/queries/index.ts";
 
@@ -305,6 +308,95 @@ test("transaction rolls back when the callback throws", () => {
     assert.equal(count.n, 0);
   } finally {
     teardown(dir);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// writeTransaction (BEGIN IMMEDIATE)
+// ---------------------------------------------------------------------------
+
+test("writeTransaction commits on normal return", () => {
+  const dir = setupQueriesDir(() => {});
+  try {
+    const db = setupDb();
+    const insert = db.prepare("INSERT INTO test_items (name, value) VALUES (?, ?)");
+    writeTransaction(() => {
+      insert.run("alpha", 1);
+      insert.run("beta", 2);
+    });
+    const count = db
+      .prepare("SELECT COUNT(*) AS n FROM test_items")
+      .get();
+    assert.equal(count.n, 2);
+  } finally {
+    teardown(dir);
+  }
+});
+
+test("writeTransaction rolls back when the callback throws", () => {
+  const dir = setupQueriesDir(() => {});
+  try {
+    const db = setupDb();
+    const insert = db.prepare("INSERT INTO test_items (name, value) VALUES (?, ?)");
+    assert.throws(() =>
+      writeTransaction(() => {
+        insert.run("alpha", 1);
+        throw new Error("boom");
+      })
+    );
+    const count = db
+      .prepare("SELECT COUNT(*) AS n FROM test_items")
+      .get();
+    assert.equal(count.n, 0);
+  } finally {
+    teardown(dir);
+  }
+});
+
+test("writeTransaction acquires the write lock at transaction start (BEGIN IMMEDIATE)", () => {
+  // Proof that writeTransaction uses BEGIN IMMEDIATE rather than the
+  // default deferred BEGIN: opening a sibling write transaction on a
+  // separate connection while writeTransaction is mid-flight must fail
+  // with SQLITE_BUSY *before* any write statement runs. Under deferred
+  // BEGIN the sibling would only collide on first write inside the
+  // body, not at the BEGIN itself.
+  const dir = setupQueriesDir(() => {});
+  // Use an on-disk DB so a second connection can open the same file;
+  // :memory: connections are independent and would not contend.
+  const tmpDb = mkdtempSync(join(tmpdir(), "pdpp-write-tx-"));
+  const dbPath = join(tmpDb, "wtx.sqlite");
+  let sibling;
+  try {
+    closeDb();
+    initDb(dbPath, { busyTimeoutMs: 0 });
+    const db = getDb();
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS test_items (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        value INTEGER NOT NULL
+      );
+    `);
+
+    // Sibling connection on the same file, also with no busy timeout
+    // so the contention surfaces synchronously instead of queueing.
+    sibling = new Database(dbPath, { timeout: 0 });
+
+    let observedBusy = false;
+    writeTransaction(() => {
+      // No write yet — under BEGIN IMMEDIATE the lock is already held.
+      try {
+        sibling.exec("BEGIN IMMEDIATE");
+        sibling.exec("ROLLBACK");
+      } catch (err) {
+        observedBusy = /SQLITE_BUSY|database is locked/i.test(String(err));
+      }
+    });
+    assert.equal(observedBusy, true, "expected sibling BEGIN IMMEDIATE to see SQLITE_BUSY while writeTransaction held the write lock");
+  } finally {
+    if (sibling) sibling.close();
+    teardown(dir);
+    rmSync(tmpDb, { force: true, recursive: true });
   }
 });
 

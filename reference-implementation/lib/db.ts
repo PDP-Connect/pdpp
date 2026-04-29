@@ -380,6 +380,21 @@ export function transaction<T>(fn: () => T): T {
   return db.transaction(fn)();
 }
 
+/**
+ * Like `transaction`, but opens with `BEGIN IMMEDIATE` so the SQLite
+ * write lock is acquired at transaction start instead of being upgraded
+ * on the first write inside the body. Use this for any mutation unit
+ * that reads state and then writes based on that state — e.g. record
+ * ingest's `(connector_id, stream)` version allocation — so concurrent
+ * writers serialize on the read, not on the first write. Synchronous.
+ *
+ * Spec: openspec/changes/harden-record-ingest-atomicity/design.md
+ */
+export function writeTransaction<T>(fn: () => T): T {
+  const db = requireDb();
+  return db.transaction(fn).immediate();
+}
+
 // ---------------------------------------------------------------------------
 // Cursor utilities (exported for handlers that decode caller-provided cursors)
 // ---------------------------------------------------------------------------
@@ -397,7 +412,12 @@ interface DbHandle {
     iterate(...params: unknown[]): IterableIterator<unknown>;
     run(...params: unknown[]): { changes: number; lastInsertRowid: number | bigint };
   };
-  transaction<T>(fn: () => T): () => T;
+  transaction<T>(fn: () => T): {
+    (): T;
+    immediate(): T;
+    deferred(): T;
+    exclusive(): T;
+  };
 }
 
 function requireDb(): DbHandle {

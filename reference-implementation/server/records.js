@@ -10,7 +10,7 @@ import {
   iterate,
   iterateDynamicSqlAcknowledged,
   referenceQueries,
-  transaction,
+  writeTransaction,
 } from '../lib/db.ts';
 import {
   lexicalIndexDelete,
@@ -88,7 +88,11 @@ function maybeFault(point, ctx) {
  * Atomicity: durable record mutation — current-state read, no-op decision,
  * version allocation, live `records` mutation, `record_changes` append,
  * `version_counter` advance, and history pruning — runs inside one explicit
- * SQLite transaction. Lexical and semantic index maintenance run after the
+ * SQLite `BEGIN IMMEDIATE` write transaction (`writeTransaction`). The
+ * write lock is acquired at transaction start so concurrent same-stream
+ * ingests serialize on the read, not on the first write — this is what
+ * makes per-`(connector_id, stream)` version allocation safe under
+ * contention. Lexical and semantic index maintenance run after the
  * durable commit and are deliberately *not* part of the atomic unit; an
  * index-maintenance failure must not roll back the durable record write.
  *
@@ -119,7 +123,7 @@ export async function ingestRecord(storageTarget, record) {
 
   // Durable mutation unit: returns the operation outcome so derived index
   // maintenance can run *after* the commit succeeds.
-  const outcome = transaction(() => {
+  const outcome = writeTransaction(() => {
     const current = getOne(
       referenceQueries.recordsIngestGetCurrentRecordState,
       [connectorId, stream, recordKey],
