@@ -27,4 +27,4 @@
 - [x] 4.4 Run `pnpm --filter pdpp-reference-implementation check`.
 - [x] 4.5 Run `openspec validate add-connector-state-scheduler-conformance-harness --strict`.
 - [x] 4.6 Run `openspec validate --all --strict`.
-- [ ] 4.7 Run `pnpm workstreams:status -- --no-fail` before owner review/merge.
+- [x] 4.7 Run `pnpm workstreams:status -- --no-fail` before owner review/merge.
