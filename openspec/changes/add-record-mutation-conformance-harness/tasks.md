@@ -22,7 +22,7 @@
 
 - [x] 4.1 Run the record mutation conformance tests.
 - [x] 4.2 Run existing ingest/delete/db-wrapper targeted tests if they remain separate.
-- [ ] 4.3 Run nearby retrieval/spine tests only if runtime code changes.
+- [x] 4.3 Run nearby retrieval/spine tests only if runtime code changes. *(Not applicable; runtime code did not change.)*
 - [x] 4.4 Run `openspec validate add-record-mutation-conformance-harness --strict`.
 - [x] 4.5 Run `openspec validate --all --strict`.
-- [ ] 4.6 Run `pnpm workstreams:status -- --no-fail` before owner review/merge.
+- [x] 4.6 Run `pnpm workstreams:status -- --no-fail` before owner review/merge.
