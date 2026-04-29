@@ -31,11 +31,11 @@
 
 ## 5. `_ref` Diagnostics
 
-- [ ] 5.1 Move `GET /_ref/records/timeline` semantics behind a canonical operation.
-- [ ] 5.2 Move `GET /_ref/deployment` semantics behind a canonical operation or explicit diagnostic capability boundary.
-- [ ] 5.3 Move `GET /_ref/clients` semantics behind a canonical operation.
-- [ ] 5.4 Preserve owner auth, response envelopes, redaction posture, and diagnostic behavior.
-- [ ] 5.5 Add/update boundary, operation, and route behavior tests.
+- [x] 5.1 Move `GET /_ref/records/timeline` semantics behind a canonical operation.
+- [x] 5.2 Move `GET /_ref/deployment` semantics behind a canonical operation or explicit diagnostic capability boundary.
+- [x] 5.3 Move `GET /_ref/clients` semantics behind a canonical operation.
+- [x] 5.4 Preserve owner auth, response envelopes, redaction posture, and diagnostic behavior.
+- [x] 5.5 Add/update boundary, operation, and route behavior tests.
 
 ## 6. Integration And Closeout
 
