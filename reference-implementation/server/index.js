@@ -115,6 +115,20 @@ import {
   StreamsAggregateVisibilityError,
   executeStreamsAggregate,
 } from '../operations/rs-streams-aggregate/index.ts';
+import { executeAsDiscoveryIndex } from '../operations/as-discovery-index/index.ts';
+import { executeAsAuthorizationServerMetadata } from '../operations/as-authorization-server-metadata/index.ts';
+import { executeAsDcrRegister } from '../operations/as-dcr-register/index.ts';
+import { executeAsDcrDelete } from '../operations/as-dcr-delete/index.ts';
+import { executeAsDeviceAuthInit } from '../operations/as-device-authorization-init/index.ts';
+import { executeAsDeviceTokenExchange } from '../operations/as-device-token-exchange/index.ts';
+import { executeAsDeviceDecision } from '../operations/as-device-decision/index.ts';
+import { executeAsIntrospect } from '../operations/as-introspect/index.ts';
+import { executeAsPolyfillConnectorRegister } from '../operations/as-polyfill-connector-register/index.ts';
+import { executeAsPolyfillConnectorDetail } from '../operations/as-polyfill-connector-detail/index.ts';
+import { executeAsParCreate } from '../operations/as-par-create/index.ts';
+import { executeAsConsentDecision } from '../operations/as-consent-decision/index.ts';
+import { executeAsConsentExchange } from '../operations/as-consent-exchange/index.ts';
+import { executeAsGrantRevoke } from '../operations/as-grant-revoke/index.ts';
 
 const AS_PORT = parseInt(process.env.AS_PORT || '7662');
 const RS_PORT = parseInt(process.env.RS_PORT || '7663');
@@ -319,17 +333,6 @@ function setReferenceTraceId(res, traceId) {
   if (traceId) {
     res.setHeader(PDPP_REFERENCE_TRACE_ID_HEADER, traceId);
   }
-}
-
-function summarizeClientRegistrationRequest(input) {
-  const body = input && typeof input === 'object' && !Array.isArray(input) ? input : {};
-  return {
-    requested_client_name: typeof body.client_name === 'string' ? body.client_name : null,
-    requested_token_endpoint_auth_method:
-      typeof body.token_endpoint_auth_method === 'string' ? body.token_endpoint_auth_method : null,
-    requested_redirect_uri_count: Array.isArray(body.redirect_uris) ? body.redirect_uris.length : 0,
-    requested_metadata_fields: Object.keys(body).sort(),
-  };
 }
 
 function normalizeFieldListParam(value) {
@@ -1575,16 +1578,17 @@ function buildAsApp(opts = {}) {
   // lives without trial-and-error. The body intentionally restates the
   // running reference revision (also exposed via the response header) so an
   // LLM agent has a single document to read.
+  // Discovery-index envelope semantics live in the canonical
+  // `as.discovery.index` operation (operations/as-discovery-index). This
+  // route is an Express host adapter: it owns request-id/header wiring and
+  // response writing; the operation owns the envelope shape.
   app.get('/', { contract: 'getAsDiscoveryIndex' }, (req, res) => {
-    res.json({
-      object: 'pdpp_discovery_index',
-      role: 'authorization_server',
-      resource_name: providerName,
-      links: {
-        well_known_authorization_server: '/.well-known/oauth-authorization-server',
-      },
-      reference_revision: referenceRevision,
-    });
+    res.json(
+      executeAsDiscoveryIndex({
+        providerName,
+        referenceRevision,
+      }),
+    );
   });
 
   // Reference-only owner-auth placeholder. This is NOT a public PDPP
@@ -1732,113 +1736,74 @@ function buildAsApp(opts = {}) {
     return { deviceCode, pending };
   }
 
-  // Primary reference surface: RFC 8414 authorization-server metadata.
+  // RFC 8414 authorization-server metadata. The metadata-document envelope
+  // lives in the canonical `as.authorization_server.metadata` operation
+  // (operations/as-authorization-server-metadata). The host adapter resolves
+  // the public issuer URL from explicit opts or ambient env, and supplies
+  // the metadata-builder dependency.
   app.get('/.well-known/oauth-authorization-server', { contract: 'getAuthorizationServerMetadata' }, (req, res) => {
     const explicitIssuer = opts.asIssuer || opts.asPublicUrl || (!opts.ignoreAmbientPublicUrls ? (process.env.AS_ISSUER || process.env.AS_PUBLIC_URL) : null);
     const issuer = resolvePublicUrl(req, explicitIssuer);
-    const providerConnectCapabilities = ['owner_self_export', 'cli_device_connect', 'third_party_client_connect'];
-    const registrationModesSupported = dynamicClientRegistrationEnabled
-      ? ['dynamic', 'pre_registered_public']
-      : ['pre_registered_public'];
     res.json(
-      buildAuthorizationServerMetadata({
-        issuer,
-        introspectionEndpoint: `${issuer}/introspect`,
-        pushedAuthorizationRequestEndpoint: `${issuer}/oauth/par`,
-        registrationEndpoint: dynamicClientRegistrationEnabled ? `${issuer}/oauth/register` : null,
-        providerConnectCapabilities,
-        registrationModesSupported,
-        authorizationDetailsTypesSupported: ['https://pdpp.org/data-access'],
-        tokenEndpoint: `${issuer}/oauth/token`,
-        tokenEndpointAuthMethodsSupported: ['none'],
-        deviceAuthorizationEndpoint: `${issuer}/oauth/device_authorization`,
-        grantTypesSupported: ['urn:ietf:params:oauth:grant-type:device_code'],
-      })
+      executeAsAuthorizationServerMetadata(
+        { issuer, dynamicClientRegistrationEnabled },
+        { buildAuthorizationServerMetadata },
+      ),
     );
   });
 
+  // DCR register semantics (input sanitization, extra metadata derivation,
+  // success/failure spine-event data shapes, HTTP status mapping) live in
+  // the canonical `as.dcr.register` operation (operations/as-dcr-register).
+  // The host adapter owns trace-context emission, owner-session resolution,
+  // request-id/trace-id headers, spine-event dispatch, and response writing.
   app.post('/oauth/register', { contract: 'registerDynamicClient' }, async (req, res) => {
     const traceContext = createTraceContext();
-    const requestSummary = summarizeClientRegistrationRequest(req.body);
     res.setHeader('Request-Id', traceContext.request_id);
     setReferenceTraceId(res, traceContext.trace_id);
-    try {
-      if (!dynamicClientRegistrationEnabled) {
-        const err = new Error('Dynamic client registration is not enabled');
-        err.code = 'invalid_request';
-        throw err;
-      }
 
-      const auth = req.headers.authorization;
-      if (!auth || !auth.startsWith('Bearer ')) {
-        const err = new Error('Initial access token required');
-        err.code = 'invalid_client';
-        throw err;
-      }
+    const ownerSession = ownerAuth.readOwnerSession(req);
+    const outcome = await executeAsDcrRegister(
+      {
+        body: req.body,
+        authorizationHeader: req.headers.authorization || null,
+        dcrEnabled: dynamicClientRegistrationEnabled,
+        initialAccessTokens: dynamicClientRegistrationInitialAccessTokens,
+        ownerSessionSubjectId: ownerSession?.sub || null,
+      },
+      { registerDynamicClient },
+    );
 
-      const initialAccessToken = auth.slice(7);
-      if (!dynamicClientRegistrationInitialAccessTokens.includes(initialAccessToken)) {
-        const err = new Error('Invalid initial access token');
-        err.code = 'invalid_client';
-        throw err;
-      }
-
-      // Owner-session-authed callers (the dashboard issuing a per-token
-      // client) get their session subject stamped onto the registration so
-      // _ref/clients?owner=true can scope listings/deletions to that
-      // operator. Anonymous callers cannot tag themselves to a subject —
-      // we never read the field from the request body.
-      const ownerSession = ownerAuth.readOwnerSession(req);
-      const extraMetadata = ownerSession?.sub ? { issuer_subject_id: ownerSession.sub } : {};
-      const registrationInput = req.body && typeof req.body === 'object' ? { ...req.body } : {};
-      // `issuer_subject_id` is a reference-only stamp owned by the AS route
-      // layer. Anonymous DCR callers cannot tag themselves to an owner, and
-      // owner-authed callers get the session subject, not the body value.
-      delete registrationInput.issuer_subject_id;
-      const registered = await registerDynamicClient(registrationInput, extraMetadata);
+    if (outcome.outcome === 'success') {
       await emitSpineEvent({
         event_type: 'client.registered',
         trace_id: traceContext.trace_id,
         scenario_id: traceContext.scenario_id,
         request_id: traceContext.request_id,
         actor_type: 'client',
-        actor_id: registered.client_id,
+        actor_id: outcome.registered.client_id,
         object_type: 'client',
-        object_id: registered.client_id,
+        object_id: outcome.registered.client_id,
         status: 'succeeded',
-        client_id: registered.client_id,
-        data: {
-          registration_mode: 'dynamic',
-          client_name: registered.client_name || null,
-          token_endpoint_auth_method: registered.token_endpoint_auth_method || null,
-          redirect_uri_count: Array.isArray(registered.redirect_uris) ? registered.redirect_uris.length : 0,
-        },
+        client_id: outcome.registered.client_id,
+        data: outcome.spineData,
       });
-      res.status(201).json(registered);
-    } catch (err) {
-      await emitSpineEvent({
-        event_type: 'client.register_rejected',
-        trace_id: traceContext.trace_id,
-        scenario_id: traceContext.scenario_id,
-        request_id: traceContext.request_id,
-        actor_type: 'client',
-        actor_id: 'dynamic_registration',
-        object_type: 'client_registration',
-        object_id: traceContext.request_id,
-        status: 'rejected',
-        data: {
-          ...requestSummary,
-          error: {
-            code: err.code || 'invalid_client_metadata',
-            message: err.message,
-          },
-        },
-      });
-      const status = err.code === 'invalid_client'
-        ? 401
-        : (err.code === 'invalid_request' ? 404 : 400);
-      oauthError(res, status, err.code || 'invalid_client_metadata', err.message);
+      return res.status(outcome.status).json(outcome.registered);
     }
+
+    await emitSpineEvent({
+      event_type: 'client.register_rejected',
+      trace_id: traceContext.trace_id,
+      scenario_id: traceContext.scenario_id,
+      request_id: traceContext.request_id,
+      actor_type: 'client',
+      actor_id: 'dynamic_registration',
+      object_type: 'client_registration',
+      object_id: traceContext.request_id,
+      status: 'rejected',
+      data: outcome.spineData,
+    });
+    oauthError(res, outcome.status, outcome.errorCode, outcome.errorMessage);
   });
 
   // RFC 7592 client deletion. Owner-session-gated rather than registration-
@@ -1847,88 +1812,94 @@ function buildAsApp(opts = {}) {
   // revoke every active grant tied to the client; refuses pre-registered
   // clients and cross-operator deletes. Idempotent: a second call returns
   // 404 not_found.
+  // DCR delete semantics (cascading delete + typed error → status mapping)
+  // live in the canonical `as.dcr.delete` operation
+  // (operations/as-dcr-delete). The host adapter owns owner-session
+  // enforcement, request-id/trace-id headers, and response writing.
   app.delete('/oauth/register/:clientId', ownerAuth.requireOwnerSession, async (req, res) => {
     const traceContext = createTraceContext();
     res.setHeader('Request-Id', traceContext.request_id);
     setReferenceTraceId(res, traceContext.trace_id);
-    try {
-      const clientId = decodeURIComponent(req.params.clientId);
-      const actingSubjectId = req.ownerSession?.sub || ownerAuth.subjectId || OWNER_AUTH_DEFAULT_SUBJECT_ID;
-      await deleteRegisteredClient(clientId, {
-        actingSubjectId,
+    const outcome = await executeAsDcrDelete(
+      {
+        clientId: decodeURIComponent(req.params.clientId),
+        actingSubjectId:
+          req.ownerSession?.sub || ownerAuth.subjectId || OWNER_AUTH_DEFAULT_SUBJECT_ID,
         requestId: traceContext.request_id,
         traceId: traceContext.trace_id,
-      });
-      res.status(204).end();
-    } catch (err) {
-      const status = err.code === 'not_found' ? 404 : (err.code === 'forbidden' ? 403 : 400);
-      pdppError(res, status, err.code || 'invalid_request', err.message);
+      },
+      { deleteRegisteredClient },
+    );
+    if (outcome.outcome === 'success') {
+      return res.status(outcome.status).end();
     }
+    pdppError(res, outcome.status, outcome.errorCode, outcome.errorMessage);
   });
 
+  // Device-authorization initiation semantics (client_id presence
+  // validation, store call, trace_context-stripped public envelope) live
+  // in the canonical `as.device.authorization.init` operation
+  // (operations/as-device-authorization-init).
   app.post('/oauth/device_authorization', { contract: 'startOwnerDeviceAuthorization' }, async (req, res) => {
-    try {
-      const clientId = req.body.client_id;
-      if (!clientId) {
-        return oauthError(res, 400, 'invalid_request', 'client_id is required');
-      }
-
-      const explicitBaseUrl = opts.asPublicUrl || (!opts.ignoreAmbientPublicUrls ? process.env.AS_PUBLIC_URL : null);
-      const result = await ownerDeviceAuthStore.initiate(clientId, {
+    const explicitBaseUrl = opts.asPublicUrl || (!opts.ignoreAmbientPublicUrls ? process.env.AS_PUBLIC_URL : null);
+    const outcome = await executeAsDeviceAuthInit(
+      {
+        clientId: req.body?.client_id,
         baseUrl: resolvePublicUrl(req, explicitBaseUrl),
-      });
-      const traceContext = result.trace_context || null;
-      if (traceContext?.request_id) {
-        res.setHeader('Request-Id', traceContext.request_id);
+      },
+      {
+        initiate: (clientId, opts2) => ownerDeviceAuthStore.initiate(clientId, opts2),
+      },
+    );
+    if (outcome.outcome === 'success') {
+      if (outcome.traceContext?.request_id) {
+        res.setHeader('Request-Id', outcome.traceContext.request_id);
       }
-      if (traceContext?.trace_id) {
-        setReferenceTraceId(res, traceContext.trace_id);
+      if (outcome.traceContext?.trace_id) {
+        setReferenceTraceId(res, outcome.traceContext.trace_id);
       }
-      const { trace_context: _traceContext, ...publicResult } = result;
-      res.status(200).json(publicResult);
-    } catch (err) {
-      if (err.request_id) {
-        res.setHeader('Request-Id', err.request_id);
-      }
-      if (err.trace_id) {
-        setReferenceTraceId(res, err.trace_id);
-      }
-      oauthError(res, 400, err.code || 'invalid_request', err.message);
+      return res.status(outcome.status).json(outcome.publicResult);
     }
+    if (outcome.requestId) {
+      res.setHeader('Request-Id', outcome.requestId);
+    }
+    if (outcome.traceId) {
+      setReferenceTraceId(res, outcome.traceId);
+    }
+    oauthError(res, outcome.status, outcome.errorCode, outcome.errorMessage);
   });
 
+  // Device-code token-exchange semantics (grant-type allowlist, store
+  // call, RFC 8628 client-fault → 400 mapping, trace_context propagation)
+  // live in the canonical `as.device.token.exchange` operation
+  // (operations/as-device-token-exchange).
   app.post('/oauth/token', { contract: 'exchangeOwnerDeviceToken' }, async (req, res) => {
-    const grantType = req.body.grant_type;
-    if (grantType !== 'urn:ietf:params:oauth:grant-type:device_code') {
-      return oauthError(res, 400, 'unsupported_grant_type', 'Only device_code grant_type is supported here');
+    const outcome = await executeAsDeviceTokenExchange(
+      {
+        grantType: req.body?.grant_type,
+        clientId: req.body?.client_id,
+        deviceCode: req.body?.device_code,
+      },
+      {
+        exchangeDeviceCode: (args) => ownerDeviceAuthStore.exchangeDeviceCode(args),
+      },
+    );
+    if (outcome.outcome === 'success') {
+      if (outcome.traceContext?.request_id) {
+        res.setHeader('Request-Id', outcome.traceContext.request_id);
+      }
+      if (outcome.traceContext?.trace_id) {
+        setReferenceTraceId(res, outcome.traceContext.trace_id);
+      }
+      return res.status(outcome.status).json(outcome.publicResult);
     }
-
-    try {
-      const result = await ownerDeviceAuthStore.exchangeDeviceCode({
-        clientId: req.body.client_id,
-        deviceCode: req.body.device_code,
-      });
-      const traceContext = result.trace_context || null;
-      if (traceContext?.request_id) {
-        res.setHeader('Request-Id', traceContext.request_id);
-      }
-      if (traceContext?.trace_id) {
-        setReferenceTraceId(res, traceContext.trace_id);
-      }
-      const { trace_context: _traceContext, ...publicResult } = result;
-      res.status(200).json(publicResult);
-    } catch (err) {
-      const status = ['authorization_pending', 'slow_down', 'access_denied', 'expired_token', 'invalid_grant', 'invalid_client'].includes(err.code)
-        ? 400
-        : 500;
-      if (err.request_id) {
-        res.setHeader('Request-Id', err.request_id);
-      }
-      if (err.trace_id) {
-        setReferenceTraceId(res, err.trace_id);
-      }
-      oauthError(res, status, err.code || 'server_error', err.message);
+    if (outcome.requestId) {
+      res.setHeader('Request-Id', outcome.requestId);
     }
+    if (outcome.traceId) {
+      setReferenceTraceId(res, outcome.traceId);
+    }
+    oauthError(res, outcome.status, outcome.errorCode, outcome.errorMessage);
   });
 
   app.get('/device', ownerAuth.requireOwnerSession, async (req, res) => {
@@ -2004,31 +1975,35 @@ function buildAsApp(opts = {}) {
     }));
   });
 
-  app.post('/device/approve', ownerAuth.requireOwnerSession, ownerAuth.requireCsrf, async (req, res) => {
-    try {
-      // approval_id is the non-redeemable opaque public id projected by
-      // /_ref/approvals; the operator dashboard sends it instead of the
-      // user_code so the user_code stays off public read surfaces.
-      // We resolve approval_id -> user_code here, on the AS side, behind
-      // the existing owner-session + CSRF gate.
-      const approvalId = req.body.approval_id;
-      let userCode = req.body.user_code;
-      if (!userCode && approvalId) {
-        const row = await ownerDeviceAuthStore.getByApprovalId(approvalId);
-        if (!row || row.status !== 'pending') {
-          return oauthError(res, 404, 'not_found', 'No pending device authorization for approval_id');
-        }
-        userCode = row.user_code;
-      }
-      const subjectId = ownerAuth.enabled
-        ? ownerAuth.subjectId
-        : (req.body.subject_id || OWNER_AUTH_DEFAULT_SUBJECT_ID);
-      if (!userCode) {
-        return oauthError(res, 400, 'invalid_request', 'user_code or approval_id is required');
-      }
+  // Device approve/deny decision semantics (approval_id → user_code
+  // resolution behind the owner-session + CSRF gate, store call, error
+  // mapping) live in the canonical `as.device.decision` operation
+  // (operations/as-device-decision). The host adapter owns owner-session
+  // + CSRF enforcement, subject-id resolution, and the hosted-UI HTML
+  // result rendering.
+  function buildDeviceDecisionDeps() {
+    return {
+      getByApprovalId: (approvalId) => ownerDeviceAuthStore.getByApprovalId(approvalId),
+      approve: (userCode, subjectId) => ownerDeviceAuthStore.approve(userCode, subjectId),
+      deny: (userCode, subjectId) => ownerDeviceAuthStore.deny(userCode, subjectId),
+    };
+  }
 
-      await ownerDeviceAuthStore.approve(userCode, subjectId);
-      res.send(renderHostedDocument({
+  app.post('/device/approve', ownerAuth.requireOwnerSession, ownerAuth.requireCsrf, async (req, res) => {
+    const subjectId = ownerAuth.enabled
+      ? ownerAuth.subjectId
+      : (req.body?.subject_id || OWNER_AUTH_DEFAULT_SUBJECT_ID);
+    const outcome = await executeAsDeviceDecision(
+      {
+        action: 'approve',
+        userCode: req.body?.user_code,
+        approvalId: req.body?.approval_id,
+        subjectId,
+      },
+      buildDeviceDecisionDeps(),
+    );
+    if (outcome.outcome === 'success') {
+      return res.send(renderHostedDocument({
         title: `${providerName} — Device access approved`,
         providerName,
         body: [
@@ -2043,37 +2018,31 @@ function buildAsApp(opts = {}) {
           }),
         ].join('\n'),
       }));
-    } catch (err) {
-      if (err.request_id) {
-        res.setHeader('Request-Id', err.request_id);
-      }
-      if (err.trace_id) {
-        setReferenceTraceId(res, err.trace_id);
-      }
-      oauthError(res, 400, err.code || 'invalid_request', err.message);
     }
+    if (outcome.requestId) {
+      res.setHeader('Request-Id', outcome.requestId);
+    }
+    if (outcome.traceId) {
+      setReferenceTraceId(res, outcome.traceId);
+    }
+    oauthError(res, outcome.status, outcome.errorCode, outcome.errorMessage);
   });
 
   app.post('/device/deny', ownerAuth.requireOwnerSession, ownerAuth.requireCsrf, async (req, res) => {
-    try {
-      const approvalId = req.body.approval_id;
-      let userCode = req.body.user_code;
-      if (!userCode && approvalId) {
-        const row = await ownerDeviceAuthStore.getByApprovalId(approvalId);
-        if (!row || row.status !== 'pending') {
-          return oauthError(res, 404, 'not_found', 'No pending device authorization for approval_id');
-        }
-        userCode = row.user_code;
-      }
-      const subjectId = ownerAuth.enabled
-        ? ownerAuth.subjectId
-        : (req.body.subject_id || OWNER_AUTH_DEFAULT_SUBJECT_ID);
-      if (!userCode) {
-        return oauthError(res, 400, 'invalid_request', 'user_code or approval_id is required');
-      }
-
-      await ownerDeviceAuthStore.deny(userCode, subjectId);
-      res.send(renderHostedDocument({
+    const subjectId = ownerAuth.enabled
+      ? ownerAuth.subjectId
+      : (req.body?.subject_id || OWNER_AUTH_DEFAULT_SUBJECT_ID);
+    const outcome = await executeAsDeviceDecision(
+      {
+        action: 'deny',
+        userCode: req.body?.user_code,
+        approvalId: req.body?.approval_id,
+        subjectId,
+      },
+      buildDeviceDecisionDeps(),
+    );
+    if (outcome.outcome === 'success') {
+      return res.send(renderHostedDocument({
         title: `${providerName} — Device access denied`,
         providerName,
         body: [
@@ -2087,25 +2056,28 @@ function buildAsApp(opts = {}) {
           }),
         ].join('\n'),
       }));
-    } catch (err) {
-      if (err.request_id) {
-        res.setHeader('Request-Id', err.request_id);
-      }
-      if (err.trace_id) {
-        setReferenceTraceId(res, err.trace_id);
-      }
-      oauthError(res, 400, err.code || 'invalid_request', err.message);
     }
+    if (outcome.requestId) {
+      res.setHeader('Request-Id', outcome.requestId);
+    }
+    if (outcome.traceId) {
+      setReferenceTraceId(res, outcome.traceId);
+    }
+    oauthError(res, outcome.status, outcome.errorCode, outcome.errorMessage);
   });
 
-  // RFC 7662-style token introspection with PDPP extensions
+  // RFC 7662-style token introspection with PDPP extensions. Token-presence
+  // validation and the AS-internal `grant_storage_binding` redaction live
+  // in the canonical `as.introspect` operation (operations/as-introspect).
   app.post('/introspect', { contract: 'introspectToken' }, async (req, res) => {
-    const token = req.body.token;
-    if (!token) return pdppError(res, 400, 'invalid_request', 'Missing token parameter');
-    const info = await introspect(token);
-    const publicInfo = { ...info };
-    delete publicInfo.grant_storage_binding;
-    res.json(publicInfo);
+    const outcome = await executeAsIntrospect(
+      { token: req.body?.token },
+      { introspect },
+    );
+    if (outcome.outcome === 'success') {
+      return res.json(outcome.publicInfo);
+    }
+    pdppError(res, outcome.status, outcome.errorCode, outcome.errorMessage);
   });
 
   // Reference-only event spine inspection surfaces for CLI/tests/future console.
@@ -2595,52 +2567,66 @@ function buildAsApp(opts = {}) {
   );
 
   if (!nativeMode) {
-    // Polyfill-only connector registry surface for the reference personal-server world.
+    // Polyfill-only connector registry: register/detail semantics live in
+    // the canonical operations (operations/as-polyfill-connector-register
+    // and operations/as-polyfill-connector-detail). The host adapter owns
+    // Express plumbing, native-mode mounting, URL decoding, and response
+    // writing.
     app.post('/connectors', async (req, res) => {
       try {
-        const manifest = req.body;
-        if (!manifest.connector_id) return pdppError(res, 400, 'invalid_request', 'Missing connector_id');
-        await registerConnector(manifest);
-        res.status(201).json({ connector_id: manifest.connector_id });
+        const outcome = await executeAsPolyfillConnectorRegister(
+          { manifest: req.body },
+          { registerConnector },
+        );
+        if (outcome.outcome === 'success') {
+          return res.status(outcome.status).json(outcome.envelope);
+        }
+        pdppError(res, outcome.status, outcome.errorCode, outcome.errorMessage);
       } catch (err) {
         handleError(res, err);
       }
     });
 
-    // Polyfill-only connector registry surface for the reference personal-server world.
     app.get('/connectors/:connectorId', async (req, res) => {
       try {
-        const manifest = await getConnectorManifest(decodeURIComponent(req.params.connectorId));
-        if (!manifest) return pdppError(res, 404, 'not_found', 'Connector not found');
-        res.json(manifest);
+        const outcome = await executeAsPolyfillConnectorDetail(
+          { connectorId: decodeURIComponent(req.params.connectorId) },
+          { getConnectorManifest },
+        );
+        if (outcome.outcome === 'success') {
+          return res.json(outcome.envelope);
+        }
+        pdppError(res, outcome.status, outcome.errorCode, outcome.errorMessage);
       } catch (err) {
         handleError(res, err);
       }
     });
   }
 
-  // Primary provider-connect request front door: RFC 9126-style request staging.
-  // The persisted pending-consent substrate remains the same; only the public start surface changes.
+  // RFC 9126-style PAR envelope semantics live in the canonical
+  // `as.par.create` operation (operations/as-par-create). The host adapter
+  // owns base-URL resolution from explicit opts or ambient env, native
+  // manifest resolution, header propagation, and response writing.
   app.post('/oauth/par', { contract: 'createPushedAuthorizationRequest' }, async (req, res) => {
     try {
       const explicitBaseUrl = opts.asPublicUrl || (!opts.ignoreAmbientPublicUrls ? process.env.AS_PUBLIC_URL : null);
-      const result = await consentStore.initiateGrant(req.body, {
-        baseUrl: resolvePublicUrl(req, explicitBaseUrl),
-        nativeManifest: resolveNativeManifest(opts),
-      });
-      const traceContext = result.trace_context || null;
-      if (traceContext?.request_id) {
-        res.setHeader('Request-Id', traceContext.request_id);
+      const output = await executeAsParCreate(
+        {
+          body: req.body,
+          baseUrl: resolvePublicUrl(req, explicitBaseUrl),
+          nativeManifest: resolveNativeManifest(opts),
+        },
+        {
+          initiateGrant: (body, opts2) => consentStore.initiateGrant(body, opts2),
+        },
+      );
+      if (output.traceContext?.request_id) {
+        res.setHeader('Request-Id', output.traceContext.request_id);
       }
-      if (traceContext?.trace_id) {
-        setReferenceTraceId(res, traceContext.trace_id);
+      if (output.traceContext?.trace_id) {
+        setReferenceTraceId(res, output.traceContext.trace_id);
       }
-      const { trace_context: _traceContext, ...publicResult } = result;
-      res.status(201).json({
-        request_uri: publicResult.request_uri,
-        authorization_url: publicResult.authorization_url,
-        expires_in: publicResult.expires_in,
-      });
+      res.status(output.status).json(output.envelope);
     } catch (err) {
       handleError(res, err);
     }
@@ -2662,35 +2648,48 @@ function buildAsApp(opts = {}) {
   });
 
 
-  // Primary approval surface for the current provider-connect request/approval profile.
+  // Consent approve/deny decision semantics (approval_id → request_uri
+  // resolution, deviceCode resolution, store call, error mapping) live
+  // in the canonical `as.consent.decision` operation
+  // (operations/as-consent-decision). The host adapter owns owner-session
+  // + CSRF enforcement, subject-id resolution, content negotiation
+  // between the JSON and HTML approve branches, exchange-code minting,
+  // and HTML rendering.
+  function buildConsentDecisionDeps() {
+    return {
+      getPendingConsentByApprovalId: (id) => consentStore.getPendingConsentByApprovalId(id),
+      buildPendingConsentRequestUri: (deviceCode) => buildPendingConsentRequestUri(deviceCode),
+      getPendingFromRequestUri: (uri) => getPendingGrantFromRequestUri(uri),
+      approveGrant: (deviceCode, subjectId, opts2) => consentStore.approveGrant(deviceCode, subjectId, opts2),
+      denyGrant: (deviceCode) => consentStore.denyGrant(deviceCode),
+    };
+  }
+
   app.post('/consent/approve', { contract: 'approveConsent' }, ownerAuth.requireOwnerSession, ownerAuth.requireCsrf, async (req, res) => {
     try {
-      // approval_id (from the operator dashboard) resolves on the AS side
-      // to the canonical request_uri so the live device_code never leaves
-      // the AS through a public read surface.
-      let requestUri = req.body?.request_uri || req.query?.request_uri;
-      const approvalId = req.body?.approval_id || req.query?.approval_id;
-      if (!requestUri && approvalId) {
-        const row = await consentStore.getPendingConsentByApprovalId(approvalId);
-        if (!row || row.status !== 'pending') {
-          return pdppError(res, 404, 'not_found', 'No pending consent for approval_id');
-        }
-        requestUri = buildPendingConsentRequestUri(row.device_code);
-      }
-      const { deviceCode, pending } = await getPendingGrantFromRequestUri(requestUri);
-      if (!deviceCode) return pdppError(res, 400, 'invalid_request', 'request_uri or approval_id is required');
-      const traceContext = pending?.request?.trace_context || null;
-      if (traceContext?.request_id) {
-        res.setHeader('Request-Id', traceContext.request_id);
-      }
-      if (traceContext?.trace_id) {
-        setReferenceTraceId(res, traceContext.trace_id);
-      }
       const subjectId = ownerAuth.enabled
         ? ownerAuth.subjectId
         : (req.body?.subject_id || req.query?.subject_id || OWNER_AUTH_DEFAULT_SUBJECT_ID);
-      const approveOpts = { ai_training_consented: req.body?.ai_training_consented };
-      const { grant, token } = await consentStore.approveGrant(deviceCode, subjectId, approveOpts);
+      const outcome = await executeAsConsentDecision(
+        {
+          action: 'approve',
+          requestUri: req.body?.request_uri || req.query?.request_uri,
+          approvalId: req.body?.approval_id || req.query?.approval_id,
+          subjectId,
+          approveOptions: { ai_training_consented: req.body?.ai_training_consented },
+        },
+        buildConsentDecisionDeps(),
+      );
+      if (outcome.outcome === 'failure') {
+        return pdppError(res, outcome.status, outcome.errorCode, outcome.errorMessage);
+      }
+      if (outcome.traceContext?.request_id) {
+        res.setHeader('Request-Id', outcome.traceContext.request_id);
+      }
+      if (outcome.traceContext?.trace_id) {
+        setReferenceTraceId(res, outcome.traceContext.trace_id);
+      }
+      const { grant, token } = outcome;
       const wantsJson = req.is('application/json') || req.accepts(['html', 'json']) === 'json';
       if (wantsJson) {
         return res.json({ grant_id: grant.grant_id, token, grant });
@@ -2744,26 +2743,27 @@ function buildAsApp(opts = {}) {
 
   app.post('/consent/deny', ownerAuth.requireOwnerSession, ownerAuth.requireCsrf, async (req, res) => {
     try {
-      let requestUri = req.body?.request_uri || req.query?.request_uri;
-      const approvalId = req.body?.approval_id || req.query?.approval_id;
-      if (!requestUri && approvalId) {
-        const row = await consentStore.getPendingConsentByApprovalId(approvalId);
-        if (!row || row.status !== 'pending') {
-          return pdppError(res, 404, 'not_found', 'No pending consent for approval_id');
-        }
-        requestUri = buildPendingConsentRequestUri(row.device_code);
+      const subjectId = ownerAuth.enabled
+        ? ownerAuth.subjectId
+        : (req.body?.subject_id || req.query?.subject_id || OWNER_AUTH_DEFAULT_SUBJECT_ID);
+      const outcome = await executeAsConsentDecision(
+        {
+          action: 'deny',
+          requestUri: req.body?.request_uri || req.query?.request_uri,
+          approvalId: req.body?.approval_id || req.query?.approval_id,
+          subjectId,
+        },
+        buildConsentDecisionDeps(),
+      );
+      if (outcome.outcome === 'failure') {
+        return pdppError(res, outcome.status, outcome.errorCode, outcome.errorMessage);
       }
-      const { deviceCode, pending } = await getPendingGrantFromRequestUri(requestUri);
-      if (!deviceCode) return pdppError(res, 400, 'invalid_request', 'request_uri or approval_id is required');
-      const traceContext = pending?.request?.trace_context || null;
-      if (traceContext?.request_id) {
-        res.setHeader('Request-Id', traceContext.request_id);
+      if (outcome.traceContext?.request_id) {
+        res.setHeader('Request-Id', outcome.traceContext.request_id);
       }
-      if (traceContext?.trace_id) {
-        setReferenceTraceId(res, traceContext.trace_id);
+      if (outcome.traceContext?.trace_id) {
+        setReferenceTraceId(res, outcome.traceContext.trace_id);
       }
-      const deleted = await consentStore.denyGrant(deviceCode);
-      if (!deleted) return pdppError(res, 404, 'not_found', 'Pending consent request not found');
       res.send(renderHostedDocument({
         title: `${providerName} — Access denied`,
         providerName,
@@ -2791,38 +2791,40 @@ function buildAsApp(opts = {}) {
   // POST /consent/approve already returns. Spec:
   //   openspec/changes/harden-consent-token-handoff/specs/
   //     reference-implementation-architecture/spec.md
+  // Consent-exchange-code redemption semantics live in the canonical
+  // `as.consent.exchange` operation (operations/as-consent-exchange).
   app.post('/consent/exchange', { contract: 'exchangeConsentCode' }, async (req, res) => {
     try {
-      const code = typeof req.body?.code === 'string' ? req.body.code : null;
-      if (!code) {
-        return pdppError(res, 400, 'invalid_request', 'code is required');
+      const outcome = await executeAsConsentExchange(
+        { code: typeof req.body?.code === 'string' ? req.body.code : null },
+        { consumeConsentExchangeCode },
+      );
+      if (outcome.outcome === 'success') {
+        return res.json(outcome.envelope);
       }
-      const result = consumeConsentExchangeCode(code);
-      if (!result.ok) {
-        if (result.reason === 'expired') {
-          return pdppError(res, 410, 'invalid_grant', 'Consent exchange code has expired');
-        }
-        if (result.reason === 'consumed') {
-          return pdppError(res, 410, 'invalid_grant', 'Consent exchange code has already been redeemed');
-        }
-        return pdppError(res, 404, 'not_found', 'Unknown consent exchange code');
-      }
-      return res.json({ grant_id: result.grantId, token: result.token, grant: result.grant });
+      pdppError(res, outcome.status, outcome.errorCode, outcome.errorMessage);
     } catch (err) {
       handleError(res, err);
     }
   });
 
 
-  // Primary reference surface.
+  // Grant-revocation envelope semantics live in the canonical
+  // `as.grant.revoke` operation (operations/as-grant-revoke). The host
+  // adapter owns Express plumbing, owner/client revoke authorization
+  // (`requireRevokeAuth`), request-id ensure, error mapping via
+  // `handleError`, and response writing.
   app.post('/grants/:grantId/revoke', { contract: 'revokeGrant' }, requireRevokeAuth, async (req, res) => {
     try {
       const requestId = ensureRequestId(res);
-      const result = await revokeGrant(req.params.grantId, { request_id: requestId });
-      if (result?.trace_id) {
-        setReferenceTraceId(res, result.trace_id);
+      const output = await executeAsGrantRevoke(
+        { grantId: req.params.grantId, requestId },
+        { revokeGrant },
+      );
+      if (output.traceId) {
+        setReferenceTraceId(res, output.traceId);
       }
-      res.json({ revoked: true });
+      res.json(output.envelope);
     } catch (err) {
       handleError(res, err);
     }
