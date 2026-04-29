@@ -96,6 +96,12 @@ import {
   executeRecordDetail,
 } from '../operations/rs-records-detail/index.ts';
 import { executeRefDatasetSummary } from '../operations/ref-dataset-summary/index.ts';
+import { executeRefConnectorsList } from '../operations/ref-connectors-list/index.ts';
+import {
+  RefConnectorDetailNotFoundError,
+  executeRefConnectorDetail,
+} from '../operations/ref-connectors-detail/index.ts';
+import { executeRefApprovalsList } from '../operations/ref-approvals-list/index.ts';
 
 const AS_PORT = parseInt(process.env.AS_PORT || '7662');
 const RS_PORT = parseInt(process.env.RS_PORT || '7663');
@@ -2423,29 +2429,73 @@ function buildAsApp(opts = {}) {
     }
   });
 
+  // Reference-only connector catalog list. Envelope assembly lives in the
+  // canonical `ref.connectors.list` operation; this route owns owner auth,
+  // response writing, and dependency wiring (the substrate read still lives
+  // in `server/ref-control.ts`).
   app.get('/_ref/connectors', { contract: 'refListConnectors' }, ownerAuth.requireOwnerSession, async (req, res) => {
     try {
-      const data = await listConnectorSummaries(controller);
-      res.json({ object: 'list', data });
+      const envelope = await executeRefConnectorsList({
+        listConnectorSummaries: () => listConnectorSummaries(controller),
+      });
+      res.json(envelope);
     } catch (err) {
       handleError(res, err);
     }
   });
 
+  // Reference-only connector detail. The canonical `ref.connectors.detail`
+  // operation owns the `ref_connector_detail` envelope discriminator and
+  // the not-found mapping; the host adapter translates host-internal
+  // `RefControlError`s into the same `not_found` / `connector_invalid`
+  // shape the route exposed before mount.
   app.get('/_ref/connectors/:connectorId', { contract: 'refGetConnector' }, ownerAuth.requireOwnerSession, async (req, res) => {
     try {
       const connectorId = decodeURIComponent(req.params.connectorId);
-      const detail = await getConnectorDetail(connectorId, controller);
-      res.json(detail);
+      const envelope = await executeRefConnectorDetail(
+        { connectorId },
+        {
+          getConnectorDetail: async (id) => {
+            try {
+              const detail = await getConnectorDetail(id, controller);
+              if (!detail) {
+                return null;
+              }
+              const { object: _ignored, ...rest } = detail;
+              return rest;
+            } catch (err) {
+              if (err && err.code === 'not_found') {
+                return null;
+              }
+              throw err;
+            }
+          },
+        },
+      );
+      res.json(envelope);
     } catch (err) {
+      if (err instanceof RefConnectorDetailNotFoundError) {
+        const wrapped = new Error(err.message);
+        wrapped.code = 'not_found';
+        handleError(res, wrapped);
+        return;
+      }
       handleError(res, err);
     }
   });
 
+  // Reference-only pending approvals queue. The canonical
+  // `ref.approvals.list` operation owns the `{object: 'list', data}`
+  // envelope, the created-at-descending sort across both kinds, and the
+  // `request_uri` / `user_code` redaction invariant. The host adapter
+  // owns owner auth and response writing; the substrate composition
+  // (consents + owner-device flows) still lives in `server/ref-control.ts`.
   app.get('/_ref/approvals', { contract: 'refListApprovals' }, ownerAuth.requireOwnerSession, async (req, res) => {
     try {
-      const data = await listPendingApprovals();
-      res.json({ object: 'list', data });
+      const envelope = await executeRefApprovalsList({
+        listPendingApprovals: () => listPendingApprovals(),
+      });
+      res.json(envelope);
     } catch (err) {
       handleError(res, err);
     }
