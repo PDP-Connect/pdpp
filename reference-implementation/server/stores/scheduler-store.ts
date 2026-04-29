@@ -22,6 +22,7 @@
 // the persistence seam only.
 
 import { allowUnboundedReadAcknowledged, exec, getOne, referenceQueries } from "../../lib/db.ts";
+import { getStorageBackendKind, isPostgresStorageBackend, postgresQuery } from "../postgres-storage.js";
 
 // ─── Domain records (public, semantic) ──────────────────────────────────────
 
@@ -62,17 +63,17 @@ export interface ActiveRunRecord {
 
 export interface SchedulerStore {
   // Schedule registry — semantic lifecycle verbs.
-  createSchedule(record: ScheduleCreate): void;
+  createSchedule(record: ScheduleCreate): Promise<void> | void;
 
   // Active-run registry — semantic lifecycle verbs.
-  deleteActiveRun(connectorId: string, runId: string): void;
-  deleteSchedule(connectorId: string): void;
-  getSchedule(connectorId: string): ScheduleRecord | null;
-  listActiveRuns(): readonly ActiveRunRecord[];
-  listSchedules(): readonly ScheduleRecord[];
-  setScheduleEnabled(connectorId: string, enabled: boolean, updatedAt: string): void;
-  updateSchedule(connectorId: string, patch: ScheduleUpdate): void;
-  upsertActiveRun(record: ActiveRunRecord): void;
+  deleteActiveRun(connectorId: string, runId: string): Promise<void> | void;
+  deleteSchedule(connectorId: string): Promise<void> | void;
+  getSchedule(connectorId: string): Promise<ScheduleRecord | null> | ScheduleRecord | null;
+  listActiveRuns(): Promise<readonly ActiveRunRecord[]> | readonly ActiveRunRecord[];
+  listSchedules(): Promise<readonly ScheduleRecord[]> | readonly ScheduleRecord[];
+  setScheduleEnabled(connectorId: string, enabled: boolean, updatedAt: string): Promise<void> | void;
+  updateSchedule(connectorId: string, patch: ScheduleUpdate): Promise<void> | void;
+  upsertActiveRun(record: ActiveRunRecord): Promise<void> | void;
 }
 
 // ─── SQLite implementation ──────────────────────────────────────────────────
@@ -80,7 +81,7 @@ export interface SchedulerStore {
 interface ScheduleSqliteRow {
   readonly connector_id: string;
   readonly created_at: string;
-  readonly enabled: 0 | 1;
+  readonly enabled: 0 | 1 | boolean;
   readonly interval_seconds: number;
   readonly jitter_seconds: number;
   readonly updated_at: string;
@@ -91,7 +92,7 @@ function rowToScheduleRecord(row: ScheduleSqliteRow): ScheduleRecord {
     connector_id: row.connector_id,
     interval_seconds: row.interval_seconds,
     jitter_seconds: row.jitter_seconds,
-    enabled: row.enabled === 1,
+    enabled: row.enabled === true || row.enabled === 1,
     created_at: row.created_at,
     updated_at: row.updated_at,
   };
@@ -165,11 +166,112 @@ export function createSqliteSchedulerStore(): SchedulerStore {
   };
 }
 
+export function createPostgresSchedulerStore(): SchedulerStore {
+  return {
+    async getSchedule(connectorId) {
+      const result = await postgresQuery(
+        `SELECT connector_id, interval_seconds, jitter_seconds, enabled, created_at, updated_at
+         FROM connector_schedules
+         WHERE connector_id = $1`,
+        [connectorId]
+      );
+      return result.rows[0] ? rowToScheduleRecord(result.rows[0] as ScheduleSqliteRow) : null;
+    },
+
+    async listSchedules() {
+      const result = await postgresQuery(
+        `SELECT connector_id, interval_seconds, jitter_seconds, enabled, created_at, updated_at
+         FROM connector_schedules
+         ORDER BY connector_id`
+      );
+      return (result.rows as ScheduleSqliteRow[]).map(rowToScheduleRecord);
+    },
+
+    async createSchedule(record) {
+      await postgresQuery(
+        `INSERT INTO connector_schedules(
+           connector_id, interval_seconds, jitter_seconds, enabled, created_at, updated_at
+         ) VALUES($1, $2, $3, $4, $5, $6)`,
+        [
+          record.connector_id,
+          record.interval_seconds,
+          record.jitter_seconds,
+          record.enabled,
+          record.created_at,
+          record.updated_at,
+        ]
+      );
+    },
+
+    async updateSchedule(connectorId, patch) {
+      await postgresQuery(
+        `UPDATE connector_schedules
+         SET interval_seconds = $1,
+             jitter_seconds = $2,
+             enabled = $3,
+             updated_at = $4
+         WHERE connector_id = $5`,
+        [patch.interval_seconds, patch.jitter_seconds, patch.enabled, patch.updated_at, connectorId]
+      );
+    },
+
+    async setScheduleEnabled(connectorId, enabled, updatedAt) {
+      await postgresQuery(
+        `UPDATE connector_schedules
+         SET enabled = $1,
+             updated_at = $2
+         WHERE connector_id = $3`,
+        [enabled, updatedAt, connectorId]
+      );
+    },
+
+    async deleteSchedule(connectorId) {
+      await postgresQuery("DELETE FROM connector_schedules WHERE connector_id = $1", [connectorId]);
+    },
+
+    async upsertActiveRun(record) {
+      await postgresQuery(
+        `INSERT INTO controller_active_runs(connector_id, run_id, trace_id, scenario_id, started_at)
+         VALUES($1, $2, $3, $4, $5)
+         ON CONFLICT (connector_id) DO UPDATE
+           SET run_id = EXCLUDED.run_id,
+               trace_id = EXCLUDED.trace_id,
+               scenario_id = EXCLUDED.scenario_id,
+               started_at = EXCLUDED.started_at`,
+        [record.connector_id, record.run_id, record.trace_id, record.scenario_id, record.started_at]
+      );
+    },
+
+    async listActiveRuns() {
+      const result = await postgresQuery(
+        `SELECT connector_id, run_id, trace_id, scenario_id, started_at
+         FROM controller_active_runs
+         ORDER BY connector_id`
+      );
+      return result.rows as ActiveRunRecord[];
+    },
+
+    async deleteActiveRun(connectorId, runId) {
+      await postgresQuery("DELETE FROM controller_active_runs WHERE connector_id = $1 AND run_id = $2", [
+        connectorId,
+        runId,
+      ]);
+    },
+  };
+}
+
+export function createSchedulerStore(): SchedulerStore {
+  return isPostgresStorageBackend() ? createPostgresSchedulerStore() : createSqliteSchedulerStore();
+}
+
 let defaultStore: SchedulerStore | null = null;
+let defaultStoreBackend: string | null = null;
 
 export function getDefaultSchedulerStore(): SchedulerStore {
-  if (!defaultStore) {
-    defaultStore = createSqliteSchedulerStore();
+  const backend = getStorageBackendKind();
+  if (!defaultStore || defaultStoreBackend !== backend) {
+    defaultStore = createSchedulerStore();
+    defaultStoreBackend = backend;
   }
   return defaultStore;
 }

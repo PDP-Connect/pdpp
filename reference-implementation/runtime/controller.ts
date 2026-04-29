@@ -18,13 +18,14 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { getOne, referenceQueries, transaction } from "../lib/db.ts";
+import { getOne, referenceQueries } from "../lib/db.ts";
 import { createTraceContext, emitSpineEvent, type SpineTraceContext } from "../lib/spine.ts";
 import {
   approveOwnerDeviceAuthorization,
   getConnectorManifest,
   initiateOwnerDeviceAuthorization,
 } from "../server/auth.js";
+import { isPostgresStorageBackend, postgresQuery } from "../server/postgres-storage.js";
 import { getSyncState } from "../server/records.js";
 import {
   type ActiveRunRecord,
@@ -181,7 +182,7 @@ export interface ControllerOptions {
   runtime?: unknown;
   runtimeContext?: { rsUrl?: string };
   scheduler?: unknown;
-  // Optional store override; defaults to the SQLite-backed singleton.
+  // Optional store override; defaults to the configured storage-backed singleton.
   // Tests use this to substitute fakes without touching module-scoped state.
   schedulerStore?: SchedulerStore;
 }
@@ -620,33 +621,47 @@ export function createController(opts: ControllerOptions = {}): Controller {
   // projections (next_due_at, last_finished_at, last_error_code). Until
   // then we accept them in the type but don't read them here.
 
-  function listPersistedActiveRuns(): readonly PersistedActiveRun[] {
-    return schedulerStore.listActiveRuns();
+  function listPersistedActiveRuns(): Promise<readonly PersistedActiveRun[]> {
+    return Promise.resolve(schedulerStore.listActiveRuns());
   }
 
-  function persistActiveRun(record: PersistedActiveRun): void {
-    schedulerStore.upsertActiveRun(record);
+  async function persistActiveRun(record: PersistedActiveRun): Promise<void> {
+    await schedulerStore.upsertActiveRun(record);
   }
 
-  function clearPersistedActiveRun(connectorId: string, runId: string): void {
-    schedulerStore.deleteActiveRun(connectorId, runId);
+  async function clearPersistedActiveRun(connectorId: string, runId: string): Promise<void> {
+    await schedulerStore.deleteActiveRun(connectorId, runId);
   }
 
-  function runAlreadyTerminal(runId: string): boolean {
+  async function runAlreadyTerminal(runId: string): Promise<boolean> {
+    if (isPostgresStorageBackend()) {
+      const { rows } = await postgresQuery(
+        `
+        SELECT 1 AS present
+        FROM spine_events
+        WHERE run_id = $1
+          AND event_type IN ('run.completed', 'run.failed')
+        LIMIT 1
+        `,
+        [runId]
+      );
+      return Boolean(rows[0]);
+    }
+
     const row = getOne<TerminalRunRow>(referenceQueries.spineCheckRunTerminal, [runId]);
     return Boolean(row);
   }
 
-  function reconcileAbandonedControllerRuns(): void {
-    const rows = listPersistedActiveRuns();
+  async function reconcileAbandonedControllerRuns(): Promise<void> {
+    const rows = await listPersistedActiveRuns();
     if (rows.length === 0) {
       return;
     }
 
-    transaction(() => {
-      for (const row of rows) {
-        if (!runAlreadyTerminal(row.run_id)) {
-          const emitted = emitSpineEvent({
+    for (const row of rows) {
+      if (!(await runAlreadyTerminal(row.run_id))) {
+        try {
+          await emitSpineEvent({
             event_type: "run.failed",
             trace_id: row.trace_id,
             scenario_id: row.scenario_id,
@@ -663,24 +678,26 @@ export function createController(opts: ControllerOptions = {}): Controller {
               message: "Reference server restarted while a controller-managed run was still active.",
             },
           });
-          emitted.catch((err: unknown) => {
-            const message = err instanceof Error ? err.message : String(err);
-            log.warn?.(`[controller] failed to emit restart reconciliation event for ${row.run_id}: ${message}`);
-          });
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          log.warn?.(`[controller] failed to emit restart reconciliation event for ${row.run_id}: ${message}`);
         }
-        clearPersistedActiveRun(row.connector_id, row.run_id);
       }
-    });
+      await clearPersistedActiveRun(row.connector_id, row.run_id);
+    }
 
     for (const row of rows) {
       log.warn?.(`[controller] reconciled abandoned controller-managed run ${row.run_id} for ${row.connector_id}`);
     }
   }
 
-  reconcileAbandonedControllerRuns();
+  reconcileAbandonedControllerRuns().catch((err) => {
+    const message = err instanceof Error ? err.message : String(err);
+    log.warn?.(`[controller] failed to reconcile abandoned controller-managed runs: ${message}`);
+  });
 
-  function getScheduleRecord(connectorId: string): Schedule | null {
-    return schedulerStore.getSchedule(connectorId);
+  function getScheduleRecord(connectorId: string): Promise<Schedule | null> {
+    return Promise.resolve(schedulerStore.getSchedule(connectorId));
   }
 
   function currentRsUrl(override: string | undefined): string {
@@ -725,11 +742,8 @@ export function createController(opts: ControllerOptions = {}): Controller {
     }
   }
 
-  // Schedule reads/writes are synchronous against the sqlite handle, but we
-  // keep the controller surface async so future slices can add I/O (e.g.
-  // mirroring to a remote control plane) without a signature break.
   async function listSchedules(): Promise<ScheduleApi[]> {
-    const schedules = schedulerStore.listSchedules();
+    const schedules = await schedulerStore.listSchedules();
     const apis = await Promise.all(
       schedules.map(async (schedule) => {
         const policy = await getConnectorRefreshPolicy(schedule.connector_id);
@@ -740,7 +754,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
   }
 
   async function getSchedule(connectorId: string): Promise<ScheduleApi | null> {
-    const schedule = getScheduleRecord(connectorId);
+    const schedule = await getScheduleRecord(connectorId);
     if (!schedule) {
       return null;
     }
@@ -751,16 +765,16 @@ export function createController(opts: ControllerOptions = {}): Controller {
   async function upsertSchedule(connectorId: string, input: ConnectorSchedulePatch): Promise<ScheduleUpsertResult> {
     const now = nowIso();
     const validated = validateScheduleInput(input);
-    const existing = getScheduleRecord(connectorId);
+    const existing = await getScheduleRecord(connectorId);
     if (existing) {
-      schedulerStore.updateSchedule(connectorId, {
+      await schedulerStore.updateSchedule(connectorId, {
         interval_seconds: validated.interval_seconds,
         jitter_seconds: validated.jitter_seconds,
         enabled: validated.enabled,
         updated_at: now,
       });
     } else {
-      schedulerStore.createSchedule({
+      await schedulerStore.createSchedule({
         connector_id: connectorId,
         interval_seconds: validated.interval_seconds,
         jitter_seconds: validated.jitter_seconds,
@@ -770,7 +784,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
       });
     }
     const policy = await getConnectorRefreshPolicy(connectorId);
-    const schedule = scheduleToApi(getScheduleRecord(connectorId), getRuntimeProjection(connectorId), policy);
+    const schedule = scheduleToApi(await getScheduleRecord(connectorId), getRuntimeProjection(connectorId), policy);
     if (!schedule) {
       throw new ControllerError(`Schedule not found after upsert for connector: ${connectorId}`, "internal_error");
     }
@@ -779,13 +793,13 @@ export function createController(opts: ControllerOptions = {}): Controller {
   }
 
   async function setScheduleEnabled(connectorId: string, enabled: boolean): Promise<ScheduleApi | null> {
-    const existing = getScheduleRecord(connectorId);
+    const existing = await getScheduleRecord(connectorId);
     if (!existing) {
       throw new ControllerError(`Schedule not found for connector: ${connectorId}`, "not_found");
     }
-    schedulerStore.setScheduleEnabled(connectorId, enabled, nowIso());
+    await schedulerStore.setScheduleEnabled(connectorId, enabled, nowIso());
     const policy = await getConnectorRefreshPolicy(connectorId);
-    return scheduleToApi(getScheduleRecord(connectorId), getRuntimeProjection(connectorId), policy);
+    return scheduleToApi(await getScheduleRecord(connectorId), getRuntimeProjection(connectorId), policy);
   }
 
   function markNeedsHuman(connectorId: string): void {
@@ -796,13 +810,13 @@ export function createController(opts: ControllerOptions = {}): Controller {
     needsHumanAttention.delete(connectorId);
   }
 
-  function deleteSchedule(connectorId: string): Promise<boolean> {
-    const existing = getScheduleRecord(connectorId);
+  async function deleteSchedule(connectorId: string): Promise<boolean> {
+    const existing = await getScheduleRecord(connectorId);
     if (!existing) {
-      return Promise.resolve(false);
+      return false;
     }
-    schedulerStore.deleteSchedule(connectorId);
-    return Promise.resolve(true);
+    await schedulerStore.deleteSchedule(connectorId);
+    return true;
   }
 
   function getActiveRun(connectorId: string): ActiveRun | null {
@@ -846,7 +860,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
     // so the scheduler can resume automatic runs after this interaction resolves.
     needsHumanAttention.delete(connectorId);
 
-    persistActiveRun({
+    await persistActiveRun({
       connector_id: connectorId,
       run_id: runId,
       trace_id: traceContext.trace_id,
@@ -891,7 +905,10 @@ export function createController(opts: ControllerOptions = {}): Controller {
       })
       .finally(() => {
         activeRuns.delete(connectorId);
-        clearPersistedActiveRun(connectorId, runId);
+        clearPersistedActiveRun(connectorId, runId).catch((err) => {
+          const message = err instanceof Error ? err.message : String(err);
+          log.warn?.(`[controller] failed to clear active run ${runId} for ${connectorId}: ${message}`);
+        });
         const leftover = activeRunInteractions.get(runId);
         activeRunInteractions.delete(runId);
         if (leftover?.pending) {

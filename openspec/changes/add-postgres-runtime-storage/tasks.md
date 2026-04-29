@@ -42,3 +42,15 @@
 - [x] 6.6 Run `pnpm exec openspec validate add-postgres-runtime-storage --strict`.
 - [x] 6.7 Run `pnpm exec openspec validate --all --strict`.
 - [x] 6.8 Run `git diff --check` and a final grep/read consistency pass for old SQLite-only assumptions in touched files.
+
+## 7. Completion Corrections
+
+- [x] 7.1 Extend Postgres bootstrap to cover connector manifests, OAuth clients, grants, tokens, pending consent, owner-device auth, connector state, schedules, active runs, and search cursor snapshots.
+- [x] 7.2 Wire authorization helpers so clients, grants, tokens, pending consent, owner-device auth, token introspection, revocation, and client deletion use Postgres in Postgres mode.
+- [x] 7.3 Wire connector manifest registry, connector-state store, scheduler store, and active-run registry to Postgres in Postgres mode.
+- [x] 7.4 Preserve manifest-declared dataset record-time bounds for Postgres `_ref/dataset/summary`.
+- [x] 7.5 Add storage-neutral store factory names and update production call sites away from `createSqlite*` names, keeping SQLite aliases only for compatibility/tests.
+- [x] 7.6 Persist lexical/semantic cursor snapshots in Postgres mode or prove they are not required by the runtime Postgres paths.
+- [x] 7.7 Update docs to state pgvector is the expected Postgres image path and JSONB vector fallback is only a degraded compatibility fallback.
+- [x] 7.8 Add/extend live Postgres runtime tests for auth/control-plane durability, connector state/schedules, dataset time bounds, and storage-neutral factories.
+- [x] 7.9 Re-run typecheck, check, broad SQLite default tests, Postgres-gated tests, OpenSpec strict validation, `git diff --check`, final grep/read consistency pass, and owner workstream status.

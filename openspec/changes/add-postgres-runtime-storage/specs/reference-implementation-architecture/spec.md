@@ -81,6 +81,44 @@ required for record mutations and disclosure spine events.
 - **AND** timeline pagination SHALL use that logical sequence rather than a
   backend-specific physical row identifier.
 
+### Requirement: Postgres runtime storage SHALL cover AS and control-plane durable state
+
+The explicit Postgres runtime backend SHALL provide Postgres-backed storage for
+durable authorization-server and operator-control state needed to run the
+reference server without a local persistent SQLite database.
+
+#### Scenario: Authorization state is durable in Postgres mode
+
+- **WHEN** `PDPP_STORAGE_BACKEND=postgres` is configured
+- **THEN** OAuth clients, grants, tokens, pending consent requests, and owner
+  device-authorization requests SHALL be written to and read from Postgres
+- **AND** token introspection, grant revocation, client deletion cascades,
+  consent approval/denial, and owner-device polling SHALL preserve existing
+  public response shapes and error codes.
+
+#### Scenario: Connector and controller state is durable in Postgres mode
+
+- **WHEN** `PDPP_STORAGE_BACKEND=postgres` is configured
+- **THEN** connector manifests, connector sync state, schedules, active runs,
+  and search cursor snapshots SHALL be written to and read from Postgres
+- **AND** reference routes that list connectors, approvals, schedules, active
+  runs, or search pages SHALL not require durable rows in SQLite.
+
+#### Scenario: Postgres runtime names are storage-neutral
+
+- **WHEN** runtime code constructs blob, consent, owner-device, connector-state,
+  or scheduler stores
+- **THEN** production call sites SHALL use storage-neutral factory names
+- **AND** SQLite-specific factory names MAY remain as compatibility aliases only
+  for tests or older imports.
+
+#### Scenario: Dataset record-time bounds preserve manifest semantics
+
+- **WHEN** the `_ref/dataset/summary` route runs against Postgres runtime storage
+- **THEN** `earliest_record_time` and `latest_record_time` SHALL be computed from
+  manifest-declared `consent_time_field` values with the same semantic rule as
+  the SQLite backend.
+
 ### Requirement: Postgres runtime validation SHALL be evidence-backed
 
 The Postgres runtime backend SHALL be validated through env-gated tests that run
@@ -91,8 +129,9 @@ default runtime remains unchanged.
 
 - **WHEN** `PDPP_TEST_POSTGRES_URL` is set to the profile-gated Compose
   Postgres service
-- **THEN** Postgres runtime storage tests SHALL exercise records, blobs,
-  disclosure spine, lexical search, semantic search, and hybrid search behavior
+- **THEN** Postgres runtime storage tests SHALL exercise authorization state,
+  connector/control state, records, blobs, disclosure spine, lexical search,
+  semantic search, and hybrid search behavior
 - **AND** those tests SHALL fail on semantic drift rather than only checking
   successful connection.
 

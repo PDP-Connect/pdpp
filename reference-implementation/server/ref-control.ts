@@ -1,10 +1,9 @@
 // Reference-only HTTP control-plane projections.
 //
 // These helpers back the `/_ref/connectors*`, `/_ref/approvals`, and
-// `/_ref/records/timeline` routes. They read from the reference sqlite
-// substrate (connectors, records, pending_consents, owner_device_auth)
-// and the spine correlation index, then shape the result into the JSON
-// envelopes the dashboard consumes.
+// `/_ref/records/timeline` routes. They read from the configured reference
+// storage substrate and the spine correlation index, then shape the result
+// into the JSON envelopes the dashboard consumes.
 //
 // Not a PDPP protocol surface: these are debugging / operator views the
 // reference implementation exposes for its own dashboard. Clients must
@@ -13,6 +12,8 @@
 import { allowUnboundedReadAcknowledged, getOne, iterateDynamicSqlAcknowledged, referenceQueries } from "../lib/db.ts";
 import { listSpineCorrelations, type SpineSummary } from "../lib/spine.ts";
 import { getConnectorManifest } from "./auth.js";
+import { isPostgresStorageBackend, postgresQuery } from "./postgres-storage.js";
+import { listAllStreams } from "./records.js";
 import {
   chooseDisplayTimestamp,
   compareTimestampValues,
@@ -65,6 +66,12 @@ interface StreamProjection {
   readonly freshness: Freshness;
   readonly last_updated: string | null;
   readonly record_count: number;
+}
+
+interface RecordProjectionRow {
+  readonly last_updated: string | null;
+  readonly record_count: number | string | null;
+  readonly stream: string;
 }
 
 interface ManifestExcerpt {
@@ -286,8 +293,20 @@ interface RunTerminalEventRow {
  * `LIMIT 1` clause; for runs without a terminal event yet (still in
  * progress, or controller_restarted), returns an empty list.
  */
-function extractKnownGapsForRun(runId: string): unknown[] {
-  const row = getOne<RunTerminalEventRow>(referenceQueries.spineGetRunTerminalEvent, [runId]);
+async function extractKnownGapsForRun(runId: string): Promise<unknown[]> {
+  const row = isPostgresStorageBackend()
+    ? ((
+        await postgresQuery(
+          `SELECT data_json::text AS data_json, event_type, occurred_at, status
+         FROM spine_events
+         WHERE run_id = $1
+           AND (event_type = 'run.finished' OR event_type = 'run.failed')
+         ORDER BY event_seq DESC
+         LIMIT 1`,
+          [runId]
+        )
+      ).rows[0] as RunTerminalEventRow | undefined)
+    : getOne<RunTerminalEventRow>(referenceQueries.spineGetRunTerminalEvent, [runId]);
   if (!row?.data_json) {
     return [];
   }
@@ -303,7 +322,7 @@ function extractKnownGapsForRun(runId: string): unknown[] {
   return [];
 }
 
-function toConnectorRunSummary(summary: SpineSummary | null): ConnectorRunSummary | null {
+async function toConnectorRunSummary(summary: SpineSummary | null): Promise<ConnectorRunSummary | null> {
   if (!summary) {
     return null;
   }
@@ -317,7 +336,7 @@ function toConnectorRunSummary(summary: SpineSummary | null): ConnectorRunSummar
     last_at: summary.last_at,
     event_count: summary.event_count,
     failure_reason: summary.failure?.reason || null,
-    known_gaps: runId ? extractKnownGapsForRun(runId) : [],
+    known_gaps: runId ? await extractKnownGapsForRun(runId) : [],
   };
 }
 
@@ -330,12 +349,18 @@ async function getLatestRunSummary(
   return toConnectorRunSummary(summaries[0] ?? null);
 }
 
-function getConnectorRecordProjection(connectorId: string): RecordProjection {
-  // REVIEWED-BOUNDED: GROUP BY stream collapses the records-table scan to one
-  // row per stream declared by this connector's manifest (dozens at most).
-  const rows = allowUnboundedReadAcknowledged<StreamAggregateRow>(referenceQueries.recordsAggregateStreamsByConnector, [
-    connectorId,
-  ]);
+async function getConnectorRecordProjection(connectorId: string): Promise<RecordProjection> {
+  const rows: RecordProjectionRow[] = isPostgresStorageBackend()
+    ? (await listAllStreams(connectorId)).map(
+        (row: { name: string; record_count: number; last_updated: string | null }) => ({
+          stream: row.name,
+          record_count: row.record_count,
+          last_updated: row.last_updated,
+        })
+      )
+    : allowUnboundedReadAcknowledged<StreamAggregateRow>(referenceQueries.recordsAggregateStreamsByConnector, [
+        connectorId,
+      ]);
   const byStream = new Map<string, StreamProjection>();
   let latest: string | null = null;
   for (const row of rows) {
@@ -381,7 +406,15 @@ function buildStreamSummary(
   };
 }
 
-function listRegisteredConnectorRows(): readonly ConnectorRow[] {
+async function listRegisteredConnectorRows(): Promise<readonly ConnectorRow[]> {
+  if (isPostgresStorageBackend()) {
+    const result = await postgresQuery(
+      `SELECT connector_id, manifest::text AS manifest
+       FROM connectors
+       ORDER BY connector_id`
+    );
+    return result.rows as ConnectorRow[];
+  }
   // REVIEWED-BOUNDED: connectors table is O(registered providers); whole-table scan is acceptable.
   return allowUnboundedReadAcknowledged<ConnectorRow>(referenceQueries.listRegisteredConnectors);
 }
@@ -402,29 +435,30 @@ function extractRefreshPolicy(manifest: ConnectorManifest): unknown {
 }
 
 export function listConnectorSummaries(controller?: ControllerLike | null): Promise<ConnectorSummary[]> {
-  const rows = listRegisteredConnectorRows();
-  return Promise.all(
-    rows.map(async (row) => {
-      const manifest = parseManifest(row.manifest, row.connector_id);
-      const live = getConnectorRecordProjection(row.connector_id);
-      const [schedule, lastRun, lastSuccessfulRun] = await Promise.all([
-        getScheduleFrom(controller, row.connector_id),
-        getLatestRunSummary(row.connector_id),
-        getLatestRunSummary(row.connector_id, "succeeded"),
-      ]);
-      return {
-        connector_id: row.connector_id,
-        display_name: manifest.display_name || row.connector_id,
-        manifest_version: manifest.version || null,
-        streams: (manifest.streams || []).map((stream) => stream.name),
-        total_records: live.totalRecords,
-        freshness: live.freshness,
-        refresh_policy: extractRefreshPolicy(manifest),
-        schedule,
-        last_run: lastRun,
-        last_successful_run: lastSuccessfulRun,
-      };
-    })
+  return listRegisteredConnectorRows().then((rows) =>
+    Promise.all(
+      rows.map(async (row) => {
+        const manifest = parseManifest(row.manifest, row.connector_id);
+        const live = await getConnectorRecordProjection(row.connector_id);
+        const [schedule, lastRun, lastSuccessfulRun] = await Promise.all([
+          getScheduleFrom(controller, row.connector_id),
+          getLatestRunSummary(row.connector_id),
+          getLatestRunSummary(row.connector_id, "succeeded"),
+        ]);
+        return {
+          connector_id: row.connector_id,
+          display_name: manifest.display_name || row.connector_id,
+          manifest_version: manifest.version || null,
+          streams: (manifest.streams || []).map((stream) => stream.name),
+          total_records: live.totalRecords,
+          freshness: live.freshness,
+          refresh_policy: extractRefreshPolicy(manifest),
+          schedule,
+          last_run: lastRun,
+          last_successful_run: lastSuccessfulRun,
+        };
+      })
+    )
   );
 }
 
@@ -436,7 +470,7 @@ export async function getConnectorDetail(
   if (!manifest) {
     throw new RefControlError(`Unknown connector: ${connectorId}`, "not_found");
   }
-  const live = getConnectorRecordProjection(connectorId);
+  const live = await getConnectorRecordProjection(connectorId);
   const [schedule, lastRun, lastSuccessfulRun] = await Promise.all([
     getScheduleFrom(controller, connectorId),
     getLatestRunSummary(connectorId),
@@ -507,6 +541,42 @@ function buildOwnerDeviceApproval(row: PendingOwnerDeviceRow): OwnerDeviceApprov
 
 export function listPendingApprovals(): Promise<Approval[]> {
   const now = new Date().toISOString();
+  if (isPostgresStorageBackend()) {
+    return Promise.all([
+      postgresQuery(
+        `SELECT device_code, user_code, params_json::text AS params_json, created_at, approval_id
+         FROM pending_consents
+         WHERE status = 'pending'
+           AND expires_at > $1
+         ORDER BY created_at DESC`,
+        [now]
+      ),
+      postgresQuery(
+        `SELECT device_code, user_code, client_id, created_at, approval_id
+         FROM owner_device_auth
+         WHERE status = 'pending'
+           AND expires_at > $1
+         ORDER BY created_at DESC`,
+        [now]
+      ),
+    ]).then(([pendingConsentsResult, pendingDevicesResult]) => {
+      const approvals: Approval[] = [
+        ...(pendingConsentsResult.rows as PendingConsentRow[])
+          .map(buildConsentApproval)
+          .filter((a): a is ConsentApproval => a !== null),
+        ...(pendingDevicesResult.rows as PendingOwnerDeviceRow[])
+          .map(buildOwnerDeviceApproval)
+          .filter((a): a is OwnerDeviceApproval => a !== null),
+      ];
+      approvals.sort((left, right) => {
+        if (left.created_at === right.created_at) {
+          return 0;
+        }
+        return left.created_at < right.created_at ? 1 : -1;
+      });
+      return approvals;
+    });
+  }
   // REVIEWED-BOUNDED: pending consents form a human-driven queue trimmed by the
   // expires_at predicate; the table cannot meaningfully exceed dozens of rows.
   const pendingConsents = allowUnboundedReadAcknowledged<PendingConsentRow>(

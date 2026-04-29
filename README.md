@@ -126,9 +126,10 @@ PDPP_DATABASE_URL=postgres://pdpp:pdpp@localhost:55432/pdpp_proof
 This does not migrate an existing SQLite database. Leave
 `PDPP_STORAGE_BACKEND` unset for the default SQLite behavior.
 
-The image is `pgvector/pgvector:pg16`; runtime bootstrap attempts to enable the
-`vector` extension when available and falls back to grant-scoped JSONB vector
-storage when it is unavailable.
+The expected image is `pgvector/pgvector:pg16`. Runtime bootstrap enables the
+`vector` extension on that path. If a custom Postgres image lacks pgvector, the
+reference falls back to grant-scoped JSONB vector storage as a degraded
+compatibility path, not the normal production configuration.
 
 The service binds to loopback only by default (`127.0.0.1:55432`) and ships
 with default `pdpp/pdpp` credentials, so it is reachable only from the host

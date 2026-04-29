@@ -3,21 +3,28 @@
 Slice 1 (`add-postgres-storage-adapters`) proved low-risk storage families
 against Postgres through conformance drivers while intentionally avoiding
 runtime storage selection. The remaining work is the second and final Postgres
-slice: records, blobs, disclosure spine, lexical search, semantic search, and
-hybrid search runtime storage.
+slice: durable reference runtime storage. That includes records, blobs,
+disclosure spine, lexical search, semantic search, hybrid search, connector
+manifests, OAuth clients, grants, tokens, pending consent, owner-device auth,
+connector state, schedules, active runs, and cursor snapshots.
 
 Current runtime code is SQLite-first. Records and search helpers call
 `better-sqlite3` directly or through the local query wrapper, semantic retrieval
-uses sqlite-vec or a SQLite BLOB fallback, and disclosure spine reads/writes are
-sync SQLite calls. Operation modules are already storage-driver agnostic; the
-host wires concrete record/search/blob/spine capabilities into them.
+uses sqlite-vec or a SQLite BLOB fallback, disclosure spine reads/writes are sync
+SQLite calls, and AS/control-plane helpers still persist clients, grants,
+tokens, pending approvals, and connector manifests in SQLite. Operation modules
+are already storage-driver agnostic; the host wires concrete capabilities into
+them.
 
 ## Goals / Non-Goals
 
 **Goals:**
 
-- Add an explicit Postgres backend for records, blobs, disclosure spine,
-  lexical search, semantic search, and hybrid search backing data.
+- Add an explicit Postgres backend for all durable runtime tables required by
+  the reference AS/RS/control-plane process: records, blobs, disclosure spine,
+  lexical search, semantic search, hybrid search, connector manifests, OAuth
+  clients, grants, tokens, pending consent, owner-device auth, connector state,
+  schedules, active runs, and cursor snapshots.
 - Preserve SQLite as the default backend and preserve existing SQLite tests.
 - Keep operation modules independent of concrete database drivers.
 - Use idempotent Postgres bootstrap DDL, not manual setup instructions.
@@ -30,7 +37,8 @@ host wires concrete record/search/blob/spine capabilities into them.
 - No migration toolchain for moving existing SQLite data into Postgres.
 - No multi-tenant storage service abstraction beyond the concrete backend seam
   needed by the reference runtime.
-- No change to public record/search/blob/spine response shapes.
+- No change to public record/search/blob/spine/auth/control-plane response
+  shapes.
 - No Postgres requirement for default development, default tests, or Docker
   reference startup.
 - No third Postgres slice.
@@ -54,9 +62,9 @@ host wires concrete record/search/blob/spine capabilities into them.
 3. **Keep Postgres schema bootstrap idempotent and local.**
 
    Runtime startup creates the required tables/indexes/extensions if missing.
-   Postgres mode may use `CREATE EXTENSION IF NOT EXISTS vector` when available,
-   but semantic retrieval must have a deterministic fallback if the extension is
-   unavailable.
+   Postgres mode uses the `pgvector/pgvector:pg16` image path and may run
+   `CREATE EXTENSION IF NOT EXISTS vector`. The JSONB vector path is retained
+   only as degraded compatibility for custom Postgres images that lack pgvector.
 
 4. **Preserve record mutation atomicity.**
 
@@ -76,14 +84,16 @@ host wires concrete record/search/blob/spine capabilities into them.
 
 - **Async Postgres driver vs sync SQLite code** -> Branch at async capability
   entry points and leave existing synchronous SQLite internals intact.
-- **Semantic vector extension availability** -> Bootstrap pgvector when
-  available; provide a fallback path that computes distances after grant-scoped
-  candidate narrowing.
+- **Semantic vector extension availability** -> Treat pgvector as the expected
+  Postgres path; retain a degraded JSONB fallback that computes distances after
+  grant-scoped candidate narrowing for custom images where the extension is
+  unavailable.
 - **SQL dialect drift** -> Keep SQL in backend-specific modules and validate
   with conformance/route tests for each user-visible surface.
-- **Backend switch overreach** -> Scope the switch to records/search/blob/spine
-  storage for this slice; SQLite remains available for existing identity and
-  operator-control surfaces unless separately specified by future work.
+- **Backend switch overreach** -> Scope the switch to durable storage owned by
+  the reference runtime. Short-lived in-memory tickets may remain in-memory when
+  that is already the security design, but durable AS/RS/control-plane rows must
+  be Postgres-backed in Postgres mode.
 - **Runtime docs overpromise data migration** -> Document that Postgres mode is
   a fresh-runtime storage backend, not a SQLite-to-Postgres migration path.
 

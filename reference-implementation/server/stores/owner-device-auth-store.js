@@ -1,5 +1,5 @@
 /**
- * Production `OwnerDeviceAuthStore` interface and SQLite-backed implementation.
+ * Production `OwnerDeviceAuthStore` interface and storage-backed implementation.
  *
  * Semantic store seam for the RFC 8628-shaped owner device-authorization
  * flow. Callers (route handlers, controllers) MUST depend on this interface
@@ -7,9 +7,9 @@
  * statements, or query builders. The interface speaks lifecycle:
  * initiate → poll exchange → approve / deny.
  *
- * The SQLite implementation here is the single runtime adapter. It wraps
- * the lifecycle helpers in `server/auth.js` so polling-interval, token
- * issuance, and spine semantics remain centralized in one module.
+ * The implementation wraps the lifecycle helpers in `server/auth.js` so
+ * polling-interval, token issuance, and spine semantics remain centralized
+ * in one module.
  *
  * Spec: openspec/changes/extract-low-risk-reference-stores/specs/
  *       reference-implementation-architecture/spec.md
@@ -25,7 +25,7 @@ import {
 } from '../auth.js';
 
 /**
- * Construct the SQLite-backed `OwnerDeviceAuthStore`.
+ * Construct the storage-backed `OwnerDeviceAuthStore`.
  *
  * No arguments: the underlying SQLite handle is owned by `server/db.js` and
  * resolved per-call from inside the `auth.js` lifecycle helpers. The store
@@ -34,7 +34,7 @@ import {
  *
  * @returns {OwnerDeviceAuthStore}
  */
-export function createSqliteOwnerDeviceAuthStore() {
+export function createOwnerDeviceAuthStore() {
   return {
     /**
      * Initiate an owner device-authorization request and return the
@@ -120,6 +120,10 @@ export function createSqliteOwnerDeviceAuthStore() {
   };
 }
 
+export function createSqliteOwnerDeviceAuthStore() {
+  return createOwnerDeviceAuthStore();
+}
+
 /**
- * @typedef {ReturnType<typeof createSqliteOwnerDeviceAuthStore>} OwnerDeviceAuthStore
+ * @typedef {ReturnType<typeof createOwnerDeviceAuthStore>} OwnerDeviceAuthStore
  */

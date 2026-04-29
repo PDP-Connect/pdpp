@@ -46,7 +46,7 @@ import {
   postgresLexicalIndexUpsert,
   postgresLexicalSearch,
 } from './postgres-search.js';
-import { isPostgresStorageBackend } from './postgres-storage.js';
+import { isPostgresStorageBackend, postgresQuery } from './postgres-storage.js';
 
 let activeLexicalBackfillCount = 0;
 let nextLexicalBackfillJobId = 1;
@@ -993,6 +993,22 @@ function hashPlan({ perConnectorPlans, isOwner }) {
 }
 
 async function persistSnapshot(snapshot) {
+  if (isPostgresStorageBackend()) {
+    await postgresQuery(
+      `
+      INSERT INTO lexical_search_snapshots(snapshot_id, query, plan_hash, results_json)
+      VALUES ($1, $2, $3, $4::jsonb)
+      ON CONFLICT(snapshot_id) DO UPDATE SET
+        query = excluded.query,
+        plan_hash = excluded.plan_hash,
+        results_json = excluded.results_json,
+        created_at = (now() AT TIME ZONE 'utc')::text
+      `,
+      [snapshot.snapshot_id, snapshot.query, snapshot.plan_hash, JSON.stringify(snapshot.results)],
+    );
+    return;
+  }
+
   exec(
     referenceQueries.searchSnapshotsInsert,
     [snapshot.snapshot_id, snapshot.query, snapshot.plan_hash, JSON.stringify(snapshot.results)],
@@ -1000,7 +1016,23 @@ async function persistSnapshot(snapshot) {
 }
 
 async function loadSnapshot(snapshotId) {
+  if (isPostgresStorageBackend()) {
+    const { rows } = await postgresQuery(
+      `
+      SELECT snapshot_id, query, plan_hash, results_json::text AS results_json, created_at
+      FROM lexical_search_snapshots
+      WHERE snapshot_id = $1
+      `,
+      [snapshotId],
+    );
+    return materializeSnapshot(rows[0]);
+  }
+
   const row = getOne(referenceQueries.searchSnapshotsGetById, [snapshotId]);
+  return materializeSnapshot(row);
+}
+
+function materializeSnapshot(row) {
   if (!row) return null;
   const createdAt = new Date(row.created_at + 'Z').getTime();
   if (Number.isFinite(createdAt) && Date.now() - createdAt > SNAPSHOT_TTL_MS) {

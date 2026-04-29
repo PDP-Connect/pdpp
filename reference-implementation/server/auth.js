@@ -17,6 +17,11 @@ import {
   transaction,
 } from '../lib/db.ts';
 import { createTraceContext, emitSpineEvent } from '../lib/spine.ts';
+import {
+  isPostgresStorageBackend,
+  postgresQuery,
+  withPostgresTransaction,
+} from './postgres-storage.js';
 
 function generateToken() {
   return randomBytes(32).toString('hex');
@@ -36,6 +41,16 @@ function expiresInIso(seconds) {
 
 function isExpired(row) {
   return new Date(row.expires_at).getTime() <= Date.now();
+}
+
+async function pgOne(sql, params = []) {
+  const result = await postgresQuery(sql, params);
+  return result.rows[0] || null;
+}
+
+async function pgExec(sql, params = []) {
+  const result = await postgresQuery(sql, params);
+  return { changes: result.rowCount || 0 };
 }
 
 let configuredNativeManifest = null;
@@ -1029,6 +1044,17 @@ export async function requireResolvedPersistedGrantState(row = {}, opts = {}) {
 }
 
 async function getPendingConsentRow(deviceCode) {
+  if (isPostgresStorageBackend()) {
+    return pgOne(
+      `SELECT device_code, user_code, params_json::text AS params_json, status,
+              subject_id, grant_id, token_id, ai_training_consented,
+              request_id, trace_id, scenario_id, created_at, expires_at,
+              approved_at, denied_at, approval_id
+       FROM pending_consents
+       WHERE device_code = $1`,
+      [deviceCode],
+    );
+  }
   return getOne(referenceQueries.authPendingConsentsGetByDeviceCode, [deviceCode]);
 }
 
@@ -1039,6 +1065,26 @@ async function createPendingConsent(deviceCode, userCode, params, expiresAt) {
   // projections. Generated alongside the row so every public read surface
   // has a stable id without exposing the live device_code.
   const approvalId = generateId('appr');
+  if (isPostgresStorageBackend()) {
+    await pgExec(
+      `INSERT INTO pending_consents(
+         device_code, user_code, params_json, status,
+         request_id, trace_id, scenario_id, created_at, expires_at, approval_id
+       ) VALUES($1, $2, $3::jsonb, 'pending', $4, $5, $6, $7, $8, $9)`,
+      [
+        deviceCode,
+        userCode,
+        JSON.stringify(params),
+        traceContext.request_id,
+        traceContext.trace_id,
+        traceContext.scenario_id || null,
+        createdAt,
+        expiresAt,
+        approvalId,
+      ],
+    );
+    return;
+  }
   exec(referenceQueries.authPendingConsentsInsert, [
     deviceCode,
     userCode,
@@ -1054,10 +1100,35 @@ async function createPendingConsent(deviceCode, userCode, params, expiresAt) {
 
 export async function getPendingConsentRowByApprovalId(approvalId) {
   if (typeof approvalId !== 'string' || !approvalId) return null;
+  if (isPostgresStorageBackend()) {
+    return pgOne(
+      `SELECT device_code, user_code, params_json::text AS params_json, status,
+              subject_id, grant_id, token_id, ai_training_consented,
+              request_id, trace_id, scenario_id, created_at, expires_at,
+              approved_at, denied_at, approval_id
+       FROM pending_consents
+       WHERE approval_id = $1`,
+      [approvalId],
+    );
+  }
   return getOne(referenceQueries.authPendingConsentsGetByApprovalId, [approvalId]);
 }
 
 async function markPendingConsentApproved(deviceCode, { subjectId, grantId, tokenId, aiTrainingConsented }) {
+  if (isPostgresStorageBackend()) {
+    await pgExec(
+      `UPDATE pending_consents
+       SET status = 'approved',
+           subject_id = $1,
+           grant_id = $2,
+           token_id = $3,
+           ai_training_consented = $4,
+           approved_at = $5
+       WHERE device_code = $6`,
+      [subjectId, grantId, tokenId, aiTrainingConsented ? true : null, nowIso(), deviceCode],
+    );
+    return;
+  }
   exec(referenceQueries.authPendingConsentsMarkApproved, [
     subjectId,
     grantId,
@@ -1069,18 +1140,50 @@ async function markPendingConsentApproved(deviceCode, { subjectId, grantId, toke
 }
 
 async function markPendingConsentDenied(deviceCode) {
+  if (isPostgresStorageBackend()) {
+    await pgExec(
+      `UPDATE pending_consents
+       SET status = 'denied', denied_at = $1
+       WHERE device_code = $2 AND status = 'pending'`,
+      [nowIso(), deviceCode],
+    );
+    return;
+  }
   exec(referenceQueries.authPendingConsentsMarkDenied, [nowIso(), deviceCode]);
 }
 
 async function markPendingConsentExpired(deviceCode) {
+  if (isPostgresStorageBackend()) {
+    await pgExec(
+      "UPDATE pending_consents SET status = 'expired' WHERE device_code = $1 AND status = 'pending'",
+      [deviceCode],
+    );
+    return;
+  }
   exec(referenceQueries.authPendingConsentsMarkExpired, [deviceCode]);
 }
 
 async function getOwnerDeviceAuthRow(deviceCode) {
+  if (isPostgresStorageBackend()) {
+    return pgOne(
+      `SELECT *
+       FROM owner_device_auth
+       WHERE device_code = $1`,
+      [deviceCode],
+    );
+  }
   return getOne(referenceQueries.authOwnerDeviceAuthGetByDeviceCode, [deviceCode]);
 }
 
 async function getOwnerDeviceAuthRowByUserCode(userCode) {
+  if (isPostgresStorageBackend()) {
+    return pgOne(
+      `SELECT *
+       FROM owner_device_auth
+       WHERE user_code = $1`,
+      [userCode],
+    );
+  }
   return getOne(referenceQueries.authOwnerDeviceAuthGetByUserCode, [userCode]);
 }
 
@@ -1097,6 +1200,27 @@ async function createOwnerDeviceAuth({
   // approval_id mirrors `pending_consents.approval_id` — see
   // createPendingConsent for rationale.
   const approvalId = generateId('appr');
+  if (isPostgresStorageBackend()) {
+    await pgExec(
+      `INSERT INTO owner_device_auth(
+         device_code, user_code, client_id, status, interval_seconds,
+         created_at, expires_at, request_id, trace_id, scenario_id, approval_id
+       ) VALUES($1, $2, $3, 'pending', $4, $5, $6, $7, $8, $9, $10)`,
+      [
+        deviceCode,
+        userCode,
+        clientId,
+        intervalSeconds,
+        nowIso(),
+        expiresAt,
+        requestId,
+        traceId,
+        scenarioId,
+        approvalId,
+      ],
+    );
+    return;
+  }
   exec(referenceQueries.authOwnerDeviceAuthInsert, [
     deviceCode,
     userCode,
@@ -1113,10 +1237,30 @@ async function createOwnerDeviceAuth({
 
 export async function getOwnerDeviceAuthRowByApprovalId(approvalId) {
   if (typeof approvalId !== 'string' || !approvalId) return null;
+  if (isPostgresStorageBackend()) {
+    return pgOne(
+      `SELECT *
+       FROM owner_device_auth
+       WHERE approval_id = $1`,
+      [approvalId],
+    );
+  }
   return getOne(referenceQueries.authOwnerDeviceAuthGetByApprovalId, [approvalId]);
 }
 
 async function markOwnerDeviceAuthApproved(deviceCode, { subjectId, tokenId }) {
+  if (isPostgresStorageBackend()) {
+    await pgExec(
+      `UPDATE owner_device_auth
+       SET status = 'approved',
+           subject_id = $1,
+           token_id = $2,
+           approved_at = $3
+       WHERE device_code = $4`,
+      [subjectId, tokenId, nowIso(), deviceCode],
+    );
+    return;
+  }
   exec(referenceQueries.authOwnerDeviceAuthMarkApproved, [
     subjectId,
     tokenId,
@@ -1126,14 +1270,37 @@ async function markOwnerDeviceAuthApproved(deviceCode, { subjectId, tokenId }) {
 }
 
 async function markOwnerDeviceAuthDenied(deviceCode) {
+  if (isPostgresStorageBackend()) {
+    await pgExec(
+      `UPDATE owner_device_auth
+       SET status = 'denied', denied_at = $1
+       WHERE device_code = $2 AND status = 'pending'`,
+      [nowIso(), deviceCode],
+    );
+    return;
+  }
   exec(referenceQueries.authOwnerDeviceAuthMarkDenied, [nowIso(), deviceCode]);
 }
 
 async function markOwnerDeviceAuthExpired(deviceCode) {
+  if (isPostgresStorageBackend()) {
+    await pgExec(
+      "UPDATE owner_device_auth SET status = 'expired' WHERE device_code = $1 AND status = 'pending'",
+      [deviceCode],
+    );
+    return;
+  }
   exec(referenceQueries.authOwnerDeviceAuthMarkExpired, [deviceCode]);
 }
 
 async function updateOwnerDeviceAuthLastPolled(deviceCode) {
+  if (isPostgresStorageBackend()) {
+    await pgExec(
+      "UPDATE owner_device_auth SET last_polled_at = $1 WHERE device_code = $2",
+      [nowIso(), deviceCode],
+    );
+    return;
+  }
   exec(referenceQueries.authOwnerDeviceAuthUpdateLastPolled, [nowIso(), deviceCode]);
 }
 
@@ -1217,6 +1384,30 @@ async function upsertRegisteredClient({
   const normalizedMetadata = normalizeClientRegistrationMetadata(inputForSpecNormalize);
   const persistedMetadata = { ...normalizedMetadata, ...referenceOnlyStamps };
   const timestamp = nowIso();
+  if (isPostgresStorageBackend()) {
+    await pgExec(
+      `INSERT INTO oauth_clients(
+         client_id, registration_mode, token_endpoint_auth_method,
+         client_secret, metadata_json, created_at, updated_at
+       ) VALUES($1, $2, $3, $4, $5::jsonb, $6, $7)
+       ON CONFLICT (client_id) DO UPDATE SET
+         registration_mode = EXCLUDED.registration_mode,
+         token_endpoint_auth_method = EXCLUDED.token_endpoint_auth_method,
+         client_secret = EXCLUDED.client_secret,
+         metadata_json = EXCLUDED.metadata_json,
+         updated_at = EXCLUDED.updated_at`,
+      [
+        clientId,
+        registrationMode,
+        normalizedMetadata.token_endpoint_auth_method,
+        clientSecret,
+        JSON.stringify(persistedMetadata),
+        timestamp,
+        timestamp,
+      ],
+    );
+    return;
+  }
   exec(referenceQueries.authOauthClientsUpsert, [
     clientId,
     registrationMode,
@@ -1239,6 +1430,18 @@ export async function seedPreRegisteredClients(clients = [], opts = {}) {
   const onRetry = typeof opts.onRetry === 'function' ? opts.onRetry : null;
   for (const client of clients) {
     if (!client?.client_id) continue;
+    if (isPostgresStorageBackend()) {
+      await upsertRegisteredClient({
+        clientId: client.client_id,
+        registrationMode: client.registration_mode || 'pre_registered_public',
+        metadata: client.metadata || {
+          client_name: client.client_name || client.client_id,
+          token_endpoint_auth_method: client.token_endpoint_auth_method || 'none',
+        },
+        clientSecret: client.client_secret || null,
+      });
+      continue;
+    }
     await runWithSqliteBusyRetry(
       () => upsertRegisteredClient({
         clientId: client.client_id,
@@ -1256,6 +1459,16 @@ export async function seedPreRegisteredClients(clients = [], opts = {}) {
 
 export async function getRegisteredClient(clientId) {
   if (!clientId) return null;
+  if (isPostgresStorageBackend()) {
+    const row = await pgOne(
+      `SELECT client_id, registration_mode, token_endpoint_auth_method,
+              client_secret, metadata_json::text AS metadata_json, created_at, updated_at
+       FROM oauth_clients
+       WHERE client_id = $1`,
+      [clientId],
+    );
+    return mapRegisteredClientRow(row || null);
+  }
   const row = getOne(referenceQueries.authOauthClientsGetByClientId, [clientId]);
   return mapRegisteredClientRow(row || null);
 }
@@ -1270,6 +1483,33 @@ export async function getRegisteredClient(clientId) {
  */
 export async function listOwnerIssuedClients(subjectId) {
   if (!subjectId) return [];
+  if (isPostgresStorageBackend()) {
+    const result = await postgresQuery(
+      `SELECT client_id, client_secret, registration_mode, token_endpoint_auth_method,
+              metadata_json::text AS metadata_json, created_at, updated_at
+       FROM oauth_clients
+       WHERE registration_mode = 'dynamic'
+         AND metadata_json->>'issuer_subject_id' = $1
+       ORDER BY created_at DESC`,
+      [subjectId],
+    );
+    return Promise.all(result.rows.map(async (row) => {
+      const mapped = mapRegisteredClientRow(row);
+      if (!mapped) return null;
+      const countRow = await pgOne(
+        `SELECT COUNT(*)::int AS active_token_count
+         FROM tokens
+         WHERE client_id = $1 AND revoked = FALSE`,
+        [mapped.client_id],
+      );
+      return {
+        client_id: mapped.client_id,
+        client_name: mapped.metadata.client_name || null,
+        created_at: mapped.created_at,
+        active_token_count: countRow ? Number(countRow.active_token_count) || 0 : 0,
+      };
+    })).then((rows) => rows.filter(Boolean));
+  }
   // REVIEWED-BOUNDED: per-operator dashboard-issued tokens are operator-scale
   // (small in practice). The query's @max_rows=256 caps pathological growth.
   const rows = allowUnboundedReadAcknowledged(referenceQueries.authOauthClientsListByIssuerSubject, [subjectId]);
@@ -1329,7 +1569,15 @@ export async function deleteRegisteredClient(clientId, { actingSubjectId, reques
   // separate token-cascade below.
   // REVIEWED-BOUNDED: per-token clients in operator usage have at most a few
   // active grants. The query's @max_rows=1024 bounds pathological cases.
-  const grantRows = allowUnboundedReadAcknowledged(referenceQueries.authGrantsListActiveIdsByClientId, [clientId]);
+  const grantRows = isPostgresStorageBackend()
+    ? (await postgresQuery(
+        `SELECT grant_id
+         FROM grants
+         WHERE client_id = $1 AND status = 'active'
+         ORDER BY issued_at ASC`,
+        [clientId],
+      )).rows
+    : allowUnboundedReadAcknowledged(referenceQueries.authGrantsListActiveIdsByClientId, [clientId]);
   const revokedGrantIds = [];
   for (const row of grantRows) {
     try {
@@ -1350,10 +1598,16 @@ export async function deleteRegisteredClient(clientId, { actingSubjectId, reques
   // Cascade-revoke any owner self-export tokens issued against this client.
   // This is what makes per-token DCR's "Revoke" button cascade to the bearer
   // for owner tokens (which never have a grant row).
-  const tokenRevoke = exec(referenceQueries.authTokensRevokeByClientId, [clientId]);
+  const tokenRevoke = isPostgresStorageBackend()
+    ? await pgExec("UPDATE tokens SET revoked = TRUE WHERE client_id = $1 AND revoked = FALSE", [clientId])
+    : exec(referenceQueries.authTokensRevokeByClientId, [clientId]);
   const revokedOwnerTokenCount = tokenRevoke?.changes ?? 0;
 
-  exec(referenceQueries.authOauthClientsDeleteByClientId, [clientId]);
+  if (isPostgresStorageBackend()) {
+    await pgExec("DELETE FROM oauth_clients WHERE client_id = $1", [clientId]);
+  } else {
+    exec(referenceQueries.authOauthClientsDeleteByClientId, [clientId]);
+  }
 
   await emitSpineEvent({
     event_type: 'client.deleted',
@@ -1840,10 +2094,19 @@ function validateConnectorManifest(manifest = {}, code = 'invalid_request', opts
  */
 export async function registerConnector(manifest) {
   validateConnectorManifest(manifest);
-  exec(referenceQueries.authConnectorsUpsert, [
-    manifest.connector_id,
-    JSON.stringify(manifest),
-  ]);
+  if (isPostgresStorageBackend()) {
+    await pgExec(
+      `INSERT INTO connectors(connector_id, manifest)
+       VALUES($1, $2::jsonb)
+       ON CONFLICT (connector_id) DO UPDATE SET manifest = EXCLUDED.manifest`,
+      [manifest.connector_id, JSON.stringify(manifest)],
+    );
+  } else {
+    exec(referenceQueries.authConnectorsUpsert, [
+      manifest.connector_id,
+      JSON.stringify(manifest),
+    ]);
+  }
   // Lexical retrieval index drift-detect + backfill. Handles three cases
   // the write-path maintenance (search.js#lexicalIndexUpsert) cannot:
   //   1. A connector is registered for the first time on a DB that already
@@ -1876,6 +2139,14 @@ export async function registerConnector(manifest) {
  * fan-out) get deterministic enumeration.
  */
 export async function listRegisteredConnectorIds() {
+  if (isPostgresStorageBackend()) {
+    const result = await postgresQuery(
+      `SELECT connector_id
+       FROM connectors
+       ORDER BY connector_id ASC`,
+    );
+    return result.rows.map((row) => row.connector_id);
+  }
   // REVIEWED-BOUNDED: connectors table is O(registered providers); whole-table scan is acceptable.
   const rows = allowUnboundedReadAcknowledged(referenceQueries.authConnectorsListIds);
   return rows.map((row) => row.connector_id);
@@ -1887,7 +2158,14 @@ export async function listRegisteredConnectorIds() {
 export async function getConnectorManifest(connectorId) {
   if (!connectorId) return null;
 
-  const row = getOne(referenceQueries.authConnectorsGetManifestById, [connectorId]);
+  const row = isPostgresStorageBackend()
+    ? await pgOne(
+        `SELECT manifest::text AS manifest
+         FROM connectors
+         WHERE connector_id = $1`,
+        [connectorId],
+      )
+    : getOne(referenceQueries.authConnectorsGetManifestById, [connectorId]);
   if (!row) return null;
   try {
     const manifest = JSON.parse(row.manifest);
@@ -2132,18 +2410,39 @@ export async function approveGrant(deviceCode, subjectId = 'owner_local', opts =
     expires_at: expiresAt,
   };
 
-  exec(referenceQueries.authGrantsInsert, [
-    grantId,
-    subjectId,
-    registeredClient.client_id,
-    serializeStorageBinding(persistedStorageBinding),
-    JSON.stringify(grant),
-    selection.access_mode,
-    issuedAt,
-    expiresAt,
-    traceContext.trace_id,
-    traceContext.scenario_id,
-  ]);
+  if (isPostgresStorageBackend()) {
+    await pgExec(
+      `INSERT INTO grants(
+         grant_id, subject_id, client_id, storage_binding_json, grant_json,
+         access_mode, issued_at, expires_at, trace_id, scenario_id
+       ) VALUES($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7, $8, $9, $10)`,
+      [
+        grantId,
+        subjectId,
+        registeredClient.client_id,
+        serializeStorageBinding(persistedStorageBinding),
+        JSON.stringify(grant),
+        selection.access_mode,
+        issuedAt,
+        expiresAt,
+        traceContext.trace_id,
+        traceContext.scenario_id,
+      ],
+    );
+  } else {
+    exec(referenceQueries.authGrantsInsert, [
+      grantId,
+      subjectId,
+      registeredClient.client_id,
+      serializeStorageBinding(persistedStorageBinding),
+      JSON.stringify(grant),
+      selection.access_mode,
+      issuedAt,
+      expiresAt,
+      traceContext.trace_id,
+      traceContext.scenario_id,
+    ]);
+  }
 
   await emitSpineEvent({
     event_type: 'consent.approved',
@@ -2655,6 +2954,82 @@ export async function exchangeOwnerDeviceCode({ clientId, deviceCode }) {
  * Issue an access token bound to a grant
  */
 export async function issueToken(grantId, subjectId, clientId, expiresAt, meta = {}) {
+  if (isPostgresStorageBackend()) {
+    const { tokenId, grantRow, persistedGrant } = await withPostgresTransaction(async (client) => {
+      const result = await client.query(
+        `SELECT access_mode, consumed, status, trace_id, scenario_id,
+                grant_json::text AS grant_json,
+                storage_binding_json::text AS storage_binding_json
+         FROM grants
+         WHERE grant_id = $1
+         FOR UPDATE`,
+        [grantId],
+      );
+      const row = result.rows[0] || null;
+
+      if (!row) {
+        const err = new Error(`Unknown grant: ${grantId}`);
+        err.code = 'grant_invalid';
+        throw err;
+      }
+
+      if (row.status !== 'active') {
+        const err = new Error(
+          row.status === 'revoked'
+            ? 'Grant has been revoked'
+            : `Grant is not active: ${row.status}`
+        );
+        err.code = row.status === 'revoked' ? 'grant_revoked' : 'grant_invalid';
+        throw err;
+      }
+
+      if (row.access_mode === 'single_use') {
+        if (row.consumed) {
+          const err = new Error('Grant has already been consumed');
+          err.code = 'grant_consumed';
+          throw err;
+        }
+        await client.query("UPDATE grants SET consumed = TRUE WHERE grant_id = $1", [grantId]);
+      }
+
+      const nextTokenId = generateToken();
+      await client.query(
+        `INSERT INTO tokens(token_id, grant_id, subject_id, client_id, token_kind, expires_at)
+         VALUES($1, $2, $3, $4, 'client', $5)`,
+        [nextTokenId, grantId, subjectId, clientId, expiresAt],
+      );
+      return {
+        tokenId: nextTokenId,
+        grantRow: row,
+        persistedGrant: requirePersistedGrantState(row).grant,
+      };
+    });
+
+    await emitSpineEvent({
+      event_type: 'token.issued',
+      trace_id: meta.traceContext?.trace_id || grantRow.trace_id || undefined,
+      scenario_id: meta.traceContext?.scenario_id || grantRow.scenario_id || undefined,
+      request_id: meta.traceContext?.request_id || undefined,
+      actor_type: 'authorization_server',
+      actor_id: 'pdpp_as',
+      subject_type: 'subject',
+      subject_id: subjectId,
+      object_type: 'token',
+      object_id: tokenId,
+      status: 'succeeded',
+      grant_id: grantId,
+      client_id: clientId,
+      token_id: tokenId,
+      data: {
+        token_kind: 'client',
+        issuance_path: meta.source || 'grant',
+        source: describeGrantSource(persistedGrant),
+      },
+    });
+
+    return tokenId;
+  }
+
   // better-sqlite3 transactions must be synchronous. We prepare the body as a
   // synchronous function and wrap it; the public export stays `async` because
   // external callers `await issueToken(...)`.
@@ -2729,7 +3104,15 @@ async function issueOwnerTokenRecord(subjectId, meta = {}) {
   // Record the issuing client_id when the caller knows it (per-token DCR
   // path). Pre-DCR callers pass NULL and the row stays as before.
   // See openspec/changes/dcr-per-owner-token-with-revoke/.
-  exec(referenceQueries.authTokensInsertOwner, [tokenId, subjectId, meta.clientId || null, expiresAt]);
+  if (isPostgresStorageBackend()) {
+    await pgExec(
+      `INSERT INTO tokens(token_id, grant_id, subject_id, client_id, token_kind, expires_at)
+       VALUES($1, NULL, $2, $3, 'owner', $4)`,
+      [tokenId, subjectId, meta.clientId || null, expiresAt],
+    );
+  } else {
+    exec(referenceQueries.authTokensInsertOwner, [tokenId, subjectId, meta.clientId || null, expiresAt]);
+  }
   await emitSpineEvent({
     event_type: 'token.issued',
     trace_id: meta.traceContext?.trace_id || undefined,
@@ -2766,7 +3149,20 @@ export async function issueOwnerToken(subjectId, meta = {}) {
  * RFC 7662-style introspection with PDPP extensions
  */
 export async function introspect(token) {
-  const row = getOne(referenceQueries.authTokensGetIntrospection, [token]);
+  const row = isPostgresStorageBackend()
+    ? await pgOne(
+        `SELECT t.token_id, t.grant_id, t.subject_id, t.client_id, t.token_kind, t.expires_at, t.revoked,
+                g.status AS grant_status,
+                g.grant_json::text AS grant_json,
+                g.trace_id,
+                g.scenario_id,
+                g.storage_binding_json::text AS storage_binding_json
+         FROM tokens t
+         LEFT JOIN grants g ON t.grant_id = g.grant_id
+         WHERE t.token_id = $1`,
+        [token],
+      )
+    : getOne(referenceQueries.authTokensGetIntrospection, [token]);
 
   if (!row) return { active: false };
 
@@ -2877,7 +3273,16 @@ export async function introspect(token) {
  * Revoke a grant
  */
 export async function revokeGrant(grantId, context = {}) {
-  const row0 = getOne(referenceQueries.authGrantsGetForRevocation, [grantId]);
+  const row0 = isPostgresStorageBackend()
+    ? await pgOne(
+        `SELECT client_id, subject_id, trace_id, scenario_id,
+                grant_json::text AS grant_json,
+                storage_binding_json::text AS storage_binding_json
+         FROM grants
+         WHERE grant_id = $1`,
+        [grantId],
+      )
+    : getOne(referenceQueries.authGrantsGetForRevocation, [grantId]);
 
   let parsedGrant = null;
   if (row0) {
@@ -2926,9 +3331,15 @@ export async function revokeGrant(grantId, context = {}) {
     }
   }
 
-  exec(referenceQueries.authGrantsMarkRevoked, [grantId]);
-  // Also revoke all tokens for this grant
-  exec(referenceQueries.authTokensRevokeByGrant, [grantId]);
+  if (isPostgresStorageBackend()) {
+    await pgExec("UPDATE grants SET status = 'revoked' WHERE grant_id = $1", [grantId]);
+    // Also revoke all tokens for this grant.
+    await pgExec("UPDATE tokens SET revoked = TRUE WHERE grant_id = $1", [grantId]);
+  } else {
+    exec(referenceQueries.authGrantsMarkRevoked, [grantId]);
+    // Also revoke all tokens for this grant
+    exec(referenceQueries.authTokensRevokeByGrant, [grantId]);
+  }
 
   if (row0 && parsedGrant) {
     const row = row0;

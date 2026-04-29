@@ -108,6 +108,132 @@ export async function bootstrapPostgresSchema() {
     } catch {}
 
     await client.query(`
+      CREATE TABLE IF NOT EXISTS connectors (
+        connector_id TEXT PRIMARY KEY,
+        manifest JSONB NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (now() AT TIME ZONE 'utc')::text
+      );
+
+      CREATE TABLE IF NOT EXISTS oauth_clients (
+        client_id TEXT PRIMARY KEY,
+        registration_mode TEXT NOT NULL,
+        token_endpoint_auth_method TEXT NOT NULL,
+        client_secret TEXT,
+        metadata_json JSONB NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_pg_oauth_clients_registration_mode
+        ON oauth_clients(registration_mode, created_at);
+
+      CREATE TABLE IF NOT EXISTS grants (
+        grant_id TEXT PRIMARY KEY,
+        subject_id TEXT NOT NULL,
+        client_id TEXT NOT NULL,
+        storage_binding_json JSONB,
+        grant_json JSONB NOT NULL,
+        access_mode TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'active',
+        consumed BOOLEAN NOT NULL DEFAULT FALSE,
+        issued_at TEXT NOT NULL,
+        expires_at TEXT,
+        trace_id TEXT,
+        scenario_id TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_pg_grants_client_status
+        ON grants(client_id, status, issued_at);
+
+      CREATE TABLE IF NOT EXISTS tokens (
+        token_id TEXT PRIMARY KEY,
+        grant_id TEXT,
+        subject_id TEXT NOT NULL,
+        client_id TEXT,
+        token_kind TEXT NOT NULL,
+        expires_at TEXT,
+        revoked BOOLEAN NOT NULL DEFAULT FALSE,
+        created_at TEXT NOT NULL DEFAULT (now() AT TIME ZONE 'utc')::text
+      );
+      CREATE INDEX IF NOT EXISTS idx_pg_tokens_grant_id
+        ON tokens(grant_id);
+      CREATE INDEX IF NOT EXISTS idx_pg_tokens_client_id
+        ON tokens(client_id);
+
+      CREATE TABLE IF NOT EXISTS pending_consents (
+        device_code TEXT PRIMARY KEY,
+        user_code TEXT NOT NULL UNIQUE,
+        params_json JSONB NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        subject_id TEXT,
+        grant_id TEXT,
+        token_id TEXT,
+        ai_training_consented BOOLEAN,
+        request_id TEXT,
+        trace_id TEXT,
+        scenario_id TEXT,
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        approved_at TEXT,
+        denied_at TEXT,
+        approval_id TEXT UNIQUE
+      );
+      CREATE INDEX IF NOT EXISTS idx_pg_pending_consents_status_expires
+        ON pending_consents(status, expires_at);
+
+      CREATE TABLE IF NOT EXISTS owner_device_auth (
+        device_code TEXT PRIMARY KEY,
+        user_code TEXT NOT NULL UNIQUE,
+        client_id TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        subject_id TEXT,
+        token_id TEXT,
+        interval_seconds INTEGER NOT NULL DEFAULT 5,
+        last_polled_at TEXT,
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        approved_at TEXT,
+        denied_at TEXT,
+        request_id TEXT,
+        trace_id TEXT,
+        scenario_id TEXT,
+        approval_id TEXT UNIQUE
+      );
+      CREATE INDEX IF NOT EXISTS idx_pg_owner_device_auth_status_expires
+        ON owner_device_auth(status, expires_at);
+
+      CREATE TABLE IF NOT EXISTS connector_state (
+        connector_id TEXT NOT NULL,
+        stream TEXT NOT NULL,
+        state_json JSONB NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY(connector_id, stream)
+      );
+
+      CREATE TABLE IF NOT EXISTS grant_connector_state (
+        grant_id TEXT NOT NULL,
+        connector_id TEXT NOT NULL,
+        stream TEXT NOT NULL,
+        state_json JSONB NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY(grant_id, connector_id, stream)
+      );
+
+      CREATE TABLE IF NOT EXISTS connector_schedules (
+        connector_id TEXT PRIMARY KEY,
+        interval_seconds INTEGER NOT NULL,
+        jitter_seconds INTEGER NOT NULL DEFAULT 0,
+        enabled BOOLEAN NOT NULL DEFAULT TRUE,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS controller_active_runs (
+        connector_id TEXT PRIMARY KEY,
+        run_id TEXT NOT NULL UNIQUE,
+        trace_id TEXT NOT NULL,
+        scenario_id TEXT NOT NULL,
+        started_at TEXT NOT NULL
+      );
+
       CREATE TABLE IF NOT EXISTS records (
         id BIGSERIAL PRIMARY KEY,
         connector_id TEXT NOT NULL,
@@ -217,6 +343,14 @@ export async function bootstrapPostgresSchema() {
       CREATE INDEX IF NOT EXISTS idx_pg_lexical_search_document
         ON lexical_search_index USING GIN(document);
 
+      CREATE TABLE IF NOT EXISTS lexical_search_snapshots (
+        snapshot_id TEXT PRIMARY KEY,
+        query TEXT NOT NULL,
+        plan_hash TEXT NOT NULL,
+        results_json JSONB NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (now() AT TIME ZONE 'utc')::text
+      );
+
       CREATE TABLE IF NOT EXISTS lexical_search_meta (
         connector_id TEXT NOT NULL,
         stream TEXT NOT NULL,
@@ -234,6 +368,14 @@ export async function bootstrapPostgresSchema() {
       );
       CREATE INDEX IF NOT EXISTS idx_pg_semantic_search_scope
         ON semantic_search_blob(connector_id, scope_key);
+
+      CREATE TABLE IF NOT EXISTS semantic_search_snapshots (
+        snapshot_id TEXT PRIMARY KEY,
+        query TEXT NOT NULL,
+        plan_hash TEXT NOT NULL,
+        results_json JSONB NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (now() AT TIME ZONE 'utc')::text
+      );
 
       CREATE TABLE IF NOT EXISTS semantic_search_meta (
         connector_id TEXT NOT NULL,

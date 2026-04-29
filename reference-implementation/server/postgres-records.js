@@ -596,7 +596,43 @@ export async function postgresGetDatasetBlobBytes() {
 }
 
 export async function postgresGetDatasetRecordTimeBounds() {
-  return { earliest: null, latest: null };
+  const connectors = await postgresQuery(
+    `SELECT connector_id, manifest
+     FROM connectors
+     ORDER BY connector_id`,
+  );
+
+  let earliest = null;
+  let latest = null;
+  for (const row of connectors.rows) {
+    const manifest = row.manifest;
+    if (!Array.isArray(manifest?.streams)) continue;
+
+    for (const stream of manifest.streams) {
+      const field = stream?.consent_time_field;
+      const streamName = stream?.name;
+      if (typeof field !== 'string' || !field || typeof streamName !== 'string') continue;
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(field)) continue;
+
+      const result = await postgresQuery(
+        `SELECT
+           MIN(record_json ->> $1) AS min_time,
+           MAX(record_json ->> $1) AS max_time
+         FROM records
+         WHERE connector_id = $2
+           AND stream = $3
+           AND deleted = FALSE
+           AND record_json ? $1`,
+        [field, row.connector_id, streamName],
+      );
+      const minTime = typeof result.rows[0]?.min_time === 'string' ? result.rows[0].min_time : null;
+      const maxTime = typeof result.rows[0]?.max_time === 'string' ? result.rows[0].max_time : null;
+      if (minTime && (earliest === null || minTime < earliest)) earliest = minTime;
+      if (maxTime && (latest === null || maxTime > latest)) latest = maxTime;
+    }
+  }
+
+  return { earliest, latest };
 }
 
 export async function postgresListDatasetTopConnectorCandidates() {

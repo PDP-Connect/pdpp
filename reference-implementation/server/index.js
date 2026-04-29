@@ -35,10 +35,10 @@ import {
   registerDynamicClient, requireGrantContractAgainstManifest, requireResolvedPersistedGrantState, seedPreRegisteredClients,
   buildPendingConsentRequestUri,
 } from './auth.js';
-import { createSqliteBlobStore } from './stores/blob-store.js';
+import { createBlobStore } from './stores/blob-store.js';
 import { postgresPersistContentAddressedBlob } from './postgres-records.js';
-import { createSqliteConsentStore } from './stores/consent-store.js';
-import { createSqliteOwnerDeviceAuthStore } from './stores/owner-device-auth-store.js';
+import { createConsentStore } from './stores/consent-store.js';
+import { createOwnerDeviceAuthStore } from './stores/owner-device-auth-store.js';
 import {
   ingestRecord, queryRecords, aggregateRecords, getRecord, deleteRecord, deleteAllRecords,
   listStreams, listAllStreams, getSyncState, putSyncState,
@@ -1491,8 +1491,8 @@ function buildAsApp(opts = {}) {
   const providerName = resolveProviderName(opts);
   const referenceRevision = resolveReferenceRevision(opts);
   const controller = opts.controller || null;
-  const consentStore = createSqliteConsentStore();
-  const ownerDeviceAuthStore = createSqliteOwnerDeviceAuthStore();
+  const consentStore = createConsentStore();
+  const ownerDeviceAuthStore = createOwnerDeviceAuthStore();
   const dynamicClientRegistrationEnabled = resolveDynamicClientRegistrationEnabled(opts);
   const dynamicClientRegistrationInitialAccessTokens = resolveDynamicClientRegistrationInitialAccessTokens(opts);
   const ownerAuthConfig = resolveOwnerAuthPlaceholderConfig(opts);
@@ -4193,7 +4193,7 @@ function buildRsApp(opts = {}) {
   // the `blob_not_found` error shape locally, and MUST NOT speak SQL.
   // Storage reads flow through the `BlobStore` capability
   // (server/stores/blob-store.js).
-  const blobStore = createSqliteBlobStore();
+  const blobStore = createBlobStore();
   app.get('/v1/blobs/:blob_id', { contract: 'getBlob' }, requireToken, async (req, res) => {
     try {
       const blobId = decodeURIComponent(req.params.blob_id);

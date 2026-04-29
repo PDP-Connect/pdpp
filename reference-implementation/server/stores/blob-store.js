@@ -1,5 +1,5 @@
 /**
- * Production `BlobStore` interface and SQLite-backed implementation.
+ * Production `BlobStore` interface and storage-backed implementation.
  *
  * Semantic store seam for `GET /v1/blobs/:blob_id` visibility evaluation:
  * the route adapter and the canonical `rs.blobs.read` operation depend on
@@ -61,7 +61,7 @@ import { isPostgresStorageBackend } from '../postgres-storage.js';
 const DEFAULT_BINDING_LIMIT = 1024;
 
 /**
- * Construct the SQLite-backed `BlobStore`.
+ * Construct the storage-backed `BlobStore`.
  *
  * No arguments: the underlying SQLite handle is owned by `server/db.js` and
  * the registry-bound query handles are owned by `server/queries/index.ts`.
@@ -70,7 +70,7 @@ const DEFAULT_BINDING_LIMIT = 1024;
  *
  * @returns {BlobStore}
  */
-export function createSqliteBlobStore() {
+export function createBlobStore() {
   if (isPostgresStorageBackend()) {
     return {
       loadContentAddressedBlob(blobId) {
@@ -96,4 +96,8 @@ export function createSqliteBlobStore() {
       return rows;
     },
   };
+}
+
+export function createSqliteBlobStore() {
+  return createBlobStore();
 }

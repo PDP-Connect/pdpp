@@ -57,7 +57,7 @@ import {
   postgresSemanticSearch,
   postgresGetSemanticRecord,
 } from './postgres-search.js';
-import { isPostgresStorageBackend } from './postgres-storage.js';
+import { isPostgresStorageBackend, postgresQuery } from './postgres-storage.js';
 
 // ─── scope_key encoding ────────────────────────────────────────────────────
 
@@ -1785,6 +1785,25 @@ function hashBackendIdentity(b) {
 }
 
 async function persistSemanticSnapshot(snapshot) {
+  const planHash = JSON.stringify({ plan: snapshot.plan_hash, backend: snapshot.backend_hash });
+  const resultsJson = JSON.stringify(snapshot.results);
+
+  if (isPostgresStorageBackend()) {
+    await postgresQuery(
+      `
+      INSERT INTO semantic_search_snapshots(snapshot_id, query, plan_hash, results_json)
+      VALUES ($1, $2, $3, $4::jsonb)
+      ON CONFLICT(snapshot_id) DO UPDATE SET
+        query = excluded.query,
+        plan_hash = excluded.plan_hash,
+        results_json = excluded.results_json,
+        created_at = (now() AT TIME ZONE 'utc')::text
+      `,
+      [snapshot.snapshot_id, snapshot.query, planHash, resultsJson],
+    );
+    return;
+  }
+
   exec(
     referenceQueries.searchSemanticSnapshotsInsert,
     [
@@ -1793,14 +1812,30 @@ async function persistSemanticSnapshot(snapshot) {
       // Store backend_hash alongside plan_hash so stale-cursor detection is
       // deterministic across restarts — the snapshot row is the source of
       // truth about what backend produced the cached distances.
-      JSON.stringify({ plan: snapshot.plan_hash, backend: snapshot.backend_hash }),
-      JSON.stringify(snapshot.results),
+      planHash,
+      resultsJson,
     ],
   );
 }
 
 async function loadSemanticSnapshot(snapshotId) {
+  if (isPostgresStorageBackend()) {
+    const { rows } = await postgresQuery(
+      `
+      SELECT snapshot_id, query, plan_hash, results_json::text AS results_json, created_at
+      FROM semantic_search_snapshots
+      WHERE snapshot_id = $1
+      `,
+      [snapshotId],
+    );
+    return materializeSemanticSnapshot(rows[0]);
+  }
+
   const row = getOne(referenceQueries.searchSemanticSnapshotsGetById, [snapshotId]);
+  return materializeSemanticSnapshot(row);
+}
+
+function materializeSemanticSnapshot(row) {
   if (!row) return null;
   const createdAt = new Date(row.created_at + 'Z').getTime();
   if (Number.isFinite(createdAt) && Date.now() - createdAt > SNAPSHOT_TTL_MS) {

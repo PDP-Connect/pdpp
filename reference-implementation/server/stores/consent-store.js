@@ -1,5 +1,5 @@
 /**
- * Production `ConsentStore` interface and SQLite-backed implementation.
+ * Production `ConsentStore` interface and storage-backed implementation.
  *
  * Semantic store seam for the third-party data-grant pending-consent flow.
  * Callers (route handlers, controllers) MUST depend on this interface
@@ -7,9 +7,9 @@
  * statements, or query builders. The interface speaks lifecycle:
  * initiate → lookup → approve / deny.
  *
- * The SQLite implementation here is the single runtime adapter. It wraps
- * the lifecycle helpers in `server/auth.js` so security, token, spine, and
- * grant semantics remain centralized in one module.
+ * The implementation wraps the lifecycle helpers in `server/auth.js` so
+ * security, token, spine, and grant semantics remain centralized in one
+ * module.
  *
  * Spec: openspec/changes/extract-low-risk-reference-stores/specs/
  *       reference-implementation-architecture/spec.md
@@ -25,7 +25,7 @@ import {
 } from '../auth.js';
 
 /**
- * Construct the SQLite-backed `ConsentStore`.
+ * Construct the storage-backed `ConsentStore`.
  *
  * No arguments: the underlying SQLite handle is owned by `server/db.js` and
  * resolved per-call from inside the `auth.js` lifecycle helpers. The store
@@ -34,7 +34,7 @@ import {
  *
  * @returns {ConsentStore}
  */
-export function createSqliteConsentStore() {
+export function createConsentStore() {
   return {
     /**
      * Stage a third-party data-grant pending-consent request.
@@ -128,6 +128,10 @@ export function createSqliteConsentStore() {
   };
 }
 
+export function createSqliteConsentStore() {
+  return createConsentStore();
+}
+
 /**
- * @typedef {ReturnType<typeof createSqliteConsentStore>} ConsentStore
+ * @typedef {ReturnType<typeof createConsentStore>} ConsentStore
  */
