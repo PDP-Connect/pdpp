@@ -18,6 +18,7 @@
     "./operations/rs-records-detail": "./operations/rs-records-detail/index.ts",
     "./operations/rs-search-lexical": "./operations/rs-search-lexical/index.ts",
     "./operations/rs-search-semantic": "./operations/rs-search-semantic/index.ts",
+    "./operations/rs-search-hybrid": "./operations/rs-search-hybrid/index.ts",
     "./operations/ref-dataset-summary": "./operations/ref-dataset-summary/index.ts"
   },
   "scripts": {

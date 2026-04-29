@@ -4,86 +4,63 @@
  * Realizes the public `hybrid-retrieval` capability defined in:
  *   openspec/changes/define-hybrid-retrieval/specs/hybrid-retrieval/spec.md
  *
- * Design: compose the existing lexical and semantic retrieval planners under
- * the caller's grant; deduplicate by (connector_id, stream, record_key);
- * return one search_result per record carrying explicit retrieval_sources
- * provenance and per-source score objects. The hybrid endpoint is NOT a new
- * grant-logic path — grant enforcement stays inside the underlying
- * runLexicalSearch / runSemanticSearch helpers.
+ * Public-contract slice (allowlist, cursor rejection, forbidden-parameter
+ * list, `q`-required, `limit` clamp, `streams[]` normalization,
+ * `filter[...]` coupling, per-source fan-out under the caller's grant,
+ * round-robin merge, dedup by `(connector_id, stream, record_key)`,
+ * `retrieval_sources` provenance, per-source `scores` map,
+ * `retrieval_mode: "hybrid"`, list-envelope shape, and the
+ * `disclosure.served` data block) is owned by the canonical
+ * `rs.search.hybrid` operation in `operations/rs-search-hybrid/index.ts`.
+ * This module is the native dependency-wiring shell: it composes the
+ * existing `runLexicalSearch` / `runSemanticSearch` runners under the same
+ * grant and hands their per-source result envelopes to `executeSearchHybrid`.
+ *
+ * Design: hybrid is NOT a new grant-logic path — grant enforcement stays
+ * inside the underlying `runLexicalSearch` / `runSemanticSearch` helpers.
+ * The shell builds a synthetic sub-request that carries the parsed hybrid
+ * params verbatim and lets each runner enforce advertisement, grant
+ * projection, stream-grant intersection, field-grant intersection, and
+ * record-level grant constraints.
  *
  * v1 pagination choice: NO cursor support. Snapshot-honest hybrid cursors
  * require encoding the combined-source snapshot identity; rather than ship
  * offset-only pagination over two independently changing candidate sets,
- * v1 rejects the `cursor` parameter and advertises cursor_supported:false.
- * Clients that need paging beyond `limit` should fall back to the individual
- * /v1/search and /v1/search/semantic endpoints in this tranche.
+ * v1 rejects the `cursor` parameter (in the operation) and advertises
+ * cursor_supported:false. Clients that need paging beyond `limit` should
+ * fall back to the individual /v1/search and /v1/search/semantic endpoints
+ * in this tranche.
  */
 
+import {
+  executeSearchHybrid,
+  parseSearchHybridParams,
+  SearchHybridRequestError,
+} from '../operations/rs-search-hybrid/index.ts';
 import { runLexicalSearch } from './search.js';
 import { runSemanticSearch } from './search-semantic.js';
 
-const ALLOWED_PARAMS = new Set(['q', 'limit', 'streams', 'streams[]', 'filter']);
-
-// Parse the v1 hybrid query-string allowlist. This mirrors the lexical /
-// semantic allowlists except that `cursor` is deliberately rejected in v1
-// (see module header). Any unknown key — including forbidden knobs like
-// `weights`, `boost`, `mode`, `connector_id`, etc. — is rejected up-front so
-// clients can't smuggle them past the delegates.
+/**
+ * Parse and validate the v1 hybrid query-string allowlist.
+ *
+ * Thin delegating shim: the canonical implementation lives in
+ * `operations/rs-search-hybrid/index.ts`. Kept exported here so any
+ * existing direct callers continue to compile with the same plain-`Error`
+ * shape (`Error` with `code` / optional `param`) the previous local
+ * implementation produced.
+ */
 export function parseHybridSearchParams(query) {
-  for (const key of Object.keys(query)) {
-    if (key === 'cursor') {
-      const err = new Error('cursor pagination is not supported on /v1/search/hybrid');
-      err.code = 'invalid_request';
-      err.param = 'cursor';
-      throw err;
+  try {
+    return parseSearchHybridParams(query);
+  } catch (err) {
+    if (err instanceof SearchHybridRequestError) {
+      const translated = new Error(err.message);
+      translated.code = err.code;
+      if (err.param !== undefined) translated.param = err.param;
+      throw translated;
     }
-    if (!ALLOWED_PARAMS.has(key)) {
-      const err = new Error(`Unsupported query parameter: ${key}`);
-      err.code = 'invalid_request';
-      err.param = key;
-      throw err;
-    }
-  }
-  const q = typeof query.q === 'string' ? query.q : '';
-  if (!q) {
-    const err = new Error('q is required');
-    err.code = 'invalid_request';
-    err.param = 'q';
     throw err;
   }
-  const limit = clampLimit(query.limit);
-  const streams = normalizeStreamsParam(query.streams ?? query['streams[]']);
-  const hasFilter = Object.prototype.hasOwnProperty.call(query, 'filter');
-  if (hasFilter && (!streams || streams.length !== 1)) {
-    const err = new Error(
-      "filter[...] requires exactly one streams[] value (e.g. ?streams[]=messages&filter[received_at][gte]=...). filter[stream] and filter[connector_id] are not supported.",
-    );
-    err.code = 'invalid_request';
-    err.param = 'streams';
-    throw err;
-  }
-  return {
-    q,
-    limit,
-    streams,
-    filter: hasFilter ? query.filter : null,
-  };
-}
-
-function clampLimit(raw) {
-  if (raw === undefined || raw === null || raw === '') return 25;
-  const n = Number(raw);
-  if (!Number.isFinite(n) || n < 1) return 25;
-  return Math.min(Math.floor(n), 100);
-}
-
-function normalizeStreamsParam(raw) {
-  if (raw === undefined || raw === null) return null;
-  const arr = Array.isArray(raw) ? raw : [raw];
-  const cleaned = arr
-    .map((v) => (typeof v === 'string' ? v.trim() : ''))
-    .filter((v) => v.length > 0);
-  return cleaned.length === 0 ? null : cleaned;
 }
 
 // The delegated sub-requests reuse the caller's parsed params verbatim.
@@ -101,18 +78,13 @@ function buildSubRequest(originalReq, params) {
   return { ...originalReq, query };
 }
 
-function resultDedupKey(result) {
-  return JSON.stringify([result.connector_id, result.stream, result.record_key]);
-}
-
 /**
  * The single helper the GET /v1/search/hybrid route delegates to.
  *
- * Composes runLexicalSearch + runSemanticSearch under the same grant plan
- * by calling each with a synthetic sub-request. The merge preserves per-
- * source ordering in a round-robin fashion so neither surface dominates the
- * first page, then deduplicates by (connector_id, stream, record_key) and
- * unions matched_fields + scores across surfaces.
+ * Composes runLexicalSearch + runSemanticSearch under the same grant by
+ * calling each with a synthetic sub-request, then hands the per-source
+ * envelopes to `executeSearchHybrid` which owns the merge / dedup /
+ * envelope / disclosure shape.
  */
 export async function runHybridSearch({
   req,
@@ -124,131 +96,70 @@ export async function runHybridSearch({
   buildOwnerReadGrantForManifest,
   resolveGrantManifest,
 }) {
-  const params = parseHybridSearchParams(req.query);
-  const subReq = buildSubRequest(req, params);
+  const isOwner = tokenInfo.pdpp_token_kind === 'owner';
+  const actor = isOwner
+    ? { kind: 'owner', subject_id: tokenInfo.subject_id ?? null }
+    : {
+        kind: 'client',
+        subject_id: tokenInfo.subject_id ?? null,
+        client_id: tokenInfo.client_id ?? null,
+        grant_id: tokenInfo.grant_id ?? null,
+      };
 
-  // Delegate to lexical and semantic planners in parallel. Errors from
-  // either are surfaced — grant_stream_not_allowed etc. should behave
-  // identically to calling the underlying endpoints. The two helpers
-  // already enforce advertisement, grant projection, field gating, and
-  // record-level grant constraints.
-  const [lexicalOutcome, semanticOutcome] = await Promise.all([
-    runLexicalSearch({
-      req: subReq,
-      opts,
-      tokenInfo,
-      resolveOwnerVisibleConnectorIds,
-      resolveOwnerScopeForConnector,
-      resolveOwnerManifestFromScope,
-      buildOwnerReadGrantForManifest,
-      resolveGrantManifest,
-    }),
-    runSemanticSearch({
-      req: subReq,
-      opts,
-      tokenInfo,
-      resolveOwnerVisibleConnectorIds,
-      resolveOwnerScopeForConnector,
-      resolveOwnerManifestFromScope,
-      buildOwnerReadGrantForManifest,
-      resolveGrantManifest,
-    }),
-  ]);
+  // Native dependencies wire the operation against the existing lexical /
+  // semantic runners. Errors from either propagate unchanged — grant_stream_not_allowed
+  // etc. behave identically to calling the underlying endpoints.
+  const dependencies = {
+    runLexical: (params) =>
+      runLexicalSearch({
+        req: buildSubRequest(req, params),
+        opts,
+        tokenInfo,
+        resolveOwnerVisibleConnectorIds,
+        resolveOwnerScopeForConnector,
+        resolveOwnerManifestFromScope,
+        buildOwnerReadGrantForManifest,
+        resolveGrantManifest,
+      }),
+    runSemantic: (params) =>
+      runSemanticSearch({
+        req: buildSubRequest(req, params),
+        opts,
+        tokenInfo,
+        resolveOwnerVisibleConnectorIds,
+        resolveOwnerScopeForConnector,
+        resolveOwnerManifestFromScope,
+        buildOwnerReadGrantForManifest,
+        resolveGrantManifest,
+      }),
+  };
 
-  const lexicalHits = Array.isArray(lexicalOutcome.envelope?.data)
-    ? lexicalOutcome.envelope.data
-    : [];
-  const semanticHits = Array.isArray(semanticOutcome.envelope?.data)
-    ? semanticOutcome.envelope.data
-    : [];
-
-  // Merge: round-robin by source rank to keep early pages balanced. The
-  // dedup map preserves the insertion order of whichever source surfaced a
-  // given record first, which naturally gives overlapping hits the best
-  // available rank. Per-source scores and matched_fields are unioned.
-  const merged = new Map();
-  const maxLen = Math.max(lexicalHits.length, semanticHits.length);
-  for (let i = 0; i < maxLen; i += 1) {
-    if (i < lexicalHits.length) {
-      addHit(merged, lexicalHits[i], 'lexical');
+  let result;
+  try {
+    result = await executeSearchHybrid(
+      { actor, query: req.query },
+      dependencies,
+    );
+  } catch (err) {
+    if (err instanceof SearchHybridRequestError) {
+      // Translate operation-typed errors into the plain-object error shape
+      // the existing native error path expects (`err.code`, optional
+      // `err.param`). Preserves the previous public error envelope.
+      const translated = new Error(err.message);
+      translated.code = err.code;
+      if (err.param !== undefined) translated.param = err.param;
+      throw translated;
     }
-    if (i < semanticHits.length) {
-      addHit(merged, semanticHits[i], 'semantic');
-    }
+    throw err;
   }
-
-  // Trim to the caller-requested limit AFTER dedup+merge so hybrid never
-  // returns fewer hits than requested purely because of cross-source
-  // overlap. has_more honestly reports whether we truncated the merged
-  // list. Since v1 hybrid has no cursor, has_more is informational only.
-  const all = Array.from(merged.values()).map(shapeHybridResult);
-  const slice = all.slice(0, params.limit);
-  const hasMore = all.length > params.limit;
 
   return {
     envelope: {
       object: 'list',
       url: '/v1/search/hybrid',
-      has_more: hasMore,
-      data: slice,
+      has_more: result.envelope.has_more,
+      data: result.envelope.data,
     },
-    disclosureData: {
-      query_shape: 'search_hybrid',
-      record_count: slice.length,
-      has_more: hasMore,
-      mode: tokenInfo.pdpp_token_kind === 'owner' ? 'owner' : 'client',
-      lexical_count: lexicalHits.length,
-      semantic_count: semanticHits.length,
-    },
+    disclosureData: result.disclosureData,
   };
-}
-
-function addHit(merged, hit, source) {
-  const key = resultDedupKey(hit);
-  const existing = merged.get(key);
-  if (existing) {
-    if (!existing.sources.has(source)) {
-      existing.sources.add(source);
-    }
-    // Union matched_fields across sources without duplicating. Field order
-    // reflects discovery order (lexical before semantic when both match).
-    for (const f of hit.matched_fields || []) {
-      if (!existing.matchedFields.includes(f)) existing.matchedFields.push(f);
-    }
-    if (hit.score) existing.scores[source] = hit.score;
-    // Keep the first non-empty snippet encountered — lexical snippets are
-    // highlighted; semantic snippets are verbatim excerpts. Either is
-    // informative; we do not invent a combined one.
-    if (!existing.snippet && hit.snippet) existing.snippet = hit.snippet;
-    return;
-  }
-  merged.set(key, {
-    base: {
-      object: hit.object,
-      stream: hit.stream,
-      record_key: hit.record_key,
-      connector_id: hit.connector_id,
-      record_url: hit.record_url,
-      emitted_at: hit.emitted_at,
-    },
-    matchedFields: Array.isArray(hit.matched_fields) ? hit.matched_fields.slice() : [],
-    sources: new Set([source]),
-    scores: hit.score ? { [source]: hit.score } : {},
-    snippet: hit.snippet || null,
-  });
-}
-
-function shapeHybridResult(entry) {
-  const sources = [];
-  if (entry.sources.has('lexical')) sources.push('lexical');
-  if (entry.sources.has('semantic')) sources.push('semantic');
-  const result = {
-    ...entry.base,
-    matched_fields: entry.matchedFields,
-    retrieval_mode: 'hybrid',
-    retrieval_sources: sources,
-  };
-  if (Object.keys(entry.scores).length > 0) result.scores = entry.scores;
-  if (entry.snippet) result.snippet = entry.snippet;
-  return result;
 }
