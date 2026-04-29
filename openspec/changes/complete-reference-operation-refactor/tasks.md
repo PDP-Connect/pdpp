@@ -2,7 +2,7 @@
 
 - [x] 1.1 Inventory remaining inline route families in `server/index.js`.
 - [x] 1.2 Create final umbrella OpenSpec change.
-- [ ] 1.3 Launch disjoint worker branches/worktrees with route-family ownership.
+- [x] 1.3 Launch disjoint worker branches/worktrees with route-family ownership.
 
 ## 2. RS Search, Discovery, And State
 
@@ -39,10 +39,10 @@
 
 ## 6. Integration And Closeout
 
-- [ ] 6.1 Confirm every operation module passes the shared boundary gate.
-- [ ] 6.2 Confirm `server/index.js` is limited to HTTP/auth/request-id/response/instrumentation/capability wiring for covered routes.
-- [ ] 6.3 Run focused route-family tests plus relevant existing security/protocol/conformance tests.
-- [ ] 6.4 Run `pnpm --filter pdpp-reference-implementation typecheck`.
-- [ ] 6.5 Run `pnpm --filter pdpp-reference-implementation check`.
-- [ ] 6.6 Run `pnpm exec openspec validate complete-reference-operation-refactor --strict`.
-- [ ] 6.7 Run `pnpm exec openspec validate --all --strict`.
+- [x] 6.1 Confirm every operation module passes the shared boundary gate.
+- [x] 6.2 Confirm `server/index.js` is limited to HTTP/auth/request-id/response/instrumentation/capability wiring for covered routes.
+- [x] 6.3 Run focused route-family tests plus relevant existing security/protocol/conformance tests.
+- [x] 6.4 Run `pnpm --filter pdpp-reference-implementation typecheck`.
+- [x] 6.5 Run `pnpm --filter pdpp-reference-implementation check`.
+- [x] 6.6 Run `pnpm exec openspec validate complete-reference-operation-refactor --strict`.
+- [x] 6.7 Run `pnpm exec openspec validate --all --strict`.
