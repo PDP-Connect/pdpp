@@ -130,7 +130,7 @@ When sending follow-up guidance to an interactive Claude worker, do not assume a
 raw `tmux send-keys` call was submitted. Claude panes may be mid-tool-call, and
 text can sit in the input box until an explicit submit reaches the pane.
 
-Use this owner-side pattern:
+Use this owner-side pattern for short inline messages:
 
 ```bash
 tmux set-buffer -- "$message"
@@ -139,6 +139,22 @@ tmux send-keys -t "main:<window>" Enter
 sleep 1
 tmux capture-pane -t "main:<window>" -p -S -40 | tail -40
 ```
+
+For anything longer than a sentence or two, write the guidance to a file under
+`tmp/workstreams/` and paste the file through tmux's buffer API rather than
+shell-quoting the message into `send-keys`:
+
+```bash
+tmux load-buffer tmp/workstreams/<handoff>.md
+tmux paste-buffer -t "main:<window>"
+tmux send-keys -t "main:<window>" Enter
+sleep 1
+tmux capture-pane -t "main:<window>" -p -S -40 | tail -40
+```
+
+Do not wrap long markdown in `printf %q`, command substitution, or other shell
+escaping and pass it directly to `tmux send-keys`; that can deliver escaped
+markdown (`$'\n'`, backslashes) to the worker instead of the intended text.
 
 After sending, verify one of these is true before moving on:
 
