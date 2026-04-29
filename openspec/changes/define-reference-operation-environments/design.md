@@ -178,13 +178,13 @@ The proof sequence in "Evidence Standard" has been partially executed by separat
 
 ### Recommended proof sequence vs landed evidence
 
-1. **Storage-only security proof (`ConsentStore` + `OwnerDeviceAuthStore`).**
-   Landed: `add-consent-device-auth-conformance-harness`. SQLite driver, deliberately-broken in-memory driver, and falsifiability test under `reference-implementation/test/helpers/`. Twelve lifecycle/security scenarios pass; falsifiability test confirms the harness fails on real terminal-state, denial-terminal, and polling-rate violations.
-   Not done: production `ConsentStore` / `OwnerDeviceAuthStore` interfaces are *not* extracted; the harness defines a candidate driver shape only.
+1. **Storage-only security proof (`ConsentStore` + `OwnerDeviceAuthStore`).** *Prerequisite harness landed; proof incomplete.*
+   Landed: `add-consent-device-auth-conformance-harness`. SQLite driver, deliberately-broken in-memory falsifiability driver, and 12 lifecycle/security scenarios under `reference-implementation/test/helpers/`. Falsifiability test confirms the harness fails on real terminal-state, denial-terminal, and polling-rate violations.
+   Not done: there is no conforming second adapter. The broken driver is *not* a memory adapter — it deliberately violates invariants. No production `ConsentStore` / `OwnerDeviceAuthStore` interface is extracted, and adapter equivalence has not been demonstrated. The storage-only security proof remains incomplete until a conforming memory (or other second) adapter passes the harness.
 
-2. **Postgres-oriented storage proof (`ConnectorStateStore` + `SchedulerStore`).**
+2. **Postgres-oriented storage proof (`ConnectorStateStore` + `SchedulerStore`).** *Prerequisite harness landed; proof incomplete.*
    Landed: `add-connector-state-scheduler-conformance-harness`. SQLite driver, broken driver, and falsifiability test pinning state, schedule, and active-run invariants (including `controller_active_runs.run_id` cross-connector uniqueness).
-   Not done: the non-default Postgres adapter spike. The harness is the prerequisite for that spike.
+   Not done: the non-default Postgres adapter spike. No second conforming adapter exists. The Postgres-oriented storage proof remains incomplete until a Postgres adapter passes the same harness.
 
 3. **Sandbox operation proof (`rs.streams.list`).**
    Landed: `mount-rs-streams-list-operation`. Operation capsule under `reference-implementation/operations/rs-streams-list/`, mounted by both Fastify (`/v1/streams`) and the Next sandbox (`/sandbox/v1/streams`). `buildLiveStreamsList` is deleted from `apps/web/src/app/sandbox/_demo/builders.ts`. Per-operation import-boundary test asserts the operation does not import Fastify/Next/SQLite/process and the sandbox route does not import the deleted builder.
