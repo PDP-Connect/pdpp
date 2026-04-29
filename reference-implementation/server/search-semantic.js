@@ -50,6 +50,14 @@ import {
   passesGrantRecordConstraints,
   passesRequestFilters,
 } from './record-filters.js';
+import {
+  postgresSemanticIndexDelete,
+  postgresSemanticIndexDeleteByConnectorStream,
+  postgresSemanticIndexUpsertMany,
+  postgresSemanticSearch,
+  postgresGetSemanticRecord,
+} from './postgres-search.js';
+import { isPostgresStorageBackend } from './postgres-storage.js';
 
 // ─── scope_key encoding ────────────────────────────────────────────────────
 
@@ -831,8 +839,6 @@ export async function semanticIndexUpsert({ connectorId, stream, recordKey, data
   if (!backend) return;
   const declared = await getStreamSemanticFields(connectorId, stream);
   if (!declared) return;
-  const index = ensureVectorIndex();
-  if (!index) return;
   const entries = [];
   for (const field of declared) {
     const text = normalizeSemanticEmbeddingInput(data?.[field]);
@@ -845,6 +851,12 @@ export async function semanticIndexUpsert({ connectorId, stream, recordKey, data
       vector,
     });
   }
+  if (isPostgresStorageBackend()) {
+    await postgresSemanticIndexUpsertMany({ connectorId, stream, recordKey, entries });
+    return;
+  }
+  const index = ensureVectorIndex();
+  if (!index) return;
   // Delete only this logical record's stale vectors after embeddings succeed.
   // Deleting by scope here would wipe every row for the field.
   await index.deleteRecord({ connectorId, stream, recordKey });
@@ -859,6 +871,10 @@ export async function semanticIndexUpsert({ connectorId, stream, recordKey, data
 
 export async function semanticIndexDelete({ connectorId, stream, recordKey }) {
   if (!backend) return;
+  if (isPostgresStorageBackend()) {
+    await postgresSemanticIndexDelete({ connectorId, stream, recordKey });
+    return;
+  }
   const index = ensureVectorIndex();
   if (!index) return;
   await index.deleteRecord({ connectorId, stream, recordKey });
@@ -866,6 +882,10 @@ export async function semanticIndexDelete({ connectorId, stream, recordKey }) {
 
 export async function semanticIndexDeleteByConnectorStream({ connectorId, stream }) {
   if (!backend) return;
+  if (isPostgresStorageBackend()) {
+    await postgresSemanticIndexDeleteByConnectorStream({ connectorId, stream });
+    return;
+  }
   const index = ensureVectorIndex();
   if (!index) return;
   await index.deleteByConnectorStream({ connectorId, stream });
@@ -1596,7 +1616,7 @@ export async function runSemanticSearch({
  */
 async function buildSemanticSnapshot({ q, perConnectorPlans, isOwner }) {
   const queryVector = await backend.embedQuery(normalizeSemanticEmbeddingInput(q) ?? '');
-  const index = ensureVectorIndex();
+  const index = isPostgresStorageBackend() ? null : ensureVectorIndex();
 
   // Configurable KNN overscan — we fetch more per connector than the final
   // page needs so the merged top-N is accurate. Matches the lexical
@@ -1608,13 +1628,23 @@ async function buildSemanticSnapshot({ q, perConnectorPlans, isOwner }) {
       const entryHits = [];
       for (const entry of planEntries) {
         if (entry.scopeKeys.length === 0) continue;
-        entryHits.push(...await index.queryPerConnector({
-          connectorId,
-          scopeKeys: entry.scopeKeys,
-          queryVector,
-          limit: PER_CONNECTOR_LIMIT,
-          recordKeys: entry.candidateRecordKeys,
-        }));
+        if (isPostgresStorageBackend()) {
+          entryHits.push(...await postgresSemanticSearch({
+            connectorId,
+            scopeKeys: entry.scopeKeys,
+            queryVector,
+            limit: PER_CONNECTOR_LIMIT,
+            recordKeys: entry.candidateRecordKeys,
+          }));
+        } else {
+          entryHits.push(...await index.queryPerConnector({
+            connectorId,
+            scopeKeys: entry.scopeKeys,
+            queryVector,
+            limit: PER_CONNECTOR_LIMIT,
+            recordKeys: entry.candidateRecordKeys,
+          }));
+        }
       }
       return entryHits.sort(compareHits).slice(0, PER_CONNECTOR_LIMIT);
     }),
@@ -1681,17 +1711,25 @@ async function buildSemanticSnapshot({ q, perConnectorPlans, isOwner }) {
  * source field is one of the grant-authorized matched fields, so the
  * snippet is grant-safe by construction).
  */
-function hydrateSemanticSearchResult({ hit }) {
-  const recordRow = getOne(
-    referenceQueries.searchSemanticRecordsGetRecordByKey,
-    [hit.connectorId, hit.stream, hit.recordKey],
-  );
+async function hydrateSemanticSearchResult({ hit }) {
+  const recordRow = isPostgresStorageBackend()
+    ? await postgresGetSemanticRecord({
+        connectorId: hit.connectorId,
+        stream: hit.stream,
+        recordKey: hit.recordKey,
+      })
+    : getOne(
+        referenceQueries.searchSemanticRecordsGetRecordByKey,
+        [hit.connectorId, hit.stream, hit.recordKey],
+      );
 
   const emittedAt = recordRow?.emitted_at ?? null;
   let snippet = null;
   if (recordRow?.record_json) {
     try {
-      const data = JSON.parse(recordRow.record_json);
+      const data = typeof recordRow.record_json === 'string'
+        ? JSON.parse(recordRow.record_json)
+        : recordRow.record_json;
       const value = data?.[hit.topField];
       if (typeof value === 'string' && value.length > 0) {
         snippet = { field: hit.topField, text: pickVerbatimExcerpt(value) };

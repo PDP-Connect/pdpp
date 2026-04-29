@@ -15,6 +15,11 @@
  */
 
 import { getMany, getOne, referenceQueries } from '../../lib/db.ts';
+import {
+  postgresListBlobBindings,
+  postgresLoadContentAddressedBlob,
+} from '../postgres-records.js';
+import { isPostgresStorageBackend } from '../postgres-storage.js';
 
 /**
  * Row shape returned by `loadContentAddressedBlob`. The `data` field carries
@@ -66,6 +71,17 @@ const DEFAULT_BINDING_LIMIT = 1024;
  * @returns {BlobStore}
  */
 export function createSqliteBlobStore() {
+  if (isPostgresStorageBackend()) {
+    return {
+      loadContentAddressedBlob(blobId) {
+        return postgresLoadContentAddressedBlob(blobId);
+      },
+      listBlobBindings(blobId, { limit = DEFAULT_BINDING_LIMIT } = {}) {
+        return postgresListBlobBindings(blobId, { limit });
+      },
+    };
+  }
+
   return {
     loadContentAddressedBlob(blobId) {
       const row = getOne(referenceQueries.blobsGetRowById, [blobId]);

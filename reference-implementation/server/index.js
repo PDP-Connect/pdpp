@@ -8,6 +8,12 @@ import { createHash } from 'node:crypto';
 
 import { closeDb, getDb, initDb } from './db.js';
 import {
+  closePostgresStorage,
+  initPostgresStorage,
+  isPostgresStorageBackend,
+  resolveStorageBackend,
+} from './postgres-storage.js';
+import {
   buildAuthorizationServerMetadata,
   buildHybridRetrievalCapability,
   buildLexicalRetrievalCapability,
@@ -30,6 +36,7 @@ import {
   buildPendingConsentRequestUri,
 } from './auth.js';
 import { createSqliteBlobStore } from './stores/blob-store.js';
+import { postgresPersistContentAddressedBlob } from './postgres-records.js';
 import { createSqliteConsentStore } from './stores/consent-store.js';
 import { createSqliteOwnerDeviceAuthStore } from './stores/owner-device-auth-store.js';
 import {
@@ -1428,6 +1435,10 @@ function decorateRecordBlobRefs(record) {
 }
 
 function persistContentAddressedBlob({ connectorId, stream, recordKey, mimeType, data }) {
+  if (isPostgresStorageBackend()) {
+    return postgresPersistContentAddressedBlob({ connectorId, stream, recordKey, mimeType, data });
+  }
+
   const sha256 = createHash('sha256').update(data).digest('hex');
   const blobId = `blob_sha256_${sha256}`;
   const sizeBytes = data.byteLength;
@@ -2109,7 +2120,7 @@ function buildAsApp(opts = {}) {
         const id = decodeURIComponent(req.params[idParamKey]);
         const opts = parseTimelinePageOptions(req, res);
         if (!opts) return;
-        const page = listSpineEventsPage(kind, id, opts);
+        const page = await listSpineEventsPage(kind, id, opts);
         if (!page.events.length && !opts.cursor) {
           return pdppError(res, 404, 'not_found', notFoundMessage);
         }
@@ -2205,33 +2216,37 @@ function buildAsApp(opts = {}) {
       // and `getIngestedTimeBounds` independently, but the previous native
       // helper used one aggregate row for both.
       let cachedAggregate = null;
-      const aggregate = () => {
+      const aggregate = async () => {
         if (cachedAggregate === null) {
-          cachedAggregate = getDatasetRecordsAggregate();
+          cachedAggregate = await getDatasetRecordsAggregate();
         }
         return cachedAggregate;
       };
 
       const summary = await executeRefDatasetSummary({
-        getCounts: () => {
-          const agg = aggregate();
+        getCounts: async () => {
+          const agg = await aggregate();
           return {
             connector_count: agg.connector_count,
             stream_count: agg.stream_count,
             record_count: agg.record_count,
           };
         },
-        getRetainedBytes: () => {
-          const agg = aggregate();
+        getRetainedBytes: async () => {
+          const [agg, recordChangesJsonBytes, blobBytes] = await Promise.all([
+            aggregate(),
+            getDatasetRecordChangesBytes(),
+            getDatasetBlobBytes(),
+          ]);
           return {
             record_json_bytes: agg.record_json_bytes,
-            record_changes_json_bytes: getDatasetRecordChangesBytes(),
-            blob_bytes: getDatasetBlobBytes(),
+            record_changes_json_bytes: recordChangesJsonBytes,
+            blob_bytes: blobBytes,
           };
         },
         getRecordTimeBounds: () => getDatasetRecordTimeBounds(),
-        getIngestedTimeBounds: () => {
-          const agg = aggregate();
+        getIngestedTimeBounds: async () => {
+          const agg = await aggregate();
           return {
             earliest: agg.earliest_ingested_at,
             latest: agg.latest_ingested_at,
@@ -4527,6 +4542,7 @@ function buildRsApp(opts = {}) {
 export async function startServer(opts = {}) {
   const logger = opts.logger ?? buildLogger({ quiet: !!opts.quiet });
   const nativeConfig = validateNativeConfiguration(opts);
+  const storageBackend = resolveStorageBackend({ opts });
   await initDb(opts.dbPath || DB_PATH, {
     busyTimeoutMs: opts.sqliteBusyTimeoutMs,
     onSchemaRetry: ({ attempt, delay, err }) => {
@@ -4548,6 +4564,10 @@ export async function startServer(opts = {}) {
     },
   );
   logger.info('database initialized');
+  await initPostgresStorage(storageBackend);
+  if (storageBackend.backend === 'postgres') {
+    logger.info('postgres runtime storage initialized');
+  }
 
   configureNativeManifest(nativeConfig?.nativeManifest || null);
 
@@ -4831,6 +4851,7 @@ if (process.argv[1] && process.argv[1].endsWith('server/index.js')) {
       closeTimeout(server.rsServer),
       Promise.race([awaitBackfill, backfillDeadline]),
     ]);
+    await closePostgresStorage();
     closeDb();
     process.exit(0);
   };
@@ -4843,7 +4864,7 @@ if (process.argv[1] && process.argv[1].endsWith('server/index.js')) {
     server.abortStartupBackfill = result.abortStartupBackfill;
     server.startupBackfillDone = result.startupBackfillDone;
   }).catch(err => {
-    closeDb();
+    closePostgresStorage().finally(() => closeDb());
     cliLogger.fatal({ err }, 'startup failed');
     process.nextTick(() => process.exit(1));
   });

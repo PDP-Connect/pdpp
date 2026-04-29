@@ -105,20 +105,30 @@ instead of pulling public images, run:
 docker compose --env-file .env.docker up --build
 ```
 
-#### Postgres proof service (test-only, profile-gated)
+#### Postgres service (profile-gated)
 
 The Compose file ships an optional `postgres` service gated behind the
-`postgres` profile. It exists only to back env-gated conformance proofs such as
+`postgres` profile. It backs env-gated conformance/runtime proofs such as
 `reference-implementation/test/connector-state-scheduler-conformance-postgres.test.js`
 and
 `reference-implementation/test/consent-device-auth-conformance-postgres.test.js`,
-landed under `openspec/changes/add-postgres-storage-adapters`. The reference
-runtime remains SQLite-backed; the `reference` and `web` services do **not**
-depend on this service and there is no operator-facing Postgres storage support.
+plus `reference-implementation/test/postgres-runtime-storage.test.js`. The
+default reference runtime uses SQLite; `reference` and `web` do **not** depend on
+this service unless Postgres runtime storage is explicitly selected.
 
-The image is `pgvector/pgvector:pg16` so a future semantic/vector proof slice
-can reuse the same service without an image swap. The current low-risk storage
-proofs do not require the `vector` extension.
+Postgres runtime mode is opt-in and fresh-storage only:
+
+```bash
+PDPP_STORAGE_BACKEND=postgres
+PDPP_DATABASE_URL=postgres://pdpp:pdpp@localhost:55432/pdpp_proof
+```
+
+This does not migrate an existing SQLite database. Leave
+`PDPP_STORAGE_BACKEND` unset for the default SQLite behavior.
+
+The image is `pgvector/pgvector:pg16`; runtime bootstrap attempts to enable the
+`vector` extension when available and falls back to grant-scoped JSONB vector
+storage when it is unavailable.
 
 The service binds to loopback only by default (`127.0.0.1:55432`) and ships
 with default `pdpp/pdpp` credentials, so it is reachable only from the host
@@ -133,11 +143,12 @@ other.
 # PDPP_POSTGRES_PORT in .env.docker. The default bind is 127.0.0.1 only.
 docker compose --profile postgres --env-file .env.docker up -d postgres
 
-# Run the env-gated conformance proofs against it.
+# Run the env-gated Postgres proofs against it.
 PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/pdpp_proof \
   node --test --test-force-exit \
   reference-implementation/test/connector-state-scheduler-conformance-postgres.test.js \
-  reference-implementation/test/consent-device-auth-conformance-postgres.test.js
+  reference-implementation/test/consent-device-auth-conformance-postgres.test.js \
+  reference-implementation/test/postgres-runtime-storage.test.js
 
 # Stop and remove only the proof service when done.
 docker compose --profile postgres --env-file .env.docker stop postgres

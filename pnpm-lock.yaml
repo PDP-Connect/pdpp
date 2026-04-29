@@ -233,6 +233,9 @@ importers:
       fastify:
         specifier: ^5.6.1
         version: 5.8.5
+      pg:
+        specifier: ^8.20.0
+        version: 8.20.0
       pino:
         specifier: ^10.3.1
         version: 10.3.1
@@ -246,9 +249,6 @@ importers:
       '@biomejs/biome':
         specifier: 2.4.12
         version: 2.4.12
-      pg:
-        specifier: ^8.20.0
-        version: 8.20.0
       pino-pretty:
         specifier: ^13.0.0
         version: 13.1.3

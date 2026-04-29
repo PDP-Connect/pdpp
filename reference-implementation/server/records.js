@@ -28,6 +28,21 @@ import {
   passesRequestFilters,
   passesTimeRange,
 } from './record-filters.js';
+import {
+  postgresDeleteAllRecords,
+  postgresDeleteRecord,
+  postgresGetDatasetBlobBytes,
+  postgresGetDatasetRecordChangesBytes,
+  postgresGetDatasetRecordsAggregate,
+  postgresGetDatasetRecordTimeBounds,
+  postgresGetRecord,
+  postgresIngestRecord,
+  postgresListAllStreams,
+  postgresListDatasetTopConnectorCandidates,
+  postgresListStreams,
+  postgresQueryRecords,
+} from './postgres-records.js';
+import { isPostgresStorageBackend } from './postgres-storage.js';
 import { getDefaultConnectorStateStore } from './stores/connector-state-store.ts';
 
 function nowIso() {
@@ -117,6 +132,23 @@ function maybeDeleteFault(point, ctx) {
  *       reference-implementation-architecture/spec.md
  */
 export async function ingestRecord(storageTarget, record) {
+  if (isPostgresStorageBackend()) {
+    const outcome = await postgresIngestRecord(storageTarget, record);
+    if (outcome.changed) {
+      const connectorId = resolveStorageConnectorId(storageTarget);
+      const { stream, key, data, op = 'upsert' } = record;
+      const recordKey = encodeKey(key);
+      if (op === 'delete') {
+        await lexicalIndexDelete({ connectorId, stream, recordKey });
+        await semanticIndexDelete({ connectorId, stream, recordKey });
+      } else {
+        await lexicalIndexUpsert({ connectorId, stream, recordKey, data });
+        await semanticIndexUpsert({ connectorId, stream, recordKey, data });
+      }
+    }
+    return outcome;
+  }
+
   const connectorId = resolveStorageConnectorId(storageTarget);
   const { stream, key, data, emitted_at, op = 'upsert' } = record;
   const recordKey = encodeKey(key);
@@ -1476,6 +1508,10 @@ async function getSnapshotAtVersion(connectorId, stream, recordKey, version) {
  * Query records for a stream under grant enforcement
  */
 export async function queryRecords(storageTarget, stream, grant, requestParams = {}, manifest = null) {
+  if (isPostgresStorageBackend()) {
+    return postgresQueryRecords(storageTarget, stream, grant, requestParams, manifest);
+  }
+
   const connectorId = resolveStorageConnectorId(storageTarget);
   const db = getDb();
 
@@ -1810,6 +1846,10 @@ export async function aggregateRecords(storageTarget, stream, grant, requestPara
  * Get a single record by key, under grant enforcement
  */
 export async function getRecord(storageTarget, stream, recordId, grant, manifest = null, requestParams = {}) {
+  if (isPostgresStorageBackend()) {
+    return postgresGetRecord(storageTarget, stream, recordId, grant, manifest, requestParams);
+  }
+
   const connectorId = resolveStorageConnectorId(storageTarget);
   const db = getDb();
 
@@ -1901,6 +1941,16 @@ export async function getRecord(storageTarget, stream, recordId, grant, manifest
  *       reference-implementation-architecture/spec.md
  */
 export async function deleteRecord(storageTarget, stream, recordId) {
+  if (isPostgresStorageBackend()) {
+    const outcome = await postgresDeleteRecord(storageTarget, stream, recordId);
+    if (outcome.changed) {
+      const connectorId = resolveStorageConnectorId(storageTarget);
+      await lexicalIndexDelete({ connectorId, stream, recordKey: recordId });
+      await semanticIndexDelete({ connectorId, stream, recordKey: recordId });
+    }
+    return outcome;
+  }
+
   const connectorId = resolveStorageConnectorId(storageTarget);
   const now = nowIso();
   const changeHistoryLimit = getChangeHistoryLimit();
@@ -1958,6 +2008,10 @@ export async function deleteRecord(storageTarget, stream, recordId) {
 }
 
 export async function listAllStreams(storageTarget) {
+  if (isPostgresStorageBackend()) {
+    return postgresListAllStreams(storageTarget);
+  }
+
   const connectorId = resolveStorageConnectorId(storageTarget);
   // REVIEWED-BOUNDED: rows are one per (connector, stream) pair; a single
   // connector's manifest declares at most a few dozen streams, well under
@@ -1979,6 +2033,14 @@ export async function listAllStreams(storageTarget) {
  * Delete all records for a connector+stream (owner-authenticated reference reset use)
  */
 export async function deleteAllRecords(storageTarget, stream) {
+  if (isPostgresStorageBackend()) {
+    const deletedRecordCount = await postgresDeleteAllRecords(storageTarget, stream);
+    const connectorId = resolveStorageConnectorId(storageTarget);
+    await lexicalIndexDeleteByConnectorStream({ connectorId, stream });
+    await semanticIndexDeleteByConnectorStream({ connectorId, stream });
+    return deletedRecordCount;
+  }
+
   const connectorId = resolveStorageConnectorId(storageTarget);
   const countRow = getOne(
     referenceQueries.recordsDeleteCountRecordsByStream,
@@ -2041,6 +2103,10 @@ export async function deleteAllRecordsForConnector(connectorId) {
  * List streams available under a grant, with record counts
  */
 export async function listStreams(storageTarget, grant, manifest = null) {
+  if (isPostgresStorageBackend()) {
+    return postgresListStreams(storageTarget, grant, manifest);
+  }
+
   const connectorId = resolveStorageConnectorId(storageTarget);
   const db = getDb();
   const result = [];
@@ -2146,6 +2212,10 @@ export async function putSyncState(storageTarget, stateMap, opts = {}) {
  * SQLite outputs into the plain numbers the operation expects.
  */
 export function getDatasetRecordsAggregate() {
+  if (isPostgresStorageBackend()) {
+    return postgresGetDatasetRecordsAggregate();
+  }
+
   const recordAgg = getOne(referenceQueries.recordsDatasetGetRecordsAggregate);
   return {
     record_count: Number(recordAgg?.record_count || 0),
@@ -2165,12 +2235,20 @@ export function getDatasetRecordsAggregate() {
 
 /** Sum of `record_changes` JSON bytes (historical versions). */
 export function getDatasetRecordChangesBytes() {
+  if (isPostgresStorageBackend()) {
+    return postgresGetDatasetRecordChangesBytes();
+  }
+
   const changeAgg = getOne(referenceQueries.recordsDatasetGetRecordChangesBytes);
   return Number(changeAgg?.record_changes_json_bytes || 0);
 }
 
 /** Sum of `blobs` table bytes. */
 export function getDatasetBlobBytes() {
+  if (isPostgresStorageBackend()) {
+    return postgresGetDatasetBlobBytes();
+  }
+
   const blobAgg = getOne(referenceQueries.recordsDatasetGetBlobBytes);
   return Number(blobAgg?.blob_bytes || 0);
 }
@@ -2182,6 +2260,10 @@ export function getDatasetBlobBytes() {
  * call it on the native side.
  */
 export async function getDatasetRecordTimeBounds() {
+  if (isPostgresStorageBackend()) {
+    return postgresGetDatasetRecordTimeBounds();
+  }
+
   return getRealWorldTimeBounds();
 }
 
@@ -2193,6 +2275,10 @@ export async function getDatasetRecordTimeBounds() {
  * registry's bounded-row cap) and let the operation own the limit.
  */
 export function listDatasetTopConnectorCandidates() {
+  if (isPostgresStorageBackend()) {
+    return postgresListDatasetTopConnectorCandidates();
+  }
+
   const candidates = [];
   for (const row of iterate(
     referenceQueries.recordsDatasetGetTopConnectorsByRecordCount,

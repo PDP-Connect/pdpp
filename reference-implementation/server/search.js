@@ -40,6 +40,13 @@ import {
   passesGrantRecordConstraints,
   passesRequestFilters,
 } from './record-filters.js';
+import {
+  postgresLexicalIndexDelete,
+  postgresLexicalIndexDeleteByConnectorStream,
+  postgresLexicalIndexUpsert,
+  postgresLexicalSearch,
+} from './postgres-search.js';
+import { isPostgresStorageBackend } from './postgres-storage.js';
 
 let activeLexicalBackfillCount = 0;
 let nextLexicalBackfillJobId = 1;
@@ -124,6 +131,16 @@ export async function lexicalIndexUpsert({ connectorId, stream, recordKey, data 
   const declared = await getStreamLexicalFields(connectorId, stream);
   if (!declared) return;
 
+  if (isPostgresStorageBackend()) {
+    const fields = Object.fromEntries(
+      declared
+        .map((field) => [field, data?.[field]])
+        .filter(([, value]) => typeof value === 'string' && value.length > 0),
+    );
+    await postgresLexicalIndexUpsert({ connectorId, stream, recordKey, fields });
+    return;
+  }
+
   exec(referenceQueries.searchIndexDeleteByRecordKey, [connectorId, stream, recordKey]);
 
   for (const field of declared) {
@@ -137,6 +154,10 @@ export async function lexicalIndexUpsert({ connectorId, stream, recordKey, data 
  * Delete all FTS rows for a single record. Called on hard or soft delete.
  */
 export async function lexicalIndexDelete({ connectorId, stream, recordKey }) {
+  if (isPostgresStorageBackend()) {
+    await postgresLexicalIndexDelete({ connectorId, stream, recordKey });
+    return;
+  }
   exec(referenceQueries.searchIndexDeleteByRecordKey, [connectorId, stream, recordKey]);
 }
 
@@ -145,6 +166,10 @@ export async function lexicalIndexDelete({ connectorId, stream, recordKey }) {
  * deleteAllRecords (the owner-authenticated reset path).
  */
 export async function lexicalIndexDeleteByConnectorStream({ connectorId, stream }) {
+  if (isPostgresStorageBackend()) {
+    await postgresLexicalIndexDeleteByConnectorStream({ connectorId, stream });
+    return;
+  }
   exec(referenceQueries.searchIndexDeleteByStream, [connectorId, stream]);
 }
 
@@ -782,6 +807,55 @@ async function buildSnapshot({ q, perConnectorPlans, isOwner }) {
  * highest-ranked field match.
  */
 async function runFtsQueryForConnector({ connectorId, planEntries, q, allowsSnippets }) {
+  if (isPostgresStorageBackend()) {
+    const collapsed = new Map();
+    for (const entry of planEntries) {
+      if (Array.isArray(entry.candidateRecordKeys) && entry.candidateRecordKeys.length === 0) continue;
+      const rows = await postgresLexicalSearch({
+        connectorId,
+        stream: entry.streamName,
+        searchableFields: entry.searchableFields,
+        q,
+        limit: 200,
+      });
+      for (const row of rows) {
+        if (
+          Array.isArray(entry.candidateRecordKeys)
+          && !entry.candidateRecordKeys.includes(row.record_key)
+        ) {
+          continue;
+        }
+        const key = `${entry.streamName}:${row.record_key}`;
+        const score = -Number(row.score || 0);
+        const existing = collapsed.get(key);
+        if (existing) {
+          if (!existing.matchedFields.includes(row.field)) {
+            existing.matchedFields.push(row.field);
+          }
+          if (score < existing.score) {
+            existing.score = score;
+            if (allowsSnippets && row.snippet_text) {
+              existing.snippet = { field: row.field, text: row.snippet_text };
+            }
+          }
+        } else {
+          collapsed.set(key, {
+            connectorId,
+            stream: entry.streamName,
+            recordKey: row.record_key,
+            emittedAt: row.emitted_at,
+            matchedFields: [row.field],
+            ...(allowsSnippets && row.snippet_text
+              ? { snippet: { field: row.field, text: row.snippet_text } }
+              : {}),
+            score,
+          });
+        }
+      }
+    }
+    return Array.from(collapsed.values()).sort((a, b) => a.score - b.score);
+  }
+
   const ftsQuery = buildFtsUserTextQuery(q);
   // Build one query per stream-field plan entry, scoped to this connector
   // and the (stream, field) pair. This guarantees the index is only ever

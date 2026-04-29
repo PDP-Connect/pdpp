@@ -1,6 +1,13 @@
 import { randomBytes } from "node:crypto";
 import { getDb } from "../server/db.js";
+import { isPostgresStorageBackend } from "../server/postgres-storage.js";
 import { getMany, type Page, referenceQueries, decodeCursor as wrapperDecodeCursor } from "./db.ts";
+import {
+  postgresEmitSpineEvent,
+  postgresListSpineCorrelations,
+  postgresListSpineEventsPage,
+  postgresSearchSpine,
+} from "./postgres-spine.js";
 
 /**
  * Narrow shape of the `better-sqlite3` database the spine module actually
@@ -306,6 +313,10 @@ export async function emitSpineEvent(
   input: SpineEventInput = {},
   dbHandle: SpineDatabase | null = null
 ): Promise<SpineEventRecord | null> {
+  if (!dbHandle && isPostgresStorageBackend()) {
+    return postgresEmitSpineEvent(input) as Promise<SpineEventRecord | null>;
+  }
+
   const db = dbHandle ?? (getDb() as SpineDatabase | undefined);
   if (!db) {
     return null;
@@ -444,6 +455,10 @@ export function listSpineEventsPage(
   id: string,
   opts: SpineEventPageOptions
 ): SpineEventPage {
+  if (isPostgresStorageBackend()) {
+    return postgresListSpineEventsPage(kind, id, opts) as unknown as SpineEventPage;
+  }
+
   const cursorEventSeq = decodeEventSeqFromCursor(opts.cursor ?? null);
   const query = PER_KIND_QUERY[kind];
   const page: Page<Record<string, unknown>> = getMany(query, [id, cursorEventSeq], {
@@ -762,6 +777,10 @@ export async function listSpineCorrelations(
   key: SpineCorrelationKey | string,
   filters: SpineCorrelationFilters = {}
 ): Promise<SpineCorrelationPage> {
+  if (isPostgresStorageBackend()) {
+    return postgresListSpineCorrelations(key, filters) as Promise<SpineCorrelationPage>;
+  }
+
   const db = getDb() as SpineDatabase | undefined;
   const empty: SpineCorrelationPage = { summaries: [], hasMore: false, nextCursor: null };
   if (!db) {
@@ -908,6 +927,10 @@ interface SpineSearchBySecondaryRow {
  */
 // biome-ignore lint/suspicious/useAwait: historical async signature kept for call-site compatibility.
 export async function searchSpine(query: unknown): Promise<SpineSearchResult> {
+  if (isPostgresStorageBackend()) {
+    return postgresSearchSpine(query) as Promise<SpineSearchResult>;
+  }
+
   const db = getDb() as SpineDatabase | undefined;
   const empty: SpineSearchResult = { exact: null, traces: [], grants: [], runs: [] };
   if (!db) {
