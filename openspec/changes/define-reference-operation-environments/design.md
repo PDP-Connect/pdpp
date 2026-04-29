@@ -91,6 +91,8 @@ Kysely is a strong candidate for future SQLite/Postgres adapters because it can 
 
 `openapi-fetch` or a similar OpenAPI-generated client should be considered separately for dashboard/client surfaces because `packages/reference-contract` already exists and handwritten dashboard clients are drift-prone. This does not replace operation extraction; it reduces client-side path and shape drift.
 
+Owner decision: generated clients are a **parallel/follow-up safety rail, not a prerequisite** for operation extraction. Operations remain the source of AS/RS behavior. A generated client may be introduced once an operation family's contract is stable enough to consume from the dashboard or sandbox, but generation must not define semantics, block low-risk operation extraction, or replace conformance tests.
+
 ### 7. Fastify remains acceptable unless the operation host boundary proves otherwise
 
 The current Fastify transport already isolates framework mechanics more than a raw Express route file would. Hono may become attractive if Web-standard `Request`/`Response` mounting materially simplifies Next/Vercel hosting, but replacing Fastify is not a prerequisite for the target architecture.
@@ -117,7 +119,7 @@ These corrections refine the Decisions above and are required before implementat
 1. Paginated contracts use adapter-owned opaque cursors and explicit tiebreakers. `rowid` is never a reference-runtime contract.
 2. `RecordStore` owns cursor comparison semantics. It must distinguish numeric, ISO-string, text, null, and empty-string missing-bucket behavior rather than relying on SQLite `json_extract` affinity or collation.
 3. `RecordStore` owns version allocation. For each `(connector_id, stream)`, `next_version = current + 1` must be computed in the same atomic unit that writes `records`, `record_changes`, and `version_counter`.
-4. `record_json_bytes` is adapter-native. If kept in operator diagnostics, it must be labeled as native storage bytes, not a PDPP-stable metric.
+4. `record_json_bytes` is adapter-native. Owner decision: keep the current operator diagnostic only as a legacy SQLite-native signal until the next `_ref/dataset/summary` contract change, then relabel or namespace it as adapter-native storage bytes rather than presenting it as a PDPP-stable metric. Do not use it in protocol examples, conformance tests, grant decisions, or portable storage/search contracts.
 5. `LexicalIndex` exposes score direction, backend/tokenizer identity, and plain-text snippet semantics. FTS5 `bm25` and Postgres `ts_rank` are not interchangeable hidden details.
 6. `SemanticIndex` exposes backend identity, index kind, distance metric, model identity, and recall determinism. Approximate vector indexes must not masquerade as exact recall.
 7. `BlobStore` separates metadata/bindings from byte storage. SQLite may inline bytes; a Postgres profile may put bytes in object storage while preserving content-addressed semantics.
@@ -210,6 +212,17 @@ The proof sequence in "Evidence Standard" has been partially executed by separat
 - **Capability-specific contracts** exist as conformance-driver shapes for consent/device-auth, connector-state/scheduler, disclosure-spine, record-read, record-mutation. None has been promoted to a production `Store` interface or published in `reference-implementation/src` as a typed contract.
 - **Environment profiles** (`local-personal`, `docker-personal`, `sandbox-fixture`, `test-memory`) remain conceptual. Sandbox-fixture is implicitly proved by the mounted operations sharing capsules with the native server; the other profiles are not yet expressed as composed dependency bundles.
 
+## Rollback Criteria And Stop Conditions
+
+These criteria govern the proof slices above. They are deliberately conservative: a slice should be reverted or paused if it improves architecture appearance while weakening evidence.
+
+1. **Conformance harness slices:** Roll back a harness change if the deliberately broken driver no longer fails, if the harness asserts implementation details instead of PDPP obligations, or if the harness can pass without exercising the advertised invariant.
+2. **Consent/device-auth adapter proof:** Roll back the memory-adapter proof if it changes production token/grant behavior, emits real tokens from the test adapter, weakens terminal-state/device-code secrecy semantics, or requires operation code to know which adapter is active.
+3. **Connector-state/scheduler Postgres proof:** Roll back the Postgres proof if `pg` becomes a runtime dependency, default tests require a Postgres server, the adapter reaches into SQLite helpers, or the harness stops detecting owner-vs-grant isolation, cross-connector `run_id` uniqueness, active-run exclusivity, and restart reconciliation failures.
+4. **Operation mount slices:** Roll back an operation mount if Fastify and Next/sandbox hosts do not call the same operation implementation, if sandbox builders reappear for mounted AS/RS behavior, if host-specific imports enter operation modules, or if native-vs-sandbox equivalence is not executable.
+5. **Boundary-gate slices:** Roll back or tighten the gate if it allows static imports from transport/storage/sandbox/process dependencies into operation modules. Loosen the gate only when a false positive blocks an explicitly documented operation dependency that remains host-agnostic.
+6. **Records/search implementation:** Stop before production extraction if cursor comparison, version allocation, `record_changes`, disclosure-spine ordering, lexical score identity, semantic index identity, or hybrid fusion cannot be expressed as backend-independent obligations with credible SQLite and Postgres mappings. Do not migrate around the hard semantics.
+
 ## Risks / Trade-offs
 
 - **Risk: Abstraction hides semantics** -> Use capability-specific contracts derived from tests, not generic repositories.
@@ -222,4 +235,3 @@ The proof sequence in "Evidence Standard" has been partially executed by separat
 
 - Whether operation capsules should live under `reference-implementation/src/operations/**` or a package-level `packages/reference-operations/**`.
 - Whether `apps/web` should eventually split into public site and operator dashboard apps, or remain one app with stricter surface boundaries.
-- Whether generated OpenAPI clients should be introduced before operation extraction or as part of the first extracted operation family.
