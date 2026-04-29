@@ -67,19 +67,30 @@ export function decodeKey(keyStr) {
   }
 }
 
-// Test-only fault injection. Production callers never set this. Tests can
-// install a hook via `__setIngestFaultHookForTest` to throw between durable
-// mutation steps and prove the surrounding transaction rolls the whole
-// unit back. The hook is invoked at well-named points inside the durable
-// mutation transaction; if unset, it is a no-op.
+// Test-only fault injection. Production callers never set these. Tests can
+// install a hook via `__setIngestFaultHookForTest` /
+// `__setDeleteFaultHookForTest` to throw between durable mutation steps and
+// prove the surrounding transaction rolls the whole unit back. The hooks
+// are invoked at well-named points inside the durable mutation transaction;
+// if unset, they are no-ops. Ingest and direct-delete have separate hooks so
+// each test pins the path it actually exercises.
 let ingestFaultHook = null;
+let deleteFaultHook = null;
 
 export function __setIngestFaultHookForTest(hook) {
   ingestFaultHook = typeof hook === 'function' ? hook : null;
 }
 
+export function __setDeleteFaultHookForTest(hook) {
+  deleteFaultHook = typeof hook === 'function' ? hook : null;
+}
+
 function maybeFault(point, ctx) {
   if (ingestFaultHook) ingestFaultHook(point, ctx);
+}
+
+function maybeDeleteFault(point, ctx) {
+  if (deleteFaultHook) deleteFaultHook(point, ctx);
 }
 
 /**
@@ -1868,48 +1879,82 @@ export async function getRecord(storageTarget, stream, recordId, grant, manifest
 }
 
 /**
- * Delete a record (owner-authenticated)
+ * Delete a record (owner-authenticated).
+ *
+ * Atomicity: durable record mutation — current-state read, absent /
+ * already-deleted no-op decision, version allocation, live `records`
+ * delete-marker mutation, `record_changes` deleted-row append,
+ * `version_counter` advance, and history pruning — runs inside one
+ * explicit SQLite `BEGIN IMMEDIATE` write transaction (`writeTransaction`).
+ * The write lock is acquired at transaction start so concurrent writers
+ * (direct delete and ingest both target the same per-`(connector_id, stream)`
+ * version state) serialize on the read, not on the first write.
+ *
+ * Lexical and semantic index deletes run after the durable commit and are
+ * deliberately *not* part of the atomic unit; an index-maintenance failure
+ * must not roll back the durable record write.
+ *
+ * Spec: openspec/changes/harden-record-delete-atomicity/specs/
+ *       reference-implementation-architecture/spec.md
  */
 export async function deleteRecord(storageTarget, stream, recordId) {
   const connectorId = resolveStorageConnectorId(storageTarget);
   const now = nowIso();
-  const current = getOne(
-    referenceQueries.recordsIngestGetCurrentRecordState,
-    [connectorId, stream, recordId],
-  );
-  if (!current || current.deleted) return 0;
+  const changeHistoryLimit = getChangeHistoryLimit();
 
-  const vcRow = getOne(
-    referenceQueries.recordsIngestGetVersionCounter,
-    [connectorId, stream],
-  );
-  const nextVersion = vcRow ? vcRow.max_version + 1 : 1;
+  const outcome = writeTransaction(() => {
+    const current = getOne(
+      referenceQueries.recordsIngestGetCurrentRecordState,
+      [connectorId, stream, recordId],
+    );
+    if (!current || current.deleted) {
+      return { kind: 'noop' };
+    }
 
-  exec(
-    referenceQueries.recordsIngestMarkRecordDeleted,
-    [now, nextVersion, connectorId, stream, recordId],
-  );
+    const vcRow = getOne(
+      referenceQueries.recordsIngestGetVersionCounter,
+      [connectorId, stream],
+    );
+    const nextVersion = vcRow ? vcRow.max_version + 1 : 1;
 
-  exec(
-    referenceQueries.recordsIngestInsertRecordChangeDeleted,
-    [connectorId, stream, recordId, nextVersion, current.record_json, now, now],
-  );
+    maybeDeleteFault('after-version-allocation', { connectorId, stream, recordId, nextVersion });
 
-  exec(
-    referenceQueries.recordsIngestUpsertVersionCounter,
-    [connectorId, stream, nextVersion],
-  );
+    exec(
+      referenceQueries.recordsIngestMarkRecordDeleted,
+      [now, nextVersion, connectorId, stream, recordId],
+    );
 
+    maybeDeleteFault('after-records-mutation', { connectorId, stream, recordId, nextVersion });
+
+    exec(
+      referenceQueries.recordsIngestInsertRecordChangeDeleted,
+      [connectorId, stream, recordId, nextVersion, current.record_json, now, now],
+    );
+
+    maybeDeleteFault('after-record-changes-append', { connectorId, stream, recordId, nextVersion });
+
+    exec(
+      referenceQueries.recordsIngestUpsertVersionCounter,
+      [connectorId, stream, nextVersion],
+    );
+
+    if (changeHistoryLimit > 0) {
+      exec(
+        referenceQueries.recordsIngestPruneRecordChanges,
+        [connectorId, stream, nextVersion - changeHistoryLimit],
+      );
+    }
+
+    return { kind: 'changed' };
+  });
+
+  if (outcome.kind === 'noop') return 0;
+
+  // Derived index maintenance runs after the durable commit. Failures here
+  // are not allowed to retroactively roll back the durable record mutation;
+  // recovery is the search-index drift detector's job.
   await lexicalIndexDelete({ connectorId, stream, recordKey: recordId });
   await semanticIndexDelete({ connectorId, stream, recordKey: recordId });
-
-  const changeHistoryLimit = getChangeHistoryLimit();
-  if (changeHistoryLimit > 0) {
-    exec(
-      referenceQueries.recordsIngestPruneRecordChanges,
-      [connectorId, stream, nextVersion - changeHistoryLimit],
-    );
-  }
 
   return 1;
 }
