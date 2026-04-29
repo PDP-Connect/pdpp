@@ -44,6 +44,8 @@ const DEFAULT_PENDING_CONSENT_TTL_SECONDS = 300;
 const DEFAULT_OWNER_DEVICE_TTL_SECONDS = 300;
 const DEFAULT_OWNER_DEVICE_INTERVAL_SECONDS = 5;
 
+let memoryDriverInstanceCounter = 0;
+
 function isPast(iso) {
   return new Date(iso).getTime() <= Date.now();
 }
@@ -60,8 +62,7 @@ export function createMemoryConsentDeviceAuthDriver() {
   // Deterministic IDs scoped to the driver instance so two parallel scenarios
   // can't collide. Combined with a per-instance prefix this avoids relying on
   // Math.random for harness identity.
-  let instanceCounter = 0;
-  const instanceTag = (++instanceCounter).toString(36);
+  const instanceTag = (++memoryDriverInstanceCounter).toString(36);
   let scopedCounter = 0;
   function nextId(prefix) {
     scopedCounter += 1;
