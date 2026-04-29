@@ -15,10 +15,16 @@
  */
 
 import type {
+  StreamDetailDependencies,
+  StreamDetailSourceDescriptor,
+  StreamMetadataEnvelope,
+} from "pdpp-reference-implementation/operations/rs-streams-detail";
+import type {
   StreamSummary,
   StreamsListDependencies,
   StreamsListSourceDescriptor,
 } from "pdpp-reference-implementation/operations/rs-streams-list";
+import { buildLiveStreamMetadata } from "./builders.ts";
 import { DEMO_RECORDS, DEMO_STREAMS } from "./dataset.ts";
 
 function streamRecordCount(streamKey: string): number {
@@ -68,5 +74,45 @@ export function createSandboxStreamsListDependencies(
   return {
     listSummaries: () => Promise.resolve(summaries),
     getSourceDescriptor: () => sourceDescriptor,
+  };
+}
+
+/**
+ * Build dependencies for `rs.streams.detail` against the sandbox demo dataset.
+ *
+ * The sandbox runs every demo as an owner-shaped read against the demo
+ * dataset; there are no client/grant projections to apply, so
+ * `isStreamInGrant` is unreachable from sandbox routes (owner actor) and
+ * `hasManifestStream` simply mirrors the demo stream catalog. The metadata
+ * envelope is assembled by the same `buildLiveStreamMetadata` helper used by
+ * `/sandbox/v1/schema`, which keeps the sandbox stream-detail and
+ * stream-listed-in-schema shapes in sync.
+ */
+export function createSandboxStreamDetailDependencies(): StreamDetailDependencies {
+  const streamByKey = new Map(DEMO_STREAMS.map((stream) => [stream.key, stream]));
+  const sourceDescriptor: StreamDetailSourceDescriptor = { binding_kind: "connector" };
+
+  return {
+    getSourceDescriptor: () => sourceDescriptor,
+    hasManifestStream: (name: string) => Promise.resolve(streamByKey.has(name)),
+    // Sandbox routes always run as owner; this dependency is unreachable from
+    // the sandbox host but the operation requires it on the type. Returning
+    // `true` matches owner-equivalent visibility so any future client-actor
+    // mounting of this fixture profile would behave like the demo schema.
+    isStreamInGrant: () => true,
+    buildStreamMetadata: (name: string) => {
+      const stream = streamByKey.get(name);
+      if (!stream) {
+        // The operation only calls this after `hasManifestStream` returns
+        // true, so an unknown name here is a fixture bug.
+        throw new Error(`Sandbox fixture: unknown stream '${name}'`);
+      }
+      const metadata: StreamMetadataEnvelope = {
+        ...buildLiveStreamMetadata(stream),
+        object: "stream_metadata",
+        name: stream.key,
+      };
+      return Promise.resolve(metadata);
+    },
   };
 }

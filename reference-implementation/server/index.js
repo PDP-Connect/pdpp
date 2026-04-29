@@ -80,6 +80,10 @@ import {
 } from './reference-revision.js';
 import { resolveReferenceTopology } from './reference-topology.ts';
 import { executeStreamsList } from '../operations/rs-streams-list/index.ts';
+import {
+  StreamDetailVisibilityError,
+  executeStreamDetail,
+} from '../operations/rs-streams-detail/index.ts';
 
 const AS_PORT = parseInt(process.env.AS_PORT || '7662');
 const RS_PORT = parseInt(process.env.RS_PORT || '7663');
@@ -3291,6 +3295,11 @@ function buildRsApp(opts = {}) {
   });
 
   // GET /v1/streams/:stream — stream metadata
+  // Stream-detail semantics live in the canonical `rs.streams.detail`
+  // operation (operations/rs-streams-detail). This route is a Fastify host
+  // adapter: it owns auth, request id / trace id, manifest + grant
+  // resolution, instrumentation events, and response writing; it MUST NOT
+  // recompute stream-detail visibility rules locally.
   app.get('/v1/streams/:stream', { contract: 'getStreamMetadata' }, requireToken, async (req, res) => {
     let queryContext = null;
     try {
@@ -3300,6 +3309,7 @@ function buildRsApp(opts = {}) {
       setReferenceTraceId(res, traceId);
 
       let manifest;
+      let storageBinding;
       let sourceDescriptor = tokenInfo.pdpp_token_kind === 'owner'
         ? null
         : buildSourceDescriptor(tokenInfo.grant?.source);
@@ -3322,47 +3332,72 @@ function buildRsApp(opts = {}) {
         queryContext.sourceDescriptor = sourceDescriptor;
         const ownerResolved = await resolveOwnerManifestFromScope(ownerScope, opts);
         manifest = ownerResolved.manifest;
+        storageBinding = ownerScope.storage_binding;
       } else {
         const grantResolved = await resolveGrantManifest(tokenInfo, opts);
         manifest = grantResolved.manifest;
         sourceDescriptor = grantResolved.source;
         queryContext.sourceDescriptor = sourceDescriptor;
+        storageBinding = resolveGrantStorageBinding(tokenInfo);
       }
 
       await emitQueryReceived(queryContext, req);
 
-      const mStream = manifest?.streams?.find(s => s.name === req.params.stream);
-      if (!mStream) {
-        const err = new Error(`Stream '${req.params.stream}' not found`);
-        err.code = 'not_found';
-        return await rejectQuery(res, req, queryContext, err);
-      }
-      const streamGrant = tokenInfo.pdpp_token_kind === 'client'
-        ? tokenInfo.grant?.streams?.find((stream) => stream.name === req.params.stream)
-        : null;
-      if (tokenInfo.pdpp_token_kind === 'client') {
-        if (!streamGrant) {
-          const err = new Error(`Stream '${req.params.stream}' not in grant`);
-          err.code = 'grant_stream_not_allowed';
-          return await rejectQuery(res, req, queryContext, err);
+      const operationInput = tokenInfo.pdpp_token_kind === 'owner'
+        ? {
+            actor: { kind: 'owner', subject_id: tokenInfo.subject_id || null },
+            streamName: req.params.stream,
+          }
+        : {
+            actor: {
+              kind: 'client',
+              subject_id: tokenInfo.subject_id || null,
+              client_id: tokenInfo.client_id || null,
+              grant_id: tokenInfo.grant_id || null,
+            },
+            streamName: req.params.stream,
+          };
+
+      const dependencies = {
+        getSourceDescriptor: () => sourceDescriptor,
+        hasManifestStream: async (name) =>
+          Array.isArray(manifest?.streams) && manifest.streams.some((s) => s.name === name),
+        isStreamInGrant: (name) =>
+          Array.isArray(tokenInfo.grant?.streams)
+            && tokenInfo.grant.streams.some((s) => s.name === name),
+        buildStreamMetadata: async (name) => {
+          const manifestStream = manifest.streams.find((s) => s.name === name);
+          const streamGrant = tokenInfo.pdpp_token_kind === 'client'
+            ? tokenInfo.grant?.streams?.find((s) => s.name === name)
+            : null;
+          const freshness = await getVisibleStreamFreshness({
+            tokenInfo,
+            storageBinding,
+            stream: name,
+            manifest,
+          });
+          return buildStreamMetadataEntry({
+            manifestStream,
+            streamGrant,
+            grantStreams: tokenInfo.grant?.streams || [],
+            freshness,
+          });
+        },
+      };
+
+      let result;
+      try {
+        result = await executeStreamDetail(operationInput, dependencies);
+      } catch (err) {
+        if (err instanceof StreamDetailVisibilityError) {
+          const visibilityErr = new Error(err.message);
+          visibilityErr.code = err.code;
+          return await rejectQuery(res, req, queryContext, visibilityErr);
         }
+        throw err;
       }
 
-      const freshness = await getVisibleStreamFreshness({
-        tokenInfo,
-        storageBinding:
-          tokenInfo.pdpp_token_kind === 'owner'
-            ? resolveOwnerReadScope(req, opts).storage_binding
-            : resolveGrantStorageBinding(tokenInfo),
-        stream: req.params.stream,
-        manifest,
-      });
-      const metadataBody = buildStreamMetadataEntry({
-        manifestStream: mStream,
-        streamGrant,
-        grantStreams: tokenInfo.grant?.streams || [],
-        freshness,
-      });
+      const metadataBody = result.metadata;
 
       await emitSpineEvent({
         event_type: 'disclosure.served',
@@ -3380,7 +3415,7 @@ function buildRsApp(opts = {}) {
         stream_id: req.params.stream,
         token_id: req.headers.authorization?.slice(7) || null,
         data: {
-          source: sourceDescriptor,
+          source: result.sourceDescriptor,
           query_shape: 'stream_metadata',
           view_count: metadataBody.views.length,
           relationship_count: metadataBody.relationships.length,

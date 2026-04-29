@@ -958,7 +958,7 @@ export interface LiveStreamMetadata {
   views: unknown[];
 }
 
-function buildLiveStreamMetadata(stream: DemoStreamDef): LiveStreamMetadata {
+export function buildLiveStreamMetadata(stream: DemoStreamDef): LiveStreamMetadata {
   const properties: Record<string, { type: string; description?: string }> = {};
   for (const field of stream.fields) {
     properties[field.name] = {
@@ -1048,13 +1048,15 @@ export function buildLiveSchemaResponse(): LiveSchemaResponse {
 // `./operations-fixtures.ts` and the sandbox route. Do not reintroduce a
 // public stream-list builder here.
 
-export function buildLiveStreamMetadataResponse(streamKey: string): LiveStreamMetadata | null {
-  const stream = DEMO_STREAMS.find((s) => s.key === streamKey);
-  if (!stream) {
-    return null;
-  }
-  return buildLiveStreamMetadata(stream);
-}
+// `buildLiveStreamMetadataResponse` lived here until the rs.streams.detail
+// operation migration. It mirrored the live RS stream-metadata shape entirely
+// inside this builder module, which made the sandbox `/sandbox/v1/streams/:s`
+// route a parallel AS/RS implementation. That route now mounts the canonical
+// `rs.streams.detail` operation with sandbox fixture dependencies; see
+// `./operations-fixtures.ts` and the sandbox route. Do not reintroduce a
+// public stream-detail builder here. `buildLiveStreamMetadata` (singular)
+// is intentionally still exported so the fixture dependencies and the
+// `/sandbox/v1/schema` builder share one envelope assembler.
 
 // Records list / detail: live record shape is `{ object: "record", id,
 // stream, data, emitted_at }`. The list envelope adds `url`.
