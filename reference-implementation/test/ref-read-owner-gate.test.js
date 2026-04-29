@@ -40,6 +40,7 @@ const REF_READ_ROUTES = [
   '/_ref/schedules',
   '/_ref/connectors/connector_does_not_exist/schedule',
   '/_ref/deployment',
+  '/_ref/clients?owner=true',
 ];
 
 async function closeServer(server) {

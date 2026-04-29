@@ -68,10 +68,10 @@ import {
   renderSurface,
 } from './hosted-ui.js';
 import {
+  collectRecordsTimelineEntries,
   getConnectorDetail,
   listConnectorSummaries,
   listPendingApprovals,
-  listRecordsTimeline,
 } from './ref-control.ts';
 import {
   DEFAULT_LOCAL_DCR_INITIAL_ACCESS_TOKEN,
@@ -111,6 +111,12 @@ import {
 import { executeRefSpineCorrelationsList } from '../operations/ref-spine-correlations-list/index.ts';
 import { executeRefSpineEventsPage } from '../operations/ref-spine-events-page/index.ts';
 import { executeRefSpineSearch } from '../operations/ref-spine-search/index.ts';
+import { executeRefRecordsTimeline } from '../operations/ref-records-timeline/index.ts';
+import {
+  RefClientsListInvalidRequestError,
+  executeRefClientsList,
+} from '../operations/ref-clients-list/index.ts';
+import { executeRefDeployment } from '../operations/ref-deployment/index.ts';
 import { executeConnectorsList } from '../operations/rs-connectors-list/index.ts';
 import { executeRsDiscoveryIndex } from '../operations/rs-discovery-index/index.ts';
 import { executeRsProtectedResourceMetadata } from '../operations/rs-protected-resource-metadata/index.ts';
@@ -2339,25 +2345,32 @@ function buildAsApp(opts = {}) {
     }
   });
 
+  // Reference-only timeline view. The canonical `ref.records.timeline`
+  // operation owns input normalization, the final `data` slice to the
+  // effective limit, and the `{object: 'list', data, meta}` envelope.
+  // The host adapter still owns owner auth and response writing, and
+  // wires the substrate read (`collectRecordsTimelineEntries`) behind
+  // the capability so the operation never touches the SQLite handle or
+  // manifest store directly.
   app.get('/_ref/records/timeline', { contract: 'refRecordsTimeline' }, ownerAuth.requireOwnerSession, async (req, res) => {
     try {
-      const limit = req.query.limit == null ? 50 : Number.parseInt(String(req.query.limit), 10);
-      const order = req.query.order === 'asc' ? 'asc' : 'desc';
-      const timestampMode = req.query.timestamp_mode === 'ingest' ? 'ingest' : 'native';
+      const limit = req.query.limit == null ? null : Number.parseInt(String(req.query.limit), 10);
       const connectorId = resolveSingleConnectorIdQueryValue(req.query.connector_id);
-      const stream = typeof req.query.stream === 'string' && req.query.stream.trim() ? req.query.stream.trim() : null;
-      const since = typeof req.query.since === 'string' && req.query.since.trim() ? req.query.since.trim() : null;
-      const until = typeof req.query.until === 'string' && req.query.until.trim() ? req.query.until.trim() : null;
-      const result = await listRecordsTimeline({
-        connectorId,
-        stream,
-        since,
-        until,
-        limit: Number.isFinite(limit) && limit > 0 ? limit : 50,
-        order,
-        timestampMode,
-      });
-      res.json(result);
+      const envelope = await executeRefRecordsTimeline(
+        {
+          connectorId,
+          stream: typeof req.query.stream === 'string' ? req.query.stream : null,
+          since: typeof req.query.since === 'string' ? req.query.since : null,
+          until: typeof req.query.until === 'string' ? req.query.until : null,
+          limit: Number.isFinite(limit) ? limit : null,
+          order: req.query.order,
+          timestampMode: req.query.timestamp_mode,
+        },
+        {
+          collectEntries: (input) => collectRecordsTimelineEntries(input),
+        },
+      );
+      res.json(envelope);
     } catch (err) {
       handleError(res, err);
     }
@@ -2402,23 +2415,29 @@ function buildAsApp(opts = {}) {
   });
 
   // /_ref/deployment — reference operator diagnostics. Not a PDPP protocol
-  // surface; the dashboard's /dashboard/deployment page reads this. Secret
-  // redaction is enforced inside collectDeploymentDiagnostics.
+  // surface; the dashboard's /dashboard/deployment page reads this. The
+  // canonical `ref.deployment` operation owns the public envelope and a
+  // defensive env-redaction invariant; the host wires
+  // `collectDeploymentDiagnostics` (which performs the actual redaction
+  // against the strict allowlist) behind the diagnostic capability so the
+  // operation never imports the substrate helper or `process`.
   app.get('/_ref/deployment', ownerAuth.requireOwnerSession, async (req, res) => {
     try {
-      const report = await collectDeploymentDiagnostics(
-        {
-          getBackend: () => getSemanticBackend(),
-          getDb: () => getDb(),
-          computeIndexState: () => computeSemanticIndexState(),
-          getBackfillProgress: () => getSemanticIndexBackfillProgress(),
-          getLexicalBackfillProgress: () => getLexicalIndexBackfillProgress(),
-          getConfiguredNativeManifest: () => getConfiguredNativeManifest(),
-          listRegisteredConnectorIds: () => listRegisteredConnectorIds(),
-          getConnectorManifest: (connectorId) => getConnectorManifest(connectorId),
-        },
-        { dbPath: opts.dbPath || DB_PATH }
-      );
+      const report = await executeRefDeployment({
+        collectDeploymentReport: () => collectDeploymentDiagnostics(
+          {
+            getBackend: () => getSemanticBackend(),
+            getDb: () => getDb(),
+            computeIndexState: () => computeSemanticIndexState(),
+            getBackfillProgress: () => getSemanticIndexBackfillProgress(),
+            getLexicalBackfillProgress: () => getLexicalIndexBackfillProgress(),
+            getConfiguredNativeManifest: () => getConfiguredNativeManifest(),
+            listRegisteredConnectorIds: () => listRegisteredConnectorIds(),
+            getConnectorManifest: (connectorId) => getConnectorManifest(connectorId),
+          },
+          { dbPath: opts.dbPath || DB_PATH }
+        ),
+      });
       res.json(report);
     } catch (err) {
       handleError(res, err);
@@ -2431,17 +2450,28 @@ function buildAsApp(opts = {}) {
   // requesting owner-session subject — so the listing is per-operator and
   // pre-registered seeds (`pdpp-web-dashboard`, `cli_longview`, ...) never
   // appear here. Spec: openspec/changes/dcr-per-owner-token-with-revoke/.
+  // Operator-issued client listing. The canonical `ref.clients.list`
+  // operation owns the `?owner=true` request requirement (typed
+  // `RefClientsListInvalidRequestError` translated to the PDPP
+  // 400 `invalid_request` envelope) and the `{object: 'list', data}`
+  // envelope. The host adapter still owns owner auth and per-operator
+  // subject scoping: `listOwnerIssuedClients` is called with the
+  // requesting owner-session subject so pre-registered seeds never
+  // appear here. See openspec/changes/dcr-per-owner-token-with-revoke/.
   app.get('/_ref/clients', ownerAuth.requireOwnerSession, async (req, res) => {
     try {
       const subjectId = req.ownerSession?.sub || ownerAuth.subjectId || OWNER_AUTH_DEFAULT_SUBJECT_ID;
-      // ?owner=true reserves room for future filters (e.g. `?registered_by=anyone`
-      // for an admin view). Today only owner=true is meaningful.
-      if (req.query?.owner !== 'true') {
-        return pdppError(res, 400, 'invalid_request', "owner=true query parameter is required");
-      }
-      const data = await listOwnerIssuedClients(subjectId);
-      res.json({ object: 'list', data });
+      const envelope = await executeRefClientsList(
+        { owner: req.query?.owner },
+        {
+          listOwnerIssuedClients: () => listOwnerIssuedClients(subjectId),
+        },
+      );
+      res.json(envelope);
     } catch (err) {
+      if (err instanceof RefClientsListInvalidRequestError) {
+        return pdppError(res, 400, 'invalid_request', err.message);
+      }
       handleError(res, err);
     }
   });

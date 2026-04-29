@@ -781,7 +781,18 @@ async function collectPairEntries(
   return entries;
 }
 
-export async function listRecordsTimeline({
+/**
+ * Substrate read for the `ref.records.timeline` operation.
+ *
+ * Returns the merged-and-sorted timeline entries for the given window,
+ * without applying the final limit slice or assembling the envelope —
+ * the operation module
+ * (`reference-implementation/operations/ref-records-timeline/index.ts`)
+ * owns that shape. Returning a slightly-over-limit collection here is
+ * intentional: the operation re-clips, and an explorer caller (e.g. a
+ * future operation behavior test) can ask for the full pre-clip set.
+ */
+export async function collectRecordsTimelineEntries({
   connectorId = null,
   stream = null,
   since = null,
@@ -789,7 +800,7 @@ export async function listRecordsTimeline({
   limit = 50,
   order = "desc",
   timestampMode = "native",
-}: TimelineOptions = {}): Promise<TimelineResponse> {
+}: TimelineOptions = {}): Promise<TimelineEntry[]> {
   const pairs = enumerateCandidatePairs(connectorId, stream);
   const perPairLimit = Math.max(limit * 2, 10);
   const orderDir: "ASC" | "DESC" = order === "asc" ? "ASC" : "DESC";
@@ -801,20 +812,5 @@ export async function listRecordsTimeline({
 
   collected.sort((left, right) => comparePrimaryDesc(order, left, right));
 
-  return {
-    object: "list",
-    data: collected.slice(0, limit),
-    meta: {
-      bounded: true,
-      ordering: `semantic_or_emitted ${order}`,
-      limit,
-      timestamp_mode: timestampMode,
-      filters: {
-        connector_id: connectorId,
-        stream,
-        since,
-        until,
-      },
-    },
-  };
+  return collected;
 }
