@@ -19,14 +19,6 @@
  *       reference-implementation-architecture/spec.md
  */
 
-// Composite-key delimiter for the in-memory rows Map. Plain pipe is
-// fine here because connector ids, stream names, and record keys never
-// contain pipes in protocol-conformant inputs and this driver is
-// test-only. Written as an ordinary ASCII literal so the file stays
-// text-safe (an earlier revision used U+001F directly and tripped
-// `file(1)` into reporting the source as binary data).
-const KEY_SEP = '|';
-
 function tokenize(text) {
   return String(text || '')
     .toLowerCase()
@@ -34,17 +26,32 @@ function tokenize(text) {
     .filter((tok) => tok.length > 0);
 }
 
-function makeKey(connectorId, stream, recordKey) {
-  return connectorId + KEY_SEP + stream + KEY_SEP + recordKey;
-}
-
-function makeStreamKeyPrefix(connectorId, stream) {
-  return connectorId + KEY_SEP + stream + KEY_SEP;
-}
-
 export function createMemoryLexicalRetrievalDriver() {
-  // rows: Map<compositeKey, { connectorId, stream, recordKey, fields: Map<field, text> }>
-  let rows;
+  // Nested map: connectorId -> stream -> recordKey -> row. Avoids any
+  // string-delimiter assumption about connector ids, stream names, or
+  // record keys; the harness must work for arbitrary protocol-legal
+  // inputs, including ones that contain ordinary printable characters
+  // a delimiter would otherwise collide with.
+  //   byConnector: Map<connectorId,
+  //     Map<stream,
+  //       Map<recordKey, { fields: Map<field, text> }>>>
+  let byConnector;
+
+  function getStreamMap(connectorId, stream, { create } = { create: false }) {
+    let streams = byConnector.get(connectorId);
+    if (!streams) {
+      if (!create) return null;
+      streams = new Map();
+      byConnector.set(connectorId, streams);
+    }
+    let recs = streams.get(stream);
+    if (!recs) {
+      if (!create) return null;
+      recs = new Map();
+      streams.set(stream, recs);
+    }
+    return recs;
+  }
 
   return {
     identity() {
@@ -63,44 +70,42 @@ export function createMemoryLexicalRetrievalDriver() {
     },
 
     async setup() {
-      rows = new Map();
+      byConnector = new Map();
     },
 
     async teardown() {
-      rows = null;
+      byConnector = null;
     },
 
     async upsert({ connectorId, stream, recordKey, fields }) {
-      const key = makeKey(connectorId, stream, recordKey);
+      const recs = getStreamMap(connectorId, stream, { create: true });
       const fieldMap = new Map();
       for (const [field, value] of Object.entries(fields || {})) {
         if (typeof value !== 'string' || value.length === 0) continue;
         fieldMap.set(field, value);
       }
-      rows.set(key, { connectorId, stream, recordKey, fields: fieldMap });
+      recs.set(recordKey, { fields: fieldMap });
     },
 
     async deleteRecord({ connectorId, stream, recordKey }) {
-      rows.delete(makeKey(connectorId, stream, recordKey));
+      const recs = getStreamMap(connectorId, stream);
+      if (recs) recs.delete(recordKey);
     },
 
     async deleteStream({ connectorId, stream }) {
-      const prefix = makeStreamKeyPrefix(connectorId, stream);
-      for (const key of Array.from(rows.keys())) {
-        if (key.startsWith(prefix)) {
-          rows.delete(key);
-        }
-      }
+      const streams = byConnector.get(connectorId);
+      if (streams) streams.delete(stream);
     },
 
     async search({ connectorId, stream, searchableFields, q }) {
       const queryTokens = tokenize(q);
       if (queryTokens.length === 0) return [];
 
-      const hits = [];
-      for (const row of rows.values()) {
-        if (row.connectorId !== connectorId || row.stream !== stream) continue;
+      const recs = getStreamMap(connectorId, stream);
+      if (!recs) return [];
 
+      const hits = [];
+      for (const [recordKey, row] of recs) {
         const matchedFields = [];
         let totalScore = 0;
         let bestField = null;
@@ -152,7 +157,7 @@ export function createMemoryLexicalRetrievalDriver() {
         }
 
         hits.push({
-          recordKey: row.recordKey,
+          recordKey,
           matchedFields,
           snippet,
           score: totalScore,

@@ -30,13 +30,29 @@ function tokenize(text) {
     .filter((tok) => tok.length > 0);
 }
 
-function makeKey(connectorId, stream, recordKey) {
-  return `${connectorId} ${stream} ${recordKey}`;
-}
-
 export function createBrokenLexicalRetrievalDriver() {
-  let rows;
+  // Nested map: connectorId -> stream -> recordKey -> { fields }. Same
+  // collision-safe shape as the conforming memory driver — the broken
+  // driver's failures are in upsert field-dropping and tie-order
+  // flipping, not key encoding.
+  let byConnector;
   let flipNextTie;
+
+  function getStreamMap(connectorId, stream, { create } = { create: false }) {
+    let streams = byConnector.get(connectorId);
+    if (!streams) {
+      if (!create) return null;
+      streams = new Map();
+      byConnector.set(connectorId, streams);
+    }
+    let recs = streams.get(stream);
+    if (!recs) {
+      if (!create) return null;
+      recs = new Map();
+      streams.set(stream, recs);
+    }
+    return recs;
+  }
 
   return {
     identity() {
@@ -55,12 +71,12 @@ export function createBrokenLexicalRetrievalDriver() {
     },
 
     async setup() {
-      rows = new Map();
+      byConnector = new Map();
       flipNextTie = false;
     },
 
     async teardown() {
-      rows = null;
+      byConnector = null;
     },
 
     async upsert({ connectorId, stream, recordKey, fields }) {
@@ -76,33 +92,29 @@ export function createBrokenLexicalRetrievalDriver() {
         fieldMap.set(field, value);
         kept += 1;
       }
-      rows.set(makeKey(connectorId, stream, recordKey), {
-        connectorId,
-        stream,
-        recordKey,
-        fields: fieldMap,
-      });
+      const recs = getStreamMap(connectorId, stream, { create: true });
+      recs.set(recordKey, { fields: fieldMap });
     },
 
     async deleteRecord({ connectorId, stream, recordKey }) {
-      rows.delete(makeKey(connectorId, stream, recordKey));
+      const recs = getStreamMap(connectorId, stream);
+      if (recs) recs.delete(recordKey);
     },
 
     async deleteStream({ connectorId, stream }) {
-      for (const key of Array.from(rows.keys())) {
-        if (key.startsWith(`${connectorId} ${stream} `)) {
-          rows.delete(key);
-        }
-      }
+      const streams = byConnector.get(connectorId);
+      if (streams) streams.delete(stream);
     },
 
     async search({ connectorId, stream, searchableFields, q }) {
       const queryTokens = tokenize(q);
       if (queryTokens.length === 0) return [];
 
+      const recs = getStreamMap(connectorId, stream);
+      if (!recs) return [];
+
       const hits = [];
-      for (const row of rows.values()) {
-        if (row.connectorId !== connectorId || row.stream !== stream) continue;
+      for (const [recordKey, row] of recs) {
         const matchedFields = [];
         let totalScore = 0;
         let bestField = null;
@@ -127,7 +139,7 @@ export function createBrokenLexicalRetrievalDriver() {
           ? { field: bestField, text: row.fields.get(bestField) || '' }
           : null;
         hits.push({
-          recordKey: row.recordKey,
+          recordKey,
           matchedFields,
           snippet,
           score: totalScore,
