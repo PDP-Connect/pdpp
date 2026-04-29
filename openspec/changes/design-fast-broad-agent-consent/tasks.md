@@ -20,7 +20,7 @@ Findings consolidated in `design-notes/2026-04-27-prior-art-review.md`.
 
 ## 3. Design Decisions
 
-Open owner decisions are detailed in `design-notes/2026-04-27-prior-art-review.md` "Owner Decisions Still Required."
+Open owner decisions are detailed in `design-notes/2026-04-27-prior-art-review.md` "Owner Decisions Still Required" and refined with proposed defaults in `design-notes/2026-04-29-owner-review-synthesis.md`.
 
 - [ ] Decide whether issued grants remain source-bounded in all near-term designs. (Recommendation: yes — consistent across every surveyed system.)
 - [ ] Decide whether the first fast setup primitive is client-authored batch consent (Option B), owner-authored permission sets (Option C), agent roles (Option D), or no change. (Recommendation: B first, then C as the next OpenSpec change. D out of scope.)
@@ -32,6 +32,12 @@ Open owner decisions are detailed in `design-notes/2026-04-27-prior-art-review.m
 - [ ] Decide whether incremental "add a source later" produces a new package linked via `parent_package_id` or stands alone, and how the dashboard renders the cumulative picture per agent identity.
 - [ ] Decide where owner-authored permission sets are stored when Option C lands (owner-local, manifest, or both) and how they affect client registration.
 - [ ] Confirm any first implementation of Option B is labeled reference-experimental in UI and docs until promoted by a follow-up OpenSpec change.
+- [ ] Decide whether AS-side enrichment of `authorization_details` is forbidden (synthesis recommendation: yes — AS may narrow only) and where that rule is captured.
+- [ ] Decide whether cross-source grants stay off the roadmap permanently or are reopened by a future change (synthesis recommendation: stay off).
+- [ ] Decide whether consent-level predicate filters (date / resource / category) are explicitly deferred to a separate OpenSpec change after the query-layer filter grammar settles (synthesis recommendation: defer).
+- [ ] Decide where normative "issued grants are source-bounded" lives: `spec-core.md` directly, or inside the `agent-consent-bundling` capability spec.
+- [ ] Decide soft-cap value for `authorization_details[]` entries per staged request (synthesis suggestion: 8, warning at 6).
+- [ ] Decide ownership of connector sensitivity classification: manifest-declared, central PDPP registry, or both.
 
 ## 4. Implementation Planning Gate
 
