@@ -1782,4 +1782,3 @@ async function loadSemanticSnapshot(snapshotId) {
     results: JSON.parse(row.results_json),
   };
 }
-
