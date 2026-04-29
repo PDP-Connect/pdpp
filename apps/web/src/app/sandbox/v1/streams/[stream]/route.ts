@@ -1,6 +1,6 @@
 import {
-  StreamDetailVisibilityError,
   executeStreamDetail,
+  StreamDetailVisibilityError,
 } from "pdpp-reference-implementation/operations/rs-streams-detail";
 import { createSandboxStreamDetailDependencies } from "../../../_demo/operations-fixtures.ts";
 import { jsonResponse, notFound } from "../../_helpers.ts";
