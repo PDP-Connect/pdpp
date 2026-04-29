@@ -332,6 +332,52 @@ export function runConsentDeviceAuthConformance({ label, test, makeDriver }) {
     }
   });
 
+  // 6b. Public lookup by user_code returns the pending view bound to the
+  //     same client_id, interval, created_at, expires_at envelope as
+  //     `start` produced. This pins the verification-UI surface: until
+  //     the row reaches a terminal state, the user_code remains
+  //     resolvable and exposes exactly the fields the verification UI
+  //     needs (no token, no device_code, no subject_id). The negative
+  //     side of this property — that the lookup disappears once the row
+  //     terminates — is pinned by the approve and deny terminal scenarios
+  //     below; this scenario is the positive companion.
+  t('owner device auth: lookupOwnerDeviceAuthByUserCode returns the pending view until terminal state', async () => {
+    const driver = await makeDriver();
+    await driver.setup();
+    try {
+      const start = await driver.startOwnerDeviceAuth({});
+
+      const view = await driver.lookupOwnerDeviceAuthByUserCode(start.user_code);
+      assert.ok(view, 'public user_code lookup MUST return the pending view while pending');
+      assert.equal(
+        view.client_id,
+        driver.getRegisteredClientId(),
+        'public user_code lookup MUST surface the registered client_id',
+      );
+      assert.equal(
+        view.interval,
+        start.interval,
+        `public user_code lookup MUST surface the same interval as start (${start.interval}); got ${view.interval}`,
+      );
+      assert.ok(view.created_at, 'public user_code lookup MUST surface created_at');
+      assert.ok(view.expires_at, 'public user_code lookup MUST surface expires_at');
+      assert.ok(
+        new Date(view.expires_at).getTime() > new Date(view.created_at).getTime(),
+        'expires_at MUST be strictly after created_at',
+      );
+
+      // Lookup MUST be stable across repeated calls before terminal state.
+      const viewAgain = await driver.lookupOwnerDeviceAuthByUserCode(start.user_code);
+      assert.ok(viewAgain, 'public user_code lookup MUST keep returning the pending view on repeated calls');
+      assert.equal(viewAgain.client_id, view.client_id);
+      assert.equal(viewAgain.interval, view.interval);
+      assert.equal(viewAgain.created_at, view.created_at);
+      assert.equal(viewAgain.expires_at, view.expires_at);
+    } finally {
+      await driver.teardown();
+    }
+  });
+
   // 7. Poll-before-approval returns `authorization_pending`. The poller
   //    MUST not receive a token while the owner has not yet approved.
   t('owner device auth: poll before approval throws authorization_pending', async () => {
@@ -441,6 +487,57 @@ export function runConsentDeviceAuthConformance({ label, test, makeDriver }) {
         afterApprove,
         null,
         'after approval, public user_code lookup MUST NOT return a pending view',
+      );
+    } finally {
+      await driver.teardown();
+    }
+  });
+
+  // 9b. Owner-device approval is terminal. After approveOwnerDeviceAuth
+  //     succeeds, a second approveOwnerDeviceAuth on the same user_code
+  //     MUST fail with `not_found` — re-approval cannot re-mint a second
+  //     owner token against the same row. The originally-issued token
+  //     remains usable for exchange (the row is bound to it), so the
+  //     poller's contract is not retroactively broken by the rejected
+  //     re-approval. This pairs with scenario 2's pending-consent
+  //     terminal-approval invariant; the same invariant must hold for
+  //     the owner-device flow.
+  t('owner device auth: approval is terminal — re-approval throws not_found, original token still exchanges', async () => {
+    const driver = await makeDriver();
+    await driver.setup();
+    try {
+      const start = await driver.startOwnerDeviceAuth({});
+
+      const firstApprove = await driver.approveOwnerDeviceAuth(start.user_code);
+      assert.ok(firstApprove.access_token,
+        'first approveOwnerDeviceAuth MUST mint an access_token');
+      const originalToken = firstApprove.access_token;
+
+      let reApproveErr = null;
+      try {
+        await driver.approveOwnerDeviceAuth(start.user_code);
+      } catch (err) {
+        reApproveErr = err;
+      }
+      assert.ok(reApproveErr, 're-approval after approval MUST throw');
+      assert.equal(
+        reApproveErr.code,
+        'not_found',
+        `re-approval error MUST carry code='not_found'; got '${reApproveErr.code}'`,
+      );
+
+      // The original token MUST still exchange — the rejected re-approval
+      // is not allowed to invalidate the already-issued bearer.
+      const exchange = await driver.exchangeOwnerDeviceCode({
+        client_id: driver.getRegisteredClientId(),
+        device_code: start.device_code,
+      });
+      assert.ok(exchange.access_token,
+        'exchange after a rejected re-approval MUST still return the original access_token');
+      assert.equal(
+        exchange.access_token,
+        originalToken,
+        'exchange MUST return the token minted by the FIRST approval, unchanged',
       );
     } finally {
       await driver.teardown();
