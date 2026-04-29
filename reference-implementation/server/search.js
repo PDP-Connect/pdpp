@@ -28,6 +28,11 @@ import {
   referenceQueries,
   transaction,
 } from '../lib/db.ts';
+import {
+  executeSearchLexical,
+  parseSearchLexicalParams,
+  SearchLexicalRequestError,
+} from '../operations/rs-search-lexical/index.ts';
 import { getConnectorManifest } from './auth.js';
 import { getDb } from './db.js';
 import {
@@ -482,218 +487,134 @@ export async function runLexicalSearch({
   buildOwnerReadGrantForManifest,
   resolveGrantManifest,
 }) {
-  // 1. Strict parameter allowlist
-  const params = parseSearchParams(req.query);
-
-  // 2. Cross-stream advertisement check (if opts say cross_stream is false,
-  //    streams[] becomes mandatory).
-  const advertisement = resolveLexicalRetrievalAdvertisement(opts);
-  if (
-    advertisement
-    && advertisement.cross_stream === false
-    && (!params.streams || params.streams.length === 0)
-  ) {
-    const err = new Error('streams[] is required when cross_stream search is disabled');
-    err.code = 'invalid_request';
-    err.param = 'streams';
-    throw err;
-  }
-
   const isOwner = tokenInfo.pdpp_token_kind === 'owner';
+  const advertisement = resolveLexicalRetrievalAdvertisement(opts);
+  const actor = isOwner
+    ? { kind: 'owner', subject_id: tokenInfo.subject_id ?? null }
+    : {
+        kind: 'client',
+        subject_id: tokenInfo.subject_id ?? null,
+        client_id: tokenInfo.client_id ?? null,
+        grant_id: tokenInfo.grant_id ?? null,
+        grant: tokenInfo.grant ?? { streams: [] },
+      };
 
-  // 3. Per-mode planning
-  let perConnectorPlans;
-  if (isOwner) {
-    const connectorIds = await resolveOwnerVisibleConnectorIds();
-    perConnectorPlans = [];
-    for (const connectorId of connectorIds) {
-      let manifest;
+  // Native dependencies wire the operation against the existing FTS5 /
+  // SQLite snapshot helpers. The operation owns the public-contract slice
+  // (allowlist, advertisement gate, mode planning, cursor format, slice math,
+  // envelope, disclosure data); these helpers keep their backend-specific
+  // semantics untouched.
+  const dependencies = {
+    getAdvertisement: () => advertisement,
+    listOwnerVisibleConnectorIds: () => resolveOwnerVisibleConnectorIds(),
+    resolveOwnerManifestForConnector: async (connectorId) => {
       try {
         const ownerScope = resolveOwnerScopeForConnector(connectorId);
         const resolved = await resolveOwnerManifestFromScope(ownerScope);
-        manifest = resolved.manifest;
+        return resolved.manifest ?? null;
       } catch {
         // Skip connectors whose manifest cannot be resolved. The owner can
         // still read the others; one broken connector should not break the
         // whole search.
-        continue;
+        return null;
       }
-      const grant = buildOwnerReadGrantForManifest(manifest);
+    },
+    buildOwnerReadGrantForManifest: (manifest) =>
+      buildOwnerReadGrantForManifest(manifest),
+    resolveClientManifest: async () => {
+      const grantResolved = await resolveGrantManifest(tokenInfo);
+      return grantResolved.manifest;
+    },
+    buildSearchPlanForGrant: ({
+      manifest,
+      grant,
+      streamsFilter,
+      filter,
+      filteredStream,
+      connectorId,
+    }) => {
       const compiledFilter = compileSingleStreamSearchFilter({
         manifest,
         grant,
-        streamName: params.filteredStream,
-        filter: params.filter,
+        streamName: filteredStream,
+        filter,
       });
-      const planEntries = buildSearchPlanForGrant({
+      return buildSearchPlanForGrant({
         manifest,
         grant,
-        streamsFilter: params.streams,
+        streamsFilter,
         compiledFilter,
         connectorId,
       });
-      if (planEntries.length === 0) continue;
-      perConnectorPlans.push({ connectorId, manifest, grant, planEntries });
-    }
-    // Owner-mode streams[] is a soft filter: unknown stream names just
-    // produce zero hits. Per the patched approved spec.
-  } else {
-    const grantResolved = await resolveGrantManifest(tokenInfo);
-    const manifest = grantResolved.manifest;
-    const grant = tokenInfo.grant;
-    const connectorId = grant?.source?.connector_id ?? null;
+    },
+    buildSnapshot: (args) => buildSnapshot(args),
+    persistSnapshot: (snapshot) => persistSnapshot(snapshot),
+    loadSnapshot: (snapshotId) => loadSnapshot(snapshotId),
+    formatRecordUrl: ({ stream, recordKey, connectorId, isOwner: ownerActor }) => {
+      const recordPath = `/v1/streams/${encodeURIComponent(stream)}/records/${encodeURIComponent(recordKey)}`;
+      return ownerActor
+        ? `${recordPath}?connector_id=${encodeURIComponent(connectorId)}`
+        : recordPath;
+    },
+  };
 
-    if (params.streams) {
-      for (const s of params.streams) {
-        const inGrant = (grant?.streams || []).some((g) => g.name === s);
-        if (!inGrant) {
-          const err = new Error(`Stream '${s}' not in grant`);
-          err.code = 'grant_stream_not_allowed';
-          throw err;
-        }
-      }
+  let result;
+  try {
+    result = await executeSearchLexical(
+      { actor, query: req.query },
+      dependencies,
+    );
+  } catch (err) {
+    if (err instanceof SearchLexicalRequestError) {
+      // Translate operation-typed errors into the plain-object error shape
+      // the existing native error path expects (`err.code`, optional
+      // `err.param`). Preserves the previous public error envelope.
+      const translated = new Error(err.message);
+      translated.code = err.code;
+      if (err.param !== undefined) translated.param = err.param;
+      throw translated;
     }
-
-    const planEntries = buildSearchPlanForGrant({
-      manifest,
-      grant,
-      streamsFilter: params.streams,
-      compiledFilter: compileSingleStreamSearchFilter({
-        manifest,
-        grant,
-        streamName: params.filteredStream,
-        filter: params.filter,
-      }),
-      connectorId,
-    });
-    perConnectorPlans = planEntries.length === 0
-      ? []
-      : [{ connectorId, manifest, grant, planEntries }];
+    throw err;
   }
-
-  // 4. Resolve cursor → snapshot. New cursor: build snapshot, persist it.
-  let snapshotId;
-  let snapshot;
-  if (params.cursor) {
-    const decoded = decodeSearchCursor(params.cursor);
-    if (!decoded) {
-      const err = new Error('Cursor is malformed');
-      err.code = 'invalid_cursor';
-      throw err;
-    }
-    snapshotId = decoded.snap;
-    snapshot = await loadSnapshot(snapshotId);
-    if (!snapshot) {
-      const err = new Error('Cursor refers to an expired or unknown snapshot');
-      err.code = 'invalid_cursor';
-      throw err;
-    }
-  } else {
-    snapshot = await buildSnapshot({
-      q: params.q,
-      perConnectorPlans,
-      isOwner,
-    });
-    snapshotId = snapshot.snapshot_id;
-    await persistSnapshot(snapshot);
-  }
-
-  // 5. Slice the snapshot
-  const offset = params.cursor
-    ? (decodeSearchCursor(params.cursor)?.off ?? 0)
-    : 0;
-  const limit = params.limit;
-  const allHits = snapshot.results;
-  const slice = allHits.slice(offset, offset + limit);
-  const hasMore = offset + limit < allHits.length;
-  const nextCursor = hasMore
-    ? encodeSearchCursor({ snap: snapshotId, off: offset + limit })
-    : null;
-
-  // 6. Shape into search_result objects. Scores are public only when the
-  // metadata advertisement says this server emits them.
-  const emitScore = advertisesScore(advertisement);
-  const data = slice.map((hit) => buildSearchResult({ hit, isOwner, emitScore }));
 
   return {
     envelope: {
       object: 'list',
       url: '/v1/search',
-      has_more: hasMore,
-      ...(nextCursor ? { next_cursor: nextCursor } : {}),
-      data,
+      has_more: result.envelope.has_more,
+      ...(result.envelope.next_cursor
+        ? { next_cursor: result.envelope.next_cursor }
+        : {}),
+      data: result.envelope.data,
     },
-    disclosureData: {
-      query_shape: 'search',
-      record_count: data.length,
-      has_more: hasMore,
-      mode: isOwner ? 'owner' : 'client',
-      connector_count: perConnectorPlans.length,
-    },
+    disclosureData: result.disclosureData,
   };
 }
 
 // ─── Pure helpers ──────────────────────────────────────────────────────────
 
-const ALLOWED_PARAMS = new Set(['q', 'limit', 'cursor', 'streams', 'streams[]', 'filter']);
-
 /**
  * Parse and validate the v1 query-string allowlist.
  *
- * Throws invalid_request with `param` set to the rejected key.
+ * Thin delegating shim: the canonical implementation lives in
+ * `operations/rs-search-lexical/index.ts`. Kept exported here so existing
+ * callers (notably `lexical-retrieval.test.js`) and any third-party code
+ * that imported the helper continue to compile, with the same error
+ * shape (`Error` with `code` / `param`) the previous local implementation
+ * produced.
  */
 export function parseSearchParams(query) {
-  for (const key of Object.keys(query)) {
-    if (!ALLOWED_PARAMS.has(key)) {
-      const err = new Error(`Unsupported query parameter: ${key}`);
-      err.code = 'invalid_request';
-      err.param = key;
-      throw err;
+  try {
+    return parseSearchLexicalParams(query);
+  } catch (err) {
+    if (err instanceof SearchLexicalRequestError) {
+      const translated = new Error(err.message);
+      translated.code = err.code;
+      if (err.param !== undefined) translated.param = err.param;
+      throw translated;
     }
-  }
-  const q = typeof query.q === 'string' ? query.q : '';
-  if (!q) {
-    const err = new Error('q is required');
-    err.code = 'invalid_request';
-    err.param = 'q';
     throw err;
   }
-  const limit = clampLimit(query.limit);
-  const cursor = typeof query.cursor === 'string' && query.cursor ? query.cursor : null;
-  const streams = normalizeStreamsParam(query.streams ?? query['streams[]']);
-  const hasFilter = Object.prototype.hasOwnProperty.call(query, 'filter');
-  if (hasFilter && (!streams || streams.length !== 1)) {
-    const err = new Error(
-      "filter[...] requires exactly one streams[] value (e.g. ?streams[]=messages&filter[received_at][gte]=...). filter[stream] and filter[connector_id] are not supported.",
-    );
-    err.code = 'invalid_request';
-    err.param = 'streams';
-    throw err;
-  }
-  return {
-    q,
-    limit,
-    cursor,
-    streams,
-    filter: hasFilter ? query.filter : null,
-    filteredStream: hasFilter ? streams[0] : null,
-  };
-}
-
-function clampLimit(raw) {
-  if (raw === undefined || raw === null || raw === '') return 25;
-  const n = Number(raw);
-  if (!Number.isFinite(n) || n < 1) return 25;
-  return Math.min(Math.floor(n), 100);
-}
-
-function normalizeStreamsParam(raw) {
-  if (raw === undefined || raw === null) return null;
-  const arr = Array.isArray(raw) ? raw : [raw];
-  const cleaned = arr
-    .map((v) => (typeof v === 'string' ? v.trim() : ''))
-    .filter((v) => v.length > 0);
-  return cleaned.length === 0 ? null : cleaned;
 }
 
 /**
@@ -817,16 +738,6 @@ function resolveLexicalRetrievalAdvertisement(opts) {
       value_semantics: 'implementation_relative',
     },
   };
-}
-
-function advertisesScore(advertisement) {
-  return !!(
-    advertisement
-    && advertisement.supported !== false
-    && advertisement.score?.supported === true
-    && advertisement.score.kind === 'bm25'
-    && advertisement.score.order === 'lower_is_better'
-  );
 }
 
 // ─── Snapshot building (FTS5 query + ranking) ──────────────────────────────
@@ -986,34 +897,11 @@ function roundRobinMerge(perConnectorHits) {
   return merged;
 }
 
-// ─── search_result shaping ─────────────────────────────────────────────────
-
-function buildSearchResult({ hit, isOwner, emitScore }) {
-  const recordPath = `/v1/streams/${encodeURIComponent(hit.stream)}/records/${encodeURIComponent(hit.recordKey)}`;
-  const recordUrl = isOwner
-    ? `${recordPath}?connector_id=${encodeURIComponent(hit.connectorId)}`
-    : recordPath;
-  const result = {
-    object: 'search_result',
-    stream: hit.stream,
-    record_key: hit.recordKey,
-    connector_id: hit.connectorId,
-    record_url: recordUrl,
-    emitted_at: hit.emittedAt,
-    matched_fields: hit.matchedFields,
-  };
-  if (emitScore && Number.isFinite(hit.score)) {
-    result.score = {
-      kind: 'bm25',
-      value: hit.score,
-      order: 'lower_is_better',
-    };
-  }
-  if (hit.snippet) result.snippet = hit.snippet;
-  return result;
-}
-
-// ─── Snapshot persistence + cursor encoding ────────────────────────────────
+// ─── Snapshot persistence ─────────────────────────────────────────────────
+//
+// `search_result` shaping and cursor encoding live in the canonical
+// `rs.search.lexical` operation; only adapter-bound snapshot storage stays
+// here.
 
 const SNAPSHOT_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
@@ -1052,18 +940,3 @@ async function loadSnapshot(snapshotId) {
   };
 }
 
-function encodeSearchCursor({ snap, off }) {
-  const json = JSON.stringify({ snap, off });
-  return Buffer.from(json, 'utf8').toString('base64url');
-}
-
-function decodeSearchCursor(cursor) {
-  try {
-    const json = Buffer.from(cursor, 'base64url').toString('utf8');
-    const parsed = JSON.parse(json);
-    if (typeof parsed.snap !== 'string' || typeof parsed.off !== 'number') return null;
-    return parsed;
-  } catch {
-    return null;
-  }
-}

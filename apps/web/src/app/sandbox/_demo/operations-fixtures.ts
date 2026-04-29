@@ -33,6 +33,15 @@ import type {
   SchemaGetSourceDescriptor,
 } from "pdpp-reference-implementation/operations/rs-schema-get";
 import type {
+  SearchLexicalAdvertisement,
+  SearchLexicalDependencies,
+  SearchLexicalGrant,
+  SearchLexicalManifest,
+  SearchLexicalPlanEntry,
+  SearchLexicalSnapshot,
+  SearchLexicalSnapshotResult,
+} from "pdpp-reference-implementation/operations/rs-search-lexical";
+import type {
   StreamDetailDependencies,
   StreamDetailSourceDescriptor,
   StreamMetadataEnvelope,
@@ -334,5 +343,210 @@ export function createSandboxRecordDetailDependencies(): RecordDetailDependencie
       return Promise.resolve(recordToLiveRecord(record) as unknown as Record<string, unknown>);
     },
     decorateRecord: (record) => record,
+  };
+}
+
+// ─── rs.search.lexical ────────────────────────────────────────────────────
+//
+// Sandbox lexical-search fixture. The sandbox runs every demo as an owner-
+// shaped read against the demo dataset; the canonical operation owns the
+// public-contract slice (allowlist, advertisement gates, mode planning,
+// cursor format, slice math, envelope, disclosure data) and only the
+// adapter-bound concerns (plan compilation, snippet matching, snapshot
+// storage, advertisement source, record-url formatting) are wired here.
+//
+// Matching strategy mirrors the previously-public `buildLiveSearchResponse`
+// builder demoted from `_demo/builders.ts`:
+//   - case-insensitive substring scan over every string field of every
+//     `DemoRecord`;
+//   - lower-is-better score `1 / (1 + matchedFields.length + occurrences)`
+//     (sandbox demo only — real bm25 is implementation-relative anyway);
+//   - per-record snippet drawn from the field with the most occurrences,
+//     with ellipsis padding;
+//   - `streams[]` filter is applied at the plan stage so the operation's
+//     soft owner-mode filter remains the only enforcement path;
+//   - request `filter[...]` is intentionally not implemented in the sandbox
+//     fixture: the operation already validates the `filter[...] requires
+//     exactly one streams[]` coupling, but per-field filter evaluation is a
+//     live-only concern and out of scope for this slice.
+
+const SANDBOX_SEARCH_SNIPPET_PADDING = 24;
+const SANDBOX_SEARCH_DEFAULT_LIMIT = 25;
+const SANDBOX_SEARCH_MAX_LIMIT = 100;
+
+const SANDBOX_LEXICAL_ADVERTISEMENT: SearchLexicalAdvertisement = {
+  supported: true,
+  cross_stream: true,
+  snippets: true,
+  default_limit: SANDBOX_SEARCH_DEFAULT_LIMIT,
+  max_limit: SANDBOX_SEARCH_MAX_LIMIT,
+  score: {
+    supported: true,
+    kind: "bm25",
+    order: "lower_is_better",
+    value_semantics: "implementation_relative",
+  },
+};
+
+function escapeRegexLiteral(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function snippetAroundMatch(haystack: string, needle: string): string {
+  const idx = haystack.toLowerCase().indexOf(needle.toLowerCase());
+  if (idx < 0) {
+    return haystack.slice(0, SANDBOX_SEARCH_SNIPPET_PADDING * 2);
+  }
+  const start = Math.max(0, idx - SANDBOX_SEARCH_SNIPPET_PADDING);
+  const end = Math.min(haystack.length, idx + needle.length + SANDBOX_SEARCH_SNIPPET_PADDING);
+  let snippet = haystack.slice(start, end);
+  if (start > 0) {
+    snippet = `…${snippet}`;
+  }
+  if (end < haystack.length) {
+    snippet = `${snippet}…`;
+  }
+  return snippet;
+}
+
+interface SandboxRecordHit extends SearchLexicalSnapshotResult {
+  emittedAt: string;
+}
+
+function matchSandboxRecord(record: DemoRecord, trimmed: string, lower: string): SandboxRecordHit | null {
+  const matchedFields: string[] = [];
+  let bestField: string | null = null;
+  let bestOccurrences = 0;
+  let bestSnippet: string | null = null;
+  for (const [field, raw] of Object.entries(record.fields)) {
+    const value = typeof raw === "string" ? raw : JSON.stringify(raw);
+    const lowerValue = value.toLowerCase();
+    if (!lowerValue.includes(lower)) {
+      continue;
+    }
+    matchedFields.push(field);
+    const occurrences = (lowerValue.match(new RegExp(escapeRegexLiteral(lower), "g")) ?? []).length;
+    if (bestField === null || occurrences > bestOccurrences) {
+      bestField = field;
+      bestOccurrences = occurrences;
+      bestSnippet = snippetAroundMatch(value, trimmed);
+    }
+  }
+  if (bestField === null || bestSnippet === null) {
+    return null;
+  }
+  const score = 1 / (1 + matchedFields.length + bestOccurrences);
+  return {
+    connectorId: record.connector_id,
+    stream: record.stream,
+    recordKey: record.record_id,
+    emittedAt: record.ingested_at,
+    matchedFields,
+    snippet: { field: bestField, text: bestSnippet },
+    score,
+  };
+}
+
+function generateSandboxSnapshotId(): string {
+  // `crypto.randomUUID` is available in modern runtimes (Node 19+, Edge,
+  // browser); the sandbox runs on Next which guarantees it.
+  return `snap_sb_${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`;
+}
+
+/**
+ * Build dependencies for `rs.search.lexical` against the sandbox demo
+ * dataset.
+ *
+ * Snapshot persistence uses an in-memory `Map`. The sandbox is request-
+ * scoped (a fresh module instance per Next request handler in the dev
+ * server) but Next route modules are also long-lived in production: that
+ * means cursor-based pagination across requests works inside the lifetime
+ * of one server process, with no TTL eviction. For the demo dataset this
+ * is bounded (sandbox records are < 100), so cache growth is negligible.
+ */
+export function createSandboxSearchLexicalDependencies(): SearchLexicalDependencies {
+  const snapshotCache = new Map<string, SearchLexicalSnapshot>();
+  return {
+    getAdvertisement: () => SANDBOX_LEXICAL_ADVERTISEMENT,
+    listOwnerVisibleConnectorIds: () => DEMO_CONNECTORS.map((c) => c.connector_id),
+    resolveOwnerManifestForConnector: (connectorId: string): SearchLexicalManifest | null => {
+      const streams = DEMO_STREAMS.filter((s) => s.connector_id === connectorId).map((s) => ({ name: s.key }));
+      if (streams.length === 0) {
+        return null;
+      }
+      return { connector_id: connectorId, streams };
+    },
+    buildOwnerReadGrantForManifest: (manifest: SearchLexicalManifest): SearchLexicalGrant => ({
+      streams: (manifest.streams ?? []).map((s) => ({ name: s.name })),
+    }),
+    // Sandbox routes do not currently mount client-actor flows; the
+    // operation's owner branch is the only consumer. This stub is here so
+    // the dependency type is satisfied and future client-actor wiring stays
+    // mechanical.
+    resolveClientManifest: ({ grant }) => ({
+      streams: (grant.streams ?? []).map((s) => ({ name: s.name })),
+    }),
+    buildSearchPlanForGrant: ({ manifest, grant, streamsFilter, connectorId }) => {
+      const grantedStreams = new Set((grant.streams ?? []).map((s) => s.name));
+      const plan: SearchLexicalPlanEntry[] = [];
+      for (const stream of manifest.streams ?? []) {
+        if (!grantedStreams.has(stream.name)) {
+          continue;
+        }
+        if (streamsFilter && !streamsFilter.includes(stream.name)) {
+          continue;
+        }
+        plan.push({
+          streamName: stream.name,
+          // Sandbox records are scanned through every string field; the
+          // declared search-field list is not surfaced in fixtures yet, so
+          // the operation receives a sentinel non-empty list to keep the
+          // plan-emptiness check meaningful.
+          searchableFields: ["__sandbox_any_string_field__"],
+          connectorId: connectorId ?? null,
+        });
+      }
+      return plan;
+    },
+    buildSnapshot: ({ q, perConnectorPlans }): SearchLexicalSnapshot => {
+      const trimmed = q.trim();
+      const lower = trimmed.toLowerCase();
+      const eligibleConnectorStreams = new Set<string>();
+      for (const plan of perConnectorPlans) {
+        for (const entry of plan.planEntries) {
+          eligibleConnectorStreams.add(`${plan.connectorId ?? ""}::${entry.streamName}`);
+        }
+      }
+      const hits: SandboxRecordHit[] = [];
+      for (const record of DEMO_RECORDS) {
+        const key = `${record.connector_id}::${record.stream}`;
+        if (!eligibleConnectorStreams.has(key)) {
+          continue;
+        }
+        const hit = matchSandboxRecord(record, trimmed, lower);
+        if (hit) {
+          hits.push(hit);
+        }
+      }
+      hits.sort((a, b) => {
+        const av = a.score ?? Number.POSITIVE_INFINITY;
+        const bv = b.score ?? Number.POSITIVE_INFINITY;
+        if (av !== bv) {
+          return av - bv;
+        }
+        return a.recordKey.localeCompare(b.recordKey);
+      });
+      return {
+        snapshot_id: generateSandboxSnapshotId(),
+        query: q,
+        results: hits,
+      };
+    },
+    persistSnapshot: (snapshot) => {
+      snapshotCache.set(snapshot.snapshot_id, snapshot);
+    },
+    loadSnapshot: (snapshotId) => snapshotCache.get(snapshotId) ?? null,
+    formatRecordUrl: ({ stream, recordKey }) =>
+      `/sandbox/v1/streams/${encodeURIComponent(stream)}/records/${encodeURIComponent(recordKey)}`,
   };
 }

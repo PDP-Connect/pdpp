@@ -1053,86 +1053,12 @@ function latestRecordTimeForStream(streamKey: string): string | null {
 // from the simple substring counter, so they are demo-only and noted as
 // such in `score.value_semantics`.
 
-export interface LiveSearchHit {
-  connector_id: string;
-  emitted_at: string;
-  matched_fields: string[];
-  object: "search_result";
-  record_key: string;
-  record_url: string;
-  score?: { kind: "bm25"; order: "lower_is_better"; value: number };
-  snippet?: { field: string; text: string };
-  stream: string;
-}
-
-export interface LiveSearchResponse extends LiveListEnvelope<LiveSearchHit> {
-  url: "/sandbox/v1/search";
-}
-
-export function buildLiveSearchResponse(
-  query: string,
-  opts: { limit?: number; cursor?: string | null } = {}
-): LiveSearchResponse {
-  const trimmed = query.trim();
-  const allHits: LiveSearchHit[] = [];
-  if (trimmed.length > 0) {
-    const lower = trimmed.toLowerCase();
-    for (const record of DEMO_RECORDS) {
-      const hit = buildLiveSearchHit(record, { lower, trimmed });
-      if (hit) {
-        allHits.push(hit);
-      }
-    }
-    // Live BM25 ordering is `lower_is_better`. The sandbox uses an inverse
-    // substring counter, so we emit `1 / (1 + matchCount)` to keep the same
-    // ordering semantic without claiming real BM25 numbers.
-    allHits.sort((a, b) => {
-      const av = a.score?.value ?? Number.POSITIVE_INFINITY;
-      const bv = b.score?.value ?? Number.POSITIVE_INFINITY;
-      if (av !== bv) {
-        return av - bv;
-      }
-      return a.record_key.localeCompare(b.record_key);
-    });
-  }
-  const paged = paginateLive(allHits, { ...opts, url: "/sandbox/v1/search" });
-  return { ...paged, url: "/sandbox/v1/search" };
-}
-
-function buildLiveSearchHit(record: DemoRecord, query: { lower: string; trimmed: string }): LiveSearchHit | null {
-  const matchedFields: string[] = [];
-  let bestMatch: { field: string; matches: number; snippet: string } | null = null;
-  for (const [field, raw] of Object.entries(record.fields)) {
-    const value = typeof raw === "string" ? raw : JSON.stringify(raw);
-    const lowerValue = value.toLowerCase();
-    if (!lowerValue.includes(query.lower)) {
-      continue;
-    }
-    matchedFields.push(field);
-    const matches = (lowerValue.match(new RegExp(escapeRegex(query.lower), "g")) ?? []).length;
-    if (!bestMatch || matches > bestMatch.matches) {
-      bestMatch = { field, matches, snippet: snippetAround(value, query.trimmed) };
-    }
-  }
-  if (!bestMatch) {
-    return null;
-  }
-  // Inverse-of-matches gives `lower_is_better` ordering aligned with live
-  // BM25. The exact value is not comparable across implementations; live
-  // BM25 also documents `value_semantics: "implementation_relative"`.
-  const value = 1 / (1 + matchedFields.length + bestMatch.matches);
-  return {
-    object: "search_result",
-    stream: record.stream,
-    record_key: record.record_id,
-    connector_id: record.connector_id,
-    record_url: `/sandbox/v1/streams/${encodeURIComponent(record.stream)}/records/${encodeURIComponent(record.record_id)}`,
-    emitted_at: record.ingested_at,
-    matched_fields: matchedFields,
-    score: { kind: "bm25", order: "lower_is_better", value },
-    snippet: { field: bestMatch.field, text: bestMatch.snippet },
-  };
-}
+// Sandbox public lexical search is now mounted through the canonical
+// `rs.search.lexical` operation capsule (see
+// `reference-implementation/operations/rs-search-lexical/`). The previous
+// website-local `buildLiveSearchResponse` builder is deleted; substring-
+// matching fixture wiring lives in `./operations-fixtures.ts` and the
+// public sandbox route mounts the operation directly.
 
 // _ref summaries: live shapes from reference-implementation/server/index.js
 // `summaryToTrace`, `summaryToGrant`, `summaryToRun`. The sandbox emits the

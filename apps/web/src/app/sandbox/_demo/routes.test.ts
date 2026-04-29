@@ -207,7 +207,7 @@ test("/sandbox/v1/streams/:s/records/:id returns a live `record` envelope", asyn
 // ─── /sandbox/v1/search ──────────────────────────────────────────────────
 
 test("/sandbox/v1/search returns the live `list` envelope with bm25-shaped scores", async () => {
-  const res = searchGet(new Request("https://example.invalid/sandbox/v1/search?q=payroll"));
+  const res = await searchGet(new Request("https://example.invalid/sandbox/v1/search?q=payroll"));
   assert.equal(res.status, 200);
   assertSandboxHeader(res);
   const body = (await jsonOf(res)) as {
@@ -236,12 +236,64 @@ test("/sandbox/v1/search returns the live `list` envelope with bm25-shaped score
   }
 });
 
-test("/sandbox/v1/search returns an empty list for an empty query", async () => {
-  const res = searchGet(new Request("https://example.invalid/sandbox/v1/search?q="));
-  const body = (await jsonOf(res)) as { object: string; data: unknown[]; has_more: boolean };
-  assert.equal(body.object, "list");
-  assert.equal(body.data.length, 0);
-  assert.equal(body.has_more, false);
+// `/sandbox/v1/search` is now a host of the canonical `rs.search.lexical`
+// operation. The operation enforces the v1 contract for every host: empty
+// or missing `q` is `invalid_request`. (Owner guidance:
+// `tmp/workstreams/mount-rs-search-lexical-operation-owner-guidance-1.md`.
+// The dashboard search UI may render an empty result state without calling
+// the API, but the API itself does not lie about the contract.)
+test("/sandbox/v1/search rejects empty `q` with invalid_request (canonical contract)", async () => {
+  const res = await searchGet(new Request("https://example.invalid/sandbox/v1/search?q="));
+  assert.equal(res.status, 400);
+  const body = (await jsonOf(res)) as {
+    error: { type: string; code: string; message: string; param?: string };
+  };
+  assert.equal(body.error.code, "invalid_request");
+  assert.equal(body.error.param, "q");
+});
+
+test("/sandbox/v1/search rejects missing `q` with invalid_request (canonical contract)", async () => {
+  const res = await searchGet(new Request("https://example.invalid/sandbox/v1/search"));
+  assert.equal(res.status, 400);
+  const body = (await jsonOf(res)) as { error: { code: string; param?: string } };
+  assert.equal(body.error.code, "invalid_request");
+  assert.equal(body.error.param, "q");
+});
+
+test("/sandbox/v1/search rejects unsupported query parameters", async () => {
+  const res = await searchGet(new Request("https://example.invalid/sandbox/v1/search?q=payroll&connector_id=foo"));
+  assert.equal(res.status, 400);
+  const body = (await jsonOf(res)) as { error: { code: string; param?: string } };
+  assert.equal(body.error.code, "invalid_request");
+  assert.equal(body.error.param, "connector_id");
+});
+
+test("/sandbox/v1/search filters by streams[] and supports cursor round-trip", async () => {
+  // First page (empty q? no — pick a hit in the demo dataset and bound it
+  // by stream so we exercise the operation's real plan/snapshot flow).
+  const res1 = await searchGet(
+    new Request("https://example.invalid/sandbox/v1/search?q=northwind&streams[]=pay_statements&limit=1")
+  );
+  assert.equal(res1.status, 200);
+  const body1 = (await jsonOf(res1)) as {
+    object: string;
+    has_more: boolean;
+    data: Record<string, unknown>[];
+    next_cursor?: string;
+  };
+  assert.equal(body1.object, "list");
+  if (body1.has_more) {
+    assert.equal(typeof body1.next_cursor, "string");
+    const res2 = await searchGet(
+      new Request(
+        `https://example.invalid/sandbox/v1/search?q=northwind&streams[]=pay_statements&limit=1&cursor=${encodeURIComponent(body1.next_cursor as string)}`
+      )
+    );
+    assert.equal(res2.status, 200);
+  }
+  for (const hit of body1.data) {
+    assert.equal(hit.stream, "pay_statements");
+  }
 });
 
 // ─── /sandbox/_ref/{traces,grants,runs} lists ───────────────────────────
