@@ -35,3 +35,12 @@
 - [x] 6.3 Manually verify the new shape: introduced `import "fastify";` and `import "../server/db";` (bare) into `operations/rs-streams-list/index.ts`. Both `operations-boundary.test.js` and `rs-streams-list-boundary.test.js` failed with the named-needle assertion. Reverted; `git diff` clean.
 - [x] 6.4 Update design and spec wording so the rule explicitly enumerates bare side-effect imports and the falsifiability harness.
 - [x] 6.5 Re-run targeted tests (25/25), typecheck, check, `openspec validate add-reference-operation-boundary-gate --strict`, `openspec validate --all --strict`, and `pnpm workstreams:status -- --no-fail`.
+
+## 7. Owner-review follow-up: close the Node-process indirection gap
+
+- [x] 7.1 Add `node:process` and `process` to `forbiddenOperationImports` so a module cannot bypass the env-access rule via `import { env } from "node:process"; const x = env.FOO;` or `import process from "process"; process.env.FOO`. Both specifier shapes are forbidden in every standard static-import form.
+- [x] 7.2 Add falsifiability cases to `operation-boundary-helper.test.js` proving the new rule fires on `import { env } from "node:process";`, `import process from "node:process";`, `import "node:process";`, `import { env } from "process";`, `import process from "process";`, and `import "process";`.
+- [x] 7.3 Manually verify the new rule: introduced `import { env } from "node:process";` into `operations/rs-streams-list/index.ts`. Both `operations-boundary.test.js` and `rs-streams-list-boundary.test.js` failed with `must not import "node:process"`. Reverted; `git diff` clean.
+- [x] 7.4 Update spec scenario "An operation module references `process.env` outside of comments" → "An operation module accesses the process environment" so the rule is precise: it covers both the literal `process.env` text shape (after comment stripping) and the Node-process import indirection. Document dynamic `import("node:process")` as an explicit out-of-scope trade-off.
+- [x] 7.5 Update design.md decision 3 to call out the indirection-gap closure and design.md decision 5 to describe the two-mechanism rule (text scan + import ban). Update the proposal "What Changes" bullet to mention the Node-process import ban.
+- [x] 7.6 Re-run targeted tests (26/26: 13 helper + 13 gate/per-operation), typecheck, check, `openspec validate add-reference-operation-boundary-gate --strict`, `openspec validate --all --strict`, and `pnpm workstreams:status -- --no-fail`.

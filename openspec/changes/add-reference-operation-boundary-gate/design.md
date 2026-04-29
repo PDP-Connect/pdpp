@@ -42,16 +42,24 @@ The forbidden-import rule is enforced through a Node test file. There is no prod
 
 The shared helper enumerates operation modules by reading `reference-implementation/operations/` and selecting subdirectories that contain `index.ts`. This matches the existing convention (`rs-streams-list/index.ts`, `rs-streams-detail/index.ts`, `rs-schema-get/index.ts`) and matches `package.json` exports. A future operation that follows the convention is automatically gated; one that does not (e.g., a folder without `index.ts`) is intentionally skipped — there is no operation to gate.
 
-### 3. Forbidden-import list is the union of the three existing tests
+### 3. Forbidden-import list consolidates the three existing tests and closes the env-indirection gap
 
-The shared list consolidates what the three existing tests already assert:
+The shared list starts from what the three existing tests already assert:
 
 - `fastify`, `express`, `next/`
 - `better-sqlite3`, `pg`
 - `./db`, `../db`, `../lib/db`, `../server/db`, `../server/records`, `../server/auth`, `../server/index`
 - `apps/web`, `_demo/`
 
-Plus the `process.env` rule (after stripping comments). No new entries; this is consolidation.
+Plus the `process.env` rule (applied after stripping comments).
+
+It also adds the Node `process` module under both specifier shapes:
+
+- `node:process`, `process`
+
+This closes an indirection gap that the `process.env` text-scan alone cannot cover: a module could otherwise bypass the env-access rule with `import { env } from "node:process"; const x = env.FOO;` or `import process from "process"; process.env.FOO` without the source ever spelling `process.env`. The spec/design always intended the gate to ban process-environment dependencies; the matcher must therefore close the indirection path, not merely the literal `process.env` shape.
+
+Dynamic imports of the Node `process` module (`await import("node:process")`) remain an intentional out-of-scope trade-off, consistent with how the gate handles every other forbidden specifier. The rule is precise: static process-environment dependencies fail; dynamic ones are not claimed.
 
 ### 4. Regex match against both static-import shapes, not AST
 
@@ -64,11 +72,13 @@ Together they catch every standard ES static-import shape that resolves a module
 
 The regexes require whitespace or a quote immediately after `import` / `from`, so dynamic `import("…")` is intentionally not matched here — dynamic imports remain an out-of-scope trade-off (a separate review concern that a later change may widen). AST-level scanning would add a TypeScript parser dependency for marginal coverage gain on a drift class that has not surfaced.
 
-A unit-style falsifiability test (`reference-implementation/test/operation-boundary-helper.test.js`) pins the matcher against all seven static-import shapes (bare, default, namespace, named, type-only, named re-export, star re-export) plus the dynamic-import exemption and the comment-stripping rule. A future weakening of the matcher fails that test rather than silently turning the gate green.
+A unit-style falsifiability test (`reference-implementation/test/operation-boundary-helper.test.js`) pins the matcher against all seven static-import shapes (bare, default, namespace, named, type-only, named re-export, star re-export) plus the dynamic-import exemption, the comment-stripping rule, and the Node-process indirection cases (`import { env } from "node:process"`, `import process from "node:process"`, `import { env } from "process"`, and the bare-specifier variants). A future weakening of the matcher fails that test rather than silently turning the gate green.
 
-### 5. Comments are stripped before the `process.env` check, not before the import check
+### 5. Comments are stripped before the `process.env` text scan, not before the import check
 
-Documentation in operation module headers names the rule (e.g., "SHALL NOT import Fastify, Next, SQLite, Postgres, ..."). The import-regex check runs against the raw source because a forbidden import only appears in literal `import …` / `from …` specifier shape, which is unlikely to occur in prose; the falsifiability test pins this assumption. The `process.env` check runs against comment-stripped source because operation-module headers explicitly mention `process.env` as part of stating the rule.
+Documentation in operation module headers names the rule (e.g., "SHALL NOT import Fastify, Next, SQLite, Postgres, ..."). The import-regex check runs against the raw source because a forbidden import only appears in literal `import …` / `from …` specifier shape, which is unlikely to occur in prose; the falsifiability test pins this assumption. The literal `process.env` text scan runs against comment-stripped source because operation-module headers explicitly mention `process.env` as part of stating the rule.
+
+Process-environment access is enforced by two mechanisms working together: the literal `process.env` text scan catches the direct form, and the Node-process import ban catches the indirection form. Either path failing fires the gate; neither path alone is the rule.
 
 ### 6. Existing per-operation tests are reduced, not deleted
 

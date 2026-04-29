@@ -3,8 +3,12 @@
  *
  * Every operation module at `reference-implementation/operations/<name>/index.ts`
  * SHALL NOT statically import Fastify, Express, Next, SQLite, Postgres, a raw
- * SQL handle, a generic repository, sandbox UI/page code, or `_demo/` builders,
- * and SHALL NOT contain executable `process.env` access.
+ * SQL handle, a generic repository, sandbox UI/page code, `_demo/` builders, or
+ * the Node `process` module (`node:process` / `process`), and SHALL NOT contain
+ * executable `process.env` access. The Node-process import ban closes the
+ * indirection gap (`import { env } from "node:process"` /
+ * `import process from "process"`) that would otherwise let the
+ * env-access rule be bypassed without the source ever spelling `process.env`.
  *
  * The check is grep-style on source: it does not execute the modules. Trade-off:
  * it cannot catch dynamically-resolved imports (`require()`, `await import()`,
@@ -62,6 +66,12 @@ export const forbiddenOperationImports = Object.freeze([
   // Sandbox UI/page code and fixture builders.
   'apps/web',
   '_demo/',
+  // Node process module — covers the indirection paths around
+  // `process.env`. Both the bare and `node:` specifiers are forbidden so
+  // `import { env } from "node:process"` and
+  // `import process from "process"` cannot bypass the env-access rule.
+  'node:process',
+  'process',
 ]);
 
 /**

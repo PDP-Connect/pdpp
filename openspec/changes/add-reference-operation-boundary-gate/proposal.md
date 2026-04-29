@@ -4,7 +4,7 @@ Each canonical RS operation (`rs.streams.list`, `rs.streams.detail`, `rs.schema.
 
 ## What Changes
 
-- Add a single conformance gate that discovers all operation modules at `reference-implementation/operations/*/index.ts` and asserts no host/storage/process imports and no executable `process.env` access.
+- Add a single conformance gate that discovers all operation modules at `reference-implementation/operations/*/index.ts` and asserts no static imports of host, storage, sandbox, or Node `process` modules and no executable `process.env` access (the Node-process import ban closes the indirection path that lets `import { env } from "node:process"` bypass a literal `process.env` text scan).
 - Centralize the forbidden-import list and comment-stripping rule in one shared helper so the rule cannot drift between operations.
 - Keep the existing per-operation boundary tests for sandbox-route and `_demo` builder demotion checks, which are operation-specific evidence rather than a general rule. Migrate the "operation has no host or storage concretes" assertion in those files to consume the shared helper so the rule lives in one place.
 - No production behavior changes. This is a test-only conformance gate.

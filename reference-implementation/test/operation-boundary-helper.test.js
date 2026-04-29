@@ -92,6 +92,20 @@ test('forbidden sandbox/demo specifier prefixes fail the gate', () => {
   expectViolation(`import { x } from "_demo/dataset";\n`, '_demo/');
 });
 
+test('static imports from the Node process module fail the gate', () => {
+  // Closes the indirection around `process.env`: an operation could otherwise
+  // bypass the env-access rule via `import { env } from "node:process"`
+  // or `import process from "process"` without the source ever spelling
+  // `process.env`. Both bare and `node:` specifiers are forbidden, in every
+  // standard static-import shape.
+  expectViolation(`import { env } from "node:process";\n`, 'node:process');
+  expectViolation(`import process from "node:process";\n`, 'node:process');
+  expectViolation(`import "node:process";\n`, 'node:process');
+  expectViolation(`import { env } from "process";\n`, 'process');
+  expectViolation(`import process from "process";\n`, 'process');
+  expectViolation(`import "process";\n`, 'process');
+});
+
 test('process.env access outside comments fails the gate with a process.env-specific message', () => {
   let thrown = null;
   try {
