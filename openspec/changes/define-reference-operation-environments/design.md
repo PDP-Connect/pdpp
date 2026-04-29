@@ -172,6 +172,41 @@ The first records/search implementation work is therefore not "write a Postgres 
 
 The complete phased records/search/Postgres execution plan and confidence ratings are captured in `design-notes/records-search-postgres-success-plan-2026-04-28.md`. The broader ideal architecture organization and migration packets are captured in `design-notes/ideal-reference-architecture-implementation-plan-2026-04-29.md`.
 
+## Implementation Evidence
+
+The proof sequence in "Evidence Standard" has been partially executed by separate, narrowly-scoped OpenSpec changes that have landed on `main`. This section is a status ledger; it does not approve broader implementation.
+
+### Recommended proof sequence vs landed evidence
+
+1. **Storage-only security proof (`ConsentStore` + `OwnerDeviceAuthStore`).**
+   Landed: `add-consent-device-auth-conformance-harness`. SQLite driver, deliberately-broken in-memory driver, and falsifiability test under `reference-implementation/test/helpers/`. Twelve lifecycle/security scenarios pass; falsifiability test confirms the harness fails on real terminal-state, denial-terminal, and polling-rate violations.
+   Not done: production `ConsentStore` / `OwnerDeviceAuthStore` interfaces are *not* extracted; the harness defines a candidate driver shape only.
+
+2. **Postgres-oriented storage proof (`ConnectorStateStore` + `SchedulerStore`).**
+   Landed: `add-connector-state-scheduler-conformance-harness`. SQLite driver, broken driver, and falsifiability test pinning state, schedule, and active-run invariants (including `controller_active_runs.run_id` cross-connector uniqueness).
+   Not done: the non-default Postgres adapter spike. The harness is the prerequisite for that spike.
+
+3. **Sandbox operation proof (`rs.streams.list`).**
+   Landed: `mount-rs-streams-list-operation`. Operation capsule under `reference-implementation/operations/rs-streams-list/`, mounted by both Fastify (`/v1/streams`) and the Next sandbox (`/sandbox/v1/streams`). `buildLiveStreamsList` is deleted from `apps/web/src/app/sandbox/_demo/builders.ts`. Per-operation import-boundary test asserts the operation does not import Fastify/Next/SQLite/process and the sandbox route does not import the deleted builder.
+
+4. **Operation-only schema proof (`rs.schema.get`).**
+   Landed: `mount-rs-schema-get-operation`. Same pattern as `rs.streams.list`. `buildLiveSchemaResponse` deleted; sandbox and native routes share one capsule. `mount-rs-stream-detail-operation` extended the pattern to `/v1/streams/:stream` and `/sandbox/v1/streams/:stream`, deleting `buildLiveStreamMetadataResponse`.
+
+5. **Records/search feasibility gate.**
+   Landed:
+   - `add-record-read-conformance-harness` — pagination, cursor round-trip, missing-value buckets, `changes_since=beginning`, projection, exact/range filters.
+   - `add-record-mutation-conformance-harness` — monotonic version allocation, no-op re-ingest, repeated/absent delete, rollback/fault, mixed-mutation contiguity.
+   - `add-disclosure-spine-conformance-harness` — append/list ordering, terminal lookup, correlation summary aggregate, rejected-vs-served visibility.
+   - `harden-record-ingest-atomicity` and `harden-record-delete-atomicity` — durable record mutation now happens inside an explicit SQLite transaction with derived index work outside the durable boundary.
+   Not done: full `RecordStore` / `LexicalIndex` / `SemanticIndex` extraction; no Postgres adapter; no hybrid retrieval feasibility implementation. `expand[]` is explicitly deferred (see `add-record-read-conformance-harness` task 2.6).
+
+### Cross-cutting status
+
+- **Per-operation import-boundary tests** exist for the three mounted operations. A *generalized* boundary gate that covers any future operation under `reference-implementation/operations/**` has not landed.
+- **Operation capsule shape** is concretely drafted by the three mounted operations and is consistent across them (request/dependencies/output, no transport coupling).
+- **Capability-specific contracts** exist as conformance-driver shapes for consent/device-auth, connector-state/scheduler, disclosure-spine, record-read, record-mutation. None has been promoted to a production `Store` interface or published in `reference-implementation/src` as a typed contract.
+- **Environment profiles** (`local-personal`, `docker-personal`, `sandbox-fixture`, `test-memory`) remain conceptual. Sandbox-fixture is implicitly proved by the mounted operations sharing capsules with the native server; the other profiles are not yet expressed as composed dependency bundles.
+
 ## Risks / Trade-offs
 
 - **Risk: Abstraction hides semantics** -> Use capability-specific contracts derived from tests, not generic repositories.

@@ -8,19 +8,19 @@
 ## 2. Architecture Refinement
 
 - [x] 2.1 Revise `design.md` using the worker audit reports, especially where current SQLite behavior contradicts proposed contracts.
-- [ ] 2.2 Draft a candidate operation capsule shape for `rs.streams.list` with request, response, auth, error, trace, and dependency obligations.
-- [ ] 2.3 Draft candidate capability-specific contracts for `ConsentStore`, `OwnerDeviceAuthStore`, `ConnectorStateStore`, `SchedulerStore`, and the minimal stream-summary `RecordStore` surface.
-- [ ] 2.4 Decide whether generated OpenAPI clients should be a prerequisite, parallel task, or follow-up to operation extraction.
-- [ ] 2.5 Decide whether `record_json_bytes` should be removed from operator summaries or relabeled as adapter-native storage bytes.
+- [x] 2.2 Draft a candidate operation capsule shape for `rs.streams.list` with request, response, auth, error, trace, and dependency obligations. (Concrete capsule landed in `reference-implementation/operations/rs-streams-list/index.ts` via `mount-rs-streams-list-operation`. The same capsule shape was applied to `rs.streams.detail` and `rs.schema.get`.)
+- [x] 2.3 Draft candidate capability-specific contracts for `ConsentStore`, `OwnerDeviceAuthStore`, `ConnectorStateStore`, `SchedulerStore`, and the minimal stream-summary `RecordStore` surface. (Drafts exist as conformance-driver shapes — `test/helpers/consent-device-auth-conformance.js`, `test/helpers/connector-state-scheduler-conformance.js` — and as the `StreamsListDependencies.listSummaries` surface in `operations/rs-streams-list/index.ts`. These are semantic candidate contracts, not promoted production `Store` interfaces yet.)
+- [ ] 2.4 Decide whether generated OpenAPI clients should be a prerequisite, parallel task, or follow-up to operation extraction. (Design.md §6 records the direction — "considered separately… does not replace operation extraction" — but the open question on line 187 still asks for an explicit ordering decision; not closed.)
+- [ ] 2.5 Decide whether `record_json_bytes` should be removed from operator summaries or relabeled as adapter-native storage bytes. (Design.md "Contract Corrections" item 4 records the constraint "if kept, must be labeled as native storage bytes." The remove-vs-relabel decision and any operator-summary edit have not landed.)
 
 ## 3. Proof Slice Planning
 
-- [ ] 3.1 Define storage-only security proof: `ConsentStore` + `OwnerDeviceAuthStore` with SQLite and memory adapters.
-- [ ] 3.2 Define Postgres-oriented storage proof: `ConnectorStateStore` + `SchedulerStore` with SQLite and a non-default Postgres adapter spike.
-- [ ] 3.3 Define sandbox operation proof: `rs.streams.list` mounted through Fastify and Next sandbox, with `buildLiveStreamsList` deleted.
-- [ ] 3.4 Define import-boundary checks or grep-based gates that prevent operations from importing concrete SQLite/Fastify/Next/process dependencies.
-- [ ] 3.5 Define conformance/equivalence tests that must pass against the existing local server and the candidate sandbox/test host.
-- [ ] 3.6 Identify rollback criteria and stop conditions for each proof slice.
+- [x] 3.1 Define storage-only security proof: `ConsentStore` + `OwnerDeviceAuthStore` with SQLite and memory adapters. (Landed as `add-consent-device-auth-conformance-harness`: SQLite driver + deliberately-broken in-memory driver + falsifiability test. Production `ConsentStore` / `OwnerDeviceAuthStore` interfaces are *not* extracted yet — this slice proves the semantic harness, not adapter swap.)
+- [x] 3.2 Define Postgres-oriented storage proof: `ConnectorStateStore` + `SchedulerStore` with SQLite and a non-default Postgres adapter spike. (Partially satisfied by `add-connector-state-scheduler-conformance-harness`: SQLite driver + broken driver covering connector-state, schedule, and active-run invariants. The Postgres adapter spike was *not* implemented; the harness is the prerequisite for it.)
+- [x] 3.3 Define sandbox operation proof: `rs.streams.list` mounted through Fastify and Next sandbox, with `buildLiveStreamsList` deleted. (Landed as `mount-rs-streams-list-operation`. Extended in the same idiom by `mount-rs-stream-detail-operation` and `mount-rs-schema-get-operation`; `buildLiveStreamsList`, `buildLiveStreamMetadataResponse`, and `buildLiveSchemaResponse` are deleted from `apps/web/src/app/sandbox/_demo/builders.ts`.)
+- [ ] 3.4 Define import-boundary checks or grep-based gates that prevent operations from importing concrete SQLite/Fastify/Next/process dependencies. (Per-operation boundary tests landed for the three mounted operations: `rs-streams-list-boundary.test.js`, `rs-streams-detail-boundary.test.js`, `rs-schema-get-boundary.test.js`. A *generalized* boundary gate that covers any future operation under `reference-implementation/operations/**` has not landed.)
+- [x] 3.5 Define conformance/equivalence tests that must pass against the existing local server and the candidate sandbox/test host. (Five conformance harnesses landed: consent/device-auth, connector-state/scheduler, disclosure-spine, record-mutation, record-read. Each ships SQLite and falsifiability/broken drivers. Sandbox-vs-native equivalence is asserted at the operation level for `rs.streams.list`, `rs.streams.detail`, and `rs.schema.get`.)
+- [ ] 3.6 Identify rollback criteria and stop conditions for each proof slice. (Design.md "Records/Search Feasibility Gate Result" enumerates stop conditions for the records/search feasibility gate. Per-slice rollback criteria — e.g. when to revert a host mount, when to back out a conformance harness — are not written down explicitly.)
 
 ## 4. Records/Search Feasibility Gate
 
