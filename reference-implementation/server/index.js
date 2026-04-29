@@ -79,6 +79,7 @@ import {
   setReferenceRevisionHeader,
 } from './reference-revision.js';
 import { resolveReferenceTopology } from './reference-topology.ts';
+import { executeStreamsList } from '../operations/rs-streams-list/index.ts';
 
 const AS_PORT = parseInt(process.env.AS_PORT || '7662');
 const RS_PORT = parseInt(process.env.RS_PORT || '7663');
@@ -3183,6 +3184,10 @@ function buildRsApp(opts = {}) {
   });
 
   // GET /v1/streams — list streams (client or owner)
+  // Stream-list semantics live in the canonical `rs.streams.list` operation
+  // (operations/rs-streams-list). This route is a Fastify host adapter:
+  // it owns auth, request id / trace id, instrumentation events, and
+  // envelope writing; it MUST NOT recompute stream-list rules locally.
   app.get('/v1/streams', { contract: 'listStreams' }, requireToken, async (req, res) => {
     let queryContext = null;
     try {
@@ -3191,9 +3196,6 @@ function buildRsApp(opts = {}) {
       const { actorType, actorId, traceId, scenarioId } = buildQueryActorContext(tokenInfo);
       setReferenceTraceId(res, traceId);
 
-      let sourceDescriptor;
-      let streamSummaries = [];
-      let manifest = null;
       queryContext = {
         tokenInfo,
         queryId,
@@ -3204,24 +3206,50 @@ function buildRsApp(opts = {}) {
         sourceDescriptor: null,
         queryData: { query_shape: 'stream_list' },
       };
+
+      let operationInput;
+      let dependencies;
       if (tokenInfo.pdpp_token_kind === 'owner') {
         const ownerScope = resolveOwnerReadScope(req, opts);
-        sourceDescriptor = buildSourceDescriptor(ownerScope.source);
-        queryContext.sourceDescriptor = sourceDescriptor;
-
-        await resolveOwnerManifest(req, opts);
-        streamSummaries = await listAllStreams(ownerScope.storage_binding);
+        // Eagerly populate queryContext for the rejected-query path; the
+        // operation also produces these via its output, but if the listing
+        // dependency throws we still need source attribution in
+        // query.received.
+        queryContext.sourceDescriptor = buildSourceDescriptor(ownerScope.source);
+        operationInput = {
+          actor: { kind: 'owner', subject_id: tokenInfo.subject_id || null },
+        };
+        dependencies = {
+          getSourceDescriptor: () => queryContext.sourceDescriptor,
+          listSummaries: async () => {
+            await resolveOwnerManifest(req, opts);
+            return listAllStreams(ownerScope.storage_binding);
+          },
+        };
       } else {
         const grant = tokenInfo.grant;
-        sourceDescriptor = buildSourceDescriptor(grant?.source);
-        queryContext.sourceDescriptor = sourceDescriptor;
-        queryContext.queryData.stream_count_limit = Array.isArray(grant?.streams) ? grant.streams.length : null;
-
-        const grantResolved = await resolveGrantManifest(tokenInfo, opts);
-        const { storageBinding } = grantResolved;
-        manifest = grantResolved.manifest;
-        streamSummaries = await listStreams(storageBinding, grant, manifest);
+        const streamCountLimit = Array.isArray(grant?.streams) ? grant.streams.length : null;
+        queryContext.sourceDescriptor = buildSourceDescriptor(grant?.source);
+        queryContext.queryData.stream_count_limit = streamCountLimit;
+        operationInput = {
+          actor: {
+            kind: 'client',
+            subject_id: tokenInfo.subject_id || null,
+            client_id: tokenInfo.client_id || null,
+            grant_id: tokenInfo.grant_id || null,
+            stream_count_limit: streamCountLimit,
+          },
+        };
+        dependencies = {
+          getSourceDescriptor: () => queryContext.sourceDescriptor,
+          listSummaries: async () => {
+            const grantResolved = await resolveGrantManifest(tokenInfo, opts);
+            return listStreams(grantResolved.storageBinding, grant, grantResolved.manifest);
+          },
+        };
       }
+
+      const result = await executeStreamsList(operationInput, dependencies);
 
       await emitQueryReceived(queryContext, req);
 
@@ -3240,15 +3268,15 @@ function buildRsApp(opts = {}) {
         client_id: tokenInfo.client_id || null,
         token_id: req.headers.authorization?.slice(7) || null,
         data: {
-          source: sourceDescriptor,
+          source: result.sourceDescriptor,
           query_shape: 'stream_list',
-          stream_count: streamSummaries.length,
+          stream_count: result.streams.length,
         },
       });
 
       res.json({
         object: 'list',
-        data: streamSummaries.map((summary) => ({
+        data: result.streams.map((summary) => ({
           ...summary,
           freshness: buildFreshness(summary.last_updated || null),
         })),

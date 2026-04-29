@@ -1040,32 +1040,13 @@ export function buildLiveSchemaResponse(): LiveSchemaResponse {
 // `buildFreshness(last_updated)` — the demo emits a parallel shape and the
 // route handler does the lightweight pagination wrapper.
 
-export interface LiveStreamSummary {
-  freshness: { last_updated: string | null };
-  last_updated: string | null;
-  name: string;
-  object: "stream";
-  record_count: number;
-}
-
-export function buildLiveStreamsList(opts: {
-  connector_id?: string;
-  cursor?: string | null;
-  limit?: number;
-}): LiveListEnvelope<LiveStreamSummary> {
-  const filtered = opts.connector_id ? DEMO_STREAMS.filter((s) => s.connector_id === opts.connector_id) : DEMO_STREAMS;
-  const summaries: LiveStreamSummary[] = filtered.map((stream) => {
-    const lastUpdated = latestRecordTimeForStream(stream.key) ?? stream.latest_record_time;
-    return {
-      object: "stream",
-      name: stream.key,
-      record_count: streamRecordCount(stream.key),
-      last_updated: lastUpdated,
-      freshness: { last_updated: lastUpdated },
-    };
-  });
-  return paginateLive(summaries, opts);
-}
+// `buildLiveStreamsList` lived here until the rs.streams.list operation
+// migration. It mirrored the live RS shape entirely inside this builder
+// module, which made the sandbox route a parallel AS/RS implementation.
+// `/sandbox/v1/streams` now mounts the canonical `rs.streams.list` operation
+// with sandbox fixture dependencies; see
+// `./operations-fixtures.ts` and the sandbox route. Do not reintroduce a
+// public stream-list builder here.
 
 export function buildLiveStreamMetadataResponse(streamKey: string): LiveStreamMetadata | null {
   const stream = DEMO_STREAMS.find((s) => s.key === streamKey);

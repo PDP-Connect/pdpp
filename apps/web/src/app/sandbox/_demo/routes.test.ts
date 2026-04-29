@@ -81,7 +81,7 @@ test("/sandbox/v1/schema returns the live `schema` envelope (no demo-shaped obje
 // ─── /sandbox/v1/streams ───────────────────────────────────────────────────
 
 test("/sandbox/v1/streams returns a live `list` of `stream` summaries", async () => {
-  const res = streamsListGet(new Request("https://example.invalid/sandbox/v1/streams"));
+  const res = await streamsListGet(new Request("https://example.invalid/sandbox/v1/streams"));
   assert.equal(res.status, 200);
   assertSandboxHeader(res);
   const body = (await jsonOf(res)) as {
@@ -102,7 +102,7 @@ test("/sandbox/v1/streams returns a live `list` of `stream` summaries", async ()
 });
 
 test("/sandbox/v1/streams supports connector_id filtering", async () => {
-  const res = streamsListGet(new Request("https://example.invalid/sandbox/v1/streams?connector_id=acme_payroll_demo"));
+  const res = await streamsListGet(new Request("https://example.invalid/sandbox/v1/streams?connector_id=acme_payroll_demo"));
   const body = (await jsonOf(res)) as { data: Array<{ name: string }> };
   assert.ok(body.data.length >= 1);
 });

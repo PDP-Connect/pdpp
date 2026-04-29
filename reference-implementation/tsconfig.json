@@ -50,6 +50,8 @@
     "server/**/*.d.ts",
     "lib/**/*.ts",
     "lib/**/*.js",
+    "operations/**/*.ts",
+    "operations/**/*.js",
     "runtime/**/*.ts",
     "runtime/**/*.js",
     "cli/**/*.ts",
