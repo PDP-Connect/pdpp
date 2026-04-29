@@ -24,6 +24,7 @@ import {
   decodeCursor,
   encodeCursor,
   exec,
+  execReturningOne,
   getMany,
   getOne,
   InvalidCursorError,
@@ -264,6 +265,83 @@ test("exec runs a mutation and returns changes plus lastInsertRowid", () => {
     assert.equal(result.changes, 1);
     assert.equal(typeof result.lastInsertRowid, "number");
     assert.ok(result.lastInsertRowid > 0);
+  } finally {
+    teardown(dir);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// execReturningOne
+// ---------------------------------------------------------------------------
+
+test("execReturningOne runs a mutation and returns the RETURNING row", () => {
+  const dir = setupQueriesDir((d) => {
+    writeFileSync(
+      join(d, "insert-test-item-returning.sql"),
+      "-- @terminator: exec_one\nINSERT INTO test_items (name, value) VALUES (?, ?) RETURNING id, name, value\n"
+    );
+  });
+  try {
+    setupDb();
+    const reg = loadReferenceQueries(dir);
+    const handle = reg.insertTestItemReturning;
+    assert.equal(handle.terminator, "exec_one");
+    const row = execReturningOne(handle, ["alpha", 7]);
+    assert.equal(row.name, "alpha");
+    assert.equal(row.value, 7);
+    assert.equal(typeof row.id, "number");
+  } finally {
+    teardown(dir);
+  }
+});
+
+test("execReturningOne mutates the underlying table — atomic upsert+RETURNING returns the freshly written value", () => {
+  // Pins the load-bearing semantic the wrapper offers over a `getOne`
+  // call on the same RETURNING SQL: callers can rely on the mutation
+  // having happened in the same statement that produced the row, so the
+  // returned value is the post-mutation state, not a pre-mutation read.
+  const dir = setupQueriesDir((d) => {
+    writeFileSync(
+      join(d, "upsert-test-counter.sql"),
+      [
+        "-- @terminator: exec_one",
+        "INSERT INTO test_items (name, value) VALUES (?, 1)",
+        "ON CONFLICT(name) DO UPDATE SET value = test_items.value + 1",
+        "RETURNING value\n",
+      ].join("\n")
+    );
+  });
+  try {
+    const db = setupDb();
+    db.exec("CREATE UNIQUE INDEX idx_test_items_name ON test_items (name)");
+    const reg = loadReferenceQueries(dir);
+    const first = execReturningOne(reg.upsertTestCounter, ["counter"]);
+    assert.equal(first.value, 1);
+    const second = execReturningOne(reg.upsertTestCounter, ["counter"]);
+    assert.equal(second.value, 2);
+    const third = execReturningOne(reg.upsertTestCounter, ["counter"]);
+    assert.equal(third.value, 3);
+    const persisted = db.prepare("SELECT value FROM test_items WHERE name = ?").get("counter");
+    assert.equal(persisted.value, 3, "mutation persisted; RETURNING value reflects post-mutation state");
+  } finally {
+    teardown(dir);
+  }
+});
+
+test("execReturningOne throws when the statement returns zero rows", () => {
+  const dir = setupQueriesDir((d) => {
+    writeFileSync(
+      join(d, "delete-test-item-returning.sql"),
+      "-- @terminator: exec_one\nDELETE FROM test_items WHERE id = ? RETURNING id\n"
+    );
+  });
+  try {
+    setupDb();
+    const reg = loadReferenceQueries(dir);
+    assert.throws(
+      () => execReturningOne(reg.deleteTestItemReturning, [9999]),
+      /returned no rows/
+    );
   } finally {
     teardown(dir);
   }

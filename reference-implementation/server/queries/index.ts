@@ -11,7 +11,7 @@
  * Each `.sql` file declares its terminator and bound via a header of
  * `-- @key: value` lines preceding the statement:
  *
- *   -- @terminator: many               # one | many | iterate | exec
+ *   -- @terminator: many               # one | many | iterate | exec | exec_one
  *   -- @cursor_field: rowid            # required for terminator=many|iterate
  *   -- @bounded_by: small_enumeration_table   # optional
  *   -- @table: connectors              # required if @bounded_by is set
@@ -27,6 +27,9 @@
  *   - terminator='iterate' artifacts: have a `@cursor_field` header.
  *   - terminator='exec' artifacts: SQL begins with INSERT/UPDATE/DELETE/
  *     CREATE/ALTER/DROP/REPLACE.
+ *   - terminator='exec_one' artifacts: SQL begins with a mutation keyword
+ *     AND contains a `RETURNING` clause; executed via `execReturningOne`,
+ *     which returns the single returned row.
  *   - Every artifact prepares cleanly against the live database.
  *   - Filenames map deterministically to keys (kebab-case → camelCase).
  *
@@ -48,6 +51,7 @@ const TRAILING_SEMICOLON_RE = /;\s*$/;
 const FRONTMATTER_LINE_RE = /^--\s*@([a-z_]+):\s*(.+?)\s*$/;
 const LIMIT_PLACEHOLDER_RE = /\bLIMIT\s+\?/i;
 const MUTATION_LEADING_KEYWORD_RE = /^\s*(INSERT|UPDATE|DELETE|REPLACE|CREATE|ALTER|DROP)\b/i;
+const RETURNING_CLAUSE_RE = /\bRETURNING\b/i;
 const LINE_SEPARATOR_RE = /\r?\n/;
 
 // Brand symbol — at runtime it's just a property; in TS it makes the
@@ -90,6 +94,19 @@ export interface MutationQuery extends QueryArtifactMetadata, Branded<"mutation"
   readonly terminator: "exec";
 }
 
+/**
+ * Mutation that returns a single row via SQL `RETURNING`. Used by atomic
+ * operations whose post-mutation result must be observed in the same
+ * statement that wrote it — e.g. `INSERT … ON CONFLICT … DO UPDATE …
+ * RETURNING <col>` for atomic counter allocation. The wrapper at
+ * `lib/db.ts` reads exactly one row via `execReturningOne`. The handle is
+ * branded distinctly from `MutationQuery` and `ReadOneQuery` so static
+ * SQL semantics are pinned at the call site.
+ */
+export interface MutationReturningOneQuery extends QueryArtifactMetadata, Branded<"mutation_returning_one"> {
+  readonly terminator: "exec_one";
+}
+
 /** Whole-table scan of a table whose row count is bounded by domain. */
 export interface SmallEnumerationQuery extends QueryArtifactMetadata, Branded<"small_enum"> {
   readonly boundedBy: "small_enumeration_table";
@@ -98,7 +115,13 @@ export interface SmallEnumerationQuery extends QueryArtifactMetadata, Branded<"s
   readonly terminator: "many";
 }
 
-export type RegisteredQuery = ReadOneQuery | ReadManyQuery | IterateQuery | MutationQuery | SmallEnumerationQuery;
+export type RegisteredQuery =
+  | ReadOneQuery
+  | ReadManyQuery
+  | IterateQuery
+  | MutationQuery
+  | MutationReturningOneQuery
+  | SmallEnumerationQuery;
 
 /**
  * The frozen registry. Keys are camel-cased filenames; values are
@@ -194,7 +217,7 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   // Records — point-read for /v1/records/{id}.
   readonly recordsGetLiveRecordByKey: ReadOneQuery;
   // Records — ingest path: read/write of records, record_changes, version_counter.
-  readonly recordsIngestAllocateNextVersion: ReadOneQuery;
+  readonly recordsIngestAllocateNextVersion: MutationReturningOneQuery;
   readonly recordsIngestGetCurrentRecordState: ReadOneQuery;
   readonly recordsIngestGetVersionCounter: ReadOneQuery;
   readonly recordsIngestInsertRecordChangeDeleted: MutationQuery;
@@ -292,7 +315,7 @@ interface ParsedFrontmatter {
   readonly cursorField: string | null;
   readonly maxRows: number | null;
   readonly table: string | null;
-  readonly terminator: "one" | "many" | "iterate" | "exec";
+  readonly terminator: "one" | "many" | "iterate" | "exec" | "exec_one";
 }
 
 function toCamelCase(value: string): string {
@@ -357,12 +380,14 @@ function splitFrontmatterAndBody(raw: string): {
   return { fm, body: lines.slice(bodyStart).join("\n") };
 }
 
+const VALID_TERMINATORS = new Set(["one", "many", "iterate", "exec", "exec_one"] as const);
+
 function validateTerminator(value: string | undefined, file: string): ParsedFrontmatter["terminator"] {
-  if (value === "one" || value === "many" || value === "iterate" || value === "exec") {
-    return value;
+  if (value !== undefined && (VALID_TERMINATORS as Set<string>).has(value)) {
+    return value as ParsedFrontmatter["terminator"];
   }
   throw new Error(
-    `[queries] ${file}: missing or invalid @terminator (got "${value ?? ""}"). Allowed: one | many | iterate | exec.`
+    `[queries] ${file}: missing or invalid @terminator (got "${value ?? ""}"). Allowed: one | many | iterate | exec | exec_one.`
   );
 }
 
@@ -427,6 +452,20 @@ function buildHandle(meta: QueryArtifactMetadata, fm: ParsedFrontmatter): Regist
       );
     }
     return Object.freeze({ ...meta, terminator: "exec" }) as MutationQuery;
+  }
+
+  if (fm.terminator === "exec_one") {
+    if (!MUTATION_LEADING_KEYWORD_RE.test(meta.sql)) {
+      throw new Error(
+        `[queries] ${meta.file}: terminator='exec_one' but SQL does not begin with INSERT/UPDATE/DELETE/REPLACE/CREATE/ALTER/DROP.`
+      );
+    }
+    if (!RETURNING_CLAUSE_RE.test(meta.sql)) {
+      throw new Error(
+        `[queries] ${meta.file}: terminator='exec_one' requires a RETURNING clause; otherwise use terminator='exec'.`
+      );
+    }
+    return Object.freeze({ ...meta, terminator: "exec_one" }) as MutationReturningOneQuery;
   }
 
   // terminator === 'many'

@@ -5,6 +5,7 @@ import { getDb } from './db.js';
 import {
   allowUnboundedReadAcknowledged,
   exec,
+  execReturningOne,
   getMany,
   getOne,
   iterate,
@@ -153,7 +154,7 @@ export async function ingestRecord(storageTarget, record) {
       return { kind: 'noop' };
     }
 
-    const allocated = getOne(
+    const allocated = execReturningOne(
       referenceQueries.recordsIngestAllocateNextVersion,
       [connectorId, stream],
     );
@@ -1913,7 +1914,7 @@ export async function deleteRecord(storageTarget, stream, recordId) {
       return { kind: 'noop' };
     }
 
-    const allocated = getOne(
+    const allocated = execReturningOne(
       referenceQueries.recordsIngestAllocateNextVersion,
       [connectorId, stream],
     );

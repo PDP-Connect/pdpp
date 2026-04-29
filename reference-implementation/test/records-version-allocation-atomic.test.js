@@ -42,7 +42,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { closeDb, getDb, initDb } from '../server/db.js';
-import { getOne, referenceQueries } from '../lib/db.ts';
+import { execReturningOne, referenceQueries } from '../lib/db.ts';
 import { deleteRecord, ingestRecord } from '../server/records.js';
 
 const CONNECTOR_ID = 'https://test.pdpp.org/connectors/version-allocation';
@@ -93,7 +93,7 @@ test('atomic allocator returns 1 on first call and bumps counter in one statemen
     // Counter is absent before any allocation.
     assert.equal(readVersionCounter(), null);
 
-    const first = getOne(
+    const first = execReturningOne(
       referenceQueries.recordsIngestAllocateNextVersion,
       [CONNECTOR_ID, STREAM],
     );
@@ -104,14 +104,14 @@ test('atomic allocator returns 1 on first call and bumps counter in one statemen
       'allocator must persist the new max_version in the same statement',
     );
 
-    const second = getOne(
+    const second = execReturningOne(
       referenceQueries.recordsIngestAllocateNextVersion,
       [CONNECTOR_ID, STREAM],
     );
     assert.equal(second.max_version, 2, 'second allocation returns counter + 1');
     assert.equal(readVersionCounter(), 2);
 
-    const third = getOne(
+    const third = execReturningOne(
       referenceQueries.recordsIngestAllocateNextVersion,
       [CONNECTOR_ID, STREAM],
     );

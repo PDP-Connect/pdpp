@@ -192,6 +192,49 @@ test("rejects terminator=exec without leading mutation keyword", () => {
   });
 });
 
+test("accepts terminator=exec_one with leading mutation keyword and RETURNING clause", () => {
+  withTempQueryDir((dir) => {
+    writeAllRequiredArtifacts(dir);
+    writeFileSync(
+      join(dir, "alloc-counter.sql"),
+      "-- @terminator: exec_one\nINSERT INTO version_counter (connector_id, stream, max_version) VALUES (?, ?, 1) ON CONFLICT(connector_id, stream) DO UPDATE SET max_version = version_counter.max_version + 1 RETURNING max_version\n"
+    );
+
+    const registry = loadReferenceQueries(dir);
+    assert.equal(registry.allocCounter.terminator, "exec_one");
+  });
+});
+
+test("rejects terminator=exec_one without leading mutation keyword", () => {
+  withTempQueryDir((dir) => {
+    writeAllRequiredArtifacts(dir);
+    writeFileSync(
+      join(dir, "wrong-exec-one.sql"),
+      "-- @terminator: exec_one\nSELECT 1 RETURNING value\n"
+    );
+
+    assert.throws(
+      () => loadReferenceQueries(dir),
+      /SQL does not begin with INSERT\/UPDATE\/DELETE/
+    );
+  });
+});
+
+test("rejects terminator=exec_one without RETURNING clause", () => {
+  withTempQueryDir((dir) => {
+    writeAllRequiredArtifacts(dir);
+    writeFileSync(
+      join(dir, "missing-returning.sql"),
+      "-- @terminator: exec_one\nINSERT INTO records (connector_id, stream, record_key) VALUES (?, ?, ?)\n"
+    );
+
+    assert.throws(
+      () => loadReferenceQueries(dir),
+      /requires a RETURNING clause/
+    );
+  });
+});
+
 test("rejects unsupported @bounded_by values", () => {
   withTempQueryDir((dir) => {
     writeAllRequiredArtifacts(dir);

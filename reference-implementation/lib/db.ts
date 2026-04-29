@@ -34,6 +34,17 @@
  *     INSERT/UPDATE/DELETE/CREATE/ALTER/DROP/REPLACE. Returns
  *     `{ changes, lastInsertRowid }`.
  *
+ *   execReturningOne(query, params)
+ *     Mutation that returns exactly one row via SQL `RETURNING`. SQL is a
+ *     `terminator: 'exec_one'` query — a mutation statement (INSERT /
+ *     UPDATE / DELETE / REPLACE / CREATE / ALTER / DROP) that includes a
+ *     `RETURNING <cols>` clause. Used for atomic operations whose
+ *     post-mutation result must be observed in the same statement that
+ *     wrote it (e.g. `INSERT … ON CONFLICT … DO UPDATE … RETURNING`
+ *     allocators). Distinct from both `exec` (mutation, no row) and
+ *     `getOne` (pure read) so the SQL semantics are pinned at the call
+ *     site.
+ *
  *   allowUnboundedReadAcknowledged(query, params)
  *     Whole-table scan of a small enumeration table. The caller MUST be
  *     a `terminator: 'many'` query annotated `@bounded_by:
@@ -49,6 +60,7 @@ import { getDb } from "../server/db.js";
 import type {
   IterateQuery,
   MutationQuery,
+  MutationReturningOneQuery,
   ReadManyQuery,
   ReadOneQuery,
   SmallEnumerationQuery,
@@ -62,6 +74,7 @@ import type {
 export type {
   IterateQuery,
   MutationQuery,
+  MutationReturningOneQuery,
   ReadManyQuery,
   ReadOneQuery,
   RegisteredQuery,
@@ -303,6 +316,39 @@ export function exec(query: MutationQuery, params: BindParams = []): ExecResult 
     changes: result.changes,
     lastInsertRowid: result.lastInsertRowid,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Primitive: execReturningOne
+// ---------------------------------------------------------------------------
+
+/**
+ * Execute a mutation that returns exactly one row via SQL `RETURNING`.
+ * The query SHALL be a `terminator: 'exec_one'` artifact whose SQL begins
+ * with a mutation keyword (INSERT/UPDATE/DELETE/REPLACE/CREATE/ALTER/
+ * DROP) and contains a `RETURNING` clause; the loader enforces that.
+ *
+ * Use this for atomic operations whose result must be observed in the
+ * same statement that wrote it — e.g. `INSERT … ON CONFLICT … DO UPDATE
+ * … RETURNING` allocators. The wrapper deliberately uses a different
+ * primitive from `exec` and `getOne` so the registry does not have to
+ * lie about whether a query is a mutation or a read.
+ *
+ * Throws if the statement returns zero rows; SQL with `RETURNING` on a
+ * single-target row is expected to return exactly one row.
+ */
+export function execReturningOne<R>(query: MutationReturningOneQuery, params: BindParams = []): R {
+  const db = requireDb();
+  const stmt = db.prepare(query.sql);
+  // better-sqlite3 lets a `RETURNING` statement be driven via `.get(...)`;
+  // it runs the mutation and returns the first row.
+  const row = stmt.get(...params) as R | undefined;
+  if (row === undefined) {
+    throw new Error(
+      `[db] execReturningOne(${query.key}) returned no rows; RETURNING statements must produce exactly one row.`
+    );
+  }
+  return row;
 }
 
 // ---------------------------------------------------------------------------
