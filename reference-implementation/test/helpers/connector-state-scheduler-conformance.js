@@ -491,12 +491,13 @@ export function runConnectorStateSchedulerConformance({ label, test, makeDriver 
   // declares `run_id UNIQUE` on `controller_active_runs` (and an index
   // on the column) precisely so a run id minted for one connector
   // cannot also be minted for another. Drivers MUST either reject the
-  // second insert or otherwise refuse to create a second active row.
-  // The scenario passes if (a) the second insert throws and the
-  // original row remains intact, or (b) the second insert is
-  // suppressed and the registry still holds exactly one row keyed to
-  // the original connector. A driver that lets both rows persist
-  // fails: the run id would no longer correlate to a single live run.
+  // duplicate insert (throw) or ignore it (no-op); they MUST NOT
+  // rebind the existing run id from connector A to connector B. Either
+  // way the original connector A row stays intact, the registry holds
+  // exactly one row under that run id, and connector B has no active
+  // row. A driver that silently moves the run id to connector B
+  // (e.g. UPDATE … WHERE run_id = ?) fails this scenario, as does a
+  // driver that lets both rows persist.
   t('active-run run_id is unique across connectors', async () => {
     const driver = await makeDriver();
     await driver.setup();
@@ -508,7 +509,6 @@ export function runConnectorStateSchedulerConformance({ label, test, makeDriver 
         startedAt: '2026-04-28T00:00:00.000Z',
       });
 
-      let collisionThrew = false;
       try {
         await driver.insertActiveRun(CONNECTOR_B, {
           runId: 'run_shared',
@@ -517,7 +517,9 @@ export function runConnectorStateSchedulerConformance({ label, test, makeDriver 
           startedAt: '2026-04-28T00:01:00.000Z',
         });
       } catch {
-        collisionThrew = true;
+        // Throwing the duplicate is acceptable; the row-state
+        // assertions below pin the invariant whether the driver
+        // throws or no-ops.
       }
 
       const list = await driver.listActiveRuns();
@@ -527,24 +529,22 @@ export function runConnectorStateSchedulerConformance({ label, test, makeDriver 
         1,
         'run_id must be unique across the active-run registry',
       );
-
-      if (collisionThrew) {
-        // Throwing path: original row remains intact.
-        assert.equal(sharedRows[0].connector_id, CONNECTOR_A);
-        assert.equal(sharedRows[0].trace_id, 'trc_a');
-        const onB = await driver.getActiveRun(CONNECTOR_B);
-        assert.equal(onB, null, 'connector B must have no active row when the duplicate insert was rejected');
-      } else {
-        // Non-throwing path: whichever row remains, it MUST be the
-        // only one bearing this run id. We don't dictate which
-        // connector wins — only that the registry never holds two
-        // rows under the same run id.
-        const onlyConnector = sharedRows[0].connector_id;
-        assert.ok(
-          onlyConnector === CONNECTOR_A || onlyConnector === CONNECTOR_B,
-          'remaining row must belong to one of the two attempted connectors',
-        );
-      }
+      assert.equal(
+        sharedRows[0].connector_id,
+        CONNECTOR_A,
+        'duplicate run_id must not rebind the existing row to a different connector',
+      );
+      assert.equal(
+        sharedRows[0].trace_id,
+        'trc_a',
+        'original row trace_id must remain intact after a duplicate run_id attempt',
+      );
+      const onB = await driver.getActiveRun(CONNECTOR_B);
+      assert.equal(
+        onB,
+        null,
+        'connector B must have no active row when its insert duplicated an existing run_id',
+      );
     } finally {
       await driver.teardown();
     }
