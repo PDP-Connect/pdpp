@@ -21,16 +21,16 @@ import {
 import { createTraceContext, emitSpineEvent, generateSpineId, listSpineCorrelations, listSpineEventsPage, searchSpine } from '../lib/spine.ts';
 import { exec, getOne, InvalidCursorError, referenceQueries, transaction } from '../lib/db.ts';
 import {
-  registerConnector, getConnectorManifest, getConfiguredNativeManifest, getManifestForStorageBinding, initiateGrant, getPendingConsent,
-  approveGrant, introspect, revokeGrant, denyGrant,
+  registerConnector, getConnectorManifest, getConfiguredNativeManifest, getManifestForStorageBinding,
+  introspect, revokeGrant,
   createConsentExchangeCode, consumeConsentExchangeCode,
-  initiateOwnerDeviceAuthorization, getOwnerDeviceAuthorizationByUserCode,
-  approveOwnerDeviceAuthorization, denyOwnerDeviceAuthorization, exchangeOwnerDeviceCode, configureNativeManifest,
+  configureNativeManifest,
   deleteRegisteredClient, listOwnerIssuedClients, listRegisteredConnectorIds,
-  parsePendingConsentRequestUri, registerDynamicClient, requireGrantContractAgainstManifest, requireResolvedPersistedGrantState, seedPreRegisteredClients,
-  getPendingConsentRowByApprovalId, getOwnerDeviceAuthRowByApprovalId,
+  registerDynamicClient, requireGrantContractAgainstManifest, requireResolvedPersistedGrantState, seedPreRegisteredClients,
   buildPendingConsentRequestUri,
 } from './auth.js';
+import { createSqliteConsentStore } from './stores/consent-store.js';
+import { createSqliteOwnerDeviceAuthStore } from './stores/owner-device-auth-store.js';
 import {
   ingestRecord, queryRecords, aggregateRecords, getRecord, deleteRecord, deleteAllRecords,
   listStreams, listAllStreams, getSyncState, putSyncState,
@@ -1570,6 +1570,8 @@ function buildAsApp(opts = {}) {
   const providerName = resolveProviderName(opts);
   const referenceRevision = resolveReferenceRevision(opts);
   const controller = opts.controller || null;
+  const consentStore = createSqliteConsentStore();
+  const ownerDeviceAuthStore = createSqliteOwnerDeviceAuthStore();
   const dynamicClientRegistrationEnabled = resolveDynamicClientRegistrationEnabled(opts);
   const dynamicClientRegistrationInitialAccessTokens = resolveDynamicClientRegistrationInitialAccessTokens(opts);
   const ownerAuthConfig = resolveOwnerAuthPlaceholderConfig(opts);
@@ -1759,9 +1761,9 @@ function buildAsApp(opts = {}) {
   }
 
   async function getPendingGrantFromRequestUri(requestUri) {
-    const deviceCode = parsePendingConsentRequestUri(requestUri);
+    const deviceCode = consentStore.parseRequestUri(requestUri);
     if (!deviceCode) return { deviceCode: null, pending: null };
-    const pending = await getPendingConsent(deviceCode);
+    const pending = await consentStore.getPendingConsentByDeviceCode(deviceCode);
     return { deviceCode, pending };
   }
 
@@ -1907,7 +1909,7 @@ function buildAsApp(opts = {}) {
       }
 
       const explicitBaseUrl = opts.asPublicUrl || (!opts.ignoreAmbientPublicUrls ? process.env.AS_PUBLIC_URL : null);
-      const result = await initiateOwnerDeviceAuthorization(clientId, {
+      const result = await ownerDeviceAuthStore.initiate(clientId, {
         baseUrl: resolvePublicUrl(req, explicitBaseUrl),
       });
       const traceContext = result.trace_context || null;
@@ -1937,7 +1939,7 @@ function buildAsApp(opts = {}) {
     }
 
     try {
-      const result = await exchangeOwnerDeviceCode({
+      const result = await ownerDeviceAuthStore.exchangeDeviceCode({
         clientId: req.body.client_id,
         deviceCode: req.body.device_code,
       });
@@ -1966,7 +1968,7 @@ function buildAsApp(opts = {}) {
 
   app.get('/device', ownerAuth.requireOwnerSession, async (req, res) => {
     const userCode = typeof req.query.user_code === 'string' ? req.query.user_code : '';
-    const pending = userCode ? await getOwnerDeviceAuthorizationByUserCode(userCode) : null;
+    const pending = userCode ? await ownerDeviceAuthStore.getByUserCode(userCode) : null;
 
     if (!userCode || !pending) {
       const emptyBody = [
@@ -2047,7 +2049,7 @@ function buildAsApp(opts = {}) {
       const approvalId = req.body.approval_id;
       let userCode = req.body.user_code;
       if (!userCode && approvalId) {
-        const row = await getOwnerDeviceAuthRowByApprovalId(approvalId);
+        const row = await ownerDeviceAuthStore.getByApprovalId(approvalId);
         if (!row || row.status !== 'pending') {
           return oauthError(res, 404, 'not_found', 'No pending device authorization for approval_id');
         }
@@ -2060,7 +2062,7 @@ function buildAsApp(opts = {}) {
         return oauthError(res, 400, 'invalid_request', 'user_code or approval_id is required');
       }
 
-      await approveOwnerDeviceAuthorization(userCode, subjectId);
+      await ownerDeviceAuthStore.approve(userCode, subjectId);
       res.send(renderHostedDocument({
         title: `${providerName} — Device access approved`,
         providerName,
@@ -2092,7 +2094,7 @@ function buildAsApp(opts = {}) {
       const approvalId = req.body.approval_id;
       let userCode = req.body.user_code;
       if (!userCode && approvalId) {
-        const row = await getOwnerDeviceAuthRowByApprovalId(approvalId);
+        const row = await ownerDeviceAuthStore.getByApprovalId(approvalId);
         if (!row || row.status !== 'pending') {
           return oauthError(res, 404, 'not_found', 'No pending device authorization for approval_id');
         }
@@ -2105,7 +2107,7 @@ function buildAsApp(opts = {}) {
         return oauthError(res, 400, 'invalid_request', 'user_code or approval_id is required');
       }
 
-      await denyOwnerDeviceAuthorization(userCode, subjectId);
+      await ownerDeviceAuthStore.deny(userCode, subjectId);
       res.send(renderHostedDocument({
         title: `${providerName} — Device access denied`,
         providerName,
@@ -2654,7 +2656,7 @@ function buildAsApp(opts = {}) {
   app.post('/oauth/par', { contract: 'createPushedAuthorizationRequest' }, async (req, res) => {
     try {
       const explicitBaseUrl = opts.asPublicUrl || (!opts.ignoreAmbientPublicUrls ? process.env.AS_PUBLIC_URL : null);
-      const result = await initiateGrant(req.body, {
+      const result = await consentStore.initiateGrant(req.body, {
         baseUrl: resolvePublicUrl(req, explicitBaseUrl),
         nativeManifest: resolveNativeManifest(opts),
       });
@@ -2701,7 +2703,7 @@ function buildAsApp(opts = {}) {
       let requestUri = req.body?.request_uri || req.query?.request_uri;
       const approvalId = req.body?.approval_id || req.query?.approval_id;
       if (!requestUri && approvalId) {
-        const row = await getPendingConsentRowByApprovalId(approvalId);
+        const row = await consentStore.getPendingConsentByApprovalId(approvalId);
         if (!row || row.status !== 'pending') {
           return pdppError(res, 404, 'not_found', 'No pending consent for approval_id');
         }
@@ -2720,7 +2722,7 @@ function buildAsApp(opts = {}) {
         ? ownerAuth.subjectId
         : (req.body?.subject_id || req.query?.subject_id || OWNER_AUTH_DEFAULT_SUBJECT_ID);
       const approveOpts = { ai_training_consented: req.body?.ai_training_consented };
-      const { grant, token } = await approveGrant(deviceCode, subjectId, approveOpts);
+      const { grant, token } = await consentStore.approveGrant(deviceCode, subjectId, approveOpts);
       const wantsJson = req.is('application/json') || req.accepts(['html', 'json']) === 'json';
       if (wantsJson) {
         return res.json({ grant_id: grant.grant_id, token, grant });
@@ -2777,7 +2779,7 @@ function buildAsApp(opts = {}) {
       let requestUri = req.body?.request_uri || req.query?.request_uri;
       const approvalId = req.body?.approval_id || req.query?.approval_id;
       if (!requestUri && approvalId) {
-        const row = await getPendingConsentRowByApprovalId(approvalId);
+        const row = await consentStore.getPendingConsentByApprovalId(approvalId);
         if (!row || row.status !== 'pending') {
           return pdppError(res, 404, 'not_found', 'No pending consent for approval_id');
         }
@@ -2792,7 +2794,7 @@ function buildAsApp(opts = {}) {
       if (traceContext?.trace_id) {
         setReferenceTraceId(res, traceContext.trace_id);
       }
-      const deleted = await denyGrant(deviceCode);
+      const deleted = await consentStore.denyGrant(deviceCode);
       if (!deleted) return pdppError(res, 404, 'not_found', 'Pending consent request not found');
       res.send(renderHostedDocument({
         title: `${providerName} — Access denied`,
