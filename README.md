@@ -105,6 +105,38 @@ instead of pulling public images, run:
 docker compose --env-file .env.docker up --build
 ```
 
+#### Postgres proof service (test-only, profile-gated)
+
+The Compose file ships an optional `postgres` service gated behind the
+`postgres` profile. It exists only to back the env-gated conformance proof at
+`reference-implementation/test/connector-state-scheduler-conformance-postgres.test.js`,
+landed under
+`openspec/changes/define-reference-operation-environments`. The reference
+runtime remains SQLite-backed; the `reference` and `web` services do **not**
+depend on this service and there is no operator-facing Postgres storage support.
+
+The image is `pgvector/pgvector:pg16` so a future semantic/vector proof slice
+can reuse the same service without an image swap. The current connector-state
+conformance test does not require the `vector` extension.
+
+```bash
+# Start just the proof service. Default host port is 55432 to avoid
+# colliding with operator-installed Postgres on 5432; override with
+# PDPP_POSTGRES_PORT in .env.docker.
+docker compose --profile postgres --env-file .env.docker up -d postgres
+
+# Run the env-gated conformance proof against it.
+PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/pdpp_proof \
+  node --test --test-force-exit \
+  reference-implementation/test/connector-state-scheduler-conformance-postgres.test.js
+
+# Stop and remove only the proof service when done.
+docker compose --profile postgres --env-file .env.docker stop postgres
+docker compose --profile postgres --env-file .env.docker rm -f postgres
+```
+
+A default `docker compose up` does not start the `postgres` service.
+
 For Docker-based development with hot reload:
 
 ```bash

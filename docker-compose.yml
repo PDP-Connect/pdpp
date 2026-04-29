@@ -51,6 +51,36 @@ services:
       retries: 30
       start_period: 30s
 
+  # Profile-gated Postgres service for the env-gated conformance proof at
+  # `reference-implementation/test/connector-state-scheduler-conformance-postgres.test.js`
+  # (see openspec/changes/add-compose-postgres-proof-service). This is a
+  # PROOF/TEST backend only — the reference runtime is SQLite-backed and the
+  # `reference` service does NOT depend on this service. The image is
+  # pgvector-capable so future semantic/vector proof slices can reuse it
+  # without an image swap. Start it explicitly:
+  #   docker compose --profile postgres --env-file .env.docker up -d postgres
+  postgres:
+    image: ${PDPP_POSTGRES_IMAGE:-pgvector/pgvector:pg16}
+    profiles: ["postgres"]
+    environment:
+      POSTGRES_USER: ${PDPP_POSTGRES_USER:-pdpp}
+      POSTGRES_PASSWORD: ${PDPP_POSTGRES_PASSWORD:-pdpp}
+      POSTGRES_DB: ${PDPP_POSTGRES_DB:-pdpp_proof}
+    ports:
+      - "${PDPP_POSTGRES_PORT:-55432}:5432"
+    volumes:
+      - pdpp-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${PDPP_POSTGRES_USER:-pdpp} -d ${PDPP_POSTGRES_DB:-pdpp_proof}",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+
   web:
     image: ${PDPP_WEB_IMAGE:-ghcr.io/vana-com/pdpp/web:main}
     build:
@@ -74,3 +104,4 @@ services:
 volumes:
   pdpp-transformers:
   pdpp-home:
+  pdpp-postgres-data:
