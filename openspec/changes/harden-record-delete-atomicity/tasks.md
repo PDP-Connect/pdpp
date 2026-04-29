@@ -25,4 +25,4 @@
 - [x] 4.3 Run `pnpm --filter pdpp-reference-implementation typecheck` if TypeScript surfaces are touched.
 - [x] 4.4 Run `openspec validate harden-record-delete-atomicity --strict`.
 - [x] 4.5 Run `openspec validate --all --strict`.
-- [ ] 4.6 Run `pnpm workstreams:status -- --no-fail` before owner review/merge.
+- [x] 4.6 Run `pnpm workstreams:status -- --no-fail` before owner review/merge.
