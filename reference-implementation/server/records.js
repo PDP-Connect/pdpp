@@ -98,17 +98,21 @@ function maybeDeleteFault(point, ctx) {
  * Ingest a RECORD envelope (owner-authenticated).
  *
  * Atomicity: durable record mutation — current-state read, no-op decision,
- * version allocation, live `records` mutation, `record_changes` append,
- * `version_counter` advance, and history pruning — runs inside one explicit
- * SQLite `BEGIN IMMEDIATE` write transaction (`writeTransaction`). The
- * write lock is acquired at transaction start so concurrent same-stream
- * ingests serialize on the read, not on the first write — this is what
- * makes per-`(connector_id, stream)` version allocation safe under
- * contention. Lexical and semantic index maintenance run after the
- * durable commit and are deliberately *not* part of the atomic unit; an
- * index-maintenance failure must not roll back the durable record write.
+ * atomic version allocation (`recordsIngestAllocateNextVersion` upserts
+ * `version_counter` and returns the freshly-allocated `max_version` in one
+ * statement), live `records` mutation, `record_changes` append, and history
+ * pruning — runs inside one explicit SQLite `BEGIN IMMEDIATE` write
+ * transaction (`writeTransaction`). The write lock is acquired at
+ * transaction start so concurrent same-stream ingests serialize on the
+ * read, not on the first write. The atomic allocator collapses the prior
+ * read-then-write pattern so per-`(connector_id, stream)` versions are
+ * unique under any writer model — including future PostgreSQL-compatible
+ * adapters that do not rely on SQLite's serial writer guarantee. Lexical
+ * and semantic index maintenance run after the durable commit and are
+ * deliberately *not* part of the atomic unit; an index-maintenance failure
+ * must not roll back the durable record write.
  *
- * Spec: openspec/changes/harden-record-ingest-atomicity/specs/
+ * Spec: openspec/changes/harden-record-version-allocation-atomicity/specs/
  *       reference-implementation-architecture/spec.md
  */
 export async function ingestRecord(storageTarget, record) {
@@ -149,11 +153,11 @@ export async function ingestRecord(storageTarget, record) {
       return { kind: 'noop' };
     }
 
-    const vcRow = getOne(
-      referenceQueries.recordsIngestGetVersionCounter,
+    const allocated = getOne(
+      referenceQueries.recordsIngestAllocateNextVersion,
       [connectorId, stream],
     );
-    const nextVersion = vcRow ? vcRow.max_version + 1 : 1;
+    const nextVersion = allocated.max_version;
 
     maybeFault('after-version-allocation', { connectorId, stream, recordKey, nextVersion });
 
@@ -180,11 +184,6 @@ export async function ingestRecord(storageTarget, record) {
     }
 
     maybeFault('after-record-changes-append', { connectorId, stream, recordKey, nextVersion, op });
-
-    exec(
-      referenceQueries.recordsIngestUpsertVersionCounter,
-      [connectorId, stream, nextVersion],
-    );
 
     if (changeHistoryLimit > 0) {
       exec(
@@ -1883,19 +1882,21 @@ export async function getRecord(storageTarget, stream, recordId, grant, manifest
  * Delete a record (owner-authenticated).
  *
  * Atomicity: durable record mutation — current-state read, absent /
- * already-deleted no-op decision, version allocation, live `records`
- * delete-marker mutation, `record_changes` deleted-row append,
- * `version_counter` advance, and history pruning — runs inside one
- * explicit SQLite `BEGIN IMMEDIATE` write transaction (`writeTransaction`).
- * The write lock is acquired at transaction start so concurrent writers
- * (direct delete and ingest both target the same per-`(connector_id, stream)`
- * version state) serialize on the read, not on the first write.
+ * already-deleted no-op decision, atomic version allocation
+ * (`recordsIngestAllocateNextVersion` upserts `version_counter` and returns
+ * the freshly-allocated `max_version` in one statement), live `records`
+ * delete-marker mutation, `record_changes` deleted-row append, and history
+ * pruning — runs inside one explicit SQLite `BEGIN IMMEDIATE` write
+ * transaction (`writeTransaction`). The write lock is acquired at
+ * transaction start so concurrent writers (direct delete and ingest both
+ * target the same per-`(connector_id, stream)` version state) serialize on
+ * the read, not on the first write.
  *
  * Lexical and semantic index deletes run after the durable commit and are
  * deliberately *not* part of the atomic unit; an index-maintenance failure
  * must not roll back the durable record write.
  *
- * Spec: openspec/changes/harden-record-delete-atomicity/specs/
+ * Spec: openspec/changes/harden-record-version-allocation-atomicity/specs/
  *       reference-implementation-architecture/spec.md
  */
 export async function deleteRecord(storageTarget, stream, recordId) {
@@ -1912,11 +1913,11 @@ export async function deleteRecord(storageTarget, stream, recordId) {
       return { kind: 'noop' };
     }
 
-    const vcRow = getOne(
-      referenceQueries.recordsIngestGetVersionCounter,
+    const allocated = getOne(
+      referenceQueries.recordsIngestAllocateNextVersion,
       [connectorId, stream],
     );
-    const nextVersion = vcRow ? vcRow.max_version + 1 : 1;
+    const nextVersion = allocated.max_version;
 
     maybeDeleteFault('after-version-allocation', { connectorId, stream, recordId, nextVersion });
 
@@ -1933,11 +1934,6 @@ export async function deleteRecord(storageTarget, stream, recordId) {
     );
 
     maybeDeleteFault('after-record-changes-append', { connectorId, stream, recordId, nextVersion });
-
-    exec(
-      referenceQueries.recordsIngestUpsertVersionCounter,
-      [connectorId, stream, nextVersion],
-    );
 
     if (changeHistoryLimit > 0) {
       exec(

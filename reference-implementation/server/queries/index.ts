@@ -194,6 +194,7 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   // Records — point-read for /v1/records/{id}.
   readonly recordsGetLiveRecordByKey: ReadOneQuery;
   // Records — ingest path: read/write of records, record_changes, version_counter.
+  readonly recordsIngestAllocateNextVersion: ReadOneQuery;
   readonly recordsIngestGetCurrentRecordState: ReadOneQuery;
   readonly recordsIngestGetVersionCounter: ReadOneQuery;
   readonly recordsIngestInsertRecordChangeDeleted: MutationQuery;
@@ -201,7 +202,6 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   readonly recordsIngestMarkRecordDeleted: MutationQuery;
   readonly recordsIngestPruneRecordChanges: MutationQuery;
   readonly recordsIngestUpsertRecord: MutationQuery;
-  readonly recordsIngestUpsertVersionCounter: MutationQuery;
   readonly recordsSnapshotsGetMinRecordChangeVersion: ReadOneQuery;
   // Records — change-log snapshot/page reads for /changes feed.
   readonly recordsSnapshotsGetSnapshotAtVersion: ReadOneQuery;
@@ -547,11 +547,11 @@ export function loadReferenceQueries(queryDir = QUERIES_DIR): ReferenceQueryRegi
     // Records — ingest path.
     "recordsIngestGetCurrentRecordState",
     "recordsIngestGetVersionCounter",
+    "recordsIngestAllocateNextVersion",
     "recordsIngestMarkRecordDeleted",
     "recordsIngestInsertRecordChangeDeleted",
     "recordsIngestUpsertRecord",
     "recordsIngestInsertRecordChangeUpsert",
-    "recordsIngestUpsertVersionCounter",
     "recordsIngestPruneRecordChanges",
     // Records — point reads.
     "recordsGetLiveRecordByKey",
