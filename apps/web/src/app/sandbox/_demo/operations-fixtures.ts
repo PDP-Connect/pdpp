@@ -41,6 +41,7 @@ import type {
   SearchLexicalSnapshot,
   SearchLexicalSnapshotResult,
 } from "pdpp-reference-implementation/operations/rs-search-lexical";
+import { SearchLexicalRequestError } from "pdpp-reference-implementation/operations/rs-search-lexical";
 import type {
   StreamDetailDependencies,
   StreamDetailSourceDescriptor,
@@ -355,8 +356,7 @@ export function createSandboxRecordDetailDependencies(): RecordDetailDependencie
 // adapter-bound concerns (plan compilation, snippet matching, snapshot
 // storage, advertisement source, record-url formatting) are wired here.
 //
-// Matching strategy mirrors the previously-public `buildLiveSearchResponse`
-// builder demoted from `_demo/builders.ts`:
+// Matching strategy:
 //   - case-insensitive substring scan over every string field of every
 //     `DemoRecord`;
 //   - lower-is-better score `1 / (1 + matchedFields.length + occurrences)`
@@ -364,11 +364,26 @@ export function createSandboxRecordDetailDependencies(): RecordDetailDependencie
 //   - per-record snippet drawn from the field with the most occurrences,
 //     with ellipsis padding;
 //   - `streams[]` filter is applied at the plan stage so the operation's
-//     soft owner-mode filter remains the only enforcement path;
-//   - request `filter[...]` is intentionally not implemented in the sandbox
-//     fixture: the operation already validates the `filter[...] requires
-//     exactly one streams[]` coupling, but per-field filter evaluation is a
-//     live-only concern and out of scope for this slice.
+//     soft owner-mode filter remains the only enforcement path.
+//
+// Request `filter[...]` evaluation:
+//   - `buildSearchPlanForGrant` compiles the request `filter` payload
+//     against the demo stream's declared fields and rejects unsupported
+//     shapes with the canonical `invalid_request` error so the sandbox
+//     API does not lie about filter semantics.
+//   - Exact filter `filter[field]=value` is supported for top-level scalar
+//     demo fields (string, number, currency_minor_units, boolean,
+//     timestamp). Comparison is `String(record[field]) === String(value)`
+//     to mirror native `compileRequestFilters` exact-match semantics.
+//   - Range filter `filter[field][op]=value` (gte/gt/lte/lt) is rejected
+//     with `invalid_request` because the sandbox demo manifest advertises
+//     `query.range_filters: {}` for every stream — there is no range
+//     support to honor. Updating that advertisement requires updating the
+//     mock metadata and every affected mock route consistently, which is
+//     out of scope for this slice.
+//   - Unknown fields reject with `invalid_request`.
+//   - Compiled filters travel on the plan entry so `buildSnapshot` can
+//     apply them before substring matching.
 
 const SANDBOX_SEARCH_SNIPPET_PADDING = 24;
 const SANDBOX_SEARCH_DEFAULT_LIMIT = 25;
@@ -411,6 +426,93 @@ function snippetAroundMatch(haystack: string, needle: string): string {
 
 interface SandboxRecordHit extends SearchLexicalSnapshotResult {
   emittedAt: string;
+}
+
+interface SandboxExactFilter {
+  field: string;
+  value: string;
+}
+
+/**
+ * Compiled filter set for one (stream, filter[...]) pair. The fixture only
+ * supports exact filters today; range filters are rejected at compile time
+ * because the sandbox manifest does not advertise `query.range_filters`.
+ */
+interface SandboxCompiledFilters {
+  exact: SandboxExactFilter[];
+  streamName: string;
+}
+
+/**
+ * Compile the request `filter[...]` payload against one demo stream's
+ * declared fields. Throws `SearchLexicalRequestError(invalid_request)` for
+ * unknown fields, unsupported range shapes, or non-scalar filter values —
+ * the sandbox API obeys the same canonical request contract as native.
+ */
+function compileSandboxFilterForStream(filter: unknown, streamName: string): SandboxCompiledFilters {
+  if (filter == null) {
+    return { streamName, exact: [] };
+  }
+  if (typeof filter !== "object" || Array.isArray(filter)) {
+    throw new SearchLexicalRequestError(
+      "invalid_request",
+      "filter must use filter[field]=value or filter[field][op]=value",
+      "filter"
+    );
+  }
+  const stream = DEMO_STREAMS.find((s) => s.key === streamName);
+  if (!stream) {
+    // The operation's plan compilation should not arrive here for streams
+    // outside the manifest, but if a future caller does, surface the
+    // configuration mistake rather than silently dropping the filter.
+    throw new SearchLexicalRequestError("invalid_request", `Unknown stream: ${streamName}`, "streams");
+  }
+  const fieldByName = new Map(stream.fields.map((f) => [f.name, f]));
+  const exact: SandboxExactFilter[] = [];
+  for (const [fieldName, rawValue] of Object.entries(filter)) {
+    const fieldDef = fieldByName.get(fieldName);
+    if (!fieldDef) {
+      throw new SearchLexicalRequestError("invalid_request", `Unknown field: ${fieldName}`, "filter");
+    }
+    if (rawValue !== null && typeof rawValue === "object" && !Array.isArray(rawValue)) {
+      // Range / object filters require the manifest to declare
+      // `query.range_filters[fieldName]`. The sandbox demo manifest
+      // declares no range filters, so this is always rejected.
+      throw new SearchLexicalRequestError(
+        "invalid_request",
+        `Range filters are not declared for '${fieldName}'`,
+        "filter"
+      );
+    }
+    if (rawValue !== null && typeof rawValue === "object") {
+      throw new SearchLexicalRequestError(
+        "invalid_request",
+        `Exact filter on '${fieldName}' must use a scalar value`,
+        "filter"
+      );
+    }
+    exact.push({ field: fieldName, value: String(rawValue) });
+  }
+  return { streamName, exact };
+}
+
+/**
+ * Evaluate compiled exact filters against a record's data. Returns true
+ * when every filter matches (or when there are no filters). Comparison is
+ * `String(record[field]) === filter.value`, mirroring native
+ * `passesRequestFilters` exact-match semantics.
+ */
+function recordPassesSandboxFilters(record: DemoRecord, filters: SandboxCompiledFilters | null): boolean {
+  if (!filters || filters.exact.length === 0) {
+    return true;
+  }
+  for (const f of filters.exact) {
+    const raw = record.fields[f.field];
+    if (String(raw) !== f.value) {
+      return false;
+    }
+  }
+  return true;
 }
 
 function matchSandboxRecord(record: DemoRecord, trimmed: string, lower: string): SandboxRecordHit | null {
@@ -486,8 +588,21 @@ export function createSandboxSearchLexicalDependencies(): SearchLexicalDependenc
     resolveClientManifest: ({ grant }) => ({
       streams: (grant.streams ?? []).map((s) => ({ name: s.name })),
     }),
-    buildSearchPlanForGrant: ({ manifest, grant, streamsFilter, connectorId }) => {
+    buildSearchPlanForGrant: ({ manifest, grant, streamsFilter, filter, filteredStream, connectorId }) => {
       const grantedStreams = new Set((grant.streams ?? []).map((s) => s.name));
+      // Compile the request filter once. The operation guarantees that
+      // when `filter` is present `filteredStream` names exactly one
+      // `streams[]` value. The filter only applies to connectors whose
+      // manifest carries that stream — `compileSandboxFilterForStream`
+      // validates the filter against the demo stream's declared fields,
+      // so unknown fields and unsupported range shapes raise
+      // `invalid_request` here. Compiled filters are attached only to
+      // the plan entry for the matched stream.
+      const manifestStreamNames = new Set((manifest.streams ?? []).map((s) => s.name));
+      const compiledFilter =
+        filter != null && filteredStream != null && manifestStreamNames.has(filteredStream)
+          ? compileSandboxFilterForStream(filter, filteredStream)
+          : null;
       const plan: SearchLexicalPlanEntry[] = [];
       for (const stream of manifest.streams ?? []) {
         if (!grantedStreams.has(stream.name)) {
@@ -504,6 +619,10 @@ export function createSandboxSearchLexicalDependencies(): SearchLexicalDependenc
           // plan-emptiness check meaningful.
           searchableFields: ["__sandbox_any_string_field__"],
           connectorId: connectorId ?? null,
+          // The fixture-only `compiledFilter` field rides on the plan
+          // entry so `buildSnapshot` can evaluate filters per-stream
+          // without re-parsing the request payload.
+          compiledFilter: compiledFilter && compiledFilter.streamName === stream.name ? compiledFilter : null,
         });
       }
       return plan;
@@ -511,16 +630,26 @@ export function createSandboxSearchLexicalDependencies(): SearchLexicalDependenc
     buildSnapshot: ({ q, perConnectorPlans }): SearchLexicalSnapshot => {
       const trimmed = q.trim();
       const lower = trimmed.toLowerCase();
-      const eligibleConnectorStreams = new Set<string>();
+      // Map `(connectorId, stream)` → compiled filter so per-record
+      // evaluation can look up the filter in O(1) without scanning plans.
+      const filtersByConnectorStream = new Map<string, SandboxCompiledFilters | null>();
       for (const plan of perConnectorPlans) {
         for (const entry of plan.planEntries) {
-          eligibleConnectorStreams.add(`${plan.connectorId ?? ""}::${entry.streamName}`);
+          const key = `${plan.connectorId ?? ""}::${entry.streamName}`;
+          filtersByConnectorStream.set(
+            key,
+            (entry.compiledFilter as SandboxCompiledFilters | null | undefined) ?? null
+          );
         }
       }
       const hits: SandboxRecordHit[] = [];
       for (const record of DEMO_RECORDS) {
         const key = `${record.connector_id}::${record.stream}`;
-        if (!eligibleConnectorStreams.has(key)) {
+        if (!filtersByConnectorStream.has(key)) {
+          continue;
+        }
+        const compiled = filtersByConnectorStream.get(key) ?? null;
+        if (!recordPassesSandboxFilters(record, compiled)) {
           continue;
         }
         const hit = matchSandboxRecord(record, trimmed, lower);

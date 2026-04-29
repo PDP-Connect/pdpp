@@ -268,6 +268,70 @@ test("/sandbox/v1/search rejects unsupported query parameters", async () => {
   assert.equal(body.error.param, "connector_id");
 });
 
+test("/sandbox/v1/search exact filter narrows hits to a matching record", async () => {
+  const res = await searchGet(
+    new Request(
+      "https://example.invalid/sandbox/v1/search?q=northwind&streams[]=pay_statements&filter[period_end]=2026-03-31"
+    )
+  );
+  assert.equal(res.status, 200);
+  const body = (await jsonOf(res)) as { object: string; data: Record<string, unknown>[] };
+  assert.equal(body.object, "list");
+  assert.equal(body.data.length, 1);
+  assert.equal(body.data[0]?.record_key, "rec_sb_paystmt_2026_03");
+});
+
+test("/sandbox/v1/search exact filter with non-matching value returns an empty list", async () => {
+  const res = await searchGet(
+    new Request(
+      "https://example.invalid/sandbox/v1/search?q=northwind&streams[]=pay_statements&filter[period_end]=2099-01-01"
+    )
+  );
+  assert.equal(res.status, 200);
+  const body = (await jsonOf(res)) as { object: string; data: unknown[]; has_more: boolean };
+  assert.equal(body.object, "list");
+  assert.equal(body.data.length, 0);
+  assert.equal(body.has_more, false);
+});
+
+const UNKNOWN_FIELD_MESSAGE = /Unknown field/;
+const RANGE_NOT_DECLARED_MESSAGE = /Range filters are not declared/;
+
+test("/sandbox/v1/search unknown filter field returns invalid_request", async () => {
+  const res = await searchGet(
+    new Request("https://example.invalid/sandbox/v1/search?q=northwind&streams[]=pay_statements&filter[bogus_field]=x")
+  );
+  assert.equal(res.status, 400);
+  const body = (await jsonOf(res)) as { error: { code: string; param?: string; message: string } };
+  assert.equal(body.error.code, "invalid_request");
+  assert.equal(body.error.param, "filter");
+  assert.match(body.error.message, UNKNOWN_FIELD_MESSAGE);
+});
+
+test("/sandbox/v1/search unsupported range filter returns invalid_request (sandbox declares no range_filters)", async () => {
+  const res = await searchGet(
+    new Request(
+      "https://example.invalid/sandbox/v1/search?q=northwind&streams[]=pay_statements&filter[period_end][gte]=2026-01-01"
+    )
+  );
+  assert.equal(res.status, 400);
+  const body = (await jsonOf(res)) as { error: { code: string; param?: string; message: string } };
+  assert.equal(body.error.code, "invalid_request");
+  assert.equal(body.error.param, "filter");
+  assert.match(body.error.message, RANGE_NOT_DECLARED_MESSAGE);
+});
+
+test("/sandbox/v1/search filter[...] without streams[] returns operation-owned invalid_request", async () => {
+  const res = await searchGet(
+    new Request("https://example.invalid/sandbox/v1/search?q=northwind&filter[period_end]=2026-03-31")
+  );
+  assert.equal(res.status, 400);
+  const body = (await jsonOf(res)) as { error: { code: string; param?: string } };
+  assert.equal(body.error.code, "invalid_request");
+  // Operation-owned coupling rule names `streams` as the rejected param.
+  assert.equal(body.error.param, "streams");
+});
+
 test("/sandbox/v1/search filters by streams[] and supports cursor round-trip", async () => {
   // First page (empty q? no — pick a hit in the demo dataset and bound it
   // by stream so we exercise the operation's real plan/snapshot flow).

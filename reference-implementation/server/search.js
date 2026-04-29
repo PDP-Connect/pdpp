@@ -939,4 +939,3 @@ async function loadSnapshot(snapshotId) {
     results: JSON.parse(row.results_json),
   };
 }
-

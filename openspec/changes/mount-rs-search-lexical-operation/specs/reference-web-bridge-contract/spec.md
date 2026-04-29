@@ -26,3 +26,13 @@ The website-hosted sandbox SHALL serve `GET /sandbox/v1/search` by mounting the 
 
 - **WHEN** `/sandbox/v1/search` is requested with a query parameter outside the v1 allowlist (`q`, `limit`, `cursor`, `streams`, `streams[]`, `filter`)
 - **THEN** the route SHALL return the canonical `invalid_request` error envelope produced by the operation, identifying the rejected parameter
+
+#### Scenario: Sandbox fixture evaluates supported filters and rejects unsupported filters
+
+- **WHEN** `/sandbox/v1/search` is requested with `filter[field]=value` for a top-level scalar field declared in the demo stream's manifest
+- **THEN** the route SHALL evaluate the filter against record data and return only matching records (or an empty list when no record matches)
+- **WHEN** `/sandbox/v1/search` is requested with `filter[field][op]=value` (a range filter) on any demo field
+- **THEN** the route SHALL return the canonical `invalid_request` error envelope because the sandbox manifest advertises no `query.range_filters` for any stream
+- **WHEN** `/sandbox/v1/search` is requested with `filter[unknown_field]=value`
+- **THEN** the route SHALL return the canonical `invalid_request` error envelope identifying the rejected filter
+- **AND** the sandbox SHALL NOT silently accept filter shapes that are not evaluated
