@@ -6,12 +6,12 @@
 
 ## 2. RS Search, Discovery, And State
 
-- [ ] 2.1 Mount `GET /v1/search` through `rs.search.lexical` without behavior changes.
-- [ ] 2.2 Mount `GET /v1/search/semantic` through `rs.search.semantic` without behavior changes.
-- [ ] 2.3 Mount `GET /v1/search/hybrid` through `rs.search.hybrid` without behavior changes.
-- [ ] 2.4 Move RS root and protected-resource discovery response shaping behind canonical operations or explicit operation-owned helpers.
-- [ ] 2.5 Move `GET/PUT /v1/state/:connectorId` semantics behind canonical operations.
-- [ ] 2.6 Add/update boundary, operation, and route behavior tests.
+- [x] 2.1 Mount `GET /v1/search` through `rs.search.lexical` without behavior changes.
+- [x] 2.2 Mount `GET /v1/search/semantic` through `rs.search.semantic` without behavior changes.
+- [x] 2.3 Mount `GET /v1/search/hybrid` through `rs.search.hybrid` without behavior changes.
+- [x] 2.4 Move RS root and protected-resource discovery response shaping behind canonical operations or explicit operation-owned helpers.
+- [x] 2.5 Move `GET/PUT /v1/state/:connectorId` semantics behind canonical operations.
+- [x] 2.6 Add/update boundary, operation, and route behavior tests.
 
 ## 3. RS Blobs And Record Mutations
 
