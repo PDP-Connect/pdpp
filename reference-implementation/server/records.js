@@ -10,6 +10,7 @@ import {
   iterate,
   iterateDynamicSqlAcknowledged,
   referenceQueries,
+  transaction,
 } from '../lib/db.ts';
 import {
   lexicalIndexDelete,
@@ -66,8 +67,33 @@ export function decodeKey(keyStr) {
   }
 }
 
+// Test-only fault injection. Production callers never set this. Tests can
+// install a hook via `__setIngestFaultHookForTest` to throw between durable
+// mutation steps and prove the surrounding transaction rolls the whole
+// unit back. The hook is invoked at well-named points inside the durable
+// mutation transaction; if unset, it is a no-op.
+let ingestFaultHook = null;
+
+export function __setIngestFaultHookForTest(hook) {
+  ingestFaultHook = typeof hook === 'function' ? hook : null;
+}
+
+function maybeFault(point, ctx) {
+  if (ingestFaultHook) ingestFaultHook(point, ctx);
+}
+
 /**
- * Ingest a RECORD envelope (owner-authenticated)
+ * Ingest a RECORD envelope (owner-authenticated).
+ *
+ * Atomicity: durable record mutation — current-state read, no-op decision,
+ * version allocation, live `records` mutation, `record_changes` append,
+ * `version_counter` advance, and history pruning — runs inside one explicit
+ * SQLite transaction. Lexical and semantic index maintenance run after the
+ * durable commit and are deliberately *not* part of the atomic unit; an
+ * index-maintenance failure must not roll back the durable record write.
+ *
+ * Spec: openspec/changes/harden-record-ingest-atomicity/specs/
+ *       reference-implementation-architecture/spec.md
  */
 export async function ingestRecord(storageTarget, record) {
   const connectorId = resolveStorageConnectorId(storageTarget);
@@ -88,64 +114,85 @@ export async function ingestRecord(storageTarget, record) {
     throw err;
   }
 
-  const current = getOne(
-    referenceQueries.recordsIngestGetCurrentRecordState,
-    [connectorId, stream, recordKey],
-  );
-
-  if (op === 'delete' && (!current || current.deleted)) {
-    return { accepted: true, changed: false };
-  }
-
-  if (op !== 'delete' && current && !current.deleted && current.record_json === recordJson) {
-    return { accepted: true, changed: false };
-  }
-
-  // Get next version
-  const vcRow = getOne(
-    referenceQueries.recordsIngestGetVersionCounter,
-    [connectorId, stream],
-  );
-  const nextVersion = vcRow ? vcRow.max_version + 1 : 1;
-
   const effectiveEmittedAt = emitted_at || nowIso();
+  const changeHistoryLimit = getChangeHistoryLimit();
 
-  if (op === 'delete') {
-    exec(
-      referenceQueries.recordsIngestMarkRecordDeleted,
-      [effectiveEmittedAt, nextVersion, connectorId, stream, recordKey],
+  // Durable mutation unit: returns the operation outcome so derived index
+  // maintenance can run *after* the commit succeeds.
+  const outcome = transaction(() => {
+    const current = getOne(
+      referenceQueries.recordsIngestGetCurrentRecordState,
+      [connectorId, stream, recordKey],
     );
-    exec(
-      referenceQueries.recordsIngestInsertRecordChangeDeleted,
-      [connectorId, stream, recordKey, nextVersion, current.record_json, effectiveEmittedAt, effectiveEmittedAt],
+
+    if (op === 'delete' && (!current || current.deleted)) {
+      return { kind: 'noop' };
+    }
+
+    if (op !== 'delete' && current && !current.deleted && current.record_json === recordJson) {
+      return { kind: 'noop' };
+    }
+
+    const vcRow = getOne(
+      referenceQueries.recordsIngestGetVersionCounter,
+      [connectorId, stream],
     );
+    const nextVersion = vcRow ? vcRow.max_version + 1 : 1;
+
+    maybeFault('after-version-allocation', { connectorId, stream, recordKey, nextVersion });
+
+    if (op === 'delete') {
+      exec(
+        referenceQueries.recordsIngestMarkRecordDeleted,
+        [effectiveEmittedAt, nextVersion, connectorId, stream, recordKey],
+      );
+      maybeFault('after-records-mutation', { connectorId, stream, recordKey, nextVersion, op });
+      exec(
+        referenceQueries.recordsIngestInsertRecordChangeDeleted,
+        [connectorId, stream, recordKey, nextVersion, current.record_json, effectiveEmittedAt, effectiveEmittedAt],
+      );
+    } else {
+      exec(
+        referenceQueries.recordsIngestUpsertRecord,
+        [connectorId, stream, recordKey, recordJson, effectiveEmittedAt, nextVersion],
+      );
+      maybeFault('after-records-mutation', { connectorId, stream, recordKey, nextVersion, op });
+      exec(
+        referenceQueries.recordsIngestInsertRecordChangeUpsert,
+        [connectorId, stream, recordKey, nextVersion, recordJson, effectiveEmittedAt],
+      );
+    }
+
+    maybeFault('after-record-changes-append', { connectorId, stream, recordKey, nextVersion, op });
+
+    exec(
+      referenceQueries.recordsIngestUpsertVersionCounter,
+      [connectorId, stream, nextVersion],
+    );
+
+    if (changeHistoryLimit > 0) {
+      exec(
+        referenceQueries.recordsIngestPruneRecordChanges,
+        [connectorId, stream, nextVersion - changeHistoryLimit],
+      );
+    }
+
+    return { kind: 'changed', op };
+  });
+
+  if (outcome.kind === 'noop') {
+    return { accepted: true, changed: false };
+  }
+
+  // Derived index maintenance runs after the durable commit. Failures here
+  // are not allowed to retroactively roll back the durable record mutation;
+  // recovery is the search-index drift detector's job.
+  if (outcome.op === 'delete') {
     await lexicalIndexDelete({ connectorId, stream, recordKey });
     await semanticIndexDelete({ connectorId, stream, recordKey });
   } else {
-    exec(
-      referenceQueries.recordsIngestUpsertRecord,
-      [connectorId, stream, recordKey, recordJson, effectiveEmittedAt, nextVersion],
-    );
-    exec(
-      referenceQueries.recordsIngestInsertRecordChangeUpsert,
-      [connectorId, stream, recordKey, nextVersion, recordJson, effectiveEmittedAt],
-    );
     await lexicalIndexUpsert({ connectorId, stream, recordKey, data });
     await semanticIndexUpsert({ connectorId, stream, recordKey, data });
-  }
-
-  // Advance version counter
-  exec(
-    referenceQueries.recordsIngestUpsertVersionCounter,
-    [connectorId, stream, nextVersion],
-  );
-
-  const changeHistoryLimit = getChangeHistoryLimit();
-  if (changeHistoryLimit > 0) {
-    exec(
-      referenceQueries.recordsIngestPruneRecordChanges,
-      [connectorId, stream, nextVersion - changeHistoryLimit],
-    );
   }
 
   return { accepted: true, changed: true };
