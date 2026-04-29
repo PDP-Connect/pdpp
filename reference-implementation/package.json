@@ -19,6 +19,11 @@
     "./operations/rs-search-lexical": "./operations/rs-search-lexical/index.ts",
     "./operations/rs-search-semantic": "./operations/rs-search-semantic/index.ts",
     "./operations/rs-search-hybrid": "./operations/rs-search-hybrid/index.ts",
+    "./operations/rs-blobs-upload": "./operations/rs-blobs-upload/index.ts",
+    "./operations/rs-blobs-read": "./operations/rs-blobs-read/index.ts",
+    "./operations/rs-records-delete-stream": "./operations/rs-records-delete-stream/index.ts",
+    "./operations/rs-records-delete": "./operations/rs-records-delete/index.ts",
+    "./operations/rs-records-ingest": "./operations/rs-records-ingest/index.ts",
     "./operations/ref-dataset-summary": "./operations/ref-dataset-summary/index.ts"
   },
   "scripts": {

@@ -15,11 +15,11 @@
 
 ## 3. RS Blobs And Record Mutations
 
-- [ ] 3.1 Move `POST /v1/blobs` upload semantics behind a canonical operation.
-- [ ] 3.2 Move `GET /v1/blobs/:blob_id` visibility/read semantics behind a canonical operation or explicit blob capability boundary.
-- [ ] 3.3 Move record bulk delete, single delete, and ingest semantics behind canonical operations.
-- [ ] 3.4 Preserve mutation atomicity, blob visibility, response envelopes, and audit events.
-- [ ] 3.5 Add/update boundary, operation, conformance, and route behavior tests.
+- [x] 3.1 Move `POST /v1/blobs` upload semantics behind a canonical operation.
+- [x] 3.2 Move `GET /v1/blobs/:blob_id` visibility/read semantics behind a canonical operation or explicit blob capability boundary.
+- [x] 3.3 Move record bulk delete, single delete, and ingest semantics behind canonical operations.
+- [x] 3.4 Preserve mutation atomicity, blob visibility, response envelopes, and audit events.
+- [x] 3.5 Add/update boundary, operation, conformance, and route behavior tests.
 
 ## 4. AS OAuth, Device, Consent, And Grants
 
