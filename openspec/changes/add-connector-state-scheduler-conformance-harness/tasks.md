@@ -11,7 +11,7 @@
 - [x] 2.2 Keep the harness API semantic and narrow; do not expose raw SQL, table names, or a generic repository.
 - [x] 2.3 Add connector-state scenarios for owner-scoped upsert/list, overwrite behavior, grant isolation, and allowed-stream enforcement where feasible. (Allowed-stream enforcement covered as the *read-side narrowing* the helper actually performs; pre-write rejection deferred to route tests.)
 - [x] 2.4 Add schedule scenarios for create/update/list/pause/resume/delete behavior where feasible.
-- [x] 2.5 Add active-run scenarios for one-active-run-per-connector, unique run id, lookup/delete, and restart cleanup where feasible. (Active-run insert reaches the persistence seam through the registered `controllerUpsertActiveRun` query because the controller has no public insert seam without spawning a real run; that coupling is bounded inside the SQLite driver and the harness scenarios stay lifecycle-shaped.)
+- [x] 2.5 Add active-run scenarios for one-active-run-per-connector, unique run id (across connectors), lookup/delete, and restart cleanup where feasible. (Active-run insert reaches the persistence seam through the registered `controllerUpsertActiveRun` query because the controller has no public insert seam without spawning a real run; that coupling is bounded inside the SQLite driver and the harness scenarios stay lifecycle-shaped. The `run_id UNIQUE` constraint on `controller_active_runs` is pinned by the cross-connector duplicate-run_id scenario, which the SQLite driver satisfies by throwing on the second insert.)
 
 ## 3. Drivers And Falsifiability
 
@@ -21,7 +21,7 @@
 
 ## 4. Validation
 
-- [x] 4.1 Run the connector-state/scheduler conformance tests. (15/15 SQLite scenarios pass; falsifiability test asserts state, schedule, and active-run failures in the broken driver.)
+- [x] 4.1 Run the connector-state/scheduler conformance tests. (16/16 SQLite scenarios pass; falsifiability test asserts state, schedule, and active-run failures in the broken driver.)
 - [x] 4.2 Run nearby existing tests such as `control-actions.test.js`, relevant `pdpp.test.js` state slices, `scheduler.test.js`, or `run-interaction-control.test.js` as appropriate. (`control-actions.test.js`, `scheduler.test.js`, `run-interaction-control.test.js` all green: 51/51.)
 - [x] 4.3 Run `pnpm --filter pdpp-reference-implementation typecheck`.
 - [x] 4.4 Run `pnpm --filter pdpp-reference-implementation check`.

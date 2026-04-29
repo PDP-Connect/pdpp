@@ -77,7 +77,7 @@ test('harness detects at least one invariant violation in each broken-driver are
     ),
   );
   const activeRunFailed = failures.some((f) =>
-    /active-run registry holds at most one row|simulated restart reconciles abandoned runs/.test(
+    /active-run registry holds at most one row|active-run run_id is unique across connectors|simulated restart reconciles abandoned runs/.test(
       f.name,
     ),
   );
