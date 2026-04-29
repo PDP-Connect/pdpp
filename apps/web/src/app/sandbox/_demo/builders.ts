@@ -923,20 +923,17 @@ function approximateRetainedBytes(): number {
 // "connector", source, stream_count, streams: [stream_metadata...] }] }`.
 // See reference-implementation/server/index.js (`/v1/schema` route +
 // `buildConnectorSchemaItem`).
-
-export interface LiveSchemaResponse {
-  bearer: { token_kind: string; scope: string };
-  connectors: LiveConnectorSchemaItem[];
-  object: "schema";
-}
-
-interface LiveConnectorSchemaItem {
-  connector_id: string;
-  object: "connector";
-  source: { binding_kind: "connector"; connector_id: string };
-  stream_count: number;
-  streams: LiveStreamMetadata[];
-}
+//
+// `buildLiveSchemaResponse` lived here until the rs.schema.get operation
+// migration. It mirrored the live RS schema shape entirely inside this
+// builder module, which made the sandbox `/sandbox/v1/schema` route a
+// parallel AS/RS implementation. That route now mounts the canonical
+// `rs.schema.get` operation with sandbox fixture dependencies; see
+// `./operations-fixtures.ts` and the sandbox route. Do not reintroduce a
+// public schema builder here. `buildLiveStreamMetadata` (singular) is
+// intentionally still exported so the schema fixture, the stream-detail
+// fixture, and any future stream-shape consumers share one envelope
+// assembler.
 
 export interface LiveStreamMetadata {
   cursor_field: string | null;
@@ -1017,24 +1014,6 @@ function latestRecordTimeForStream(streamKey: string): string | null {
   return matching.at(-1) ?? null;
 }
 
-export function buildLiveSchemaResponse(): LiveSchemaResponse {
-  const connectors: LiveConnectorSchemaItem[] = DEMO_CONNECTORS.map((connector) => {
-    const streams = DEMO_STREAMS.filter((s) => s.connector_id === connector.connector_id);
-    return {
-      object: "connector",
-      source: { binding_kind: "connector", connector_id: connector.connector_id },
-      connector_id: connector.connector_id,
-      stream_count: streams.length,
-      streams: streams.map((s) => buildLiveStreamMetadata(s)),
-    };
-  });
-  return {
-    object: "schema",
-    bearer: { token_kind: "owner", scope: "owner" },
-    connectors,
-  };
-}
-
 // Streams list: live shape is `{ object: "list", data: [{ object: "stream",
 // name, record_count, last_updated, freshness }] }` where `freshness` is
 // `buildFreshness(last_updated)` — the demo emits a parallel shape and the
@@ -1055,8 +1034,8 @@ export function buildLiveSchemaResponse(): LiveSchemaResponse {
 // `rs.streams.detail` operation with sandbox fixture dependencies; see
 // `./operations-fixtures.ts` and the sandbox route. Do not reintroduce a
 // public stream-detail builder here. `buildLiveStreamMetadata` (singular)
-// is intentionally still exported so the fixture dependencies and the
-// `/sandbox/v1/schema` builder share one envelope assembler.
+// is intentionally still exported so the fixture dependencies share one
+// envelope assembler with the schema and stream-detail fixtures.
 
 // Records list / detail: live record shape is `{ object: "record", id,
 // stream, data, emitted_at }`. The list envelope adds `url`.

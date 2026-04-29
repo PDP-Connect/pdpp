@@ -15,6 +15,11 @@
  */
 
 import type {
+  ConnectorSchemaItem,
+  SchemaGetDependencies,
+  SchemaGetSourceDescriptor,
+} from "pdpp-reference-implementation/operations/rs-schema-get";
+import type {
   StreamDetailDependencies,
   StreamDetailSourceDescriptor,
   StreamMetadataEnvelope,
@@ -25,7 +30,7 @@ import type {
   StreamsListSourceDescriptor,
 } from "pdpp-reference-implementation/operations/rs-streams-list";
 import { buildLiveStreamMetadata } from "./builders.ts";
-import { DEMO_RECORDS, DEMO_STREAMS } from "./dataset.ts";
+import { DEMO_CONNECTORS, DEMO_RECORDS, DEMO_STREAMS } from "./dataset.ts";
 
 function streamRecordCount(streamKey: string): number {
   return DEMO_RECORDS.filter((record) => record.stream === streamKey).length;
@@ -114,5 +119,43 @@ export function createSandboxStreamDetailDependencies(): StreamDetailDependencie
       };
       return Promise.resolve(metadata);
     },
+  };
+}
+
+/**
+ * Build dependencies for `rs.schema.get` against the sandbox demo dataset.
+ *
+ * The sandbox runs every demo as an owner-shaped read; the connector items
+ * are assembled from the demo connector list, with each connector's streams
+ * built through the same `buildLiveStreamMetadata` helper used by the
+ * stream-detail fixture and (previously) by the deleted public schema
+ * builder. Keeping one envelope helper means the schema and stream-detail
+ * shapes cannot drift.
+ *
+ * The aggregate source descriptor is `{binding_kind: 'connector'}` (no
+ * `connector_id`) — schema discovery spans every demo connector, so no
+ * single connector_id applies to the disclosure event. Per-connector items
+ * carry their own `source.connector_id`.
+ */
+export function createSandboxSchemaGetDependencies(): SchemaGetDependencies {
+  const sourceDescriptor: SchemaGetSourceDescriptor = { binding_kind: "connector" };
+  const connectors: ConnectorSchemaItem[] = DEMO_CONNECTORS.map((connector) => {
+    const streams = DEMO_STREAMS.filter((s) => s.connector_id === connector.connector_id);
+    return {
+      object: "connector",
+      source: { binding_kind: "connector", connector_id: connector.connector_id },
+      connector_id: connector.connector_id,
+      stream_count: streams.length,
+      streams: streams.map((stream) => ({
+        ...buildLiveStreamMetadata(stream),
+        object: "stream_metadata",
+        name: stream.key,
+      })),
+    };
+  });
+
+  return {
+    getSourceDescriptor: () => sourceDescriptor,
+    listConnectorItems: () => Promise.resolve(connectors),
   };
 }

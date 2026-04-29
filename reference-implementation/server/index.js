@@ -79,6 +79,7 @@ import {
   setReferenceRevisionHeader,
 } from './reference-revision.js';
 import { resolveReferenceTopology } from './reference-topology.ts';
+import { executeSchemaGet } from '../operations/rs-schema-get/index.ts';
 import { executeStreamsList } from '../operations/rs-streams-list/index.ts';
 import {
   StreamDetailVisibilityError,
@@ -3085,6 +3086,12 @@ function buildRsApp(opts = {}) {
   });
 
   // GET /v1/schema — one-shot capability/schema discovery for the bearer
+  // Schema-discovery semantics live in the canonical `rs.schema.get`
+  // operation (operations/rs-schema-get). This route is a Fastify host
+  // adapter: it owns auth, request id / trace id, source-descriptor / manifest
+  // / grant resolution wiring, instrumentation events, and response writing;
+  // it MUST NOT recompute schema-discovery rules or bearer projection
+  // locally.
   app.get('/v1/schema', { contract: 'getSchema' }, requireToken, async (req, res) => {
     let queryContext = null;
     try {
@@ -3104,15 +3111,12 @@ function buildRsApp(opts = {}) {
         queryData: { query_shape: 'schema' },
       };
 
-      let connectorItems = [];
-      const bearer = {
-        token_kind: tokenInfo.pdpp_token_kind,
-        scope: tokenInfo.pdpp_token_kind === 'owner' ? 'owner' : 'grant',
-      };
-      if (tokenInfo.grant_id) bearer.grant_id = tokenInfo.grant_id;
-      if (tokenInfo.client_id) bearer.client_id = tokenInfo.client_id;
-
+      let operationInput;
+      let dependencies;
       if (tokenInfo.pdpp_token_kind === 'owner') {
+        operationInput = {
+          actor: { kind: 'owner', subject_id: tokenInfo.subject_id || null },
+        };
         const nativeManifest = resolveNativeManifest(opts);
         const nativeStorageBinding = resolveNativeStorageBinding(opts);
         if (nativeManifest && nativeStorageBinding) {
@@ -3121,33 +3125,65 @@ function buildRsApp(opts = {}) {
             provider_id: nativeManifest.provider_id,
           });
           queryContext.sourceDescriptor = source;
-          connectorItems = [await buildConnectorSchemaItem({
-            source,
-            storageBinding: nativeStorageBinding,
-            manifest: nativeManifest,
-          })];
+          dependencies = {
+            getSourceDescriptor: () => source,
+            listConnectorItems: async () => {
+              const item = await buildConnectorSchemaItem({
+                source,
+                storageBinding: nativeStorageBinding,
+                manifest: nativeManifest,
+              });
+              return [item];
+            },
+          };
         } else {
-          const connectorIds = await listRegisteredConnectorIds();
-          connectorItems = await Promise.all(connectorIds.map(async (connectorId) => {
-            const manifest = await resolveRegisteredConnectorManifest(connectorId);
-            return buildConnectorSchemaItem({
-              source: { binding_kind: 'connector', connector_id: connectorId },
-              storageBinding: { connector_id: connectorId },
-              manifest,
-            });
-          }));
+          // Multiple registered connectors: no single source descriptor, the
+          // disclosure event has historically emitted `source: null` for this
+          // branch. Operation propagates `null` through verbatim.
+          dependencies = {
+            getSourceDescriptor: () => null,
+            listConnectorItems: async () => {
+              const connectorIds = await listRegisteredConnectorIds();
+              return Promise.all(connectorIds.map(async (connectorId) => {
+                const manifest = await resolveRegisteredConnectorManifest(connectorId);
+                return buildConnectorSchemaItem({
+                  source: { binding_kind: 'connector', connector_id: connectorId },
+                  storageBinding: { connector_id: connectorId },
+                  manifest,
+                });
+              }));
+            },
+          };
         }
       } else {
+        operationInput = {
+          actor: {
+            kind: 'client',
+            subject_id: tokenInfo.subject_id || null,
+            client_id: tokenInfo.client_id || null,
+            grant_id: tokenInfo.grant_id || null,
+          },
+        };
+        // Eagerly resolve the grant so the rejected-query path has the
+        // correct source descriptor even if connector-item assembly throws.
         const grantResolved = await resolveGrantManifest(tokenInfo, opts);
         const source = grantResolved.source;
         queryContext.sourceDescriptor = source;
-        connectorItems = [await buildConnectorSchemaItem({
-          source,
-          storageBinding: grantResolved.storageBinding,
-          manifest: grantResolved.manifest,
-          grant: tokenInfo.grant,
-        })];
+        dependencies = {
+          getSourceDescriptor: () => source,
+          listConnectorItems: async () => {
+            const item = await buildConnectorSchemaItem({
+              source,
+              storageBinding: grantResolved.storageBinding,
+              manifest: grantResolved.manifest,
+              grant: tokenInfo.grant,
+            });
+            return [item];
+          },
+        };
       }
+
+      const result = await executeSchemaGet(operationInput, dependencies);
 
       await emitQueryReceived(queryContext, req);
 
@@ -3166,18 +3202,14 @@ function buildRsApp(opts = {}) {
         client_id: tokenInfo.client_id || null,
         token_id: req.headers.authorization?.slice(7) || null,
         data: {
-          source: queryContext.sourceDescriptor,
+          source: result.sourceDescriptor,
           query_shape: 'schema',
-          connector_count: connectorItems.length,
-          stream_count: connectorItems.reduce((sum, item) => sum + item.stream_count, 0),
+          connector_count: result.counts.connector_count,
+          stream_count: result.counts.stream_count,
         },
       });
 
-      res.json({
-        object: 'schema',
-        bearer,
-        connectors: connectorItems,
-      });
+      res.json(result.response);
     } catch (err) {
       if (queryContext) {
         await emitQueryReceived(queryContext, req);
