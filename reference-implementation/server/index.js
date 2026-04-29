@@ -111,6 +111,13 @@ import { executeRefSpineCorrelationsList } from '../operations/ref-spine-correla
 import { executeRefSpineEventsPage } from '../operations/ref-spine-events-page/index.ts';
 import { executeRefSpineSearch } from '../operations/ref-spine-search/index.ts';
 import { executeConnectorsList } from '../operations/rs-connectors-list/index.ts';
+import { executeRsDiscoveryIndex } from '../operations/rs-discovery-index/index.ts';
+import { executeRsProtectedResourceMetadata } from '../operations/rs-protected-resource-metadata/index.ts';
+import { executeRsConnectorStateGet } from '../operations/rs-connector-state-get/index.ts';
+import {
+  RsConnectorStatePutValidationError,
+  executeRsConnectorStatePut,
+} from '../operations/rs-connector-state-put/index.ts';
 import {
   StreamsAggregateVisibilityError,
   executeStreamsAggregate,
@@ -2873,18 +2880,11 @@ function buildRsApp(opts = {}) {
   // schema, and core query base live before guessing at REST/LLM-API
   // conventions. See openspec/changes/polish-reference-api-discovery-seams.
   app.get('/', { contract: 'getRsDiscoveryIndex' }, (req, res) => {
-    res.json({
-      object: 'pdpp_discovery_index',
-      role: 'resource_server',
-      resource_name: providerName,
-      links: {
-        well_known: '/.well-known/oauth-protected-resource',
-        schema: '/v1/schema',
-        core_query_base: '/v1',
-        connectors: '/v1/connectors',
-      },
-      reference_revision: referenceRevision,
+    const { envelope } = executeRsDiscoveryIndex({
+      providerName,
+      referenceRevision,
     });
+    res.json(envelope);
   });
 
   // Primary reference surface: RFC 9728 protected-resource metadata.
@@ -2895,107 +2895,58 @@ function buildRsApp(opts = {}) {
     const fallbackIssuer = `${req.protocol}://${req.hostname}:${opts.asPort || AS_PORT}`;
     const issuer = resolvePublicUrl(req, shouldUseDirectRequestOrigin(req, explicitIssuer) ? fallbackIssuer : explicitIssuer || fallbackIssuer);
 
-    // Lexical retrieval extension advertisement. Exposed by default; reference
-    // forks or test fixtures can suppress it by passing
-    // opts.lexicalRetrievalSupported === false (omits the block) or
-    // opts.lexicalRetrievalCapability (overrides the shape outright). See:
+    // Composition (which capabilities to publish, which discovery hints to
+    // include) is owned by the canonical `rs.protected-resource-metadata`
+    // operation. The host adapter resolves URLs and live capability shapes
+    // (e.g. `buildSemanticRetrievalCapability` against the live embedding
+    // backend) and passes them through dependency callbacks. Truthfulness
+    // rules — semantic only when backend is available; hybrid only when both
+    // lexical AND semantic are supported — are encoded inside the operation.
+    // See:
     //   openspec/changes/add-lexical-retrieval-extension/specs/lexical-retrieval/spec.md
-    const capabilities = {};
-    if (opts.lexicalRetrievalCapability) {
-      capabilities.lexical_retrieval = opts.lexicalRetrievalCapability;
-    } else if (opts.lexicalRetrievalSupported !== false) {
-      capabilities.lexical_retrieval = buildLexicalRetrievalCapability();
-    }
-
-    // Semantic retrieval experimental extension advertisement. Truthfulness
-    // rules (enforced by buildSemanticRetrievalCapability + this call site):
-    //   - Only published when a real embedding backend is configured and
-    //     available. opts.semanticRetrievalSupported === false suppresses it
-    //     explicitly; opts.semanticRetrievalCapability overrides the shape.
-    //   - model / dimensions / distance_metric come from the live backend.
-    //   - index_state is read from computeSemanticIndexState at request time;
-    //     backend-identity drift flips it to "stale" honestly.
-    //   - stability is hardcoded "experimental" in v1; query_input is "text";
-    //     lexical_blending is false. See:
     //   openspec/changes/add-semantic-retrieval-experimental-extension/specs/semantic-retrieval/spec.md
-    if (opts.semanticRetrievalCapability) {
-      capabilities.semantic_retrieval = opts.semanticRetrievalCapability;
-    } else if (opts.semanticRetrievalSupported !== false) {
-      const semBackend = getSemanticBackend();
-      if (semBackend && semBackend.available()) {
-        const semCap = buildSemanticRetrievalCapability({
-          model: semBackend.model(),
-          dimensions: semBackend.dimensions(),
-          distanceMetric: semBackend.distanceMetric(),
-          indexState: computeSemanticIndexState(),
-          profileId: semBackend.profileId ? semBackend.profileId() : null,
-          dtype: semBackend.dtype ? semBackend.dtype() : null,
-          languageBias: semBackend.languageBias ? semBackend.languageBias() : null,
-        });
-        if (semCap) capabilities.semantic_retrieval = semCap;
-      }
-    }
-
-    // Hybrid retrieval experimental extension advertisement. Truthfulness
-    // rules: only publish when BOTH lexical and semantic retrieval are
-    // advertised with supported:true on this server, so the composition
-    // under one grant is honest. opts.hybridRetrievalSupported === false
-    // suppresses it; opts.hybridRetrievalCapability overrides the shape.
-    // v1 hybrid reports cursor_supported:false because the endpoint
-    // rejects cursor parameters — see search-hybrid.js module header.
-    if (opts.hybridRetrievalCapability) {
-      capabilities.hybrid_retrieval = opts.hybridRetrievalCapability;
-    } else if (opts.hybridRetrievalSupported !== false) {
-      const lexSupported = capabilities.lexical_retrieval?.supported === true;
-      const semSupported = capabilities.semantic_retrieval?.supported === true;
-      if (lexSupported && semSupported) {
-        const hybridCap = buildHybridRetrievalCapability({
-          lexicalAvailable: true,
-          semanticAvailable: true,
-        });
-        if (hybridCap && hybridCap.supported === true) {
-          capabilities.hybrid_retrieval = hybridCap;
-        }
-      }
-    }
-
-    // Discovery hints — names the canonical first-call shapes a caller needs
-    // after reading this metadata document, derived from the same runtime
-    // state used for capability advertisement so the block cannot drift
-    // from live behavior. See:
+    //   openspec/changes/define-hybrid-retrieval/specs/hybrid-retrieval/spec.md
     //   openspec/changes/polish-reference-api-discovery-seams
-    const discoveryHints = {
-      schema_endpoint: '/v1/schema',
-      query_base: '/v1',
-      connectors_endpoint: '/v1/connectors',
-      streams_endpoint_template: '/v1/streams/{stream}',
-      aggregate: {
-        endpoint_template: '/v1/streams/{stream}/aggregate',
+    const { composition } = executeRsProtectedResourceMetadata(
+      {},
+      {
+        resolveLexicalCapability: () => {
+          if (opts.lexicalRetrievalCapability) {
+            return opts.lexicalRetrievalCapability;
+          }
+          if (opts.lexicalRetrievalSupported !== false) {
+            return buildLexicalRetrievalCapability();
+          }
+          return null;
+        },
+        resolveSemanticCapability: () => {
+          if (opts.semanticRetrievalCapability) {
+            return opts.semanticRetrievalCapability;
+          }
+          if (opts.semanticRetrievalSupported === false) return null;
+          const semBackend = getSemanticBackend();
+          if (!semBackend || !semBackend.available()) return null;
+          return (
+            buildSemanticRetrievalCapability({
+              model: semBackend.model(),
+              dimensions: semBackend.dimensions(),
+              distanceMetric: semBackend.distanceMetric(),
+              indexState: computeSemanticIndexState(),
+              profileId: semBackend.profileId ? semBackend.profileId() : null,
+              dtype: semBackend.dtype ? semBackend.dtype() : null,
+              languageBias: semBackend.languageBias ? semBackend.languageBias() : null,
+            }) || null
+          );
+        },
+        resolveHybridCapabilityOverride: () =>
+          opts.hybridRetrievalCapability || null,
+        buildDefaultHybridCapability: ({ lexicalAvailable, semanticAvailable }) =>
+          buildHybridRetrievalCapability({ lexicalAvailable, semanticAvailable }),
+        isHybridSuppressed: () => opts.hybridRetrievalSupported === false,
+        isNativeSingleSourceMode: () => !!resolveNativeManifest(opts),
       },
-      changes_since_bootstrap: 'beginning',
-      blob_indirection: 'data.blob_ref.fetch_url',
-    };
-    if (capabilities.lexical_retrieval?.supported === true) {
-      discoveryHints.search = {
-        endpoint: capabilities.lexical_retrieval.endpoint || '/v1/search',
-        scope_param: 'streams[]',
-        // The v1 lexical contract requires exactly one streams[] value when
-        // any filter[...] parameter is present. See the lexical-retrieval
-        // capability spec.
-        filter_requires_single_stream: true,
-      };
-    }
-    if (capabilities.hybrid_retrieval?.supported === true) {
-      discoveryHints.hybrid_pagination_supported = !!capabilities.hybrid_retrieval.cursor_supported;
-    }
-    // Polyfill mode: an owner-token caller must pass `connector_id` on
-    // discovery and read endpoints because there is no single ambient
-    // source. Native single-source mode resolves the connector implicitly
-    // from the manifest, so we omit the hint there rather than emit
-    // `false` and confuse callers reading the absence as a default.
-    if (!resolveNativeManifest(opts)) {
-      discoveryHints.owner_polyfill_requires_connector_id = true;
-    }
+    );
+    const { capabilities, discoveryHints } = composition;
 
     res.json(
       buildProtectedResourceMetadata({
@@ -4362,6 +4313,12 @@ function buildRsApp(opts = {}) {
     });
 
     // GET /v1/state/:connectorId (Collection Profile, owner-authenticated)
+    // Validation order, the storage call shape, and the
+    // grant-scope-driven `allowedStreams` semantics live in the canonical
+    // `rs.connector-state.get` operation. The host adapter wires auth,
+    // request id / trace id, instrumentation events
+    // (`state.requested`, `state.served`, `state.rejected`), the manifest
+    // resolver, the grant-scope resolver, and the response writing.
     app.get('/v1/state/:connectorId', requireToken, requireOwner, async (req, res) => {
       const connectorId = decodeURIComponent(req.params.connectorId);
       const grantId = typeof req.query.grant_id === 'string' ? req.query.grant_id : null;
@@ -4371,18 +4328,23 @@ function buildRsApp(opts = {}) {
         operation: 'read',
       });
       try {
-        await resolveRegisteredConnectorManifest(connectorId);
-        const grantScope = grantId ? await resolveGrantScopedStateGrant(connectorId, grantId) : null;
-        if (grantScope?.traceId) {
-          stateContext.traceId = grantScope.traceId;
-          stateContext.scenarioId = grantScope.scenarioId;
-        }
-        setReferenceTraceId(res, stateContext.traceId);
-        await emitStateRequested(req, stateContext);
-        const state = await getSyncState(connectorId, {
-          grantId,
-          allowedStreams: grantScope?.grantedStreams || null,
-        });
+        const { state } = await executeRsConnectorStateGet(
+          { connectorId, grantId },
+          {
+            resolveRegisteredConnectorManifest: (id) =>
+              resolveRegisteredConnectorManifest(id),
+            resolveGrantScope: (id, gid) => resolveGrantScopedStateGrant(id, gid),
+            onGrantResolved: async (grantScope) => {
+              if (grantScope?.traceId) {
+                stateContext.traceId = grantScope.traceId;
+                stateContext.scenarioId = grantScope.scenarioId;
+              }
+              setReferenceTraceId(res, stateContext.traceId);
+              await emitStateRequested(req, stateContext);
+            },
+            getSyncState: (id, args) => getSyncState(id, args),
+          },
+        );
         await emitStateEvent(req, stateContext, 'state.served', 'succeeded', {
           visible_streams: Object.keys(state?.state || {}),
           updated_at: state?.updated_at || null,
@@ -4394,14 +4356,20 @@ function buildRsApp(opts = {}) {
     });
 
     // PUT /v1/state/:connectorId (Collection Profile, owner-authenticated)
+    // Validation order (manifest stream membership, grant-scope membership),
+    // the storage call shape, and the typed validation errors live in the
+    // canonical `rs.connector-state.put` operation. The host adapter
+    // translates the typed validation error into the existing PDPP error
+    // envelope shape.
     app.put('/v1/state/:connectorId', requireToken, requireOwner, async (req, res) => {
       const connectorId = decodeURIComponent(req.params.connectorId);
       const grantId = typeof req.query.grant_id === 'string' ? req.query.grant_id : null;
-      const requestedStreams = (
+      const stateMap = (
         req.body?.state
         && typeof req.body.state === 'object'
         && !Array.isArray(req.body.state)
-      ) ? Object.keys(req.body.state) : [];
+      ) ? req.body.state : {};
+      const requestedStreams = Object.keys(stateMap);
       const stateContext = buildStateContext(req, res, {
         connectorId,
         grantId,
@@ -4409,38 +4377,37 @@ function buildRsApp(opts = {}) {
         requestedStreams,
       });
       try {
-        const manifest = await resolveRegisteredConnectorManifest(connectorId);
-        const grantScope = grantId ? await resolveGrantScopedStateGrant(connectorId, grantId) : null;
-        if (grantScope?.traceId) {
-          stateContext.traceId = grantScope.traceId;
-          stateContext.scenarioId = grantScope.scenarioId;
-        }
-        setReferenceTraceId(res, stateContext.traceId);
-        await emitStateRequested(req, stateContext);
-        const stateMap = req.body.state || {};
-        const manifestStreams = new Set((manifest.streams || []).map((stream) => stream.name));
-        for (const stream of Object.keys(stateMap)) {
-          if (!manifestStreams.has(stream)) {
-            const err = new Error(`Stream '${stream}' not found for connector ${connectorId}`);
-            err.code = 'not_found';
-            return await rejectState(res, req, stateContext, err);
-          }
-          if (grantScope && !grantScope.grantedStreams.has(stream)) {
-            const err = new Error(`Grant '${grantId}' is not scoped to stream ${stream}`);
-            err.code = 'invalid_request';
-            return await rejectState(res, req, stateContext, err);
-          }
-        }
-        const state = await putSyncState(connectorId, stateMap, {
-          grantId,
-          allowedStreams: grantScope?.grantedStreams || null,
-        });
+        const { state } = await executeRsConnectorStatePut(
+          { connectorId, grantId, stateMap },
+          {
+            resolveRegisteredConnectorManifest: (id) =>
+              resolveRegisteredConnectorManifest(id),
+            resolveGrantScope: (id, gid) => resolveGrantScopedStateGrant(id, gid),
+            onGrantResolved: async (grantScope) => {
+              if (grantScope?.traceId) {
+                stateContext.traceId = grantScope.traceId;
+                stateContext.scenarioId = grantScope.scenarioId;
+              }
+              setReferenceTraceId(res, stateContext.traceId);
+              await emitStateRequested(req, stateContext);
+            },
+            putSyncState: (id, map, args) => putSyncState(id, map, args),
+          },
+        );
         await emitStateEvent(req, stateContext, 'state.updated', 'succeeded', {
           persisted_streams: Object.keys(state?.state || {}),
           updated_at: state?.updated_at || null,
         });
         res.json(state);
       } catch (err) {
+        if (err instanceof RsConnectorStatePutValidationError) {
+          // Translate the operation-typed validation error into the plain
+          // `Error` shape `rejectState` already understands so the public
+          // error envelope and `state.rejected` event remain unchanged.
+          const translated = new Error(err.message);
+          translated.code = err.code;
+          return await rejectState(res, req, stateContext, translated);
+        }
         return await rejectState(res, req, stateContext, err);
       }
     });
