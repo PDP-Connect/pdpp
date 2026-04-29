@@ -27,9 +27,9 @@ import {
 } from "../server/auth.js";
 import { getSyncState } from "../server/records.js";
 import {
-  type ActiveRunRow,
+  type ActiveRunRecord,
   getDefaultSchedulerStore,
-  type ScheduleRow as SchedulerScheduleRow,
+  type ScheduleRecord,
   type SchedulerStore,
 } from "../server/stores/scheduler-store.ts";
 import { runConnector } from "./index.js";
@@ -68,10 +68,11 @@ export interface ValidatedSchedulePatch {
   readonly jitter_seconds: number;
 }
 
-// Domain row shapes are owned by the scheduler store; re-aliased here so
-// existing controller code reads as before without touching `referenceQueries`.
-type ScheduleRow = SchedulerScheduleRow;
-type PersistedActiveRunRow = ActiveRunRow;
+// Domain record shapes are owned by the scheduler store; re-aliased here
+// so the controller stays semantic ("a schedule", "a persisted active run")
+// rather than touching SQLite-flavored row shapes directly.
+type Schedule = ScheduleRecord;
+type PersistedActiveRun = ActiveRunRecord;
 
 interface TerminalRunRow {
   readonly present: 1;
@@ -543,10 +544,10 @@ function validateScheduleInput(input: ConnectorSchedulePatch | null | undefined)
 }
 
 function computeEffectiveMode(
-  row: ScheduleRow,
+  schedule: Schedule,
   runtimeProjection: RuntimeProjection | null
 ): "automatic" | "manual" | "paused" {
-  if (!row.enabled) {
+  if (!schedule.enabled) {
     return "paused";
   }
   if (runtimeProjection?.human_attention_needed) {
@@ -570,25 +571,25 @@ function buildMinimumIntervalWarning(intervalSeconds: number, policy: RefreshPol
   return null;
 }
 
-function scheduleRowToApi(
-  row: ScheduleRow | null,
+function scheduleToApi(
+  schedule: Schedule | null,
   runtimeProjection: RuntimeProjection | null = null,
   policy: RefreshPolicy | null = null
 ): ScheduleApi | null {
-  if (!row) {
+  if (!schedule) {
     return null;
   }
-  const effectiveMode = computeEffectiveMode(row, runtimeProjection);
+  const effectiveMode = computeEffectiveMode(schedule, runtimeProjection);
   const humanAttentionNeeded = runtimeProjection?.human_attention_needed ?? false;
-  const minimumIntervalWarning = buildMinimumIntervalWarning(row.interval_seconds, policy);
+  const minimumIntervalWarning = buildMinimumIntervalWarning(schedule.interval_seconds, policy);
   return {
     object: "schedule",
-    connector_id: row.connector_id,
-    interval_seconds: row.interval_seconds,
-    jitter_seconds: row.jitter_seconds,
-    enabled: !!row.enabled,
-    created_at: row.created_at,
-    updated_at: row.updated_at,
+    connector_id: schedule.connector_id,
+    interval_seconds: schedule.interval_seconds,
+    jitter_seconds: schedule.jitter_seconds,
+    enabled: schedule.enabled,
+    created_at: schedule.created_at,
+    updated_at: schedule.updated_at,
     next_due_at: null,
     active_run_id: runtimeProjection?.active_run_id || null,
     last_started_at: runtimeProjection?.last_started_at || null,
@@ -619,16 +620,16 @@ export function createController(opts: ControllerOptions = {}): Controller {
   // projections (next_due_at, last_finished_at, last_error_code). Until
   // then we accept them in the type but don't read them here.
 
-  function listPersistedActiveRuns(): readonly PersistedActiveRunRow[] {
-    return schedulerStore.activeRuns.list();
+  function listPersistedActiveRuns(): readonly PersistedActiveRun[] {
+    return schedulerStore.listActiveRuns();
   }
 
-  function persistActiveRun(row: PersistedActiveRunRow): void {
-    schedulerStore.activeRuns.upsert(row);
+  function persistActiveRun(record: PersistedActiveRun): void {
+    schedulerStore.upsertActiveRun(record);
   }
 
   function clearPersistedActiveRun(connectorId: string, runId: string): void {
-    schedulerStore.activeRuns.delete(connectorId, runId);
+    schedulerStore.deleteActiveRun(connectorId, runId);
   }
 
   function runAlreadyTerminal(runId: string): boolean {
@@ -678,8 +679,8 @@ export function createController(opts: ControllerOptions = {}): Controller {
 
   reconcileAbandonedControllerRuns();
 
-  function getScheduleRow(connectorId: string): ScheduleRow | null {
-    return schedulerStore.schedules.get(connectorId);
+  function getScheduleRecord(connectorId: string): Schedule | null {
+    return schedulerStore.getSchedule(connectorId);
   }
 
   function currentRsUrl(override: string | undefined): string {
@@ -728,39 +729,38 @@ export function createController(opts: ControllerOptions = {}): Controller {
   // keep the controller surface async so future slices can add I/O (e.g.
   // mirroring to a remote control plane) without a signature break.
   async function listSchedules(): Promise<ScheduleApi[]> {
-    const rows = schedulerStore.schedules.list();
+    const schedules = schedulerStore.listSchedules();
     const apis = await Promise.all(
-      rows.map(async (row) => {
-        const policy = await getConnectorRefreshPolicy(row.connector_id);
-        const api = scheduleRowToApi(row, getRuntimeProjection(row.connector_id), policy);
-        return api;
+      schedules.map(async (schedule) => {
+        const policy = await getConnectorRefreshPolicy(schedule.connector_id);
+        return scheduleToApi(schedule, getRuntimeProjection(schedule.connector_id), policy);
       })
     );
     return apis.flatMap((api) => (api ? [api] : []));
   }
 
   async function getSchedule(connectorId: string): Promise<ScheduleApi | null> {
-    const row = getScheduleRow(connectorId);
-    if (!row) {
+    const schedule = getScheduleRecord(connectorId);
+    if (!schedule) {
       return null;
     }
     const policy = await getConnectorRefreshPolicy(connectorId);
-    return scheduleRowToApi(row, getRuntimeProjection(connectorId), policy);
+    return scheduleToApi(schedule, getRuntimeProjection(connectorId), policy);
   }
 
   async function upsertSchedule(connectorId: string, input: ConnectorSchedulePatch): Promise<ScheduleUpsertResult> {
     const now = nowIso();
     const validated = validateScheduleInput(input);
-    const existing = getScheduleRow(connectorId);
+    const existing = getScheduleRecord(connectorId);
     if (existing) {
-      schedulerStore.schedules.update(connectorId, {
+      schedulerStore.updateSchedule(connectorId, {
         interval_seconds: validated.interval_seconds,
         jitter_seconds: validated.jitter_seconds,
         enabled: validated.enabled,
         updated_at: now,
       });
     } else {
-      schedulerStore.schedules.insert({
+      schedulerStore.createSchedule({
         connector_id: connectorId,
         interval_seconds: validated.interval_seconds,
         jitter_seconds: validated.jitter_seconds,
@@ -770,7 +770,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
       });
     }
     const policy = await getConnectorRefreshPolicy(connectorId);
-    const schedule = scheduleRowToApi(getScheduleRow(connectorId), getRuntimeProjection(connectorId), policy);
+    const schedule = scheduleToApi(getScheduleRecord(connectorId), getRuntimeProjection(connectorId), policy);
     if (!schedule) {
       throw new ControllerError(`Schedule not found after upsert for connector: ${connectorId}`, "internal_error");
     }
@@ -779,13 +779,13 @@ export function createController(opts: ControllerOptions = {}): Controller {
   }
 
   async function setScheduleEnabled(connectorId: string, enabled: boolean): Promise<ScheduleApi | null> {
-    const existing = getScheduleRow(connectorId);
+    const existing = getScheduleRecord(connectorId);
     if (!existing) {
       throw new ControllerError(`Schedule not found for connector: ${connectorId}`, "not_found");
     }
-    schedulerStore.schedules.setEnabled(connectorId, enabled, nowIso());
+    schedulerStore.setScheduleEnabled(connectorId, enabled, nowIso());
     const policy = await getConnectorRefreshPolicy(connectorId);
-    return scheduleRowToApi(getScheduleRow(connectorId), getRuntimeProjection(connectorId), policy);
+    return scheduleToApi(getScheduleRecord(connectorId), getRuntimeProjection(connectorId), policy);
   }
 
   function markNeedsHuman(connectorId: string): void {
@@ -797,11 +797,11 @@ export function createController(opts: ControllerOptions = {}): Controller {
   }
 
   function deleteSchedule(connectorId: string): Promise<boolean> {
-    const existing = getScheduleRow(connectorId);
+    const existing = getScheduleRecord(connectorId);
     if (!existing) {
       return Promise.resolve(false);
     }
-    schedulerStore.schedules.delete(connectorId);
+    schedulerStore.deleteSchedule(connectorId);
     return Promise.resolve(true);
   }
 

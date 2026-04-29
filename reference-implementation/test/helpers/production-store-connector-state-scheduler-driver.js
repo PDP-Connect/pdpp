@@ -71,26 +71,29 @@ const HARNESS_MANIFESTS = [
   },
 ];
 
-function activeRunRowToSummary(row) {
-  if (!row) return null;
+function activeRunRecordToSummary(record) {
+  if (!record) return null;
   return {
-    connector_id: row.connector_id,
-    run_id: row.run_id,
-    trace_id: row.trace_id,
-    scenario_id: row.scenario_id,
-    started_at: row.started_at,
+    connector_id: record.connector_id,
+    run_id: record.run_id,
+    trace_id: record.trace_id,
+    scenario_id: record.scenario_id,
+    started_at: record.started_at,
   };
 }
 
-function scheduleRowToSummary(row) {
-  if (!row) return null;
+function scheduleRecordToSummary(record) {
+  if (!record) return null;
+  // The store surface guarantees `record.enabled` is already a boolean;
+  // we forward it verbatim so a future store regression that re-leaks a
+  // 0/1 numeric would surface in the harness's strict equality checks.
   return {
-    connector_id: row.connector_id,
-    interval_seconds: row.interval_seconds,
-    jitter_seconds: row.jitter_seconds,
-    enabled: Boolean(row.enabled),
-    created_at: row.created_at,
-    updated_at: row.updated_at,
+    connector_id: record.connector_id,
+    interval_seconds: record.interval_seconds,
+    jitter_seconds: record.jitter_seconds,
+    enabled: record.enabled,
+    created_at: record.created_at,
+    updated_at: record.updated_at,
   };
 }
 
@@ -146,17 +149,17 @@ export function createProductionStoreConnectorStateSchedulerDriver() {
       const enabled = patch.enabled !== false;
       const intervalSeconds = patch.interval_seconds;
       const jitterSeconds = patch.jitter_seconds || 0;
-      const existing = schedulerStore.schedules.get(connectorId);
+      const existing = schedulerStore.getSchedule(connectorId);
       const now = nowIso();
       if (existing) {
-        schedulerStore.schedules.update(connectorId, {
+        schedulerStore.updateSchedule(connectorId, {
           interval_seconds: intervalSeconds,
           jitter_seconds: jitterSeconds,
           enabled,
           updated_at: now,
         });
       } else {
-        schedulerStore.schedules.insert({
+        schedulerStore.createSchedule({
           connector_id: connectorId,
           interval_seconds: intervalSeconds,
           jitter_seconds: jitterSeconds,
@@ -165,31 +168,31 @@ export function createProductionStoreConnectorStateSchedulerDriver() {
           updated_at: now,
         });
       }
-      return scheduleRowToSummary(schedulerStore.schedules.get(connectorId));
+      return scheduleRecordToSummary(schedulerStore.getSchedule(connectorId));
     },
 
     async getSchedule(connectorId) {
-      return scheduleRowToSummary(schedulerStore.schedules.get(connectorId));
+      return scheduleRecordToSummary(schedulerStore.getSchedule(connectorId));
     },
 
     async listSchedules() {
-      return schedulerStore.schedules.list().map(scheduleRowToSummary);
+      return schedulerStore.listSchedules().map(scheduleRecordToSummary);
     },
 
     async setScheduleEnabled(connectorId, enabled) {
-      schedulerStore.schedules.setEnabled(connectorId, enabled, nowIso());
-      return scheduleRowToSummary(schedulerStore.schedules.get(connectorId));
+      schedulerStore.setScheduleEnabled(connectorId, enabled, nowIso());
+      return scheduleRecordToSummary(schedulerStore.getSchedule(connectorId));
     },
 
     async deleteSchedule(connectorId) {
-      const existing = schedulerStore.schedules.get(connectorId);
+      const existing = schedulerStore.getSchedule(connectorId);
       if (!existing) return false;
-      schedulerStore.schedules.delete(connectorId);
+      schedulerStore.deleteSchedule(connectorId);
       return true;
     },
 
     async insertActiveRun(connectorId, run) {
-      schedulerStore.activeRuns.upsert({
+      schedulerStore.upsertActiveRun({
         connector_id: connectorId,
         run_id: run.runId,
         trace_id: run.traceId,
@@ -199,23 +202,23 @@ export function createProductionStoreConnectorStateSchedulerDriver() {
     },
 
     async getActiveRun(connectorId) {
-      const rows = schedulerStore.activeRuns.list();
-      const found = rows.find((row) => row.connector_id === connectorId);
-      return found ? activeRunRowToSummary(found) : null;
+      const records = schedulerStore.listActiveRuns();
+      const found = records.find((record) => record.connector_id === connectorId);
+      return found ? activeRunRecordToSummary(found) : null;
     },
 
     async listActiveRuns() {
-      return schedulerStore.activeRuns.list().map(activeRunRowToSummary);
+      return schedulerStore.listActiveRuns().map(activeRunRecordToSummary);
     },
 
     async deleteActiveRun(connectorId, runId) {
-      schedulerStore.activeRuns.delete(connectorId, runId);
+      schedulerStore.deleteActiveRun(connectorId, runId);
     },
 
     async simulateRestart() {
       // Constructing a fresh controller against the same DB triggers
       // `reconcileAbandonedControllerRuns`, which reads from
-      // `schedulerStore.activeRuns.list()` and clears each row after
+      // `schedulerStore.listActiveRuns()` and clears each record after
       // emitting `run.failed`.
       controller = createController({
         logger: { warn: () => {}, error: () => {} },
