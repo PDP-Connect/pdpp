@@ -2,7 +2,7 @@
  * Postgres-backed driver for the connector-state / schedule / active-run
  * conformance harness.
  *
- * This is a *test-only* spike. It exists to demonstrate that the
+ * This is a *test-only* proof adapter. It exists to demonstrate that the
  * persistence obligations pinned by
  * `helpers/connector-state-scheduler-conformance.js` can be satisfied by
  * a non-SQLite backend without reaching into the SQLite reference at
@@ -23,8 +23,8 @@
  *     contract only requires that `wasRunMarkedFailed` reports `true`
  *     for any run that was active at the time of the simulated restart.
  *
- *   - There is no production `ConnectorStateStore` / `SchedulerStore`
- *     interface being extracted by this spike. The driver exists only
+ *   - There is no runtime `ConnectorStateStore` / `SchedulerStore`
+ *     interface being selected by this slice. The driver exists only
  *     to evidence that the conformance harness is portable to a second
  *     backend with credibly Postgres-shaped semantics (jsonb, stable
  *     `ON CONFLICT` upsert, UNIQUE constraints, transaction-safe
@@ -34,8 +34,7 @@
  * var by its caller (the test file). It SHALL NOT be imported from
  * production code paths.
  *
- * Spec: openspec/changes/define-reference-operation-environments/
- *       (task 3.2 Postgres-oriented storage proof).
+ * Spec: openspec/changes/add-postgres-storage-adapters/
  */
 
 import pg from 'pg';

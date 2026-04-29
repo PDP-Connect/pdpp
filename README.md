@@ -108,16 +108,17 @@ docker compose --env-file .env.docker up --build
 #### Postgres proof service (test-only, profile-gated)
 
 The Compose file ships an optional `postgres` service gated behind the
-`postgres` profile. It exists only to back the env-gated conformance proof at
-`reference-implementation/test/connector-state-scheduler-conformance-postgres.test.js`,
-landed under
-`openspec/changes/define-reference-operation-environments`. The reference
+`postgres` profile. It exists only to back env-gated conformance proofs such as
+`reference-implementation/test/connector-state-scheduler-conformance-postgres.test.js`
+and
+`reference-implementation/test/consent-device-auth-conformance-postgres.test.js`,
+landed under `openspec/changes/add-postgres-storage-adapters`. The reference
 runtime remains SQLite-backed; the `reference` and `web` services do **not**
 depend on this service and there is no operator-facing Postgres storage support.
 
 The image is `pgvector/pgvector:pg16` so a future semantic/vector proof slice
-can reuse the same service without an image swap. The current connector-state
-conformance test does not require the `vector` extension.
+can reuse the same service without an image swap. The current low-risk storage
+proofs do not require the `vector` extension.
 
 The service binds to loopback only by default (`127.0.0.1:55432`) and ships
 with default `pdpp/pdpp` credentials, so it is reachable only from the host
@@ -132,10 +133,11 @@ other.
 # PDPP_POSTGRES_PORT in .env.docker. The default bind is 127.0.0.1 only.
 docker compose --profile postgres --env-file .env.docker up -d postgres
 
-# Run the env-gated conformance proof against it.
+# Run the env-gated conformance proofs against it.
 PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/pdpp_proof \
   node --test --test-force-exit \
-  reference-implementation/test/connector-state-scheduler-conformance-postgres.test.js
+  reference-implementation/test/connector-state-scheduler-conformance-postgres.test.js \
+  reference-implementation/test/consent-device-auth-conformance-postgres.test.js
 
 # Stop and remove only the proof service when done.
 docker compose --profile postgres --env-file .env.docker stop postgres

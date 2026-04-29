@@ -51,9 +51,10 @@ services:
       retries: 30
       start_period: 30s
 
-  # Profile-gated Postgres service for the env-gated conformance proof at
+  # Profile-gated Postgres service for env-gated conformance proofs such as
   # `reference-implementation/test/connector-state-scheduler-conformance-postgres.test.js`
-  # (see openspec/changes/add-compose-postgres-proof-service). This is a
+  # and `reference-implementation/test/consent-device-auth-conformance-postgres.test.js`
+  # (see openspec/changes/add-postgres-storage-adapters). This is a
   # PROOF/TEST backend only — the reference runtime is SQLite-backed and the
   # `reference` service does NOT depend on this service. The image is
   # pgvector-capable so future semantic/vector proof slices can reuse it

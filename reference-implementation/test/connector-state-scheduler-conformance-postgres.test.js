@@ -1,9 +1,8 @@
 /**
  * Connector state, schedule, and active-run conformance — Postgres
- * adapter spike.
+ * proof adapter.
  *
- * Test-only proof slice for the
- * `define-reference-operation-environments` change (task 3.2). Runs the
+ * Test-only proof slice for the `add-postgres-storage-adapters` change. Runs the
  * reusable conformance scenarios from
  * `helpers/connector-state-scheduler-conformance.js` against a
  * Postgres-backed driver that reimplements the three concerns
@@ -22,11 +21,10 @@
  *     not fail in environments without Postgres.
  *
  * The Postgres dependency (`pg`) is dev-scoped on
- * `reference-implementation` because this is a test-only spike. There
- * is no production Postgres adapter being introduced here.
+ * `reference-implementation` because this is a test-only proof. There
+ * is no runtime Postgres adapter being introduced here.
  *
- * Spec: openspec/changes/define-reference-operation-environments/
- *       (task 3.2 Postgres-oriented storage proof).
+ * Spec: openspec/changes/add-postgres-storage-adapters/
  */
 
 import test from 'node:test';
@@ -40,7 +38,7 @@ if (!POSTGRES_URL) {
   test('postgres connector-state/scheduler conformance (skipped: PDPP_TEST_POSTGRES_URL unset)', { skip: true }, () => {});
 } else {
   runConnectorStateSchedulerConformance({
-    label: 'postgres-spike',
+    label: 'postgres-connector-state-scheduler',
     test,
     makeDriver: () =>
       createPostgresConnectorStateSchedulerDriver({ connectionString: POSTGRES_URL }),
