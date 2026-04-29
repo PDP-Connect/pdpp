@@ -187,7 +187,7 @@ The proof sequence in "Evidence Standard" has been partially executed by separat
    Not done: the non-default Postgres adapter spike. No second conforming adapter exists. The Postgres-oriented storage proof remains incomplete until a Postgres adapter passes the same harness.
 
 3. **Sandbox operation proof (`rs.streams.list`).**
-   Landed: `mount-rs-streams-list-operation`. Operation capsule under `reference-implementation/operations/rs-streams-list/`, mounted by both Fastify (`/v1/streams`) and the Next sandbox (`/sandbox/v1/streams`). `buildLiveStreamsList` is deleted from `apps/web/src/app/sandbox/_demo/builders.ts`. Per-operation import-boundary test asserts the operation does not import Fastify/Next/SQLite/process and the sandbox route does not import the deleted builder.
+   Landed: `mount-rs-streams-list-operation`. Operation capsule under `reference-implementation/operations/rs-streams-list/`, mounted by both Fastify (`/v1/streams`) and the Next sandbox (`/sandbox/v1/streams`). `buildLiveStreamsList` is deleted from `apps/web/src/app/sandbox/_demo/builders.ts`. The generalized boundary gate (see Cross-cutting status) covers this operation, and the per-operation boundary test additionally asserts the sandbox route does not reimport the deleted builder.
 
 4. **Operation-only schema proof (`rs.schema.get`).**
    Landed: `mount-rs-schema-get-operation`. Same pattern as `rs.streams.list`. `buildLiveSchemaResponse` deleted; sandbox and native routes share one capsule. `mount-rs-stream-detail-operation` extended the pattern to `/v1/streams/:stream` and `/sandbox/v1/streams/:stream`, deleting `buildLiveStreamMetadataResponse`.
@@ -202,7 +202,7 @@ The proof sequence in "Evidence Standard" has been partially executed by separat
 
 ### Cross-cutting status
 
-- **Per-operation import-boundary tests** exist for the three mounted operations. A *generalized* boundary gate that covers any future operation under `reference-implementation/operations/**` has not landed.
+- **Generalized operation boundary gate landed** via `add-reference-operation-boundary-gate`. A shared helper at `reference-implementation/test/helpers/operation-boundary.js` and a discovery-based test at `reference-implementation/test/operations-boundary.test.js` enumerate every module under `reference-implementation/operations/*/index.ts` and reject static imports of host (Fastify, Next), storage (SQLite, Postgres, raw DB), sandbox, and Node `process` modules, plus executable `process.env` access. Per-operation boundary tests now consume the shared rule. Dynamic imports remain explicitly out of scope for the gate.
 - **Operation capsule shape** is concretely drafted by the three mounted operations and is consistent across them (request/dependencies/output, no transport coupling).
 - **Capability-specific contracts** exist as conformance-driver shapes for consent/device-auth, connector-state/scheduler, disclosure-spine, record-read, record-mutation. None has been promoted to a production `Store` interface or published in `reference-implementation/src` as a typed contract.
 - **Environment profiles** (`local-personal`, `docker-personal`, `sandbox-fixture`, `test-memory`) remain conceptual. Sandbox-fixture is implicitly proved by the mounted operations sharing capsules with the native server; the other profiles are not yet expressed as composed dependency bundles.
