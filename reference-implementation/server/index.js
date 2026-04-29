@@ -107,6 +107,9 @@ import {
   RefConnectorScheduleGetNotFoundError,
   executeRefConnectorScheduleGet,
 } from '../operations/ref-connector-schedule-get/index.ts';
+import { executeRefSpineCorrelationsList } from '../operations/ref-spine-correlations-list/index.ts';
+import { executeRefSpineEventsPage } from '../operations/ref-spine-events-page/index.ts';
+import { executeRefSpineSearch } from '../operations/ref-spine-search/index.ts';
 
 const AS_PORT = parseInt(process.env.AS_PORT || '7662');
 const RS_PORT = parseInt(process.env.RS_PORT || '7663');
@@ -640,67 +643,13 @@ async function rejectMutation(res, req, context, err) {
   return pdppError(res, status, code, err.message);
 }
 
-// Strip live-bearer-shaped fields from a spine event before it leaves the
-// reference. `token_id` on `spine_events` is the literal opaque bearer in the
-// reference's introspection table — see auth.js::issueToken — so a public
-// `_ref` timeline read MUST NOT echo it back. `token.issued` events also use
-// the bearer string as their `object_id` (because `object_type === 'token'`),
-// so we redact that too.
-//
-// `pending_consent` and `owner_device_auth` events use the live `device_code`
-// as their `object_id`, and `request.submitted` for `owner_device_auth`
-// carries `data.user_code` — both are bearer-equivalent in the takeover
-// chain (the device_code redeems for an owner bearer at /oauth/token; the
-// user_code is the human verifier that completes the device flow). We
-// redact both here so trace/timeline reads cannot leak them.
-//
-// The schema-level fix lives in `openspec/changes/
-// harden-reference-auth-surfaces/design-notes/
-// spine-token-id-storage-2026-04-27.md`; this projection is the read-time
-// guarantee we ship today.
-const REDACTED_OBJECT_ID_LITERAL_BY_TYPE = {
-  token: '<redacted-token-id>',
-  pending_consent: '<redacted-device-code>',
-  owner_device_auth: '<redacted-device-code>',
-};
-const REDACTED_BEARER_DATA_KEYS = new Set(['device_code', 'user_code', 'request_uri']);
-
-function redactSpineEventForPublic(event) {
-  if (!event || typeof event !== 'object') return event;
-  const { token_id: _token_id, ...rest } = event;
-  const objectIdLiteral = REDACTED_OBJECT_ID_LITERAL_BY_TYPE[rest.object_type];
-  if (objectIdLiteral && typeof rest.object_id === 'string') {
-    rest.object_id = objectIdLiteral;
-  }
-  if (rest.data && typeof rest.data === 'object' && !Array.isArray(rest.data)) {
-    let cloned = null;
-    for (const key of REDACTED_BEARER_DATA_KEYS) {
-      if (key in rest.data) {
-        if (!cloned) cloned = { ...rest.data };
-        cloned[key] = '<redacted-bearer>';
-      }
-    }
-    if (cloned) rest.data = cloned;
-  }
-  return rest;
-}
-
-function buildTimelineEnvelope(object, idKey, idValue, events, pagination = null) {
-  const traceId = events.find((event) => event.trace_id)?.trace_id || null;
-  const envelope = {
-    object,
-    [idKey]: idValue,
-    trace_id: traceId,
-    event_count: events.length,
-    data: events.map(redactSpineEventForPublic),
-  };
-  if (pagination) {
-    envelope.truncated = pagination.truncated;
-    envelope.next_cursor = pagination.next_cursor;
-    envelope.limit = pagination.limit;
-  }
-  return envelope;
-}
+// Spine timeline envelope assembly and live-bearer redaction live in the
+// `ref.spine.events.page` operation; see
+// reference-implementation/operations/ref-spine-events-page/index.ts.
+// The host adapter still owns query-string parsing for `limit`/`cursor`
+// (including the 400 error shape and the upper bound) because cursor
+// validation is route-layer concern: an invalid cursor must short-circuit
+// before any operation runs.
 
 const TIMELINE_DEFAULT_LIMIT = 2_000;
 const TIMELINE_MAX_LIMIT = 5_000;
@@ -2170,69 +2119,25 @@ function buildAsApp(opts = {}) {
     };
   }
 
-  function summaryToTrace(s) {
-    return {
-      object: 'trace_summary',
-      trace_id: s.id,
-      first_at: s.first_at,
-      last_at: s.last_at,
-      event_count: s.event_count,
-      status: s.status,
-      kinds: s.kinds,
-      request_id: s.request_id,
-      grant_id: s.grant_id,
-      run_id: s.run_id,
-      client_id: s.client_id,
-      provider_id: s.provider_id,
-      actor_type: s.actor_type,
-      actor_id: s.actor_id,
-      failure: s.failure,
-    };
-  }
+  // Spine correlation list / timeline / search routes delegate envelope
+  // assembly to canonical operation modules. The host adapter retains
+  // ownership of owner-auth, query-string parsing, cursor validation
+  // (`InvalidCursorError` → 400), 404-on-empty-first-page, and contract
+  // metadata; the operation owns response shape (per-kind discriminators,
+  // pagination fields, and live-bearer redaction on timelines). See
+  // openspec/changes/mount-ref-spine-operations.
 
-  function summaryToGrant(s) {
-    return {
-      object: 'grant_summary',
-      grant_id: s.id,
-      first_at: s.first_at,
-      last_at: s.last_at,
-      event_count: s.event_count,
-      status: s.status,
-      kinds: s.kinds,
-      client_id: s.client_id,
-      provider_id: s.provider_id,
-      connector_id: s.connector_id || null,
-      failure: s.failure,
-    };
-  }
-
-  function summaryToRun(s) {
-    return {
-      object: 'run_summary',
-      run_id: s.id,
-      first_at: s.first_at,
-      last_at: s.last_at,
-      event_count: s.event_count,
-      status: s.status,
-      kinds: s.kinds,
-      needs_input: Boolean(s.needs_input),
-      connector_id: s.connector_id || null,
-      provider_id: s.provider_id,
-      grant_id: s.grant_id,
-      failure_reason: s.failure?.reason || null,
-    };
-  }
+  const spineCorrelationsListDeps = {
+    listSpineCorrelations: (kind, filters) => listSpineCorrelations(kind, filters),
+  };
 
   app.get('/_ref/traces', ownerAuth.requireOwnerSession, async (req, res) => {
     try {
-      const { summaries, hasMore, nextCursor } = await listSpineCorrelations('trace', parseListFilters(req.query));
-      const body = {
-        object: 'list',
-        data: summaries.map(summaryToTrace),
-        has_more: hasMore,
-      };
-      if (nextCursor) body.next_cursor = nextCursor;
-      res.json(body);
+      const envelope = await executeRefSpineCorrelationsList(
+        { kind: 'trace', filters: parseListFilters(req.query) },
+        spineCorrelationsListDeps,
+      );
+      res.json(envelope);
     } catch (err) {
       handleError(res, err);
     }
@@ -2240,14 +2145,11 @@ function buildAsApp(opts = {}) {
 
   app.get('/_ref/grants', ownerAuth.requireOwnerSession, async (req, res) => {
     try {
-      const { summaries, hasMore, nextCursor } = await listSpineCorrelations('grant', parseListFilters(req.query));
-      const body = {
-        object: 'list',
-        data: summaries.map(summaryToGrant),
-        has_more: hasMore,
-      };
-      if (nextCursor) body.next_cursor = nextCursor;
-      res.json(body);
+      const envelope = await executeRefSpineCorrelationsList(
+        { kind: 'grant', filters: parseListFilters(req.query) },
+        spineCorrelationsListDeps,
+      );
+      res.json(envelope);
     } catch (err) {
       handleError(res, err);
     }
@@ -2255,14 +2157,11 @@ function buildAsApp(opts = {}) {
 
   app.get('/_ref/runs', ownerAuth.requireOwnerSession, async (req, res) => {
     try {
-      const { summaries, hasMore, nextCursor } = await listSpineCorrelations('run', parseListFilters(req.query));
-      const body = {
-        object: 'list',
-        data: summaries.map(summaryToRun),
-        has_more: hasMore,
-      };
-      if (nextCursor) body.next_cursor = nextCursor;
-      res.json(body);
+      const envelope = await executeRefSpineCorrelationsList(
+        { kind: 'run', filters: parseListFilters(req.query) },
+        spineCorrelationsListDeps,
+      );
+      res.json(envelope);
     } catch (err) {
       handleError(res, err);
     }
@@ -2275,66 +2174,59 @@ function buildAsApp(opts = {}) {
   //   openspec/changes/add-lexical-retrieval-extension/specs/lexical-retrieval/spec.md
   app.get('/_ref/search', { contract: 'refSearch' }, ownerAuth.requireOwnerSession, async (req, res) => {
     try {
-      const result = await searchSpine(req.query.q || '');
-      res.json({
-        object: 'search_result',
-        exact: result.exact,
-        traces: result.traces.map(summaryToTrace),
-        grants: result.grants.map(summaryToGrant),
-        runs: result.runs.map(summaryToRun),
-      });
+      const envelope = await executeRefSpineSearch(
+        { query: req.query.q || '' },
+        { searchSpine: (query) => searchSpine(query) },
+      );
+      res.json(envelope);
     } catch (err) {
       handleError(res, err);
     }
   });
 
-  app.get('/_ref/traces/:traceId', ownerAuth.requireOwnerSession, async (req, res) => {
-    try {
-      const traceId = decodeURIComponent(req.params.traceId);
-      const opts = parseTimelinePageOptions(req, res);
-      if (!opts) return;
-      const page = listSpineEventsPage('trace', traceId, opts);
-      if (!page.events.length && !opts.cursor) return pdppError(res, 404, 'not_found', 'Trace not found');
-      res.json(buildTimelineEnvelope('trace', 'trace_id', traceId, page.events, page));
-    } catch (err) {
-      if (err instanceof InvalidCursorError) {
-        return pdppError(res, 400, 'invalid_cursor', err.message, 'cursor');
+  function handleSpineTimeline(kind, idParamKey, notFoundMessage) {
+    return async (req, res) => {
+      try {
+        const id = decodeURIComponent(req.params[idParamKey]);
+        const opts = parseTimelinePageOptions(req, res);
+        if (!opts) return;
+        const page = listSpineEventsPage(kind, id, opts);
+        if (!page.events.length && !opts.cursor) {
+          return pdppError(res, 404, 'not_found', notFoundMessage);
+        }
+        const envelope = executeRefSpineEventsPage({
+          kind,
+          id,
+          cursor: opts.cursor,
+          page,
+        });
+        res.json(envelope);
+      } catch (err) {
+        if (err instanceof InvalidCursorError) {
+          return pdppError(res, 400, 'invalid_cursor', err.message, 'cursor');
+        }
+        handleError(res, err);
       }
-      handleError(res, err);
-    }
-  });
+    };
+  }
 
-  app.get('/_ref/grants/:grantId/timeline', ownerAuth.requireOwnerSession, async (req, res) => {
-    try {
-      const grantId = decodeURIComponent(req.params.grantId);
-      const opts = parseTimelinePageOptions(req, res);
-      if (!opts) return;
-      const page = listSpineEventsPage('grant', grantId, opts);
-      if (!page.events.length && !opts.cursor) return pdppError(res, 404, 'not_found', 'Grant timeline not found');
-      res.json(buildTimelineEnvelope('grant_timeline', 'grant_id', grantId, page.events, page));
-    } catch (err) {
-      if (err instanceof InvalidCursorError) {
-        return pdppError(res, 400, 'invalid_cursor', err.message, 'cursor');
-      }
-      handleError(res, err);
-    }
-  });
+  app.get(
+    '/_ref/traces/:traceId',
+    ownerAuth.requireOwnerSession,
+    handleSpineTimeline('trace', 'traceId', 'Trace not found'),
+  );
 
-  app.get('/_ref/runs/:runId/timeline', ownerAuth.requireOwnerSession, async (req, res) => {
-    try {
-      const runId = decodeURIComponent(req.params.runId);
-      const opts = parseTimelinePageOptions(req, res);
-      if (!opts) return;
-      const page = listSpineEventsPage('run', runId, opts);
-      if (!page.events.length && !opts.cursor) return pdppError(res, 404, 'not_found', 'Run timeline not found');
-      res.json(buildTimelineEnvelope('run_timeline', 'run_id', runId, page.events, page));
-    } catch (err) {
-      if (err instanceof InvalidCursorError) {
-        return pdppError(res, 400, 'invalid_cursor', err.message, 'cursor');
-      }
-      handleError(res, err);
-    }
-  });
+  app.get(
+    '/_ref/grants/:grantId/timeline',
+    ownerAuth.requireOwnerSession,
+    handleSpineTimeline('grant', 'grantId', 'Grant timeline not found'),
+  );
+
+  app.get(
+    '/_ref/runs/:runId/timeline',
+    ownerAuth.requireOwnerSession,
+    handleSpineTimeline('run', 'runId', 'Run timeline not found'),
+  );
 
   // Reference-only, owner-only control surface: answer the current pending
   // interaction for a live controller-managed run. The read path remains the
