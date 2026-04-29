@@ -10,9 +10,11 @@
  *   - The sandbox `/sandbox/v1/schema` route SHALL NOT import
  *     `buildLiveSchemaResponse` (it must mount the canonical operation).
  *
- * The check is grep-style on source: it does not execute the modules.
- * Trade-off: it cannot catch dynamically-resolved imports, but it does
- * catch the static-import drift class this slice is meant to prevent.
+ * The operation-module boundary check delegates to the shared helper so the
+ * forbidden-import list is the single source of truth across operations
+ * (see openspec/changes/add-reference-operation-boundary-gate). Sandbox-route
+ * and `_demo/builders.ts` demotion assertions remain operation-specific and
+ * stay here.
  */
 
 import assert from 'node:assert/strict';
@@ -20,6 +22,8 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
+
+import { assertOperationBoundary } from './helpers/operation-boundary.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, '..', '..');
@@ -29,44 +33,8 @@ function read(rel) {
 }
 
 test('rs.schema.get operation has no host or storage concretes', () => {
-  const src = read('reference-implementation/operations/rs-schema-get/index.ts');
-
-  // Forbidden module imports.
-  const forbidden = [
-    'fastify',
-    'express',
-    'next/',
-    'better-sqlite3',
-    './db',
-    '../db',
-    '../lib/db',
-    '../server/db',
-    '../server/records',
-    '../server/auth',
-    '../server/index',
-    'pg', // postgres
-    // Sandbox UI/page code must not be reachable from the operation.
-    'apps/web',
-    '_demo/',
-  ];
-  for (const needle of forbidden) {
-    assert.equal(
-      src.includes(`from '${needle}`) || src.includes(`from "${needle}`),
-      false,
-      `rs.schema.get operation must not import "${needle}" (got match in operations/rs-schema-get/index.ts)`,
-    );
-  }
-
-  // process.env access is also forbidden. Strip comments first so
-  // documentation that names the rule does not trip the guard.
-  const stripped = src
-    .replace(/\/\*[\s\S]*?\*\//g, '')
-    .replace(/\/\/[^\n]*/g, '');
-  assert.equal(
-    stripped.includes('process.env'),
-    false,
-    'rs.schema.get operation must not read process.env',
-  );
+  const rel = 'reference-implementation/operations/rs-schema-get/index.ts';
+  assertOperationBoundary(read(rel), rel);
 });
 
 test('sandbox /sandbox/v1/schema route does not import buildLiveSchemaResponse', () => {
