@@ -308,6 +308,148 @@ export function runDisclosureSpineConformance({ label, test, makeDriver }) {
     }
   });
 
+  // 4b. Pagination remains stable across pages when every event in the
+  //     timeline shares the *same* occurred_at. A driver that orders by
+  //     wall-clock time and uses a backend-private physical row identity as
+  //     a tiebreaker can still pass the single-page tied-timestamp scenario
+  //     above while losing ordering once the timeline is read in chunks
+  //     small enough to require a cursor. This scenario forces a paged walk
+  //     through tied-timestamp events and verifies the visited sequence
+  //     matches the append order with no overlap or gap.
+  t('paged walk preserves append order when every event shares the same occurred_at', async () => {
+    const driver = await makeDriver();
+    await driver.setup();
+    try {
+      const traceId = 'trc_paging_tie';
+      const sharedTs = '2026-04-06T00:00:00.000Z';
+      const total = 9;
+      const ids = [];
+      for (let i = 0; i < total; i += 1) {
+        const r = await driver.append(evt({
+          trace_id: traceId,
+          event_type: `reference.test.paged_tie_${i.toString(16)}`,
+          occurred_at: sharedTs,
+        }));
+        ids.push(r.event_id);
+      }
+
+      const collected = [];
+      let cursor = null;
+      let pages = 0;
+      while (pages < 20) {
+        const page = await driver.listPage('trace', traceId, { limit: 2, cursor });
+        pages += 1;
+        for (const ev of page.events) collected.push(ev.event_id);
+        if (!page.truncated) {
+          assert.equal(
+            page.next_cursor,
+            null,
+            'next_cursor must be null on the final page',
+          );
+          break;
+        }
+        assert.ok(
+          page.next_cursor,
+          'next_cursor must be present when the page is truncated',
+        );
+        cursor = page.next_cursor;
+      }
+
+      assert.deepEqual(
+        collected,
+        ids,
+        'paged walk over tied-timestamp events must visit each event exactly once in append order',
+      );
+      assert.equal(
+        new Set(collected).size,
+        collected.length,
+        'paged walk over tied-timestamp events must not repeat events across pages',
+      );
+      assert.ok(
+        pages >= Math.ceil(total / 2),
+        `expected at least ${Math.ceil(total / 2)} pages of size 2 over ${total} events`,
+      );
+    } finally {
+      await driver.teardown();
+    }
+  });
+
+  // 4c. Interleaved appends across two correlations must each surface a
+  //     paged walk that respects the *correlation-local* append order. A
+  //     driver that confused inter-correlation order (for instance, by
+  //     mixing physical row identity into a per-correlation cursor without
+  //     the correlation bound) would surface foreign events or skip rows
+  //     when the same backend page boundary fell between two correlations.
+  t('paged walk per correlation is stable when correlations are interleaved', async () => {
+    const driver = await makeDriver();
+    await driver.setup();
+    try {
+      const traceA = 'trc_interleaved_a';
+      const traceB = 'trc_interleaved_b';
+      const sharedTs = '2026-04-07T00:00:00.000Z';
+      // Interleave appends across both correlations; deliberately mix in a
+      // matching shared occurred_at so the only stable order is append.
+      const sequence = [
+        { trace: traceA, tag: 'a0' },
+        { trace: traceB, tag: 'b0' },
+        { trace: traceA, tag: 'a1' },
+        { trace: traceB, tag: 'b1' },
+        { trace: traceA, tag: 'a2' },
+        { trace: traceB, tag: 'b2' },
+        { trace: traceA, tag: 'a3' },
+        { trace: traceB, tag: 'b3' },
+        { trace: traceA, tag: 'a4' },
+        { trace: traceB, tag: 'b4' },
+      ];
+      const idsByTrace = { [traceA]: [], [traceB]: [] };
+      for (const step of sequence) {
+        const r = await driver.append(evt({
+          trace_id: step.trace,
+          event_type: `reference.test.interleaved_${step.tag}`,
+          occurred_at: sharedTs,
+        }));
+        idsByTrace[step.trace].push(r.event_id);
+      }
+
+      for (const [traceId, expected] of Object.entries(idsByTrace)) {
+        const collected = [];
+        let cursor = null;
+        let pages = 0;
+        while (pages < 20) {
+          const page = await driver.listPage('trace', traceId, { limit: 2, cursor });
+          pages += 1;
+          for (const ev of page.events) {
+            assert.equal(
+              ev.trace_id,
+              traceId,
+              `paged walk for ${traceId} must not surface events from a sibling correlation`,
+            );
+            collected.push(ev.event_id);
+          }
+          if (!page.truncated) {
+            assert.equal(page.next_cursor, null, 'next_cursor must be null on the final page');
+            break;
+          }
+          assert.ok(page.next_cursor, 'next_cursor must be present when the page is truncated');
+          cursor = page.next_cursor;
+        }
+
+        assert.deepEqual(
+          collected,
+          expected,
+          `paged walk for ${traceId} must visit every event in correlation-local append order`,
+        );
+        assert.equal(
+          new Set(collected).size,
+          collected.length,
+          `paged walk for ${traceId} must not repeat events`,
+        );
+      }
+    } finally {
+      await driver.teardown();
+    }
+  });
+
   // 5. Rejected vs served event visibility. A correlation whose terminal
   //    event is rejected must surface that rejection in the summary status —
   //    rejected events MUST remain visible (they are the audit signal), and

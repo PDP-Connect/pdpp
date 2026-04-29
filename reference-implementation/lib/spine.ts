@@ -266,14 +266,27 @@ function normalizeSpineEventInput(input: SpineEventInput): NormalizedSpineEvent 
   };
 }
 
+/**
+ * Spine append. The `event_seq` column is the stable logical sequence the
+ * disclosure-spine cursor contract orders by; the INSERT computes it as
+ * `MAX(event_seq) + 1` from the table itself. SQLite serializes writers,
+ * so the subquery sees a consistent maximum across concurrent appends.
+ * `event_seq` SHALL NOT be supplied by callers — the assignment is the
+ * append boundary's responsibility.
+ *
+ * Spec: openspec/changes/replace-spine-rowid-cursor-with-event-seq/specs/
+ *       reference-implementation-architecture/spec.md
+ */
 const INSERT_SPINE_EVENT_SQL = `
   INSERT INTO spine_events(
-    event_id, event_type, occurred_at, recorded_at, scenario_id, trace_id,
+    event_id, event_seq, event_type, occurred_at, recorded_at, scenario_id, trace_id,
     actor_type, actor_id, subject_type, subject_id, object_type, object_id,
     status, request_id, grant_id, run_id, provider_id, client_id, stream_id,
     token_id, interaction_id, data_json, version
   ) VALUES (
-    @event_id, @event_type, @occurred_at, @recorded_at, @scenario_id, @trace_id,
+    @event_id,
+    (SELECT COALESCE(MAX(event_seq), 0) + 1 FROM spine_events),
+    @event_type, @occurred_at, @recorded_at, @scenario_id, @trace_id,
     @actor_type, @actor_id, @subject_type, @subject_id, @object_type, @object_id,
     @status, @request_id, @grant_id, @run_id, @provider_id, @client_id, @stream_id,
     @token_id, @interaction_id, @data_json, @version
@@ -395,9 +408,14 @@ const PER_KIND_QUERY = {
   run: referenceQueries.spineListEventsByRunId,
 } as const;
 
-function decodeRowidFromCursor(cursor: string | null | undefined): number {
-  // First page: rowid > 0 returns every row. Cursors carry the last
-  // observed rowid so the next page picks up where we left off.
+function decodeEventSeqFromCursor(cursor: string | null | undefined): number {
+  // First page: `event_seq > 0` returns every row (event_seq is assigned
+  // monotonically starting at 1). Cursors carry the last observed
+  // event_seq so the next page picks up where we left off. The cursor is
+  // opaque to clients and refers only to stable logical ordering — never
+  // SQLite `rowid`.
+  // Spec: openspec/changes/replace-spine-rowid-cursor-with-event-seq/specs/
+  //       reference-implementation-architecture/spec.md
   if (!cursor) {
     return 0;
   }
@@ -409,8 +427,9 @@ function decodeRowidFromCursor(cursor: string | null | undefined): number {
  * `getMany` returns rows as `Record<string, unknown>` because the
  * wrapper's generic only constrains "the shape has indexable string
  * keys." better-sqlite3 hands back plain objects whose keys are the
- * SELECTed columns; for `SELECT rowid, *` against `spine_events`,
- * those columns are exactly the `SpineEventRow` shape plus a `rowid`.
+ * SELECTed columns; for `SELECT event_seq AS id, *` against
+ * `spine_events`, those columns are exactly the `SpineEventRow` shape
+ * plus an `id` (the event_seq projection used by the cursor builder).
  * The cast here is structural, not lossy.
  */
 // The wrapper's `Page<R extends Record<string, unknown>>` generic can't
@@ -425,9 +444,9 @@ export function listSpineEventsPage(
   id: string,
   opts: SpineEventPageOptions
 ): SpineEventPage {
-  const cursorRowid = decodeRowidFromCursor(opts.cursor ?? null);
+  const cursorEventSeq = decodeEventSeqFromCursor(opts.cursor ?? null);
   const query = PER_KIND_QUERY[kind];
-  const page: Page<Record<string, unknown>> = getMany(query, [id, cursorRowid], {
+  const page: Page<Record<string, unknown>> = getMany(query, [id, cursorEventSeq], {
     limit: opts.limit,
   });
   return {

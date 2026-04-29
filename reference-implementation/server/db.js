@@ -357,8 +357,18 @@ CREATE TABLE IF NOT EXISTS version_counter (
   PRIMARY KEY(connector_id, stream)
 );
 
+-- spine_events.event_seq: stable monotonic logical sequence assigned at
+-- append time. Disclosure-spine timeline pagination orders by event_seq
+-- so the cursor contract no longer leaks SQLite rowid. The column is
+-- additive; existing rows are backfilled in initDb post-schema. New
+-- inserts compute event_seq via a (SELECT MAX(event_seq) + 1 FROM ...)
+-- subquery inside the INSERT, which is safe under SQLite's single-writer
+-- lock model.
+-- Spec: openspec/changes/replace-spine-rowid-cursor-with-event-seq/specs/
+--       reference-implementation-architecture/spec.md
 CREATE TABLE IF NOT EXISTS spine_events (
   event_id         TEXT PRIMARY KEY,
+  event_seq        INTEGER,
   event_type       TEXT NOT NULL,
   occurred_at      TEXT NOT NULL,
   recorded_at      TEXT NOT NULL,
@@ -391,6 +401,9 @@ CREATE INDEX IF NOT EXISTS idx_spine_events_grant
 
 CREATE INDEX IF NOT EXISTS idx_spine_events_run
   ON spine_events(run_id, occurred_at, recorded_at);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_spine_events_seq
+  ON spine_events(event_seq) WHERE event_seq IS NOT NULL;
 
 -- Lexical retrieval extension — SQLite FTS5 backing for GET /v1/search.
 -- One row per (connector_id, stream, record_key, field) where \`field\` is
@@ -614,6 +627,22 @@ export function initDb(path = ':memory:', opts = {}) {
   // auth tables; see SCHEMA comment for rationale.
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'pending_consents', 'approval_id', 'TEXT'));
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'owner_device_auth', 'approval_id', 'TEXT'));
+  // Disclosure-spine `event_seq` migration. Pre-existing reference DBs were
+  // created before `event_seq` existed; add the column non-destructively and
+  // seed it for any rows that lack a value. The seed orders by `rowid` —
+  // SQLite's physical row identity at the moment of backfill — purely as a
+  // one-shot reconstruction of historical append order. After backfill,
+  // `event_seq` is the only ordering surface readers and cursors consult;
+  // the cursor contract no longer reads `rowid`.
+  runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'spine_events', 'event_seq', 'INTEGER'));
+  runWithSqliteBusyRetrySync(() => {
+    raw.exec(
+      `UPDATE spine_events SET event_seq = rowid WHERE event_seq IS NULL`
+    );
+  });
+  raw.exec(
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_spine_events_seq ON spine_events(event_seq) WHERE event_seq IS NOT NULL`
+  );
   // Index gives us a fast lookup-by-approval-id and approximates the
   // UNIQUE constraint on the column (the inline CREATE TABLE form
   // declares it UNIQUE; SQLite's ALTER TABLE ADD COLUMN does not

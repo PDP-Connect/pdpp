@@ -70,6 +70,20 @@ test('harness detects at least one spine invariant violation in a broken driver'
   const summaryExtentFailed = failures.some((f) =>
     /full extent/.test(f.name),
   );
+  // The tied-timestamp paged-walk scenario and the interleaved-appends paged-walk
+  // scenario protect the cursor-stability invariant the spine `event_seq` change
+  // pinned: a backend whose pagination depends on a private physical row identity
+  // can still pass the single-page tied scenario while losing order across pages.
+  // The broken driver reverses listPage, so both paged-walk scenarios fail —
+  // require that signal so the harness keeps proving cursor stability.
+  // Spec: openspec/changes/replace-spine-rowid-cursor-with-event-seq/specs/
+  //       reference-implementation-architecture/spec.md
+  const pagedTiedFailed = failures.some((f) =>
+    /paged walk preserves append order when every event shares/.test(f.name),
+  );
+  const pagedInterleavedFailed = failures.some((f) =>
+    /paged walk per correlation is stable when correlations are interleaved/.test(f.name),
+  );
   assert.ok(
     orderingFailed,
     `expected the append-order or terminal scenario to fail. failures=${JSON.stringify(failures.map((f) => f.name), null, 2)}`,
@@ -77,5 +91,13 @@ test('harness detects at least one spine invariant violation in a broken driver'
   assert.ok(
     summaryExtentFailed,
     `expected the summary-extent scenario to fail. failures=${JSON.stringify(failures.map((f) => f.name), null, 2)}`,
+  );
+  assert.ok(
+    pagedTiedFailed,
+    `expected the paged tied-timestamp scenario to fail. failures=${JSON.stringify(failures.map((f) => f.name), null, 2)}`,
+  );
+  assert.ok(
+    pagedInterleavedFailed,
+    `expected the paged interleaved-correlation scenario to fail. failures=${JSON.stringify(failures.map((f) => f.name), null, 2)}`,
   );
 });
