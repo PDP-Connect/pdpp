@@ -23,11 +23,11 @@
 
 ## 4. AS OAuth, Device, Consent, And Grants
 
-- [ ] 4.1 Move DCR register/delete semantics behind canonical operations.
-- [ ] 4.2 Move device authorization, token, device approval/deny, and introspection semantics behind canonical operations.
-- [ ] 4.3 Move PAR, consent approve/deny/exchange, and grant revoke semantics behind canonical operations.
-- [ ] 4.4 Preserve auth gates, CSRF/session behavior, error envelopes, token/device-code secrecy, and spine events.
-- [ ] 4.5 Add/update boundary, operation, security, and route behavior tests.
+- [x] 4.1 Move DCR register/delete semantics behind canonical operations.
+- [x] 4.2 Move device authorization, token, device approval/deny, and introspection semantics behind canonical operations.
+- [x] 4.3 Move PAR, consent approve/deny/exchange, and grant revoke semantics behind canonical operations.
+- [x] 4.4 Preserve auth gates, CSRF/session behavior, error envelopes, token/device-code secrecy, and spine events.
+- [x] 4.5 Add/update boundary, operation, security, and route behavior tests.
 
 ## 5. `_ref` Diagnostics
 
