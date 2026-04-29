@@ -19,10 +19,17 @@ The reference implementation SHALL serve public semantic search behavior through
 #### Scenario: Existing public semantic search semantics are preserved on the native route
 
 - **WHEN** the native `GET /v1/search/semantic` route is migrated to the operation
-- **THEN** the public JSON response shape, error codes, cursor format (including the `sem1.` prefix and stale-cursor backend-identity rejection), scoring metadata (`score.kind: "semantic_distance"`, `score.order: "lower_is_better"`, `score.value_semantics: "distance"`, `score.comparable_with` carrying backend identity), per-hit `retrieval_mode: "semantic"`, grant filtering behavior, stream/filter query semantics, backend/profile/model identity disclosure, and `disclosure.served` event shape (`query_shape: "search_semantic"`) SHALL remain equivalent to the previous native route behavior
+- **THEN** the public JSON response shape, error codes, cursor format (including the `sem1.` prefix and stale-cursor backend-identity rejection), per-hit score shape on emitted results (exactly `{ kind: "semantic_distance", value, order: "lower_is_better" }` and nothing more), per-hit `retrieval_mode: "semantic"`, grant filtering behavior, stream/filter query semantics, and `disclosure.served` event shape (`query_shape: "search_semantic"`) SHALL remain equivalent to the previous native route behavior
 - **AND** the migration SHALL NOT broaden, narrow, or otherwise change the v1 query-parameter allowlist (`q`, `limit`, `cursor`, `streams`, `streams[]`, `filter`)
 - **AND** the migration SHALL NOT change the explicit forbidden-parameter list (`vector`, `embedding`, `embed`, `model`, `model_id`, `model_family`, `rank`, `boost`, `weights`, `blend`, `connector_id`, `fields`, `expand`, `expand[]`, `expand_limit`, `expand_limit[]`, `order`, `sort`, `mode`)
 - **AND** the migration SHALL NOT change the score-advertisement gate, the cross-stream advertisement gate, the `filter[...]` requires-exactly-one-`streams[]` rule, or the snippet grant-safety property (snippet text is a verbatim contiguous substring of the matched field's stored value)
+- **AND** per-hit score objects on `/v1/search/semantic` results SHALL NOT include capability-level metadata fields (`value_semantics`, `comparable_with`, `model`, `dimensions`, `distance_metric`, `profile_id`, `dtype`, `backend_identity`); those remain advertised at `capabilities.semantic_retrieval.score` on `/.well-known/oauth-protected-resource`, not on individual result hits
+
+#### Scenario: Backend identity disclosure stays on the capability surface
+
+- **WHEN** a client reads `/.well-known/oauth-protected-resource`
+- **THEN** `capabilities.semantic_retrieval.score` SHALL continue to advertise `value_semantics`, `comparable_with` (backend identity, model, dimensions, distance_metric, and where applicable profile_id/dtype), and the score gate fields (`supported`, `kind`, `order`)
+- **AND** the per-hit `score` object on `/v1/search/semantic` results SHALL remain limited to `kind`, `value`, and `order`; backend identity is disclosed once at the capability surface, not repeated on every hit
 
 #### Scenario: No-silent-fallback invariant continues to hold
 

@@ -314,6 +314,70 @@ test('score is emitted only when advertisement is semantic_distance lower_is_bet
   }
 });
 
+test('per-hit score object carries exactly kind/value/order — no capability-level metadata leaks onto individual hits', async () => {
+  // Per-hit score on /v1/search/semantic results emits exactly
+  // { kind, value, order }. Capability-level fields such as `value_semantics`,
+  // `comparable_with`, `model`, `dimensions`, `distance_metric`, `profile_id`,
+  // `dtype`, and `backend_identity` are advertised once at
+  // `capabilities.semantic_retrieval.score` and MUST NOT be repeated on
+  // individual hits. Even when the advertisement carries those fields, the
+  // operation must not propagate them onto the per-hit score object.
+  const richAdvertisement = {
+    ...defaultAdvertisement,
+    score: {
+      ...defaultAdvertisement.score,
+      value_semantics: 'distance',
+      comparable_with: {
+        backend_identity: 'profile=stub;model=pdpp-reference-stub-embed-v0;dimensions=64;metric=cosine',
+        model: 'pdpp-reference-stub-embed-v0',
+        dimensions: 64,
+        distance_metric: 'cosine',
+        profile_id: 'stub',
+        dtype: 'fp32',
+      },
+    },
+  };
+  const deps = makeDeps({ getAdvertisement: () => richAdvertisement });
+  const out = await executeSearchSemantic(
+    { actor: ownerActor, query: { q: 'foo' } },
+    deps,
+  );
+  assert.ok(out.envelope.data.length > 0, 'precondition: snapshot returned hits');
+  const forbiddenScoreFields = [
+    'value_semantics',
+    'comparable_with',
+    'model',
+    'dimensions',
+    'distance_metric',
+    'profile_id',
+    'dtype',
+    'backend_identity',
+    'supported',
+    'snippets',
+    'cross_stream',
+    'default_limit',
+    'max_limit',
+  ];
+  for (const hit of out.envelope.data) {
+    assert.ok(hit.score, 'precondition: score advertised, score should be emitted');
+    assert.deepEqual(
+      Object.keys(hit.score).sort(),
+      ['kind', 'order', 'value'],
+      'per-hit score MUST carry exactly kind/value/order',
+    );
+    assert.equal(hit.score.kind, 'semantic_distance');
+    assert.equal(hit.score.order, 'lower_is_better');
+    assert.equal(typeof hit.score.value, 'number');
+    for (const forbidden of forbiddenScoreFields) {
+      assert.equal(
+        forbidden in hit.score,
+        false,
+        `per-hit score MUST NOT include capability-level field "${forbidden}"`,
+      );
+    }
+  }
+});
+
 // ─── retrieval_mode is unconditionally "semantic" ──────────────────────
 
 test('every emitted hit carries retrieval_mode:"semantic"', async () => {
