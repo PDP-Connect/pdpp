@@ -178,9 +178,10 @@ The proof sequence in "Evidence Standard" has been partially executed by separat
 
 ### Recommended proof sequence vs landed evidence
 
-1. **Storage-only security proof (`ConsentStore` + `OwnerDeviceAuthStore`).** *Prerequisite harness landed; proof incomplete.*
+1. **Storage-only security proof (`ConsentStore` + `OwnerDeviceAuthStore`).** *Adapter-swap proof landed at the test level; production interface still not extracted.*
    Landed: `add-consent-device-auth-conformance-harness`. SQLite driver, deliberately-broken in-memory falsifiability driver, and 12 lifecycle/security scenarios under `reference-implementation/test/helpers/`. Falsifiability test confirms the harness fails on real terminal-state, denial-terminal, and polling-rate violations.
-   Not done: there is no conforming second adapter. The broken driver is *not* a memory adapter — it deliberately violates invariants. No production `ConsentStore` / `OwnerDeviceAuthStore` interface is extracted, and adapter equivalence has not been demonstrated. The storage-only security proof remains incomplete until a conforming memory (or other second) adapter passes the harness.
+   Also landed: a conforming in-memory second adapter at `reference-implementation/test/helpers/memory-consent-device-auth-driver.js` and a green conformance run via `reference-implementation/test/consent-device-auth-conformance-memory.test.js`. The same 12-scenario harness now passes against SQLite *and* the conforming memory adapter, and still fails against the broken falsifiability driver. The storage-only adapter-swap property is therefore demonstrated.
+   Not done: no production `ConsentStore` / `OwnerDeviceAuthStore` interface is extracted from `server/auth.js`. The memory driver is test-only and deliberately does not issue real tokens, mint grants, or emit spine events. Promoting these conformance-driver shapes into a production storage contract is a separate change.
 
 2. **Postgres-oriented storage proof (`ConnectorStateStore` + `SchedulerStore`).** *Prerequisite harness landed; proof incomplete.*
    Landed: `add-connector-state-scheduler-conformance-harness`. SQLite driver, broken driver, and falsifiability test pinning state, schedule, and active-run invariants (including `controller_active_runs.run_id` cross-connector uniqueness).
