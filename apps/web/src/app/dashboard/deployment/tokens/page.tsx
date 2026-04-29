@@ -4,8 +4,9 @@ import { Input } from "@/components/ui/input.tsx";
 import { Timestamp } from "@/components/ui/timestamp.tsx";
 import { CopyButton } from "../../components/copy-button.tsx";
 import { PageHeader } from "../../components/primitives.tsx";
-import { DashboardShell } from "../../components/shell.tsx";
+import { DashboardShell, ServerUnreachable } from "../../components/shell.tsx";
 import { buildOwnerBootstrapExamples, getOwnerBootstrapFlow } from "../../lib/operator-bootstrap.ts";
+import { ReferenceServerUnreachableError } from "../../lib/owner-token.ts";
 import { listOwnerIssuedClients, type OwnerIssuedClient } from "../../lib/ref-client.ts";
 import { introspectOwnerTokenFlowAction, issueOwnerTokenAction, revokeOwnerTokenAction } from "./actions.ts";
 
@@ -310,11 +311,16 @@ export default async function DeploymentTokensPage({ searchParams }: { searchPar
   try {
     const resp = await listOwnerIssuedClients();
     tokens = resp.data ?? [];
-  } catch {
-    // Listing is best-effort — the issuance + revoke surfaces still work
-    // if the AS is briefly unreachable. The error block above already
-    // surfaces operator-actionable failures.
-    tokens = [];
+  } catch (err) {
+    if (err instanceof ReferenceServerUnreachableError) {
+      return (
+        <DashboardShell active="deployment">
+          <PageHeader title="Tokens" />
+          <ServerUnreachable />
+        </DashboardShell>
+      );
+    }
+    throw err;
   }
 
   return (

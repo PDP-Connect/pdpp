@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
+import { existsSync, readFileSync } from "node:fs";
+import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { GET } from "./[...path]/route.ts";
+
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+const SKILLS_REWRITE_PAIR =
+  /source:\s*['"]\/\.well-known\/skills\/:path\*['"][\s\S]*?destination:\s*['"]\/well-known\/skills\/:path\*['"]/;
 
 const APPLICATION_JSON = /^application\/json/;
 const PDPP_SKILL_FRONTMATTER = /name: pdpp-data-access/;
@@ -31,6 +38,33 @@ test("agent skill .well-known route serves the catalog with forwarded origin", a
   assert.equal(skills.length, 1);
   assert.ok(
     skills[0]?.files.some((file) => file.url === "https://pdpp.dev/.well-known/skills/pdpp-data-access/SKILL.md")
+  );
+});
+
+// Regression: prior to this fix the handler lived under
+// `app/.well-known/skills/[...path]/route.ts`, a dot-prefixed App Router
+// directory which Next treats as a private folder and never registers as a
+// route. The next.config rewrite (`/.well-known/skills/:path*` →
+// `/well-known/skills/:path*`) only resolves when an actual handler lives at
+// `app/well-known/skills/[...path]/route.ts`. This test pins both halves so
+// the rewrite cannot silently re-break the public skill discovery surface.
+test("well-known skills handler lives at the rewrite destination", () => {
+  const handler = path.join(HERE, "[...path]", "route.ts");
+  assert.equal(existsSync(handler), true, `expected handler at ${handler}`);
+
+  const dotPrefixed = path.join(HERE, "..", "..", ".well-known", "skills", "[...path]", "route.ts");
+  assert.equal(
+    existsSync(dotPrefixed),
+    false,
+    "dot-prefixed App Router folders are private; the handler must NOT live under app/.well-known/**"
+  );
+
+  const nextConfigPath = path.resolve(HERE, "..", "..", "..", "..", "next.config.mjs");
+  const nextConfig = readFileSync(nextConfigPath, "utf8");
+  assert.match(
+    nextConfig,
+    SKILLS_REWRITE_PAIR,
+    "next.config.mjs must rewrite /.well-known/skills/** to the routable /well-known/skills/** destination"
   );
 });
 

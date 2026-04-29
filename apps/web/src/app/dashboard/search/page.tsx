@@ -23,6 +23,7 @@ import {
 } from "../lib/rs-client.ts";
 import { shortConnectorName } from "../lib/timeline.ts";
 import { summarize } from "../lib/timeline-summaries.ts";
+import { verifyDashboardSession } from "../lib/verify-session.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -383,6 +384,13 @@ export default async function SearchPage({
   const query = (qParam ?? "").trim();
   const cursor = typeof cursorParam === "string" && cursorParam ? cursorParam : null;
   const prevStack = parsePrevStack(prevParam);
+
+  // Empty-query loads bypass `loadSearchResult`, so they would otherwise miss
+  // the DAL gate. Verify the session here so the empty-shell render redirects
+  // unauthenticated callers consistently with sibling dashboard routes.
+  if (!query) {
+    await verifyDashboardSession();
+  }
 
   const { result, unreachable } = query
     ? await loadSearchResult(query, cursor, prevStack, jump)
