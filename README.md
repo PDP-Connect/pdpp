@@ -119,10 +119,17 @@ The image is `pgvector/pgvector:pg16` so a future semantic/vector proof slice
 can reuse the same service without an image swap. The current connector-state
 conformance test does not require the `vector` extension.
 
+The service binds to loopback only by default (`127.0.0.1:55432`) and ships
+with default `pdpp/pdpp` credentials, so it is reachable only from the host
+running Docker. LAN/WAN exposure requires deliberately overriding
+`PDPP_POSTGRES_BIND_HOST` **and** changing `PDPP_POSTGRES_USER` /
+`PDPP_POSTGRES_PASSWORD` to non-default values; do not do one without the
+other.
+
 ```bash
 # Start just the proof service. Default host port is 55432 to avoid
 # colliding with operator-installed Postgres on 5432; override with
-# PDPP_POSTGRES_PORT in .env.docker.
+# PDPP_POSTGRES_PORT in .env.docker. The default bind is 127.0.0.1 only.
 docker compose --profile postgres --env-file .env.docker up -d postgres
 
 # Run the env-gated conformance proof against it.
