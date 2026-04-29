@@ -27,6 +27,7 @@ import {
   passesRequestFilters,
   passesTimeRange,
 } from './record-filters.js';
+import { getDefaultConnectorStateStore } from './stores/connector-state-store.ts';
 
 function nowIso() {
   return new Date().toISOString();
@@ -2083,61 +2084,28 @@ export async function listStreams(storageTarget, grant, manifest = null) {
 }
 
 /**
- * Get/put sync state (Collection Profile, owner-authenticated)
+ * Get/put sync state (Collection Profile, owner-authenticated).
+ *
+ * Persistence is delegated to the production `ConnectorStateStore`; this
+ * function preserves the legacy signature (string | { connector_id }
+ * storage target, `allowedStreams` accepts Set/array/null) so existing
+ * route handlers and the runtime caller don't change shape.
  */
 export async function getSyncState(storageTarget, opts = {}) {
   const connectorId = resolveStorageConnectorId(storageTarget);
   const { grantId = null, allowedStreams = null } = opts;
-  const allowedStreamSet = allowedStreams instanceof Set
-    ? allowedStreams
-    : (Array.isArray(allowedStreams) ? new Set(allowedStreams) : null);
-  // REVIEWED-BOUNDED: rows are one per (connector, [grant], stream); a
-  // connector's manifest declares at most a few dozen streams, so the
-  // result fits comfortably under the registry's @max_rows=256 cap.
-  const rows = grantId
-    ? allowUnboundedReadAcknowledged(
-        referenceQueries.recordsSyncStateListGrantConnectorState,
-        [connectorId, grantId],
-      )
-    : allowUnboundedReadAcknowledged(
-        referenceQueries.recordsSyncStateListConnectorState,
-        [connectorId],
-      );
-  const state = {};
-  let updatedAt = null;
-  for (const row of rows) {
-    if (allowedStreamSet && !allowedStreamSet.has(row.stream)) continue;
-    state[row.stream] = JSON.parse(row.state_json);
-    if (!updatedAt || row.updated_at > updatedAt) updatedAt = row.updated_at;
-  }
-  return {
-    object: 'stream_state',
-    connector_id: connectorId,
-    grant_id: grantId,
-    state,
-    updated_at: updatedAt,
-  };
+  return getDefaultConnectorStateStore().getState(
+    { connectorId, grantId },
+    { allowedStreams },
+  );
 }
 
 export async function putSyncState(storageTarget, stateMap, opts = {}) {
   const connectorId = resolveStorageConnectorId(storageTarget);
   const { grantId = null, allowedStreams = null } = opts;
-  const now = nowIso();
-  for (const [stream, cursor] of Object.entries(stateMap)) {
-    if (grantId) {
-      exec(
-        referenceQueries.recordsSyncStateUpsertGrantConnectorState,
-        [grantId, connectorId, stream, JSON.stringify(cursor), now],
-      );
-      continue;
-    }
-
-    exec(
-      referenceQueries.recordsSyncStateUpsertConnectorState,
-      [connectorId, stream, JSON.stringify(cursor), now],
-    );
-  }
-  return getSyncState(connectorId, { grantId, allowedStreams });
+  const store = getDefaultConnectorStateStore();
+  await store.putState({ connectorId, grantId }, stateMap);
+  return store.getState({ connectorId, grantId }, { allowedStreams });
 }
 
 /**

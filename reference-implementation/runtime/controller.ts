@@ -18,7 +18,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { allowUnboundedReadAcknowledged, exec, getOne, referenceQueries, transaction } from "../lib/db.ts";
+import { getOne, referenceQueries, transaction } from "../lib/db.ts";
 import { createTraceContext, emitSpineEvent, type SpineTraceContext } from "../lib/spine.ts";
 import {
   approveOwnerDeviceAuthorization,
@@ -26,6 +26,12 @@ import {
   initiateOwnerDeviceAuthorization,
 } from "../server/auth.js";
 import { getSyncState } from "../server/records.js";
+import {
+  type ActiveRunRow,
+  getDefaultSchedulerStore,
+  type ScheduleRow as SchedulerScheduleRow,
+  type SchedulerStore,
+} from "../server/stores/scheduler-store.ts";
 import { runConnector } from "./index.js";
 
 // ─── Path constants ─────────────────────────────────────────────────────────
@@ -62,22 +68,10 @@ export interface ValidatedSchedulePatch {
   readonly jitter_seconds: number;
 }
 
-interface ScheduleRow {
-  readonly connector_id: string;
-  readonly created_at: string;
-  readonly enabled: 0 | 1;
-  readonly interval_seconds: number;
-  readonly jitter_seconds: number;
-  readonly updated_at: string;
-}
-
-interface PersistedActiveRunRow {
-  readonly connector_id: string;
-  readonly run_id: string;
-  readonly scenario_id: string;
-  readonly started_at: string;
-  readonly trace_id: string;
-}
+// Domain row shapes are owned by the scheduler store; re-aliased here so
+// existing controller code reads as before without touching `referenceQueries`.
+type ScheduleRow = SchedulerScheduleRow;
+type PersistedActiveRunRow = ActiveRunRow;
 
 interface TerminalRunRow {
   readonly present: 1;
@@ -186,6 +180,9 @@ export interface ControllerOptions {
   runtime?: unknown;
   runtimeContext?: { rsUrl?: string };
   scheduler?: unknown;
+  // Optional store override; defaults to the SQLite-backed singleton.
+  // Tests use this to substitute fakes without touching module-scoped state.
+  schedulerStore?: SchedulerStore;
 }
 
 export interface Controller {
@@ -615,6 +612,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
   const resolveConnectorPath = opts.connectorPathResolver || resolveDefaultConnectorPath;
   const ownerClientId = opts.ownerClientId || "cli_longview";
   const ownerSubjectId = opts.ownerSubjectId || "owner_local";
+  const schedulerStore = opts.schedulerStore || getDefaultSchedulerStore();
 
   // `runtime` and `scheduler` are declared in ControllerOptions as hooks
   // for a later slice that will wire runtime state into the schedule
@@ -622,23 +620,15 @@ export function createController(opts: ControllerOptions = {}): Controller {
   // then we accept them in the type but don't read them here.
 
   function listPersistedActiveRuns(): readonly PersistedActiveRunRow[] {
-    // REVIEWED-BOUNDED: controller_active_runs holds at most one row per
-    // registered connector; whole-table scan is bounded by the connector count.
-    return allowUnboundedReadAcknowledged<PersistedActiveRunRow>(referenceQueries.controllerListActiveRuns);
+    return schedulerStore.activeRuns.list();
   }
 
   function persistActiveRun(row: PersistedActiveRunRow): void {
-    exec(referenceQueries.controllerUpsertActiveRun, [
-      row.connector_id,
-      row.run_id,
-      row.trace_id,
-      row.scenario_id,
-      row.started_at,
-    ]);
+    schedulerStore.activeRuns.upsert(row);
   }
 
   function clearPersistedActiveRun(connectorId: string, runId: string): void {
-    exec(referenceQueries.controllerDeleteActiveRun, [connectorId, runId]);
+    schedulerStore.activeRuns.delete(connectorId, runId);
   }
 
   function runAlreadyTerminal(runId: string): boolean {
@@ -689,7 +679,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
   reconcileAbandonedControllerRuns();
 
   function getScheduleRow(connectorId: string): ScheduleRow | null {
-    return getOne<ScheduleRow>(referenceQueries.controllerGetScheduleByConnector, [connectorId]);
+    return schedulerStore.schedules.get(connectorId);
   }
 
   function currentRsUrl(override: string | undefined): string {
@@ -738,9 +728,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
   // keep the controller surface async so future slices can add I/O (e.g.
   // mirroring to a remote control plane) without a signature break.
   async function listSchedules(): Promise<ScheduleApi[]> {
-    // REVIEWED-BOUNDED: connector_schedules holds at most one row per registered
-    // connector; the schedule registry is bounded by the connector count.
-    const rows = allowUnboundedReadAcknowledged<ScheduleRow>(referenceQueries.controllerListSchedules);
+    const rows = schedulerStore.schedules.list();
     const apis = await Promise.all(
       rows.map(async (row) => {
         const policy = await getConnectorRefreshPolicy(row.connector_id);
@@ -765,22 +753,21 @@ export function createController(opts: ControllerOptions = {}): Controller {
     const validated = validateScheduleInput(input);
     const existing = getScheduleRow(connectorId);
     if (existing) {
-      exec(referenceQueries.controllerUpdateSchedule, [
-        validated.interval_seconds,
-        validated.jitter_seconds,
-        validated.enabled ? 1 : 0,
-        now,
-        connectorId,
-      ]);
+      schedulerStore.schedules.update(connectorId, {
+        interval_seconds: validated.interval_seconds,
+        jitter_seconds: validated.jitter_seconds,
+        enabled: validated.enabled,
+        updated_at: now,
+      });
     } else {
-      exec(referenceQueries.controllerInsertSchedule, [
-        connectorId,
-        validated.interval_seconds,
-        validated.jitter_seconds,
-        validated.enabled ? 1 : 0,
-        now,
-        now,
-      ]);
+      schedulerStore.schedules.insert({
+        connector_id: connectorId,
+        interval_seconds: validated.interval_seconds,
+        jitter_seconds: validated.jitter_seconds,
+        enabled: validated.enabled,
+        created_at: now,
+        updated_at: now,
+      });
     }
     const policy = await getConnectorRefreshPolicy(connectorId);
     const schedule = scheduleRowToApi(getScheduleRow(connectorId), getRuntimeProjection(connectorId), policy);
@@ -796,7 +783,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
     if (!existing) {
       throw new ControllerError(`Schedule not found for connector: ${connectorId}`, "not_found");
     }
-    exec(referenceQueries.controllerUpdateScheduleEnabled, [enabled ? 1 : 0, nowIso(), connectorId]);
+    schedulerStore.schedules.setEnabled(connectorId, enabled, nowIso());
     const policy = await getConnectorRefreshPolicy(connectorId);
     return scheduleRowToApi(getScheduleRow(connectorId), getRuntimeProjection(connectorId), policy);
   }
@@ -814,7 +801,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
     if (!existing) {
       return Promise.resolve(false);
     }
-    exec(referenceQueries.controllerDeleteSchedule, [connectorId]);
+    schedulerStore.schedules.delete(connectorId);
     return Promise.resolve(true);
   }
 
