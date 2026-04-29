@@ -38,6 +38,11 @@ import {
   referenceQueries,
   transaction,
 } from '../lib/db.ts';
+import {
+  executeSearchSemantic,
+  parseSearchSemanticParams,
+  SearchSemanticRequestError,
+} from '../operations/rs-search-semantic/index.ts';
 import { getConnectorManifest } from './auth.js';
 import { getDb } from './db.js';
 import {
@@ -1271,78 +1276,28 @@ export function computeIndexState() {
 
 // ─── Public-route entry point ──────────────────────────────────────────────
 
-const ALLOWED_PARAMS = new Set(['q', 'limit', 'cursor', 'streams', 'streams[]', 'filter']);
-
-// Parameters that MUST be rejected explicitly (not silently ignored). Some
-// of these overlap with "anything not in ALLOWED_PARAMS" — the explicit list
-// makes the rejection intentional and visible in source.
-const FORBIDDEN_PARAMS = new Set([
-  'vector', 'embedding', 'embed',
-  'model', 'model_id', 'model_family',
-  'rank', 'boost', 'weights', 'blend',
-  'connector_id',
-  'fields', 'expand', 'expand[]', 'expand_limit', 'expand_limit[]',
-  'order', 'sort', 'mode',
-]);
-
+/**
+ * Parse and validate the v1 semantic-search query-string allowlist + the
+ * explicit forbidden-parameter list.
+ *
+ * Thin delegating shim: the canonical implementation lives in
+ * `operations/rs-search-semantic/index.ts`. Kept exported here so existing
+ * direct importers (notably `semantic-retrieval.test.js`) continue to
+ * receive the same plain-`Error` shape (`err.code`, optional `err.param`)
+ * the previous local implementation produced.
+ */
 export function parseSemanticSearchParams(query) {
-  for (const key of Object.keys(query)) {
-    if (FORBIDDEN_PARAMS.has(key)) {
-      const err = new Error(`Unsupported query parameter: ${key}`);
-      err.code = 'invalid_request';
-      err.param = key;
-      throw err;
+  try {
+    return parseSearchSemanticParams(query);
+  } catch (err) {
+    if (err instanceof SearchSemanticRequestError) {
+      const translated = new Error(err.message);
+      translated.code = err.code;
+      if (err.param !== undefined) translated.param = err.param;
+      throw translated;
     }
-    if (!ALLOWED_PARAMS.has(key)) {
-      const err = new Error(`Unsupported query parameter: ${key}`);
-      err.code = 'invalid_request';
-      err.param = key;
-      throw err;
-    }
-  }
-  const q = typeof query.q === 'string' ? query.q : '';
-  if (!q) {
-    const err = new Error('q is required');
-    err.code = 'invalid_request';
-    err.param = 'q';
     throw err;
   }
-  const limit = clampLimit(query.limit);
-  const cursor = typeof query.cursor === 'string' && query.cursor ? query.cursor : null;
-  const streams = normalizeStreamsParam(query.streams ?? query['streams[]']);
-  const hasFilter = Object.prototype.hasOwnProperty.call(query, 'filter');
-  if (hasFilter && (!streams || streams.length !== 1)) {
-    const err = new Error(
-      "filter[...] requires exactly one streams[] value (e.g. ?streams[]=messages&filter[received_at][gte]=...). filter[stream] and filter[connector_id] are not supported.",
-    );
-    err.code = 'invalid_request';
-    err.param = 'streams';
-    throw err;
-  }
-  return {
-    q,
-    limit,
-    cursor,
-    streams,
-    filter: hasFilter ? query.filter : null,
-    filteredStream: hasFilter ? streams[0] : null,
-  };
-}
-
-function clampLimit(raw) {
-  if (raw === undefined || raw === null || raw === '') return 25;
-  const n = Number(raw);
-  if (!Number.isFinite(n) || n < 1) return 25;
-  return Math.min(Math.floor(n), 100);
-}
-
-function normalizeStreamsParam(raw) {
-  if (raw === undefined || raw === null) return null;
-  const arr = Array.isArray(raw) ? raw : [raw];
-  const cleaned = arr
-    .map((v) => (typeof v === 'string' ? v.trim() : ''))
-    .filter((v) => v.length > 0);
-  return cleaned.length === 0 ? null : cleaned;
 }
 
 /**
@@ -1483,18 +1438,22 @@ function resolveSemanticRetrievalAdvertisement(opts) {
   };
 }
 
-function advertisesSemanticScore(advertisement) {
-  return !!(
-    advertisement
-    && advertisement.supported !== false
-    && advertisement.score?.supported === true
-    && advertisement.score.kind === 'semantic_distance'
-    && advertisement.score.order === 'lower_is_better'
-  );
-}
-
 /**
  * The single helper the GET /v1/search/semantic route delegates to.
+ *
+ * Thin native dependency-wiring shell around the canonical
+ * `executeSearchSemantic` operation in
+ * `operations/rs-search-semantic/index.ts`. The operation owns the
+ * public-contract slice (allowlist + forbidden parameters, `q` required,
+ * `limit` clamping, `streams[]` normalization, `filter[...]` coupling,
+ * cross-stream advertisement gate, mode classification, cursor encode/decode
+ * with the `sem1.` prefix, snapshot orchestration with backend-identity
+ * stale-cursor detection, slice math, score-advertisement gate,
+ * `search_result` shaping including `retrieval_mode: "semantic"`,
+ * list-envelope, and `disclosure.served` data block); this shell preserves
+ * the existing native semantics by wiring those concerns onto the live
+ * embedding pipeline, vector index, snapshot tables, records-table snippet
+ * hydration, and `record_url` formatting.
  */
 export async function runSemanticSearch({
   req,
@@ -1514,156 +1473,108 @@ export async function runSemanticSearch({
     throw err;
   }
 
-  const params = parseSemanticSearchParams(req.query);
-
-  const advertisement = resolveSemanticRetrievalAdvertisement(opts);
-  if (
-    advertisement
-    && advertisement.cross_stream === false
-    && (!params.streams || params.streams.length === 0)
-  ) {
-    const err = new Error('streams[] is required when cross_stream search is disabled');
-    err.code = 'invalid_request';
-    err.param = 'streams';
-    throw err;
-  }
-
   const isOwner = tokenInfo.pdpp_token_kind === 'owner';
+  const advertisement = resolveSemanticRetrievalAdvertisement(opts);
+  const actor = isOwner
+    ? { kind: 'owner', subject_id: tokenInfo.subject_id ?? null }
+    : {
+        kind: 'client',
+        subject_id: tokenInfo.subject_id ?? null,
+        client_id: tokenInfo.client_id ?? null,
+        grant_id: tokenInfo.grant_id ?? null,
+        grant: tokenInfo.grant ?? { streams: [] },
+      };
 
-  // Per-mode planning (mirrors runLexicalSearch).
-  let perConnectorPlans;
-  if (isOwner) {
-    const connectorIds = await resolveOwnerVisibleConnectorIds();
-    perConnectorPlans = [];
-    for (const connectorId of connectorIds) {
-      let manifest;
+  // Native dependencies wire the operation against the existing embedding
+  // pipeline, vector index, snapshot tables, and records-table snippet
+  // hydration. The operation owns the public-contract slice; these helpers
+  // keep their backend-specific semantics untouched.
+  const dependencies = {
+    getAdvertisement: () => advertisement,
+    getCurrentBackendIdentity: () => hashBackendIdentity(backend),
+    listOwnerVisibleConnectorIds: () => resolveOwnerVisibleConnectorIds(),
+    resolveOwnerManifestForConnector: async (connectorId) => {
       try {
         const ownerScope = resolveOwnerScopeForConnector(connectorId);
         const resolved = await resolveOwnerManifestFromScope(ownerScope);
-        manifest = resolved.manifest;
+        return resolved.manifest ?? null;
       } catch {
-        continue;
+        // Skip connectors whose manifest cannot be resolved. The owner can
+        // still read the others; one broken connector should not break the
+        // whole search.
+        return null;
       }
-      const grant = buildOwnerReadGrantForManifest(manifest);
+    },
+    buildOwnerReadGrantForManifest: (manifest) =>
+      buildOwnerReadGrantForManifest(manifest),
+    resolveClientManifest: async () => {
+      const grantResolved = await resolveGrantManifest(tokenInfo);
+      return grantResolved.manifest;
+    },
+    buildSearchPlanForGrant: ({
+      manifest,
+      grant,
+      streamsFilter,
+      filter,
+      filteredStream,
+      connectorId,
+    }) => {
       const compiledFilter = compileSingleStreamSearchFilter({
         manifest,
         grant,
-        streamName: params.filteredStream,
-        filter: params.filter,
+        streamName: filteredStream,
+        filter,
       });
-      const planEntries = buildSemanticSearchPlanForGrant({
+      return buildSemanticSearchPlanForGrant({
         manifest,
         grant,
-        streamsFilter: params.streams,
+        streamsFilter,
         compiledFilter,
         connectorId,
       });
-      if (planEntries.length === 0) continue;
-      perConnectorPlans.push({ connectorId, manifest, grant, planEntries });
-    }
-  } else {
-    const grantResolved = await resolveGrantManifest(tokenInfo);
-    const manifest = grantResolved.manifest;
-    const grant = tokenInfo.grant;
-    const connectorId = grant?.source?.connector_id ?? null;
+    },
+    buildSnapshot: (args) => buildSemanticSnapshot(args),
+    persistSnapshot: (snapshot) => persistSemanticSnapshot(snapshot),
+    loadSnapshot: (snapshotId) => loadSemanticSnapshot(snapshotId),
+    hydrateResult: ({ hit }) => hydrateSemanticSearchResult({ hit }),
+    formatRecordUrl: ({ stream, recordKey, connectorId, isOwner: ownerActor }) => {
+      const recordPath = `/v1/streams/${encodeURIComponent(stream)}/records/${encodeURIComponent(recordKey)}`;
+      return ownerActor
+        ? `${recordPath}?connector_id=${encodeURIComponent(connectorId)}`
+        : recordPath;
+    },
+  };
 
-    if (params.streams) {
-      for (const s of params.streams) {
-        const inGrant = (grant?.streams || []).some((g) => g.name === s);
-        if (!inGrant) {
-          const err = new Error(`Stream '${s}' not in grant`);
-          err.code = 'grant_stream_not_allowed';
-          throw err;
-        }
-      }
+  let result;
+  try {
+    result = await executeSearchSemantic(
+      { actor, query: req.query },
+      dependencies,
+    );
+  } catch (err) {
+    if (err instanceof SearchSemanticRequestError) {
+      // Translate operation-typed errors into the plain-object error shape
+      // the existing native error path expects (`err.code`, optional
+      // `err.param`). Preserves the previous public error envelope.
+      const translated = new Error(err.message);
+      translated.code = err.code;
+      if (err.param !== undefined) translated.param = err.param;
+      throw translated;
     }
-
-    const planEntries = buildSemanticSearchPlanForGrant({
-      manifest,
-      grant,
-      streamsFilter: params.streams,
-      compiledFilter: compileSingleStreamSearchFilter({
-        manifest,
-        grant,
-        streamName: params.filteredStream,
-        filter: params.filter,
-      }),
-      connectorId,
-    });
-    perConnectorPlans = planEntries.length === 0
-      ? []
-      : [{ connectorId, manifest, grant, planEntries }];
-  }
-
-  // Resolve cursor → snapshot.
-  let snapshotId;
-  let snapshot;
-  if (params.cursor) {
-    const decoded = decodeSemanticSearchCursor(params.cursor);
-    if (!decoded) {
-      const err = new Error('Cursor is malformed');
-      err.code = 'invalid_cursor';
-      throw err;
-    }
-    snapshotId = decoded.snap;
-    snapshot = await loadSemanticSnapshot(snapshotId);
-    if (!snapshot) {
-      const err = new Error('Cursor refers to an expired or unknown snapshot');
-      err.code = 'invalid_cursor';
-      throw err;
-    }
-    // Stale-cursor check: backend identity on the snapshot must match the
-    // current backend. Any divergence ⇒ invalid_cursor (the spec permits
-    // this, and recomputing under a different model would be dishonest).
-    const currentBackendHash = hashBackendIdentity(backend);
-    if (snapshot.backend_hash !== currentBackendHash) {
-      const err = new Error('Cursor predates a backend identity change');
-      err.code = 'invalid_cursor';
-      throw err;
-    }
-  } else {
-    snapshot = await buildSemanticSnapshot({
-      q: params.q,
-      perConnectorPlans,
-      isOwner,
-    });
-    snapshotId = snapshot.snapshot_id;
-    await persistSemanticSnapshot(snapshot);
-  }
-
-  const offset = params.cursor
-    ? (decodeSemanticSearchCursor(params.cursor)?.off ?? 0)
-    : 0;
-  const limit = params.limit;
-  const allHits = snapshot.results;
-  const slice = allHits.slice(offset, offset + limit);
-  const hasMore = offset + limit < allHits.length;
-  const nextCursor = hasMore
-    ? encodeSemanticSearchCursor({ snap: snapshotId, off: offset + limit })
-    : null;
-
-  // Hydrate verbatim grant-safe snippets and build search_result objects.
-  const emitScore = advertisesSemanticScore(advertisement);
-  const data = [];
-  for (const hit of slice) {
-    data.push(await buildSemanticSearchResult({ hit, isOwner, emitScore }));
+    throw err;
   }
 
   return {
     envelope: {
       object: 'list',
       url: '/v1/search/semantic',
-      has_more: hasMore,
-      ...(nextCursor ? { next_cursor: nextCursor } : {}),
-      data,
+      has_more: result.envelope.has_more,
+      ...(result.envelope.next_cursor
+        ? { next_cursor: result.envelope.next_cursor }
+        : {}),
+      data: result.envelope.data,
     },
-    disclosureData: {
-      query_shape: 'search_semantic',
-      record_count: data.length,
-      has_more: hasMore,
-      mode: isOwner ? 'owner' : 'client',
-      connector_count: perConnectorPlans.length,
-    },
+    disclosureData: result.disclosureData,
   };
 }
 
@@ -1757,24 +1668,27 @@ async function buildSemanticSnapshot({ q, perConnectorPlans, isOwner }) {
   };
 }
 
-// ─── search_result shaping + grant-safe snippets ───────────────────────────
+// ─── search_result hydration + grant-safe snippets ─────────────────────────
 
-async function buildSemanticSearchResult({ hit, isOwner, emitScore }) {
-  const recordPath = `/v1/streams/${encodeURIComponent(hit.stream)}/records/${encodeURIComponent(hit.recordKey)}`;
-  const recordUrl = isOwner
-    ? `${recordPath}?connector_id=${encodeURIComponent(hit.connectorId)}`
-    : recordPath;
-
-  // Hydrate the emitted_at + snippet source text from the records table.
-  // Snippet is a verbatim contiguous substring of the matched field's stored
-  // value. NEVER a paraphrase, summary, or model-generated text.
+/**
+ * Hydrate `emitted_at` and `snippet` for one semantic snapshot hit. The
+ * operation calls this once per emitted hit so the records-table read stays
+ * in this native shell rather than crossing the operation boundary.
+ *
+ * Snippet is a verbatim contiguous substring of the matched field's stored
+ * value. NEVER a paraphrase, summary, or model-generated text. Field-grant
+ * intersection happens in `buildSemanticSearchPlanForGrant` (the snippet's
+ * source field is one of the grant-authorized matched fields, so the
+ * snippet is grant-safe by construction).
+ */
+function hydrateSemanticSearchResult({ hit }) {
   const recordRow = getOne(
     referenceQueries.searchSemanticRecordsGetRecordByKey,
     [hit.connectorId, hit.stream, hit.recordKey],
   );
 
   const emittedAt = recordRow?.emitted_at ?? null;
-  let snippet;
+  let snippet = null;
   if (recordRow?.record_json) {
     try {
       const data = JSON.parse(recordRow.record_json);
@@ -1786,26 +1700,7 @@ async function buildSemanticSearchResult({ hit, isOwner, emitScore }) {
       // Corrupt record_json — skip snippet rather than fabricate.
     }
   }
-
-  const result = {
-    object: 'search_result',
-    stream: hit.stream,
-    record_key: hit.recordKey,
-    connector_id: hit.connectorId,
-    record_url: recordUrl,
-    emitted_at: emittedAt,
-    matched_fields: hit.matchedFields,
-    retrieval_mode: 'semantic', // v1: lexical_blending is false
-  };
-  if (emitScore && Number.isFinite(hit.distance)) {
-    result.score = {
-      kind: 'semantic_distance',
-      value: hit.distance,
-      order: 'lower_is_better',
-    };
-  }
-  if (snippet) result.snippet = snippet;
-  return result;
+  return { emittedAt, snippet };
 }
 
 /**
@@ -1888,30 +1783,3 @@ async function loadSemanticSnapshot(snapshotId) {
   };
 }
 
-/**
- * Semantic cursors are prefixed to distinguish them from lexical cursors
- * on the wire. The prefix is checked in decode; a cursor without the
- * prefix is rejected as invalid_cursor. This realizes the spec scenario
- * "cursor from /v1/search passed to /v1/search/semantic → invalid_cursor".
- */
-const SEMANTIC_CURSOR_PREFIX = 'sem1.';
-
-function encodeSemanticSearchCursor({ snap, off }) {
-  const json = JSON.stringify({ snap, off });
-  return SEMANTIC_CURSOR_PREFIX + Buffer.from(json, 'utf8').toString('base64url');
-}
-
-function decodeSemanticSearchCursor(cursor) {
-  if (typeof cursor !== 'string' || !cursor.startsWith(SEMANTIC_CURSOR_PREFIX)) {
-    return null;
-  }
-  try {
-    const body = cursor.slice(SEMANTIC_CURSOR_PREFIX.length);
-    const json = Buffer.from(body, 'base64url').toString('utf8');
-    const parsed = JSON.parse(json);
-    if (typeof parsed.snap !== 'string' || typeof parsed.off !== 'number') return null;
-    return parsed;
-  } catch {
-    return null;
-  }
-}
