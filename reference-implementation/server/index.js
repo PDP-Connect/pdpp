@@ -85,6 +85,14 @@ import {
   StreamDetailVisibilityError,
   executeStreamDetail,
 } from '../operations/rs-streams-detail/index.ts';
+import {
+  RecordsListVisibilityError,
+  executeRecordsList,
+} from '../operations/rs-records-list/index.ts';
+import {
+  RecordDetailVisibilityError,
+  executeRecordDetail,
+} from '../operations/rs-records-detail/index.ts';
 
 const AS_PORT = parseInt(process.env.AS_PORT || '7662');
 const RS_PORT = parseInt(process.env.RS_PORT || '7663');
@@ -3564,6 +3572,14 @@ function buildRsApp(opts = {}) {
   });
 
   // GET /v1/streams/:stream/records
+  // Record-list semantics live in the canonical `rs.records.list` operation
+  // (operations/rs-records-list). This route is a Fastify host adapter:
+  // it owns auth, request id / trace id, source-descriptor / manifest /
+  // grant resolution, query-received and disclosure-served instrumentation,
+  // blob-ref URL decoration, the host-shaped `url` envelope field, and
+  // response writing. It MUST NOT recompute view/fields mutual exclusion,
+  // view → fields resolution, manifest stream visibility, or owner read-
+  // grant construction locally.
   app.get('/v1/streams/:stream/records', { contract: 'listRecords' }, requireToken, async (req, res) => {
     let queryContext = null;
     try {
@@ -3572,10 +3588,9 @@ function buildRsApp(opts = {}) {
       const { actorType, actorId, traceId, scenarioId } = buildQueryActorContext(tokenInfo);
       setReferenceTraceId(res, traceId);
 
-      let grant = tokenInfo.grant;
       let sourceDescriptor = tokenInfo.pdpp_token_kind === 'owner'
         ? null
-        : buildSourceDescriptor(grant?.source);
+        : buildSourceDescriptor(tokenInfo.grant?.source);
       let storageBinding = null;
       let manifest;
       const requestParams = { ...req.query };
@@ -3617,56 +3632,48 @@ function buildRsApp(opts = {}) {
 
       await emitQueryReceived(queryContext, req);
 
-      if (tokenInfo.pdpp_token_kind === 'owner') {
-        const mStream = manifest.streams.find((stream) => stream.name === req.params.stream);
-        if (!mStream) {
-          const err = new Error(`Stream '${req.params.stream}' not found`);
-          err.code = 'not_found';
-          return await rejectQuery(res, req, queryContext, err);
-        }
-        grant = buildOwnerReadGrant(req.params.stream);
-      }
-
-      // View and fields mutual exclusion
-      if (req.query.view && req.query.fields) {
-        const err = new Error('view and fields are mutually exclusive');
-        err.code = 'invalid_request';
-        return await rejectQuery(res, req, queryContext, err);
-      }
-
-      const mStream = manifest?.streams?.find(s => s.name === req.params.stream);
-      validateRequestedQueryFieldParams(requestParams, mStream);
-
-      if (req.query.view && !requestParams.fields) {
-        const viewDef = (mStream?.views || []).find(v => v.id === req.query.view);
-        if (!viewDef) {
-          const err = new Error(`Unknown view: ${req.query.view}`);
-          err.code = 'invalid_request';
-          return await rejectQuery(res, req, queryContext, err);
-        }
-        // Check view is within grant fields
-        const streamGrant = grant.streams.find(s => s.name === req.params.stream);
-        if (streamGrant?.fields) {
-          const unauthorized = viewDef.fields.filter(f => !streamGrant.fields.includes(f));
-          if (unauthorized.length) {
-            const err = new Error(`View includes fields not in grant: ${unauthorized.join(', ')}`);
-            err.code = 'field_not_granted';
-            return await rejectQuery(res, req, queryContext, err);
-          }
-        }
-        requestParams.fields = viewDef.fields;
-        delete requestParams.view;
-      }
-
-      const result = await queryRecords(storageBinding, req.params.stream, grant, requestParams, manifest);
-
-      const disclosureEventData = {
-        source: sourceDescriptor,
-        query_shape: 'record_list',
-        record_count: result.data?.length || 0,
-        has_more: !!result.has_more,
-        has_next_changes_since: !!result.next_changes_since,
+      const operationInput = {
+        actor: tokenInfo.pdpp_token_kind === 'owner'
+          ? { kind: 'owner', subject_id: tokenInfo.subject_id || null }
+          : {
+              kind: 'client',
+              subject_id: tokenInfo.subject_id || null,
+              client_id: tokenInfo.client_id || null,
+              grant_id: tokenInfo.grant_id || null,
+            },
+        streamName: req.params.stream,
+        requestParams,
+        rawQueryView: typeof req.query.view === 'string' ? req.query.view : null,
+        rawQueryFields:
+          typeof req.query.fields === 'string'
+            ? req.query.fields
+            : Array.isArray(req.query.fields) || req.query.fields == null
+              ? null
+              : String(req.query.fields),
       };
+
+      const dependencies = {
+        getSourceDescriptor: () => sourceDescriptor,
+        getManifest: () => manifest,
+        getGrant: () => tokenInfo.grant || { streams: [] },
+        queryRecords: (stream, grant, params, m) =>
+          queryRecords(storageBinding, stream, grant, params, m),
+        decorateRecord: (record) => decorateRecordBlobRefs(record),
+        validateRequestFields: (params, manifestStream) =>
+          validateRequestedQueryFieldParams(params, manifestStream),
+      };
+
+      let result;
+      try {
+        result = await executeRecordsList(operationInput, dependencies);
+      } catch (err) {
+        if (err instanceof RecordsListVisibilityError) {
+          const mappedErr = new Error(err.message);
+          mappedErr.code = err.code;
+          return await rejectQuery(res, req, queryContext, mappedErr);
+        }
+        throw err;
+      }
 
       await emitSpineEvent({
         event_type: 'disclosure.served',
@@ -3683,12 +3690,11 @@ function buildRsApp(opts = {}) {
         client_id: tokenInfo.client_id || null,
         stream_id: req.params.stream,
         token_id: req.headers.authorization?.slice(7) || null,
-        data: disclosureEventData,
+        data: { source: result.sourceDescriptor, ...result.disclosureData },
       });
 
       res.json({
-        ...result,
-        data: result.data.map(decorateRecordBlobRefs),
+        ...result.result,
         url: req.path,
       });
     } catch (err) {
@@ -3701,6 +3707,13 @@ function buildRsApp(opts = {}) {
   });
 
   // GET /v1/streams/:stream/records/:id
+  // Single-record-read semantics live in the canonical `rs.records.get`
+  // operation (operations/rs-records-detail). This route is a Fastify host
+  // adapter: it owns auth, request id / trace id, source-descriptor /
+  // manifest / grant resolution, URI decoding of the path-level record id,
+  // query-received and disclosure-served instrumentation, blob-ref URL
+  // decoration, and response writing. It MUST NOT recompute owner read-
+  // grant construction or `not_found` mapping locally.
   app.get('/v1/streams/:stream/records/:id', { contract: 'getRecord' }, requireToken, async (req, res) => {
     let queryContext = null;
     try {
@@ -3708,11 +3721,10 @@ function buildRsApp(opts = {}) {
       const queryId = ensureRequestId(res);
       const { actorType, actorId, traceId, scenarioId } = buildQueryActorContext(tokenInfo);
       setReferenceTraceId(res, traceId);
-      let grant = tokenInfo.grant;
       let storageBinding = null;
       let sourceDescriptor = tokenInfo.pdpp_token_kind === 'owner'
         ? null
-        : buildSourceDescriptor(grant?.source);
+        : buildSourceDescriptor(tokenInfo.grant?.source);
       let manifest;
       const requestedRecordId = decodeURIComponent(req.params.id);
       queryContext = {
@@ -3738,7 +3750,6 @@ function buildRsApp(opts = {}) {
         const ownerResolved = await resolveOwnerManifestFromScope(ownerScope, opts);
         storageBinding = ownerResolved.storageBinding;
         manifest = ownerResolved.manifest;
-        grant = buildOwnerReadGrant(req.params.stream);
         sourceDescriptor = buildSourceDescriptor(ownerScope.source);
         queryContext.sourceDescriptor = sourceDescriptor;
       } else {
@@ -3749,11 +3760,51 @@ function buildRsApp(opts = {}) {
         queryContext.sourceDescriptor = sourceDescriptor;
       }
       await emitQueryReceived(queryContext, req);
-      const record = await getRecord(storageBinding, req.params.stream,
-        requestedRecordId, grant, manifest, {
+
+      const operationInput = {
+        actor: tokenInfo.pdpp_token_kind === 'owner'
+          ? { kind: 'owner', subject_id: tokenInfo.subject_id || null }
+          : {
+              kind: 'client',
+              subject_id: tokenInfo.subject_id || null,
+              client_id: tokenInfo.client_id || null,
+              grant_id: tokenInfo.grant_id || null,
+            },
+        streamName: req.params.stream,
+        recordId: requestedRecordId,
+        expandOptions: {
           expand: req.query.expand,
           expand_limit: req.query.expand_limit,
-        });
+        },
+      };
+
+      const dependencies = {
+        getSourceDescriptor: () => sourceDescriptor,
+        getManifest: () => manifest,
+        getGrant: () => tokenInfo.grant || { streams: [] },
+        getRecord: (stream, recordId, grant, m, options) =>
+          getRecord(storageBinding, stream, recordId, grant, m, options),
+        decorateRecord: (record) => decorateRecordBlobRefs(record),
+      };
+
+      // The native `getRecord` capability throws an `Error` carrying
+      // `code: 'not_found'` for missing or grant-filtered records, so the
+      // operation's null-record check is unreachable here — that branch
+      // only fires for hosts whose `getRecord` returns null on miss
+      // (e.g., the sandbox fixture). Native `not_found` errors flow
+      // through the existing outer catch into `rejectQuery`.
+      let result;
+      try {
+        result = await executeRecordDetail(operationInput, dependencies);
+      } catch (err) {
+        if (err instanceof RecordDetailVisibilityError) {
+          const mappedErr = new Error(err.message);
+          mappedErr.code = err.code;
+          return await rejectQuery(res, req, queryContext, mappedErr);
+        }
+        throw err;
+      }
+
       await emitSpineEvent({
         event_type: 'disclosure.served',
         trace_id: traceId,
@@ -3769,16 +3820,9 @@ function buildRsApp(opts = {}) {
         client_id: tokenInfo.client_id || null,
         stream_id: req.params.stream,
         token_id: req.headers.authorization?.slice(7) || null,
-        data: {
-          source: sourceDescriptor,
-          query_shape: 'record_detail',
-          record_count: record ? 1 : 0,
-          has_more: false,
-          has_next_changes_since: false,
-          requested_record_id: requestedRecordId,
-        },
+        data: { source: result.sourceDescriptor, ...result.disclosureData },
       });
-      res.json(decorateRecordBlobRefs(record));
+      res.json(result.record);
     } catch (err) {
       if (queryContext) {
         await emitQueryReceived(queryContext, req);

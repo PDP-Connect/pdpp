@@ -1037,59 +1037,13 @@ function latestRecordTimeForStream(streamKey: string): string | null {
 // is intentionally still exported so the fixture dependencies share one
 // envelope assembler with the schema and stream-detail fixtures.
 
-// Records list / detail: live record shape is `{ object: "record", id,
-// stream, data, emitted_at }`. The list envelope adds `url`.
-
-export interface LiveStreamRecord {
-  data: Readonly<Record<string, unknown>>;
-  emitted_at: string;
-  id: string;
-  object: "record";
-  stream: string;
-}
-
-function recordToLiveRecord(record: DemoRecord): LiveStreamRecord {
-  return {
-    object: "record",
-    id: record.record_id,
-    stream: record.stream,
-    data: { ...record.fields },
-    emitted_at: record.ingested_at,
-  };
-}
-
-export function buildLiveRecordsList(opts: {
-  connector_id?: string;
-  cursor?: string | null;
-  limit?: number;
-  stream: string;
-}): LiveListEnvelope<LiveStreamRecord> | null {
-  if (!DEMO_STREAMS.some((s) => s.key === opts.stream)) {
-    return null;
-  }
-  const matching = DEMO_RECORDS.filter((record) => {
-    if (record.stream !== opts.stream) {
-      return false;
-    }
-    if (opts.connector_id && record.connector_id !== opts.connector_id) {
-      return false;
-    }
-    return true;
-  });
-  const sorted = sortRecordsNewestFirst(matching);
-  return paginateLive(sorted.map(recordToLiveRecord), {
-    ...opts,
-    url: `/sandbox/v1/streams/${encodeURIComponent(opts.stream)}/records`,
-  });
-}
-
-export function buildLiveRecordDetail(streamKey: string, recordId: string): LiveStreamRecord | null {
-  const record = DEMO_RECORDS.find((r) => r.stream === streamKey && r.record_id === recordId);
-  if (!record) {
-    return null;
-  }
-  return recordToLiveRecord(record);
-}
+// Records list / detail are mounted through the canonical operation
+// capsules `rs.records.list` and `rs.records.get` (see
+// `reference-implementation/operations/rs-records-list` /
+// `rs-records-detail`). The previous website-local
+// `buildLiveRecordsList` / `buildLiveRecordDetail` builders are deleted;
+// fixture wiring lives in `./operations-fixtures.ts` and the public
+// sandbox routes mount the operation directly.
 
 // Search: live envelope is `{ object: "list", url: "/v1/search", has_more,
 // [next_cursor], data: [{ object: "search_result", stream, record_key,
