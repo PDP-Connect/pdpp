@@ -6,7 +6,7 @@
 
 - Add a `postgres` Compose service gated behind the `postgres` profile so default `docker compose up` is unaffected.
 - Use a pgvector-capable Postgres image (`pgvector/pgvector:pg16`) so future semantic/vector proof slices can reuse the same service without an image swap. The current connector-state/scheduler conformance test does not use the `vector` extension.
-- Expose the host port via `PDPP_POSTGRES_PORT`, defaulting to `55432` to avoid colliding with operator-installed Postgres on `5432`.
+- Expose the host port via `PDPP_POSTGRES_PORT`, defaulting to `55432` to avoid colliding with operator-installed Postgres on `5432`, and bind to loopback by default via `PDPP_POSTGRES_BIND_HOST=127.0.0.1`.
 - Persist data in a named volume (`pdpp-postgres-data`) so a proof run survives an intentional container recreate.
 - Add a `pg_isready` healthcheck so `docker compose --profile postgres up -d --wait postgres` is reliable.
 - Document that this is a proof/test backend only, not a runtime backend, and that the `reference` service does not depend on it.
