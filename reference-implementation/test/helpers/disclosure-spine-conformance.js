@@ -75,23 +75,33 @@ export function runDisclosureSpineConformance({ label, test, makeDriver }) {
   const t = (name, fn) => test(`[conformance:${label}] ${name}`, fn);
 
   // 1. Append/list ordering for a single correlation. Pins the append-order
-  //    invariant that downstream summarizers rely on.
-  t('append/list preserves append order across one trace correlation', async () => {
+  //    invariant that downstream summarizers rely on. The seed deliberately
+  //    uses a *non-monotonic* `occurred_at` schedule so that a driver that
+  //    sorts by wall-clock time would diverge from the append sequence — the
+  //    only property that makes this scenario pass is honoring the append
+  //    order itself.
+  t('append/list preserves append order even when occurred_at is non-monotonic', async () => {
     const driver = await makeDriver();
     await driver.setup();
     try {
       const traceId = 'trc_seq_1';
-      const baseTs = Date.parse('2026-04-01T00:00:00.000Z');
-      const sequence = ['a', 'b', 'c', 'd', 'e'];
+      // Wall-clock schedule decoupled from append index. If the driver sorted
+      // by occurred_at it would produce: c (00), a (05), e (07), b (10), d (12).
+      // The append order is: a, b, c, d, e. Any timestamp-ordered driver
+      // therefore fails this scenario.
+      const sequence = [
+        { tag: 'a', occurred_at: '2026-04-01T00:00:05.000Z' },
+        { tag: 'b', occurred_at: '2026-04-01T00:00:10.000Z' },
+        { tag: 'c', occurred_at: '2026-04-01T00:00:00.000Z' },
+        { tag: 'd', occurred_at: '2026-04-01T00:00:12.000Z' },
+        { tag: 'e', occurred_at: '2026-04-01T00:00:07.000Z' },
+      ];
       const appended = [];
-      for (let i = 0; i < sequence.length; i += 1) {
+      for (const step of sequence) {
         const r = await driver.append(evt({
           trace_id: traceId,
-          event_type: `reference.test.${sequence[i]}`,
-          // Strictly increasing timestamps — keeps "append order == time order"
-          // a property of the seed, so any driver that orders by occurred_at
-          // OR by insertion order produces the same sequence.
-          occurred_at: new Date(baseTs + i * 1000).toISOString(),
+          event_type: `reference.test.${step.tag}`,
+          occurred_at: step.occurred_at,
         }));
         assert.ok(r && r.event_id, 'append must return a record with event_id');
         appended.push(r.event_id);
@@ -102,13 +112,46 @@ export function runDisclosureSpineConformance({ label, test, makeDriver }) {
       assert.deepEqual(
         eventIds,
         appended,
-        'listPage must return events in append order',
+        'listPage must return events in append order, not occurred_at order',
       );
       const types = page.events.map((e) => e.event_type);
       assert.deepEqual(
         types,
-        sequence.map((s) => `reference.test.${s}`),
-        'listPage must surface event_type unchanged in append order',
+        sequence.map((s) => `reference.test.${s.tag}`),
+        'listPage must surface event_type in append order, not occurred_at order',
+      );
+    } finally {
+      await driver.teardown();
+    }
+  });
+
+  // 1b. Append-order tiebreaker when occurred_at is identical across events.
+  //     A driver that orders by occurred_at alone would produce an undefined
+  //     order across these events; the append sequence is the only stable
+  //     answer, and downstream summarizers depend on it.
+  t('append order is preserved when multiple events share the same occurred_at', async () => {
+    const driver = await makeDriver();
+    await driver.setup();
+    try {
+      const traceId = 'trc_seq_tie';
+      const sharedTs = '2026-04-01T01:00:00.000Z';
+      const tags = ['a', 'b', 'c', 'd'];
+      const appended = [];
+      for (const tag of tags) {
+        const r = await driver.append(evt({
+          trace_id: traceId,
+          event_type: `reference.test.${tag}`,
+          occurred_at: sharedTs,
+        }));
+        appended.push(r.event_id);
+      }
+
+      const page = await driver.listPage('trace', traceId, { limit: 100 });
+      const eventIds = page.events.map((e) => e.event_id);
+      assert.deepEqual(
+        eventIds,
+        appended,
+        'listPage must use append sequence as the tiebreaker when occurred_at is identical',
       );
     } finally {
       await driver.teardown();
@@ -175,21 +218,35 @@ export function runDisclosureSpineConformance({ label, test, makeDriver }) {
 
   // 3. Terminal/latest event lookup. The last event in a correlation's
   //    timeline is the terminal event; consumers (summary, status derivation)
-  //    rely on this being stable.
-  t('latest event lookup returns the most recently appended event', async () => {
+  //    rely on this being stable. The seed schedule deliberately makes the
+  //    last *appended* event carry an *earlier* `occurred_at` than its
+  //    predecessor — a clock-skew shape that real-world emitters can produce
+  //    when retried or when several actors share the same correlation. A
+  //    driver that returned the wall-clock max as the terminal event would
+  //    surface the wrong row.
+  t('latest event lookup returns the most recently appended event even with non-monotonic occurred_at', async () => {
     const driver = await makeDriver();
     await driver.setup();
     try {
       const traceId = 'trc_terminal';
-      const baseTs = Date.parse('2026-04-03T00:00:00.000Z');
-      const types = ['start', 'progress', 'progress', 'finish'];
+      // Append schedule (index, event_type, occurred_at):
+      //   0 start    2026-04-03T00:00:00Z
+      //   1 progress 2026-04-03T00:00:05Z
+      //   2 progress 2026-04-03T00:00:30Z   <- highest occurred_at
+      //   3 finish   2026-04-03T00:00:10Z   <- last appended; earlier than [2]
+      const schedule = [
+        { type: 'start',    status: 'in_progress', occurred_at: '2026-04-03T00:00:00.000Z' },
+        { type: 'progress', status: 'in_progress', occurred_at: '2026-04-03T00:00:05.000Z' },
+        { type: 'progress', status: 'in_progress', occurred_at: '2026-04-03T00:00:30.000Z' },
+        { type: 'finish',   status: 'succeeded',   occurred_at: '2026-04-03T00:00:10.000Z' },
+      ];
       let lastId = null;
-      for (let i = 0; i < types.length; i += 1) {
+      for (const step of schedule) {
         const r = await driver.append(evt({
           trace_id: traceId,
-          event_type: `reference.test.${types[i]}`,
-          status: i === types.length - 1 ? 'succeeded' : 'in_progress',
-          occurred_at: new Date(baseTs + i * 1000).toISOString(),
+          event_type: `reference.test.${step.type}`,
+          status: step.status,
+          occurred_at: step.occurred_at,
         }));
         lastId = r.event_id;
       }
@@ -201,7 +258,7 @@ export function runDisclosureSpineConformance({ label, test, makeDriver }) {
       const terminal = page.events.at(-1);
       assert.ok(terminal, 'timeline must have at least one event');
       assert.equal(terminal.event_id, lastId,
-        'terminal event must be the last appended event');
+        'terminal event must be the last appended event, not the max-occurred_at event');
       assert.equal(terminal.event_type, 'reference.test.finish');
       assert.equal(terminal.status, 'succeeded');
     } finally {
