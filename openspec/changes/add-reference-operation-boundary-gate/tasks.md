@@ -27,3 +27,11 @@
 - [x] 5.5 Run `openspec validate add-reference-operation-boundary-gate --strict`. (Valid.)
 - [x] 5.6 Run `openspec validate --all --strict`. (53 passed / 0 failed.)
 - [x] 5.7 Run `pnpm workstreams:status -- --no-fail` before owner review.
+
+## 6. Owner-review follow-up: cover bare side-effect imports
+
+- [x] 6.1 Tighten `assertOperationBoundary` to fail on bare side-effect imports (`import "fastify";`, `import "../server/db";`) in addition to `from`-style imports. Implementation uses two per-needle regexes (`\bfrom\s*['"]<x>` and `\bimport\s+['"]<x>`) so every standard ES static-import shape — bare, default, namespace, named, type-only, named re-export, star re-export — is caught.
+- [x] 6.2 Add `reference-implementation/test/operation-boundary-helper.test.js` as a permanent falsifiability harness for the matcher (12 cases: seven import shapes, the dynamic-import exemption, comment-only mentions, and the `process.env` rule). A future weakening of the matcher fails this test rather than silently turning the gate green.
+- [x] 6.3 Manually verify the new shape: introduced `import "fastify";` and `import "../server/db";` (bare) into `operations/rs-streams-list/index.ts`. Both `operations-boundary.test.js` and `rs-streams-list-boundary.test.js` failed with the named-needle assertion. Reverted; `git diff` clean.
+- [x] 6.4 Update design and spec wording so the rule explicitly enumerates bare side-effect imports and the falsifiability harness.
+- [x] 6.5 Re-run targeted tests (25/25), typecheck, check, `openspec validate add-reference-operation-boundary-gate --strict`, `openspec validate --all --strict`, and `pnpm workstreams:status -- --no-fail`.

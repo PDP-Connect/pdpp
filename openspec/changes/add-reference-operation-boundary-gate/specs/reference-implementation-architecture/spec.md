@@ -12,7 +12,8 @@ The reference implementation SHALL gate every canonical reference operation modu
 
 #### Scenario: An operation module imports a forbidden concrete
 
-- **WHEN** any operation module under `reference-implementation/operations/<name>/index.ts` introduces a static import from `fastify`, `express`, `next/`, `better-sqlite3`, `pg`, `./db`, `../db`, `../lib/db`, `../server/db`, `../server/records`, `../server/auth`, `../server/index`, `apps/web`, or `_demo/`
+- **WHEN** any operation module under `reference-implementation/operations/<name>/index.ts` introduces a static import that resolves a specifier of `fastify`, `express`, `next/`, `better-sqlite3`, `pg`, `./db`, `../db`, `../lib/db`, `../server/db`, `../server/records`, `../server/auth`, `../server/index`, `apps/web`, or `_demo/`
+- **AND** the import takes any standard ES static-import shape — bare side-effect (`import "<x>";`), default (`import x from "<x>";`), namespace (`import * as x from "<x>";`), named (`import { x } from "<x>";`), type-only (`import type { X } from "<x>";`), or re-export (`export { x } from "<x>";`, `export * from "<x>";`)
 - **THEN** the discovery-based boundary test SHALL fail with a message that names the module and the forbidden import
 
 #### Scenario: An operation module references `process.env` outside of comments

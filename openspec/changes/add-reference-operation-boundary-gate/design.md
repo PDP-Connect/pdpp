@@ -28,7 +28,7 @@ Goals:
 Non-goals:
 
 - No production abstraction. No new `OperationRegistry`, `ImportGuard`, or build-time linter. This is a test-only conformance gate.
-- No AST-based static analysis. A grep-style scan over `from "<module>"` and `process.env` is sufficient for the static-import drift class. Dynamic `require()` / `await import()` and string concatenation are out of scope (the existing per-operation tests already document this trade-off).
+- No AST-based static analysis. Cheap regexes over the two static-import shapes (`from '<x>'` and bare `import '<x>'`) plus a comment-stripped `process.env` scan are sufficient for the static-import drift class. Dynamic `require()` / `await import()` and string-concatenated specifiers are out of scope.
 - No widening of the forbidden list beyond what the three existing tests already enforce, except to add the comment-stripping rule and to fold them into one place.
 - No moving of the per-operation route / builder-demotion tests. Those are not the rule under generalization.
 
@@ -53,15 +53,22 @@ The shared list consolidates what the three existing tests already assert:
 
 Plus the `process.env` rule (after stripping comments). No new entries; this is consolidation.
 
-### 4. Grep-style match, not AST
+### 4. Regex match against both static-import shapes, not AST
 
-The check looks for the literal substrings `from '<needle>` and `from "<needle>` in the source. Same approach the three existing tests use today; same trade-off — it cannot catch dynamically resolved imports, but it does catch the static-import drift class this gate is meant to prevent. AST-level scanning would add a TypeScript parser dependency for marginal coverage gain on a problem that has not surfaced.
+The check uses two cheap per-needle regexes against the raw source:
+
+- `\bfrom\s*['"]<needle>` — covers `import x from`, `import type { X } from`, `import * as x from`, `import { x } from`, `export { x } from`, and `export * from`.
+- `\bimport\s+['"]<needle>` — covers bare side-effect imports such as `import "fastify";` and `import "../server/db";`.
+
+Together they catch every standard ES static-import shape that resolves a module specifier at parse time. An earlier draft of this gate used a `from '<x>'` substring check; that draft missed bare side-effect imports, which would have been a silent gate bypass. The spec/design require failure on any forbidden static import, so the matcher must cover both shapes.
+
+The regexes require whitespace or a quote immediately after `import` / `from`, so dynamic `import("…")` is intentionally not matched here — dynamic imports remain an out-of-scope trade-off (a separate review concern that a later change may widen). AST-level scanning would add a TypeScript parser dependency for marginal coverage gain on a drift class that has not surfaced.
+
+A unit-style falsifiability test (`reference-implementation/test/operation-boundary-helper.test.js`) pins the matcher against all seven static-import shapes (bare, default, namespace, named, type-only, named re-export, star re-export) plus the dynamic-import exemption and the comment-stripping rule. A future weakening of the matcher fails that test rather than silently turning the gate green.
 
 ### 5. Comments are stripped before the `process.env` check, not before the import check
 
-Documentation in operation module headers names the rule (e.g., "SHALL NOT import Fastify, Next, SQLite, Postgres, ..."). The import-substring check runs against the raw source because a forbidden import only appears in `from '<x>'` form, which is not a phrase used in prose. The `process.env` check runs against comment-stripped source because operation-module headers explicitly mention `process.env` as part of stating the rule.
-
-This matches the existing per-operation tests verbatim.
+Documentation in operation module headers names the rule (e.g., "SHALL NOT import Fastify, Next, SQLite, Postgres, ..."). The import-regex check runs against the raw source because a forbidden import only appears in literal `import …` / `from …` specifier shape, which is unlikely to occur in prose; the falsifiability test pins this assumption. The `process.env` check runs against comment-stripped source because operation-module headers explicitly mention `process.env` as part of stating the rule.
 
 ### 6. Existing per-operation tests are reduced, not deleted
 
