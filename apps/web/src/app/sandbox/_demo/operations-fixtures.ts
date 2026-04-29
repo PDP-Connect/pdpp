@@ -47,7 +47,7 @@ export interface SandboxStreamsListFixtureOptions {
  * sandbox query-param semantics.
  */
 export function createSandboxStreamsListDependencies(
-  options: SandboxStreamsListFixtureOptions = {},
+  options: SandboxStreamsListFixtureOptions = {}
 ): StreamsListDependencies {
   const filtered = options.connectorId
     ? DEMO_STREAMS.filter((s) => s.connector_id === options.connectorId)

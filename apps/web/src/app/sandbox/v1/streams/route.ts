@@ -33,8 +33,8 @@ export async function GET(request: Request): Promise<Response> {
   const { streams } = await executeStreamsList(
     { actor: { kind: "owner", subject_id: null } },
     createSandboxStreamsListDependencies({
-      ...(params.connector_id !== undefined ? { connectorId: params.connector_id } : {}),
-    }),
+      ...(params.connector_id === undefined ? {} : { connectorId: params.connector_id }),
+    })
   );
 
   // Sandbox-specific envelope: paginated `{object:'list', has_more, data,
@@ -48,13 +48,13 @@ export async function GET(request: Request): Promise<Response> {
   const next = start + limit;
   const hasMore = next < streams.length;
 
-  type SandboxStream = {
-    object: "stream";
-    name: string;
-    record_count: number;
-    last_updated: string | null;
+  interface SandboxStream {
     freshness: { last_updated: string | null };
-  };
+    last_updated: string | null;
+    name: string;
+    object: "stream";
+    record_count: number;
+  }
   const data: SandboxStream[] = slice.map((s) => ({
     object: s.object,
     name: s.name,
@@ -63,12 +63,12 @@ export async function GET(request: Request): Promise<Response> {
     freshness: { last_updated: s.last_updated },
   }));
 
-  type SandboxStreamsEnvelope = {
-    object: "list";
-    has_more: boolean;
+  interface SandboxStreamsEnvelope {
     data: SandboxStream[];
+    has_more: boolean;
     next_cursor?: string;
-  };
+    object: "list";
+  }
   const envelope: SandboxStreamsEnvelope = {
     object: "list",
     has_more: hasMore,

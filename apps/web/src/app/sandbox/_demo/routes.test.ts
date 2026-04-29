@@ -102,7 +102,9 @@ test("/sandbox/v1/streams returns a live `list` of `stream` summaries", async ()
 });
 
 test("/sandbox/v1/streams supports connector_id filtering", async () => {
-  const res = await streamsListGet(new Request("https://example.invalid/sandbox/v1/streams?connector_id=acme_payroll_demo"));
+  const res = await streamsListGet(
+    new Request("https://example.invalid/sandbox/v1/streams?connector_id=acme_payroll_demo")
+  );
   const body = (await jsonOf(res)) as { data: Array<{ name: string }> };
   assert.ok(body.data.length >= 1);
 });
