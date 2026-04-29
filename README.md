@@ -232,8 +232,14 @@ the LAN — prefer the bridge IP, which limits exposure to local containers.
 
 When the bridge env vars are set but the bridge isn't reachable, runs fail
 fast with `host_browser_bridge_unavailable` rather than waiting on an
-invisible browser. When the env vars are unset, browser-backed Docker runs
-behave as before (in-container Chromium). See
+invisible browser. When the env vars are **unset** and the runtime detects
+it's running in a container (`/.dockerenv`), headed-browser acquisitions
+also fail closed with `host_browser_bridge_unavailable` — launching an
+invisible in-container Chromium for an interactive flow would silently hang
+on the operator's `auto-login` handshake. Headless container acquisitions
+are unaffected. The escape hatch for explicit X11/VNC debugging is
+`PDPP_ALLOW_HEADED_CONTAINER_BROWSER=1`, which emits a per-acquisition
+warning. See
 `openspec/changes/design-host-browser-bridge-for-docker/design.md` for the
 full design.
 
@@ -241,11 +247,13 @@ Current Docker connector-support posture:
 
 | Connector(s) | Docker posture | Operator requirement | Current caveat |
 | --- | --- | --- | --- |
-| YNAB, GitHub | Supported without browser automation. | Provide the connector's token/PAT through `.env.docker`, shell env, or Docker secrets. | Connector correctness is still subject to live upstream behavior and each connector's declared stream contract. |
-| Gmail, Slack | Supported when their non-browser inputs are supplied. | Provide credentials/tokens and mount any local archives explicitly. | Interactive credential prompts happen through the run interaction UI; archive-backed streams only see files mounted into the container. |
-| OpenAI Codex CLI, Claude Code | Filesystem-only; supported in same-host Docker when host agent state is mounted read-only. | Add a local Compose override such as `${HOME}/.codex:/root/.codex:ro` and `${HOME}/.claude:/root/.claude:ro`; no extra env vars are needed because the connectors default to `~/.codex` and `~/.claude`. | Default Compose uses a named `pdpp-home` volume, so it does **not** see your host Codex/Claude history unless you mount it. Multi-device collection belongs to the proposed local-device exporter topology. |
-| Amazon, Chase, ChatGPT, Reddit, USAA | Browser-backed; Docker needs the host browser bridge for owner-visible login/challenge flows. | Start `host-browser-bridge.ts`, export the printed bridge URL/token, then run Compose. | Today the bridge is opt-in; the remaining gap is stricter fail-fast behavior when a browser-interactive Docker run has no visible-browser backend. Future remote deployments may use a streamed-browser backend instead. |
-| Spotify and other API/import connectors | Depends on connector maturity and required credentials/files. | Supply each connector's documented env vars or mounted files. | Some connectors are still fixture/pilot quality rather than proven live-account Docker flows. |
+| YNAB, GitHub, Notion, Oura, Strava, Reddit, Gmail | API-shaped; supported in Docker. | Provide the connector's token/PAT/IMAP credentials through `.env.docker`, shell env, or Docker secrets. | Some connectors are maintainer-verified live; others are code-ready and unverified — see `packages/polyfill-connectors/CONNECTORS.md`. Connector correctness is still subject to live upstream behavior and each connector's declared stream contract. |
+| Slack | Subprocess-shaped; **not supported in the stock reference image**. | Slack's connector spawns the `slackdump` binary, which is AGPL-3.0 and is intentionally **not** bundled. To run Slack in Docker, build a derived image that installs `slackdump` (or mount it in) and set `SLACKDUMP_BIN` to its in-container path. | Stock `ghcr.io/vana-com/pdpp/reference` images cannot run the Slack connector as published. |
+| OpenAI Codex CLI, Claude Code | Filesystem-only; supported in same-host Docker when host agent state is mounted read-only. | Add a local Compose override such as `${HOME}/.codex:/root/.codex:ro` and `${HOME}/.claude:/root/.claude:ro`; no extra env vars are needed because the connectors default to `~/.codex` and `~/.claude`. | Default Compose uses a named `pdpp-home` volume, which exposes `/root/.pdpp` but **not** `/root/.codex` or `/root/.claude`. Multi-device collection belongs to the proposed `design-local-device-exporter-collection` topology. |
+| WhatsApp, Google Takeout, Twitter archive, Apple Health, iCal | Filesystem-only; supported in Docker via the `pdpp-home` named volume. | Drop extracted exports into the volume at `/root/.pdpp/imports/<connector>/`, or override the connector-specific `*_DIR` env var. iCal also accepts `ICAL_SUBSCRIPTION_URL` (pure HTTP, no mount needed). | Defaults already point at `~/.pdpp/imports/<connector>/` which the named volume covers; `docker cp` or a one-time bind-mount is the simplest way to seed the volume. |
+| iMessage | Filesystem-only; **not supported in Linux Docker**. | iMessage is hardcoded to `~/Library/Messages/chat.db` (macOS-format SQLite). | Effectively macOS-only; runs on the host, not in Linux containers. |
+| Amazon, Chase, ChatGPT, USAA + scaffolded browser-scrapers (Anthropic, Shopify, HEB, Whole Foods, LinkedIn, Meta, Loom, Uber, DoorDash) | Browser-backed; Docker needs the host browser bridge for owner-visible login/challenge flows. | Start `host-browser-bridge.ts`, export the printed bridge URL/token, then run Compose. | When no bridge is configured, headed-browser acquisitions in a container fail fast with `host_browser_bridge_unavailable` rather than launching an invisible in-container Chromium (`packages/polyfill-connectors/src/browser-launch.ts:decideContainerHeadedBrowserGate`). The four "verified" entries are end-to-end maintainer-verified; the rest are scaffolded and need DOM selectors before they're usable. Future remote deployments may use a streamed-browser backend instead. |
+| Spotify, Pocket | Blocked upstream. | n/a | Spotify's OAuth app registration is frozen as of Feb 2026; Pocket sunset 2025-07-08. |
 
 CI builds Docker targets on pull requests without pushing images. On `main`,
 semantic-release creates GitHub releases from Conventional Commits and the same
