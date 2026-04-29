@@ -152,6 +152,13 @@ instructions, prefer writing the guidance into a non-sensitive handoff file unde
 `tmp/workstreams/` and tell the worker to read that file, so the instruction is
 auditable even if the interactive pane is interrupted.
 
+When polling a reused Claude pane for completion, do not grep the entire
+scrollback for the distinctive final line alone. Old reports remain in tmux
+history and can create false positives after an owner revision. Anchor the poll
+to a new branch commit, a changed `git status`, or transcript lines after the
+most recent owner message; then verify `git status --short` and `git log
+main..HEAD` directly in the worktree before treating the worker as ready.
+
 ### Local Workstream Hub
 
 The reliable local channel is a shared directory under Git's common directory:
