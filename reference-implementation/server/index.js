@@ -29,6 +29,7 @@ import {
   registerDynamicClient, requireGrantContractAgainstManifest, requireResolvedPersistedGrantState, seedPreRegisteredClients,
   buildPendingConsentRequestUri,
 } from './auth.js';
+import { createSqliteBlobStore } from './stores/blob-store.js';
 import { createSqliteConsentStore } from './stores/consent-store.js';
 import { createSqliteOwnerDeviceAuthStore } from './stores/owner-device-auth-store.js';
 import {
@@ -4191,7 +4192,10 @@ function buildRsApp(opts = {}) {
   // header / body writing, and wiring the actor-scoped storage binding,
   // manifest, and grant into the operation's `getVisibleRecord` capability.
   // It MUST NOT recompute the binding loop, the visibility short-circuit, or
-  // the `blob_not_found` error shape locally.
+  // the `blob_not_found` error shape locally, and MUST NOT speak SQL.
+  // Storage reads flow through the `BlobStore` capability
+  // (server/stores/blob-store.js).
+  const blobStore = createSqliteBlobStore();
   app.get('/v1/blobs/:blob_id', { contract: 'getBlob' }, requireToken, async (req, res) => {
     try {
       const blobId = decodeURIComponent(req.params.blob_id);
@@ -4210,24 +4214,8 @@ function buildRsApp(opts = {}) {
       }
 
       const dependencies = {
-        loadBlob: (id) => {
-          const rows = getDb().prepare(`
-            SELECT blob_id, connector_id, stream, record_key, mime_type, size_bytes, sha256, data
-            FROM blobs
-            WHERE blob_id = ?
-            LIMIT 1
-          `).all(id);
-          return rows.length ? rows[0] : null;
-        },
-        loadBindings: (id) => getDb().prepare(`
-          SELECT connector_id, stream, record_key
-          FROM blob_bindings
-          WHERE blob_id = ?
-          UNION
-          SELECT connector_id, stream, record_key
-          FROM blobs
-          WHERE blob_id = ?
-        `).all(id, id),
+        loadBlob: (id) => blobStore.loadContentAddressedBlob(id),
+        loadBindings: (id) => blobStore.listBlobBindings(id),
         getActorConnectorId: () => storageBinding?.connector_id ?? null,
         getVisibleRecord: async (binding) => {
           const grant = tokenInfo.pdpp_token_kind === 'owner'
