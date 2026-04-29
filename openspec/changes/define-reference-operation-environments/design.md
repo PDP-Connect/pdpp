@@ -170,7 +170,7 @@ Feasibility confidence after these audits:
 
 The first records/search implementation work is therefore not "write a Postgres adapter." It is a conformance-harness tranche that makes the hard semantics executable against the current SQLite behavior and a second adapter or memory fixture.
 
-The complete phased execution plan and confidence ratings are captured in `design-notes/records-search-postgres-success-plan-2026-04-28.md`.
+The complete phased records/search/Postgres execution plan and confidence ratings are captured in `design-notes/records-search-postgres-success-plan-2026-04-28.md`. The broader ideal architecture organization and migration packets are captured in `design-notes/ideal-reference-architecture-implementation-plan-2026-04-29.md`.
 
 ## Risks / Trade-offs
 
