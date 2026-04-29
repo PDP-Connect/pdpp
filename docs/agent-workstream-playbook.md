@@ -293,6 +293,19 @@ style nits while the worker is still making progress. Interrupt immediately only
 for P0/P1 issues, unsafe Git state, data-loss risk, or an imminent protocol
 decision that the worker must not make.
 
+For token efficiency, owner feedback should be written to
+`tmp/workstreams/<branch>-owner-review-N.md` when it is longer than a sentence.
+Paste that file into the worker pane and tell the worker to fix the branch in a
+new commit. The owner should review the resulting diff and files, not replay the
+whole transcript, unless the worker appears stuck or unsafe.
+
+When the scope is uncertain, prefer a report-first lane before code. The worker
+should produce a concise evidence memo under `tmp/workstreams/` with repro
+commands, findings, recommended slice, and explicit "no code changed" status.
+After the owner chooses the slice, launch or resume an implementation lane with a
+narrow write scope. Do not let exploratory workers silently become broad
+implementation workers.
+
 ### Decisions Log
 
 Use `decisions.md` only for cross-lane decisions, such as:
@@ -465,6 +478,12 @@ or cite the prior owner-approved baseline report.
 ## Report Format
 
 Use concise, evidence-first reports.
+
+Token budget rule: reports should summarize evidence, not narrate the session.
+Put long repro logs, route matrices, screenshots, or design memos in files under
+`tmp/workstreams/` or the relevant OpenSpec/design-note path, then link the file.
+The owner reads artifacts and diffs selectively; terminal scrollback is a
+fallback debugging tool, not the primary review channel.
 
 ```text
 Status: complete | blocked | needs owner review
