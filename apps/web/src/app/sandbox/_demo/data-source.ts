@@ -21,6 +21,7 @@
  *     never resolves it through path-based discovery.
  */
 
+import { executeRefDatasetSummary } from "pdpp-reference-implementation/operations/ref-dataset-summary";
 import type { DashboardDataSource } from "@/app/dashboard/lib/data-source.ts";
 import type {
   DeploymentDiagnostics,
@@ -48,7 +49,6 @@ import type {
   StreamSummary,
 } from "@/app/dashboard/lib/rs-client.ts";
 import {
-  buildDatasetSummary,
   buildGrantTimeline,
   buildRecordsList,
   buildRunTimeline,
@@ -61,6 +61,7 @@ import {
   getDemoTraces,
 } from "./builders.ts";
 import { DEMO_CAPABILITIES, DEMO_RECORDS } from "./dataset.ts";
+import { createSandboxRefDatasetSummaryDependencies } from "./operations-fixtures.ts";
 import type { DemoRecord, DemoStreamDef, DemoTimelineEvent } from "./types.ts";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
@@ -644,26 +645,17 @@ export const sandboxDashboardDataSource: DashboardDataSource = {
   },
 
   async getDatasetSummary(): Promise<LiveDatasetSummary> {
-    const built = buildDatasetSummary();
-    return {
-      object: "dataset_summary",
-      blob_bytes: built.blob_bytes,
-      connector_count: built.connector_count,
-      earliest_ingested_at: built.earliest_record_time,
-      earliest_record_time: built.earliest_record_time,
-      latest_ingested_at: built.latest_record_time,
-      latest_record_time: built.latest_record_time,
-      record_changes_json_bytes: 0,
-      record_count: built.record_count,
-      record_json_bytes: built.blob_bytes,
-      stream_count: built.stream_count,
-      top_connectors: built.top_connectors.map((tc) => ({
-        object: "dataset_connector_summary",
-        connector_id: tc.connector_id,
-        record_count: tc.record_count,
-      })),
-      total_retained_bytes: built.total_retained_bytes,
-    };
+    // Mount the canonical `ref.dataset.summary` operation with sandbox
+    // fixture dependencies so the dashboard data source returns the same
+    // envelope the public `/sandbox/_ref/dataset/summary` route returns.
+    // The operation owns envelope assembly (object, total_retained_bytes,
+    // top-connector sort/limit/wrap, empty-corpus collapse, ingest-vs-
+    // record-time distinction) — the previous local mapping silently drifted
+    // (`record_json_bytes` was mapped from the demo `blob_bytes`, and the
+    // `*_ingested_at` bounds were sourced from record-time fields rather
+    // than the substrate's ingest-time bounds). Routing through the
+    // operation removes that drift class for the dashboard surface.
+    return await executeRefDatasetSummary(createSandboxRefDatasetSummaryDependencies());
   },
 
   async listPendingApprovals(): Promise<ListResponse<PendingApproval>> {

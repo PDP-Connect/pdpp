@@ -14,7 +14,9 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
+import { executeRefDatasetSummary } from "pdpp-reference-implementation/operations/ref-dataset-summary";
 import { sandboxDashboardDataSource as ds } from "./data-source.ts";
+import { createSandboxRefDatasetSummaryDependencies } from "./operations-fixtures.ts";
 
 const NOT_FOUND_RE = /\(404\)/;
 
@@ -152,6 +154,44 @@ test("getDatasetSummary maps to the live DatasetSummary shape used by OverviewHe
   assert.ok("earliest_ingested_at" in s);
   assert.ok("latest_ingested_at" in s);
   assert.ok(Array.isArray(s.top_connectors));
+});
+
+test("getDatasetSummary returns the canonical ref.dataset.summary envelope (no parallel adapter drift)", async () => {
+  // Parity gate: the dashboard data source MUST return exactly the
+  // envelope `executeRefDatasetSummary(createSandboxRefDatasetSummaryDependencies())`
+  // returns — i.e. the same body the public `/sandbox/_ref/dataset/summary`
+  // route sends. The previous local mapping silently drifted
+  // (`record_json_bytes` was sourced from the demo `blob_bytes`,
+  // `*_ingested_at` were sourced from record-time fields), so this assertion
+  // exists to prevent that drift class from regressing. `deepEqual` on
+  // every field of every nested object is the right primitive: any future
+  // adapter that re-maps a field in `data-source.ts` will fail this test.
+  const fromDataSource = await ds.getDatasetSummary();
+  const fromOperation = await executeRefDatasetSummary(createSandboxRefDatasetSummaryDependencies());
+  assert.deepEqual(fromDataSource, fromOperation);
+});
+
+test("getDatasetSummary distinguishes ingest-time bounds from record-time bounds", async () => {
+  // Regression test for the specific drift the previous local mapping
+  // exhibited: it returned `earliest_ingested_at = built.earliest_record_time`
+  // (and the matching `latest_*`), conflating substrate ingest time with
+  // real-world record time. The two are different fields on every demo
+  // record (`ingested_at` vs `record_time`) so the canonical sandbox
+  // envelope must not collapse them.
+  const s = await ds.getDatasetSummary();
+  // Fields are present (already covered by the shape test above), but
+  // also distinct unless every demo record happens to have identical
+  // ingested_at and record_time — which it doesn't in the seeded data.
+  assert.notEqual(
+    s.earliest_ingested_at,
+    s.earliest_record_time,
+    "earliest_ingested_at must come from substrate ingest time, not record time"
+  );
+  assert.notEqual(
+    s.latest_ingested_at,
+    s.latest_record_time,
+    "latest_ingested_at must come from substrate ingest time, not record time"
+  );
 });
 
 test("listPendingApprovals is always empty (sandbox has no live owner)", async () => {

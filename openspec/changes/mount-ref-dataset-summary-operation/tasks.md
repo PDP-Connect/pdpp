@@ -17,18 +17,21 @@
 - [x] 3.1 Migrate native Fastify `GET /_ref/dataset/summary` to call `executeRefDatasetSummary` while preserving `ownerAuth.requireOwnerSession`, response writing, and `handleError`. Delete the old `getDatasetSummary` import and call site.
 - [x] 3.2 Migrate Next sandbox `GET /sandbox/_ref/dataset/summary` to call the same operation with sandbox fixture dependencies; preserve sandbox demo headers via `jsonResponse`.
 - [x] 3.3 Delete `buildLiveDatasetSummary` and its `LiveDatasetSummary` type from `apps/web/src/app/sandbox/_demo/builders.ts` so the public sandbox route cannot import a parallel envelope writer.
+- [x] 3.4 Migrate the sandbox dashboard data source (`sandboxDashboardDataSource.getDatasetSummary` in `apps/web/src/app/sandbox/_demo/data-source.ts`) to mount the canonical operation with the sandbox fixture dependencies. Remove the local mapping over `buildDatasetSummary()` so the dashboard surface and the sandbox public route return the same envelope from the same operation call. The drift the local mapping introduced (`record_json_bytes` from demo `blob_bytes`; `*_ingested_at` from record-time fields) is corrected by routing through the operation.
 
 ## 4. Boundary Tests
 
 - [x] 4.1 Confirm the new operation module is enumerated by the shared `reference-implementation/test/operations-boundary.test.js` discovery and that it passes the shared boundary rule.
 - [x] 4.2 Add a per-operation boundary test (`reference-implementation/test/ref-dataset-summary-boundary.test.js`) proving the sandbox `/sandbox/_ref/dataset/summary` route does not statically import `buildLiveDatasetSummary` and that `_demo/builders.ts` no longer exports it (or its `LiveDatasetSummary` type).
+- [x] 4.3 Extend the per-operation boundary test to assert the sandbox dashboard data source (`apps/web/src/app/sandbox/_demo/data-source.ts`) calls `executeRefDatasetSummary` and `createSandboxRefDatasetSummaryDependencies`, and does NOT import or call the demo-shaped `buildDatasetSummary`. This catches reintroduction of a parallel local mapping for the dashboard surface.
+- [x] 4.4 Add a parity regression test in `apps/web/src/app/sandbox/_demo/data-source.test.ts` that asserts `sandboxDashboardDataSource.getDatasetSummary()` is `deepEqual` to `executeRefDatasetSummary(createSandboxRefDatasetSummaryDependencies())`, plus an explicit assertion that `earliest_ingested_at !== earliest_record_time` and `latest_ingested_at !== latest_record_time` on the seeded demo dataset (the previous local mapping conflated these two pairs).
 
 ## 5. Validation
 
 - [x] 5.1 Run `node --test --test-force-exit reference-implementation/test/operations-boundary.test.js`.
 - [x] 5.2 Run `node --test --test-force-exit reference-implementation/test/ref-dataset-summary-operation.test.js`.
 - [x] 5.3 Run `node --test --test-force-exit reference-implementation/test/ref-dataset-summary-boundary.test.js`.
-- [x] 5.4 Run `node --test --test-force-exit --import tsx apps/web/src/app/sandbox/_demo/routes.test.ts`.
+- [x] 5.4 Run `node --test --test-force-exit --import tsx apps/web/src/app/sandbox/_demo/routes.test.ts apps/web/src/app/sandbox/_demo/data-source.test.ts`.
 - [x] 5.5 Run `pnpm --filter pdpp-reference-implementation typecheck`.
 - [x] 5.6 Run `pnpm --filter pdpp-reference-implementation check`.
 - [x] 5.7 Run `pnpm --dir apps/web run types:check`.

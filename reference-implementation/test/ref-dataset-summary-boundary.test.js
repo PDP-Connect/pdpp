@@ -91,3 +91,36 @@ test('sandbox builders.ts no longer exports LiveDatasetSummary', () => {
     'LiveDatasetSummary interface must be removed so the public surface relies on the operation envelope type',
   );
 });
+
+test('sandbox dashboard data source mounts ref.dataset.summary instead of building a live envelope locally', () => {
+  // The sandbox dashboard data source is part of the public sandbox
+  // experience: shared dashboard feature views render against it. Letting
+  // it construct its own live-shaped `dataset_summary` envelope is the
+  // same drift class as the public route doing so. The previous local
+  // mapping (`built.blob_bytes` → `record_json_bytes`,
+  // `built.earliest_record_time` → `earliest_ingested_at`, etc.) silently
+  // disagreed with the canonical route. The fix mounts the operation;
+  // this test pins it.
+  const src = read('apps/web/src/app/sandbox/_demo/data-source.ts');
+  assert.ok(
+    /\bexecuteRefDatasetSummary\b/.test(src),
+    'sandbox dashboard data source must call the canonical ref.dataset.summary operation',
+  );
+  assert.ok(
+    /\bcreateSandboxRefDatasetSummaryDependencies\b/.test(src),
+    'sandbox dashboard data source must wire the sandbox fixture dependencies',
+  );
+  // `buildDatasetSummary` (a different demo-shaped helper) may still
+  // exist in `_demo/builders.ts` for non-live demo content; what must NOT
+  // exist is the data source importing or calling it. Catch both forms.
+  assert.equal(
+    /\bimport\b[^;]*\bbuildDatasetSummary\b[^;]*\bfrom\b[^;]*;/.test(src),
+    false,
+    'sandbox dashboard data source must not import the demo-shaped buildDatasetSummary',
+  );
+  assert.equal(
+    /\bbuildDatasetSummary\s*\(/.test(src),
+    false,
+    'sandbox dashboard data source must not call buildDatasetSummary — the operation owns the envelope',
+  );
+});

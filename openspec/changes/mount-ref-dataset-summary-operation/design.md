@@ -2,12 +2,13 @@
 
 `define-reference-operation-environments` established that AS/RS behavior should live behind canonical operation capsules and that hosts (Fastify, Next sandbox, tests) should adapt requests and supply environment dependencies. The proof sequence has now landed `rs.streams.list`, `rs.streams.detail`, `rs.schema.get`, `rs.records.list`, `rs.records.get`, and `rs.search.lexical`. The reference-only `/_ref/dataset/summary` operator-console surface is a smaller but structurally identical instance of the drift pattern: native and sandbox each maintain their own envelope assembly, and the sandbox imports a website-local builder.
 
-The current state of the two routes:
+The current state of the three sandbox/native dataset-summary surfaces:
 
 - Native Fastify `GET /_ref/dataset/summary` (server/index.js around the route defined for `contract: 'refDatasetSummary'`) calls `getDatasetSummary()` from `server/records.js`. That helper runs three SQLite aggregates (records aggregate with counts and bytes, record_changes bytes, blob bytes), conditionally invokes `getRealWorldTimeBounds()`, calls `getTopConnectorsByRecordCount(3)`, and assembles the entire envelope inline.
-- Sandbox `/sandbox/_ref/dataset/summary` imports `buildLiveDatasetSummary` from `apps/web/src/app/sandbox/_demo/builders.ts`, which builds the same envelope from `DEMO_RECORDS` / `DEMO_STREAMS` / `DEMO_CONNECTORS`.
+- Sandbox public route `/sandbox/_ref/dataset/summary` imports `buildLiveDatasetSummary` from `apps/web/src/app/sandbox/_demo/builders.ts`, which builds the same envelope from `DEMO_RECORDS` / `DEMO_STREAMS` / `DEMO_CONNECTORS`.
+- Sandbox dashboard data source `sandboxDashboardDataSource.getDatasetSummary` in `apps/web/src/app/sandbox/_demo/data-source.ts` calls `buildDatasetSummary()` (a different demo-shaped helper that returns `{is_demo, notice, ...}`) and then maps it field-by-field into the live `DatasetSummary` shape. This mapping has already drifted: `record_json_bytes` is sourced from the demo `blob_bytes`, `record_changes_json_bytes` is hard-coded to `0`, and `earliest_ingested_at` / `latest_ingested_at` are sourced from real-world record-time fields rather than substrate ingest-time fields.
 
-This is exactly the drift class operation extraction is meant to remove. The semantics are reference/operator-only (not PDPP), but the architectural shape is identical to the rs.* mounts.
+This is exactly the drift class operation extraction is meant to remove. The semantics are reference/operator-only (not PDPP), but the architectural shape is identical to the rs.* mounts. Crucially, all three surfaces — native route, sandbox public route, and sandbox dashboard data source — must mount the same operation. Only fixing the public route would leave the dashboard surface as a third, silently-disagreeing implementation.
 
 ## Goals / Non-Goals
 
@@ -15,9 +16,11 @@ This is exactly the drift class operation extraction is meant to remove. The sem
 
 - Define a canonical `ref.dataset.summary` operation whose semantics are independent of HTTP framework, sandbox UI, concrete database driver, sandbox modules, and `process` / `process.env`.
 - Mount the operation from the native Fastify reference server and from the Next sandbox route.
+- Mount the same operation from the sandbox dashboard data source (`sandboxDashboardDataSource.getDatasetSummary`) so the dashboard surface returns the canonical envelope and the previous local mapping (with its `record_json_bytes` / `*_ingested_at` drift) is removed.
 - Add sandbox fixture dependencies under `apps/web/src/app/sandbox/_demo/operations-fixtures.ts`.
 - Delete `buildLiveDatasetSummary` (and its exported type) so the public sandbox route cannot import a parallel envelope writer.
 - Preserve the existing public JSON envelope for both native and sandbox dataset-summary routes byte-for-byte.
+- Add a parity test pinning the dashboard data source's envelope to `executeRefDatasetSummary(createSandboxRefDatasetSummaryDependencies())` so the drift cannot regress.
 
 **Non-Goals:**
 
@@ -74,9 +77,13 @@ The split:
 
 `getDatasetSummary` is removed once the native route mounts the operation. The split helpers stay private to `server/records.js` and are imported by the route handler that wires them into the operation dependencies.
 
-### 4. Sandbox fixture dependencies live in `_demo/operations-fixtures.ts`
+### 4. Sandbox fixture dependencies live in `_demo/operations-fixtures.ts`; the dashboard data source mounts them too
 
 Following the existing `rs.*` operation pattern. The sandbox fixture module exposes `createSandboxRefDatasetSummaryDependencies()` which reads `DEMO_CONNECTORS`, `DEMO_STREAMS`, and `DEMO_RECORDS` directly. The route handler is thin: call the operation with fixture deps, write the live-shaped response.
+
+The sandbox dashboard data source (`sandboxDashboardDataSource.getDatasetSummary`) mounts the same operation with the same fixture dependency factory. There is no second adapter in `data-source.ts` — the data source's responsibility for dataset summary collapses to a single `await executeRefDatasetSummary(createSandboxRefDatasetSummaryDependencies())` call. The previous local mapping over `buildDatasetSummary()` is removed.
+
+The `buildDatasetSummary` helper in `_demo/builders.ts` is intentionally left in place: it returns a different demo-shaped envelope (with `is_demo: true` and `notice`) that other demo content may consume. The boundary tests prevent the dashboard data source from importing or calling it for live-shaped output.
 
 The sandbox fixture preserves today's `buildLiveDatasetSummary` semantics:
 
