@@ -115,6 +115,31 @@ import {
   StreamsAggregateVisibilityError,
   executeStreamsAggregate,
 } from '../operations/rs-streams-aggregate/index.ts';
+import {
+  BlobsUploadInvalidRequestError,
+  BlobsUploadStreamNotFoundError,
+  executeBlobsUpload,
+} from '../operations/rs-blobs-upload/index.ts';
+import {
+  BlobsReadNotFoundError,
+  executeBlobsRead,
+} from '../operations/rs-blobs-read/index.ts';
+import {
+  RecordsDeleteStreamInvalidRequestError,
+  RecordsDeleteStreamNotFoundError,
+  executeRecordsDeleteStream,
+} from '../operations/rs-records-delete-stream/index.ts';
+import {
+  RecordsDeleteInvalidRequestError,
+  RecordsDeleteNotFoundError,
+  executeRecordsDelete,
+} from '../operations/rs-records-delete/index.ts';
+import {
+  RecordsIngestInvalidRequestError,
+  RecordsIngestNotFoundError,
+  executeRecordsIngest,
+  parseLines as parseIngestLines,
+} from '../operations/rs-records-ingest/index.ts';
 
 const AS_PORT = parseInt(process.env.AS_PORT || '7662');
 const RS_PORT = parseInt(process.env.RS_PORT || '7663');
@@ -1385,43 +1410,6 @@ function decorateRecordBlobRefs(record) {
   return next;
 }
 
-function resolveSingleNonEmptyQueryValue(rawValue, name) {
-  if (typeof rawValue !== 'string' || !rawValue.trim()) {
-    const err = new Error(`${name} must be a single non-empty string`);
-    err.code = 'invalid_request';
-    throw err;
-  }
-  return rawValue.trim();
-}
-
-function normalizeUploadContentType(rawContentType) {
-  if (typeof rawContentType !== 'string') {
-    const err = new Error('Content-Type header is required');
-    err.code = 'invalid_request';
-    throw err;
-  }
-  const mediaType = rawContentType.split(';')[0].trim().toLowerCase();
-  if (!mediaType || !/^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/i.test(mediaType)) {
-    const err = new Error('Content-Type header must be a valid media type');
-    err.code = 'invalid_request';
-    throw err;
-  }
-  return mediaType;
-}
-
-function coerceUploadBodyToBuffer(body) {
-  if (Buffer.isBuffer(body)) return body;
-  if (typeof body === 'string') return Buffer.from(body, 'utf8');
-  if (body === undefined || body === null) return Buffer.alloc(0);
-  if (body instanceof ArrayBuffer) return Buffer.from(body);
-  if (ArrayBuffer.isView(body)) {
-    return Buffer.from(body.buffer, body.byteOffset, body.byteLength);
-  }
-  const err = new Error('Blob upload body must be bytes');
-  err.code = 'invalid_request';
-  throw err;
-}
-
 function persistContentAddressedBlob({ connectorId, stream, recordKey, mimeType, data }) {
   const sha256 = createHash('sha256').update(data).digest('hex');
   const blobId = `blob_sha256_${sha256}`;
@@ -1465,66 +1453,6 @@ async function getVisibleStreamFreshness({ tokenInfo, storageBinding, stream, ma
   }
   const summaries = await listStreams(storageBinding, { streams: [streamGrant] }, manifest);
   return buildFreshness(summaries[0]?.last_updated || null);
-}
-
-async function resolveAuthorizedBlob(req, blobId, opts = {}) {
-  const rows = getDb().prepare(`
-    SELECT blob_id, connector_id, stream, record_key, mime_type, size_bytes, sha256, data
-    FROM blobs
-    WHERE blob_id = ?
-    LIMIT 1
-  `).all(blobId);
-  if (!rows.length) {
-    const err = new Error('Blob not found');
-    err.code = 'blob_not_found';
-    throw err;
-  }
-
-  const blob = rows[0];
-  const { tokenInfo } = req;
-  let storageBinding;
-  let manifest;
-
-  if (tokenInfo.pdpp_token_kind === 'owner') {
-    const ownerScope = resolveOwnerReadScope(req, opts);
-    const ownerResolved = await resolveOwnerManifestFromScope(ownerScope, opts);
-    storageBinding = ownerResolved.storageBinding;
-    manifest = ownerResolved.manifest;
-  } else {
-    const grantResolved = await resolveGrantManifest(tokenInfo, opts);
-    storageBinding = grantResolved.storageBinding;
-    manifest = grantResolved.manifest;
-  }
-
-  const bindings = getDb().prepare(`
-    SELECT connector_id, stream, record_key
-    FROM blob_bindings
-    WHERE blob_id = ?
-    UNION
-    SELECT connector_id, stream, record_key
-    FROM blobs
-    WHERE blob_id = ?
-  `).all(blobId, blobId);
-
-  for (const binding of bindings) {
-    if (storageBinding?.connector_id !== binding.connector_id) continue;
-    try {
-      const grant = tokenInfo.pdpp_token_kind === 'owner'
-        ? buildOwnerReadGrant(binding.stream)
-        : tokenInfo.grant;
-      const visibleRecord = await getRecord(storageBinding, binding.stream, binding.record_key, grant, manifest);
-      if (visibleRecord?.data?.blob_ref?.blob_id === blobId) {
-        return blob;
-      }
-    } catch {
-      // Try the next binding; callers only learn whether any visible record
-      // exposes the requested blob reference.
-    }
-  }
-
-  const err = new Error('Blob not found');
-  err.code = 'blob_not_found';
-  throw err;
 }
 
 // ─── AS App ─────────────────────────────────────────────────────────────────
@@ -4200,40 +4128,127 @@ function buildRsApp(opts = {}) {
     });
   }
 
+  // POST /v1/blobs
+  // Blob-upload semantics live in the canonical `rs.blobs.upload` operation
+  // (operations/rs-blobs-upload). This route is a Fastify host adapter:
+  // it owns auth, request id, response writing, and concrete capability
+  // wiring. It MUST NOT recompute query/Content-Type validation, manifest
+  // visibility, or response envelope shaping locally. The host wires the
+  // existing `persistContentAddressedBlob` capability, which preserves
+  // blob+binding atomicity.
   app.post('/v1/blobs', { contract: 'uploadBlob' }, requireToken, requireOwner, async (req, res) => {
     try {
-      const connectorId = resolveSingleNonEmptyQueryValue(req.query.connector_id, 'connector_id');
-      const stream = resolveSingleNonEmptyQueryValue(req.query.stream, 'stream');
-      const recordKey = resolveSingleNonEmptyQueryValue(req.query.record_key, 'record_key');
-      const mimeType = normalizeUploadContentType(req.headers['content-type']);
-      const manifest = await resolveRegisteredConnectorManifest(connectorId);
-      const manifestStream = (manifest.streams || []).find((candidate) => candidate.name === stream);
-      if (!manifestStream) {
-        const err = new Error(`Stream '${stream}' not found for connector ${connectorId}`);
-        err.code = 'not_found';
-        throw err;
+      let manifestCache = null;
+      const dependencies = {
+        hasManifestStream: async (connectorId, streamName) => {
+          manifestCache = await resolveRegisteredConnectorManifest(connectorId);
+          return Boolean(
+            (manifestCache.streams || []).find((candidate) => candidate.name === streamName),
+          );
+        },
+        persistBlob: ({ connectorId, stream, recordKey, mimeType, data }) =>
+          persistContentAddressedBlob({
+            connectorId,
+            stream,
+            recordKey,
+            mimeType,
+            data: Buffer.isBuffer(data) ? data : Buffer.from(data),
+          }),
+      };
+      const operationInput = {
+        requestParams: {
+          connector_id: req.query.connector_id,
+          stream: req.query.stream,
+          record_key: req.query.record_key,
+        },
+        contentType: req.headers['content-type'],
+        body: req.body,
+      };
+      let output;
+      try {
+        output = await executeBlobsUpload(operationInput, dependencies);
+      } catch (opErr) {
+        if (
+          opErr instanceof BlobsUploadInvalidRequestError
+          || opErr instanceof BlobsUploadStreamNotFoundError
+        ) {
+          const mapped = new Error(opErr.message);
+          mapped.code = opErr.code;
+          throw mapped;
+        }
+        throw opErr;
       }
-      const body = coerceUploadBodyToBuffer(req.body);
-      const result = persistContentAddressedBlob({
-        connectorId,
-        stream,
-        recordKey,
-        mimeType,
-        data: body,
-      });
-      res.json({
-        object: 'blob',
-        ...result,
-      });
+      res.json(output.envelope);
     } catch (err) {
       handleError(res, err);
     }
   });
 
+  // GET /v1/blobs/:blob_id
+  // Per-binding blob-visibility semantics live in the canonical `rs.blobs.read`
+  // operation (operations/rs-blobs-read). This route is a Fastify host
+  // adapter: it owns auth, decoding the blob_id path parameter, response
+  // header / body writing, and wiring the actor-scoped storage binding,
+  // manifest, and grant into the operation's `getVisibleRecord` capability.
+  // It MUST NOT recompute the binding loop, the visibility short-circuit, or
+  // the `blob_not_found` error shape locally.
   app.get('/v1/blobs/:blob_id', { contract: 'getBlob' }, requireToken, async (req, res) => {
     try {
       const blobId = decodeURIComponent(req.params.blob_id);
-      const blob = await resolveAuthorizedBlob(req, blobId, opts);
+      const { tokenInfo } = req;
+      let storageBinding;
+      let manifest;
+      if (tokenInfo.pdpp_token_kind === 'owner') {
+        const ownerScope = resolveOwnerReadScope(req, opts);
+        const ownerResolved = await resolveOwnerManifestFromScope(ownerScope, opts);
+        storageBinding = ownerResolved.storageBinding;
+        manifest = ownerResolved.manifest;
+      } else {
+        const grantResolved = await resolveGrantManifest(tokenInfo, opts);
+        storageBinding = grantResolved.storageBinding;
+        manifest = grantResolved.manifest;
+      }
+
+      const dependencies = {
+        loadBlob: (id) => {
+          const rows = getDb().prepare(`
+            SELECT blob_id, connector_id, stream, record_key, mime_type, size_bytes, sha256, data
+            FROM blobs
+            WHERE blob_id = ?
+            LIMIT 1
+          `).all(id);
+          return rows.length ? rows[0] : null;
+        },
+        loadBindings: (id) => getDb().prepare(`
+          SELECT connector_id, stream, record_key
+          FROM blob_bindings
+          WHERE blob_id = ?
+          UNION
+          SELECT connector_id, stream, record_key
+          FROM blobs
+          WHERE blob_id = ?
+        `).all(id, id),
+        getActorConnectorId: () => storageBinding?.connector_id ?? null,
+        getVisibleRecord: async (binding) => {
+          const grant = tokenInfo.pdpp_token_kind === 'owner'
+            ? buildOwnerReadGrant(binding.stream)
+            : tokenInfo.grant;
+          return await getRecord(storageBinding, binding.stream, binding.record_key, grant, manifest);
+        },
+      };
+
+      let output;
+      try {
+        output = await executeBlobsRead({ blobId }, dependencies);
+      } catch (opErr) {
+        if (opErr instanceof BlobsReadNotFoundError) {
+          const mapped = new Error(opErr.message);
+          mapped.code = opErr.code;
+          throw mapped;
+        }
+        throw opErr;
+      }
+      const blob = output.blob;
       res.setHeader('Content-Type', blob.mime_type);
       res.setHeader('Content-Length', String(blob.size_bytes));
       res.send(Buffer.isBuffer(blob.data) ? blob.data : Buffer.from(blob.data || ''));
@@ -4244,6 +4259,12 @@ function buildRsApp(opts = {}) {
 
   if (!nativeMode) {
     // DELETE /v1/streams/:stream/records (owner-authenticated reference reset for polyfill mode)
+    // Bulk-delete semantics live in the canonical `rs.records.delete_stream`
+    // operation (operations/rs-records-delete-stream). This route is a
+    // Fastify host adapter: it owns auth, mutation-context wiring, trace
+    // id setup, instrumentation dispatch, and response writing. It MUST NOT
+    // recompute the connector_id presence rule, manifest visibility, or the
+    // `{ deleted_record_count }` event payload locally.
     app.delete('/v1/streams/:stream/records', requireToken, requireOwner, async (req, res) => {
       const connectorId = resolveSingleConnectorIdQueryValue(req.query.connector_id);
       const mutationContext = buildMutationContext(req, res, {
@@ -4252,23 +4273,44 @@ function buildRsApp(opts = {}) {
         streamId: req.params.stream,
       });
       try {
-        if (!connectorId) {
-          const err = new Error('connector_id must be a single non-empty string');
-          err.code = 'invalid_request';
-          return await rejectMutation(res, req, mutationContext, err);
+        const dependencies = {
+          hasManifestStream: async (cid, streamName) => {
+            const manifest = await resolveRegisteredConnectorManifest(cid);
+            return Boolean(
+              (manifest.streams || []).find((stream) => stream.name === streamName),
+            );
+          },
+          deleteAllRecords: (cid, streamName) => deleteAllRecords(cid, streamName),
+        };
+        let output;
+        try {
+          // Validate inputs before emitting `mutation.requested` to mirror
+          // the previous native ordering: invalid_request short-circuits via
+          // rejectMutation, which itself emits the requested event for parity.
+          if (!connectorId) {
+            throw new RecordsDeleteStreamInvalidRequestError(
+              'connector_id must be a single non-empty string',
+            );
+          }
+          setReferenceTraceId(res, mutationContext.traceId);
+          await emitMutationRequested(req, mutationContext);
+          output = await executeRecordsDeleteStream(
+            { connectorId, streamName: req.params.stream },
+            dependencies,
+          );
+        } catch (opErr) {
+          if (
+            opErr instanceof RecordsDeleteStreamInvalidRequestError
+            || opErr instanceof RecordsDeleteStreamNotFoundError
+          ) {
+            const mapped = new Error(opErr.message);
+            mapped.code = opErr.code;
+            return await rejectMutation(res, req, mutationContext, mapped);
+          }
+          throw opErr;
         }
-        setReferenceTraceId(res, mutationContext.traceId);
-        await emitMutationRequested(req, mutationContext);
-        const manifest = await resolveRegisteredConnectorManifest(connectorId);
-        const manifestStream = (manifest.streams || []).find((stream) => stream.name === req.params.stream);
-        if (!manifestStream) {
-          const err = new Error(`Stream '${req.params.stream}' not found for connector ${connectorId}`);
-          err.code = 'not_found';
-          return await rejectMutation(res, req, mutationContext, err);
-        }
-        const deletedRecordCount = await deleteAllRecords(connectorId, req.params.stream);
         await emitMutationEvent(req, mutationContext, 'mutation.completed', 'succeeded', {
-          deleted_record_count: deletedRecordCount,
+          deleted_record_count: output.deletedRecordCount,
         });
         res.status(204).end();
       } catch (err) {
@@ -4277,6 +4319,12 @@ function buildRsApp(opts = {}) {
     });
 
     // DELETE /v1/streams/:stream/records/:id (owner-authenticated)
+    // Single-delete semantics live in the canonical `rs.records.delete`
+    // operation (operations/rs-records-delete). This route is a Fastify
+    // host adapter: it owns auth, mutation-context wiring, trace id setup,
+    // instrumentation dispatch, and response writing. It MUST NOT recompute
+    // the connector_id presence rule, manifest visibility, or the
+    // `{ deleted_record_count }` event payload locally.
     app.delete('/v1/streams/:stream/records/:id', requireToken, requireOwner, async (req, res) => {
       const connectorId = resolveSingleConnectorIdQueryValue(req.query.connector_id);
       const requestedRecordId = decodeURIComponent(req.params.id);
@@ -4287,23 +4335,45 @@ function buildRsApp(opts = {}) {
         requestedRecordId,
       });
       try {
-        if (!connectorId) {
-          const err = new Error('connector_id must be a single non-empty string');
-          err.code = 'invalid_request';
-          return await rejectMutation(res, req, mutationContext, err);
+        const dependencies = {
+          hasManifestStream: async (cid, streamName) => {
+            const manifest = await resolveRegisteredConnectorManifest(cid);
+            return Boolean(
+              (manifest.streams || []).find((stream) => stream.name === streamName),
+            );
+          },
+          deleteRecord: (cid, streamName, recordId) => deleteRecord(cid, streamName, recordId),
+        };
+        let output;
+        try {
+          if (!connectorId) {
+            throw new RecordsDeleteInvalidRequestError(
+              'connector_id must be a single non-empty string',
+            );
+          }
+          setReferenceTraceId(res, mutationContext.traceId);
+          await emitMutationRequested(req, mutationContext);
+          output = await executeRecordsDelete(
+            {
+              connectorId,
+              streamName: req.params.stream,
+              recordId: requestedRecordId,
+            },
+            dependencies,
+          );
+        } catch (opErr) {
+          if (
+            opErr instanceof RecordsDeleteInvalidRequestError
+            || opErr instanceof RecordsDeleteNotFoundError
+          ) {
+            const mapped = new Error(opErr.message);
+            mapped.code = opErr.code;
+            return await rejectMutation(res, req, mutationContext, mapped);
+          }
+          throw opErr;
         }
-        setReferenceTraceId(res, mutationContext.traceId);
-        await emitMutationRequested(req, mutationContext);
-        const manifest = await resolveRegisteredConnectorManifest(connectorId);
-        const manifestStream = (manifest.streams || []).find((stream) => stream.name === req.params.stream);
-        if (!manifestStream) {
-          const err = new Error(`Stream '${req.params.stream}' not found for connector ${connectorId}`);
-          err.code = 'not_found';
-          return await rejectMutation(res, req, mutationContext, err);
-        }
-        const deletedRecordCount = await deleteRecord(connectorId, req.params.stream, requestedRecordId);
         await emitMutationEvent(req, mutationContext, 'mutation.completed', 'succeeded', {
-          deleted_record_count: deletedRecordCount,
+          deleted_record_count: output.deletedRecordCount,
         });
         res.status(204).end();
       } catch (err) {
@@ -4312,9 +4382,16 @@ function buildRsApp(opts = {}) {
     });
 
     // POST /v1/ingest/:stream (Collection Profile, owner-authenticated)
+    // Ingest semantics live in the canonical `rs.records.ingest` operation
+    // (operations/rs-records-ingest). This route is a Fastify host adapter:
+    // it owns auth, mutation-context wiring, trace id setup, instrumentation
+    // dispatch, and response writing. It MUST NOT recompute line splitting,
+    // connector_id presence, manifest visibility, JSON parse handling, the
+    // accepted/rejected counters, or the response envelope locally. Per-record
+    // durable atomicity remains in the underlying `ingestRecord` capability.
     app.post('/v1/ingest/:stream', requireToken, requireOwner, async (req, res) => {
       const connectorId = resolveSingleConnectorIdQueryValue(req.query.connector_id);
-      const lines = (req.body || '').split('\n').filter((line) => line.trim());
+      const lines = parseIngestLines(typeof req.body === 'string' ? req.body : '');
       const mutationContext = buildMutationContext(req, res, {
         connectorId,
         operation: 'ingest_records',
@@ -4322,40 +4399,49 @@ function buildRsApp(opts = {}) {
         submittedRecordCount: lines.length,
       });
       try {
-        if (!connectorId) {
-          const err = new Error('connector_id must be a single non-empty string');
-          err.code = 'invalid_request';
-          return await rejectMutation(res, req, mutationContext, err);
-        }
-        setReferenceTraceId(res, mutationContext.traceId);
-        await emitMutationRequested(req, mutationContext);
-        const manifest = await resolveRegisteredConnectorManifest(connectorId);
-        const manifestStream = (manifest.streams || []).find((stream) => stream.name === req.params.stream);
-        if (!manifestStream) {
-          const err = new Error(`Stream '${req.params.stream}' not found for connector ${connectorId}`);
-          err.code = 'not_found';
-          return await rejectMutation(res, req, mutationContext, err);
-        }
-        let accepted = 0, rejected = 0;
-        const errors = [];
-
-        for (const line of lines) {
-          try {
-            const record = JSON.parse(line);
-            await ingestRecord(connectorId, { ...record, stream: req.params.stream });
-            accepted++;
-          } catch (e) {
-            rejected++;
-            errors.push(e.message);
+        const dependencies = {
+          hasManifestStream: async (cid, streamName) => {
+            const manifest = await resolveRegisteredConnectorManifest(cid);
+            return Boolean(
+              (manifest.streams || []).find((stream) => stream.name === streamName),
+            );
+          },
+          ingestRecord: (cid, record) => ingestRecord(cid, record),
+        };
+        let output;
+        try {
+          if (!connectorId) {
+            throw new RecordsIngestInvalidRequestError(
+              'connector_id must be a single non-empty string',
+            );
           }
+          setReferenceTraceId(res, mutationContext.traceId);
+          await emitMutationRequested(req, mutationContext);
+          output = await executeRecordsIngest(
+            {
+              connectorId,
+              streamName: req.params.stream,
+              body: typeof req.body === 'string' ? req.body : '',
+            },
+            dependencies,
+          );
+        } catch (opErr) {
+          if (
+            opErr instanceof RecordsIngestInvalidRequestError
+            || opErr instanceof RecordsIngestNotFoundError
+          ) {
+            const mapped = new Error(opErr.message);
+            mapped.code = opErr.code;
+            return await rejectMutation(res, req, mutationContext, mapped);
+          }
+          throw opErr;
         }
-
         await emitMutationEvent(req, mutationContext, 'mutation.completed', 'succeeded', {
-          records_accepted: accepted,
-          records_rejected: rejected,
-          error_count: errors.length,
+          records_accepted: output.envelope.records_accepted,
+          records_rejected: output.envelope.records_rejected,
+          error_count: output.envelope.errors.length,
         });
-        res.json({ stream: req.params.stream, records_accepted: accepted, records_rejected: rejected, errors });
+        res.json(output.envelope);
       } catch (err) {
         return await rejectMutation(res, req, mutationContext, err);
       }
