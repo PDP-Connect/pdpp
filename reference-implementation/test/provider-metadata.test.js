@@ -837,6 +837,65 @@ test('pdpp_discovery_hints omits search when lexical retrieval is suppressed', a
   }
 });
 
+test('HEAD on /v1 RS endpoints mirrors GET status (RFC 7231 §4.3.2)', async () => {
+  // Without auto HEAD shadows, an unauthenticated `HEAD /v1/streams` returned
+  // 404 while `GET /v1/streams` returned 401. Per RFC 7231 §4.3.2 HEAD must
+  // behave like GET minus the message body — the status code (and crucially
+  // the auth-gate behavior) must agree.
+  const server = await startServer({
+    quiet: true,
+    asPort: 0,
+    rsPort: 0,
+    dbPath: ':memory:',
+  });
+  const rsUrl = `http://localhost:${server.rsPort}`;
+
+  try {
+    const probes = ['/v1/streams', '/v1/schema', '/v1/search', '/v1/search/hybrid'];
+    for (const path of probes) {
+      const getResp = await fetch(`${rsUrl}${path}`);
+      const headResp = await fetch(`${rsUrl}${path}`, { method: 'HEAD' });
+      assert.equal(
+        headResp.status,
+        getResp.status,
+        `HEAD ${path} status ${headResp.status} must match GET status ${getResp.status}`,
+      );
+      // HEAD body must be empty per RFC 7231.
+      const headBody = await headResp.text();
+      assert.equal(headBody, '', `HEAD ${path} body must be empty`);
+    }
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test('HEAD on RS metadata endpoints mirrors GET status', async () => {
+  const server = await startServer({
+    quiet: true,
+    asPort: 0,
+    rsPort: 0,
+    dbPath: ':memory:',
+  });
+  const rsUrl = `http://localhost:${server.rsPort}`;
+  const asUrl = `http://localhost:${server.asPort}`;
+
+  try {
+    for (const url of [
+      `${rsUrl}/.well-known/oauth-protected-resource`,
+      `${asUrl}/.well-known/oauth-authorization-server`,
+      `${rsUrl}/`,
+      `${asUrl}/`,
+    ]) {
+      const getResp = await fetch(url);
+      const headResp = await fetch(url, { method: 'HEAD' });
+      assert.equal(headResp.status, getResp.status, `HEAD ${url} status mismatch`);
+      assert.equal(await headResp.text(), '', `HEAD ${url} body must be empty`);
+    }
+  } finally {
+    await closeServer(server);
+  }
+});
+
 test('PDPP_REFERENCE_REVISION env override flows into the discovery index and response header', async () => {
   const previous = process.env.PDPP_REFERENCE_REVISION;
   process.env.PDPP_REFERENCE_REVISION = 'pdpp-reference@1.2.3+abc123';

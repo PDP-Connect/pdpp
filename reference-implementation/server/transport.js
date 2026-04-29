@@ -160,10 +160,16 @@ function buildFastify({ loggerInstance }) {
       if (typeof header === 'string' && header.trim()) return header.trim();
       return undefined; // Fastify generates one
     },
-    // Fastify auto-registers HEAD shadow routes for every GET by default.
-    // PDPP registers explicit HEAD routes (e.g. /v1/blobs/:blob_id) so we
-    // disable the shadow to avoid "Method 'HEAD' already declared" errors.
-    exposeHeadRoutes: false,
+    // Fastify auto-registers HEAD shadow routes for every GET. PDPP relies
+    // on this so HEAD probes return GET-equivalent status codes (RFC 7231
+    // §4.3.2) — without it, an unauthenticated `HEAD /v1/streams` returns
+    // 404 while `GET /v1/streams` returns 401, which both confuses tooling
+    // and leaks "no such resource" semantics for protected URLs. PDPP does
+    // not currently register any explicit `app.head()` routes; if a future
+    // route needs custom HEAD semantics, disable this shadow (or scope it
+    // off the affected path) before registering the explicit handler —
+    // Fastify will otherwise reject it as "Method 'HEAD' already declared."
+    exposeHeadRoutes: true,
     // Router-level options moved out of the top-level constructor in Fastify 5
     // (the deprecated location warns FSTDEP022 and is removed in Fastify 6).
     routerOptions: {

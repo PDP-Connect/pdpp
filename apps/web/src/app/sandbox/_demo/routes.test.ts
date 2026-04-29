@@ -540,3 +540,92 @@ test("/sandbox/.well-known/oauth-protected-resource returns the live RS metadata
   assert.equal(caps?.lexical_retrieval?.supported, true);
   assert.ok(caps?.lexical_retrieval?.endpoint);
 });
+
+test("sandbox metadata prefers X-Forwarded-Host/Proto over the request URL", async () => {
+  // Under `next dev --hostname 0.0.0.0` the request URL would otherwise pin
+  // the issuer to `http://0.0.0.0:...`, which is not an address a relying
+  // party can resolve. The forwarded headers must win.
+  const res = authServerGet(
+    new Request("http://0.0.0.0:3010/sandbox/.well-known/oauth-authorization-server", {
+      headers: {
+        "x-forwarded-host": "pdpp.example.com",
+        "x-forwarded-proto": "https",
+        host: "0.0.0.0:3010",
+      },
+    })
+  );
+  assert.equal(res.status, 200);
+  const body = (await jsonOf(res)) as Record<string, unknown>;
+  assert.equal(body.issuer, "https://pdpp.example.com/sandbox");
+});
+
+test("sandbox metadata falls back to Host header when no forwarded headers are present", async () => {
+  const res = protectedResourceGet(
+    new Request("http://0.0.0.0:3010/sandbox/.well-known/oauth-protected-resource", {
+      headers: {
+        host: "pdpp.example.com",
+      },
+    })
+  );
+  assert.equal(res.status, 200);
+  const body = (await jsonOf(res)) as Record<string, unknown>;
+  assert.equal(body.resource, "http://pdpp.example.com/sandbox");
+});
+
+test("sandbox metadata normalizes 0.0.0.0 to localhost when no forwarded or host headers are routable", async () => {
+  // Last-resort fallback: a direct dev call to `0.0.0.0` should not advertise
+  // `0.0.0.0` to the caller. Normalize to `localhost` while preserving the
+  // port so the document still names a reachable origin.
+  const res = authServerGet(
+    new Request("http://0.0.0.0:3010/sandbox/.well-known/oauth-authorization-server", {
+      headers: {
+        host: "0.0.0.0:3010",
+      },
+    })
+  );
+  assert.equal(res.status, 200);
+  const body = (await jsonOf(res)) as Record<string, unknown>;
+  assert.equal(body.issuer, "http://localhost:3010/sandbox");
+});
+
+test("sandbox metadata preserves bracketed IPv6 hosts and only normalizes bind addresses", async () => {
+  // Bracketed IPv6 in Host headers (`[::1]:3010`, `[2001:db8::1]:3010`) must
+  // round-trip — the colon-split that works for IPv4 / DNS names would
+  // otherwise truncate the address. The bind-only literal `::` is normalized
+  // to `localhost`; routable IPv6 addresses are passed through.
+  {
+    const res = authServerGet(
+      new Request("http://0.0.0.0:3010/sandbox/.well-known/oauth-authorization-server", {
+        headers: { host: "[2001:db8::1]:3010" },
+      })
+    );
+    const body = (await jsonOf(res)) as Record<string, unknown>;
+    assert.equal(body.issuer, "http://[2001:db8::1]:3010/sandbox");
+  }
+  {
+    const res = authServerGet(
+      new Request("http://0.0.0.0:3010/sandbox/.well-known/oauth-authorization-server", {
+        headers: { host: "[::]:3010" },
+      })
+    );
+    const body = (await jsonOf(res)) as Record<string, unknown>;
+    assert.equal(body.issuer, "http://localhost:3010/sandbox");
+  }
+});
+
+test("sandbox metadata strips the first value from a comma-list X-Forwarded-Host", async () => {
+  // X-Forwarded-Host can be a list when multiple proxies append. RFC 7239
+  // semantics: the leftmost value is the original client. Mirror the live AS
+  // helper which already does this.
+  const res = authServerGet(
+    new Request("http://0.0.0.0:3010/sandbox/.well-known/oauth-authorization-server", {
+      headers: {
+        "x-forwarded-host": "pdpp.example.com, internal-lb.example.com",
+        "x-forwarded-proto": "https, http",
+      },
+    })
+  );
+  assert.equal(res.status, 200);
+  const body = (await jsonOf(res)) as Record<string, unknown>;
+  assert.equal(body.issuer, "https://pdpp.example.com/sandbox");
+});
