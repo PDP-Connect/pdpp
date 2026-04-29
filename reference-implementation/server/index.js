@@ -110,6 +110,11 @@ import {
 import { executeRefSpineCorrelationsList } from '../operations/ref-spine-correlations-list/index.ts';
 import { executeRefSpineEventsPage } from '../operations/ref-spine-events-page/index.ts';
 import { executeRefSpineSearch } from '../operations/ref-spine-search/index.ts';
+import { executeConnectorsList } from '../operations/rs-connectors-list/index.ts';
+import {
+  StreamsAggregateVisibilityError,
+  executeStreamsAggregate,
+} from '../operations/rs-streams-aggregate/index.ts';
 
 const AS_PORT = parseInt(process.env.AS_PORT || '7662');
 const RS_PORT = parseInt(process.env.RS_PORT || '7663');
@@ -3011,6 +3016,11 @@ function buildRsApp(opts = {}) {
   });
 
   // GET /v1/connectors — bearer-scoped connector/source discovery
+  // Connector-list semantics live in the canonical `rs.connectors.list`
+  // operation (operations/rs-connectors-list). This route is a Fastify host
+  // adapter: it owns auth, request id / trace id, manifest/grant/storage-
+  // binding resolution, instrumentation events, and response writing; it MUST
+  // NOT recompute the envelope shape or the disclosure totals locally.
   app.get('/v1/connectors', { contract: 'listConnectors' }, requireToken, async (req, res) => {
     let queryContext = null;
     try {
@@ -3030,8 +3040,12 @@ function buildRsApp(opts = {}) {
         queryData: { query_shape: 'connector_list' },
       };
 
-      let connectorItems = [];
+      let operationInput;
+      let dependencies;
       if (tokenInfo.pdpp_token_kind === 'owner') {
+        operationInput = {
+          actor: { kind: 'owner', subject_id: tokenInfo.subject_id || null },
+        };
         const nativeManifest = resolveNativeManifest(opts);
         const nativeStorageBinding = resolveNativeStorageBinding(opts);
         if (nativeManifest && nativeStorageBinding) {
@@ -3040,33 +3054,65 @@ function buildRsApp(opts = {}) {
             provider_id: nativeManifest.provider_id,
           });
           queryContext.sourceDescriptor = source;
-          connectorItems = [await buildConnectorDiscoveryItem({
-            source,
-            storageBinding: nativeStorageBinding,
-            manifest: nativeManifest,
-          })];
+          dependencies = {
+            getSourceDescriptor: () => source,
+            listConnectorItems: async () => {
+              const item = await buildConnectorDiscoveryItem({
+                source,
+                storageBinding: nativeStorageBinding,
+                manifest: nativeManifest,
+              });
+              return [item];
+            },
+          };
         } else {
-          const connectorIds = await listRegisteredConnectorIds();
-          connectorItems = await Promise.all(connectorIds.map(async (connectorId) => {
-            const manifest = await resolveRegisteredConnectorManifest(connectorId);
-            return buildConnectorDiscoveryItem({
-              source: { binding_kind: 'connector', connector_id: connectorId },
-              storageBinding: { connector_id: connectorId },
-              manifest,
-            });
-          }));
+          // Multiple registered connectors: no single source descriptor; the
+          // disclosure event has historically emitted `source: null` for this
+          // branch. The operation propagates `null` through verbatim.
+          dependencies = {
+            getSourceDescriptor: () => null,
+            listConnectorItems: async () => {
+              const connectorIds = await listRegisteredConnectorIds();
+              return Promise.all(connectorIds.map(async (connectorId) => {
+                const manifest = await resolveRegisteredConnectorManifest(connectorId);
+                return buildConnectorDiscoveryItem({
+                  source: { binding_kind: 'connector', connector_id: connectorId },
+                  storageBinding: { connector_id: connectorId },
+                  manifest,
+                });
+              }));
+            },
+          };
         }
       } else {
+        operationInput = {
+          actor: {
+            kind: 'client',
+            subject_id: tokenInfo.subject_id || null,
+            client_id: tokenInfo.client_id || null,
+            grant_id: tokenInfo.grant_id || null,
+          },
+        };
+        // Eagerly resolve the grant so the rejected-query path has the
+        // correct source descriptor even if connector-item assembly throws.
         const grantResolved = await resolveGrantManifest(tokenInfo, opts);
         const source = grantResolved.source;
         queryContext.sourceDescriptor = source;
-        connectorItems = [await buildConnectorDiscoveryItem({
-          source,
-          storageBinding: grantResolved.storageBinding,
-          manifest: grantResolved.manifest,
-          grant: tokenInfo.grant,
-        })];
+        dependencies = {
+          getSourceDescriptor: () => source,
+          listConnectorItems: async () => {
+            const item = await buildConnectorDiscoveryItem({
+              source,
+              storageBinding: grantResolved.storageBinding,
+              manifest: grantResolved.manifest,
+              grant: tokenInfo.grant,
+            });
+            return [item];
+          },
+        };
       }
+
+      const result = await executeConnectorsList(operationInput, dependencies);
 
       await emitQueryReceived(queryContext, req);
 
@@ -3085,17 +3131,14 @@ function buildRsApp(opts = {}) {
         client_id: tokenInfo.client_id || null,
         token_id: req.headers.authorization?.slice(7) || null,
         data: {
-          source: queryContext.sourceDescriptor,
+          source: result.sourceDescriptor,
           query_shape: 'connector_list',
-          connector_count: connectorItems.length,
-          stream_count: connectorItems.reduce((sum, item) => sum + item.stream_count, 0),
+          connector_count: result.disclosureTotals.connector_count,
+          stream_count: result.disclosureTotals.stream_count,
         },
       });
 
-      res.json({
-        object: 'list',
-        data: connectorItems,
-      });
+      res.json(result.envelope);
     } catch (err) {
       if (queryContext) {
         await emitQueryReceived(queryContext, req);
@@ -3485,6 +3528,12 @@ function buildRsApp(opts = {}) {
   });
 
   // GET /v1/streams/:stream/aggregate
+  // Aggregate semantics live in the canonical `rs.streams.aggregate`
+  // operation (operations/rs-streams-aggregate). This route is a Fastify host
+  // adapter: it owns auth, request id / trace id, manifest/grant/storage-
+  // binding resolution, instrumentation events, and response writing; it MUST
+  // NOT recompute the `query.received` data block, the owner-branch
+  // visibility check, or the disclosure totals locally.
   app.get('/v1/streams/:stream/aggregate', { contract: 'aggregateStream' }, requireToken, async (req, res) => {
     let queryContext = null;
     try {
@@ -3500,6 +3549,9 @@ function buildRsApp(opts = {}) {
       let storageBinding = null;
       let manifest;
       const requestParams = { ...req.query };
+      // Pre-emit query data block matches the operation's shape so the
+      // rejected-query path emits the same fields whether the failure happens
+      // before or after the operation runs.
       const queryEventData = {
         query_shape: 'stream_aggregate',
         metric: typeof requestParams.metric === 'string' ? requestParams.metric : null,
@@ -3519,6 +3571,7 @@ function buildRsApp(opts = {}) {
         queryData: { ...queryEventData },
       };
 
+      let operationInput;
       if (tokenInfo.pdpp_token_kind === 'owner') {
         const ownerScope = resolveOwnerReadScope(req, opts);
         sourceDescriptor = buildSourceDescriptor(ownerScope.source);
@@ -3526,26 +3579,61 @@ function buildRsApp(opts = {}) {
         const ownerResolved = await resolveOwnerManifestFromScope(ownerScope, opts);
         storageBinding = ownerResolved.storageBinding;
         manifest = ownerResolved.manifest;
-        if (!manifest.streams.find((stream) => stream.name === req.params.stream)) {
-          const err = new Error(`Stream '${req.params.stream}' not found`);
-          err.code = 'not_found';
-          return await rejectQuery(res, req, queryContext, err);
-        }
         grant = buildOwnerReadGrant(req.params.stream);
+        operationInput = {
+          actor: { kind: 'owner', subject_id: tokenInfo.subject_id || null },
+          streamName: req.params.stream,
+          requestParams,
+        };
       } else {
         const grantResolved = await resolveGrantManifest(tokenInfo, opts);
         storageBinding = grantResolved.storageBinding;
         sourceDescriptor = grantResolved.source;
         manifest = grantResolved.manifest;
         queryContext.sourceDescriptor = sourceDescriptor;
+        operationInput = {
+          actor: {
+            kind: 'client',
+            subject_id: tokenInfo.subject_id || null,
+            client_id: tokenInfo.client_id || null,
+            grant_id: tokenInfo.grant_id || null,
+          },
+          streamName: req.params.stream,
+          requestParams,
+        };
       }
 
       await emitQueryReceived(queryContext, req);
 
-      const mStream = manifest?.streams?.find((stream) => stream.name === req.params.stream);
-      validateRequestedQueryFieldParams(requestParams, mStream);
+      const dependencies = {
+        getSourceDescriptor: () => sourceDescriptor,
+        hasManifestStream: (streamName) => Boolean(
+          manifest?.streams?.find((stream) => stream.name === streamName),
+        ),
+        validateRequest: (params) => {
+          const mStream = manifest?.streams?.find((stream) => stream.name === req.params.stream);
+          validateRequestedQueryFieldParams(params, mStream);
+        },
+        aggregate: (params) => aggregateRecords(
+          storageBinding,
+          req.params.stream,
+          grant,
+          params,
+          manifest,
+        ),
+      };
 
-      const result = await aggregateRecords(storageBinding, req.params.stream, grant, requestParams, manifest);
+      let result;
+      try {
+        result = await executeStreamsAggregate(operationInput, dependencies);
+      } catch (opErr) {
+        if (opErr instanceof StreamsAggregateVisibilityError) {
+          const visibilityErr = new Error(opErr.message);
+          visibilityErr.code = opErr.code;
+          return await rejectQuery(res, req, queryContext, visibilityErr);
+        }
+        throw opErr;
+      }
 
       await emitSpineEvent({
         event_type: 'disclosure.served',
@@ -3563,17 +3651,17 @@ function buildRsApp(opts = {}) {
         stream_id: req.params.stream,
         token_id: req.headers.authorization?.slice(7) || null,
         data: {
-          source: sourceDescriptor,
+          source: result.sourceDescriptor,
           query_shape: 'stream_aggregate',
-          metric: result.metric,
-          field: result.field,
-          group_by: result.group_by,
-          filtered_record_count: result.filtered_record_count,
-          group_count: Array.isArray(result.groups) ? result.groups.length : null,
+          metric: result.disclosureTotals.metric,
+          field: result.disclosureTotals.field,
+          group_by: result.disclosureTotals.group_by,
+          filtered_record_count: result.disclosureTotals.filtered_record_count,
+          group_count: result.disclosureTotals.group_count,
         },
       });
 
-      res.json(result);
+      res.json(result.result);
     } catch (err) {
       if (queryContext) {
         await emitQueryReceived(queryContext, req);
