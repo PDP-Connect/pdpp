@@ -306,3 +306,140 @@ test('rs.records.list awaits async dependency promises', async () => {
   assert.equal(resolved, true);
   assert.deepEqual(result.result.data, []);
 });
+
+// ─── view/fields mutex regression: non-string raw query values ────────────
+//
+// `qs.parse` (used by the native Fastify transport) yields arrays for
+// repeated params (`?fields=a&fields=b`) and objects for bracketed
+// params. The previous native route applied a truthiness test
+// (`if (req.query.view && req.query.fields)`), so non-string truthy
+// values still triggered the mutual-exclusion rejection. The operation
+// MUST preserve that — otherwise a client could pass `view=compact` plus
+// repeated `fields=` params and silently drop the view.
+//
+// See openspec/changes/mount-rs-record-read-operations and
+// owner-review-1 for the fix that motivated these tests.
+
+test('rs.records.list rejects view + array-shaped fields as mutually exclusive', async () => {
+  await assert.rejects(
+    () =>
+      executeRecordsList(
+        {
+          actor: ownerActor,
+          streamName: 'pay_statements',
+          requestParams: { view: 'compact', fields: ['net_pay_minor', 'employer'] },
+          rawQueryView: 'compact',
+          rawQueryFields: ['net_pay_minor', 'employer'],
+        },
+        makeDeps(),
+      ),
+    (err) => {
+      assert.ok(err instanceof RecordsListVisibilityError);
+      assert.equal(err.code, 'invalid_request');
+      assert.match(err.message, /mutually exclusive/);
+      return true;
+    },
+  );
+});
+
+test('rs.records.list rejects array-shaped view + array-shaped fields as mutually exclusive', async () => {
+  await assert.rejects(
+    () =>
+      executeRecordsList(
+        {
+          actor: ownerActor,
+          streamName: 'pay_statements',
+          requestParams: {},
+          // `?view=compact&view=other` — qs yields an array.
+          rawQueryView: ['compact', 'other'],
+          rawQueryFields: ['net_pay_minor'],
+        },
+        makeDeps(),
+      ),
+    (err) => {
+      assert.ok(err instanceof RecordsListVisibilityError);
+      assert.equal(err.code, 'invalid_request');
+      assert.match(err.message, /mutually exclusive/);
+      return true;
+    },
+  );
+});
+
+test('rs.records.list rejects bracketed-object view + string fields as mutually exclusive', async () => {
+  await assert.rejects(
+    () =>
+      executeRecordsList(
+        {
+          actor: ownerActor,
+          streamName: 'pay_statements',
+          requestParams: { fields: 'net_pay_minor' },
+          // `?view[id]=compact` — qs yields an object.
+          rawQueryView: { id: 'compact' },
+          rawQueryFields: 'net_pay_minor',
+        },
+        makeDeps(),
+      ),
+    (err) => {
+      assert.ok(err instanceof RecordsListVisibilityError);
+      assert.equal(err.code, 'invalid_request');
+      assert.match(err.message, /mutually exclusive/);
+      return true;
+    },
+  );
+});
+
+test('rs.records.list raises Unknown view for an array-shaped raw view value', async () => {
+  // Repeated `?view=a&view=b` with no fields: qs yields ['a', 'b']. The
+  // previous native route compared `req.query.view` directly to view ids
+  // via `===`, so an array could never match — the route fell through to
+  // the "Unknown view" branch with the array's default-coerced form.
+  await assert.rejects(
+    () =>
+      executeRecordsList(
+        {
+          actor: ownerActor,
+          streamName: 'pay_statements',
+          requestParams: {},
+          rawQueryView: ['a', 'b'],
+        },
+        makeDeps(),
+      ),
+    (err) => {
+      assert.ok(err instanceof RecordsListVisibilityError);
+      assert.equal(err.code, 'invalid_request');
+      // `String(['a','b'])` -> "a,b", matching the prior native template
+      // literal coercion (`Unknown view: ${req.query.view}`).
+      assert.match(err.message, /Unknown view: a,b/);
+      return true;
+    },
+  );
+});
+
+test('rs.records.list does not surface non-string raw view as requested_view', async () => {
+  // The previous native route emitted `requested_view` only when the host
+  // supplied a non-empty string view. Non-string truthy values still
+  // trigger mutex/Unknown-view paths, but they should NOT leak into the
+  // `query.received` instrumentation field as a coerced string.
+  await assert.rejects(() =>
+    executeRecordsList(
+      {
+        actor: ownerActor,
+        streamName: 'pay_statements',
+        requestParams: {},
+        rawQueryView: ['a', 'b'],
+      },
+      makeDeps(),
+    ),
+  );
+  // Indirect proof: a successful call with a string view DOES surface it.
+  const result = await executeRecordsList(
+    {
+      actor: ownerActor,
+      streamName: 'pay_statements',
+      requestParams: { view: 'compact' },
+      rawQueryView: 'compact',
+    },
+    makeDeps(),
+  );
+  assert.equal(result.queryData.requested_view, 'compact');
+});

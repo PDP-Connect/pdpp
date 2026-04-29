@@ -157,12 +157,17 @@ export interface RecordsListInput {
    */
   requestParams: Record<string, unknown>;
   /**
-   * Raw `view` / `fields` query values as strings so the mutual-exclusion
-   * check matches the previous native route exactly (it tested the raw
-   * `req.query.view` / `req.query.fields` values).
+   * Raw `view` / `fields` query values forwarded from the host. Hosts pass
+   * the value `qs.parse` / `Request.url` produced — typically a string,
+   * but `qs` can yield an array for repeated params (`?fields=a&fields=b`)
+   * or an object for bracketed params. The operation's mutual-exclusion
+   * check tests these for truthiness so it preserves the previous native
+   * behavior (`if (req.query.view && req.query.fields)`), regardless of
+   * whether the host parsed the param into a string, an array, or any
+   * other truthy shape.
    */
-  rawQueryView?: string | null;
-  rawQueryFields?: string | null;
+  rawQueryView?: unknown;
+  rawQueryFields?: unknown;
 }
 
 export interface RecordsListOutput {
@@ -242,11 +247,15 @@ export async function executeRecordsList(
     grant = buildOwnerReadGrant(input.streamName);
   }
 
-  // View / fields mutual exclusion runs against the raw query values to
-  // match the previous native route exactly (`req.query.view` /
-  // `req.query.fields`).
-  const rawView = input.rawQueryView ?? null;
-  const rawFields = input.rawQueryFields ?? null;
+  // View / fields mutual exclusion runs as a truthiness test against the
+  // raw query values to match the previous native route exactly
+  // (`if (req.query.view && req.query.fields)`). The host may pass arrays
+  // (qs repeated params), objects (qs bracketed params), or strings; the
+  // operation does not coerce here so non-string truthy values still
+  // trigger the rejection instead of silently degrading to a single-param
+  // path.
+  const rawView = input.rawQueryView;
+  const rawFields = input.rawQueryFields;
   if (rawView && rawFields) {
     throw new RecordsListVisibilityError(
       "invalid_request",
@@ -259,16 +268,20 @@ export async function executeRecordsList(
 
   dependencies.validateRequestFields(input.requestParams, mStream);
 
-  // View → fields resolution. Only runs when the request asks for a view and
-  // `fields` was not already promoted by the validator (preserves prior
-  // native ordering: validate fields if present, then resolve view if no
-  // fields were supplied).
+  // View → fields resolution. Only runs when the request asks for a view
+  // and `fields` was not already promoted by the validator (preserves
+  // prior native ordering: validate fields if present, then resolve view
+  // if no fields were supplied). View id comparison uses `===` against
+  // `viewDef.id`; non-string raw `view` values therefore fall through to
+  // the "Unknown view" rejection, matching the previous native behavior
+  // (which embedded `req.query.view` directly into the template literal,
+  // coercing arrays/objects to their default string form).
   if (rawView && input.requestParams.fields == null) {
     const viewDef = (mStream?.views ?? []).find((v) => v.id === rawView);
     if (!viewDef) {
       throw new RecordsListVisibilityError(
         "invalid_request",
-        `Unknown view: ${rawView}`,
+        `Unknown view: ${String(rawView)}`,
       );
     }
     const streamGrant = grant.streams.find((s) => s.name === input.streamName);
@@ -313,6 +326,11 @@ export async function executeRecordsList(
     has_changes_since: !!input.requestParams.changes_since,
     limit: Number.isFinite(limit as number) ? (limit as number) : null,
   };
+  // Preserve the previous native instrumentation rule: `requested_view` is
+  // only emitted when the host supplied a non-empty string view. Non-string
+  // raw values (arrays, objects from qs) still trigger the
+  // mutual-exclusion / unknown-view paths above, but they do not surface as
+  // a `requested_view` instrumentation field.
   if (typeof rawView === "string" && rawView.trim()) {
     queryData.requested_view = rawView.trim();
   }

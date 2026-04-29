@@ -33,7 +33,7 @@ This is exactly the drift class operation extraction is meant to remove for reco
 
 The operation owns the host-independent slice of behavior:
 
-- view/fields mutual exclusion;
+- view/fields mutual exclusion, applied as a truthiness test against the raw host-supplied query values so non-string parsed shapes (arrays from `qs` repeated params, objects from `qs` bracketed params) still trigger the rejection — preserving the previous native `if (req.query.view && req.query.fields)` behavior;
 - view → fields resolution against the grant (and the `field_not_granted` error when a view names ungranted fields);
 - field/filter validation against the manifest stream;
 - owner read-grant construction (`{streams: [{name}]}`);

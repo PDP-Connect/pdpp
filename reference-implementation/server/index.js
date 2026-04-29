@@ -3643,13 +3643,14 @@ function buildRsApp(opts = {}) {
             },
         streamName: req.params.stream,
         requestParams,
-        rawQueryView: typeof req.query.view === 'string' ? req.query.view : null,
-        rawQueryFields:
-          typeof req.query.fields === 'string'
-            ? req.query.fields
-            : Array.isArray(req.query.fields) || req.query.fields == null
-              ? null
-              : String(req.query.fields),
+        // Forward the raw `view` / `fields` values without coercion so the
+        // operation can apply the previous native truthiness test
+        // (`if (req.query.view && req.query.fields)`). `qs.parse` may
+        // produce strings, arrays (repeated params), or objects (bracketed
+        // params); the operation handles each shape per its boundary
+        // contract.
+        rawQueryView: req.query.view,
+        rawQueryFields: req.query.fields,
       };
 
       const dependencies = {

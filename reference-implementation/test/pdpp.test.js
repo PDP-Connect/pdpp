@@ -6353,6 +6353,39 @@ test('PDPP reference implementation integration', async (t) => {
     });
   });
 
+  // Regression for owner-review-1 (mount-rs-record-read-operations): the
+  // Fastify transport uses `qs.parse`, so repeated `?fields=a&fields=b`
+  // produces an array. The previous native route rejected `view + fields`
+  // via a truthiness test (`if (req.query.view && req.query.fields)`), so
+  // arrays still triggered the mutex. The operation must preserve that
+  // behavior; otherwise a client could pass `view=compact` plus repeated
+  // `fields=` params and silently drop the view.
+  await t.test('record-list rejects view plus repeated fields query params (qs array shape)', async () => {
+    await withNativeHarness(async ({ asUrl, rsUrl, nativeManifest }) => {
+      await seedNorthstar(nativeManifest);
+
+      const approved = await approveGrant(asUrl, 'employee_1', {
+        client_id: 'longview',
+        provider_id: nativeManifest.provider_id,
+        purpose_code: 'https://pdpp.org/purpose/financial_planning',
+        purpose_description: 'Support compensation planning and verification',
+        access_mode: 'continuous',
+        streams: [{ name: 'pay_statements' }],
+      });
+
+      // Repeated `fields=` produces `fields: ['id', 'employer']` after qs
+      // parsing, which is the exact shape the P1 fix guards against.
+      const rejectedResp = await fetch(
+        `${rsUrl}/v1/streams/pay_statements/records?view=summary&fields=id&fields=employer`,
+        { headers: { Authorization: `Bearer ${approved.token}` } },
+      );
+      assert.equal(rejectedResp.status, 400);
+      const rejectedBody = await rejectedResp.json();
+      assert.equal(rejectedBody.error.code, 'invalid_request');
+      assert.match(rejectedBody.error.message, /view and fields are mutually exclusive/);
+    });
+  });
+
   await t.test('native owner query rejections stay correlated on owner traces', async () => {
     await withNativeHarness(async ({ asUrl, rsUrl, nativeManifest }) => {
       const ownerToken = await issueOwnerToken(asUrl, 'employee_1');
