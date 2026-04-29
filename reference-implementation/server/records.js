@@ -2141,10 +2141,13 @@ export async function putSyncState(storageTarget, stateMap, opts = {}) {
 }
 
 /**
- * Aggregate dataset summary used by the reference `/_ref/dataset/summary` surface
- * powering the operator-console hero band.
+ * Native capability inputs for the canonical `ref.dataset.summary` operation
+ * (`reference-implementation/operations/ref-dataset-summary`). The operation
+ * owns envelope assembly, `total_retained_bytes` derivation, top-connector
+ * sort/limit, and the empty-corpus collapse rule; the helpers below are the
+ * native dependency wiring the route hands in.
  *
- * Semantics:
+ * Semantics preserved from the previous combined `getDatasetSummary`:
  * - `record_count`, `connector_count`, `stream_count`, and `record_json_bytes`
  *   count only live (non-soft-deleted) records — what normal reads would
  *   surface.
@@ -2154,10 +2157,11 @@ export async function putSyncState(storageTarget, stateMap, opts = {}) {
  *   versions retained by design for change tracking. Included in
  *   `total_retained_bytes` because the substrate is honestly holding them.
  * - `blob_bytes` sums the whole `blobs` table (blobs are not soft-deleted).
- * - `total_retained_bytes = record_json_bytes + record_changes_json_bytes + blob_bytes`.
- *   Three concepts kept separately labeled so callers can disambiguate.
  * - Byte fields use `LENGTH(CAST(... AS BLOB))` so multibyte JSON counts real
  *   bytes, not codepoints.
+ * - `record_json_bytes` is an adapter-native operator diagnostic per
+ *   `define-reference-operation-environments` contract correction (4); the
+ *   operation preserves this and does not present it as a PDPP-stable metric.
  * - `earliest_record_time` / `latest_record_time` are real-world timestamps
  *   pulled from record payloads via each stream's manifest-declared
  *   `consent_time_field`. Streams without a `consent_time_field` don't
@@ -2170,36 +2174,70 @@ export async function putSyncState(storageTarget, stateMap, opts = {}) {
  *   available and useful for operator observability; they are *not* the real
  *   age of the data.
  */
-export async function getDatasetSummary() {
+
+/**
+ * One-row aggregate over the live records substrate: counts and the
+ * substrate's own ingest-time bounds. Coerces nullable / `BigInt`-shaped
+ * SQLite outputs into the plain numbers the operation expects.
+ */
+export function getDatasetRecordsAggregate() {
   const recordAgg = getOne(referenceQueries.recordsDatasetGetRecordsAggregate);
-  const changeAgg = getOne(referenceQueries.recordsDatasetGetRecordChangesBytes);
-  const blobAgg = getOne(referenceQueries.recordsDatasetGetBlobBytes);
-
-  const recordCount = Number(recordAgg?.record_count || 0);
-  const connectorCount = Number(recordAgg?.connector_count || 0);
-  const streamCount = Number(recordAgg?.stream_count || 0);
-  const recordJsonBytes = Number(recordAgg?.record_json_bytes || 0);
-  const recordChangesJsonBytes = Number(changeAgg?.record_changes_json_bytes || 0);
-  const blobBytes = Number(blobAgg?.blob_bytes || 0);
-
-  const realWorldBounds =
-    recordCount > 0 ? await getRealWorldTimeBounds() : { earliest: null, latest: null };
-
   return {
-    object: 'dataset_summary',
-    connector_count: connectorCount,
-    stream_count: streamCount,
-    record_count: recordCount,
-    record_json_bytes: recordJsonBytes,
-    record_changes_json_bytes: recordChangesJsonBytes,
-    blob_bytes: blobBytes,
-    total_retained_bytes: recordJsonBytes + recordChangesJsonBytes + blobBytes,
-    earliest_record_time: realWorldBounds.earliest,
-    latest_record_time: realWorldBounds.latest,
-    earliest_ingested_at: recordCount > 0 ? recordAgg?.earliest_ingested_at || null : null,
-    latest_ingested_at: recordCount > 0 ? recordAgg?.latest_ingested_at || null : null,
-    top_connectors: await getTopConnectorsByRecordCount(3),
+    record_count: Number(recordAgg?.record_count || 0),
+    connector_count: Number(recordAgg?.connector_count || 0),
+    stream_count: Number(recordAgg?.stream_count || 0),
+    record_json_bytes: Number(recordAgg?.record_json_bytes || 0),
+    earliest_ingested_at:
+      typeof recordAgg?.earliest_ingested_at === 'string'
+        ? recordAgg.earliest_ingested_at
+        : null,
+    latest_ingested_at:
+      typeof recordAgg?.latest_ingested_at === 'string'
+        ? recordAgg.latest_ingested_at
+        : null,
   };
+}
+
+/** Sum of `record_changes` JSON bytes (historical versions). */
+export function getDatasetRecordChangesBytes() {
+  const changeAgg = getOne(referenceQueries.recordsDatasetGetRecordChangesBytes);
+  return Number(changeAgg?.record_changes_json_bytes || 0);
+}
+
+/** Sum of `blobs` table bytes. */
+export function getDatasetBlobBytes() {
+  const blobAgg = getOne(referenceQueries.recordsDatasetGetBlobBytes);
+  return Number(blobAgg?.blob_bytes || 0);
+}
+
+/**
+ * Real-world record-time bounds across streams the manifest declares as
+ * temporally meaningful (`consent_time_field`). Exposed so the
+ * `ref.dataset.summary` operation's `getRecordTimeBounds` dependency can
+ * call it on the native side.
+ */
+export async function getDatasetRecordTimeBounds() {
+  return getRealWorldTimeBounds();
+}
+
+/**
+ * Candidate connectors for the top-N slot. The underlying SQL already orders
+ * by `record_count DESC, connector_id ASC`, but the operation reapplies the
+ * sort and limit so both adapters cannot drift. We collect every row here
+ * (the connector corpus is small — tens of entries at most, well under the
+ * registry's bounded-row cap) and let the operation own the limit.
+ */
+export function listDatasetTopConnectorCandidates() {
+  const candidates = [];
+  for (const row of iterate(
+    referenceQueries.recordsDatasetGetTopConnectorsByRecordCount,
+  )) {
+    candidates.push({
+      connector_id: row.connector_id,
+      record_count: Number(row.record_count || 0),
+    });
+  }
+  return candidates;
 }
 
 /**
@@ -2260,26 +2298,6 @@ async function getRealWorldTimeBounds() {
   }
 
   return { earliest, latest };
-}
-
-/**
- * Top N connectors by live record count, used by the operator-console hero
- * "quiet breadth row". Returns `[{ connector_id, record_count }]` sorted by
- * record_count descending. Excludes soft-deleted rows.
- */
-async function getTopConnectorsByRecordCount(limit) {
-  const result = [];
-  for (const row of iterate(
-    referenceQueries.recordsDatasetGetTopConnectorsByRecordCount,
-  )) {
-    result.push({
-      object: 'dataset_connector_summary',
-      connector_id: row.connector_id,
-      record_count: Number(row.record_count || 0),
-    });
-    if (result.length >= limit) break;
-  }
-  return result;
 }
 
 // --- Cursor encoding ---
