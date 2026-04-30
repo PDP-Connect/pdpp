@@ -3,6 +3,16 @@ title: "Deferred Concerns"
 description: "Issues identified during design and review that are intentionally out of scope for v0.1. Each item is named precisely so it can be referenced from the core spec and tracked for future versions."
 ---
 
+<Callout type="info" title="Spec status">
+  Status: **Informational (non-normative; tracking document for future versions)**
+
+  Date: 2026-04-06 (revised)
+</Callout>
+
+Issues identified during design and review that are intentionally out of scope for v0.1. Each item is named precisely so it can be referenced from the core spec and tracked for future versions.
+
+---
+
 ## Newly deferred (2026-04-07)
 
 ### Predicate-Based Grant Scoping (Subset Templates)
@@ -44,6 +54,35 @@ The grant carries the template ID and bound parameter values, not the predicate.
 
 **Design constraint:** The subset template approach must not become a backdoor for arbitrary predicate-in-grant. Per-request or per-user subset-stream synthesis (where the client or user supplies the predicate at runtime) is not the goal. The manifest is the trusted, versioned artifact; the grant binds typed parameters against a connector-defined template.
 
+---
+
+## Newly deferred (2026-04-11)
+
+### Active Erasure Signal
+
+**Description:** A standardized signal from the personal server or authorization server to the recipient indicating that revocation has been paired with a deletion request. This is distinct from revocation itself: revocation stops future access, while erasure asks the recipient to delete already received data.
+
+**Why deferred:** A real erasure signal requires more than a new event name. It needs recipient authentication, delivery and retry semantics, acknowledgment behavior, auditability, and a clear relationship to legal obligations that may override deletion. Those choices cross AS, RS, and client boundaries and should not be improvised into v0.1.
+
+**v0.1 posture:** State explicitly that revocation is not deletion. Do not overload revocation responses or introspection state to imply downstream erasure.
+
+### Re-Interaction / Session Refresh
+
+**Description:** A standardized way for a runtime or personal server to signal that a `continuous` collection path needs fresh user interaction: login renewal, MFA, consent refresh, or other source-side reauthentication.
+
+**Why deferred:** This is not just a runtime message. It crosses the connector runtime, the user's notification surface, the authorization server, and potentially the app that depends on the grant. It needs asynchronous interaction semantics rather than the current foreground `INTERACTION` request/response pattern.
+
+**v0.1 posture:** A `continuous` grant may remain valid while collection fails or pauses because source-side session state has decayed. Implementations should surface this honestly as an operational failure, not reinterpret it as grant revocation or successful freshness.
+
+### Request-Side Freshness Requirements
+
+**Description:** A client-specified freshness requirement such as maximum acceptable age for data returned under a grant or query.
+
+**Why deferred:** Request-side freshness creates a new promise surface. A personal server may know that data is stale, but still be unable to refresh it because the connector is unavailable, the user is offline, or the source throttles access. Before standardizing a request field, the protocol must decide whether unmet freshness is a hard error, a best-effort hint, or a negotiation mechanism.
+
+**v0.1 posture:** Prefer response-side freshness metadata first. Let the server report what it knows (`captured_at`, `status`, `last_attempted_at`) before asking it to promise collection behavior it may not be able to deliver.
+
+---
 
 ## Newly deferred (2026-04-06)
 
@@ -83,6 +122,7 @@ The grant carries the template ID and bound parameter values, not the predicate.
 
 **Why deferred:** Requires the resource server to materialize historical state from version history. Expensive to implement and not required for the core incremental sync use case.
 
+---
 
 ## Previously deferred (carried forward)
 
@@ -101,31 +141,29 @@ These aren't just "add later" — they affect how we define the grant object and
 
 **Design constraint for v0.1:** Keep the grant immutable and self-contained. Add `subject` and `client` identity fields even if we don't sign them yet. This makes future signing non-breaking.
 
-### Meta-grants (`source: "*"`)
+### Wildcard consent expansion (`streams: [{ "name": "*" }]`)
 
-**Finding (Codex):** An old consent with `source: "*"` silently expands to new connectors added later. This is semantically ambiguous and potentially unsafe.
+**Finding (Codex):** A wildcard consent can be misread as a live pointer that grows with future manifest changes. That would make a grant silently widen over time.
 
-**Semantic implication:** A grant should represent a fixed set of consented access, not a pointer that grows. Two options:
-1. Freeze: `source: "*"` is expanded to an explicit list of connector IDs at consent time. New connectors require re-consent.
-2. Dynamic: `source: "*"` genuinely means "everything, including future sources." This is appropriate for personal agents but should be a distinct, clearly labeled grant type.
+**Semantic implication:** A grant should represent a fixed set of consented access, not a pointer that grows. The only defensible v0.1 behavior is expansion at consent time into an explicit list of stream names. New streams introduced by later manifest versions require re-consent.
 
-**Design constraint for v0.1:** Decide which semantic `source: "*"` has. The spec currently says "expanded by gateway" but doesn't say whether the expansion is frozen or dynamic.
+**Design constraint for v0.1:** Wildcard stream requests expand at consent time and are frozen in the issued grant. Future stream types are not silently included.
 
-### Purpose enforcement
+### Purpose declarations and registry evolution
 
-**Finding (Codex):** Free-form `purpose` string is not enforceable, localizable, or auditable.
+**Finding (Codex):** Free-form purpose text alone is not enough for localization, audit, or policy.
 
-**Semantic implication:** If purpose is just a display string, it has no semantic weight. If it's a coded value from a registry (like W3C DPV purpose taxonomy), it becomes machine-readable and enforceable.
+**Semantic implication:** In PDPP, purpose is best understood primarily as a structured policy declaration. `purpose_code` supports consent display, audit, registration policy, and limited protocol rules. It should not be described as generic downstream-use enforcement at the RS layer. Only explicitly named cases such as `ai_training` should carry protocol-level consent requirements.
 
-**Design constraint for v0.1:** At minimum, define `purpose` as a string that apps choose but that appears in audit logs. Consider a `purpose_code` from a small initial registry (e.g., `personalization`, `analytics`, `ai_training`, `export`, `agent_context`) alongside a human-readable `purpose_description`.
+**Design constraint for v0.1:** Keep `purpose_code` plus `purpose_description`. Future work is registry evolution and profile-specific policy binding, not pretending every purpose code is self-enforcing.
 
 ### Retention semantics
 
 **Finding (Gemini):** `retention` with `on_expiry: "delete"` is a policy expectation, not a DRM mechanism. There's no enforcement.
 
-**Semantic implication:** The spec should be honest about what `retention` means: it's a constraint the recipient *agrees to* as part of the grant, enforceable through legal/contractual means and potentially through DTI Trust Registry verification, but not technically enforced by the protocol.
+**Semantic implication:** The spec should be honest about what `retention` means: it is a structured policy declaration and policy commitment the recipient agrees to as part of the grant, enforceable through legal/contractual means and potentially through trust-registry verification, but not technically enforced by the protocol.
 
-**Design constraint for v0.1:** Keep `retention` in the spec but document it as a policy field, not a technical control. This is consistent with how Open Banking handles it.
+**Design constraint for v0.1:** Keep `retention` in the spec but document it as a structured policy field, not a technical control. This is consistent with how Open Banking handles it.
 
 ## Concerns that affect implementation but not semantics
 
@@ -180,30 +218,11 @@ These can be fully deferred. The semantic spec doesn't need to change for these.
 
 **Action:** Add RECORD_ERROR or error field on RECORD in v0.2.
 
-## Corrections to make in v0.1
+## Historical corrections (mostly resolved)
 
-These are factual errors or inconsistencies that should be fixed regardless of scope.
+Many of the March 2026 naming and semantic-precision corrections identified during early review have since been incorporated into the live v0.1 draft: URI-based `type`, `connector_id`, `access_mode`, inclusive/exclusive `time_range`, START `state` as a per-stream map, `StreamRequest`/`StreamGrant` separation for `necessity`, compound-key ordering, and field-allowlist behavior.
 
-### Naming
-- `source` vs `connector_id` inconsistency → standardize on one
-- `sync_mode: "continuous"` → rename to `recurring` (continuous implies persistent connection)
-- `type: "personal_data"` → use a URI per RFC 9396 convention
-- `capabilities.browser` → `runtime_requirements.browser` (it's what the runtime needs, not what the connector has)
-
-### Compatibility claims
-- "Follows RFC 9396 exactly" → "Uses the RFC 9396 authorization_details envelope"
-- "RECORD and STATE follows Airbyte's protocol" → "Inspired by Airbyte's checkpoint pattern" (format differs)
-- "Grant can be submitted as consent artifact in DTI transfer" → remove until a mapping appendix exists
-- "v1 adapter runs without modification" → clarify this is a runtime-specific wrapper, not a protocol feature
-
-### Semantic precision
-- `time_range`: state that `since` is inclusive (>=), `until` is exclusive (<)
-- `limit`: define as per-run, not lifetime
-- `necessity` on StreamSelection: split into `StreamRequest` (has necessity) and `StreamGrant` (doesn't — stream is either in the grant or not)
-- `state` in START: define as `{ [streamName]: cursor }` map, not "the last STATE emitted"
-- Compound `key` ordering: must match `primary_key` field order in manifest
-- Required schema fields always included regardless of `fields` allowlist
-- Defaults: omitting selectors means "all data" — document this explicitly as a conscious choice (or change it)
+The main still-live issue from that pass is not terminology but default posture: whether v0.1 remains too permissive when selectors are omitted.
 
 ### Privacy-hostile defaults
 **Finding (Codex):** Omitting selectors means "all available data", `necessity` defaults to `required`, `"name": "*"` means all streams. These defaults favor maximum data collection.

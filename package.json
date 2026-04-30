@@ -13,6 +13,7 @@
     "docker:smoke": "bash scripts/docker-smoke.sh",
     "agent-skill:check": "node scripts/sync-agent-skill.mjs --check",
     "agent-skill:sync": "node scripts/sync-agent-skill.mjs --write",
+    "spec:check": "node scripts/spec-check.mjs",
     "workstreams:status": "node scripts/workstreams-status.mjs",
     "reference-contract:generate": "pnpm --filter @pdpp/reference-contract run generate:all",
     "reference-contract:check-generated": "pnpm --filter @pdpp/reference-contract run check:generated",

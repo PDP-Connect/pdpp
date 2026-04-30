@@ -3,12 +3,29 @@ title: "Profile"
 description: "Companion to the Personal Data Portability Protocol (PDPP) core spec."
 ---
 
+<Callout type="info" title="Spec status">
+  Status: **Draft**
+
+  Date: 2026-04-11
+</Callout>
+
+Companion to the Personal Data Portability Protocol (PDPP) core spec.
+
+---
+
 ## Overview
 
 The Collection Profile defines how connectors collect data from source platforms and write it to a PDPP resource server. It is one fulfillment mechanism for the PDPP core protocol; pre-collected data, manual imports, and other ingestion mechanisms are equally valid.
 
 The Collection Profile is architecturally separate from the core protocol. A resource server serving pre-collected data needs no awareness of this profile. A connector runtime implementing this profile needs no awareness of grant semantics beyond what is explicitly passed to it in the START message.
 
+### Collection method abstraction
+
+Connectors abstract over the source platform's data access interface. The runtime does not standardize the connector's source-specific collection logic; it standardizes only the runtime contract around bindings, scope, state, and emitted messages. A connector that collects data via browser automation and one that calls a platform's export API both use the same START/RECORD/STATE/DONE protocol, the same binding matching, and the same state management.
+
+This abstraction is intentional. Many platforms do not currently offer structured data portability APIs. The `browser_automation` binding enables connectors that drive a browser to collect data from a platform's web UI. As platforms adopt data portability standards or offer their own APIs, connector implementations can change without changing the consent surface, grant enforcement, or query API.
+
+---
 
 ## 1. Connector Manifest Extensions
 
@@ -57,6 +74,7 @@ The core manifest (Section 7 of the core spec) defines the consent surface. The 
 | `interactive` | `{}` | Presence indicates INTERACTION messages will be handled. |
 | `loopback_listen` | `{}` | Presence indicates the connector may bind to local ports. |
 
+---
 
 ## 2. Connector Run Protocol
 
@@ -95,7 +113,7 @@ The connector process transitions through the following states:
 
 **Protocol violations:**
 
-- A connector MUST NOT emit INTERACTION while already in `waiting_for_interaction`. A runtime that receives a second INTERACTION in this state MUST terminate the connector process and mark the run as failed.
+- A connector MUST NOT emit INTERACTION while already in `waiting_for_interaction`. A runtime that receives a second INTERACTION in this state MUST terminate the connector process and mark the run as failed. **Note (non-normative):** Runtimes that process connector messages sequentially via a single-threaded message queue may make this violation unrepresentable in practice, because the queue serializes INTERACTION processing. The protocol rule remains valid for correct connector behavior and for runtime architectures that dispatch messages concurrently.
 - A connector that receives INTERACTION_RESPONSE while in `collecting` (no pending INTERACTION) SHOULD treat it as a fatal protocol error, write a diagnostic to stderr, and exit with non-zero status.
 - START is exactly-once. It MUST be the first message sent by the runtime. A connector that receives START while in any state other than `initializing` MUST treat it as a fatal protocol error.
 
@@ -103,6 +121,7 @@ The connector process transitions through the following states:
 
 SKIP_RESULT is a message emitted while in the `collecting` state. It does not cause a state transition.
 
+---
 
 ## 3. Messages
 
@@ -341,6 +360,7 @@ On failure:
 | `failed` | Collection failed. Runtime does NOT persist STATE. |
 | `cancelled` | Collection was cancelled (e.g., user revoked mid-run). Runtime does NOT persist STATE. |
 
+---
 
 ## 4. Connector Conformance
 
@@ -372,6 +392,7 @@ A conformant connector:
 11. For grant-driven runs, never constructs a `scope` broader than the grant permits.
 12. Rejects or discards connector emissions that fall outside the declared `scope` before durable write.
 
+---
 
 ## 5. TypeScript Types
 

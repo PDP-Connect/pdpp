@@ -329,6 +329,10 @@ This repo uses a strict authority order:
 2. **Code and tests** define what the current reference implementation actually does.
 3. **OpenSpec** defines project-level architecture and change planning.
 
+Public web spec pages are downstream copies of the root specs. `pnpm spec:check`
+enforces parity, with only explicitly allowlisted web-only extension specs and
+reference-only root examples exempt from one-to-one pairing.
+
 OpenSpec in this repo is intentionally project-scoped. It does not replace or compete with the normative PDPP specs.
 
 ## OpenSpec
