@@ -18,8 +18,8 @@
 
 - [ ] 3.1 Add a Codex-first local device exporter CLI under `packages/polyfill-connectors` that can enroll with a reference server using a one-time code.
 - [ ] 3.2 Run the existing Codex connector locally through the Collection Profile runtime and transform emitted records into the device ingest envelope.
-- [ ] 3.3 Add a small durable local queue with per-source-instance ordering, retry backoff, and permanent-error recording.
-- [ ] 3.4 Add tests for queue persistence, retry ordering, permanent validation failures, and heartbeat diagnostics payloads.
+- [x] 3.3 Add a small durable local queue with per-source-instance ordering, retry backoff, and permanent-error recording.
+- [x] 3.4 Add tests for queue persistence, retry ordering, permanent validation failures, and heartbeat diagnostics payloads.
 - [ ] 3.5 Document required environment variables and local state paths without requiring owner tokens in the agent.
 
 ## 4. Dashboard And Reference UI
