@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 
 import { PdppCliError, PdppUsageError } from './lib/errors.js';
+import { runCli as runPublicCli } from '../../packages/cli/src/index.js';
+import { createPdppCliCommand, PDPP_CLI_BIN_NAME, PDPP_CLI_PACKAGE_NAME } from '../../packages/cli/src/package-info.js';
 import { runAgent } from './commands/agent.js';
 import { runAuth } from './commands/auth.js';
 import { runGrant } from './commands/grant.js';
@@ -12,16 +14,25 @@ import { runRun } from './commands/run.js';
 import { runSeed } from './commands/seed.js';
 import { runTrace } from './commands/trace.js';
 
-const HELP = `PDPP CLI (reference implementation surface; some commands are reference-only)
+const HELP = `PDPP CLI (reference implementation surface; reference-only commands are marked)
+
+Public CLI package:
+  package: ${PDPP_CLI_PACKAGE_NAME}
+  command: ${createPdppCliCommand()}
+
+Public commands delegated to ${PDPP_CLI_PACKAGE_NAME}:
+  ${PDPP_CLI_BIN_NAME} --help
+  ${PDPP_CLI_BIN_NAME} package-info [--provider-url <url>]
+  ${PDPP_CLI_BIN_NAME} connect <provider-url>  (gated)
 
 Agent access (project-local grant management for coding agents):
-  pdpp agent bootstrap [--rs-url <url>] [--as-url <url>] [--initial-access-token <tok>]
-  pdpp agent status [--format json|table]
-  pdpp agent request --source-kind <kind> --source-id <id> --streams <s1,s2> --purpose <text> [--access-mode <mode>]
-  pdpp agent store --grant-id <id> --token <token>
-  pdpp agent use [<grant-id>]
-  pdpp agent forget <grant-id>
-  pdpp agent revoke <grant-id>
+  pdpp agent bootstrap [--rs-url <url>] [--as-url <url>] [--initial-access-token <tok>]  (reference-only)
+  pdpp agent status [--format json|table]  (reference-only)
+  pdpp agent request --source-kind <kind> --source-id <id> --streams <s1,s2> --purpose <text> [--access-mode <mode>]  (reference-only)
+  pdpp agent store --grant-id <id> --token <token>  (reference-only)
+  pdpp agent use [<grant-id>]  (reference-only)
+  pdpp agent forget <grant-id>  (reference-only)
+  pdpp agent revoke <grant-id>  (reference-only)
 
 Standard CLI (reference implementation surface; some commands are reference-only)
 
@@ -65,12 +76,20 @@ const COMMANDS = {
   trace: runTrace,
 };
 
+const PUBLIC_DELEGATED_COMMANDS = new Set(['package-info', 'connect']);
+
 async function main() {
   const argv = process.argv.slice(2);
   const [group, ...rest] = argv;
 
   if (!group || group === 'help' || group === '--help' || group === '-h') {
     process.stdout.write(`${HELP}\n`);
+    return;
+  }
+
+  if (PUBLIC_DELEGATED_COMMANDS.has(group)) {
+    const exitCode = await runPublicCli(argv, { stdout: process.stdout, stderr: process.stderr });
+    process.exitCode = exitCode;
     return;
   }
 

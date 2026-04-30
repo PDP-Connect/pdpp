@@ -47,11 +47,63 @@ async function closeServer(server) {
   await Promise.allSettled([closeOne(server.asServer), closeOne(server.rsServer)]);
 }
 
-async function spinUpServer() {
-  const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
+async function spinUpServer(opts = {}) {
+  const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:', ...opts });
   const asUrl = `http://localhost:${server.asPort}`;
   const rsUrl = `http://localhost:${server.rsPort}`;
   return { server, asUrl, rsUrl };
+}
+
+async function createAgentConnectRequest({ asUrl, clientName = 'Agent Connect Test' }) {
+  const spotifyManifest = await registerSpotify(asUrl);
+  const registered = await registerClient({
+    asUrl,
+    initialAccessToken: DEFAULT_LOCAL_DCR_INITIAL_ACCESS_TOKEN,
+    metadata: { client_name: clientName, token_endpoint_auth_method: 'none' },
+  });
+  const streamName = spotifyManifest.streams[0].name;
+  const staged = await stageParRequest({
+    asUrl,
+    request: buildParRequest({
+      clientId: registered.client_id,
+      clientName,
+      sourceKind: 'connector',
+      sourceId: spotifyManifest.connector_id,
+      streamName,
+      purposeCode: 'https://pdpp.org/purpose/personal_assistant',
+      purposeDescription: 'Test agent-connect access.',
+      accessMode: 'single_use',
+    }),
+  });
+  const startResp = await fetch(`${asUrl}/agent-connect`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      request_uri: staged.request_uri,
+      client_id: registered.client_id,
+    }),
+  });
+  const start = await startResp.json();
+  assert.equal(startResp.status, 201);
+  assert.equal(start.status, 'pending');
+  assert.equal(typeof start.polling_code, 'string');
+  assert.equal(typeof start.approval_url, 'string');
+  assert.equal(typeof start.token_url, 'string');
+  return { spotifyManifest, registered, streamName, staged, start };
+}
+
+async function pollAgentConnectToken({ tokenUrl, pollingCode }) {
+  const resp = await fetch(tokenUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ polling_code: pollingCode }),
+  });
+  const body = await resp.json();
+  return { resp, body };
+}
+
+function errorCode(body) {
+  return body?.error?.code || body?.error || body?.code || null;
 }
 
 async function registerSpotify(asUrl) {
@@ -231,7 +283,8 @@ test('agent-flow: register client, stage PAR, approve inline, store token, verif
     const parRequest = buildParRequest({
       clientId: registered.client_id,
       clientName: 'Agent CLI Test',
-      connectorId,
+      sourceKind: 'connector',
+      sourceId: connectorId,
       streamName,
       purposeCode: 'https://pdpp.org/purpose/personal_assistant',
       purposeDescription: 'Test agent access to listening history.',
@@ -339,7 +392,8 @@ test('agent-flow: deny path — no token is cached after denial', async () => {
       request: buildParRequest({
         clientId: registered.client_id,
         clientName: 'Agent CLI Deny Test',
-        connectorId: spotifyManifest.connector_id,
+        sourceKind: 'connector',
+        sourceId: spotifyManifest.connector_id,
         streamName: spotifyManifest.streams[0].name,
         purposeCode: 'https://pdpp.org/purpose/personal_assistant',
         purposeDescription: 'Test denial path',
@@ -359,6 +413,136 @@ test('agent-flow: deny path — no token is cached after denial', async () => {
 
     // No grant or token should be in the cache
     assert.equal(listGrants(cacheRoot).length, 0, 'no grant should be cached after denial');
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test('agent-connect: owner approval completes polling without exposing owner token', async () => {
+  const { server, asUrl, rsUrl } = await spinUpServer();
+  try {
+    const { staged, start } = await createAgentConnectRequest({ asUrl });
+
+    const pendingPoll = await pollAgentConnectToken({
+      tokenUrl: start.token_url,
+      pollingCode: start.polling_code,
+    });
+    assert.equal(pendingPoll.resp.status, 202);
+    assert.equal(pendingPoll.body.error, 'authorization_pending');
+
+    await approveInline({
+      asUrl,
+      requestUri: staged.request_uri,
+      subjectId: 'owner_local',
+    });
+
+    const completedPoll = await pollAgentConnectToken({
+      tokenUrl: start.token_url,
+      pollingCode: start.polling_code,
+    });
+    assert.equal(completedPoll.resp.status, 200);
+    assert.equal(completedPoll.body.token_type, 'Bearer');
+    assert.equal(typeof completedPoll.body.access_token, 'string');
+    assert.equal(typeof completedPoll.body.grant_id, 'string');
+
+    const schemaResp = await fetch(`${rsUrl}/v1/schema`, {
+      headers: { Authorization: `Bearer ${completedPoll.body.access_token}` },
+    });
+    assert.equal(schemaResp.status, 200);
+
+    const replayPoll = await pollAgentConnectToken({
+      tokenUrl: start.token_url,
+      pollingCode: start.polling_code,
+    });
+    assert.equal(replayPoll.resp.status, 401);
+    assert.equal(errorCode(replayPoll.body), 'invalid_grant');
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test('agent-connect: owner denial returns bounded access_denied', async () => {
+  const { server, asUrl } = await spinUpServer();
+  try {
+    const { staged, start } = await createAgentConnectRequest({ asUrl, clientName: 'Agent Connect Deny Test' });
+
+    await fetch(`${asUrl}/consent/deny`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' },
+      body: new URLSearchParams({ request_uri: staged.request_uri }).toString(),
+      redirect: 'manual',
+    });
+
+    const deniedPoll = await pollAgentConnectToken({
+      tokenUrl: start.token_url,
+      pollingCode: start.polling_code,
+    });
+    assert.equal(deniedPoll.resp.status, 403);
+    assert.equal(errorCode(deniedPoll.body), 'access_denied');
+    assert.doesNotMatch(JSON.stringify(deniedPoll.body), /Bearer|owner_local|access_token/);
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test('agent-connect: expired polling handle returns bounded expired_token', async () => {
+  const { server, asUrl } = await spinUpServer({ agentConnectTtlMs: 1 });
+  try {
+    const { start } = await createAgentConnectRequest({ asUrl, clientName: 'Agent Connect Expiry Test' });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    const expiredPoll = await pollAgentConnectToken({
+      tokenUrl: start.token_url,
+      pollingCode: start.polling_code,
+    });
+    assert.equal(expiredPoll.resp.status, 400);
+    assert.equal(errorCode(expiredPoll.body), 'expired_token');
+    assert.doesNotMatch(JSON.stringify(expiredPoll.body), /access_token|polling_code/);
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test('agent-connect: approved scoped token cannot access ungranted stream', async () => {
+  const { server, asUrl, rsUrl } = await spinUpServer();
+  try {
+    const { spotifyManifest, staged, start } = await createAgentConnectRequest({
+      asUrl,
+      clientName: 'Agent Connect Scope Test',
+    });
+    await approveInline({
+      asUrl,
+      requestUri: staged.request_uri,
+      subjectId: 'owner_local',
+    });
+    const completedPoll = await pollAgentConnectToken({
+      tokenUrl: start.token_url,
+      pollingCode: start.polling_code,
+    });
+    assert.equal(completedPoll.resp.status, 200);
+
+    const ungrantedStream = spotifyManifest.streams[1].name;
+    const streamResp = await fetch(`${rsUrl}/v1/streams/${encodeURIComponent(ungrantedStream)}`, {
+      headers: { Authorization: `Bearer ${completedPoll.body.access_token}` },
+    });
+    const body = await streamResp.json();
+    assert.equal(streamResp.status, 403);
+    assert.match(errorCode(body) || JSON.stringify(body), /permission|scope|grant|forbidden/i);
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test('agent-connect: schema verification fails cleanly for invalid bearer', async () => {
+  const { server, rsUrl } = await spinUpServer();
+  try {
+    const schemaResp = await fetch(`${rsUrl}/v1/schema`, {
+      headers: { Authorization: 'Bearer not-a-real-token' },
+    });
+    const body = await schemaResp.json();
+    assert.equal(schemaResp.status, 401);
+    assert.equal(errorCode(body), 'authentication_error');
+    assert.doesNotMatch(JSON.stringify(body), /not-a-real-token/);
   } finally {
     await closeServer(server);
   }

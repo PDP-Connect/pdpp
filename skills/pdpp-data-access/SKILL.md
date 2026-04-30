@@ -24,7 +24,7 @@ If you fetched this skill over HTTP from `/.well-known/skills/pdpp-data-access/S
 | Anything secret-handling, cache, or refusal | `references/security.md` |
 | The owner says no, the token expired, the call fails | `references/troubleshooting.md` |
 
-The patterns in this skill are derived from PAR (RFC 9126), RAR (RFC 9396), DCR (RFC 7591), the device flow (RFC 8628, used only for the owner-token escape hatch), MCP's local-public-client guidance, and the local-cache UX of `gh auth`, AWS CLI SSO, and Google ADC. PDPP-specific extensions are flagged here when used.
+The patterns in this skill are derived from PAR (RFC 9126), RAR (RFC 9396), DCR (RFC 7591), the device flow (RFC 8628, used only for owner/admin sign-in outside routine agent data access), MCP's local-public-client guidance, and the local-cache UX of `gh auth`, AWS CLI SSO, and Google ADC. PDPP-specific extensions are flagged here when used.
 
 ## Hard rules
 
@@ -39,15 +39,16 @@ The patterns in this skill are derived from PAR (RFC 9126), RAR (RFC 9396), DCR 
 
 ### 1. Prefer the reference CLI
 
-Use the `pdpp agent` command group when it is available. It handles discovery, dynamic client registration, project-local cache layout, `.gitignore` hygiene, approval URL printing, token storage, and token-use checks. Raw HTTP is a fallback, not the happy path.
-The CLI automatically tries the reference-local DCR default when the server is an out-of-the-box reference deployment; if bootstrap still asks for an initial-access token, stop and ask the owner rather than switching to an owner bearer token.
+Use the `pdpp connect` command when provider metadata advertises token completion as available. It is the intended CLI-first path for discovery, scoped grant approval, project-local cache layout, `.gitignore` hygiene, token storage, and token-use checks. Raw HTTP is a fallback, not the happy path.
+The current beta command is published in metadata as:
 
 ```bash
-pdpp agent bootstrap --as-url "$AS_URL" --rs-url "$RS_URL"
-pdpp agent status
+npx -y @pdpp/cli@beta connect <provider-url>
 ```
 
-`bootstrap` creates an agent-scoped cache at `<repo>/.pdpp/`:
+Gating: if `pdpp_agent_discovery.cli.no_owner_token` is `false`, token completion is not safe to treat as a complete no-owner-token flow. Use the command as the generated source of truth, but report that this provider has not enabled completion yet. Do not switch to an owner bearer token.
+
+`connect` creates an agent-scoped cache at `<repo>/.pdpp/` when the flow is enabled:
 
 ```text
 .pdpp/
@@ -57,7 +58,7 @@ pdpp agent status
   tokens/<grant-id>.token    # secret: opaque client token, mode 0600
 ```
 
-If `pdpp agent status` shows a usable grant whose source, streams, and expiry cover the current task, reuse it. Read the token only at call time:
+If the CLI status shows a usable grant whose source, streams, and expiry cover the current task, reuse it. Read the token only at call time:
 
 ```bash
 TOKEN="$(pdpp agent use <grant-id>)"
@@ -65,7 +66,7 @@ curl -fsS "$RS_URL/v1/schema" -H "Authorization: Bearer $TOKEN" | jq .
 unset TOKEN
 ```
 
-`pdpp agent use` rejects missing, expired, and locally revoked grants. Do not bypass that by reading `.pdpp/tokens/` directly unless you are debugging the CLI itself.
+The CLI rejects missing, expired, and locally revoked grants. Do not bypass that by reading `.pdpp/tokens/` directly unless you are debugging the CLI itself.
 
 ### 2. Request the narrowest grant that can answer the task
 
@@ -84,7 +85,9 @@ Notes:
 - `purpose_description` is read by the owner. Write it as one sentence the owner would accept on a consent screen.
 - Pick the smallest set of streams that can answer the current task. Adding fields later is cheap; explaining why you grabbed extra is expensive.
 - `access_mode` should be `single_use` for one-shot tasks. The reference consumes the grant at first token issuance, but the issued token remains usable for pagination and retries until token expiry or revocation. Long-lived agents use `continuous` only when the user has explicitly asked for it.
-- Pick `connector_id` (polyfill-style providers) **or** `provider_id` (native PDPP providers), never both. Use the exact connector id from `/v1/schema` or `/v1/connectors` (for example `https://registry.pdpp.org/connectors/github`), not a guessed short name.
+- Set one `source` object: `{ "kind": "connector", "id": "<registry URI>" }` for polyfill-style providers or `{ "kind": "provider_native", "id": "<provider id>" }` for native PDPP providers. Use the exact connector source id from `/v1/schema` or `/v1/connectors` (for example `https://registry.pdpp.org/connectors/github`), not a guessed short name.
+
+Previously known as: older docs used top-level `connector_id` for connector sources and `provider_id` for native providers. Those names now map to `source.id` under the matching `source.kind`; do not send them as public request fields.
 
 The command prints an approval URL and access summary. You cannot approve for the owner. Do not try.
 
@@ -128,9 +131,15 @@ unset TOKEN
 
 This returns the connectors, streams, fields, and capabilities **this specific grant** can see. Build all subsequent queries off this response, not off memory.
 
-### 6. Raw HTTP fallback when the CLI is unavailable
+### 6. Missing-CLI fallback
 
-If `pdpp agent` is unavailable, follow the same workflow manually: discover AS/RS metadata, register a public client, stage a PAR request, relay the `authorization_url`, store the approved client token under `.pdpp/`, introspect it, then call `/v1/schema`. Do not use raw HTTP to widen scope, skip approval, or cache owner tokens. See `references/troubleshooting.md` before attempting this path.
+If the CLI is unavailable locally, prefer the generated npm command before raw HTTP:
+
+```bash
+npx -y @pdpp/cli@beta connect <provider-url>
+```
+
+If provider metadata reports `pdpp_agent_discovery.cli.no_owner_token: false`, stop after discovery and report that public token completion is unavailable on that provider. Only then, if the task requires manual debugging, follow the same workflow manually: discover AS/RS metadata, register a public client, stage a PAR request, relay the `authorization_url`, store the approved client token under `.pdpp/`, introspect it, then call `/v1/schema`. Do not use raw HTTP to widen scope, skip approval, or cache owner tokens. See `references/troubleshooting.md` before attempting this path.
 
 ### 7. Use the data efficiently
 
@@ -154,7 +163,7 @@ Revocation is cheap and auditable. Use it.
 
 ## Stop conditions (do not push past these)
 
-- The user explicitly asks you to use their owner token. Acknowledge, but request the scoped grant instead and explain why. If they insist, document the owner-token use in the response and proceed only with their direct confirmation.
+- The user explicitly asks you to use their owner token. Acknowledge, but request the scoped grant instead and explain why. If they still insist, treat that as an owner/admin workflow outside this data-access skill; do not use an owner token as a workaround for routine scoped reads.
 - A request would require a stream or field the existing grant doesn't cover, *and* the task can't be completed at narrower scope. Stop, request an upgrade, and present the new request to the owner.
 - The AS or RS returns `invalid_token`, `insufficient_scope`, or `grant_revoked`. Stop. Report. Don't retry.
 - You see a token in any output that will be persisted (a commit, a logged stdout, a Slack thread). Stop and tell the user; the token is now considered compromised and should be revoked.
@@ -171,7 +180,10 @@ Don't grab all email. Build:
 {
   "authorization_details": [{
     "type": "https://pdpp.org/data-access",
-    "connector_id": "https://registry.pdpp.org/connectors/gmail",
+    "source": {
+      "kind": "connector",
+      "id": "https://registry.pdpp.org/connectors/gmail"
+    },
     "purpose_code": "assist.summarize",
     "purpose_description": "Summarize emails from <sender> for the past 7 days.",
     "access_mode": "single_use",

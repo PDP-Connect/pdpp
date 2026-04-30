@@ -18,6 +18,8 @@
     "workstreams:status": "node scripts/workstreams-status.mjs",
     "reference-contract:generate": "pnpm --filter @pdpp/reference-contract run generate:all",
     "reference-contract:check-generated": "pnpm --filter @pdpp/reference-contract run check:generated",
+    "cli:published-beta-help": "node scripts/cli-acceptance-smoke.mjs published-beta-help",
+    "cli:connect-smoke": "node scripts/cli-acceptance-smoke.mjs local-connect",
     "release": "semantic-release",
     "release:dry-run": "semantic-release --dry-run --no-ci",
     "reference-implementation:test": "pnpm --dir reference-implementation run test",

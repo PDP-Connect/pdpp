@@ -2,8 +2,8 @@ import {
   createPdppCliCommand,
   getPdppCliPackageInfo,
   PDPP_CLI_BIN_NAME,
-  PDPP_CLI_PACKAGE_NAME,
 } from './package-info.js';
+import { ConnectError, connectProvider, normalizeProviderUrl } from './connect/flow.js';
 
 const HELP = `PDPP CLI
 
@@ -16,7 +16,6 @@ Agent access:
   ${createPdppCliCommand()}
 
 Notes:
-  connect is gated until the reference AS supports no-owner-token scoped grant completion.
   Do not ask users for owner bearer tokens for routine delegated access.
 `;
 
@@ -41,30 +40,20 @@ export async function runCli(argv, io = { stdout: process.stdout, stderr: proces
       return 64;
     }
 
-    const normalizedProviderUrl = normalizeProviderUrl(providerUrl);
-    if (!normalizedProviderUrl) {
-      io.stderr.write(`Invalid provider URL: ${providerUrl}\n`);
-      return 64;
+    try {
+      await connectProvider(providerUrl, { io });
+      return 0;
+    } catch (error) {
+      if (error instanceof ConnectError) {
+        io.stderr.write(`${error.message}\n`);
+        return error.exitCode;
+      }
+      throw error;
     }
-
-    io.stderr.write(
-      `${PDPP_CLI_PACKAGE_NAME} connect is not enabled yet. The reference AS still needs no-owner-token scoped grant completion before this command can be advertised.\n`
-    );
-    return 69;
   }
 
   io.stderr.write(`Unknown command: ${command}\n\n${HELP}\n`);
   return 64;
-}
-
-export function normalizeProviderUrl(value) {
-  try {
-    const parsed = new URL(value.includes('://') ? value : `https://${value}`);
-    parsed.hash = '';
-    return parsed.origin;
-  } catch {
-    return null;
-  }
 }
 
 function readOption(argv, name) {
@@ -75,3 +64,5 @@ function readOption(argv, name) {
 
   return argv[index + 1];
 }
+
+export { connectProvider, normalizeProviderUrl };

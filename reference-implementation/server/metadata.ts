@@ -325,9 +325,20 @@ export interface ProtectedResourceDiscoveryHints {
 
 export interface ProtectedResourceAgentDiscovery {
   advisory: true;
+  cli?: {
+    bin_name: string;
+    connect_command: string;
+    install_command: string;
+    no_owner_token: boolean;
+    no_owner_token_policy: string;
+    package: string;
+    package_specifier: string;
+    run_command: string;
+    version_policy: string;
+  };
   llms_full_txt: string;
   llms_txt: string;
-  recommended_flow: "pdpp agent";
+  recommended_flow: "pdpp connect";
   skill: string;
   skill_catalog: string;
   skill_name: "pdpp-data-access";
@@ -650,6 +661,7 @@ export function buildHybridRetrievalCapability({
 // `additionalProperties: false` expectations and keeps the published
 // document free of `null` / `undefined` keys.
 export interface AuthorizationServerMetadataInput {
+  agentConnectEndpoint?: string | null;
   authorizationDetailsTypesSupported?: readonly string[] | null;
   deviceAuthorizationEndpoint?: string | null;
   grantTypesSupported?: readonly string[] | null;
@@ -664,6 +676,7 @@ export interface AuthorizationServerMetadataInput {
 }
 
 export interface AuthorizationServerMetadata {
+  agent_connect_endpoint?: string;
   device_authorization_endpoint?: string;
   grant_types_supported?: readonly string[];
   introspection_endpoint: string;
@@ -688,6 +701,7 @@ export function buildAuthorizationServerMetadata({
   tokenEndpoint,
   tokenEndpointAuthMethodsSupported,
   deviceAuthorizationEndpoint,
+  agentConnectEndpoint,
   grantTypesSupported,
 }: AuthorizationServerMetadataInput): AuthorizationServerMetadata {
   const metadata: AuthorizationServerMetadata = {
@@ -720,6 +734,9 @@ export function buildAuthorizationServerMetadata({
   }
   if (deviceAuthorizationEndpoint) {
     metadata.device_authorization_endpoint = deviceAuthorizationEndpoint;
+  }
+  if (agentConnectEndpoint) {
+    metadata.agent_connect_endpoint = agentConnectEndpoint;
   }
   if (grantTypesSupported?.length) {
     metadata.grant_types_supported = grantTypesSupported;

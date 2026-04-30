@@ -8,6 +8,7 @@
   },
   "exports": {
     ".": "./src/index.js",
+    "./cache-layout": "./src/cache-layout.js",
     "./package-info": "./src/package-info.js"
   },
   "files": [

@@ -4,10 +4,11 @@ Command-line tools for PDPP providers.
 
 ## Status
 
-This package is the public npm home for the `pdpp` command. The initial package
-scaffold is intentionally narrow: package startup, help output, and shared
-package metadata are in place before the no-owner-token `pdpp connect` flow is
-advertised by provider metadata or hosted docs.
+This package is the public npm home for the `pdpp` command. The beta CLI supports
+`pdpp connect <provider-url>` for delegated access: the agent runs the command,
+the owner approves scoped access in the browser, and the CLI stores scoped client
+credentials in the project-local `.pdpp/` cache without asking for an owner
+bearer token.
 
 ## Install
 

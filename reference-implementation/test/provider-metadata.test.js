@@ -6,6 +6,7 @@ import { request as httpRequest } from 'node:http';
 import { startServer } from '../server/index.js';
 import { resolvePublicUrl, resolveSiblingPublicUrl } from '../server/metadata.ts';
 import { PDPP_REFERENCE_REVISION_HEADER } from '../server/reference-revision.js';
+import { createPdppCliCommand, getPdppCliPackageInfo } from '../../packages/cli/src/package-info.js';
 
 const TEST_DCR_INITIAL_ACCESS_TOKEN = 'pdpp-reference-test-initial-access-token';
 
@@ -71,7 +72,7 @@ async function httpRequestJson(url, { headers = {} } = {}) {
         resp.on('end', () => {
           try {
             const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-            resolve({ status: resp.statusCode, body });
+            resolve({ status: resp.statusCode, headers: resp.headers, body });
           } catch (err) {
             reject(err);
           }
@@ -155,6 +156,7 @@ test('composed mode env drives browser-facing metadata when explicit public urls
   });
   const asUrl = `http://localhost:${server.asPort}`;
   const rsUrl = `http://localhost:${server.rsPort}`;
+  const expectedCli = getPdppCliPackageInfo('http://localhost:3200');
 
   try {
     const protectedResource = await fetchJson(`${rsUrl}/.well-known/oauth-protected-resource`);
@@ -165,7 +167,18 @@ test('composed mode env drives browser-facing metadata when explicit public urls
     assert.deepEqual(protectedResource.body.pdpp_agent_discovery, {
       advisory: true,
       skill_name: 'pdpp-data-access',
-      recommended_flow: 'pdpp agent',
+      recommended_flow: 'pdpp connect',
+      cli: {
+        package: expectedCli.packageName,
+        package_specifier: expectedCli.packageSpecifier,
+        bin_name: expectedCli.binName,
+        install_command: `npx -y ${expectedCli.packageSpecifier} --help`,
+        run_command: expectedCli.runCommand,
+        connect_command: createPdppCliCommand('<provider-url>'),
+        version_policy: expectedCli.versionPolicy,
+        no_owner_token: false,
+        no_owner_token_policy: 'requires_native_reference_provider_for_one_command_connect',
+      },
       skill_catalog: 'http://localhost:3200/.well-known/skills/index.json',
       skill: 'http://localhost:3200/.well-known/skills/pdpp-data-access/SKILL.md',
       llms_txt: 'http://localhost:3200/llms.txt',
@@ -876,6 +889,90 @@ test('discovery index does not require authentication', async () => {
     });
     assert.equal(resp.status, 200);
     assert.equal(body.object, 'pdpp_discovery_index');
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test('RS 401 responses advertise protected-resource metadata in header and body', async () => {
+  const server = await startServer({
+    quiet: true,
+    asPort: 0,
+    rsPort: 0,
+    dbPath: ':memory:',
+  });
+  const rsUrl = `http://localhost:${server.rsPort}`;
+  const metadataUrl = `${rsUrl}/.well-known/oauth-protected-resource`;
+  const expectedChallenge = `Bearer resource_metadata="${metadataUrl}"`;
+
+  try {
+    const missingResp = await fetch(`${rsUrl}/v1/schema`);
+    const missingBody = await missingResp.json();
+    assert.equal(missingResp.status, 401);
+    assert.equal(missingResp.headers.get('www-authenticate'), expectedChallenge);
+    assert.equal(missingBody.error.code, 'authentication_error');
+    assert.equal(missingBody.error.resource_metadata, metadataUrl);
+    assert.match(missingBody.error.next_step, /pdpp_agent_discovery\.cli/);
+    assert.doesNotMatch(missingBody.error.next_step, /npx -y @pdpp\/cli@beta connect/);
+
+    const invalidResp = await fetch(`${rsUrl}/v1/schema`, {
+      headers: { authorization: 'Bearer not-a-real-token' },
+    });
+    const invalidBody = await invalidResp.json();
+    assert.equal(invalidResp.status, 401);
+    assert.equal(invalidResp.headers.get('www-authenticate'), expectedChallenge);
+    assert.equal(invalidBody.error.resource_metadata, metadataUrl);
+    assert.match(invalidBody.error.next_step, /pdpp_agent_discovery\.cli/);
+    assert.doesNotMatch(invalidBody.error.next_step, /npx -y @pdpp\/cli@beta connect/);
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test('RS 401 metadata challenge uses configured public resource origin', async () => {
+  const publicResource = 'https://resource.example';
+  const server = await startServer({
+    quiet: true,
+    asPort: 0,
+    rsPort: 0,
+    dbPath: ':memory:',
+    asPublicUrl: 'https://as.example',
+    asIssuer: 'https://as.example',
+    rsPublicUrl: publicResource,
+  });
+  const rsUrl = `http://localhost:${server.rsPort}`;
+  const metadataUrl = `${publicResource}/.well-known/oauth-protected-resource`;
+
+  try {
+    const resp = await fetch(`${rsUrl}/v1/schema`);
+    const body = await resp.json();
+    assert.equal(resp.status, 401);
+    assert.equal(resp.headers.get('www-authenticate'), `Bearer resource_metadata="${metadataUrl}"`);
+    assert.equal(body.error.resource_metadata, metadataUrl);
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test('RS 401 metadata challenge omits untrusted public host-derived origin', async () => {
+  const server = await startServer({
+    quiet: true,
+    asPort: 0,
+    rsPort: 0,
+    dbPath: ':memory:',
+    trustedMetadataHosts: '',
+  });
+  const rsUrl = `http://localhost:${server.rsPort}`;
+
+  try {
+    const resp = await httpRequestJson(`${rsUrl}/v1/schema`, {
+      headers: { host: 'attacker.example' },
+    });
+    assert.equal(resp.status, 401);
+    assert.equal(resp.headers['www-authenticate'], undefined);
+    assert.equal(resp.body.error.code, 'authentication_error');
+    assert.equal(resp.body.error.resource_metadata, undefined);
+    assert.equal(resp.body.error.next_step, undefined);
   } finally {
     await closeServer(server);
   }

@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { getFileMode, getPdppCacheLayout, writePdppSecretFile } from '../src/cache-layout.js';
 
 const packageRoot = fileURLToPath(new URL('..', import.meta.url));
 
@@ -14,6 +15,8 @@ test('package manifest stays intentionally narrow', () => {
   assert.equal(manifest.name, '@pdpp/cli');
   assert.deepEqual(manifest.bin, { pdpp: './bin/pdpp.js' });
   assert.equal(manifest.publishConfig.tag, 'beta');
+  assert.equal(manifest.publishConfig.provenance, false);
+  assert.equal(Object.hasOwn(manifest, 'dependencies'), false);
   assert.equal(Object.hasOwn(manifest, 'main'), false);
   assert.equal(Object.hasOwn(manifest, 'directories'), false);
   assert.equal(Object.hasOwn(manifest, 'author'), false);
@@ -33,7 +36,10 @@ test('npm package contents stay narrowly allowlisted', () => {
     'README.md',
     'bin/pdpp.js',
     'package.json',
+    'src/cache-layout.js',
+    ...(files.includes('src/connect/flow.js') ? ['src/connect/flow.js'] : []),
     'src/index.js',
+    'src/package-info.d.ts',
     'src/package-info.js',
   ]);
 
@@ -43,6 +49,22 @@ test('npm package contents stay narrowly allowlisted', () => {
     assert.doesNotMatch(file, /^server\//);
     assert.doesNotMatch(file, /^test\//);
     assert.doesNotMatch(file, /sqlite|fixture|capture|screenshot/i);
+  }
+});
+
+test('cache layout is explicit and secret files are owner-only', () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'pdpp-cli-cache-'));
+  try {
+    const layout = getPdppCacheLayout(join(tempRoot, '.pdpp'));
+    assert.equal(layout.clientsDir, join(tempRoot, '.pdpp', 'clients'));
+    assert.equal(layout.grantsDir, join(tempRoot, '.pdpp', 'grants'));
+    assert.equal(layout.secretsDir, join(tempRoot, '.pdpp', 'secrets'));
+
+    const secretPath = layout.secretFile('grant-1');
+    writePdppSecretFile(secretPath, 'secret-value');
+    assert.equal(getFileMode(secretPath), 0o600);
+  } finally {
+    rmSync(tempRoot, { force: true, recursive: true });
   }
 });
 

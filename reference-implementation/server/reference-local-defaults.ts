@@ -33,6 +33,10 @@ export const DEFAULT_PRE_REGISTERED_PUBLIC_CLIENTS: readonly DefaultPreRegistere
     metadata: { client_name: "Longview CLI", token_endpoint_auth_method: "none" },
   },
   {
+    client_id: "pdpp_cli",
+    metadata: { client_name: "PDPP CLI", token_endpoint_auth_method: "none" },
+  },
+  {
     client_id: "concert_recommendation_app",
     metadata: {
       client_name: "Concert Recommendation App",
