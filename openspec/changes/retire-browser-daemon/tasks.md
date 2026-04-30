@@ -49,9 +49,9 @@ See `design-notes/browser-channel-decision-memo.md` for the full decision and ra
 - [x] `cd /home/user/code/pdpp && openspec validate --all --strict`
 - [x] `pnpm --filter @pdpp/polyfill-connectors typecheck`
 - [x] `pnpm --filter @pdpp/polyfill-connectors test`
-- [ ] Manual smoke: trigger one browser-backed connector run end-to-end on the host (e.g. Spotify or GitHub). Confirm no `~/.pdpp/browser-daemon.json` is created. _(operator-side check; not run as part of this tranche)_
-- [ ] Manual smoke: run `bin/amazon-request-export.ts` to its existing checkpoint; confirm it acquires Chromium directly and does not depend on a separate daemon process. _(operator-side check; not run as part of this tranche)_
+- [x] Manual smoke: trigger one browser-backed connector run end-to-end on the host (Amazon connector, `PDPP_AMAZON_YEARS=2026 PDPP_AMAZON_SKIP_DETAIL=1`). Confirmed it succeeded with no `~/.pdpp/browser-daemon.json` created and no daemon-log write.
+- [x] Manual smoke: run `bin/amazon-request-export.ts` to its existing checkpoint; confirmed it acquires Chromium directly, reaches Privacy Central without `--submit`, and does not depend on or create a separate daemon discovery file.
 
 ## 6. Future capability (not implemented in this tranche)
 
-- [ ] _Deferred:_ change `connector-runtime.ts:609` default from `profileName = name` to `profileName = ${name}__${subjectId}` when multi-account support ships. Captured as a requirement in the spec delta; no code change here.
+- [x] _Deferred / tracked:_ change `connector-runtime.ts:609` default from `profileName = name` to `profileName = ${name}__${subjectId}` when multi-account support ships. Captured as a future requirement in the spec delta; no code change in this tranche.
