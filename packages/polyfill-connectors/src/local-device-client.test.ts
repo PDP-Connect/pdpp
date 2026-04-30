@@ -7,7 +7,7 @@ test("LocalDeviceClient sends enrollment exchange without bearer token", async (
   const seen: SeenRequest[] = [];
   const server = await startJsonServer(seen);
   try {
-    const client = new LocalDeviceClient({ baseUrl: server.url, deviceToken: "device-token" });
+    const client = new LocalDeviceClient({ baseUrl: server.url, deviceId: "device-1", deviceToken: "device-token" });
     const response = await client.exchangeEnrollment({
       code: "enroll-123",
       device_label: "Laptop",
@@ -31,7 +31,7 @@ test("LocalDeviceClient sends bearer-authenticated heartbeat and ingest batch sh
   const seen: SeenRequest[] = [];
   const server = await startJsonServer(seen);
   try {
-    const client = new LocalDeviceClient({ baseUrl: server.url, deviceToken: "device-token" });
+    const client = new LocalDeviceClient({ baseUrl: server.url, deviceId: "device-1", deviceToken: "device-token" });
     await client.heartbeat({
       connector_id: "codex",
       records_pending: 3,
@@ -44,7 +44,7 @@ test("LocalDeviceClient sends bearer-authenticated heartbeat and ingest batch sh
       source_instance_id: "source-1",
     });
 
-    assert.equal(seen[0]?.path, LOCAL_DEVICE_ENDPOINTS.heartbeat);
+    assert.equal(seen[0]?.path, LOCAL_DEVICE_ENDPOINTS.heartbeat("device-1"));
     assert.equal(seen[0]?.authorization, "Bearer device-token");
     assert.deepEqual(seen[0]?.body, {
       connector_id: "codex",
@@ -52,7 +52,7 @@ test("LocalDeviceClient sends bearer-authenticated heartbeat and ingest batch sh
       source_instance_id: "source-1",
       status: "healthy",
     });
-    assert.equal(seen[1]?.path, LOCAL_DEVICE_ENDPOINTS.ingestBatch);
+    assert.equal(seen[1]?.path, LOCAL_DEVICE_ENDPOINTS.ingestBatch("device-1"));
     assert.equal(seen[1]?.authorization, "Bearer device-token");
     assert.deepEqual(seen[1]?.body, {
       batch_id: "batch-1",

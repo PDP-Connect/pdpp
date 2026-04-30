@@ -1,0 +1,205 @@
+import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { dirname } from "node:path";
+import { createInterface } from "node:readline";
+import { fileURLToPath } from "node:url";
+import type { EmittedMessage, StartMessage, StreamScope } from "./connector-runtime.ts";
+import { type EnrollmentExchangeResponse, LocalDeviceClient } from "./local-device-client.ts";
+import { buildLocalDeviceRecordEnvelope, type LocalDeviceRecordEnvelope } from "./local-device-envelope.ts";
+import { LocalDeviceQueue, type LocalDeviceQueueItem } from "./local-device-queue.ts";
+
+export const CODEX_CONNECTOR_ID = "codex";
+export const DEFAULT_CODEX_STREAMS = ["sessions", "messages", "function_calls", "rules", "prompts", "skills"] as const;
+
+export interface LocalDeviceEnrollmentConfig {
+  baseUrl: string;
+  code: string;
+  deviceLabel?: string;
+  sourceInstanceId: string;
+}
+
+export interface LocalDeviceRuntimeConfig {
+  baseUrl: string;
+  batchSize?: number;
+  codexArgs?: string[];
+  codexCommand?: string;
+  codexEnv?: NodeJS.ProcessEnv;
+  deviceId: string;
+  deviceToken: string;
+  queuePath: string;
+  sourceInstanceId: string;
+  streams?: readonly string[];
+}
+
+export interface LocalDeviceRuntimeResult {
+  done: Extract<EmittedMessage, { type: "DONE" }> | null;
+  enqueuedBatches: number;
+  recordsQueued: number;
+  sentBatches: number;
+}
+
+export async function enrollLocalDevice(config: LocalDeviceEnrollmentConfig): Promise<EnrollmentExchangeResponse> {
+  const client = new LocalDeviceClient({ baseUrl: config.baseUrl });
+  return await client.exchangeEnrollment({
+    code: config.code,
+    ...(config.deviceLabel ? { device_label: config.deviceLabel } : {}),
+    source_instance_id: config.sourceInstanceId,
+  });
+}
+
+export async function runCodexLocalDeviceExporter(config: LocalDeviceRuntimeConfig): Promise<LocalDeviceRuntimeResult> {
+  const batchSize = config.batchSize ?? 100;
+  const queue = new LocalDeviceQueue({ path: config.queuePath });
+  const client = new LocalDeviceClient({
+    baseUrl: config.baseUrl,
+    deviceId: config.deviceId,
+    deviceToken: config.deviceToken,
+  });
+
+  await client.heartbeat({
+    connector_id: CODEX_CONNECTOR_ID,
+    records_pending: (await queue.list()).filter((item) => item.status !== "sent").length,
+    source_instance_id: config.sourceInstanceId,
+    status: "starting",
+  });
+
+  const messages = await collectCodexMessages(config);
+  const records = messages.filter((msg): msg is Extract<EmittedMessage, { type: "RECORD" }> => msg.type === "RECORD");
+  const done =
+    messages.findLast((msg): msg is Extract<EmittedMessage, { type: "DONE" }> => msg.type === "DONE") ?? null;
+
+  let recordsQueued = 0;
+  let enqueuedBatches = 0;
+  let batchSeq = nextBatchSeq(await queue.list(), config.sourceInstanceId);
+  for (const chunk of chunkRecords(records, batchSize)) {
+    const batchId = `${config.sourceInstanceId}-${batchSeq}-${randomUUID()}`;
+    const envelopes = chunk.map((record) =>
+      buildLocalDeviceRecordEnvelope({
+        batchId,
+        batchSeq,
+        connectorId: CODEX_CONNECTOR_ID,
+        deviceId: config.deviceId,
+        record,
+        sourceInstanceId: config.sourceInstanceId,
+      })
+    );
+    await queue.enqueue({ batchId, batchSeq, records: envelopes, sourceInstanceId: config.sourceInstanceId });
+    recordsQueued += envelopes.length;
+    enqueuedBatches++;
+    batchSeq++;
+  }
+
+  const sentBatches = await drainLocalDeviceQueue({ client, queue });
+  await client.heartbeat({
+    connector_id: CODEX_CONNECTOR_ID,
+    records_pending: (await queue.list()).filter((item) => item.status !== "sent").length,
+    source_instance_id: config.sourceInstanceId,
+    status: "healthy",
+  });
+
+  return { done, enqueuedBatches, recordsQueued, sentBatches };
+}
+
+export function buildCodexStartMessage(streams: readonly string[] = DEFAULT_CODEX_STREAMS): StartMessage {
+  return {
+    scope: { streams: streams.map((name): StreamScope => ({ name })) },
+    type: "START",
+  };
+}
+
+export function transformRecordsToLocalDeviceEnvelopes(input: {
+  batchId: string;
+  batchSeq: number;
+  deviceId: string;
+  messages: readonly EmittedMessage[];
+  sourceInstanceId: string;
+}): LocalDeviceRecordEnvelope[] {
+  return input.messages
+    .filter((msg): msg is Extract<EmittedMessage, { type: "RECORD" }> => msg.type === "RECORD")
+    .map((record) =>
+      buildLocalDeviceRecordEnvelope({
+        batchId: input.batchId,
+        batchSeq: input.batchSeq,
+        connectorId: CODEX_CONNECTOR_ID,
+        deviceId: input.deviceId,
+        record,
+        sourceInstanceId: input.sourceInstanceId,
+      })
+    );
+}
+
+export async function drainLocalDeviceQueue(input: {
+  client: Pick<LocalDeviceClient, "ingestBatch">;
+  queue: LocalDeviceQueue;
+}): Promise<number> {
+  let sent = 0;
+  for (;;) {
+    const item = await input.queue.dequeueReady();
+    if (!item) {
+      return sent;
+    }
+    try {
+      await sendQueueItem(input.client, item);
+      await input.queue.markSent(item.batch_id);
+      sent++;
+    } catch (error) {
+      await input.queue.markRetry(item.batch_id, error instanceof Error ? error.message : String(error));
+      return sent;
+    }
+  }
+}
+
+async function sendQueueItem(
+  client: Pick<LocalDeviceClient, "ingestBatch">,
+  item: LocalDeviceQueueItem
+): Promise<void> {
+  await client.ingestBatch({
+    batch_id: item.batch_id,
+    records: item.records,
+    source_instance_id: item.source_instance_id,
+  });
+}
+
+async function collectCodexMessages(config: LocalDeviceRuntimeConfig): Promise<EmittedMessage[]> {
+  const child = spawnCodex(config);
+  const messages: EmittedMessage[] = [];
+  const stderr: Buffer[] = [];
+  child.stdin.end(`${JSON.stringify(buildCodexStartMessage(config.streams))}\n`);
+  child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
+
+  const lines = createInterface({ input: child.stdout, terminal: false });
+  for await (const line of lines) {
+    if (!line.trim()) {
+      continue;
+    }
+    messages.push(JSON.parse(line) as EmittedMessage);
+  }
+
+  const exitCode = await new Promise<number | null>((resolve) => child.once("close", resolve));
+  if (exitCode !== 0) {
+    throw new Error(`codex connector exited ${exitCode}: ${Buffer.concat(stderr).toString("utf8").trim()}`);
+  }
+  return messages;
+}
+
+function spawnCodex(config: LocalDeviceRuntimeConfig): ChildProcessWithoutNullStreams {
+  return spawn(config.codexCommand ?? "tsx", config.codexArgs ?? ["connectors/codex/index.ts"], {
+    cwd: dirname(fileURLToPath(new URL("..", import.meta.url))),
+    env: { ...process.env, ...config.codexEnv },
+  });
+}
+
+function chunkRecords<T>(records: readonly T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let index = 0; index < records.length; index += size) {
+    chunks.push(records.slice(index, index + size));
+  }
+  return chunks;
+}
+
+function nextBatchSeq(items: readonly LocalDeviceQueueItem[], sourceInstanceId: string): number {
+  return (
+    Math.max(0, ...items.filter((item) => item.source_instance_id === sourceInstanceId).map((item) => item.batch_seq)) +
+    1
+  );
+}

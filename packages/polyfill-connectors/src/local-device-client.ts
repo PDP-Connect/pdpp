@@ -1,13 +1,14 @@
 import type { LocalDeviceRecordEnvelope } from "./local-device-envelope.ts";
 
 export const LOCAL_DEVICE_ENDPOINTS = {
-  exchangeEnrollment: "/reference/local-devices/enrollment/exchange",
-  heartbeat: "/reference/local-devices/heartbeat",
-  ingestBatch: "/reference/local-devices/ingest/batches",
+  exchangeEnrollment: "/_ref/device-exporters/enroll",
+  heartbeat: (deviceId: string) => `/_ref/device-exporters/${encodeURIComponent(deviceId)}/heartbeat`,
+  ingestBatch: (deviceId: string) => `/_ref/device-exporters/${encodeURIComponent(deviceId)}/ingest-batches`,
 } as const;
 
 export interface LocalDeviceClientOptions {
   baseUrl: string;
+  deviceId?: string;
   deviceToken?: string;
   fetchImpl?: typeof fetch;
 }
@@ -51,11 +52,13 @@ export class LocalDeviceHttpError extends Error {
 
 export class LocalDeviceClient {
   readonly #baseUrl: URL;
+  readonly #deviceId: string | undefined;
   readonly #deviceToken: string | undefined;
   readonly #fetch: typeof fetch;
 
   constructor(options: LocalDeviceClientOptions) {
     this.#baseUrl = new URL(options.baseUrl);
+    this.#deviceId = options.deviceId;
     this.#deviceToken = options.deviceToken;
     this.#fetch = options.fetchImpl ?? fetch;
   }
@@ -65,11 +68,18 @@ export class LocalDeviceClient {
   }
 
   heartbeat(request: HeartbeatRequest): Promise<{ ok: true }> {
-    return this.#post(LOCAL_DEVICE_ENDPOINTS.heartbeat, request, true);
+    return this.#post(LOCAL_DEVICE_ENDPOINTS.heartbeat(this.#requireDeviceId()), request, true);
   }
 
   ingestBatch(request: IngestBatchRequest): Promise<{ ok: true }> {
-    return this.#post(LOCAL_DEVICE_ENDPOINTS.ingestBatch, request, true);
+    return this.#post(LOCAL_DEVICE_ENDPOINTS.ingestBatch(this.#requireDeviceId()), request, true);
+  }
+
+  #requireDeviceId(): string {
+    if (!this.#deviceId) {
+      throw new Error("device id required for authenticated local device request");
+    }
+    return this.#deviceId;
   }
 
   async #post<TResponse>(path: string, body: unknown, authenticate: boolean): Promise<TResponse> {
