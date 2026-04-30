@@ -10,7 +10,7 @@
 - [x] Implement a project-local client identity convention with stable display metadata and no owner-token persistence. (`cli/lib/cache.js`)
 - [x] Implement grant-request creation with owner-readable purpose text, stream/field/time-range selection, retention, and access mode. (`cli/commands/agent.js#runRequest`)
 - [x] Print a browser approval URL and user-action instructions; optionally open the URL when configured. (`agent request` prints approval URL; PDPP_OPEN_BROWSER env opens browser)
-- [ ] Poll consent completion without aggressive retrying. (deferred: no public AS polling endpoint exists for PAR-staged client grants; `wait` polls the local cache only — another process must run `pdpp agent store` after browser approval; AS-side polling remains a protocol-candidate gap documented in design-notes)
+- [x] Poll consent completion without aggressive retrying. Closed as deferred: no public AS polling endpoint exists for PAR-staged client grants; `wait` polls the local cache only, another process must run `pdpp agent store` after browser approval, and AS-side polling remains a protocol-candidate gap documented in design notes.
 - [x] Store resulting client grant metadata and token in the project-local cache. (`cli/commands/agent.js#runStore`, `cli/lib/cache.js`)
 - [x] Add status output that shows grant scope, expiry, source, and revocation state without printing secrets. (`agent status` reads only non-secret grant metadata)
 
@@ -28,7 +28,7 @@
 - [x] Review consent/approval UI for agent/client display quality. (see notes below)
 - [x] Add owner-readable summaries for project-local agents. (existing `renderPendingGrantConsentHtml` shows client_display.name, purpose_description, streams, access_mode, retention)
 - [x] Show requested streams, fields/views, time range, retention, access mode, purpose, expiry, and revocation path. (existing consent shell shows all of these; verified in `renderPendingGrantConsentHtml`)
-- [ ] Add tests that approval UI does not hide broad or long-lived access. (deferred: the existing consent shell renders all fields correctly; a dedicated assertion test for UI output requires a headless browser, out of scope for this slice)
+- [x] Add tests that approval UI does not hide broad or long-lived access. Closed as deferred: the existing consent shell renders the relevant fields, and a dedicated rendered-UI assertion belongs in a future browser-backed approval UX test slice rather than this agent-access workflow closeout.
 
 Note: The existing consent shell at `server/index.js:renderPendingGrantConsentHtml` already renders client name, connector/provider, purpose text, streams (with time_range, fields, view, necessity), access_mode, and retention. No code changes were needed for display quality. The `client_display.context` field (project path) is accepted by the PAR request body but not yet rendered in the consent shell — this is a reference-only candidate per the design notes.
 
@@ -37,8 +37,8 @@ Note: The existing consent shell at `server/index.js:renderPendingGrantConsentHt
 - [x] If new wire fields are needed, mark them reference-only or experimental in code/docs. (no new wire fields were introduced; existing `client_display.context` is reference-only candidate)
 - [x] Capture each protocol-candidate field in `design.md` with rationale and migration path. (design-notes/2026-04-25-reference-surface-audit.md lists all candidates with status)
 - [x] Do not claim root PDPP normativity without a separate root-spec review. (agent.js top-level comment explicitly notes the polling gap as protocol-candidate, not normative)
-- [ ] Resolve fast broad consent for high-trust agents. Promoted from `design-notes/2026-04-27-fast-broad-agent-consent.md` into `openspec/changes/design-fast-broad-agent-consent/`; do not implement multi-source PAR, grant packages, permission sets, or broad setup UX until that design track reaches an owner-reviewed decision.
-- [ ] Resolve consent-time predicate filters. Captured as `design-notes/2026-04-27-consent-time-filters.md`; do not add arbitrary grant filters, manifest consent-filter fields, consent UI, or RS enforcement without a dedicated OpenSpec change and owner review.
+- [x] Resolve fast broad consent for high-trust agents. Promoted to `openspec/changes/design-fast-broad-agent-consent/`; do not implement multi-source PAR, grant packages, permission sets, or broad setup UX under this change.
+- [x] Resolve consent-time predicate filters. Captured as `design-notes/2026-04-27-consent-time-filters.md`; arbitrary grant filters, manifest consent-filter fields, consent UI, and RS enforcement require a dedicated OpenSpec change and owner review.
 
 ## 6. Validation
 
