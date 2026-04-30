@@ -34,7 +34,6 @@ import {
   SearchLexicalRequestError,
 } from '../operations/rs-search-lexical/index.ts';
 import { getConnectorManifest } from './auth.js';
-import { getDb } from './db.js';
 import {
   compileRequestFilters,
   passesGrantRecordConstraints,
@@ -678,7 +677,6 @@ function buildCandidateRecordKeys({ connectorId, streamName, streamGrant, manife
   const needsRecordScan = compiledFilters?.length || hasGrantRecordConstraints(streamGrant);
   if (!needsRecordScan) return null;
 
-  const db = getDb();
   const where = ['connector_id = ?', 'stream = ?', 'deleted = 0'];
   const binds = [connectorId, streamName];
   if (Array.isArray(streamGrant?.resources) && streamGrant.resources.length > 0) {
@@ -686,11 +684,14 @@ function buildCandidateRecordKeys({ connectorId, streamName, streamGrant, manife
     binds.push(...streamGrant.resources);
   }
 
-  const rows = db.prepare(`
+  // REVIEWED-DYNAMIC: candidate-key scan includes a variable resources IN
+  // clause and optional JS-side grant/filter predicates, so the SQL shape is
+  // grant-dependent and cannot be a static registry artifact.
+  const rows = iterateDynamicSqlAcknowledged(`
     SELECT record_key, record_json
     FROM records
     WHERE ${where.join(' AND ')}
-  `).all(...binds);
+  `, binds);
 
   const allowed = [];
   for (const row of rows) {

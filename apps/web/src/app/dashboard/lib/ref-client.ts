@@ -40,8 +40,14 @@ export interface SpineEvent {
 export interface TimelineEnvelope {
   event_count: number;
   events: SpineEvent[];
+  next_cursor?: string;
   object: string;
   trace_id: string | null;
+  truncated?: boolean;
+}
+
+interface TimelinePageOptions {
+  cursor?: string | null;
 }
 
 /**
@@ -58,6 +64,8 @@ function normalizeTimeline(raw: unknown): TimelineEnvelope {
     event_count?: number;
     data?: SpineEvent[];
     events?: SpineEvent[];
+    next_cursor?: unknown;
+    truncated?: unknown;
   };
   let events: SpineEvent[] = [];
   if (Array.isArray(r.events)) {
@@ -70,7 +78,17 @@ function normalizeTimeline(raw: unknown): TimelineEnvelope {
     trace_id: r.trace_id ?? null,
     event_count: typeof r.event_count === "number" ? r.event_count : events.length,
     events,
+    next_cursor: typeof r.next_cursor === "string" && r.next_cursor.length > 0 ? r.next_cursor : undefined,
+    truncated: r.truncated === true,
   };
+}
+
+function withTimelinePage(path: string, options: TimelinePageOptions = {}): string {
+  if (!options.cursor) {
+    return path;
+  }
+  const params = new URLSearchParams({ cursor: options.cursor });
+  return `${path}?${params.toString()}`;
 }
 
 export interface ListResponse<T> {
@@ -230,9 +248,12 @@ async function refFetch(path: string, params?: Record<string, string | number | 
 
 export { RefNotFoundError };
 
-export async function getTraceTimeline(traceId: string): Promise<TimelineEnvelope | null> {
+export async function getTraceTimeline(
+  traceId: string,
+  options?: TimelinePageOptions
+): Promise<TimelineEnvelope | null> {
   try {
-    return normalizeTimeline(await refFetch(`/_ref/traces/${encodeURIComponent(traceId)}`));
+    return normalizeTimeline(await refFetch(withTimelinePage(`/_ref/traces/${encodeURIComponent(traceId)}`, options)));
   } catch (err) {
     if (err instanceof RefNotFoundError) {
       return null;
@@ -241,9 +262,14 @@ export async function getTraceTimeline(traceId: string): Promise<TimelineEnvelop
   }
 }
 
-export async function getGrantTimeline(grantId: string): Promise<TimelineEnvelope | null> {
+export async function getGrantTimeline(
+  grantId: string,
+  options?: TimelinePageOptions
+): Promise<TimelineEnvelope | null> {
   try {
-    return normalizeTimeline(await refFetch(`/_ref/grants/${encodeURIComponent(grantId)}/timeline`));
+    return normalizeTimeline(
+      await refFetch(withTimelinePage(`/_ref/grants/${encodeURIComponent(grantId)}/timeline`, options))
+    );
   } catch (err) {
     if (err instanceof RefNotFoundError) {
       return null;
@@ -252,9 +278,11 @@ export async function getGrantTimeline(grantId: string): Promise<TimelineEnvelop
   }
 }
 
-export async function getRunTimeline(runId: string): Promise<TimelineEnvelope | null> {
+export async function getRunTimeline(runId: string, options?: TimelinePageOptions): Promise<TimelineEnvelope | null> {
   try {
-    return normalizeTimeline(await refFetch(`/_ref/runs/${encodeURIComponent(runId)}/timeline`));
+    return normalizeTimeline(
+      await refFetch(withTimelinePage(`/_ref/runs/${encodeURIComponent(runId)}/timeline`, options))
+    );
   } catch (err) {
     if (err instanceof RefNotFoundError) {
       return null;

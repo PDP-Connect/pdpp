@@ -58,6 +58,11 @@
  *     checks that the row count does not exceed the declared bound and
  *     throws if it does.
  *
+ *   execDynamicSqlAcknowledged(sql, params)
+ *     Dynamic mutation escape hatch for runtime-created database objects.
+ *     Keep this narrow; prefer registered `exec` artifacts unless prepare-time
+ *     validation would fail before the object exists.
+ *
  *   transaction(fn)
  *     Better-sqlite3 transaction wrapper, unchanged.
  */
@@ -444,6 +449,24 @@ export function* iterateDynamicSqlAcknowledged<R>(sql: string, params: BindParam
   for (const row of stmt.iterate(...params) as IterableIterator<R>) {
     yield row;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Primitive: execDynamicSqlAcknowledged
+// ---------------------------------------------------------------------------
+
+/**
+ * Dynamic mutation escape hatch. Use only when a mutation cannot be a
+ * registered SQL artifact because the target object is created at runtime
+ * or the mutation SQL contains validated runtime-only DDL fragments.
+ *
+ * Every call site SHALL include an adjacent `// REVIEWED-DYNAMIC: <reason>`
+ * comment explaining why static registry validation does not fit.
+ */
+export function execDynamicSqlAcknowledged(sql: string, params: BindParams = []): ExecResult {
+  const db = requireDb();
+  const stmt = db.prepare(sql);
+  return normalizeExecResult(stmt.run(...params));
 }
 
 // ---------------------------------------------------------------------------

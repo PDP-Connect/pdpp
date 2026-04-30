@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { Fragment } from "react";
 import { Timestamp } from "@/components/ui/timestamp.tsx";
 import type { SpineEvent } from "../lib/ref-client.ts";
@@ -81,17 +82,29 @@ function groupTimeline(events: SpineEvent[]): TimelineNode[] {
   return nodes;
 }
 
-export function TimelineView({ events }: { events: SpineEvent[] }) {
+export function TimelineView({ events, loadMoreHref }: { events: SpineEvent[]; loadMoreHref?: string | null }) {
   const nodes = groupTimeline(events);
   return (
-    <ol className="relative space-y-1.5">
-      {nodes.map((node) => {
-        if (node.kind === "progress-group") {
-          return <ProgressGroupRow events={node.events} key={`pg-${node.start}`} startIndex={node.start} />;
-        }
-        return <EventRow event={node.event} index={node.index} key={node.event.event_id} />;
-      })}
-    </ol>
+    <>
+      <ol className="relative space-y-1.5">
+        {nodes.map((node) => {
+          if (node.kind === "progress-group") {
+            return <ProgressGroupRow events={node.events} key={`pg-${node.start}`} startIndex={node.start} />;
+          }
+          return <EventRow event={node.event} index={node.index} key={node.event.event_id} />;
+        })}
+      </ol>
+      {loadMoreHref ? (
+        <div className="pdpp-caption mt-4 flex justify-end">
+          <Link
+            className="text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+            href={loadMoreHref}
+          >
+            load more timeline events →
+          </Link>
+        </div>
+      ) : null}
+    </>
   );
 }
 

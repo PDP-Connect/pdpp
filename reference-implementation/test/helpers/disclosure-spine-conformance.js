@@ -216,6 +216,56 @@ export function runDisclosureSpineConformance({ label, test, makeDriver }) {
     }
   });
 
+  // 2b. Regression coverage for the historical crash shape: every
+  // reference-only timeline kind must page through a longer correlation
+  // without materializing the full list in one call.
+  t('listPage pages long trace, grant, and run timelines', async () => {
+    const driver = await makeDriver();
+    await driver.setup();
+    try {
+      const cases = [
+        { kind: 'trace', field: 'trace_id', id: 'trc_long_kind' },
+        { kind: 'grant', field: 'grant_id', id: 'grnt_long_kind' },
+        { kind: 'run', field: 'run_id', id: 'run_long_kind' },
+      ];
+      const total = 13;
+      const baseTs = Date.parse('2026-04-07T00:00:00.000Z');
+
+      for (const c of cases) {
+        const ids = [];
+        for (let i = 0; i < total; i += 1) {
+          const r = await driver.append(evt({
+            [c.field]: c.id,
+            event_type: `reference.test.long_${c.kind}_${i.toString(16)}`,
+            occurred_at: new Date(baseTs + i * 1000).toISOString(),
+          }));
+          ids.push(r.event_id);
+        }
+
+        const collected = [];
+        let cursor = null;
+        let pages = 0;
+        while (pages < 20) {
+          const page = await driver.listPage(c.kind, c.id, { limit: 4, cursor });
+          pages += 1;
+          for (const ev of page.events) collected.push(ev.event_id);
+          if (!page.truncated) {
+            assert.equal(page.next_cursor, null, `${c.kind} final page must not expose next_cursor`);
+            break;
+          }
+          assert.ok(page.next_cursor, `${c.kind} truncated page must expose next_cursor`);
+          cursor = page.next_cursor;
+        }
+
+        assert.deepEqual(collected, ids, `${c.kind} paged walk must visit every event in append order`);
+        assert.equal(new Set(collected).size, collected.length, `${c.kind} paged walk must not repeat events`);
+        assert.ok(pages >= 4, `${c.kind} timeline should require multiple pages`);
+      }
+    } finally {
+      await driver.teardown();
+    }
+  });
+
   // 3. Terminal/latest event lookup. The last event in a correlation's
   //    timeline is the terminal event; consumers (summary, status derivation)
   //    rely on this being stable. The seed schedule deliberately makes the

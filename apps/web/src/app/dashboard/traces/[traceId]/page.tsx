@@ -8,13 +8,30 @@ import { getTraceTimeline, type TimelineEnvelope } from "../../lib/ref-client.ts
 
 export const dynamic = "force-dynamic";
 
-export default async function TraceDetailPage({ params }: { params: Promise<{ traceId: string }> }) {
+type TimelineSearchParams = Promise<{ cursor?: string | string[] }>;
+
+function getCursor(searchParams: { cursor?: string | string[] }): string | null {
+  return typeof searchParams.cursor === "string" && searchParams.cursor.length > 0 ? searchParams.cursor : null;
+}
+
+function traceTimelineHref(traceId: string, cursor: string): string {
+  return `/dashboard/traces/${encodeURIComponent(traceId)}?${new URLSearchParams({ cursor }).toString()}`;
+}
+
+export default async function TraceDetailPage({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ traceId: string }>;
+  searchParams: TimelineSearchParams;
+}) {
   const { traceId: raw } = await params;
   const traceId = decodeURIComponent(raw);
+  const cursor = getCursor(await searchParams);
 
   let envelope: TimelineEnvelope | null;
   try {
-    envelope = await getTraceTimeline(traceId);
+    envelope = await getTraceTimeline(traceId, { cursor });
   } catch (err) {
     if (err instanceof ReferenceServerUnreachableError) {
       return (
@@ -79,7 +96,12 @@ export default async function TraceDetailPage({ params }: { params: Promise<{ tr
       ) : null}
 
       <Section title="Timeline">
-        <TimelineView events={envelope.events} />
+        <TimelineView
+          events={envelope.events}
+          loadMoreHref={
+            envelope.truncated && envelope.next_cursor ? traceTimelineHref(traceId, envelope.next_cursor) : null
+          }
+        />
       </Section>
 
       <Section title="CLI equivalent">

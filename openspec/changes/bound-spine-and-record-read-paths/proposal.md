@@ -7,11 +7,11 @@ reference spine timeline rendering could still materialize every event for a
 long-running correlation before responding.
 
 This change closes that specific regression and adds a durable wrapper/registry
-foundation so new database reads are harder to author unsafely. Owner review
-found that the first draft overclaimed a total migration of every historical
-`db.prepare(...)` call site. This proposal is intentionally narrower: it makes
-the implemented guarantees explicit and records the remaining broad migration
-as follow-up work rather than implied truth.
+foundation so database reads are harder to author unsafely. Owner review
+turned the original broad migration goal into explicit invariants: static
+application SQL goes through registered artifacts, dynamic SQL uses acknowledged
+wrapper helpers, and production direct `db.prepare(...)` usage is confined to
+the engine/wrapper/registry allowlist.
 
 ## What Changes
 
@@ -29,8 +29,9 @@ as follow-up work rather than implied truth.
 - Add a staged-file pre-commit gate that blocks newly introduced direct
   `db.prepare(...)` / `getDb().prepare(...)` calls outside the wrapper,
   registry, and database engine internals.
-- Leave remaining grandfathered direct-prepare and dynamic-SQL call sites
-  auditable but not yet fully eliminated. Those are tracked as follow-ups.
+- Migrate the remaining production application-level direct-prepare sites to
+  registered artifacts, bounded wrappers, or explicitly acknowledged dynamic
+  helpers.
 
 ## Capabilities
 

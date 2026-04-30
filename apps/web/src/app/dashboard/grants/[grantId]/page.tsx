@@ -8,13 +8,30 @@ import { getGrantTimeline, type TimelineEnvelope } from "../../lib/ref-client.ts
 
 export const dynamic = "force-dynamic";
 
-export default async function GrantDetailPage({ params }: { params: Promise<{ grantId: string }> }) {
+type TimelineSearchParams = Promise<{ cursor?: string | string[] }>;
+
+function getCursor(searchParams: { cursor?: string | string[] }): string | null {
+  return typeof searchParams.cursor === "string" && searchParams.cursor.length > 0 ? searchParams.cursor : null;
+}
+
+function grantTimelineHref(grantId: string, cursor: string): string {
+  return `/dashboard/grants/${encodeURIComponent(grantId)}?${new URLSearchParams({ cursor }).toString()}`;
+}
+
+export default async function GrantDetailPage({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ grantId: string }>;
+  searchParams: TimelineSearchParams;
+}) {
   const { grantId: raw } = await params;
   const grantId = decodeURIComponent(raw);
+  const cursor = getCursor(await searchParams);
 
   let envelope: TimelineEnvelope | null;
   try {
-    envelope = await getGrantTimeline(grantId);
+    envelope = await getGrantTimeline(grantId, { cursor });
   } catch (err) {
     if (err instanceof ReferenceServerUnreachableError) {
       return (
@@ -67,7 +84,12 @@ export default async function GrantDetailPage({ params }: { params: Promise<{ gr
       ) : null}
 
       <Section title="Timeline">
-        <TimelineView events={envelope.events} />
+        <TimelineView
+          events={envelope.events}
+          loadMoreHref={
+            envelope.truncated && envelope.next_cursor ? grantTimelineHref(grantId, envelope.next_cursor) : null
+          }
+        />
       </Section>
 
       <Section title="CLI equivalent">

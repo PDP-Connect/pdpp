@@ -328,6 +328,10 @@ export async function bootstrapPostgresSchema() {
         ON spine_events(trace_id, occurred_at, recorded_at);
       CREATE INDEX IF NOT EXISTS idx_pg_spine_events_run
         ON spine_events(run_id, occurred_at, recorded_at);
+      CREATE INDEX IF NOT EXISTS idx_pg_spine_events_run_terminal
+        ON spine_events(run_id, event_type, event_seq DESC)
+        WHERE run_id IS NOT NULL
+          AND event_type IN ('run.completed', 'run.failed', 'run.cancelled');
       CREATE INDEX IF NOT EXISTS idx_pg_spine_events_grant
         ON spine_events(grant_id, occurred_at, recorded_at);
 

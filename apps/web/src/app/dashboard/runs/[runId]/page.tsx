@@ -31,13 +31,30 @@ interface LatestProgress {
   total: number | null;
 }
 
-export default async function RunDetailPage({ params }: { params: Promise<{ runId: string }> }) {
+type TimelineSearchParams = Promise<{ cursor?: string | string[] }>;
+
+function getCursor(searchParams: { cursor?: string | string[] }): string | null {
+  return typeof searchParams.cursor === "string" && searchParams.cursor.length > 0 ? searchParams.cursor : null;
+}
+
+function runTimelineHref(runId: string, cursor: string): string {
+  return `/dashboard/runs/${encodeURIComponent(runId)}?${new URLSearchParams({ cursor }).toString()}`;
+}
+
+export default async function RunDetailPage({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ runId: string }>;
+  searchParams: TimelineSearchParams;
+}) {
   const { runId: raw } = await params;
   const runId = decodeURIComponent(raw);
+  const cursor = getCursor(await searchParams);
 
   let envelope: TimelineEnvelope | null;
   try {
-    envelope = await getRunTimeline(runId);
+    envelope = await getRunTimeline(runId, { cursor });
   } catch (err) {
     if (err instanceof ReferenceServerUnreachableError) {
       return (
@@ -105,7 +122,12 @@ export default async function RunDetailPage({ params }: { params: Promise<{ runI
       <ViolationDiagnosis failure={failure} />
       <ConnectorStderrTailSection failure={failure} />
       <Section title="Timeline">
-        <TimelineView events={events} />
+        <TimelineView
+          events={events}
+          loadMoreHref={
+            envelope.truncated && envelope.next_cursor ? runTimelineHref(runId, envelope.next_cursor) : null
+          }
+        />
       </Section>
       <Section title="CLI equivalent">
         <pre className="pdpp-caption overflow-x-auto rounded-md border border-border/80 bg-muted/30 p-3 font-mono">

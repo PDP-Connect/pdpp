@@ -300,7 +300,9 @@ async function extractKnownGapsForRun(runId: string): Promise<unknown[]> {
           `SELECT data_json::text AS data_json, event_type, occurred_at, status
          FROM spine_events
          WHERE run_id = $1
-           AND (event_type = 'run.finished' OR event_type = 'run.failed')
+           AND (event_type = 'run.completed'
+                OR event_type = 'run.failed'
+                OR event_type = 'run.cancelled')
          ORDER BY event_seq DESC
          LIMIT 1`,
           [runId]

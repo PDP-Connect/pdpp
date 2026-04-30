@@ -32,6 +32,7 @@ import { fileURLToPath } from 'node:url';
 import {
   allowUnboundedReadAcknowledged,
   exec,
+  execDynamicSqlAcknowledged,
   getMany,
   getOne,
   iterateDynamicSqlAcknowledged,
@@ -556,7 +557,7 @@ function makeBlobFlatIndex({ dimensions, distanceMetric }) {
  * sidecar mapping (connector_id, scope_key, record_key) → rowid so we can
  * upsert by logical identity.
  */
-function makeSqliteVecIndex({ db, dimensions, distanceMetric }) {
+function makeSqliteVecIndex({ dimensions, distanceMetric }) {
   // Bootstrap the vec0 virtual table lazily on first use. Dimensions and
   // distance_metric are baked into the schema. If either changes, recreate
   // the virtual table and let manifest backfill rebuild from stored records.
@@ -574,7 +575,7 @@ function makeSqliteVecIndex({ db, dimensions, distanceMetric }) {
       // with backend-derived dimensions/metric; the registry's prepare
       // validation would fail before the table exists. The static
       // sibling tables ARE registered.
-      db.prepare('DROP TABLE semantic_search_vec').run();
+      execDynamicSqlAcknowledged('DROP TABLE semantic_search_vec', []);
       exec(referenceQueries.searchSemanticRowidDeleteAll, []);
       exec(referenceQueries.searchSemanticMetaDeleteAll, []);
       exec(referenceQueries.searchSemanticProgressDeleteAll, []);
@@ -584,14 +585,14 @@ function makeSqliteVecIndex({ db, dimensions, distanceMetric }) {
     // interpolated from validated backend config (small enumeration of
     // metrics × backend-defined dimensions). No user input crosses into
     // the SQL string.
-    db.prepare(`
+    execDynamicSqlAcknowledged(`
       CREATE VIRTUAL TABLE semantic_search_vec USING vec0(
         connector_id TEXT PARTITION KEY,
         scope_key    TEXT,
         +record_key  TEXT,
         embedding    FLOAT[${dimensions}] distance_metric=${distanceMetric}
       )
-    `).run();
+    `, []);
   }
   ensureTable();
 
@@ -603,25 +604,27 @@ function makeSqliteVecIndex({ db, dimensions, distanceMetric }) {
       // mutation the wrapper cannot register because the table is
       // created lazily; static prepare validation would fail before
       // ensureTable() runs.
-      db.prepare('UPDATE semantic_search_vec SET embedding = ? WHERE rowid = ?').run(buf, existing.rowid);
+      execDynamicSqlAcknowledged('UPDATE semantic_search_vec SET embedding = ? WHERE rowid = ?', [buf, existing.rowid]);
       return;
     }
     // REVIEWED-DYNAMIC: INSERT into semantic_search_vec is a runtime
     // mutation against a lazily-created table.
-    const info = db.prepare('INSERT INTO semantic_search_vec(connector_id, scope_key, record_key, embedding) VALUES(?, ?, ?, ?)')
-      .run(connectorId, scopeKey, recordKey, buf);
+    const info = execDynamicSqlAcknowledged(
+      'INSERT INTO semantic_search_vec(connector_id, scope_key, record_key, embedding) VALUES(?, ?, ?, ?)',
+      [connectorId, scopeKey, recordKey, buf],
+    );
     exec(referenceQueries.searchSemanticRowidInsert, [connectorId, scopeKey, recordKey, Number(info.lastInsertRowid)]);
   }
 
   // Page through the rowid sidecar and delete corresponding vec rows.
-  // The vec table mutations are direct (lazy table) and the sidecar
-  // mutations go through the wrapper.
+  // The vec table mutations use the dynamic helper (lazy table) and the
+  // sidecar mutations use static wrapper artifacts.
   const ROWID_PAGE = 1000;
 
   function deleteVecByRowid(rowid) {
     // REVIEWED-DYNAMIC: DELETE on semantic_search_vec runs against the
     // lazily-created table; static registration would fail.
-    db.prepare('DELETE FROM semantic_search_vec WHERE rowid = ?').run(rowid);
+    execDynamicSqlAcknowledged('DELETE FROM semantic_search_vec WHERE rowid = ?', [rowid]);
   }
 
   return {
@@ -1353,7 +1356,6 @@ function buildCandidateRecordKeys({ connectorId, streamName, streamGrant, manife
   const needsRecordScan = compiledFilters?.length || hasGrantRecordConstraints(streamGrant);
   if (!needsRecordScan) return null;
 
-  const db = getDb();
   const where = ['connector_id = ?', 'stream = ?', 'deleted = 0'];
   const binds = [connectorId, streamName];
   if (Array.isArray(streamGrant?.resources) && streamGrant.resources.length > 0) {
@@ -1361,11 +1363,14 @@ function buildCandidateRecordKeys({ connectorId, streamName, streamGrant, manife
     binds.push(...streamGrant.resources);
   }
 
-  const rows = db.prepare(`
+  // REVIEWED-DYNAMIC: candidate-key scan includes a variable resources IN
+  // clause and optional JS-side grant/filter predicates, so the SQL shape is
+  // grant-dependent and cannot be a static registry artifact.
+  const rows = iterateDynamicSqlAcknowledged(`
     SELECT record_key, record_json
     FROM records
     WHERE ${where.join(' AND ')}
-  `).all(...binds);
+  `, binds);
 
   const allowed = [];
   for (const row of rows) {

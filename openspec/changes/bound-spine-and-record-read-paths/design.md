@@ -67,9 +67,9 @@ That is acceptable only if summary extent fields do not pretend the sample is
 the whole correlation. The implementation therefore uses SQL aggregate values
 for `first_at`, `last_at`, and `event_count` after hydration.
 
-Lifecycle-derived display fields may still be approximate above the hydration
-cap. A later indexed-terminal-event pass can make those exact without
-re-materializing the full event list.
+Run lifecycle-derived display fields that depend on terminal event payloads use
+an indexed terminal-event lookup (`run_id`, `event_type`, `event_seq DESC`) so
+they stay exact even when the summary hydration sample is capped.
 
 ### 5. Staged-file gate prevents new direct prepares
 
@@ -80,13 +80,15 @@ The pre-commit gate rejects newly staged direct `db.prepare(...)` /
 - `reference-implementation/server/db.js`
 - `reference-implementation/server/queries/index.ts`
 
-This is a prevention gate for new code. It intentionally does not claim that
-all grandfathered call sites are gone.
+This is a prevention gate for new code. The closeout pass also migrates the
+remaining application-level direct prepares: static SQL goes through registered
+artifacts, search candidate builders go through `iterateDynamicSqlAcknowledged`,
+and sqlite-vec runtime-table DDL/DML goes through `execDynamicSqlAcknowledged`.
 
 ## Non-Goals
 
-- Fully migrating every historical `db.prepare(...)` call site in the reference
-  implementation.
+- Eliminating direct prepares inside the engine, wrapper, and query-registry
+  validation allowlist. Those files own the database driver boundary.
 - Proving that every dynamic SQL path has a SQL-enforced page bound.
 - Enforcing `REVIEWED-*` comment proximity in lefthook. The loud escape-hatch
   names remain the review trigger; comment enforcement can be reconsidered if
@@ -97,18 +99,25 @@ all grandfathered call sites are gone.
 
 ## Risks
 
-- **Residual direct prepares remain.** The staged-file gate prevents new ones
-  but does not remove all old ones. The remaining set must stay visible in
-  owner review and follow-up planning.
 - **Dynamic SQL still depends on caller discipline.** The dynamic escape hatch
   centralizes the surface but cannot statically prove that every generated SQL
   shape is bounded.
 - **Pagination is additive but still a behavior change for very long
   timelines.** Clients that assumed a single response contained every event now
   need to follow `next_cursor` when `truncated` is true.
-- **Summary lifecycle fields can be approximate above the hydration cap.** The
-  extent fields are exact; lifecycle precision needs a future indexed terminal
-  event design.
+
+## Closeout Decisions
+
+- `iterateDynamicSqlAcknowledged` does not enforce SQL `LIMIT` presence at
+  runtime. Some legitimate dynamic paths stream and break in JS after
+  authorization-side filtering; a string-level LIMIT guard would reject valid
+  paths without proving the rest are safe. The enforcement layer remains code
+  review, loud helper names, adjacent `REVIEWED-DYNAMIC` comments, focused
+  tests, and the no-direct-prepare gate.
+- Response-size budgets, route concurrency, and process-supervisor recovery
+  are not added here because the measured failure class is closed by SQL
+  pagination plus the dashboard load-more affordance. They should reopen only
+  with a new measured failure or budget target.
 
 ## Acceptance
 
@@ -116,5 +125,5 @@ all grandfathered call sites are gone.
 - Reference typecheck and lint pass.
 - The wrapper and query registry tests pass.
 - The `_ref` timeline endpoints return bounded envelopes with stable cursors.
-- Grep confirms remaining direct prepares are known grandfathered sites or
-  explicit allowlist files, not accidental new call sites.
+- Grep confirms remaining direct prepares are explicit engine/wrapper/registry
+  allowlist files, not application-level call sites.

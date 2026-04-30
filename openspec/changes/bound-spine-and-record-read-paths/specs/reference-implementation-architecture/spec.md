@@ -43,7 +43,7 @@ The reference implementation SHALL provide a typed SQL wrapper above the existin
 
 Registered multi-row query artifacts SHALL declare their terminator and cursor metadata. At startup, the registry SHALL validate registered query artifacts against the live database schema and reject malformed registered query artifacts before serving requests.
 
-This requirement establishes the wrapper foundation and the migrated call sites in this change. It does not claim that every historical production `db.prepare(...)` call site has already been migrated.
+Application-level reference code SHALL route static SQL through registered query artifacts and wrapper primitives. Genuinely dynamic SQL SHALL route through explicitly acknowledged dynamic wrapper primitives. Direct `db.prepare(...)` usage SHALL be limited to the engine, wrapper, and query-registry allowlist.
 
 #### Scenario: A bounded multi-row read reaches the wrapper with no limit
 - **WHEN** RS code attempts a multi-row read by calling `getMany(query, params, { limit })` with `limit <= 0`
@@ -64,7 +64,7 @@ This requirement establishes the wrapper foundation and the migrated call sites 
 
 The reference repository SHALL include a pre-commit gate that rejects newly-staged direct `db.prepare(...)` or `getDb().prepare(...)` usage under production reference code, except in the explicit engine/wrapper/registry files that are responsible for preparing SQL.
 
-This gate is a staged-file prevention mechanism. It SHALL NOT be interpreted as proof that every grandfathered direct-prepare call site has already been migrated.
+This gate is a staged-file prevention mechanism. Closeout validation SHALL pair it with a production-reference grep so direct prepare usage remains confined to the engine, wrapper, and query-registry allowlist.
 
 #### Scenario: A pre-commit attempts to introduce direct prepare usage
 - **WHEN** a contributor stages a change to a production reference file that introduces `db.prepare(` or `getDb().prepare(`
@@ -75,10 +75,15 @@ This gate is a staged-file prevention mechanism. It SHALL NOT be interpreted as 
 
 Reference correlation list surfaces MAY hydrate only a bounded event sample per row to derive display fields, but they SHALL use SQL aggregate values for the full correlation's `first_at`, `last_at`, and `event_count`.
 
-The reference MAY still derive lifecycle display fields from the bounded sample until a later change introduces indexed terminal-event hydration for every correlation kind. If lifecycle fields are approximate above the hydration cap, that limitation SHALL be documented in the implementation notes or a follow-up task.
+Run lifecycle display fields that depend on terminal event payloads SHALL use an indexed terminal-event lookup rather than relying on the bounded hydration sample.
 
 #### Scenario: A correlation has more events than the hydration cap
 - **WHEN** the reference builds a run, grant, or trace summary for a correlation whose event count exceeds the hydration cap
 - **THEN** `event_count` SHALL report the SQL aggregate count for the full correlation
 - **AND** `first_at` and `last_at` SHALL report the SQL aggregate timestamps for the full correlation
 - **AND** the implementation SHALL NOT report the hydration-sample length as the correlation's total event count
+
+#### Scenario: A run terminal event is beyond the hydration cap
+- **WHEN** the reference builds a run summary whose terminal event is not present in the bounded hydration sample
+- **THEN** terminal payload fields used for lifecycle display SHALL be hydrated through an indexed run-terminal-event lookup
+- **AND** the implementation SHALL NOT scan the full run timeline to recover those fields
