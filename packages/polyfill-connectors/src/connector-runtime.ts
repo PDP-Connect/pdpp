@@ -160,6 +160,13 @@ export interface BrowserConfig {
   profileName?: string;
 }
 
+export interface BrowserRuntimeVisibility {
+  readonly envKey: string;
+  readonly headless: boolean;
+  readonly hostBridgeConfigured: boolean;
+  readonly profileName: string;
+}
+
 export interface EnsureSessionArgs {
   context: BrowserContext;
   page: Page;
@@ -567,13 +574,19 @@ async function runInBrowser(args: {
   baseCtx: BaseCollectContext;
 }): Promise<void> {
   const { browser, name, emit, sendInteraction, progress, ensureSession, probeSession, collect, baseCtx } = args;
+  const visibility = resolveBrowserRuntimeVisibility(browser, name);
+  const browserSendInteraction: BaseCollectContext["sendInteraction"] = (req) =>
+    sendInteraction(decorateBrowserManualAction(req, visibility));
   const { context: ctx, release } = await acquireBrowser(browser, name);
   const tracer = makeTracer(ctx, name, emit);
   await tracer.start();
   try {
     const page = await ctx.newPage();
-    await establishSession({ ensureSession, probeSession }, { context: ctx, page, name, sendInteraction, progress });
-    await collect({ ...baseCtx, context: ctx, page });
+    await establishSession(
+      { ensureSession, probeSession },
+      { context: ctx, page, name, progress, sendInteraction: browserSendInteraction }
+    );
+    await collect({ ...baseCtx, context: ctx, page, sendInteraction: browserSendInteraction });
   } finally {
     await tracer.stop();
     await release().catch((): undefined => undefined);
@@ -603,6 +616,45 @@ interface AcquiredBrowser {
   release: () => Promise<void>;
 }
 
+const MANUAL_ACTION_RECOVERY_RE = /\bheadless\b|host browser bridge|rerun .*headed|PDPP_[A-Z0-9_]+_HEADLESS/iu;
+
+export function resolveBrowserRuntimeVisibility(
+  browser: BrowserConfig,
+  name: string,
+  env: NodeJS.ProcessEnv = process.env
+): BrowserRuntimeVisibility {
+  const profileName = browser.profileName ?? name;
+  const envKey = `PDPP_${profileName.toUpperCase()}_HEADLESS`;
+  return {
+    envKey,
+    headless: browser.headless ?? env[envKey] !== "0",
+    hostBridgeConfigured: Boolean(
+      env.PDPP_HOST_BROWSER_BRIDGE_URL?.trim() && env.PDPP_HOST_BROWSER_BRIDGE_TOKEN?.trim()
+    ),
+    profileName,
+  };
+}
+
+export function decorateBrowserManualAction(
+  req: InteractionRequest,
+  visibility: BrowserRuntimeVisibility
+): InteractionRequest {
+  if (req.kind !== "manual_action" || !visibility.headless || visibility.hostBridgeConfigured) {
+    return req;
+  }
+  if (MANUAL_ACTION_RECOVERY_RE.test(req.message)) {
+    return req;
+  }
+  return {
+    ...req,
+    message:
+      `${req.message}\n\n` +
+      "This run is using a headless browser, so there may be no visible browser window to complete this manual action. " +
+      `If you cannot complete it, cancel this interaction and rerun with ${visibility.envKey}=0 on a host desktop. ` +
+      "In Docker, start the host browser bridge and set PDPP_HOST_BROWSER_BRIDGE_URL and PDPP_HOST_BROWSER_BRIDGE_TOKEN instead.",
+  };
+}
+
 /**
  * Acquire a browser context for the connector, routing through the
  * host browser bridge if configured (Docker/Compose) or falling back
@@ -613,9 +665,7 @@ interface AcquiredBrowser {
  */
 async function acquireBrowser(browser: BrowserConfig, name: string): Promise<AcquiredBrowser> {
   const { acquireBrowserForConnector, HostBrowserBridgeUnavailableError } = await import("./browser-launch.ts");
-  const profileName = browser.profileName ?? name;
-  const envKey = `PDPP_${profileName.toUpperCase()}_HEADLESS`;
-  const headless = browser.headless ?? process.env[envKey] !== "0";
+  const { headless, profileName } = resolveBrowserRuntimeVisibility(browser, name);
   try {
     return await acquireBrowserForConnector({ profileName, headless });
   } catch (err) {
