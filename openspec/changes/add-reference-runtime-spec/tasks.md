@@ -7,7 +7,7 @@
 ## 2. Canonical Spec Delta
 
 - [x] Expand the `reference-implementation-runtime` spec with normative requirements and scenarios.
-- [ ] Add or update tests/docs only after requirements are approved.
+- [x] Add or update tests/docs only after requirements are approved.
 
 ## Acceptance Checks
 
