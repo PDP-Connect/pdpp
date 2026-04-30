@@ -8,6 +8,8 @@
 // the same builders drive both the live HTTP responses and the static
 // fixtures used in conformance tests.
 
+import { isIP } from "node:net";
+
 // Lightweight Express-like accessors. We don't import express types
 // directly here because the helper is also called from Fastify and
 // from tests that fabricate a tiny shim — the structural duck type
@@ -21,6 +23,25 @@ export interface ResolvePublicUrlRequest {
 // matching V8 perf characteristic) prefers the literal compiled once.
 const TRAILING_SLASH_RE = /\/+$/;
 const HEADER_LIST_SEPARATOR_RE = /\s*,\s*/;
+const TRUSTED_HOST_SEPARATOR_RE = /[\s,]+/;
+const URL_SCHEME_RE = /^[a-z][a-z0-9+.-]*:\/\//i;
+const BRACKETED_HOST_RE = /^\[(.*)\]$/;
+const DECIMAL_PORT_RE = /^\d+$/;
+
+export type MetadataTrustedHosts = string | readonly string[] | null | undefined;
+
+interface TrustedMetadataRequestOriginOptions {
+  forceHostDerived?: boolean;
+}
+
+interface HostAndPort {
+  hostname: string;
+  port: string | null;
+}
+
+interface TrustedHostPattern extends HostAndPort {
+  wildcard: boolean;
+}
 
 export function stripTrailingSlash(value: string): string {
   return value.replace(TRAILING_SLASH_RE, "");
@@ -30,11 +51,41 @@ function firstHeaderValue(value: string | undefined): string | undefined {
   return value?.split(HEADER_LIST_SEPARATOR_RE, 1)[0]?.trim() || undefined;
 }
 
+function normalizeHostname(hostname: string): string {
+  return hostname.trim().toLowerCase().replace(BRACKETED_HOST_RE, "$1");
+}
+
 function isLoopbackHost(hostname: string): boolean {
-  const normalized = hostname.toLowerCase();
+  const normalized = normalizeHostname(hostname);
   return (
     normalized === "localhost" || normalized === "0.0.0.0" || normalized === "::1" || normalized.startsWith("127.")
   );
+}
+
+function isPrivateNetworkHost(hostname: string): boolean {
+  const normalized = normalizeHostname(hostname);
+  if (isLoopbackHost(normalized) || normalized.endsWith(".local")) {
+    return true;
+  }
+
+  const ipVersion = isIP(normalized);
+  if (ipVersion === 4) {
+    const octets = normalized.split(".").map((part) => Number(part));
+    const first = octets[0] ?? -1;
+    const second = octets[1] ?? -1;
+    return (
+      first === 10 ||
+      (first === 172 && second >= 16 && second <= 31) ||
+      (first === 192 && second === 168) ||
+      (first === 169 && second === 254)
+    );
+  }
+
+  if (ipVersion === 6) {
+    return normalized.startsWith("fc") || normalized.startsWith("fd") || normalized.startsWith("fe80:");
+  }
+
+  return false;
 }
 
 function hostFromOrigin(value: string): string | null {
@@ -47,6 +98,87 @@ function parseUrl(value: string): URL | null {
   } catch {
     return null;
   }
+}
+
+function splitBareHostAndPort(value: string): HostAndPort | null {
+  const normalized = value.trim();
+  if (!normalized) {
+    return null;
+  }
+
+  if (normalized.startsWith("[")) {
+    const closeBracket = normalized.indexOf("]");
+    if (closeBracket === -1) {
+      return null;
+    }
+    const hostname = normalizeHostname(normalized.slice(1, closeBracket));
+    const suffix = normalized.slice(closeBracket + 1);
+    if (!suffix) {
+      return { hostname, port: null };
+    }
+    const port = suffix.startsWith(":") ? suffix.slice(1) : "";
+    return hostname && DECIMAL_PORT_RE.test(port) ? { hostname, port } : null;
+  }
+
+  const lastColon = normalized.lastIndexOf(":");
+  const hasSingleColon = lastColon !== -1 && normalized.indexOf(":") === lastColon;
+  if (hasSingleColon) {
+    const port = normalized.slice(lastColon + 1);
+    if (DECIMAL_PORT_RE.test(port)) {
+      return { hostname: normalizeHostname(normalized.slice(0, lastColon)), port };
+    }
+  }
+
+  return { hostname: normalizeHostname(normalized), port: null };
+}
+
+function parseTrustedHostPattern(entry: string): TrustedHostPattern | null {
+  const value = stripTrailingSlash(entry.trim());
+  if (!value) {
+    return null;
+  }
+
+  if (URL_SCHEME_RE.test(value)) {
+    const parsed = parseUrl(value);
+    return parsed?.hostname
+      ? { hostname: normalizeHostname(parsed.hostname), port: parsed.port || null, wildcard: false }
+      : null;
+  }
+
+  const wildcard = value.startsWith("*.");
+  const bare = splitBareHostAndPort(wildcard ? value.slice(2) : value);
+  if (!bare?.hostname || bare.hostname.includes("*")) {
+    return null;
+  }
+  return { ...bare, wildcard };
+}
+
+function trustedHostEntries(trustedHosts: MetadataTrustedHosts): string[] {
+  if (!trustedHosts) {
+    return [];
+  }
+  const values = Array.isArray(trustedHosts) ? trustedHosts : [trustedHosts];
+  return values
+    .flatMap((value) => String(value).split(TRUSTED_HOST_SEPARATOR_RE))
+    .map((value) => value.trim())
+    .filter(Boolean);
+}
+
+function matchesTrustedHost(pattern: TrustedHostPattern, request: HostAndPort): boolean {
+  if (pattern.port && pattern.port !== request.port) {
+    return false;
+  }
+  if (pattern.wildcard) {
+    return request.hostname.endsWith(`.${pattern.hostname}`) && request.hostname !== pattern.hostname;
+  }
+  return request.hostname === pattern.hostname;
+}
+
+function trustedHostsInclude(request: HostAndPort, trustedHosts: MetadataTrustedHosts): boolean {
+  return trustedHostEntries(trustedHosts).some((entry) => {
+    const pattern = parseTrustedHostPattern(entry);
+    return pattern ? matchesTrustedHost(pattern, request) : false;
+  });
 }
 
 function forwardedPublicOrigin(req: ResolvePublicUrlRequest): string | null {
@@ -98,6 +230,43 @@ export function shouldUseDirectRequestOrigin(req: ResolvePublicUrlRequest, expli
     isLoopbackHost(parsedExplicit.hostname) &&
     !isLoopbackHost(requestHostname)
   );
+}
+
+function explicitUrlUsesRequestOrigin(req: ResolvePublicUrlRequest, explicitUrl?: string | null): boolean {
+  if (!explicitUrl) {
+    return true;
+  }
+
+  const parsedExplicit = parseUrl(explicitUrl);
+  if (!parsedExplicit) {
+    return false;
+  }
+
+  if (forwardedPublicOrigin(req) && isLoopbackHost(parsedExplicit.hostname)) {
+    return true;
+  }
+
+  const requestHostname = hostFromOrigin(resolveRequestPublicUrl(req));
+  return !!(requestHostname && isLoopbackHost(parsedExplicit.hostname) && !isLoopbackHost(requestHostname));
+}
+
+export function isTrustedMetadataRequestOrigin(
+  req: ResolvePublicUrlRequest,
+  explicitUrl?: string | null,
+  trustedHosts?: MetadataTrustedHosts,
+  options: TrustedMetadataRequestOriginOptions = {}
+): boolean {
+  if (!(options.forceHostDerived || explicitUrlUsesRequestOrigin(req, explicitUrl))) {
+    return true;
+  }
+
+  const requestOrigin = parseUrl(resolveRequestPublicUrl(req));
+  if (!requestOrigin?.hostname) {
+    return false;
+  }
+
+  const request = { hostname: normalizeHostname(requestOrigin.hostname), port: requestOrigin.port || null };
+  return isPrivateNetworkHost(request.hostname) || trustedHostsInclude(request, trustedHosts);
 }
 
 export function resolveSiblingPublicUrl(req: ResolvePublicUrlRequest, explicitUrl?: string | null): string | null {

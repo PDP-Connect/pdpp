@@ -106,8 +106,13 @@ test('seedPreRegisteredClients survives a transient sibling write lock at startu
     initDb(dbPath, { busyTimeoutMs: 25 });
     closeDb();
 
+    // New process opens with a tight busy_timeout. The sibling lock below
+    // starts after schema/migration setup so this test targets the seed
+    // retry path, not initDb's synchronous startup retry path.
+    initDb(dbPath, { busyTimeoutMs: 25 });
+
     // Sibling holds a write transaction with busy_timeout=0 so its hold
-    // is observable as a lock to the seed connection.
+    // is observable as a lock to the already-open seed connection.
     sibling = new Database(dbPath, { timeout: 0 });
     sibling.pragma('journal_mode = WAL');
     sibling.pragma('busy_timeout = 0');
@@ -118,11 +123,6 @@ test('seedPreRegisteredClients survives a transient sibling write lock at startu
         client_secret, metadata_json, created_at, updated_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?)
     `).run('sibling_holding_writer', 'pre_registered_public', 'none', null, '{}', 'now', 'now');
-
-    // New process opens with a tight busy_timeout. Without the retry,
-    // the seed write inside the sibling's hold window would surface a
-    // SQLITE_BUSY immediately.
-    initDb(dbPath, { busyTimeoutMs: 25 });
 
     // Release the sibling lock shortly after seed begins. The retry
     // backoff (100ms initial) lets the second attempt land after this.
@@ -138,7 +138,7 @@ test('seedPreRegisteredClients survives a transient sibling write lock at startu
       ],
       {
         onRetry: (info) => retryEvents.push(info),
-        retry: { initialDelayMs: 30, maxDelayMs: 200, maxAttempts: 8 },
+        retry: { initialDelayMs: 100, maxDelayMs: 200, maxAttempts: 8 },
       },
     );
 

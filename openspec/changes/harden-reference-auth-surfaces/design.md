@@ -90,17 +90,27 @@ The consent page is the owner-trust boundary for third-party access. The 2026-04
 
 This follow-up does not change the authorization-details format, token issuance, grant storage, revocation semantics, or the broader question of fast/broad multi-source consent.
 
+## AS/RS metadata Host trust (2026-04-29 follow-up)
+
+Production posture: configured public origins remain the preferred and authoritative deployment mode. When `AS_PUBLIC_URL`, `AS_ISSUER`, `RS_PUBLIC_URL`, `PDPP_REFERENCE_ORIGIN`, or equivalent startup options provide a non-loopback public origin, the AS/RS metadata documents are pinned to that origin and ignore hostile `Host` / `X-Forwarded-Host` values.
+
+Unconfigured Host-derived metadata remains supported only for local and private-network discovery: localhost, loopback, `.local`, RFC1918 IPv4, IPv4 link-local, IPv6 unique-local, and IPv6 link-local hosts. This preserves local-device, Docker, and LAN workflows without requiring a pre-baked public hostname.
+
+Public Host-derived metadata requires an operator allowlist via `PDPP_TRUSTED_HOSTS` or the equivalent startup option. Entries are comma/whitespace separated. Bare hostnames and URL entries match exact hostnames; `host:port` entries also require the request port; `*.example.com` matches subdomains but not the apex. Rejected requests return HTTP `421` with a PDPP error envelope and `error.code = "misdirected_request"`.
+
 ## Alternatives considered
 
 - **Hash `token_id` in storage now.** Rejected: out-of-scope schema/migration churn. Captured as `design-notes/spine-token-id-storage-2026-04-27.md`.
 - **Revoke via consent exchange-code, not bearer.** Rejected: that is a real protocol design question (replacing token-copy with one-time-use codes everywhere). Captured as `design-notes/consent-result-token-rendering-2026-04-27.md`.
 - **Refuse to start in default docker-compose without `PDPP_OWNER_PASSWORD`.** Rejected here: ops change, separate tranche; would also break local dev defaults that hundreds of test runs and the existing CI rely on.
 - **Use the placeholder owner session as the revoke credential.** Rejected: the cookie gate is no-op when password is unset; using it would mean revoke is unauth in default mode again.
+- **Fail startup whenever public origins are omitted.** Rejected for this tranche: it would break local-device, Docker, LAN, and tunnel workflows that intentionally self-discover request origins. The safer narrowed control is to reject only public Host-derived metadata unless the host is allowlisted.
 
 ## Acceptance checks
 
 - `node --test reference-implementation/test/security-auth-surfaces.test.js` passes locally and on CI.
 - The full reference test suite (`pnpm --filter pdpp-reference-implementation test`) passes, with revoke-using tests updated to send the grant's bearer.
+- `node --test reference-implementation/test/provider-metadata.test.js` covers explicit-origin pinning, local/LAN discovery, `PDPP_TRUSTED_HOSTS`, and hostile Host / `X-Forwarded-Host` rejection.
 - `openspec validate harden-reference-auth-surfaces --strict` passes.
 - `openspec validate --all --strict` passes.
 - `git grep -nE '"the owner"' apps/ packages/ reference-implementation/ openspec/specs/` returns nothing under non-archive paths.

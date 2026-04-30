@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
+import { request as httpRequest } from 'node:http';
 
 import { startServer } from '../server/index.js';
 import { resolvePublicUrl, resolveSiblingPublicUrl } from '../server/metadata.ts';
@@ -51,6 +52,35 @@ async function fetchJsonResponse(url, opts = {}) {
   const resp = await fetch(url, opts);
   const body = await resp.json();
   return { resp, body };
+}
+
+async function httpRequestJson(url, { headers = {} } = {}) {
+  const target = new URL(url);
+  return new Promise((resolve, reject) => {
+    const req = httpRequest(
+      {
+        hostname: target.hostname,
+        port: target.port,
+        path: `${target.pathname}${target.search}`,
+        method: 'GET',
+        headers,
+      },
+      (resp) => {
+        const chunks = [];
+        resp.on('data', (chunk) => chunks.push(chunk));
+        resp.on('end', () => {
+          try {
+            const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+            resolve({ status: resp.statusCode, body });
+          } catch (err) {
+            reject(err);
+          }
+        });
+      },
+    );
+    req.on('error', reject);
+    req.end();
+  });
 }
 
 
@@ -177,6 +207,7 @@ test('proxied composed metadata rebases localhost defaults to the forwarded publ
     referenceOrigin: localOrigin,
     asPublicUrl: localOrigin,
     rsPublicUrl: localOrigin,
+    trustedMetadataHosts: ['peregrine-dev.example'],
   });
   const asUrl = `http://localhost:${server.asPort}`;
   const rsUrl = `http://localhost:${server.rsPort}`;
@@ -207,6 +238,152 @@ test('proxied composed metadata rebases localhost defaults to the forwarded publ
     assert.equal(authorizationServer.body.device_authorization_endpoint, `${publicOrigin}/oauth/device_authorization`);
   } finally {
     await closeServer(server);
+  }
+});
+
+test('provider metadata pins explicit public origins despite hostile forwarded hosts', async () => {
+  const asOrigin = 'https://as.example.test';
+  const rsOrigin = 'https://rs.example.test';
+  const server = await startServer({
+    quiet: true,
+    asPort: 0,
+    rsPort: 0,
+    dbPath: ':memory:',
+    asPublicUrl: asOrigin,
+    rsPublicUrl: rsOrigin,
+    trustedMetadataHosts: [],
+  });
+  const asUrl = `http://localhost:${server.asPort}`;
+  const rsUrl = `http://localhost:${server.rsPort}`;
+  const hostileHeaders = {
+    'x-forwarded-host': 'evil.example',
+    'x-forwarded-proto': 'https',
+  };
+
+  try {
+    const authorizationServer = await fetchJson(`${asUrl}/.well-known/oauth-authorization-server`, {
+      headers: hostileHeaders,
+    });
+    assert.equal(authorizationServer.status, 200);
+    assert.equal(authorizationServer.body.issuer, asOrigin);
+    assert.equal(authorizationServer.body.registration_endpoint, `${asOrigin}/oauth/register`);
+
+    const protectedResource = await fetchJson(`${rsUrl}/.well-known/oauth-protected-resource`, {
+      headers: hostileHeaders,
+    });
+    assert.equal(protectedResource.status, 200);
+    assert.equal(protectedResource.body.resource, rsOrigin);
+    assert.deepEqual(protectedResource.body.authorization_servers, [asOrigin]);
+    assert.equal(protectedResource.body.pdpp_core_query_base, `${rsOrigin}/v1`);
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test('provider metadata permits unconfigured local and private-LAN host discovery', async () => {
+  const server = await startServer({
+    quiet: true,
+    asPort: 0,
+    rsPort: 0,
+    dbPath: ':memory:',
+    trustedMetadataHosts: [],
+  });
+  const asUrl = `http://localhost:${server.asPort}`;
+  const rsUrl = `http://localhost:${server.rsPort}`;
+  const lanAsHost = `192.168.50.10:${server.asPort}`;
+  const lanRsHost = `192.168.50.10:${server.rsPort}`;
+
+  try {
+    const authorizationServer = await httpRequestJson(`${asUrl}/.well-known/oauth-authorization-server`, {
+      headers: { host: lanAsHost },
+    });
+    assert.equal(authorizationServer.status, 200);
+    assert.equal(authorizationServer.body.issuer, `http://${lanAsHost}`);
+
+    const protectedResource = await httpRequestJson(`${rsUrl}/.well-known/oauth-protected-resource`, {
+      headers: { host: lanRsHost },
+    });
+    assert.equal(protectedResource.status, 200);
+    assert.equal(protectedResource.body.resource, `http://${lanRsHost}`);
+    assert.deepEqual(protectedResource.body.authorization_servers, [`http://192.168.50.10:${server.asPort}`]);
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test('provider metadata rejects unconfigured public Host and X-Forwarded-Host values', async () => {
+  const server = await startServer({
+    quiet: true,
+    asPort: 0,
+    rsPort: 0,
+    dbPath: ':memory:',
+    trustedMetadataHosts: [],
+  });
+  const asUrl = `http://localhost:${server.asPort}`;
+  const rsUrl = `http://localhost:${server.rsPort}`;
+
+  try {
+    const authorizationServer = await httpRequestJson(`${asUrl}/.well-known/oauth-authorization-server`, {
+      headers: { host: 'evil.example' },
+    });
+    assert.equal(authorizationServer.status, 421);
+    assert.equal(authorizationServer.body.error.code, 'misdirected_request');
+
+    const protectedResource = await fetchJson(`${rsUrl}/.well-known/oauth-protected-resource`, {
+      headers: {
+        'x-forwarded-host': 'evil.example',
+        'x-forwarded-proto': 'https',
+      },
+    });
+    assert.equal(protectedResource.status, 421);
+    assert.equal(protectedResource.body.error.code, 'misdirected_request');
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test('PDPP_TRUSTED_HOSTS permits explicit public host-derived metadata allowlisting', async () => {
+  const previousTrustedHosts = process.env.PDPP_TRUSTED_HOSTS;
+  process.env.PDPP_TRUSTED_HOSTS = 'pdpp.example.com, *.trusted.example';
+  let server;
+
+  try {
+    server = await startServer({
+      quiet: true,
+      asPort: 0,
+      rsPort: 0,
+      dbPath: ':memory:',
+    });
+    const asUrl = `http://localhost:${server.asPort}`;
+    const rsUrl = `http://localhost:${server.rsPort}`;
+
+    const authorizationServer = await fetchJson(`${asUrl}/.well-known/oauth-authorization-server`, {
+      headers: {
+        'x-forwarded-host': 'tenant.trusted.example',
+        'x-forwarded-proto': 'https',
+      },
+    });
+    assert.equal(authorizationServer.status, 200);
+    assert.equal(authorizationServer.body.issuer, 'https://tenant.trusted.example');
+
+    const protectedResource = await fetchJson(`${rsUrl}/.well-known/oauth-protected-resource`, {
+      headers: {
+        'x-forwarded-host': 'pdpp.example.com',
+        'x-forwarded-proto': 'https',
+      },
+    });
+    assert.equal(protectedResource.status, 200);
+    assert.equal(protectedResource.body.resource, 'https://pdpp.example.com');
+    assert.deepEqual(protectedResource.body.authorization_servers, ['https://pdpp.example.com']);
+  } finally {
+    if (server) {
+      await closeServer(server);
+    }
+    if (previousTrustedHosts === undefined) {
+      delete process.env.PDPP_TRUSTED_HOSTS;
+    } else {
+      process.env.PDPP_TRUSTED_HOSTS = previousTrustedHosts;
+    }
   }
 });
 

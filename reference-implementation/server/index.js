@@ -19,6 +19,7 @@ import {
   buildLexicalRetrievalCapability,
   buildProtectedResourceMetadata,
   buildSemanticRetrievalCapability,
+  isTrustedMetadataRequestOrigin,
   resolvePublicUrl,
   resolveSiblingPublicUrl,
   shouldUseDirectRequestOrigin,
@@ -306,6 +307,19 @@ function pdppError(res, status, code, message, param = null) {
   if (param) body.error.param = param;
   body.error.request_id = ensureRequestId(res);
   res.status(status).json(body);
+}
+
+function rejectUntrustedMetadataHost(req, res, explicitUrl, trustedHosts, options = {}) {
+  if (isTrustedMetadataRequestOrigin(req, explicitUrl, trustedHosts, options)) {
+    return false;
+  }
+  pdppError(
+    res,
+    421,
+    'misdirected_request',
+    'Host-derived metadata requires a local/private request host or PDPP_TRUSTED_HOSTS allowlist',
+  );
+  return true;
 }
 
 function typeFor(status) {
@@ -1696,6 +1710,9 @@ function buildAsApp(opts = {}) {
   // the metadata-builder dependency.
   app.get('/.well-known/oauth-authorization-server', { contract: 'getAuthorizationServerMetadata' }, (req, res) => {
     const explicitIssuer = opts.asIssuer || opts.asPublicUrl || (!opts.ignoreAmbientPublicUrls ? (process.env.AS_ISSUER || process.env.AS_PUBLIC_URL) : null);
+    if (rejectUntrustedMetadataHost(req, res, explicitIssuer, opts.trustedMetadataHosts)) {
+      return;
+    }
     const issuer = resolvePublicUrl(req, explicitIssuer);
     res.json(
       executeAsAuthorizationServerMetadata(
@@ -2866,10 +2883,22 @@ function buildRsApp(opts = {}) {
   // Primary reference surface: RFC 9728 protected-resource metadata.
   app.get('/.well-known/oauth-protected-resource', { contract: 'getProtectedResourceMetadata' }, (req, res) => {
     const explicitResource = opts.rsPublicUrl || (!opts.ignoreAmbientPublicUrls ? process.env.RS_PUBLIC_URL : null);
+    if (rejectUntrustedMetadataHost(req, res, explicitResource, opts.trustedMetadataHosts)) {
+      return;
+    }
     const resource = resolvePublicUrl(req, explicitResource);
     const explicitIssuer = opts.asIssuer || opts.asPublicUrl || (!opts.ignoreAmbientPublicUrls ? (process.env.AS_ISSUER || process.env.AS_PUBLIC_URL) : null);
     const fallbackIssuer = `${req.protocol}://${req.hostname}:${opts.asPort || AS_PORT}`;
-    const issuer = resolvePublicUrl(req, shouldUseDirectRequestOrigin(req, explicitIssuer) ? fallbackIssuer : explicitIssuer || fallbackIssuer);
+    const issuerUsesDirectRequestOrigin = shouldUseDirectRequestOrigin(req, explicitIssuer);
+    const issuerSource = issuerUsesDirectRequestOrigin ? fallbackIssuer : explicitIssuer || fallbackIssuer;
+    if (
+      rejectUntrustedMetadataHost(req, res, issuerSource, opts.trustedMetadataHosts, {
+        forceHostDerived: issuerUsesDirectRequestOrigin || !explicitIssuer,
+      })
+    ) {
+      return;
+    }
+    const issuer = resolvePublicUrl(req, issuerSource);
 
     // Composition (which capabilities to publish, which discovery hints to
     // include) is owned by the canonical `rs.protected-resource-metadata`
@@ -4670,6 +4699,7 @@ export async function startServer(opts = {}) {
     (!ignoreAmbientPublicUrls ? (process.env.AS_ISSUER || process.env.AS_PUBLIC_URL) : null) ||
     null;
   const configuredRsPublicUrl = referenceTopology.rsPublicUrl || null;
+  const trustedMetadataHosts = opts.trustedMetadataHosts ?? process.env.PDPP_TRUSTED_HOSTS ?? null;
   const runtimeContext = {
     rsUrl: configuredRsPublicUrl || null,
   };
@@ -4689,6 +4719,7 @@ export async function startServer(opts = {}) {
     asPublicUrl: configuredAsPublicUrl,
     asIssuer: configuredAsIssuer,
     ignoreAmbientPublicUrls,
+    trustedMetadataHosts,
     ownerAuthPassword: opts.ownerAuthPassword,
     ownerAuthSubjectId: opts.ownerAuthSubjectId,
     ownerAuthForceSecureCookies: opts.ownerAuthForceSecureCookies,
@@ -4715,6 +4746,7 @@ export async function startServer(opts = {}) {
     asIssuer: configuredAsIssuer || asPublicUrl,
     rsPublicUrl: configuredRsPublicUrl,
     ignoreAmbientPublicUrls,
+    trustedMetadataHosts,
     logger,
     // Lexical retrieval extension knobs — see search.js + the metadata route.
     lexicalRetrievalSupported: opts.lexicalRetrievalSupported,

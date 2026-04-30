@@ -253,6 +253,29 @@ function extractCookie(resp) {
   return raw ? raw.split(';', 1)[0] : null;
 }
 
+function getRawSetCookieList(resp) {
+  if (typeof resp.headers.getSetCookie === 'function') {
+    return resp.headers.getSetCookie();
+  }
+  const single = resp.headers.get('set-cookie');
+  return single ? [single] : [];
+}
+
+function findSetCookiePair(setCookies, name) {
+  for (const header of setCookies) {
+    const pair = header.split(';', 1)[0];
+    if (pair.startsWith(`${name}=`)) {
+      return pair;
+    }
+  }
+  return null;
+}
+
+function extractCsrfFieldValue(html) {
+  const match = html.match(/<input type="hidden" name="_csrf" value="([^"]+)"\s*\/>/);
+  return match ? match[1] : null;
+}
+
 async function fetchJson(url, opts = {}) {
   const resp = await fetch(url, opts);
   const body = await resp.json();
@@ -407,15 +430,27 @@ test('composed browser origin carries metadata, owner session, dashboard, device
       '/owner/login?return_to=%2Fdashboard',
     );
 
+    const loginPage = await fetch(`${webOrigin}/owner/login?return_to=%2Fdashboard`, {
+      headers: { Accept: 'text/html' },
+      redirect: 'manual',
+    });
+    assert.equal(loginPage.status, 200);
+    const csrfCookie = findSetCookiePair(getRawSetCookieList(loginPage), 'pdpp_owner_csrf');
+    const csrfField = extractCsrfFieldValue(await loginPage.text());
+    assert.ok(csrfCookie, 'owner login GET should issue a CSRF cookie');
+    assert.ok(csrfField, 'owner login GET should render a CSRF field');
+
     const loginResp = await fetch(`${webOrigin}/owner/login`, {
       method: 'POST',
       redirect: 'manual',
       headers: {
         'Content-Type': 'application/x-www-form-urlencoded',
+        Cookie: csrfCookie,
       },
       body: new URLSearchParams({
         password: OWNER_PASSWORD,
         return_to: '/dashboard',
+        _csrf: csrfField,
       }).toString(),
     });
     assert.ok(
@@ -464,13 +499,29 @@ test('composed browser origin carries metadata, owner session, dashboard, device
     assert.equal(deviceStart.body.verification_uri, `${webOrigin}/device`);
     assert.match(deviceStart.body.verification_uri_complete, new RegExp(`^${webOrigin.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/device\\?user_code=`));
 
+    const devicePage = await fetch(`${webOrigin}/device?user_code=${encodeURIComponent(deviceStart.body.user_code)}`, {
+      headers: {
+        Accept: 'text/html',
+        Cookie: ownerCookie,
+      },
+      redirect: 'manual',
+    });
+    assert.equal(devicePage.status, 200);
+    const deviceCsrfCookie = findSetCookiePair(getRawSetCookieList(devicePage), 'pdpp_owner_csrf');
+    const deviceCsrfField = extractCsrfFieldValue(await devicePage.text());
+    assert.ok(deviceCsrfCookie, 'device approval page should issue a CSRF cookie');
+    assert.ok(deviceCsrfField, 'device approval page should render a CSRF field');
+
     const approveDevice = await fetch(`${webOrigin}/device/approve`, {
       method: 'POST',
       headers: {
-        Cookie: ownerCookie,
+        Cookie: `${ownerCookie}; ${deviceCsrfCookie}`,
         'Content-Type': 'application/x-www-form-urlencoded',
       },
-      body: new URLSearchParams({ user_code: deviceStart.body.user_code }).toString(),
+      body: new URLSearchParams({
+        user_code: deviceStart.body.user_code,
+        _csrf: deviceCsrfField,
+      }).toString(),
     });
     assert.equal(approveDevice.status, 200);
 

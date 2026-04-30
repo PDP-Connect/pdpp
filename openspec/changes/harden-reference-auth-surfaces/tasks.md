@@ -103,7 +103,7 @@ The owner bug-hunt reconciliation found three remaining P1 consent-surface issue
 
 The 2026-04-29 P0/P1 surface bug hunt found that live AS/RS metadata is Host-derived when no explicit public origin is configured. The bounded follow-up fixed `/sandbox` advertising `0.0.0.0`, but intentionally did not drive-by change live AS/RS metadata semantics.
 
-- [ ] 9.1 Decide and specify production posture for unconfigured public origins: fail startup, emit deployment diagnostics only, or accept Host-derived metadata behind a trusted-host allowlist.
-- [ ] 9.2 If allowlisting is selected, define `PDPP_TRUSTED_HOSTS` matching semantics and rejection shape (`421 Misdirected Request` vs PDPP error envelope).
-- [ ] 9.3 Add tests covering explicit-origin pinning, unconfigured local/LAN discovery, and hostile Host/`X-Forwarded-Host` requests in the chosen deployment mode.
+- [x] 9.1 Decide and specify production posture for unconfigured public origins: fail startup, emit deployment diagnostics only, or accept Host-derived metadata behind a trusted-host allowlist.
+- [x] 9.2 If allowlisting is selected, define `PDPP_TRUSTED_HOSTS` matching semantics and rejection shape (`421 Misdirected Request` vs PDPP error envelope).
+- [x] 9.3 Add tests covering explicit-origin pinning, unconfigured local/LAN discovery, and hostile Host/`X-Forwarded-Host` requests in the chosen deployment mode.
 - [x] 9.4 Capture current policy and tradeoffs in `design-notes/metadata-origin-host-trust-2026-04-29.md`.

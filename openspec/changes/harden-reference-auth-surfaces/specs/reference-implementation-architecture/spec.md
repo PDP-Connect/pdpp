@@ -310,3 +310,31 @@ Requests for `purpose_category: "ai_training"` SHALL require explicit affirmativ
 - **WHEN** a caller submits an authorization request for `purpose_category: "ai_training"` without the reference's explicit affirmative consent marker
 - **THEN** the AS SHALL reject the request with a typed PDPP error envelope
 - **AND** the response SHALL NOT be a generic `500` internal server error
+
+### Requirement: Host-derived AS/RS metadata SHALL be trusted only for local/private or allowlisted hosts
+
+The reference SHALL pin AS/RS metadata to configured public origins when present. When metadata would derive its origin from request `Host` or `X-Forwarded-Host`, the reference SHALL accept the request only if the resolved request hostname is local/private or matches `PDPP_TRUSTED_HOSTS` (or an equivalent startup option). `PDPP_TRUSTED_HOSTS` entries SHALL be comma/whitespace separated; bare hostnames and URL entries SHALL match exact hostnames; `host:port` entries SHALL also match the request port; wildcard entries of the form `*.example.com` SHALL match subdomains and SHALL NOT match the apex hostname. Rejections SHALL use HTTP `421` and a PDPP error envelope with `error.code` equal to `misdirected_request`.
+
+#### Scenario: Explicit public origins are configured and a hostile forwarded host is sent
+- **WHEN** AS/RS metadata is requested with `X-Forwarded-Host: evil.example`
+- **AND** explicit non-loopback AS/RS public origins are configured
+- **THEN** the metadata document SHALL publish the configured origins
+- **AND** the hostile forwarded host SHALL NOT appear in the issuer, resource, registration endpoint, or PDPP query-base URLs
+
+#### Scenario: No public origin is configured and a private LAN host is sent
+- **WHEN** AS/RS metadata is requested with a private LAN `Host`
+- **AND** no explicit AS/RS public origin is configured
+- **THEN** the metadata document SHALL be allowed
+- **AND** the issuer/resource URLs SHALL derive from that private LAN host
+
+#### Scenario: No public origin is configured and an unknown public host is sent
+- **WHEN** AS/RS metadata is requested with a public `Host` or `X-Forwarded-Host`
+- **AND** that host does not match `PDPP_TRUSTED_HOSTS`
+- **THEN** the reference SHALL reject the request with HTTP `421`
+- **AND** the response body SHALL be a PDPP error envelope with `error.code` equal to `misdirected_request`
+
+#### Scenario: A trusted public host is configured
+- **WHEN** AS/RS metadata is requested with a public `Host` or `X-Forwarded-Host`
+- **AND** that host matches `PDPP_TRUSTED_HOSTS`
+- **THEN** the metadata document SHALL be allowed
+- **AND** the issuer/resource URLs MAY derive from that trusted public host

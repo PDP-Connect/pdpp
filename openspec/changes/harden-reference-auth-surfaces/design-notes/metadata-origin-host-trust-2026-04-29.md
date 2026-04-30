@@ -1,9 +1,9 @@
 # Metadata Origin Host Trust
 
-Status: sprint-needed
+Status: decided
 Owner: reference owner
 Created: 2026-04-29
-Updated: 2026-04-29
+Updated: 2026-04-30
 Related: openspec/changes/harden-reference-auth-surfaces
 
 ## Question
@@ -32,6 +32,10 @@ Hardening this incorrectly would either:
 
 ## Current Leaning
 
+Decision: explicit public origins remain preferred and authoritative. Unconfigured Host-derived metadata remains accepted for local/private request hosts and for operator-allowlisted public hosts via `PDPP_TRUSTED_HOSTS`. Unknown public Host-derived requests return HTTP `421` with a PDPP `misdirected_request` error envelope.
+
+Historical leaning before the decision:
+
 Keep dynamic Host-derived metadata for local/dev mode, but make production and exposed deployments explicit:
 
 - If `NODE_ENV=production` or a deployment-mode env marks the instance as public, require explicit AS/RS public origins or fail startup.
@@ -47,3 +51,4 @@ Promote this to normative OpenSpec requirements before changing live AS/RS metad
 ## Decision Log
 
 - 2026-04-29: Captured from `tmp/workstreams/p01-surface-bughunt-report.md` and the owner-reviewed follow-up `fix-p01-metadata-and-head-semantics`. Sandbox `0.0.0.0` metadata was fixed. Live AS/RS Host-derived metadata remains a deliberate hardening question, not a same-slice patch.
+- 2026-04-30: Promoted into `harden-reference-auth-surfaces`: configured origins pin metadata; local/private Host-derived metadata remains supported; public Host-derived metadata requires `PDPP_TRUSTED_HOSTS`; unknown public hosts receive `421` / `misdirected_request`.
