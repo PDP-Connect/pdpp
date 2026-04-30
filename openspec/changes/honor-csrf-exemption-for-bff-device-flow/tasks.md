@@ -25,4 +25,4 @@
 
 - [x] `openspec validate honor-csrf-exemption-for-bff-device-flow --strict` passes.
 - [x] `openspec validate --all --strict` passes.
-- [ ] Manual verification: `/dashboard/deployment/tokens` end-to-end against `PDPP_OWNER_PASSWORD`-enabled AS issues a bearer that introspects active.
+- [x] Manual verification: `/dashboard/deployment/tokens` end-to-end against `PDPP_OWNER_PASSWORD`-enabled AS issues a bearer that introspects active.
