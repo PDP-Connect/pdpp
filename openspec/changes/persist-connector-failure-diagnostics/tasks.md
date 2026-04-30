@@ -39,5 +39,5 @@
 
 ## Deferred follow-up
 
-- [ ] Consider a separate log-artifact/blob-backed diagnostic store after retention, authorization, and storage policy are designed. Do not implement that as part of this slice.
-- [ ] Consider per-run Node diagnostic report correlation after filename, retention, and authorization policy are designed. Do not implement that as part of this slice.
+- [x] Consider a separate log-artifact/blob-backed diagnostic store after retention, authorization, and storage policy are designed. Do not implement that as part of this slice.
+- [x] Consider per-run Node diagnostic report correlation after filename, retention, and authorization policy are designed. Do not implement that as part of this slice.
