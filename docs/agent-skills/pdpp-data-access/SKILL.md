@@ -24,7 +24,7 @@ If you fetched this skill over HTTP from `/.well-known/skills/pdpp-data-access/S
 | Anything secret-handling, cache, or refusal | `references/security.md` |
 | The owner says no, the token expired, the call fails | `references/troubleshooting.md` |
 
-The patterns in this skill are derived from PAR (RFC 9126), RAR (RFC 9396), DCR (RFC 7591), the device flow (RFC 8628, used only for the owner-token escape hatch), MCP's local-public-client guidance, and the local-cache UX of `gh auth`, AWS CLI SSO, and Google ADC. PDPP-specific extensions are flagged here when used.
+The patterns in this skill are derived from PAR (RFC 9126), RAR (RFC 9396), DCR (RFC 7591), the device flow (RFC 8628, used only for owner/admin sign-in outside routine agent data access), MCP's local-public-client guidance, and the local-cache UX of `gh auth`, AWS CLI SSO, and Google ADC. PDPP-specific extensions are flagged here when used.
 
 ## Hard rules
 
@@ -156,7 +156,7 @@ Revocation is cheap and auditable. Use it.
 
 ## Stop conditions (do not push past these)
 
-- The user explicitly asks you to use their owner token. Acknowledge, but request the scoped grant instead and explain why. If they insist, document the owner-token use in the response and proceed only with their direct confirmation.
+- The user explicitly asks you to use their owner token. Acknowledge, but request the scoped grant instead and explain why. If they still insist, treat that as an owner/admin workflow outside this data-access skill; do not use an owner token as a workaround for routine scoped reads.
 - A request would require a stream or field the existing grant doesn't cover, *and* the task can't be completed at narrower scope. Stop, request an upgrade, and present the new request to the owner.
 - The AS or RS returns `invalid_token`, `insufficient_scope`, or `grant_revoked`. Stop. Report. Don't retry.
 - You see a token in any output that will be persisted (a commit, a logged stdout, a Slack thread). Stop and tell the user; the token is now considered compromised and should be revoked.

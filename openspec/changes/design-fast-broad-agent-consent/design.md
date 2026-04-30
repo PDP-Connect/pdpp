@@ -113,6 +113,37 @@ Prior art validates this shape. RFC 9396 already supports multi-entry staged req
 
 This leaning is not final. It must survive owner review before implementation.
 
+## Current-State Audit
+
+Reference PAR behavior remains intentionally one-entry-only:
+
+- `reference-implementation/server/auth.js` rejects any request whose `authorization_details.length !== 1`.
+- The observed runtime failure shape for two entries is HTTP `400` with body `{ error: { type: "invalid_request_error", code: "invalid_request", message: "Exactly one authorization_details entry is supported in the current reference flow", request_id } }`; no `PDPP-Reference-Trace-Id` header is returned for this validation failure.
+- `reference-implementation/test/pdpp.test.js` now pins that multi-entry rejection shape in the malformed request-envelope coverage.
+- The public reference contract schema also advertises `authorization_details.maxItems = 1` (`packages/reference-contract/src/public/index.ts`).
+
+Consent presentation for maximal single-source grants is legible but not enough for mixed-source batching:
+
+- Wildcard streams render as an "All streams" warning and expand to manifest stream names when available (`reference-implementation/server/index.js`).
+- Continuous access renders a warning; when no retention bound is present, the owner sees that the client may keep reading until revocation.
+- Per-stream fields, views, time ranges, and optionality render in the stream list when provided.
+- There is no risk scoring, sensitivity classification, package summary, or second confirmation for "continuous + all streams + no retention + no field projection"; that is acceptable for the one-source current flow but insufficient for Option B.
+
+Dashboard grant surfaces are per-grant today:
+
+- `/dashboard/grants` lists individual grant summaries with status, client id, source, event count, and a peekable timeline (`apps/web/src/app/dashboard/grants/page.tsx`).
+- `/dashboard/grants/[grantId]` shows a single grant timeline (`apps/web/src/app/dashboard/grants/[grantId]/page.tsx`).
+- `POST /grants/:grantId/revoke` remains per-grant and accepts owner or same-grant client auth (`reference-implementation/server/index.js`).
+- Package/session grouping could be added as display metadata without weakening revocation, but a "revoke package" affordance must dispatch one revoke per child grant and surface partial failures.
+
+Agent guidance mostly resists broad shortcuts:
+
+- `docs/agent-skills/pdpp-data-access/SKILL.md` tells agents to request the narrowest grant, avoid owner bearer tokens, avoid silent broadening, and stop on insufficient scope.
+- `reference-implementation/cli/commands/agent.js` stages exactly one source object per request and defaults to `single_use`.
+- One stale CLI help line advertised `pdpp agent request --connector-id`; this audit corrected it to `--source-kind <kind> --source-id <id>` in `reference-implementation/cli/index.js`.
+- The skill's old "owner-token escape hatch" wording was too permissive for routine data access; this audit tightened it to treat owner/admin sign-in as outside the data-access skill rather than as a broad-read workaround.
+- `docs/agent-skills/pdpp-data-access/references/grant-design.md` now says cross-source tasks require multiple requests/grants in the current reference; multi-entry batch consent remains a design track.
+
 ## Prior Art
 
 Reviewed in detail in `design-notes/2026-04-27-prior-art-review.md`. Headline findings:

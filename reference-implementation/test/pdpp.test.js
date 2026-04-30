@@ -679,6 +679,37 @@ test('PDPP reference implementation integration', async (t) => {
       assert.equal(missingClientBody.error.code, 'invalid_request');
       assert.match(missingClientBody.error.message, /requires client_id/);
 
+      const multiDetailsResp = await fetch(`${asUrl}/oauth/par`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          client_id: 'longview',
+          authorization_details: [
+            {
+              type: 'https://pdpp.org/data-access',
+              source: { kind: 'connector', id: spotifyManifest.connector_id },
+              purpose_code: 'https://pdpp.org/purpose/personalization',
+              access_mode: 'continuous',
+              streams: [{ name: 'top_artists' }],
+            },
+            {
+              type: 'https://pdpp.org/data-access',
+              source: { kind: 'connector', id: spotifyManifest.connector_id },
+              purpose_code: 'https://pdpp.org/purpose/personalization',
+              access_mode: 'continuous',
+              streams: [{ name: 'saved_tracks' }],
+            },
+          ],
+        }),
+      });
+      assert.equal(multiDetailsResp.status, 400);
+      assert.equal(multiDetailsResp.headers.get('PDPP-Reference-Trace-Id'), null);
+      const multiDetailsBody = await multiDetailsResp.json();
+      assert.equal(multiDetailsBody.error.type, 'invalid_request_error');
+      assert.equal(multiDetailsBody.error.code, 'invalid_request');
+      assert.match(multiDetailsBody.error.message, /Exactly one authorization_details entry is supported/);
+      assert.ok(multiDetailsBody.error.request_id);
+
       const unsupportedRequestFieldsResp = await fetch(`${asUrl}/oauth/par`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

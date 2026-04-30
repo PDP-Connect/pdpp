@@ -17,7 +17,7 @@ const HELP = `PDPP CLI (reference implementation surface; some commands are refe
 Agent access (project-local grant management for coding agents):
   pdpp agent bootstrap [--rs-url <url>] [--as-url <url>] [--initial-access-token <tok>]
   pdpp agent status [--format json|table]
-  pdpp agent request --connector-id <id> --streams <s1,s2> --purpose <text> [--access-mode <mode>]
+  pdpp agent request --source-kind <kind> --source-id <id> --streams <s1,s2> --purpose <text> [--access-mode <mode>]
   pdpp agent store --grant-id <id> --token <token>
   pdpp agent use [<grant-id>]
   pdpp agent forget <grant-id>
