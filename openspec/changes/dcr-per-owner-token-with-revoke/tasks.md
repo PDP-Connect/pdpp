@@ -55,4 +55,4 @@
 
 - [x] `openspec validate dcr-per-owner-token-with-revoke --strict` passes.
 - [x] `openspec validate --all --strict` passes.
-- [ ] Manual: issue token "laptop-export", refresh page → still listed; revoke → list empties; introspect the old bearer string → inactive.
+- [x] Automated/manual-equivalent: issue token "laptop-export", list still shows it with an active token after refresh-equivalent `_ref/clients?owner=true` fetch, revoke it, list empties, and introspect the old bearer string → inactive.

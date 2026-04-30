@@ -170,12 +170,12 @@ test('DCR per owner token: owner-issued clients list and cascade-revoke owner be
     const sessionCookie = await login(asUrl);
 
     const ownerRegistered = await registerClient(asUrl, {
-      client_name: 'Laptop export',
+      client_name: 'laptop-export',
       issuer_subject_id: 'body_must_not_win',
       token_endpoint_auth_method: 'none',
     }, sessionCookie);
     assert.equal(ownerRegistered.status, 201);
-    assert.equal(ownerRegistered.body.client_name, 'Laptop export');
+    assert.equal(ownerRegistered.body.client_name, 'laptop-export');
     assert.ok(ownerRegistered.body.client_id);
 
     const anonymousRegistered = await registerClient(asUrl, {
@@ -190,7 +190,7 @@ test('DCR per owner token: owner-issued clients list and cascade-revoke owner be
     assert.ok(clientIds.includes(ownerRegistered.body.client_id));
     assert.ok(!clientIds.includes(anonymousRegistered.body.client_id));
     const listedOwnerClient = listed.data.find((row) => row.client_id === ownerRegistered.body.client_id);
-    assert.equal(listedOwnerClient.client_name, 'Laptop export');
+    assert.equal(listedOwnerClient.client_name, 'laptop-export');
     assert.equal(listedOwnerClient.active_token_count, 0);
 
     const token = await issueOwnerTokenViaDeviceFlow(asUrl, ownerRegistered.body.client_id, sessionCookie);
@@ -200,6 +200,11 @@ test('DCR per owner token: owner-issued clients list and cascade-revoke owner be
     assert.equal(active.pdpp_token_kind, 'owner');
     assert.equal(active.subject_id, TEST_SUBJECT);
     assert.equal(active.client_id, ownerRegistered.body.client_id);
+
+    const listedAfterIssue = await listOwnerClients(asUrl, sessionCookie);
+    const issuedClient = listedAfterIssue.data.find((row) => row.client_id === ownerRegistered.body.client_id);
+    assert.equal(issuedClient.client_name, 'laptop-export');
+    assert.equal(issuedClient.active_token_count, 1);
 
     const deleteResp = await fetch(`${asUrl}/oauth/register/${encodeURIComponent(ownerRegistered.body.client_id)}`, {
       method: 'DELETE',
