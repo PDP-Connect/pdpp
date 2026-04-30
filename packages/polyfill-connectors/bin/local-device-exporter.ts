@@ -12,7 +12,7 @@ interface CliOptions {
   deviceLabel?: string;
   deviceToken?: string;
   queuePath: string;
-  sourceInstanceId: string;
+  sourceInstanceId: string | undefined;
 }
 
 const DEFAULT_QUEUE_PATH = join(
@@ -32,14 +32,13 @@ async function main(): Promise<void> {
       baseUrl: options.baseUrl,
       code: options.code,
       ...(options.deviceLabel ? { deviceLabel: options.deviceLabel } : {}),
-      sourceInstanceId: options.sourceInstanceId,
     });
     process.stdout.write(`${JSON.stringify(response, null, 2)}\n`);
     return;
   }
 
-  if (!(options.deviceId && options.deviceToken)) {
-    throw new Error("run requires --device-id <id> and --device-token <token>");
+  if (!(options.deviceId && options.deviceToken && options.sourceInstanceId)) {
+    throw new Error("run requires --device-id <id>, --device-token <token>, and --source-instance-id <id>");
   }
   const result = await runCodexLocalDeviceExporter({
     baseUrl: options.baseUrl,
@@ -54,13 +53,13 @@ async function main(): Promise<void> {
 function parseArgs(args: string[]): CliOptions {
   const [command, ...rest] = args;
   if (command !== "enroll" && command !== "run") {
-    throw new Error("usage: local-device-exporter <enroll|run> --base-url <url> --source-instance-id <id> [options]");
+    throw new Error("usage: local-device-exporter <enroll|run> --base-url <url> [options]");
   }
   const options: CliOptions = {
     baseUrl: process.env.PDPP_REFERENCE_BASE_URL ?? "http://127.0.0.1:3000",
     command,
     queuePath: process.env.PDPP_LOCAL_DEVICE_QUEUE ?? DEFAULT_QUEUE_PATH,
-    sourceInstanceId: process.env.PDPP_SOURCE_INSTANCE_ID ?? "codex-local",
+    sourceInstanceId: process.env.PDPP_SOURCE_INSTANCE_ID,
   };
   if (process.env.PDPP_LOCAL_DEVICE_ID) {
     options.deviceId = process.env.PDPP_LOCAL_DEVICE_ID;

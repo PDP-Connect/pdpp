@@ -101,7 +101,7 @@ function record(sourceInstanceId: string, batchSeq: number): LocalDeviceRecordEn
     data: { id: batchSeq },
     device_id: "device-1",
     emitted_at: "2026-04-30T12:00:00.000Z",
-    key: String(batchSeq),
+    record_key: String(batchSeq),
     source_instance_id: sourceInstanceId,
     stream: "messages",
   };

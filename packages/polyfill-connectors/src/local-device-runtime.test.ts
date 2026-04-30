@@ -3,6 +3,7 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import type { IngestBatchRequest } from "./local-device-client.ts";
 import { LocalDeviceQueue } from "./local-device-queue.ts";
 import {
   buildCodexStartMessage,
@@ -60,11 +61,11 @@ test("drainLocalDeviceQueue marks sent batches and preserves retryable failures"
   await queue.enqueue({ batchId: "batch-1", batchSeq: 1, records: record, sourceInstanceId: "source-1" });
   await queue.enqueue({ batchId: "batch-2", batchSeq: 2, records: record, sourceInstanceId: "source-1" });
 
-  const sent: string[] = [];
+  const sent: IngestBatchRequest[] = [];
   const client = {
-    async ingestBatch(request: { batch_id: string }): Promise<{ ok: true }> {
+    async ingestBatch(request: IngestBatchRequest): Promise<{ ok: true }> {
       await Promise.resolve();
-      sent.push(request.batch_id);
+      sent.push(request);
       if (request.batch_id === "batch-2") {
         throw new Error("temporary 503");
       }
@@ -73,7 +74,14 @@ test("drainLocalDeviceQueue marks sent batches and preserves retryable failures"
   };
 
   assert.equal(await drainLocalDeviceQueue({ client, queue }), 1);
-  assert.deepEqual(sent, ["batch-1", "batch-2"]);
+  assert.deepEqual(
+    sent.map((request) => request.batch_id),
+    ["batch-1", "batch-2"]
+  );
+  assert.equal(typeof sent[0]?.body_hash, "string");
+  assert.deepEqual(sent[0]?.records, [
+    { data: { id: "message-1" }, emitted_at: "2026-04-30T12:00:00.000Z", record_key: "message-1", stream: "messages" },
+  ]);
   const items = await queue.list();
   assert.equal(items.find((item) => item.batch_id === "batch-1")?.status, "sent");
   assert.equal(items.find((item) => item.batch_id === "batch-2")?.status, "pending");

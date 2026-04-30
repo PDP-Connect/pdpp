@@ -318,6 +318,10 @@ const DeviceHeartbeatBodySchema = {
   additionalProperties: false,
   properties: {
     agent_version: { type: "string" },
+    connector_id: { type: "string" },
+    source_instance_id: { type: "string" },
+    status: { type: "string", enum: ["starting", "healthy", "retrying", "blocked", "stopped"] },
+    records_pending: { type: "integer", minimum: 0 },
     source_instances: {
       type: "array",
       items: {

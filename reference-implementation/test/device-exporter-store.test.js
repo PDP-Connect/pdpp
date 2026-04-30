@@ -56,6 +56,9 @@ async function runConformance(makeStore) {
 
   await driver.call('markCredentialUsed', 'cred_1', LATER);
   assert.equal((await driver.call('findCredentialByTokenHash', 'sha256:device-token')).lastUsedAt, LATER);
+  assert.equal(await driver.call('markDeviceHeartbeat', 'dev_1', { receivedAt: LATER, lastError: null }), 1);
+  assert.equal((await driver.call('getDevice', 'dev_1')).lastHeartbeatAt, LATER);
+  assert.equal((await driver.call('listDevices', 'owner_1'))[0].lastHeartbeatAt, LATER);
 
   await driver.call('upsertSourceInstance', {
     sourceInstanceId: 'src_1',

@@ -9,7 +9,7 @@ export interface LocalDeviceRecordEnvelope {
   data: RecordData;
   device_id: string;
   emitted_at: string;
-  key: string;
+  record_key: string;
   source_instance_id: string;
   stream: string;
 }
@@ -36,7 +36,7 @@ export function buildLocalDeviceRecordEnvelope(input: BuildLocalDeviceRecordEnve
     connector_id: input.connectorId,
     data: toNormalizedRecordData(input.record.data),
     emitted_at: input.record.emitted_at,
-    key: String(input.record.key),
+    record_key: String(input.record.key),
     stream: input.record.stream,
   };
 

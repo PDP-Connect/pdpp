@@ -9,18 +9,16 @@ test("LocalDeviceClient sends enrollment exchange without bearer token", async (
   try {
     const client = new LocalDeviceClient({ baseUrl: server.url, deviceId: "device-1", deviceToken: "device-token" });
     const response = await client.exchangeEnrollment({
-      code: "enroll-123",
       device_label: "Laptop",
-      source_instance_id: "source-1",
+      enrollment_code: "enroll-123",
     });
 
     assert.equal(response.device_id, "device-1");
     assert.equal(seen[0]?.path, LOCAL_DEVICE_ENDPOINTS.exchangeEnrollment);
     assert.equal(seen[0]?.authorization, undefined);
     assert.deepEqual(seen[0]?.body, {
-      code: "enroll-123",
       device_label: "Laptop",
-      source_instance_id: "source-1",
+      enrollment_code: "enroll-123",
     });
   } finally {
     await server.close();
@@ -40,7 +38,11 @@ test("LocalDeviceClient sends bearer-authenticated heartbeat and ingest batch sh
     });
     await client.ingestBatch({
       batch_id: "batch-1",
-      records: [],
+      batch_seq: 1,
+      body_hash: "hash-1",
+      connector_id: "codex",
+      device_id: "device-1",
+      records: [{ data: {}, emitted_at: "2026-04-30T12:00:00.000Z", record_key: "record-1", stream: "messages" }],
       source_instance_id: "source-1",
     });
 
@@ -56,7 +58,11 @@ test("LocalDeviceClient sends bearer-authenticated heartbeat and ingest batch sh
     assert.equal(seen[1]?.authorization, "Bearer device-token");
     assert.deepEqual(seen[1]?.body, {
       batch_id: "batch-1",
-      records: [],
+      batch_seq: 1,
+      body_hash: "hash-1",
+      connector_id: "codex",
+      device_id: "device-1",
+      records: [{ data: {}, emitted_at: "2026-04-30T12:00:00.000Z", record_key: "record-1", stream: "messages" }],
       source_instance_id: "source-1",
     });
   } finally {

@@ -277,6 +277,9 @@ export async function bootstrapPostgresSchema() {
         owner_subject_id TEXT NOT NULL,
         display_name TEXT NOT NULL,
         status TEXT NOT NULL DEFAULT 'active',
+        agent_version TEXT,
+        last_heartbeat_at TEXT,
+        last_error_json JSONB,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         revoked_at TEXT
@@ -300,6 +303,9 @@ export async function bootstrapPostgresSchema() {
         enrollment_code_id TEXT PRIMARY KEY,
         code_hash TEXT NOT NULL UNIQUE,
         owner_subject_id TEXT NOT NULL,
+        connector_id TEXT NOT NULL,
+        local_binding_id TEXT NOT NULL,
+        display_name TEXT,
         device_id TEXT REFERENCES device_exporters(device_id) ON DELETE SET NULL,
         status TEXT NOT NULL DEFAULT 'pending',
         created_at TEXT NOT NULL,
@@ -317,6 +323,7 @@ export async function bootstrapPostgresSchema() {
         local_binding_id TEXT NOT NULL,
         display_name TEXT,
         status TEXT NOT NULL DEFAULT 'active',
+        last_error_json JSONB,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         revoked_at TEXT,
@@ -575,6 +582,7 @@ export async function bootstrapPostgresSchema() {
       );
     `);
     await migratePostgresSpineSourceColumns(client);
+    await migratePostgresDeviceExporterColumns(client);
   } finally {
     client.release();
   }
@@ -653,4 +661,23 @@ async function migratePostgresSpineSourceColumns(client) {
     } catch {}
     throw err;
   }
+}
+
+async function migratePostgresDeviceExporterColumns(client) {
+  await client.query(`
+    ALTER TABLE device_exporters
+      ADD COLUMN IF NOT EXISTS agent_version TEXT,
+      ADD COLUMN IF NOT EXISTS last_heartbeat_at TEXT,
+      ADD COLUMN IF NOT EXISTS last_error_json JSONB
+  `);
+  await client.query(`
+    ALTER TABLE device_enrollment_codes
+      ADD COLUMN IF NOT EXISTS connector_id TEXT NOT NULL DEFAULT 'unknown',
+      ADD COLUMN IF NOT EXISTS local_binding_id TEXT NOT NULL DEFAULT 'default',
+      ADD COLUMN IF NOT EXISTS display_name TEXT
+  `);
+  await client.query(`
+    ALTER TABLE device_source_instances
+      ADD COLUMN IF NOT EXISTS last_error_json JSONB
+  `);
 }

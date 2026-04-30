@@ -1,4 +1,4 @@
-import { exec, getOne, referenceQueries } from '../../lib/db.ts';
+import { allowUnboundedReadAcknowledged, exec, getMany, getOne, referenceQueries } from '../../lib/db.ts';
 import { getStorageBackendKind, isPostgresStorageBackend, postgresQuery } from '../postgres-storage.js';
 
 export class DeviceBatchConflictError extends Error {
@@ -40,6 +40,9 @@ function mapDevice(row) {
     ownerSubjectId: row.owner_subject_id,
     displayName: row.display_name,
     status: row.status,
+    agentVersion: row.agent_version,
+    lastHeartbeatAt: row.last_heartbeat_at,
+    lastError: parseJson(row.last_error_json, null),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     revokedAt: row.revoked_at,
@@ -65,6 +68,9 @@ function mapEnrollment(row) {
     enrollmentCodeId: row.enrollment_code_id,
     codeHash: row.code_hash,
     ownerSubjectId: row.owner_subject_id,
+    connectorId: row.connector_id,
+    localBindingId: row.local_binding_id,
+    displayName: row.display_name,
     deviceId: row.device_id,
     status: row.status,
     createdAt: row.created_at,
@@ -83,6 +89,7 @@ function mapSourceInstance(row) {
     localBindingId: row.local_binding_id,
     displayName: row.display_name,
     status: row.status,
+    lastError: parseJson(row.last_error_json, null),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     revokedAt: row.revoked_at,
@@ -123,6 +130,9 @@ export function createSqliteDeviceExporterStore() {
         record.ownerSubjectId,
         record.displayName,
         record.status ?? 'active',
+        record.agentVersion ?? null,
+        record.lastHeartbeatAt ?? null,
+        record.lastError === undefined ? null : JSON.stringify(record.lastError),
         record.createdAt,
         record.updatedAt,
         record.revokedAt ?? null,
@@ -133,9 +143,23 @@ export function createSqliteDeviceExporterStore() {
       return mapDevice(getOne(referenceQueries.deviceExportersGetDevice, [deviceId]));
     },
 
+    listDevices(ownerSubjectId) {
+      return allowUnboundedReadAcknowledged(referenceQueries.deviceExportersListDevices, [ownerSubjectId]).map(mapDevice);
+    },
+
     revokeDevice(deviceId, revokedAt) {
       exec(referenceQueries.deviceExportersRevokeDevice, [revokedAt, revokedAt, deviceId]);
       exec(referenceQueries.deviceExportersRevokeCredentialsForDevice, [revokedAt, deviceId]);
+    },
+
+    markDeviceHeartbeat(deviceId, record) {
+      return exec(referenceQueries.deviceExportersUpdateDeviceHeartbeat, [
+        record.receivedAt,
+        record.receivedAt,
+        record.agentVersion ?? null,
+        record.lastError === undefined ? null : JSON.stringify(record.lastError),
+        deviceId,
+      ]).changes;
     },
 
     createCredential(record) {
@@ -163,6 +187,9 @@ export function createSqliteDeviceExporterStore() {
         record.enrollmentCodeId,
         record.codeHash,
         record.ownerSubjectId,
+        record.connectorId ?? 'unknown',
+        record.localBindingId ?? 'default',
+        record.displayName ?? null,
         record.deviceId ?? null,
         record.status ?? 'pending',
         record.createdAt,
@@ -194,6 +221,7 @@ export function createSqliteDeviceExporterStore() {
         record.localBindingId,
         record.displayName ?? null,
         record.status ?? 'active',
+        record.lastError === undefined ? null : JSON.stringify(record.lastError),
         record.createdAt,
         record.updatedAt,
         record.revokedAt ?? null,
@@ -204,10 +232,33 @@ export function createSqliteDeviceExporterStore() {
       return mapSourceInstance(getOne(referenceQueries.deviceExportersGetSourceInstance, [deviceId, sourceInstanceId]));
     },
 
+    listSourceInstances({ deviceId = null } = {}) {
+      return allowUnboundedReadAcknowledged(referenceQueries.deviceExportersListSourceInstances, [deviceId, deviceId]).map(
+        mapSourceInstance,
+      );
+    },
+
     getSourceInstanceByBinding(deviceId, connectorId, localBindingId) {
       return mapSourceInstance(
         getOne(referenceQueries.deviceExportersGetSourceInstanceByBinding, [deviceId, connectorId, localBindingId]),
       );
+    },
+
+    markSourceInstanceHeartbeat(deviceId, sourceInstanceId, record) {
+      return exec(referenceQueries.deviceExportersUpdateSourceInstanceHeartbeat, [
+        record.receivedAt,
+        record.lastError === undefined ? null : JSON.stringify(record.lastError),
+        deviceId,
+        sourceInstanceId,
+      ]).changes;
+    },
+
+    getBatchOutcome(deviceId, batchId) {
+      return mapOutcome(getOne(referenceQueries.deviceExportersGetBatchOutcomeByBatch, [deviceId, batchId]));
+    },
+
+    listBatchOutcomes({ deviceId = null, limit = 500 } = {}) {
+      return getMany(referenceQueries.deviceExportersListBatchOutcomes, [deviceId, deviceId], { limit }).rows.map(mapOutcome);
     },
 
     recordBatchOutcome(record) {
@@ -246,24 +297,62 @@ export function createPostgresDeviceExporterStore() {
   return {
     async createDevice(record) {
       await postgresQuery(
-        `INSERT INTO device_exporters(device_id, owner_subject_id, display_name, status, created_at, updated_at, revoked_at)
-         VALUES($1, $2, $3, $4, $5, $6, $7)`,
-        [record.deviceId, record.ownerSubjectId, record.displayName, record.status ?? 'active', record.createdAt, record.updatedAt, record.revokedAt ?? null],
+        `INSERT INTO device_exporters(device_id, owner_subject_id, display_name, status, agent_version, last_heartbeat_at, last_error_json, created_at, updated_at, revoked_at)
+         VALUES($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10)`,
+        [
+          record.deviceId,
+          record.ownerSubjectId,
+          record.displayName,
+          record.status ?? 'active',
+          record.agentVersion ?? null,
+          record.lastHeartbeatAt ?? null,
+          record.lastError === undefined ? null : JSON.stringify(record.lastError),
+          record.createdAt,
+          record.updatedAt,
+          record.revokedAt ?? null,
+        ],
       );
     },
 
     async getDevice(deviceId) {
       const result = await postgresQuery(
-        `SELECT device_id, owner_subject_id, display_name, status, created_at, updated_at, revoked_at
+        `SELECT device_id, owner_subject_id, display_name, status, agent_version, last_heartbeat_at, last_error_json, created_at, updated_at, revoked_at
          FROM device_exporters WHERE device_id = $1`,
         [deviceId],
       );
       return mapDevice(result.rows[0]);
     },
 
+    async listDevices(ownerSubjectId) {
+      const result = await postgresQuery(
+        `SELECT device_id, owner_subject_id, display_name, status, agent_version, last_heartbeat_at, last_error_json, created_at, updated_at, revoked_at
+         FROM device_exporters
+         WHERE owner_subject_id = $1
+         ORDER BY created_at DESC, device_id ASC`,
+        [ownerSubjectId],
+      );
+      return result.rows.map(mapDevice);
+    },
+
     async revokeDevice(deviceId, revokedAt) {
       await postgresQuery(`UPDATE device_exporters SET status = 'revoked', revoked_at = $1, updated_at = $1 WHERE device_id = $2`, [revokedAt, deviceId]);
       await postgresQuery(`UPDATE device_ingest_credentials SET status = 'revoked', revoked_at = $1 WHERE device_id = $2 AND status <> 'revoked'`, [revokedAt, deviceId]);
+    },
+
+    async markDeviceHeartbeat(deviceId, record) {
+      const result = await postgresQuery(
+        `UPDATE device_exporters
+            SET updated_at = $1, last_heartbeat_at = $2, agent_version = COALESCE($3, agent_version), last_error_json = $4::jsonb
+          WHERE device_id = $5 AND status = 'active'`,
+        [
+          record.receivedAt,
+          record.receivedAt,
+          record.agentVersion ?? null,
+          record.lastError === undefined ? null : JSON.stringify(record.lastError),
+          deviceId,
+        ],
+      );
+      return result.rowCount;
     },
 
     async createCredential(record) {
@@ -289,15 +378,28 @@ export function createPostgresDeviceExporterStore() {
 
     async createEnrollmentCode(record) {
       await postgresQuery(
-        `INSERT INTO device_enrollment_codes(enrollment_code_id, code_hash, owner_subject_id, device_id, status, created_at, expires_at, consumed_at, revoked_at)
-         VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-        [record.enrollmentCodeId, record.codeHash, record.ownerSubjectId, record.deviceId ?? null, record.status ?? 'pending', record.createdAt, record.expiresAt, record.consumedAt ?? null, record.revokedAt ?? null],
+        `INSERT INTO device_enrollment_codes(enrollment_code_id, code_hash, owner_subject_id, connector_id, local_binding_id, display_name, device_id, status, created_at, expires_at, consumed_at, revoked_at)
+         VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+        [
+          record.enrollmentCodeId,
+          record.codeHash,
+          record.ownerSubjectId,
+          record.connectorId ?? 'unknown',
+          record.localBindingId ?? 'default',
+          record.displayName ?? null,
+          record.deviceId ?? null,
+          record.status ?? 'pending',
+          record.createdAt,
+          record.expiresAt,
+          record.consumedAt ?? null,
+          record.revokedAt ?? null,
+        ],
       );
     },
 
     async findEnrollmentByCodeHash(codeHash) {
       const result = await postgresQuery(
-        `SELECT enrollment_code_id, code_hash, owner_subject_id, device_id, status, created_at, expires_at, consumed_at, revoked_at
+        `SELECT enrollment_code_id, code_hash, owner_subject_id, connector_id, local_binding_id, display_name, device_id, status, created_at, expires_at, consumed_at, revoked_at
          FROM device_enrollment_codes WHERE code_hash = $1`,
         [codeHash],
       );
@@ -324,34 +426,93 @@ export function createPostgresDeviceExporterStore() {
 
     async upsertSourceInstance(record) {
       await postgresQuery(
-        `INSERT INTO device_source_instances(source_instance_id, device_id, connector_id, local_binding_id, display_name, status, created_at, updated_at, revoked_at)
-         VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        `INSERT INTO device_source_instances(source_instance_id, device_id, connector_id, local_binding_id, display_name, status, last_error_json, created_at, updated_at, revoked_at)
+         VALUES($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10)
          ON CONFLICT(device_id, connector_id, local_binding_id) DO UPDATE SET
            source_instance_id = excluded.source_instance_id,
            display_name = excluded.display_name,
            status = excluded.status,
+           last_error_json = excluded.last_error_json,
            updated_at = excluded.updated_at,
            revoked_at = excluded.revoked_at`,
-        [record.sourceInstanceId, record.deviceId, record.connectorId, record.localBindingId, record.displayName ?? null, record.status ?? 'active', record.createdAt, record.updatedAt, record.revokedAt ?? null],
+        [
+          record.sourceInstanceId,
+          record.deviceId,
+          record.connectorId,
+          record.localBindingId,
+          record.displayName ?? null,
+          record.status ?? 'active',
+          record.lastError === undefined ? null : JSON.stringify(record.lastError),
+          record.createdAt,
+          record.updatedAt,
+          record.revokedAt ?? null,
+        ],
       );
     },
 
     async getSourceInstance(deviceId, sourceInstanceId) {
       const result = await postgresQuery(
-        `SELECT source_instance_id, device_id, connector_id, local_binding_id, display_name, status, created_at, updated_at, revoked_at
+        `SELECT source_instance_id, device_id, connector_id, local_binding_id, display_name, status, last_error_json, created_at, updated_at, revoked_at
          FROM device_source_instances WHERE device_id = $1 AND source_instance_id = $2`,
         [deviceId, sourceInstanceId],
       );
       return mapSourceInstance(result.rows[0]);
     },
 
+    async listSourceInstances({ deviceId = null } = {}) {
+      const result = await postgresQuery(
+        `SELECT source_instance_id, device_id, connector_id, local_binding_id, display_name, status, last_error_json, created_at, updated_at, revoked_at
+         FROM device_source_instances
+         WHERE ($1::text IS NULL OR device_id = $1)
+         ORDER BY device_id ASC, created_at DESC, source_instance_id ASC`,
+        [deviceId],
+      );
+      return result.rows.map(mapSourceInstance);
+    },
+
     async getSourceInstanceByBinding(deviceId, connectorId, localBindingId) {
       const result = await postgresQuery(
-        `SELECT source_instance_id, device_id, connector_id, local_binding_id, display_name, status, created_at, updated_at, revoked_at
+        `SELECT source_instance_id, device_id, connector_id, local_binding_id, display_name, status, last_error_json, created_at, updated_at, revoked_at
          FROM device_source_instances WHERE device_id = $1 AND connector_id = $2 AND local_binding_id = $3`,
         [deviceId, connectorId, localBindingId],
       );
       return mapSourceInstance(result.rows[0]);
+    },
+
+    async markSourceInstanceHeartbeat(deviceId, sourceInstanceId, record) {
+      const result = await postgresQuery(
+        `UPDATE device_source_instances
+            SET updated_at = $1, last_error_json = $2::jsonb
+          WHERE device_id = $3 AND source_instance_id = $4 AND status = 'active'`,
+        [
+          record.receivedAt,
+          record.lastError === undefined ? null : JSON.stringify(record.lastError),
+          deviceId,
+          sourceInstanceId,
+        ],
+      );
+      return result.rowCount;
+    },
+
+    async getBatchOutcome(deviceId, batchId) {
+      const result = await postgresQuery(
+        `SELECT device_id, batch_id, body_hash, source_instance_id, status, http_status, response_json, created_at
+         FROM device_ingest_batch_outcomes WHERE device_id = $1 AND batch_id = $2`,
+        [deviceId, batchId],
+      );
+      return mapOutcome(result.rows[0]);
+    },
+
+    async listBatchOutcomes({ deviceId = null, limit = 500 } = {}) {
+      const result = await postgresQuery(
+        `SELECT device_id, batch_id, body_hash, source_instance_id, status, http_status, response_json, created_at
+         FROM device_ingest_batch_outcomes
+         WHERE ($1::text IS NULL OR device_id = $1)
+         ORDER BY created_at DESC
+         LIMIT $2`,
+        [deviceId, limit],
+      );
+      return result.rows.map(mapOutcome);
     },
 
     async recordBatchOutcome(record) {

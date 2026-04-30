@@ -14,14 +14,15 @@ export interface LocalDeviceClientOptions {
 }
 
 export interface EnrollmentExchangeRequest {
-  code: string;
   device_label?: string;
-  source_instance_id: string;
+  enrollment_code: string;
 }
 
 export interface EnrollmentExchangeResponse {
+  connector_id: string;
   device_id: string;
   device_token: string;
+  local_binding_name: string;
   source_instance_id: string;
 }
 
@@ -34,7 +35,11 @@ export interface HeartbeatRequest {
 
 export interface IngestBatchRequest {
   batch_id: string;
-  records: LocalDeviceRecordEnvelope[];
+  batch_seq: number;
+  body_hash: string;
+  connector_id: string;
+  device_id: string;
+  records: Pick<LocalDeviceRecordEnvelope, "data" | "emitted_at" | "record_key" | "stream">[];
   source_instance_id: string;
 }
 

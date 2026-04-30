@@ -248,6 +248,9 @@ CREATE TABLE IF NOT EXISTS device_exporters (
   owner_subject_id  TEXT NOT NULL,
   display_name      TEXT NOT NULL,
   status            TEXT NOT NULL DEFAULT 'active',
+  agent_version     TEXT,
+  last_heartbeat_at TEXT,
+  last_error_json   TEXT,
   created_at        TEXT NOT NULL,
   updated_at        TEXT NOT NULL,
   revoked_at        TEXT
@@ -274,6 +277,9 @@ CREATE TABLE IF NOT EXISTS device_enrollment_codes (
   enrollment_code_id  TEXT PRIMARY KEY,
   code_hash           TEXT NOT NULL UNIQUE,
   owner_subject_id    TEXT NOT NULL,
+  connector_id        TEXT NOT NULL,
+  local_binding_id    TEXT NOT NULL,
+  display_name        TEXT,
   device_id           TEXT,
   status              TEXT NOT NULL DEFAULT 'pending',
   created_at          TEXT NOT NULL,
@@ -293,6 +299,7 @@ CREATE TABLE IF NOT EXISTS device_source_instances (
   local_binding_id    TEXT NOT NULL,
   display_name        TEXT,
   status              TEXT NOT NULL DEFAULT 'active',
+  last_error_json     TEXT,
   created_at          TEXT NOT NULL,
   updated_at          TEXT NOT NULL,
   revoked_at          TEXT,
@@ -885,6 +892,13 @@ export function initDb(path = ':memory:', opts = {}) {
   // auth tables; see SCHEMA comment for rationale.
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'pending_consents', 'approval_id', 'TEXT'));
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'owner_device_auth', 'approval_id', 'TEXT'));
+  runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'device_exporters', 'agent_version', 'TEXT'));
+  runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'device_exporters', 'last_heartbeat_at', 'TEXT'));
+  runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'device_exporters', 'last_error_json', 'TEXT'));
+  runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'device_enrollment_codes', 'connector_id', "TEXT NOT NULL DEFAULT 'unknown'"));
+  runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'device_enrollment_codes', 'local_binding_id', "TEXT NOT NULL DEFAULT 'default'"));
+  runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'device_enrollment_codes', 'display_name', 'TEXT'));
+  runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'device_source_instances', 'last_error_json', 'TEXT'));
   // Disclosure-spine `event_seq` migration. Pre-existing reference DBs were
   // created before `event_seq` existed; add the column non-destructively and
   // seed it for any rows that lack a value. The seed orders by `rowid` —

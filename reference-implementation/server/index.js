@@ -4,7 +4,7 @@
  * Combined AS + RS implementing PDPP v0.1.0 core spec.
  * Starts on port 7662 (AS/introspection) and 7663 (RS query API).
  */
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 
 import { closeDb, getDb, initDb } from './db.js';
 import {
@@ -40,6 +40,7 @@ import { createBlobStore } from './stores/blob-store.js';
 import { postgresPersistContentAddressedBlob } from './postgres-records.js';
 import { createConsentStore } from './stores/consent-store.js';
 import { createOwnerDeviceAuthStore } from './stores/owner-device-auth-store.js';
+import { DeviceBatchConflictError, createDeviceExporterStore } from './stores/device-exporter-store.js';
 import {
   ingestRecord, queryRecords, aggregateRecords, getRecord, deleteRecord, deleteAllRecords,
   listStreams, listAllStreams, getSyncState, putSyncState,
@@ -321,6 +322,36 @@ function rejectUntrustedMetadataHost(req, res, explicitUrl, trustedHosts, option
     'Host-derived metadata requires a local/private request host or PDPP_TRUSTED_HOSTS allowlist',
   );
   return true;
+}
+
+function sha256Hex(value) {
+  return createHash('sha256').update(value, 'utf8').digest('hex');
+}
+
+function hashDeviceSecret(value) {
+  return `sha256:${sha256Hex(value)}`;
+}
+
+function generateReferenceSecret(prefix, bytes = 24) {
+  return `${prefix}_${randomBytes(bytes).toString('base64url')}`;
+}
+
+function optionalObject(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
+}
+
+function requireNonEmptyString(value, param) {
+  if (typeof value !== 'string' || !value.trim()) {
+    const err = new Error(`${param} is required`);
+    err.code = 'invalid_request';
+    err.param = param;
+    throw err;
+  }
+  return value.trim();
+}
+
+function referenceLocalDeviceStorageConnectorId(connectorId, sourceInstanceId) {
+  return `local-device:${encodeURIComponent(connectorId)}:${encodeURIComponent(sourceInstanceId)}`;
 }
 
 function typeFor(status) {
@@ -1505,6 +1536,7 @@ function buildAsApp(opts = {}) {
   const controller = opts.controller || null;
   const consentStore = createConsentStore();
   const ownerDeviceAuthStore = createOwnerDeviceAuthStore();
+  const deviceExporterStore = opts.deviceExporterStore || createDeviceExporterStore();
   const dynamicClientRegistrationEnabled = resolveDynamicClientRegistrationEnabled(opts);
   const dynamicClientRegistrationInitialAccessTokens = resolveDynamicClientRegistrationInitialAccessTokens(opts);
   const ownerAuthConfig = resolveOwnerAuthPlaceholderConfig(opts);
@@ -1561,6 +1593,160 @@ function buildAsApp(opts = {}) {
   // `PDPP_OWNER_PASSWORD` is set, and is a no-op otherwise. See
   // `reference-implementation/server/owner-auth.js`.
   ownerAuth.attachRoutes(app);
+
+  function getOwnerSubjectId(req) {
+    return req.ownerSession?.sub || ownerAuth.subjectId || OWNER_AUTH_DEFAULT_SUBJECT_ID;
+  }
+
+  async function requireDeviceExporterCredential(req, res, next) {
+    try {
+      const auth = req.headers.authorization;
+      if (!auth || !auth.startsWith('Bearer ')) {
+        return pdppError(res, 401, 'authentication_error', 'Missing device exporter bearer token');
+      }
+      const token = auth.slice(7);
+      const tokenInfo = await introspect(token);
+      if (tokenInfo.active) {
+        return pdppError(res, 403, 'permission_error', 'Owner/client bearer tokens are not valid device exporter credentials');
+      }
+
+      const credential = await deviceExporterStore.findCredentialByTokenHash(hashDeviceSecret(token));
+      if (!credential || credential.status !== 'active') {
+        return pdppError(res, 401, 'authentication_error', 'Invalid or revoked device exporter credential');
+      }
+      const device = await deviceExporterStore.getDevice(credential.deviceId);
+      if (!device || device.status !== 'active') {
+        return pdppError(res, 401, 'authentication_error', 'Invalid or revoked device exporter credential');
+      }
+      await deviceExporterStore.markCredentialUsed(credential.credentialId, new Date().toISOString());
+      req.deviceExporterCredential = credential;
+      req.deviceExporter = device;
+      next();
+    } catch (err) {
+      handleError(res, err);
+    }
+  }
+
+  async function buildDeviceExporterDiagnostics(ownerSubjectId) {
+    const [devices, sourceInstances, outcomes] = await Promise.all([
+      deviceExporterStore.listDevices(ownerSubjectId),
+      deviceExporterStore.listSourceInstances(),
+      deviceExporterStore.listBatchOutcomes({ limit: 5000 }),
+    ]);
+    const now = Date.now();
+    const sourcesByDevice = new Map();
+    const outcomeStats = new Map();
+
+    for (const outcome of outcomes) {
+      const key = outcome.sourceInstanceId;
+      const current = outcomeStats.get(key) || {
+        accepted: 0,
+        rejected: 0,
+        lastIngestAt: null,
+      };
+      if (outcome.status === 'accepted') {
+        current.accepted += outcome.response?.accepted_record_count ?? 0;
+      } else if (outcome.status === 'rejected') {
+        current.rejected += outcome.response?.rejected_record_count ?? 0;
+      }
+      if (!current.lastIngestAt || outcome.createdAt > current.lastIngestAt) {
+        current.lastIngestAt = outcome.createdAt;
+      }
+      outcomeStats.set(key, current);
+    }
+
+    for (const source of sourceInstances) {
+      const stats = outcomeStats.get(source.sourceInstanceId) || {
+        accepted: 0,
+        rejected: 0,
+        lastIngestAt: null,
+      };
+      const projected = {
+        object: 'device_source_instance',
+        source_instance_id: source.sourceInstanceId,
+        device_id: source.deviceId,
+        connector_id: source.connectorId,
+        local_binding_name: source.localBindingId,
+        display_name: source.displayName,
+        created_at: source.createdAt,
+        last_ingest_at: stats.lastIngestAt,
+        accepted_record_count: stats.accepted,
+        rejected_record_count: stats.rejected,
+        last_error: source.lastError,
+      };
+      const list = sourcesByDevice.get(source.deviceId) || [];
+      list.push(projected);
+      sourcesByDevice.set(source.deviceId, list);
+    }
+
+    return devices.map((device) => {
+      const sourceList = sourcesByDevice.get(device.deviceId) || [];
+      const lastIngestAt = sourceList.reduce(
+        (latest, source) => (!latest || (source.last_ingest_at && source.last_ingest_at > latest) ? source.last_ingest_at : latest),
+        null,
+      );
+      const lastHeartbeatAt = device.lastHeartbeatAt ?? null;
+      const stale = Boolean(
+        lastHeartbeatAt
+        && Number.isFinite(Date.parse(lastHeartbeatAt))
+        && now - Date.parse(lastHeartbeatAt) > 5 * 60 * 1000
+      );
+      return {
+        object: 'device_exporter',
+        device_id: device.deviceId,
+        subject_id: device.ownerSubjectId,
+        display_name: device.displayName,
+        status: device.status,
+        created_at: device.createdAt,
+        last_heartbeat_at: lastHeartbeatAt,
+        last_ingest_at: lastIngestAt,
+        revoked_at: device.revokedAt,
+        stale,
+        source_instances: sourceList,
+        last_error: device.lastError,
+      };
+    });
+  }
+
+  function normalizeHeartbeatSourceInstances(body) {
+    if (Array.isArray(body.source_instances)) {
+      return body.source_instances;
+    }
+    if (typeof body.source_instance_id === 'string') {
+      return [{ source_instance_id: body.source_instance_id, last_error: body.last_error ?? null }];
+    }
+    return [];
+  }
+
+  function normalizeDeviceIngestRecords(body) {
+    if (!Array.isArray(body.records) || body.records.length === 0) {
+      const err = new Error('records must be a non-empty array');
+      err.code = 'invalid_request';
+      err.param = 'records';
+      throw err;
+    }
+    return body.records.map((record, index) => {
+      if (!record || typeof record !== 'object' || Array.isArray(record)) {
+        const err = new Error(`records[${index}] must be an object`);
+        err.code = 'invalid_request';
+        err.param = 'records';
+        throw err;
+      }
+      const key = record.record_key ?? record.key;
+      if (key == null || (typeof key !== 'string' && !Array.isArray(key))) {
+        const err = new Error(`records[${index}].record_key is required`);
+        err.code = 'invalid_request';
+        err.param = 'records';
+        throw err;
+      }
+      return {
+        stream: requireNonEmptyString(record.stream, `records[${index}].stream`),
+        key,
+        emitted_at: typeof record.emitted_at === 'string' ? record.emitted_at : undefined,
+        data: optionalObject(record.data) || {},
+      };
+    });
+  }
 
   function renderPendingGrantConsentHtml(pending, requestUri, csrfToken) {
     const request = pending.request;
@@ -2439,6 +2625,263 @@ function buildAsApp(opts = {}) {
       });
       res.json(report);
     } catch (err) {
+      handleError(res, err);
+    }
+  });
+
+  app.post('/_ref/device-exporters/enrollment-codes', { contract: 'refCreateDeviceExporterEnrollmentCode' }, ownerAuth.requireOwnerSession, async (req, res) => {
+    try {
+      const body = req.body || {};
+      const connectorId = requireNonEmptyString(body.connector_id, 'connector_id');
+      const localBindingId = requireNonEmptyString(body.local_binding_name, 'local_binding_name');
+      const now = new Date();
+      const expiresInSeconds = Number.isInteger(body.expires_in_seconds)
+        ? body.expires_in_seconds
+        : 15 * 60;
+      if (expiresInSeconds < 60 || expiresInSeconds > 86_400) {
+        return pdppError(res, 400, 'invalid_request', 'expires_in_seconds must be between 60 and 86400', 'expires_in_seconds');
+      }
+      const enrollmentCode = generateReferenceSecret('lde', 18);
+      const expiresAt = new Date(now.getTime() + expiresInSeconds * 1000).toISOString();
+      await deviceExporterStore.createEnrollmentCode({
+        enrollmentCodeId: generateSpineId('denroll'),
+        codeHash: hashDeviceSecret(enrollmentCode),
+        ownerSubjectId: getOwnerSubjectId(req),
+        connectorId,
+        localBindingId,
+        displayName: typeof body.display_name === 'string' && body.display_name.trim() ? body.display_name.trim() : null,
+        createdAt: now.toISOString(),
+        expiresAt,
+      });
+      res.status(201).json({
+        object: 'device_exporter_enrollment_code',
+        enrollment_code: enrollmentCode,
+        expires_at: expiresAt,
+        connector_id: connectorId,
+        local_binding_name: localBindingId,
+      });
+    } catch (err) {
+      handleError(res, err);
+    }
+  });
+
+  app.post('/_ref/device-exporters/enroll', { contract: 'refExchangeDeviceExporterEnrollmentCode' }, async (req, res) => {
+    try {
+      const body = req.body || {};
+      const enrollmentCode = requireNonEmptyString(body.enrollment_code, 'enrollment_code');
+      const enrollment = await deviceExporterStore.findEnrollmentByCodeHash(hashDeviceSecret(enrollmentCode));
+      const now = new Date();
+      if (!enrollment || enrollment.status !== 'pending') {
+        return pdppError(res, 400, 'invalid_request', 'Enrollment code is invalid or already used', 'enrollment_code');
+      }
+      if (Date.parse(enrollment.expiresAt) <= now.getTime()) {
+        await deviceExporterStore.revokeEnrollmentCode(enrollment.enrollmentCodeId, now.toISOString());
+        return pdppError(res, 410, 'invalid_request', 'Enrollment code has expired', 'enrollment_code');
+      }
+
+      const deviceId = generateSpineId('dexp');
+      const credentialId = generateSpineId('dcred');
+      const sourceInstanceId = generateSpineId('dsrc');
+      const deviceToken = generateReferenceSecret('ldt', 32);
+      const displayName = typeof body.device_label === 'string' && body.device_label.trim()
+        ? body.device_label.trim()
+        : (enrollment.displayName || enrollment.localBindingId);
+
+      await deviceExporterStore.createDevice({
+        deviceId,
+        ownerSubjectId: enrollment.ownerSubjectId,
+        displayName,
+        createdAt: now.toISOString(),
+        updatedAt: now.toISOString(),
+      });
+      await deviceExporterStore.createCredential({
+        credentialId,
+        deviceId,
+        tokenHash: hashDeviceSecret(deviceToken),
+        createdAt: now.toISOString(),
+      });
+      await deviceExporterStore.upsertSourceInstance({
+        sourceInstanceId,
+        deviceId,
+        connectorId: enrollment.connectorId,
+        localBindingId: enrollment.localBindingId,
+        displayName: enrollment.displayName,
+        createdAt: now.toISOString(),
+        updatedAt: now.toISOString(),
+      });
+      const consumed = await deviceExporterStore.consumeEnrollmentCode(enrollment.enrollmentCodeId, deviceId, now.toISOString());
+      if (!consumed) {
+        await deviceExporterStore.revokeDevice(deviceId, now.toISOString());
+        return pdppError(res, 409, 'invalid_request', 'Enrollment code was consumed by another device', 'enrollment_code');
+      }
+
+      res.status(201).json({
+        object: 'device_exporter_enrollment',
+        device_id: deviceId,
+        source_instance_id: sourceInstanceId,
+        device_token: deviceToken,
+        connector_id: enrollment.connectorId,
+        local_binding_name: enrollment.localBindingId,
+      });
+    } catch (err) {
+      handleError(res, err);
+    }
+  });
+
+  app.get('/_ref/device-exporters', { contract: 'refListDeviceExporters' }, ownerAuth.requireOwnerSession, async (req, res) => {
+    try {
+      res.json({ object: 'list', data: await buildDeviceExporterDiagnostics(getOwnerSubjectId(req)) });
+    } catch (err) {
+      handleError(res, err);
+    }
+  });
+
+  app.get('/_ref/device-exporters/source-instances', { contract: 'refListDeviceExporterSourceInstances' }, ownerAuth.requireOwnerSession, async (req, res) => {
+    try {
+      const diagnostics = await buildDeviceExporterDiagnostics(getOwnerSubjectId(req));
+      const requestedDeviceId = typeof req.query.device_id === 'string' && req.query.device_id.trim()
+        ? req.query.device_id.trim()
+        : null;
+      const data = diagnostics
+        .flatMap((device) => device.source_instances)
+        .filter((source) => !requestedDeviceId || source.device_id === requestedDeviceId);
+      res.json({ object: 'list', data });
+    } catch (err) {
+      handleError(res, err);
+    }
+  });
+
+  app.get('/_ref/device-exporters/diagnostics', { contract: 'refListDeviceExporterDiagnostics' }, ownerAuth.requireOwnerSession, async (req, res) => {
+    try {
+      res.json({ object: 'list', data: await buildDeviceExporterDiagnostics(getOwnerSubjectId(req)) });
+    } catch (err) {
+      handleError(res, err);
+    }
+  });
+
+  app.post('/_ref/device-exporters/:deviceId/revoke', { contract: 'refRevokeDeviceExporter' }, ownerAuth.requireOwnerSession, async (req, res) => {
+    try {
+      const deviceId = decodeURIComponent(req.params.deviceId);
+      const device = await deviceExporterStore.getDevice(deviceId);
+      if (!device || device.ownerSubjectId !== getOwnerSubjectId(req)) {
+        return pdppError(res, 404, 'not_found', 'Device exporter not found');
+      }
+      const revokedAt = new Date().toISOString();
+      await deviceExporterStore.revokeDevice(deviceId, revokedAt);
+      res.json({ object: 'device_exporter_revocation', device_id: deviceId, revoked_at: revokedAt });
+    } catch (err) {
+      handleError(res, err);
+    }
+  });
+
+  app.post('/_ref/device-exporters/:deviceId/heartbeat', { contract: 'refHeartbeatDeviceExporter' }, requireDeviceExporterCredential, async (req, res) => {
+    try {
+      const deviceId = decodeURIComponent(req.params.deviceId);
+      if (deviceId !== req.deviceExporter.deviceId) {
+        return pdppError(res, 403, 'permission_error', 'Device credential is not valid for this device');
+      }
+      const body = req.body || {};
+      const receivedAt = new Date().toISOString();
+      await deviceExporterStore.markDeviceHeartbeat(deviceId, {
+        receivedAt,
+        agentVersion: typeof body.agent_version === 'string' ? body.agent_version : null,
+        lastError: body.last_error ?? null,
+      });
+      for (const source of normalizeHeartbeatSourceInstances(body)) {
+        const sourceInstanceId = requireNonEmptyString(source.source_instance_id, 'source_instance_id');
+        const existing = await deviceExporterStore.getSourceInstance(deviceId, sourceInstanceId);
+        if (!existing) {
+          return pdppError(res, 400, 'invalid_request', `Unknown source_instance_id '${sourceInstanceId}'`, 'source_instance_id');
+        }
+        await deviceExporterStore.markSourceInstanceHeartbeat(deviceId, sourceInstanceId, {
+          receivedAt,
+          lastError: source.last_error ?? null,
+        });
+      }
+      res.json({
+        object: 'device_exporter_heartbeat',
+        device_id: deviceId,
+        received_at: receivedAt,
+        status: 'accepted',
+      });
+    } catch (err) {
+      handleError(res, err);
+    }
+  });
+
+  app.post('/_ref/device-exporters/:deviceId/ingest-batches', { contract: 'refIngestDeviceExporterBatch' }, requireDeviceExporterCredential, async (req, res) => {
+    try {
+      const deviceId = decodeURIComponent(req.params.deviceId);
+      if (deviceId !== req.deviceExporter.deviceId) {
+        return pdppError(res, 403, 'permission_error', 'Device credential is not valid for this device');
+      }
+      const body = req.body || {};
+      const bodyDeviceId = requireNonEmptyString(body.device_id, 'device_id');
+      if (bodyDeviceId !== deviceId) {
+        return pdppError(res, 400, 'invalid_request', 'body device_id must match path deviceId', 'device_id');
+      }
+      const sourceInstanceId = requireNonEmptyString(body.source_instance_id, 'source_instance_id');
+      const batchId = requireNonEmptyString(body.batch_id, 'batch_id');
+      const bodyHash = requireNonEmptyString(body.body_hash, 'body_hash');
+      const connectorId = requireNonEmptyString(body.connector_id, 'connector_id');
+      if (!Number.isInteger(body.batch_seq) || body.batch_seq < 0) {
+        return pdppError(res, 400, 'invalid_request', 'batch_seq must be a non-negative integer', 'batch_seq');
+      }
+      const sourceInstance = await deviceExporterStore.getSourceInstance(deviceId, sourceInstanceId);
+      if (!sourceInstance || sourceInstance.status !== 'active') {
+        return pdppError(res, 400, 'invalid_request', `Unknown source_instance_id '${sourceInstanceId}'`, 'source_instance_id');
+      }
+      if (sourceInstance.connectorId !== connectorId) {
+        return pdppError(res, 400, 'invalid_request', 'connector_id does not match source_instance_id', 'connector_id');
+      }
+
+      const records = normalizeDeviceIngestRecords(body);
+      const existing = await deviceExporterStore.getBatchOutcome(deviceId, batchId);
+      if (existing) {
+        if (existing.bodyHash !== bodyHash) {
+          return pdppError(res, 409, 'device_batch_conflict', `Device ingest batch '${batchId}' already exists with a different body hash`);
+        }
+        return res.status(200).json({
+          object: 'device_ingest_batch_result',
+          device_id: deviceId,
+          source_instance_id: sourceInstanceId,
+          batch_id: batchId,
+          body_hash: bodyHash,
+          status: 'replayed',
+          accepted_record_count: existing.response?.accepted_record_count ?? records.length,
+          rejected_record_count: existing.response?.rejected_record_count ?? 0,
+        });
+      }
+
+      const storageConnectorId = referenceLocalDeviceStorageConnectorId(connectorId, sourceInstanceId);
+      for (const record of records) {
+        await ingestRecord(storageConnectorId, record);
+      }
+      const response = {
+        object: 'device_ingest_batch_result',
+        device_id: deviceId,
+        source_instance_id: sourceInstanceId,
+        batch_id: batchId,
+        body_hash: bodyHash,
+        status: 'accepted',
+        accepted_record_count: records.length,
+        rejected_record_count: 0,
+      };
+      await deviceExporterStore.recordBatchOutcome({
+        deviceId,
+        batchId,
+        bodyHash,
+        sourceInstanceId,
+        status: 'accepted',
+        httpStatus: 201,
+        response,
+        createdAt: new Date().toISOString(),
+      });
+      res.status(201).json(response);
+    } catch (err) {
+      if (err instanceof DeviceBatchConflictError) {
+        return pdppError(res, 409, 'device_batch_conflict', err.message);
+      }
       handleError(res, err);
     }
   });

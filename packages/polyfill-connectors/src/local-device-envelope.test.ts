@@ -44,6 +44,6 @@ test("buildLocalDeviceRecordEnvelope creates deterministic connector RECORD body
   });
 
   assert.equal(first.body_hash, retry.body_hash);
-  assert.equal(first.key, "42");
+  assert.equal(first.record_key, "42");
   assert.deepEqual(Object.keys(first.data), ["a", "z"]);
 });

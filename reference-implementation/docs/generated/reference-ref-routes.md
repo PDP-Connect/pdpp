@@ -218,6 +218,10 @@ Accept a heartbeat from a device-scoped local exporter credential.
 
 `application/json`
 - `agent_version` — string
+- `connector_id` — string
+- `source_instance_id` — string
+- `status` — enum `starting | healthy | retrying | blocked | stopped`
+- `records_pending` — integer · min: 0
 - `source_instances` — array
 - `last_error` — object|null
 

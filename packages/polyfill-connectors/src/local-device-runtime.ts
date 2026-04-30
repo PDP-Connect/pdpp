@@ -5,7 +5,11 @@ import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import type { EmittedMessage, StartMessage, StreamScope } from "./connector-runtime.ts";
 import { type EnrollmentExchangeResponse, LocalDeviceClient } from "./local-device-client.ts";
-import { buildLocalDeviceRecordEnvelope, type LocalDeviceRecordEnvelope } from "./local-device-envelope.ts";
+import {
+  buildLocalDeviceRecordEnvelope,
+  hashCanonicalJson,
+  type LocalDeviceRecordEnvelope,
+} from "./local-device-envelope.ts";
 import { LocalDeviceQueue, type LocalDeviceQueueItem } from "./local-device-queue.ts";
 
 export const CODEX_CONNECTOR_ID = "codex";
@@ -15,7 +19,6 @@ export interface LocalDeviceEnrollmentConfig {
   baseUrl: string;
   code: string;
   deviceLabel?: string;
-  sourceInstanceId: string;
 }
 
 export interface LocalDeviceRuntimeConfig {
@@ -41,9 +44,8 @@ export interface LocalDeviceRuntimeResult {
 export async function enrollLocalDevice(config: LocalDeviceEnrollmentConfig): Promise<EnrollmentExchangeResponse> {
   const client = new LocalDeviceClient({ baseUrl: config.baseUrl });
   return await client.exchangeEnrollment({
-    code: config.code,
+    enrollment_code: config.code,
     ...(config.deviceLabel ? { device_label: config.deviceLabel } : {}),
-    source_instance_id: config.sourceInstanceId,
   });
 }
 
@@ -153,9 +155,22 @@ async function sendQueueItem(
   client: Pick<LocalDeviceClient, "ingestBatch">,
   item: LocalDeviceQueueItem
 ): Promise<void> {
+  const firstRecord = item.records[0];
+  if (!firstRecord) {
+    throw new Error(`local device batch has no records: ${item.batch_id}`);
+  }
   await client.ingestBatch({
     batch_id: item.batch_id,
-    records: item.records,
+    batch_seq: item.batch_seq,
+    body_hash: hashCanonicalJson(item.records),
+    connector_id: firstRecord.connector_id,
+    device_id: firstRecord.device_id,
+    records: item.records.map((record) => ({
+      data: record.data,
+      emitted_at: record.emitted_at,
+      record_key: record.record_key,
+      stream: record.stream,
+    })),
     source_instance_id: item.source_instance_id,
   });
 }
