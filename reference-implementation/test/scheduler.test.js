@@ -171,6 +171,88 @@ test('scheduler history records checkpoint summaries from runConnector results',
   }
 });
 
+test('scheduler hydrates and appends persisted history when a schedulerStore is supplied', async () => {
+  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, 'manifests/spotify.json'), 'utf8'));
+  const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
+  const asUrl = `http://localhost:${server.asPort}`;
+  const rsUrl = `http://localhost:${server.rsPort}`;
+  const completedRuns = [];
+  const appendedHistory = [];
+  const lastRunUpserts = [];
+  const persistedHistory = {
+    connectorId: 'https://registry.pdpp.org/connectors/persisted-history',
+    source: {
+      binding_kind: 'connector',
+      connector_id: 'https://registry.pdpp.org/connectors/persisted-history',
+    },
+    status: 'skipped',
+    recordsEmitted: 0,
+    reportedRecordsEmitted: null,
+    checkpointSummary: null,
+    knownGaps: [],
+    connectorError: null,
+    runId: null,
+    traceId: null,
+    failureReason: null,
+    terminalReason: null,
+    startedAt: '2026-04-29T00:00:00.000Z',
+    completedAt: '2026-04-29T00:00:00.000Z',
+    attempt: 0,
+  };
+
+  try {
+    const registerResp = await fetchJson(`${asUrl}/connectors`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(spotifyManifest),
+    });
+    assert.equal(registerResp.status, 201);
+
+    const ownerToken = await issueOwnerToken(asUrl, 'scheduler_persistence_user');
+    const scheduler = createScheduler({
+      connectors: [
+        {
+          connectorId: spotifyManifest.connector_id,
+          connectorPath: join(REFERENCE_IMPL_DIR, 'connectors/seed/index.js'),
+          manifest: spotifyManifest,
+          ownerToken,
+          intervalMs: 60_000,
+        },
+      ],
+      rsUrl,
+      onInteraction: async () => ({ status: 'cancelled' }),
+      onRunComplete: (record) => completedRuns.push(record),
+      getState: async () => null,
+      setState: async () => {},
+      schedulerStore: {
+        appendRunHistory: async (record) => appendedHistory.push(record),
+        listLastRunTimes: async () => [
+          {
+            connector_id: spotifyManifest.connector_id,
+            last_run_time_ms: Date.now(),
+            updated_at: '2026-04-29T00:00:00.000Z',
+          },
+        ],
+        listRunHistory: async () => [persistedHistory],
+        upsertLastRunTime: async (connectorId, lastRunTimeMs, updatedAt) => {
+          lastRunUpserts.push({ connectorId, lastRunTimeMs, updatedAt });
+        },
+      },
+    });
+
+    scheduler.start();
+    await waitFor(() => appendedHistory.length >= 1 && lastRunUpserts.length >= 1, 8000);
+    scheduler.stop();
+
+    assert.equal(scheduler.getHistory()[0].connectorId, persistedHistory.connectorId);
+    assert.equal(appendedHistory[0].connectorId, spotifyManifest.connector_id);
+    assert.equal(lastRunUpserts[0].connectorId, spotifyManifest.connector_id);
+    assert.equal(completedRuns.length, 1);
+  } finally {
+    await closeServer(server);
+  }
+});
+
 test('scheduler preserves failure reasons and checkpoint summaries from failed runConnector results', async () => {
   const manifest = {
     protocol_version: '0.1.0',

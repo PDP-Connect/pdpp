@@ -60,6 +60,7 @@ import {
 } from './search-semantic.js';
 import { collectDeploymentDiagnostics } from './deployment-diagnostics.ts';
 import { createOwnerAuthPlaceholder, OWNER_AUTH_DEFAULT_SUBJECT_ID } from './owner-auth.ts';
+import { registerInboxRoutes } from './inbox.js';
 import { createController } from '../runtime/controller.ts';
 import { isClosedPipeWriteError } from '../runtime/pipe-errors.js';
 import { createApp, buildLogger } from './transport.js';
@@ -2174,6 +2175,8 @@ function buildAsApp(opts = {}) {
     ownerAuth.requireOwnerSession,
     handleSpineTimeline('run', 'runId', 'Run timeline not found'),
   );
+
+  registerInboxRoutes(app, { controller, ownerAuth, pdppError, handleError });
 
   // Reference-only, owner-only control surface: answer the current pending
   // interaction for a live controller-managed run. The read path remains the

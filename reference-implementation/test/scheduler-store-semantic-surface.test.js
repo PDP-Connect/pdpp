@@ -58,6 +58,7 @@ async function withFreshStore(fn) {
 test('SchedulerStore exposes only semantic schedule lifecycle methods', () => {
   const store = createSqliteSchedulerStore();
   const expected = [
+    'appendRunHistory',
     'createSchedule',
     'deleteSchedule',
     'getSchedule',
@@ -66,6 +67,9 @@ test('SchedulerStore exposes only semantic schedule lifecycle methods', () => {
     'updateSchedule',
     'deleteActiveRun',
     'listActiveRuns',
+    'listLastRunTimes',
+    'listRunHistory',
+    'upsertLastRunTime',
     'upsertActiveRun',
   ];
   for (const name of expected) {
@@ -144,6 +148,59 @@ test('setScheduleEnabled toggles the boolean without leaking 0|1', async () => {
     const resumed = store.getSchedule(SEMANTIC_CONNECTOR);
     assert.equal(typeof resumed.enabled, 'boolean');
     assert.equal(resumed.enabled, true);
+  });
+});
+
+test('scheduler run history and last-run time round-trip through semantic methods', async () => {
+  await withFreshStore((store) => {
+    const startedAt = '2026-04-29T01:00:00.000Z';
+    const completedAt = '2026-04-29T01:00:01.000Z';
+    store.appendRunHistory({
+      connectorId: SEMANTIC_CONNECTOR,
+      source: { binding_kind: 'connector', connector_id: SEMANTIC_CONNECTOR },
+      status: 'succeeded',
+      recordsEmitted: 7,
+      reportedRecordsEmitted: null,
+      checkpointSummary: { streams: 1 },
+      knownGaps: [],
+      connectorError: null,
+      runId: 'run_semantic_history',
+      traceId: 'trc_semantic_history',
+      failureReason: null,
+      terminalReason: null,
+      startedAt,
+      completedAt,
+      attempt: 1,
+    });
+    store.upsertLastRunTime(SEMANTIC_CONNECTOR, 1_776_000_001_000, completedAt);
+
+    const history = store.listRunHistory(10);
+    assert.equal(history.length, 1);
+    assert.deepEqual(history[0], {
+      connectorId: SEMANTIC_CONNECTOR,
+      source: { binding_kind: 'connector', connector_id: SEMANTIC_CONNECTOR },
+      status: 'succeeded',
+      recordsEmitted: 7,
+      reportedRecordsEmitted: null,
+      checkpointSummary: { streams: 1 },
+      knownGaps: [],
+      connectorError: null,
+      runId: 'run_semantic_history',
+      traceId: 'trc_semantic_history',
+      failureReason: null,
+      terminalReason: null,
+      startedAt,
+      completedAt,
+      attempt: 1,
+    });
+
+    assert.deepEqual(store.listLastRunTimes(), [
+      {
+        connector_id: SEMANTIC_CONNECTOR,
+        last_run_time_ms: 1_776_000_001_000,
+        updated_at: completedAt,
+      },
+    ]);
   });
 });
 

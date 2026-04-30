@@ -234,6 +234,35 @@ export async function bootstrapPostgresSchema() {
         started_at TEXT NOT NULL
       );
 
+      CREATE TABLE IF NOT EXISTS scheduler_run_history (
+        id BIGSERIAL PRIMARY KEY,
+        connector_id TEXT NOT NULL,
+        source_json JSONB NOT NULL,
+        status TEXT NOT NULL,
+        records_emitted INTEGER NOT NULL DEFAULT 0,
+        reported_records_emitted INTEGER,
+        checkpoint_summary_json JSONB,
+        known_gaps_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+        connector_error_json JSONB,
+        run_id TEXT,
+        trace_id TEXT,
+        failure_reason TEXT,
+        terminal_reason TEXT,
+        started_at TEXT NOT NULL,
+        completed_at TEXT NOT NULL,
+        error TEXT,
+        attempt INTEGER NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_pg_scheduler_run_history_connector_completed
+        ON scheduler_run_history(connector_id, completed_at, id);
+
+      CREATE TABLE IF NOT EXISTS scheduler_last_run_times (
+        connector_id TEXT PRIMARY KEY,
+        last_run_time_ms BIGINT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
       CREATE TABLE IF NOT EXISTS records (
         id BIGSERIAL PRIMARY KEY,
         connector_id TEXT NOT NULL,

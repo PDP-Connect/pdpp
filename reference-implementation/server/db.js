@@ -263,6 +263,35 @@ CREATE TABLE IF NOT EXISTS controller_active_runs (
 CREATE INDEX IF NOT EXISTS idx_controller_active_runs_run_id
   ON controller_active_runs(run_id);
 
+CREATE TABLE IF NOT EXISTS scheduler_run_history (
+  id                         INTEGER PRIMARY KEY AUTOINCREMENT,
+  connector_id               TEXT NOT NULL,
+  source_json                TEXT NOT NULL,
+  status                     TEXT NOT NULL,
+  records_emitted            INTEGER NOT NULL DEFAULT 0,
+  reported_records_emitted   INTEGER,
+  checkpoint_summary_json    TEXT,
+  known_gaps_json            TEXT NOT NULL DEFAULT '[]',
+  connector_error_json       TEXT,
+  run_id                     TEXT,
+  trace_id                   TEXT,
+  failure_reason             TEXT,
+  terminal_reason            TEXT,
+  started_at                 TEXT NOT NULL,
+  completed_at               TEXT NOT NULL,
+  error                      TEXT,
+  attempt                    INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_scheduler_run_history_connector_completed
+  ON scheduler_run_history(connector_id, completed_at, id);
+
+CREATE TABLE IF NOT EXISTS scheduler_last_run_times (
+  connector_id       TEXT PRIMARY KEY,
+  last_run_time_ms   INTEGER NOT NULL,
+  updated_at         TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS oauth_clients (
   client_id                  TEXT PRIMARY KEY,
   registration_mode          TEXT NOT NULL,

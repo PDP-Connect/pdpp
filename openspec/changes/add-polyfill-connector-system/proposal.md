@@ -1,6 +1,6 @@
 # Add polyfill connector system
 
-**Status:** In progress — 8 connectors pristine (951k records), 3 open-question notes on partial-run honesty mechanism, Chase scaffolded (2026-04-21)
+**Status:** Task implementation complete as of 2026-04-30. The connector reality table in `tasks.md` remains the source of truth for live-platform limitations and follow-up candidates.
 **Owner:** the owner (with Claude working autonomously across multi-day sessions 2026-04-19 → 2026-04-21)
 **Scope (original):** MVP polyfill connectors for the owner's real data (YNAB, Gmail, ChatGPT, Amazon, USAA) + scheduler + inbox + ntfy notifications.
 **Scope (expanded 2026-04-19):** +21 additional connectors including local coding-agent history (Claude Code, Codex), file-based imports (WhatsApp, Google Takeout, Twitter archive, iMessage, Apple Health, iCal), pending-credential API connectors (GitHub, Oura, Spotify, Strava, Notion, Reddit, Pocket, Slack), and scaffolded browser scrapers (Anthropic, Shopify, HEB, Wholefoods, LinkedIn, Meta, Loom, Uber, DoorDash).
@@ -36,8 +36,8 @@ This is separate from the reference-implementation samples by design. It is **no
 ### Operational infrastructure
 - **Browser profile**: single persistent Playwright context at `~/.pdpp/browser-profile/`, `channel: 'chrome'`, fixed viewport/UA, shared by all browser-backed connectors. One bootstrap session logs in to everything; scrapers reuse cookies.
 - **Session keep-alive**: lightweight "am I still logged in?" probe every ~2 hours per browser-backed connector. Not often enough to look botlike; often enough to beat idle-TTL expiry.
-- **Scheduler**: extend `reference-implementation/runtime/scheduler.js` with SQLite-backed run history and per-connector intervals. Jittered schedules. Exponential backoff on failure.
-- **Inbox**: single parked-interactions list on the personal server. CLI command `pdpp inbox` + minimal web page at `/inbox`. Forms for `credentials`/`otp`; "come to the browser" affordance for `manual_action`.
+- **Scheduler**: extend `reference-implementation/runtime/scheduler.ts` with persisted run history, last-run interval gates, jittered schedules, and exponential backoff on failure.
+- **Inbox**: reference-only, owner-only run interaction page and JSON/form routes at `/_ref/inbox/:runId`. Global inbox enumeration and a `pdpp inbox` CLI are deferred until the controller exposes a durable pending-interaction list instead of only run-id lookups.
 - **ntfy notifications**: push to `pdpp-the owner` topic on `ntfy.vivid.fish` (self-hosted, auth-enforced) whenever the inbox gains an item or a critical failure occurs.
 - **Pause/resume INTERACTION**: run parks on INTERACTION, resumes on INTERACTION_RESPONSE without re-scraping from zero. This is the single biggest UX win over vana-connect.
 - **Distinct auth states**: "never authed" vs "expired token" vs "session died" are each their own copy in the inbox, not collapsed.
@@ -71,7 +71,7 @@ This is separate from the reference-implementation samples by design. It is **no
 ## Impact
 
 - `packages/polyfill-connectors/` — new
-- `reference-implementation/runtime/scheduler.js` — extended (persistence, keep-alive, jitter)
+- `reference-implementation/runtime/scheduler.ts` — extended (persistence, keep-alive, jitter)
 - `reference-implementation/server/` — inbox endpoints, ntfy adapter
 - `reference-implementation/manifests/` — polyfill manifests registered from the new package at startup
 - No changes to `spec-core.md` or `spec-collection-profile.md`

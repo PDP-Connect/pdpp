@@ -46,6 +46,7 @@ export interface StartPolyfillSchedulerOptions {
   asUrl: string;
   connectors: readonly string[];
   inboxHandler: InboxHandler;
+  nightlySummary?: false | NightlySummaryOptions;
   rsUrl: string;
   subjectId?: string;
 }
@@ -91,12 +92,102 @@ export interface PolyfillSchedulerHandle {
   summarize(): Promise<SchedulerSummary>;
 }
 
+type SummaryNotifier = (summary: SchedulerSummary) => Promise<unknown>;
+
+interface TimerLike {
+  unref?: () => void;
+}
+
+export interface NightlySummarySchedule {
+  stop: () => void;
+}
+
+export interface NightlySummaryOptions {
+  clearTimeout?: (timer: TimerLike) => void;
+  hour?: number;
+  minute?: number;
+  notify?: SummaryNotifier;
+  now?: () => Date;
+  setTimeout?: (callback: () => void, delayMs: number) => TimerLike;
+}
+
+export function millisecondsUntilNextNightlySummary(now: Date, hour = 7, minute = 0): number {
+  const next = new Date(now);
+  next.setHours(hour, minute, 0, 0);
+  if (next.getTime() <= now.getTime()) {
+    next.setDate(next.getDate() + 1);
+  }
+  return next.getTime() - now.getTime();
+}
+
+export async function notifyOvernightSummarySafely(
+  summary: SchedulerSummary,
+  notify: SummaryNotifier = notifyOvernightSummary
+): Promise<void> {
+  try {
+    await notify(summary);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`[scheduler] failed to send overnight summary: ${message}`);
+  }
+}
+
+export function scheduleNightlySummary(
+  handle: Pick<PolyfillSchedulerHandle, "summarize">,
+  {
+    hour = 7,
+    minute = 0,
+    now = () => new Date(),
+    notify = notifyOvernightSummary,
+    setTimeout: setTimer = setTimeout,
+    clearTimeout: clearTimer = (pendingTimer) => {
+      clearTimeout(pendingTimer as ReturnType<typeof setTimeout>);
+    },
+  }: NightlySummaryOptions = {}
+): NightlySummarySchedule {
+  let stopped = false;
+  let timer: TimerLike | undefined;
+
+  const scheduleNext = (): void => {
+    if (stopped) {
+      return;
+    }
+    const delayMs = millisecondsUntilNextNightlySummary(now(), hour, minute);
+    timer = setTimer(() => {
+      Promise.resolve()
+        .then(async () => {
+          const summary = await handle.summarize();
+          await notifyOvernightSummarySafely(summary, notify);
+          scheduleNext();
+        })
+        .catch((err: unknown) => {
+          const message = err instanceof Error ? err.message : String(err);
+          console.error(`[scheduler] failed to build overnight summary: ${message}`);
+          scheduleNext();
+        });
+    }, delayMs);
+    timer.unref?.();
+  };
+
+  scheduleNext();
+
+  return {
+    stop: (): void => {
+      stopped = true;
+      if (timer) {
+        clearTimer(timer);
+      }
+    },
+  };
+}
+
 export async function startPolyfillScheduler({
   asUrl,
   rsUrl,
   connectors,
   subjectId = "owner_local",
   inboxHandler,
+  nightlySummary,
 }: StartPolyfillSchedulerOptions): Promise<PolyfillSchedulerHandle> {
   const { createScheduler } = (await import(join(REFERENCE_IMPL_DIR, "runtime/scheduler.js"))) as {
     createScheduler: (args: CreateSchedulerArgs) => Scheduler;
@@ -174,9 +265,13 @@ export async function startPolyfillScheduler({
   });
 
   scheduler.start();
+  let nightlySummarySchedule: NightlySummarySchedule | undefined;
   const handle: PolyfillSchedulerHandle = {
     scheduler,
-    stop: (): void => scheduler.stop(),
+    stop: (): void => {
+      nightlySummarySchedule?.stop();
+      scheduler.stop();
+    },
     summarize(): Promise<SchedulerSummary> {
       const stats = scheduler.getStats();
       const counts: Record<string, string> = {};
@@ -195,9 +290,12 @@ export async function startPolyfillScheduler({
     },
     async notifySummary(): Promise<SchedulerSummary> {
       const sum = await this.summarize();
-      await notifyOvernightSummary(sum);
+      await notifyOvernightSummarySafely(sum);
       return sum;
     },
   };
+  if (nightlySummary !== false) {
+    nightlySummarySchedule = scheduleNightlySummary(handle, nightlySummary);
+  }
   return handle;
 }

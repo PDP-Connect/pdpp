@@ -251,6 +251,88 @@ test('POST /_ref/runs/:runId/interaction: success delivers response and run comp
   });
 });
 
+test('GET /_ref/inbox/:runId renders pending interaction HTML and JSON', async () => {
+  await withHarness({}, async ({ asUrl, spotifyManifest }) => {
+    const started = await startRun(asUrl, spotifyManifest.connector_id);
+    const pending = await waitForPendingInteraction(asUrl, started.run_id);
+
+    try {
+      const htmlResp = await fetch(`${asUrl}/_ref/inbox/${encodeURIComponent(started.run_id)}`);
+      assert.equal(htmlResp.status, 200);
+      assert.match(htmlResp.headers.get('content-type') || '', /text\/html/);
+      const html = await htmlResp.text();
+      assert.match(html, /Pending interaction/);
+      assert.match(html, new RegExp(pending.interaction_id));
+      assert.match(html, /Send success/);
+      assert.match(html, /Cancel interaction/);
+
+      const json = await fetchJson(`${asUrl}/_ref/inbox/${encodeURIComponent(started.run_id)}.json`);
+      assert.equal(json.status, 200);
+      assert.equal(json.body.object, 'ref_inbox_item');
+      assert.deepEqual(json.body.data, {
+        run_id: started.run_id,
+        connector_id: spotifyManifest.connector_id,
+        interaction_id: pending.interaction_id,
+        kind: 'credentials',
+        stream: null,
+      });
+    } finally {
+      await fetch(`${asUrl}/_ref/inbox/${encodeURIComponent(started.run_id)}/dismiss`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ interaction_id: pending.interaction_id }),
+      });
+      await waitForRunTerminal(asUrl, started.run_id);
+    }
+  });
+});
+
+test('POST /_ref/inbox/:runId/respond accepts minimal form success data', async () => {
+  await withHarness({}, async ({ asUrl, spotifyManifest }) => {
+    const started = await startRun(asUrl, spotifyManifest.connector_id);
+    const pending = await waitForPendingInteraction(asUrl, started.run_id);
+
+    const resp = await fetch(`${asUrl}/_ref/inbox/${encodeURIComponent(started.run_id)}/respond`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        interaction_id: pending.interaction_id,
+        data_json: JSON.stringify({ code: '123456' }),
+      }),
+    });
+    assert.equal(resp.status, 202);
+    const ack = await resp.json();
+    assert.equal(ack.object, 'run_interaction_ack');
+    assert.equal(ack.status, 'success');
+
+    const timeline = await waitForRunTerminal(asUrl, started.run_id);
+    const completedInteraction = timeline.data.find((event) => event.event_type === 'run.interaction_completed');
+    assert.ok(completedInteraction, 'interaction_completed event should be recorded');
+    assert.equal(completedInteraction.status, 'success');
+  });
+});
+
+test('POST /_ref/inbox/:runId/dismiss cancels the pending interaction', async () => {
+  await withHarness({ cancelOnReceive: true }, async ({ asUrl, spotifyManifest }) => {
+    const started = await startRun(asUrl, spotifyManifest.connector_id);
+    const pending = await waitForPendingInteraction(asUrl, started.run_id);
+
+    const resp = await fetch(`${asUrl}/_ref/inbox/${encodeURIComponent(started.run_id)}/dismiss`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ interaction_id: pending.interaction_id }),
+    });
+    assert.equal(resp.status, 202);
+    const ack = await resp.json();
+    assert.equal(ack.status, 'cancelled');
+
+    const timeline = await waitForRunTerminal(asUrl, started.run_id);
+    const completedInteraction = timeline.data.find((event) => event.event_type === 'run.interaction_completed');
+    assert.ok(completedInteraction, 'interaction_completed event should be recorded for inbox cancel');
+    assert.equal(completedInteraction.status, 'cancelled');
+  });
+});
+
 test('POST /_ref/runs/:runId/interaction: cancelled cancels the pending interaction', async () => {
   await withHarness({ cancelOnReceive: true }, async ({ asUrl, spotifyManifest }) => {
     const started = await startRun(asUrl, spotifyManifest.connector_id);

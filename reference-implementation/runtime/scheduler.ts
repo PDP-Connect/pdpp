@@ -18,6 +18,7 @@
  * new wire-level contract, or is it purely a runtime concern?
  */
 
+import type { SchedulerRunHistoryRecord, SchedulerStore } from "../server/stores/scheduler-store.ts";
 import { runConnector } from "./index.js";
 
 // ─── Shared domain types ────────────────────────────────────────────────────
@@ -154,6 +155,10 @@ export interface SchedulerOptions {
   onInteraction: InteractionHandler;
   onRunComplete?: RunCompleteHandler;
   rsUrl?: string;
+  schedulerStore?: Pick<
+    SchedulerStore,
+    "appendRunHistory" | "listLastRunTimes" | "listRunHistory" | "upsertLastRunTime"
+  >;
   setState?: SetStateHandler;
 }
 
@@ -298,6 +303,57 @@ function buildRuntime(): SchedulerRuntime {
     notifiedNeedsHumanSkips: new Set(),
     running: false,
     timers: [],
+  };
+}
+
+function toStoredRunRecord(record: RunRecord): SchedulerRunHistoryRecord {
+  const stored: SchedulerRunHistoryRecord = {
+    connectorId: record.connectorId,
+    source: { ...record.source },
+    status: record.status,
+    recordsEmitted: record.recordsEmitted,
+    reportedRecordsEmitted: record.reportedRecordsEmitted ?? null,
+    checkpointSummary: record.checkpointSummary,
+    knownGaps: record.knownGaps,
+    connectorError: record.connectorError ? { ...record.connectorError } : null,
+    runId: record.runId ?? null,
+    traceId: record.traceId ?? null,
+    failureReason: record.failureReason ?? null,
+    terminalReason: record.terminalReason ?? null,
+    startedAt: record.startedAt,
+    completedAt: record.completedAt,
+    attempt: record.attempt,
+  };
+  if (record.error !== undefined) {
+    return { ...stored, error: record.error };
+  }
+  return stored;
+}
+
+function fromStoredRunRecord(record: SchedulerRunHistoryRecord): RunRecord {
+  const restored: RunRecord = {
+    connectorId: record.connectorId,
+    source: {
+      binding_kind: "connector",
+      connector_id: typeof record.source.connector_id === "string" ? record.source.connector_id : record.connectorId,
+    },
+    status: record.status,
+    recordsEmitted: record.recordsEmitted,
+    reportedRecordsEmitted: record.reportedRecordsEmitted ?? null,
+    checkpointSummary: record.checkpointSummary,
+    knownGaps: record.knownGaps,
+    runId: record.runId ?? null,
+    traceId: record.traceId ?? null,
+    failureReason: record.failureReason ?? null,
+    terminalReason: (record.terminalReason ?? null) as TerminalReason | null,
+    startedAt: record.startedAt,
+    completedAt: record.completedAt,
+    attempt: record.attempt,
+  };
+  return {
+    ...restored,
+    ...(record.connectorError === undefined ? {} : { connectorError: record.connectorError as ConnectorError | null }),
+    ...(record.error === undefined ? {} : { error: record.error }),
   };
 }
 
@@ -456,6 +512,7 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
     onRunComplete = () => {
       // no-op
     },
+    schedulerStore,
     getState = async () => null,
     setState = async () => {
       // no-op
@@ -467,11 +524,46 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
   } = opts;
 
   const runtime = buildRuntime();
+  let hydrationStarted = false;
 
   function recordAndNotify(record: RunRecord): RunRecord {
     runtime.history.push(record);
+    if (schedulerStore) {
+      Promise.resolve(schedulerStore.appendRunHistory(toStoredRunRecord(record))).catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`[scheduler] failed to persist run history for ${record.connectorId}: ${message}`);
+      });
+    }
     onRunComplete(record);
     return record;
+  }
+
+  async function hydratePersistence(): Promise<void> {
+    if (!schedulerStore || hydrationStarted) {
+      return;
+    }
+    hydrationStarted = true;
+    const [history, lastRunTimes] = await Promise.all([
+      Promise.resolve(schedulerStore.listRunHistory(500)),
+      Promise.resolve(schedulerStore.listLastRunTimes()),
+    ]);
+    if (runtime.history.length === 0) {
+      runtime.history.push(...history.map(fromStoredRunRecord));
+    }
+    for (const row of lastRunTimes) {
+      runtime.lastRunTime.set(row.connector_id, row.last_run_time_ms);
+    }
+  }
+
+  function persistLastRunTime(connectorId: string, lastRunTimeMs: number): void {
+    runtime.lastRunTime.set(connectorId, lastRunTimeMs);
+    if (!schedulerStore) {
+      return;
+    }
+    Promise.resolve(schedulerStore.upsertLastRunTime(connectorId, lastRunTimeMs, nowIso())).catch((err: unknown) => {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`[scheduler] failed to persist last_run_time for ${connectorId}: ${message}`);
+    });
   }
 
   function handleGrantFailureDisable(reason: string | null | undefined, connectorId: string): void {
@@ -522,7 +614,13 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
     const record = buildSuccessOrFailureRecord({ connectorId, result, startedAt, attempt });
 
     runtime.history.push(record);
-    runtime.lastRunTime.set(connectorId, Date.now());
+    if (schedulerStore) {
+      Promise.resolve(schedulerStore.appendRunHistory(toStoredRunRecord(record))).catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`[scheduler] failed to persist run history for ${connectorId}: ${message}`);
+      });
+    }
+    persistLastRunTime(connectorId, Date.now());
 
     if (result.status === "succeeded" && grantAccessMode === "single_use") {
       runtime.exhaustedGrants.add(connectorId);
@@ -608,6 +706,13 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
 
     const failRecord = buildExhaustedFailureRecord({ connectorId, lastError, attempt });
     runtime.history.push(failRecord);
+    if (schedulerStore) {
+      Promise.resolve(schedulerStore.appendRunHistory(toStoredRunRecord(failRecord))).catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`[scheduler] failed to persist run history for ${connectorId}: ${message}`);
+      });
+    }
+    persistLastRunTime(connectorId, Date.now());
     handleGrantFailureDisable(failRecord.terminalReason ?? failRecord.failureReason, connectorId);
     onRunComplete(failRecord);
     return failRecord;
@@ -692,6 +797,27 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
       return;
     }
     runtime.running = true;
+    Promise.resolve()
+      .then(hydratePersistence)
+      .then(() => {
+        if (!runtime.running) {
+          return;
+        }
+        startScheduledLoops();
+      })
+      .catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`[scheduler] failed to hydrate persisted scheduler state: ${message}`);
+        if (runtime.running) {
+          startScheduledLoops();
+        }
+      });
+  }
+
+  function startScheduledLoops(): void {
+    if (runtime.timers.length > 0) {
+      return;
+    }
     for (const schedule of connectors) {
       // Run immediately, then on interval. Fire-and-forget is intentional:
       // the callback handles its own errors via `onRunComplete`, and the

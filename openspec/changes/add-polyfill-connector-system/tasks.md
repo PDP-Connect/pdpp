@@ -86,18 +86,18 @@ entire connector program forward at once:
 - [x] `flushAndExit(code)` fix in every connector — prevents JSONL truncation at end of run
 - [x] `filesystem: {}` binding exposed by runtime (`buildAvailableBindings`) — enables local-file connectors
 
-## Infrastructure (still pending)
+## Infrastructure closeout
 
 - [x] ~~Browser daemon — long-lived Chromium, CDP-attached, session cookies persist across runs. `pdpp-connectors browser start|stop|status|restart|logs` CLI. Resolves the USAA session-token-on-process-exit problem documented in the 2026-04-20 Opus research.~~ **Superseded 2026-04-25** by `openspec/changes/retire-browser-daemon`. Production runtime never used the daemon path; the per-connector isolated patchright profile in `acquireIsolatedBrowser` is the only remaining browser-launch primitive.
 - [x] Session keep-alive probes (`scripts/session-keepalive.mjs`) — 8-min interval ping against Chase + Amazon authenticated URLs.
-- [ ] Scheduler persistence (SQLite-backed `run_history` + `last_run_time`)
-- [ ] Inbox module (`reference-implementation/server/inbox.js`) + routes + minimal HTML *(reference-impl concern)*
+- [x] Scheduler persistence (SQLite-backed `run_history` + `last_run_time`) — 2026-04-30 landed `scheduler_run_history` and `scheduler_last_run_times` schema/query/store support, plus optional `schedulerStore` hydration/appends in `runtime/scheduler.ts`. Evidence: `pnpm --dir reference-implementation exec node --test test/scheduler-store-semantic-surface.test.js test/scheduler.test.js test/run-interaction-control.test.js`.
+- [x] Inbox module (`reference-implementation/server/inbox.js`) + routes + minimal HTML *(reference-impl concern)* — 2026-04-30 reference-only run-id surface landed at `/_ref/inbox/:runId`, `/:runId.json`, `/:runId/respond`, and `/:runId/dismiss`; uses controller `getPendingInteraction(runId)`/`respondToInteraction(runId, input)` only, so no global inbox list until the controller exposes enumeration. Evidence: `pnpm --dir reference-implementation exec node --test test/run-interaction-control.test.js`.
 - [x] `ntfy` bridge module — exists at `src/ntfy.js`, used by scheduler-runner and the new CLI interaction handler
 - [x] Orchestrator CLI now wires `onInteraction` — file-drop response + ntfy + TTY prompt. Runs that need creds/OTP no longer fail silently.
-- [ ] Pause/resume INTERACTION handling — runtime supports parking, scheduler doesn't read the state yet
+- [x] Pause/resume INTERACTION handling — live-process pause/resume is implemented through controller pending-interaction brokering, the run-id inbox surface, scheduler-runner `InboxHandler.park()/waitFor()`, and scheduler `needs_human_attention` suppression for automatic retries. Restart-safe checkpoint resume after process death remains explicitly deferred by `design.md`.
 - [~] First-party connector progress reporting pass — audit core connectors and emit `PROGRESS { count, total }` wherever the upstream exposes a bounded unit of work (pages, files, accounts, budgets, repositories, archive entries). Connectors that cannot know a total should still report phase/count honestly. Do not invent percentages.
   - 2026-04-24 worker pass patched bounded counters for ynab, gmail, github PR search, chase, usaa statement hydration, and chatgpt conversation detail batches; compacted duplicate Claude Code line progress. Audit captured in `design-notes/core-connector-progress-audit-2026-04-24.md`.
-- [ ] **Nightly status summary via ntfy** — today still fires manually
+- [x] **Nightly status summary via ntfy** — scheduler-runner now exposes `scheduleNightlySummary()` with injectable clock/notifier; `notifySummary()` and scheduled sends keep ntfy failures non-fatal. Evidence: `pnpm exec node --test --test-timeout=30000 --import tsx src/scheduler-runner.test.ts`.
 - [x] **Partial-run honesty mechanism** transferred to `define-partial-run-honesty` (SKIP_RESULT taxonomy, known gaps, and recovery contract). The three linked `*-open-question.md` notes remain as source context.
 
 ## Spec-conformance work (delivered today)
@@ -136,7 +136,7 @@ See `design-notes/spec-conformance-upgrade-2026-04-19.md` for the full retrofit 
 - [x] `design-notes/settings-stream-convention-open-question.md` — new today (Layer 2 cross-cutting)
 - [x] `design-notes/usaa-extra-streams.md`
 - [x] New `design-notes/claude-code-codex-connectors.md` — rationale + schema decisions for the two local-file connectors.
-- [ ] Move OpenAI/Anthropic token data from "scaffolded" to "implemented" once selectors wired
+- [x] Resolve OpenAI/Anthropic token data status — ChatGPT/OpenAI is already implemented (`#client-bootstrap` bearer + backend API); Anthropic remains explicitly scaffolded because selectors/API wiring still require a live Claude DOM/API pass, so it is not moved to implemented in this change.
 
 ## Post-refactor quality follow-up (owner-approved 2026-04-23)
 

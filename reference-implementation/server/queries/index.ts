@@ -186,11 +186,15 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   readonly controllerGetScheduleByConnector: ReadOneQuery;
   readonly controllerInsertSchedule: MutationQuery;
   // Controller — schedule + active-run persistence for runtime/controller.
+  readonly controllerInsertSchedulerRunHistory: MutationQuery;
   readonly controllerListActiveRuns: SmallEnumerationQuery;
+  readonly controllerListSchedulerLastRunTimes: SmallEnumerationQuery;
+  readonly controllerListSchedulerRunHistory: ReadManyQuery;
   readonly controllerListSchedules: SmallEnumerationQuery;
   readonly controllerUpdateSchedule: MutationQuery;
   readonly controllerUpdateScheduleEnabled: MutationQuery;
   readonly controllerUpsertActiveRun: MutationQuery;
+  readonly controllerUpsertSchedulerLastRunTime: MutationQuery;
   // Grants — runtime hydration of persisted grant rows for grant-scoped
   // state lookups and similar runtime paths.
   readonly grantsGetScopedStateById: ReadOneQuery;
@@ -647,6 +651,10 @@ export function loadReferenceQueries(queryDir = QUERIES_DIR): ReferenceQueryRegi
     "controllerUpdateSchedule",
     "controllerUpdateScheduleEnabled",
     "controllerDeleteSchedule",
+    "controllerInsertSchedulerRunHistory",
+    "controllerListSchedulerRunHistory",
+    "controllerListSchedulerLastRunTimes",
+    "controllerUpsertSchedulerLastRunTime",
     // Spine — controller-side terminal-event existence probe.
     "spineCheckRunTerminal",
     "spineInsertEvent",

@@ -21,7 +21,7 @@
 // `wasRunMarkedFailed` accessor stay in the controller. The store is
 // the persistence seam only.
 
-import { allowUnboundedReadAcknowledged, exec, getOne, referenceQueries } from "../../lib/db.ts";
+import { allowUnboundedReadAcknowledged, exec, getMany, getOne, referenceQueries } from "../../lib/db.ts";
 import { getStorageBackendKind, isPostgresStorageBackend, postgresQuery } from "../postgres-storage.js";
 
 // ─── Domain records (public, semantic) ──────────────────────────────────────
@@ -59,9 +59,37 @@ export interface ActiveRunRecord {
   readonly trace_id: string;
 }
 
+export interface SchedulerRunHistoryRecord {
+  readonly attempt: number;
+  readonly checkpointSummary: Record<string, unknown> | null;
+  readonly completedAt: string;
+  readonly connectorError?: Record<string, unknown> | null;
+  readonly connectorId: string;
+  readonly error?: string;
+  readonly failureReason?: string | null;
+  readonly knownGaps: readonly Record<string, unknown>[];
+  readonly recordsEmitted: number;
+  readonly reportedRecordsEmitted?: number | null;
+  readonly runId?: string | null;
+  readonly source: Record<string, unknown>;
+  readonly startedAt: string;
+  readonly status: "failed" | "skipped" | "succeeded";
+  readonly terminalReason?: string | null;
+  readonly traceId?: string | null;
+}
+
+export interface SchedulerLastRunTimeRecord {
+  readonly connector_id: string;
+  readonly last_run_time_ms: number;
+  readonly updated_at: string;
+}
+
 // ─── Public store surface ───────────────────────────────────────────────────
 
 export interface SchedulerStore {
+  // Scheduler run history + interval gate timestamps.
+  appendRunHistory(record: SchedulerRunHistoryRecord): Promise<void> | void;
+
   // Schedule registry — semantic lifecycle verbs.
   createSchedule(record: ScheduleCreate): Promise<void> | void;
 
@@ -70,10 +98,13 @@ export interface SchedulerStore {
   deleteSchedule(connectorId: string): Promise<void> | void;
   getSchedule(connectorId: string): Promise<ScheduleRecord | null> | ScheduleRecord | null;
   listActiveRuns(): Promise<readonly ActiveRunRecord[]> | readonly ActiveRunRecord[];
+  listLastRunTimes(): Promise<readonly SchedulerLastRunTimeRecord[]> | readonly SchedulerLastRunTimeRecord[];
+  listRunHistory(limit: number): Promise<readonly SchedulerRunHistoryRecord[]> | readonly SchedulerRunHistoryRecord[];
   listSchedules(): Promise<readonly ScheduleRecord[]> | readonly ScheduleRecord[];
   setScheduleEnabled(connectorId: string, enabled: boolean, updatedAt: string): Promise<void> | void;
   updateSchedule(connectorId: string, patch: ScheduleUpdate): Promise<void> | void;
   upsertActiveRun(record: ActiveRunRecord): Promise<void> | void;
+  upsertLastRunTime(connectorId: string, lastRunTimeMs: number, updatedAt: string): Promise<void> | void;
 }
 
 // ─── SQLite implementation ──────────────────────────────────────────────────
@@ -87,6 +118,25 @@ interface ScheduleSqliteRow {
   readonly updated_at: string;
 }
 
+interface SchedulerRunHistoryRow extends Record<string, unknown> {
+  readonly attempt: number;
+  readonly checkpoint_summary_json: unknown;
+  readonly completed_at: string;
+  readonly connector_error_json: unknown;
+  readonly connector_id: string;
+  readonly error: string | null;
+  readonly failure_reason: string | null;
+  readonly known_gaps_json: unknown;
+  readonly records_emitted: number;
+  readonly reported_records_emitted: number | null;
+  readonly run_id: string | null;
+  readonly source_json: unknown;
+  readonly started_at: string;
+  readonly status: "failed" | "skipped" | "succeeded";
+  readonly terminal_reason: string | null;
+  readonly trace_id: string | null;
+}
+
 function rowToScheduleRecord(row: ScheduleSqliteRow): ScheduleRecord {
   return {
     connector_id: row.connector_id,
@@ -98,8 +148,96 @@ function rowToScheduleRecord(row: ScheduleSqliteRow): ScheduleRecord {
   };
 }
 
+function parseJsonValue(value: unknown, fallback: unknown): unknown {
+  if (value == null) {
+    return fallback;
+  }
+  if (typeof value === "string") {
+    return JSON.parse(value);
+  }
+  return value;
+}
+
+function asObjectOrNull(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  return value as Record<string, unknown>;
+}
+
+function asObjectArray(value: unknown): readonly Record<string, unknown>[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.filter(
+    (item): item is Record<string, unknown> => !!item && typeof item === "object" && !Array.isArray(item)
+  );
+}
+
+function rowToRunHistoryRecord(row: SchedulerRunHistoryRow): SchedulerRunHistoryRecord {
+  const record: SchedulerRunHistoryRecord = {
+    connectorId: row.connector_id,
+    source: asObjectOrNull(parseJsonValue(row.source_json, {})) ?? {},
+    status: row.status,
+    recordsEmitted: row.records_emitted,
+    reportedRecordsEmitted: row.reported_records_emitted,
+    checkpointSummary: asObjectOrNull(parseJsonValue(row.checkpoint_summary_json, null)),
+    knownGaps: asObjectArray(parseJsonValue(row.known_gaps_json, [])),
+    connectorError: asObjectOrNull(parseJsonValue(row.connector_error_json, null)),
+    runId: row.run_id,
+    traceId: row.trace_id,
+    failureReason: row.failure_reason,
+    terminalReason: row.terminal_reason,
+    startedAt: row.started_at,
+    completedAt: row.completed_at,
+    attempt: row.attempt,
+  };
+  return row.error === null ? record : { ...record, error: row.error };
+}
+
+function serializeJson(value: unknown): string | null {
+  return value === null || value === undefined ? null : JSON.stringify(value);
+}
+
 export function createSqliteSchedulerStore(): SchedulerStore {
   return {
+    appendRunHistory(record) {
+      exec(referenceQueries.controllerInsertSchedulerRunHistory, [
+        record.connectorId,
+        JSON.stringify(record.source),
+        record.status,
+        record.recordsEmitted,
+        record.reportedRecordsEmitted ?? null,
+        serializeJson(record.checkpointSummary ?? null),
+        JSON.stringify(record.knownGaps),
+        serializeJson(record.connectorError ?? null),
+        record.runId ?? null,
+        record.traceId ?? null,
+        record.failureReason ?? null,
+        record.terminalReason ?? null,
+        record.startedAt,
+        record.completedAt,
+        record.error ?? null,
+        record.attempt,
+      ]);
+    },
+
+    listRunHistory(limit) {
+      return getMany<SchedulerRunHistoryRow>(referenceQueries.controllerListSchedulerRunHistory, [], {
+        limit,
+      }).rows.map(rowToRunHistoryRecord);
+    },
+
+    listLastRunTimes() {
+      return allowUnboundedReadAcknowledged<SchedulerLastRunTimeRecord>(
+        referenceQueries.controllerListSchedulerLastRunTimes
+      );
+    },
+
+    upsertLastRunTime(connectorId, lastRunTimeMs, updatedAt) {
+      exec(referenceQueries.controllerUpsertSchedulerLastRunTime, [connectorId, lastRunTimeMs, updatedAt]);
+    },
+
     getSchedule(connectorId) {
       const row = getOne<ScheduleSqliteRow>(referenceQueries.controllerGetScheduleByConnector, [connectorId]);
       return row ? rowToScheduleRecord(row) : null;
@@ -168,6 +306,100 @@ export function createSqliteSchedulerStore(): SchedulerStore {
 
 export function createPostgresSchedulerStore(): SchedulerStore {
   return {
+    async appendRunHistory(record) {
+      await postgresQuery(
+        `INSERT INTO scheduler_run_history(
+           connector_id,
+           source_json,
+           status,
+           records_emitted,
+           reported_records_emitted,
+           checkpoint_summary_json,
+           known_gaps_json,
+           connector_error_json,
+           run_id,
+           trace_id,
+           failure_reason,
+           terminal_reason,
+           started_at,
+           completed_at,
+           error,
+           attempt
+         ) VALUES($1, $2::jsonb, $3, $4, $5, $6::jsonb, $7::jsonb, $8::jsonb, $9, $10, $11, $12, $13, $14, $15, $16)`,
+        [
+          record.connectorId,
+          JSON.stringify(record.source),
+          record.status,
+          record.recordsEmitted,
+          record.reportedRecordsEmitted ?? null,
+          serializeJson(record.checkpointSummary ?? null),
+          JSON.stringify(record.knownGaps),
+          serializeJson(record.connectorError ?? null),
+          record.runId ?? null,
+          record.traceId ?? null,
+          record.failureReason ?? null,
+          record.terminalReason ?? null,
+          record.startedAt,
+          record.completedAt,
+          record.error ?? null,
+          record.attempt,
+        ]
+      );
+    },
+
+    async listRunHistory(limit) {
+      const boundedLimit = Math.max(1, Math.min(5000, Math.trunc(limit)));
+      const result = await postgresQuery(
+        `SELECT
+           id,
+           connector_id,
+           source_json,
+           status,
+           records_emitted,
+           reported_records_emitted,
+           checkpoint_summary_json,
+           known_gaps_json,
+           connector_error_json,
+           run_id,
+           trace_id,
+           failure_reason,
+           terminal_reason,
+           started_at,
+           completed_at,
+           error,
+           attempt
+         FROM (
+           SELECT *
+           FROM scheduler_run_history
+           ORDER BY completed_at DESC, id DESC
+           LIMIT $1
+         ) rows
+         ORDER BY completed_at ASC, id ASC`,
+        [boundedLimit]
+      );
+      return (result.rows as SchedulerRunHistoryRow[]).map(rowToRunHistoryRecord);
+    },
+
+    async listLastRunTimes() {
+      const result = await postgresQuery(
+        `SELECT connector_id, last_run_time_ms, updated_at
+         FROM scheduler_last_run_times
+         ORDER BY connector_id`
+      );
+      return result.rows as SchedulerLastRunTimeRecord[];
+    },
+
+    async upsertLastRunTime(connectorId, lastRunTimeMs, updatedAt) {
+      await postgresQuery(
+        `INSERT INTO scheduler_last_run_times(connector_id, last_run_time_ms, updated_at)
+         VALUES($1, $2, $3)
+         ON CONFLICT(connector_id) DO UPDATE SET
+           last_run_time_ms = EXCLUDED.last_run_time_ms,
+           updated_at = EXCLUDED.updated_at`,
+        [connectorId, lastRunTimeMs, updatedAt]
+      );
+    },
+
     async getSchedule(connectorId) {
       const result = await postgresQuery(
         `SELECT connector_id, interval_seconds, jitter_seconds, enabled, created_at, updated_at
