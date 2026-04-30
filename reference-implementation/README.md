@@ -60,6 +60,18 @@ The current reference is centered on one architectural claim:
 - `GET /.well-known/oauth-protected-resource`
 - `GET /.well-known/oauth-authorization-server`
 
+Protected-resource metadata includes advisory agent discovery. The generated
+CLI command is:
+
+```bash
+npx -y @pdpp/cli@beta connect <provider-url>
+```
+
+The no-owner-token completion path is beta but complete in the reference flow.
+Metadata sets `pdpp_agent_discovery.cli.no_owner_token` true when the AS can
+complete owner-approved scoped token handoff without asking for an owner bearer
+token.
+
 ### Client request start
 
 - `POST /oauth/par`

@@ -1,4 +1,7 @@
-branches: ["main"]
+branches:
+  - name: main
+  - name: beta
+    prerelease: true
 tagFormat: "v${version}"
 preset: "conventionalcommits"
 plugins:
@@ -6,6 +9,8 @@ plugins:
     - preset: conventionalcommits
   - - "@semantic-release/release-notes-generator"
     - preset: conventionalcommits
+  - - "@semantic-release/npm"
+    - pkgRoot: "packages/cli"
   - - "@semantic-release/github"
     - successComment: false
       failComment: false

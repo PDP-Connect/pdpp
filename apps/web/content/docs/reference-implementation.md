@@ -32,6 +32,19 @@ The current provider-connect story starts with standards-based discovery:
 - `GET /.well-known/oauth-protected-resource`
 - `GET /.well-known/oauth-authorization-server`
 
+The protected-resource metadata also includes advisory agent discovery at
+`pdpp_agent_discovery`. Its CLI command is generated from the published package
+metadata:
+
+```bash
+npx -y @pdpp/cli@beta connect <provider-url>
+```
+
+This remains beta software, but `pdpp_agent_discovery.cli.no_owner_token` is
+`true` when the reference AS token-completion path supports owner-approved
+scoped handoff without an owner bearer token. Treat the command as the
+no-owner-token connect flow while that metadata flag is true.
+
 The authorization-server metadata truthfully advertises:
 
 - `pushed_authorization_request_endpoint`

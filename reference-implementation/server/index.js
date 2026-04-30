@@ -63,6 +63,11 @@ import { collectDeploymentDiagnostics } from './deployment-diagnostics.ts';
 import { createOwnerAuthPlaceholder, OWNER_AUTH_DEFAULT_SUBJECT_ID } from './owner-auth.ts';
 import { registerInboxRoutes } from './inbox.js';
 import { createController } from '../runtime/controller.ts';
+import {
+  createPdppCliCommand,
+  PDPP_CLI_DEFAULT_CLIENT_ID,
+  getPdppCliPackageInfo,
+} from '../../packages/cli/src/package-info.js';
 import { isClosedPipeWriteError } from '../runtime/pipe-errors.js';
 import { createApp, buildLogger } from './transport.js';
 import {
@@ -190,6 +195,11 @@ const PDPP_DCR_INITIAL_ACCESS_TOKENS = (process.env.PDPP_DCR_INITIAL_ACCESS_TOKE
   .map((value) => value.trim())
   .filter(Boolean);
 const PDPP_REFERENCE_TRACE_ID_HEADER = 'PDPP-Reference-Trace-Id';
+const PROTECTED_RESOURCE_METADATA_PATH = '/.well-known/oauth-protected-resource';
+const PROTECTED_RESOURCE_METADATA_URL_LOCAL = 'protectedResourceMetadataUrl';
+const PROTECTED_RESOURCE_METADATA_NEXT_STEP =
+  'Fetch error.resource_metadata, then follow pdpp_agent_discovery.cli when token completion is available; otherwise request a scoped client grant without using an owner bearer token.';
+const AGENT_CONNECT_TTL_MS = 5 * 60 * 1000;
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -307,6 +317,11 @@ function scheduleRetrievalStartupBackfill({ manifests, logger, signal = null }) 
 function pdppError(res, status, code, message, param = null) {
   const body = { error: { type: typeFor(status), code, message } };
   if (param) body.error.param = param;
+  const resourceMetadataUrl = status === 401 ? getProtectedResourceMetadataUrl(res) : null;
+  if (resourceMetadataUrl) {
+    body.error.resource_metadata = resourceMetadataUrl;
+    body.error.next_step = PROTECTED_RESOURCE_METADATA_NEXT_STEP;
+  }
   body.error.request_id = ensureRequestId(res);
   res.status(status).json(body);
 }
@@ -322,6 +337,40 @@ function rejectUntrustedMetadataHost(req, res, explicitUrl, trustedHosts, option
     'Host-derived metadata requires a local/private request host or PDPP_TRUSTED_HOSTS allowlist',
   );
   return true;
+}
+
+function httpQuotedString(value) {
+  return String(value).replace(/["\\]/g, '\\$&');
+}
+
+function protectedResourceMetadataUrlForResource(resource) {
+  const parsed = new URL(resource);
+  const resourcePath = parsed.pathname === '/' ? '' : parsed.pathname;
+  return `${parsed.origin}${PROTECTED_RESOURCE_METADATA_PATH}${resourcePath}${parsed.search}`;
+}
+
+function resolveTrustedProtectedResourceMetadataUrl(req, explicitResource, trustedHosts) {
+  if (!isTrustedMetadataRequestOrigin(req, explicitResource, trustedHosts)) {
+    return null;
+  }
+  try {
+    return protectedResourceMetadataUrlForResource(resolvePublicUrl(req, explicitResource));
+  } catch {
+    return null;
+  }
+}
+
+function getProtectedResourceMetadataUrl(res) {
+  const metadataUrl = res.locals?.[PROTECTED_RESOURCE_METADATA_URL_LOCAL];
+  return typeof metadataUrl === 'string' && metadataUrl ? metadataUrl : null;
+}
+
+function setProtectedResourceMetadataChallenge(res) {
+  const metadataUrl = getProtectedResourceMetadataUrl(res);
+  if (!metadataUrl) {
+    return;
+  }
+  res.setHeader('WWW-Authenticate', `Bearer resource_metadata="${httpQuotedString(metadataUrl)}"`);
 }
 
 function sha256Hex(value) {
@@ -780,6 +829,7 @@ function parseTimelinePageOptions(req, res) {
 async function requireToken(req, res, next) {
   const auth = req.headers.authorization;
   if (!auth || !auth.startsWith('Bearer ')) {
+    setProtectedResourceMetadataChallenge(res);
     return pdppError(res, 401, 'authentication_error', 'Missing Bearer token');
   }
   const token = auth.slice(7);
@@ -834,6 +884,7 @@ async function requireToken(req, res, next) {
     if (info.inactive_reason === 'grant_invalid') {
       return pdppError(res, 403, 'grant_invalid', 'Grant is malformed or no longer valid');
     }
+    setProtectedResourceMetadataChallenge(res);
     return pdppError(res, 401, 'authentication_error', 'Invalid or expired token');
   }
   req.tokenInfo = info;
@@ -1881,6 +1932,169 @@ function buildAsApp(opts = {}) {
     const pending = await consentStore.getPendingConsentByDeviceCode(deviceCode);
     return { deviceCode, pending };
   }
+
+  const agentConnectAttempts = new Map();
+
+  function pruneAgentConnectAttempts(now = Date.now()) {
+    for (const [id, attempt] of agentConnectAttempts) {
+      if (attempt.status !== 'pending' || attempt.expiresAt <= now) {
+        agentConnectAttempts.delete(id);
+      }
+    }
+  }
+
+  function publicAgentConnectAttempt(attempt) {
+    return {
+      id: attempt.id,
+      object: 'agent_connect_attempt',
+      status: attempt.status,
+      approval_url: attempt.approvalUrl,
+      poll_url: attempt.tokenUrl,
+      token_url: attempt.tokenUrl,
+      expires_in: Math.max(Math.ceil((attempt.expiresAt - Date.now()) / 1000), 0),
+      interval: attempt.interval,
+    };
+  }
+
+  function completeAgentConnectAttempt(requestUri, outcome) {
+    for (const attempt of agentConnectAttempts.values()) {
+      if (attempt.requestUri !== requestUri || attempt.status !== 'pending') continue;
+      attempt.status = outcome.status;
+      attempt.completedAt = new Date().toISOString();
+      if (outcome.status === 'approved') {
+        attempt.token = outcome.token;
+        attempt.grant = outcome.grant;
+        attempt.grantId = outcome.grant?.grant_id || outcome.grantId || null;
+      }
+    }
+  }
+
+  function failAgentConnectAttempt(requestUri, status) {
+    completeAgentConnectAttempt(requestUri, { status });
+  }
+
+  function buildAgentConnectError(status) {
+    if (status === 'denied') {
+      return { error: 'access_denied', error_description: 'Owner denied the scoped access request' };
+    }
+    if (status === 'expired') {
+      return { error: 'expired_token', error_description: 'The agent-connect request expired before approval' };
+    }
+    return { error: 'authorization_pending', error_description: 'Owner approval is still pending' };
+  }
+
+  // Narrow hosted completion handoff for CLI `connect`: the CLI first stages a
+  // normal PAR request, then registers that request_uri here to receive a
+  // polling handle. Owner approval still happens through the existing consent
+  // page, but the bearer is returned only to the caller holding the polling
+  // code, never rendered into the owner browser.
+  app.post('/agent-connect', async (req, res) => {
+    try {
+      const explicitBaseUrl = opts.asPublicUrl || (!opts.ignoreAmbientPublicUrls ? process.env.AS_PUBLIC_URL : null);
+      const baseUrl = resolvePublicUrl(req, explicitBaseUrl);
+      let requestUri = typeof req.body?.request_uri === 'string' ? req.body.request_uri : null;
+      let clientId = typeof req.body?.client_id === 'string' ? req.body.client_id : null;
+      if (!requestUri) {
+        const nativeManifest = resolveNativeManifest(opts);
+        if (!nativeManifest?.provider_id || !nativeManifest?.storage_binding?.connector_id) {
+          return pdppError(
+            res,
+            400,
+            'invalid_request',
+            'request_uri is required unless the reference provider is running with a native manifest',
+          );
+        }
+        const clientName = typeof req.body?.client_name === 'string' && req.body.client_name.trim()
+          ? req.body.client_name.trim()
+          : 'PDPP CLI';
+        clientId = clientId || PDPP_CLI_DEFAULT_CLIENT_ID;
+        const staged = await consentStore.initiateGrant(
+          {
+            client_id: clientId,
+            client_display: { name: clientName },
+            authorization_details: [
+              {
+                type: 'https://pdpp.org/data-access',
+                source: { kind: 'provider_native', id: nativeManifest.provider_id },
+                purpose_code: 'https://pdpp.org/purpose/personal_assistant',
+                purpose_description: 'Delegate scoped personal data access to a local PDPP CLI client.',
+                access_mode: 'single_use',
+                streams: [{ name: '*' }],
+              },
+            ],
+          },
+          { baseUrl, nativeManifest },
+        );
+        requestUri = staged.request_uri;
+      }
+      if (!requestUri) return pdppError(res, 400, 'invalid_request', 'request_uri is required');
+      const { pending } = await getPendingGrantFromRequestUri(requestUri);
+      if (!pending) return pdppError(res, 400, 'expired_token', 'Pending grant request is unknown or expired');
+      if (clientId && pending.request?.client?.client_id !== clientId) {
+        return pdppError(res, 403, 'invalid_client', 'client_id does not match pending request');
+      }
+
+      pruneAgentConnectAttempts();
+      const id = `agc_${randomBytes(16).toString('hex')}`;
+      const pollingCode = `agc_poll_${randomBytes(32).toString('hex')}`;
+      const tokenUrl = `${baseUrl}/agent-connect/${encodeURIComponent(id)}/token`;
+      const approvalUrl = new URL(`${baseUrl}/consent`);
+      approvalUrl.searchParams.set('request_uri', requestUri);
+      const attempt = {
+        id,
+        pollingCode,
+        requestUri,
+        clientId: pending.request?.client?.client_id || clientId || null,
+        status: 'pending',
+        createdAt: new Date().toISOString(),
+        expiresAt: Date.now() + (opts.agentConnectTtlMs || AGENT_CONNECT_TTL_MS),
+        interval: 2,
+        approvalUrl: approvalUrl.toString(),
+        tokenUrl,
+      };
+      agentConnectAttempts.set(id, attempt);
+      res.status(201).json({
+        ...publicAgentConnectAttempt(attempt),
+        polling_code: pollingCode,
+      });
+    } catch (err) {
+      handleError(res, err);
+    }
+  });
+
+  app.post('/agent-connect/:attemptId/token', async (req, res) => {
+    try {
+      const attempt = agentConnectAttempts.get(req.params.attemptId);
+      const pollingCode = typeof req.body?.polling_code === 'string' ? req.body.polling_code : null;
+      if (!attempt || pollingCode !== attempt.pollingCode) {
+        return pdppError(res, 401, 'invalid_grant', 'Unknown agent-connect polling handle');
+      }
+      if (attempt.status === 'pending' && attempt.expiresAt <= Date.now()) {
+        attempt.status = 'expired';
+      }
+      if (attempt.status === 'pending') {
+        return res.status(202).json({
+          status: 'pending',
+          ...buildAgentConnectError('pending'),
+          interval: attempt.interval,
+        });
+      }
+      if (attempt.status !== 'approved') {
+        const error = buildAgentConnectError(attempt.status);
+        agentConnectAttempts.delete(attempt.id);
+        return pdppError(res, attempt.status === 'denied' ? 403 : 400, error.error, error.error_description);
+      }
+      agentConnectAttempts.delete(attempt.id);
+      res.json({
+        access_token: attempt.token,
+        token_type: 'Bearer',
+        grant_id: attempt.grantId,
+        grant: attempt.grant,
+      });
+    } catch (err) {
+      handleError(res, err);
+    }
+  });
 
   // RFC 8414 authorization-server metadata. The metadata-document envelope
   // lives in the canonical `as.authorization_server.metadata` operation
@@ -3126,6 +3340,11 @@ function buildAsApp(opts = {}) {
         setReferenceTraceId(res, outcome.traceContext.trace_id);
       }
       const { grant, token } = outcome;
+      completeAgentConnectAttempt(req.body?.request_uri || req.query?.request_uri, {
+        status: 'approved',
+        token,
+        grant,
+      });
       const wantsJson = req.is('application/json') || req.accepts(['html', 'json']) === 'json';
       if (wantsJson) {
         return res.json({ grant_id: grant.grant_id, token, grant });
@@ -3200,6 +3419,7 @@ function buildAsApp(opts = {}) {
       if (outcome.traceContext?.trace_id) {
         setReferenceTraceId(res, outcome.traceContext.trace_id);
       }
+      failAgentConnectAttempt(req.body?.request_uri || req.query?.request_uri, 'denied');
       res.send(renderHostedDocument({
         title: `${providerName} — Access denied`,
         providerName,
@@ -3270,15 +3490,30 @@ function buildAsApp(opts = {}) {
 
 // ─── RS App ─────────────────────────────────────────────────────────────────
 
-function buildAgentDiscoveryMetadata(origin) {
+function buildAgentDiscoveryMetadata(origin, { noOwnerToken = true } = {}) {
   if (!origin) {
     return null;
   }
   const base = stripTrailingSlash(origin);
+  const cli = getPdppCliPackageInfo(base);
+  const noOwnerTokenPolicy = noOwnerToken
+    ? cli.noOwnerTokenPolicy
+    : 'requires_native_reference_provider_for_one_command_connect';
   return {
     advisory: true,
     skill_name: 'pdpp-data-access',
-    recommended_flow: 'pdpp agent',
+    recommended_flow: 'pdpp connect',
+    cli: {
+      package: cli.packageName,
+      package_specifier: cli.packageSpecifier,
+      bin_name: cli.binName,
+      install_command: `npx -y ${cli.packageSpecifier} --help`,
+      run_command: cli.runCommand,
+      connect_command: createPdppCliCommand('<provider-url>'),
+      version_policy: cli.versionPolicy,
+      no_owner_token: noOwnerToken,
+      no_owner_token_policy: noOwnerTokenPolicy,
+    },
     skill_catalog: `${base}/.well-known/skills/index.json`,
     skill: `${base}/.well-known/skills/pdpp-data-access/SKILL.md`,
     llms_txt: `${base}/llms.txt`,
@@ -3291,6 +3526,8 @@ function buildRsApp(opts = {}) {
   const nativeMode = !!resolveNativeManifest(opts);
   const providerName = resolveProviderName(opts);
   const referenceRevision = resolveReferenceRevision(opts);
+  const explicitResource = opts.rsPublicUrl || (!opts.ignoreAmbientPublicUrls ? process.env.RS_PUBLIC_URL : null);
+  const trustedMetadataHosts = opts.trustedMetadataHosts ?? (!opts.ignoreAmbientPublicUrls ? process.env.PDPP_TRUSTED_HOSTS : null);
 
   app.use((req, res, next) => {
     res.setHeader('Request-Id', req.get('Request-Id') || generateSpineId('req'));
@@ -3303,6 +3540,10 @@ function buildRsApp(opts = {}) {
         `PDPP-Version '${requestedVersion}' is not supported. Current: ${CURRENT_VERSION}`);
     }
     res.setHeader('PDPP-Version', CURRENT_VERSION);
+    const metadataUrl = resolveTrustedProtectedResourceMetadataUrl(req, explicitResource, trustedMetadataHosts);
+    if (metadataUrl) {
+      res.locals[PROTECTED_RESOURCE_METADATA_URL_LOCAL] = metadataUrl;
+    }
     next();
   });
 
@@ -3320,8 +3561,7 @@ function buildRsApp(opts = {}) {
 
   // Primary reference surface: RFC 9728 protected-resource metadata.
   app.get('/.well-known/oauth-protected-resource', { contract: 'getProtectedResourceMetadata' }, (req, res) => {
-    const explicitResource = opts.rsPublicUrl || (!opts.ignoreAmbientPublicUrls ? process.env.RS_PUBLIC_URL : null);
-    if (rejectUntrustedMetadataHost(req, res, explicitResource, opts.trustedMetadataHosts)) {
+    if (rejectUntrustedMetadataHost(req, res, explicitResource, trustedMetadataHosts)) {
       return;
     }
     const resource = resolvePublicUrl(req, explicitResource);
@@ -3330,7 +3570,7 @@ function buildRsApp(opts = {}) {
     const issuerUsesDirectRequestOrigin = shouldUseDirectRequestOrigin(req, explicitIssuer);
     const issuerSource = issuerUsesDirectRequestOrigin ? fallbackIssuer : explicitIssuer || fallbackIssuer;
     if (
-      rejectUntrustedMetadataHost(req, res, issuerSource, opts.trustedMetadataHosts, {
+      rejectUntrustedMetadataHost(req, res, issuerSource, trustedMetadataHosts, {
         forceHostDerived: issuerUsesDirectRequestOrigin || !explicitIssuer,
       })
     ) {
@@ -3404,6 +3644,7 @@ function buildRsApp(opts = {}) {
         discoveryHints,
         agentDiscovery: buildAgentDiscoveryMetadata(
           opts.agentDiscoveryOrigin ? resolveSiblingPublicUrl(req, opts.agentDiscoveryOrigin) : null,
+          { noOwnerToken: nativeMode },
         ),
       })
     );
@@ -5162,6 +5403,7 @@ export async function startServer(opts = {}) {
     ownerAuthSubjectId: opts.ownerAuthSubjectId,
     ownerAuthForceSecureCookies: opts.ownerAuthForceSecureCookies,
     ownerAuthSameSite: opts.ownerAuthSameSite,
+    agentConnectTtlMs: opts.agentConnectTtlMs,
     referenceRevision: opts.referenceRevision,
     logger,
   });

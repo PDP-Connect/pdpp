@@ -32,6 +32,7 @@ export interface AsAuthorizationServerMetadataBuilderInput {
   readonly tokenEndpoint: string;
   readonly tokenEndpointAuthMethodsSupported: readonly string[];
   readonly deviceAuthorizationEndpoint: string;
+  readonly agentConnectEndpoint: string;
   readonly grantTypesSupported: readonly string[];
 }
 
@@ -66,6 +67,7 @@ export function executeAsAuthorizationServerMetadata(
     tokenEndpoint: `${issuer}/oauth/token`,
     tokenEndpointAuthMethodsSupported: ["none"],
     deviceAuthorizationEndpoint: `${issuer}/oauth/device_authorization`,
+    agentConnectEndpoint: `${issuer}/agent-connect`,
     grantTypesSupported: ["urn:ietf:params:oauth:grant-type:device_code"],
   });
 }
