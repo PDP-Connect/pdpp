@@ -5,7 +5,8 @@
  *   - ntfy notifications on INTERACTION and on run failures
  *   - inbox integration (INTERACTION → parkInteraction → wait)
  *   - per-connector interval + jitter
- *   - persistent state via RS /v1/state/{connector_id}
+ *   - persistent sync state via RS /v1/state/{connector_id}
+ *   - persistent scheduler history and last-run interval gates
  */
 
 import { dirname, join } from "node:path";
@@ -48,6 +49,7 @@ export interface StartPolyfillSchedulerOptions {
   inboxHandler: InboxHandler;
   nightlySummary?: false | NightlySummaryOptions;
   rsUrl: string;
+  schedulerStore?: false | SchedulerPersistenceStore;
   subjectId?: string;
 }
 
@@ -70,12 +72,20 @@ interface Scheduler {
   stop: () => void;
 }
 
+export interface SchedulerPersistenceStore {
+  appendRunHistory: (record: unknown) => Promise<void> | void;
+  listLastRunTimes: () => Promise<readonly unknown[]> | readonly unknown[];
+  listRunHistory: (limit: number) => Promise<readonly unknown[]> | readonly unknown[];
+  upsertLastRunTime: (connectorId: string, lastRunTimeMs: number, updatedAt: string) => Promise<void> | void;
+}
+
 interface CreateSchedulerArgs {
   connectors: Record<string, unknown>[];
   getState: (connectorId: string) => Promise<Record<string, unknown> | null>;
   onInteraction: (msg: InteractionMessageShape) => Promise<unknown>;
   onRunComplete: (record: SchedulerRunRecord) => void;
   rsUrl: string;
+  schedulerStore?: SchedulerPersistenceStore;
   setState: () => Promise<void>;
 }
 
@@ -181,6 +191,34 @@ export function scheduleNightlySummary(
   };
 }
 
+export async function loadDefaultSchedulerPersistenceStore(): Promise<SchedulerPersistenceStore> {
+  const { initPostgresStorage, resolveStorageBackend } = (await import(
+    join(REFERENCE_IMPL_DIR, "server/postgres-storage.js")
+  )) as {
+    initPostgresStorage: (config: unknown) => Promise<unknown>;
+    resolveStorageBackend: () => unknown;
+  };
+  await initPostgresStorage(resolveStorageBackend());
+
+  const { getDefaultSchedulerStore } = (await import(join(REFERENCE_IMPL_DIR, "server/stores/scheduler-store.js"))) as {
+    getDefaultSchedulerStore: () => SchedulerPersistenceStore;
+  };
+  return getDefaultSchedulerStore();
+}
+
+export function resolveSchedulerPersistenceStore(
+  schedulerStore: false | SchedulerPersistenceStore | undefined,
+  loadDefaultStore: () => Promise<SchedulerPersistenceStore> = loadDefaultSchedulerPersistenceStore
+): Promise<SchedulerPersistenceStore | null> {
+  if (schedulerStore === false) {
+    return Promise.resolve(null);
+  }
+  if (schedulerStore) {
+    return Promise.resolve(schedulerStore);
+  }
+  return loadDefaultStore();
+}
+
 export async function startPolyfillScheduler({
   asUrl,
   rsUrl,
@@ -188,6 +226,7 @@ export async function startPolyfillScheduler({
   subjectId = "owner_local",
   inboxHandler,
   nightlySummary,
+  schedulerStore: schedulerStoreOption,
 }: StartPolyfillSchedulerOptions): Promise<PolyfillSchedulerHandle> {
   const { createScheduler } = (await import(join(REFERENCE_IMPL_DIR, "runtime/scheduler.js"))) as {
     createScheduler: (args: CreateSchedulerArgs) => Scheduler;
@@ -199,6 +238,7 @@ export async function startPolyfillScheduler({
       rsUrl: string;
     }) => Promise<Record<string, unknown> | null>;
   };
+  const schedulerStore = await resolveSchedulerPersistenceStore(schedulerStoreOption);
 
   // Register all requested manifests first
   const schedules: Record<string, unknown>[] = [];
@@ -224,7 +264,7 @@ export async function startPolyfillScheduler({
     });
   }
 
-  const scheduler = createScheduler({
+  const schedulerArgs: CreateSchedulerArgs = {
     connectors: schedules,
     rsUrl,
     onInteraction: async (msg) => {
@@ -262,7 +302,12 @@ export async function startPolyfillScheduler({
       // handles state via /v1/state/{connector_id}. This hook is retained for
       // symmetry but isn't needed.
     },
-  });
+  };
+  if (schedulerStore) {
+    schedulerArgs.schedulerStore = schedulerStore;
+  }
+
+  const scheduler = createScheduler(schedulerArgs);
 
   scheduler.start();
   let nightlySummarySchedule: NightlySummarySchedule | undefined;

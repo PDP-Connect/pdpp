@@ -3,6 +3,8 @@ import { test } from "node:test";
 import {
   millisecondsUntilNextNightlySummary,
   notifyOvernightSummarySafely,
+  resolveSchedulerPersistenceStore,
+  type SchedulerPersistenceStore,
   type SchedulerSummary,
   scheduleNightlySummary,
 } from "./scheduler-runner.ts";
@@ -77,4 +79,40 @@ test("scheduleNightlySummary stop clears the pending timer", () => {
   schedule.stop();
 
   assert.deepEqual(cleared, [timer]);
+});
+
+test("resolveSchedulerPersistenceStore disables persistence explicitly", async () => {
+  const store = await resolveSchedulerPersistenceStore(false, () =>
+    Promise.reject(new Error("default store should not load"))
+  );
+
+  assert.equal(store, null);
+});
+
+test("resolveSchedulerPersistenceStore uses injected store without loading the default", async () => {
+  const injected: SchedulerPersistenceStore = {
+    appendRunHistory: () => undefined,
+    listLastRunTimes: () => [],
+    listRunHistory: () => [],
+    upsertLastRunTime: () => undefined,
+  };
+
+  const store = await resolveSchedulerPersistenceStore(injected, () =>
+    Promise.reject(new Error("default store should not load"))
+  );
+
+  assert.equal(store, injected);
+});
+
+test("resolveSchedulerPersistenceStore loads the default store when omitted", async () => {
+  const loaded: SchedulerPersistenceStore = {
+    appendRunHistory: () => undefined,
+    listLastRunTimes: () => [],
+    listRunHistory: () => [],
+    upsertLastRunTime: () => undefined,
+  };
+
+  const store = await resolveSchedulerPersistenceStore(undefined, () => Promise.resolve(loaded));
+
+  assert.equal(store, loaded);
 });
