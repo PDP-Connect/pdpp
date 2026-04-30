@@ -205,11 +205,198 @@ const CommonErrors = {
   409: { schema: ErrorObjectSchema, description: "Conflict (e.g. run_already_active)" },
 };
 
+const DeviceExporterErrors = {
+  ...CommonErrors,
+  401: { schema: ErrorObjectSchema, description: "Authentication required" },
+  403: { schema: ErrorObjectSchema, description: "Permission denied" },
+};
+
 const ConnectorIdParamSchema = {
   type: "object",
   additionalProperties: false,
   properties: { connectorId: { type: "string", minLength: 1 } },
   required: ["connectorId"],
+};
+
+const DeviceIdParamSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: { deviceId: { type: "string", minLength: 1 } },
+  required: ["deviceId"],
+};
+
+const DeviceSourceInstanceSchema = {
+  type: "object",
+  additionalProperties: true,
+  properties: {
+    object: { const: "device_source_instance" },
+    source_instance_id: { type: "string" },
+    device_id: { type: "string" },
+    connector_id: { type: "string" },
+    local_binding_name: { type: "string" },
+    display_name: { type: ["string", "null"] },
+    created_at: { type: "string" },
+    last_ingest_at: { type: ["string", "null"] },
+    accepted_record_count: { type: "integer", minimum: 0 },
+    rejected_record_count: { type: "integer", minimum: 0 },
+    last_error: { type: ["object", "null"], additionalProperties: true },
+  },
+  required: ["object", "source_instance_id", "device_id", "connector_id", "local_binding_name", "created_at"],
+};
+
+const DeviceExporterSchema = {
+  type: "object",
+  additionalProperties: true,
+  properties: {
+    object: { const: "device_exporter" },
+    device_id: { type: "string" },
+    subject_id: { type: "string" },
+    display_name: { type: ["string", "null"] },
+    status: { type: "string", enum: ["active", "revoked"] },
+    created_at: { type: "string" },
+    last_heartbeat_at: { type: ["string", "null"] },
+    last_ingest_at: { type: ["string", "null"] },
+    revoked_at: { type: ["string", "null"] },
+    stale: { type: "boolean" },
+    source_instances: { type: "array", items: DeviceSourceInstanceSchema },
+    last_error: { type: ["object", "null"], additionalProperties: true },
+  },
+  required: ["object", "device_id", "subject_id", "status", "created_at", "stale", "source_instances"],
+};
+
+const DeviceEnrollmentCodeCreateBodySchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    connector_id: { type: "string", minLength: 1 },
+    local_binding_name: { type: "string", minLength: 1 },
+    display_name: { type: "string" },
+    expires_in_seconds: { type: "integer", minimum: 60, maximum: 86_400 },
+  },
+  required: ["connector_id", "local_binding_name"],
+};
+
+const DeviceEnrollmentCodeResponseSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    object: { const: "device_exporter_enrollment_code" },
+    enrollment_code: { type: "string" },
+    expires_at: { type: "string" },
+    connector_id: { type: "string" },
+    local_binding_name: { type: "string" },
+  },
+  required: ["object", "enrollment_code", "expires_at", "connector_id", "local_binding_name"],
+};
+
+const DeviceEnrollmentExchangeBodySchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    enrollment_code: { type: "string", minLength: 1 },
+    agent_version: { type: "string" },
+  },
+  required: ["enrollment_code"],
+};
+
+const DeviceEnrollmentExchangeResponseSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    object: { const: "device_exporter_enrollment" },
+    device_id: { type: "string" },
+    source_instance_id: { type: "string" },
+    device_token: { type: "string" },
+    connector_id: { type: "string" },
+    local_binding_name: { type: "string" },
+  },
+  required: ["object", "device_id", "source_instance_id", "device_token", "connector_id", "local_binding_name"],
+};
+
+const DeviceHeartbeatBodySchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    agent_version: { type: "string" },
+    source_instances: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          source_instance_id: { type: "string" },
+          last_error: { type: ["object", "null"], additionalProperties: true },
+        },
+        required: ["source_instance_id"],
+      },
+    },
+    last_error: { type: ["object", "null"], additionalProperties: true },
+  },
+};
+
+const DeviceHeartbeatResponseSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    object: { const: "device_exporter_heartbeat" },
+    device_id: { type: "string" },
+    received_at: { type: "string" },
+    status: { type: "string", enum: ["accepted"] },
+  },
+  required: ["object", "device_id", "received_at", "status"],
+};
+
+const DeviceIngestBatchBodySchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    device_id: { type: "string" },
+    source_instance_id: { type: "string" },
+    batch_id: { type: "string" },
+    batch_seq: { type: "integer", minimum: 0 },
+    body_hash: { type: "string" },
+    connector_id: { type: "string" },
+    records: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          stream: { type: "string" },
+          record_key: { type: ["string", "array"] },
+          emitted_at: { type: "string" },
+          data: { type: "object", additionalProperties: true },
+        },
+        required: ["stream", "record_key", "data"],
+      },
+    },
+  },
+  required: ["device_id", "source_instance_id", "batch_id", "batch_seq", "body_hash", "connector_id", "records"],
+};
+
+const DeviceIngestBatchResponseSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    object: { const: "device_ingest_batch_result" },
+    device_id: { type: "string" },
+    source_instance_id: { type: "string" },
+    batch_id: { type: "string" },
+    body_hash: { type: "string" },
+    status: { type: "string", enum: ["accepted", "replayed", "rejected"] },
+    accepted_record_count: { type: "integer", minimum: 0 },
+    rejected_record_count: { type: "integer", minimum: 0 },
+  },
+  required: [
+    "object",
+    "device_id",
+    "source_instance_id",
+    "batch_id",
+    "body_hash",
+    "status",
+    "accepted_record_count",
+    "rejected_record_count",
+  ],
 };
 
 export const referenceManifests = [
@@ -294,6 +481,147 @@ export const referenceManifests = [
         },
       },
       ...CommonErrors,
+    },
+  },
+  {
+    id: "refCreateDeviceExporterEnrollmentCode",
+    method: "POST",
+    path: "/_ref/device-exporters/enrollment-codes",
+    surface: "reference",
+    tags: ["reference", "device-exporters"],
+    summary: "Create a short-lived local device exporter enrollment code for an owner-approved connector binding.",
+    request: { body: { schema: DeviceEnrollmentCodeCreateBodySchema } },
+    responses: { 201: { schema: DeviceEnrollmentCodeResponseSchema, description: "Created" }, ...DeviceExporterErrors },
+  },
+  {
+    id: "refExchangeDeviceExporterEnrollmentCode",
+    method: "POST",
+    path: "/_ref/device-exporters/enroll",
+    surface: "reference",
+    tags: ["reference", "device-exporters"],
+    summary: "Exchange a one-time enrollment code for a device-scoped local exporter credential.",
+    request: { body: { schema: DeviceEnrollmentExchangeBodySchema } },
+    responses: { 201: { schema: DeviceEnrollmentExchangeResponseSchema, description: "Created" }, ...DeviceExporterErrors },
+  },
+  {
+    id: "refListDeviceExporters",
+    method: "GET",
+    path: "/_ref/device-exporters",
+    surface: "reference",
+    tags: ["reference", "device-exporters"],
+    summary: "List enrolled local device exporters and their source-instance diagnostics.",
+    responses: {
+      200: {
+        schema: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            object: { const: "list" },
+            data: { type: "array", items: DeviceExporterSchema },
+          },
+          required: ["object", "data"],
+        },
+      },
+      ...DeviceExporterErrors,
+    },
+  },
+  {
+    id: "refListDeviceExporterSourceInstances",
+    method: "GET",
+    path: "/_ref/device-exporters/source-instances",
+    surface: "reference",
+    tags: ["reference", "device-exporters"],
+    summary: "List local device exporter source instances without promoting source-instance identity to the public PDPP contract.",
+    request: {
+      query: {
+        type: "object",
+        additionalProperties: false,
+        properties: { device_id: { type: "string" } },
+      },
+    },
+    responses: {
+      200: {
+        schema: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            object: { const: "list" },
+            data: { type: "array", items: DeviceSourceInstanceSchema },
+          },
+          required: ["object", "data"],
+        },
+      },
+      ...DeviceExporterErrors,
+    },
+  },
+  {
+    id: "refListDeviceExporterDiagnostics",
+    method: "GET",
+    path: "/_ref/device-exporters/diagnostics",
+    surface: "reference",
+    tags: ["reference", "device-exporters"],
+    summary: "List owner/operator diagnostics for local device exporters, including heartbeat and ingest freshness.",
+    responses: {
+      200: {
+        schema: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            object: { const: "list" },
+            data: { type: "array", items: DeviceExporterSchema },
+          },
+          required: ["object", "data"],
+        },
+      },
+      ...DeviceExporterErrors,
+    },
+  },
+  {
+    id: "refRevokeDeviceExporter",
+    method: "POST",
+    path: "/_ref/device-exporters/{deviceId}/revoke",
+    surface: "reference",
+    tags: ["reference", "device-exporters"],
+    summary: "Revoke a local device exporter credential and stop future heartbeats or ingest from that device.",
+    request: { params: DeviceIdParamSchema },
+    responses: {
+      200: {
+        schema: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            object: { const: "device_exporter_revocation" },
+            device_id: { type: "string" },
+            revoked_at: { type: "string" },
+          },
+          required: ["object", "device_id", "revoked_at"],
+        },
+      },
+      ...DeviceExporterErrors,
+    },
+  },
+  {
+    id: "refHeartbeatDeviceExporter",
+    method: "POST",
+    path: "/_ref/device-exporters/{deviceId}/heartbeat",
+    surface: "reference",
+    tags: ["reference", "device-exporters"],
+    summary: "Accept a heartbeat from a device-scoped local exporter credential.",
+    request: { params: DeviceIdParamSchema, body: { schema: DeviceHeartbeatBodySchema } },
+    responses: { 200: { schema: DeviceHeartbeatResponseSchema }, ...DeviceExporterErrors },
+  },
+  {
+    id: "refIngestDeviceExporterBatch",
+    method: "POST",
+    path: "/_ref/device-exporters/{deviceId}/ingest-batches",
+    surface: "reference",
+    tags: ["reference", "device-exporters"],
+    summary: "Accept an idempotent source-instance-aware ingest batch from a local device exporter.",
+    request: { params: DeviceIdParamSchema, body: { schema: DeviceIngestBatchBodySchema } },
+    responses: {
+      200: { schema: DeviceIngestBatchResponseSchema },
+      201: { schema: DeviceIngestBatchResponseSchema, description: "Created" },
+      ...DeviceExporterErrors,
     },
   },
   {
