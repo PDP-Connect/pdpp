@@ -1,6 +1,7 @@
 ## 1. Capture
 
-- [ ] Run the v0.2.0 Reddit connector with `PDPP_CAPTURE_FIXTURES=1` against the owner account; confirm all seven streams emit records.
+- [ ] Run the v0.2.0 Reddit connector with `PDPP_CAPTURE_FIXTURES=1` against the owner account; confirm all six current streams emit records.
+  - 2026-04-30 owner attempt: all-stream capture emitted `INTERACTION kind=manual_action` before any records because Reddit login rendered an unexpected challenge/Cloudflare surface. Blocked until the owner completes login in the visible Reddit browser profile.
 - [ ] Verify the raw run lands under `fixtures/reddit/raw/<runId>/records/*.jsonl` and `http/*.json`.
 
 ## 2. Redaction plan

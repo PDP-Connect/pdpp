@@ -6,8 +6,9 @@
   - 2026-04-24 worker read-only DB audit:
     - `packages/polyfill-connectors/.pdpp-data/pdpp.sqlite`: trusted owner data by local connector evidence: Amazon, Chase, ChatGPT, Claude Code, Codex, Gmail, Slack, USAA, and YNAB. GitHub is mixed: owner/API streams exist, but `commits` and `starred_repos` contain seed-connector rows from the known resolver-collision window. Spotify is untrusted seed/demo: `top_artists` 8, `saved_tracks` 8, `recently_played` 5; keys and sample payloads match `reference-implementation/connectors/seed/index.js`. Reddit is untrusted seed/demo: `posts` 4, `comments` 5, `saved` 3; keys and sample payloads match the same seed connector. Unknown/test: `/home/user/.vana/pdpp/pdpp.db` contains a legacy `unknown/test` row and older GitHub/Plaid rows not produced by the current reference DB path.
     - Additional ignored worktree DBs (`pdpp-crash-before`, `pdpp-next`) also contain Spotify/Reddit seed rows and should not be used as owner-account evidence.
-- [ ] Purge or quarantine Spotify and Reddit seed/demo rows before using them as internal-demo evidence.
+- [x] Purge or quarantine Spotify and Reddit seed/demo rows before using them as internal-demo evidence.
   - 2026-04-24 worker note: no direct DB mutation was performed. The existing safe pattern is the owner-authenticated reference reset endpoint, which deletes `records`, `record_changes`, `version_counter`, lexical index rows, and semantic index rows for a connector+stream. Gated owner action after starting the reference with `PDPP_DB_PATH=packages/polyfill-connectors/.pdpp-data/pdpp.sqlite`: issue an owner token, then run `DELETE /v1/streams/{stream}/records?connector_id=https%3A%2F%2Fregistry.pdpp.org%2Fconnectors%2Fspotify` for `top_artists`, `saved_tracks`, `recently_played`, and the same endpoint for Reddit `posts`, `comments`, `saved`.
+  - 2026-04-30 owner closeout: purged Spotify `top_artists`, `saved_tracks`, and `recently_played` through the owner-authenticated reset endpoint against the mounted local reference DB; verified zero live Spotify rows remain. Reddit is no longer seed/demo in the local DB: `run_1777407344215` completed successfully on 2026-04-28 with six current v0.2.0 streams committed (`submitted`, `comments`, `saved`, `upvoted`, `downvoted`, `hidden`), and no stale `posts` stream remains live.
 
 ## 2. Connector Slices
 
@@ -24,9 +25,11 @@
 - [ ] Gmail: keep attachment blob hydration separate from generic text extraction; add any missing safe relationships after `expand[]` support.
 - [x] Slack: audit v0.3.0 coverage for reactions, attachments, canvases, stars, user groups, and reminders.
   - 2026-04-25 ChatGPT/GitHub/Slack audit slice: `reactions`, `message_attachments`, and `canvases` are declared in `manifests/slack.json`, implemented in `connectors/slack/index.ts`/`parsers.ts`, and covered by parser/integration tests. `stars`, `user_groups`, and `reminders` are manifest-declared as Layer 2 streams but intentionally emit `SKIP_RESULT` from the slackdump archive path because slackdump archive mode does not call `stars.list`, `usergroups.list`, or `reminders.list`; implementing them requires an API fallback with live Slack credentials.
-- [ ] Reddit: re-ingest from verified Reddit credentials or keep connector marked untrusted.
+- [x] Reddit: re-ingest from verified Reddit credentials or keep connector marked untrusted.
   - 2026-04-24 owner pass completed the connector-side stream/schema work but did not mark existing DB rows trusted: `reddit` v0.2.0 now declares and shape-checks `submitted`, `comments`, `saved`, `upvoted`, `downvoted`, and `hidden`, with parser/integration coverage for pagination, cursoring, request scoping, and schema-failure skips. `gilded` was retracted on 2026-04-28 after live testing showed `/user/{name}/gilded.json` is not a current reliable Reddit JSON listing surface; evidence is captured in `design-notes/reddit-gilded-retraction-2026-04-28.md`. The local database still needs the separate purge/re-ingest step before Reddit can be used as internal-demo evidence.
-- [ ] Spotify: keep blocked/untrusted until real account access is possible.
+  - 2026-04-30 owner closeout: local DB evidence now shows a successful owner-backed Reddit run (`run_1777407344215`, 543 records flushed, six state streams committed) and live rows in all six current streams. Reddit can be used as internal-demo evidence; a separate pilot-real-shape fixture remains blocked on current Reddit browser login/Cloudflare approval.
+- [x] Spotify: keep blocked/untrusted until real account access is possible.
+  - 2026-04-30 owner closeout: no real Spotify account token is available; purged all live Spotify seed rows from the local reference DB and left Spotify with zero trusted live rows. Keep Spotify blocked/untrusted until a real account access path is available.
 
 ## 3. Validation
 
