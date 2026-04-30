@@ -47,7 +47,7 @@ export function CommandPaletteProvider({ children }: { children: ReactNode }) {
 }
 
 function buildShortcuts({ basePath, overviewHref }: { basePath: string; overviewHref: string }) {
-  return [
+  const shortcuts = [
     { label: "Overview", href: overviewHref },
     { label: "Search", href: `${basePath}/search` },
     { label: "Traces", href: `${basePath}/traces` },
@@ -55,6 +55,10 @@ function buildShortcuts({ basePath, overviewHref }: { basePath: string; overview
     { label: "Runs", href: `${basePath}/runs` },
     { label: "Records", href: `${basePath}/records` },
   ];
+  if (basePath === "/dashboard") {
+    shortcuts.push({ label: "Device exporters", href: `${basePath}/device-exporters` });
+  }
+  return shortcuts;
 }
 
 export function CommandPaletteTrigger() {
