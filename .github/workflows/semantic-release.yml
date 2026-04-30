@@ -2,7 +2,7 @@ name: semantic-release
 
 on:
   push:
-    branches: [main]
+    branches: [beta]
   workflow_dispatch: {}
 
 concurrency:
@@ -15,11 +15,12 @@ permissions:
 jobs:
   resolve-version:
     name: resolve next version
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/beta'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
       contents: write
+      id-token: write
     outputs:
       new-release-published: ${{ steps.version.outputs.new-release-published }}
       new-release-version: ${{ steps.version.outputs.new-release-version }}
@@ -38,7 +39,7 @@ jobs:
       - name: Install Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: "25"
+          node-version: "lts/*"
           cache: "pnpm"
 
       - name: Install dependencies
@@ -75,7 +76,7 @@ jobs:
       - name: Install Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: "25"
+          node-version: "lts/*"
           cache: "pnpm"
 
       - name: Install dependencies
@@ -95,6 +96,9 @@ jobs:
 
       - name: Typecheck web app
         run: pnpm --dir apps/web run types:check
+
+      - name: Verify CLI package
+        run: pnpm --filter @pdpp/cli run verify
 
   validate-release-images:
     name: validate release image ${{ matrix.image }}
@@ -146,8 +150,7 @@ jobs:
             org.opencontainers.image.version=${{ needs.resolve-version.outputs.new-release-version }}
           tags: |
             type=raw,value=${{ needs.resolve-version.outputs.new-release-version }}
-            type=raw,value=${{ needs.resolve-version.outputs.new-release-major-minor }}
-            type=raw,value=latest
+            type=raw,value=beta
             type=sha,prefix=sha-
 
       - name: Build image
@@ -164,13 +167,14 @@ jobs:
           target: ${{ matrix.target }}
 
   release:
-    name: publish GitHub release
+    name: publish GitHub and npm release
     needs: [resolve-version, quality, validate-release-images]
     if: needs.resolve-version.outputs.new-release-published == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
       contents: write
+      id-token: write
     outputs:
       published: ${{ steps.semantic-release.outputs.new-release-published }}
       version: ${{ steps.semantic-release.outputs.new-release-version }}
@@ -189,7 +193,7 @@ jobs:
       - name: Install Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: "25"
+          node-version: "lts/*"
           cache: "pnpm"
 
       - name: Install dependencies
@@ -264,8 +268,7 @@ jobs:
             org.opencontainers.image.version=${{ needs.release.outputs.version }}
           tags: |
             type=raw,value=${{ needs.release.outputs.version }}
-            type=raw,value=${{ needs.release.outputs.major-minor }}
-            type=raw,value=latest
+            type=raw,value=beta
             type=sha,prefix=sha-
 
       - name: Build and push image

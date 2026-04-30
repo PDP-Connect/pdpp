@@ -1,6 +1,7 @@
 {
   "name": "pdpp",
   "version": "1.0.0",
+  "private": true,
   "description": "PDPP protocol specs, reference implementation, docs site, and design workbench.",
   "type": "module",
   "scripts": {

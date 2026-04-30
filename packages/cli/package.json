@@ -1,0 +1,48 @@
+{
+  "name": "@pdpp/cli",
+  "version": "0.0.0",
+  "description": "Command-line tools for PDPP providers.",
+  "type": "module",
+  "bin": {
+    "pdpp": "./bin/pdpp.js"
+  },
+  "exports": {
+    ".": "./src/index.js",
+    "./package-info": "./src/package-info.js"
+  },
+  "files": [
+    "bin/",
+    "src/",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "verify": "pnpm test",
+    "pack:dry-run": "pnpm pack --dry-run"
+  },
+  "keywords": [
+    "pdpp",
+    "personal-data",
+    "oauth",
+    "cli"
+  ],
+  "license": "ISC",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vana-com/pdpp.git",
+    "directory": "packages/cli"
+  },
+  "bugs": {
+    "url": "https://github.com/vana-com/pdpp/issues"
+  },
+  "homepage": "https://github.com/vana-com/pdpp#readme",
+  "engines": {
+    "node": ">=22.14.0"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": false,
+    "registry": "https://registry.npmjs.org/",
+    "tag": "beta"
+  }
+}
