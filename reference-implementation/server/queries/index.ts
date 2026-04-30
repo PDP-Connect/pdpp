@@ -227,6 +227,7 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   readonly recordsIngestMarkRecordDeleted: MutationQuery;
   readonly recordsIngestPruneRecordChanges: MutationQuery;
   readonly recordsIngestUpsertRecord: MutationQuery;
+  readonly recordsListStreamVisibleCandidates: IterateQuery;
   readonly recordsSnapshotsGetMinRecordChangeVersion: ReadOneQuery;
   // Records — change-log snapshot/page reads for /changes feed.
   readonly recordsSnapshotsGetSnapshotAtVersion: ReadOneQuery;
@@ -307,9 +308,18 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   // Spine — controller-side terminal-event existence probe.
   readonly spineCheckRunTerminal: ReadOneQuery;
   readonly spineGetRunTerminalEvent: ReadOneQuery;
+  // Spine — append and correlation search.
+  readonly spineInsertEvent: MutationQuery;
   readonly spineListEventsByGrantId: ReadManyQuery;
   readonly spineListEventsByRunId: ReadManyQuery;
   readonly spineListEventsByTraceId: ReadManyQuery;
+  readonly spineSearchFindGrantId: ReadOneQuery;
+  readonly spineSearchFindRunId: ReadOneQuery;
+  readonly spineSearchFindTraceId: ReadOneQuery;
+  readonly spineSearchFindTraceIdByRequestId: ReadOneQuery;
+  readonly spineSearchListGrantSummariesByLike: ReadManyQuery;
+  readonly spineSearchListRunSummariesByLike: ReadManyQuery;
+  readonly spineSearchListTraceSummariesByLike: ReadManyQuery;
 }
 
 interface ParsedFrontmatter {
@@ -624,6 +634,7 @@ export function loadReferenceQueries(queryDir = QUERIES_DIR): ReferenceQueryRegi
     "recordsDatasetGetBlobBytes",
     "recordsDatasetGetStreamTimeBounds",
     "recordsDatasetGetTopConnectorsByRecordCount",
+    "recordsListStreamVisibleCandidates",
     // Records — streaming aggregate.
     "recordsAggregateIterateStreamRecordsForAggregation",
     // Controller — schedule + active-run persistence.
@@ -638,6 +649,14 @@ export function loadReferenceQueries(queryDir = QUERIES_DIR): ReferenceQueryRegi
     "controllerDeleteSchedule",
     // Spine — controller-side terminal-event existence probe.
     "spineCheckRunTerminal",
+    "spineInsertEvent",
+    "spineSearchFindTraceId",
+    "spineSearchFindGrantId",
+    "spineSearchFindRunId",
+    "spineSearchFindTraceIdByRequestId",
+    "spineSearchListTraceSummariesByLike",
+    "spineSearchListGrantSummariesByLike",
+    "spineSearchListRunSummariesByLike",
     // Lexical retrieval — FTS5 index maintenance.
     "searchIndexDeleteByRecordKey",
     "searchIndexInsertRow",

@@ -34,6 +34,12 @@
  *     INSERT/UPDATE/DELETE/CREATE/ALTER/DROP/REPLACE. Returns
  *     `{ changes, lastInsertRowid }`.
  *
+ *   execNamedOn(db, query, params)
+ *     Same mutation semantics as `exec`, but binds a named-parameter object
+ *     against an explicit database handle. This exists for append paths that
+ *     already accept a transaction handle and whose SQL artifact uses
+ *     `@named` placeholders.
+ *
  *   execReturningOne(query, params)
  *     Mutation that returns exactly one row via SQL `RETURNING`. SQL is a
  *     `terminator: 'exec_one'` query — a mutation statement (INSERT /
@@ -316,6 +322,34 @@ export function exec(query: MutationQuery, params: BindParams = []): ExecResult 
     changes: result.changes,
     lastInsertRowid: result.lastInsertRowid,
   };
+}
+
+function normalizeExecResult(result: unknown): ExecResult {
+  const row = result && typeof result === "object" ? (result as Partial<ExecResult>) : {};
+  return {
+    changes: typeof row.changes === "number" ? row.changes : 0,
+    lastInsertRowid:
+      typeof row.lastInsertRowid === "number" || typeof row.lastInsertRowid === "bigint" ? row.lastInsertRowid : 0,
+  };
+}
+
+/**
+ * Execute a named-parameter mutation against a specific DB handle. Keep this
+ * narrow: most code should use positional `exec`; this helper preserves
+ * transaction-handle call sites whose static SQL is clearer with `@name`
+ * placeholders.
+ */
+export function execNamedOn(
+  db: {
+    prepare(sql: string): {
+      run(params: object): unknown;
+    };
+  },
+  query: MutationQuery,
+  params: object
+): ExecResult {
+  const stmt = db.prepare(query.sql);
+  return normalizeExecResult(stmt.run(params));
 }
 
 // ---------------------------------------------------------------------------

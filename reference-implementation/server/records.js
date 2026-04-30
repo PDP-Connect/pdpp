@@ -2108,15 +2108,10 @@ export async function listStreams(storageTarget, grant, manifest = null) {
   }
 
   const connectorId = resolveStorageConnectorId(storageTarget);
-  const db = getDb();
   const result = [];
 
   for (const sg of grant.streams) {
-    const rows = db.prepare(`
-      SELECT record_key, record_json, emitted_at
-      FROM records
-      WHERE connector_id = ? AND stream = ? AND deleted = 0
-    `).all(connectorId, sg.name);
+    const rows = iterate(referenceQueries.recordsListStreamVisibleCandidates, [connectorId, sg.name]);
     const effective = buildEffectiveFilter(sg, {});
     const manifestStream = manifest?.streams?.find((stream) => stream.name === sg.name);
     const consentTimeField = manifestStream?.consent_time_field || null;

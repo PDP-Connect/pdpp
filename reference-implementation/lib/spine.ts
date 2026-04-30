@@ -1,7 +1,15 @@
 import { randomBytes } from "node:crypto";
 import { getDb } from "../server/db.js";
 import { isPostgresStorageBackend } from "../server/postgres-storage.js";
-import { getMany, type Page, referenceQueries, decodeCursor as wrapperDecodeCursor } from "./db.ts";
+import {
+  execNamedOn,
+  getMany,
+  getOne,
+  iterateDynamicSqlAcknowledged,
+  type Page,
+  referenceQueries,
+  decodeCursor as wrapperDecodeCursor,
+} from "./db.ts";
 import {
   postgresEmitSpineEvent,
   postgresListSpineCorrelations,
@@ -274,33 +282,6 @@ function normalizeSpineEventInput(input: SpineEventInput): NormalizedSpineEvent 
 }
 
 /**
- * Spine append. The `event_seq` column is the stable logical sequence the
- * disclosure-spine cursor contract orders by; the INSERT computes it as
- * `MAX(event_seq) + 1` from the table itself. SQLite serializes writers,
- * so the subquery sees a consistent maximum across concurrent appends.
- * `event_seq` SHALL NOT be supplied by callers — the assignment is the
- * append boundary's responsibility.
- *
- * Spec: openspec/changes/replace-spine-rowid-cursor-with-event-seq/specs/
- *       reference-implementation-architecture/spec.md
- */
-const INSERT_SPINE_EVENT_SQL = `
-  INSERT INTO spine_events(
-    event_id, event_seq, event_type, occurred_at, recorded_at, scenario_id, trace_id,
-    actor_type, actor_id, subject_type, subject_id, object_type, object_id,
-    status, request_id, grant_id, run_id, provider_id, client_id, stream_id,
-    token_id, interaction_id, data_json, version
-  ) VALUES (
-    @event_id,
-    (SELECT COALESCE(MAX(event_seq), 0) + 1 FROM spine_events),
-    @event_type, @occurred_at, @recorded_at, @scenario_id, @trace_id,
-    @actor_type, @actor_id, @subject_type, @subject_id, @object_type, @object_id,
-    @status, @request_id, @grant_id, @run_id, @provider_id, @client_id, @stream_id,
-    @token_id, @interaction_id, @data_json, @version
-  )
-`;
-
-/**
  * Emit a spine event synchronously. Declared `async` for backwards-compatible
  * return shape (callers already `await` it); internally the `better-sqlite3`
  * INSERT is synchronous, so the returned Promise resolves on the next tick
@@ -323,7 +304,7 @@ export async function emitSpineEvent(
   }
   const event = normalizeSpineEventInput(input);
 
-  db.prepare(INSERT_SPINE_EVENT_SQL).run(event);
+  execNamedOn(db, referenceQueries.spineInsertEvent, event);
 
   return hydrateNormalizedEvent(event);
 }
@@ -863,7 +844,9 @@ export async function listSpineCorrelations(
     LIMIT ?
   `;
 
-  const aggRows = db.prepare(sql).all(...whereBinds, ...havingBinds, sqlLimit) as CorrelationAggregateRow[];
+  const aggRows = [
+    ...iterateDynamicSqlAcknowledged<CorrelationAggregateRow>(sql, [...whereBinds, ...havingBinds, sqlLimit]),
+  ];
 
   const correlationKind = CORRELATION_KIND_FOR_COLUMN[column];
   const summaries: SpineSummary[] = [];
@@ -941,17 +924,17 @@ export async function searchSpine(query: unknown): Promise<SpineSearchResult> {
     return empty;
   }
 
-  const exactMatch = findExactMatch(db, q);
+  const exactMatch = findExactMatch(q);
 
   return {
     exact: exactMatch,
-    traces: summariesForLike(db, "trace_id", q),
-    grants: summariesForLike(db, "grant_id", q),
-    runs: summariesForLike(db, "run_id", q),
+    traces: summariesForLike("trace_id", q),
+    grants: summariesForLike("grant_id", q),
+    runs: summariesForLike("run_id", q),
   };
 }
 
-function findExactMatch(db: SpineDatabase, q: string): { kind: SpineCorrelationKey; id: string } | null {
+function findExactMatch(q: string): { kind: SpineCorrelationKey; id: string } | null {
   const columns: readonly { column: "trace_id" | "grant_id" | "run_id"; kind: SpineCorrelationKey }[] = [
     { column: "trace_id", kind: "trace" },
     { column: "grant_id", kind: "grant" },
@@ -959,15 +942,13 @@ function findExactMatch(db: SpineDatabase, q: string): { kind: SpineCorrelationK
   ];
 
   for (const { column, kind } of columns) {
-    const row = db.prepare(`SELECT 1 FROM spine_events WHERE ${column} = ? LIMIT 1`).get(q);
+    const row = getOne(EXACT_MATCH_QUERY[column], [q]);
     if (row) {
       return { kind, id: q };
     }
   }
   // request_id is un-indexed but small-cardinality; the lookup is bounded.
-  const fallback = db
-    .prepare("SELECT trace_id FROM spine_events WHERE request_id = ? AND trace_id IS NOT NULL LIMIT 1")
-    .get(q) as SpineSearchBySecondaryRow | undefined;
+  const fallback = getOne<SpineSearchBySecondaryRow>(referenceQueries.spineSearchFindTraceIdByRequestId, [q]);
   if (fallback?.trace_id) {
     return { kind: "trace", id: fallback.trace_id };
   }
@@ -979,19 +960,22 @@ interface SpineSearchLikeRow {
   readonly last_at: string;
 }
 
-function summariesForLike(db: SpineDatabase, column: "trace_id" | "grant_id" | "run_id", q: string): SpineSummary[] {
+const EXACT_MATCH_QUERY = {
+  trace_id: referenceQueries.spineSearchFindTraceId,
+  grant_id: referenceQueries.spineSearchFindGrantId,
+  run_id: referenceQueries.spineSearchFindRunId,
+} as const;
+
+const LIKE_SUMMARY_QUERY = {
+  trace_id: referenceQueries.spineSearchListTraceSummariesByLike,
+  grant_id: referenceQueries.spineSearchListGrantSummariesByLike,
+  run_id: referenceQueries.spineSearchListRunSummariesByLike,
+} as const;
+
+function summariesForLike(column: "trace_id" | "grant_id" | "run_id", q: string): SpineSummary[] {
   const like = `%${q}%`;
-  const idRows = db
-    .prepare(
-      `SELECT DISTINCT ${column} AS id, MAX(occurred_at) AS last_at
-         FROM spine_events
-        WHERE ${column} IS NOT NULL
-          AND ${column} LIKE ?
-        GROUP BY ${column}
-        ORDER BY last_at DESC
-        LIMIT 10`
-    )
-    .all(like) as SpineSearchLikeRow[];
+  const page = getMany<Record<string, unknown>>(LIKE_SUMMARY_QUERY[column], [like], { limit: 10 });
+  const idRows = page.rows as unknown as SpineSearchLikeRow[];
 
   const correlationKind = CORRELATION_KIND_FOR_COLUMN[column];
   const out: SpineSummary[] = [];

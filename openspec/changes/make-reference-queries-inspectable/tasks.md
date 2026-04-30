@@ -17,8 +17,10 @@
 
 - [x] Extract one low-risk server module first and validate the pattern.
   - 2026-04-24 proof slice: extracted `list-registered-connectors.sql` and wired `ref-control.ts` connector listing through `referenceQueries.listRegisteredConnectors`.
-- [ ] Extract remaining static server/runtime/lib statements in small commits.
-- [ ] Extract test-only static statements only where it improves readability.
+- [x] Extract remaining static server/runtime/lib statements in small commits.
+  - 2026-04-30 owner closeout: extracted the remaining static spine append/search statements and the grant-visible stream candidate scan into named query artifacts. Sidecar audit found no remaining production direct SQL site that is static-extractable and blocking this change; the remaining app-level direct builders are dynamic search candidate scans or sqlite-vec runtime-table DDL/DML that cannot be registry-validated at startup.
+- [x] Extract test-only static statements only where it improves readability.
+  - 2026-04-30 sidecar audit: no test-only extraction candidates improved readability. Inline test SQL is concentrated in setup/tampering helpers, assertion probes, query-registry fixture SQL, and test-only adapter drivers where locality is clearer than durable query artifacts.
 - [x] Leave dynamic query builders in code with short comments explaining why.
   - 2026-04-24 proof slice: documented the touched `ref-control.ts` timeline dynamic builder; broader dynamic builders listed above remain for later extraction slices.
 
