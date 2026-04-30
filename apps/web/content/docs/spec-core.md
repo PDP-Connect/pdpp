@@ -317,7 +317,10 @@ A client requests specific personal data by including `authorization_details` in
   "authorization_details": [
     {
       "type": "https://pdpp.org/data-access",
-      "connector_id": "https://registry.pdpp.org/connectors/spotify",
+      "source": {
+        "kind": "connector",
+        "id": "https://registry.pdpp.org/connectors/spotify"
+      },
       "purpose_code": "https://pdpp.org/purpose/personalization",
       "purpose_description": "Recommend concerts based on your listening history",
       "access_mode": "single_use",
@@ -1388,7 +1391,7 @@ interface DataGrant {
   issued_at: string;
   subject: { id: string; [key: string]: unknown };
   client: { client_id: string; [key: string]: unknown };
-  connector_id: string;
+  source: { kind: 'connector' | 'provider_native'; id: string };
   manifest_version: string;
   purpose_code: string;    // URI
   purpose_description?: string;

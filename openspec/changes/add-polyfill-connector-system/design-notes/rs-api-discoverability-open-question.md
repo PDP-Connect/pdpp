@@ -6,16 +6,16 @@
 
 **Framing:** Discovery + error + query answers differ depending on whether the primary client is the owner's own agent or a third-party client. See `pdpp-trust-model-framing.md`.
 
-## Quirk 1 — `connector_id` is mandatory on every endpoint, including listing
+## Quirk 1 — connector source identity is mandatory on every endpoint, including listing
 
-`GET /v1/streams` without a `connector_id` query parameter returns:
+`GET /v1/streams` without a connector source query returns:
 
 ```json
 {
   "error": {
     "type": "invalid_request_error",
     "code": "invalid_request",
-    "message": "connector_id must be a single non-empty string for polyfill owner access",
+    "message": "source.kind=connector and source.id must identify a connector for polyfill owner access",
     "request_id": "req_..."
   }
 }
@@ -103,7 +103,7 @@ None of these three questions is addressed in `spec-core.md` or `spec-data-query
    ```
    Status codes MUST match the error type (400 for invalid_request, 401 for unauthorized, 404 for not_found, etc.). Never fall through to framework defaults.
 
-2. RS MUST expose `GET /v1/connectors` that returns the connectors accessible to the presented bearer. Minimum schema: `{ object: "list", data: [{ connector_id, streams: [...], record_count, last_updated }] }`.
+2. RS MUST expose `GET /v1/connectors` that returns the connector sources accessible to the presented bearer. Minimum schema: `{ object: "list", data: [{ source: { kind: "connector", id }, streams: [...], record_count, last_updated }] }`.
 
 - **Pro:** closes the immediate gap. Small surface area. Lets the RS stay otherwise unchanged.
 - **Con:** doesn't address stream-level discovery (schema endpoints, resource discovery inside a stream).

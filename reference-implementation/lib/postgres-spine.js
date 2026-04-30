@@ -22,8 +22,65 @@ function eventId(prefix) {
   return `${prefix}_${randomUUID().replace(/-/g, '')}`;
 }
 
+function nonEmptyString(value) {
+  return typeof value === 'string' && value ? value : null;
+}
+
+function isSourceKind(value) {
+  return value === 'connector' || value === 'provider_native';
+}
+
+function normalizeSourceObject(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const kind = isSourceKind(value.kind) ? value.kind : null;
+  const id = nonEmptyString(value.id);
+  if (kind && id) return { kind, id };
+
+  const legacyKind = isSourceKind(value.binding_kind) ? value.binding_kind : null;
+  if (legacyKind === 'connector') {
+    const connectorId = nonEmptyString(value.connector_id);
+    return connectorId ? { kind: 'connector', id: connectorId } : null;
+  }
+  if (legacyKind === 'provider_native') {
+    const providerId = nonEmptyString(value.provider_id);
+    return providerId ? { kind: 'provider_native', id: providerId } : null;
+  }
+
+  const connectorId = nonEmptyString(value.connector_id);
+  const providerId = nonEmptyString(value.provider_id);
+  if (connectorId && !providerId) return { kind: 'connector', id: connectorId };
+  if (providerId && !connectorId) return { kind: 'provider_native', id: providerId };
+  return null;
+}
+
+function deriveSource(input, actorType, actorId) {
+  const explicitKind = isSourceKind(input.source_kind) ? input.source_kind : null;
+  const explicitId = nonEmptyString(input.source_id);
+  if (explicitKind && explicitId) return { kind: explicitKind, id: explicitId };
+
+  const data = input.data && typeof input.data === 'object' && !Array.isArray(input.data) ? input.data : {};
+  const source = normalizeSourceObject(data.source) || normalizeSourceObject(data.source_binding);
+  if (source) return source;
+
+  const connectorId = nonEmptyString(data.connector_id);
+  const providerId = nonEmptyString(data.provider_id);
+  if (connectorId && !providerId) return { kind: 'connector', id: connectorId };
+  if (providerId && !connectorId) return { kind: 'provider_native', id: providerId };
+  if (actorType === 'runtime' && actorId) return { kind: 'connector', id: actorId };
+  return null;
+}
+
+function serializeData(inputData, source) {
+  const data = inputData && typeof inputData === 'object' && !Array.isArray(inputData) ? { ...inputData } : {};
+  if (source) data.source = source;
+  return JSON.stringify(data);
+}
+
 function normalize(input = {}) {
   const at = input.occurred_at || nowIso();
+  const actorType = input.actor_type || 'system';
+  const actorId = input.actor_id || 'system';
+  const source = deriveSource(input, actorType, actorId);
   return {
     event_id: input.event_id || eventId('evt'),
     event_type: input.event_type || 'event',
@@ -31,8 +88,8 @@ function normalize(input = {}) {
     recorded_at: nowIso(),
     scenario_id: input.scenario_id || 'default',
     trace_id: input.trace_id || eventId('trace'),
-    actor_type: input.actor_type || 'system',
-    actor_id: input.actor_id || 'system',
+    actor_type: actorType,
+    actor_id: actorId,
     subject_type: input.subject_type || null,
     subject_id: input.subject_id || null,
     object_type: input.object_type || 'object',
@@ -41,12 +98,13 @@ function normalize(input = {}) {
     request_id: input.request_id || null,
     grant_id: input.grant_id || null,
     run_id: input.run_id || null,
-    provider_id: input.provider_id || null,
+    source_kind: source?.kind || null,
+    source_id: source?.id || null,
     client_id: input.client_id || null,
     stream_id: input.stream_id || null,
     token_id: input.token_id || null,
     interaction_id: input.interaction_id || null,
-    data_json: JSON.stringify(input.data ?? {}),
+    data_json: serializeData(input.data, source),
     version: input.version || '1',
   };
 }
@@ -70,7 +128,8 @@ function hydrate(row) {
     request_id: row.request_id,
     grant_id: row.grant_id,
     run_id: row.run_id,
-    provider_id: row.provider_id,
+    source_kind: row.source_kind,
+    source_id: row.source_id,
     client_id: row.client_id,
     stream_id: row.stream_id,
     token_id: row.token_id,
@@ -104,12 +163,14 @@ function summarizeRows(id, rows) {
   const last = events[events.length - 1] || first;
   const kinds = [...new Set(events.map((event) => event.event_type).filter(Boolean))];
   const failureEvent = events.find((event) => event.status === 'failed' || event.status === 'rejected');
+  const source = events.find((event) => event.source_kind && event.source_id);
+  const connector = events.find((event) => event.source_kind === 'connector' && event.source_id);
   return {
     id,
     actor_id: last.actor_id || null,
     actor_type: last.actor_type || null,
     client_id: last.client_id || null,
-    connector_id: typeof last.data?.connector_id === 'string' ? last.data.connector_id : null,
+    connector_id: connector?.source_id || null,
     event_count: events.length,
     failure: failureEvent
       ? {
@@ -122,9 +183,11 @@ function summarizeRows(id, rows) {
     kinds,
     last_at: last.occurred_at || null,
     needs_input: events.some((event) => event.status === 'needs_input'),
-    provider_id: last.provider_id || null,
     request_id: last.request_id || null,
     run_id: last.run_id || null,
+    source: source ? { kind: source.source_kind, id: source.source_id } : null,
+    source_id: source?.source_id || null,
+    source_kind: source?.source_kind || null,
     status: last.status || 'unknown',
     trace_id: last.trace_id || null,
   };
@@ -136,13 +199,13 @@ export async function postgresEmitSpineEvent(input = {}) {
     `INSERT INTO spine_events (
        event_id, event_type, occurred_at, recorded_at, scenario_id, trace_id,
        actor_type, actor_id, subject_type, subject_id, object_type, object_id,
-       status, request_id, grant_id, run_id, provider_id, client_id, stream_id,
+       status, request_id, grant_id, run_id, source_kind, source_id, client_id, stream_id,
        token_id, interaction_id, data_json, version
      ) VALUES (
        $1, $2, $3, $4, $5, $6,
        $7, $8, $9, $10, $11, $12,
-       $13, $14, $15, $16, $17, $18, $19,
-       $20, $21, $22::jsonb, $23
+       $13, $14, $15, $16, $17, $18, $19, $20,
+       $21, $22, $23::jsonb, $24
      )
      RETURNING *`,
     [
@@ -162,7 +225,8 @@ export async function postgresEmitSpineEvent(input = {}) {
       event.request_id,
       event.grant_id,
       event.run_id,
-      event.provider_id,
+      event.source_kind,
+      event.source_id,
       event.client_id,
       event.stream_id,
       event.token_id,

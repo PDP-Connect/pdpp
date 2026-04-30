@@ -94,8 +94,18 @@ function DraftFormFields({ draft }: { draft: Draft }) {
         name="redirect_uri"
         placeholder="https://client.example/callback"
       />
-      <FormField defaultValue={draft.connectorId} label="Connector id" name="connector_id" />
-      <FormField defaultValue={draft.providerId} label="Provider id" name="provider_id" />
+      <label className="grid gap-1 text-sm">
+        <span className="text-muted-foreground">Source kind</span>
+        <select
+          className="rounded-md border border-input bg-background px-3 py-2 text-sm"
+          defaultValue={draft.sourceKind}
+          name="source_kind"
+        >
+          <option value="connector">connector</option>
+          <option value="provider_native">provider_native</option>
+        </select>
+      </label>
+      <FormField defaultValue={draft.sourceId} label="Source id" name="source_id" />
       <FormField defaultValue={draft.purposeCode} label="Purpose code" name="purpose_code" />
       <FormSelect
         defaultValue={draft.accessMode}

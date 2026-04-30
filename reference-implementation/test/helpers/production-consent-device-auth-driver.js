@@ -113,7 +113,7 @@ export function createProductionConsentDeviceAuthDriver() {
         authorization_details: [
           {
             type: 'https://pdpp.org/data-access',
-            connector_id: manifest.connector_id,
+            source: { kind: 'connector', id: manifest.connector_id },
             purpose_code: purposeCode,
             purpose_description: purposeDescription,
             access_mode: accessMode,

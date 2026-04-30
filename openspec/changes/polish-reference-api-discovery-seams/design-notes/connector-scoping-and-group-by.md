@@ -10,18 +10,18 @@ Related: polish-reference-api-discovery-seams (parent change), specs/lexical-ret
 
 Two assistant-friendly seams remain on the search and aggregate surfaces. They were called out in `tmp/pdpp-review-memo.md` and intentionally deferred from the seam-polish slice because both touch durable contract:
 
-1. **Connector scoping on `/v1/search`.** Owner-mode lexical search (and by extension semantic + hybrid) currently fans out across every owner-visible connector. There is no public way to narrow to "only my emails" without inferring the right `streams[]` per connector. The lexical-retrieval spec explicitly says "no public connector_id parameter," so adding one is a contract change.
+1. **Connector scoping on `/v1/search`.** Owner-mode lexical search (and by extension semantic + hybrid) currently fans out across every owner-visible connector. There is no public way to narrow to "only my emails" without inferring the right `streams[]` per connector. The lexical-retrieval spec explicitly says there is no public connector source filter, so adding one is a contract change.
 2. **`group_by` on `sum`/`min`/`max` aggregations.** The runtime allows `group_by` only with `metric=count`; the manifest's `query.aggregations.group_by` declaration is independent of metric and could already authorize, e.g., `sum-by-payee`. The reference architecture spec only has scenarios for grouped count.
 
 ## Context
 
 ### Connector scoping
 
-- Affected specs: `lexical-retrieval/spec.md`, `semantic-retrieval/spec.md`, `hybrid-retrieval/spec.md`. Each currently locks the v1 query allowlist with `additionalProperties: false` and excludes `connector_id` deliberately.
+- Affected specs: `lexical-retrieval/spec.md`, `semantic-retrieval/spec.md`, `hybrid-retrieval/spec.md`. Each currently locks the v1 query allowlist with `additionalProperties: false` and excludes connector source filters deliberately.
 - Owner-mode plumbing exists (`resolveOwnerVisibleConnectorIds`); narrowing happens in `runLexicalSearch` / `runSemanticSearch` / `runHybridSearch`. A `connectors[]` filter would compose with `streams[]` and range filters cleanly: streams[] filters per-connector plan entries; connectors[] filters the connector list before plan construction.
 - Open questions:
-  - Parameter name: `connector_id` (single) vs. `connectors[]` (repeated). The latter mirrors `streams[]`.
-  - Error class for unknown connector under owner mode (`unknown_connector`?). For client tokens `connector_id` is implied by the grant — should the param be a no-op when it matches, or rejected as redundant?
+  - Parameter shape: a single `source` object vs. `sources[]` repeated. The latter mirrors `streams[]`.
+  - Error class for unknown connector source under owner mode (`unknown_source`?). For client tokens the source is implied by the grant — should the param be a no-op when it matches, or rejected as redundant?
   - Should the param be allowed only in owner mode, or also in client mode for parity?
 
 ### group_by on sum/min/max

@@ -157,7 +157,7 @@ test('scheduler run history and last-run time round-trip through semantic method
     const completedAt = '2026-04-29T01:00:01.000Z';
     store.appendRunHistory({
       connectorId: SEMANTIC_CONNECTOR,
-      source: { binding_kind: 'connector', connector_id: SEMANTIC_CONNECTOR },
+      source: { kind: 'connector', id: SEMANTIC_CONNECTOR },
       status: 'succeeded',
       recordsEmitted: 7,
       reportedRecordsEmitted: null,
@@ -178,7 +178,7 @@ test('scheduler run history and last-run time round-trip through semantic method
     assert.equal(history.length, 1);
     assert.deepEqual(history[0], {
       connectorId: SEMANTIC_CONNECTOR,
-      source: { binding_kind: 'connector', connector_id: SEMANTIC_CONNECTOR },
+      source: { kind: 'connector', id: SEMANTIC_CONNECTOR },
       status: 'succeeded',
       recordsEmitted: 7,
       reportedRecordsEmitted: null,

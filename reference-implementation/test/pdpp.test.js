@@ -117,8 +117,11 @@ async function startGrantRequest(asUrl, params) {
       authorization_details: [
         {
           type: 'https://pdpp.org/data-access',
-          ...(params.connector_id ? { connector_id: params.connector_id } : {}),
-          ...(params.provider_id ? { provider_id: params.provider_id } : {}),
+          source: params.source || (
+            params.provider_id
+              ? { kind: 'provider_native', id: params.provider_id }
+              : { kind: 'connector', id: params.connector_id }
+          ),
           purpose_code: params.purpose_code,
           purpose_description: params.purpose_description,
           access_mode: params.access_mode,
@@ -407,7 +410,7 @@ test('PDPP reference implementation integration', async (t) => {
 
       const { body: initiate } = await startGrantRequest(asUrl, {
         client_id: 'concert_recommendation_app',
-        connector_id: spotifyManifest.connector_id,
+        source: { kind: 'connector', id: spotifyManifest.connector_id },
         purpose_code: 'https://pdpp.org/purpose/personalization',
         purpose_description: 'Maintain a concert-recommendation profile over time',
         access_mode: 'continuous',
@@ -450,7 +453,7 @@ test('PDPP reference implementation integration', async (t) => {
 
       const { body: initiate } = await startGrantRequest(asUrl, {
         client_id: 'concert_recommendation_app',
-        connector_id: spotifyManifest.connector_id,
+        source: { kind: 'connector', id: spotifyManifest.connector_id },
         purpose_code: 'https://pdpp.org/purpose/personalization',
         purpose_description: 'Maintain a concert-recommendation profile over time',
         access_mode: 'continuous',
@@ -495,7 +498,7 @@ test('PDPP reference implementation integration', async (t) => {
           authorization_details: [
             {
               type: 'https://pdpp.org/data-access',
-              connector_id: spotifyManifest.connector_id,
+              source: { kind: 'connector', id: spotifyManifest.connector_id },
               purpose_code: 'https://pdpp.org/purpose/personalization',
               purpose_description: 'Maintain a concert-recommendation profile over time',
               access_mode: 'continuous',
@@ -526,8 +529,8 @@ test('PDPP reference implementation integration', async (t) => {
 
       assert.equal(approved.grant.client.client_id, 'longview');
       assert.equal(approved.grant.client.client_display.name, 'Longview');
-      assert.equal(approved.grant.source?.binding_kind, 'connector');
-      assert.equal(approved.grant.source?.connector_id, spotifyManifest.connector_id);
+      assert.equal(approved.grant.source?.kind, 'connector');
+      assert.equal(approved.grant.source?.id, spotifyManifest.connector_id);
       assert.equal(approved.grant.access_mode, 'continuous');
       assert.equal(approved.grant.retention.max_duration, 'P30D');
       assert.equal(approved.grant.streams[0].name, 'top_artists');
@@ -548,7 +551,7 @@ test('PDPP reference implementation integration', async (t) => {
     await withHarness(async ({ asUrl, spotifyManifest }) => {
       const approved = await approveGrant(asUrl, 'u1', {
         client_id: 'longview',
-        connector_id: spotifyManifest.connector_id,
+        source: { kind: 'connector', id: spotifyManifest.connector_id },
         purpose_code: 'https://pdpp.org/purpose/personalization',
         purpose_description: 'Maintain a concert-recommendation profile over time',
         access_mode: 'continuous',
@@ -606,7 +609,7 @@ test('PDPP reference implementation integration', async (t) => {
     await withHarness(async ({ asUrl, spotifyManifest }) => {
       const approved = await approveGrant(asUrl, 'u1', {
         client_id: 'longview',
-        connector_id: spotifyManifest.connector_id,
+        source: { kind: 'connector', id: spotifyManifest.connector_id },
         purpose_code: 'https://pdpp.org/purpose/personalization',
         purpose_description: 'Maintain a concert-recommendation profile over time',
         access_mode: 'continuous',
@@ -636,8 +639,8 @@ test('PDPP reference implementation integration', async (t) => {
       assert.ok(rejectedEvent, 'malformed polyfill persisted grants should emit grant.revoke_rejected artifacts');
       assert.equal(rejectedEvent.request_id, revokeRequestId);
       assert.equal(rejectedEvent.trace_id, revokeTraceId);
-      assert.equal(rejectedEvent.data?.source?.binding_kind, 'connector');
-      assert.equal(rejectedEvent.data?.source?.connector_id, spotifyManifest.connector_id);
+      assert.equal(rejectedEvent.data?.source?.kind, 'connector');
+      assert.equal(rejectedEvent.data?.source?.id, spotifyManifest.connector_id);
       assert.ok(!('connector_id' in (rejectedEvent.data || {})), 'polyfill revoke rejection should use a source descriptor instead of a raw connector_id field');
       assert.ok(!('storage_connector_id' in (rejectedEvent.data || {})), 'polyfill revoke rejection should not expose storage connector ids');
       assert.equal(rejectedEvent.data?.error?.code, 'grant_invalid');
@@ -663,7 +666,7 @@ test('PDPP reference implementation integration', async (t) => {
           authorization_details: [
             {
               type: 'https://pdpp.org/data-access',
-              connector_id: spotifyManifest.connector_id,
+              source: { kind: 'connector', id: spotifyManifest.connector_id },
               purpose_code: 'https://pdpp.org/purpose/personalization',
               access_mode: 'continuous',
               streams: [{ name: 'top_artists' }],
@@ -687,7 +690,7 @@ test('PDPP reference implementation integration', async (t) => {
           authorization_details: [
             {
               type: 'https://pdpp.org/data-access',
-              connector_id: spotifyManifest.connector_id,
+              source: { kind: 'connector', id: spotifyManifest.connector_id },
               purpose_code: 'https://pdpp.org/purpose/personalization',
               access_mode: 'continuous',
               streams: [{ name: 'top_artists' }],
@@ -708,7 +711,7 @@ test('PDPP reference implementation integration', async (t) => {
           authorization_details: [
             {
               type: 'https://example.com/not-pdpp',
-              connector_id: 'spotify',
+              source: { kind: 'connector', id: 'spotify' },
               purpose_code: 'https://pdpp.org/purpose/personalization',
               access_mode: 'continuous',
               streams: [{ name: 'top_artists' }],
@@ -729,7 +732,7 @@ test('PDPP reference implementation integration', async (t) => {
           authorization_details: [
             {
               type: 'https://pdpp.org/data-access',
-              connector_id: spotifyManifest.connector_id,
+              source: { kind: 'connector', id: spotifyManifest.connector_id },
               purpose_code: 'https://pdpp.org/purpose/personalization',
               access_mode: 'time_bounded',
               streams: [{ name: 'top_artists' }],
@@ -750,7 +753,7 @@ test('PDPP reference implementation integration', async (t) => {
           authorization_details: [
             {
               type: 'https://pdpp.org/data-access',
-              connector_id: spotifyManifest.connector_id,
+              source: { kind: 'connector', id: spotifyManifest.connector_id },
               purpose_code: 'https://pdpp.org/purpose/personalization',
               access_mode: 'continuous',
               streams: [],
@@ -771,7 +774,7 @@ test('PDPP reference implementation integration', async (t) => {
           authorization_details: [
             {
               type: 'https://pdpp.org/data-access',
-              connector_id: spotifyManifest.connector_id,
+              source: { kind: 'connector', id: spotifyManifest.connector_id },
               purpose_code: 'https://pdpp.org/purpose/personalization',
               access_mode: 'continuous',
               locations: ['https://rs.pdpp.example'],
@@ -793,7 +796,7 @@ test('PDPP reference implementation integration', async (t) => {
           authorization_details: [
             {
               type: 'https://pdpp.org/data-access',
-              connector_id: spotifyManifest.connector_id,
+              source: { kind: 'connector', id: spotifyManifest.connector_id },
               purpose_code: 'https://pdpp.org/purpose/personalization',
               access_mode: 'continuous',
               streams: [{ name: 'top_artists', expand: ['albums'] }],
@@ -814,7 +817,7 @@ test('PDPP reference implementation integration', async (t) => {
           authorization_details: [
             {
               type: 'https://pdpp.org/data-access',
-              connector_id: 'not_a_real_connector',
+              source: { kind: 'connector', id: 'not_a_real_connector' },
               purpose_code: 'https://pdpp.org/purpose/personalization',
               access_mode: 'continuous',
               streams: [{ name: 'top_artists' }],
@@ -825,7 +828,7 @@ test('PDPP reference implementation integration', async (t) => {
       assert.equal(unknownConnectorResp.status, 400);
       const unknownConnectorBody = await unknownConnectorResp.json();
       assert.equal(unknownConnectorBody.error.code, 'invalid_request');
-      assert.match(unknownConnectorBody.error.message, /Unknown connector: not_a_real_connector/);
+      assert.match(unknownConnectorBody.error.message, /Unknown source/);
 
       const unknownStreamResp = await fetch(`${asUrl}/oauth/par`, {
         method: 'POST',
@@ -835,7 +838,7 @@ test('PDPP reference implementation integration', async (t) => {
           authorization_details: [
             {
               type: 'https://pdpp.org/data-access',
-              connector_id: spotifyManifest.connector_id,
+              source: { kind: 'connector', id: spotifyManifest.connector_id },
               purpose_code: 'https://pdpp.org/purpose/personalization',
               access_mode: 'continuous',
               streams: [{ name: 'not_a_real_stream' }],
@@ -856,7 +859,7 @@ test('PDPP reference implementation integration', async (t) => {
           authorization_details: [
             {
               type: 'https://pdpp.org/data-access',
-              connector_id: spotifyManifest.connector_id,
+              source: { kind: 'connector', id: spotifyManifest.connector_id },
               purpose_code: 'https://pdpp.org/purpose/personalization',
               access_mode: 'continuous',
               streams: [{ name: 'top_artists', view: 'not_a_real_view' }],
@@ -877,7 +880,7 @@ test('PDPP reference implementation integration', async (t) => {
           authorization_details: [
             {
               type: 'https://pdpp.org/data-access',
-              connector_id: spotifyManifest.connector_id,
+              source: { kind: 'connector', id: spotifyManifest.connector_id },
               purpose_code: 'https://pdpp.org/purpose/personalization',
               access_mode: 'continuous',
               streams: [{ name: 'top_artists', view: 'basic', fields: ['id'] }],
@@ -898,7 +901,7 @@ test('PDPP reference implementation integration', async (t) => {
           authorization_details: [
             {
               type: 'https://pdpp.org/data-access',
-              connector_id: spotifyManifest.connector_id,
+              source: { kind: 'connector', id: spotifyManifest.connector_id },
               purpose_code: 'https://pdpp.org/purpose/personalization',
               access_mode: 'continuous',
               streams: [{ name: 'top_artists', fields: ['id', 'not_a_real_field'] }],
@@ -919,7 +922,7 @@ test('PDPP reference implementation integration', async (t) => {
           authorization_details: [
             {
               type: 'https://pdpp.org/data-access',
-              connector_id: spotifyManifest.connector_id,
+              source: { kind: 'connector', id: spotifyManifest.connector_id },
               purpose_code: 'https://pdpp.org/purpose/personalization',
               access_mode: 'continuous',
               streams: [{ name: 'top_artists', fields: [] }],
@@ -944,7 +947,7 @@ test('PDPP reference implementation integration', async (t) => {
           authorization_details: [
             {
               type: 'https://pdpp.org/data-access',
-              connector_id: spotifyManifest.connector_id,
+              source: { kind: 'connector', id: spotifyManifest.connector_id },
               purpose_code: 'https://pdpp.org/purpose/personalization',
               access_mode: 'continuous',
               streams: [{ name: 'top_artists' }],
@@ -978,7 +981,7 @@ test('PDPP reference implementation integration', async (t) => {
           authorization_details: [
             {
               type: 'https://pdpp.org/data-access',
-              connector_id: spotifyManifest.connector_id,
+              source: { kind: 'connector', id: spotifyManifest.connector_id },
               purpose_code: 'https://pdpp.org/purpose/personalization',
               access_mode: 'continuous',
               streams: [{ name: 'top_artists' }],
@@ -1012,7 +1015,7 @@ test('PDPP reference implementation integration', async (t) => {
           authorization_details: [
             {
               type: 'https://pdpp.org/data-access',
-              connector_id: spotifyManifest.connector_id,
+              source: { kind: 'connector', id: spotifyManifest.connector_id },
               purpose_code: 'https://pdpp.org/purpose/personalization',
               access_mode: 'continuous',
               streams: [{ name: 'top_artists' }],
@@ -1039,8 +1042,8 @@ test('PDPP reference implementation integration', async (t) => {
       assert.equal(rejectedEvent.status, 'rejected');
       assert.equal(rejectedEvent.data?.error?.code, 'invalid_client');
       assert.match(rejectedEvent.data?.error?.message || '', /malformed or no longer valid/);
-      assert.equal(rejectedEvent.data?.source?.binding_kind, 'connector');
-      assert.equal(rejectedEvent.data?.source?.connector_id, spotifyManifest.connector_id);
+      assert.equal(rejectedEvent.data?.source?.kind, 'connector');
+      assert.equal(rejectedEvent.data?.source?.id, spotifyManifest.connector_id);
       assert.ok(!('connector_id' in (rejectedEvent.data || {})));
     });
   });
@@ -1055,7 +1058,7 @@ test('PDPP reference implementation integration', async (t) => {
           authorization_details: [
             {
               type: 'https://pdpp.org/data-access',
-              connector_id: spotifyManifest.connector_id,
+              source: { kind: 'connector', id: spotifyManifest.connector_id },
               purpose_code: 'https://pdpp.org/purpose/personalization',
               purpose_description: 'Maintain a concert-recommendation profile over time',
               access_mode: 'continuous',
@@ -1082,8 +1085,8 @@ test('PDPP reference implementation integration', async (t) => {
       assert.equal(submittedEvent.trace_id, traceId);
       assert.equal(submittedEvent.client_id, 'longview');
       assert.equal(submittedEvent.status, 'succeeded');
-      assert.equal(submittedEvent.data?.source?.binding_kind, 'connector');
-      assert.equal(submittedEvent.data?.source?.connector_id, spotifyManifest.connector_id);
+      assert.equal(submittedEvent.data?.source?.kind, 'connector');
+      assert.equal(submittedEvent.data?.source?.id, spotifyManifest.connector_id);
       assert.ok(!('connector_id' in (submittedEvent.data || {})));
     });
   });
@@ -1127,7 +1130,7 @@ test('PDPP reference implementation integration', async (t) => {
           authorization_details: [
             {
               type: 'https://pdpp.org/data-access',
-              connector_id: spotifyManifest.connector_id,
+              source: { kind: 'connector', id: spotifyManifest.connector_id },
               purpose_code: 'https://pdpp.org/purpose/personalization',
               purpose_description: 'Maintain a concert-recommendation profile over time',
               access_mode: 'continuous',
@@ -1171,7 +1174,7 @@ test('PDPP reference implementation integration', async (t) => {
           authorization_details: [
             {
               type: 'https://pdpp.org/data-access',
-              connector_id: spotifyManifest.connector_id,
+              source: { kind: 'connector', id: spotifyManifest.connector_id },
               purpose_code: 'https://pdpp.org/purpose/personalization',
               purpose_description: 'Maintain a concert-recommendation profile over time',
               access_mode: 'continuous',
@@ -1214,7 +1217,7 @@ test('PDPP reference implementation integration', async (t) => {
           name: 'Forged Display Name',
           uri: 'https://forged.longview.example',
         },
-        connector_id: spotifyManifest.connector_id,
+        source: { kind: 'connector', id: spotifyManifest.connector_id },
         purpose_code: 'https://pdpp.org/purpose/personalization',
         purpose_description: 'Maintain a concert-recommendation profile over time',
         access_mode: 'continuous',
@@ -1250,7 +1253,7 @@ test('PDPP reference implementation integration', async (t) => {
     await withHarness(async ({ asUrl, spotifyManifest }) => {
       const initiate = await startGrantRequest(asUrl, {
         client_id: 'longview',
-        connector_id: spotifyManifest.connector_id,
+        source: { kind: 'connector', id: spotifyManifest.connector_id },
         purpose_code: 'https://pdpp.org/purpose/personalization',
         purpose_description: 'Maintain a concert-recommendation profile over time',
         access_mode: 'continuous',
@@ -1285,8 +1288,8 @@ test('PDPP reference implementation integration', async (t) => {
       assert.equal(approveResp.status, 200);
       assert.equal(approveResp.headers['request-id'], stagedRequestId);
       assert.equal(approveResp.headers['pdpp-reference-trace-id'], stagedTraceId);
-      assert.equal(approveResp.body.grant.source.binding_kind, 'connector');
-      assert.equal(approveResp.body.grant.source.connector_id, spotifyManifest.connector_id);
+      assert.equal(approveResp.body.grant.source.kind, 'connector');
+      assert.equal(approveResp.body.grant.source.id, spotifyManifest.connector_id);
 
       const { body: trace } = await fetchJson(`${asUrl}/_ref/traces/${encodeURIComponent(stagedTraceId)}`);
       const approvedEvent = (trace.data || []).find((event) =>
@@ -1294,16 +1297,16 @@ test('PDPP reference implementation integration', async (t) => {
         && event.request_id === stagedRequestId
       );
       assert.ok(approvedEvent, 'trace should keep consent.approved on the original staged trace');
-      assert.equal(approvedEvent.data?.source?.binding_kind, 'connector');
-      assert.equal(approvedEvent.data?.source?.connector_id, spotifyManifest.connector_id);
+      assert.equal(approvedEvent.data?.source?.kind, 'connector');
+      assert.equal(approvedEvent.data?.source?.id, spotifyManifest.connector_id);
 
       const grantIssuedEvent = (trace.data || []).find((event) =>
         event.event_type === 'grant.issued'
         && event.request_id === stagedRequestId
       );
       assert.ok(grantIssuedEvent, 'trace should keep grant.issued on the original staged trace');
-      assert.equal(grantIssuedEvent.data?.source?.binding_kind, 'connector');
-      assert.equal(grantIssuedEvent.data?.source?.connector_id, spotifyManifest.connector_id);
+      assert.equal(grantIssuedEvent.data?.source?.kind, 'connector');
+      assert.equal(grantIssuedEvent.data?.source?.id, spotifyManifest.connector_id);
 
       const forgedTraceResp = await fetch(`${asUrl}/_ref/traces/trc_forged_pending`);
       assert.equal(forgedTraceResp.status, 404);
@@ -1314,7 +1317,7 @@ test('PDPP reference implementation integration', async (t) => {
     await withHarness(async ({ asUrl, spotifyManifest }) => {
       const initiate = await startGrantRequest(asUrl, {
         client_id: 'longview',
-        connector_id: spotifyManifest.connector_id,
+        source: { kind: 'connector', id: spotifyManifest.connector_id },
         purpose_code: 'https://pdpp.org/purpose/personalization',
         purpose_description: 'Maintain a concert-recommendation profile over time',
         access_mode: 'continuous',
@@ -1385,7 +1388,7 @@ test('PDPP reference implementation integration', async (t) => {
     await withHarness(async ({ asUrl, spotifyManifest }) => {
       const initiate = await startGrantRequest(asUrl, {
         client_id: 'longview',
-        connector_id: spotifyManifest.connector_id,
+        source: { kind: 'connector', id: spotifyManifest.connector_id },
         purpose_code: 'https://pdpp.org/purpose/personalization',
         purpose_description: 'Maintain a concert-recommendation profile over time',
         access_mode: 'continuous',
@@ -1416,12 +1419,12 @@ test('PDPP reference implementation integration', async (t) => {
       const consentResp = await fetchJson(`${asUrl}/consent?request_uri=${encodeURIComponent(initiate.body.request_uri)}`);
       assert.equal(consentResp.status, 400);
       assert.equal(consentResp.body.error.code, 'invalid_request');
-      assert.match(consentResp.body.error.message, /source_binding must include only binding_kind and connector_id/);
+      assert.match(consentResp.body.error.message, /source_binding must include only kind and id/);
 
       const approveResp = await approveGrantRequest(asUrl, initiate.body.request_uri, 'u1');
       assert.equal(approveResp.status, 400);
       assert.equal(approveResp.body.error.code, 'invalid_request');
-      assert.match(approveResp.body.error.message, /source_binding must include only binding_kind and connector_id/);
+      assert.match(approveResp.body.error.message, /source_binding must include only kind and id/);
 
       const { body: trace } = await fetchJson(`${asUrl}/_ref/traces/${encodeURIComponent(stagedTraceId)}`);
       const rejectedEvent = (trace.data || []).find((event) =>
@@ -1429,16 +1432,16 @@ test('PDPP reference implementation integration', async (t) => {
         && event.request_id === stagedRequestId
       );
       assert.ok(rejectedEvent, 'trace should keep request.rejected on the original staged trace');
-      assert.equal(rejectedEvent.data?.source?.binding_kind, 'connector');
-      assert.equal(rejectedEvent.data?.source?.connector_id, spotifyManifest.connector_id);
+      assert.equal(rejectedEvent.data?.source?.kind, 'connector');
+      assert.equal(rejectedEvent.data?.source?.id, spotifyManifest.connector_id);
     });
   });
 
-  await t.test('persisted pending request source bindings without binding_kind are rejected without reconstructing connector source artifacts', async () => {
+  await t.test('persisted pending request source bindings without kind are rejected without reconstructing connector source artifacts', async () => {
     await withHarness(async ({ asUrl, spotifyManifest }) => {
       const initiate = await startGrantRequest(asUrl, {
         client_id: 'longview',
-        connector_id: spotifyManifest.connector_id,
+        source: { kind: 'connector', id: spotifyManifest.connector_id },
         purpose_code: 'https://pdpp.org/purpose/personalization',
         purpose_description: 'Maintain a concert-recommendation profile over time',
         access_mode: 'continuous',
@@ -1451,19 +1454,19 @@ test('PDPP reference implementation integration', async (t) => {
 
       await mutatePendingConsentRequest(initiate.body.request_uri, (request) => {
         request.source_binding = {
-          connector_id: request.source_binding.connector_id,
+          id: request.source_binding.id,
         };
       });
 
       const consentResp = await fetchJson(`${asUrl}/consent?request_uri=${encodeURIComponent(initiate.body.request_uri)}`);
       assert.equal(consentResp.status, 400);
       assert.equal(consentResp.body.error.code, 'invalid_request');
-      assert.match(consentResp.body.error.message, /source_binding\.binding_kind must be 'connector' or 'provider_native'/);
+      assert.match(consentResp.body.error.message, /source_binding must include only kind and id/);
 
       const approveResp = await approveGrantRequest(asUrl, initiate.body.request_uri, 'u1');
       assert.equal(approveResp.status, 400);
       assert.equal(approveResp.body.error.code, 'invalid_request');
-      assert.match(approveResp.body.error.message, /source_binding\.binding_kind must be 'connector' or 'provider_native'/);
+      assert.match(approveResp.body.error.message, /source_binding must include only kind and id/);
 
       const { body: trace } = await fetchJson(`${asUrl}/_ref/traces/${encodeURIComponent(stagedTraceId)}`);
       const rejectedEvent = (trace.data || []).find((event) =>
@@ -1484,7 +1487,7 @@ test('PDPP reference implementation integration', async (t) => {
 
       const initiate = await startGrantRequest(asUrl, {
         client_id: registration.body.client_id,
-        connector_id: spotifyManifest.connector_id,
+        source: { kind: 'connector', id: spotifyManifest.connector_id },
         purpose_code: 'https://pdpp.org/purpose/personalization',
         purpose_description: 'Maintain a concert-recommendation profile over time',
         access_mode: 'continuous',
@@ -1530,8 +1533,8 @@ test('PDPP reference implementation integration', async (t) => {
       assert.ok(rejectedEvent, 'trace should preserve invalid_client rejection details');
       assert.equal(rejectedEvent.object_type, 'pending_consent');
       assert.equal(rejectedEvent.client_id, registration.body.client_id);
-      assert.equal(rejectedEvent.data?.source?.binding_kind, 'connector');
-      assert.equal(rejectedEvent.data?.source?.connector_id, spotifyManifest.connector_id);
+      assert.equal(rejectedEvent.data?.source?.kind, 'connector');
+      assert.equal(rejectedEvent.data?.source?.id, spotifyManifest.connector_id);
       assert.match(rejectedEvent.data?.error?.message || '', /Unknown client_id/);
     });
   });
@@ -1540,7 +1543,7 @@ test('PDPP reference implementation integration', async (t) => {
     await withHarness(async ({ asUrl, spotifyManifest }) => {
       const initiate = await startGrantRequest(asUrl, {
         client_id: 'longview',
-        connector_id: spotifyManifest.connector_id,
+        source: { kind: 'connector', id: spotifyManifest.connector_id },
         purpose_code: 'https://pdpp.org/purpose/personalization',
         purpose_description: 'Maintain a concert-recommendation profile over time',
         access_mode: 'single_use',
@@ -1568,8 +1571,8 @@ test('PDPP reference implementation integration', async (t) => {
       assert.equal(deniedEvent.client_id, 'longview');
       assert.equal(deniedEvent.object_type, 'pending_consent');
       assert.equal(deniedEvent.status, 'denied');
-      assert.equal(deniedEvent.data?.source?.binding_kind, 'connector');
-      assert.equal(deniedEvent.data?.source?.connector_id, spotifyManifest.connector_id);
+      assert.equal(deniedEvent.data?.source?.kind, 'connector');
+      assert.equal(deniedEvent.data?.source?.id, spotifyManifest.connector_id);
 
       const grantIssuedEvent = (trace.data || []).find((event) => event.event_type === 'grant.issued');
       assert.equal(grantIssuedEvent, undefined, 'denied consent trace should not issue a grant');
@@ -1585,7 +1588,7 @@ test('PDPP reference implementation integration', async (t) => {
 
       const initiate = await startGrantRequest(asUrl, {
         client_id: registration.body.client_id,
-        connector_id: spotifyManifest.connector_id,
+        source: { kind: 'connector', id: spotifyManifest.connector_id },
         purpose_code: 'https://pdpp.org/purpose/personalization',
         purpose_description: 'Maintain a concert-recommendation profile over time',
         access_mode: 'continuous',
@@ -2280,7 +2283,7 @@ test('PDPP reference implementation integration', async (t) => {
     await withHarness(async ({ asUrl, spotifyManifest }) => {
       const initiate = await startGrantRequest(asUrl, {
         client_id: 'longview',
-        connector_id: spotifyManifest.connector_id,
+        source: { kind: 'connector', id: spotifyManifest.connector_id },
         purpose_code: 'https://pdpp.org/purpose/concert_recommendation',
         purpose_description: 'Recommend concerts and nearby live events',
         access_mode: 'continuous',
@@ -2310,7 +2313,7 @@ test('PDPP reference implementation integration', async (t) => {
     await withHarness(async ({ asUrl, spotifyManifest }) => {
       const initiate = await startGrantRequest(asUrl, {
         client_id: 'longview',
-        connector_id: spotifyManifest.connector_id,
+        source: { kind: 'connector', id: spotifyManifest.connector_id },
         purpose_code: 'https://pdpp.org/purpose/concert_recommendation',
         purpose_description: 'Recommend concerts and nearby live events',
         access_mode: 'continuous',
@@ -2408,7 +2411,7 @@ test('PDPP reference implementation integration', async (t) => {
     await withHarness(async ({ asUrl, spotifyManifest }) => {
       const initiate = await startGrantRequest(asUrl, {
         client_id: 'longview',
-        connector_id: spotifyManifest.connector_id,
+        source: { kind: 'connector', id: spotifyManifest.connector_id },
         purpose_code: 'https://pdpp.org/purpose/concert_recommendation',
         purpose_description: 'Recommend concerts and nearby live events',
         access_mode: 'continuous',
@@ -2438,7 +2441,7 @@ test('PDPP reference implementation integration', async (t) => {
     await withHarness(async ({ asUrl, spotifyManifest }) => {
       const initiate = await startGrantRequest(asUrl, {
         client_id: 'longview',
-        connector_id: spotifyManifest.connector_id,
+        source: { kind: 'connector', id: spotifyManifest.connector_id },
         purpose_code: 'https://pdpp.org/purpose/concert_recommendation',
         purpose_description: 'Recommend concerts and nearby live events',
         access_mode: 'continuous',
@@ -2468,7 +2471,7 @@ test('PDPP reference implementation integration', async (t) => {
     await withHarness(async ({ asUrl, spotifyManifest }) => {
       const initiate = await startGrantRequest(asUrl, {
         client_id: 'longview',
-        connector_id: spotifyManifest.connector_id,
+        source: { kind: 'connector', id: spotifyManifest.connector_id },
         purpose_code: 'https://pdpp.org/purpose/concert_recommendation',
         purpose_description: 'Recommend concerts and nearby live events',
         access_mode: 'continuous',
@@ -2498,7 +2501,7 @@ test('PDPP reference implementation integration', async (t) => {
     await withHarness(async ({ asUrl, spotifyManifest }) => {
       const initiate = await startGrantRequest(asUrl, {
         client_id: 'longview',
-        connector_id: spotifyManifest.connector_id,
+        source: { kind: 'connector', id: spotifyManifest.connector_id },
         purpose_code: 'https://pdpp.org/purpose/concert_recommendation',
         purpose_description: 'Recommend concerts and nearby live events',
         access_mode: 'continuous',
@@ -2528,7 +2531,7 @@ test('PDPP reference implementation integration', async (t) => {
     await withHarness(async ({ asUrl, spotifyManifest }) => {
       const initiate = await startGrantRequest(asUrl, {
         client_id: 'longview',
-        connector_id: spotifyManifest.connector_id,
+        source: { kind: 'connector', id: spotifyManifest.connector_id },
         purpose_code: 'https://pdpp.org/purpose/concert_recommendation',
         purpose_description: 'Recommend concerts and nearby live events',
         access_mode: 'continuous',
@@ -2558,7 +2561,7 @@ test('PDPP reference implementation integration', async (t) => {
     await withNativeHarness(async ({ asUrl, nativeManifest }) => {
       const initiate = await startGrantRequest(asUrl, {
         client_id: 'longview',
-        provider_id: nativeManifest.provider_id,
+        source: { kind: 'provider_native', id: nativeManifest.provider_id },
         purpose_code: 'https://pdpp.org/purpose/financial_planning',
         purpose_description: 'Support compensation planning and verification',
         access_mode: 'continuous',
@@ -2606,8 +2609,8 @@ test('PDPP reference implementation integration', async (t) => {
       assert.ok(rejectedEvent, 'trace should preserve invalid_request rejection details');
       assert.equal(rejectedEvent.object_type, 'pending_consent');
       assert.equal(rejectedEvent.client_id, 'longview');
-      assert.equal(rejectedEvent.data?.source?.binding_kind, 'provider_native');
-      assert.equal(rejectedEvent.data?.source?.provider_id, nativeManifest.provider_id);
+      assert.equal(rejectedEvent.data?.source?.kind, 'provider_native');
+      assert.equal(rejectedEvent.data?.source?.id, nativeManifest.provider_id);
       assert.match(rejectedEvent.data?.error?.message || '', /Pending consent request manifest_version '999\.0\.0' does not match current manifest version/);
     });
   });
@@ -2616,7 +2619,7 @@ test('PDPP reference implementation integration', async (t) => {
     await withNativeHarness(async ({ asUrl, nativeManifest }) => {
       const initiate = await startGrantRequest(asUrl, {
         client_id: 'longview',
-        provider_id: nativeManifest.provider_id,
+        source: { kind: 'provider_native', id: nativeManifest.provider_id },
         purpose_code: 'https://pdpp.org/purpose/financial_planning',
         purpose_description: 'Support compensation planning and verification',
         access_mode: 'single_use',
@@ -2644,8 +2647,8 @@ test('PDPP reference implementation integration', async (t) => {
       assert.equal(deniedEvent.client_id, 'longview');
       assert.equal(deniedEvent.object_type, 'pending_consent');
       assert.equal(deniedEvent.status, 'denied');
-      assert.equal(deniedEvent.data?.source?.binding_kind, 'provider_native');
-      assert.equal(deniedEvent.data?.source?.provider_id, nativeManifest.provider_id);
+      assert.equal(deniedEvent.data?.source?.kind, 'provider_native');
+      assert.equal(deniedEvent.data?.source?.id, nativeManifest.provider_id);
       assert.ok(!('connector_id' in (deniedEvent.data || {})));
       assert.ok(!('storage_connector_id' in (deniedEvent.data || {})));
 
@@ -2664,7 +2667,7 @@ test('PDPP reference implementation integration', async (t) => {
           authorization_details: [
             {
               type: 'https://pdpp.org/data-access',
-              provider_id: 'northstar_hr',
+              source: { kind: 'provider_native', id: 'northstar_hr' },
               purpose_code: 'https://pdpp.org/purpose/financial_planning',
               access_mode: 'continuous',
               streams: [{ name: 'pay_statements' }],
@@ -2676,7 +2679,7 @@ test('PDPP reference implementation integration', async (t) => {
       assert.equal(initiateResp.status, 400);
       const initiateBody = await initiateResp.json();
       assert.equal(initiateBody.error.code, 'invalid_request');
-      assert.match(initiateBody.error.message, /include connector_id for polyfill access or provider_id for native provider access/);
+      assert.match(initiateBody.error.message, /source.*provider_native/);
     });
   });
 
@@ -2684,7 +2687,7 @@ test('PDPP reference implementation integration', async (t) => {
     await withHarness(async ({ asUrl, spotifyManifest }) => {
       const approved = await approveGrant(asUrl, 'u1', {
         client_id: 'longview',
-        connector_id: spotifyManifest.connector_id,
+        source: { kind: 'connector', id: spotifyManifest.connector_id },
         purpose_code: 'https://pdpp.org/purpose/personalization',
         purpose_description: 'Maintain a concert-recommendation profile over time',
         access_mode: 'continuous',
@@ -2696,8 +2699,8 @@ test('PDPP reference implementation integration', async (t) => {
       const events = [...(timeline.data || []), ...(trace.data || [])];
 
       for (const event of events) {
-        if (!event?.data?.source || event.data.source.binding_kind !== 'connector') continue;
-        assert.equal(event.data.source.connector_id, spotifyManifest.connector_id);
+        if (!event?.data?.source || event.data.source.kind !== 'connector') continue;
+        assert.equal(event.data.source.id, spotifyManifest.connector_id);
         assert.ok(!('storage_connector_id' in event.data), `connector event ${event.event_type} should not expose storage_connector_id`);
       }
     });
@@ -2713,7 +2716,7 @@ test('PDPP reference implementation integration', async (t) => {
           authorization_details: [
             {
               type: 'https://pdpp.org/data-access',
-              connector_id: spotifyManifest.connector_id,
+              source: { kind: 'connector', id: spotifyManifest.connector_id },
               purpose_code: 'https://pdpp.org/purpose/personalization',
               purpose_description: 'Maintain a concert-recommendation profile over time',
               access_mode: 'continuous',
@@ -2799,7 +2802,7 @@ test('PDPP reference implementation integration', async (t) => {
       const approved = await approveGrant(asUrl, 'employee_1', {
         client_id: 'longview',
         client_display: { name: 'Longview' },
-        provider_id: nativeManifest.provider_id,
+        source: { kind: 'provider_native', id: nativeManifest.provider_id },
         purpose_code: 'https://pdpp.org/purpose/financial_planning',
         purpose_description: 'Support compensation planning and verification',
         access_mode: 'continuous',
@@ -2807,8 +2810,8 @@ test('PDPP reference implementation integration', async (t) => {
       });
 
       assert.ok(!('connector_id' in approved.grant), 'native grants should not expose connector_id');
-      assert.equal(approved.grant.source?.binding_kind, 'provider_native');
-      assert.equal(approved.grant.source?.provider_id, nativeManifest.provider_id);
+      assert.equal(approved.grant.source?.kind, 'provider_native');
+      assert.equal(approved.grant.source?.id, nativeManifest.provider_id);
 
       const grantRows = getDb().prepare(`
         SELECT storage_binding_json
@@ -2826,8 +2829,8 @@ test('PDPP reference implementation integration', async (t) => {
         body: JSON.stringify({ token: approved.token }),
       });
       assert.equal(introspection.active, true);
-      assert.equal(introspection.grant.source?.binding_kind, 'provider_native');
-      assert.equal(introspection.grant.source?.provider_id, nativeManifest.provider_id);
+      assert.equal(introspection.grant.source?.kind, 'provider_native');
+      assert.equal(introspection.grant.source?.id, nativeManifest.provider_id);
       assert.ok(!('grant_storage_connector_id' in introspection), 'public introspection should not leak storage connector ids');
       assert.ok(!('grant_storage_binding' in introspection), 'public introspection should not leak structured storage bindings');
 
@@ -2837,32 +2840,32 @@ test('PDPP reference implementation integration', async (t) => {
         if (!event.data) continue;
         assert.ok(!('storage_connector_id' in event.data), `${event.event_type} should not expose storage_connector_id in native traces`);
         assert.ok(!('connector_id' in event.data), `${event.event_type} should not expose connector_id in native traces`);
-        if (event.data.source?.binding_kind === 'provider_native') {
-          assert.equal(event.data.source.provider_id, nativeManifest.provider_id);
+        if (event.data.source?.kind === 'provider_native') {
+          assert.equal(event.data.source.id, nativeManifest.provider_id);
         }
       }
       const requestEvent = trace.data.find((event) => event.event_type === 'request.submitted');
       assert.ok(requestEvent, 'trace should include request.submitted');
-      assert.equal(requestEvent.data.source?.binding_kind, 'provider_native');
-      assert.equal(requestEvent.data.source?.provider_id, nativeManifest.provider_id);
+      assert.equal(requestEvent.data.source?.kind, 'provider_native');
+      assert.equal(requestEvent.data.source?.id, nativeManifest.provider_id);
       assert.ok(!('storage_connector_id' in requestEvent.data), 'native request event should not expose storage connector ids');
 
       const consentApprovedEvent = trace.data.find((event) => event.event_type === 'consent.approved');
       assert.ok(consentApprovedEvent, 'trace should include consent.approved');
-      assert.equal(consentApprovedEvent.data.source?.binding_kind, 'provider_native');
-      assert.equal(consentApprovedEvent.data.source?.provider_id, nativeManifest.provider_id);
+      assert.equal(consentApprovedEvent.data.source?.kind, 'provider_native');
+      assert.equal(consentApprovedEvent.data.source?.id, nativeManifest.provider_id);
 
       const issuedEvent = initialTimeline.data.find((event) => event.event_type === 'grant.issued');
       assert.ok(issuedEvent, 'grant timeline should include grant.issued');
-      assert.equal(issuedEvent.data.source?.binding_kind, 'provider_native');
-      assert.equal(issuedEvent.data.source?.provider_id, nativeManifest.provider_id);
+      assert.equal(issuedEvent.data.source?.kind, 'provider_native');
+      assert.equal(issuedEvent.data.source?.id, nativeManifest.provider_id);
       assert.ok(!('connector_id' in issuedEvent.data), 'native grant-issued event should not expose connector_id');
       assert.ok(!('storage_connector_id' in issuedEvent.data), 'native grant-issued event should not expose storage connector ids');
 
       const tokenIssuedEvent = initialTimeline.data.find((event) => event.event_type === 'token.issued');
       assert.ok(tokenIssuedEvent, 'grant timeline should include token.issued');
-      assert.equal(tokenIssuedEvent.data.source?.binding_kind, 'provider_native');
-      assert.equal(tokenIssuedEvent.data.source?.provider_id, nativeManifest.provider_id);
+      assert.equal(tokenIssuedEvent.data.source?.kind, 'provider_native');
+      assert.equal(tokenIssuedEvent.data.source?.id, nativeManifest.provider_id);
       assert.equal(tokenIssuedEvent.data.issuance_path, 'grant_approval');
       assert.ok(!('connector_id' in tokenIssuedEvent.data), 'native token-issued event should not expose connector_id');
       assert.ok(!('storage_connector_id' in tokenIssuedEvent.data), 'native token-issued event should not expose storage connector ids');
@@ -2918,8 +2921,8 @@ test('PDPP reference implementation integration', async (t) => {
         if (!event.data) continue;
         assert.ok(!('storage_connector_id' in event.data), `${event.event_type} should not expose storage_connector_id in native grant timelines`);
         assert.ok(!('connector_id' in event.data), `${event.event_type} should not expose connector_id in native grant timelines`);
-        if (event.data.source?.binding_kind === 'provider_native') {
-          assert.equal(event.data.source.provider_id, nativeManifest.provider_id);
+        if (event.data.source?.kind === 'provider_native') {
+          assert.equal(event.data.source.id, nativeManifest.provider_id);
         }
       }
       const streamListQueryEvent = postQueryTimeline.data.find((event) =>
@@ -2927,8 +2930,8 @@ test('PDPP reference implementation integration', async (t) => {
         && event.object_id === clientStreamsRequestId
       );
       assert.ok(streamListQueryEvent, 'grant timeline should include query.received for native stream list');
-      assert.equal(streamListQueryEvent.data.source?.binding_kind, 'provider_native');
-      assert.equal(streamListQueryEvent.data.source?.provider_id, nativeManifest.provider_id);
+      assert.equal(streamListQueryEvent.data.source?.kind, 'provider_native');
+      assert.equal(streamListQueryEvent.data.source?.id, nativeManifest.provider_id);
       assert.equal(streamListQueryEvent.data.query_shape, 'stream_list');
       assert.ok(!('storage_connector_id' in streamListQueryEvent.data), 'native stream-list query should not expose storage connector ids');
 
@@ -2937,8 +2940,8 @@ test('PDPP reference implementation integration', async (t) => {
         && event.object_id === clientStreamsRequestId
       );
       assert.ok(streamListDisclosureEvent, 'grant timeline should include disclosure.served for native stream list');
-      assert.equal(streamListDisclosureEvent.data.source?.binding_kind, 'provider_native');
-      assert.equal(streamListDisclosureEvent.data.source?.provider_id, nativeManifest.provider_id);
+      assert.equal(streamListDisclosureEvent.data.source?.kind, 'provider_native');
+      assert.equal(streamListDisclosureEvent.data.source?.id, nativeManifest.provider_id);
       assert.equal(streamListDisclosureEvent.data.query_shape, 'stream_list');
       assert.ok(!('storage_connector_id' in streamListDisclosureEvent.data), 'native stream-list disclosure should not expose storage connector ids');
 
@@ -2992,8 +2995,8 @@ test('PDPP reference implementation integration', async (t) => {
       const { body: revokedTimeline } = await fetchJson(`${asUrl}/_ref/grants/${encodeURIComponent(approved.grant.grant_id)}/timeline`);
       const revokedEvent = revokedTimeline.data.find((event) => event.event_type === 'grant.revoked');
       assert.ok(revokedEvent, 'grant timeline should include grant.revoked after native revocation');
-      assert.equal(revokedEvent.data.source?.binding_kind, 'provider_native');
-      assert.equal(revokedEvent.data.source?.provider_id, nativeManifest.provider_id);
+      assert.equal(revokedEvent.data.source?.kind, 'provider_native');
+      assert.equal(revokedEvent.data.source?.id, nativeManifest.provider_id);
       assert.ok(!('connector_id' in revokedEvent.data), 'native revoked event should not expose connector_id');
       assert.ok(!('storage_connector_id' in revokedEvent.data), 'native revoked event should not expose storage connector ids');
     });
@@ -3005,7 +3008,7 @@ test('PDPP reference implementation integration', async (t) => {
 
       const approved = await approveGrant(asUrl, 'employee_1', {
         client_id: 'longview',
-        provider_id: nativeManifest.provider_id,
+        source: { kind: 'provider_native', id: nativeManifest.provider_id },
         purpose_code: 'https://pdpp.org/purpose/financial_planning',
         purpose_description: 'Support compensation planning and verification',
         access_mode: 'continuous',
@@ -3055,7 +3058,7 @@ test('PDPP reference implementation integration', async (t) => {
 
       const approved = await approveGrant(asUrl, 'employee_1', {
         client_id: 'longview',
-        provider_id: nativeManifest.provider_id,
+        source: { kind: 'provider_native', id: nativeManifest.provider_id },
         purpose_code: 'https://pdpp.org/purpose/financial_planning',
         purpose_description: 'Support compensation planning and verification',
         access_mode: 'continuous',
@@ -3085,8 +3088,8 @@ test('PDPP reference implementation integration', async (t) => {
       assert.ok(rejectedEvent, 'malformed native persisted grants should emit grant.revoke_rejected artifacts');
       assert.equal(rejectedEvent.request_id, revokeRequestId);
       assert.equal(rejectedEvent.trace_id, revokeTraceId);
-      assert.equal(rejectedEvent.data?.source?.binding_kind, 'provider_native');
-      assert.equal(rejectedEvent.data?.source?.provider_id, nativeManifest.provider_id);
+      assert.equal(rejectedEvent.data?.source?.kind, 'provider_native');
+      assert.equal(rejectedEvent.data?.source?.id, nativeManifest.provider_id);
       assert.ok(!('connector_id' in (rejectedEvent.data || {})), 'native revoke rejection should not expose connector_id');
       assert.ok(!('storage_connector_id' in (rejectedEvent.data || {})), 'native revoke rejection should not expose storage connector ids');
       assert.equal(rejectedEvent.data?.error?.code, 'grant_invalid');
@@ -3111,7 +3114,7 @@ test('PDPP reference implementation integration', async (t) => {
 
       const approved = await approveGrant(asUrl, 'employee_1', {
         client_id: 'longview',
-        provider_id: nativeManifest.provider_id,
+        source: { kind: 'provider_native', id: nativeManifest.provider_id },
         purpose_code: 'https://pdpp.org/purpose/financial_planning',
         purpose_description: 'Support compensation planning and verification',
         access_mode: 'continuous',
@@ -3181,7 +3184,7 @@ test('PDPP reference implementation integration', async (t) => {
 
       const approved = await approveGrant(asUrl, 'employee_1', {
         client_id: 'longview',
-        provider_id: nativeManifest.provider_id,
+        source: { kind: 'provider_native', id: nativeManifest.provider_id },
         purpose_code: 'https://pdpp.org/purpose/financial_planning',
         purpose_description: 'Support compensation planning and verification',
         access_mode: 'continuous',
@@ -3267,7 +3270,7 @@ test('PDPP reference implementation integration', async (t) => {
 
       const approved = await approveGrant(asUrl, 'u1', {
         client_id: 'concert_recommendation_app',
-        connector_id: spotifyManifest.connector_id,
+        source: { kind: 'connector', id: spotifyManifest.connector_id },
         purpose_code: 'https://pdpp.org/purpose/concert_recommendation',
         purpose_description: 'Recommend concerts and nearby live events',
         access_mode: 'continuous',
@@ -3277,8 +3280,8 @@ test('PDPP reference implementation integration', async (t) => {
       const missingConnectorId = 'missing_spotify_connector';
       const remappedGrant = JSON.parse(JSON.stringify(approved.grant));
       remappedGrant.source = {
-        binding_kind: 'connector',
-        connector_id: missingConnectorId,
+        kind: 'connector',
+        id: missingConnectorId,
       };
 
       getDb().prepare(`
@@ -3326,8 +3329,8 @@ test('PDPP reference implementation integration', async (t) => {
         );
         assert.ok(queryReceivedEvent, `grant timeline should include query.received for broken polyfill ${queryShape} reads`);
         assert.equal(queryReceivedEvent.data.query_shape, queryShape);
-        assert.equal(queryReceivedEvent.data.source?.binding_kind, 'connector');
-        assert.equal(queryReceivedEvent.data.source?.connector_id, missingConnectorId);
+        assert.equal(queryReceivedEvent.data.source?.kind, 'connector');
+        assert.equal(queryReceivedEvent.data.source?.id, missingConnectorId);
         if (streamId) {
           assert.equal(queryReceivedEvent.stream_id, streamId);
         }
@@ -3342,8 +3345,8 @@ test('PDPP reference implementation integration', async (t) => {
         assert.ok(rejectedEvent, `grant timeline should include query.rejected for broken polyfill ${queryShape} reads`);
         assert.equal(rejectedEvent.trace_id, rejectedTraceId);
         assert.equal(rejectedEvent.data.query_shape, queryShape);
-        assert.equal(rejectedEvent.data.source?.binding_kind, 'connector');
-        assert.equal(rejectedEvent.data.source?.connector_id, missingConnectorId);
+        assert.equal(rejectedEvent.data.source?.kind, 'connector');
+        assert.equal(rejectedEvent.data.source?.id, missingConnectorId);
         assert.equal(rejectedEvent.data.error?.code, 'not_found');
         assert.match(rejectedEvent.data.error?.message || '', /Unknown connector: missing_spotify_connector/);
         if (streamId) {
@@ -3389,7 +3392,7 @@ test('PDPP reference implementation integration', async (t) => {
 
       const approved = await approveGrant(asUrl, 'employee_1', {
         client_id: 'longview',
-        provider_id: nativeManifest.provider_id,
+        source: { kind: 'provider_native', id: nativeManifest.provider_id },
         purpose_code: 'https://pdpp.org/purpose/financial_planning',
         purpose_description: 'Support compensation planning and verification',
         access_mode: 'continuous',
@@ -3481,7 +3484,7 @@ test('PDPP reference implementation integration', async (t) => {
 
       const approved = await approveGrant(asUrl, 'owner_local', {
         client_id: 'longview',
-        connector_id: spotifyManifest.connector_id,
+        source: { kind: 'connector', id: spotifyManifest.connector_id },
         purpose_code: 'https://pdpp.org/purpose/concert_recommendation',
         purpose_description: 'Recommend concerts and nearby live events',
         access_mode: 'continuous',
@@ -3581,7 +3584,7 @@ test('PDPP reference implementation integration', async (t) => {
 
       const approved = await approveGrant(asUrl, 'owner_local', {
         client_id: 'longview',
-        connector_id: spotifyManifest.connector_id,
+        source: { kind: 'connector', id: spotifyManifest.connector_id },
         purpose_code: 'https://pdpp.org/purpose/concert_recommendation',
         purpose_description: 'Recommend concerts and nearby live events',
         access_mode: 'continuous',
@@ -3670,7 +3673,7 @@ test('PDPP reference implementation integration', async (t) => {
 
       const approved = await approveGrant(asUrl, 'owner_local', {
         client_id: 'longview',
-        connector_id: spotifyManifest.connector_id,
+        source: { kind: 'connector', id: spotifyManifest.connector_id },
         purpose_code: 'https://pdpp.org/purpose/concert_recommendation',
         purpose_description: 'Recommend concerts and nearby live events',
         access_mode: 'continuous',
@@ -3740,7 +3743,7 @@ test('PDPP reference implementation integration', async (t) => {
     await withNativeHarness(async ({ asUrl, rsUrl, nativeManifest }) => {
       const approved = await approveGrant(asUrl, 'employee_1', {
         client_id: 'longview',
-        provider_id: nativeManifest.provider_id,
+        source: { kind: 'provider_native', id: nativeManifest.provider_id },
         purpose_code: 'https://pdpp.org/purpose/financial_planning',
         purpose_description: 'Support compensation planning and verification',
         access_mode: 'continuous',
@@ -3807,7 +3810,7 @@ test('PDPP reference implementation integration', async (t) => {
     await withNativeHarness(async ({ asUrl, rsUrl, nativeManifest }) => {
       const approved = await approveGrant(asUrl, 'employee_1', {
         client_id: 'longview',
-        provider_id: nativeManifest.provider_id,
+        source: { kind: 'provider_native', id: nativeManifest.provider_id },
         purpose_code: 'https://pdpp.org/purpose/financial_planning',
         purpose_description: 'Support compensation planning and verification',
         access_mode: 'continuous',
@@ -3880,7 +3883,7 @@ test('PDPP reference implementation integration', async (t) => {
           authorization_details: [
             {
               type: 'https://pdpp.org/data-access',
-              provider_id: 'wrong_provider',
+              source: { kind: 'provider_native', id: 'wrong_provider' },
               purpose_code: 'https://pdpp.org/purpose/financial_planning',
               access_mode: 'continuous',
               streams: [{ name: 'pay_statements' }],
@@ -3892,11 +3895,11 @@ test('PDPP reference implementation integration', async (t) => {
       assert.equal(initiateResp.status, 400);
       const initiateBody = await initiateResp.json();
       assert.equal(initiateBody.error.code, 'invalid_request');
-      assert.match(initiateBody.error.message, /Unknown native provider/);
+      assert.match(initiateBody.error.message, /Unknown source/);
     });
   });
 
-  await t.test('native provider grants reject requests that include both connector_id and provider_id', async () => {
+  await t.test('native provider grants reject requests that mix legacy source scalars with source objects', async () => {
     await withNativeHarness(async ({ asUrl, nativeManifest }) => {
       const initiateResp = await fetch(`${asUrl}/oauth/par`, {
         method: 'POST',
@@ -3906,8 +3909,11 @@ test('PDPP reference implementation integration', async (t) => {
           authorization_details: [
             {
               type: 'https://pdpp.org/data-access',
+              source: {
+                kind: 'provider_native',
+                id: nativeManifest.provider_id,
+              },
               connector_id: 'spotify',
-              provider_id: nativeManifest.provider_id,
               purpose_code: 'https://pdpp.org/purpose/financial_planning',
               access_mode: 'continuous',
               streams: [{ name: 'pay_statements' }],
@@ -3919,7 +3925,7 @@ test('PDPP reference implementation integration', async (t) => {
       assert.equal(initiateResp.status, 400);
       const initiateBody = await initiateResp.json();
       assert.equal(initiateBody.error.code, 'invalid_request');
-      assert.match(initiateBody.error.message, /must not include both connector_id and provider_id/);
+      assert.match(initiateBody.error.message, /source: \{ kind/);
     });
   });
 
@@ -3927,7 +3933,7 @@ test('PDPP reference implementation integration', async (t) => {
     await withNativeHarness(async ({ asUrl, nativeManifest }) => {
       const initiate = await startGrantRequest(asUrl, {
         client_id: 'longview',
-        provider_id: nativeManifest.provider_id,
+        source: { kind: 'provider_native', id: nativeManifest.provider_id },
         purpose_code: 'https://pdpp.org/purpose/financial_planning',
         purpose_description: 'Support compensation planning and verification',
         access_mode: 'continuous',
@@ -3972,7 +3978,7 @@ test('PDPP reference implementation integration', async (t) => {
     await withNativeHarness(async ({ asUrl, nativeManifest }) => {
       const initiate = await startGrantRequest(asUrl, {
         client_id: 'longview',
-        provider_id: nativeManifest.provider_id,
+        source: { kind: 'provider_native', id: nativeManifest.provider_id },
         purpose_code: 'https://pdpp.org/purpose/financial_planning',
         purpose_description: 'Support compensation planning and verification',
         access_mode: 'continuous',
@@ -4005,12 +4011,12 @@ test('PDPP reference implementation integration', async (t) => {
       );
       assert.equal(consentResp.status, 400);
       assert.equal(consentResp.body.error.code, 'invalid_request');
-      assert.match(consentResp.body.error.message, /source_binding must include only binding_kind and provider_id/);
+      assert.match(consentResp.body.error.message, /source_binding must include only kind and id/);
 
       const approveResp = await approveGrantRequest(asUrl, initiate.body.request_uri, 'employee_1');
       assert.equal(approveResp.status, 400);
       assert.equal(approveResp.body.error.code, 'invalid_request');
-      assert.match(approveResp.body.error.message, /source_binding must include only binding_kind and provider_id/);
+      assert.match(approveResp.body.error.message, /source_binding must include only kind and id/);
     });
   });
 
@@ -4018,7 +4024,7 @@ test('PDPP reference implementation integration', async (t) => {
     await withHarness(async ({ asUrl, spotifyManifest }) => {
       const initiate = await startGrantRequest(asUrl, {
         client_id: 'longview',
-        connector_id: spotifyManifest.connector_id,
+        source: { kind: 'connector', id: spotifyManifest.connector_id },
         purpose_code: 'https://pdpp.org/purpose/concert_recommendation',
         purpose_description: 'Recommend concerts and nearby live events',
         access_mode: 'continuous',
@@ -4037,7 +4043,7 @@ test('PDPP reference implementation integration', async (t) => {
       assert.equal(rows.length, 1);
 
       const malformedRequest = JSON.parse(rows[0].params_json);
-      malformedRequest.source_binding.connector_id = 'other_connector';
+      malformedRequest.source_binding.id = 'other_connector';
 
       getDb().prepare(`
         UPDATE pending_consents
@@ -4050,12 +4056,12 @@ test('PDPP reference implementation integration', async (t) => {
       );
       assert.equal(consentResp.status, 400);
       assert.equal(consentResp.body.error.code, 'invalid_request');
-      assert.match(consentResp.body.error.message, /source_binding\.connector_id must match storage_binding\.connector_id/);
+      assert.match(consentResp.body.error.message, /source_binding\.id must match storage_binding\.connector_id/);
 
       const approveResp = await approveGrantRequest(asUrl, initiate.body.request_uri, 'owner_local');
       assert.equal(approveResp.status, 400);
       assert.equal(approveResp.body.error.code, 'invalid_request');
-      assert.match(approveResp.body.error.message, /source_binding\.connector_id must match storage_binding\.connector_id/);
+      assert.match(approveResp.body.error.message, /source_binding\.id must match storage_binding\.connector_id/);
     });
   });
 
@@ -4115,7 +4121,7 @@ test('PDPP reference implementation integration', async (t) => {
       assert.equal(ownerStreamListQueryEvent.data.query_shape, 'stream_list');
       assert.equal(ownerStreamListQueryEvent.actor_type, 'subject');
       assert.equal(ownerStreamListQueryEvent.subject_id, 'employee_1');
-      assert.equal(ownerStreamListQueryEvent.data.source?.binding_kind, 'provider_native');
+      assert.equal(ownerStreamListQueryEvent.data.source?.kind, 'provider_native');
       assert.ok(!('connector_id' in ownerStreamListQueryEvent.data), 'owner stream-list query event should not expose connector_id');
 
       const ownerStreamListDisclosureEvent = streamsTrace.data.find((event) =>
@@ -4126,7 +4132,7 @@ test('PDPP reference implementation integration', async (t) => {
       assert.equal(ownerStreamListDisclosureEvent.data.query_shape, 'stream_list');
       assert.equal(ownerStreamListDisclosureEvent.actor_type, 'subject');
       assert.equal(ownerStreamListDisclosureEvent.subject_id, 'employee_1');
-      assert.equal(ownerStreamListDisclosureEvent.data.source?.binding_kind, 'provider_native');
+      assert.equal(ownerStreamListDisclosureEvent.data.source?.kind, 'provider_native');
       assert.ok(!('connector_id' in ownerStreamListDisclosureEvent.data), 'owner stream-list disclosure event should not expose connector_id');
 
       const ownerStreamMetadataQueryEvent = streamMetadataTrace.data.find((event) =>
@@ -4136,7 +4142,7 @@ test('PDPP reference implementation integration', async (t) => {
       assert.ok(ownerStreamMetadataQueryEvent, 'owner self-export trace should include query.received for stream metadata');
       assert.equal(ownerStreamMetadataQueryEvent.stream_id, 'pay_statements');
       assert.equal(ownerStreamMetadataQueryEvent.data.query_shape, 'stream_metadata');
-      assert.equal(ownerStreamMetadataQueryEvent.data.source?.binding_kind, 'provider_native');
+      assert.equal(ownerStreamMetadataQueryEvent.data.source?.kind, 'provider_native');
       assert.ok(!('connector_id' in ownerStreamMetadataQueryEvent.data), 'owner stream-metadata query event should not expose connector_id');
 
       const ownerStreamMetadataDisclosureEvent = streamMetadataTrace.data.find((event) =>
@@ -4146,7 +4152,7 @@ test('PDPP reference implementation integration', async (t) => {
       assert.ok(ownerStreamMetadataDisclosureEvent, 'owner self-export trace should include disclosure.served for stream metadata');
       assert.equal(ownerStreamMetadataDisclosureEvent.stream_id, 'pay_statements');
       assert.equal(ownerStreamMetadataDisclosureEvent.data.query_shape, 'stream_metadata');
-      assert.equal(ownerStreamMetadataDisclosureEvent.data.source?.binding_kind, 'provider_native');
+      assert.equal(ownerStreamMetadataDisclosureEvent.data.source?.kind, 'provider_native');
       assert.ok(!('connector_id' in ownerStreamMetadataDisclosureEvent.data), 'owner stream-metadata disclosure event should not expose connector_id');
 
       const ownerQueryEvent = ownerTrace.data.find((event) =>
@@ -4157,8 +4163,8 @@ test('PDPP reference implementation integration', async (t) => {
       assert.equal(ownerQueryEvent.object_id, recordsRequestId);
       assert.equal(ownerQueryEvent.actor_type, 'subject');
       assert.equal(ownerQueryEvent.subject_id, 'employee_1');
-      assert.equal(ownerQueryEvent.data.source?.binding_kind, 'provider_native');
-      assert.equal(ownerQueryEvent.data.source?.provider_id, nativeManifest.provider_id);
+      assert.equal(ownerQueryEvent.data.source?.kind, 'provider_native');
+      assert.equal(ownerQueryEvent.data.source?.id, nativeManifest.provider_id);
       assert.ok(!('connector_id' in ownerQueryEvent.data), 'owner trace query event should not expose connector_id');
 
       const ownerDisclosureEvent = ownerTrace.data.find((event) =>
@@ -4169,8 +4175,8 @@ test('PDPP reference implementation integration', async (t) => {
       assert.equal(ownerDisclosureEvent.object_id, recordsRequestId);
       assert.equal(ownerDisclosureEvent.actor_type, 'subject');
       assert.equal(ownerDisclosureEvent.subject_id, 'employee_1');
-      assert.equal(ownerDisclosureEvent.data.source?.binding_kind, 'provider_native');
-      assert.equal(ownerDisclosureEvent.data.source?.provider_id, nativeManifest.provider_id);
+      assert.equal(ownerDisclosureEvent.data.source?.kind, 'provider_native');
+      assert.equal(ownerDisclosureEvent.data.source?.id, nativeManifest.provider_id);
       assert.equal(ownerDisclosureEvent.data.record_count, 1);
       assert.ok(!('connector_id' in ownerDisclosureEvent.data), 'owner trace disclosure event should not expose connector_id');
     });
@@ -4203,8 +4209,8 @@ test('PDPP reference implementation integration', async (t) => {
       assert.equal(queryReceivedEvent.data.query_shape, 'stream_list');
       assert.equal(queryReceivedEvent.actor_type, 'subject');
       assert.equal(queryReceivedEvent.subject_id, 'u1');
-      assert.equal(queryReceivedEvent.data.source?.binding_kind, 'connector');
-      assert.equal(queryReceivedEvent.data.source?.connector_id, missingConnectorId);
+      assert.equal(queryReceivedEvent.data.source?.kind, 'connector');
+      assert.equal(queryReceivedEvent.data.source?.id, missingConnectorId);
 
       const rejectedEvent = trace.data.find((event) =>
         event.event_type === 'query.rejected'
@@ -4213,8 +4219,8 @@ test('PDPP reference implementation integration', async (t) => {
       assert.ok(rejectedEvent, 'owner trace should include query.rejected for broken polyfill owner reads');
       assert.equal(rejectedEvent.trace_id, rejectedTraceId);
       assert.equal(rejectedEvent.data.query_shape, 'stream_list');
-      assert.equal(rejectedEvent.data.source?.binding_kind, 'connector');
-      assert.equal(rejectedEvent.data.source?.connector_id, missingConnectorId);
+      assert.equal(rejectedEvent.data.source?.kind, 'connector');
+      assert.equal(rejectedEvent.data.source?.id, missingConnectorId);
       assert.equal(rejectedEvent.data.error?.code, 'not_found');
       assert.match(rejectedEvent.data.error?.message || '', /Unknown connector: missing_spotify_connector/);
 
@@ -4408,8 +4414,8 @@ test('PDPP reference implementation integration', async (t) => {
         );
         assert.ok(queryReceivedEvent, `owner trace should include query.received for malformed ${queryShape} reads`);
         assert.equal(queryReceivedEvent.data.query_shape, queryShape);
-        assert.equal(queryReceivedEvent.data.source?.binding_kind, 'connector');
-        assert.equal(queryReceivedEvent.data.source?.connector_id, spotifyManifest.connector_id);
+        assert.equal(queryReceivedEvent.data.source?.kind, 'connector');
+        assert.equal(queryReceivedEvent.data.source?.id, spotifyManifest.connector_id);
         if (streamId) {
           assert.equal(queryReceivedEvent.stream_id, streamId);
         }
@@ -4478,8 +4484,8 @@ test('PDPP reference implementation integration', async (t) => {
       assert.ok(unknownGetRequested, 'owner state traces should include state.requested for rejected unknown-connector reads');
       assert.equal(unknownGetRequested.data.state_scope, 'owner');
       assert.equal(unknownGetRequested.data.operation, 'read');
-      assert.equal(unknownGetRequested.data.source?.binding_kind, 'connector');
-      assert.equal(unknownGetRequested.data.source?.connector_id, missingConnectorId);
+      assert.equal(unknownGetRequested.data.source?.kind, 'connector');
+      assert.equal(unknownGetRequested.data.source?.id, missingConnectorId);
 
       const unknownGetRejected = (unknownGetTrace.data || []).find((event) =>
         event.event_type === 'state.rejected'
@@ -4592,7 +4598,7 @@ test('PDPP reference implementation integration', async (t) => {
 
       const approved = await approveGrant(asUrl, 'u1', {
         client_id: 'concert_recommendation_app',
-        connector_id: spotifyManifest.connector_id,
+        source: { kind: 'connector', id: spotifyManifest.connector_id },
         purpose_code: 'https://pdpp.org/purpose/personalization',
         purpose_description: 'Maintain a concert-recommendation profile over time',
         access_mode: 'continuous',
@@ -4668,7 +4674,7 @@ test('PDPP reference implementation integration', async (t) => {
 
       const approved = await approveGrant(asUrl, 'u1', {
         client_id: 'concert_recommendation_app',
-        connector_id: spotifyManifest.connector_id,
+        source: { kind: 'connector', id: spotifyManifest.connector_id },
         purpose_code: 'https://pdpp.org/purpose/personalization',
         purpose_description: 'Maintain a concert-recommendation profile over time',
         access_mode: 'continuous',
@@ -4702,8 +4708,8 @@ test('PDPP reference implementation integration', async (t) => {
       assert.equal(malformedGrantRequested.trace_id, malformedGrantGetTraceId);
       assert.equal(malformedGrantRequested.data.state_scope, 'grant');
       assert.equal(malformedGrantRequested.data.operation, 'read');
-      assert.equal(malformedGrantRequested.data.source?.binding_kind, 'connector');
-      assert.equal(malformedGrantRequested.data.source?.connector_id, spotifyManifest.connector_id);
+      assert.equal(malformedGrantRequested.data.source?.kind, 'connector');
+      assert.equal(malformedGrantRequested.data.source?.id, spotifyManifest.connector_id);
 
       const malformedGrantRejected = (malformedGrantTimeline.data || []).find((event) =>
         event.event_type === 'state.rejected'
@@ -4742,7 +4748,7 @@ test('PDPP reference implementation integration', async (t) => {
 
       const approved = await approveGrant(asUrl, 'u1', {
         client_id: 'concert_recommendation_app',
-        connector_id: spotifyManifest.connector_id,
+        source: { kind: 'connector', id: spotifyManifest.connector_id },
         purpose_code: 'https://pdpp.org/purpose/personalization',
         purpose_description: 'Maintain a concert-recommendation profile over time',
         access_mode: 'continuous',
@@ -4780,8 +4786,8 @@ test('PDPP reference implementation integration', async (t) => {
       assert.equal(getRequested.trace_id, getTraceId);
       assert.equal(getRequested.data.operation, 'read');
       assert.equal(getRequested.data.state_scope, 'grant');
-      assert.equal(getRequested.data.source?.binding_kind, 'connector');
-      assert.equal(getRequested.data.source?.connector_id, spotifyManifest.connector_id);
+      assert.equal(getRequested.data.source?.kind, 'connector');
+      assert.equal(getRequested.data.source?.id, spotifyManifest.connector_id);
 
       const servedEvent = (grantTimelineAfterGet.data || []).find((event) =>
         event.event_type === 'state.served'
@@ -4882,7 +4888,7 @@ test('PDPP reference implementation integration', async (t) => {
 
       const approved = await approveGrant(asUrl, 'u1', {
         client_id: 'concert_recommendation_app',
-        connector_id: spotifyManifest.connector_id,
+        source: { kind: 'connector', id: spotifyManifest.connector_id },
         purpose_code: 'https://pdpp.org/purpose/personalization',
         purpose_description: 'Maintain a concert-recommendation profile over time',
         access_mode: 'continuous',
@@ -4929,7 +4935,7 @@ test('PDPP reference implementation integration', async (t) => {
 
       const approved = await approveGrant(asUrl, 'u1', {
         client_id: 'concert_recommendation_app',
-        connector_id: spotifyManifest.connector_id,
+        source: { kind: 'connector', id: spotifyManifest.connector_id },
         purpose_code: 'https://pdpp.org/purpose/personalization',
         purpose_description: 'Maintain a concert-recommendation profile over time',
         access_mode: 'continuous',
@@ -4976,7 +4982,7 @@ test('PDPP reference implementation integration', async (t) => {
 
       const approved = await approveGrant(asUrl, 'u1', {
         client_id: 'concert_recommendation_app',
-        connector_id: spotifyManifest.connector_id,
+        source: { kind: 'connector', id: spotifyManifest.connector_id },
         purpose_code: 'https://pdpp.org/purpose/personalization',
         purpose_description: 'Generate a one-time concert recommendation snapshot',
         access_mode: 'single_use',
@@ -5164,8 +5170,8 @@ test('PDPP reference implementation integration', async (t) => {
       assert.equal(ingestRequested.stream_id, 'top_artists');
       assert.equal(ingestRequested.data.operation, 'ingest_records');
       assert.equal(ingestRequested.data.submitted_record_count, 2);
-      assert.equal(ingestRequested.data.source?.binding_kind, 'connector');
-      assert.equal(ingestRequested.data.source?.connector_id, spotifyManifest.connector_id);
+      assert.equal(ingestRequested.data.source?.kind, 'connector');
+      assert.equal(ingestRequested.data.source?.id, spotifyManifest.connector_id);
 
       const ingestCompleted = ingestTrace.data.find((event) =>
         event.event_type === 'mutation.completed'
@@ -5177,8 +5183,8 @@ test('PDPP reference implementation integration', async (t) => {
       assert.equal(ingestCompleted.data.records_accepted, 1);
       assert.equal(ingestCompleted.data.records_rejected, 1);
       assert.equal(ingestCompleted.data.error_count, 1);
-      assert.equal(ingestCompleted.data.source?.binding_kind, 'connector');
-      assert.equal(ingestCompleted.data.source?.connector_id, spotifyManifest.connector_id);
+      assert.equal(ingestCompleted.data.source?.kind, 'connector');
+      assert.equal(ingestCompleted.data.source?.id, spotifyManifest.connector_id);
 
       const deleteResp = await fetch(
         `${rsUrl}/v1/streams/top_artists/records/${encodeURIComponent('artist_trace_success')}?connector_id=${encodeURIComponent(spotifyManifest.connector_id)}`,
@@ -5202,8 +5208,8 @@ test('PDPP reference implementation integration', async (t) => {
       assert.equal(deleteRequested.stream_id, 'top_artists');
       assert.equal(deleteRequested.data.operation, 'delete_record');
       assert.equal(deleteRequested.data.requested_record_id, 'artist_trace_success');
-      assert.equal(deleteRequested.data.source?.binding_kind, 'connector');
-      assert.equal(deleteRequested.data.source?.connector_id, spotifyManifest.connector_id);
+      assert.equal(deleteRequested.data.source?.kind, 'connector');
+      assert.equal(deleteRequested.data.source?.id, spotifyManifest.connector_id);
 
       const deleteCompleted = deleteTrace.data.find((event) =>
         event.event_type === 'mutation.completed'
@@ -5214,8 +5220,8 @@ test('PDPP reference implementation integration', async (t) => {
       assert.equal(deleteCompleted.data.operation, 'delete_record');
       assert.equal(deleteCompleted.data.requested_record_id, 'artist_trace_success');
       assert.equal(deleteCompleted.data.deleted_record_count, 1);
-      assert.equal(deleteCompleted.data.source?.binding_kind, 'connector');
-      assert.equal(deleteCompleted.data.source?.connector_id, spotifyManifest.connector_id);
+      assert.equal(deleteCompleted.data.source?.kind, 'connector');
+      assert.equal(deleteCompleted.data.source?.id, spotifyManifest.connector_id);
     });
   });
 
@@ -5421,7 +5427,7 @@ test('PDPP reference implementation integration', async (t) => {
 
       const approved = await approveGrant(asUrl, 'u1', {
         client_id: 'concert_recommendation_app',
-        connector_id: spotifyManifest.connector_id,
+        source: { kind: 'connector', id: spotifyManifest.connector_id },
         purpose_code: 'https://pdpp.org/purpose/personalization',
         purpose_description: 'Recommend concerts based on a chosen artist subset',
         access_mode: 'single_use',
@@ -5484,7 +5490,7 @@ test('PDPP reference implementation integration', async (t) => {
       const since = new Date(Date.now() - (4 * 24 * 60 * 60 * 1000)).toISOString();
       const approved = await approveGrant(asUrl, 'u1', {
         client_id: 'concert_recommendation_app',
-        connector_id: spotifyManifest.connector_id,
+        source: { kind: 'connector', id: spotifyManifest.connector_id },
         purpose_code: 'https://pdpp.org/purpose/personalization',
         purpose_description: 'Recommend concerts from recent listening only',
         access_mode: 'single_use',
@@ -5536,7 +5542,7 @@ test('PDPP reference implementation integration', async (t) => {
 
       const approved = await approveGrant(asUrl, 'u1', {
         client_id: 'concert_recommendation_app',
-        connector_id: spotifyManifest.connector_id,
+        source: { kind: 'connector', id: spotifyManifest.connector_id },
         purpose_code: 'https://pdpp.org/purpose/personalization',
         purpose_description: 'Recommend concerts using top artists only',
         access_mode: 'single_use',
@@ -5564,8 +5570,8 @@ test('PDPP reference implementation integration', async (t) => {
       assert.equal(queryReceivedEvent.trace_id, rejectedTraceId);
       assert.equal(queryReceivedEvent.stream_id, 'recently_played');
       assert.equal(queryReceivedEvent.data.query_shape, 'stream_metadata');
-      assert.equal(queryReceivedEvent.data.source?.binding_kind, 'connector');
-      assert.equal(queryReceivedEvent.data.source?.connector_id, spotifyManifest.connector_id);
+      assert.equal(queryReceivedEvent.data.source?.kind, 'connector');
+      assert.equal(queryReceivedEvent.data.source?.id, spotifyManifest.connector_id);
 
       const rejectedEvent = timeline.data.find((event) =>
         event.event_type === 'query.rejected'
@@ -5575,8 +5581,8 @@ test('PDPP reference implementation integration', async (t) => {
       assert.equal(rejectedEvent.trace_id, rejectedTraceId);
       assert.equal(rejectedEvent.stream_id, 'recently_played');
       assert.equal(rejectedEvent.data.query_shape, 'stream_metadata');
-      assert.equal(rejectedEvent.data.source?.binding_kind, 'connector');
-      assert.equal(rejectedEvent.data.source?.connector_id, spotifyManifest.connector_id);
+      assert.equal(rejectedEvent.data.source?.kind, 'connector');
+      assert.equal(rejectedEvent.data.source?.id, spotifyManifest.connector_id);
       assert.equal(rejectedEvent.data.error?.code, 'grant_stream_not_allowed');
       assert.match(rejectedEvent.data.error?.message || '', /Stream 'recently_played' not in grant/);
 
@@ -5595,7 +5601,7 @@ test('PDPP reference implementation integration', async (t) => {
 
       const approved = await approveGrant(asUrl, 'u1', {
         client_id: 'concert_recommendation_app',
-        connector_id: spotifyManifest.connector_id,
+        source: { kind: 'connector', id: spotifyManifest.connector_id },
         purpose_code: 'https://pdpp.org/purpose/personalization',
         purpose_description: 'Recommend concerts using top artists only',
         access_mode: 'single_use',
@@ -5623,8 +5629,8 @@ test('PDPP reference implementation integration', async (t) => {
       assert.equal(queryReceivedEvent.trace_id, rejectedTraceId);
       assert.equal(queryReceivedEvent.stream_id, 'recently_played');
       assert.equal(queryReceivedEvent.data.query_shape, 'record_list');
-      assert.equal(queryReceivedEvent.data.source?.binding_kind, 'connector');
-      assert.equal(queryReceivedEvent.data.source?.connector_id, spotifyManifest.connector_id);
+      assert.equal(queryReceivedEvent.data.source?.kind, 'connector');
+      assert.equal(queryReceivedEvent.data.source?.id, spotifyManifest.connector_id);
 
       const rejectedEvent = timeline.data.find((event) =>
         event.event_type === 'query.rejected'
@@ -5659,7 +5665,7 @@ test('PDPP reference implementation integration', async (t) => {
 
       const approved = await approveGrant(asUrl, 'u1', {
         client_id: 'concert_recommendation_app',
-        connector_id: spotifyManifest.connector_id,
+        source: { kind: 'connector', id: spotifyManifest.connector_id },
         purpose_code: 'https://pdpp.org/purpose/personalization',
         purpose_description: 'Recommend concerts using top artists only',
         access_mode: 'single_use',
@@ -5687,8 +5693,8 @@ test('PDPP reference implementation integration', async (t) => {
       assert.equal(queryReceivedEvent.trace_id, rejectedTraceId);
       assert.equal(queryReceivedEvent.stream_id, 'saved_tracks');
       assert.equal(queryReceivedEvent.data.query_shape, 'record_detail');
-      assert.equal(queryReceivedEvent.data.source?.binding_kind, 'connector');
-      assert.equal(queryReceivedEvent.data.source?.connector_id, spotifyManifest.connector_id);
+      assert.equal(queryReceivedEvent.data.source?.kind, 'connector');
+      assert.equal(queryReceivedEvent.data.source?.id, spotifyManifest.connector_id);
 
       const rejectedEvent = timeline.data.find((event) =>
         event.event_type === 'query.rejected'
@@ -5716,7 +5722,7 @@ test('PDPP reference implementation integration', async (t) => {
 
       const approved = await approveGrant(asUrl, 'u1', {
         client_id: 'concert_recommendation_app',
-        connector_id: spotifyManifest.connector_id,
+        source: { kind: 'connector', id: spotifyManifest.connector_id },
         purpose_code: 'https://pdpp.org/purpose/personalization',
         purpose_description: 'Recommend concerts using a chosen artist subset',
         access_mode: 'single_use',
@@ -5752,8 +5758,8 @@ test('PDPP reference implementation integration', async (t) => {
       assert.equal(queryReceivedEvent.stream_id, 'top_artists');
       assert.equal(queryReceivedEvent.data.query_shape, 'record_detail');
       assert.equal(queryReceivedEvent.data.requested_record_id, rejectedId);
-      assert.equal(queryReceivedEvent.data.source?.binding_kind, 'connector');
-      assert.equal(queryReceivedEvent.data.source?.connector_id, spotifyManifest.connector_id);
+      assert.equal(queryReceivedEvent.data.source?.kind, 'connector');
+      assert.equal(queryReceivedEvent.data.source?.id, spotifyManifest.connector_id);
 
       const rejectedEvent = timeline.data.find((event) =>
         event.event_type === 'query.rejected'
@@ -5764,8 +5770,8 @@ test('PDPP reference implementation integration', async (t) => {
       assert.equal(rejectedEvent.stream_id, 'top_artists');
       assert.equal(rejectedEvent.data.query_shape, 'record_detail');
       assert.equal(rejectedEvent.data.requested_record_id, rejectedId);
-      assert.equal(rejectedEvent.data.source?.binding_kind, 'connector');
-      assert.equal(rejectedEvent.data.source?.connector_id, spotifyManifest.connector_id);
+      assert.equal(rejectedEvent.data.source?.kind, 'connector');
+      assert.equal(rejectedEvent.data.source?.id, spotifyManifest.connector_id);
       assert.equal(rejectedEvent.data.error?.code, 'not_found');
       assert.match(rejectedEvent.data.error?.message || '', /Record not found/);
 
@@ -5785,7 +5791,7 @@ test('PDPP reference implementation integration', async (t) => {
       const since = new Date(Date.now() - (4 * 24 * 60 * 60 * 1000)).toISOString();
       const approved = await approveGrant(asUrl, 'u1', {
         client_id: 'concert_recommendation_app',
-        connector_id: spotifyManifest.connector_id,
+        source: { kind: 'connector', id: spotifyManifest.connector_id },
         purpose_code: 'https://pdpp.org/purpose/personalization',
         purpose_description: 'Recommend concerts from recent listening only',
         access_mode: 'single_use',
@@ -5836,8 +5842,8 @@ test('PDPP reference implementation integration', async (t) => {
       assert.equal(queryReceivedEvent.stream_id, 'top_artists');
       assert.equal(queryReceivedEvent.data.query_shape, 'record_detail');
       assert.equal(queryReceivedEvent.data.requested_record_id, hiddenRecord.id);
-      assert.equal(queryReceivedEvent.data.source?.binding_kind, 'connector');
-      assert.equal(queryReceivedEvent.data.source?.connector_id, spotifyManifest.connector_id);
+      assert.equal(queryReceivedEvent.data.source?.kind, 'connector');
+      assert.equal(queryReceivedEvent.data.source?.id, spotifyManifest.connector_id);
 
       const rejectedEvent = timeline.data.find((event) =>
         event.event_type === 'query.rejected'
@@ -5848,8 +5854,8 @@ test('PDPP reference implementation integration', async (t) => {
       assert.equal(rejectedEvent.stream_id, 'top_artists');
       assert.equal(rejectedEvent.data.query_shape, 'record_detail');
       assert.equal(rejectedEvent.data.requested_record_id, hiddenRecord.id);
-      assert.equal(rejectedEvent.data.source?.binding_kind, 'connector');
-      assert.equal(rejectedEvent.data.source?.connector_id, spotifyManifest.connector_id);
+      assert.equal(rejectedEvent.data.source?.kind, 'connector');
+      assert.equal(rejectedEvent.data.source?.id, spotifyManifest.connector_id);
       assert.equal(rejectedEvent.data.error?.code, 'not_found');
       assert.match(rejectedEvent.data.error?.message || '', /Record not found/);
 
@@ -5878,7 +5884,7 @@ test('PDPP reference implementation integration', async (t) => {
 
       const approved = await approveGrant(asUrl, 'u1', {
         client_id: 'concert_recommendation_app',
-        connector_id: spotifyManifest.connector_id,
+        source: { kind: 'connector', id: spotifyManifest.connector_id },
         purpose_code: 'https://pdpp.org/purpose/personalization',
         purpose_description: 'Recommend concerts using only the latest permitted artist',
         access_mode: 'single_use',
@@ -5913,8 +5919,8 @@ test('PDPP reference implementation integration', async (t) => {
       assert.equal(queryReceivedEvent.trace_id, traceId);
       assert.equal(queryReceivedEvent.stream_id, 'top_artists');
       assert.equal(queryReceivedEvent.data.query_shape, 'record_list');
-      assert.equal(queryReceivedEvent.data.source?.binding_kind, 'connector');
-      assert.equal(queryReceivedEvent.data.source?.connector_id, spotifyManifest.connector_id);
+      assert.equal(queryReceivedEvent.data.source?.kind, 'connector');
+      assert.equal(queryReceivedEvent.data.source?.id, spotifyManifest.connector_id);
 
       const servedEvent = timeline.data.find((event) =>
         event.event_type === 'disclosure.served'
@@ -5926,8 +5932,8 @@ test('PDPP reference implementation integration', async (t) => {
       assert.equal(servedEvent.data.query_shape, 'record_list');
       assert.equal(servedEvent.data.record_count, 1);
       assert.equal(servedEvent.data.has_more, false);
-      assert.equal(servedEvent.data.source?.binding_kind, 'connector');
-      assert.equal(servedEvent.data.source?.connector_id, spotifyManifest.connector_id);
+      assert.equal(servedEvent.data.source?.kind, 'connector');
+      assert.equal(servedEvent.data.source?.id, spotifyManifest.connector_id);
     });
   });
 
@@ -5938,7 +5944,7 @@ test('PDPP reference implementation integration', async (t) => {
 
       const approved = await approveGrant(asUrl, 'u1', {
         client_id: 'concert_recommendation_app',
-        connector_id: spotifyManifest.connector_id,
+        source: { kind: 'connector', id: spotifyManifest.connector_id },
         purpose_code: 'https://pdpp.org/purpose/personalization',
         purpose_description: 'Recommend concerts using the basic top-artist subset',
         access_mode: 'single_use',
@@ -5976,7 +5982,7 @@ test('PDPP reference implementation integration', async (t) => {
 
       const approved = await approveGrant(asUrl, 'u1', {
         client_id: 'concert_recommendation_app',
-        connector_id: spotifyManifest.connector_id,
+        source: { kind: 'connector', id: spotifyManifest.connector_id },
         purpose_code: 'https://pdpp.org/purpose/personalization',
         purpose_description: 'Recommend concerts using the basic top-artist subset',
         access_mode: 'single_use',
@@ -6020,7 +6026,7 @@ test('PDPP reference implementation integration', async (t) => {
 
       const approved = await approveGrant(asUrl, 'u1', {
         client_id: 'concert_recommendation_app',
-        connector_id: spotifyManifest.connector_id,
+        source: { kind: 'connector', id: spotifyManifest.connector_id },
         purpose_code: 'https://pdpp.org/purpose/personalization',
         purpose_description: 'Recommend concerts using the basic top-artist subset',
         access_mode: 'single_use',
@@ -6051,8 +6057,8 @@ test('PDPP reference implementation integration', async (t) => {
       assert.equal(queryReceivedEvent.trace_id, rejectedTraceId);
       assert.equal(queryReceivedEvent.stream_id, 'top_artists');
       assert.equal(queryReceivedEvent.data.query_shape, 'record_list');
-      assert.equal(queryReceivedEvent.data.source?.binding_kind, 'connector');
-      assert.equal(queryReceivedEvent.data.source?.connector_id, spotifyManifest.connector_id);
+      assert.equal(queryReceivedEvent.data.source?.kind, 'connector');
+      assert.equal(queryReceivedEvent.data.source?.id, spotifyManifest.connector_id);
 
       const rejectedEvent = timeline.data.find((event) =>
         event.event_type === 'query.rejected'
@@ -6062,8 +6068,8 @@ test('PDPP reference implementation integration', async (t) => {
       assert.equal(rejectedEvent.trace_id, rejectedTraceId);
       assert.equal(rejectedEvent.stream_id, 'top_artists');
       assert.equal(rejectedEvent.data.query_shape, 'record_list');
-      assert.equal(rejectedEvent.data.source?.binding_kind, 'connector');
-      assert.equal(rejectedEvent.data.source?.connector_id, spotifyManifest.connector_id);
+      assert.equal(rejectedEvent.data.source?.kind, 'connector');
+      assert.equal(rejectedEvent.data.source?.id, spotifyManifest.connector_id);
       assert.equal(rejectedEvent.data.error?.code, 'field_not_granted');
       assert.match(rejectedEvent.data.error?.message || '', /Filter on field 'popularity' not in grant/);
 
@@ -6082,7 +6088,7 @@ test('PDPP reference implementation integration', async (t) => {
 
       const approved = await approveGrant(asUrl, 'u1', {
         client_id: 'concert_recommendation_app',
-        connector_id: spotifyManifest.connector_id,
+        source: { kind: 'connector', id: spotifyManifest.connector_id },
         purpose_code: 'https://pdpp.org/purpose/personalization',
         purpose_description: 'Recommend concerts using the basic top-artist subset',
         access_mode: 'single_use',
@@ -6114,8 +6120,8 @@ test('PDPP reference implementation integration', async (t) => {
       assert.equal(queryReceivedEvent.stream_id, 'top_artists');
       assert.equal(queryReceivedEvent.data.query_shape, 'record_list');
       assert.equal(queryReceivedEvent.data.requested_view, 'full');
-      assert.equal(queryReceivedEvent.data.source?.binding_kind, 'connector');
-      assert.equal(queryReceivedEvent.data.source?.connector_id, spotifyManifest.connector_id);
+      assert.equal(queryReceivedEvent.data.source?.kind, 'connector');
+      assert.equal(queryReceivedEvent.data.source?.id, spotifyManifest.connector_id);
 
       const rejectedEvent = timeline.data.find((event) =>
         event.event_type === 'query.rejected'
@@ -6126,8 +6132,8 @@ test('PDPP reference implementation integration', async (t) => {
       assert.equal(rejectedEvent.stream_id, 'top_artists');
       assert.equal(rejectedEvent.data.query_shape, 'record_list');
       assert.equal(rejectedEvent.data.requested_view, 'full');
-      assert.equal(rejectedEvent.data.source?.binding_kind, 'connector');
-      assert.equal(rejectedEvent.data.source?.connector_id, spotifyManifest.connector_id);
+      assert.equal(rejectedEvent.data.source?.kind, 'connector');
+      assert.equal(rejectedEvent.data.source?.id, spotifyManifest.connector_id);
       assert.equal(rejectedEvent.data.error?.code, 'field_not_granted');
       assert.match(rejectedEvent.data.error?.message || '', /View includes fields not in grant: popularity/);
 
@@ -6146,7 +6152,7 @@ test('PDPP reference implementation integration', async (t) => {
 
       const approved = await approveGrant(asUrl, 'u1', {
         client_id: 'concert_recommendation_app',
-        connector_id: spotifyManifest.connector_id,
+        source: { kind: 'connector', id: spotifyManifest.connector_id },
         purpose_code: 'https://pdpp.org/purpose/personalization',
         purpose_description: 'Maintain a concert-recommendation profile over time using the basic top-artist subset',
         access_mode: 'continuous',
@@ -6248,7 +6254,7 @@ test('PDPP reference implementation integration', async (t) => {
 
       const approved = await approveGrant(asUrl, 'u1', {
         client_id: 'concert_recommendation_app',
-        connector_id: spotifyManifest.connector_id,
+        source: { kind: 'connector', id: spotifyManifest.connector_id },
         purpose_code: 'https://pdpp.org/purpose/personalization',
         purpose_description: 'Maintain a concert-recommendation profile over time using the basic top-artist subset',
         access_mode: 'continuous',
@@ -6281,8 +6287,8 @@ test('PDPP reference implementation integration', async (t) => {
       assert.equal(queryReceivedEvent.stream_id, 'top_artists');
       assert.equal(queryReceivedEvent.data.query_shape, 'record_list');
       assert.equal(queryReceivedEvent.data.has_changes_since, true);
-      assert.equal(queryReceivedEvent.data.source?.binding_kind, 'connector');
-      assert.equal(queryReceivedEvent.data.source?.connector_id, spotifyManifest.connector_id);
+      assert.equal(queryReceivedEvent.data.source?.kind, 'connector');
+      assert.equal(queryReceivedEvent.data.source?.id, spotifyManifest.connector_id);
 
       const rejectedEvent = timeline.data.find((event) =>
         event.event_type === 'query.rejected'
@@ -6293,8 +6299,8 @@ test('PDPP reference implementation integration', async (t) => {
       assert.equal(rejectedEvent.stream_id, 'top_artists');
       assert.equal(rejectedEvent.data.query_shape, 'record_list');
       assert.equal(rejectedEvent.data.has_changes_since, true);
-      assert.equal(rejectedEvent.data.source?.binding_kind, 'connector');
-      assert.equal(rejectedEvent.data.source?.connector_id, spotifyManifest.connector_id);
+      assert.equal(rejectedEvent.data.source?.kind, 'connector');
+      assert.equal(rejectedEvent.data.source?.id, spotifyManifest.connector_id);
       assert.equal(rejectedEvent.data.error?.code, 'field_not_granted');
       assert.match(rejectedEvent.data.error?.message || '', /Filter on field 'popularity' not in grant/);
 
@@ -6312,7 +6318,7 @@ test('PDPP reference implementation integration', async (t) => {
 
       const approved = await approveGrant(asUrl, 'employee_1', {
         client_id: 'longview',
-        provider_id: nativeManifest.provider_id,
+        source: { kind: 'provider_native', id: nativeManifest.provider_id },
         purpose_code: 'https://pdpp.org/purpose/financial_planning',
         purpose_description: 'Support compensation planning and verification',
         access_mode: 'continuous',
@@ -6338,7 +6344,7 @@ test('PDPP reference implementation integration', async (t) => {
       );
       assert.ok(queryReceivedEvent, 'grant timeline should include query.received for rejected native client reads');
       assert.equal(queryReceivedEvent.data.query_shape, 'record_list');
-      assert.equal(queryReceivedEvent.data.source?.binding_kind, 'provider_native');
+      assert.equal(queryReceivedEvent.data.source?.kind, 'provider_native');
 
       const rejectedEvent = timeline.data.find((event) =>
         event.event_type === 'query.rejected'
@@ -6347,7 +6353,7 @@ test('PDPP reference implementation integration', async (t) => {
       assert.ok(rejectedEvent, 'grant timeline should include query.rejected for rejected native client reads');
       assert.equal(rejectedEvent.trace_id, rejectedTraceId);
       assert.equal(rejectedEvent.data.query_shape, 'record_list');
-      assert.equal(rejectedEvent.data.source?.binding_kind, 'provider_native');
+      assert.equal(rejectedEvent.data.source?.kind, 'provider_native');
       assert.equal(rejectedEvent.data.error?.code, 'invalid_request');
       assert.match(rejectedEvent.data.error?.message || '', /view and fields are mutually exclusive/);
     });
@@ -6366,7 +6372,7 @@ test('PDPP reference implementation integration', async (t) => {
 
       const approved = await approveGrant(asUrl, 'employee_1', {
         client_id: 'longview',
-        provider_id: nativeManifest.provider_id,
+        source: { kind: 'provider_native', id: nativeManifest.provider_id },
         purpose_code: 'https://pdpp.org/purpose/financial_planning',
         purpose_description: 'Support compensation planning and verification',
         access_mode: 'continuous',
@@ -6410,7 +6416,7 @@ test('PDPP reference implementation integration', async (t) => {
       assert.ok(queryReceivedEvent, 'owner trace should include query.received for rejected native owner reads');
       assert.equal(queryReceivedEvent.stream_id, 'not_a_stream');
       assert.equal(queryReceivedEvent.data.query_shape, 'stream_metadata');
-      assert.equal(queryReceivedEvent.data.source?.binding_kind, 'provider_native');
+      assert.equal(queryReceivedEvent.data.source?.kind, 'provider_native');
 
       const rejectedEvent = trace.data.find((event) =>
         event.event_type === 'query.rejected'
@@ -6419,7 +6425,7 @@ test('PDPP reference implementation integration', async (t) => {
       assert.ok(rejectedEvent, 'owner trace should include query.rejected for rejected native owner reads');
       assert.equal(rejectedEvent.stream_id, 'not_a_stream');
       assert.equal(rejectedEvent.data.query_shape, 'stream_metadata');
-      assert.equal(rejectedEvent.data.source?.binding_kind, 'provider_native');
+      assert.equal(rejectedEvent.data.source?.kind, 'provider_native');
       assert.equal(rejectedEvent.data.error?.code, 'not_found');
       assert.match(rejectedEvent.data.error?.message || '', /Stream 'not_a_stream' not found/);
     });
@@ -6432,7 +6438,7 @@ test('PDPP reference implementation integration', async (t) => {
 
       const approved = await approveGrant(asUrl, 'u1', {
         client_id: 'concert_recommendation_app',
-        connector_id: spotifyManifest.connector_id,
+        source: { kind: 'connector', id: spotifyManifest.connector_id },
         purpose_code: 'https://pdpp.org/purpose/personalization',
         purpose_description: 'Maintain a concert-recommendation profile over time',
         access_mode: 'continuous',
@@ -6552,7 +6558,7 @@ test('PDPP reference implementation integration', async (t) => {
 
       const approved = await approveGrant(asUrl, 'u1', {
         client_id: 'concert_recommendation_app',
-        connector_id: spotifyManifest.connector_id,
+        source: { kind: 'connector', id: spotifyManifest.connector_id },
         purpose_code: 'https://pdpp.org/purpose/personalization',
         purpose_description: 'Recommend concerts using only one permitted artist change stream',
         access_mode: 'single_use',
@@ -6591,8 +6597,8 @@ test('PDPP reference implementation integration', async (t) => {
       assert.equal(queryReceivedEvent.stream_id, 'top_artists');
       assert.equal(queryReceivedEvent.data.query_shape, 'record_list');
       assert.equal(queryReceivedEvent.data.has_changes_since, true);
-      assert.equal(queryReceivedEvent.data.source?.binding_kind, 'connector');
-      assert.equal(queryReceivedEvent.data.source?.connector_id, spotifyManifest.connector_id);
+      assert.equal(queryReceivedEvent.data.source?.kind, 'connector');
+      assert.equal(queryReceivedEvent.data.source?.id, spotifyManifest.connector_id);
 
       const servedEvent = timeline.data.find((event) =>
         event.event_type === 'disclosure.served'
@@ -6605,8 +6611,8 @@ test('PDPP reference implementation integration', async (t) => {
       assert.equal(servedEvent.data.record_count, 1);
       assert.equal(servedEvent.data.has_more, false);
       assert.equal(servedEvent.data.has_next_changes_since, true);
-      assert.equal(servedEvent.data.source?.binding_kind, 'connector');
-      assert.equal(servedEvent.data.source?.connector_id, spotifyManifest.connector_id);
+      assert.equal(servedEvent.data.source?.kind, 'connector');
+      assert.equal(servedEvent.data.source?.id, spotifyManifest.connector_id);
     });
   });
 
@@ -6617,7 +6623,7 @@ test('PDPP reference implementation integration', async (t) => {
 
       const approved = await approveGrant(asUrl, 'u1', {
         client_id: 'concert_recommendation_app',
-        connector_id: spotifyManifest.connector_id,
+        source: { kind: 'connector', id: spotifyManifest.connector_id },
         purpose_code: 'https://pdpp.org/purpose/personalization',
         purpose_description: 'Maintain a concert-recommendation profile over time',
         access_mode: 'continuous',
@@ -6702,7 +6708,7 @@ test('PDPP reference implementation integration', async (t) => {
 
       const approved = await approveGrant(asUrl, 'u1', {
         client_id: 'concert_recommendation_app',
-        connector_id: spotifyManifest.connector_id,
+        source: { kind: 'connector', id: spotifyManifest.connector_id },
         purpose_code: 'https://pdpp.org/purpose/personalization',
         purpose_description: 'One-time recommendation bootstrap',
         access_mode: 'single_use',
@@ -6736,7 +6742,7 @@ test('PDPP reference implementation integration', async (t) => {
 
         const approved = await approveGrant(asUrl, 'u1', {
           client_id: 'concert_recommendation_app',
-          connector_id: spotifyManifest.connector_id,
+          source: { kind: 'connector', id: spotifyManifest.connector_id },
           purpose_code: 'https://pdpp.org/purpose/personalization',
           purpose_description: 'Incremental sync with cursor expiry',
           access_mode: 'continuous',
@@ -6801,7 +6807,7 @@ test('PDPP reference implementation integration', async (t) => {
 
       const approved = await approveGrant(asUrl, 'u1', {
         client_id: 'concert_recommendation_app',
-        connector_id: spotifyManifest.connector_id,
+        source: { kind: 'connector', id: spotifyManifest.connector_id },
         purpose_code: 'https://pdpp.org/purpose/personalization',
         purpose_description: 'Revocation test',
         access_mode: 'continuous',
@@ -6837,7 +6843,7 @@ test('PDPP reference implementation integration', async (t) => {
 
       const approved = await approveGrant(asUrl, 'employee_1', {
         client_id: 'longview',
-        provider_id: nativeManifest.provider_id,
+        source: { kind: 'provider_native', id: nativeManifest.provider_id },
         purpose_code: 'https://pdpp.org/purpose/financial_planning',
         purpose_description: 'Expiry correlation test',
         access_mode: 'continuous',
@@ -6905,7 +6911,7 @@ test('PDPP reference implementation integration', async (t) => {
       ]) {
         const approved = await approveGrant(asUrl, 'employee_1', {
           client_id: 'longview',
-          provider_id: nativeManifest.provider_id,
+          source: { kind: 'provider_native', id: nativeManifest.provider_id },
           purpose_code: 'https://pdpp.org/purpose/financial_planning',
           purpose_description: `Auth-gate ${scenario.inactiveReason} correlation test`,
           access_mode: 'continuous',
@@ -6947,7 +6953,7 @@ test('PDPP reference implementation integration', async (t) => {
 
       const approved = await approveGrant(asUrl, 'employee_1', {
         client_id: 'longview',
-        provider_id: nativeManifest.provider_id,
+        source: { kind: 'provider_native', id: nativeManifest.provider_id },
         purpose_code: 'https://pdpp.org/purpose/financial_planning',
         purpose_description: 'Auth-gate route-shape correlation test',
         access_mode: 'continuous',

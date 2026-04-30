@@ -81,7 +81,7 @@ async function startPendingConsent(asUrl, overrides = {}) {
       authorization_details: [
         {
           type: 'https://pdpp.org/data-access',
-          connector_id: SPOTIFY_MANIFEST.connector_id,
+          source: { kind: 'connector', id: SPOTIFY_MANIFEST.connector_id },
           purpose_code: 'test',
           purpose_description: 'test',
           access_mode: 'single_use',

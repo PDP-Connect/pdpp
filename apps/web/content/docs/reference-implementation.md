@@ -20,8 +20,8 @@ The live reference implementation is organized around four first-class actors:
 
 Those actors share one engine substrate but expose two different source-realization models:
 
-- **Native provider**: public requests identify the source with `provider_id`
-- **Polyfill source**: public requests identify the source with `connector_id`
+- **Native provider**: public requests identify the source with `source: { kind: "provider_native", id }`
+- **Polyfill source**: public requests identify the source with `source: { kind: "connector", id }`
 
 ## Primary surfaces
 
@@ -107,8 +107,8 @@ Clients and owners both query the resource server through `/v1`.
 
 The main distinction is source realization:
 
-- **Native provider mode**: no public `connector_id` is required for owner reads or client grant reads
-- **Polyfill mode**: owner reads still require `connector_id`, because the source identity is connector-scoped
+- **Native provider mode**: owner reads and client grant reads use `source.kind = "provider_native"`
+- **Polyfill mode**: owner reads and client grant reads use `source.kind = "connector"`, because the source identity is connector-scoped
 
 In the current reference, successful and route-level rejected `/v1/streams`, `/v1/streams/:stream`, `/v1/streams/:stream/records`, and `/v1/streams/:stream/records/:id` responses also expose:
 
@@ -152,8 +152,8 @@ The reference is trying to prove one specific architectural point:
 
 That is why the same engine supports both:
 
-- `provider_id` for native sources such as Northstar HR
-- `connector_id` for collected/polyfill sources such as Spotify
+- `source: { kind: "provider_native", id: "northstar_hr" }` for native sources such as Northstar HR
+- `source: { kind: "connector", id: "https://registry.pdpp.org/connectors/spotify" }` for collected/polyfill sources such as Spotify
 
 ## What is still intentionally thin
 

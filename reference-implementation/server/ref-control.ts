@@ -165,8 +165,12 @@ interface ConsentRequestEnvelope {
     purpose_description?: string;
     streams?: unknown[];
   };
-  source_binding?: { connector_id?: string; provider_id?: string };
-  storage_binding?: { connector_id?: string };
+  source_binding?: { kind?: string; id?: string };
+}
+
+interface SourcePreview {
+  readonly id: string;
+  readonly kind: "connector" | "provider_native";
 }
 
 interface ConsentApproval {
@@ -175,10 +179,9 @@ interface ConsentApproval {
   readonly created_at: string;
   readonly grant_preview: {
     readonly access_mode: string | null;
-    readonly connector_id: string | null;
-    readonly provider_id: string | null;
     readonly purpose_code: string | null;
     readonly purpose_description: string | null;
+    readonly source: SourcePreview | null;
     readonly streams: unknown[];
   };
   readonly kind: "consent";
@@ -346,7 +349,9 @@ async function getLatestRunSummary(
   connectorId: string,
   status: string | null = null
 ): Promise<ConnectorRunSummary | null> {
-  const filters = status ? { connectorId, status, limit: 1 } : { connectorId, limit: 1 };
+  const filters = status
+    ? { sourceKind: "connector", sourceId: connectorId, status, limit: 1 }
+    : { sourceKind: "connector", sourceId: connectorId, limit: 1 };
   const { summaries } = await listSpineCorrelations("run", filters);
   return toConnectorRunSummary(summaries[0] ?? null);
 }
@@ -506,6 +511,7 @@ function buildConsentApproval(row: PendingConsentRow): ConsentApproval | null {
     return null;
   }
   const request = parseManifest(row.params_json, `pending consent ${row.approval_id}`) as ConsentRequestEnvelope;
+  const source = sourcePreviewFromConsentRequest(request);
   return {
     object: "approval",
     approval_id: row.approval_id,
@@ -515,14 +521,24 @@ function buildConsentApproval(row: PendingConsentRow): ConsentApproval | null {
     user_code: null,
     created_at: row.created_at,
     grant_preview: {
-      connector_id: request.source_binding?.connector_id || request.storage_binding?.connector_id || null,
-      provider_id: request.source_binding?.provider_id || null,
       access_mode: request.selection?.access_mode || null,
       purpose_code: request.selection?.purpose_code || null,
       purpose_description: request.selection?.purpose_description || null,
+      source,
       streams: request.selection?.streams || [],
     },
   };
+}
+
+function sourcePreviewFromConsentRequest(request: ConsentRequestEnvelope): SourcePreview | null {
+  const source = request.source_binding;
+  if (source?.kind === "connector" && source.id) {
+    return { kind: "connector", id: source.id };
+  }
+  if (source?.kind === "provider_native" && source.id) {
+    return { kind: "provider_native", id: source.id };
+  }
+  return null;
 }
 
 function buildOwnerDeviceApproval(row: PendingOwnerDeviceRow): OwnerDeviceApproval | null {

@@ -15,6 +15,10 @@ function asString(value: FormDataEntryValue | null): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
+function asSourceKind(value: FormDataEntryValue | null): "connector" | "provider_native" {
+  return asString(value) === "provider_native" ? "provider_native" : "connector";
+}
+
 function readDraft(formData: FormData) {
   return {
     initialAccessToken: asString(formData.get("initial_access_token")),
@@ -22,8 +26,8 @@ function readDraft(formData: FormData) {
     clientName: asString(formData.get("client_name")),
     clientUri: asString(formData.get("client_uri")),
     redirectUri: asString(formData.get("redirect_uri")),
-    connectorId: asString(formData.get("connector_id")),
-    providerId: asString(formData.get("provider_id")),
+    sourceKind: asSourceKind(formData.get("source_kind")),
+    sourceId: asString(formData.get("source_id")),
     purposeCode: asString(formData.get("purpose_code")),
     purposeDescription: asString(formData.get("purpose_description")),
     accessMode: asString(formData.get("access_mode")),

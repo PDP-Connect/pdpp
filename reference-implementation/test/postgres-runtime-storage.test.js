@@ -272,7 +272,7 @@ if (!POSTGRES_URL) {
         authorization_details: [
           {
             type: 'https://pdpp.org/data-access',
-            connector_id: connectorId,
+            source: { kind: 'connector', id: connectorId },
             purpose_code: 'https://pdpp.org/purpose/personalization',
             purpose_description: 'Postgres runtime storage coverage',
             access_mode: 'continuous',
@@ -289,13 +289,14 @@ if (!POSTGRES_URL) {
           (approval) =>
             approval.kind === 'consent' &&
             approval.client_id === clientId &&
-            approval.grant_preview?.connector_id === connectorId,
+            approval.grant_preview?.source?.kind === 'connector' &&
+            approval.grant_preview?.source?.id === connectorId,
         ),
       );
 
       const approved = await approveGrant(deviceCode, ownerSubjectId);
       issuedGrantId = approved.grant.grant_id;
-      assert.equal(approved.grant.source.connector_id, connectorId);
+      assert.deepEqual(approved.grant.source, { kind: 'connector', id: connectorId });
       const tokenInfo = await introspect(approved.token);
       assert.equal(tokenInfo.active, true);
       assert.equal(tokenInfo.grant_id, approved.grant.grant_id);

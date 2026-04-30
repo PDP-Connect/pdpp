@@ -20,7 +20,7 @@ The current reference proves request staging, protected dynamic client registrat
 
 ## Example 1: Longview requests compensation data from Northstar HR
 
-This is the native-provider path. Longview requests compensation records from `Northstar HR`, so the request identifies the source with `provider_id`, not `connector_id`.
+This is the native-provider path. Longview requests compensation records from `Northstar HR`, so the request identifies the source with `source: { kind: "provider_native", id: "northstar_hr" }`.
 
 ### Step 1: Longview stages the request through PAR
 
@@ -39,7 +39,10 @@ Content-Type: application/json
   "authorization_details": [
     {
       "type": "https://pdpp.org/data-access",
-      "provider_id": "northstar_hr",
+      "source": {
+        "kind": "provider_native",
+        "id": "northstar_hr"
+      },
       "purpose_code": "https://longview.example/purpose/career-move-planning",
       "purpose_description": "Compare salary, equity, benefits, and tax tradeoffs before a career move",
       "access_mode": "continuous",
@@ -103,8 +106,8 @@ Reference response:
       "client_display": { "name": "Longview" }
     },
     "source": {
-      "binding_kind": "provider_native",
-      "provider_id": "northstar_hr"
+      "kind": "provider_native",
+      "id": "northstar_hr"
     },
     "purpose_code": "https://longview.example/purpose/career-move-planning",
     "access_mode": "continuous",
@@ -119,7 +122,7 @@ Reference response:
 
 ### Step 4: Longview queries the resource server
 
-Because this is the native-provider path, the client does **not** pass `connector_id`.
+Because this is the native-provider path, the client relies on the grant-bound source object.
 
 ```http
 GET /v1/streams/pay_statements/records?limit=10
@@ -241,7 +244,7 @@ Reference response:
 
 ### Step 5: Export data as the owner
 
-Native owner reads also omit `connector_id`:
+Native owner reads use the provider-native source:
 
 ```bash
 pdpp owner export pay_statements --rs-url http://localhost:7762 --owner-token 1b9b...
@@ -250,17 +253,17 @@ pdpp owner export pay_statements --rs-url http://localhost:7762 --owner-token 1b
 Polyfill owner reads are different:
 
 - they use the same owner token model
-- they still require `--connector-id <registry URI>` because the public source identity is connector-scoped
+- they identify the source as `{ "kind": "connector", "id": "<registry URI>" }` because the public source identity is connector-scoped
 
-## Example 3: Polyfill source access still uses connector_id
+## Example 3: Polyfill source access uses a connector source object
 
 The reference also supports a polyfill path for collected sources like Spotify. In that path:
 
-- the request sent to `/oauth/par` includes `connector_id`
-- the resulting grant has `source.binding_kind = "connector"`
+- the request sent to `/oauth/par` includes `source: { kind: "connector", id }`
+- the resulting grant has `source.kind = "connector"`
 - owner reads and runtime ingest/state operations remain connector-scoped
 
 That split is intentional. The reference implementation is proving one engine substrate with two honest realizations:
 
-- native provider access identified with `provider_id`
-- polyfill access identified with `connector_id`
+- native provider access identified with `source.kind = "provider_native"`
+- polyfill access identified with `source.kind = "connector"`

@@ -223,7 +223,7 @@ test('rs.streams.aggregate disclosure totals tolerate missing groups field with 
 });
 
 test('rs.streams.aggregate propagates the dependency source descriptor', async () => {
-  const source = { binding_kind: 'connector', connector_id: 'gmail' };
+  const source = { kind: 'connector', id: 'gmail' };
   const out = await executeStreamsAggregate(
     ownerInput(),
     defaultDeps({ getSourceDescriptor: () => source }),

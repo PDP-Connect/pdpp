@@ -133,7 +133,7 @@ export function buildTranscript(state: SandboxState): readonly TranscriptEntry[]
         requested_scope: {
           streams: [SANDBOX_STREAM.key],
           fields: SANDBOX_STREAM.fields,
-          providers: [SANDBOX_CONNECTOR.providerId],
+          sources: [SANDBOX_CONNECTOR.source],
         },
         client_claims: {
           commitments: SANDBOX_CLIENT.commitments,
@@ -189,7 +189,7 @@ export function buildTranscript(state: SandboxState): readonly TranscriptEntry[]
         grant_id: SANDBOX_GRANT.grantId,
         stream: SANDBOX_STREAM.key,
         projected_fields: SANDBOX_STREAM.fields,
-        provider: SANDBOX_CONNECTOR.providerId,
+        source: SANDBOX_CONNECTOR.source,
         record_count: SANDBOX_RECORDS.length,
         records: SANDBOX_RECORDS,
       },

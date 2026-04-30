@@ -18,7 +18,7 @@ The response shape:
   "bearer": { "token_kind": "client", "scope": "grant", "grant_id": "…", "client_id": "…" },
   "connectors": [
     {
-      "source": { "binding_kind": "connector", "connector_id": "https://registry.pdpp.org/connectors/gmail" },
+      "source": { "kind": "connector", "id": "https://registry.pdpp.org/connectors/gmail" },
       "streams": [
         {
           "object": "stream_metadata",

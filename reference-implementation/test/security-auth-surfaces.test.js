@@ -71,7 +71,7 @@ async function approveSpotifyGrant(asUrl, spotifyManifest, subjectId = 'owner_lo
       authorization_details: [
         {
           type: 'https://pdpp.org/data-access',
-          connector_id: spotifyManifest.connector_id,
+          source: { kind: 'connector', id: spotifyManifest.connector_id },
           purpose_code: 'https://pdpp.org/purpose/personalization',
           purpose_description: 'Auth-surface regression smoke',
           access_mode: 'continuous',

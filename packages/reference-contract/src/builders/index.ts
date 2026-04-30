@@ -135,26 +135,33 @@ export interface ParRequestInput {
   authorization_details?: unknown;
   client_display?: unknown;
   client_id?: unknown;
-  connector_id?: unknown;
-  provider_id?: unknown;
   purpose_code?: unknown;
   purpose_description?: unknown;
   request_context?: unknown;
   retention?: unknown;
   scenario_id?: unknown;
+  source?: unknown;
   streams?: unknown;
   type?: unknown;
 }
 
+function assertNoLegacySourceKeys(input: object): void {
+  if ("connector_id" in input || "provider_id" in input) {
+    throw new Error(
+      "buildParRequest no longer accepts top-level connector_id/provider_id; pass source: { kind: 'connector' | 'provider_native', id }"
+    );
+  }
+}
+
 export function buildParRequest(input: ParRequestInput = {}): ObjectLike {
+  assertNoLegacySourceKeys(input);
   if (Array.isArray(input.authorization_details) && input.authorization_details.length) {
     return { ...input };
   }
 
   const detail = compactObject({
     type: input.type ?? "https://pdpp.org/data-access",
-    connector_id: input.connector_id,
-    provider_id: input.provider_id,
+    source: isPlainObject(input.source) ? input.source : undefined,
     purpose_code: input.purpose_code,
     purpose_description: input.purpose_description,
     access_mode: input.access_mode,

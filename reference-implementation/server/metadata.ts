@@ -312,7 +312,7 @@ export interface ProtectedResourceDiscoveryHints {
   changes_since_bootstrap: "beginning";
   connectors_endpoint: string;
   hybrid_pagination_supported?: boolean;
-  owner_polyfill_requires_connector_id?: boolean;
+  owner_polyfill_requires_source_kind_connector?: boolean;
   query_base: string;
   schema_endpoint: string;
   search?: {

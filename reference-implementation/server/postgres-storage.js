@@ -16,6 +16,78 @@ const VALID_BACKENDS = new Set(['sqlite', 'postgres']);
 let activeBackend = 'sqlite';
 let pool = null;
 
+function nonEmptyString(value) {
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function isSourceKind(value) {
+  return value === 'connector' || value === 'provider_native';
+}
+
+function parseSpineSourceShape(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+
+  const canonicalKind = nonEmptyString(value.kind);
+  const canonicalId = nonEmptyString(value.id);
+  if (isSourceKind(canonicalKind) && canonicalId) {
+    return { kind: canonicalKind, id: canonicalId };
+  }
+
+  const legacyKind = nonEmptyString(value.binding_kind);
+  if (legacyKind === 'connector') {
+    const id = nonEmptyString(value.connector_id);
+    if (id) return { kind: 'connector', id };
+  }
+  if (legacyKind === 'provider_native') {
+    const id = nonEmptyString(value.provider_id);
+    if (id) return { kind: 'provider_native', id };
+  }
+
+  const connectorId = nonEmptyString(value.connector_id);
+  const providerId = nonEmptyString(value.provider_id);
+  if (connectorId && !providerId) return { kind: 'connector', id: connectorId };
+  if (providerId && !connectorId) return { kind: 'provider_native', id: providerId };
+
+  return null;
+}
+
+function deriveSpineSource(payload, row) {
+  if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
+    if (Object.prototype.hasOwnProperty.call(payload, 'source')) {
+      const source = parseSpineSourceShape(payload.source);
+      if (source) return source;
+    }
+    if (Object.prototype.hasOwnProperty.call(payload, 'source_binding')) {
+      const source = parseSpineSourceShape(payload.source_binding);
+      if (source) return source;
+    }
+    const connectorId = nonEmptyString(payload.connector_id);
+    const providerId = nonEmptyString(payload.provider_id);
+    if (connectorId && !providerId) return { kind: 'connector', id: connectorId };
+    if (providerId && !connectorId) return { kind: 'provider_native', id: providerId };
+  }
+
+  const sourceKind = nonEmptyString(row.source_kind);
+  const sourceId = nonEmptyString(row.source_id);
+  if (isSourceKind(sourceKind) && sourceId) {
+    return { kind: sourceKind, id: sourceId };
+  }
+
+  const providerId = nonEmptyString(row.provider_id);
+  if (providerId) {
+    return { kind: 'provider_native', id: providerId };
+  }
+
+  const actorId = nonEmptyString(row.actor_id);
+  if (row.actor_type === 'runtime' && actorId) {
+    return { kind: 'connector', id: actorId };
+  }
+
+  return null;
+}
+
 function normalizeBackend(value) {
   const normalized = String(value || 'sqlite').trim().toLowerCase();
   if (!VALID_BACKENDS.has(normalized)) {
@@ -345,7 +417,8 @@ export async function bootstrapPostgresSchema() {
         request_id TEXT,
         grant_id TEXT,
         run_id TEXT,
-        provider_id TEXT,
+        source_kind TEXT,
+        source_id TEXT,
         client_id TEXT,
         stream_id TEXT,
         token_id TEXT,
@@ -432,7 +505,83 @@ export async function bootstrapPostgresSchema() {
         PRIMARY KEY(connector_id, stream)
       );
     `);
+    await migratePostgresSpineSourceColumns(client);
   } finally {
     client.release();
+  }
+}
+
+async function hasPostgresColumn(client, table, column) {
+  const result = await client.query(
+    `SELECT 1
+       FROM information_schema.columns
+      WHERE table_schema = current_schema()
+        AND table_name = $1
+        AND column_name = $2
+      LIMIT 1`,
+    [table, column],
+  );
+  return result.rowCount > 0;
+}
+
+async function migratePostgresSpineSourceColumns(client) {
+  const hadProviderId = await hasPostgresColumn(client, 'spine_events', 'provider_id');
+  await client.query('BEGIN');
+  try {
+    const before = await client.query('SELECT COUNT(*)::int AS count FROM spine_events');
+    await client.query(`
+      ALTER TABLE spine_events
+        ADD COLUMN IF NOT EXISTS source_kind TEXT,
+        ADD COLUMN IF NOT EXISTS source_id TEXT
+    `);
+
+    const providerProjection = hadProviderId ? ', provider_id' : '';
+    const rows = await client.query(
+      `SELECT event_id, actor_type, actor_id, data_json, source_kind, source_id${providerProjection} FROM spine_events`
+    );
+
+    for (const row of rows.rows) {
+      const payload = row.data_json && typeof row.data_json === 'object' && !Array.isArray(row.data_json)
+        ? row.data_json
+        : {};
+      const source = deriveSpineSource(payload, row);
+      if (!source) {
+        continue;
+      }
+      const dataJson = { ...payload, source };
+      if (
+        row.source_kind !== source.kind
+        || row.source_id !== source.id
+        || JSON.stringify(payload.source) !== JSON.stringify(source)
+      ) {
+        await client.query(
+          `UPDATE spine_events
+              SET source_kind = $1, source_id = $2, data_json = $3::jsonb
+            WHERE event_id = $4`,
+          [source.kind, source.id, JSON.stringify(dataJson), row.event_id],
+        );
+      }
+    }
+
+    if (hadProviderId) {
+      await client.query('ALTER TABLE spine_events DROP COLUMN provider_id');
+    }
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_pg_spine_events_source
+        ON spine_events(source_kind, source_id, occurred_at, recorded_at)
+    `);
+
+    const after = await client.query('SELECT COUNT(*)::int AS count FROM spine_events');
+    if (before.rows[0].count !== after.rows[0].count) {
+      throw new Error(
+        `spine_events source migration row-count mismatch: before=${before.rows[0].count} after=${after.rows[0].count}`
+      );
+    }
+    await client.query('COMMIT');
+  } catch (err) {
+    try {
+      await client.query('ROLLBACK');
+    } catch {}
+    throw err;
   }
 }

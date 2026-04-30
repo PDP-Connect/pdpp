@@ -20,9 +20,8 @@
  */
 
 export interface ConnectorsListSourceDescriptor {
-  binding_kind: "connector" | "provider_native";
-  connector_id?: string;
-  provider_id?: string;
+  kind: "connector" | "provider_native";
+  id: string;
   [extra: string]: unknown;
 }
 

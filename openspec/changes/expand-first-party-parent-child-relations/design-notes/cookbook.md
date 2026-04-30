@@ -12,7 +12,8 @@ in one read:
 ```bash
 curl -H "Authorization: Bearer $TOKEN" \
   "$RS/v1/streams/messages/records\
-?connector_id=$(jq -rn --arg s 'https://registry.pdpp.org/connectors/slack' '$s|@uri')\
+?source_kind=connector\
+&source_id=$(jq -rn --arg s 'https://registry.pdpp.org/connectors/slack' '$s|@uri')\
 &order=desc\
 &expand=message_attachments\
 &expand=reactions\
@@ -51,5 +52,5 @@ parent record directly:
 ```bash
 # Look up the channel for a Slack message:
 curl -H "Authorization: Bearer $TOKEN" \
-  "$RS/v1/streams/channels/records/$CHANNEL_ID?connector_id=...&fields=id,name,is_private"
+  "$RS/v1/streams/channels/records/$CHANNEL_ID?source_kind=connector&source_id=...&fields=id,name,is_private"
 ```

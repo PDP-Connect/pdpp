@@ -413,7 +413,8 @@ CREATE TABLE IF NOT EXISTS spine_events (
   request_id       TEXT,
   grant_id         TEXT,
   run_id           TEXT,
-  provider_id      TEXT,
+  source_kind      TEXT,
+  source_id        TEXT,
   client_id        TEXT,
   stream_id        TEXT,
   token_id         TEXT,
@@ -613,6 +614,159 @@ function addColumnIfMissing(raw, table, column, type) {
   raw.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
 }
 
+function tableColumns(raw, table) {
+  return raw.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
+}
+
+function hasTableColumn(raw, table, column) {
+  return tableColumns(raw, table).includes(column);
+}
+
+function isSourceKind(value) {
+  return value === 'connector' || value === 'provider_native';
+}
+
+function nonEmptyString(value) {
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function parseSpineSourceShape(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+
+  const source = value;
+  const canonicalKind = nonEmptyString(source.kind);
+  const canonicalId = nonEmptyString(source.id);
+  if (isSourceKind(canonicalKind) && canonicalId) {
+    return { kind: canonicalKind, id: canonicalId };
+  }
+
+  const legacyKind = nonEmptyString(source.binding_kind);
+  if (legacyKind === 'connector') {
+    const id = nonEmptyString(source.connector_id);
+    if (id) return { kind: 'connector', id };
+  }
+  if (legacyKind === 'provider_native') {
+    const id = nonEmptyString(source.provider_id);
+    if (id) return { kind: 'provider_native', id };
+  }
+
+  const connectorId = nonEmptyString(source.connector_id);
+  const providerId = nonEmptyString(source.provider_id);
+  if (connectorId && !providerId) return { kind: 'connector', id: connectorId };
+  if (providerId && !connectorId) return { kind: 'provider_native', id: providerId };
+
+  return null;
+}
+
+function parseSpineEventData(rawJson, eventId) {
+  try {
+    return rawJson ? JSON.parse(rawJson) : {};
+  } catch (err) {
+    throw new Error(`Cannot migrate spine_events row ${eventId}: data_json is not valid JSON`);
+  }
+}
+
+function deriveSpineSource(payload, row) {
+  if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
+    if (Object.prototype.hasOwnProperty.call(payload, 'source')) {
+      const source = parseSpineSourceShape(payload.source);
+      if (source) return source;
+    }
+    if (Object.prototype.hasOwnProperty.call(payload, 'source_binding')) {
+      const source = parseSpineSourceShape(payload.source_binding);
+      if (source) return source;
+    }
+    const connectorId = nonEmptyString(payload.connector_id);
+    const providerId = nonEmptyString(payload.provider_id);
+    if (connectorId && !providerId) return { kind: 'connector', id: connectorId };
+    if (providerId && !connectorId) return { kind: 'provider_native', id: providerId };
+  }
+
+  const sourceKind = nonEmptyString(row.source_kind);
+  const sourceId = nonEmptyString(row.source_id);
+  if (isSourceKind(sourceKind) && sourceId) {
+    return { kind: sourceKind, id: sourceId };
+  }
+
+  const providerId = nonEmptyString(row.provider_id);
+  if (providerId) {
+    return { kind: 'provider_native', id: providerId };
+  }
+
+  const actorId = nonEmptyString(row.actor_id);
+  if (row.actor_type === 'runtime' && actorId) {
+    return { kind: 'connector', id: actorId };
+  }
+
+  return null;
+}
+
+function migrateSpineSourceColumns(raw, opts = {}) {
+  if (!tableColumns(raw, 'spine_events').length) {
+    return { backfilledRows: 0, rowCount: 0, droppedProviderId: false };
+  }
+
+  const hadProviderId = hasTableColumn(raw, 'spine_events', 'provider_id');
+  const migration = raw.transaction(() => {
+    const beforeCount = raw.prepare('SELECT COUNT(*) AS count FROM spine_events').get().count;
+    addColumnIfMissing(raw, 'spine_events', 'source_kind', 'TEXT');
+    addColumnIfMissing(raw, 'spine_events', 'source_id', 'TEXT');
+
+    const providerProjection = hadProviderId ? ', provider_id' : '';
+    const rows = raw.prepare(
+      `SELECT event_id, actor_type, actor_id, data_json, source_kind, source_id${providerProjection} FROM spine_events`
+    ).all();
+    const update = raw.prepare(
+      'UPDATE spine_events SET source_kind = @source_kind, source_id = @source_id, data_json = @data_json WHERE event_id = @event_id'
+    );
+    let backfilledRows = 0;
+
+    for (const row of rows) {
+      const payload = parseSpineEventData(row.data_json, row.event_id);
+      const source = deriveSpineSource(payload, row);
+      if (!source) {
+        continue;
+      }
+      const nextPayload = payload && typeof payload === 'object' && !Array.isArray(payload)
+        ? { ...payload, source }
+        : { source };
+      const nextDataJson = JSON.stringify(nextPayload);
+      if (row.source_kind !== source.kind || row.source_id !== source.id || row.data_json !== nextDataJson) {
+        update.run({
+          event_id: row.event_id,
+          source_kind: source.kind,
+          source_id: source.id,
+          data_json: nextDataJson,
+        });
+        backfilledRows += 1;
+      }
+    }
+
+    if (hadProviderId) {
+      raw.exec('ALTER TABLE spine_events DROP COLUMN provider_id');
+    }
+    raw.exec(
+      `CREATE INDEX IF NOT EXISTS idx_spine_events_source
+        ON spine_events(source_kind, source_id, occurred_at, recorded_at)`
+    );
+
+    const afterCount = raw.prepare('SELECT COUNT(*) AS count FROM spine_events').get().count;
+    if (beforeCount !== afterCount) {
+      throw new Error(`spine_events source migration row-count mismatch: before=${beforeCount} after=${afterCount}`);
+    }
+    raw.pragma('user_version = 1');
+    return { backfilledRows, rowCount: afterCount, droppedProviderId: hadProviderId };
+  });
+
+  const result = migration();
+  if (typeof opts.onSchemaMigration === 'function') {
+    opts.onSchemaMigration({ name: 'spine_events_source_columns', ...result });
+  }
+  return result;
+}
+
 function loadVectorExtension(raw) {
   try {
     sqliteVec.load(raw);
@@ -674,6 +828,7 @@ export function initDb(path = ':memory:', opts = {}) {
       `UPDATE spine_events SET event_seq = rowid WHERE event_seq IS NULL`
     );
   });
+  runWithSqliteBusyRetrySync(() => migrateSpineSourceColumns(raw, opts));
   raw.exec(
     `CREATE UNIQUE INDEX IF NOT EXISTS idx_spine_events_seq ON spine_events(event_seq) WHERE event_seq IS NOT NULL`
   );

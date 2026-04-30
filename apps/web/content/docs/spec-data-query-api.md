@@ -62,7 +62,7 @@ Each per-stream entry uses the same shape as `GET /v1/streams/{stream}`: `schema
     {
       "object": "connector",
       "connector_id": "conn_spotify",
-      "source": { "binding_kind": "connector", "connector_id": "conn_spotify" },
+      "source": { "kind": "connector", "id": "conn_spotify" },
       "stream_count": 3,
       "streams": [
         {

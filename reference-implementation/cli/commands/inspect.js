@@ -39,10 +39,8 @@ function renderGrant(grant) {
     subject_id: grant.subject?.id || '',
     access_mode: grant.access_mode || '',
     purpose_code: grant.purpose_code || '',
-    source_kind: sourceBinding.binding_kind,
-    source_id: sourceBinding.binding_kind === 'provider_native'
-      ? sourceBinding.provider_id
-      : sourceBinding.connector_id,
+    source_kind: sourceBinding.kind,
+    source_id: sourceBinding.id,
     streams: (grant.streams || []).map((stream) => stream.name).join(', '),
     expires_at: grant.expires_at || '',
   };
@@ -67,10 +65,8 @@ function renderRequest(request) {
     client_display: clientDisplay,
     purpose_code: purposeCode,
     access_mode: accessMode,
-    source_kind: sourceBinding.binding_kind,
-    source_id: sourceBinding.binding_kind === 'provider_native'
-      ? sourceBinding.provider_id
-      : sourceBinding.connector_id,
+    source_kind: sourceBinding.kind,
+    source_id: sourceBinding.id,
     streams,
   };
 }
@@ -90,26 +86,18 @@ function renderManifest(manifest) {
 
 function requireSourceBinding(sourceBinding, fieldName) {
   if (!sourceBinding || typeof sourceBinding !== 'object') {
-    throw new PdppUsageError(`${fieldName} must use the current structured binding shape`);
+    throw new PdppUsageError(`${fieldName} must be source: { kind: 'connector' | 'provider_native', id }`);
   }
 
-  if (sourceBinding.binding_kind === 'provider_native') {
-    requireExactKeys(sourceBinding, ['binding_kind', 'provider_id'], fieldName);
-    if (typeof sourceBinding.provider_id === 'string' && sourceBinding.provider_id.trim()) {
-      return { binding_kind: 'provider_native', provider_id: sourceBinding.provider_id.trim() };
-    }
-    throw new PdppUsageError(`${fieldName}.provider_id is required for provider_native bindings`);
+  requireExactKeys(sourceBinding, ['kind', 'id'], fieldName);
+  if (sourceBinding.kind !== 'connector' && sourceBinding.kind !== 'provider_native') {
+    throw new PdppUsageError(`${fieldName}.kind must be 'connector' or 'provider_native'`);
+  }
+  if (typeof sourceBinding.id === 'string' && sourceBinding.id.trim()) {
+    return { kind: sourceBinding.kind, id: sourceBinding.id.trim() };
   }
 
-  if (sourceBinding.binding_kind === 'connector') {
-    requireExactKeys(sourceBinding, ['binding_kind', 'connector_id'], fieldName);
-    if (typeof sourceBinding.connector_id === 'string' && sourceBinding.connector_id.trim()) {
-      return { binding_kind: 'connector', connector_id: sourceBinding.connector_id.trim() };
-    }
-    throw new PdppUsageError(`${fieldName}.connector_id is required for connector bindings`);
-  }
-
-  throw new PdppUsageError(`${fieldName}.binding_kind must be 'connector' or 'provider_native'`);
+  throw new PdppUsageError(`${fieldName}.id is required`);
 }
 
 function requireStorageBinding(storageBinding, fieldName) {
@@ -133,8 +121,8 @@ function requireExactKeys(input, allowedKeys, fieldName) {
 }
 
 function requireCoherentBindings(sourceBinding, storageBinding, sourceFieldName, storageFieldName) {
-  if (sourceBinding.binding_kind === 'connector' && sourceBinding.connector_id !== storageBinding.connector_id) {
-    throw new PdppUsageError(`${sourceFieldName}.connector_id must match ${storageFieldName}.connector_id`);
+  if (sourceBinding.kind === 'connector' && sourceBinding.id !== storageBinding.connector_id) {
+    throw new PdppUsageError(`${sourceFieldName}.id must match ${storageFieldName}.connector_id for connector access`);
   }
 }
 

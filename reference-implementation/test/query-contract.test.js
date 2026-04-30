@@ -116,7 +116,7 @@ async function startGrantRequest(asUrl, params) {
       authorization_details: [
         {
           type: 'https://pdpp.org/data-access',
-          connector_id: params.connector_id,
+          source: params.source || { kind: 'connector', id: params.connector_id },
           purpose_code: params.purpose_code,
           purpose_description: params.purpose_description,
           access_mode: params.access_mode,
@@ -346,8 +346,8 @@ test('connector discovery lists owner-visible polyfill connectors without connec
     assert.equal(connector.object, 'connector');
     assert.equal(connector.connector_id, spotifyManifest.connector_id);
     assert.deepEqual(connector.source, {
-      binding_kind: 'connector',
-      connector_id: spotifyManifest.connector_id,
+      kind: 'connector',
+      id: spotifyManifest.connector_id,
     });
     assert.deepEqual(
       connector.streams.map((stream) => stream.name).sort(),
@@ -371,7 +371,7 @@ test('connector discovery scopes client tokens to the granted source and streams
   await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
     const approved = await approveGrant(asUrl, 'schema_discovery_owner', {
       client_id: 'longview',
-      connector_id: spotifyManifest.connector_id,
+      source: { kind: 'connector', id: spotifyManifest.connector_id },
       purpose_code: 'https://pdpp.org/purpose/analytics',
       purpose_description: 'schema discovery test',
       access_mode: 'continuous',
@@ -423,8 +423,8 @@ test('schema discovery enumerates owner-visible polyfill connectors with full pe
 
     const spotify = body.connectors.find((c) => c.connector_id === spotifyManifest.connector_id);
     assert.deepEqual(spotify.source, {
-      binding_kind: 'connector',
-      connector_id: spotifyManifest.connector_id,
+      kind: 'connector',
+      id: spotifyManifest.connector_id,
     });
     assert.deepEqual(
       spotify.streams.map((s) => s.name).sort(),
@@ -455,7 +455,7 @@ test('schema discovery scopes a client token to its grant source and streams', a
     assert.equal((await registerConnectorManifest(asUrl, gmailManifest)).status, 201);
     const approved = await approveGrant(asUrl, 'schema_client_owner', {
       client_id: 'longview',
-      connector_id: spotifyManifest.connector_id,
+      source: { kind: 'connector', id: spotifyManifest.connector_id },
       purpose_code: 'https://pdpp.org/purpose/analytics',
       purpose_description: 'schema discovery client scope',
       access_mode: 'continuous',
@@ -602,7 +602,7 @@ test('stream metadata marks grant-limited field capabilities unusable for client
   await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
     const approved = await approveGrant(asUrl, 'capability_limited_spotify_owner', {
       client_id: 'longview',
-      connector_id: spotifyManifest.connector_id,
+      source: { kind: 'connector', id: spotifyManifest.connector_id },
       purpose_code: 'https://pdpp.org/purpose/analytics',
       purpose_description: 'schema discovery test',
       access_mode: 'continuous',

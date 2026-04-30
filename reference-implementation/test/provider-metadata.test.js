@@ -544,7 +544,7 @@ test('explicit browser-facing public urls drive metadata, device verification, a
         authorization_details: [
           {
             type: 'https://pdpp.org/data-access',
-            connector_id: 'https://registry.pdpp.org/connectors/spotify',
+            source: { kind: 'connector', id: 'https://registry.pdpp.org/connectors/spotify' },
             purpose_code: 'https://pdpp.org/purpose/recommendation',
             purpose_description: 'Review top artists',
             access_mode: 'single_use',
@@ -906,9 +906,9 @@ test('protected-resource metadata names canonical first-call shapes via pdpp_dis
     assert.equal(hints.connectors_endpoint, '/v1/connectors');
     assert.equal(hints.streams_endpoint_template, '/v1/streams/{stream}');
     // Default reference startup is polyfill-mode (no native manifest), so
-    // owner-token reads must pass `connector_id`. The hint surfaces that
+    // owner-token reads must use source.kind = "connector". The hint surfaces that
     // requirement without making the caller hit a route and parse a 400.
-    assert.equal(hints.owner_polyfill_requires_connector_id, true);
+    assert.equal(hints.owner_polyfill_requires_source_kind_connector, true);
 
     // Lexical retrieval is advertised by default; the search hints should
     // mirror the canonical streams[] scope and the v1 single-stream filter
@@ -922,9 +922,9 @@ test('protected-resource metadata names canonical first-call shapes via pdpp_dis
   }
 });
 
-test('pdpp_discovery_hints omits owner_polyfill_requires_connector_id when a native manifest is configured', async () => {
+test('pdpp_discovery_hints omits owner_polyfill_requires_source_kind_connector when a native manifest is configured', async () => {
   // Native single-source mode resolves the connector implicitly from the
-  // manifest, so the polyfill connector_id requirement does not apply. The
+  // manifest, so the polyfill source-kind requirement does not apply. The
   // hint should be absent rather than emitted as `false`, matching the
   // truthful-omission convention used elsewhere in this block (see
   // hybrid_pagination_supported).
@@ -950,9 +950,9 @@ test('pdpp_discovery_hints omits owner_polyfill_requires_connector_id when a nat
     assert.equal(hints.connectors_endpoint, '/v1/connectors');
     assert.equal(hints.streams_endpoint_template, '/v1/streams/{stream}');
     assert.equal(
-      Object.prototype.hasOwnProperty.call(hints, 'owner_polyfill_requires_connector_id'),
+      Object.prototype.hasOwnProperty.call(hints, 'owner_polyfill_requires_source_kind_connector'),
       false,
-      'owner_polyfill_requires_connector_id should be omitted in native single-source mode',
+      'owner_polyfill_requires_source_kind_connector should be omitted in native single-source mode',
     );
   } finally {
     await closeServer(server);

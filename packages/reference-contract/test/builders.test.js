@@ -61,7 +61,7 @@ test('buildParRequest lifts flat data-access inputs into authorization_details',
     buildParRequest({
       client_id: 'concert_recommendation_app',
       scenario_id: 'scenario_contract_builders',
-      connector_id: 'spotify',
+      source: { kind: 'connector', id: 'spotify' },
       purpose_code: 'https://pdpp.org/purpose/personalization',
       purpose_description: 'Suggest concerts based on listening history',
       access_mode: 'single_use',
@@ -73,7 +73,7 @@ test('buildParRequest lifts flat data-access inputs into authorization_details',
       authorization_details: [
         {
           type: 'https://pdpp.org/data-access',
-          connector_id: 'spotify',
+          source: { kind: 'connector', id: 'spotify' },
           purpose_code: 'https://pdpp.org/purpose/personalization',
           purpose_description: 'Suggest concerts based on listening history',
           access_mode: 'single_use',
@@ -81,5 +81,16 @@ test('buildParRequest lifts flat data-access inputs into authorization_details',
         },
       ],
     },
+  );
+});
+
+test('buildParRequest rejects legacy source scalar inputs', () => {
+  assert.throws(
+    () =>
+      buildParRequest({
+        connector_id: 'spotify',
+        purpose_code: 'https://pdpp.org/purpose/personalization',
+      }),
+    /source: \{ kind: 'connector' \| 'provider_native', id \}/,
   );
 });

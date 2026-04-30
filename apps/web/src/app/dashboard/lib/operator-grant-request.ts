@@ -23,14 +23,14 @@ export interface GrantRequestDraft {
   clientId: string;
   clientName: string;
   clientUri: string;
-  connectorId: string;
   fields: string;
   initialAccessToken: string;
-  providerId: string;
   purposeCode: string;
   purposeDescription: string;
   redirectUri: string;
   retention: string;
+  sourceId: string;
+  sourceKind: "connector" | "provider_native";
   streamName: string;
   subjectId: string;
   view: string;
@@ -74,6 +74,17 @@ function trim(value: string | undefined): string {
   return (value ?? "").trim();
 }
 
+function normalizeSourceKind(value: string | undefined): GrantRequestDraft["sourceKind"] {
+  return trim(value) === "provider_native" ? "provider_native" : "connector";
+}
+
+function sourceFromDraft(draft: GrantRequestDraft) {
+  return {
+    kind: draft.sourceKind,
+    id: draft.sourceId,
+  };
+}
+
 export function createDefaultGrantRequestDraft(): GrantRequestDraft {
   return {
     initialAccessToken: DEFAULT_DCR_INITIAL_ACCESS_TOKEN,
@@ -81,8 +92,8 @@ export function createDefaultGrantRequestDraft(): GrantRequestDraft {
     clientName: "Longview",
     clientUri: "",
     redirectUri: "",
-    connectorId: "",
-    providerId: "",
+    sourceKind: "connector",
+    sourceId: "",
     purposeCode: "https://pdpp.org/purpose/financial_planning",
     purposeDescription: "Compare personal data across providers.",
     accessMode: "single_use",
@@ -102,8 +113,8 @@ function sanitizeDraft(input: Partial<GrantRequestDraft> = {}): GrantRequestDraf
     clientName: trim(input.clientName) || base.clientName,
     clientUri: trim(input.clientUri),
     redirectUri: trim(input.redirectUri),
-    connectorId: trim(input.connectorId),
-    providerId: trim(input.providerId),
+    sourceKind: normalizeSourceKind(input.sourceKind),
+    sourceId: trim(input.sourceId),
     purposeCode: trim(input.purposeCode) || base.purposeCode,
     purposeDescription: trim(input.purposeDescription) || base.purposeDescription,
     accessMode: trim(input.accessMode) || base.accessMode,
@@ -116,11 +127,8 @@ function sanitizeDraft(input: Partial<GrantRequestDraft> = {}): GrantRequestDraf
 }
 
 function requireSingleSourceBinding(draft: GrantRequestDraft) {
-  if (!(draft.connectorId || draft.providerId)) {
-    throw new Error("connector_id or provider_id is required");
-  }
-  if (draft.connectorId && draft.providerId) {
-    throw new Error("Specify connector_id or provider_id, not both");
+  if (!draft.sourceId) {
+    throw new Error("source.id is required");
   }
 }
 
@@ -297,8 +305,7 @@ export async function stageGrantRequest(
     authorization_details: [
       {
         type: "https://pdpp.org/data-access",
-        ...(workspace.draft.connectorId ? { connector_id: workspace.draft.connectorId } : {}),
-        ...(workspace.draft.providerId ? { provider_id: workspace.draft.providerId } : {}),
+        source: sourceFromDraft(workspace.draft),
         purpose_code: workspace.draft.purposeCode,
         purpose_description: workspace.draft.purposeDescription,
         access_mode: workspace.draft.accessMode,
@@ -383,8 +390,7 @@ export async function buildGrantRequestExamples(workspace: GrantRequestWorkspace
     authorization_details: [
       {
         type: "https://pdpp.org/data-access",
-        ...(workspace.draft.connectorId ? { connector_id: workspace.draft.connectorId } : {}),
-        ...(workspace.draft.providerId ? { provider_id: workspace.draft.providerId } : {}),
+        source: sourceFromDraft(workspace.draft),
         purpose_code: workspace.draft.purposeCode,
         purpose_description: workspace.draft.purposeDescription,
         access_mode: workspace.draft.accessMode,

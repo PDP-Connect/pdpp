@@ -120,13 +120,13 @@ export function deleteGrantFiles(cacheRoot, grantId) {
   }
 }
 
-export function hasUsableGrant(cacheRoot, { grantId, connectorId, providerId, streams } = {}) {
+export function hasUsableGrant(cacheRoot, { grantId, sourceKind, sourceId, streams } = {}) {
   for (const grant of listGrants(cacheRoot)) {
     if (grantId && grant.grant_id !== grantId) continue;
     if (grant.revoked) continue;
     if (grant.expires_at && new Date(grant.expires_at).getTime() <= Date.now()) continue;
-    if (connectorId && grant.connector_id !== connectorId) continue;
-    if (providerId && grant.provider_id !== providerId) continue;
+    if (sourceKind && grant.source?.kind !== sourceKind) continue;
+    if (sourceId && grant.source?.id !== sourceId) continue;
     if (streams && streams.length) {
       const grantStreams = new Set((grant.streams || []).map((s) => s.name || s));
       if (!streams.every((s) => grantStreams.has(s))) continue;
@@ -148,12 +148,12 @@ export async function ensureGitignore(cacheRoot) {
 export function redactGrantForDisplay(grant) {
   if (!grant) return null;
   const {
-    grant_id, connector_id, provider_id, streams,
+    grant_id, source, streams,
     purpose_description, purpose_code, access_mode,
     retention, expires_at, revoked, issued_at, client_id,
   } = grant;
   return {
-    grant_id, connector_id, provider_id, streams,
+    grant_id, source, streams,
     purpose_description, purpose_code, access_mode,
     retention, expires_at, revoked, issued_at, client_id,
   };

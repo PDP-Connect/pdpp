@@ -9,8 +9,8 @@ deployment choices for PDPP requirements.
 
 The important architectural split in the live reference is:
 
-- **Native provider path**: `Northstar HR` exposes PDPP directly and public requests identify the source with `provider_id`
-- **Polyfill path**: collected sources still use connector manifests, runtime orchestration, and public `connector_id`
+- **Native provider path**: `Northstar HR` exposes PDPP directly and public requests identify the source with `source: { kind: "provider_native", id }`
+- **Polyfill path**: collected sources still use connector manifests, runtime orchestration, and public `source: { kind: "connector", id }`
 
 ## Components
 
@@ -48,7 +48,7 @@ The important architectural split in the live reference is:
                 ▼                               ▼
 ┌───────────────────────────────┐   ┌───────────────────────────┐
 │         Northstar HR          │   │   Connector Runtime       │
-│   provider_id = northstar_hr  │   │ START → RECORD/STATE/     │
+│ source.kind = provider_native │   │ START → RECORD/STATE/     │
 │   public native source        │   │ INTERACTION → DONE        │
 └───────────────────────────────┘   └────────────┬──────────────┘
                                                  │
@@ -65,15 +65,15 @@ The important architectural split in the live reference is:
 ### Flow A: Longview requests native provider data
 
 1. Longview stages a request through `POST /oauth/par`
-2. The request identifies the source with `provider_id`
+2. The request identifies the source with `source: { kind: "provider_native", id: "northstar_hr" }`
 3. The AS renders `GET /consent?request_uri=...`
 4. `POST /consent/approve` issues the grant and client token
-5. Longview queries `/v1/streams/...` without public `connector_id`
+5. Longview queries `/v1/streams/...` with the grant-bound source object
 
 ### Flow B: Longview requests polyfill data
 
 1. Longview stages the same kind of request through `POST /oauth/par`
-2. The request identifies the source with `connector_id`
+2. The request identifies the source with `source: { kind: "connector", id }`
 3. The AS issues a connector-scoped grant after consent
 4. The RS serves any already-collected records under that grant
 5. If data must be refreshed, the runtime uses the Collection Profile to collect it
@@ -83,15 +83,15 @@ The important architectural split in the live reference is:
 1. The CLI discovers provider metadata from the RS and AS
 2. The owner authenticates through the OAuth device flow
 3. The CLI calls `/v1/streams/...` with an owner token
-4. Native owner reads do not require `connector_id`
-5. Polyfill owner reads still require `connector_id`
+4. Native owner reads use `source.kind = "provider_native"`
+5. Polyfill owner reads use `source.kind = "connector"`
 
 ## What the reference is proving
 
 - One engine substrate can support both native and polyfill realizations.
 - Public source identity stays honest:
-  - `provider_id` for native providers
-  - `connector_id` for polyfill sources
+  - `source.kind = "provider_native"` for native providers
+  - `source.kind = "connector"` for polyfill sources
 - The website is a consumer of the reference, not the implementation boundary itself.
 
 ## What the spec defines vs what it doesn't
@@ -111,9 +111,9 @@ The important architectural split in the live reference is:
 
 ## How connector versioning works
 
-Connector versioning matters only for the polyfill path. Native providers such as Northstar HR do not expose a public `connector_id` in the current reference contract.
+Connector versioning matters only for the polyfill path. Native providers such as Northstar HR do not expose a public connector source in the current reference contract.
 
-For connector-based realizations, the resource server stores connector manifests. A grant references a specific connector by `connector_id` (a fully qualified URI). The manifest has a `protocol_version` and the connector itself has a version.
+For connector-based realizations, the resource server stores connector manifests. A grant references a specific connector with `source: { kind: "connector", id }`, where `id` is a fully qualified URI. The manifest has a `protocol_version` and the connector itself has a version.
 
 **When a connector is updated:**
 

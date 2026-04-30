@@ -561,7 +561,7 @@ test('composed browser origin carries metadata, owner session, dashboard, device
         authorization_details: [
           {
             type: 'https://pdpp.org/data-access',
-            connector_id: SPOTIFY_CONNECTOR_ID,
+            source: { kind: 'connector', id: SPOTIFY_CONNECTOR_ID },
             purpose_code: 'https://pdpp.org/purpose/recommendation',
             purpose_description: 'Review top artists',
             access_mode: 'single_use',
@@ -599,7 +599,7 @@ test('composed browser origin carries metadata, owner session, dashboard, device
     });
     assert.equal(approvedGrant.resp.status, 200);
     assert.equal(typeof approvedGrant.body.token, 'string');
-    assert.equal(approvedGrant.body.grant.source.connector_id, SPOTIFY_CONNECTOR_ID);
+    assert.deepEqual(approvedGrant.body.grant.source, { kind: 'connector', id: SPOTIFY_CONNECTOR_ID });
   } finally {
     await stopChildProcess(webServer.child);
     await closeServer(server);

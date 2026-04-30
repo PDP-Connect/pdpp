@@ -12,7 +12,7 @@
  *     endpoint pulled from the lexical capability (defaults to `/v1/search`).
  *   - `hybrid_pagination_supported` reflects the hybrid capability's
  *     `cursor_supported` flag when hybrid is published.
- *   - `owner_polyfill_requires_connector_id` is published only when the
+ *   - `owner_polyfill_requires_source_kind_connector` is published only when the
  *     server is NOT in native single-source mode.
  */
 
@@ -207,19 +207,19 @@ test('hybrid_pagination_supported reflects cursor_supported when hybrid is publi
   assert.equal(composition.discoveryHints.hybrid_pagination_supported, true);
 });
 
-test('owner_polyfill_requires_connector_id only published in non-native mode', () => {
+test('owner_polyfill_requires_source_kind_connector only published in non-native mode', () => {
   const polyfill = executeRsProtectedResourceMetadata(
     {},
     withDefaults({ isNativeSingleSourceMode: () => false }),
   ).composition;
-  assert.equal(polyfill.discoveryHints.owner_polyfill_requires_connector_id, true);
+  assert.equal(polyfill.discoveryHints.owner_polyfill_requires_source_kind_connector, true);
 
   const native = executeRsProtectedResourceMetadata(
     {},
     withDefaults({ isNativeSingleSourceMode: () => true }),
   ).composition;
   assert.equal(
-    native.discoveryHints.owner_polyfill_requires_connector_id,
+    native.discoveryHints.owner_polyfill_requires_source_kind_connector,
     undefined,
   );
 });

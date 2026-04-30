@@ -68,7 +68,8 @@ test('example client completes the current reference flow on the inline-approval
     const parRequest = buildParRequest({
       clientId: registered.client_id,
       clientName: 'Reference Example Client',
-      connectorId: spotifyManifest.connector_id,
+      sourceKind: 'connector',
+      sourceId: spotifyManifest.connector_id,
       streamName: firstStream(spotifyManifest),
       purposeCode: 'https://pdpp.org/purpose/financial_planning',
       purposeDescription: 'example-client test',
@@ -115,7 +116,8 @@ test('example client denies a staged request on the inline path', async () => {
       request: buildParRequest({
         clientId: registered.client_id,
         clientName: 'Reference Example Client',
-        connectorId: spotifyManifest.connector_id,
+        sourceKind: 'connector',
+        sourceId: spotifyManifest.connector_id,
         streamName: firstStream(spotifyManifest),
         purposeCode: 'https://pdpp.org/purpose/financial_planning',
         purposeDescription: 'deny path',
@@ -159,7 +161,8 @@ test('example client surfaces owner-auth enabled as an honest failure instead of
       request: buildParRequest({
         clientId: registered.client_id,
         clientName: 'Reference Example Client',
-        connectorId: spotifyManifest.connector_id,
+        sourceKind: 'connector',
+        sourceId: spotifyManifest.connector_id,
         streamName: firstStream(spotifyManifest),
         purposeCode: 'https://pdpp.org/purpose/financial_planning',
         purposeDescription: 'owner-auth enabled',
@@ -226,9 +229,9 @@ test('example client shipped defaults stage a PAR request and reach records agai
 
     // The shipped defaults must correspond to the real manifest.
     assert.equal(
-      draft.connectorId,
+      draft.sourceId,
       spotifyManifest.connector_id,
-      'shipped default connectorId must match the registered spotify manifest',
+      'shipped default source.id must match the registered spotify manifest',
     );
     assert.ok(
       spotifyManifest.streams.some((s) => s.name === draft.streamName),
@@ -244,8 +247,8 @@ test('example client shipped defaults stage a PAR request and reach records agai
     const parRequest = buildParRequest({
       clientId: registered.client_id,
       clientName: draft.clientName,
-      connectorId: draft.connectorId,
-      providerId: draft.providerId,
+      sourceKind: draft.sourceKind,
+      sourceId: draft.sourceId,
       streamName: draft.streamName,
       purposeCode: draft.purposeCode,
       purposeDescription: draft.purposeDescription,

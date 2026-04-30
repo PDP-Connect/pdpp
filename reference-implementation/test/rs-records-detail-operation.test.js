@@ -32,7 +32,7 @@ const clientActor = {
   client_id: 'client_x',
   grant_id: 'grant_y',
 };
-const sourceDescriptor = { binding_kind: 'connector', connector_id: 'acme_payroll' };
+const sourceDescriptor = { kind: 'connector', id: 'acme_payroll' };
 
 function makeDeps(overrides = {}) {
   return {

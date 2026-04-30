@@ -268,8 +268,8 @@ let polyfillManifestFingerprints: Map<string, ManifestFingerprint> | null = null
 let polyfillConnectorPaths: Map<string, string> | null = null;
 const ABANDONED_CONTROLLER_RUN_REASON = "controller_restarted";
 
-function buildRunSource(connectorId: string): { binding_kind: "connector"; connector_id: string } {
-  return { binding_kind: "connector", connector_id: connectorId };
+function buildRunSource(connectorId: string): { kind: "connector"; id: string } {
+  return { kind: "connector", id: connectorId };
 }
 
 function nowIso(): string {

@@ -34,7 +34,8 @@ interface Params {
   client_id?: string;
   cursor?: string;
   peek?: string;
-  provider_id?: string;
+  source_id?: string;
+  source_kind?: "connector" | "provider_native";
   q?: string;
   status?: string;
 }
@@ -89,7 +90,8 @@ export default async function GrantsPage({ searchParams }: { searchParams: Promi
     cursor: params.cursor,
     status: params.status,
     client_id: params.client_id,
-    provider_id: params.provider_id,
+    source_id: params.source_id,
+    source_kind: params.source_kind,
     q: params.q,
     limit: 50,
   };
@@ -251,10 +253,11 @@ function PendingApprovalRow({ approval }: { approval: PendingApproval }) {
           </span>
           <StatusBadge status={approval.kind} />
         </div>
-        <div className="pdpp-caption mt-1 break-words text-muted-foreground">
-          client {approval.client_id ?? "—"}
-          {approval.grant_preview?.connector_id ? ` · connector ${approval.grant_preview.connector_id}` : ""}
-          {approval.grant_preview?.provider_id ? ` · provider ${approval.grant_preview.provider_id}` : ""}
+          <div className="pdpp-caption mt-1 break-words text-muted-foreground">
+            client {approval.client_id ?? "—"}
+          {approval.grant_preview?.source
+            ? ` · source ${approval.grant_preview.source.kind}:${approval.grant_preview.source.id}`
+            : ""}
           {previewStreams.length ? ` · streams ${previewStreams.join(", ")}` : ""}
         </div>
       </div>
@@ -293,8 +296,7 @@ function GrantRow({ grant, params }: { grant: GrantSummary; params: Params }) {
       <div className="pdpp-caption mt-1 text-muted-foreground">
         {grant.event_count} events
         {grant.client_id ? ` · client ${grant.client_id}` : ""}
-        {grant.provider_id ? ` · provider ${grant.provider_id}` : ""}
-        {grant.connector_id ? ` · ${grant.connector_id}` : ""}
+        {grant.source ? ` · source ${grant.source.kind}:${grant.source.id}` : ""}
       </div>
     </Link>
   );

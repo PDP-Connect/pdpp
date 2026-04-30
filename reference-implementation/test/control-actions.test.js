@@ -96,7 +96,14 @@ async function registerConnector(asUrl, manifest) {
   assert.equal(registerResp.status, 201, 'register connector');
 }
 
-async function emitSyntheticRun({ connectorId, runId, status, occurredAt, knownGaps = [] }) {
+async function emitSyntheticRun({
+  connectorId,
+  runId,
+  status,
+  occurredAt,
+  knownGaps = [],
+  source = { kind: 'connector', id: connectorId },
+}) {
   const trace = createTraceContext({ scenarioId: `scn_${runId}` });
   await emitSpineEvent({
     event_type: 'run.started',
@@ -109,8 +116,10 @@ async function emitSyntheticRun({ connectorId, runId, status, occurredAt, knownG
     object_id: runId,
     status: 'started',
     run_id: runId,
+    source_kind: source.kind,
+    source_id: source.id,
     data: {
-      source: { binding_kind: 'connector', connector_id: connectorId },
+      source,
       collection_mode: 'incremental',
       persist_state: true,
       state_commit_intent: 'commit_on_success',
@@ -130,8 +139,10 @@ async function emitSyntheticRun({ connectorId, runId, status, occurredAt, knownG
     object_id: runId,
     status,
     run_id: runId,
+    source_kind: source.kind,
+    source_id: source.id,
     data: {
-      source: { binding_kind: 'connector', connector_id: connectorId },
+      source,
       records_emitted: 0,
       records_flushed: 0,
       buffered_records_dropped: 0,
@@ -534,8 +545,10 @@ test('controller startup reconciles abandoned controller-managed runs after rest
       object_id: runId,
       status: 'started',
       run_id: runId,
+      source_kind: 'connector',
+      source_id: connectorId,
       data: {
-        source: { binding_kind: 'connector', connector_id: connectorId },
+        source: { kind: 'connector', id: connectorId },
         collection_mode: 'incremental',
         persist_state: true,
         state_commit_intent: 'commit_on_success',
@@ -555,8 +568,10 @@ test('controller startup reconciles abandoned controller-managed runs after rest
       status: 'started',
       run_id: runId,
       interaction_id: 'int_restart_orphan',
+      source_kind: 'connector',
+      source_id: connectorId,
       data: {
-        source: { binding_kind: 'connector', connector_id: connectorId },
+        source: { kind: 'connector', id: connectorId },
         kind: 'credentials',
         stream: null,
         message: 'Need a token',
@@ -764,7 +779,7 @@ test('GET /_ref/approvals surfaces pending provider-connect consents with grant 
         client_id: 'concert_recommendation_app',
         authorization_details: [{
           type: 'https://pdpp.org/data-access',
-          connector_id: spotifyManifest.connector_id,
+          source: { kind: 'connector', id: spotifyManifest.connector_id },
           purpose_code: 'https://pdpp.org/purpose/personalization',
           purpose_description: 'Suggest concerts based on listening history',
           access_mode: 'single_use',
@@ -782,7 +797,7 @@ test('GET /_ref/approvals surfaces pending provider-connect consents with grant 
     assert.ok(entry, 'expected a consent approval entry');
     assert.equal(entry.client_id, 'concert_recommendation_app');
     assert.ok(entry.grant_preview);
-    assert.equal(entry.grant_preview.connector_id, spotifyManifest.connector_id);
+    assert.deepEqual(entry.grant_preview.source, { kind: 'connector', id: spotifyManifest.connector_id });
     assert.equal(entry.grant_preview.access_mode, 'single_use');
     assert.ok(Array.isArray(entry.grant_preview.streams));
   });

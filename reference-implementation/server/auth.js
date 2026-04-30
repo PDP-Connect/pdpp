@@ -77,11 +77,10 @@ const SUPPORTED_PENDING_REQUEST_FIELDS = new Set([
 ]);
 const SUPPORTED_AUTHORIZATION_DETAIL_FIELDS = new Set([
   'access_mode',
-  'connector_id',
-  'provider_id',
   'purpose_code',
   'purpose_description',
   'retention',
+  'source',
   'streams',
   'type',
 ]);
@@ -421,15 +420,15 @@ function normalizePendingGrantRequest(input, opts = {}) {
   if (!detail || detail.type !== 'https://pdpp.org/data-access') {
     invalidRequest('Unsupported authorization_details type');
   }
+  if ('connector_id' in detail || 'provider_id' in detail) {
+    invalidRequest("authorization_details must use source: { kind: 'connector' | 'provider_native', id }");
+  }
   const unsupportedDetailFields = Object.keys(detail).filter((field) => !SUPPORTED_AUTHORIZATION_DETAIL_FIELDS.has(field));
   if (unsupportedDetailFields.length) {
     invalidRequest(`Unsupported authorization_details fields: ${unsupportedDetailFields.join(', ')}`);
   }
   if (!Array.isArray(detail.streams) || detail.streams.length === 0) {
     invalidRequest('authorization_details[0].streams must be a non-empty array');
-  }
-  if (detail.connector_id && detail.provider_id) {
-    invalidRequest('authorization_details must not include both connector_id and provider_id');
   }
   if (!SUPPORTED_ACCESS_MODES.has(detail.access_mode)) {
     invalidRequest('authorization_details[0].access_mode must be "single_use" or "continuous"');
@@ -448,28 +447,28 @@ function normalizePendingGrantRequest(input, opts = {}) {
   const configuredNativeProviderId = nativeManifest?.provider_id || null;
   const configuredNativeStorageBinding = resolveConfiguredNativeStorageBinding(opts);
   const configuredNativeStorageConnectorId = configuredNativeStorageBinding?.connector_id || null;
-  if (detail.provider_id && configuredNativeProviderId && detail.provider_id !== configuredNativeProviderId) {
-    invalidRequest(`Unknown native provider: ${detail.provider_id}`);
+  const detailSource = detail.source;
+  if (!detailSource || typeof detailSource !== 'object' || Array.isArray(detailSource)) {
+    invalidRequest("authorization_details[0].source must be { kind: 'connector' | 'provider_native', id }");
+  }
+  const detailSourceKeys = Object.keys(detailSource).sort();
+  if (detailSourceKeys.length !== 2 || detailSourceKeys[0] !== 'id' || detailSourceKeys[1] !== 'kind') {
+    invalidRequest('authorization_details[0].source must include only kind and id');
+  }
+  const bindingKind = detailSource.kind;
+  const sourceId = detailSource.id;
+  if (!['connector', 'provider_native'].includes(bindingKind) || !isNonEmptyString(sourceId)) {
+    invalidRequest("authorization_details[0].source.kind must be 'connector' or 'provider_native' and source.id is required");
+  }
+  if (bindingKind === 'provider_native' && configuredNativeProviderId && sourceId !== configuredNativeProviderId) {
+    invalidRequest(`Unknown source: { kind: 'provider_native', id: '${sourceId}' }`);
+  }
+  const resolvedConnectorId = bindingKind === 'connector' ? sourceId : configuredNativeStorageConnectorId;
+  if (!resolvedConnectorId) {
+    invalidRequest("authorization_details[0].source requires configured native storage for provider_native access");
   }
 
-  const bindingKind = detail.connector_id ? 'connector' : (detail.provider_id ? 'provider_native' : null);
-  const providerId = detail.provider_id || configuredNativeProviderId;
-  const resolvedConnectorId = bindingKind === 'connector'
-    ? detail.connector_id
-    : (bindingKind === 'provider_native' ? configuredNativeStorageConnectorId : null);
-  if (!bindingKind || !resolvedConnectorId) {
-    invalidRequest('authorization_details must include connector_id for polyfill access or provider_id for native provider access');
-  }
-
-  const sourceBinding = bindingKind === 'provider_native'
-    ? {
-        binding_kind: bindingKind,
-        provider_id: providerId,
-      }
-    : {
-        binding_kind: bindingKind,
-        connector_id: resolvedConnectorId,
-      };
+  const sourceBinding = { kind: bindingKind, id: sourceId };
 
   return {
     request_kind: 'pdpp_selection_request',
@@ -620,25 +619,19 @@ function requireStructuredPendingRequestShape(request = {}) {
 }
 
 function requireStructuredSourceBinding(sourceBinding, { code, fieldName }) {
-  if (!sourceBinding || typeof sourceBinding !== 'object') {
+  if (!sourceBinding || typeof sourceBinding !== 'object' || Array.isArray(sourceBinding)) {
     throw bindingError(code, `${fieldName} is required`);
   }
-
-  if (sourceBinding.binding_kind === 'connector') {
-    if (!isNonEmptyString(sourceBinding.connector_id)) {
-      throw bindingError(code, `${fieldName}.connector_id is required for connector access`);
-    }
-    return { binding_kind: 'connector', connector_id: sourceBinding.connector_id };
+  if (!hasExactBindingKeys(sourceBinding, ['kind', 'id'])) {
+    throw bindingError(code, `${fieldName} must include only kind and id`);
   }
-
-  if (sourceBinding.binding_kind === 'provider_native') {
-    if (!isNonEmptyString(sourceBinding.provider_id)) {
-      throw bindingError(code, `${fieldName}.provider_id is required for native provider access`);
-    }
-    return { binding_kind: 'provider_native', provider_id: sourceBinding.provider_id };
+  if (!['connector', 'provider_native'].includes(sourceBinding.kind)) {
+    throw bindingError(code, `${fieldName}.kind must be 'connector' or 'provider_native'`);
   }
-
-  throw bindingError(code, `${fieldName}.binding_kind must be 'connector' or 'provider_native'`);
+  if (!isNonEmptyString(sourceBinding.id)) {
+    throw bindingError(code, `${fieldName}.id is required`);
+  }
+  return { kind: sourceBinding.kind, id: sourceBinding.id };
 }
 
 function requireStructuredStorageBinding(storageBinding, { code, fieldName }) {
@@ -667,31 +660,25 @@ function requireStructuredPendingRequestBindings(request = {}) {
     code: 'invalid_request',
     fieldName: 'storage_binding',
   });
-  if (sourceBinding.binding_kind === 'connector' && !hasExactBindingKeys(requestSourceBinding, ['binding_kind', 'connector_id'])) {
-    throw bindingError('invalid_request', 'source_binding must include only binding_kind and connector_id');
-  }
-  if (sourceBinding.binding_kind === 'provider_native' && !hasExactBindingKeys(requestSourceBinding, ['binding_kind', 'provider_id'])) {
-    throw bindingError('invalid_request', 'source_binding must include only binding_kind and provider_id');
-  }
   if (!hasExactBindingKeys(requestStorageBinding, ['connector_id'])) {
     throw bindingError('invalid_request', 'storage_binding must include only connector_id');
   }
 
   if (
-    sourceBinding.binding_kind === 'connector'
-    && sourceBinding.connector_id !== storageBinding.connector_id
+    sourceBinding.kind === 'connector'
+    && sourceBinding.id !== storageBinding.connector_id
   ) {
-    throw bindingError('invalid_request', 'source_binding.connector_id must match storage_binding.connector_id');
+    throw bindingError('invalid_request', 'source_binding.id must match storage_binding.connector_id for connector access');
   }
 
-  if (sourceBinding.binding_kind === 'provider_native') {
+  if (sourceBinding.kind === 'provider_native') {
     const nativeManifest = resolveConfiguredNativeManifest();
     const nativeStorageBinding = resolveConfiguredNativeStorageBinding();
     if (!nativeManifest?.provider_id || !nativeStorageBinding?.connector_id) {
       throw bindingError('invalid_request', 'native provider access requires a configured native manifest');
     }
-    if (sourceBinding.provider_id !== nativeManifest.provider_id) {
-      throw bindingError('invalid_request', 'source_binding.provider_id must match the configured native provider');
+    if (sourceBinding.id !== nativeManifest.provider_id) {
+      throw bindingError('invalid_request', 'source_binding.id must match the configured native provider');
     }
     if (storageBinding.connector_id !== nativeStorageBinding.connector_id) {
       throw bindingError('invalid_request', 'storage_binding.connector_id must match the configured native storage binding');
@@ -705,9 +692,10 @@ function requireGrantManifestForBindings(sourceBinding, storageBinding, opts = {
   const grantStorageConnectorId = storageBinding?.connector_id || null;
   return getManifestForStorageBinding(storageBinding, opts).then((manifest) => {
     if (manifest) return manifest;
-    const err = sourceBinding?.binding_kind === 'provider_native'
-      ? new Error(`Unknown native provider: ${sourceBinding.provider_id}`)
-      : new Error(`Unknown connector: ${grantStorageConnectorId}`);
+    const source = sourceBinding?.kind && sourceBinding?.id
+      ? `{ kind: '${sourceBinding.kind}', id: '${sourceBinding.id}' }`
+      : `{ kind: 'connector', id: '${grantStorageConnectorId || 'unknown'}' }`;
+    const err = new Error(`Unknown source: ${source}`);
     err.code = 'invalid_request';
     throw err;
   });
@@ -774,31 +762,25 @@ function requireStructuredGrantBindings(grant = {}, storageBinding) {
     code: 'grant_invalid',
     fieldName: 'grant_storage_binding',
   });
-  if (sourceBinding.binding_kind === 'connector' && !hasExactBindingKeys(grant?.source, ['binding_kind', 'connector_id'])) {
-    throw bindingError('grant_invalid', 'grant.source must include only binding_kind and connector_id');
-  }
-  if (sourceBinding.binding_kind === 'provider_native' && !hasExactBindingKeys(grant?.source, ['binding_kind', 'provider_id'])) {
-    throw bindingError('grant_invalid', 'grant.source must include only binding_kind and provider_id');
-  }
   if (!hasExactBindingKeys(storageBinding, ['connector_id'])) {
     throw bindingError('grant_invalid', 'grant_storage_binding must include only connector_id');
   }
 
   if (
-    sourceBinding.binding_kind === 'connector'
-    && sourceBinding.connector_id !== normalizedStorageBinding.connector_id
+    sourceBinding.kind === 'connector'
+    && sourceBinding.id !== normalizedStorageBinding.connector_id
   ) {
-    throw bindingError('grant_invalid', 'grant.source.connector_id must match grant_storage_binding.connector_id');
+    throw bindingError('grant_invalid', 'grant.source.id must match grant_storage_binding.connector_id for connector access');
   }
 
-  if (sourceBinding.binding_kind === 'provider_native') {
+  if (sourceBinding.kind === 'provider_native') {
     const nativeManifest = resolveConfiguredNativeManifest();
     const nativeStorageBinding = resolveConfiguredNativeStorageBinding();
     if (!nativeManifest?.provider_id || !nativeStorageBinding?.connector_id) {
       throw bindingError('grant_invalid', 'provider-native grants require a configured native manifest');
     }
-    if (sourceBinding.provider_id !== nativeManifest.provider_id) {
-      throw bindingError('grant_invalid', 'grant.source.provider_id must match the configured native provider');
+    if (sourceBinding.id !== nativeManifest.provider_id) {
+      throw bindingError('grant_invalid', 'grant.source.id must match the configured native provider');
     }
     if (normalizedStorageBinding.connector_id !== nativeStorageBinding.connector_id) {
       throw bindingError('grant_invalid', 'grant_storage_binding.connector_id must match the configured native storage binding');
@@ -809,13 +791,8 @@ function requireStructuredGrantBindings(grant = {}, storageBinding) {
 }
 
 function describeSourceBinding(sourceBinding) {
-  if (sourceBinding?.binding_kind === 'provider_native') {
-    return isNonEmptyString(sourceBinding.provider_id)
-      ? { binding_kind: 'provider_native', provider_id: sourceBinding.provider_id }
-      : null;
-  }
-  if (sourceBinding?.binding_kind === 'connector' && isNonEmptyString(sourceBinding.connector_id)) {
-    return { binding_kind: 'connector', connector_id: sourceBinding.connector_id };
+  if (['connector', 'provider_native'].includes(sourceBinding?.kind) && isNonEmptyString(sourceBinding.id)) {
+    return { kind: sourceBinding.kind, id: sourceBinding.id };
   }
   return null;
 }
@@ -854,12 +831,6 @@ function describePersistedGrantSource(row = {}) {
       code: 'grant_invalid',
       fieldName: 'grant.source',
     });
-    const expectedKeys = sourceBinding.binding_kind === 'provider_native'
-      ? ['binding_kind', 'provider_id']
-      : ['binding_kind', 'connector_id'];
-    if (!hasExactBindingKeys(grant?.source, expectedKeys)) {
-      return null;
-    }
     return describeSourceBinding(sourceBinding);
   } catch {
     return null;

@@ -577,7 +577,7 @@ function buildStateContext(req, res, { connectorId, grantId = null, traceId = nu
     scenarioId: scenarioId || undefined,
     grantId,
     connectorId,
-    sourceDescriptor: connectorId ? { binding_kind: 'connector', connector_id: connectorId } : null,
+    sourceDescriptor: connectorId ? buildSourceDescriptor({ kind: 'connector', id: connectorId }) : null,
     operation,
     requestedStreams,
     requestedEmitted: false,
@@ -652,7 +652,7 @@ function buildMutationContext(req, res, {
     traceId: traceId || generateSpineId('trc_mut'),
     scenarioId: scenarioId || undefined,
     connectorId,
-    sourceDescriptor: connectorId ? { binding_kind: 'connector', connector_id: connectorId } : null,
+    sourceDescriptor: connectorId ? buildSourceDescriptor({ kind: 'connector', id: connectorId }) : null,
     operation,
     streamId,
     requestedRecordId,
@@ -901,10 +901,7 @@ function resolveOwnerReadScope(req, opts = {}) {
   if (nativeManifest && nativeStorageBinding) {
     return {
       public_scope: 'native',
-      source: {
-        binding_kind: 'provider_native',
-        provider_id: nativeManifest.provider_id,
-      },
+      source: { kind: 'provider_native', id: nativeManifest.provider_id },
       storage_binding: nativeStorageBinding,
     };
   }
@@ -918,7 +915,7 @@ function resolveOwnerReadScope(req, opts = {}) {
 
   return {
     public_scope: 'polyfill',
-    source: { binding_kind: 'connector', connector_id: connectorId },
+    source: { kind: 'connector', id: connectorId },
     storage_binding: { connector_id: connectorId },
   };
 }
@@ -1026,11 +1023,11 @@ function resolveOwnerAuthPlaceholderConfig(opts = {}) {
 }
 
 function buildSourceDescriptor(sourceBinding = null) {
-  if (sourceBinding?.binding_kind === 'provider_native' && sourceBinding.provider_id) {
-    return { binding_kind: 'provider_native', provider_id: sourceBinding.provider_id };
+  if (sourceBinding?.kind === 'provider_native' && sourceBinding.id) {
+    return { kind: 'provider_native', id: sourceBinding.id };
   }
-  if (sourceBinding?.binding_kind === 'connector' && sourceBinding.connector_id) {
-    return { binding_kind: 'connector', connector_id: sourceBinding.connector_id };
+  if (sourceBinding?.kind === 'connector' && sourceBinding.id) {
+    return { kind: 'connector', id: sourceBinding.id };
   }
   return null;
 }
@@ -1051,8 +1048,8 @@ async function resolveOwnerManifestFromScope(ownerScope, opts = {}) {
   const manifest = await getManifestForStorageBinding(storageBinding, opts);
   if (!manifest) {
     const err = new Error(
-      ownerScope.source.binding_kind === 'provider_native'
-        ? `Unknown native provider: ${ownerScope.source.provider_id}`
+      ownerScope.source.kind === 'provider_native'
+        ? `Unknown source: { kind: 'provider_native', id: '${ownerScope.source.id}' }`
         : `Unknown connector: ${storageBinding?.connector_id || 'unknown'}`
     );
     err.code = 'not_found';
@@ -1071,8 +1068,8 @@ async function resolveGrantManifest(tokenInfo, opts = {}) {
   const source = buildSourceDescriptor(tokenInfo?.grant?.source);
   const manifest = await getManifestForStorageBinding(storageBinding, opts);
   if (!manifest) {
-    const err = source?.binding_kind === 'provider_native'
-      ? new Error(`Unknown native provider: ${source.provider_id}`)
+    const err = source?.kind === 'provider_native'
+      ? new Error(`Unknown source: { kind: 'provider_native', id: '${source.id}' }`)
       : new Error(`Unknown connector: ${storageBinding?.connector_id || 'unknown'}`);
     err.code = 'not_found';
     throw err;
@@ -1350,7 +1347,7 @@ function buildStreamDiscoverySummary({ connectorId = null, stream, summary = nul
 }
 
 async function buildConnectorSchemaItem({ source, storageBinding, manifest, grant = null }) {
-  const connectorId = source?.binding_kind === 'connector' ? source.connector_id : null;
+  const connectorId = source?.kind === 'connector' ? source.id : null;
   const streamSummaries = grant
     ? await listStreams(storageBinding, grant, manifest)
     : await listAllStreams(storageBinding);
@@ -1388,7 +1385,7 @@ async function buildConnectorSchemaItem({ source, storageBinding, manifest, gran
 }
 
 async function buildConnectorDiscoveryItem({ source, storageBinding, manifest, grant = null }) {
-  const connectorId = source?.binding_kind === 'connector' ? source.connector_id : null;
+  const connectorId = source?.kind === 'connector' ? source.id : null;
   const streamSummaries = grant
     ? await listStreams(storageBinding, grant, manifest)
     : await listAllStreams(storageBinding);
@@ -1571,12 +1568,8 @@ function buildAsApp(opts = {}) {
     const selection = request.selection || {};
     const sourceBinding = request.source_binding;
     const clientName = client.client_display?.name || client.client_id || 'Client application';
-    const connectorId = sourceBinding?.connector_id;
-    const providerId = sourceBinding?.provider_id;
-    const showConnectorLabel = sourceBinding?.binding_kind !== 'provider_native';
-    const sourceLabel = showConnectorLabel
-      ? (connectorId || 'this source')
-      : (providerId || 'this source');
+    const sourceLabel = sourceBinding?.id || 'this source';
+    const sourceFactLabel = sourceBinding?.kind === 'provider_native' ? 'Provider' : 'Connector';
 
     const requestedStreams = Array.isArray(selection.streams) ? selection.streams : [];
     const isWildcardRequest = requestedStreams.length === 1 && requestedStreams[0]?.name === '*';
@@ -1648,8 +1641,7 @@ function buildAsApp(opts = {}) {
 
     const facts = renderKeyValueList([
       { label: 'Requesting app', value: clientName },
-      showConnectorLabel && connectorId ? { label: 'Connector', value: connectorId } : null,
-      !showConnectorLabel && providerId ? { label: 'Provider', value: providerId } : null,
+      sourceBinding?.id ? { label: sourceFactLabel, value: sourceBinding.id } : null,
       { label: 'Purpose', value: selection.purpose_description || selection.purpose_code },
       { label: 'Access mode', value: selection.access_mode },
       selection.retention
@@ -2060,8 +2052,8 @@ function buildAsApp(opts = {}) {
       until: query.until,
       status: query.status,
       clientId: query.client_id,
-      providerId: query.provider_id,
-      connectorId: query.connector_id,
+      sourceKind: query.source_kind,
+      sourceId: query.source_id,
       grantId: query.grant_id,
       q: query.q,
     };
@@ -3009,8 +3001,8 @@ function buildRsApp(opts = {}) {
         const nativeStorageBinding = resolveNativeStorageBinding(opts);
         if (nativeManifest && nativeStorageBinding) {
           const source = buildSourceDescriptor({
-            binding_kind: 'provider_native',
-            provider_id: nativeManifest.provider_id,
+            kind: 'provider_native',
+            id: nativeManifest.provider_id,
           });
           queryContext.sourceDescriptor = source;
           dependencies = {
@@ -3035,7 +3027,7 @@ function buildRsApp(opts = {}) {
               return Promise.all(connectorIds.map(async (connectorId) => {
                 const manifest = await resolveRegisteredConnectorManifest(connectorId);
                 return buildConnectorDiscoveryItem({
-                  source: { binding_kind: 'connector', connector_id: connectorId },
+                  source: buildSourceDescriptor({ kind: 'connector', id: connectorId }),
                   storageBinding: { connector_id: connectorId },
                   manifest,
                 });
@@ -3143,8 +3135,8 @@ function buildRsApp(opts = {}) {
         const nativeStorageBinding = resolveNativeStorageBinding(opts);
         if (nativeManifest && nativeStorageBinding) {
           const source = buildSourceDescriptor({
-            binding_kind: 'provider_native',
-            provider_id: nativeManifest.provider_id,
+            kind: 'provider_native',
+            id: nativeManifest.provider_id,
           });
           queryContext.sourceDescriptor = source;
           dependencies = {
@@ -3169,7 +3161,7 @@ function buildRsApp(opts = {}) {
               return Promise.all(connectorIds.map(async (connectorId) => {
                 const manifest = await resolveRegisteredConnectorManifest(connectorId);
                 return buildConnectorSchemaItem({
-                  source: { binding_kind: 'connector', connector_id: connectorId },
+                  source: buildSourceDescriptor({ kind: 'connector', id: connectorId }),
                   storageBinding: { connector_id: connectorId },
                   manifest,
                 });
@@ -3936,7 +3928,7 @@ function buildRsApp(opts = {}) {
         },
         resolveOwnerScopeForConnector: (connectorId) => ({
           public_scope: 'polyfill',
-          source: { binding_kind: 'connector', connector_id: connectorId },
+          source: { kind: 'connector', id: connectorId },
           storage_binding: { connector_id: connectorId },
         }),
         resolveOwnerManifestFromScope: (ownerScope) =>
@@ -4029,7 +4021,7 @@ function buildRsApp(opts = {}) {
           },
           resolveOwnerScopeForConnector: (connectorId) => ({
             public_scope: 'polyfill',
-            source: { binding_kind: 'connector', connector_id: connectorId },
+            source: { kind: 'connector', id: connectorId },
             storage_binding: { connector_id: connectorId },
           }),
           resolveOwnerManifestFromScope: (ownerScope) =>
@@ -4120,7 +4112,7 @@ function buildRsApp(opts = {}) {
           },
           resolveOwnerScopeForConnector: (connectorId) => ({
             public_scope: 'polyfill',
-            source: { binding_kind: 'connector', connector_id: connectorId },
+            source: { kind: 'connector', id: connectorId },
             storage_binding: { connector_id: connectorId },
           }),
           resolveOwnerManifestFromScope: (ownerScope) =>

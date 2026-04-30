@@ -668,10 +668,9 @@ export async function executeSearchSemantic(
       grant,
     });
     const connectorId =
-      typeof (grant as { source?: { connector_id?: unknown } } | null)?.source
-        ?.connector_id === "string"
-        ? ((grant as { source?: { connector_id?: string } }).source!
-            .connector_id as string)
+      (grant as { source?: { kind?: unknown; id?: unknown } } | null)?.source?.kind === "connector" &&
+      typeof (grant as { source?: { id?: unknown } } | null)?.source?.id === "string"
+        ? ((grant as { source?: { id?: string } }).source!.id as string)
         : null;
     const planEntries = dependencies.buildSearchPlanForGrant({
       manifest,

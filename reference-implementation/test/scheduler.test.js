@@ -132,8 +132,8 @@ test('scheduler history records checkpoint summaries from runConnector results',
     const [record] = completedRuns;
     assert.equal(record.status, 'succeeded');
     assert.deepEqual(record.source, {
-      binding_kind: 'connector',
-      connector_id: spotifyManifest.connector_id,
+      kind: 'connector',
+      id: spotifyManifest.connector_id,
     });
     assert.ok(record.runId);
     assert.ok(record.traceId);
@@ -182,8 +182,8 @@ test('scheduler hydrates and appends persisted history when a schedulerStore is 
   const persistedHistory = {
     connectorId: 'https://registry.pdpp.org/connectors/persisted-history',
     source: {
-      binding_kind: 'connector',
-      connector_id: 'https://registry.pdpp.org/connectors/persisted-history',
+      kind: 'connector',
+      id: 'https://registry.pdpp.org/connectors/persisted-history',
     },
     status: 'skipped',
     recordsEmitted: 0,
@@ -339,8 +339,8 @@ rl.on('line', (line) => {
     assert.ok(record.runId);
     assert.ok(record.traceId);
     assert.deepEqual(record.source, {
-      binding_kind: 'connector',
-      connector_id: manifest.connector_id,
+      kind: 'connector',
+      id: manifest.connector_id,
     });
     assert.deepEqual(record.checkpointSummary, {
       mode: 'checkpointed_streaming',
@@ -2036,8 +2036,8 @@ test('scheduler treats single_use grants as one successful run followed by exhau
     assert.equal(second.error, 'single_use grant already consumed');
     assert.equal(second.checkpointSummary, null);
     assert.deepEqual(second.source, {
-      binding_kind: 'connector',
-      connector_id: spotifyManifest.connector_id,
+      kind: 'connector',
+      id: spotifyManifest.connector_id,
     });
 
     assert.deepEqual(persistedStates, [], 'single_use scheduler runs should not persist connector state');

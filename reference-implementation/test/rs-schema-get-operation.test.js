@@ -36,7 +36,7 @@ function makeConnectorItem(connectorId, streamCount) {
   }
   return {
     object: 'connector',
-    source: { binding_kind: 'connector', connector_id: connectorId },
+    source: { kind: 'connector', id: connectorId },
     connector_id: connectorId,
     stream_count: streams.length,
     streams,
@@ -45,7 +45,7 @@ function makeConnectorItem(connectorId, streamCount) {
 
 test('rs.schema.get returns the dependency connector items verbatim under owner', async () => {
   const items = [makeConnectorItem('acme_payroll', 2), makeConnectorItem('quill_health', 1)];
-  const sourceDescriptor = { binding_kind: 'provider_native', provider_id: 'pdpp.local' };
+  const sourceDescriptor = { kind: 'provider_native', id: 'pdpp.local' };
 
   const result = await executeSchemaGet(
     { actor: ownerActor },
@@ -68,7 +68,7 @@ test('rs.schema.get projects client bearer with grant_id and client_id when pres
     { actor: clientActor },
     {
       listConnectorItems: () => Promise.resolve([makeConnectorItem('acme_payroll', 1)]),
-      getSourceDescriptor: () => ({ binding_kind: 'connector', connector_id: 'acme_payroll' }),
+      getSourceDescriptor: () => ({ kind: 'connector', id: 'acme_payroll' }),
     },
   );
 
@@ -92,7 +92,7 @@ test('rs.schema.get omits grant_id/client_id from client bearer when null', asyn
     },
     {
       listConnectorItems: () => Promise.resolve([]),
-      getSourceDescriptor: () => ({ binding_kind: 'connector' }),
+      getSourceDescriptor: () => ({ kind: 'connector', id: 'acme_payroll' }),
     },
   );
 
@@ -140,7 +140,7 @@ test('rs.schema.get awaits async dependency promises', async () => {
             r([makeConnectorItem('c', 1)]);
           }),
         ),
-      getSourceDescriptor: () => ({ binding_kind: 'connector', connector_id: 'c' }),
+      getSourceDescriptor: () => ({ kind: 'connector', id: 'c' }),
     },
   );
 
@@ -161,7 +161,7 @@ test('rs.schema.get derives stream_count from connector items, not from the resp
         Promise.resolve([
           {
             object: 'connector',
-            source: { binding_kind: 'connector', connector_id: 'x' },
+            source: { kind: 'connector', id: 'x' },
             connector_id: 'x',
             stream_count: 5,
             streams: [], // intentionally inconsistent: count is the source of truth

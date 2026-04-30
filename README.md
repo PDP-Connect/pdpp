@@ -35,8 +35,9 @@ It includes:
 
 The reference currently proves one shared substrate with two honest realizations:
 
-- **native provider** access identified publicly with `provider_id`
-- **polyfill/connector** access identified publicly with `connector_id`
+- public source identity is `source: { kind: "provider_native" | "connector", id: string }`
+
+Legacy docs may call `source.id` a `provider_id` for native providers or a `connector_id` for polyfill connectors.
 
 ### Website and docs
 

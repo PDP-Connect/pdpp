@@ -9,14 +9,14 @@ Each entry binds the grant to one source. Cross-source tasks need multiple entri
 | Field | Meaning | Common values |
 | --- | --- | --- |
 | `type` | Grant family | `"https://pdpp.org/data-access"` for read access |
-| `connector_id` *or* `provider_id` | Which source | Exact connector id from discovery, e.g. `"https://registry.pdpp.org/connectors/github"`, or a registered provider id (native) |
+| `source` | Which source | `{ "kind": "connector", "id": "https://registry.pdpp.org/connectors/github" }` or `{ "kind": "provider_native", "id": "northstar_hr" }` |
 | `purpose_code` | Coarse intent | `assist.summarize`, `assist.review`, `assist.search`, `assist.draft`, `assist.export` |
 | `purpose_description` | Owner-readable why | One sentence, plain English, scoped to the task |
 | `access_mode` | Access pattern | `single_use`, `continuous` |
 | `streams[]` | Streams + fields | `[{ "name": "pull_requests", "fields": ["repository_full_name","title","updated_at"] }]` |
 | `streams[].time_range` | When applicable | `{ "since": "2026-04-01T00:00:00Z" }` or relative window |
 
-Pick `connector_id` xor `provider_id`. The reference will reject a request that names both. For connector-backed access, use the exact `source.connector_id` value from `/v1/schema` or `/v1/connectors`; do not guess short aliases like `github`.
+Set exactly one source object. The reference will reject legacy top-level `connector_id` or `provider_id` fields in public requests. For connector-backed access, use the exact connector source `id` value from `/v1/schema` or `/v1/connectors`; do not guess short aliases like `github`.
 
 ## Choosing each field
 
@@ -24,6 +24,7 @@ Pick `connector_id` xor `provider_id`. The reference will reject a request that 
 
 - Use the *narrowest* source that contains the data. If both `gmail` and a generic `mail` connector exist, prefer the specific one — its manifest is usually tighter.
 - A "search across all my data" intent is almost never legitimate as one grant. Split the task by source.
+- Older docs may call connector sources `connector_id` and native sources `provider_id`; those names now map to `source.id` under the matching `source.kind`.
 
 ### `purpose_code`
 
@@ -82,7 +83,10 @@ GitHub issues + PRs:
 {
   "authorization_details": [{
     "type": "https://pdpp.org/data-access",
-    "connector_id": "https://registry.pdpp.org/connectors/github",
+    "source": {
+      "kind": "connector",
+      "id": "https://registry.pdpp.org/connectors/github"
+    },
     "purpose_code": "assist.summarize",
     "purpose_description": "Summarize my last 7 days of GitHub issues and pull requests on acme/api.",
     "access_mode": "single_use",
@@ -99,8 +103,8 @@ GitHub issues + PRs:
 Two grants, two requests, two approvals. The owner sees each one explicitly.
 
 ```text
-Grant A: connector_id=https://registry.pdpp.org/connectors/gmail, streams=[messages], time_range=last 24h
-Grant B: connector_id=https://registry.pdpp.org/connectors/ical, streams=[events], time_range=next 24h
+Grant A: source={kind: connector, id: https://registry.pdpp.org/connectors/gmail}, streams=[messages], time_range=last 24h
+Grant B: source={kind: connector, id: https://registry.pdpp.org/connectors/ical}, streams=[events], time_range=next 24h
 ```
 
 Don't try to bundle these into one `authorization_details[]` array entry — the reference treats one entry as one source binding.

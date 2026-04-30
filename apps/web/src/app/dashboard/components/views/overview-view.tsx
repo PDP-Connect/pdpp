@@ -108,7 +108,9 @@ export function OverviewView({
                     </div>
                     <div className="pdpp-caption mt-1 flex flex-wrap items-center gap-2">
                       <StatusBadge status={r.status} />
-                      <span className="text-muted-foreground">{r.failure_reason ?? r.connector_id ?? "—"}</span>
+                      <span className="text-muted-foreground">
+                        {r.failure_reason ?? (r.source ? `${r.source.kind}:${r.source.id}` : "—")}
+                      </span>
                     </div>
                   </Link>
                 </li>
@@ -135,12 +137,7 @@ export function OverviewView({
         ) : (
           <DataList>
             {data.recentDecisions.map((g) => {
-              let providerSuffix = "";
-              if (g.connector_id) {
-                providerSuffix = ` · ${g.connector_id}`;
-              } else if (g.provider_id) {
-                providerSuffix = ` · ${g.provider_id}`;
-              }
+              const providerSuffix = g.source ? ` · ${g.source.kind}:${g.source.id}` : "";
               return (
                 <li key={g.grant_id}>
                   <Link
@@ -188,7 +185,7 @@ export function OverviewView({
                 >
                   <code className="break-all font-medium font-mono text-foreground">{r.run_id}</code>
                   <span className="min-w-0 truncate text-muted-foreground">
-                    {r.connector_id ?? r.provider_id ?? "—"}
+                    {r.source ? `${r.source.kind}:${r.source.id}` : "—"}
                     {r.failure_reason ? ` · ${r.failure_reason}` : ""}
                   </span>
                   <span className="pdpp-caption flex items-center gap-2 justify-self-end">

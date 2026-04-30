@@ -34,7 +34,7 @@ import {
 
 const ownerActor = { kind: 'owner', subject_id: 'subj_owner' };
 const clientGrant = {
-  source: { connector_id: 'acme_payroll' },
+  source: { kind: 'connector', id: 'acme_payroll' },
   streams: [{ name: 'pay_statements' }, { name: 'time_entries' }],
 };
 const clientActor = {

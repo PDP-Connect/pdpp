@@ -30,6 +30,11 @@ export interface RefSpineFailureSummary {
   readonly reason: string | null;
 }
 
+export interface RefSpineSource {
+  readonly kind: "connector" | "provider_native";
+  readonly id: string;
+}
+
 /**
  * Subset of the spine summary shape consumed by the per-kind
  * projections. The operation does not depend on every field of the
@@ -49,8 +54,10 @@ export interface RefSpineCorrelationSummary {
   readonly grant_id: string | null;
   readonly run_id: string | null;
   readonly client_id: string | null;
-  readonly provider_id: string | null;
   readonly connector_id: string | null;
+  readonly source: RefSpineSource | null;
+  readonly source_id: string | null;
+  readonly source_kind: "connector" | "provider_native" | null;
   readonly actor_type: string;
   readonly actor_id: string;
   readonly failure: RefSpineFailureSummary | null;
@@ -101,7 +108,7 @@ export interface RefSpineTraceSummary {
   readonly grant_id: string | null;
   readonly run_id: string | null;
   readonly client_id: string | null;
-  readonly provider_id: string | null;
+  readonly source: RefSpineSource | null;
   readonly actor_type: string;
   readonly actor_id: string;
   readonly failure: RefSpineFailureSummary | null;
@@ -116,8 +123,7 @@ export interface RefSpineGrantSummary {
   readonly status: string;
   readonly kinds: readonly string[];
   readonly client_id: string | null;
-  readonly provider_id: string | null;
-  readonly connector_id: string | null;
+  readonly source: RefSpineSource | null;
   readonly failure: RefSpineFailureSummary | null;
 }
 
@@ -130,8 +136,7 @@ export interface RefSpineRunSummary {
   readonly status: string;
   readonly kinds: readonly string[];
   readonly needs_input: boolean;
-  readonly connector_id: string | null;
-  readonly provider_id: string | null;
+  readonly source: RefSpineSource | null;
   readonly grant_id: string | null;
   readonly failure_reason: string | null;
 }
@@ -148,6 +153,19 @@ export interface RefSpineCorrelationsListEnvelope {
   readonly next_cursor?: string;
 }
 
+function sourceFromSummary(s: RefSpineCorrelationSummary): RefSpineSource | null {
+  if (s.source) {
+    return s.source;
+  }
+  if (s.source_kind && s.source_id) {
+    return { kind: s.source_kind, id: s.source_id };
+  }
+  if (s.connector_id) {
+    return { kind: "connector", id: s.connector_id };
+  }
+  return null;
+}
+
 export function summaryToTrace(s: RefSpineCorrelationSummary): RefSpineTraceSummary {
   return {
     object: "trace_summary",
@@ -161,7 +179,7 @@ export function summaryToTrace(s: RefSpineCorrelationSummary): RefSpineTraceSumm
     grant_id: s.grant_id,
     run_id: s.run_id,
     client_id: s.client_id,
-    provider_id: s.provider_id,
+    source: sourceFromSummary(s),
     actor_type: s.actor_type,
     actor_id: s.actor_id,
     failure: s.failure,
@@ -178,8 +196,7 @@ export function summaryToGrant(s: RefSpineCorrelationSummary): RefSpineGrantSumm
     status: s.status,
     kinds: s.kinds,
     client_id: s.client_id,
-    provider_id: s.provider_id,
-    connector_id: s.connector_id || null,
+    source: sourceFromSummary(s),
     failure: s.failure,
   };
 }
@@ -194,8 +211,7 @@ export function summaryToRun(s: RefSpineCorrelationSummary): RefSpineRunSummary 
     status: s.status,
     kinds: s.kinds,
     needs_input: Boolean(s.needs_input),
-    connector_id: s.connector_id || null,
-    provider_id: s.provider_id,
+    source: sourceFromSummary(s),
     grant_id: s.grant_id,
     failure_reason: s.failure?.reason || null,
   };

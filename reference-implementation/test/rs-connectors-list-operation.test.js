@@ -16,7 +16,7 @@ import { executeConnectorsList } from '../operations/rs-connectors-list/index.ts
 function makeItem(connectorId, overrides = {}) {
   return {
     object: 'connector',
-    source: { binding_kind: 'connector', connector_id: connectorId },
+    source: { kind: 'connector', id: connectorId },
     stream_count: 0,
     streams: [],
     connector_id: connectorId,
@@ -95,7 +95,7 @@ test('rs.connectors.list computes connector_count and stream_count totals', asyn
 });
 
 test('rs.connectors.list propagates the dependency source descriptor', async () => {
-  const source = { binding_kind: 'provider_native', provider_id: 'native_provider' };
+  const source = { kind: 'provider_native', id: 'native_provider' };
   const result = await executeConnectorsList(
     { actor: { kind: 'owner', subject_id: 'sub_1' } },
     {

@@ -40,7 +40,7 @@ test('request validators accept the shipped public flow shapes', () => {
       authorization_details: [
         {
           type: 'https://pdpp.org/data-access',
-          connector_id: 'spotify',
+          source: { kind: 'connector', id: 'spotify' },
           purpose_code: 'https://pdpp.org/purpose/personalization',
           access_mode: 'continuous',
           streams: [{ name: 'top_artists', view: 'basic' }],

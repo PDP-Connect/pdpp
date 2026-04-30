@@ -57,6 +57,16 @@ import { buildLiveStreamMetadata } from "./builders.ts";
 import { DEMO_CONNECTORS, DEMO_RECORDS, DEMO_STREAMS } from "./dataset.ts";
 import type { DemoRecord } from "./types.ts";
 
+const SANDBOX_AGGREGATE_SOURCE_ID = "sandbox_demo";
+
+function connectorSource(connectorId: string): { kind: "connector"; id: string } {
+  return { kind: "connector", id: connectorId };
+}
+
+function connectorIdForStream(streamName: string): string {
+  return DEMO_STREAMS.find((stream) => stream.key === streamName)?.connector_id ?? SANDBOX_AGGREGATE_SOURCE_ID;
+}
+
 function streamRecordCount(streamKey: string): number {
   return DEMO_RECORDS.filter((record) => record.stream === streamKey).length;
 }
@@ -98,8 +108,8 @@ export function createSandboxStreamsListDependencies(
     };
   });
   const sourceDescriptor: StreamsListSourceDescriptor = options.connectorId
-    ? { binding_kind: "connector", connector_id: options.connectorId }
-    : { binding_kind: "connector" };
+    ? connectorSource(options.connectorId)
+    : connectorSource(SANDBOX_AGGREGATE_SOURCE_ID);
 
   return {
     listSummaries: () => Promise.resolve(summaries),
@@ -118,9 +128,9 @@ export function createSandboxStreamsListDependencies(
  * `/sandbox/v1/schema`, which keeps the sandbox stream-detail and
  * stream-listed-in-schema shapes in sync.
  */
-export function createSandboxStreamDetailDependencies(): StreamDetailDependencies {
+export function createSandboxStreamDetailDependencies(streamName: string): StreamDetailDependencies {
   const streamByKey = new Map(DEMO_STREAMS.map((stream) => [stream.key, stream]));
-  const sourceDescriptor: StreamDetailSourceDescriptor = { binding_kind: "connector" };
+  const sourceDescriptor: StreamDetailSourceDescriptor = connectorSource(connectorIdForStream(streamName));
 
   return {
     getSourceDescriptor: () => sourceDescriptor,
@@ -157,18 +167,16 @@ export function createSandboxStreamDetailDependencies(): StreamDetailDependencie
  * builder. Keeping one envelope helper means the schema and stream-detail
  * shapes cannot drift.
  *
- * The aggregate source descriptor is `{binding_kind: 'connector'}` (no
- * `connector_id`) — schema discovery spans every demo connector, so no
- * single connector_id applies to the disclosure event. Per-connector items
- * carry their own `source.connector_id`.
+ * The aggregate source descriptor is `null` because schema discovery spans
+ * every demo connector; per-connector items carry their own `source.id`.
  */
 export function createSandboxSchemaGetDependencies(): SchemaGetDependencies {
-  const sourceDescriptor: SchemaGetSourceDescriptor = { binding_kind: "connector" };
+  const sourceDescriptor: SchemaGetSourceDescriptor | null = null;
   const connectors: ConnectorSchemaItem[] = DEMO_CONNECTORS.map((connector) => {
     const streams = DEMO_STREAMS.filter((s) => s.connector_id === connector.connector_id);
     return {
       object: "connector",
-      source: { binding_kind: "connector", connector_id: connector.connector_id },
+      source: connectorSource(connector.connector_id),
       connector_id: connector.connector_id,
       stream_count: streams.length,
       streams: streams.map((stream) => ({
@@ -270,6 +278,8 @@ function sandboxOwnerGrantPlaceholder(): RecordsListGrant {
 export interface SandboxRecordsListFixtureOptions {
   /** When provided, only records whose `connector_id` matches are listed. */
   connectorId?: string;
+  /** Stream being listed; used to attribute unfiltered owner reads. */
+  streamName?: string;
 }
 
 /**
@@ -283,8 +293,8 @@ export function createSandboxRecordsListDependencies(
   options: SandboxRecordsListFixtureOptions = {}
 ): RecordsListDependencies {
   const sourceDescriptor: RecordsListSourceDescriptor = options.connectorId
-    ? { binding_kind: "connector", connector_id: options.connectorId }
-    : { binding_kind: "connector" };
+    ? connectorSource(options.connectorId)
+    : connectorSource(connectorIdForStream(options.streamName ?? ""));
 
   return {
     getSourceDescriptor: () => sourceDescriptor,
@@ -327,8 +337,8 @@ export function createSandboxRecordsListDependencies(
 /**
  * Build dependencies for `rs.records.get` against the sandbox demo dataset.
  */
-export function createSandboxRecordDetailDependencies(): RecordDetailDependencies {
-  const sourceDescriptor: RecordDetailSourceDescriptor = { binding_kind: "connector" };
+export function createSandboxRecordDetailDependencies(streamName: string): RecordDetailDependencies {
+  const sourceDescriptor: RecordDetailSourceDescriptor = connectorSource(connectorIdForStream(streamName));
   return {
     getSourceDescriptor: () => sourceDescriptor,
     getManifest: (): RecordDetailManifest => ({

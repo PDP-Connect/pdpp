@@ -5,11 +5,13 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
+import Database from 'better-sqlite3';
 
 import { startServer } from '../server/index.js';
-import { getDb } from '../server/db.js';
+import { closeDb, getDb, initDb } from '../server/db.js';
 import { ingestRecord } from '../server/records.js';
 import { runConnector } from '../runtime/index.js';
+import { emitSpineEvent } from '../lib/spine.ts';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, '..');
@@ -183,6 +185,135 @@ async function seedNorthstar(nativeManifest) {
 }
 
 test('event spine', async (t) => {
+  await t.test('migrates pre-source-column spine rows without losing row counts', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'pdpp-spine-migration-'));
+    const dbPath = join(dir, 'legacy.sqlite');
+    const oldDb = new Database(dbPath);
+
+    try {
+      oldDb.exec(`
+        CREATE TABLE spine_events (
+          event_id         TEXT PRIMARY KEY,
+          event_seq        INTEGER,
+          event_type       TEXT NOT NULL,
+          occurred_at      TEXT NOT NULL,
+          recorded_at      TEXT NOT NULL,
+          scenario_id      TEXT NOT NULL,
+          trace_id         TEXT NOT NULL,
+          actor_type       TEXT NOT NULL,
+          actor_id         TEXT NOT NULL,
+          subject_type     TEXT,
+          subject_id       TEXT,
+          object_type      TEXT NOT NULL,
+          object_id        TEXT NOT NULL,
+          status           TEXT NOT NULL,
+          request_id       TEXT,
+          grant_id         TEXT,
+          run_id           TEXT,
+          provider_id      TEXT,
+          client_id        TEXT,
+          stream_id        TEXT,
+          token_id         TEXT,
+          interaction_id   TEXT,
+          data_json        TEXT NOT NULL,
+          version          TEXT NOT NULL
+        )
+      `);
+      const insert = oldDb.prepare(`
+        INSERT INTO spine_events (
+          event_id, event_seq, event_type, occurred_at, recorded_at, scenario_id, trace_id,
+          actor_type, actor_id, object_type, object_id, status, provider_id, data_json, version
+        )
+        VALUES (@event_id, @event_seq, @event_type, @occurred_at, @recorded_at, @scenario_id, @trace_id,
+          @actor_type, @actor_id, @object_type, @object_id, @status, @provider_id, @data_json, @version)
+      `);
+      insert.run({
+        event_id: 'evt_connector_legacy',
+        event_seq: 1,
+        event_type: 'query.received',
+        occurred_at: '2026-04-01T00:00:00Z',
+        recorded_at: '2026-04-01T00:00:01Z',
+        scenario_id: 'scn_test',
+        trace_id: 'trc_test',
+        actor_type: 'client',
+        actor_id: 'client_a',
+        object_type: 'query',
+        object_id: 'req_a',
+        status: 'succeeded',
+        provider_id: null,
+        data_json: JSON.stringify({
+          source: { binding_kind: 'connector', connector_id: 'conn_legacy' },
+        }),
+        version: 'spine.v1',
+      });
+      insert.run({
+        event_id: 'evt_native_legacy',
+        event_seq: 2,
+        event_type: 'grant.issued',
+        occurred_at: '2026-04-01T00:00:02Z',
+        recorded_at: '2026-04-01T00:00:03Z',
+        scenario_id: 'scn_test',
+        trace_id: 'trc_test',
+        actor_type: 'authorization_server',
+        actor_id: 'pdpp_reference',
+        object_type: 'grant',
+        object_id: 'grant_native',
+        status: 'succeeded',
+        provider_id: 'provider_legacy',
+        data_json: JSON.stringify({
+          source: { binding_kind: 'provider_native', provider_id: 'provider_legacy' },
+        }),
+        version: 'spine.v1',
+      });
+      insert.run({
+        event_id: 'evt_runtime_source_scalar',
+        event_seq: 3,
+        event_type: 'run.completed',
+        occurred_at: '2026-04-01T00:00:04Z',
+        recorded_at: '2026-04-01T00:00:05Z',
+        scenario_id: 'scn_test',
+        trace_id: 'trc_test',
+        actor_type: 'runtime',
+        actor_id: 'conn_runtime_fallback',
+        object_type: 'run',
+        object_id: 'run_runtime_fallback',
+        status: 'succeeded',
+        provider_id: null,
+        data_json: JSON.stringify({ source: 'connector-payload-label' }),
+        version: 'spine.v1',
+      });
+      oldDb.close();
+
+      const migrations = [];
+      initDb(dbPath, { onSchemaMigration: (event) => migrations.push(event) });
+      const db = getDb();
+      const columns = db.prepare('PRAGMA table_info(spine_events)').all().map((row) => row.name);
+      const rowCount = db.prepare('SELECT COUNT(*) AS count FROM spine_events').get().count;
+      const connectorCount = db.prepare(
+        'SELECT COUNT(*) AS count FROM spine_events WHERE source_kind = ? AND source_id = ?'
+      ).get('connector', 'conn_legacy').count;
+      const nativeCount = db.prepare(
+        'SELECT COUNT(*) AS count FROM spine_events WHERE source_kind = ? AND source_id = ?'
+      ).get('provider_native', 'provider_legacy').count;
+      const runtimeFallbackCount = db.prepare(
+        'SELECT COUNT(*) AS count FROM spine_events WHERE source_kind = ? AND source_id = ?'
+      ).get('connector', 'conn_runtime_fallback').count;
+
+      assert.equal(rowCount, 3);
+      assert.equal(connectorCount, 1);
+      assert.equal(nativeCount, 1);
+      assert.equal(runtimeFallbackCount, 1);
+      assert.equal(db.pragma('user_version', { simple: true }), 1);
+      assert.equal(columns.includes('provider_id'), false);
+      assert.ok(columns.includes('source_kind'));
+      assert.ok(columns.includes('source_id'));
+      assert.equal(migrations[0]?.rowCount, 3);
+    } finally {
+      closeDb();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   await t.test('captures dynamic client registration success and rejection as trace artifacts', async () => {
     await withHarness(async ({ asUrl }) => {
       const registration = await registerDynamicClient(asUrl, {
@@ -250,7 +381,7 @@ test('event spine', async (t) => {
           authorization_details: [
             {
               type: 'https://pdpp.org/data-access',
-              connector_id: spotifyManifest.connector_id,
+              source: { kind: 'connector', id: spotifyManifest.connector_id },
               purpose_code: 'https://pdpp.org/purpose/personalization',
               purpose_description: 'Recommend concerts based on recent listening history',
               access_mode: 'single_use',
@@ -326,8 +457,8 @@ test('event spine', async (t) => {
       for (const eventType of ['request.submitted', 'consent.approved', 'grant.issued', 'token.issued', 'grant.revoked']) {
         const event = (traceTimeline.data || []).find((entry) => entry.event_type === eventType);
         assert.ok(event, `expected ${eventType} event`);
-        assert.equal(event.data?.source?.binding_kind, 'connector');
-        assert.equal(event.data?.source?.connector_id, spotifyManifest.connector_id);
+        assert.equal(event.data?.source?.kind, 'connector');
+        assert.equal(event.data?.source?.id, spotifyManifest.connector_id);
         assert.ok(!('connector_id' in (event.data || {})), `${eventType} should use source descriptors instead of raw connector_id`);
         if (eventType === 'request.submitted') {
           assert.equal(event.request_id, initiateRequestId);
@@ -353,7 +484,7 @@ test('event spine', async (t) => {
           authorization_details: [
             {
               type: 'https://pdpp.org/data-access',
-              connector_id: spotifyManifest.connector_id,
+              source: { kind: 'connector', id: spotifyManifest.connector_id },
               purpose_code: 'https://pdpp.org/purpose/personalization',
               purpose_description: 'Recommend concerts based on recent listening history',
               access_mode: 'single_use',
@@ -395,8 +526,8 @@ test('event spine', async (t) => {
       assert.equal(deniedEvent.client_id, 'concert_recommendation_app');
       assert.equal(deniedEvent.object_type, 'pending_consent');
       assert.equal(deniedEvent.status, 'denied');
-      assert.equal(deniedEvent.data?.source?.binding_kind, 'connector');
-      assert.equal(deniedEvent.data?.source?.connector_id, spotifyManifest.connector_id);
+      assert.equal(deniedEvent.data?.source?.kind, 'connector');
+      assert.equal(deniedEvent.data?.source?.id, spotifyManifest.connector_id);
 
       const grantIssuedEvent = (traceTimeline.data || []).find((event) => event.event_type === 'grant.issued');
       assert.equal(grantIssuedEvent, undefined, 'denied consent should not issue a grant');
@@ -580,7 +711,7 @@ test('event spine', async (t) => {
           authorization_details: [
             {
               type: 'https://pdpp.org/data-access',
-              connector_id: spotifyManifest.connector_id,
+              source: { kind: 'connector', id: spotifyManifest.connector_id },
               purpose_code: 'https://pdpp.org/purpose/personalization',
               purpose_description: 'Recommend concerts based on recent listening history',
               access_mode: 'single_use',
@@ -618,8 +749,8 @@ test('event spine', async (t) => {
         );
         assert.ok(queryReceived, 'expected query.received for rejected connector grant read');
         assert.equal(queryReceived.data.query_shape, 'record_list');
-        assert.equal(queryReceived.data.source?.binding_kind, 'connector');
-        assert.equal(queryReceived.data.source?.connector_id, spotifyManifest.connector_id);
+        assert.equal(queryReceived.data.source?.kind, 'connector');
+        assert.equal(queryReceived.data.source?.id, spotifyManifest.connector_id);
         assert.ok(!('connector_id' in (queryReceived.data || {})));
 
         const rejected = (timeline.data || []).find((event) =>
@@ -628,8 +759,8 @@ test('event spine', async (t) => {
         );
         assert.ok(rejected, 'expected query.rejected for rejected connector grant read');
         assert.equal(rejected.data.query_shape, 'record_list');
-        assert.equal(rejected.data.source?.binding_kind, 'connector');
-        assert.equal(rejected.data.source?.connector_id, spotifyManifest.connector_id);
+        assert.equal(rejected.data.source?.kind, 'connector');
+        assert.equal(rejected.data.source?.id, spotifyManifest.connector_id);
         assert.equal(rejected.data.error?.code, 'invalid_request');
         assert.match(rejected.data.error?.message || '', /view and fields are mutually exclusive/);
         assert.ok(!('connector_id' in (rejected.data || {})));
@@ -650,7 +781,7 @@ test('event spine', async (t) => {
           authorization_details: [
             {
               type: 'https://pdpp.org/data-access',
-              connector_id: spotifyManifest.connector_id,
+              source: { kind: 'connector', id: spotifyManifest.connector_id },
               purpose_code: 'https://pdpp.org/purpose/personalization',
               purpose_description: 'Recommend concerts based on recent listening history',
               access_mode: 'single_use',
@@ -688,8 +819,8 @@ test('event spine', async (t) => {
         );
         assert.ok(queryReceived, 'expected query.received for rejected connector unknown-field read');
         assert.equal(queryReceived.data.query_shape, 'record_list');
-        assert.equal(queryReceived.data.source?.binding_kind, 'connector');
-        assert.equal(queryReceived.data.source?.connector_id, spotifyManifest.connector_id);
+        assert.equal(queryReceived.data.source?.kind, 'connector');
+        assert.equal(queryReceived.data.source?.id, spotifyManifest.connector_id);
         assert.ok(!('connector_id' in (queryReceived.data || {})));
 
         const rejected = (timeline.data || []).find((event) =>
@@ -698,8 +829,8 @@ test('event spine', async (t) => {
         );
         assert.ok(rejected, 'expected query.rejected for rejected connector unknown-field read');
         assert.equal(rejected.data.query_shape, 'record_list');
-        assert.equal(rejected.data.source?.binding_kind, 'connector');
-        assert.equal(rejected.data.source?.connector_id, spotifyManifest.connector_id);
+        assert.equal(rejected.data.source?.kind, 'connector');
+        assert.equal(rejected.data.source?.id, spotifyManifest.connector_id);
         assert.equal(rejected.data.error?.code, 'unknown_field');
         assert.match(rejected.data.error?.message || '', /Unknown field: not_a_real_field/);
         assert.ok(!('connector_id' in (rejected.data || {})));
@@ -719,7 +850,7 @@ test('event spine', async (t) => {
           authorization_details: [
             {
               type: 'https://pdpp.org/data-access',
-              provider_id: nativeManifest.provider_id,
+              source: { kind: 'provider_native', id: nativeManifest.provider_id },
               purpose_code: 'https://pdpp.org/purpose/financial_planning',
               purpose_description: 'Support compensation planning and verification',
               access_mode: 'continuous',
@@ -754,8 +885,8 @@ test('event spine', async (t) => {
       );
       assert.ok(clientRejected, 'expected query.rejected for rejected native client read');
       assert.equal(clientRejected.data.query_shape, 'record_list');
-      assert.equal(clientRejected.data.source?.binding_kind, 'provider_native');
-      assert.equal(clientRejected.data.source?.provider_id, nativeManifest.provider_id);
+      assert.equal(clientRejected.data.source?.kind, 'provider_native');
+      assert.equal(clientRejected.data.source?.id, nativeManifest.provider_id);
       assert.equal(clientRejected.data.error?.code, 'invalid_request');
       assert.ok(!('connector_id' in (clientRejected.data || {})));
 
@@ -777,10 +908,42 @@ test('event spine', async (t) => {
       assert.ok(ownerRejected, 'expected query.rejected for rejected native owner read');
       assert.equal(ownerRejected.stream_id, 'not_a_stream');
       assert.equal(ownerRejected.data.query_shape, 'stream_metadata');
-      assert.equal(ownerRejected.data.source?.binding_kind, 'provider_native');
-      assert.equal(ownerRejected.data.source?.provider_id, nativeManifest.provider_id);
+      assert.equal(ownerRejected.data.source?.kind, 'provider_native');
+      assert.equal(ownerRejected.data.source?.id, nativeManifest.provider_id);
       assert.equal(ownerRejected.data.error?.code, 'not_found');
       assert.ok(!('connector_id' in (ownerRejected.data || {})));
+    });
+  });
+
+  await t.test('stores connector and native source identities in queryable spine columns', async () => {
+    await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
+      const ownerToken = await issueOwnerToken(asUrl, 'employee_1');
+      await seedSpotify(rsUrl, spotifyManifest, ownerToken);
+
+      const nativeProviderId = 'provider_native_spine_column_test';
+      await emitSpineEvent({
+        event_type: 'test.native_source',
+        actor_type: 'provider_native',
+        actor_id: nativeProviderId,
+        object_type: 'test',
+        object_id: 'native_source',
+        data: { source: { kind: 'provider_native', id: nativeProviderId } },
+      });
+
+      const db = getDb();
+      const connectorRows = db.prepare(
+        'SELECT COUNT(*) AS count FROM spine_events WHERE source_kind = ? AND source_id = ?'
+      ).get('connector', spotifyManifest.connector_id);
+      const nativeRows = db.prepare(
+        'SELECT COUNT(*) AS count FROM spine_events WHERE source_kind = ? AND source_id = ?'
+      ).get('provider_native', nativeProviderId);
+      const nullSourceIds = db.prepare(
+        "SELECT COUNT(*) AS count FROM spine_events WHERE source_kind IS NOT NULL AND (source_id IS NULL OR source_id = '')"
+      ).get();
+
+      assert.ok(connectorRows.count > 0, 'expected connector events to be queryable by source_kind/source_id');
+      assert.ok(nativeRows.count > 0, 'expected native events to be queryable by source_kind/source_id');
+      assert.equal(nullSourceIds.count, 0, 'sourced spine rows must always carry source_id');
     });
   });
 
@@ -796,7 +959,7 @@ test('event spine', async (t) => {
           authorization_details: [
             {
               type: 'https://pdpp.org/data-access',
-              provider_id: nativeManifest.provider_id,
+              source: { kind: 'provider_native', id: nativeManifest.provider_id },
               purpose_code: 'https://pdpp.org/purpose/financial_planning',
               purpose_description: 'Trace auth-gate failures for native client reads',
               access_mode: 'continuous',
@@ -902,8 +1065,8 @@ test('event spine', async (t) => {
       assert.equal(ingestRequested.stream_id, 'top_artists');
       assert.equal(ingestRequested.data.operation, 'ingest_records');
       assert.equal(ingestRequested.data.submitted_record_count, 2);
-      assert.equal(ingestRequested.data.source?.binding_kind, 'connector');
-      assert.equal(ingestRequested.data.source?.connector_id, spotifyManifest.connector_id);
+      assert.equal(ingestRequested.data.source?.kind, 'connector');
+      assert.equal(ingestRequested.data.source?.id, spotifyManifest.connector_id);
       assert.ok(!('connector_id' in (ingestRequested.data || {})));
 
       const ingestCompleted = (ingestTrace.data || []).find((event) =>
@@ -916,8 +1079,8 @@ test('event spine', async (t) => {
       assert.equal(ingestCompleted.data.records_accepted, 1);
       assert.equal(ingestCompleted.data.records_rejected, 1);
       assert.equal(ingestCompleted.data.error_count, 1);
-      assert.equal(ingestCompleted.data.source?.binding_kind, 'connector');
-      assert.equal(ingestCompleted.data.source?.connector_id, spotifyManifest.connector_id);
+      assert.equal(ingestCompleted.data.source?.kind, 'connector');
+      assert.equal(ingestCompleted.data.source?.id, spotifyManifest.connector_id);
       assert.ok(!('connector_id' in (ingestCompleted.data || {})));
 
       const deleteResp = await fetch(
@@ -942,8 +1105,8 @@ test('event spine', async (t) => {
       assert.equal(deleteRequested.stream_id, 'top_artists');
       assert.equal(deleteRequested.data.operation, 'delete_record');
       assert.equal(deleteRequested.data.requested_record_id, 'event_spine_owner_mutation_success');
-      assert.equal(deleteRequested.data.source?.binding_kind, 'connector');
-      assert.equal(deleteRequested.data.source?.connector_id, spotifyManifest.connector_id);
+      assert.equal(deleteRequested.data.source?.kind, 'connector');
+      assert.equal(deleteRequested.data.source?.id, spotifyManifest.connector_id);
       assert.ok(!('connector_id' in (deleteRequested.data || {})));
 
       const deleteCompleted = (deleteTrace.data || []).find((event) =>
@@ -955,8 +1118,8 @@ test('event spine', async (t) => {
       assert.equal(deleteCompleted.data.operation, 'delete_record');
       assert.equal(deleteCompleted.data.requested_record_id, 'event_spine_owner_mutation_success');
       assert.equal(deleteCompleted.data.deleted_record_count, 1);
-      assert.equal(deleteCompleted.data.source?.binding_kind, 'connector');
-      assert.equal(deleteCompleted.data.source?.connector_id, spotifyManifest.connector_id);
+      assert.equal(deleteCompleted.data.source?.kind, 'connector');
+      assert.equal(deleteCompleted.data.source?.id, spotifyManifest.connector_id);
       assert.ok(!('connector_id' in (deleteCompleted.data || {})));
     });
   });
@@ -1026,8 +1189,8 @@ test('event spine', async (t) => {
       assert.equal(updateRequested.data.state_scope, 'owner');
       assert.equal(updateRequested.data.operation, 'write');
       assert.deepEqual(updateRequested.data.requested_streams, ['top_artists']);
-      assert.equal(updateRequested.data.source?.binding_kind, 'connector');
-      assert.equal(updateRequested.data.source?.connector_id, spotifyManifest.connector_id);
+      assert.equal(updateRequested.data.source?.kind, 'connector');
+      assert.equal(updateRequested.data.source?.id, spotifyManifest.connector_id);
 
       const updated = (updateTrace.data || []).find((event) =>
         event.event_type === 'state.updated'
@@ -1088,7 +1251,7 @@ test('event spine', async (t) => {
           authorization_details: [
             {
               type: 'https://pdpp.org/data-access',
-              connector_id: spotifyManifest.connector_id,
+              source: { kind: 'connector', id: spotifyManifest.connector_id },
               purpose_code: 'https://pdpp.org/purpose/personalization',
               purpose_description: 'Maintain grant-scoped state for trace inspection',
               access_mode: 'continuous',
@@ -1224,8 +1387,8 @@ test('event spine', async (t) => {
       for (const event of runTimeline.data || []) {
         if (!String(event.event_type || '').startsWith('run.')) continue;
         if (!event.data) continue;
-        assert.equal(event.data.source?.binding_kind, 'connector');
-        assert.equal(event.data.source?.connector_id, spotifyManifest.connector_id);
+        assert.equal(event.data.source?.kind, 'connector');
+        assert.equal(event.data.source?.id, spotifyManifest.connector_id);
         assert.ok(!('connector_id' in event.data), `${event.event_type} should use source descriptors instead of raw connector_id`);
       }
 
@@ -1558,8 +1721,8 @@ rl.on('line', (line) => {
       assert.equal(failedEvent.data.state_streams_committed, 1);
 
       for (const event of [...advancedEvents, failedEvent]) {
-        assert.equal(event.data.source?.binding_kind, 'connector');
-        assert.equal(event.data.source?.connector_id, manifest.connector_id);
+        assert.equal(event.data.source?.kind, 'connector');
+        assert.equal(event.data.source?.id, manifest.connector_id);
         assert.ok(!('connector_id' in event.data), `${event.event_type} should use source descriptors instead of raw connector_id`);
       }
     } finally {
@@ -1644,8 +1807,8 @@ rl.on('line', (line) => {
 
         const failedEvent = (runTimeline.data || []).find((event) => event.event_type === 'run.failed');
         assert.ok(failedEvent, 'expected run.failed event');
-        assert.equal(failedEvent.data?.source?.binding_kind, 'connector');
-        assert.equal(failedEvent.data?.source?.connector_id, spotifyManifest.connector_id);
+        assert.equal(failedEvent.data?.source?.kind, 'connector');
+        assert.equal(failedEvent.data?.source?.id, spotifyManifest.connector_id);
         assert.equal(failedEvent.data?.reason, 'authentication_error');
         assert.equal(failedEvent.data?.records_emitted, 1);
         assert.equal(failedEvent.data?.records_flushed, 0);
@@ -1747,8 +1910,8 @@ rl.on('line', (line) => {
 
         const failedEvent = (runTimeline.data || []).find((event) => event.event_type === 'run.failed');
         assert.ok(failedEvent, 'expected run.failed event');
-        assert.equal(failedEvent.data?.source?.binding_kind, 'connector');
-        assert.equal(failedEvent.data?.source?.connector_id, spotifyManifest.connector_id);
+        assert.equal(failedEvent.data?.source?.kind, 'connector');
+        assert.equal(failedEvent.data?.source?.id, spotifyManifest.connector_id);
         assert.equal(failedEvent.data?.reason, 'permission_error');
         assert.equal(failedEvent.data?.records_emitted, 1);
         assert.equal(failedEvent.data?.records_flushed, 1);
@@ -1836,8 +1999,8 @@ rl.on('line', (line) => {
         const { body: runTimeline } = await fetchJson(`${asUrl}/_ref/runs/${encodeURIComponent(rejected.run_id)}/timeline`);
         const failedEvent = (runTimeline.data || []).find((event) => event.event_type === 'run.failed');
         assert.ok(failedEvent, 'expected run.failed event');
-        assert.equal(failedEvent.data?.source?.binding_kind, 'connector');
-        assert.equal(failedEvent.data?.source?.connector_id, spotifyManifest.connector_id);
+        assert.equal(failedEvent.data?.source?.kind, 'connector');
+        assert.equal(failedEvent.data?.source?.id, spotifyManifest.connector_id);
         assert.equal(failedEvent.data?.reason, 'connector_invalid');
         assert.equal(failedEvent.data?.records_emitted, 1);
         assert.equal(failedEvent.data?.records_flushed, 0);
@@ -1921,8 +2084,8 @@ rl.on('line', (line) => {
         const { body: runTimeline } = await fetchJson(`${asUrl}/_ref/runs/${encodeURIComponent(rejected.run_id)}/timeline`);
         const failedEvent = (runTimeline.data || []).find((event) => event.event_type === 'run.failed');
         assert.ok(failedEvent, 'expected run.failed event');
-        assert.equal(failedEvent.data?.source?.binding_kind, 'connector');
-        assert.equal(failedEvent.data?.source?.connector_id, spotifyManifest.connector_id);
+        assert.equal(failedEvent.data?.source?.kind, 'connector');
+        assert.equal(failedEvent.data?.source?.id, spotifyManifest.connector_id);
         assert.equal(failedEvent.data?.reason, 'rate_limit_error');
         assert.equal(failedEvent.data?.records_emitted, 1);
         assert.equal(failedEvent.data?.records_flushed, 0);
@@ -2014,8 +2177,8 @@ rl.on('line', (line) => {
         assert.equal(failedEvent.data.checkpoint_commit_status, 'not_committed');
 
         for (const event of (runTimeline.data || []).filter((entry) => ['run.state_staged', 'run.failed'].includes(entry.event_type))) {
-          assert.equal(event.data.source?.binding_kind, 'connector');
-          assert.equal(event.data.source?.connector_id, spotifyManifest.connector_id);
+          assert.equal(event.data.source?.kind, 'connector');
+          assert.equal(event.data.source?.id, spotifyManifest.connector_id);
           assert.ok(!('connector_id' in event.data), `${event.event_type} should use source descriptors instead of raw connector_id`);
         }
       } finally {
@@ -2079,8 +2242,8 @@ rl.on('line', (line) => {
 
         const failedEvent = (runTimeline.data || []).find((event) => event.event_type === 'run.failed');
         assert.ok(failedEvent, 'expected run.failed event');
-        assert.equal(failedEvent.data.source?.binding_kind, 'connector');
-        assert.equal(failedEvent.data.source?.connector_id, spotifyManifest.connector_id);
+        assert.equal(failedEvent.data.source?.kind, 'connector');
+        assert.equal(failedEvent.data.source?.id, spotifyManifest.connector_id);
         assert.equal(failedEvent.data.reason, 'connector_reported_failed');
         assert.equal(failedEvent.data.connector_error_message, 'Remote provider rate limit');
         assert.equal(failedEvent.data.connector_error_retryable, true);
@@ -2148,8 +2311,8 @@ rl.on('line', (line) => {
         const failedEvent = (runTimeline.data || []).find((event) => event.event_type === 'run.failed');
         assert.ok(failedEvent, 'expected run.failed event');
         assert.equal(failedEvent.status, 'cancelled');
-        assert.equal(failedEvent.data.source?.binding_kind, 'connector');
-        assert.equal(failedEvent.data.source?.connector_id, spotifyManifest.connector_id);
+        assert.equal(failedEvent.data.source?.kind, 'connector');
+        assert.equal(failedEvent.data.source?.id, spotifyManifest.connector_id);
         assert.equal(failedEvent.data.reason, 'connector_reported_cancelled');
         assert.equal(failedEvent.data.connector_error_message, 'User denied follow-up verification');
         assert.equal(failedEvent.data.connector_error_retryable, false);
@@ -2212,8 +2375,8 @@ rl.on('line', (line) => {
 
         const failedEvent = (runTimeline.data || []).find((event) => event.event_type === 'run.failed');
         assert.ok(failedEvent, 'expected run.failed event');
-        assert.equal(failedEvent.data.source?.binding_kind, 'connector');
-        assert.equal(failedEvent.data.source?.connector_id, spotifyManifest.connector_id);
+        assert.equal(failedEvent.data.source?.kind, 'connector');
+        assert.equal(failedEvent.data.source?.id, spotifyManifest.connector_id);
         assert.equal(failedEvent.data.reason, 'connector_protocol_violation');
         assert.equal(failedEvent.data.checkpoint_commit_status, 'not_committed');
         assert.ok(!('connector_error_message' in failedEvent.data));
@@ -2294,8 +2457,8 @@ rl.on('line', (line) => {
 
         const failedEvent = (runTimeline.data || []).find((event) => event.event_type === 'run.failed');
         assert.ok(failedEvent, 'expected run.failed event');
-        assert.equal(failedEvent.data.source?.binding_kind, 'connector');
-        assert.equal(failedEvent.data.source?.connector_id, spotifyManifest.connector_id);
+        assert.equal(failedEvent.data.source?.kind, 'connector');
+        assert.equal(failedEvent.data.source?.id, spotifyManifest.connector_id);
         assert.equal(failedEvent.data.reason, 'connector_protocol_violation');
         assert.equal(failedEvent.data.records_flushed, 1);
         assert.equal(failedEvent.data.buffered_records_dropped, 0);
@@ -2363,8 +2526,8 @@ rl.on('line', (line) => {
 
         const failedEvent = (runTimeline.data || []).find((event) => event.event_type === 'run.failed');
         assert.ok(failedEvent, 'expected run.failed event');
-        assert.equal(failedEvent.data.source?.binding_kind, 'connector');
-        assert.equal(failedEvent.data.source?.connector_id, spotifyManifest.connector_id);
+        assert.equal(failedEvent.data.source?.kind, 'connector');
+        assert.equal(failedEvent.data.source?.id, spotifyManifest.connector_id);
         assert.equal(failedEvent.data.reason, 'connector_protocol_violation');
         assert.equal(failedEvent.data.records_flushed, 0);
         assert.equal(failedEvent.data.buffered_records_dropped, 0);
@@ -2425,8 +2588,8 @@ rl.on('line', (line) => {
 
         const failedEvent = (runTimeline.data || []).find((event) => event.event_type === 'run.failed');
         assert.ok(failedEvent, 'expected run.failed event');
-        assert.equal(failedEvent.data.source?.binding_kind, 'connector');
-        assert.equal(failedEvent.data.source?.connector_id, spotifyManifest.connector_id);
+        assert.equal(failedEvent.data.source?.kind, 'connector');
+        assert.equal(failedEvent.data.source?.id, spotifyManifest.connector_id);
         assert.equal(failedEvent.data.reason, 'connector_protocol_violation');
         assert.equal(failedEvent.data.records_flushed, 0);
         assert.equal(failedEvent.data.buffered_records_dropped, 0);
@@ -2498,8 +2661,8 @@ rl.on('line', (line) => {
 
         const failedEvent = (runTimeline.data || []).find((event) => event.event_type === 'run.failed');
         assert.ok(failedEvent, 'expected run.failed event');
-        assert.equal(failedEvent.data.source?.binding_kind, 'connector');
-        assert.equal(failedEvent.data.source?.connector_id, spotifyManifest.connector_id);
+        assert.equal(failedEvent.data.source?.kind, 'connector');
+        assert.equal(failedEvent.data.source?.id, spotifyManifest.connector_id);
         assert.equal(failedEvent.data.reason, 'connector_protocol_violation');
         assert.equal(failedEvent.data.records_flushed, 0);
         assert.equal(failedEvent.data.buffered_records_dropped, 0);
@@ -2566,8 +2729,8 @@ rl.on('line', (line) => {
 
         const failedEvent = (runTimeline.data || []).find((event) => event.event_type === 'run.failed');
         assert.ok(failedEvent, 'expected run.failed event');
-        assert.equal(failedEvent.data.source?.binding_kind, 'connector');
-        assert.equal(failedEvent.data.source?.connector_id, spotifyManifest.connector_id);
+        assert.equal(failedEvent.data.source?.kind, 'connector');
+        assert.equal(failedEvent.data.source?.id, spotifyManifest.connector_id);
         assert.equal(failedEvent.data.reason, 'connector_protocol_violation');
         assert.equal(failedEvent.data.records_flushed, 0);
         assert.equal(failedEvent.data.buffered_records_dropped, 0);
@@ -2629,8 +2792,8 @@ rl.on('line', (line) => {
 
         const failedEvent = (runTimeline.data || []).find((event) => event.event_type === 'run.failed');
         assert.ok(failedEvent, 'expected run.failed event');
-        assert.equal(failedEvent.data.source?.binding_kind, 'connector');
-        assert.equal(failedEvent.data.source?.connector_id, spotifyManifest.connector_id);
+        assert.equal(failedEvent.data.source?.kind, 'connector');
+        assert.equal(failedEvent.data.source?.id, spotifyManifest.connector_id);
         assert.equal(failedEvent.data.reason, 'connector_protocol_violation');
         assert.equal(failedEvent.data.records_flushed, 0);
         assert.equal(failedEvent.data.buffered_records_dropped, 0);
@@ -2697,8 +2860,8 @@ rl.on('line', (line) => {
 
         const failedEvent = (runTimeline.data || []).find((event) => event.event_type === 'run.failed');
         assert.ok(failedEvent, 'expected run.failed event');
-        assert.equal(failedEvent.data.source?.binding_kind, 'connector');
-        assert.equal(failedEvent.data.source?.connector_id, spotifyManifest.connector_id);
+        assert.equal(failedEvent.data.source?.kind, 'connector');
+        assert.equal(failedEvent.data.source?.id, spotifyManifest.connector_id);
         assert.equal(failedEvent.data.reason, 'connector_protocol_violation');
         assert.equal(failedEvent.data.records_flushed, 0);
         assert.equal(failedEvent.data.buffered_records_dropped, 0);
@@ -2762,8 +2925,8 @@ rl.on('line', (line) => {
 
         const failedEvent = (runTimeline.data || []).find((event) => event.event_type === 'run.failed');
         assert.ok(failedEvent, 'expected run.failed event');
-        assert.equal(failedEvent.data.source?.binding_kind, 'connector');
-        assert.equal(failedEvent.data.source?.connector_id, spotifyManifest.connector_id);
+        assert.equal(failedEvent.data.source?.kind, 'connector');
+        assert.equal(failedEvent.data.source?.id, spotifyManifest.connector_id);
         assert.equal(failedEvent.data.reason, 'connector_protocol_violation');
         assert.equal(failedEvent.data.records_flushed, 0);
         assert.equal(failedEvent.data.buffered_records_dropped, 0);
@@ -2831,8 +2994,8 @@ rl.on('line', (line) => {
 
         const failedEvent = (runTimeline.data || []).find((event) => event.event_type === 'run.failed');
         assert.ok(failedEvent, 'expected run.failed event');
-        assert.equal(failedEvent.data.source?.binding_kind, 'connector');
-        assert.equal(failedEvent.data.source?.connector_id, spotifyManifest.connector_id);
+        assert.equal(failedEvent.data.source?.kind, 'connector');
+        assert.equal(failedEvent.data.source?.id, spotifyManifest.connector_id);
         assert.equal(failedEvent.data.reason, 'connector_protocol_violation');
         assert.equal(failedEvent.data.records_flushed, 0);
         assert.equal(failedEvent.data.buffered_records_dropped, 0);
@@ -2909,8 +3072,8 @@ rl.on('line', (line) => {
         assert.equal(interactionCompleted.data.stream, null);
 
         for (const event of [interactionRequired, interactionCompleted]) {
-          assert.equal(event.data.source?.binding_kind, 'connector');
-          assert.equal(event.data.source?.connector_id, spotifyManifest.connector_id);
+          assert.equal(event.data.source?.kind, 'connector');
+          assert.equal(event.data.source?.id, spotifyManifest.connector_id);
           assert.ok(!('connector_id' in event.data), `${event.event_type} should use source descriptors instead of raw connector_id`);
         }
 
@@ -2978,8 +3141,8 @@ rl.on('line', (line) => {
         assert.equal(interactionCompleted.data.stream, null);
 
         for (const event of [interactionRequired, interactionCompleted]) {
-          assert.equal(event.data.source?.binding_kind, 'connector');
-          assert.equal(event.data.source?.connector_id, spotifyManifest.connector_id);
+          assert.equal(event.data.source?.kind, 'connector');
+          assert.equal(event.data.source?.id, spotifyManifest.connector_id);
           assert.ok(!('connector_id' in event.data), `${event.event_type} should use source descriptors instead of raw connector_id`);
         }
       } finally {
@@ -3046,8 +3209,8 @@ rl.on('line', (line) => {
         assert.equal(interactionCompleted.data.stream, null);
 
         for (const event of [interactionRequired, interactionCompleted]) {
-          assert.equal(event.data.source?.binding_kind, 'connector');
-          assert.equal(event.data.source?.connector_id, spotifyManifest.connector_id);
+          assert.equal(event.data.source?.kind, 'connector');
+          assert.equal(event.data.source?.id, spotifyManifest.connector_id);
           assert.ok(!('connector_id' in event.data), `${event.event_type} should use source descriptors instead of raw connector_id`);
         }
       } finally {
@@ -3127,8 +3290,8 @@ rl.on('line', (line) => {
         assert.equal(failedEvent.data.checkpoint_commit_status, 'not_committed');
 
         for (const event of [...interactionRequiredEvents, failedEvent]) {
-          assert.equal(event.data.source?.binding_kind, 'connector');
-          assert.equal(event.data.source?.connector_id, spotifyManifest.connector_id);
+          assert.equal(event.data.source?.kind, 'connector');
+          assert.equal(event.data.source?.id, spotifyManifest.connector_id);
           assert.ok(!('connector_id' in event.data), `${event.event_type} should use source descriptors instead of raw connector_id`);
         }
       } finally {
@@ -3212,8 +3375,8 @@ rl.on('line', (line) => {
         assert.equal(failedEvent.data.checkpoint_commit_status, 'not_committed');
 
         for (const event of [...interactionRequiredEvents, failedEvent]) {
-          assert.equal(event.data.source?.binding_kind, 'connector');
-          assert.equal(event.data.source?.connector_id, spotifyManifest.connector_id);
+          assert.equal(event.data.source?.kind, 'connector');
+          assert.equal(event.data.source?.id, spotifyManifest.connector_id);
           assert.ok(!('connector_id' in event.data), `${event.event_type} should use source descriptors instead of raw connector_id`);
         }
       } finally {
@@ -3292,8 +3455,8 @@ rl.on('line', (line) => {
         assert.equal(failedEvent.data.checkpoint_commit_status, 'not_committed');
 
         for (const event of [...interactionRequiredEvents, failedEvent]) {
-          assert.equal(event.data.source?.binding_kind, 'connector');
-          assert.equal(event.data.source?.connector_id, spotifyManifest.connector_id);
+          assert.equal(event.data.source?.kind, 'connector');
+          assert.equal(event.data.source?.id, spotifyManifest.connector_id);
           assert.ok(!('connector_id' in event.data), `${event.event_type} should use source descriptors instead of raw connector_id`);
         }
       } finally {
@@ -3373,8 +3536,8 @@ rl.on('line', (line) => {
         assert.equal(failedEvent.data.checkpoint_commit_status, 'not_committed');
 
         for (const event of [...interactionRequiredEvents, failedEvent]) {
-          assert.equal(event.data.source?.binding_kind, 'connector');
-          assert.equal(event.data.source?.connector_id, spotifyManifest.connector_id);
+          assert.equal(event.data.source?.kind, 'connector');
+          assert.equal(event.data.source?.id, spotifyManifest.connector_id);
           assert.ok(!('connector_id' in event.data), `${event.event_type} should use source descriptors instead of raw connector_id`);
         }
       } finally {
@@ -3453,8 +3616,8 @@ rl.on('line', (line) => {
         assert.equal(failedEvent.data.checkpoint_commit_status, 'not_committed');
 
         for (const event of [...interactionRequiredEvents, failedEvent]) {
-          assert.equal(event.data.source?.binding_kind, 'connector');
-          assert.equal(event.data.source?.connector_id, spotifyManifest.connector_id);
+          assert.equal(event.data.source?.kind, 'connector');
+          assert.equal(event.data.source?.id, spotifyManifest.connector_id);
           assert.ok(!('connector_id' in event.data), `${event.event_type} should use source descriptors instead of raw connector_id`);
         }
       } finally {
@@ -3529,8 +3692,8 @@ rl.on('line', (line) => {
         assert.equal(failedEvent.data.checkpoint_commit_status, 'not_committed');
 
         for (const event of [...interactionRequiredEvents, failedEvent]) {
-          assert.equal(event.data.source?.binding_kind, 'connector');
-          assert.equal(event.data.source?.connector_id, spotifyManifest.connector_id);
+          assert.equal(event.data.source?.kind, 'connector');
+          assert.equal(event.data.source?.id, spotifyManifest.connector_id);
           assert.ok(!('connector_id' in event.data), `${event.event_type} should use source descriptors instead of raw connector_id`);
         }
       } finally {

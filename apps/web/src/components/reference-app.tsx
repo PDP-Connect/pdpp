@@ -1508,7 +1508,10 @@ Content-Type: application/json
   "client_display": { "name": "${LONGVIEW_CLIENT_NAME}", ... },
   "authorization_details": [{
     "type": "https://pdpp.org/data-access",
-    "connector_id": "https://registry.pdpp.org/profiles/compensation-v1",
+    "source": {
+      "kind": "connector",
+      "id": "https://registry.pdpp.org/profiles/compensation-v1"
+    },
     "purpose_code": "${LONGVIEW_PURPOSE_CODE}",
     "streams": [
       { "name": "pay_statements", "necessity": "required" },

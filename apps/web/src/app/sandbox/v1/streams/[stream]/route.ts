@@ -12,7 +12,7 @@ export async function GET(_request: Request, ctx: { params: Promise<{ stream: st
   try {
     const result = await executeStreamDetail(
       { actor: { kind: "owner", subject_id: null }, streamName: stream },
-      createSandboxStreamDetailDependencies()
+      createSandboxStreamDetailDependencies(stream)
     );
     return jsonResponse(result.metadata);
   } catch (err) {

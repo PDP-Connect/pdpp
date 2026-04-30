@@ -180,41 +180,32 @@ const StreamSelectionSchema = {
   required: ["name"],
 };
 
+export const SourceObjectSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    kind: { type: "string", enum: ["connector", "provider_native"] },
+    id: NonEmptyStringSchema,
+  },
+  required: ["kind", "id"],
+};
+
 const AuthorizationDetailBaseSchema = {
   type: "object",
   additionalProperties: false,
   properties: {
     type: { const: "https://pdpp.org/data-access" },
-    connector_id: NonEmptyStringSchema,
-    provider_id: NonEmptyStringSchema,
+    source: SourceObjectSchema,
     purpose_code: NonEmptyStringSchema,
     purpose_description: NonEmptyStringSchema,
     access_mode: { type: "string", enum: ["single_use", "continuous"] },
     retention: RetentionSchema,
     streams: { type: "array", minItems: 1, items: StreamSelectionSchema },
   },
-  required: ["type", "purpose_code", "access_mode", "streams"],
+  required: ["type", "source", "purpose_code", "access_mode", "streams"],
 };
 
-const AuthorizationDetailSchema = {
-  allOf: [
-    AuthorizationDetailBaseSchema,
-    {
-      oneOf: [{ required: ["connector_id"] }, { required: ["provider_id"] }],
-    },
-  ],
-};
-
-const GrantSourceSchema = {
-  type: "object",
-  additionalProperties: false,
-  properties: {
-    binding_kind: { type: "string", enum: ["connector", "provider_native"] },
-    connector_id: NonEmptyStringSchema,
-    provider_id: NonEmptyStringSchema,
-  },
-  required: ["binding_kind"],
-};
+const AuthorizationDetailSchema = AuthorizationDetailBaseSchema;
 
 const GrantSchema = {
   type: "object",
@@ -240,7 +231,7 @@ const GrantSchema = {
       },
       required: ["client_id"],
     },
-    source: GrantSourceSchema,
+    source: SourceObjectSchema,
     manifest_version: NonEmptyStringSchema,
     purpose_code: NonEmptyStringSchema,
     purpose_description: NonEmptyStringSchema,
@@ -467,7 +458,7 @@ const ProtectedResourceDiscoveryHintsSchema = {
     hybrid_pagination_supported: { type: "boolean" },
     connectors_endpoint: NonEmptyStringSchema,
     streams_endpoint_template: NonEmptyStringSchema,
-    owner_polyfill_requires_connector_id: { type: "boolean" },
+    owner_polyfill_requires_source_kind_connector: { type: "boolean" },
   },
   required: [
     "schema_endpoint",

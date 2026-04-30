@@ -61,8 +61,8 @@ Options shared by most subcommands:
   --format json|table    Output format (default: json when piped, table when TTY)
 
 Grant request options (pdpp agent request):
-  --connector-id <id>    Polyfill connector ID (from /v1/schema)
-  --provider-id <id>     Native provider ID (from /v1/schema)
+  --source-kind <kind>   connector | provider_native
+  --source-id <id>       Source identifier from /v1/connectors
   --streams <s1,s2,...>  Comma-separated stream names
   --purpose <text>       Owner-readable one-sentence purpose description
   --purpose-code <code>  Machine-readable purpose code (default: assist.general)
@@ -128,6 +128,18 @@ export async function runAgent(argv) {
   }
 
   throw new PdppUsageError(`Unknown agent subcommand: ${subcommand}\n\n${AGENT_USAGE}`);
+}
+
+function requireSourceFromFlags(flags) {
+  const kind = flags['source-kind'] || null;
+  const id = flags['source-id'] || null;
+  if (!kind || !id) {
+    throw new PdppUsageError('Both --source-kind <connector|provider_native> and --source-id <id> are required.');
+  }
+  if (kind !== 'connector' && kind !== 'provider_native') {
+    throw new PdppUsageError('--source-kind must be connector or provider_native.');
+  }
+  return { kind, id };
 }
 
 // ─── bootstrap ───────────────────────────────────────────────────────────────
@@ -209,8 +221,7 @@ async function runStatus(flags, cacheRoot) {
     const expired = g.expires_at ? new Date(g.expires_at).getTime() <= now : false;
     return {
       grant_id: g.grant_id,
-      connector_id: g.connector_id || null,
-      provider_id: g.provider_id || null,
+      source: g.source || null,
       streams: (g.streams || []).map((s) => s.name || s),
       access_mode: g.access_mode || null,
       purpose_description: g.purpose_description || null,
@@ -254,14 +265,7 @@ async function runRequest(flags, cacheRoot) {
   const clientMeta = clients.find((c) => c.client_id === clientId);
   const clientName = clientMeta?.client_name || clientId;
 
-  const connectorId = flags['connector-id'] || null;
-  const providerId = flags['provider-id'] || null;
-  if (!connectorId && !providerId) {
-    throw new PdppUsageError('One of --connector-id or --provider-id is required.');
-  }
-  if (connectorId && providerId) {
-    throw new PdppUsageError('Specify only one of --connector-id or --provider-id, not both.');
-  }
+  const source = requireSourceFromFlags(flags);
 
   const streamNames = flags.streams ? flags.streams.split(',').map((s) => s.trim()).filter(Boolean) : [];
   if (!streamNames.length) {
@@ -289,8 +293,7 @@ async function runRequest(flags, cacheRoot) {
     authorization_details: [
       {
         type: 'https://pdpp.org/data-access',
-        ...(connectorId ? { connector_id: connectorId } : {}),
-        ...(providerId ? { provider_id: providerId } : {}),
+        source,
         purpose_code: purposeCode,
         purpose_description: purposeText,
         access_mode: accessMode,
@@ -313,7 +316,7 @@ async function runRequest(flags, cacheRoot) {
   process.stderr.write('PDPP Agent Grant Request — owner approval needed\n');
   process.stderr.write('═══════════════════════════════════════════════════════\n');
   process.stderr.write(`Client:   ${clientName}\n`);
-  process.stderr.write(`Source:   ${connectorId || providerId}\n`);
+  process.stderr.write(`Source:   ${source.kind}:${source.id}\n`);
   process.stderr.write(`Streams:  ${streamNames.join(', ')}\n`);
   process.stderr.write(`Purpose:  ${purposeText}\n`);
   process.stderr.write(`Mode:     ${accessMode}\n`);
@@ -339,7 +342,7 @@ async function runRequest(flags, cacheRoot) {
       authorization_url: approvalUrl,
       expires_in: expiresIn,
       client_id: clientId,
-      source: connectorId || providerId,
+      source,
       streams: streamNames,
       access_mode: accessMode,
     },
@@ -431,11 +434,11 @@ async function runStore(flags, cacheRoot) {
   }
 
   const grant = introspection.grant_json || {};
+  const source = grant.source || introspection.source || null;
   const grantMeta = {
     grant_id: resolvedGrantId,
     client_id: introspection.client_id || null,
-    connector_id: grant.connector_id || introspection.connector_id || null,
-    provider_id: grant.provider_id || introspection.provider_id || null,
+    source,
     streams: grant.streams || [],
     purpose_description: grant.purpose_description || null,
     purpose_code: grant.purpose_code || null,
@@ -455,7 +458,9 @@ async function runStore(flags, cacheRoot) {
   });
 
   process.stderr.write(`Stored grant ${resolvedGrantId}\n`);
-  process.stderr.write(`  Source:  ${grantMeta.connector_id || grantMeta.provider_id || '(unknown)'}\n`);
+  process.stderr.write(
+    `  Source:  ${grantMeta.source ? `${grantMeta.source.kind}:${grantMeta.source.id}` : '(unknown)'}\n`
+  );
   process.stderr.write(`  Streams: ${(grantMeta.streams || []).map((s) => s.name || s).join(', ') || '(none)'}\n`);
   if (grantMeta.expires_at) {
     process.stderr.write(`  Expires: ${grantMeta.expires_at}\n`);

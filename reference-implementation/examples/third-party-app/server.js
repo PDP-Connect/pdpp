@@ -63,8 +63,8 @@ export function buildDefaultDraft() {
   return {
     clientName: CLIENT_LABEL,
     initialAccessToken: DEFAULT_LOCAL_DCR_INITIAL_ACCESS_TOKEN,
-    connectorId: 'https://registry.pdpp.org/connectors/spotify',
-    providerId: '',
+    sourceKind: 'connector',
+    sourceId: 'https://registry.pdpp.org/connectors/spotify',
     streamName: 'top_artists',
     purposeCode: 'https://pdpp.org/purpose/personalization',
     purposeDescription: 'Recommend concerts based on your listening history.',
@@ -164,10 +164,10 @@ function renderPage() {
   <section>
     <h2><span class="tag">2</span>Request staging (PAR)</h2>
     <form method="post" action="/par" class="inline">
-      <label for="connectorId">connector_id</label>
-      <input id="connectorId" name="connectorId" value="${escapeHtml(state.draft.connectorId)}" />
-      <label for="providerId">provider_id</label>
-      <input id="providerId" name="providerId" value="${escapeHtml(state.draft.providerId)}" placeholder="(leave empty for connector mode)" />
+      <label for="sourceKind">source.kind</label>
+      <input id="sourceKind" name="sourceKind" value="${escapeHtml(state.draft.sourceKind)}" />
+      <label for="sourceId">source.id</label>
+      <input id="sourceId" name="sourceId" value="${escapeHtml(state.draft.sourceId)}" />
       <label for="streamName">stream name</label>
       <input id="streamName" name="streamName" value="${escapeHtml(state.draft.streamName)}" />
       <label for="purposeCode">purpose_code</label>
@@ -301,8 +301,8 @@ app.post('/par', async (req, res) => {
     const request = buildParRequest({
       clientId: state.clientId,
       clientName: state.draft.clientName,
-      connectorId: state.draft.connectorId,
-      providerId: state.draft.providerId,
+      sourceKind: state.draft.sourceKind,
+      sourceId: state.draft.sourceId,
       streamName: state.draft.streamName,
       purposeCode: state.draft.purposeCode,
       purposeDescription: state.draft.purposeDescription,

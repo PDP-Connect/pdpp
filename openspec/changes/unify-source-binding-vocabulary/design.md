@@ -59,20 +59,20 @@ The runtime's discriminator is already `binding_kind: 'connector' | 'provider_na
 The breaking-change cost is paid once at the contract boundary. Alternatives considered:
 
 - **Dual-write window**: keep `provider_id` and add `source_kind`/`source_id`, dual-populate, eventually drop the legacy column. Rejected — the reference is forkable substrate, not a hosted product with a rolling upgrade window. A single migration step in the open-source release is cleaner than a multi-release deprecation.
-- **In-place ALTER**: drop `provider_id`, add `source_kind` and `source_id`, backfill from `data_json.source.binding_kind` and `data_json.source.{provider_id|connector_id}`. **Chosen.** SQLite `ALTER TABLE` is cheap, the rows already carry the source object inside `data_json`, and the migration is idempotent.
+- **In-place ALTER**: drop `provider_id`, add `source_kind` and `source_id`, backfill from canonical or legacy `data_json.source` / `data_json.source_binding`, payload-level connector/provider fields, existing source columns, legacy `provider_id`, or runtime actor identity for old connector-run rows. **Chosen.** SQLite `ALTER TABLE` is cheap, the rows carry enough source evidence to derive the new columns, and the migration is idempotent.
 - **Recreate from `data_json`**: drop and re-derive the columns at startup whenever they are missing. Rejected as too implicit — a migration is the right place to do this once.
 
-The `version_counter` table tracks schema version; the migration bumps it. The "Pre-existing databases SHALL continue to open and operate" requirement (`reference-implementation-architecture/spec.md:1459`) is honored because the migration runs at startup and is idempotent.
+`version_counter` is not a schema-version table; it tracks per-connector stream record versions. The migration therefore does not mutate it. SQLite records this schema transition with `PRAGMA user_version`; Postgres relies on idempotent column introspection. The "Pre-existing databases SHALL continue to open and operate" requirement (`reference-implementation-architecture/spec.md:1459`) is honored because the migration runs at startup and is idempotent.
 
 ### Decision 4: Internal `connector_id` columns stay
 
 Tables that always carry connector identity (records, record_changes, connector_state, grant_connector_state, version_counter, lexical and semantic search indices) keep their `connector_id` columns unchanged. Even in native mode, `storage_binding.connector_id` carries that internal identity, and the architecture spec's existing scenario "Internal storage remains connector-shaped" explicitly authorizes that asymmetry. We are unifying public identity, not collapsing the storage substrate.
 
-### Decision 5: Aliases in the contract type, not in the wire format
+### Decision 5: No public aliases
 
-The contract type may expose `connector_id` and `provider_id` as **read-only kind-keyed accessors** for ergonomics in TypeScript callers (`source.connector_id` returns `source.id` when `source.kind === 'connector'`, otherwise `undefined`). They do **not** appear on the wire. This keeps the wire format honest and lets idiomatic TypeScript stay readable.
+The contract does not expose kind-keyed source aliases. Callers read `source.kind` and `source.id` everywhere. Keeping a single vocabulary in both wire payloads and helper types avoids a second, historically named API surface.
 
-The README and the `pdpp-data-access` skill present the source object as canonical and mention the legacy names only once, in a "previously known as" footnote.
+The README and the `pdpp-data-access` skill present the source object as canonical and mention the old names only once, in a "previously known as" footnote.
 
 ### Decision 6: One change, one slice — no deferred sub-slices
 
@@ -93,7 +93,7 @@ The shadow-bug note in `add-polyfill-connector-system` is orthogonal and continu
 The reference implementation is an open-source forkable substrate with no hosted release pipeline; "deploy" means "ship a release tag." The migration plan is therefore:
 
 1. Land the change behind a feature flag is **not** appropriate here — there is no flag boundary in the engine. Instead, ship the change as a single coherent commit so anyone who pulls the new release runs the migration on first startup.
-2. The startup migration alters `spine_events` in place and bumps `version_counter`. It is idempotent.
+2. The startup migration alters `spine_events` in place, records the SQLite schema transition via `PRAGMA user_version`, and leaves `version_counter` untouched because it is a record-version allocator, not a schema-version table. It is idempotent.
 3. Forks running on an older release continue to work; pulling the new release upgrades on first boot.
 4. Rollback: reverting the release reverts the schema. The migration explicitly does NOT delete row data — it only renames a column and adds one — so a roll-back release sees a `source_kind` and `source_id` column it does not understand and ignores them. Spine reads from older rows continue to work because the source object is also embedded inside `data_json`.
 

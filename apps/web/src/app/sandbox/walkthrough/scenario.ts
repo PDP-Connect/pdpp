@@ -28,7 +28,7 @@ export const SANDBOX_CLIENT = {
 } as const;
 
 export const SANDBOX_CONNECTOR = {
-  providerId: "provider_acme_payroll_demo",
+  source: { kind: "connector", id: "acme_payroll_demo" },
   name: "Acme Payroll (simulated)",
   notes:
     "Stand-in payroll connector used only inside this sandbox. No real Acme Corporation, employer, or paycheck data is involved.",

@@ -18,7 +18,7 @@ function encodeScopeResourceKey(key) {
 }
 
 function buildRunSourceDescriptor(connectorId) {
-  return { binding_kind: 'connector', connector_id: connectorId };
+  return { kind: 'connector', id: connectorId };
 }
 
 function appendUniqueFields(fields, extraFields) {

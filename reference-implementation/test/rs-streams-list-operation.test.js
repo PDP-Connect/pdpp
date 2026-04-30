@@ -23,7 +23,7 @@ test('rs.streams.list returns the dependency summaries unchanged', async () => {
     { object: 'stream', name: 'pay_statements', record_count: 3, last_updated: '2026-03-31T00:00:00Z' },
     { object: 'stream', name: 'equity_grants', record_count: 0, last_updated: null },
   ];
-  const sourceDescriptor = { binding_kind: 'connector', connector_id: 'acme_payroll' };
+  const sourceDescriptor = { kind: 'connector', id: 'acme_payroll' };
 
   const result = await executeStreamsList(
     { actor: { kind: 'owner', subject_id: 'subj_1' } },
@@ -51,7 +51,7 @@ test('rs.streams.list propagates client stream_count_limit to queryData', async 
     },
     {
       listSummaries: () => Promise.resolve([]),
-      getSourceDescriptor: () => ({ binding_kind: 'connector', connector_id: 'c' }),
+      getSourceDescriptor: () => ({ kind: 'connector', id: 'c' }),
     },
   );
 
@@ -64,7 +64,7 @@ test('rs.streams.list owner queryData has no stream_count_limit key', async () =
     { actor: { kind: 'owner', subject_id: 's' } },
     {
       listSummaries: () => Promise.resolve([]),
-      getSourceDescriptor: () => ({ binding_kind: 'provider_native', provider_id: 'p' }),
+      getSourceDescriptor: () => ({ kind: 'provider_native', id: 'p' }),
     },
   );
 
@@ -84,7 +84,7 @@ test('rs.streams.list propagates a null stream_count_limit when grant.streams is
     },
     {
       listSummaries: () => Promise.resolve([]),
-      getSourceDescriptor: () => ({ binding_kind: 'connector', connector_id: 'c' }),
+      getSourceDescriptor: () => ({ kind: 'connector', id: 'c' }),
     },
   );
 
@@ -103,7 +103,7 @@ test('rs.streams.list awaits dependency promises', async () => {
             r([]);
           }),
         ),
-      getSourceDescriptor: () => ({ binding_kind: 'connector', connector_id: 'x' }),
+      getSourceDescriptor: () => ({ kind: 'connector', id: 'x' }),
     },
   );
 

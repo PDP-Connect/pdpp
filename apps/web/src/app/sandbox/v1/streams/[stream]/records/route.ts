@@ -27,6 +27,7 @@ export async function GET(request: Request, ctx: { params: Promise<{ stream: str
         requestParams,
       },
       createSandboxRecordsListDependencies({
+        streamName: stream,
         ...(params.connector_id === undefined ? {} : { connectorId: params.connector_id }),
       })
     );

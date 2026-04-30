@@ -136,7 +136,7 @@ async function approveClientGrant(asUrl, params) {
       authorization_details: [
         {
           type: 'https://pdpp.org/data-access',
-          connector_id: params.connector_id,
+          source: { kind: 'connector', id: params.connector_id },
           purpose_code: params.purpose_code,
           purpose_description: params.purpose_description,
           access_mode: params.access_mode,

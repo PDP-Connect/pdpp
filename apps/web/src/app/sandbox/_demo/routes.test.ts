@@ -53,7 +53,7 @@ test("/sandbox/v1/schema returns the live `schema` envelope (no demo-shaped obje
     connectors: Array<{
       object: string;
       connector_id: string;
-      source: { binding_kind: string; connector_id: string };
+      source: { kind: string; id: string };
       stream_count: number;
       streams: Record<string, unknown>[];
     }>;
@@ -65,8 +65,8 @@ test("/sandbox/v1/schema returns the live `schema` envelope (no demo-shaped obje
   assert.ok(body.connectors.length >= 3);
   for (const c of body.connectors) {
     assert.equal(c.object, "connector");
-    assert.equal(c.source.binding_kind, "connector");
-    assert.equal(c.source.connector_id, c.connector_id);
+    assert.equal(c.source.kind, "connector");
+    assert.equal(c.source.id, c.connector_id);
     assert.equal(typeof c.stream_count, "number");
     assert.equal(c.streams.length, c.stream_count);
     for (const s of c.streams) {

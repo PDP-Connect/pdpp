@@ -124,8 +124,11 @@ async function startGrantRequest(asUrl, params) {
       authorization_details: [
         {
           type: 'https://pdpp.org/data-access',
-          ...(params.connector_id ? { connector_id: params.connector_id } : {}),
-          ...(params.provider_id ? { provider_id: params.provider_id } : {}),
+          source: params.source || (
+            params.provider_id
+              ? { kind: 'provider_native', id: params.provider_id }
+              : { kind: 'connector', id: params.connector_id }
+          ),
           purpose_code: params.purpose_code,
           purpose_description: params.purpose_description,
           access_mode: params.access_mode,
@@ -312,7 +315,7 @@ async function seedNorthstar(nativeManifest) {
 async function issueNorthstarClientGrant(asUrl, nativeManifest, subjectId = 'cli_owner') {
   return approveGrant(asUrl, subjectId, {
     client_id: 'longview',
-    provider_id: nativeManifest.provider_id,
+    source: { kind: 'provider_native', id: nativeManifest.provider_id },
     purpose_code: 'https://pdpp.org/purpose/financial_planning',
     purpose_description: 'Support compensation planning and verification',
     access_mode: 'continuous',
@@ -360,7 +363,7 @@ async function withMalformedPolyfillClientGrant(fn) {
 
     const approved = await approveGrant(asUrl, 'cli_owner', {
       client_id: 'concert_recommendation_app',
-      connector_id: spotifyManifest.connector_id,
+      source: { kind: 'connector', id: spotifyManifest.connector_id },
       purpose_code: 'https://pdpp.org/purpose/concert_recommendation',
       purpose_description: 'Recommend concerts and nearby live events',
       access_mode: 'continuous',
@@ -370,8 +373,8 @@ async function withMalformedPolyfillClientGrant(fn) {
     const missingConnectorId = 'missing_spotify_connector';
     const remappedGrant = JSON.parse(JSON.stringify(approved.grant));
     remappedGrant.source = {
-      binding_kind: 'connector',
-      connector_id: missingConnectorId,
+      kind: 'connector',
+      id: missingConnectorId,
     };
 
     getDb().prepare(`
@@ -421,8 +424,8 @@ function assertMalformedPolyfillClientArtifacts({
   assert.ok(queryReceived, `artifacts should include query.received for malformed polyfill client ${label}`);
   assert.equal(queryReceived.trace_id, traceId);
   assert.equal(queryReceived.data?.query_shape, queryShape);
-  assert.equal(queryReceived.data?.source?.binding_kind, 'connector');
-  assert.equal(queryReceived.data?.source?.connector_id, missingConnectorId);
+  assert.equal(queryReceived.data?.source?.kind, 'connector');
+  assert.equal(queryReceived.data?.source?.id, missingConnectorId);
   if (streamId) {
     assert.equal(queryReceived.stream_id, streamId);
   }
@@ -436,8 +439,8 @@ function assertMalformedPolyfillClientArtifacts({
   assert.ok(rejectedEvent, `artifacts should include query.rejected for malformed polyfill client ${label}`);
   assert.equal(rejectedEvent.trace_id, traceId);
   assert.equal(rejectedEvent.data?.query_shape, queryShape);
-  assert.equal(rejectedEvent.data?.source?.binding_kind, 'connector');
-  assert.equal(rejectedEvent.data?.source?.connector_id, missingConnectorId);
+  assert.equal(rejectedEvent.data?.source?.kind, 'connector');
+  assert.equal(rejectedEvent.data?.source?.id, missingConnectorId);
   assert.equal(rejectedEvent.data?.error?.code, 'not_found');
   assert.match(rejectedEvent.data?.error?.message || '', /Unknown connector: missing_spotify_connector/);
   if (streamId) {
@@ -545,8 +548,8 @@ test('PDPP CLI smoke', async (t) => {
       assert.equal(result.json.subject_id, 'cli_owner');
       assert.ok(typeof result.json.trace_id === 'string' && result.json.trace_id.startsWith('trc_'));
       assert.ok(typeof result.json.scenario_id === 'string' && result.json.scenario_id.startsWith('scn_'));
-      assert.equal(result.json.grant.source.binding_kind, 'provider_native');
-      assert.equal(result.json.grant.source.provider_id, nativeManifest.provider_id);
+      assert.equal(result.json.grant.source.kind, 'provider_native');
+      assert.equal(result.json.grant.source.id, nativeManifest.provider_id);
       assert.equal('grant_storage_binding' in result.json, false);
       assert.equal(result.stderr, '');
     });
@@ -1308,10 +1311,7 @@ test('PDPP CLI smoke', async (t) => {
         access_mode: 'continuous',
         streams: [{ name: 'pay_statements' }, { name: 'equity_grants' }],
       },
-      source_binding: {
-        binding_kind: 'provider_native',
-        provider_id: 'northstar_hr',
-      },
+      source_binding: { kind: 'provider_native', id: 'northstar_hr' },
       storage_binding: {
         connector_id: 'northstar_hr_native',
       },
@@ -1359,7 +1359,7 @@ test('PDPP CLI smoke', async (t) => {
     );
 
     assert.notEqual(result.code, 0);
-    assert.match(result.stderr, /request\.source_binding\.binding_kind must be 'connector' or 'provider_native'/);
+    assert.match(result.stderr, /request\.source_binding must include only kind and id/);
   });
 
   await t.test('inspect request rejects malformed storage_binding instead of masking it', async () => {
@@ -1378,10 +1378,7 @@ test('PDPP CLI smoke', async (t) => {
         access_mode: 'continuous',
         streams: [{ name: 'pay_statements' }],
       },
-      source_binding: {
-        binding_kind: 'connector',
-        connector_id: 'northstar_hr_native',
-      },
+      source_binding: { kind: 'connector', id: 'northstar_hr_native' },
       storage_binding: {
         connector_id: 'northstar_hr_native',
         debug_context: 'should_not_be_accepted',
@@ -1412,10 +1409,7 @@ test('PDPP CLI smoke', async (t) => {
         access_mode: 'continuous',
         streams: [{ name: 'pay_statements' }],
       },
-      source_binding: {
-        binding_kind: 'connector',
-        connector_id: 'northstar_hr_native',
-      },
+      source_binding: { kind: 'connector', id: 'northstar_hr_native' },
       storage_binding: {
         connector_id: 'other_storage_connector',
       },
@@ -1426,7 +1420,7 @@ test('PDPP CLI smoke', async (t) => {
     );
 
     assert.notEqual(result.code, 0);
-    assert.match(result.stderr, /request\.source_binding\.connector_id must match request\.storage_binding\.connector_id/);
+    assert.match(result.stderr, /request\.source_binding\.id must match request\.storage_binding\.connector_id/);
   });
 
   await t.test('inspect grant renders current grant source and client display fields', async () => {
@@ -1439,10 +1433,7 @@ test('PDPP CLI smoke', async (t) => {
         client_display: { name: 'Longview' },
       },
       subject: { id: 'employee_1' },
-      source: {
-        binding_kind: 'provider_native',
-        provider_id: 'northstar_hr',
-      },
+      source: { kind: 'provider_native', id: 'northstar_hr' },
       access_mode: 'continuous',
       purpose_code: 'https://pdpp.org/purpose/financial_planning',
       streams: [{ name: 'pay_statements' }, { name: 'equity_grants' }],
@@ -1489,7 +1480,7 @@ test('PDPP CLI smoke', async (t) => {
     );
 
     assert.notEqual(result.code, 0);
-    assert.match(result.stderr, /grant\.source\.binding_kind must be 'connector' or 'provider_native'/);
+    assert.match(result.stderr, /grant\.source must include only kind and id/);
   });
 
   await t.test('inspect grant rejects malformed optional grant_storage_binding instead of masking it', async () => {
@@ -1502,10 +1493,7 @@ test('PDPP CLI smoke', async (t) => {
         client_display: { name: 'Longview' },
       },
       subject: { id: 'employee_1' },
-      source: {
-        binding_kind: 'connector',
-        connector_id: 'northstar_hr_native',
-      },
+      source: { kind: 'connector', id: 'northstar_hr_native' },
       grant_storage_binding: {
         connector_id: 'northstar_hr_native',
         debug_context: 'should_not_be_accepted',
@@ -1534,10 +1522,7 @@ test('PDPP CLI smoke', async (t) => {
         client_display: { name: 'Longview' },
       },
       subject: { id: 'employee_1' },
-      source: {
-        binding_kind: 'connector',
-        connector_id: 'northstar_hr_native',
-      },
+      source: { kind: 'connector', id: 'northstar_hr_native' },
       grant_storage_binding: {
         connector_id: 'other_storage_connector',
       },
@@ -1552,7 +1537,7 @@ test('PDPP CLI smoke', async (t) => {
     );
 
     assert.notEqual(result.code, 0);
-    assert.match(result.stderr, /grant\.source\.connector_id must match grant\.grant_storage_binding\.connector_id/);
+    assert.match(result.stderr, /grant\.source\.id must match grant\.grant_storage_binding\.connector_id/);
   });
 
   await t.test('grant start accepts a dynamically registered client', async () => {
@@ -1577,7 +1562,7 @@ test('PDPP CLI smoke', async (t) => {
         authorization_details: [
           {
             type: 'https://pdpp.org/data-access',
-            connector_id: spotifyManifest.connector_id,
+            source: { kind: 'connector', id: spotifyManifest.connector_id },
             purpose_code: 'compensation_planning',
             purpose_description: 'Compare pay, equity, and benefits data',
             access_mode: 'single_use',
@@ -1619,7 +1604,7 @@ test('PDPP CLI smoke', async (t) => {
         authorization_details: [
           {
             type: 'https://pdpp.org/data-access',
-            connector_id: spotifyManifest.connector_id,
+            source: { kind: 'connector', id: spotifyManifest.connector_id },
             purpose_code: 'compensation_planning',
             purpose_description: 'Compare pay, equity, and benefits data',
             access_mode: 'single_use',
@@ -1664,7 +1649,7 @@ test('PDPP CLI smoke', async (t) => {
           authorization_details: [
             {
               type: 'https://pdpp.org/data-access',
-              connector_id: spotifyManifest.connector_id,
+              source: { kind: 'connector', id: spotifyManifest.connector_id },
               purpose_code: 'compensation_planning',
               purpose_description: 'Compare pay, equity, and benefits data',
               access_mode: 'single_use',
@@ -1713,7 +1698,7 @@ test('PDPP CLI smoke', async (t) => {
 
       const initiate = await startGrantRequest(asUrl, {
         client_id: registration.json.client_id,
-        connector_id: spotifyManifest.connector_id,
+        source: { kind: 'connector', id: spotifyManifest.connector_id },
         purpose_code: 'compensation_planning',
         purpose_description: 'Compare pay, equity, and benefits data',
         access_mode: 'single_use',
@@ -1746,8 +1731,8 @@ test('PDPP CLI smoke', async (t) => {
       assert.ok(rejected, 'trace show should include request.rejected for consent-time deleted-client drift');
       assert.equal(rejected.object_type, 'pending_consent');
       assert.equal(rejected.client_id, registration.json.client_id);
-      assert.equal(rejected.data?.source?.binding_kind, 'connector');
-      assert.equal(rejected.data?.source?.connector_id, spotifyManifest.connector_id);
+      assert.equal(rejected.data?.source?.kind, 'connector');
+      assert.equal(rejected.data?.source?.id, spotifyManifest.connector_id);
       assert.equal(rejected.data?.error?.code, 'invalid_client');
       assert.match(rejected.data?.error?.message || '', /Unknown client_id/);
       assert.equal(result.stderr, '');
@@ -1758,7 +1743,7 @@ test('PDPP CLI smoke', async (t) => {
     await withHarness(async ({ asUrl, spotifyManifest }) => {
       const initiate = await startGrantRequest(asUrl, {
         client_id: 'longview',
-        connector_id: spotifyManifest.connector_id,
+        source: { kind: 'connector', id: spotifyManifest.connector_id },
         purpose_code: 'compensation_planning',
         purpose_description: 'Compare pay, equity, and benefits data',
         access_mode: 'single_use',
@@ -1795,24 +1780,24 @@ test('PDPP CLI smoke', async (t) => {
         && event.request_id === stagedRequestId
       );
       assert.ok(approved, 'trace show should keep consent.approved on the original staged trace');
-      assert.equal(approved.data?.source?.binding_kind, 'connector');
-      assert.equal(approved.data?.source?.connector_id, spotifyManifest.connector_id);
+      assert.equal(approved.data?.source?.kind, 'connector');
+      assert.equal(approved.data?.source?.id, spotifyManifest.connector_id);
 
       const grantIssued = (result.json.data || []).find((event) =>
         event.event_type === 'grant.issued'
         && event.request_id === stagedRequestId
       );
       assert.ok(grantIssued, 'trace show should keep grant.issued on the original staged trace');
-      assert.equal(grantIssued.data?.source?.binding_kind, 'connector');
-      assert.equal(grantIssued.data?.source?.connector_id, spotifyManifest.connector_id);
+      assert.equal(grantIssued.data?.source?.kind, 'connector');
+      assert.equal(grantIssued.data?.source?.id, spotifyManifest.connector_id);
 
       const tokenIssued = (result.json.data || []).find((event) =>
         event.event_type === 'token.issued'
         && event.request_id === stagedRequestId
       );
       assert.ok(tokenIssued, 'trace show should keep token.issued on the original staged trace');
-      assert.equal(tokenIssued.data?.source?.binding_kind, 'connector');
-      assert.equal(tokenIssued.data?.source?.connector_id, spotifyManifest.connector_id);
+      assert.equal(tokenIssued.data?.source?.kind, 'connector');
+      assert.equal(tokenIssued.data?.source?.id, spotifyManifest.connector_id);
       assert.equal(tokenIssued.data?.issuance_path, 'grant_approval');
       assert.equal(result.stderr, '');
     });
@@ -1822,7 +1807,7 @@ test('PDPP CLI smoke', async (t) => {
     await withNativeHarness(async ({ asUrl, nativeManifest }) => {
       const initiate = await startGrantRequest(asUrl, {
         client_id: 'longview',
-        provider_id: nativeManifest.provider_id,
+        source: { kind: 'provider_native', id: nativeManifest.provider_id },
         purpose_code: 'https://pdpp.org/purpose/financial_planning',
         purpose_description: 'Support compensation planning and verification',
         access_mode: 'single_use',
@@ -1850,8 +1835,8 @@ test('PDPP CLI smoke', async (t) => {
         && event.request_id === stagedRequestId
       );
       assert.ok(approved, 'trace show should keep consent.approved on the original staged native trace');
-      assert.equal(approved.data?.source?.binding_kind, 'provider_native');
-      assert.equal(approved.data?.source?.provider_id, nativeManifest.provider_id);
+      assert.equal(approved.data?.source?.kind, 'provider_native');
+      assert.equal(approved.data?.source?.id, nativeManifest.provider_id);
       assert.ok(!('connector_id' in (approved.data || {})));
       assert.ok(!('storage_connector_id' in (approved.data || {})));
 
@@ -1860,8 +1845,8 @@ test('PDPP CLI smoke', async (t) => {
         && event.request_id === stagedRequestId
       );
       assert.ok(grantIssued, 'trace show should keep grant.issued on the original staged native trace');
-      assert.equal(grantIssued.data?.source?.binding_kind, 'provider_native');
-      assert.equal(grantIssued.data?.source?.provider_id, nativeManifest.provider_id);
+      assert.equal(grantIssued.data?.source?.kind, 'provider_native');
+      assert.equal(grantIssued.data?.source?.id, nativeManifest.provider_id);
       assert.ok(!('connector_id' in (grantIssued.data || {})));
       assert.ok(!('storage_connector_id' in (grantIssued.data || {})));
 
@@ -1870,8 +1855,8 @@ test('PDPP CLI smoke', async (t) => {
         && event.request_id === stagedRequestId
       );
       assert.ok(tokenIssued, 'trace show should keep token.issued on the original staged native trace');
-      assert.equal(tokenIssued.data?.source?.binding_kind, 'provider_native');
-      assert.equal(tokenIssued.data?.source?.provider_id, nativeManifest.provider_id);
+      assert.equal(tokenIssued.data?.source?.kind, 'provider_native');
+      assert.equal(tokenIssued.data?.source?.id, nativeManifest.provider_id);
       assert.equal(tokenIssued.data?.issuance_path, 'grant_approval');
       assert.ok(!('connector_id' in (tokenIssued.data || {})));
       assert.ok(!('storage_connector_id' in (tokenIssued.data || {})));
@@ -1883,7 +1868,7 @@ test('PDPP CLI smoke', async (t) => {
     await withHarness(async ({ asUrl, spotifyManifest }) => {
       const initiate = await startGrantRequest(asUrl, {
         client_id: 'longview',
-        connector_id: spotifyManifest.connector_id,
+        source: { kind: 'connector', id: spotifyManifest.connector_id },
         purpose_code: 'https://pdpp.org/purpose/financial_planning',
         purpose_description: 'Compare pay, equity, and benefits data',
         access_mode: 'single_use',
@@ -1926,8 +1911,8 @@ test('PDPP CLI smoke', async (t) => {
         && event.request_id === stagedRequestId
       );
       assert.ok(rejected, 'trace show should keep request.rejected on the original staged trace');
-      assert.equal(rejected.data?.source?.binding_kind, 'connector');
-      assert.equal(rejected.data?.source?.connector_id, spotifyManifest.connector_id);
+      assert.equal(rejected.data?.source?.kind, 'connector');
+      assert.equal(rejected.data?.source?.id, spotifyManifest.connector_id);
       assert.equal(result.stderr, '');
     });
   });
@@ -1936,7 +1921,7 @@ test('PDPP CLI smoke', async (t) => {
     await withHarness(async ({ asUrl, spotifyManifest }) => {
       const initiate = await startGrantRequest(asUrl, {
         client_id: 'longview',
-        connector_id: spotifyManifest.connector_id,
+        source: { kind: 'connector', id: spotifyManifest.connector_id },
         purpose_code: 'https://pdpp.org/purpose/financial_planning',
         purpose_description: 'Compare pay, equity, and benefits data',
         access_mode: 'single_use',
@@ -1949,7 +1934,7 @@ test('PDPP CLI smoke', async (t) => {
 
       await mutatePendingConsentRequest(initiate.body.request_uri, (request) => {
         request.source_binding = {
-          connector_id: request.source_binding.connector_id,
+          id: request.source_binding.id,
         };
       });
 
@@ -1977,7 +1962,7 @@ test('PDPP CLI smoke', async (t) => {
     await withNativeHarness(async ({ asUrl, nativeManifest }) => {
       const initiate = await startGrantRequest(asUrl, {
         client_id: 'longview',
-        provider_id: nativeManifest.provider_id,
+        source: { kind: 'provider_native', id: nativeManifest.provider_id },
         purpose_code: 'https://pdpp.org/purpose/financial_planning',
         purpose_description: 'Support compensation planning and verification',
         access_mode: 'continuous',
@@ -2012,8 +1997,8 @@ test('PDPP CLI smoke', async (t) => {
       assert.ok(rejected, 'trace show should include request.rejected for consent-time native manifest drift');
       assert.equal(rejected.object_type, 'pending_consent');
       assert.equal(rejected.client_id, 'longview');
-      assert.equal(rejected.data?.source?.binding_kind, 'provider_native');
-      assert.equal(rejected.data?.source?.provider_id, nativeManifest.provider_id);
+      assert.equal(rejected.data?.source?.kind, 'provider_native');
+      assert.equal(rejected.data?.source?.id, nativeManifest.provider_id);
       assert.equal(rejected.data?.error?.code, 'invalid_request');
       assert.match(rejected.data?.error?.message || '', /Pending consent request manifest_version '999\.0\.0' does not match current manifest version/);
       assert.equal(result.stderr, '');
@@ -2024,7 +2009,7 @@ test('PDPP CLI smoke', async (t) => {
     await withHarness(async ({ asUrl, spotifyManifest }) => {
       const initiate = await startGrantRequest(asUrl, {
         client_id: 'longview',
-        connector_id: spotifyManifest.connector_id,
+        source: { kind: 'connector', id: spotifyManifest.connector_id },
         purpose_code: 'compensation_planning',
         purpose_description: 'Compare pay, equity, and benefits data',
         access_mode: 'single_use',
@@ -2058,8 +2043,8 @@ test('PDPP CLI smoke', async (t) => {
       assert.equal(denied.client_id, 'longview');
       assert.equal(denied.object_type, 'pending_consent');
       assert.equal(denied.status, 'denied');
-      assert.equal(denied.data?.source?.binding_kind, 'connector');
-      assert.equal(denied.data?.source?.connector_id, spotifyManifest.connector_id);
+      assert.equal(denied.data?.source?.kind, 'connector');
+      assert.equal(denied.data?.source?.id, spotifyManifest.connector_id);
       assert.equal(result.stderr, '');
     });
   });
@@ -2068,7 +2053,7 @@ test('PDPP CLI smoke', async (t) => {
     await withNativeHarness(async ({ asUrl, nativeManifest }) => {
       const initiate = await startGrantRequest(asUrl, {
         client_id: 'longview',
-        provider_id: nativeManifest.provider_id,
+        source: { kind: 'provider_native', id: nativeManifest.provider_id },
         purpose_code: 'https://pdpp.org/purpose/financial_planning',
         purpose_description: 'Support compensation planning and verification',
         access_mode: 'single_use',
@@ -2102,8 +2087,8 @@ test('PDPP CLI smoke', async (t) => {
       assert.equal(denied.client_id, 'longview');
       assert.equal(denied.object_type, 'pending_consent');
       assert.equal(denied.status, 'denied');
-      assert.equal(denied.data?.source?.binding_kind, 'provider_native');
-      assert.equal(denied.data?.source?.provider_id, nativeManifest.provider_id);
+      assert.equal(denied.data?.source?.kind, 'provider_native');
+      assert.equal(denied.data?.source?.id, nativeManifest.provider_id);
       assert.ok(!('connector_id' in (denied.data || {})));
       assert.ok(!('storage_connector_id' in (denied.data || {})));
       assert.equal(result.stderr, '');
@@ -2121,7 +2106,7 @@ test('PDPP CLI smoke', async (t) => {
         authorization_details: [
           {
             type: 'https://pdpp.org/data-access',
-            connector_id: spotifyManifest.connector_id,
+            source: { kind: 'connector', id: spotifyManifest.connector_id },
             purpose_code: 'compensation_planning',
             purpose_description: 'Compare pay, equity, and benefits data',
             access_mode: 'single_use',
@@ -2163,7 +2148,7 @@ test('PDPP CLI smoke', async (t) => {
         authorization_details: [
           {
             type: 'https://pdpp.org/data-access',
-            connector_id: spotifyManifest.connector_id,
+            source: { kind: 'connector', id: spotifyManifest.connector_id },
             purpose_code: 'compensation_planning',
             purpose_description: 'Compare pay, equity, and benefits data',
             access_mode: 'single_use',
@@ -2201,7 +2186,7 @@ test('PDPP CLI smoke', async (t) => {
         authorization_details: [
           {
             type: 'https://pdpp.org/data-access',
-            provider_id: nativeManifest.provider_id,
+            source: { kind: 'provider_native', id: nativeManifest.provider_id },
             purpose_code: 'https://pdpp.org/purpose/financial_planning',
             purpose_description: 'Compare pay, equity, and benefits data',
             access_mode: 'single_use',
@@ -2234,7 +2219,7 @@ test('PDPP CLI smoke', async (t) => {
         authorization_details: [
           {
             type: 'https://pdpp.org/data-access',
-            connector_id: spotifyManifest.connector_id,
+            source: { kind: 'connector', id: spotifyManifest.connector_id },
             purpose_code: 'compensation_planning',
             purpose_description: 'Compare pay, equity, and benefits data',
             access_mode: 'single_use',
@@ -2261,7 +2246,7 @@ test('PDPP CLI smoke', async (t) => {
         authorization_details: [
           {
             type: 'https://pdpp.org/data-access',
-            connector_id: spotifyManifest.connector_id,
+            source: { kind: 'connector', id: spotifyManifest.connector_id },
             purpose_code: 'compensation_planning',
             purpose_description: 'Compare pay, equity, and benefits data',
             access_mode: 'single_use',
@@ -2307,7 +2292,7 @@ test('PDPP CLI smoke', async (t) => {
     await withHarness(async ({ asUrl, spotifyManifest }) => {
       const approved = await approveGrant(asUrl, 'u1', {
         client_id: 'longview',
-        connector_id: spotifyManifest.connector_id,
+        source: { kind: 'connector', id: spotifyManifest.connector_id },
         purpose_code: 'https://pdpp.org/purpose/personalization',
         purpose_description: 'Maintain a concert-recommendation profile over time',
         access_mode: 'continuous',
@@ -2327,7 +2312,7 @@ test('PDPP CLI smoke', async (t) => {
             storage_binding_json = ?
         WHERE grant_id = ?
       `).run(JSON.stringify(malformedGrant), JSON.stringify({
-              connector_id: spotifyManifest.connector_id,
+              source: { kind: 'connector', id: spotifyManifest.connector_id },
               debug_context: 'should_not_escape',
             }), approved.grant.grant_id);
 
@@ -2412,7 +2397,7 @@ test('PDPP CLI smoke', async (t) => {
         authorization_details: [
           {
             type: 'https://pdpp.org/data-access',
-            provider_id: 'northstar_hr',
+            source: { kind: 'provider_native', id: 'northstar_hr' },
             purpose_code: 'https://pdpp.org/purpose/financial_planning',
             purpose_description: 'Compare pay, equity, and benefits data',
             access_mode: 'single_use',
@@ -2428,7 +2413,7 @@ test('PDPP CLI smoke', async (t) => {
       );
 
       assert.notEqual(result.code, 0);
-      assert.match(result.stderr, /include connector_id for polyfill access or provider_id for native provider access/);
+      assert.match(result.stderr, /source.*provider_native/);
     });
   });
 
@@ -2442,7 +2427,7 @@ test('PDPP CLI smoke', async (t) => {
         authorization_details: [
           {
             type: 'https://pdpp.org/data-access',
-            provider_id: 'wrong_provider',
+            source: { kind: 'provider_native', id: 'wrong_provider' },
             purpose_code: 'https://pdpp.org/purpose/financial_planning',
             purpose_description: 'Compare pay, equity, and benefits data',
             access_mode: 'single_use',
@@ -2458,11 +2443,11 @@ test('PDPP CLI smoke', async (t) => {
       );
 
       assert.notEqual(result.code, 0);
-      assert.match(result.stderr, /Unknown native provider/);
+      assert.match(result.stderr, /Unknown source/);
     });
   });
 
-  await t.test('grant start fails honestly when a native provider request includes both connector_id and provider_id', async () => {
+  await t.test('grant start fails honestly when a native provider request mixes a legacy source scalar with a source object', async () => {
     await withNativeHarness(async ({ asUrl }) => {
       const tmpDir = mkdtempSync(join(tmpdir(), 'pdpp-cli-native-binding-conflict-'));
       const requestPath = join(tmpDir, 'request.json');
@@ -2472,8 +2457,11 @@ test('PDPP CLI smoke', async (t) => {
         authorization_details: [
           {
             type: 'https://pdpp.org/data-access',
+            source: {
+              kind: 'provider_native',
+              id: 'northstar_hr',
+            },
             connector_id: 'spotify',
-            provider_id: 'northstar_hr',
             purpose_code: 'https://pdpp.org/purpose/financial_planning',
             purpose_description: 'Compare pay, equity, and benefits data',
             access_mode: 'single_use',
@@ -2489,7 +2477,7 @@ test('PDPP CLI smoke', async (t) => {
       );
 
       assert.notEqual(result.code, 0);
-      assert.match(result.stderr, /must not include both connector_id and provider_id/);
+      assert.match(result.stderr, /source: \{ kind/);
     });
   });
 
@@ -2598,7 +2586,7 @@ test('PDPP CLI smoke', async (t) => {
       await seedSpotify(rsUrl, spotifyManifest, ownerToken);
       const approved = await approveGrant(asUrl, 'cli_owner', {
         client_id: 'concert_recommendation_app',
-        connector_id: spotifyManifest.connector_id,
+        source: { kind: 'connector', id: spotifyManifest.connector_id },
         client_display: { name: 'Concert Recommendation App' },
         purpose_code: 'https://pdpp.org/purpose/personalization',
         purpose_description: 'Recommend concerts based on listening history',
@@ -2624,7 +2612,7 @@ test('PDPP CLI smoke', async (t) => {
       const ownerToken = await issueOwnerToken(asUrl, 'cli_owner');
       const approved = await approveGrant(asUrl, 'cli_owner', {
         client_id: 'concert_recommendation_app',
-        connector_id: spotifyManifest.connector_id,
+        source: { kind: 'connector', id: spotifyManifest.connector_id },
         client_display: { name: 'Concert Recommendation App' },
         purpose_code: 'https://pdpp.org/purpose/personalization',
         purpose_description: 'Maintain grant-scoped state through the CLI timeline reader',
@@ -2715,8 +2703,8 @@ test('PDPP CLI smoke', async (t) => {
 
       const revokedEvent = (result.json.data || []).find((event) => event.event_type === 'grant.revoked');
       assert.ok(revokedEvent, 'grant timeline should include grant.revoked after native revocation');
-      assert.equal(revokedEvent.data?.source?.binding_kind, 'provider_native');
-      assert.equal(revokedEvent.data?.source?.provider_id, nativeManifest.provider_id);
+      assert.equal(revokedEvent.data?.source?.kind, 'provider_native');
+      assert.equal(revokedEvent.data?.source?.id, nativeManifest.provider_id);
       assert.ok(!('connector_id' in (revokedEvent.data || {})), 'native revoked event should not expose connector_id');
       assert.ok(!('storage_connector_id' in (revokedEvent.data || {})), 'native revoked event should not expose storage connector ids');
       assert.equal(result.stderr, '');
@@ -2757,8 +2745,8 @@ test('PDPP CLI smoke', async (t) => {
       assert.ok(rejectedEvent, 'grant timeline should include grant.revoke_rejected for malformed native revocation');
       assert.equal(rejectedEvent.request_id, requestId);
       assert.equal(rejectedEvent.trace_id, traceId);
-      assert.equal(rejectedEvent.data?.source?.binding_kind, 'provider_native');
-      assert.equal(rejectedEvent.data?.source?.provider_id, nativeManifest.provider_id);
+      assert.equal(rejectedEvent.data?.source?.kind, 'provider_native');
+      assert.equal(rejectedEvent.data?.source?.id, nativeManifest.provider_id);
       assert.ok(!('connector_id' in (rejectedEvent.data || {})), 'native revoke rejection should not expose connector_id');
       assert.ok(!('storage_connector_id' in (rejectedEvent.data || {})), 'native revoke rejection should not expose storage connector ids');
       assert.equal(rejectedEvent.data?.error?.code, 'grant_invalid');
@@ -2778,15 +2766,15 @@ test('PDPP CLI smoke', async (t) => {
 
       const grantIssued = (result.json.data || []).find((event) => event.event_type === 'grant.issued');
       assert.ok(grantIssued, 'grant timeline should include grant.issued for native approval');
-      assert.equal(grantIssued.data?.source?.binding_kind, 'provider_native');
-      assert.equal(grantIssued.data?.source?.provider_id, nativeManifest.provider_id);
+      assert.equal(grantIssued.data?.source?.kind, 'provider_native');
+      assert.equal(grantIssued.data?.source?.id, nativeManifest.provider_id);
       assert.ok(!('connector_id' in (grantIssued.data || {})), 'native grant-issued event should not expose connector_id');
       assert.ok(!('storage_connector_id' in (grantIssued.data || {})), 'native grant-issued event should not expose storage connector ids');
 
       const tokenIssued = (result.json.data || []).find((event) => event.event_type === 'token.issued');
       assert.ok(tokenIssued, 'grant timeline should include token.issued for native approval');
-      assert.equal(tokenIssued.data?.source?.binding_kind, 'provider_native');
-      assert.equal(tokenIssued.data?.source?.provider_id, nativeManifest.provider_id);
+      assert.equal(tokenIssued.data?.source?.kind, 'provider_native');
+      assert.equal(tokenIssued.data?.source?.id, nativeManifest.provider_id);
       assert.equal(tokenIssued.data?.issuance_path, 'grant_approval');
       assert.ok(!('connector_id' in (tokenIssued.data || {})), 'native token-issued event should not expose connector_id');
       assert.ok(!('storage_connector_id' in (tokenIssued.data || {})), 'native token-issued event should not expose storage connector ids');
@@ -2800,7 +2788,7 @@ test('PDPP CLI smoke', async (t) => {
 
       const approved = await approveGrant(asUrl, 'employee_1', {
         client_id: 'longview',
-        provider_id: nativeManifest.provider_id,
+        source: { kind: 'provider_native', id: nativeManifest.provider_id },
         purpose_code: 'https://pdpp.org/purpose/financial_planning',
         purpose_description: 'Support compensation planning and verification',
         access_mode: 'continuous',
@@ -2831,8 +2819,8 @@ test('PDPP CLI smoke', async (t) => {
       assert.equal(queryReceived.trace_id, rejectedTraceId);
       assert.equal(queryReceived.stream_id, 'pay_statements');
       assert.equal(queryReceived.data?.query_shape, 'record_list');
-      assert.equal(queryReceived.data?.source?.binding_kind, 'provider_native');
-      assert.equal(queryReceived.data?.source?.provider_id, nativeManifest.provider_id);
+      assert.equal(queryReceived.data?.source?.kind, 'provider_native');
+      assert.equal(queryReceived.data?.source?.id, nativeManifest.provider_id);
       assert.ok(!('connector_id' in (queryReceived.data || {})));
       assert.ok(!('storage_connector_id' in (queryReceived.data || {})));
 
@@ -2843,8 +2831,8 @@ test('PDPP CLI smoke', async (t) => {
       assert.equal(rejectedEvent.trace_id, rejectedTraceId);
       assert.equal(rejectedEvent.stream_id, 'pay_statements');
       assert.equal(rejectedEvent.data?.query_shape, 'record_list');
-      assert.equal(rejectedEvent.data?.source?.binding_kind, 'provider_native');
-      assert.equal(rejectedEvent.data?.source?.provider_id, nativeManifest.provider_id);
+      assert.equal(rejectedEvent.data?.source?.kind, 'provider_native');
+      assert.equal(rejectedEvent.data?.source?.id, nativeManifest.provider_id);
       assert.ok(!('connector_id' in (rejectedEvent.data || {})));
       assert.ok(!('storage_connector_id' in (rejectedEvent.data || {})));
       assert.equal(rejectedEvent.data?.error?.code, 'invalid_request');
@@ -3060,7 +3048,7 @@ test('PDPP CLI smoke', async (t) => {
 
       const approved = await approveGrant(asUrl, 'cli_owner', {
         client_id: 'concert_recommendation_app',
-        connector_id: spotifyManifest.connector_id,
+        source: { kind: 'connector', id: spotifyManifest.connector_id },
         client_display: { name: 'Concert Recommendation App' },
         purpose_code: 'https://pdpp.org/purpose/personalization',
         purpose_description: 'Maintain a concert-recommendation profile over time using the basic top-artist subset',
@@ -3097,8 +3085,8 @@ test('PDPP CLI smoke', async (t) => {
       assert.equal(queryReceived.stream_id, 'top_artists');
       assert.equal(queryReceived.data?.query_shape, 'record_list');
       assert.equal(queryReceived.data?.has_changes_since, true);
-      assert.equal(queryReceived.data?.source?.binding_kind, 'connector');
-      assert.equal(queryReceived.data?.source?.connector_id, spotifyManifest.connector_id);
+      assert.equal(queryReceived.data?.source?.kind, 'connector');
+      assert.equal(queryReceived.data?.source?.id, spotifyManifest.connector_id);
 
       const rejectedEvent = (timeline.json.data || []).find((event) =>
         event.event_type === 'query.rejected' && event.object_id === rejectedRequestId
@@ -3108,8 +3096,8 @@ test('PDPP CLI smoke', async (t) => {
       assert.equal(rejectedEvent.stream_id, 'top_artists');
       assert.equal(rejectedEvent.data?.query_shape, 'record_list');
       assert.equal(rejectedEvent.data?.has_changes_since, true);
-      assert.equal(rejectedEvent.data?.source?.binding_kind, 'connector');
-      assert.equal(rejectedEvent.data?.source?.connector_id, spotifyManifest.connector_id);
+      assert.equal(rejectedEvent.data?.source?.kind, 'connector');
+      assert.equal(rejectedEvent.data?.source?.id, spotifyManifest.connector_id);
       assert.equal(rejectedEvent.data?.error?.code, 'field_not_granted');
       assert.match(rejectedEvent.data?.error?.message || '', /Filter on field 'popularity' not in grant/);
 
@@ -3128,7 +3116,7 @@ test('PDPP CLI smoke', async (t) => {
 
       const approved = await approveGrant(asUrl, 'cli_owner', {
         client_id: 'concert_recommendation_app',
-        connector_id: spotifyManifest.connector_id,
+        source: { kind: 'connector', id: spotifyManifest.connector_id },
         client_display: { name: 'Concert Recommendation App' },
         purpose_code: 'https://pdpp.org/purpose/personalization',
         purpose_description: 'Recommend concerts using a chosen artist subset',
@@ -3167,8 +3155,8 @@ test('PDPP CLI smoke', async (t) => {
       assert.equal(queryReceived.stream_id, 'top_artists');
       assert.equal(queryReceived.data?.query_shape, 'record_detail');
       assert.equal(queryReceived.data?.requested_record_id, rejectedId);
-      assert.equal(queryReceived.data?.source?.binding_kind, 'connector');
-      assert.equal(queryReceived.data?.source?.connector_id, spotifyManifest.connector_id);
+      assert.equal(queryReceived.data?.source?.kind, 'connector');
+      assert.equal(queryReceived.data?.source?.id, spotifyManifest.connector_id);
 
       const rejectedEvent = (timeline.json.data || []).find((event) =>
         event.event_type === 'query.rejected' && event.object_id === rejectedRequestId
@@ -3178,8 +3166,8 @@ test('PDPP CLI smoke', async (t) => {
       assert.equal(rejectedEvent.stream_id, 'top_artists');
       assert.equal(rejectedEvent.data?.query_shape, 'record_detail');
       assert.equal(rejectedEvent.data?.requested_record_id, rejectedId);
-      assert.equal(rejectedEvent.data?.source?.binding_kind, 'connector');
-      assert.equal(rejectedEvent.data?.source?.connector_id, spotifyManifest.connector_id);
+      assert.equal(rejectedEvent.data?.source?.kind, 'connector');
+      assert.equal(rejectedEvent.data?.source?.id, spotifyManifest.connector_id);
       assert.equal(rejectedEvent.data?.error?.code, 'not_found');
       assert.match(rejectedEvent.data?.error?.message || '', /Record not found/);
 
@@ -3205,7 +3193,7 @@ test('PDPP CLI smoke', async (t) => {
 
       const approved = await approveGrant(asUrl, 'cli_owner', {
         client_id: 'concert_recommendation_app',
-        connector_id: spotifyManifest.connector_id,
+        source: { kind: 'connector', id: spotifyManifest.connector_id },
         client_display: { name: 'Concert Recommendation App' },
         purpose_code: 'https://pdpp.org/purpose/personalization',
         purpose_description: 'Recommend concerts using top artists only',
@@ -3273,8 +3261,8 @@ test('PDPP CLI smoke', async (t) => {
         assert.equal(queryReceived.stream_id, scenario.streamId);
         assert.equal(queryReceived.data?.query_shape, scenario.queryShape);
         assert.equal(queryReceived.data?.requested_record_id ?? null, scenario.requestedRecordId ?? null);
-        assert.equal(queryReceived.data?.source?.binding_kind, 'connector');
-        assert.equal(queryReceived.data?.source?.connector_id, spotifyManifest.connector_id);
+        assert.equal(queryReceived.data?.source?.kind, 'connector');
+        assert.equal(queryReceived.data?.source?.id, spotifyManifest.connector_id);
 
         const rejectedEvent = (timeline.json.data || []).find((event) =>
           event.event_type === 'query.rejected' && event.object_id === rejectedRequestId
@@ -3284,8 +3272,8 @@ test('PDPP CLI smoke', async (t) => {
         assert.equal(rejectedEvent.stream_id, scenario.streamId);
         assert.equal(rejectedEvent.data?.query_shape, scenario.queryShape);
         assert.equal(rejectedEvent.data?.requested_record_id ?? null, scenario.requestedRecordId ?? null);
-        assert.equal(rejectedEvent.data?.source?.binding_kind, 'connector');
-        assert.equal(rejectedEvent.data?.source?.connector_id, spotifyManifest.connector_id);
+        assert.equal(rejectedEvent.data?.source?.kind, 'connector');
+        assert.equal(rejectedEvent.data?.source?.id, spotifyManifest.connector_id);
         assert.equal(rejectedEvent.data?.error?.code, scenario.expectedCode);
         assert.match(rejectedEvent.data?.error?.message || '', scenario.expectedMessage);
 
@@ -3306,7 +3294,7 @@ test('PDPP CLI smoke', async (t) => {
       const since = new Date(Date.now() - (4 * 24 * 60 * 60 * 1000)).toISOString();
       const approved = await approveGrant(asUrl, 'cli_owner', {
         client_id: 'concert_recommendation_app',
-        connector_id: spotifyManifest.connector_id,
+        source: { kind: 'connector', id: spotifyManifest.connector_id },
         client_display: { name: 'Concert Recommendation App' },
         purpose_code: 'https://pdpp.org/purpose/personalization',
         purpose_description: 'Recommend concerts from recent listening only',
@@ -3360,8 +3348,8 @@ test('PDPP CLI smoke', async (t) => {
       assert.equal(queryReceived.stream_id, 'top_artists');
       assert.equal(queryReceived.data?.query_shape, 'record_detail');
       assert.equal(queryReceived.data?.requested_record_id, hiddenRecord.id);
-      assert.equal(queryReceived.data?.source?.binding_kind, 'connector');
-      assert.equal(queryReceived.data?.source?.connector_id, spotifyManifest.connector_id);
+      assert.equal(queryReceived.data?.source?.kind, 'connector');
+      assert.equal(queryReceived.data?.source?.id, spotifyManifest.connector_id);
 
       const rejectedEvent = (timeline.json.data || []).find((event) =>
         event.event_type === 'query.rejected' && event.object_id === rejectedRequestId
@@ -3371,8 +3359,8 @@ test('PDPP CLI smoke', async (t) => {
       assert.equal(rejectedEvent.stream_id, 'top_artists');
       assert.equal(rejectedEvent.data?.query_shape, 'record_detail');
       assert.equal(rejectedEvent.data?.requested_record_id, hiddenRecord.id);
-      assert.equal(rejectedEvent.data?.source?.binding_kind, 'connector');
-      assert.equal(rejectedEvent.data?.source?.connector_id, spotifyManifest.connector_id);
+      assert.equal(rejectedEvent.data?.source?.kind, 'connector');
+      assert.equal(rejectedEvent.data?.source?.id, spotifyManifest.connector_id);
       assert.equal(rejectedEvent.data?.error?.code, 'not_found');
       assert.match(rejectedEvent.data?.error?.message || '', /Record not found/);
 
@@ -3479,8 +3467,8 @@ test('PDPP CLI smoke', async (t) => {
         assert.ok(skippedEvent, 'run timeline should include run.stream_skipped');
         assert.equal(skippedEvent.status, 'skipped');
         assert.equal(skippedEvent.stream_id, 'saved_tracks');
-        assert.equal(skippedEvent.data?.source?.binding_kind, 'connector');
-        assert.equal(skippedEvent.data?.source?.connector_id, spotifyManifest.connector_id);
+        assert.equal(skippedEvent.data?.source?.kind, 'connector');
+        assert.equal(skippedEvent.data?.source?.id, spotifyManifest.connector_id);
         assert.equal(skippedEvent.data?.reason, 'rate_limited');
         assert.equal(skippedEvent.data?.message, 'Platform returned 429');
 
@@ -3558,8 +3546,8 @@ rl.on('line', (line) => {
 
         const interactionRequired = (timeline.json.data || []).find((event) => event.event_type === 'run.interaction_required');
         assert.ok(interactionRequired, 'run timeline should include run.interaction_required');
-        assert.equal(interactionRequired.data?.source?.binding_kind, 'connector');
-        assert.equal(interactionRequired.data?.source?.connector_id, spotifyManifest.connector_id);
+        assert.equal(interactionRequired.data?.source?.kind, 'connector');
+        assert.equal(interactionRequired.data?.source?.id, spotifyManifest.connector_id);
         assert.equal(interactionRequired.data?.kind, 'credentials');
         assert.equal(interactionRequired.data?.stream, 'saved_tracks');
 
@@ -4524,8 +4512,8 @@ rl.on('line', (line) => {
 
         const failedEvent = (timeline.json.data || []).find((event) => event.event_type === 'run.failed');
         assert.ok(failedEvent, 'run timeline should include run.failed for runtime authentication failures');
-        assert.equal(failedEvent.data?.source?.binding_kind, 'connector');
-        assert.equal(failedEvent.data?.source?.connector_id, spotifyManifest.connector_id);
+        assert.equal(failedEvent.data?.source?.kind, 'connector');
+        assert.equal(failedEvent.data?.source?.id, spotifyManifest.connector_id);
         assert.equal(failedEvent.data?.reason, 'authentication_error');
         assert.equal(failedEvent.data?.records_emitted, 1);
         assert.equal(failedEvent.data?.records_flushed, 0);
@@ -4630,8 +4618,8 @@ rl.on('line', (line) => {
 
         const failedEvent = (timeline.json.data || []).find((event) => event.event_type === 'run.failed');
         assert.ok(failedEvent, 'run timeline should include run.failed for runtime permission failures');
-        assert.equal(failedEvent.data?.source?.binding_kind, 'connector');
-        assert.equal(failedEvent.data?.source?.connector_id, spotifyManifest.connector_id);
+        assert.equal(failedEvent.data?.source?.kind, 'connector');
+        assert.equal(failedEvent.data?.source?.id, spotifyManifest.connector_id);
         assert.equal(failedEvent.data?.reason, 'permission_error');
         assert.equal(failedEvent.data?.records_emitted, 1);
         assert.equal(failedEvent.data?.records_flushed, 1);
@@ -4722,8 +4710,8 @@ rl.on('line', (line) => {
 
         const failedEvent = (timeline.json.data || []).find((event) => event.event_type === 'run.failed');
         assert.ok(failedEvent, 'run timeline should include run.failed for deterministic runtime connector_invalid failures');
-        assert.equal(failedEvent.data?.source?.binding_kind, 'connector');
-        assert.equal(failedEvent.data?.source?.connector_id, spotifyManifest.connector_id);
+        assert.equal(failedEvent.data?.source?.kind, 'connector');
+        assert.equal(failedEvent.data?.source?.id, spotifyManifest.connector_id);
         assert.equal(failedEvent.data?.reason, 'connector_invalid');
         assert.equal(failedEvent.data?.records_emitted, 1);
         assert.equal(failedEvent.data?.records_flushed, 0);
@@ -4810,8 +4798,8 @@ rl.on('line', (line) => {
 
         const failedEvent = (timeline.json.data || []).find((event) => event.event_type === 'run.failed');
         assert.ok(failedEvent, 'run timeline should include run.failed for retryable runtime rate_limit_error failures');
-        assert.equal(failedEvent.data?.source?.binding_kind, 'connector');
-        assert.equal(failedEvent.data?.source?.connector_id, spotifyManifest.connector_id);
+        assert.equal(failedEvent.data?.source?.kind, 'connector');
+        assert.equal(failedEvent.data?.source?.id, spotifyManifest.connector_id);
         assert.equal(failedEvent.data?.reason, 'rate_limit_error');
         assert.equal(failedEvent.data?.records_emitted, 1);
         assert.equal(failedEvent.data?.records_flushed, 0);
@@ -4875,8 +4863,8 @@ rl.on('line', (line) => {
 
         const failedEvent = (timeline.json.data || []).find((event) => event.event_type === 'run.failed');
         assert.ok(failedEvent, 'run timeline should include run.failed for connector-declared failures');
-        assert.equal(failedEvent.data?.source?.binding_kind, 'connector');
-        assert.equal(failedEvent.data?.source?.connector_id, spotifyManifest.connector_id);
+        assert.equal(failedEvent.data?.source?.kind, 'connector');
+        assert.equal(failedEvent.data?.source?.id, spotifyManifest.connector_id);
         assert.equal(failedEvent.data?.reason, 'connector_reported_failed');
         assert.equal(failedEvent.data?.connector_error_message, 'Remote provider rate limit');
         assert.equal(failedEvent.data?.connector_error_retryable, true);
@@ -4942,8 +4930,8 @@ rl.on('line', (line) => {
         const failedEvent = (timeline.json.data || []).find((event) => event.event_type === 'run.failed');
         assert.ok(failedEvent, 'run timeline should include run.failed for connector-declared cancellations');
         assert.equal(failedEvent.status, 'cancelled');
-        assert.equal(failedEvent.data?.source?.binding_kind, 'connector');
-        assert.equal(failedEvent.data?.source?.connector_id, spotifyManifest.connector_id);
+        assert.equal(failedEvent.data?.source?.kind, 'connector');
+        assert.equal(failedEvent.data?.source?.id, spotifyManifest.connector_id);
         assert.equal(failedEvent.data?.reason, 'connector_reported_cancelled');
         assert.equal(failedEvent.data?.connector_error_message, 'User denied follow-up verification');
         assert.equal(failedEvent.data?.connector_error_retryable, false);
@@ -5027,8 +5015,8 @@ rl.on('line', (line) => {
 
         const failedEvent = (timeline.json.data || []).find((event) => event.event_type === 'run.failed');
         assert.ok(failedEvent, 'run timeline should include run.failed for terminal counter mismatch');
-        assert.equal(failedEvent.data?.source?.binding_kind, 'connector');
-        assert.equal(failedEvent.data?.source?.connector_id, spotifyManifest.connector_id);
+        assert.equal(failedEvent.data?.source?.kind, 'connector');
+        assert.equal(failedEvent.data?.source?.id, spotifyManifest.connector_id);
         assert.equal(failedEvent.data?.reason, 'connector_protocol_violation');
         assert.equal(failedEvent.data?.records_emitted, 1);
         assert.equal(failedEvent.data?.reported_records_emitted, 2);
@@ -5114,8 +5102,8 @@ rl.on('line', (line) => {
 
         const failedEvent = (timeline.json.data || []).find((event) => event.event_type === 'run.failed');
         assert.ok(failedEvent, 'run timeline should include run.failed for invalid DONE.status');
-        assert.equal(failedEvent.data?.source?.binding_kind, 'connector');
-        assert.equal(failedEvent.data?.source?.connector_id, spotifyManifest.connector_id);
+        assert.equal(failedEvent.data?.source?.kind, 'connector');
+        assert.equal(failedEvent.data?.source?.id, spotifyManifest.connector_id);
         assert.equal(failedEvent.data?.reason, 'connector_protocol_violation');
         assert.equal(failedEvent.data?.records_emitted, 1);
         assert.equal(failedEvent.data?.records_flushed, 1);
@@ -5223,8 +5211,8 @@ rl.on('line', (line) => {
 
           const failedEvent = (timeline.json.data || []).find((event) => event.event_type === 'run.failed');
           assert.ok(failedEvent, `run timeline should include run.failed for ${scenario.name}`);
-          assert.equal(failedEvent.data?.source?.binding_kind, 'connector');
-          assert.equal(failedEvent.data?.source?.connector_id, spotifyManifest.connector_id);
+          assert.equal(failedEvent.data?.source?.kind, 'connector');
+          assert.equal(failedEvent.data?.source?.id, spotifyManifest.connector_id);
           assert.equal(failedEvent.data?.reason, 'connector_protocol_violation');
           assert.equal(failedEvent.data?.exit_code, scenario.expectedExitCode);
           assert.equal(failedEvent.data?.records_flushed, 1);
@@ -5293,8 +5281,8 @@ rl.on('line', (line) => {
 
         const failedEvent = (timeline.json.data || []).find((event) => event.event_type === 'run.failed');
         assert.ok(failedEvent, 'run timeline should include run.failed for contradictory success-terminal errors');
-        assert.equal(failedEvent.data?.source?.binding_kind, 'connector');
-        assert.equal(failedEvent.data?.source?.connector_id, spotifyManifest.connector_id);
+        assert.equal(failedEvent.data?.source?.kind, 'connector');
+        assert.equal(failedEvent.data?.source?.id, spotifyManifest.connector_id);
         assert.equal(failedEvent.data?.reason, 'connector_protocol_violation');
         assert.equal(failedEvent.data?.checkpoint_commit_status, 'not_committed');
         assert.ok(!('connector_error_message' in failedEvent.data), 'protocol-violation timeline should not surface contradictory DONE.error details');
@@ -5384,8 +5372,8 @@ rl.on('line', (line) => {
 
         const failedEvent = (timeline.json.data || []).find((event) => event.event_type === 'run.failed');
         assert.ok(failedEvent, 'run timeline should include run.failed for post-DONE protocol violations');
-        assert.equal(failedEvent.data?.source?.binding_kind, 'connector');
-        assert.equal(failedEvent.data?.source?.connector_id, spotifyManifest.connector_id);
+        assert.equal(failedEvent.data?.source?.kind, 'connector');
+        assert.equal(failedEvent.data?.source?.id, spotifyManifest.connector_id);
         assert.equal(failedEvent.data?.reason, 'connector_protocol_violation');
         assert.equal(failedEvent.data?.records_flushed, 1);
         assert.equal(failedEvent.data?.buffered_records_dropped, 0);
@@ -5590,7 +5578,7 @@ rl.on('line', (line) => {
       await seedSpotify(rsUrl, spotifyManifest, ownerToken);
       const approved = await approveGrant(asUrl, 'cli_owner', {
         client_id: 'concert_recommendation_app',
-        connector_id: spotifyManifest.connector_id,
+        source: { kind: 'connector', id: spotifyManifest.connector_id },
         client_display: { name: 'Concert Recommendation App' },
         purpose_code: 'https://pdpp.org/purpose/personalization',
         purpose_description: 'Recommend concerts based on listening history',
@@ -5646,8 +5634,8 @@ rl.on('line', (line) => {
       const ingestRequested = (ingestTrace.json.data || []).find((event) => event.event_type === 'mutation.requested');
       assert.ok(ingestRequested, 'trace show should include mutation.requested for owner ingest');
       assert.equal(ingestRequested.data?.operation, 'ingest_records');
-      assert.equal(ingestRequested.data?.source?.binding_kind, 'connector');
-      assert.equal(ingestRequested.data?.source?.connector_id, spotifyManifest.connector_id);
+      assert.equal(ingestRequested.data?.source?.kind, 'connector');
+      assert.equal(ingestRequested.data?.source?.id, spotifyManifest.connector_id);
 
       const ingestCompleted = (ingestTrace.json.data || []).find((event) => event.event_type === 'mutation.completed');
       assert.ok(ingestCompleted, 'trace show should include mutation.completed for owner ingest');
@@ -5715,8 +5703,8 @@ rl.on('line', (line) => {
       );
       assert.ok(mutationRejected, 'trace show should include mutation.rejected for malformed polyfill owner mutations');
       assert.equal(mutationRejected.data?.operation, 'delete_stream_records');
-      assert.equal(mutationRejected.data?.source?.binding_kind, 'connector');
-      assert.equal(mutationRejected.data?.source?.connector_id, spotifyManifest.connector_id);
+      assert.equal(mutationRejected.data?.source?.kind, 'connector');
+      assert.equal(mutationRejected.data?.source?.id, spotifyManifest.connector_id);
       assert.equal(mutationRejected.data?.error?.code, 'connector_invalid');
       assert.match(
         mutationRejected.data?.error?.message || '',
@@ -5749,8 +5737,8 @@ rl.on('line', (line) => {
       assert.equal(stateRequested.data?.state_scope, 'owner');
       assert.equal(stateRequested.data?.operation, 'write');
       assert.deepEqual(stateRequested.data?.requested_streams, ['top_artists']);
-      assert.equal(stateRequested.data?.source?.binding_kind, 'connector');
-      assert.equal(stateRequested.data?.source?.connector_id, spotifyManifest.connector_id);
+      assert.equal(stateRequested.data?.source?.kind, 'connector');
+      assert.equal(stateRequested.data?.source?.id, spotifyManifest.connector_id);
 
       const stateUpdated = (updateTrace.json.data || []).find((event) => event.event_type === 'state.updated');
       assert.ok(stateUpdated, 'trace show should include state.updated for owner state writes');
@@ -5812,8 +5800,8 @@ rl.on('line', (line) => {
       assert.ok(stateRejected, 'trace show should include state.rejected for malformed polyfill owner state reads');
       assert.equal(stateRejected.data?.state_scope, 'owner');
       assert.equal(stateRejected.data?.operation, 'read');
-      assert.equal(stateRejected.data?.source?.binding_kind, 'connector');
-      assert.equal(stateRejected.data?.source?.connector_id, spotifyManifest.connector_id);
+      assert.equal(stateRejected.data?.source?.kind, 'connector');
+      assert.equal(stateRejected.data?.source?.id, spotifyManifest.connector_id);
       assert.equal(stateRejected.data?.error?.code, 'connector_invalid');
       assert.match(
         stateRejected.data?.error?.message || '',
@@ -5849,7 +5837,7 @@ rl.on('line', (line) => {
 
       const approved = await approveGrant(asUrl, 'cli_owner', {
         client_id: 'concert_recommendation_app',
-        connector_id: spotifyManifest.connector_id,
+        source: { kind: 'connector', id: spotifyManifest.connector_id },
         purpose_code: 'https://pdpp.org/purpose/personalization',
         purpose_description: 'Maintain a concert-recommendation profile over time',
         access_mode: 'continuous',
@@ -5877,7 +5865,7 @@ rl.on('line', (line) => {
 
       const approved = await approveGrant(asUrl, 'cli_owner', {
         client_id: 'concert_recommendation_app',
-        connector_id: spotifyManifest.connector_id,
+        source: { kind: 'connector', id: spotifyManifest.connector_id },
         purpose_code: 'https://pdpp.org/purpose/personalization',
         purpose_description: 'Maintain a concert-recommendation profile over time',
         access_mode: 'continuous',
@@ -5904,7 +5892,7 @@ rl.on('line', (line) => {
 
       const approved = await approveGrant(asUrl, 'cli_owner', {
         client_id: 'concert_recommendation_app',
-        connector_id: spotifyManifest.connector_id,
+        source: { kind: 'connector', id: spotifyManifest.connector_id },
         purpose_code: 'https://pdpp.org/purpose/personalization',
         purpose_description: 'Recommend concerts using the basic top-artist subset',
         access_mode: 'single_use',
@@ -5965,7 +5953,7 @@ rl.on('line', (line) => {
 
       const approved = await approveGrant(asUrl, 'cli_owner', {
         client_id: 'concert_recommendation_app',
-        connector_id: spotifyManifest.connector_id,
+        source: { kind: 'connector', id: spotifyManifest.connector_id },
         purpose_code: 'https://pdpp.org/purpose/personalization',
         purpose_description: 'Recommend concerts using only the latest permitted artist',
         access_mode: 'single_use',
@@ -6017,7 +6005,7 @@ rl.on('line', (line) => {
 
       const approved = await approveGrant(asUrl, 'cli_owner', {
         client_id: 'concert_recommendation_app',
-        connector_id: spotifyManifest.connector_id,
+        source: { kind: 'connector', id: spotifyManifest.connector_id },
         purpose_code: 'https://pdpp.org/purpose/personalization',
         purpose_description: 'Maintain a concert-recommendation profile over time',
         access_mode: 'continuous',
@@ -6054,7 +6042,7 @@ rl.on('line', (line) => {
 
       const approved = await approveGrant(asUrl, 'cli_owner', {
         client_id: 'longview',
-        provider_id: nativeManifest.provider_id,
+        source: { kind: 'provider_native', id: nativeManifest.provider_id },
         purpose_code: 'https://pdpp.org/purpose/financial_planning',
         purpose_description: 'Support compensation planning and verification',
         access_mode: 'continuous',
@@ -6097,7 +6085,7 @@ rl.on('line', (line) => {
 
       const approved = await approveGrant(asUrl, 'cli_owner', {
         client_id: 'longview',
-        provider_id: nativeManifest.provider_id,
+        source: { kind: 'provider_native', id: nativeManifest.provider_id },
         purpose_code: 'https://pdpp.org/purpose/financial_planning',
         purpose_description: 'Support compensation planning and verification',
         access_mode: 'continuous',
@@ -6130,7 +6118,7 @@ rl.on('line', (line) => {
 
       const approved = await approveGrant(asUrl, 'cli_owner', {
         client_id: 'longview',
-        provider_id: nativeManifest.provider_id,
+        source: { kind: 'provider_native', id: nativeManifest.provider_id },
         purpose_code: 'https://pdpp.org/purpose/financial_planning',
         purpose_description: 'Support compensation planning and verification',
         access_mode: 'continuous',
@@ -6538,8 +6526,8 @@ rl.on('line', (line) => {
       assert.ok(queryReceived, 'trace show should include query.received for rejected native client reads');
       assert.equal(queryReceived.data?.query_shape, 'record_list');
       assert.equal(queryReceived.stream_id, 'pay_statements');
-      assert.equal(queryReceived.data?.source?.binding_kind, 'provider_native');
-      assert.equal(queryReceived.data?.source?.provider_id, nativeManifest.provider_id);
+      assert.equal(queryReceived.data?.source?.kind, 'provider_native');
+      assert.equal(queryReceived.data?.source?.id, nativeManifest.provider_id);
       assert.ok(!('connector_id' in (queryReceived.data || {})));
       assert.ok(!('storage_connector_id' in (queryReceived.data || {})));
 
@@ -6549,8 +6537,8 @@ rl.on('line', (line) => {
       assert.ok(rejectedEvent, 'trace show should include query.rejected for rejected native client reads');
       assert.equal(rejectedEvent.data?.query_shape, 'record_list');
       assert.equal(rejectedEvent.stream_id, 'pay_statements');
-      assert.equal(rejectedEvent.data?.source?.binding_kind, 'provider_native');
-      assert.equal(rejectedEvent.data?.source?.provider_id, nativeManifest.provider_id);
+      assert.equal(rejectedEvent.data?.source?.kind, 'provider_native');
+      assert.equal(rejectedEvent.data?.source?.id, nativeManifest.provider_id);
       assert.ok(!('connector_id' in (rejectedEvent.data || {})));
       assert.ok(!('storage_connector_id' in (rejectedEvent.data || {})));
       assert.equal(rejectedEvent.data?.error?.code, 'invalid_request');
@@ -6623,16 +6611,16 @@ rl.on('line', (line) => {
       );
       assert.ok(queryReceived, 'trace show should include query.received for malformed polyfill owner reads');
       assert.equal(queryReceived.data?.query_shape, 'stream_list');
-      assert.equal(queryReceived.data?.source?.binding_kind, 'connector');
-      assert.equal(queryReceived.data?.source?.connector_id, spotifyManifest.connector_id);
+      assert.equal(queryReceived.data?.source?.kind, 'connector');
+      assert.equal(queryReceived.data?.source?.id, spotifyManifest.connector_id);
 
       const rejectedEvent = (trace.json.data || []).find((event) =>
         event.event_type === 'query.rejected' && event.object_id === requestId
       );
       assert.ok(rejectedEvent, 'trace show should include query.rejected for malformed polyfill owner reads');
       assert.equal(rejectedEvent.data?.query_shape, 'stream_list');
-      assert.equal(rejectedEvent.data?.source?.binding_kind, 'connector');
-      assert.equal(rejectedEvent.data?.source?.connector_id, spotifyManifest.connector_id);
+      assert.equal(rejectedEvent.data?.source?.kind, 'connector');
+      assert.equal(rejectedEvent.data?.source?.id, spotifyManifest.connector_id);
       assert.equal(rejectedEvent.data?.error?.code, 'connector_invalid');
       assert.match(
         rejectedEvent.data?.error?.message || '',
@@ -6686,8 +6674,8 @@ rl.on('line', (line) => {
       assert.ok(queryReceived, 'trace show should include query.received for malformed polyfill owner record-detail reads');
       assert.equal(queryReceived.data?.query_shape, 'record_detail');
       assert.equal(queryReceived.stream_id, 'top_artists');
-      assert.equal(queryReceived.data?.source?.binding_kind, 'connector');
-      assert.equal(queryReceived.data?.source?.connector_id, spotifyManifest.connector_id);
+      assert.equal(queryReceived.data?.source?.kind, 'connector');
+      assert.equal(queryReceived.data?.source?.id, spotifyManifest.connector_id);
 
       const rejectedEvent = (trace.json.data || []).find((event) =>
         event.event_type === 'query.rejected' && event.object_id === requestId
@@ -6695,8 +6683,8 @@ rl.on('line', (line) => {
       assert.ok(rejectedEvent, 'trace show should include query.rejected for malformed polyfill owner record-detail reads');
       assert.equal(rejectedEvent.data?.query_shape, 'record_detail');
       assert.equal(rejectedEvent.stream_id, 'top_artists');
-      assert.equal(rejectedEvent.data?.source?.binding_kind, 'connector');
-      assert.equal(rejectedEvent.data?.source?.connector_id, spotifyManifest.connector_id);
+      assert.equal(rejectedEvent.data?.source?.kind, 'connector');
+      assert.equal(rejectedEvent.data?.source?.id, spotifyManifest.connector_id);
       assert.equal(rejectedEvent.data?.error?.code, 'connector_invalid');
       assert.match(
         rejectedEvent.data?.error?.message || '',
@@ -6743,8 +6731,8 @@ rl.on('line', (line) => {
       assert.ok(queryReceived, 'trace show should include query.received for malformed polyfill owner record-list reads');
       assert.equal(queryReceived.data?.query_shape, 'record_list');
       assert.equal(queryReceived.stream_id, 'top_artists');
-      assert.equal(queryReceived.data?.source?.binding_kind, 'connector');
-      assert.equal(queryReceived.data?.source?.connector_id, spotifyManifest.connector_id);
+      assert.equal(queryReceived.data?.source?.kind, 'connector');
+      assert.equal(queryReceived.data?.source?.id, spotifyManifest.connector_id);
 
       const rejectedEvent = (trace.json.data || []).find((event) =>
         event.event_type === 'query.rejected' && event.object_id === requestId
@@ -6752,8 +6740,8 @@ rl.on('line', (line) => {
       assert.ok(rejectedEvent, 'trace show should include query.rejected for malformed polyfill owner record-list reads');
       assert.equal(rejectedEvent.data?.query_shape, 'record_list');
       assert.equal(rejectedEvent.stream_id, 'top_artists');
-      assert.equal(rejectedEvent.data?.source?.binding_kind, 'connector');
-      assert.equal(rejectedEvent.data?.source?.connector_id, spotifyManifest.connector_id);
+      assert.equal(rejectedEvent.data?.source?.kind, 'connector');
+      assert.equal(rejectedEvent.data?.source?.id, spotifyManifest.connector_id);
       assert.equal(rejectedEvent.data?.error?.code, 'connector_invalid');
       assert.match(
         rejectedEvent.data?.error?.message || '',
@@ -6847,8 +6835,8 @@ rl.on('line', (line) => {
       assert.ok(queryReceived, 'trace show should include query.received for rejected native owner reads');
       assert.equal(queryReceived.data?.query_shape, 'record_list');
       assert.equal(queryReceived.stream_id, 'not_a_stream');
-      assert.equal(queryReceived.data?.source?.binding_kind, 'provider_native');
-      assert.equal(queryReceived.data?.source?.provider_id, nativeManifest.provider_id);
+      assert.equal(queryReceived.data?.source?.kind, 'provider_native');
+      assert.equal(queryReceived.data?.source?.id, nativeManifest.provider_id);
       assert.ok(!('connector_id' in (queryReceived.data || {})));
       assert.ok(!('storage_connector_id' in (queryReceived.data || {})));
 
@@ -6858,8 +6846,8 @@ rl.on('line', (line) => {
       assert.ok(rejectedEvent, 'trace show should include query.rejected for rejected native owner reads');
       assert.equal(rejectedEvent.data?.query_shape, 'record_list');
       assert.equal(rejectedEvent.stream_id, 'not_a_stream');
-      assert.equal(rejectedEvent.data?.source?.binding_kind, 'provider_native');
-      assert.equal(rejectedEvent.data?.source?.provider_id, nativeManifest.provider_id);
+      assert.equal(rejectedEvent.data?.source?.kind, 'provider_native');
+      assert.equal(rejectedEvent.data?.source?.id, nativeManifest.provider_id);
       assert.ok(!('connector_id' in (rejectedEvent.data || {})));
       assert.ok(!('storage_connector_id' in (rejectedEvent.data || {})));
       assert.equal(rejectedEvent.data?.error?.code, 'not_found');

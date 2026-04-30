@@ -11,6 +11,11 @@ import { redirectToOwnerLogin } from "./login-redirect.ts";
 import { getAsInternalUrl, ReferenceServerUnreachableError, withOwnerSessionCookie } from "./owner-token.ts";
 import { verifyDashboardSession } from "./verify-session.ts";
 
+export interface SourceObject {
+  id: string;
+  kind: "connector" | "provider_native";
+}
+
 export interface SpineEvent {
   actor_id: string | null;
   actor_type: string | null;
@@ -23,7 +28,8 @@ export interface SpineEvent {
   object_id: string | null;
   object_type: string | null;
   occurred_at: string;
-  provider_id: string | null;
+  provider_id?: string | null;
+  source?: SourceObject | null;
   recorded_at: string;
   request_id: string | null;
   run_id: string | null;
@@ -114,7 +120,8 @@ export interface TraceSummary {
   kinds: string[];
   last_at: string;
   object: "trace_summary";
-  provider_id: string | null;
+  provider_id?: string | null;
+  source?: SourceObject | null;
   request_id: string | null;
   run_id: string | null;
   status: string;
@@ -123,7 +130,7 @@ export interface TraceSummary {
 
 export interface GrantSummary {
   client_id: string | null;
-  connector_id: string | null;
+  connector_id?: string | null;
   event_count: number;
   failure: FailureInfo | null;
   first_at: string;
@@ -131,12 +138,13 @@ export interface GrantSummary {
   kinds: string[];
   last_at: string;
   object: "grant_summary";
-  provider_id: string | null;
+  provider_id?: string | null;
+  source?: SourceObject | null;
   status: string;
 }
 
 export interface RunSummary {
-  connector_id: string | null;
+  connector_id?: string | null;
   event_count: number;
   failure_reason: string | null;
   first_at: string;
@@ -145,7 +153,8 @@ export interface RunSummary {
   last_at: string;
   needs_input: boolean;
   object: "run_summary";
-  provider_id: string | null;
+  provider_id?: string | null;
+  source?: SourceObject | null;
   run_id: string;
   status: string;
 }
@@ -300,6 +309,8 @@ export interface ListQuery {
   provider_id?: string;
   q?: string;
   since?: string;
+  source_id?: string;
+  source_kind?: SourceObject["kind"];
   status?: string;
   until?: string;
 }
@@ -507,8 +518,7 @@ export interface PendingApproval {
   client_id?: string | null;
   created_at: string;
   grant_preview?: {
-    connector_id?: string | null;
-    provider_id?: string | null;
+    source?: SourceObject | null;
     streams?: Array<{ name?: string } | string>;
   } | null;
   kind: "consent" | "owner_device";

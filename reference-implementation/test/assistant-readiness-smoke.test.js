@@ -34,6 +34,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 import { startServer } from '../server/index.js';
+import { getDb } from '../server/db.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const POLYFILL_MANIFESTS_DIR = join(
@@ -203,6 +204,12 @@ const CASES = [
   },
 ];
 
+const REPRESENTATIVE_REALIZATION_CASES = [
+  { kind: 'api', name: 'github.issues' },
+  { kind: 'browser-scraper', name: 'chatgpt.messages' },
+  { kind: 'file-based', name: 'claude_code.messages' },
+];
+
 async function withHarness(fn) {
   const server = await startServer({
     quiet: true,
@@ -323,5 +330,46 @@ test('assistant smoke: in-memory fallback activates for stale DB cursor_field dr
     assert.equal(status, 200);
     // Null-cursor row goes to the missing bucket in ASC (after present).
     assert.deepEqual(body.data.map((r) => r.id), ['i1', 'i3', 'i2']);
+  });
+});
+
+test('assistant smoke: representative polyfill classes populate canonical spine source columns', async () => {
+  await withHarness(async ({ asUrl, rsUrl }) => {
+    const ownerToken = await issueOwnerToken(asUrl);
+    const expectedConnectorIds = [];
+
+    for (const representative of REPRESENTATIVE_REALIZATION_CASES) {
+      const c = CASES.find((item) => item.name === representative.name);
+      assert.ok(c, `missing representative case for ${representative.kind}`);
+      const manifest = loadManifest(c.manifest);
+      await registerManifest(asUrl, manifest);
+      expectedConnectorIds.push(manifest.connector_id);
+
+      await seedRecords(rsUrl, ownerToken, manifest.connector_id, c.stream, c.records().slice(0, 1));
+      const page = await fetchJson(
+        `${rsUrl}/v1/streams/${encodeURIComponent(c.stream)}/records?connector_id=${encodeURIComponent(manifest.connector_id)}&limit=1`,
+        { headers: { Authorization: `Bearer ${ownerToken}` } },
+      );
+      assert.equal(page.status, 200, `${representative.kind} representative query succeeds`);
+      assert.equal(page.body.object, 'list');
+    }
+
+    const rows = getDb().prepare('SELECT event_id, source_kind, source_id, data_json FROM spine_events').all();
+    const sourcedRows = rows.filter((row) => {
+      const data = JSON.parse(row.data_json || '{}');
+      return data.source?.kind === 'connector' && expectedConnectorIds.includes(data.source.id);
+    });
+
+    for (const connectorId of expectedConnectorIds) {
+      assert.ok(
+        sourcedRows.some((row) => row.source_id === connectorId),
+        `expected sourced spine rows for ${connectorId}`,
+      );
+    }
+    assert.equal(
+      sourcedRows.filter((row) => row.source_kind !== 'connector' || !row.source_id).length,
+      0,
+      'representative sourced spine rows should have non-null canonical source columns',
+    );
   });
 });

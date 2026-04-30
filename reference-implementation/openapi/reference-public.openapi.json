@@ -330,7 +330,7 @@
                           "type": "string",
                           "minLength": 1
                         },
-                        "owner_polyfill_requires_connector_id": {
+                        "owner_polyfill_requires_source_kind_connector": {
                           "type": "boolean"
                         }
                       },
@@ -1065,138 +1065,134 @@
                     "minItems": 1,
                     "maxItems": 1,
                     "items": {
-                      "allOf": [
-                        {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "type": {
+                          "const": "https://pdpp.org/data-access"
+                        },
+                        "source": {
                           "type": "object",
                           "additionalProperties": false,
                           "properties": {
-                            "type": {
-                              "const": "https://pdpp.org/data-access"
-                            },
-                            "connector_id": {
-                              "type": "string",
-                              "minLength": 1
-                            },
-                            "provider_id": {
-                              "type": "string",
-                              "minLength": 1
-                            },
-                            "purpose_code": {
-                              "type": "string",
-                              "minLength": 1
-                            },
-                            "purpose_description": {
-                              "type": "string",
-                              "minLength": 1
-                            },
-                            "access_mode": {
+                            "kind": {
                               "type": "string",
                               "enum": [
-                                "single_use",
-                                "continuous"
+                                "connector",
+                                "provider_native"
                               ]
                             },
-                            "retention": {
-                              "type": "object",
-                              "additionalProperties": false,
-                              "properties": {
-                                "max_duration": {
-                                  "type": "string",
-                                  "minLength": 1
-                                },
-                                "on_expiry": {
+                            "id": {
+                              "type": "string",
+                              "minLength": 1
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "id"
+                          ]
+                        },
+                        "purpose_code": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "purpose_description": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "access_mode": {
+                          "type": "string",
+                          "enum": [
+                            "single_use",
+                            "continuous"
+                          ]
+                        },
+                        "retention": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "properties": {
+                            "max_duration": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "on_expiry": {
+                              "type": "string",
+                              "minLength": 1
+                            }
+                          },
+                          "required": [
+                            "max_duration",
+                            "on_expiry"
+                          ]
+                        },
+                        "streams": {
+                          "type": "array",
+                          "minItems": 1,
+                          "items": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                              "name": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "necessity": {
+                                "type": "string",
+                                "enum": [
+                                  "required",
+                                  "optional"
+                                ]
+                              },
+                              "view": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "fields": {
+                                "type": "array",
+                                "minItems": 1,
+                                "items": {
                                   "type": "string",
                                   "minLength": 1
                                 }
                               },
-                              "required": [
-                                "max_duration",
-                                "on_expiry"
-                              ]
-                            },
-                            "streams": {
-                              "type": "array",
-                              "minItems": 1,
-                              "items": {
+                              "time_range": {
                                 "type": "object",
                                 "additionalProperties": false,
                                 "properties": {
-                                  "name": {
+                                  "since": {
                                     "type": "string",
                                     "minLength": 1
                                   },
-                                  "necessity": {
-                                    "type": "string",
-                                    "enum": [
-                                      "required",
-                                      "optional"
-                                    ]
-                                  },
-                                  "view": {
+                                  "until": {
                                     "type": "string",
                                     "minLength": 1
-                                  },
-                                  "fields": {
-                                    "type": "array",
-                                    "minItems": 1,
-                                    "items": {
-                                      "type": "string",
-                                      "minLength": 1
-                                    }
-                                  },
-                                  "time_range": {
-                                    "type": "object",
-                                    "additionalProperties": false,
-                                    "properties": {
-                                      "since": {
-                                        "type": "string",
-                                        "minLength": 1
-                                      },
-                                      "until": {
-                                        "type": "string",
-                                        "minLength": 1
-                                      }
-                                    }
-                                  },
-                                  "resources": {
-                                    "type": "array",
-                                    "items": {
-                                      "type": "string",
-                                      "minLength": 1
-                                    }
-                                  },
-                                  "client_claims": {
-                                    "type": "object",
-                                    "additionalProperties": true
                                   }
-                                },
-                                "required": [
-                                  "name"
-                                ]
+                                }
+                              },
+                              "resources": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string",
+                                  "minLength": 1
+                                }
+                              },
+                              "client_claims": {
+                                "type": "object",
+                                "additionalProperties": true
                               }
-                            }
-                          },
-                          "required": [
-                            "type",
-                            "purpose_code",
-                            "access_mode",
-                            "streams"
-                          ]
-                        },
-                        {
-                          "oneOf": [
-                            {
-                              "required": [
-                                "connector_id"
-                              ]
                             },
-                            {
-                              "required": [
-                                "provider_id"
-                              ]
-                            }
-                          ]
+                            "required": [
+                              "name"
+                            ]
+                          }
                         }
+                      },
+                      "required": [
+                        "type",
+                        "source",
+                        "purpose_code",
+                        "access_mode",
+                        "streams"
                       ]
                     }
                   }
@@ -1308,24 +1304,21 @@
                           "type": "object",
                           "additionalProperties": false,
                           "properties": {
-                            "binding_kind": {
+                            "kind": {
                               "type": "string",
                               "enum": [
                                 "connector",
                                 "provider_native"
                               ]
                             },
-                            "connector_id": {
-                              "type": "string",
-                              "minLength": 1
-                            },
-                            "provider_id": {
+                            "id": {
                               "type": "string",
                               "minLength": 1
                             }
                           },
                           "required": [
-                            "binding_kind"
+                            "kind",
+                            "id"
                           ]
                         },
                         "manifest_version": {
@@ -1716,24 +1709,21 @@
                           "type": "object",
                           "additionalProperties": false,
                           "properties": {
-                            "binding_kind": {
+                            "kind": {
                               "type": "string",
                               "enum": [
                                 "connector",
                                 "provider_native"
                               ]
                             },
-                            "connector_id": {
-                              "type": "string",
-                              "minLength": 1
-                            },
-                            "provider_id": {
+                            "id": {
                               "type": "string",
                               "minLength": 1
                             }
                           },
                           "required": [
-                            "binding_kind"
+                            "kind",
+                            "id"
                           ]
                         },
                         "manifest_version": {
@@ -2356,24 +2346,21 @@
                           "type": "object",
                           "additionalProperties": false,
                           "properties": {
-                            "binding_kind": {
+                            "kind": {
                               "type": "string",
                               "enum": [
                                 "connector",
                                 "provider_native"
                               ]
                             },
-                            "connector_id": {
-                              "type": "string",
-                              "minLength": 1
-                            },
-                            "provider_id": {
+                            "id": {
                               "type": "string",
                               "minLength": 1
                             }
                           },
                           "required": [
-                            "binding_kind"
+                            "kind",
+                            "id"
                           ]
                         },
                         "manifest_version": {

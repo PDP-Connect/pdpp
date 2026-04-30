@@ -20,7 +20,7 @@
  *   pointers and a fixed `changes_since_bootstrap: 'beginning'` plus
  *   `blob_indirection` value. Search and hybrid pagination hints are
  *   only added when the matching capability is advertised. The polyfill
- *   `owner_polyfill_requires_connector_id` hint is added only when the
+ *   `owner_polyfill_requires_source_kind_connector` hint is added only when the
  *   server is NOT in native single-source mode.
  *
  * Boundary rules (see openspec/changes/complete-reference-operation-refactor):
@@ -63,7 +63,7 @@ export interface RsProtectedResourceMetadataDiscoveryHints {
     readonly filter_requires_single_stream: true;
   };
   readonly hybrid_pagination_supported?: boolean;
-  readonly owner_polyfill_requires_connector_id?: true;
+  readonly owner_polyfill_requires_source_kind_connector?: true;
 }
 
 export interface RsProtectedResourceMetadataCapabilities {
@@ -112,7 +112,7 @@ export interface RsProtectedResourceMetadataDependencies {
   isHybridSuppressed(): boolean;
   /**
    * Whether the host is running in native single-source mode. When
-   * `false`, the polyfill `owner_polyfill_requires_connector_id`
+   * `false`, the polyfill `owner_polyfill_requires_source_kind_connector`
    * discovery hint is published.
    */
   isNativeSingleSourceMode(): boolean;
@@ -199,7 +199,7 @@ export function executeRsProtectedResourceMetadata(
       filter_requires_single_stream: true;
     };
     hybrid_pagination_supported?: boolean;
-    owner_polyfill_requires_connector_id?: true;
+    owner_polyfill_requires_source_kind_connector?: true;
   } = {
     schema_endpoint: "/v1/schema",
     query_base: "/v1",
@@ -228,7 +228,7 @@ export function executeRsProtectedResourceMetadata(
   }
 
   if (!dependencies.isNativeSingleSourceMode()) {
-    discoveryHints.owner_polyfill_requires_connector_id = true;
+    discoveryHints.owner_polyfill_requires_source_kind_connector = true;
   }
 
   return {

@@ -52,8 +52,8 @@ export interface ConnectorError {
 }
 
 export interface RunSource {
-  readonly binding_kind: "connector";
-  readonly connector_id: string;
+  readonly id: string;
+  readonly kind: "connector";
 }
 
 /**
@@ -235,7 +235,7 @@ function isTerminalGrantFailure(reason: string | null | undefined): reason is Te
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 function buildScheduledRunSource(connectorId: string): RunSource {
-  return { binding_kind: "connector", connector_id: connectorId };
+  return { kind: "connector", id: connectorId };
 }
 
 function describeFailedRunResult(result: RunConnectorResult): RunConnectorError {
@@ -331,11 +331,15 @@ function toStoredRunRecord(record: RunRecord): SchedulerRunHistoryRecord {
 }
 
 function fromStoredRunRecord(record: SchedulerRunHistoryRecord): RunRecord {
+  let sourceId = record.connectorId;
+  if (typeof record.source.id === "string") {
+    sourceId = record.source.id;
+  }
   const restored: RunRecord = {
     connectorId: record.connectorId,
     source: {
-      binding_kind: "connector",
-      connector_id: typeof record.source.connector_id === "string" ? record.source.connector_id : record.connectorId,
+      kind: "connector",
+      id: sourceId,
     },
     status: record.status,
     recordsEmitted: record.recordsEmitted,

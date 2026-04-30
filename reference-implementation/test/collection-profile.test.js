@@ -2032,8 +2032,8 @@ rl.on('line', (line) => {
       assert.ok(skippedEvent, 'expected run.stream_skipped event');
       assert.equal(skippedEvent.status, 'skipped');
       assert.equal(skippedEvent.stream_id, 'items');
-      assert.equal(skippedEvent.data.source?.binding_kind, 'connector');
-      assert.equal(skippedEvent.data.source?.connector_id, connectorId);
+      assert.equal(skippedEvent.data.source?.kind, 'connector');
+      assert.equal(skippedEvent.data.source?.id, connectorId);
       assert.equal(skippedEvent.data.reason, 'rate_limited');
       assert.equal(skippedEvent.data.message, 'Platform returned 429');
       assert.equal(skippedEvent.data.known_gap.kind, 'skip_result');
@@ -2316,8 +2316,8 @@ rl.on('line', (line) => {
       assert.ok(progressEvent, 'expected run.progress_reported event');
       assert.equal(progressEvent.status, 'in_progress');
       assert.equal(progressEvent.stream_id, 'items');
-      assert.equal(progressEvent.data.source?.binding_kind, 'connector');
-      assert.equal(progressEvent.data.source?.connector_id, connectorId);
+      assert.equal(progressEvent.data.source?.kind, 'connector');
+      assert.equal(progressEvent.data.source?.id, connectorId);
       assert.equal(progressEvent.data.message, 'Fetching first page');
       assert.equal(progressEvent.data.count, 1);
       assert.equal(progressEvent.data.total, 3);
@@ -6016,7 +6016,7 @@ async function startGrantRequest(asUrl, params) {
       authorization_details: [
         {
           type: 'https://pdpp.org/data-access',
-          connector_id: params.connectorId,
+          source: { kind: 'connector', id: params.connectorId },
           purpose_code: 'https://pdpp.org/purpose/personalization',
           purpose_description: 'Collection Profile conformance test grant',
           access_mode: 'continuous',

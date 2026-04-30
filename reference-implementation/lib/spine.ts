@@ -40,6 +40,13 @@ export type SpineDatabase = BetterSqliteDatabase;
 
 export type SpineCorrelationKey = "trace" | "grant" | "run";
 
+type SourceKind = "connector" | "provider_native";
+
+export interface SourceObject {
+  readonly id: string;
+  readonly kind: SourceKind;
+}
+
 export interface SpineTraceContext {
   readonly request_id: string;
   readonly scenario_id: string;
@@ -63,10 +70,11 @@ export interface SpineEventInput {
   readonly object_id?: string | null;
   readonly object_type?: string | null;
   readonly occurred_at?: string | null;
-  readonly provider_id?: string | null;
   readonly request_id?: string | null;
   readonly run_id?: string | null;
   readonly scenario_id?: string | null;
+  readonly source_id?: string | null;
+  readonly source_kind?: SourceKind | string | null;
   readonly status?: string | null;
   readonly stream_id?: string | null;
   readonly subject_id?: string | null;
@@ -92,11 +100,12 @@ export interface SpineEventRecord {
   readonly object_id: string;
   readonly object_type: string;
   readonly occurred_at: string;
-  readonly provider_id: string | null;
   readonly recorded_at: string;
   readonly request_id: string | null;
   readonly run_id: string | null;
   readonly scenario_id: string;
+  readonly source_id: string | null;
+  readonly source_kind: SourceKind | null;
   readonly status: string;
   readonly stream_id: string | null;
   readonly subject_id: string | null;
@@ -118,11 +127,12 @@ interface NormalizedSpineEvent {
   readonly object_id: string;
   readonly object_type: string;
   readonly occurred_at: string;
-  readonly provider_id: string | null;
   readonly recorded_at: string;
   readonly request_id: string | null;
   readonly run_id: string | null;
   readonly scenario_id: string;
+  readonly source_id: string | null;
+  readonly source_kind: SourceKind | null;
   readonly status: string;
   readonly stream_id: string | null;
   readonly subject_id: string | null;
@@ -144,11 +154,12 @@ interface SpineEventRow {
   readonly object_id: string;
   readonly object_type: string;
   readonly occurred_at: string;
-  readonly provider_id: string | null;
   readonly recorded_at: string;
   readonly request_id: string | null;
   readonly run_id: string | null;
   readonly scenario_id: string;
+  readonly source_id: string | null;
+  readonly source_kind: SourceKind | null;
   readonly status: string;
   readonly stream_id: string | null;
   readonly subject_id: string | null;
@@ -167,13 +178,13 @@ export interface SpineEventFilters {
 
 export interface SpineCorrelationFilters {
   readonly clientId?: string | null;
-  readonly connectorId?: string | null;
   readonly cursor?: string | null;
   readonly grantId?: string | null;
   readonly limit?: number | string | null;
-  readonly providerId?: string | null;
   readonly q?: string | null;
   readonly since?: string | null;
+  readonly sourceId?: string | null;
+  readonly sourceKind?: SourceKind | string | null;
   readonly status?: string | null;
   readonly until?: string | null;
 }
@@ -196,9 +207,11 @@ export interface SpineSummary {
   kinds: string[];
   last_at: string;
   needs_input: boolean;
-  provider_id: string | null;
   request_id: string | null;
   run_id: string | null;
+  source: SourceObject | null;
+  source_id: string | null;
+  source_kind: SourceKind | null;
   status: string;
   trace_id: string | null;
 }
@@ -252,8 +265,88 @@ function asOptionalString(value: unknown): string | null {
   return typeof value === "string" && value ? value : null;
 }
 
+function asSourceKind(value: unknown): SourceKind | null {
+  return value === "connector" || value === "provider_native" ? value : null;
+}
+
+function normalizeSourceObject(value: unknown): SourceObject | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  const source = value as Record<string, unknown>;
+  const kind = asSourceKind(source.kind);
+  const id = asOptionalString(source.id);
+  if (kind && id) {
+    return { kind, id };
+  }
+
+  const legacyKind = asSourceKind(source.binding_kind);
+  if (legacyKind === "connector") {
+    const id = asOptionalString(source.connector_id);
+    return id ? { kind: "connector", id } : null;
+  }
+  if (legacyKind === "provider_native") {
+    const id = asOptionalString(source.provider_id);
+    return id ? { kind: "provider_native", id } : null;
+  }
+
+  const connectorId = asOptionalString(source.connector_id);
+  const providerId = asOptionalString(source.provider_id);
+  if (connectorId && !providerId) {
+    return { kind: "connector", id: connectorId };
+  }
+  if (providerId && !connectorId) {
+    return { kind: "provider_native", id: providerId };
+  }
+  return null;
+}
+
+function deriveSourceFromEventInput(input: SpineEventInput, actorType: string, actorId: string): SourceObject | null {
+  const explicitKind = asSourceKind(input.source_kind);
+  const explicitId = asOptionalString(input.source_id);
+  if (explicitKind && explicitId) {
+    return { kind: explicitKind, id: explicitId };
+  }
+
+  const data =
+    input.data && typeof input.data === "object" && !Array.isArray(input.data)
+      ? (input.data as Record<string, unknown>)
+      : null;
+  const source = normalizeSourceObject(data?.source) ?? normalizeSourceObject(data?.source_binding);
+  if (source) {
+    return source;
+  }
+
+  const connectorId = asOptionalString(data?.connector_id);
+  const providerId = asOptionalString(data?.provider_id);
+  if (connectorId && !providerId) {
+    return { kind: "connector", id: connectorId };
+  }
+  if (providerId && !connectorId) {
+    return { kind: "provider_native", id: providerId };
+  }
+  if (actorType === "runtime" && actorId) {
+    return { kind: "connector", id: actorId };
+  }
+  return null;
+}
+
+function serializeSpineEventData(inputData: unknown, source: SourceObject | null): string {
+  const data =
+    inputData && typeof inputData === "object" && !Array.isArray(inputData)
+      ? { ...(inputData as Record<string, unknown>) }
+      : {};
+  if (source) {
+    data.source = source;
+  }
+  return JSON.stringify(data);
+}
+
 function normalizeSpineEventInput(input: SpineEventInput): NormalizedSpineEvent {
   const occurredAt = asString(input.occurred_at, nowIso());
+  const actorType = asString(input.actor_type, "system");
+  const actorId = asString(input.actor_id, "pdpp_reference");
+  const source = deriveSourceFromEventInput(input, actorType, actorId);
   return {
     event_id: asString(input.event_id, generateSpineId("evt")),
     event_type: asOptionalString(input.event_type),
@@ -261,8 +354,8 @@ function normalizeSpineEventInput(input: SpineEventInput): NormalizedSpineEvent 
     recorded_at: nowIso(),
     scenario_id: asString(input.scenario_id, DEFAULT_SCENARIO_ID),
     trace_id: asString(input.trace_id, generateSpineId("trc")),
-    actor_type: asString(input.actor_type, "system"),
-    actor_id: asString(input.actor_id, "pdpp_reference"),
+    actor_type: actorType,
+    actor_id: actorId,
     subject_type: asOptionalString(input.subject_type),
     subject_id: asOptionalString(input.subject_id),
     object_type: asString(input.object_type, "event"),
@@ -271,12 +364,13 @@ function normalizeSpineEventInput(input: SpineEventInput): NormalizedSpineEvent 
     request_id: asOptionalString(input.request_id),
     grant_id: asOptionalString(input.grant_id),
     run_id: asOptionalString(input.run_id),
-    provider_id: asOptionalString(input.provider_id),
+    source_kind: source?.kind ?? null,
+    source_id: source?.id ?? null,
     client_id: asOptionalString(input.client_id),
     stream_id: asOptionalString(input.stream_id),
     token_id: asOptionalString(input.token_id),
     interaction_id: asOptionalString(input.interaction_id),
-    data_json: JSON.stringify(input.data ?? {}),
+    data_json: serializeSpineEventData(input.data, source),
     version: asString(input.version, SPINE_VERSION),
   };
 }
@@ -327,7 +421,8 @@ function hydrateNormalizedEvent(event: NormalizedSpineEvent): SpineEventRecord {
     request_id: event.request_id,
     grant_id: event.grant_id,
     run_id: event.run_id,
-    provider_id: event.provider_id,
+    source_kind: event.source_kind,
+    source_id: event.source_id,
     client_id: event.client_id,
     stream_id: event.stream_id,
     token_id: event.token_id,
@@ -355,7 +450,8 @@ function hydrateRows(rows: readonly SpineEventRow[]): SpineEventRecord[] {
     request_id: row.request_id,
     grant_id: row.grant_id,
     run_id: row.run_id,
-    provider_id: row.provider_id,
+    source_kind: row.source_kind,
+    source_id: row.source_id,
     client_id: row.client_id,
     stream_id: row.stream_id,
     token_id: row.token_id,
@@ -487,6 +583,9 @@ function loadEventsForSummary(kind: SpineCorrelationKind, id: string): SpineEven
  * Reference-only helper used by the `_ref` list surfaces.
  */
 function connectorIdFromEvent(ev: SpineEventRecord): string | null {
+  if (ev.source_kind === "connector" && ev.source_id) {
+    return ev.source_id;
+  }
   if (ev.actor_type === "runtime" && ev.actor_id) {
     return ev.actor_id;
   }
@@ -503,12 +602,21 @@ function connectorIdFromEvent(ev: SpineEventRecord): string | null {
   }
   const source = d.source;
   if (source && typeof source === "object") {
-    const id = (source as Record<string, unknown>).connector_id;
-    if (typeof id === "string") {
-      return id;
+    const normalized = normalizeSourceObject(source);
+    if (normalized?.kind === "connector") {
+      return normalized.id;
     }
   }
   return null;
+}
+
+function sourceFromEvent(ev: SpineEventRecord): SourceObject | null {
+  const sourceKind = asSourceKind(ev.source_kind);
+  if (sourceKind && ev.source_id) {
+    return { kind: sourceKind, id: ev.source_id };
+  }
+  const data = ev.data && typeof ev.data === "object" ? (ev.data as Record<string, unknown>) : {};
+  return normalizeSourceObject(data.source) ?? normalizeSourceObject(data.source_binding);
 }
 
 function pickFirstNonNull<T extends keyof SpineEventRecord>(
@@ -559,6 +667,13 @@ function summarizeEvents(events: readonly SpineEventRecord[]): SpineSummary | nu
       break;
     }
   }
+  let source: SourceObject | null = null;
+  for (const ev of events) {
+    source = sourceFromEvent(ev);
+    if (source) {
+      break;
+    }
+  }
 
   return {
     first_at: first.occurred_at,
@@ -572,7 +687,9 @@ function summarizeEvents(events: readonly SpineEventRecord[]): SpineSummary | nu
     trace_id: pickFirstNonNull(events, "trace_id") as string | null,
     run_id: pickFirstNonNull(events, "run_id") as string | null,
     client_id: pickFirstNonNull(events, "client_id") as string | null,
-    provider_id: pickFirstNonNull(events, "provider_id") as string | null,
+    source,
+    source_kind: source?.kind ?? null,
+    source_id: source?.id ?? null,
     connector_id,
     actor_type: first.actor_type,
     actor_id: first.actor_id,
@@ -642,7 +759,10 @@ function applyFilters(summary: SpineSummary, filters: SpineCorrelationFilters): 
   if (filters.clientId && summary.client_id !== filters.clientId) {
     return false;
   }
-  if (filters.providerId && summary.provider_id !== filters.providerId) {
+  if (filters.sourceKind && summary.source_kind !== filters.sourceKind) {
+    return false;
+  }
+  if (filters.sourceId && summary.source_id !== filters.sourceId) {
     return false;
   }
   if (filters.grantId && summary.grant_id !== filters.grantId) {
@@ -738,16 +858,15 @@ function clampLimit(raw: unknown): number {
  * Shape:
  *   1. SQL `GROUP BY <correlation_column>` with bounded aggregates and SQL
  *      LIMIT/ORDER BY. `since`/`until`/`status` (strict — i.e., existence of
- *      any matching event) push into the WHERE clause. `clientId`/`providerId`/
- *      `grantId` are event-column equality filters pushed into WHERE too.
+ *      any matching event) push into the WHERE clause. `clientId`/`sourceKind`/
+ *      `sourceId`/`grantId` are event-column equality filters pushed into WHERE too.
  *   2. SQL `q` narrowing via LIKE on the indexed correlation columns.
- *      Secondary-field LIKE (request_id / client_id / provider_id) stays as a
+ *      Secondary-field LIKE (request_id / client_id / source_id) stays as a
  *      page-scope filter in JS to avoid a Cartesian product in the GROUP BY.
  *   3. Page-scope hydration: for the at-most-`limit` group ids, fetch their
  *      events via `listSpineEventsSync` and run `summarizeEvents` /
  *      `deriveGrantLifecycleStatus` to produce the same response shape.
- *   4. Page-scope JS filters: `connectorId` (derived from event JSON) and
- *      the fuzzy `q` match on secondary fields.
+ *   4. Page-scope JS filters: fuzzy `q` match on secondary fields.
  *
  * Backwards-compatible return shape: `{summaries, hasMore, nextCursor}`. The
  * cursor remains `"<last_at>::<id>"`.
@@ -795,21 +914,18 @@ export async function listSpineCorrelations(
     whereParts.push("client_id = ?");
     whereBinds.push(filters.clientId);
   }
-  if (filters.providerId) {
-    whereParts.push("provider_id = ?");
-    whereBinds.push(filters.providerId);
+  if (filters.sourceKind) {
+    whereParts.push("source_kind = ?");
+    whereBinds.push(String(filters.sourceKind));
+  }
+  if (filters.sourceId) {
+    whereParts.push("source_id = ?");
+    whereBinds.push(filters.sourceId);
   }
   if (filters.grantId && column !== "grant_id") {
     whereParts.push("grant_id = ?");
     whereBinds.push(filters.grantId);
   }
-  if (filters.connectorId && key === "run") {
-    whereParts.push(
-      "run_id IN (SELECT run_id FROM spine_events WHERE run_id IS NOT NULL AND actor_type = 'runtime' AND actor_id = ?)"
-    );
-    whereBinds.push(filters.connectorId);
-  }
-
   // q narrowing on the indexed correlation column. Secondary-field LIKE stays
   // in the page-scope pass below.
   if (filters.q) {
@@ -873,13 +989,10 @@ export async function listSpineCorrelations(
     if (!applyFilters(s, filters)) {
       continue;
     }
-    if (filters.connectorId && s.connector_id !== filters.connectorId) {
-      continue;
-    }
     if (filters.q) {
       const needle = String(filters.q).toLowerCase();
       const hay =
-        `${aggRow.id} ${s.request_id || ""} ${s.grant_id || ""} ${s.run_id || ""} ${s.client_id || ""} ${s.provider_id || ""}`.toLowerCase();
+        `${aggRow.id} ${s.request_id || ""} ${s.grant_id || ""} ${s.run_id || ""} ${s.client_id || ""} ${s.source_id || ""}`.toLowerCase();
       if (!hay.includes(needle)) {
         continue;
       }

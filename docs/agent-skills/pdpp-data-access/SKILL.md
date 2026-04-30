@@ -84,7 +84,9 @@ Notes:
 - `purpose_description` is read by the owner. Write it as one sentence the owner would accept on a consent screen.
 - Pick the smallest set of streams that can answer the current task. Adding fields later is cheap; explaining why you grabbed extra is expensive.
 - `access_mode` should be `single_use` for one-shot tasks. The reference consumes the grant at first token issuance, but the issued token remains usable for pagination and retries until token expiry or revocation. Long-lived agents use `continuous` only when the user has explicitly asked for it.
-- Pick `connector_id` (polyfill-style providers) **or** `provider_id` (native PDPP providers), never both. Use the exact connector id from `/v1/schema` or `/v1/connectors` (for example `https://registry.pdpp.org/connectors/github`), not a guessed short name.
+- Set one `source` object: `{ "kind": "connector", "id": "<registry URI>" }` for polyfill-style providers or `{ "kind": "provider_native", "id": "<provider id>" }` for native PDPP providers. Use the exact connector source id from `/v1/schema` or `/v1/connectors` (for example `https://registry.pdpp.org/connectors/github`), not a guessed short name.
+
+Previously known as: older docs used top-level `connector_id` for connector sources and `provider_id` for native providers. Those names now map to `source.id` under the matching `source.kind`; do not send them as public request fields.
 
 The command prints an approval URL and access summary. You cannot approve for the owner. Do not try.
 
@@ -171,7 +173,10 @@ Don't grab all email. Build:
 {
   "authorization_details": [{
     "type": "https://pdpp.org/data-access",
-    "connector_id": "https://registry.pdpp.org/connectors/gmail",
+    "source": {
+      "kind": "connector",
+      "id": "https://registry.pdpp.org/connectors/gmail"
+    },
     "purpose_code": "assist.summarize",
     "purpose_description": "Summarize emails from <sender> for the past 7 days.",
     "access_mode": "single_use",

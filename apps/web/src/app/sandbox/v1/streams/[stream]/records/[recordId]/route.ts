@@ -16,7 +16,7 @@ export async function GET(_request: Request, ctx: { params: Promise<{ stream: st
         streamName: stream,
         recordId,
       },
-      createSandboxRecordDetailDependencies()
+      createSandboxRecordDetailDependencies(stream)
     );
     return jsonResponse(out.record);
   } catch (err) {

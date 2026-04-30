@@ -64,10 +64,13 @@ export async function registerClient({ asUrl, initialAccessToken, metadata }) {
   return body.value;
 }
 
-export function buildParRequest({ clientId, clientName, connectorId, providerId, streamName, purposeCode, purposeDescription, accessMode }) {
+export function buildParRequest({ clientId, clientName, sourceKind, sourceId, streamName, purposeCode, purposeDescription, accessMode }) {
   if (!clientId) throw new Error('clientId is required');
-  if (Boolean(connectorId) === Boolean(providerId)) {
-    throw new Error('Specify exactly one of connectorId or providerId');
+  if (sourceKind !== 'connector' && sourceKind !== 'provider_native') {
+    throw new Error("sourceKind must be 'connector' or 'provider_native'");
+  }
+  if (!sourceId) {
+    throw new Error('sourceId is required');
   }
   if (!streamName) throw new Error('streamName is required');
   return {
@@ -76,8 +79,7 @@ export function buildParRequest({ clientId, clientName, connectorId, providerId,
     authorization_details: [
       {
         type: 'https://pdpp.org/data-access',
-        ...(connectorId ? { connector_id: connectorId } : {}),
-        ...(providerId ? { provider_id: providerId } : {}),
+        source: { kind: sourceKind, id: sourceId },
         purpose_code: purposeCode,
         purpose_description: purposeDescription,
         access_mode: accessMode,
