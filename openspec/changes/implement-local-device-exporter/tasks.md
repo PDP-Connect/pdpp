@@ -1,9 +1,9 @@
 ## 1. Server Storage And Credentials
 
-- [ ] 1.1 Add SQLite and Postgres tables/adapters for device exporters, source instances, device ingest credentials, enrollment codes, and ingest batch outcomes.
-- [ ] 1.2 Add storage conformance tests covering enrollment lifecycle, token lookup, revocation, source-instance lookup, batch idempotency, and batch conflict rejection.
+- [x] 1.1 Add SQLite and Postgres tables/adapters for device exporters, source instances, device ingest credentials, enrollment codes, and ingest batch outcomes.
+- [x] 1.2 Add storage conformance tests covering enrollment lifecycle, token lookup, revocation, source-instance lookup, batch idempotency, and batch conflict rejection.
 - [ ] 1.3 Add a dedicated device credential verifier that rejects owner tokens and client grant tokens on device routes.
-- [ ] 1.4 Add migration/bootstrap behavior so existing reference instances start with zero enrolled devices and no behavior change.
+- [x] 1.4 Add migration/bootstrap behavior so existing reference instances start with zero enrolled devices and no behavior change.
 
 ## 2. Server Routes And Ingest
 

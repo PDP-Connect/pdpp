@@ -195,6 +195,22 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   readonly controllerUpdateScheduleEnabled: MutationQuery;
   readonly controllerUpsertActiveRun: MutationQuery;
   readonly controllerUpsertSchedulerLastRunTime: MutationQuery;
+  readonly deviceExportersConsumeEnrollmentCode: MutationQuery;
+  readonly deviceExportersGetBatchOutcomeByBatch: ReadOneQuery;
+  readonly deviceExportersGetCredentialByTokenHash: ReadOneQuery;
+  readonly deviceExportersGetDevice: ReadOneQuery;
+  readonly deviceExportersGetEnrollmentByCodeHash: ReadOneQuery;
+  readonly deviceExportersGetSourceInstance: ReadOneQuery;
+  readonly deviceExportersGetSourceInstanceByBinding: ReadOneQuery;
+  readonly deviceExportersInsertBatchOutcome: MutationQuery;
+  readonly deviceExportersInsertCredential: MutationQuery;
+  readonly deviceExportersInsertDevice: MutationQuery;
+  readonly deviceExportersInsertEnrollmentCode: MutationQuery;
+  readonly deviceExportersMarkCredentialUsed: MutationQuery;
+  readonly deviceExportersRevokeCredentialsForDevice: MutationQuery;
+  readonly deviceExportersRevokeDevice: MutationQuery;
+  readonly deviceExportersRevokeEnrollmentCode: MutationQuery;
+  readonly deviceExportersUpsertSourceInstance: MutationQuery;
   // Grants — runtime hydration of persisted grant rows for grant-scoped
   // state lookups and similar runtime paths.
   readonly grantsGetScopedStateById: ReadOneQuery;

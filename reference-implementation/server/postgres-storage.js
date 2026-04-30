@@ -272,6 +272,75 @@ export async function bootstrapPostgresSchema() {
       CREATE INDEX IF NOT EXISTS idx_pg_owner_device_auth_status_expires
         ON owner_device_auth(status, expires_at);
 
+      CREATE TABLE IF NOT EXISTS device_exporters (
+        device_id TEXT PRIMARY KEY,
+        owner_subject_id TEXT NOT NULL,
+        display_name TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'active',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        revoked_at TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_pg_device_exporters_owner_status
+        ON device_exporters(owner_subject_id, status, created_at);
+
+      CREATE TABLE IF NOT EXISTS device_ingest_credentials (
+        credential_id TEXT PRIMARY KEY,
+        device_id TEXT NOT NULL REFERENCES device_exporters(device_id) ON DELETE CASCADE,
+        token_hash TEXT NOT NULL UNIQUE,
+        status TEXT NOT NULL DEFAULT 'active',
+        created_at TEXT NOT NULL,
+        last_used_at TEXT,
+        revoked_at TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_pg_device_ingest_credentials_device_status
+        ON device_ingest_credentials(device_id, status);
+
+      CREATE TABLE IF NOT EXISTS device_enrollment_codes (
+        enrollment_code_id TEXT PRIMARY KEY,
+        code_hash TEXT NOT NULL UNIQUE,
+        owner_subject_id TEXT NOT NULL,
+        device_id TEXT REFERENCES device_exporters(device_id) ON DELETE SET NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        consumed_at TEXT,
+        revoked_at TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_pg_device_enrollment_codes_owner_status
+        ON device_enrollment_codes(owner_subject_id, status, expires_at);
+
+      CREATE TABLE IF NOT EXISTS device_source_instances (
+        source_instance_id TEXT PRIMARY KEY,
+        device_id TEXT NOT NULL REFERENCES device_exporters(device_id) ON DELETE CASCADE,
+        connector_id TEXT NOT NULL,
+        local_binding_id TEXT NOT NULL,
+        display_name TEXT,
+        status TEXT NOT NULL DEFAULT 'active',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        revoked_at TEXT,
+        UNIQUE(device_id, connector_id, local_binding_id),
+        UNIQUE(device_id, source_instance_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_pg_device_source_instances_device_status
+        ON device_source_instances(device_id, status);
+
+      CREATE TABLE IF NOT EXISTS device_ingest_batch_outcomes (
+        device_id TEXT NOT NULL REFERENCES device_exporters(device_id) ON DELETE CASCADE,
+        batch_id TEXT NOT NULL,
+        body_hash TEXT NOT NULL,
+        source_instance_id TEXT NOT NULL,
+        status TEXT NOT NULL,
+        http_status INTEGER NOT NULL,
+        response_json JSONB NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY(device_id, batch_id, body_hash),
+        UNIQUE(device_id, batch_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_pg_device_ingest_batch_outcomes_source
+        ON device_ingest_batch_outcomes(device_id, source_instance_id, created_at);
+
       CREATE TABLE IF NOT EXISTS connector_state (
         connector_id TEXT NOT NULL,
         stream TEXT NOT NULL,
