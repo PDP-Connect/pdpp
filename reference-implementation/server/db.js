@@ -432,14 +432,6 @@ CREATE INDEX IF NOT EXISTS idx_spine_events_grant
 CREATE INDEX IF NOT EXISTS idx_spine_events_run
   ON spine_events(run_id, occurred_at, recorded_at);
 
-CREATE INDEX IF NOT EXISTS idx_spine_events_run_terminal
-  ON spine_events(run_id, event_type, event_seq DESC)
-  WHERE run_id IS NOT NULL
-    AND event_type IN ('run.completed', 'run.failed', 'run.cancelled');
-
-CREATE UNIQUE INDEX IF NOT EXISTS idx_spine_events_seq
-  ON spine_events(event_seq) WHERE event_seq IS NOT NULL;
-
 -- Lexical retrieval extension — SQLite FTS5 backing for GET /v1/search.
 -- One row per (connector_id, stream, record_key, field) where \`field\` is
 -- declared in the stream's manifest under query.search.lexical_fields.
@@ -829,6 +821,12 @@ export function initDb(path = ':memory:', opts = {}) {
     );
   });
   runWithSqliteBusyRetrySync(() => migrateSpineSourceColumns(raw, opts));
+  raw.exec(
+    `CREATE INDEX IF NOT EXISTS idx_spine_events_run_terminal
+      ON spine_events(run_id, event_type, event_seq DESC)
+      WHERE run_id IS NOT NULL
+        AND event_type IN ('run.completed', 'run.failed', 'run.cancelled')`
+  );
   raw.exec(
     `CREATE UNIQUE INDEX IF NOT EXISTS idx_spine_events_seq ON spine_events(event_seq) WHERE event_seq IS NOT NULL`
   );

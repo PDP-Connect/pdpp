@@ -314,6 +314,82 @@ test('event spine', async (t) => {
     }
   });
 
+  await t.test('migrates pre-event-seq spine rows before creating event_seq indexes', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'pdpp-spine-event-seq-migration-'));
+    const dbPath = join(dir, 'legacy.sqlite');
+    const oldDb = new Database(dbPath);
+
+    try {
+      oldDb.exec(`
+        CREATE TABLE spine_events (
+          event_id         TEXT PRIMARY KEY,
+          event_type       TEXT NOT NULL,
+          occurred_at      TEXT NOT NULL,
+          recorded_at      TEXT NOT NULL,
+          scenario_id      TEXT NOT NULL,
+          trace_id         TEXT NOT NULL,
+          actor_type       TEXT NOT NULL,
+          actor_id         TEXT NOT NULL,
+          subject_type     TEXT,
+          subject_id       TEXT,
+          object_type      TEXT NOT NULL,
+          object_id        TEXT NOT NULL,
+          status           TEXT NOT NULL,
+          request_id       TEXT,
+          grant_id         TEXT,
+          run_id           TEXT,
+          source_kind      TEXT,
+          source_id        TEXT,
+          client_id        TEXT,
+          stream_id        TEXT,
+          token_id         TEXT,
+          interaction_id   TEXT,
+          data_json        TEXT NOT NULL,
+          version          TEXT NOT NULL
+        );
+
+        INSERT INTO spine_events (
+          event_id, event_type, occurred_at, recorded_at, scenario_id, trace_id,
+          actor_type, actor_id, object_type, object_id, status, run_id,
+          source_kind, source_id, data_json, version
+        )
+        VALUES (
+          'evt_legacy_without_event_seq',
+          'run.completed',
+          '2026-04-01T00:00:00Z',
+          '2026-04-01T00:00:01Z',
+          'scn_test',
+          'trc_test',
+          'runtime',
+          'conn_legacy',
+          'run',
+          'run_legacy',
+          'succeeded',
+          'run_legacy',
+          'connector',
+          'conn_legacy',
+          '{"source":{"kind":"connector","id":"conn_legacy"}}',
+          'spine.v1'
+        );
+      `);
+      oldDb.close();
+
+      initDb(dbPath);
+      const db = getDb();
+      const columns = db.prepare('PRAGMA table_info(spine_events)').all().map((row) => row.name);
+      const indexes = db.prepare('PRAGMA index_list(spine_events)').all().map((row) => row.name);
+      const row = db.prepare('SELECT event_seq FROM spine_events WHERE event_id = ?').get('evt_legacy_without_event_seq');
+
+      assert.ok(columns.includes('event_seq'));
+      assert.equal(row.event_seq, 1);
+      assert.ok(indexes.includes('idx_spine_events_run_terminal'));
+      assert.ok(indexes.includes('idx_spine_events_seq'));
+    } finally {
+      closeDb();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   await t.test('captures dynamic client registration success and rejection as trace artifacts', async () => {
     await withHarness(async ({ asUrl }) => {
       const registration = await registerDynamicClient(asUrl, {
