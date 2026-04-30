@@ -1,4 +1,5 @@
 import type { BaseLayoutProps } from "fumadocs-ui/layouts/shared";
+import { ThemeToggle } from "@/components/theme/theme-toggle.tsx";
 
 export function baseOptions(): BaseLayoutProps {
   return {
@@ -9,7 +10,8 @@ export function baseOptions(): BaseLayoutProps {
     },
     githubUrl: "https://github.com/vana-com/pdpp",
     themeSwitch: {
-      enabled: false,
+      component: <ThemeToggle />,
+      enabled: true,
     },
   };
 }

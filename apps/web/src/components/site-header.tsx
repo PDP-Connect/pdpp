@@ -6,7 +6,13 @@ import { usePathname } from "next/navigation";
 import { PdppLogo } from "@/components/pdpp-logo.tsx";
 import { ThemeToggle } from "@/components/theme/theme-toggle.tsx";
 
-export function SiteHeader({ currentLabel }: { currentLabel: string }) {
+export function SiteHeader({
+  currentLabel,
+  showThemeToggle = true,
+}: {
+  currentLabel: string;
+  showThemeToggle?: boolean;
+}) {
   const pathname = usePathname();
   const isHome = pathname === "/";
 
@@ -50,7 +56,7 @@ export function SiteHeader({ currentLabel }: { currentLabel: string }) {
             </Link>
           );
         })}
-        <ThemeToggle className="ml-1" />
+        {showThemeToggle ? <ThemeToggle className="ml-1" /> : null}
       </nav>
     </div>
   );

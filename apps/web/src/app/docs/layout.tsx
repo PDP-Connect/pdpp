@@ -15,7 +15,7 @@ export default function Layout({ children }: { children: ReactNode }) {
           borderBottom: "1px solid var(--border)",
         }}
       >
-        <SiteHeader currentLabel="Docs" />
+        <SiteHeader currentLabel="Docs" showThemeToggle={false} />
         <div className="flex-1" />
         <span className="font-mono text-xs" style={{ color: "var(--muted-foreground)", opacity: 0.5 }}>
           v0.1.0

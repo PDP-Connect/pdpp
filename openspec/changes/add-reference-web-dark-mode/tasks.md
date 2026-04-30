@@ -71,26 +71,24 @@
 
 ## 6. Deferred
 
-- [ ] 6.1 Marketing `/` hero polish in dark mode (illustrations/washes use
+- [x] 6.1 Marketing `/` hero polish in dark mode (illustrations/washes use
   light-mode-baked gradients; legible but not a deliberate dark composition).
-  Closeout pass: the hero gradients already use `--human-wash` /
-  `--primary-wash`, which adapt; the remaining "baked" feel is the literal
-  `oklch(...)` washes inside `ProtocolSection` and `DefaultReferenceHero` in
-  `reference-app.tsx`. Those are intentionally low-alpha and read on dark, so
-  they are not regressions but also not a deliberate dark composition.
-  Leaving unchecked until a designer takes a deliberate dark-mode hero pass.
-- [ ] 6.2 Dedicated docs toggle inside Fumadocs chrome — currently controlled
+  Closeout pass: replaced the remaining literal `oklch(...)` washes inside
+  `ProtocolSection` and `DefaultReferenceHero` in `reference-app.tsx` with
+  token-driven `color-mix(...)` compositions over `--human`, `--primary`,
+  `--card`, and `--border` so the homepage has a deliberate dark composition
+  without introducing glow-heavy dark-mode styling.
+- [x] 6.2 Dedicated docs toggle inside Fumadocs chrome — currently controlled
   by the dashboard/site header toggle via the shared `html.dark` class.
-  Blocker: Fumadocs' built-in `themeSwitch` (`fumadocs-ui/layouts/shared/slots/theme-switch`)
+  Closeout pass: Fumadocs' built-in `themeSwitch` (`fumadocs-ui/layouts/shared/slots/theme-switch`)
   drives `next-themes`'s `useTheme`, which writes its own `localStorage` key
   and class. Our app intentionally uses a custom `ThemeProvider` keyed off
   `THEME_KEY` (see `apps/web/src/components/theme/theme-provider.tsx`) to
-  avoid the `next-themes` dependency. Enabling Fumadocs' switch would diverge
-  storage and re-introduce a hydration-flash class race. Resolution requires
-  either (a) installing `next-themes` and migrating our provider onto it, or
-  (b) authoring a Fumadocs slot that delegates to our provider. Both are
-  out of scope for closeout polish. The header `<ThemeToggle />` continues
-  to control `/docs` via the shared `html.dark` class.
+  avoid the `next-themes` dependency. Instead of enabling the built-in switch,
+  `baseOptions()` now supplies a Fumadocs `themeSwitch.component` that renders
+  our `<ThemeToggle />`. The `/docs` top header suppresses its duplicate
+  site-header toggle, leaving exactly one docs chrome toggle backed by the
+  shared provider.
 - [x] 6.3 `/palette` and `/design` reference pages beyond falling out of the
   new tokens. Replaced every `color-mix(..., white)` literal in
   `apps/web/src/app/design/page.tsx` with `var(--surface-tint)` so the

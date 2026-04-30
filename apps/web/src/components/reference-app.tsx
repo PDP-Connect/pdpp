@@ -60,6 +60,16 @@ const SECTION_DISPLAY_ORDER = Object.fromEntries(
   SECTIONS.map((section, index) => [section.id, (index + 1) * 10])
 ) as Record<SectionId, number>;
 
+const FEATURED_SECTION_WASH = {
+  human:
+    "linear-gradient(to bottom, color-mix(in oklab, var(--human) 14%, transparent), color-mix(in oklab, var(--human) 5%, transparent) 32%, transparent 68%)",
+  protocol:
+    "linear-gradient(to bottom, color-mix(in oklab, var(--primary) 12%, transparent), color-mix(in oklab, var(--primary) 4%, transparent) 32%, transparent 68%)",
+} as const;
+
+const HERO_WASH =
+  "radial-gradient(circle at 16% 18%, color-mix(in oklab, var(--human) 14%, transparent) 0, transparent 26rem), radial-gradient(circle at 86% 4%, color-mix(in oklab, var(--primary) 16%, transparent) 0, transparent 30rem), linear-gradient(to bottom, color-mix(in oklab, var(--card) 42%, transparent), transparent 74%)";
+
 // ─── Specimen data ──────────────────────────────────────────────────────────
 
 const CONNECTOR_SPECIMEN = LONGVIEW_CONNECTOR_SPECIMEN;
@@ -878,10 +888,7 @@ function FeaturedSection({
       style={{
         borderLeft: `2px solid ${borderColor}`,
         order: SECTION_DISPLAY_ORDER[config.id],
-        background:
-          config.surface === "human"
-            ? "linear-gradient(to bottom, oklch(0.52 0.09 45 / 0.06), oklch(0.52 0.09 45 / 0.02) 30%, transparent 60%)"
-            : "linear-gradient(to bottom, oklch(0.580 0.172 253.7 / 0.03), oklch(0.580 0.172 253.7 / 0.01) 30%, transparent 60%)",
+        background: config.surface === "human" ? FEATURED_SECTION_WASH.human : FEATURED_SECTION_WASH.protocol,
       }}
     >
       <div className="mx-auto w-full max-w-3xl px-6 md:px-12">
@@ -927,7 +934,7 @@ const GRANTED_PAY_STATEMENT_FIELDS = [...LONGVIEW_PAY_STATEMENT_GRANTED_FIELDS];
 
 function DefaultReferenceHero() {
   return (
-    <section className="px-6 pt-20 pb-16 md:px-12 md:pt-28 md:pb-24">
+    <section className="px-6 pt-20 pb-16 md:px-12 md:pt-28 md:pb-24" style={{ background: HERO_WASH }}>
       <div className="mx-auto max-w-3xl">
         <Reveal>
           <div className="mb-8 flex items-center gap-2">
@@ -936,7 +943,7 @@ function DefaultReferenceHero() {
               style={{
                 backgroundColor: "var(--primary-wash)",
                 color: "var(--primary)",
-                border: "1px solid oklch(0.580 0.172 253.7 / 0.15)",
+                border: "1px solid color-mix(in oklab, var(--primary) 34%, var(--border))",
               }}
             >
               PDPP
