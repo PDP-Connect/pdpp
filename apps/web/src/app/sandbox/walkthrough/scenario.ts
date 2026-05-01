@@ -1,9 +1,8 @@
 /**
  * Seeded sandbox scenario.
  *
- * Everything in this file is fictional. No real platform credentials, owners,
- * employers, bank accounts, or token values are referenced. The shapes are
- * inspired by PDPP but are simulated, not captured from a live owner instance.
+ * Seeded scenario data for the guided sandbox walkthrough. The shapes mirror
+ * the reference implementation flows while staying deterministic for demos.
  */
 
 export const SANDBOX_OWNER = {
@@ -30,8 +29,7 @@ export const SANDBOX_CLIENT = {
 export const SANDBOX_CONNECTOR = {
   source: { kind: "connector", id: "acme_payroll_demo" },
   name: "Acme Payroll (simulated)",
-  notes:
-    "Stand-in payroll connector used only inside this sandbox. No real Acme Corporation, employer, or paycheck data is involved.",
+  notes: "Demo payroll connector with a stable pay-statement profile for the guided walkthrough.",
 } as const;
 
 export const SANDBOX_STREAM = {

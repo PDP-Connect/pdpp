@@ -1,8 +1,8 @@
 /**
  * Mock-owner schedules page.
  *
- * Read-only view of the demo connector schedules. No mutations — sandbox
- * connectors have no live AS/RS to schedule against.
+ * Read-only view of the sandbox connector schedules. Live instances expose
+ * the same cadence model with owner-write controls.
  */
 
 import { DashboardShell } from "@/app/dashboard/components/shell.tsx";
@@ -21,8 +21,8 @@ export default async function SandboxSchedulesPage() {
         description="Reference instance schedules. In the live dashboard, owners can set automatic refresh cadences per connector."
         readOnlyNotice={
           <div className="pdpp-caption mb-6 rounded border border-border/80 bg-muted/40 px-4 py-3 text-muted-foreground">
-            Read-only in mock-owner mode. To configure schedules, connect a live reference instance on the{" "}
-            <span className="font-medium text-foreground">live dashboard</span>.
+            Schedule controls appear on live reference instances. This profile shows the cadence model and connector
+            defaults.
           </div>
         }
         renderRow={(summary) => <ScheduleReadRow key={summary.connector_id} summary={summary} />}

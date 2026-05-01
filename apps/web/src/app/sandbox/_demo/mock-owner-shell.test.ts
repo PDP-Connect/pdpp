@@ -27,9 +27,9 @@ const SANDBOX_SHELL_IMPORT_RE = /from\s+["'].*_demo\/components\/shell\.tsx["']/
 const MOCK_OWNER_MODE_RE = /mode=["']mock-owner["']/;
 const SANDBOX_OVERVIEW_CONTENT_IMPORT_RE = /from\s+["'](?:\.\/|\.\.\/)overview-content\.tsx["']/;
 const SANDBOX_OVERVIEW_CONTENT_RENDER_RE = /<SandboxOverviewContent\s*\/>/;
-const MOCK_OWNER_FOOTER_NAME_RE = /MockOwnerFooter/;
+const SANDBOX_FOOTER_NAME_RE = /SandboxFooter/;
 const MOCK_OWNER_BRANCH_RE = /mode\s*===\s*["']mock-owner["']/;
-const MOCK_OWNER_FOOTER_RENDER_RE = /<MockOwnerFooter\s*\/>/;
+const SANDBOX_FOOTER_RENDER_RE = /<SandboxFooter\s*\/>/;
 const SANDBOX_OVERVIEW_ROUTE_RE = /export const sandboxRoutes: Routes = makeRoutes\(["']\/sandbox["']\);/;
 const COMMAND_PALETTE_OVERVIEW_RE =
   /<CommandPalette\s+basePath=\{routes\.basePath\}\s+overviewHref=\{routes\.section\.overview\}\s*\/>/;
@@ -169,20 +169,22 @@ test("/sandbox layout does not render global site chrome around mock-owner dashb
   );
 });
 
-test("/sandbox/search is dynamic so the server page receives ?q=... search params", async () => {
-  const src = await readFile(join(SANDBOX_DIR, "search", "page.tsx"), "utf8");
-  assert.match(src, FORCE_DYNAMIC_RE);
+test("query-driven sandbox pages are dynamic so server pages receive search params", async () => {
+  for (const rel of ["search/page.tsx", "grants/page.tsx", "runs/page.tsx", "traces/page.tsx"]) {
+    const src = await readFile(join(SANDBOX_DIR, rel), "utf8");
+    assert.match(src, FORCE_DYNAMIC_RE, `${rel} must be force-dynamic because it reads searchParams`);
+  }
 });
 
-test("DashboardShell in mock-owner mode swaps in the mock-owner footer (no live AS/RS probe)", async () => {
+test("DashboardShell in mock-owner mode swaps in the sandbox footer (no live AS/RS probe)", async () => {
   const src = await readFile(join(SANDBOX_DIR, "..", "dashboard", "components", "shell.tsx"), "utf8");
   // Both branches exist; the shell must not emit only the live footer.
-  assert.match(src, MOCK_OWNER_FOOTER_NAME_RE, "shell must define a MockOwnerFooter for mock-owner mode");
-  // The conditional explicitly picks the mock-owner footer when the
+  assert.match(src, SANDBOX_FOOTER_NAME_RE, "shell must define a SandboxFooter for mock-owner mode");
+  // The conditional explicitly picks the sandbox footer when the
   // mode is "mock-owner". This regex is intentionally lax to let small
   // refactors of the conditional still pass.
   assert.match(src, MOCK_OWNER_BRANCH_RE, "shell must branch on mode === 'mock-owner'");
-  assert.match(src, MOCK_OWNER_FOOTER_RENDER_RE, "shell must render <MockOwnerFooter /> in mock-owner mode");
+  assert.match(src, SANDBOX_FOOTER_RENDER_RE, "shell must render <SandboxFooter /> in mock-owner mode");
 });
 
 test("sandboxRoutes overview is `/sandbox`", async () => {

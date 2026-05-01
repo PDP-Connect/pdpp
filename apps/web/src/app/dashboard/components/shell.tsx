@@ -33,9 +33,8 @@ export type DashboardSection =
  *
  * `mock-owner` is the public sandbox binding: same shell, same nav,
  * same chrome, but URLs prefix `/sandbox/...` and the env footer is
- * replaced with a non-probing reference-instance summary so the
- * sandbox never reaches out to a live AS/RS. The persistent
- * "Mock owner · fictional data" affordance lives in the env footer.
+ * replaced with a non-probing sandbox summary so the sandbox never
+ * reaches out to a live AS/RS.
  */
 export type ShellMode = "live" | "mock-owner";
 
@@ -143,7 +142,7 @@ function SidebarContent({ active, mode, routes }: { active: DashboardSection; mo
         {active === "records" ? <RecordsSubnav routes={routes} /> : null}
       </div>
 
-      {mode === "mock-owner" ? <MockOwnerFooter /> : <EnvFooter />}
+      {mode === "mock-owner" ? <SandboxFooter /> : <EnvFooter />}
     </div>
   );
 }
@@ -208,20 +207,18 @@ async function EnvFooter() {
 }
 
 /**
- * Sandbox/mock-owner footer. Replaces the live AS/RS probe so the
- * sandbox never reaches out to a configured reference server, and
- * carries the persistent "Mock owner · fictional data" affordance plus
- * pointers to the supporting educational surfaces.
+ * Sandbox footer. Replaces the live AS/RS probe so the public sandbox
+ * never reaches out to a configured reference server.
  */
-function MockOwnerFooter() {
+function SandboxFooter() {
   return (
     <div className="pt-6">
       <div className="pdpp-eyebrow mb-2 flex items-center gap-2">
         <span aria-hidden className="inline-block h-1.5 w-1.5 rounded-full bg-amber-500/80" />
-        Mock owner
+        Sandbox
       </div>
       <p className="pdpp-caption text-muted-foreground">
-        Reference dashboard against deterministic fictional data. No real owner, no live calls.
+        A reference profile for exploring PDPP grants, runs, traces, records, and discovery.
       </p>
       <ul className="pdpp-caption mt-3 flex flex-col gap-1 text-muted-foreground">
         <li>
@@ -235,8 +232,8 @@ function MockOwnerFooter() {
           </Link>
         </li>
         <li>
-          <Link className="hover:text-foreground hover:underline" href="/sandbox">
-            Exit mock-owner mode →
+          <Link className="hover:text-foreground hover:underline" href="/reference">
+            Reference overview →
           </Link>
         </li>
       </ul>

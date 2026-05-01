@@ -7,7 +7,7 @@ import type { TraceSummary } from "@/app/dashboard/lib/ref-client.ts";
 import { Timestamp } from "@/components/ui/timestamp.tsx";
 import { sandboxDashboardDataSource } from "../_demo/data-source.ts";
 
-export const dynamic = "force-static";
+export const dynamic = "force-dynamic";
 
 interface Params {
   cursor?: string;

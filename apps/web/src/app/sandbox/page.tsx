@@ -3,8 +3,7 @@ import { SandboxOverviewContent } from "./overview-content.tsx";
 
 export const metadata: Metadata = {
   title: "PDPP reference instance · Sandbox",
-  description:
-    "Inspect the PDPP reference dashboard as a mock owner. Deterministic fictional data, no credentials, no live calls.",
+  description: "Explore a mock-adapter-backed PDPP reference instance with a complete reference data profile.",
 };
 
 export const dynamic = "force-static";

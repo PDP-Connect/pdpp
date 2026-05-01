@@ -47,7 +47,7 @@ const SANDBOX_PATH_SUFFIX_RE = /\/sandbox$/;
 
 const DEMO_NOTICE = {
   is_demo: true,
-  notice: "Sandbox demo: deterministic fictional data. Not a live PDPP reference instance.",
+  notice: "Sandbox demo: deterministic reference profile.",
 } as const;
 
 export interface ListEnvelope<T> {
@@ -829,7 +829,7 @@ export function buildProtectedResourceMetadata(issuer = DEMO_ISSUER): OAuthProte
       "stream:transactions:read",
     ],
     pdpp_demo: {
-      note: "Sandbox demo metadata. Advertises sandbox-prefixed endpoints; not a live RS.",
+      note: "Sandbox demo metadata. Advertises sandbox-prefixed endpoints.",
       streams_endpoint: `${issuer}/v1/streams`,
       record_endpoint_template: `${issuer}/v1/streams/{stream}/records/{recordId}`,
       search_endpoint: `${issuer}/v1/search`,
