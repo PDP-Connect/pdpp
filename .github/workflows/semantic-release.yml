@@ -168,7 +168,9 @@ jobs:
 
   release:
     name: publish GitHub and npm release
-    needs: [resolve-version, quality, validate-release-images]
+    # Package publishing must not be blocked by release-image validation. Image
+    # publication remains separately gated on successful validation below.
+    needs: [resolve-version, quality]
     if: needs.resolve-version.outputs.new-release-published == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -210,8 +212,8 @@ jobs:
 
   publish-images:
     name: publish release image ${{ matrix.image }}
-    needs: release
-    if: needs.release.outputs.published == 'true'
+    needs: [release, validate-release-images]
+    if: needs.release.outputs.published == 'true' && needs.validate-release-images.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
