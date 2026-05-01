@@ -7,6 +7,9 @@
     "bindings": {
       "network": {
         "required": true
+      },
+      "browser": {
+        "required": true
       }
     }
   },

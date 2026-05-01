@@ -11,7 +11,19 @@
       "filesystem": {
         "required": true
       }
-    }
+    },
+    "external_tools": [
+      {
+        "name": "slackdump",
+        "license": "AGPL-3.0",
+        "purpose": "Session-token Slack archive export",
+        "install_hint": "go install github.com/rusq/slackdump/v4/cmd/slackdump@latest",
+        "detect": {
+          "command": "slackdump --help",
+          "exit_code": 0
+        }
+      }
+    ]
   },
   "capabilities": {
     "human_interaction": [
