@@ -4,7 +4,7 @@
  * Combined AS + RS implementing PDPP v0.1.0 core spec.
  * Starts on port 7662 (AS/introspection) and 7663 (RS query API).
  */
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 
 import { closeDb, getDb, initDb } from './db.js';
 import {
@@ -19,12 +19,14 @@ import {
   buildLexicalRetrievalCapability,
   buildProtectedResourceMetadata,
   buildSemanticRetrievalCapability,
+  isLocalOrPrivateRequestOrigin,
   isTrustedMetadataRequestOrigin,
   resolvePublicUrl,
   resolveSiblingPublicUrl,
   shouldUseDirectRequestOrigin,
   stripTrailingSlash,
 } from './metadata.ts';
+import { deriveReferenceFreshness } from './freshness.ts';
 import { createTraceContext, emitSpineEvent, generateSpineId, listSpineCorrelations, listSpineEventsPage, searchSpine } from '../lib/spine.ts';
 import { exec, getOne, InvalidCursorError, referenceQueries, transaction } from '../lib/db.ts';
 import {
@@ -40,6 +42,7 @@ import { createBlobStore } from './stores/blob-store.js';
 import { postgresPersistContentAddressedBlob } from './postgres-records.js';
 import { createConsentStore } from './stores/consent-store.js';
 import { createOwnerDeviceAuthStore } from './stores/owner-device-auth-store.js';
+import { DeviceBatchConflictError, createDeviceExporterStore } from './stores/device-exporter-store.js';
 import {
   ingestRecord, queryRecords, aggregateRecords, getRecord, deleteRecord, deleteAllRecords,
   listStreams, listAllStreams, getSyncState, putSyncState,
@@ -62,6 +65,11 @@ import { collectDeploymentDiagnostics } from './deployment-diagnostics.ts';
 import { createOwnerAuthPlaceholder, OWNER_AUTH_DEFAULT_SUBJECT_ID } from './owner-auth.ts';
 import { registerInboxRoutes } from './inbox.js';
 import { createController } from '../runtime/controller.ts';
+import {
+  createPdppCliCommand,
+  PDPP_CLI_DEFAULT_CLIENT_ID,
+  getPdppCliPackageInfo,
+} from '../../packages/cli/src/package-info.js';
 import { isClosedPipeWriteError } from '../runtime/pipe-errors.js';
 import { createApp, buildLogger } from './transport.js';
 import {
@@ -165,7 +173,7 @@ import {
 } from '../operations/rs-records-ingest/index.ts';
 import { executeAsDiscoveryIndex } from '../operations/as-discovery-index/index.ts';
 import { executeAsAuthorizationServerMetadata } from '../operations/as-authorization-server-metadata/index.ts';
-import { executeAsDcrRegister } from '../operations/as-dcr-register/index.ts';
+import { executeAsDcrRegister, summarizeDcrRegisterRequest } from '../operations/as-dcr-register/index.ts';
 import { executeAsDcrDelete } from '../operations/as-dcr-delete/index.ts';
 import { executeAsDeviceAuthInit } from '../operations/as-device-authorization-init/index.ts';
 import { executeAsDeviceTokenExchange } from '../operations/as-device-token-exchange/index.ts';
@@ -189,6 +197,13 @@ const PDPP_DCR_INITIAL_ACCESS_TOKENS = (process.env.PDPP_DCR_INITIAL_ACCESS_TOKE
   .map((value) => value.trim())
   .filter(Boolean);
 const PDPP_REFERENCE_TRACE_ID_HEADER = 'PDPP-Reference-Trace-Id';
+const PROTECTED_RESOURCE_METADATA_PATH = '/.well-known/oauth-protected-resource';
+const PROTECTED_RESOURCE_METADATA_URL_LOCAL = 'protectedResourceMetadataUrl';
+const PROTECTED_RESOURCE_METADATA_NEXT_STEP =
+  'Fetch error.resource_metadata, then follow pdpp_agent_discovery.cli when token completion is available; otherwise request a scoped client grant without using an owner bearer token.';
+const AGENT_CONNECT_TTL_MS = 5 * 60 * 1000;
+const PUBLIC_DCR_RATE_LIMIT_WINDOW_MS = 10 * 60 * 1000;
+const PUBLIC_DCR_RATE_LIMIT_MAX = 120;
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -306,6 +321,11 @@ function scheduleRetrievalStartupBackfill({ manifests, logger, signal = null }) 
 function pdppError(res, status, code, message, param = null) {
   const body = { error: { type: typeFor(status), code, message } };
   if (param) body.error.param = param;
+  const resourceMetadataUrl = status === 401 ? getProtectedResourceMetadataUrl(res) : null;
+  if (resourceMetadataUrl) {
+    body.error.resource_metadata = resourceMetadataUrl;
+    body.error.next_step = PROTECTED_RESOURCE_METADATA_NEXT_STEP;
+  }
   body.error.request_id = ensureRequestId(res);
   res.status(status).json(body);
 }
@@ -321,6 +341,70 @@ function rejectUntrustedMetadataHost(req, res, explicitUrl, trustedHosts, option
     'Host-derived metadata requires a local/private request host or PDPP_TRUSTED_HOSTS allowlist',
   );
   return true;
+}
+
+function httpQuotedString(value) {
+  return String(value).replace(/["\\]/g, '\\$&');
+}
+
+function protectedResourceMetadataUrlForResource(resource) {
+  const parsed = new URL(resource);
+  const resourcePath = parsed.pathname === '/' ? '' : parsed.pathname;
+  return `${parsed.origin}${PROTECTED_RESOURCE_METADATA_PATH}${resourcePath}${parsed.search}`;
+}
+
+function resolveTrustedProtectedResourceMetadataUrl(req, explicitResource, trustedHosts) {
+  if (!isTrustedMetadataRequestOrigin(req, explicitResource, trustedHosts)) {
+    return null;
+  }
+  try {
+    return protectedResourceMetadataUrlForResource(resolvePublicUrl(req, explicitResource));
+  } catch {
+    return null;
+  }
+}
+
+function getProtectedResourceMetadataUrl(res) {
+  const metadataUrl = res.locals?.[PROTECTED_RESOURCE_METADATA_URL_LOCAL];
+  return typeof metadataUrl === 'string' && metadataUrl ? metadataUrl : null;
+}
+
+function setProtectedResourceMetadataChallenge(res) {
+  const metadataUrl = getProtectedResourceMetadataUrl(res);
+  if (!metadataUrl) {
+    return;
+  }
+  res.setHeader('WWW-Authenticate', `Bearer resource_metadata="${httpQuotedString(metadataUrl)}"`);
+}
+
+function sha256Hex(value) {
+  return createHash('sha256').update(value, 'utf8').digest('hex');
+}
+
+function hashDeviceSecret(value) {
+  return `sha256:${sha256Hex(value)}`;
+}
+
+function generateReferenceSecret(prefix, bytes = 24) {
+  return `${prefix}_${randomBytes(bytes).toString('base64url')}`;
+}
+
+function optionalObject(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
+}
+
+function requireNonEmptyString(value, param) {
+  if (typeof value !== 'string' || !value.trim()) {
+    const err = new Error(`${param} is required`);
+    err.code = 'invalid_request';
+    err.param = param;
+    throw err;
+  }
+  return value.trim();
+}
+
+function referenceLocalDeviceStorageConnectorId(connectorId, sourceInstanceId) {
+  return `local-device:${encodeURIComponent(connectorId)}:${encodeURIComponent(sourceInstanceId)}`;
 }
 
 function typeFor(status) {
@@ -374,9 +458,11 @@ function handleError(res, err) {
 }
 
 function oauthError(res, status, code, description) {
+  const requestId = ensureRequestId(res);
   res.status(status).json({
     error: code,
     error_description: description,
+    request_id: requestId,
   });
 }
 
@@ -749,6 +835,7 @@ function parseTimelinePageOptions(req, res) {
 async function requireToken(req, res, next) {
   const auth = req.headers.authorization;
   if (!auth || !auth.startsWith('Bearer ')) {
+    setProtectedResourceMetadataChallenge(res);
     return pdppError(res, 401, 'authentication_error', 'Missing Bearer token');
   }
   const token = auth.slice(7);
@@ -803,6 +890,7 @@ async function requireToken(req, res, next) {
     if (info.inactive_reason === 'grant_invalid') {
       return pdppError(res, 403, 'grant_invalid', 'Grant is malformed or no longer valid');
     }
+    setProtectedResourceMetadataChallenge(res);
     return pdppError(res, 401, 'authentication_error', 'Invalid or expired token');
   }
   req.tokenInfo = info;
@@ -964,13 +1052,12 @@ function defaultPreRegisteredPublicClients() {
 
 function resolveDynamicClientRegistrationEnabled(opts = {}) {
   const requested = opts.enableDynamicClientRegistration ?? PDPP_ENABLE_DYNAMIC_CLIENT_REGISTRATION;
-  const initialAccessTokens = resolveDynamicClientRegistrationInitialAccessTokens(opts);
-  return requested && initialAccessTokens.length > 0;
+  return Boolean(requested);
 }
 
 function resolveDynamicClientRegistrationInitialAccessTokens(opts = {}) {
   // Explicit opts win, including an explicit empty array for tests that want
-  // to prove "DCR off" without toggling the enable flag.
+  // public self-registration without accepting bootstrap tokens.
   if (Array.isArray(opts.dynamicClientRegistrationInitialAccessTokens)) {
     return opts.dynamicClientRegistrationInitialAccessTokens.filter(Boolean);
   }
@@ -985,8 +1072,80 @@ function resolveDynamicClientRegistrationInitialAccessTokens(opts = {}) {
   return [DEFAULT_LOCAL_DCR_INITIAL_ACCESS_TOKEN];
 }
 
+function resolveDynamicClientRegistrationInitialAccessTokensForRequest(req, tokens) {
+  if (isLocalOrPrivateRequestOrigin(req)) {
+    return tokens;
+  }
+  return tokens.filter((token) => token !== DEFAULT_LOCAL_DCR_INITIAL_ACCESS_TOKEN);
+}
+
 function resolvePreRegisteredPublicClients(opts = {}) {
   return opts.preRegisteredPublicClients || defaultPreRegisteredPublicClients();
+}
+
+function createPublicDcrRateLimiter(config = {}) {
+  if (config === false) {
+    return { check: () => null };
+  }
+  const windowMs = Number.isFinite(config.windowMs)
+    ? Math.max(1, config.windowMs)
+    : PUBLIC_DCR_RATE_LIMIT_WINDOW_MS;
+  const max = Number.isFinite(config.max)
+    ? Math.max(1, config.max)
+    : PUBLIC_DCR_RATE_LIMIT_MAX;
+  const attempts = new Map();
+
+  return {
+    check(req) {
+      const now = Date.now();
+      if (attempts.size > 1000) {
+        for (const [key, entry] of attempts.entries()) {
+          if (entry.resetAt <= now) attempts.delete(key);
+        }
+      }
+      const key =
+        req.ip ||
+        req.socket?.remoteAddress ||
+        req.connection?.remoteAddress ||
+        'unknown';
+      const current = attempts.get(key);
+      if (!current || current.resetAt <= now) {
+        attempts.set(key, { count: 1, resetAt: now + windowMs });
+        return null;
+      }
+      if (current.count >= max) {
+        return Math.max(1, Math.ceil((current.resetAt - now) / 1000));
+      }
+      current.count += 1;
+      return null;
+    },
+  };
+}
+
+function publicClientMetadataForAuthorizationServer(clients = []) {
+  return clients
+    .map((client) => {
+      const clientId = typeof client.client_id === 'string' ? client.client_id.trim() : '';
+      if (!clientId) {
+        return null;
+      }
+      const metadata = client.metadata || {};
+      const clientName =
+        typeof metadata.client_name === 'string' && metadata.client_name.trim()
+          ? metadata.client_name.trim()
+          : clientId;
+      const tokenEndpointAuthMethod =
+        typeof metadata.token_endpoint_auth_method === 'string' &&
+        metadata.token_endpoint_auth_method.trim()
+          ? metadata.token_endpoint_auth_method.trim()
+          : 'none';
+      return {
+        client_id: clientId,
+        client_name: clientName,
+        token_endpoint_auth_method: tokenEndpointAuthMethod,
+      };
+    })
+    .filter(Boolean);
 }
 
 function resolveOwnerAuthPlaceholderConfig(opts = {}) {
@@ -1037,6 +1196,27 @@ function resolveGrantStorageBinding(tokenInfo) {
   return null;
 }
 
+function buildClientSourceDescriptor(tokenInfo) {
+  const grantSource = buildSourceDescriptor(tokenInfo?.grant?.source);
+  if (grantSource) return grantSource;
+
+  const storageBinding = resolveGrantStorageBinding(tokenInfo);
+  if (storageBinding?.connector_id) {
+    return { kind: 'connector', id: storageBinding.connector_id };
+  }
+  return null;
+}
+
+function buildOwnerQuerySourceDescriptor(req, opts = {}) {
+  const nativeManifest = resolveNativeManifest(opts);
+  if (nativeManifest?.provider_id) {
+    return buildSourceDescriptor({ kind: 'provider_native', id: nativeManifest.provider_id });
+  }
+
+  const connectorId = resolveSingleConnectorIdQueryValue(req.query.connector_id);
+  return connectorId ? buildSourceDescriptor({ kind: 'connector', id: connectorId }) : null;
+}
+
 function buildOwnerReadGrant(streamName) {
   return {
     streams: [{ name: streamName }],
@@ -1065,7 +1245,7 @@ async function resolveOwnerManifest(req, opts = {}) {
 
 async function resolveGrantManifest(tokenInfo, opts = {}) {
   const storageBinding = resolveGrantStorageBinding(tokenInfo);
-  const source = buildSourceDescriptor(tokenInfo?.grant?.source);
+  const source = buildClientSourceDescriptor(tokenInfo);
   const manifest = await getManifestForStorageBinding(storageBinding, opts);
   if (!manifest) {
     const err = source?.kind === 'provider_native'
@@ -1146,14 +1326,71 @@ function normalizePrimaryKey(primaryKey) {
 }
 
 function buildFreshness(lastUpdated = null) {
-  if (!lastUpdated) {
-    return { status: 'unknown' };
+  return deriveReferenceFreshness({ recordLastUpdatedAt: lastUpdated });
+}
+
+function getConnectorRunEvidenceSource(source) {
+  return source?.kind === 'connector' && typeof source.id === 'string' && source.id
+    ? source.id
+    : null;
+}
+
+async function getLatestConnectorRunSummary(connectorId, status = null) {
+  if (!connectorId) {
+    return null;
+  }
+  const filters = status
+    ? { sourceKind: 'connector', sourceId: connectorId, status, limit: 1 }
+    : { sourceKind: 'connector', sourceId: connectorId, limit: 1 };
+  const { summaries } = await listSpineCorrelations('run', filters);
+  const summary = summaries[0] || null;
+  if (!summary) {
+    return null;
   }
   return {
-    status: 'unknown',
-    captured_at: lastUpdated,
-    last_attempted_at: lastUpdated,
+    last_at: summary.last_at,
+    status: summary.status,
   };
+}
+
+function getManifestRefreshPolicy(manifest) {
+  const capabilities = manifest?.capabilities;
+  if (!capabilities || typeof capabilities !== 'object' || Array.isArray(capabilities)) {
+    return null;
+  }
+  return capabilities.refresh_policy ?? null;
+}
+
+function getMaximumStalenessSeconds(refreshPolicy) {
+  if (!refreshPolicy || typeof refreshPolicy !== 'object' || Array.isArray(refreshPolicy)) {
+    return null;
+  }
+  const value = refreshPolicy.maximum_staleness_seconds;
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : null;
+}
+
+async function getConnectorFreshnessEvidence({ source, manifest }) {
+  const connectorId = getConnectorRunEvidenceSource(source);
+  const refreshPolicy = getManifestRefreshPolicy(manifest);
+  const [lastRun, lastSuccessfulRun] = await Promise.all([
+    getLatestConnectorRunSummary(connectorId),
+    getLatestConnectorRunSummary(connectorId, 'succeeded'),
+  ]);
+  return {
+    lastRun,
+    lastSuccessfulRun,
+    maximumStalenessSeconds: getMaximumStalenessSeconds(refreshPolicy),
+  };
+}
+
+function buildConnectorAwareFreshness(evidence, recordLastUpdatedAt = null) {
+  return deriveReferenceFreshness({
+    lastAttemptedAt: evidence?.lastRun?.last_at ?? null,
+    lastAttemptStatus: evidence?.lastRun?.status ?? null,
+    lastSuccessfulRunAt: evidence?.lastSuccessfulRun?.last_at ?? null,
+    maximumStalenessSeconds: evidence?.maximumStalenessSeconds ?? null,
+    recordLastUpdatedAt,
+  });
 }
 
 function hasObjectEntries(value) {
@@ -1334,14 +1571,14 @@ function buildStreamDiscoveryCapabilities({ connectorId = null, stream }) {
   };
 }
 
-function buildStreamDiscoverySummary({ connectorId = null, stream, summary = null }) {
+function buildStreamDiscoverySummary({ connectorId = null, stream, summary = null, freshnessEvidence = null }) {
   const lastUpdated = summary?.last_updated || null;
   return {
     object: 'stream',
     name: stream.name,
     record_count: summary?.record_count || 0,
     last_updated: lastUpdated,
-    freshness: buildFreshness(lastUpdated),
+    freshness: buildConnectorAwareFreshness(freshnessEvidence, lastUpdated),
     capabilities: buildStreamDiscoveryCapabilities({ connectorId, stream }),
   };
 }
@@ -1361,6 +1598,7 @@ async function buildConnectorSchemaItem({ source, storageBinding, manifest, gran
       .filter(Boolean)
     : manifest.streams || [];
   const grantStreams = grant?.streams || [];
+  const freshnessEvidence = await getConnectorFreshnessEvidence({ source, manifest });
 
   const streams = visibleStreams.map((manifestStream) => {
     const lastUpdated = summaryByName.get(manifestStream.name)?.last_updated || null;
@@ -1368,7 +1606,7 @@ async function buildConnectorSchemaItem({ source, storageBinding, manifest, gran
       manifestStream,
       streamGrant: grantStreamByName ? grantStreamByName.get(manifestStream.name) || null : null,
       grantStreams,
-      freshness: buildFreshness(lastUpdated),
+      freshness: buildConnectorAwareFreshness(freshnessEvidence, lastUpdated),
     });
   });
 
@@ -1395,6 +1633,7 @@ async function buildConnectorDiscoveryItem({ source, storageBinding, manifest, g
       .map((streamGrant) => manifest.streams.find((stream) => stream.name === streamGrant.name))
       .filter(Boolean)
     : manifest.streams || [];
+  const freshnessEvidence = await getConnectorFreshnessEvidence({ source, manifest });
 
   const item = {
     object: 'connector',
@@ -1404,6 +1643,7 @@ async function buildConnectorDiscoveryItem({ source, storageBinding, manifest, g
       connectorId,
       stream,
       summary: summaryByName.get(stream.name) || null,
+      freshnessEvidence,
     })),
   };
 
@@ -1478,11 +1718,12 @@ function persistContentAddressedBlob({ connectorId, stream, recordKey, mimeType,
   };
 }
 
-async function getVisibleStreamFreshness({ tokenInfo, storageBinding, stream, manifest }) {
+async function getVisibleStreamFreshness({ tokenInfo, source, storageBinding, stream, manifest }) {
+  const freshnessEvidence = await getConnectorFreshnessEvidence({ source, manifest });
   if (tokenInfo?.pdpp_token_kind === 'owner') {
     const summaries = await listAllStreams(storageBinding);
     const summary = summaries.find((entry) => entry.name === stream);
-    return buildFreshness(summary?.last_updated || null);
+    return buildConnectorAwareFreshness(freshnessEvidence, summary?.last_updated || null);
   }
 
   const streamGrant = tokenInfo?.grant?.streams?.find((entry) => entry.name === stream);
@@ -1492,7 +1733,7 @@ async function getVisibleStreamFreshness({ tokenInfo, storageBinding, stream, ma
     throw err;
   }
   const summaries = await listStreams(storageBinding, { streams: [streamGrant] }, manifest);
-  return buildFreshness(summaries[0]?.last_updated || null);
+  return buildConnectorAwareFreshness(freshnessEvidence, summaries[0]?.last_updated || null);
 }
 
 // ─── AS App ─────────────────────────────────────────────────────────────────
@@ -1505,8 +1746,10 @@ function buildAsApp(opts = {}) {
   const controller = opts.controller || null;
   const consentStore = createConsentStore();
   const ownerDeviceAuthStore = createOwnerDeviceAuthStore();
+  const deviceExporterStore = opts.deviceExporterStore || createDeviceExporterStore();
   const dynamicClientRegistrationEnabled = resolveDynamicClientRegistrationEnabled(opts);
   const dynamicClientRegistrationInitialAccessTokens = resolveDynamicClientRegistrationInitialAccessTokens(opts);
+  const publicDcrRateLimiter = createPublicDcrRateLimiter(opts.publicDynamicClientRegistrationRateLimit);
   const ownerAuthConfig = resolveOwnerAuthPlaceholderConfig(opts);
   const ownerAuth = createOwnerAuthPlaceholder({
     password: ownerAuthConfig.password,
@@ -1561,6 +1804,160 @@ function buildAsApp(opts = {}) {
   // `PDPP_OWNER_PASSWORD` is set, and is a no-op otherwise. See
   // `reference-implementation/server/owner-auth.js`.
   ownerAuth.attachRoutes(app);
+
+  function getOwnerSubjectId(req) {
+    return req.ownerSession?.sub || ownerAuth.subjectId || OWNER_AUTH_DEFAULT_SUBJECT_ID;
+  }
+
+  async function requireDeviceExporterCredential(req, res, next) {
+    try {
+      const auth = req.headers.authorization;
+      if (!auth || !auth.startsWith('Bearer ')) {
+        return pdppError(res, 401, 'authentication_error', 'Missing device exporter bearer token');
+      }
+      const token = auth.slice(7);
+      const tokenInfo = await introspect(token);
+      if (tokenInfo.active) {
+        return pdppError(res, 403, 'permission_error', 'Owner/client bearer tokens are not valid device exporter credentials');
+      }
+
+      const credential = await deviceExporterStore.findCredentialByTokenHash(hashDeviceSecret(token));
+      if (!credential || credential.status !== 'active') {
+        return pdppError(res, 401, 'authentication_error', 'Invalid or revoked device exporter credential');
+      }
+      const device = await deviceExporterStore.getDevice(credential.deviceId);
+      if (!device || device.status !== 'active') {
+        return pdppError(res, 401, 'authentication_error', 'Invalid or revoked device exporter credential');
+      }
+      await deviceExporterStore.markCredentialUsed(credential.credentialId, new Date().toISOString());
+      req.deviceExporterCredential = credential;
+      req.deviceExporter = device;
+      next();
+    } catch (err) {
+      handleError(res, err);
+    }
+  }
+
+  async function buildDeviceExporterDiagnostics(ownerSubjectId) {
+    const [devices, sourceInstances, outcomes] = await Promise.all([
+      deviceExporterStore.listDevices(ownerSubjectId),
+      deviceExporterStore.listSourceInstances(),
+      deviceExporterStore.listBatchOutcomes({ limit: 5000 }),
+    ]);
+    const now = Date.now();
+    const sourcesByDevice = new Map();
+    const outcomeStats = new Map();
+
+    for (const outcome of outcomes) {
+      const key = outcome.sourceInstanceId;
+      const current = outcomeStats.get(key) || {
+        accepted: 0,
+        rejected: 0,
+        lastIngestAt: null,
+      };
+      if (outcome.status === 'accepted') {
+        current.accepted += outcome.response?.accepted_record_count ?? 0;
+      } else if (outcome.status === 'rejected') {
+        current.rejected += outcome.response?.rejected_record_count ?? 0;
+      }
+      if (!current.lastIngestAt || outcome.createdAt > current.lastIngestAt) {
+        current.lastIngestAt = outcome.createdAt;
+      }
+      outcomeStats.set(key, current);
+    }
+
+    for (const source of sourceInstances) {
+      const stats = outcomeStats.get(source.sourceInstanceId) || {
+        accepted: 0,
+        rejected: 0,
+        lastIngestAt: null,
+      };
+      const projected = {
+        object: 'device_source_instance',
+        source_instance_id: source.sourceInstanceId,
+        device_id: source.deviceId,
+        connector_id: source.connectorId,
+        local_binding_name: source.localBindingId,
+        display_name: source.displayName,
+        created_at: source.createdAt,
+        last_ingest_at: stats.lastIngestAt,
+        accepted_record_count: stats.accepted,
+        rejected_record_count: stats.rejected,
+        last_error: source.lastError,
+      };
+      const list = sourcesByDevice.get(source.deviceId) || [];
+      list.push(projected);
+      sourcesByDevice.set(source.deviceId, list);
+    }
+
+    return devices.map((device) => {
+      const sourceList = sourcesByDevice.get(device.deviceId) || [];
+      const lastIngestAt = sourceList.reduce(
+        (latest, source) => (!latest || (source.last_ingest_at && source.last_ingest_at > latest) ? source.last_ingest_at : latest),
+        null,
+      );
+      const lastHeartbeatAt = device.lastHeartbeatAt ?? null;
+      const stale = Boolean(
+        lastHeartbeatAt
+        && Number.isFinite(Date.parse(lastHeartbeatAt))
+        && now - Date.parse(lastHeartbeatAt) > 5 * 60 * 1000
+      );
+      return {
+        object: 'device_exporter',
+        device_id: device.deviceId,
+        subject_id: device.ownerSubjectId,
+        display_name: device.displayName,
+        status: device.status,
+        created_at: device.createdAt,
+        last_heartbeat_at: lastHeartbeatAt,
+        last_ingest_at: lastIngestAt,
+        revoked_at: device.revokedAt,
+        stale,
+        source_instances: sourceList,
+        last_error: device.lastError,
+      };
+    });
+  }
+
+  function normalizeHeartbeatSourceInstances(body) {
+    if (Array.isArray(body.source_instances)) {
+      return body.source_instances;
+    }
+    if (typeof body.source_instance_id === 'string') {
+      return [{ source_instance_id: body.source_instance_id, last_error: body.last_error ?? null }];
+    }
+    return [];
+  }
+
+  function normalizeDeviceIngestRecords(body) {
+    if (!Array.isArray(body.records) || body.records.length === 0) {
+      const err = new Error('records must be a non-empty array');
+      err.code = 'invalid_request';
+      err.param = 'records';
+      throw err;
+    }
+    return body.records.map((record, index) => {
+      if (!record || typeof record !== 'object' || Array.isArray(record)) {
+        const err = new Error(`records[${index}] must be an object`);
+        err.code = 'invalid_request';
+        err.param = 'records';
+        throw err;
+      }
+      const key = record.record_key ?? record.key;
+      if (key == null || (typeof key !== 'string' && !Array.isArray(key))) {
+        const err = new Error(`records[${index}].record_key is required`);
+        err.code = 'invalid_request';
+        err.param = 'records';
+        throw err;
+      }
+      return {
+        stream: requireNonEmptyString(record.stream, `records[${index}].stream`),
+        key,
+        emitted_at: typeof record.emitted_at === 'string' ? record.emitted_at : undefined,
+        data: optionalObject(record.data) || {},
+      };
+    });
+  }
 
   function renderPendingGrantConsentHtml(pending, requestUri, csrfToken) {
     const request = pending.request;
@@ -1696,6 +2093,169 @@ function buildAsApp(opts = {}) {
     return { deviceCode, pending };
   }
 
+  const agentConnectAttempts = new Map();
+
+  function pruneAgentConnectAttempts(now = Date.now()) {
+    for (const [id, attempt] of agentConnectAttempts) {
+      if (attempt.status !== 'pending' || attempt.expiresAt <= now) {
+        agentConnectAttempts.delete(id);
+      }
+    }
+  }
+
+  function publicAgentConnectAttempt(attempt) {
+    return {
+      id: attempt.id,
+      object: 'agent_connect_attempt',
+      status: attempt.status,
+      approval_url: attempt.approvalUrl,
+      poll_url: attempt.tokenUrl,
+      token_url: attempt.tokenUrl,
+      expires_in: Math.max(Math.ceil((attempt.expiresAt - Date.now()) / 1000), 0),
+      interval: attempt.interval,
+    };
+  }
+
+  function completeAgentConnectAttempt(requestUri, outcome) {
+    for (const attempt of agentConnectAttempts.values()) {
+      if (attempt.requestUri !== requestUri || attempt.status !== 'pending') continue;
+      attempt.status = outcome.status;
+      attempt.completedAt = new Date().toISOString();
+      if (outcome.status === 'approved') {
+        attempt.token = outcome.token;
+        attempt.grant = outcome.grant;
+        attempt.grantId = outcome.grant?.grant_id || outcome.grantId || null;
+      }
+    }
+  }
+
+  function failAgentConnectAttempt(requestUri, status) {
+    completeAgentConnectAttempt(requestUri, { status });
+  }
+
+  function buildAgentConnectError(status) {
+    if (status === 'denied') {
+      return { error: 'access_denied', error_description: 'Owner denied the scoped access request' };
+    }
+    if (status === 'expired') {
+      return { error: 'expired_token', error_description: 'The agent-connect request expired before approval' };
+    }
+    return { error: 'authorization_pending', error_description: 'Owner approval is still pending' };
+  }
+
+  // Narrow hosted completion handoff for CLI `connect`: the CLI first stages a
+  // normal PAR request, then registers that request_uri here to receive a
+  // polling handle. Owner approval still happens through the existing consent
+  // page, but the bearer is returned only to the caller holding the polling
+  // code, never rendered into the owner browser.
+  app.post('/agent-connect', async (req, res) => {
+    try {
+      const explicitBaseUrl = opts.asPublicUrl || (!opts.ignoreAmbientPublicUrls ? process.env.AS_PUBLIC_URL : null);
+      const baseUrl = resolvePublicUrl(req, explicitBaseUrl);
+      let requestUri = typeof req.body?.request_uri === 'string' ? req.body.request_uri : null;
+      let clientId = typeof req.body?.client_id === 'string' ? req.body.client_id : null;
+      if (!requestUri) {
+        const nativeManifest = resolveNativeManifest(opts);
+        if (!nativeManifest?.provider_id || !nativeManifest?.storage_binding?.connector_id) {
+          return pdppError(
+            res,
+            400,
+            'invalid_request',
+            'request_uri is required unless the reference provider is running with a native manifest',
+          );
+        }
+        const clientName = typeof req.body?.client_name === 'string' && req.body.client_name.trim()
+          ? req.body.client_name.trim()
+          : 'PDPP CLI';
+        clientId = clientId || PDPP_CLI_DEFAULT_CLIENT_ID;
+        const staged = await consentStore.initiateGrant(
+          {
+            client_id: clientId,
+            client_display: { name: clientName },
+            authorization_details: [
+              {
+                type: 'https://pdpp.org/data-access',
+                source: { kind: 'provider_native', id: nativeManifest.provider_id },
+                purpose_code: 'https://pdpp.org/purpose/personal_assistant',
+                purpose_description: 'Delegate scoped personal data access to a local PDPP CLI client.',
+                access_mode: 'single_use',
+                streams: [{ name: '*' }],
+              },
+            ],
+          },
+          { baseUrl, nativeManifest },
+        );
+        requestUri = staged.request_uri;
+      }
+      if (!requestUri) return pdppError(res, 400, 'invalid_request', 'request_uri is required');
+      const { pending } = await getPendingGrantFromRequestUri(requestUri);
+      if (!pending) return pdppError(res, 400, 'expired_token', 'Pending grant request is unknown or expired');
+      if (clientId && pending.request?.client?.client_id !== clientId) {
+        return pdppError(res, 403, 'invalid_client', 'client_id does not match pending request');
+      }
+
+      pruneAgentConnectAttempts();
+      const id = `agc_${randomBytes(16).toString('hex')}`;
+      const pollingCode = `agc_poll_${randomBytes(32).toString('hex')}`;
+      const tokenUrl = `${baseUrl}/agent-connect/${encodeURIComponent(id)}/token`;
+      const approvalUrl = new URL(`${baseUrl}/consent`);
+      approvalUrl.searchParams.set('request_uri', requestUri);
+      const attempt = {
+        id,
+        pollingCode,
+        requestUri,
+        clientId: pending.request?.client?.client_id || clientId || null,
+        status: 'pending',
+        createdAt: new Date().toISOString(),
+        expiresAt: Date.now() + (opts.agentConnectTtlMs || AGENT_CONNECT_TTL_MS),
+        interval: 2,
+        approvalUrl: approvalUrl.toString(),
+        tokenUrl,
+      };
+      agentConnectAttempts.set(id, attempt);
+      res.status(201).json({
+        ...publicAgentConnectAttempt(attempt),
+        polling_code: pollingCode,
+      });
+    } catch (err) {
+      handleError(res, err);
+    }
+  });
+
+  app.post('/agent-connect/:attemptId/token', async (req, res) => {
+    try {
+      const attempt = agentConnectAttempts.get(req.params.attemptId);
+      const pollingCode = typeof req.body?.polling_code === 'string' ? req.body.polling_code : null;
+      if (!attempt || pollingCode !== attempt.pollingCode) {
+        return pdppError(res, 401, 'invalid_grant', 'Unknown agent-connect polling handle');
+      }
+      if (attempt.status === 'pending' && attempt.expiresAt <= Date.now()) {
+        attempt.status = 'expired';
+      }
+      if (attempt.status === 'pending') {
+        return res.status(202).json({
+          status: 'pending',
+          ...buildAgentConnectError('pending'),
+          interval: attempt.interval,
+        });
+      }
+      if (attempt.status !== 'approved') {
+        const error = buildAgentConnectError(attempt.status);
+        agentConnectAttempts.delete(attempt.id);
+        return pdppError(res, attempt.status === 'denied' ? 403 : 400, error.error, error.error_description);
+      }
+      agentConnectAttempts.delete(attempt.id);
+      res.json({
+        access_token: attempt.token,
+        token_type: 'Bearer',
+        grant_id: attempt.grantId,
+        grant: attempt.grant,
+      });
+    } catch (err) {
+      handleError(res, err);
+    }
+  });
+
   // RFC 8414 authorization-server metadata. The metadata-document envelope
   // lives in the canonical `as.authorization_server.metadata` operation
   // (operations/as-authorization-server-metadata). The host adapter resolves
@@ -1709,7 +2269,13 @@ function buildAsApp(opts = {}) {
     const issuer = resolvePublicUrl(req, explicitIssuer);
     res.json(
       executeAsAuthorizationServerMetadata(
-        { issuer, dynamicClientRegistrationEnabled },
+        {
+          issuer,
+          dynamicClientRegistrationEnabled,
+          preRegisteredPublicClients: publicClientMetadataForAuthorizationServer(
+            resolvePreRegisteredPublicClients(opts),
+          ),
+        },
         { buildAuthorizationServerMetadata },
       ),
     );
@@ -1726,12 +2292,46 @@ function buildAsApp(opts = {}) {
     setReferenceTraceId(res, traceContext.trace_id);
 
     const ownerSession = ownerAuth.readOwnerSession(req);
+    const authorizationHeader = req.headers.authorization || null;
+    if (!authorizationHeader && !ownerSession) {
+      const retryAfter = publicDcrRateLimiter.check(req);
+      if (retryAfter) {
+        res.setHeader('Retry-After', String(retryAfter));
+        await emitSpineEvent({
+          event_type: 'client.register_rejected',
+          trace_id: traceContext.trace_id,
+          scenario_id: traceContext.scenario_id,
+          request_id: traceContext.request_id,
+          actor_type: 'client',
+          actor_id: 'dynamic_registration',
+          object_type: 'client_registration',
+          object_id: traceContext.request_id,
+          status: 'rejected',
+          data: {
+            ...summarizeDcrRegisterRequest(req.body),
+            error: {
+              code: 'slow_down',
+              message: 'Too many public client registration attempts; retry later',
+            },
+          },
+        });
+        return oauthError(
+          res,
+          429,
+          'slow_down',
+          'Too many public client registration attempts; retry later',
+        );
+      }
+    }
     const outcome = await executeAsDcrRegister(
       {
         body: req.body,
-        authorizationHeader: req.headers.authorization || null,
+        authorizationHeader,
         dcrEnabled: dynamicClientRegistrationEnabled,
-        initialAccessTokens: dynamicClientRegistrationInitialAccessTokens,
+        initialAccessTokens: resolveDynamicClientRegistrationInitialAccessTokensForRequest(
+          req,
+          dynamicClientRegistrationInitialAccessTokens,
+        ),
         ownerSessionSubjectId: ownerSession?.sub || null,
       },
       { registerDynamicClient },
@@ -2045,6 +2645,9 @@ function buildAsApp(opts = {}) {
 
   // Reference-only event spine inspection surfaces for CLI/tests/future console.
   function parseListFilters(query) {
+    const legacyConnectorId = typeof query.connector_id === 'string' && query.connector_id.trim()
+      ? query.connector_id.trim()
+      : null;
     return {
       limit: query.limit,
       cursor: query.cursor,
@@ -2052,8 +2655,8 @@ function buildAsApp(opts = {}) {
       until: query.until,
       status: query.status,
       clientId: query.client_id,
-      sourceKind: query.source_kind,
-      sourceId: query.source_id,
+      sourceKind: query.source_kind || (legacyConnectorId ? 'connector' : undefined),
+      sourceId: query.source_id || legacyConnectorId || undefined,
       grantId: query.grant_id,
       q: query.q,
     };
@@ -2443,6 +3046,263 @@ function buildAsApp(opts = {}) {
     }
   });
 
+  app.post('/_ref/device-exporters/enrollment-codes', { contract: 'refCreateDeviceExporterEnrollmentCode' }, ownerAuth.requireOwnerSession, async (req, res) => {
+    try {
+      const body = req.body || {};
+      const connectorId = requireNonEmptyString(body.connector_id, 'connector_id');
+      const localBindingId = requireNonEmptyString(body.local_binding_name, 'local_binding_name');
+      const now = new Date();
+      const expiresInSeconds = Number.isInteger(body.expires_in_seconds)
+        ? body.expires_in_seconds
+        : 15 * 60;
+      if (expiresInSeconds < 60 || expiresInSeconds > 86_400) {
+        return pdppError(res, 400, 'invalid_request', 'expires_in_seconds must be between 60 and 86400', 'expires_in_seconds');
+      }
+      const enrollmentCode = generateReferenceSecret('lde', 18);
+      const expiresAt = new Date(now.getTime() + expiresInSeconds * 1000).toISOString();
+      await deviceExporterStore.createEnrollmentCode({
+        enrollmentCodeId: generateSpineId('denroll'),
+        codeHash: hashDeviceSecret(enrollmentCode),
+        ownerSubjectId: getOwnerSubjectId(req),
+        connectorId,
+        localBindingId,
+        displayName: typeof body.display_name === 'string' && body.display_name.trim() ? body.display_name.trim() : null,
+        createdAt: now.toISOString(),
+        expiresAt,
+      });
+      res.status(201).json({
+        object: 'device_exporter_enrollment_code',
+        enrollment_code: enrollmentCode,
+        expires_at: expiresAt,
+        connector_id: connectorId,
+        local_binding_name: localBindingId,
+      });
+    } catch (err) {
+      handleError(res, err);
+    }
+  });
+
+  app.post('/_ref/device-exporters/enroll', { contract: 'refExchangeDeviceExporterEnrollmentCode' }, async (req, res) => {
+    try {
+      const body = req.body || {};
+      const enrollmentCode = requireNonEmptyString(body.enrollment_code, 'enrollment_code');
+      const enrollment = await deviceExporterStore.findEnrollmentByCodeHash(hashDeviceSecret(enrollmentCode));
+      const now = new Date();
+      if (!enrollment || enrollment.status !== 'pending') {
+        return pdppError(res, 400, 'invalid_request', 'Enrollment code is invalid or already used', 'enrollment_code');
+      }
+      if (Date.parse(enrollment.expiresAt) <= now.getTime()) {
+        await deviceExporterStore.revokeEnrollmentCode(enrollment.enrollmentCodeId, now.toISOString());
+        return pdppError(res, 410, 'invalid_request', 'Enrollment code has expired', 'enrollment_code');
+      }
+
+      const deviceId = generateSpineId('dexp');
+      const credentialId = generateSpineId('dcred');
+      const sourceInstanceId = generateSpineId('dsrc');
+      const deviceToken = generateReferenceSecret('ldt', 32);
+      const displayName = typeof body.device_label === 'string' && body.device_label.trim()
+        ? body.device_label.trim()
+        : (enrollment.displayName || enrollment.localBindingId);
+
+      await deviceExporterStore.createDevice({
+        deviceId,
+        ownerSubjectId: enrollment.ownerSubjectId,
+        displayName,
+        createdAt: now.toISOString(),
+        updatedAt: now.toISOString(),
+      });
+      await deviceExporterStore.createCredential({
+        credentialId,
+        deviceId,
+        tokenHash: hashDeviceSecret(deviceToken),
+        createdAt: now.toISOString(),
+      });
+      await deviceExporterStore.upsertSourceInstance({
+        sourceInstanceId,
+        deviceId,
+        connectorId: enrollment.connectorId,
+        localBindingId: enrollment.localBindingId,
+        displayName: enrollment.displayName,
+        createdAt: now.toISOString(),
+        updatedAt: now.toISOString(),
+      });
+      const consumed = await deviceExporterStore.consumeEnrollmentCode(enrollment.enrollmentCodeId, deviceId, now.toISOString());
+      if (!consumed) {
+        await deviceExporterStore.revokeDevice(deviceId, now.toISOString());
+        return pdppError(res, 409, 'invalid_request', 'Enrollment code was consumed by another device', 'enrollment_code');
+      }
+
+      res.status(201).json({
+        object: 'device_exporter_enrollment',
+        device_id: deviceId,
+        source_instance_id: sourceInstanceId,
+        device_token: deviceToken,
+        connector_id: enrollment.connectorId,
+        local_binding_name: enrollment.localBindingId,
+      });
+    } catch (err) {
+      handleError(res, err);
+    }
+  });
+
+  app.get('/_ref/device-exporters', { contract: 'refListDeviceExporters' }, ownerAuth.requireOwnerSession, async (req, res) => {
+    try {
+      res.json({ object: 'list', data: await buildDeviceExporterDiagnostics(getOwnerSubjectId(req)) });
+    } catch (err) {
+      handleError(res, err);
+    }
+  });
+
+  app.get('/_ref/device-exporters/source-instances', { contract: 'refListDeviceExporterSourceInstances' }, ownerAuth.requireOwnerSession, async (req, res) => {
+    try {
+      const diagnostics = await buildDeviceExporterDiagnostics(getOwnerSubjectId(req));
+      const requestedDeviceId = typeof req.query.device_id === 'string' && req.query.device_id.trim()
+        ? req.query.device_id.trim()
+        : null;
+      const data = diagnostics
+        .flatMap((device) => device.source_instances)
+        .filter((source) => !requestedDeviceId || source.device_id === requestedDeviceId);
+      res.json({ object: 'list', data });
+    } catch (err) {
+      handleError(res, err);
+    }
+  });
+
+  app.get('/_ref/device-exporters/diagnostics', { contract: 'refListDeviceExporterDiagnostics' }, ownerAuth.requireOwnerSession, async (req, res) => {
+    try {
+      res.json({ object: 'list', data: await buildDeviceExporterDiagnostics(getOwnerSubjectId(req)) });
+    } catch (err) {
+      handleError(res, err);
+    }
+  });
+
+  app.post('/_ref/device-exporters/:deviceId/revoke', { contract: 'refRevokeDeviceExporter' }, ownerAuth.requireOwnerSession, async (req, res) => {
+    try {
+      const deviceId = decodeURIComponent(req.params.deviceId);
+      const device = await deviceExporterStore.getDevice(deviceId);
+      if (!device || device.ownerSubjectId !== getOwnerSubjectId(req)) {
+        return pdppError(res, 404, 'not_found', 'Device exporter not found');
+      }
+      const revokedAt = new Date().toISOString();
+      await deviceExporterStore.revokeDevice(deviceId, revokedAt);
+      res.json({ object: 'device_exporter_revocation', device_id: deviceId, revoked_at: revokedAt });
+    } catch (err) {
+      handleError(res, err);
+    }
+  });
+
+  app.post('/_ref/device-exporters/:deviceId/heartbeat', { contract: 'refHeartbeatDeviceExporter' }, requireDeviceExporterCredential, async (req, res) => {
+    try {
+      const deviceId = decodeURIComponent(req.params.deviceId);
+      if (deviceId !== req.deviceExporter.deviceId) {
+        return pdppError(res, 403, 'permission_error', 'Device credential is not valid for this device');
+      }
+      const body = req.body || {};
+      const receivedAt = new Date().toISOString();
+      await deviceExporterStore.markDeviceHeartbeat(deviceId, {
+        receivedAt,
+        agentVersion: typeof body.agent_version === 'string' ? body.agent_version : null,
+        lastError: body.last_error ?? null,
+      });
+      for (const source of normalizeHeartbeatSourceInstances(body)) {
+        const sourceInstanceId = requireNonEmptyString(source.source_instance_id, 'source_instance_id');
+        const existing = await deviceExporterStore.getSourceInstance(deviceId, sourceInstanceId);
+        if (!existing) {
+          return pdppError(res, 400, 'invalid_request', `Unknown source_instance_id '${sourceInstanceId}'`, 'source_instance_id');
+        }
+        await deviceExporterStore.markSourceInstanceHeartbeat(deviceId, sourceInstanceId, {
+          receivedAt,
+          lastError: source.last_error ?? null,
+        });
+      }
+      res.json({
+        object: 'device_exporter_heartbeat',
+        device_id: deviceId,
+        received_at: receivedAt,
+        status: 'accepted',
+      });
+    } catch (err) {
+      handleError(res, err);
+    }
+  });
+
+  app.post('/_ref/device-exporters/:deviceId/ingest-batches', { contract: 'refIngestDeviceExporterBatch' }, requireDeviceExporterCredential, async (req, res) => {
+    try {
+      const deviceId = decodeURIComponent(req.params.deviceId);
+      if (deviceId !== req.deviceExporter.deviceId) {
+        return pdppError(res, 403, 'permission_error', 'Device credential is not valid for this device');
+      }
+      const body = req.body || {};
+      const bodyDeviceId = requireNonEmptyString(body.device_id, 'device_id');
+      if (bodyDeviceId !== deviceId) {
+        return pdppError(res, 400, 'invalid_request', 'body device_id must match path deviceId', 'device_id');
+      }
+      const sourceInstanceId = requireNonEmptyString(body.source_instance_id, 'source_instance_id');
+      const batchId = requireNonEmptyString(body.batch_id, 'batch_id');
+      const bodyHash = requireNonEmptyString(body.body_hash, 'body_hash');
+      const connectorId = requireNonEmptyString(body.connector_id, 'connector_id');
+      if (!Number.isInteger(body.batch_seq) || body.batch_seq < 0) {
+        return pdppError(res, 400, 'invalid_request', 'batch_seq must be a non-negative integer', 'batch_seq');
+      }
+      const sourceInstance = await deviceExporterStore.getSourceInstance(deviceId, sourceInstanceId);
+      if (!sourceInstance || sourceInstance.status !== 'active') {
+        return pdppError(res, 400, 'invalid_request', `Unknown source_instance_id '${sourceInstanceId}'`, 'source_instance_id');
+      }
+      if (sourceInstance.connectorId !== connectorId) {
+        return pdppError(res, 400, 'invalid_request', 'connector_id does not match source_instance_id', 'connector_id');
+      }
+
+      const records = normalizeDeviceIngestRecords(body);
+      const existing = await deviceExporterStore.getBatchOutcome(deviceId, batchId);
+      if (existing) {
+        if (existing.bodyHash !== bodyHash) {
+          return pdppError(res, 409, 'device_batch_conflict', `Device ingest batch '${batchId}' already exists with a different body hash`);
+        }
+        return res.status(200).json({
+          object: 'device_ingest_batch_result',
+          device_id: deviceId,
+          source_instance_id: sourceInstanceId,
+          batch_id: batchId,
+          body_hash: bodyHash,
+          status: 'replayed',
+          accepted_record_count: existing.response?.accepted_record_count ?? records.length,
+          rejected_record_count: existing.response?.rejected_record_count ?? 0,
+        });
+      }
+
+      const storageConnectorId = referenceLocalDeviceStorageConnectorId(connectorId, sourceInstanceId);
+      for (const record of records) {
+        await ingestRecord(storageConnectorId, record);
+      }
+      const response = {
+        object: 'device_ingest_batch_result',
+        device_id: deviceId,
+        source_instance_id: sourceInstanceId,
+        batch_id: batchId,
+        body_hash: bodyHash,
+        status: 'accepted',
+        accepted_record_count: records.length,
+        rejected_record_count: 0,
+      };
+      await deviceExporterStore.recordBatchOutcome({
+        deviceId,
+        batchId,
+        bodyHash,
+        sourceInstanceId,
+        status: 'accepted',
+        httpStatus: 201,
+        response,
+        createdAt: new Date().toISOString(),
+      });
+      res.status(201).json(response);
+    } catch (err) {
+      if (err instanceof DeviceBatchConflictError) {
+        return pdppError(res, 409, 'device_batch_conflict', err.message);
+      }
+      handleError(res, err);
+    }
+  });
+
   // Operator-issued client listing. Backs the dashboard Tokens page so an
   // operator can see and revoke the credentials they registered. Returns
   // only dynamic clients whose `metadata.issuer_subject_id` matches the
@@ -2683,6 +3543,11 @@ function buildAsApp(opts = {}) {
         setReferenceTraceId(res, outcome.traceContext.trace_id);
       }
       const { grant, token } = outcome;
+      completeAgentConnectAttempt(req.body?.request_uri || req.query?.request_uri, {
+        status: 'approved',
+        token,
+        grant,
+      });
       const wantsJson = req.is('application/json') || req.accepts(['html', 'json']) === 'json';
       if (wantsJson) {
         return res.json({ grant_id: grant.grant_id, token, grant });
@@ -2757,6 +3622,7 @@ function buildAsApp(opts = {}) {
       if (outcome.traceContext?.trace_id) {
         setReferenceTraceId(res, outcome.traceContext.trace_id);
       }
+      failAgentConnectAttempt(req.body?.request_uri || req.query?.request_uri, 'denied');
       res.send(renderHostedDocument({
         title: `${providerName} — Access denied`,
         providerName,
@@ -2827,15 +3693,30 @@ function buildAsApp(opts = {}) {
 
 // ─── RS App ─────────────────────────────────────────────────────────────────
 
-function buildAgentDiscoveryMetadata(origin) {
+function buildAgentDiscoveryMetadata(origin, { noOwnerToken = true } = {}) {
   if (!origin) {
     return null;
   }
   const base = stripTrailingSlash(origin);
+  const cli = getPdppCliPackageInfo(base);
+  const noOwnerTokenPolicy = noOwnerToken
+    ? cli.noOwnerTokenPolicy
+    : 'requires_native_reference_provider_for_one_command_connect';
   return {
     advisory: true,
     skill_name: 'pdpp-data-access',
-    recommended_flow: 'pdpp agent',
+    recommended_flow: 'pdpp connect',
+    cli: {
+      package: cli.packageName,
+      package_specifier: cli.packageSpecifier,
+      bin_name: cli.binName,
+      install_command: `npx -y ${cli.packageSpecifier} --help`,
+      run_command: cli.runCommand,
+      connect_command: createPdppCliCommand('<provider-url>'),
+      version_policy: cli.versionPolicy,
+      no_owner_token: noOwnerToken,
+      no_owner_token_policy: noOwnerTokenPolicy,
+    },
     skill_catalog: `${base}/.well-known/skills/index.json`,
     skill: `${base}/.well-known/skills/pdpp-data-access/SKILL.md`,
     llms_txt: `${base}/llms.txt`,
@@ -2848,6 +3729,8 @@ function buildRsApp(opts = {}) {
   const nativeMode = !!resolveNativeManifest(opts);
   const providerName = resolveProviderName(opts);
   const referenceRevision = resolveReferenceRevision(opts);
+  const explicitResource = opts.rsPublicUrl || (!opts.ignoreAmbientPublicUrls ? process.env.RS_PUBLIC_URL : null);
+  const trustedMetadataHosts = opts.trustedMetadataHosts ?? (!opts.ignoreAmbientPublicUrls ? process.env.PDPP_TRUSTED_HOSTS : null);
 
   app.use((req, res, next) => {
     res.setHeader('Request-Id', req.get('Request-Id') || generateSpineId('req'));
@@ -2860,6 +3743,10 @@ function buildRsApp(opts = {}) {
         `PDPP-Version '${requestedVersion}' is not supported. Current: ${CURRENT_VERSION}`);
     }
     res.setHeader('PDPP-Version', CURRENT_VERSION);
+    const metadataUrl = resolveTrustedProtectedResourceMetadataUrl(req, explicitResource, trustedMetadataHosts);
+    if (metadataUrl) {
+      res.locals[PROTECTED_RESOURCE_METADATA_URL_LOCAL] = metadataUrl;
+    }
     next();
   });
 
@@ -2877,8 +3764,7 @@ function buildRsApp(opts = {}) {
 
   // Primary reference surface: RFC 9728 protected-resource metadata.
   app.get('/.well-known/oauth-protected-resource', { contract: 'getProtectedResourceMetadata' }, (req, res) => {
-    const explicitResource = opts.rsPublicUrl || (!opts.ignoreAmbientPublicUrls ? process.env.RS_PUBLIC_URL : null);
-    if (rejectUntrustedMetadataHost(req, res, explicitResource, opts.trustedMetadataHosts)) {
+    if (rejectUntrustedMetadataHost(req, res, explicitResource, trustedMetadataHosts)) {
       return;
     }
     const resource = resolvePublicUrl(req, explicitResource);
@@ -2887,7 +3773,7 @@ function buildRsApp(opts = {}) {
     const issuerUsesDirectRequestOrigin = shouldUseDirectRequestOrigin(req, explicitIssuer);
     const issuerSource = issuerUsesDirectRequestOrigin ? fallbackIssuer : explicitIssuer || fallbackIssuer;
     if (
-      rejectUntrustedMetadataHost(req, res, issuerSource, opts.trustedMetadataHosts, {
+      rejectUntrustedMetadataHost(req, res, issuerSource, trustedMetadataHosts, {
         forceHostDerived: issuerUsesDirectRequestOrigin || !explicitIssuer,
       })
     ) {
@@ -2961,6 +3847,7 @@ function buildRsApp(opts = {}) {
         discoveryHints,
         agentDiscovery: buildAgentDiscoveryMetadata(
           opts.agentDiscoveryOrigin ? resolveSiblingPublicUrl(req, opts.agentDiscoveryOrigin) : null,
+          { noOwnerToken: nativeMode },
         ),
       })
     );
@@ -2987,7 +3874,9 @@ function buildRsApp(opts = {}) {
         actorId,
         traceId,
         scenarioId,
-        sourceDescriptor: null,
+        sourceDescriptor: tokenInfo.pdpp_token_kind === 'owner'
+          ? buildOwnerQuerySourceDescriptor(req, opts)
+          : buildClientSourceDescriptor(tokenInfo),
         queryData: { query_shape: 'connector_list' },
       };
 
@@ -3121,7 +4010,9 @@ function buildRsApp(opts = {}) {
         actorId,
         traceId,
         scenarioId,
-        sourceDescriptor: null,
+        sourceDescriptor: tokenInfo.pdpp_token_kind === 'owner'
+          ? buildOwnerQuerySourceDescriptor(req, opts)
+          : buildClientSourceDescriptor(tokenInfo),
         queryData: { query_shape: 'schema' },
       };
 
@@ -3253,33 +4144,41 @@ function buildRsApp(opts = {}) {
         actorId,
         traceId,
         scenarioId,
-        sourceDescriptor: null,
+        sourceDescriptor: tokenInfo.pdpp_token_kind === 'owner'
+          ? buildOwnerQuerySourceDescriptor(req, opts)
+          : buildClientSourceDescriptor(tokenInfo),
         queryData: { query_shape: 'stream_list' },
       };
 
       let operationInput;
       let dependencies;
+      let streamListFreshnessEvidence = null;
       if (tokenInfo.pdpp_token_kind === 'owner') {
         const ownerScope = resolveOwnerReadScope(req, opts);
-        // Eagerly populate queryContext for the rejected-query path; the
-        // operation also produces these via its output, but if the listing
-        // dependency throws we still need source attribution in
-        // query.received.
+        // Set source before manifest resolution so malformed connector
+        // failures remain attributable in query.received/query.rejected.
         queryContext.sourceDescriptor = buildSourceDescriptor(ownerScope.source);
+        const ownerResolved = await resolveOwnerManifest(req, opts);
+        streamListFreshnessEvidence = await getConnectorFreshnessEvidence({
+          source: ownerScope.source,
+          manifest: ownerResolved.manifest,
+        });
         operationInput = {
           actor: { kind: 'owner', subject_id: tokenInfo.subject_id || null },
         };
         dependencies = {
           getSourceDescriptor: () => queryContext.sourceDescriptor,
-          listSummaries: async () => {
-            await resolveOwnerManifest(req, opts);
-            return listAllStreams(ownerScope.storage_binding);
-          },
+          listSummaries: async () => listAllStreams(ownerScope.storage_binding),
         };
       } else {
         const grant = tokenInfo.grant;
+        const grantResolved = await resolveGrantManifest(tokenInfo, opts);
+        streamListFreshnessEvidence = await getConnectorFreshnessEvidence({
+          source: grantResolved.source,
+          manifest: grantResolved.manifest,
+        });
         const streamCountLimit = Array.isArray(grant?.streams) ? grant.streams.length : null;
-        queryContext.sourceDescriptor = buildSourceDescriptor(grant?.source);
+        queryContext.sourceDescriptor = grantResolved.source;
         queryContext.queryData.stream_count_limit = streamCountLimit;
         operationInput = {
           actor: {
@@ -3292,10 +4191,7 @@ function buildRsApp(opts = {}) {
         };
         dependencies = {
           getSourceDescriptor: () => queryContext.sourceDescriptor,
-          listSummaries: async () => {
-            const grantResolved = await resolveGrantManifest(tokenInfo, opts);
-            return listStreams(grantResolved.storageBinding, grant, grantResolved.manifest);
-          },
+          listSummaries: async () => listStreams(grantResolved.storageBinding, grant, grantResolved.manifest),
         };
       }
 
@@ -3328,7 +4224,7 @@ function buildRsApp(opts = {}) {
         object: 'list',
         data: result.streams.map((summary) => ({
           ...summary,
-          freshness: buildFreshness(summary.last_updated || null),
+          freshness: buildConnectorAwareFreshness(streamListFreshnessEvidence, summary.last_updated || null),
         })),
       });
     } catch (err) {
@@ -3357,8 +4253,8 @@ function buildRsApp(opts = {}) {
       let manifest;
       let storageBinding;
       let sourceDescriptor = tokenInfo.pdpp_token_kind === 'owner'
-        ? null
-        : buildSourceDescriptor(tokenInfo.grant?.source);
+        ? buildOwnerQuerySourceDescriptor(req, opts)
+        : buildClientSourceDescriptor(tokenInfo);
 
       queryContext = {
         tokenInfo,
@@ -3418,6 +4314,7 @@ function buildRsApp(opts = {}) {
             : null;
           const freshness = await getVisibleStreamFreshness({
             tokenInfo,
+            source: sourceDescriptor,
             storageBinding,
             stream: name,
             manifest,
@@ -3495,8 +4392,8 @@ function buildRsApp(opts = {}) {
 
       let grant = tokenInfo.grant;
       let sourceDescriptor = tokenInfo.pdpp_token_kind === 'owner'
-        ? null
-        : buildSourceDescriptor(grant?.source);
+        ? buildOwnerQuerySourceDescriptor(req, opts)
+        : buildClientSourceDescriptor(tokenInfo);
       let storageBinding = null;
       let manifest;
       const requestParams = { ...req.query };
@@ -3640,8 +4537,8 @@ function buildRsApp(opts = {}) {
       setReferenceTraceId(res, traceId);
 
       let sourceDescriptor = tokenInfo.pdpp_token_kind === 'owner'
-        ? null
-        : buildSourceDescriptor(tokenInfo.grant?.source);
+        ? buildOwnerQuerySourceDescriptor(req, opts)
+        : buildClientSourceDescriptor(tokenInfo);
       let storageBinding = null;
       let manifest;
       const requestParams = { ...req.query };
@@ -3775,8 +4672,8 @@ function buildRsApp(opts = {}) {
       setReferenceTraceId(res, traceId);
       let storageBinding = null;
       let sourceDescriptor = tokenInfo.pdpp_token_kind === 'owner'
-        ? null
-        : buildSourceDescriptor(tokenInfo.grant?.source);
+        ? buildOwnerQuerySourceDescriptor(req, opts)
+        : buildClientSourceDescriptor(tokenInfo);
       let manifest;
       const requestedRecordId = decodeURIComponent(req.params.id);
       queryContext = {
@@ -3905,7 +4802,7 @@ function buildRsApp(opts = {}) {
         actorId,
         traceId,
         scenarioId,
-        sourceDescriptor: isOwner ? null : buildSourceDescriptor(tokenInfo.grant?.source),
+        sourceDescriptor: isOwner ? null : buildClientSourceDescriptor(tokenInfo),
         streamId: null,
         queryData: { query_shape: 'search' },
       };
@@ -4001,7 +4898,7 @@ function buildRsApp(opts = {}) {
           actorId,
           traceId,
           scenarioId,
-          sourceDescriptor: isOwner ? null : buildSourceDescriptor(tokenInfo.grant?.source),
+          sourceDescriptor: isOwner ? null : buildClientSourceDescriptor(tokenInfo),
           streamId: null,
           queryData: { query_shape: 'search_semantic' },
         };
@@ -4093,7 +4990,7 @@ function buildRsApp(opts = {}) {
           actorId,
           traceId,
           scenarioId,
-          sourceDescriptor: isOwner ? null : buildSourceDescriptor(tokenInfo.grant?.source),
+          sourceDescriptor: isOwner ? null : buildClientSourceDescriptor(tokenInfo),
           streamId: null,
           queryData: { query_shape: 'search_hybrid' },
         };
@@ -4261,6 +5158,7 @@ function buildRsApp(opts = {}) {
       const blob = output.blob;
       res.setHeader('Content-Type', blob.mime_type);
       res.setHeader('Content-Length', String(blob.size_bytes));
+      res.setHeader('Cache-Control', 'private, no-store');
       res.send(Buffer.isBuffer(blob.data) ? blob.data : Buffer.from(blob.data || ''));
     } catch (err) {
       handleError(res, err);
@@ -4711,6 +5609,7 @@ export async function startServer(opts = {}) {
     dbPath: opts.dbPath || DB_PATH,
     enableDynamicClientRegistration: resolveDynamicClientRegistrationEnabled(opts),
     dynamicClientRegistrationInitialAccessTokens: resolveDynamicClientRegistrationInitialAccessTokens(opts),
+    preRegisteredPublicClients: resolvePreRegisteredPublicClients(opts),
     asPublicUrl: configuredAsPublicUrl,
     asIssuer: configuredAsIssuer,
     ignoreAmbientPublicUrls,
@@ -4719,6 +5618,8 @@ export async function startServer(opts = {}) {
     ownerAuthSubjectId: opts.ownerAuthSubjectId,
     ownerAuthForceSecureCookies: opts.ownerAuthForceSecureCookies,
     ownerAuthSameSite: opts.ownerAuthSameSite,
+    agentConnectTtlMs: opts.agentConnectTtlMs,
+    publicDynamicClientRegistrationRateLimit: opts.publicDynamicClientRegistrationRateLimit,
     referenceRevision: opts.referenceRevision,
     logger,
   });

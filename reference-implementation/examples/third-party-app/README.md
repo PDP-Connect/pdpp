@@ -13,7 +13,7 @@ It is not:
 It is a third-party client illustration that calls the real public endpoints
 the reference AS currently advertises:
 
-1. `POST /oauth/register` — dynamic client registration (protected)
+1. `POST /oauth/register` — public-client self-registration
 2. `POST /oauth/par` — PAR request staging
 3. Owner approval at `GET /consent?request_uri=...`
    - and, when owner-auth is disabled, a reference-local inline JSON shortcut

@@ -12,6 +12,7 @@
 import { allowUnboundedReadAcknowledged, getOne, iterateDynamicSqlAcknowledged, referenceQueries } from "../lib/db.ts";
 import { listSpineCorrelations, type SpineSummary } from "../lib/spine.ts";
 import { getConnectorManifest } from "./auth.js";
+import { deriveReferenceFreshness, type ReferenceFreshness } from "./freshness.ts";
 import { isPostgresStorageBackend, postgresQuery } from "./postgres-storage.js";
 import { listAllStreams } from "./records.js";
 import {
@@ -50,11 +51,7 @@ interface StreamAggregateRow {
   readonly stream: string;
 }
 
-interface Freshness {
-  readonly captured_at?: string;
-  readonly last_attempted_at?: string;
-  readonly status: "unknown";
-}
+type Freshness = ReferenceFreshness;
 
 interface RecordProjection {
   readonly byStream: Map<string, StreamProjection>;
@@ -273,14 +270,7 @@ function parseManifest(raw: string, connectorId: string): ConnectorManifest {
 }
 
 function buildFreshness(lastUpdated: string | null = null): Freshness {
-  if (!lastUpdated) {
-    return { status: "unknown" };
-  }
-  return {
-    status: "unknown",
-    captured_at: lastUpdated,
-    last_attempted_at: lastUpdated,
-  };
+  return deriveReferenceFreshness({ recordLastUpdatedAt: lastUpdated });
 }
 
 interface RunTerminalEventRow {
@@ -401,7 +391,8 @@ function buildManifestExcerpt(manifest: ConnectorManifest): ManifestExcerpt {
 
 function buildStreamSummary(
   stream: { name: string; semantics?: string },
-  live: StreamProjection | null = null
+  live: StreamProjection | null = null,
+  connectorFreshness: Freshness | null = null
 ): StreamSummary {
   return {
     object: "stream",
@@ -409,7 +400,7 @@ function buildStreamSummary(
     semantics: stream.semantics || null,
     record_count: live?.record_count || 0,
     last_updated: live?.last_updated || null,
-    freshness: live?.freshness || { status: "unknown" },
+    freshness: connectorFreshness || live?.freshness || { status: "unknown" },
   };
 }
 
@@ -441,6 +432,34 @@ function extractRefreshPolicy(manifest: ConnectorManifest): unknown {
   return caps.refresh_policy ?? null;
 }
 
+function getMaximumStalenessSeconds(refreshPolicy: unknown): number | null {
+  if (!refreshPolicy || typeof refreshPolicy !== "object" || Array.isArray(refreshPolicy)) {
+    return null;
+  }
+  const value = (refreshPolicy as { maximum_staleness_seconds?: unknown }).maximum_staleness_seconds;
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
+}
+
+function buildConnectorFreshness({
+  lastRun,
+  lastSuccessfulRun,
+  live,
+  refreshPolicy,
+}: {
+  lastRun: ConnectorRunSummary | null;
+  lastSuccessfulRun: ConnectorRunSummary | null;
+  live: RecordProjection;
+  refreshPolicy: unknown;
+}): Freshness {
+  return deriveReferenceFreshness({
+    lastAttemptedAt: lastRun?.last_at ?? null,
+    lastAttemptStatus: lastRun?.status ?? null,
+    lastSuccessfulRunAt: lastSuccessfulRun?.last_at ?? null,
+    maximumStalenessSeconds: getMaximumStalenessSeconds(refreshPolicy),
+    recordLastUpdatedAt: live.freshness.captured_at ?? null,
+  });
+}
+
 export function listConnectorSummaries(controller?: ControllerLike | null): Promise<ConnectorSummary[]> {
   return listRegisteredConnectorRows().then((rows) =>
     Promise.all(
@@ -452,14 +471,21 @@ export function listConnectorSummaries(controller?: ControllerLike | null): Prom
           getLatestRunSummary(row.connector_id),
           getLatestRunSummary(row.connector_id, "succeeded"),
         ]);
+        const refreshPolicy = extractRefreshPolicy(manifest);
+        const freshness = buildConnectorFreshness({
+          lastRun,
+          lastSuccessfulRun,
+          live,
+          refreshPolicy,
+        });
         return {
           connector_id: row.connector_id,
           display_name: manifest.display_name || row.connector_id,
           manifest_version: manifest.version || null,
           streams: (manifest.streams || []).map((stream) => stream.name),
           total_records: live.totalRecords,
-          freshness: live.freshness,
-          refresh_policy: extractRefreshPolicy(manifest),
+          freshness,
+          refresh_policy: refreshPolicy,
           schedule,
           last_run: lastRun,
           last_successful_run: lastSuccessfulRun,
@@ -483,20 +509,27 @@ export async function getConnectorDetail(
     getLatestRunSummary(connectorId),
     getLatestRunSummary(connectorId, "succeeded"),
   ]);
+  const refreshPolicy = extractRefreshPolicy(manifest);
+  const freshness = buildConnectorFreshness({
+    lastRun,
+    lastSuccessfulRun,
+    live,
+    refreshPolicy,
+  });
   return {
     object: "ref_connector_detail",
     connector_id: connectorId,
     display_name: manifest.display_name || connectorId,
     manifest_version: manifest.version || null,
     total_records: live.totalRecords,
-    freshness: live.freshness,
+    freshness,
     schedule,
     last_run: lastRun,
     last_successful_run: lastSuccessfulRun,
     recent_runs: lastRun ? [lastRun] : [],
     manifest_excerpt: buildManifestExcerpt(manifest),
     streams: (manifest.streams || []).map((stream) =>
-      buildStreamSummary(stream, live.byStream.get(stream.name) || null)
+      buildStreamSummary(stream, live.byStream.get(stream.name) || null, freshness)
     ),
   };
 }

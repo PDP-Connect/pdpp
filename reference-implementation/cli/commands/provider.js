@@ -63,9 +63,6 @@ export async function runProvider(argv) {
   if (subcommand === 'register') {
     const source = requirePositional(positionals, 0, 'path-or--');
     const initialAccessToken = resolveInitialAccessToken(flags);
-    if (!initialAccessToken) {
-      throw new PdppUsageError('Missing required flag: --initial-access-token');
-    }
 
     const discovered = await discoverProvider(flags);
     const registrationEndpoint = discovered.authorizationServerMetadata.registration_endpoint;
@@ -78,7 +75,7 @@ export async function runProvider(argv) {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${initialAccessToken}`,
+        ...(initialAccessToken ? { Authorization: `Bearer ${initialAccessToken}` } : {}),
       },
       body: JSON.stringify(metadata),
     });
@@ -89,6 +86,6 @@ export async function runProvider(argv) {
   throw new PdppUsageError(
     'Usage: pdpp provider <show|register> ...\n' +
     '  show --rs-url <url> [--as-url <url>] [--format json|table]\n' +
-    '  register <path-or-> --rs-url <url> [--as-url <url>] --initial-access-token <token> [--format json|table]'
+    '  register <path-or-> --rs-url <url> [--as-url <url>] [--initial-access-token <token>] [--format json|table]'
   );
 }

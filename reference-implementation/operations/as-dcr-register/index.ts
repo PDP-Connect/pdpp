@@ -66,6 +66,10 @@ export interface DcrRegisterError extends Error {
 
 export interface DcrRegisterSuccessSpineData {
   readonly registration_mode: "dynamic";
+  readonly registration_access:
+    | "public"
+    | "initial_access_token"
+    | "owner_session";
   readonly client_name: string | null;
   readonly token_endpoint_auth_method: string | null;
   readonly redirect_uri_count: number;
@@ -139,17 +143,21 @@ export async function executeAsDcrRegister(
     }
 
     const auth = input.authorizationHeader;
-    if (!auth || !auth.startsWith("Bearer ")) {
-      const err = new Error("Initial access token required") as DcrRegisterError;
-      err.code = "invalid_client";
-      throw err;
-    }
-
-    const initialAccessToken = auth.slice(7);
-    if (!input.initialAccessTokens.includes(initialAccessToken)) {
-      const err = new Error("Invalid initial access token") as DcrRegisterError;
-      err.code = "invalid_client";
-      throw err;
+    let registrationAccess: DcrRegisterSuccessSpineData["registration_access"] =
+      input.ownerSessionSubjectId ? "owner_session" : "public";
+    if (auth) {
+      if (!auth.startsWith("Bearer ")) {
+        const err = new Error("Malformed initial access token") as DcrRegisterError;
+        err.code = "invalid_client";
+        throw err;
+      }
+      const initialAccessToken = auth.slice(7);
+      if (!input.initialAccessTokens.includes(initialAccessToken)) {
+        const err = new Error("Invalid initial access token") as DcrRegisterError;
+        err.code = "invalid_client";
+        throw err;
+      }
+      registrationAccess = "initial_access_token";
     }
 
     // `issuer_subject_id` is a reference-only stamp owned by this operation
@@ -176,6 +184,7 @@ export async function executeAsDcrRegister(
       registered,
       spineData: {
         registration_mode: "dynamic",
+        registration_access: registrationAccess,
         client_name: registered.client_name || null,
         token_endpoint_auth_method:
           registered.token_endpoint_auth_method || null,

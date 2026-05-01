@@ -1,6 +1,6 @@
 # Troubleshooting
 
-When the flow breaks, work the failure top-down: discovery → registration → PAR → approval → token → introspect → schema → call. Most agent-side failures are at the boundary between two of those stages.
+When the flow breaks, work the failure top-down: discovery -> agent-connect -> approval -> token -> schema -> call. Manual DCR/PAR is a fallback path, not the CLI happy path.
 
 ## Discovery
 
@@ -10,18 +10,17 @@ When the flow breaks, work the failure top-down: discovery → registration → 
 - Try the other well-known path. Many users provide the AS URL when you needed the RS URL or vice versa.
 - If both 404, ask the user for the issuer URL printed at server start.
 
-**Symptom:** Discovery returns metadata but no `pushed_authorization_request_endpoint` or `registration_endpoint`.
+**Symptom:** Discovery returns metadata but no `agent_connect_endpoint`.
 
-- This AS is configured without PAR or dynamic registration. The agent flow this skill describes won't work as-is.
-- Stop. Tell the user the AS is configured without the endpoints the skill needs, and ask them to either enable them or pre-provision a client_id and grant out-of-band.
+- This provider has not enabled the no-owner-token CLI completion path.
+- Stop. Tell the user the provider metadata does not advertise agent-connect, and ask them to update the provider or pre-provision a scoped client credential out-of-band.
 
 ## Registration
 
 **Symptom:** `POST /oauth/register` returns `401 invalid_token` or `403`.
 
-- The AS protects registration with an initial-access token and you don't have one.
-- Ask the user *once* for an initial-access token (read it from `PDPP_INITIAL_ACCESS_TOKEN` env if they prefer).
-- For the forkable local reference server only, if the operator did not configure `PDPP_DCR_INITIAL_ACCESS_TOKENS`, the documented reference-local default is `pdpp-reference-local-initial-access-token`. Use it only for local reference/dev servers; do not treat it as a PDPP protocol default.
+- If you sent an `Authorization: Bearer ...` header, the AS rejected that bootstrap token. Retry public self-registration without a bearer token when metadata advertises `registration_endpoint` and `pdpp_registration_modes_supported` includes `dynamic`.
+- Ask the user for an initial-access token only if the provider metadata says registration is protected or public self-registration fails with an explicit policy requiring one.
 - Do not request an owner bearer token to "fall back" to. They are not interchangeable.
 
 **Symptom:** Registration succeeds but the returned `client_id` doesn't appear in subsequent PAR calls (`invalid_client`).
@@ -50,9 +49,8 @@ When the flow breaks, work the failure top-down: discovery → registration → 
 
 **Symptom:** Owner approves but you have no token.
 
-- The reference does not yet expose a public polling endpoint for PAR-staged grants. Either:
-  - The local CLI captured the token and wrote it to `.pdpp/tokens/<grant-id>.token`. Look there.
-  - Ask the user to paste the token from the consent confirmation screen *once*, into a single-message channel. Save with `mode 0600` and never echo it.
+- If you used `pdpp connect`, it should continue polling the returned `token_url` and then store `.pdpp/clients/<provider-host>.json`. If it stopped early, re-run `pdpp connect <provider-url>`.
+- If you used raw HTTP, poll only the returned `token_url` with the returned polling code. If the provider used a PAR/consent exchange-code fallback, redeem the code with `POST /consent/exchange` and JSON `{ "code": "<code>" }`.
 - Stop and ask if the user reports approving but neither path produced a token. Don't bypass with an owner token.
 
 **Symptom:** Owner says they approved but the request shows `pending` or `expired` later.
@@ -67,11 +65,11 @@ When the flow breaks, work the failure top-down: discovery → registration → 
 
 **Symptom:** `introspect` returns `active=false`.
 
-- The token expired, was revoked, or was never valid. Don't use it. If the grant id is still in the cache, mark it dead in `grants/<grant-id>.json` and request a fresh grant.
+- The token expired, was revoked, or was never valid. Don't use it. If the cached provider credential is stale, delete the matching `.pdpp/clients/<provider-host>.json` and run `pdpp connect <provider-url>` again.
 
 **Symptom:** `pdpp_token_kind=owner` when you expected `client`.
 
-- You picked up the wrong token. The owner-token path mints these via `/oauth/device_authorization`; check your CLI flow and confirm you ran the agent flow, not the owner flow.
+- You picked up the wrong token. The owner-token path mints these via `/oauth/device_authorization`; check your CLI flow and confirm you ran `pdpp connect`, not the owner self-export flow.
 
 ## Schema
 
@@ -123,9 +121,9 @@ When the flow breaks, work the failure top-down: discovery → registration → 
 
 ## Cache and filesystem
 
-**Symptom:** `tokens/<grant-id>.token` exists but `cat` returns empty.
+**Symptom:** `.pdpp/clients/<provider-host>.json` exists but `pdpp token <provider-url>` fails.
 
-- Either the writer failed mid-write or the file was truncated by a tool. Revoke the grant id (just in case it leaked) and request a new grant.
+- The credential cache is malformed, missing `credential.access_token`, or expired. Delete the provider cache file and run `pdpp connect <provider-url>` again. If it may have leaked, revoke from the dashboard before reconnecting.
 
 **Symptom:** `.pdpp/` ends up tracked by git.
 

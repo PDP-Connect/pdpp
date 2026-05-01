@@ -22,6 +22,7 @@
 - [x] 3.2 Add reference query tests proving `expand=attachments` exposes `blob_ref.fetch_url` only when the grant includes `attachments.blob_ref`.
 - [x] 3.3 Add reference query tests proving `GET /v1/blobs/{blob_id}` returns bytes for visible blobs and rejects hidden blobs.
 - [x] 3.4 Add restart/idempotency coverage showing repeated hydration does not duplicate stored bytes.
+- [x] 3.5 Add route regression coverage that visible blob GET/HEAD responses include private no-store cache semantics and HEAD returns metadata without a body.
 
 ## 4. Broader First-Party Follow-Ups
 

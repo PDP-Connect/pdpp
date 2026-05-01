@@ -16,7 +16,7 @@ interface InteractionField {
 interface Props {
   fields: InteractionField[];
   interactionId: string;
-  kind: "credentials" | "otp" | "manual_action" | string;
+  kind: "credentials" | "host_browser_required" | "otp" | "manual_action" | string;
   message: string;
   runId: string;
 }
@@ -51,7 +51,7 @@ export function RunInteractionForm({ runId, interactionId, kind, message, fields
     submitWithStatus(new FormData(), "cancelled");
   }
 
-  const showFields = kind !== "manual_action" && fields.length > 0;
+  const showFields = kind !== "manual_action" && kind !== "host_browser_required" && fields.length > 0;
   const submitLabel = getSubmitLabel(kind);
 
   return (
@@ -107,6 +107,9 @@ export function RunInteractionForm({ runId, interactionId, kind, message, fields
 }
 
 function getSubmitLabel(kind: Props["kind"]): string {
+  if (kind === "host_browser_required") {
+    return "I've completed this in the host browser";
+  }
   if (kind === "manual_action") {
     return "I've completed this step — continue";
   }

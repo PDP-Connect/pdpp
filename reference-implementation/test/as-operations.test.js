@@ -146,20 +146,38 @@ test('as.dcr.register rejects with invalid_request when DCR is disabled', async 
   assert.equal(outcome.spineData.error.code, 'invalid_request');
 });
 
-test('as.dcr.register requires Bearer authorization header', async () => {
+test('as.dcr.register allows public self-registration without Bearer authorization', async () => {
+  let capturedSanitized;
+  let capturedExtra;
   const outcome = await executeAsDcrRegister(
     {
-      body: {},
+      body: { client_name: 'public cli', token_endpoint_auth_method: 'none' },
       authorizationHeader: null,
       dcrEnabled: true,
       initialAccessTokens: ['t'],
       ownerSessionSubjectId: null,
     },
-    { registerDynamicClient: () => assert.fail('not reached') },
+    {
+      registerDynamicClient: (input, extra) => {
+        capturedSanitized = input;
+        capturedExtra = extra;
+        return {
+          client_id: 'c_public',
+          client_name: 'public cli',
+          token_endpoint_auth_method: 'none',
+          redirect_uris: [],
+        };
+      },
+    },
   );
-  assert.equal(outcome.outcome, 'failure');
-  assert.equal(outcome.status, 401);
-  assert.equal(outcome.errorCode, 'invalid_client');
+  assert.equal(outcome.outcome, 'success');
+  assert.equal(outcome.status, 201);
+  assert.deepEqual(capturedSanitized, {
+    client_name: 'public cli',
+    token_endpoint_auth_method: 'none',
+  });
+  assert.deepEqual(capturedExtra, {});
+  assert.equal(outcome.spineData.registration_access, 'public');
 });
 
 test('as.dcr.register rejects unknown initial access token with 401 invalid_client', async () => {
@@ -215,6 +233,7 @@ test('as.dcr.register strips body issuer_subject_id and stamps owner session sub
   assert.deepEqual(capturedExtra, { issuer_subject_id: 'owner_alice' });
   assert.deepEqual(outcome.spineData, {
     registration_mode: 'dynamic',
+    registration_access: 'initial_access_token',
     client_name: 'cli',
     token_endpoint_auth_method: 'none',
     redirect_uri_count: 1,

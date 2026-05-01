@@ -23,6 +23,12 @@ The reference RS SHALL expose a public schema/capability discovery surface that 
 - **THEN** those values SHALL be derived from the same manifest, grant, and metadata rules used by `GET /v1/streams/:stream`
 - **AND** the implementation SHALL NOT maintain a second independent field-capability source of truth.
 
+#### Scenario: Core documentation names schema discovery
+
+- **WHEN** a reader consults Core Section 8 for the Resource Server query surface
+- **THEN** the documentation SHALL name `GET /v1/schema` as the bearer-scoped schema and capability discovery endpoint
+- **AND** it SHALL describe the response envelope with `object: "schema"`, bearer scope, connectors, and stream metadata entries.
+
 ### Requirement: Query affordance documentation is copy-pasteable
 
 The reference documentation SHALL provide working examples for the currently supported query affordances, including stream-scoped search filters, range-filtered record listing, aggregation calls, first `changes_since` sync, `expand[]`, and `blob_ref.fetch_url`.
@@ -38,3 +44,26 @@ The reference documentation SHALL provide working examples for the currently sup
 - **WHEN** a record includes a visible `data.blob_ref.fetch_url`
 - **THEN** the documentation SHALL describe that URL as the supported byte-fetch path
 - **AND** it SHALL NOT imply that attachment-specific content endpoints exist unless they are implemented and tested.
+
+#### Scenario: A caller discovers aggregate support
+
+- **WHEN** a caller reads Core Section 8 stream metadata and aggregate documentation
+- **THEN** the documentation SHALL describe `field_capabilities`, `expand_capabilities`, and `query.aggregations`
+- **AND** it SHALL describe `GET /v1/streams/{stream}/aggregate` with `metric`, `field`, `group_by`, and `filter[...]` parameters.
+
+#### Scenario: A caller bootstraps change tracking
+
+- **WHEN** a caller reads Core Section 8 incremental-sync documentation
+- **THEN** the documentation SHALL name `changes_since=beginning` as the initial-session bootstrap sentinel
+- **AND** it SHALL tell clients to persist the terminal page's `next_changes_since` for later sessions.
+
+#### Scenario: A caller starts from protected-resource metadata
+
+- **WHEN** a caller reads Core Section 8 discovery guidance
+- **THEN** the documentation SHALL describe `pdpp_discovery_hints` as the protected-resource metadata block that points to schema discovery, query base, aggregate templates, the change-tracking bootstrap sentinel, and blob indirection.
+
+#### Scenario: A caller lands on the superseded companion page
+
+- **WHEN** a reader opens the historical Data Query API companion page
+- **THEN** the page SHALL contain no independent normative endpoint contract
+- **AND** it SHALL redirect the reader to Core Section 8 as the authoritative Resource Server query interface.

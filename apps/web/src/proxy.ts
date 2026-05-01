@@ -34,6 +34,9 @@ function resolveReferenceProxyTarget(pathname: string): string | null {
   if (pathname.startsWith("/oauth/")) {
     return AS_PROXY_TARGET;
   }
+  if (pathname === "/agent-connect" || pathname.startsWith("/agent-connect/")) {
+    return AS_PROXY_TARGET;
+  }
   if (pathname === "/introspect") {
     return AS_PROXY_TARGET;
   }
@@ -152,6 +155,8 @@ export const config = {
     "/sandbox/well-known/:path*",
     "/.well-known/:path*",
     "/oauth/:path*",
+    "/agent-connect",
+    "/agent-connect/:path*",
     "/introspect",
     "/grants/:path*",
     "/_ref/:path*",

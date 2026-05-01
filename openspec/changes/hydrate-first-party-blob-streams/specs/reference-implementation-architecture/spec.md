@@ -24,6 +24,12 @@ The reference implementation SHALL use its existing blob substrate for first-par
 - **THEN** the reference SHALL NOT expose a usable blob `fetch_url`
 - **AND** `GET /v1/blobs/{blob_id}` SHALL remain unauthorized unless some visible record exposes that blob reference under the caller's grant
 
+#### Scenario: A visible blob is served with private cache semantics
+
+- **WHEN** a caller fetches a visible blob through `GET /v1/blobs/{blob_id}`
+- **THEN** the response SHALL include `Content-Type`, `Content-Length`, and `Cache-Control: private, no-store`
+- **AND** a `HEAD /v1/blobs/{blob_id}` request under the same grant SHALL return the same status and metadata headers without a response body
+
 ### Requirement: First-party blob hydration coverage stays auditable
 
 The reference implementation SHALL keep first-party blob hydration coverage auditable by classifying shipped connector streams that may contain collectible binary content.

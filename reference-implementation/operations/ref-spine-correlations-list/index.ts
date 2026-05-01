@@ -130,6 +130,7 @@ export interface RefSpineGrantSummary {
 export interface RefSpineRunSummary {
   readonly object: "run_summary";
   readonly run_id: string | undefined;
+  readonly connector_id: string | null;
   readonly first_at: string;
   readonly last_at: string;
   readonly event_count: number;
@@ -205,6 +206,7 @@ export function summaryToRun(s: RefSpineCorrelationSummary): RefSpineRunSummary 
   return {
     object: "run_summary",
     run_id: s.id,
+    connector_id: s.connector_id,
     first_at: s.first_at,
     last_at: s.last_at,
     event_count: s.event_count,

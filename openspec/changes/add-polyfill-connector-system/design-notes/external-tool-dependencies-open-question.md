@@ -1,8 +1,9 @@
 # Open question: external-tool dependencies (subprocess binaries)
 
-**Status:** open
+**Status:** partially decided
 **Raised:** 2026-04-19
-**Trigger:** the Slack connector requires `slackdump` on PATH. The Collection Profile spec has no concept for this class of dependency, so the requirement is invisible to the runtime, the consent card, and the user.
+**Trigger:** the Slack connector requires `slackdump` on PATH. The Collection Profile spec had no concept for this class of dependency, so the requirement was invisible to the runtime, the consent card, and the user.
+**Decision:** `openspec/changes/declare-polyfill-external-tools` adopts Option A as static manifest metadata. Runtime execution of `detect.command` and `setup_required` interactions remain deferred.
 
 ## Three classes of dependency, only one is spec'd
 
@@ -10,7 +11,7 @@
 |---|---|---|
 | 1. Runtime bindings | `network`, `filesystem`, `interactive` | ✅ yes — `runtime_requirements.bindings` |
 | 2. Language-level deps | npm packages, Go modules, Python imports | ❌ no — implicit in the connector package |
-| 3. External tool binaries | `slackdump`, `osxphotos`, `ffmpeg`, `pandoc`, `playwright` browsers | ❌ no — invisible to spec |
+| 3. External tool binaries | `slackdump`, `osxphotos`, `ffmpeg`, `pandoc`, `playwright` browsers | ✅ static manifest metadata via `runtime_requirements.external_tools`; runtime preflight deferred |
 
 Class 1 is declared by the manifest and enforced by the runtime. Classes 2 and 3 are implementation concerns today. That's fine for (2) — every polyfill-runtime can assume its connectors resolve their own language deps. It's problematic for (3) because the runtime has no way to:
 
@@ -30,7 +31,7 @@ Class 1 is declared by the manifest and enforced by the runtime. Classes 2 and 3
 | future: icloud_photos | `pyicloud` or `osxphotos` | MIT | iCloud photo library access |
 | future: ffmpeg-using media | `ffmpeg` | LGPL/GPL | Video/audio transcoding |
 
-Today all of these silently fail-at-runtime with cryptic errors if the binary is missing.
+Before `declare-polyfill-external-tools`, all of these silently failed at runtime with cryptic errors if the binary was missing. Slack now declares `slackdump`; runtime preflight is still deferred.
 
 ## What the spec could add
 
@@ -100,6 +101,6 @@ Option C defers the problem and will be re-raised every time a new connector add
 
 ## Action items
 
-- [ ] Inventory which connectors already rely on external tools (today: slack; future: many)
-- [ ] If Option A lands, retrofit slack + browser-scraper manifests with `external_tools` declarations
+- [x] Inventory which connectors already rely on external tools (today: slack; future: many)
+- [x] If Option A lands, retrofit slack manifest with `external_tools` declarations
 - [ ] Consider how this interacts with hosted runtimes (Vercel would preinstall vs. self-hosted checks at spawn)

@@ -1,10 +1,12 @@
-import { agentSkillsLLMSFullText } from "@/lib/agent-skills/catalog.ts";
-import { source } from "@/lib/docs-source.ts";
-import { getLLMText } from "@/lib/get-llm-text.ts";
-
 export const revalidate = false;
+export const dynamic = "force-dynamic";
 
 export async function GET() {
+  const [{ agentSkillsLLMSFullText }, { source }, { getLLMText }] = await Promise.all([
+    import("@/lib/agent-skills/catalog.ts"),
+    import("@/lib/docs-source.ts"),
+    import("@/lib/get-llm-text.ts"),
+  ]);
   const scan = source.getPages().map(getLLMText);
   const [scanned, skillText] = await Promise.all([Promise.all(scan), agentSkillsLLMSFullText()]);
 

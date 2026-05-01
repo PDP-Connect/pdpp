@@ -273,12 +273,13 @@ async function issueOwnerToken(asUrl, subjectId = 'owner_local') {
 }
 
 async function registerDynamicClient(asUrl, metadata, initialAccessToken = TEST_DCR_INITIAL_ACCESS_TOKEN) {
+  const headers = { 'Content-Type': 'application/json' };
+  if (initialAccessToken) {
+    headers.Authorization = `Bearer ${initialAccessToken}`;
+  }
   return fetchJson(`${asUrl}/oauth/register`, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${initialAccessToken}`,
-    },
+    headers,
     body: JSON.stringify(metadata),
   });
 }
@@ -678,6 +679,37 @@ test('PDPP reference implementation integration', async (t) => {
       const missingClientBody = await missingClientResp.json();
       assert.equal(missingClientBody.error.code, 'invalid_request');
       assert.match(missingClientBody.error.message, /requires client_id/);
+
+      const multiDetailsResp = await fetch(`${asUrl}/oauth/par`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          client_id: 'longview',
+          authorization_details: [
+            {
+              type: 'https://pdpp.org/data-access',
+              source: { kind: 'connector', id: spotifyManifest.connector_id },
+              purpose_code: 'https://pdpp.org/purpose/personalization',
+              access_mode: 'continuous',
+              streams: [{ name: 'top_artists' }],
+            },
+            {
+              type: 'https://pdpp.org/data-access',
+              source: { kind: 'connector', id: spotifyManifest.connector_id },
+              purpose_code: 'https://pdpp.org/purpose/personalization',
+              access_mode: 'continuous',
+              streams: [{ name: 'saved_tracks' }],
+            },
+          ],
+        }),
+      });
+      assert.equal(multiDetailsResp.status, 400);
+      assert.equal(multiDetailsResp.headers.get('PDPP-Reference-Trace-Id'), null);
+      const multiDetailsBody = await multiDetailsResp.json();
+      assert.equal(multiDetailsBody.error.type, 'invalid_request_error');
+      assert.equal(multiDetailsBody.error.code, 'invalid_request');
+      assert.match(multiDetailsBody.error.message, /Exactly one authorization_details entry is supported/);
+      assert.ok(multiDetailsBody.error.request_id);
 
       const unsupportedRequestFieldsResp = await fetch(`${asUrl}/oauth/par`, {
         method: 'POST',
@@ -1091,7 +1123,7 @@ test('PDPP reference implementation integration', async (t) => {
     });
   });
 
-  await t.test('protected dynamic client registration returns a usable public client', async () => {
+  await t.test('initial-access-token dynamic client registration returns a usable public client', async () => {
     await withHarness(async ({ asUrl, spotifyManifest }) => {
       const registration = await registerDynamicClient(asUrl, {
         client_name: 'Dynamic Longview',
@@ -1118,6 +1150,7 @@ test('PDPP reference implementation integration', async (t) => {
       assert.equal(registeredEvent.object_id, registration.body.client_id);
       assert.equal(registeredEvent.client_id, registration.body.client_id);
       assert.equal(registeredEvent.data?.registration_mode, 'dynamic');
+      assert.equal(registeredEvent.data?.registration_access, 'initial_access_token');
       assert.equal(registeredEvent.data?.client_name, 'Dynamic Longview');
       assert.equal(registeredEvent.data?.token_endpoint_auth_method, 'none');
       assert.equal(registeredEvent.data?.redirect_uri_count, 1);
@@ -1151,6 +1184,31 @@ test('PDPP reference implementation integration', async (t) => {
       assert.equal(approved.grant.client.client_id, registration.body.client_id);
       assert.equal(approved.grant.client.client_display.name, 'Dynamic Longview');
       assert.equal(approved.grant.client.client_display.uri, 'https://longview.example');
+    });
+  });
+
+  await t.test('public dynamic client registration works without an initial access token', async () => {
+    await withHarness(async ({ asUrl }) => {
+      const registration = await registerDynamicClient(
+        asUrl,
+        {
+          client_name: 'Public Dynamic Longview',
+          token_endpoint_auth_method: 'none',
+        },
+        null,
+      );
+
+      assert.equal(registration.status, 201);
+      const registrationTraceId = registration.headers['pdpp-reference-trace-id'];
+      assert.ok(registrationTraceId?.startsWith('trc_'));
+      assert.ok(typeof registration.body.client_id === 'string' && registration.body.client_id.startsWith('cli_'));
+      assert.equal(registration.body.client_name, 'Public Dynamic Longview');
+      assert.equal(registration.body.token_endpoint_auth_method, 'none');
+
+      const { body: registrationTrace } = await fetchJson(`${asUrl}/_ref/traces/${encodeURIComponent(registrationTraceId)}`);
+      const registeredEvent = (registrationTrace.data || []).find((event) => event.event_type === 'client.registered');
+      assert.ok(registeredEvent, 'trace should include client.registered');
+      assert.equal(registeredEvent.data?.registration_access, 'public');
     });
   });
 
@@ -1905,7 +1963,7 @@ test('PDPP reference implementation integration', async (t) => {
     });
   });
 
-  await t.test('protected dynamic client registration rejects invalid initial access tokens', async () => {
+  await t.test('dynamic client registration rejects invalid initial access tokens', async () => {
     await withHarness(async ({ asUrl }) => {
       const registration = await fetch(`${asUrl}/oauth/register`, {
         method: 'POST',
@@ -1941,7 +1999,7 @@ test('PDPP reference implementation integration', async (t) => {
     });
   });
 
-  await t.test('protected dynamic client registration rejects broader OAuth metadata beyond the current public-client profile', async () => {
+  await t.test('dynamic client registration rejects broader OAuth metadata beyond the current public-client profile', async () => {
     await withHarness(async ({ asUrl }) => {
       const responseTypes = await fetch(`${asUrl}/oauth/register`, {
         method: 'POST',
@@ -1999,7 +2057,7 @@ test('PDPP reference implementation integration', async (t) => {
     });
   });
 
-  await t.test('protected dynamic client registration rejects unsupported client metadata extension fields', async () => {
+  await t.test('dynamic client registration rejects unsupported client metadata extension fields', async () => {
     await withHarness(async ({ asUrl }) => {
       const registration = await fetch(`${asUrl}/oauth/register`, {
         method: 'POST',
@@ -2021,7 +2079,7 @@ test('PDPP reference implementation integration', async (t) => {
     });
   });
 
-  await t.test('protected dynamic client registration rejects malformed URI metadata fields', async () => {
+  await t.test('dynamic client registration rejects malformed URI metadata fields', async () => {
     await withHarness(async ({ asUrl }) => {
       const invalidRedirectUris = await fetch(`${asUrl}/oauth/register`, {
         method: 'POST',

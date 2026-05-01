@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { resolveRepoRoot } from "@/lib/openspec/filesystem.ts";
+import { pdppCliConnectCommand, pdppCliTokenCompletionUnavailable } from "@/lib/pdpp-cli-command.ts";
 
 const SKILL_NAME = "pdpp-data-access";
 const SKILL_DESCRIPTION =
@@ -135,8 +136,11 @@ export function agentSkillsLLMSIndex(): string {
     "",
     `- ${SKILL_NAME}: ${WELL_KNOWN_BASE_PATH}/${SKILL_NAME}/SKILL.md`,
     `- Skill catalog: ${WELL_KNOWN_BASE_PATH}/index.json`,
+    `- PDPP CLI connect command: \`${pdppCliConnectCommand}\``,
     "",
-    "Use the skill when a coding agent needs PDPP data through scoped client grants. The skill is CLI-first (`pdpp agent ...`) and forbids owner-token use for routine data access.",
+    `Use the skill when a coding agent needs PDPP data through scoped client grants. The skill is CLI-first and forbids owner-token use for routine data access. Token completion is ${
+      pdppCliTokenCompletionUnavailable ? "not yet public; keep the CLI command gated." : "available through the CLI."
+    }`,
   ].join("\n");
 }
 

@@ -1477,6 +1477,7 @@ test('event spine', async (t) => {
       assert.deepEqual(startedEvent.data.bindings, {
         network: {},
         filesystem: {},
+        browser: {},
         interactive: {},
       });
       assert.deepEqual(startedEvent.data.scope, {

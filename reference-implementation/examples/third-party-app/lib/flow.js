@@ -2,7 +2,7 @@
  * Pure helpers that exercise the current thin PDPP reference provider-connect
  * flow:
  *
- *   POST /oauth/register      (protected dynamic client registration)
+ *   POST /oauth/register      (public-client self-registration)
  *   POST /oauth/par           (PAR request staging)
  *   POST /consent/approve     (reference-local inline approval shortcut)
  *   POST /consent/deny        (reference-local inline denial shortcut)
@@ -47,12 +47,13 @@ function describeFailure(body, fallback) {
 }
 
 export async function registerClient({ asUrl, initialAccessToken, metadata }) {
+  const headers = { 'Content-Type': 'application/json' };
+  if (initialAccessToken) {
+    headers.Authorization = `Bearer ${initialAccessToken}`;
+  }
   const response = await fetch(`${asUrl}/oauth/register`, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${initialAccessToken}`,
-    },
+    headers,
     body: JSON.stringify(metadata),
   });
   const body = await readJsonOrText(response);

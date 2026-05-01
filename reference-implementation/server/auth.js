@@ -1677,6 +1677,94 @@ const REFRESH_POLICY_ALLOWED_KEYS = new Set([
   'background_safe',
   'rationale',
 ]);
+const RUNTIME_REQUIREMENT_BINDINGS = new Set(['browser', 'filesystem', 'interactive', 'network']);
+
+function validateRuntimeRequirements(manifest, code) {
+  const requirements = manifest.runtime_requirements;
+  if (requirements === undefined || requirements === null) return;
+  if (typeof requirements !== 'object' || Array.isArray(requirements)) {
+    throw invalidConnectorManifest('runtime_requirements must be an object when declared', code);
+  }
+  const bindings = requirements.bindings;
+  if (bindings === undefined || bindings === null) return;
+  if (typeof bindings !== 'object' || Array.isArray(bindings)) {
+    throw invalidConnectorManifest('runtime_requirements.bindings must be an object when declared', code);
+  }
+  const unknownBindings = Object.keys(bindings).filter((binding) => !RUNTIME_REQUIREMENT_BINDINGS.has(binding));
+  if (unknownBindings.length) {
+    throw invalidConnectorManifest(
+      `runtime_requirements.bindings has unsupported keys: ${unknownBindings.join(', ')}`,
+      code,
+    );
+  }
+  for (const [binding, requirement] of Object.entries(bindings)) {
+    if (!requirement || typeof requirement !== 'object' || Array.isArray(requirement)) {
+      throw invalidConnectorManifest(`runtime_requirements.bindings.${binding} must be an object`, code);
+    }
+    if (requirement.required !== undefined && typeof requirement.required !== 'boolean') {
+      throw invalidConnectorManifest(`runtime_requirements.bindings.${binding}.required must be a boolean`, code);
+    }
+  }
+  const externalTools = requirements.external_tools;
+  if (externalTools === undefined || externalTools === null) return;
+  if (!Array.isArray(externalTools)) {
+    throw invalidConnectorManifest('runtime_requirements.external_tools must be an array when declared', code);
+  }
+  const allowedToolKeys = new Set(['detect', 'install_hint', 'license', 'min_version', 'name', 'purpose']);
+  const seenToolNames = new Set();
+  for (const [index, tool] of externalTools.entries()) {
+    if (!tool || typeof tool !== 'object' || Array.isArray(tool)) {
+      throw invalidConnectorManifest(`runtime_requirements.external_tools[${index}] must be an object`, code);
+    }
+    const unknownKeys = Object.keys(tool).filter((key) => !allowedToolKeys.has(key));
+    if (unknownKeys.length) {
+      throw invalidConnectorManifest(
+        `runtime_requirements.external_tools[${index}] has unsupported keys: ${unknownKeys.join(', ')}`,
+        code,
+      );
+    }
+    for (const fieldName of ['name', 'license', 'purpose']) {
+      if (!isNonEmptyString(tool[fieldName])) {
+        throw invalidConnectorManifest(
+          `runtime_requirements.external_tools[${index}].${fieldName} must be a non-empty string`,
+          code,
+        );
+      }
+    }
+    if (seenToolNames.has(tool.name)) {
+      throw invalidConnectorManifest(`runtime_requirements.external_tools duplicates tool '${tool.name}'`, code);
+    }
+    seenToolNames.add(tool.name);
+    for (const fieldName of ['install_hint', 'min_version']) {
+      if (tool[fieldName] !== undefined && !isNonEmptyString(tool[fieldName])) {
+        throw invalidConnectorManifest(
+          `runtime_requirements.external_tools[${index}].${fieldName} must be a non-empty string`,
+          code,
+        );
+      }
+    }
+    if (tool.detect !== undefined) {
+      if (!tool.detect || typeof tool.detect !== 'object' || Array.isArray(tool.detect)) {
+        throw invalidConnectorManifest(`runtime_requirements.external_tools[${index}].detect must be an object`, code);
+      }
+      if (!isNonEmptyString(tool.detect.command)) {
+        throw invalidConnectorManifest(
+          `runtime_requirements.external_tools[${index}].detect.command must be a non-empty string`,
+          code,
+        );
+      }
+      if (
+        tool.detect.exit_code !== undefined
+        && (!Number.isInteger(tool.detect.exit_code) || tool.detect.exit_code < 0)
+      ) {
+        throw invalidConnectorManifest(
+          `runtime_requirements.external_tools[${index}].detect.exit_code must be a non-negative integer`,
+          code,
+        );
+      }
+    }
+  }
+}
 
 function validateRefreshPolicyCapability(manifest, code) {
   const capabilities = manifest.capabilities;
@@ -1852,6 +1940,7 @@ function validateConnectorManifest(manifest = {}, code = 'invalid_request', opts
     throw invalidConnectorManifest('Connector manifests must include a non-empty streams array', code);
   }
 
+  validateRuntimeRequirements(manifest, code);
   validateRefreshPolicyCapability(manifest, code);
 
   const manifestStreamsByName = new Map(

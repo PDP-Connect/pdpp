@@ -16,7 +16,7 @@ Two things remain deliberately out of scope in these examples:
 
 - a generic third-party authorization-code redirect flow
 
-The current reference proves request staging, protected dynamic client registration, consent, issued grants, owner self-export, and honest native-versus-polyfill source identity.
+The current reference proves request staging, public-client self-registration, consent, issued grants, owner self-export, and honest native-versus-polyfill source identity.
 
 ## Example 1: Longview requests compensation data from Northstar HR
 

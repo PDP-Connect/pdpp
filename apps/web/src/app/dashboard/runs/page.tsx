@@ -1,20 +1,10 @@
 import Link from "next/link";
-import { Button } from "@/components/ui/button.tsx";
-import { Input } from "@/components/ui/input.tsx";
-import { Select } from "@/components/ui/select.tsx";
 import { Timestamp } from "@/components/ui/timestamp.tsx";
 import { LivePoller } from "../components/live-poller.tsx";
-import { PeekEmpty, PeekPane, PeekTimeline, pivotsFromEnvelope } from "../components/peek.tsx";
-import {
-  DataList,
-  FilterSummary,
-  PageHeader,
-  Pager,
-  SplitLayout,
-  StatusBadge,
-  Toolbar,
-} from "../components/primitives.tsx";
-import { DashboardShell, EmptyState, ServerUnreachable } from "../components/shell.tsx";
+import { PageHeader, StatusBadge } from "../components/primitives.tsx";
+import { DashboardShell, ServerUnreachable } from "../components/shell.tsx";
+import { type ListWithPeekParams, ListWithPeekView } from "../components/views/list-with-peek.tsx";
+import { dashboardRoutes } from "../components/views/routes.ts";
 import { ReferenceServerUnreachableError } from "../lib/owner-token.ts";
 import {
   getRunTimeline,
@@ -34,43 +24,8 @@ interface Params {
   status?: string;
 }
 
-function renderRunsPeek({
-  peekId,
-  peekEnvelope,
-  closePeekHref,
-  openPeekFullHref,
-}: {
-  peekId: string | undefined;
-  peekEnvelope: TimelineEnvelope | null;
-  closePeekHref: string;
-  openPeekFullHref: string;
-}) {
-  if (!peekId) {
-    return <PeekEmpty />;
-  }
-  if (!peekEnvelope) {
-    return (
-      <PeekPane closeHref={closePeekHref} openHref={openPeekFullHref} title={`run ${peekId}`}>
-        <p className="text-muted-foreground">Run not found.</p>
-      </PeekPane>
-    );
-  }
-  return (
-    <PeekPane
-      cliCommand={`pdpp run timeline ${peekId}`}
-      closeHref={closePeekHref}
-      openHref={openPeekFullHref}
-      title={`run ${peekId}`}
-    >
-      <Pivots currentKind="run" envelope={peekEnvelope} />
-      <div className="pdpp-caption mb-2 text-muted-foreground">{peekEnvelope.events.length} events</div>
-      <PeekTimeline events={peekEnvelope.events} />
-    </PeekPane>
-  );
-}
-
-function listHref(params: Params, overrides: Partial<Params> = {}): string {
-  const merged = { ...params, ...overrides };
+function listHref(params: Params, overrides: Record<string, string | undefined> = {}): string {
+  const merged: Record<string, string | undefined> = { ...params, ...overrides };
   const qs = Object.entries(merged)
     .filter(([, v]) => v !== undefined && v !== "")
     .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`)
@@ -107,9 +62,6 @@ export default async function RunsPage({ searchParams }: { searchParams: Promise
     throw err;
   }
 
-  const closePeekHref = listHref(params, { peek: undefined });
-  const openPeekFullHref = params.peek ? `/dashboard/runs/${encodeURIComponent(params.peek)}` : "";
-
   const activeFilters = [
     params.status ? { label: "status", value: params.status } : null,
     params.connector_id ? { label: "connector", value: params.connector_id } : null,
@@ -121,92 +73,54 @@ export default async function RunsPage({ searchParams }: { searchParams: Promise
   // interaction ids; `kinds` is only an event-type vocabulary and is too lossy
   // for pending-interaction state.
   const liveRunCount = result.data.filter(isLiveRun).length;
+  const viewParams: ListWithPeekParams<RunSummary> = {
+    active: "runs",
+    routes: dashboardRoutes,
+    subject: "run",
+    title: "Runs",
+    description: "Connector runs and their lifecycle: staging, advance, progress, and failures.",
+    result,
+    rowKey: (run) => run.run_id,
+    renderRow: (run, { peeked, href }) => <RunRow href={href} peeked={peeked} run={run} />,
+    filters: {
+      query: { name: "q", placeholder: "id contains…", defaultValue: params.q ?? "" },
+      connector: { name: "connector_id", defaultValue: params.connector_id ?? "" },
+      status: {
+        name: "status",
+        defaultValue: params.status ?? "",
+        options: [
+          { value: "succeeded", label: "succeeded" },
+          { value: "failed", label: "failed" },
+          { value: "cancelled", label: "cancelled" },
+          { value: "started", label: "started" },
+        ],
+      },
+    },
+    activeFilterChips: activeFilters,
+    resetHref: "/dashboard/runs",
+    buildListHref: (overrides) => listHref(params, overrides),
+    peekId: params.peek,
+    peekEnvelope,
+    peekCliCommand: (id) => `pdpp run timeline ${id}`,
+    emptyTitle: "No runs yet",
+    emptyHint: "Run artifacts appear after connector runs stage, advance, or fail.",
+  };
 
   return (
     <DashboardShell active="runs">
       <LivePoller enabled={liveRunCount > 0} />
-      <PageHeader
-        count={`${result.data.length}${result.has_more ? "+" : ""}`}
-        description="Connector runs and their lifecycle: staging, advance, progress, and failures."
-        title="Runs"
-      />
-
-      <form method="get">
-        <Toolbar>
-          <label className="flex min-w-0 flex-col gap-1" htmlFor="runs-query">
-            <span className="pdpp-eyebrow">Query</span>
-            <Input
-              className="w-56 font-mono"
-              defaultValue={params.q ?? ""}
-              id="runs-query"
-              name="q"
-              placeholder="id contains…"
-              type="search"
-            />
-          </label>
-          <label className="flex min-w-0 flex-col gap-1" htmlFor="runs-connector-id">
-            <span className="pdpp-eyebrow">Connector</span>
-            <Input
-              className="w-48 font-mono"
-              defaultValue={params.connector_id ?? ""}
-              id="runs-connector-id"
-              name="connector_id"
-              placeholder="connector_id"
-              type="text"
-            />
-          </label>
-          <label className="flex min-w-0 flex-col gap-1" htmlFor="runs-status">
-            <span className="pdpp-eyebrow">Status</span>
-            <Select defaultValue={params.status ?? ""} id="runs-status" name="status">
-              <option value="">Any</option>
-              <option value="succeeded">succeeded</option>
-              <option value="failed">failed</option>
-              <option value="cancelled">cancelled</option>
-              <option value="started">started</option>
-            </Select>
-          </label>
-          <Button className="mt-5" size="sm" type="submit">
-            Filter
-          </Button>
-        </Toolbar>
-      </form>
-
-      <FilterSummary items={activeFilters} resetHref="/dashboard/runs" />
-
-      <SplitLayout
-        main={
-          <>
-            {result.data.length === 0 ? (
-              <EmptyState
-                hint="Run artifacts appear after connector runs stage, advance, or fail."
-                title="No runs yet"
-              />
-            ) : (
-              <DataList>
-                {result.data.map((r) => (
-                  <li key={r.run_id}>
-                    <RunRow params={params} run={r} />
-                  </li>
-                ))}
-              </DataList>
-            )}
-            {result.has_more && result.next_cursor && <Pager next={listHref(params, { cursor: result.next_cursor })} />}
-          </>
-        }
-        peek={renderRunsPeek({ peekId: params.peek, peekEnvelope, closePeekHref, openPeekFullHref })}
-      />
+      <ListWithPeekView params={viewParams} />
     </DashboardShell>
   );
 }
 
-function RunRow({ run, params }: { run: RunSummary; params: Params }) {
-  const peeked = params.peek === run.run_id;
+function RunRow({ run, peeked, href }: { run: RunSummary; peeked: boolean; href: string }) {
   const awaitingInput = isAwaitingInteraction(run);
   return (
     <Link
       aria-current={peeked ? "true" : undefined}
       className={`block px-3 py-2.5 transition-colors ${peeked ? "bg-muted" : "hover:bg-muted/40"}`}
-      href={listHref(params, { peek: run.run_id })}
+      href={href}
       scroll={false}
     >
       <div className="flex flex-wrap items-baseline justify-between gap-2">
@@ -256,24 +170,4 @@ function isAwaitingInteraction(run: RunSummary): boolean {
 
 function isTerminalRunStatus(status: string): boolean {
   return ["cancelled", "failed", "rejected", "succeeded"].includes(status);
-}
-
-function Pivots({ envelope, currentKind }: { envelope: TimelineEnvelope; currentKind: "trace" | "grant" | "run" }) {
-  const pivots = pivotsFromEnvelope(envelope).filter((p) => p.kind !== currentKind);
-  if (pivots.length === 0) {
-    return null;
-  }
-  return (
-    <div className="mb-3 flex flex-wrap gap-1">
-      {pivots.map((p) => (
-        <Link
-          className="pdpp-eyebrow rounded border border-border px-2 py-0.5 hover:bg-muted/60"
-          href={`/dashboard/${p.kind}s?peek=${encodeURIComponent(p.id)}`}
-          key={`${p.kind}:${p.id}`}
-        >
-          {p.kind} {p.id} →
-        </Link>
-      ))}
-    </div>
-  );
 }

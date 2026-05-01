@@ -32,6 +32,19 @@ The current provider-connect story starts with standards-based discovery:
 - `GET /.well-known/oauth-protected-resource`
 - `GET /.well-known/oauth-authorization-server`
 
+The protected-resource metadata also includes advisory agent discovery at
+`pdpp_agent_discovery`. Its CLI command is generated from the published package
+metadata:
+
+```bash
+npx -y @pdpp/cli@beta connect <provider-url>
+```
+
+This remains beta software, but `pdpp_agent_discovery.cli.no_owner_token` is
+`true` when the reference AS token-completion path supports owner-approved
+scoped handoff without an owner bearer token. Treat the command as the
+no-owner-token connect flow while that metadata flag is true.
+
 The authorization-server metadata truthfully advertises:
 
 - `pushed_authorization_request_endpoint`
@@ -39,7 +52,9 @@ The authorization-server metadata truthfully advertises:
 - `device_authorization_endpoint`
 - `token_endpoint`
 - `introspection_endpoint`
+- `agent_connect_endpoint`
 - `pdpp_registration_modes_supported`
+- `pdpp_pre_registered_public_clients`
 - `pdpp_authorization_details_types_supported`
 
 The same metadata intentionally does **not** advertise a full generic OAuth authorization-code client-connect surface yet. In the live reference today, there is still no published `authorization_endpoint`, no published `response_types_supported`, and no published PKCE/browser redirect flow.
@@ -50,17 +65,21 @@ Client requests are staged through:
 
 - `POST /oauth/par`
 
+The live reference uses PAR to persist the RFC 9396 `authorization_details` request, then sends the user through the reference consent shell. Approval returns the grant and client bearer token directly. That direct-token return is a reference shortcut; it is not a generic OAuth authorization-code redirect profile.
+
 ### Client registration
 
-The current reference also supports a protected dynamic registration path:
+The current reference also supports public-client self-registration:
 
 - `POST /oauth/register`
 
 It is intentionally narrow:
 
 - public-client metadata only (`token_endpoint_auth_method: "none"`)
-- protected by an initial access token
-- meant to coexist with the pre-registered client path, not replace it
+- no initial access token required for the public path
+- optional initial-access tokens remain available for operator/bootstrap use
+- registration creates a public `client_id` only; data access still requires owner-approved consent
+- meant to coexist with the pre-registered client path as fallback and examples
 
 The current reference contract expects a single RFC 9396 `authorization_details` entry of type `https://pdpp.org/data-access`.
 
@@ -84,6 +103,20 @@ Owner login is a separate device flow:
 - `POST /oauth/token`
 
 That flow yields an **owner bearer token** for self-export and direct owner queries.
+
+### Error envelopes
+
+OAuth authorization-server endpoints keep RFC-shaped error bodies:
+
+```json
+{
+  "error": "invalid_request",
+  "error_description": "client_id is required",
+  "request_id": "req_..."
+}
+```
+
+The reference adds `request_id` and a matching `Request-Id` header for debugging. Resource-server and PDPP-native endpoints continue to use the nested PDPP error envelope with `error.type`, `error.code`, `error.message`, and `error.request_id`.
 
 ### Semantic retrieval diagnostics
 

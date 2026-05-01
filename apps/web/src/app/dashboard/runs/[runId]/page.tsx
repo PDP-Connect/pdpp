@@ -1,9 +1,9 @@
-import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Fragment } from "react";
-import { Callout, MetaPill, PageHeader, Section, StatusBadge } from "../../components/primitives.tsx";
+import { Callout, MetaPill, PageHeader, StatusBadge } from "../../components/primitives.tsx";
 import { DashboardShell, ServerUnreachable } from "../../components/shell.tsx";
-import { TimelineView } from "../../components/timeline-view.tsx";
+import { dashboardRoutes } from "../../components/views/routes.ts";
+import { TimelineDetailView } from "../../components/views/timeline-detail-view.tsx";
 import { getAsInternalUrl, ReferenceServerUnreachableError } from "../../lib/owner-token.ts";
 import { getRunTimeline, type SpineEvent, type TimelineEnvelope } from "../../lib/ref-client.ts";
 import {
@@ -72,8 +72,6 @@ export default async function RunDetailPage({
   }
 
   const events = envelope.events;
-  const traceIds = Array.from(new Set(events.map((e) => e.trace_id).filter(Boolean) as string[]));
-  const grantIds = Array.from(new Set(events.map((e) => e.grant_id).filter(Boolean) as string[]));
   const connectorId = events.find((e) => e.actor_type === "runtime")?.actor_id ?? null;
 
   const checkpoints = summarizeCheckpoints(events);
@@ -94,92 +92,58 @@ export default async function RunDetailPage({
   return (
     <DashboardShell active="runs">
       <RunDetailPoller enabled={active} />
-      <RunHeader
-        connectorId={connectorId}
-        eventCount={events.length}
-        latestProgress={latestProgress}
-        runId={runId}
-        stateTone={stateTone}
-        stateValue={stateValue}
+      <TimelineDetailView
+        beforeTimeline={
+          <>
+            <PendingInteractionSection pendingInteraction={pendingInteraction} runId={runId} />
+            <LatestProgressSection active={active} latestProgress={latestProgress} terminalStatus={terminalStatus} />
+            <BridgeUnavailableSection bridgeUnavailable={bridgeUnavailable} />
+            <StatsGrid
+              checkpoints={checkpoints}
+              failure={failure}
+              failureRows={failureRows}
+              interactions={interactions}
+              progress={progress}
+            />
+            <KnownGapsSection
+              coverageGaps={gapClassification.coverageGaps}
+              protocolViolationCount={gapClassification.protocolViolationGaps.length}
+              skippedCount={events.filter((e) => e.event_type === "run.stream_skipped").length}
+              summary={terminalKnownGaps.summary ?? gapClassification.summary}
+            />
+            <ViolationDiagnosis failure={failure} />
+            <ConnectorStderrTailSection failure={failure} />
+          </>
+        }
+        breadcrumbs={[{ label: "Runs", href: dashboardRoutes.section.runs }, { label: "Run" }]}
+        cliCommand={`pdpp run timeline ${runId}`}
+        description={
+          <>
+            {connectorId ? (
+              <>
+                connector <span className="font-mono text-foreground">{connectorId}</span>
+                {" · "}
+              </>
+            ) : null}
+            {events.length} events
+          </>
+        }
+        envelope={envelope}
+        id={runId}
+        loadMoreHref={envelope.truncated && envelope.next_cursor ? runTimelineHref(runId, envelope.next_cursor) : null}
+        meta={
+          <>
+            <MetaPill label="state" tone={stateTone} value={stateValue} />
+            {latestProgress?.percentLabel ? (
+              <MetaPill label="progress" tone="protocol" value={latestProgress.percentLabel} />
+            ) : null}
+          </>
+        }
+        rawUrl={`${getAsInternalUrl()}/_ref/runs/${encodeURIComponent(runId)}/timeline`}
+        routes={dashboardRoutes}
+        subject="run"
       />
-      <PendingInteractionSection pendingInteraction={pendingInteraction} runId={runId} />
-      <LatestProgressSection active={active} latestProgress={latestProgress} terminalStatus={terminalStatus} />
-      <RelatedRunLinks grantIds={grantIds} traceIds={traceIds} />
-      <BridgeUnavailableSection bridgeUnavailable={bridgeUnavailable} />
-      <StatsGrid
-        checkpoints={checkpoints}
-        failure={failure}
-        failureRows={failureRows}
-        interactions={interactions}
-        progress={progress}
-      />
-      <KnownGapsSection
-        coverageGaps={gapClassification.coverageGaps}
-        protocolViolationCount={gapClassification.protocolViolationGaps.length}
-        skippedCount={events.filter((e) => e.event_type === "run.stream_skipped").length}
-        summary={terminalKnownGaps.summary ?? gapClassification.summary}
-      />
-      <ViolationDiagnosis failure={failure} />
-      <ConnectorStderrTailSection failure={failure} />
-      <Section title="Timeline">
-        <TimelineView
-          events={events}
-          loadMoreHref={
-            envelope.truncated && envelope.next_cursor ? runTimelineHref(runId, envelope.next_cursor) : null
-          }
-        />
-      </Section>
-      <Section title="CLI equivalent">
-        <pre className="pdpp-caption overflow-x-auto rounded-md border border-border/80 bg-muted/30 p-3 font-mono">
-          pdpp run timeline {runId}
-        </pre>
-        <p className="pdpp-caption mt-1 break-all text-muted-foreground">
-          raw: <code>{`${getAsInternalUrl()}/_ref/runs/${encodeURIComponent(runId)}/timeline`}</code>
-        </p>
-      </Section>
     </DashboardShell>
-  );
-}
-
-function RunHeader({
-  connectorId,
-  eventCount,
-  latestProgress,
-  runId,
-  stateTone,
-  stateValue,
-}: {
-  connectorId: string | null;
-  eventCount: number;
-  latestProgress: LatestProgress | null;
-  runId: string;
-  stateTone: RunStateTone;
-  stateValue: string | null;
-}) {
-  return (
-    <PageHeader
-      breadcrumbs={[{ label: "Runs", href: "/dashboard/runs" }, { label: "Run" }]}
-      description={
-        <>
-          {connectorId ? (
-            <>
-              connector <span className="font-mono text-foreground">{connectorId}</span>
-              {" · "}
-            </>
-          ) : null}
-          {eventCount} events
-        </>
-      }
-      meta={
-        <>
-          <MetaPill label="state" tone={stateTone} value={stateValue} />
-          {latestProgress?.percentLabel ? (
-            <MetaPill label="progress" tone="protocol" value={latestProgress.percentLabel} />
-          ) : null}
-        </>
-      }
-      title={<code className="font-mono">{runId}</code>}
-    />
   );
 }
 
@@ -193,14 +157,19 @@ function PendingInteractionSection({
   if (!pendingInteraction) {
     return null;
   }
+  const isHostBrowserRequired = pendingInteraction.kind === "host_browser_required";
 
   return (
     <Callout
       action={<StatusBadge inline status="pending" />}
       className="mb-6 border border-[color:var(--warning)] border-l-4 bg-[color:var(--warning-wash)]"
-      description="This run is alive, but it cannot continue until the requested interaction is satisfied."
+      description={
+        isHostBrowserRequired
+          ? "This run is alive, but it needs you to finish a step in the visible host browser window."
+          : "This run is alive, but it cannot continue until the requested interaction is satisfied."
+      }
       surface="human"
-      title="Waiting on operator input"
+      title={isHostBrowserRequired ? "Waiting on host browser" : "Waiting on operator input"}
     >
       <dl className="pdpp-caption grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
         <dt className="text-muted-foreground">kind</dt>
@@ -274,35 +243,6 @@ function LatestProgressSection({
         ) : null}
       </dl>
     </Callout>
-  );
-}
-
-function RelatedRunLinks({ grantIds, traceIds }: { grantIds: string[]; traceIds: string[] }) {
-  if (traceIds.length === 0 && grantIds.length === 0) {
-    return null;
-  }
-
-  return (
-    <div className="mb-6 flex flex-wrap gap-2">
-      {traceIds.map((id) => (
-        <Link
-          className="pdpp-caption inline-flex items-center rounded-md border border-border px-2.5 py-1 hover:bg-muted/60"
-          href={`/dashboard/traces/${encodeURIComponent(id)}`}
-          key={id}
-        >
-          trace <code className="ml-1 font-mono">{id}</code> →
-        </Link>
-      ))}
-      {grantIds.map((id) => (
-        <Link
-          className="pdpp-caption inline-flex items-center rounded-md border border-border px-2.5 py-1 hover:bg-muted/60"
-          href={`/dashboard/grants/${encodeURIComponent(id)}`}
-          key={id}
-        >
-          grant <code className="ml-1 font-mono">{id}</code> →
-        </Link>
-      ))}
-    </div>
   );
 }
 

@@ -14,6 +14,11 @@ const HEADLESS_NO_BRIDGE: BrowserRuntimeVisibility = {
   profileName: "reddit",
 };
 
+const HEADLESS_WITH_BRIDGE: BrowserRuntimeVisibility = {
+  ...HEADLESS_NO_BRIDGE,
+  hostBridgeConfigured: true,
+};
+
 const MANUAL_ACTION: InteractionRequest = {
   kind: "manual_action",
   message: "Log in to reddit.com in the browser window and re-run.",
@@ -72,10 +77,14 @@ test("decorateBrowserManualAction leaves non-manual interactions unchanged", () 
 
 test("decorateBrowserManualAction leaves visible-browser-capable runs unchanged", () => {
   assert.equal(decorateBrowserManualAction(MANUAL_ACTION, { ...HEADLESS_NO_BRIDGE, headless: false }), MANUAL_ACTION);
-  assert.equal(
-    decorateBrowserManualAction(MANUAL_ACTION, { ...HEADLESS_NO_BRIDGE, hostBridgeConfigured: true }),
-    MANUAL_ACTION
-  );
+});
+
+test("decorateBrowserManualAction marks host bridge runs as host_browser_required", () => {
+  const decorated = decorateBrowserManualAction(MANUAL_ACTION, HEADLESS_WITH_BRIDGE);
+
+  assert.notEqual(decorated, MANUAL_ACTION);
+  assert.equal(decorated.kind, "host_browser_required");
+  assert.match(decorated.message, /visible browser window on the host machine/u);
 });
 
 test("decorateBrowserManualAction does not duplicate existing recovery copy", () => {

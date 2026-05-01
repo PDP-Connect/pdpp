@@ -59,7 +59,7 @@ test('ref.spine.correlations.list emits trace_summary discriminator', async () =
   assert.equal(envelope.data[0].actor_type, 'system');
 });
 
-test('ref.spine.correlations.list emits grant_summary discriminator with connector_id fallback', async () => {
+test('ref.spine.correlations.list emits grant_summary discriminator with source fallback', async () => {
   const envelope = await executeRefSpineCorrelationsList(
     { kind: 'grant', filters: {} },
     {
@@ -75,7 +75,7 @@ test('ref.spine.correlations.list emits grant_summary discriminator with connect
   const entry = envelope.data[0];
   assert.equal(entry.object, 'grant_summary');
   assert.equal(entry.grant_id, 'grt_1');
-  assert.equal(entry.connector_id, null);
+  assert.deepEqual(entry.source, null);
   assert.equal('actor_type' in entry, false);
 });
 

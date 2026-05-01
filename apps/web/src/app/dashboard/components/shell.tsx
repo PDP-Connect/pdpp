@@ -22,7 +22,8 @@ export type DashboardSection =
   | "runs"
   | "records"
   | "schedules"
-  | "deployment";
+  | "deployment"
+  | "device-exporters";
 
 /**
  * Shell binding mode.
@@ -40,8 +41,8 @@ export type ShellMode = "live" | "mock-owner";
 
 const SCHEME_PREFIX_RE = /^https?:\/\//;
 
-function buildNav(routes: Routes): NavItem[] {
-  return [
+function buildNav(routes: Routes, mode: ShellMode): NavItem[] {
+  const nav: NavItem[] = [
     { href: routes.section.overview, label: "Overview", match: (a) => a === "overview" },
     { href: routes.section.search, label: "Search", match: (a) => a === "search" },
     { href: routes.section.traces, label: "Traces", match: (a) => a === "traces" },
@@ -51,6 +52,14 @@ function buildNav(routes: Routes): NavItem[] {
     { href: routes.section.schedules, label: "Schedules", match: (a) => a === "schedules" },
     { href: routes.section.deployment, label: "Deployment", match: (a) => a === "deployment" },
   ];
+  if (mode === "live") {
+    nav.push({
+      href: routes.section.deviceExporters,
+      label: "Device exporters",
+      match: (a) => a === "device-exporters",
+    });
+  }
+  return nav;
 }
 
 function resolveRoutes(mode: ShellMode): Routes {
@@ -97,7 +106,7 @@ function DesktopSidebar({ active, mode, routes }: { active: DashboardSection; mo
 }
 
 function SidebarContent({ active, mode, routes }: { active: DashboardSection; mode: ShellMode; routes: Routes }) {
-  const nav = buildNav(routes);
+  const nav = buildNav(routes, mode);
   const tagline = mode === "mock-owner" ? "reference instance" : "control plane";
   return (
     <div className="flex h-full flex-col justify-between">

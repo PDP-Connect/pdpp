@@ -40,9 +40,12 @@ export function TimelineDetailView({
   routes,
   cliCommand,
   rawUrl,
+  loadMoreHref,
   count,
   description,
   breadcrumbs,
+  beforeTimeline,
+  meta,
 }: {
   subject: TimelineSubject;
   id: string;
@@ -50,9 +53,12 @@ export function TimelineDetailView({
   routes: Routes;
   cliCommand: string;
   rawUrl: string;
+  loadMoreHref?: string | null;
   count?: string;
   description?: React.ReactNode;
   breadcrumbs: { label: string; href?: string }[];
+  beforeTimeline?: React.ReactNode;
+  meta?: React.ReactNode;
 }) {
   const pivots = pivotsForSubject(envelope, subject);
   const pivotHref = (kind: TimelineSubject, pivotId: string) => {
@@ -71,6 +77,7 @@ export function TimelineDetailView({
         breadcrumbs={breadcrumbs}
         count={count}
         description={description}
+        meta={meta}
         title={<code className="font-mono">{id}</code>}
       />
 
@@ -90,8 +97,10 @@ export function TimelineDetailView({
         </div>
       ) : null}
 
+      {beforeTimeline}
+
       <Section title="Timeline">
-        <TimelineView events={envelope.events} />
+        <TimelineView events={envelope.events} loadMoreHref={loadMoreHref} />
       </Section>
 
       <Section title="CLI equivalent">

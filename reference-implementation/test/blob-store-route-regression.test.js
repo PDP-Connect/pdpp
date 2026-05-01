@@ -226,7 +226,18 @@ test('GET /v1/blobs/:blob_id returns 200 with bytes when a visible record refere
     assert.equal(readResp.status, 200);
     assert.equal(readResp.headers.get('content-type'), 'text/plain');
     assert.equal(readResp.headers.get('content-length'), String(bytes.byteLength));
+    assert.equal(readResp.headers.get('cache-control'), 'private, no-store');
     const buf = Buffer.from(await readResp.arrayBuffer());
     assert.deepEqual(buf, bytes);
+
+    const headResp = await fetch(
+      `${rsUrl}/v1/blobs/${encodeURIComponent(uploadBody.blob_id)}?connector_id=${encodeURIComponent(manifest.connector_id)}`,
+      { method: 'HEAD', headers: { Authorization: `Bearer ${ownerToken}` } },
+    );
+    assert.equal(headResp.status, 200);
+    assert.equal(headResp.headers.get('content-type'), 'text/plain');
+    assert.equal(headResp.headers.get('content-length'), String(bytes.byteLength));
+    assert.equal(headResp.headers.get('cache-control'), 'private, no-store');
+    assert.equal(await headResp.text(), '');
   });
 });

@@ -1,20 +1,10 @@
 import Link from "next/link";
 import { Button, buttonVariants } from "@/components/ui/button.tsx";
-import { Input } from "@/components/ui/input.tsx";
-import { Select } from "@/components/ui/select.tsx";
 import { Timestamp } from "@/components/ui/timestamp.tsx";
-import { PeekEmpty, PeekPane, PeekTimeline, pivotsFromEnvelope } from "../components/peek.tsx";
-import {
-  DataList,
-  FilterSummary,
-  PageHeader,
-  Pager,
-  Section,
-  SplitLayout,
-  StatusBadge,
-  Toolbar,
-} from "../components/primitives.tsx";
+import { DataList, PageHeader, Section, StatusBadge } from "../components/primitives.tsx";
 import { DashboardShell, EmptyState, ServerUnreachable } from "../components/shell.tsx";
+import { type ListWithPeekParams, ListWithPeekView } from "../components/views/list-with-peek.tsx";
+import { dashboardRoutes } from "../components/views/routes.ts";
 import { getOwnerLoginPath, ReferenceServerUnreachableError } from "../lib/owner-token.ts";
 import {
   type GrantSummary,
@@ -23,7 +13,6 @@ import {
   listGrants,
   listPendingApprovals,
   type PendingApproval,
-  type TimelineEnvelope,
 } from "../lib/ref-client.ts";
 import { approvePendingApprovalAction, denyPendingApprovalAction } from "./pending-actions.ts";
 
@@ -34,45 +23,10 @@ interface Params {
   client_id?: string;
   cursor?: string;
   peek?: string;
+  q?: string;
   source_id?: string;
   source_kind?: "connector" | "provider_native";
-  q?: string;
   status?: string;
-}
-
-function renderGrantsPeek({
-  peekId,
-  peekEnvelope,
-  closePeekHref,
-  openPeekFullHref,
-}: {
-  peekId: string | undefined;
-  peekEnvelope: TimelineEnvelope | null;
-  closePeekHref: string;
-  openPeekFullHref: string;
-}) {
-  if (!peekId) {
-    return <PeekEmpty />;
-  }
-  if (!peekEnvelope) {
-    return (
-      <PeekPane closeHref={closePeekHref} openHref={openPeekFullHref} title={`grant ${peekId}`}>
-        <p className="text-muted-foreground">Grant not found.</p>
-      </PeekPane>
-    );
-  }
-  return (
-    <PeekPane
-      cliCommand={`pdpp grant timeline ${peekId}`}
-      closeHref={closePeekHref}
-      openHref={openPeekFullHref}
-      title={`grant ${peekId}`}
-    >
-      <Pivots currentKind="grant" envelope={peekEnvelope} />
-      <div className="pdpp-caption mb-2 text-muted-foreground">{peekEnvelope.events.length} events</div>
-      <PeekTimeline events={peekEnvelope.events} />
-    </PeekPane>
-  );
 }
 
 function listHref(params: Params, overrides: Partial<Params> = {}): string {
@@ -98,7 +52,7 @@ export default async function GrantsPage({ searchParams }: { searchParams: Promi
 
   let result: ListResponse<GrantSummary>;
   let approvals: ListResponse<PendingApproval>;
-  let peekEnvelope: TimelineEnvelope | null = null;
+  let peekEnvelope: Awaited<ReturnType<typeof getGrantTimeline>> = null;
   try {
     [result, approvals] = await Promise.all([listGrants(filters), listPendingApprovals()]);
     if (params.peek) {
@@ -116,27 +70,13 @@ export default async function GrantsPage({ searchParams }: { searchParams: Promi
     throw err;
   }
 
-  const closePeekHref = listHref(params, { peek: undefined });
-  const openPeekFullHref = params.peek ? `/dashboard/grants/${encodeURIComponent(params.peek)}` : "";
   const ownerLoginUrl = getOwnerLoginPath();
   const activeFilters = [
     params.status ? { label: "state", value: params.status } : null,
     params.q ? { label: "query", value: params.q } : null,
   ].filter((item): item is { label: string; value: string } => Boolean(item));
-
-  return (
-    <DashboardShell active="grants">
-      <PageHeader
-        actions={
-          <Link className={buttonVariants({ variant: "outline", size: "sm" })} href="/dashboard/grants/request">
-            Grant request workspace
-          </Link>
-        }
-        count={`${result.data.length}${result.has_more ? "+" : ""}`}
-        description="Issued authorizations and lifecycle decisions for client access to owner data."
-        title="Grants"
-      />
-
+  const preHeader = (
+    <>
       {params.approval_error ? (
         <div className="pdpp-caption mb-6 rounded-md border border-destructive/30 border-l-4 border-l-destructive/60 bg-destructive/5 px-4 py-2.5">
           <span className="font-medium text-destructive">Approval error:</span> <span>{params.approval_error}</span>
@@ -173,65 +113,50 @@ export default async function GrantsPage({ searchParams }: { searchParams: Promi
           </>
         )}
       </Section>
+    </>
+  );
+  const viewParams: ListWithPeekParams<GrantSummary> = {
+    active: "grants",
+    activeFilterChips: activeFilters,
+    buildListHref: (overrides) => listHref(params, overrides),
+    description: "Issued authorizations and lifecycle decisions for client access to owner data.",
+    emptyHint: "Grant artifacts appear after client/provider-connect consent flows issue or reject grants.",
+    emptyTitle: "No grants yet",
+    filters: {
+      query: { name: "q", placeholder: "id contains…", defaultValue: params.q ?? "" },
+      status: {
+        name: "status",
+        defaultValue: params.status ?? "",
+        options: [
+          { value: "issued", label: "issued" },
+          { value: "revoked", label: "revoked" },
+          { value: "denied", label: "denied" },
+          { value: "failed", label: "failed" },
+          { value: "pending", label: "pending" },
+        ],
+      },
+    },
+    headerActions: (
+      <Link className={buttonVariants({ variant: "outline", size: "sm" })} href="/dashboard/grants/request">
+        Grant request workspace
+      </Link>
+    ),
+    peekCliCommand: (id) => `pdpp grant timeline ${id}`,
+    peekEnvelope,
+    peekId: params.peek,
+    preHeader,
+    renderRow: (grant, { peeked, href }) => <GrantRow grant={grant} href={href} peeked={peeked} />,
+    resetHref: "/dashboard/grants",
+    result,
+    routes: dashboardRoutes,
+    rowKey: (grant) => grant.grant_id,
+    subject: "grant",
+    title: "Grants",
+  };
 
-      <Section title="All grants">
-        <form method="get">
-          <Toolbar>
-            <label className="flex min-w-0 flex-col gap-1" htmlFor="grants-query">
-              <span className="pdpp-eyebrow">Query</span>
-              <Input
-                className="w-64 font-mono"
-                defaultValue={params.q ?? ""}
-                id="grants-query"
-                name="q"
-                placeholder="id contains…"
-                type="search"
-              />
-            </label>
-            <label className="flex min-w-0 flex-col gap-1" htmlFor="grants-status">
-              <span className="pdpp-eyebrow">State</span>
-              <Select defaultValue={params.status ?? ""} id="grants-status" name="status">
-                <option value="">Any state</option>
-                <option value="issued">issued</option>
-                <option value="revoked">revoked</option>
-                <option value="denied">denied</option>
-                <option value="failed">failed</option>
-                <option value="pending">pending</option>
-              </Select>
-            </label>
-            <Button className="mt-5" size="sm" type="submit">
-              Filter
-            </Button>
-          </Toolbar>
-        </form>
-
-        <FilterSummary items={activeFilters} resetHref="/dashboard/grants" />
-
-        <SplitLayout
-          main={
-            <>
-              {result.data.length === 0 ? (
-                <EmptyState
-                  hint="Grant artifacts appear after client/provider-connect consent flows issue or reject grants."
-                  title="No grants yet"
-                />
-              ) : (
-                <DataList>
-                  {result.data.map((g) => (
-                    <li key={g.grant_id}>
-                      <GrantRow grant={g} params={params} />
-                    </li>
-                  ))}
-                </DataList>
-              )}
-              {result.has_more && result.next_cursor && (
-                <Pager next={listHref(params, { cursor: result.next_cursor })} />
-              )}
-            </>
-          }
-          peek={renderGrantsPeek({ peekId: params.peek, peekEnvelope, closePeekHref, openPeekFullHref })}
-        />
-      </Section>
+  return (
+    <DashboardShell active="grants">
+      <ListWithPeekView params={viewParams} />
     </DashboardShell>
   );
 }
@@ -253,8 +178,8 @@ function PendingApprovalRow({ approval }: { approval: PendingApproval }) {
           </span>
           <StatusBadge status={approval.kind} />
         </div>
-          <div className="pdpp-caption mt-1 break-words text-muted-foreground">
-            client {approval.client_id ?? "—"}
+        <div className="pdpp-caption mt-1 break-words text-muted-foreground">
+          client {approval.client_id ?? "—"}
           {approval.grant_preview?.source
             ? ` · source ${approval.grant_preview.source.kind}:${approval.grant_preview.source.id}`
             : ""}
@@ -275,13 +200,12 @@ function PendingApprovalRow({ approval }: { approval: PendingApproval }) {
   );
 }
 
-function GrantRow({ grant, params }: { grant: GrantSummary; params: Params }) {
-  const peeked = params.peek === grant.grant_id;
+function GrantRow({ grant, href, peeked }: { grant: GrantSummary; href: string; peeked: boolean }) {
   return (
     <Link
       aria-current={peeked ? "true" : undefined}
       className={`block px-3 py-2.5 transition-colors ${peeked ? "bg-muted" : "hover:bg-muted/40"}`}
-      href={listHref(params, { peek: grant.grant_id })}
+      href={href}
       scroll={false}
     >
       <div className="flex flex-wrap items-baseline justify-between gap-2">
@@ -299,25 +223,5 @@ function GrantRow({ grant, params }: { grant: GrantSummary; params: Params }) {
         {grant.source ? ` · source ${grant.source.kind}:${grant.source.id}` : ""}
       </div>
     </Link>
-  );
-}
-
-function Pivots({ envelope, currentKind }: { envelope: TimelineEnvelope; currentKind: "trace" | "grant" | "run" }) {
-  const pivots = pivotsFromEnvelope(envelope).filter((p) => p.kind !== currentKind);
-  if (pivots.length === 0) {
-    return null;
-  }
-  return (
-    <div className="mb-3 flex flex-wrap gap-1">
-      {pivots.map((p) => (
-        <Link
-          className="pdpp-eyebrow rounded border border-border px-2 py-0.5 hover:bg-muted/60"
-          href={`/dashboard/${p.kind}s?peek=${encodeURIComponent(p.id)}`}
-          key={`${p.kind}:${p.id}`}
-        >
-          {p.kind} {p.id} →
-        </Link>
-      ))}
-    </div>
   );
 }

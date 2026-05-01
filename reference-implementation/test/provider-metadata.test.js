@@ -6,6 +6,7 @@ import { request as httpRequest } from 'node:http';
 import { startServer } from '../server/index.js';
 import { resolvePublicUrl, resolveSiblingPublicUrl } from '../server/metadata.ts';
 import { PDPP_REFERENCE_REVISION_HEADER } from '../server/reference-revision.js';
+import { createPdppCliCommand, getPdppCliPackageInfo } from '../../packages/cli/src/package-info.js';
 
 const TEST_DCR_INITIAL_ACCESS_TOKEN = 'pdpp-reference-test-initial-access-token';
 
@@ -48,6 +49,18 @@ function expectReferenceRevisionHeader(resp, expectedRevision) {
   assert.equal(resp.headers.get(PDPP_REFERENCE_REVISION_HEADER), expectedRevision);
 }
 
+function assertPublicClientAdvertised(metadata, clientId, clientName) {
+  const clients = metadata.pdpp_pre_registered_public_clients;
+  assert.ok(Array.isArray(clients), 'expected pdpp_pre_registered_public_clients array');
+  const client = clients.find((entry) => entry.client_id === clientId);
+  assert.ok(client, `expected public client ${clientId} to be advertised`);
+  assert.deepEqual(client, {
+    client_id: clientId,
+    client_name: clientName,
+    token_endpoint_auth_method: 'none',
+  });
+}
+
 async function fetchJsonResponse(url, opts = {}) {
   const resp = await fetch(url, opts);
   const body = await resp.json();
@@ -71,7 +84,7 @@ async function httpRequestJson(url, { headers = {} } = {}) {
         resp.on('end', () => {
           try {
             const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-            resolve({ status: resp.statusCode, body });
+            resolve({ status: resp.statusCode, headers: resp.headers, body });
           } catch (err) {
             reject(err);
           }
@@ -155,6 +168,7 @@ test('composed mode env drives browser-facing metadata when explicit public urls
   });
   const asUrl = `http://localhost:${server.asPort}`;
   const rsUrl = `http://localhost:${server.rsPort}`;
+  const expectedCli = getPdppCliPackageInfo('http://localhost:3200');
 
   try {
     const protectedResource = await fetchJson(`${rsUrl}/.well-known/oauth-protected-resource`);
@@ -165,7 +179,18 @@ test('composed mode env drives browser-facing metadata when explicit public urls
     assert.deepEqual(protectedResource.body.pdpp_agent_discovery, {
       advisory: true,
       skill_name: 'pdpp-data-access',
-      recommended_flow: 'pdpp agent',
+      recommended_flow: 'pdpp connect',
+      cli: {
+        package: expectedCli.packageName,
+        package_specifier: expectedCli.packageSpecifier,
+        bin_name: expectedCli.binName,
+        install_command: `npx -y ${expectedCli.packageSpecifier} --help`,
+        run_command: expectedCli.runCommand,
+        connect_command: createPdppCliCommand('<provider-url>'),
+        version_policy: expectedCli.versionPolicy,
+        no_owner_token: false,
+        no_owner_token_policy: 'requires_native_reference_provider_for_one_command_connect',
+      },
       skill_catalog: 'http://localhost:3200/.well-known/skills/index.json',
       skill: 'http://localhost:3200/.well-known/skills/pdpp-data-access/SKILL.md',
       llms_txt: 'http://localhost:3200/llms.txt',
@@ -235,6 +260,8 @@ test('proxied composed metadata rebases localhost defaults to the forwarded publ
     assert.equal(authorizationServer.status, 200);
     assert.equal(authorizationServer.body.issuer, publicOrigin);
     assert.equal(authorizationServer.body.registration_endpoint, `${publicOrigin}/oauth/register`);
+    assert.deepEqual(authorizationServer.body.pdpp_registration_modes_supported, ['dynamic', 'pre_registered_public']);
+    assertPublicClientAdvertised(authorizationServer.body, 'pdpp_cli', 'PDPP CLI');
     assert.equal(authorizationServer.body.device_authorization_endpoint, `${publicOrigin}/oauth/device_authorization`);
   } finally {
     await closeServer(server);
@@ -267,6 +294,8 @@ test('provider metadata pins explicit public origins despite hostile forwarded h
     assert.equal(authorizationServer.status, 200);
     assert.equal(authorizationServer.body.issuer, asOrigin);
     assert.equal(authorizationServer.body.registration_endpoint, `${asOrigin}/oauth/register`);
+    assert.deepEqual(authorizationServer.body.pdpp_registration_modes_supported, ['dynamic', 'pre_registered_public']);
+    assertPublicClientAdvertised(authorizationServer.body, 'pdpp_cli', 'PDPP CLI');
 
     const protectedResource = await fetchJson(`${rsUrl}/.well-known/oauth-protected-resource`, {
       headers: hostileHeaders,
@@ -275,6 +304,48 @@ test('provider metadata pins explicit public origins despite hostile forwarded h
     assert.equal(protectedResource.body.resource, rsOrigin);
     assert.deepEqual(protectedResource.body.authorization_servers, [asOrigin]);
     assert.equal(protectedResource.body.pdpp_core_query_base, `${rsOrigin}/v1`);
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test('operator-supplied DCR token remains advertised for public metadata', async () => {
+  const publicHost = 'peregrine-dev.example';
+  const publicOrigin = `https://${publicHost}`;
+  const server = await startServer({
+    quiet: true,
+    asPort: 0,
+    rsPort: 0,
+    dbPath: ':memory:',
+    trustedMetadataHosts: [publicHost],
+    dynamicClientRegistrationInitialAccessTokens: [TEST_DCR_INITIAL_ACCESS_TOKEN],
+  });
+  const asUrl = `http://localhost:${server.asPort}`;
+  const publicHeaders = {
+    'x-forwarded-host': publicHost,
+    'x-forwarded-proto': 'https',
+  };
+
+  try {
+    const authorizationServer = await fetchJson(`${asUrl}/.well-known/oauth-authorization-server`, {
+      headers: publicHeaders,
+    });
+    assert.equal(authorizationServer.status, 200);
+    assert.equal(authorizationServer.body.issuer, publicOrigin);
+    assert.equal(authorizationServer.body.registration_endpoint, `${publicOrigin}/oauth/register`);
+    assert.deepEqual(authorizationServer.body.pdpp_registration_modes_supported, ['dynamic', 'pre_registered_public']);
+    assertPublicClientAdvertised(authorizationServer.body, 'pdpp_cli', 'PDPP CLI');
+
+    const registerPublic = await fetch(`${asUrl}/oauth/register`, {
+      method: 'POST',
+      headers: {
+        ...publicHeaders,
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${TEST_DCR_INITIAL_ACCESS_TOKEN}`,
+      },
+      body: JSON.stringify({ client_name: 'Public DCR Client', token_endpoint_auth_method: 'none' }),
+    });
+    assert.ok(registerPublic.status === 200 || registerPublic.status === 201, `unexpected status ${registerPublic.status}`);
   } finally {
     await closeServer(server);
   }
@@ -433,10 +504,12 @@ test('provider metadata routes expose current honest capability set', async () =
     assert.equal('code_challenge_methods_supported' in authorizationServer.body, false);
     assert.deepEqual(authorizationServer.body.pdpp_provider_connect_capabilities, ['owner_self_export', 'cli_device_connect', 'third_party_client_connect']);
     assert.deepEqual(authorizationServer.body.pdpp_registration_modes_supported, ['dynamic', 'pre_registered_public']);
+    assertPublicClientAdvertised(authorizationServer.body, 'pdpp_cli', 'PDPP CLI');
     assert.deepEqual(authorizationServer.body.pdpp_authorization_details_types_supported, ['https://pdpp.org/data-access']);
     assert.equal(authorizationServer.body.token_endpoint, `${asUrl}/oauth/token`);
     assert.deepEqual(authorizationServer.body.token_endpoint_auth_methods_supported, ['none']);
     assert.equal(authorizationServer.body.device_authorization_endpoint, `${asUrl}/oauth/device_authorization`);
+    assert.equal(authorizationServer.body.agent_connect_endpoint, `${asUrl}/agent-connect`);
     assert.deepEqual(authorizationServer.body.grant_types_supported, ['urn:ietf:params:oauth:grant-type:device_code']);
   } finally {
     await closeServer(server);
@@ -565,7 +638,7 @@ test('explicit browser-facing public urls drive metadata, device verification, a
   }
 });
 
-test('provider metadata omits registration endpoint when initial access tokens are explicitly empty', async () => {
+test('provider metadata advertises public registration when initial access tokens are explicitly empty', async () => {
   const server = await startServer({
     quiet: true,
     asPort: 0,
@@ -578,14 +651,51 @@ test('provider metadata omits registration endpoint when initial access tokens a
   try {
     const authorizationServer = await fetchJson(`${asUrl}/.well-known/oauth-authorization-server`);
     assert.equal(authorizationServer.status, 200);
-    assert.equal('registration_endpoint' in authorizationServer.body, false);
-    assert.deepEqual(authorizationServer.body.pdpp_registration_modes_supported, ['pre_registered_public']);
+    assert.equal(authorizationServer.body.registration_endpoint, `${asUrl}/oauth/register`);
+    assert.deepEqual(authorizationServer.body.pdpp_registration_modes_supported, ['dynamic', 'pre_registered_public']);
+    assertPublicClientAdvertised(authorizationServer.body, 'pdpp_cli', 'PDPP CLI');
   } finally {
     await closeServer(server);
   }
 });
 
-test('default local reference startup advertises a registration endpoint backed by the shared default token', async () => {
+test('pre-registered public metadata publishes configured client identifiers', async () => {
+  const server = await startServer({
+    quiet: true,
+    asPort: 0,
+    rsPort: 0,
+    dbPath: ':memory:',
+    dynamicClientRegistrationInitialAccessTokens: [],
+    preRegisteredPublicClients: [
+      {
+        client_id: 'agent_demo',
+        metadata: {
+          client_name: 'Agent Demo',
+          token_endpoint_auth_method: 'none',
+        },
+      },
+    ],
+  });
+  const asUrl = `http://localhost:${server.asPort}`;
+
+  try {
+    const authorizationServer = await fetchJson(`${asUrl}/.well-known/oauth-authorization-server`);
+    assert.equal(authorizationServer.status, 200);
+    assert.equal(authorizationServer.body.registration_endpoint, `${asUrl}/oauth/register`);
+    assert.deepEqual(authorizationServer.body.pdpp_registration_modes_supported, ['dynamic', 'pre_registered_public']);
+    assert.deepEqual(authorizationServer.body.pdpp_pre_registered_public_clients, [
+      {
+        client_id: 'agent_demo',
+        client_name: 'Agent Demo',
+        token_endpoint_auth_method: 'none',
+      },
+    ]);
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test('default local reference startup advertises public self-registration', async () => {
   const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
   const asUrl = `http://localhost:${server.asPort}`;
 
@@ -594,17 +704,16 @@ test('default local reference startup advertises a registration endpoint backed 
     assert.equal(authorizationServer.status, 200);
     assert.equal(authorizationServer.body.registration_endpoint, `${asUrl}/oauth/register`);
     assert.deepEqual(authorizationServer.body.pdpp_registration_modes_supported, ['dynamic', 'pre_registered_public']);
+    assertPublicClientAdvertised(authorizationServer.body, 'pdpp_cli', 'PDPP CLI');
 
-    // The default local DCR token must actually unlock /oauth/register; a
-    // bogus token must still be rejected.
-    const { DEFAULT_LOCAL_DCR_INITIAL_ACCESS_TOKEN } = await import('../server/reference-local-defaults.ts');
+    // No bearer token is required for public-client identity registration; a
+    // bogus token must still be rejected rather than silently downgraded.
     const registerOk = await fetch(`${asUrl}/oauth/register`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${DEFAULT_LOCAL_DCR_INITIAL_ACCESS_TOKEN}`,
       },
-      body: JSON.stringify({ client_name: 'Default Local Client', token_endpoint_auth_method: 'none' }),
+      body: JSON.stringify({ client_name: 'Default Public Client', token_endpoint_auth_method: 'none' }),
     });
     assert.ok(registerOk.status === 200 || registerOk.status === 201, `unexpected status ${registerOk.status}`);
     const registered = await registerOk.json();
@@ -622,6 +731,101 @@ test('default local reference startup advertises a registration endpoint backed 
       registerNope.status === 400 || registerNope.status === 401,
       `expected 4xx rejection, got ${registerNope.status}`,
     );
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test('public forwarded host advertises self-registration and rejects bogus bearer tokens', async () => {
+  const publicHost = 'peregrine-dev.vivid.fish';
+  const server = await startServer({
+    quiet: true,
+    asPort: 0,
+    rsPort: 0,
+    dbPath: ':memory:',
+    trustedMetadataHosts: publicHost,
+  });
+  const asUrl = `http://localhost:${server.asPort}`;
+  const publicHeaders = {
+    'X-Forwarded-Host': publicHost,
+    'X-Forwarded-Proto': 'https',
+  };
+
+  try {
+    const authorizationServer = await fetchJson(`${asUrl}/.well-known/oauth-authorization-server`, {
+      headers: publicHeaders,
+    });
+    assert.equal(authorizationServer.status, 200);
+    assert.equal(authorizationServer.body.registration_endpoint, `https://${publicHost}/oauth/register`);
+    assert.deepEqual(authorizationServer.body.pdpp_registration_modes_supported, ['dynamic', 'pre_registered_public']);
+
+    const registerPublic = await fetch(`${asUrl}/oauth/register`, {
+      method: 'POST',
+      headers: {
+        ...publicHeaders,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ client_name: 'Public Default Client', token_endpoint_auth_method: 'none' }),
+    });
+    assert.ok(registerPublic.status === 200 || registerPublic.status === 201, `unexpected status ${registerPublic.status}`);
+    const registered = await registerPublic.json();
+    assert.equal(typeof registered.client_id, 'string');
+
+    const registerNope = await fetch(`${asUrl}/oauth/register`, {
+      method: 'POST',
+      headers: {
+        ...publicHeaders,
+        'Content-Type': 'application/json',
+        Authorization: 'Bearer nope',
+      },
+      body: JSON.stringify({ client_name: 'Bogus Public Client', token_endpoint_auth_method: 'none' }),
+    });
+    assert.equal(registerNope.status, 401);
+    const body = await registerNope.json();
+    assert.equal(body.error, 'invalid_client');
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test('public self-registration is rate limited without blocking authenticated bootstrap tokens', async () => {
+  const server = await startServer({
+    quiet: true,
+    asPort: 0,
+    rsPort: 0,
+    dbPath: ':memory:',
+    dynamicClientRegistrationInitialAccessTokens: [TEST_DCR_INITIAL_ACCESS_TOKEN],
+    publicDynamicClientRegistrationRateLimit: { max: 1, windowMs: 60_000 },
+  });
+  const asUrl = `http://localhost:${server.asPort}`;
+
+  try {
+    const firstPublic = await fetch(`${asUrl}/oauth/register`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ client_name: 'First Public Client', token_endpoint_auth_method: 'none' }),
+    });
+    assert.equal(firstPublic.status, 201);
+
+    const secondPublic = await fetch(`${asUrl}/oauth/register`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ client_name: 'Second Public Client', token_endpoint_auth_method: 'none' }),
+    });
+    assert.equal(secondPublic.status, 429);
+    assert.equal(secondPublic.headers.has('Retry-After'), true);
+    const rateLimited = await secondPublic.json();
+    assert.equal(rateLimited.error, 'slow_down');
+
+    const bootstrap = await fetch(`${asUrl}/oauth/register`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${TEST_DCR_INITIAL_ACCESS_TOKEN}`,
+      },
+      body: JSON.stringify({ client_name: 'Bootstrap Client', token_endpoint_auth_method: 'none' }),
+    });
+    assert.equal(bootstrap.status, 201);
   } finally {
     await closeServer(server);
   }
@@ -876,6 +1080,90 @@ test('discovery index does not require authentication', async () => {
     });
     assert.equal(resp.status, 200);
     assert.equal(body.object, 'pdpp_discovery_index');
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test('RS 401 responses advertise protected-resource metadata in header and body', async () => {
+  const server = await startServer({
+    quiet: true,
+    asPort: 0,
+    rsPort: 0,
+    dbPath: ':memory:',
+  });
+  const rsUrl = `http://localhost:${server.rsPort}`;
+  const metadataUrl = `${rsUrl}/.well-known/oauth-protected-resource`;
+  const expectedChallenge = `Bearer resource_metadata="${metadataUrl}"`;
+
+  try {
+    const missingResp = await fetch(`${rsUrl}/v1/schema`);
+    const missingBody = await missingResp.json();
+    assert.equal(missingResp.status, 401);
+    assert.equal(missingResp.headers.get('www-authenticate'), expectedChallenge);
+    assert.equal(missingBody.error.code, 'authentication_error');
+    assert.equal(missingBody.error.resource_metadata, metadataUrl);
+    assert.match(missingBody.error.next_step, /pdpp_agent_discovery\.cli/);
+    assert.doesNotMatch(missingBody.error.next_step, /npx -y @pdpp\/cli@beta connect/);
+
+    const invalidResp = await fetch(`${rsUrl}/v1/schema`, {
+      headers: { authorization: 'Bearer not-a-real-token' },
+    });
+    const invalidBody = await invalidResp.json();
+    assert.equal(invalidResp.status, 401);
+    assert.equal(invalidResp.headers.get('www-authenticate'), expectedChallenge);
+    assert.equal(invalidBody.error.resource_metadata, metadataUrl);
+    assert.match(invalidBody.error.next_step, /pdpp_agent_discovery\.cli/);
+    assert.doesNotMatch(invalidBody.error.next_step, /npx -y @pdpp\/cli@beta connect/);
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test('RS 401 metadata challenge uses configured public resource origin', async () => {
+  const publicResource = 'https://resource.example';
+  const server = await startServer({
+    quiet: true,
+    asPort: 0,
+    rsPort: 0,
+    dbPath: ':memory:',
+    asPublicUrl: 'https://as.example',
+    asIssuer: 'https://as.example',
+    rsPublicUrl: publicResource,
+  });
+  const rsUrl = `http://localhost:${server.rsPort}`;
+  const metadataUrl = `${publicResource}/.well-known/oauth-protected-resource`;
+
+  try {
+    const resp = await fetch(`${rsUrl}/v1/schema`);
+    const body = await resp.json();
+    assert.equal(resp.status, 401);
+    assert.equal(resp.headers.get('www-authenticate'), `Bearer resource_metadata="${metadataUrl}"`);
+    assert.equal(body.error.resource_metadata, metadataUrl);
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test('RS 401 metadata challenge omits untrusted public host-derived origin', async () => {
+  const server = await startServer({
+    quiet: true,
+    asPort: 0,
+    rsPort: 0,
+    dbPath: ':memory:',
+    trustedMetadataHosts: '',
+  });
+  const rsUrl = `http://localhost:${server.rsPort}`;
+
+  try {
+    const resp = await httpRequestJson(`${rsUrl}/v1/schema`, {
+      headers: { host: 'attacker.example' },
+    });
+    assert.equal(resp.status, 401);
+    assert.equal(resp.headers['www-authenticate'], undefined);
+    assert.equal(resp.body.error.code, 'authentication_error');
+    assert.equal(resp.body.error.resource_metadata, undefined);
+    assert.equal(resp.body.error.next_step, undefined);
   } finally {
     await closeServer(server);
   }

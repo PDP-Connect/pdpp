@@ -24,7 +24,6 @@ import { PdppCliError, PdppUsageError } from '../lib/errors.js';
 import { bearer, fetchJson } from '../lib/fetch.js';
 import { resolveFormat, writeData } from '../lib/output.js';
 import { discoverProvider } from '../lib/discovery.js';
-import { DEFAULT_LOCAL_DCR_INITIAL_ACCESS_TOKEN } from '../../server/reference-local-defaults.ts';
 import {
   deleteGrantFiles,
   ensureCacheDirs,
@@ -68,7 +67,7 @@ Grant request options (pdpp agent request):
   --purpose-code <code>  Machine-readable purpose code (default: assist.general)
   --access-mode <mode>   single_use | continuous (default: single_use)
   --client-id <id>       Use a specific registered client id (default: first cached client)
-  --initial-access-token <token>  Initial access token for DCR (default: $PDPP_INITIAL_ACCESS_TOKEN, then reference-local default)
+  --initial-access-token <token>  Optional operator/bootstrap token for DCR (default: $PDPP_INITIAL_ACCESS_TOKEN)
 
 Wait options (pdpp agent wait):
   --grant-id <id>           Wait for a specific grant ID (default: any usable grant)
@@ -164,7 +163,7 @@ async function runBootstrap(flags, cacheRoot) {
 
   writeAccess(cacheRoot, { as_url: asUrl, rs_url: rsUrl });
 
-  const initialAccessToken = resolveInitialAccessToken(flags) || DEFAULT_LOCAL_DCR_INITIAL_ACCESS_TOKEN;
+  const initialAccessToken = resolveInitialAccessToken(flags);
   const projectLabel = flags['project-label'] || process.env.PDPP_PROJECT_LABEL || process.cwd().split('/').pop() || 'agent-project';
   const clientName = `Claude Code · ${projectLabel}`;
 
@@ -188,9 +187,8 @@ async function runBootstrap(flags, cacheRoot) {
   } catch (err) {
     if (err.status === 401 || err.status === 403) {
       throw new PdppCliError(
-        'Client registration requires an initial access token. ' +
-        'Pass --initial-access-token or set $PDPP_INITIAL_ACCESS_TOKEN. ' +
-        'The CLI already tried the reference-local default token.',
+        'Client registration rejected the supplied initial access token. ' +
+        'Omit the token for public self-registration or pass a valid operator/bootstrap token.',
         1,
       );
     }

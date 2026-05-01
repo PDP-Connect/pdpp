@@ -4,6 +4,14 @@ import net from "node:net";
 const DEFAULT_WEB_PORT = 3000;
 const MAX_PORT_SCAN = 100;
 
+try {
+  process.loadEnvFile(".env.local");
+} catch (err) {
+  if (err?.code !== "ENOENT") {
+    throw err;
+  }
+}
+
 function isPortAvailable(port) {
   return new Promise((resolve) => {
     const server = net.createServer();

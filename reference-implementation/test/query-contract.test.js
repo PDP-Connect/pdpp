@@ -23,6 +23,7 @@ import { fileURLToPath } from 'node:url';
 
 import { startServer } from '../server/index.js';
 import { getDb } from '../server/db.js';
+import { createTraceContext, emitSpineEvent } from '../lib/spine.ts';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, '..');
@@ -70,7 +71,7 @@ async function issueOwnerToken(asUrl, subjectId = 'owner_local') {
   return tokenBody.access_token;
 }
 
-async function withHarness(fn) {
+async function withHarness(fn, options = {}) {
   const server = await startServer({
     quiet: true,
     asPort: 0,
@@ -94,6 +95,7 @@ async function withHarness(fn) {
       group_by: ['name'],
     },
   };
+  options.mutateManifest?.(spotifyManifest);
   try {
     const registerResp = await fetch(`${asUrl}/connectors`, {
       method: 'POST',
@@ -147,6 +149,66 @@ function cloneJson(value) {
 
 function readGmailManifest() {
   return JSON.parse(readFileSync(join(POLYFILL_MANIFESTS_DIR, 'gmail.json'), 'utf8'));
+}
+
+function addTestRefreshPolicy(manifest, overrides = {}) {
+  manifest.capabilities = {
+    ...(manifest.capabilities || {}),
+    refresh_policy: {
+      recommended_mode: 'automatic',
+      rationale: 'Test policy for freshness derivation coverage.',
+      maximum_staleness_seconds: 3600,
+      ...overrides,
+    },
+  };
+}
+
+async function emitSyntheticRun({
+  connectorId,
+  runId,
+  status,
+  occurredAt,
+}) {
+  const trace = createTraceContext({ scenarioId: `scn_${runId}` });
+  await emitSpineEvent({
+    event_type: 'run.started',
+    occurred_at: occurredAt,
+    trace_id: trace.trace_id,
+    scenario_id: trace.scenario_id,
+    actor_type: 'runtime',
+    actor_id: connectorId,
+    object_type: 'run',
+    object_id: runId,
+    status: 'started',
+    run_id: runId,
+    source_kind: 'connector',
+    source_id: connectorId,
+    data: {
+      source: { kind: 'connector', id: connectorId },
+      scope: { streams: [{ name: 'top_artists' }] },
+      scope_streams: ['top_artists'],
+    },
+  });
+  await emitSpineEvent({
+    event_type: status === 'succeeded' ? 'run.completed' : 'run.failed',
+    occurred_at: occurredAt,
+    trace_id: trace.trace_id,
+    scenario_id: trace.scenario_id,
+    actor_type: 'runtime',
+    actor_id: connectorId,
+    object_type: 'run',
+    object_id: runId,
+    status,
+    run_id: runId,
+    source_kind: 'connector',
+    source_id: connectorId,
+    data: {
+      source: { kind: 'connector', id: connectorId },
+      records_emitted: 0,
+      records_flushed: 0,
+      ...(status === 'failed' ? { reason: 'synthetic_failure' } : {}),
+    },
+  });
 }
 
 async function registerConnectorManifest(asUrl, manifest) {
@@ -863,6 +925,73 @@ test('stream metadata includes freshness when records exist', async () => {
     assert.ok(['current', 'unknown'].includes(body.freshness.status));
     assert.ok(body.freshness.captured_at);
   });
+});
+
+test('schema discovery and stream list derive current freshness from connector run history', async () => {
+  await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
+    const ownerToken = await issueOwnerToken(asUrl);
+    const connectorId = spotifyManifest.connector_id;
+    const runAt = new Date(Date.now() - 60_000).toISOString();
+    await emitSyntheticRun({
+      connectorId,
+      runId: 'run_freshness_schema_success',
+      status: 'succeeded',
+      occurredAt: runAt,
+    });
+    await seedSpotifyTopArtists(rsUrl, ownerToken, connectorId, [
+      { id: 'fresh-1', name: 'Fresh Artist', source_updated_at: runAt },
+    ]);
+
+    const schemaResp = await fetchJson(`${rsUrl}/v1/schema`, {
+      headers: { 'Authorization': `Bearer ${ownerToken}` },
+    });
+    assert.equal(schemaResp.status, 200);
+    const schemaConnector = schemaResp.body.connectors.find((row) => row.connector_id === connectorId);
+    const schemaStream = schemaConnector.streams.find((stream) => stream.name === 'top_artists');
+    assert.equal(schemaStream.freshness.status, 'current');
+    assert.equal(schemaStream.freshness.captured_at, runAt);
+    assert.equal(schemaStream.freshness.last_attempted_at, runAt);
+
+    const listResp = await fetchJson(
+      `${rsUrl}/v1/streams?connector_id=${encodeURIComponent(connectorId)}`,
+      { headers: { 'Authorization': `Bearer ${ownerToken}` } },
+    );
+    assert.equal(listResp.status, 200);
+    const listStream = listResp.body.data.find((stream) => stream.name === 'top_artists');
+    assert.equal(listStream.freshness.status, 'current');
+    assert.equal(listStream.freshness.captured_at, runAt);
+    assert.equal(listStream.freshness.last_attempted_at, runAt);
+  }, { mutateManifest: addTestRefreshPolicy });
+});
+
+test('stream metadata marks stale freshness when the latest connector attempt failed', async () => {
+  await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
+    const ownerToken = await issueOwnerToken(asUrl);
+    const connectorId = spotifyManifest.connector_id;
+    const successAt = new Date(Date.now() - 10 * 60_000).toISOString();
+    const failedAt = new Date(Date.now() - 60_000).toISOString();
+    await emitSyntheticRun({
+      connectorId,
+      runId: 'run_freshness_detail_success',
+      status: 'succeeded',
+      occurredAt: successAt,
+    });
+    await emitSyntheticRun({
+      connectorId,
+      runId: 'run_freshness_detail_failed',
+      status: 'failed',
+      occurredAt: failedAt,
+    });
+
+    const { status, body } = await fetchJson(
+      `${rsUrl}/v1/streams/top_artists?connector_id=${encodeURIComponent(connectorId)}`,
+      { headers: { 'Authorization': `Bearer ${ownerToken}` } },
+    );
+    assert.equal(status, 200);
+    assert.equal(body.freshness.status, 'stale');
+    assert.equal(body.freshness.captured_at, successAt);
+    assert.equal(body.freshness.last_attempted_at, failedAt);
+  }, { mutateManifest: addTestRefreshPolicy });
 });
 
 test('stream list publishes freshness with unknown status when empty', async () => {

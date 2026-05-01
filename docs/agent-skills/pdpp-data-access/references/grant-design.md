@@ -4,7 +4,10 @@ The PDPP grant request is the contract you offer the owner. Get it right and you
 
 ## Structure of `authorization_details[]`
 
-Each entry binds the grant to one source. Cross-source tasks need multiple entries (or, more often, multiple grants). One entry has:
+Each entry binds the grant to one source. The current reference accepts exactly
+one `authorization_details[]` entry per PAR request, so cross-source tasks need
+multiple requests and multiple grants. Batch consent with multiple staged
+entries is still a design track, not the current agent workflow. One entry has:
 
 | Field | Meaning | Common values |
 | --- | --- | --- |

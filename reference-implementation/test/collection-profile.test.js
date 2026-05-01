@@ -324,6 +324,7 @@ test('Collection Profile conformance', async (t) => {
       assert.deepEqual(captured.bindings, {
         network: {},
         filesystem: {},
+        browser: {},
         interactive: {},
       });
       assert.ok(!('config' in captured), 'legacy START.config should be absent');
@@ -1960,6 +1961,7 @@ rl.on('line', (line) => {
       assert.deepEqual(captured.bindings, {
         network: {},
         filesystem: {},
+        browser: {},
         interactive: {},
       });
     } finally {
@@ -1991,6 +1993,7 @@ rl.on('line', (line) => {
       assert.deepEqual(captured.bindings, {
         network: {},
         filesystem: {},
+        browser: {},
       });
     } finally {
       cleanup();

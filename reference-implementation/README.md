@@ -18,7 +18,7 @@ The current provider-connect story is intentionally thin and honest. It proves:
 
 - standards-based discovery via RFC 9728 protected-resource metadata and RFC 8414 AS metadata
 - PAR-backed request staging through `POST /oauth/par`
-- protected dynamic client registration through `POST /oauth/register`
+- public-client self-registration through `POST /oauth/register`
 - a consent shell and approval surface for issued grants
 - owner self-export through the device flow
 - pre-registered and dynamically registered client paths for the current third-party connect flow
@@ -60,6 +60,18 @@ The current reference is centered on one architectural claim:
 - `GET /.well-known/oauth-protected-resource`
 - `GET /.well-known/oauth-authorization-server`
 
+Protected-resource metadata includes advisory agent discovery. The generated
+CLI command is:
+
+```bash
+npx -y @pdpp/cli@beta connect <provider-url>
+```
+
+The no-owner-token completion path is beta but complete in the reference flow.
+Metadata sets `pdpp_agent_discovery.cli.no_owner_token` true when the AS can
+complete owner-approved scoped token handoff without asking for an owner bearer
+token.
+
 ### Client request start
 
 - `POST /oauth/par`
@@ -68,18 +80,17 @@ The current reference is centered on one architectural claim:
 
 - `POST /oauth/register`
 
-Dynamic client registration is enabled **by default** for local reference use.
-When neither `PDPP_DCR_INITIAL_ACCESS_TOKENS` nor `startServer()`'s
-`dynamicClientRegistrationInitialAccessTokens` opt is set, the reference AS
-falls back to a shared reference-local default token exported from
-[`server/reference-local-defaults.ts`](server/reference-local-defaults.ts).
-This keeps the forkable reference usable out of the box without silently
-widening the protocol contract.
+Dynamic client registration is enabled **by default**. Public clients can
+self-register supported public-client metadata without an initial access token.
+Registration creates only a public `client_id`; it does not grant data access or
+mint bearer tokens.
 
 Overrides:
 
 - `PDPP_DCR_INITIAL_ACCESS_TOKENS=token1,token2` — comma-separated initial
-  access tokens. When set, the reference server only accepts these tokens.
+  access tokens for optional operator/bootstrap registration. If a caller sends
+  a bearer token, it must be one of these tokens; callers can omit the bearer
+  token for public self-registration.
 - `PDPP_ENABLE_DYNAMIC_CLIENT_REGISTRATION=0` — explicitly disables DCR. The
   AS metadata then omits `registration_endpoint` and advertises only
   `pdpp_registration_modes_supported: ["pre_registered_public"]`.

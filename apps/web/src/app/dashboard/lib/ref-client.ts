@@ -29,11 +29,11 @@ export interface SpineEvent {
   object_type: string | null;
   occurred_at: string;
   provider_id?: string | null;
-  source?: SourceObject | null;
   recorded_at: string;
   request_id: string | null;
   run_id: string | null;
   scenario_id: string | null;
+  source?: SourceObject | null;
   status: string | null;
   stream_id: string | null;
   subject_id: string | null;
@@ -121,9 +121,9 @@ export interface TraceSummary {
   last_at: string;
   object: "trace_summary";
   provider_id?: string | null;
-  source?: SourceObject | null;
   request_id: string | null;
   run_id: string | null;
+  source?: SourceObject | null;
   status: string;
   trace_id: string;
 }
@@ -154,8 +154,8 @@ export interface RunSummary {
   needs_input: boolean;
   object: "run_summary";
   provider_id?: string | null;
-  source?: SourceObject | null;
   run_id: string;
+  source?: SourceObject | null;
   status: string;
 }
 
@@ -222,7 +222,7 @@ class RefNotFoundError extends Error {
   readonly status = 404;
 }
 
-async function refFetch(path: string, params?: Record<string, string | number | undefined>) {
+async function refFetch(path: string, params?: Record<string, string | number | undefined>, init: RequestInit = {}) {
   // DAL gate: verify owner session before any AS read. The proxy already
   // redirects unauthenticated browser navigations; this catches programmatic
   // / proxy-bypass paths (CVE-2025-29927 class) before any data leaves the AS.
@@ -238,7 +238,14 @@ async function refFetch(path: string, params?: Record<string, string | number | 
   }
   let res: Response;
   try {
-    res = await fetch(url.toString(), await withOwnerSessionCookie({ cache: "no-store" }));
+    res = await fetch(
+      url.toString(),
+      await withOwnerSessionCookie({
+        cache: "no-store",
+        ...init,
+        headers: init.headers,
+      })
+    );
   } catch (err) {
     throw new ReferenceServerUnreachableError(`Cannot reach authorization server at ${getAsInternalUrl()}`, err);
   }
@@ -495,6 +502,91 @@ export interface DeploymentDiagnostics {
 
 export async function getDeploymentDiagnostics(): Promise<DeploymentDiagnostics> {
   return (await refFetch("/_ref/deployment")) as DeploymentDiagnostics;
+}
+
+export interface DeviceSourceInstance {
+  accepted_record_count?: number;
+  connector_id: string;
+  created_at: string;
+  device_id: string;
+  display_name?: string | null;
+  last_error?: Record<string, unknown> | null;
+  last_ingest_at?: string | null;
+  local_binding_name: string;
+  object: "device_source_instance";
+  rejected_record_count?: number;
+  source_instance_id: string;
+}
+
+export interface DeviceExporter {
+  created_at: string;
+  device_id: string;
+  display_name?: string | null;
+  last_error?: Record<string, unknown> | null;
+  last_heartbeat_at?: string | null;
+  last_ingest_at?: string | null;
+  object: "device_exporter";
+  revoked_at?: string | null;
+  source_instances: DeviceSourceInstance[];
+  stale: boolean;
+  status: "active" | "revoked";
+  subject_id: string;
+}
+
+export interface DeviceEnrollmentCode {
+  connector_id: string;
+  enrollment_code: string;
+  expires_at: string;
+  local_binding_name: string;
+  object: "device_exporter_enrollment_code";
+}
+
+export interface CreateDeviceEnrollmentCodeInput {
+  connector_id: string;
+  display_name?: string;
+  expires_in_seconds?: number;
+  local_binding_name: string;
+}
+
+export async function createDeviceEnrollmentCode(
+  input: CreateDeviceEnrollmentCodeInput
+): Promise<DeviceEnrollmentCode> {
+  return (await refFetch("/_ref/device-exporters/enrollment-codes", undefined, {
+    body: JSON.stringify(input),
+    headers: { "content-type": "application/json" },
+    method: "POST",
+  })) as DeviceEnrollmentCode;
+}
+
+export async function listDeviceExporters(): Promise<ListResponse<DeviceExporter>> {
+  return (await refFetch("/_ref/device-exporters")) as ListResponse<DeviceExporter>;
+}
+
+export async function listDeviceExporterSourceInstances(
+  opts: { device_id?: string } = {}
+): Promise<ListResponse<DeviceSourceInstance>> {
+  return (await refFetch(
+    "/_ref/device-exporters/source-instances",
+    opts as Record<string, string | number | undefined>
+  )) as ListResponse<DeviceSourceInstance>;
+}
+
+export async function listDeviceExporterDiagnostics(): Promise<ListResponse<DeviceExporter>> {
+  return (await refFetch("/_ref/device-exporters/diagnostics")) as ListResponse<DeviceExporter>;
+}
+
+export async function revokeDeviceExporter(deviceId: string): Promise<{
+  device_id: string;
+  object: "device_exporter_revocation";
+  revoked_at: string;
+}> {
+  return (await refFetch(`/_ref/device-exporters/${encodeURIComponent(deviceId)}/revoke`, undefined, {
+    method: "POST",
+  })) as {
+    device_id: string;
+    object: "device_exporter_revocation";
+    revoked_at: string;
+  };
 }
 
 export async function refSearch(query: string): Promise<{

@@ -76,7 +76,7 @@ curl -fsS "$RS_URL/v1/streams/pull_requests/records?changes_since=$LAST_CURSOR" 
   -H "Authorization: Bearer $TOKEN"
 ```
 
-Save the response's `next_changes_since` into `grants/<grant-id>.json` so the next session resumes correctly. If the response also includes `next_cursor`, use it only to page within the same changes window. To bootstrap, pass `changes_since=beginning`.
+Save the response's `next_changes_since` in your own project-local task state so the next session resumes correctly; do not edit the CLI credential cache for cursor bookkeeping. If the response also includes `next_cursor`, use it only to page within the same changes window. To bootstrap, pass `changes_since=beginning`.
 
 ## Search
 

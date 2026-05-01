@@ -153,6 +153,32 @@
                       },
                       "minItems": 1
                     },
+                    "pdpp_pre_registered_public_clients": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                          "client_id": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "client_name": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "token_endpoint_auth_method": {
+                            "const": "none"
+                          }
+                        },
+                        "required": [
+                          "client_id",
+                          "client_name",
+                          "token_endpoint_auth_method"
+                        ]
+                      },
+                      "minItems": 1
+                    },
                     "pdpp_authorization_details_types_supported": {
                       "type": "array",
                       "items": {
@@ -175,6 +201,10 @@
                       "type": "string",
                       "format": "uri"
                     },
+                    "agent_connect_endpoint": {
+                      "type": "string",
+                      "format": "uri"
+                    },
                     "grant_types_supported": {
                       "type": "array",
                       "items": {
@@ -189,10 +219,12 @@
                     "pushed_authorization_request_endpoint",
                     "pdpp_provider_connect_capabilities",
                     "pdpp_registration_modes_supported",
+                    "pdpp_pre_registered_public_clients",
                     "pdpp_authorization_details_types_supported",
                     "token_endpoint",
                     "token_endpoint_auth_methods_supported",
                     "device_authorization_endpoint",
+                    "agent_connect_endpoint",
                     "grant_types_supported"
                   ]
                 }
@@ -768,10 +800,14 @@
                     },
                     "error_description": {
                       "type": "string"
+                    },
+                    "request_id": {
+                      "type": "string"
                     }
                   },
                   "required": [
-                    "error"
+                    "error",
+                    "request_id"
                   ]
                 }
               }
@@ -791,10 +827,14 @@
                     },
                     "error_description": {
                       "type": "string"
+                    },
+                    "request_id": {
+                      "type": "string"
                     }
                   },
                   "required": [
-                    "error"
+                    "error",
+                    "request_id"
                   ]
                 }
               }
@@ -814,10 +854,14 @@
                     },
                     "error_description": {
                       "type": "string"
+                    },
+                    "request_id": {
+                      "type": "string"
                     }
                   },
                   "required": [
-                    "error"
+                    "error",
+                    "request_id"
                   ]
                 }
               }
@@ -2078,10 +2122,14 @@
                     },
                     "error_description": {
                       "type": "string"
+                    },
+                    "request_id": {
+                      "type": "string"
                     }
                   },
                   "required": [
-                    "error"
+                    "error",
+                    "request_id"
                   ]
                 }
               }
@@ -2162,10 +2210,14 @@
                     },
                     "error_description": {
                       "type": "string"
+                    },
+                    "request_id": {
+                      "type": "string"
                     }
                   },
                   "required": [
-                    "error"
+                    "error",
+                    "request_id"
                   ]
                 }
               }
@@ -2185,10 +2237,14 @@
                     },
                     "error_description": {
                       "type": "string"
+                    },
+                    "request_id": {
+                      "type": "string"
                     }
                   },
                   "required": [
-                    "error"
+                    "error",
+                    "request_id"
                   ]
                 }
               }

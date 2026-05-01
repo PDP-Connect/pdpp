@@ -39,6 +39,17 @@ const CapabilityFlagSchema = {
   required: ["declared", "usable"],
 };
 
+const PreRegisteredPublicClientSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    client_id: NonEmptyStringSchema,
+    client_name: NonEmptyStringSchema,
+    token_endpoint_auth_method: { const: "none" },
+  },
+  required: ["client_id", "client_name", "token_endpoint_auth_method"],
+};
+
 const RetrievalScoreSchema = {
   type: "object",
   additionalProperties: false,
@@ -272,6 +283,11 @@ const AuthorizationServerMetadataSchema = {
       items: { type: "string", enum: ["dynamic", "pre_registered_public"] },
       minItems: 1,
     },
+    pdpp_pre_registered_public_clients: {
+      type: "array",
+      items: PreRegisteredPublicClientSchema,
+      minItems: 1,
+    },
     pdpp_authorization_details_types_supported: {
       type: "array",
       items: { const: "https://pdpp.org/data-access" },
@@ -284,6 +300,7 @@ const AuthorizationServerMetadataSchema = {
       minItems: 1,
     },
     device_authorization_endpoint: UriSchema,
+    agent_connect_endpoint: UriSchema,
     grant_types_supported: {
       type: "array",
       items: { const: "urn:ietf:params:oauth:grant-type:device_code" },
@@ -296,10 +313,12 @@ const AuthorizationServerMetadataSchema = {
     "pushed_authorization_request_endpoint",
     "pdpp_provider_connect_capabilities",
     "pdpp_registration_modes_supported",
+    "pdpp_pre_registered_public_clients",
     "pdpp_authorization_details_types_supported",
     "token_endpoint",
     "token_endpoint_auth_methods_supported",
     "device_authorization_endpoint",
+    "agent_connect_endpoint",
     "grant_types_supported",
   ],
 };

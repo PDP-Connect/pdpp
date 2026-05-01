@@ -77,7 +77,7 @@ export interface InteractionResponse {
   value?: string;
 }
 
-export type InteractionKind = "credentials" | "otp" | "manual_action";
+export type InteractionKind = "credentials" | "host_browser_required" | "otp" | "manual_action";
 
 /** All messages a connector emits over stdout. */
 export type EmittedMessage =
@@ -639,7 +639,19 @@ export function decorateBrowserManualAction(
   req: InteractionRequest,
   visibility: BrowserRuntimeVisibility
 ): InteractionRequest {
-  if (req.kind !== "manual_action" || !visibility.headless || visibility.hostBridgeConfigured) {
+  if (req.kind !== "manual_action") {
+    return req;
+  }
+  if (visibility.hostBridgeConfigured) {
+    return {
+      ...req,
+      kind: "host_browser_required",
+      message:
+        `${req.message}\n\n` +
+        "A host browser bridge is configured. Complete this step in the visible browser window on the host machine, then continue this run.",
+    };
+  }
+  if (!visibility.headless) {
     return req;
   }
   if (MANUAL_ACTION_RECOVERY_RE.test(req.message)) {

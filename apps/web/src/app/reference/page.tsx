@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { ConnectAgentCard } from "@/app/dashboard/components/connect-agent-card.tsx";
 import { buttonVariants } from "@/components/ui/button.tsx";
 import { cn } from "@/lib/utils.ts";
 
@@ -37,7 +38,7 @@ const architectureLayers = [
     label: "Educational surface",
     route: "/sandbox",
     title: "Sandbox demo instance",
-    body: "A mock reference instance backed by deterministic fictional data. Browse connectors, streams, records, grants, runs, traces, and call sandbox-prefixed AS/RS-shaped APIs without credentials. The guided one-scenario walkthrough lives at /sandbox/walkthrough.",
+    body: "A mock-adapter-backed reference instance with deterministic fictional data. Browse connectors, streams, records, grants, runs, traces, and call sandbox-prefixed AS/RS-shaped APIs without credentials or a live AS/RS dependency. The guided one-scenario walkthrough lives at /sandbox/walkthrough.",
   },
 ] as const;
 
@@ -59,7 +60,7 @@ const referenceLinks = [
     label: "Sandbox",
     title: "Mock reference demo instance",
     href: "/sandbox",
-    body: "Browse a public, credential-free PDPP reference surface backed by fictional data. Inspect records/grants/runs/traces, call sandbox-prefixed AS/RS-shaped APIs (/sandbox/v1/**, /sandbox/_ref/**, /sandbox/.well-known/**), and read the guided walkthrough at /sandbox/walkthrough.",
+    body: "Browse a public, credential-free PDPP reference surface backed by deterministic mock adapters, not live owner data. Inspect records/grants/runs/traces, call sandbox-prefixed AS/RS-shaped APIs (/sandbox/v1/**, /sandbox/_ref/**, /sandbox/.well-known/**), and read the guided walkthrough at /sandbox/walkthrough.",
   },
   {
     label: "Repository",
@@ -148,6 +149,10 @@ export default function ReferencePage() {
             </p>
           </aside>
         </section>
+
+        <div className="mt-10">
+          <ConnectAgentCard mode="live" />
+        </div>
 
         <section className="mt-14 grid gap-8 lg:grid-cols-[15rem_minmax(0,1fr)]">
           <div>

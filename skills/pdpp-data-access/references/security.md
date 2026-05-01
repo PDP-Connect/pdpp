@@ -13,17 +13,17 @@ If you see a value with shape `tok_*`, `owner_*`, or any opaque token-like strin
 
 ## Where tokens may live
 
-✅ Allowed:
+Allowed:
 
-- Files under `<repo>/.pdpp/tokens/<grant-id>.token`, mode `0600`, owned by the user.
+- The project-local CLI cache under `<repo>/.pdpp/clients/<provider-host>.json`, mode `0600`, owned by the user.
 - Process memory while you call PDPP.
-- Environment variables you set yourself for the duration of a single shell invocation (e.g., `TOKEN=$(cat .pdpp/tokens/foo.token) curl …`).
+- Environment variables you set yourself for the duration of a single shell invocation, for example `TOKEN="$(pdpp token <provider-url>)" curl ...`.
 
-🚫 Not allowed:
+Not allowed:
 
 - Prompts (yours or the user's). If a token ends up in a prompt, it is in the LLM training surface.
 - Tool transcripts, logs, stderr, stdout that gets persisted, run-output capture files.
-- Shell history. Pass tokens via `--data-binary @file` or by reading from `.pdpp/tokens/`, not as inline `--data` arguments.
+- Shell history. Prefer `pdpp token <provider-url>` in command substitution, not inline `--data` arguments.
 - Commit messages, PR descriptions, comments, diffs. If you see one in `git diff`, stop.
 - Slack, email, issue trackers, third-party services.
 - Files under any path that `git status` will track. Confirm `.pdpp/` is gitignored before writing tokens.
@@ -32,16 +32,14 @@ If you see a value with shape `tok_*`, `owner_*`, or any opaque token-like strin
 
 ```
 <repo>/.pdpp/                             # mode 0700
-  agent-access.json                       # mode 0600 (non-secret summary)
-  clients/<client-id>.json                # mode 0600 (non-secret registration)
-  grants/<grant-id>.json                  # mode 0600 (non-secret scope)
-  tokens/<grant-id>.token                 # mode 0600 (SECRET)
+  .gitignore                             # ignores cached credentials
+  clients/<provider-host>.json           # mode 0600 (SECRET: scoped credential)
 ```
 
-Before writing any token file:
+Before writing any credential file manually:
 
 1. Verify `.pdpp/` exists with mode `0700`. If it doesn't, create it that way. Never `0755`.
-2. Verify `.gitignore` covers `.pdpp/`. If the project has a `.gitignore` and it does not yet contain `.pdpp/`, append a line. If the project has no `.gitignore`, create one with `.pdpp/`.
+2. Verify `.pdpp/.gitignore` ignores `*` and only permits `.gitignore`.
 3. Write the file with `O_CREAT | O_WRONLY | O_EXCL` semantics where the runtime allows it; otherwise write to a temp file and `rename` to the final path. Set mode `0600` after write.
 
 ## Reading tokens at call time
@@ -49,15 +47,14 @@ Before writing any token file:
 Read the token only at the moment of the HTTP call. Do not bind it to a long-lived variable in your tool's state. Patterns:
 
 ```bash
-TOKEN=$(cat .pdpp/tokens/<grant-id>.token); \
+TOKEN="$(pdpp token <provider-url>)"; \
   curl -fsS "$RS_URL/v1/streams/pull_requests/records?limit=10&order=desc" \
     -H "Authorization: Bearer $TOKEN"; \
   unset TOKEN
 ```
 
 ```python
-with open(token_path, "r") as f:
-    token = f.read().strip()
+token = subprocess.check_output(["pdpp", "token", provider_url], text=True).strip()
 try:
     response = httpx.get(f"{RS_URL}/v1/streams/pull_requests/records",
                         params={"limit": 10},
@@ -70,12 +67,12 @@ If your harness logs the full subprocess command, prefer `--data-binary @-` with
 
 ## Status output never prints secrets
 
-When showing the user "what grants do I have?", read `agent-access.json`, `clients/`, and `grants/`. Do **not** read `tokens/`. The non-secret files contain enough to answer:
+When showing the user "what grants do I have?", read `.pdpp/clients/*.json` but redact `credential.access_token`. The cached metadata contains enough to answer:
 
 - which grants exist
 - what scope they cover
 - when they expire
-- whether they are revoked (introspect on demand if you need ground truth)
+- whether they are expired locally; introspect on demand if you need ground truth
 
 Print "(token cached)" or "(no token cached)" — never the token value.
 
@@ -89,17 +86,17 @@ Print "(token cached)" or "(no token cached)" — never the token value.
 
 If a token has appeared anywhere it shouldn't have (chat history, log, commit, screenshot, third-party tool):
 
-1. Immediately revoke. The reference revoke endpoint requires the grant's own bearer (or an owner bearer) — read the cached token from `.pdpp/tokens/<grant-id>.token` for this single call, even if the token is the one that leaked. Revoking it is the goal.
+1. Immediately revoke. The reference revoke endpoint requires the grant's own bearer (or an owner bearer). Use `pdpp token <provider-url>` for this single call, even if the token is the one that leaked. Revoking it is the goal.
 
    ```bash
-   TOKEN=$(cat .pdpp/tokens/<grant-id>.token); \
+   TOKEN="$(pdpp token <provider-url>)"; \
      curl -fsS -X POST "$AS_URL/grants/<grant-id>/revoke" \
        -H "Authorization: Bearer $TOKEN"; \
      unset TOKEN
    ```
 
-   If the token file is already gone (the leak prompted a hand-deletion) and you do not have an owner bearer, tell the user: the reference revoke endpoint will reject unauthenticated calls. Operators can revoke from the dashboard or via an owner-bound CLI session.
-2. Delete `.pdpp/tokens/<grant-id>.token` and `.pdpp/grants/<grant-id>.json`.
+   If the credential cache is already gone or the cached file lacks `credential.grant_id`, tell the user: the reference revoke endpoint will reject unauthenticated calls. Operators can revoke from the dashboard or via an owner-bound CLI session.
+2. Delete the matching `.pdpp/clients/<provider-host>.json`.
 3. Tell the user what leaked, where, and that you've revoked.
 4. Do not silently re-request a replacement grant. The user decides whether to grant again.
 

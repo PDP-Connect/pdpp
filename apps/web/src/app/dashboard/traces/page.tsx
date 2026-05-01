@@ -1,19 +1,9 @@
 import Link from "next/link";
-import { Button } from "@/components/ui/button.tsx";
-import { Input } from "@/components/ui/input.tsx";
-import { Select } from "@/components/ui/select.tsx";
 import { Timestamp } from "@/components/ui/timestamp.tsx";
-import { PeekEmpty, PeekPane, PeekTimeline, pivotsFromEnvelope } from "../components/peek.tsx";
-import {
-  DataList,
-  FilterSummary,
-  PageHeader,
-  Pager,
-  SplitLayout,
-  StatusBadge,
-  Toolbar,
-} from "../components/primitives.tsx";
-import { DashboardShell, EmptyState, ServerUnreachable } from "../components/shell.tsx";
+import { PageHeader, StatusBadge } from "../components/primitives.tsx";
+import { DashboardShell, ServerUnreachable } from "../components/shell.tsx";
+import { type ListWithPeekParams, ListWithPeekView } from "../components/views/list-with-peek.tsx";
+import { dashboardRoutes } from "../components/views/routes.ts";
 import { ReferenceServerUnreachableError } from "../lib/owner-token.ts";
 import {
   getTraceTimeline,
@@ -34,43 +24,8 @@ interface Params {
   status?: string;
 }
 
-function renderTracesPeek({
-  peekId,
-  peekEnvelope,
-  closePeekHref,
-  openPeekFullHref,
-}: {
-  peekId: string | undefined;
-  peekEnvelope: TimelineEnvelope | null;
-  closePeekHref: string;
-  openPeekFullHref: string;
-}) {
-  if (!peekId) {
-    return <PeekEmpty />;
-  }
-  if (!peekEnvelope) {
-    return (
-      <PeekPane closeHref={closePeekHref} openHref={openPeekFullHref} title={`trace ${peekId}`}>
-        <p className="text-muted-foreground">Trace not found.</p>
-      </PeekPane>
-    );
-  }
-  return (
-    <PeekPane
-      cliCommand={`pdpp trace show ${peekId}`}
-      closeHref={closePeekHref}
-      openHref={openPeekFullHref}
-      title={`trace ${peekId}`}
-    >
-      <Pivots currentKind="trace" envelope={peekEnvelope} />
-      <div className="pdpp-caption mb-2 text-muted-foreground">{peekEnvelope.events.length} events</div>
-      <PeekTimeline events={peekEnvelope.events} />
-    </PeekPane>
-  );
-}
-
-function listHref(params: Params, overrides: Partial<Params> = {}): string {
-  const merged = { ...params, ...overrides };
+function listHref(params: Params, overrides: Record<string, string | undefined> = {}): string {
+  const merged: Record<string, string | undefined> = { ...params, ...overrides };
   const qs = Object.entries(merged)
     .filter(([, v]) => v !== undefined && v !== "")
     .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`)
@@ -108,86 +63,55 @@ export default async function TracesPage({ searchParams }: { searchParams: Promi
     throw err;
   }
 
-  const closePeekHref = listHref(params, { peek: undefined });
-  const openPeekFullHref = params.peek ? `/dashboard/traces/${encodeURIComponent(params.peek)}` : "";
-
   const activeFilters = [
     params.status ? { label: "status", value: params.status } : null,
     params.q ? { label: "query", value: params.q } : null,
   ].filter((item): item is { label: string; value: string } => Boolean(item));
+  const viewParams: ListWithPeekParams<TraceSummary> = {
+    active: "traces",
+    routes: dashboardRoutes,
+    subject: "trace",
+    title: "Traces",
+    description: "The event-spine view of protocol interactions — provider-connect, owner device flows, /v1 reads.",
+    result,
+    rowKey: (trace) => trace.trace_id,
+    renderRow: (trace, { peeked, href }) => <TraceRow href={href} peeked={peeked} trace={trace} />,
+    filters: {
+      query: { name: "q", placeholder: "id contains…", defaultValue: params.q ?? "" },
+      status: {
+        name: "status",
+        defaultValue: params.status ?? "",
+        options: [
+          { value: "succeeded", label: "succeeded" },
+          { value: "failed", label: "failed" },
+          { value: "rejected", label: "rejected" },
+          { value: "started", label: "started" },
+        ],
+      },
+    },
+    activeFilterChips: activeFilters,
+    resetHref: "/dashboard/traces",
+    buildListHref: (overrides) => listHref(params, overrides),
+    peekId: params.peek,
+    peekEnvelope,
+    peekCliCommand: (id) => `pdpp trace show ${id}`,
+    emptyTitle: "No traces yet",
+    emptyHint: "Trace artifacts appear as provider-connect, owner-device, or /v1 read flows run.",
+  };
 
   return (
     <DashboardShell active="traces">
-      <PageHeader
-        count={`${result.data.length}${result.has_more ? "+" : ""}`}
-        description="The event-spine view of protocol interactions — provider-connect, owner device flows, /v1 reads."
-        title="Traces"
-      />
-
-      <form method="get">
-        <Toolbar>
-          <label className="flex min-w-0 flex-col gap-1" htmlFor="traces-query">
-            <span className="pdpp-eyebrow">Query</span>
-            <Input
-              className="w-64 font-mono"
-              defaultValue={params.q ?? ""}
-              id="traces-query"
-              name="q"
-              placeholder="id contains…"
-              type="search"
-            />
-          </label>
-          <label className="flex min-w-0 flex-col gap-1" htmlFor="traces-status">
-            <span className="pdpp-eyebrow">Status</span>
-            <Select defaultValue={params.status ?? ""} id="traces-status" name="status">
-              <option value="">Any</option>
-              <option value="succeeded">succeeded</option>
-              <option value="failed">failed</option>
-              <option value="rejected">rejected</option>
-              <option value="started">started</option>
-            </Select>
-          </label>
-          <Button className="mt-5" size="sm" type="submit">
-            Filter
-          </Button>
-        </Toolbar>
-      </form>
-
-      <FilterSummary items={activeFilters} resetHref="/dashboard/traces" />
-
-      <SplitLayout
-        main={
-          <>
-            {result.data.length === 0 ? (
-              <EmptyState
-                hint="Trace artifacts appear as provider-connect, owner-device, or /v1 read flows run."
-                title="No traces yet"
-              />
-            ) : (
-              <DataList>
-                {result.data.map((t) => (
-                  <li key={t.trace_id}>
-                    <TraceRow params={params} trace={t} />
-                  </li>
-                ))}
-              </DataList>
-            )}
-            {result.has_more && result.next_cursor && <Pager next={listHref(params, { cursor: result.next_cursor })} />}
-          </>
-        }
-        peek={renderTracesPeek({ peekId: params.peek, peekEnvelope, closePeekHref, openPeekFullHref })}
-      />
+      <ListWithPeekView params={viewParams} />
     </DashboardShell>
   );
 }
 
-function TraceRow({ trace, params }: { trace: TraceSummary; params: Params }) {
-  const peeked = params.peek === trace.trace_id;
+function TraceRow({ trace, peeked, href }: { trace: TraceSummary; peeked: boolean; href: string }) {
   return (
     <Link
       aria-current={peeked ? "true" : undefined}
       className={`block px-3 py-2.5 transition-colors ${peeked ? "bg-muted" : "hover:bg-muted/40"}`}
-      href={listHref(params, { peek: trace.trace_id })}
+      href={href}
       scroll={false}
     >
       <div className="flex flex-wrap items-baseline justify-between gap-2">
@@ -207,25 +131,5 @@ function TraceRow({ trace, params }: { trace: TraceSummary; params: Params }) {
         {trace.kinds.slice(0, 4).join(", ")}
       </div>
     </Link>
-  );
-}
-
-function Pivots({ envelope, currentKind }: { envelope: TimelineEnvelope; currentKind: "trace" | "grant" | "run" }) {
-  const pivots = pivotsFromEnvelope(envelope).filter((p) => p.kind !== currentKind);
-  if (pivots.length === 0) {
-    return null;
-  }
-  return (
-    <div className="mb-3 flex flex-wrap gap-1">
-      {pivots.map((p) => (
-        <Link
-          className="pdpp-eyebrow rounded border border-border px-2 py-0.5 hover:bg-muted/60"
-          href={`/dashboard/${p.kind}s?peek=${encodeURIComponent(p.id)}`}
-          key={`${p.kind}:${p.id}`}
-        >
-          {p.kind} {p.id} →
-        </Link>
-      ))}
-    </div>
   );
 }

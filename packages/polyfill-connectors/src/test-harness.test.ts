@@ -193,7 +193,7 @@ test("runConnectorProtocolSubprocess: non-browser fixture completes START to DON
   });
 
   assert.equal(result.code, 0);
-  assert.equal(result.stderr, "");
+  assert.equal(result.stderr.trim(), "");
 
   const types = result.messages.map((m) => m.type);
   assert.deepEqual(types, ["PROGRESS", "RECORD", "SKIP_RESULT", "STATE", "PROGRESS", "DONE"]);

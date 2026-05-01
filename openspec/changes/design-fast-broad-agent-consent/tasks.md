@@ -13,10 +13,10 @@ Findings consolidated in `design-notes/2026-04-27-prior-art-review.md`.
 
 ## 2. Current-State Audit
 
-- [ ] Confirm the reference PAR route still accepts exactly one `authorization_details[]` entry and document the exact failure shape for multi-entry requests.
-- [ ] Audit the consent UI for maximal single-source grants: wildcard streams, continuous access, no time bound, no retention, no field projection.
-- [ ] Audit dashboard grant listing/revocation to determine whether package/session grouping could be displayed without weakening per-grant revocation.
-- [ ] Audit `pdpp-data-access` skill and CLI guidance for any wording that encourages owner tokens or broad access as a workaround.
+- [x] Confirm the reference PAR route still accepts exactly one `authorization_details[]` entry and document the exact failure shape for multi-entry requests.
+- [x] Audit the consent UI for maximal single-source grants: wildcard streams, continuous access, no time bound, no retention, no field projection.
+- [x] Audit dashboard grant listing/revocation to determine whether package/session grouping could be displayed without weakening per-grant revocation.
+- [x] Audit `pdpp-data-access` skill and CLI guidance for any wording that encourages owner tokens or broad access as a workaround.
 
 ## 3. Design Decisions
 

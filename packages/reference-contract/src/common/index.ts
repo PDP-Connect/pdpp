@@ -147,8 +147,9 @@ export const OAuthErrorSchema: JsonSchema = {
   properties: {
     error: { type: "string" },
     error_description: { type: "string" },
+    request_id: { type: "string" },
   },
-  required: ["error"],
+  required: ["error", "request_id"],
 };
 
 export const ListEnvelopeSchema = (itemSchema: JsonSchema): JsonSchema => ({

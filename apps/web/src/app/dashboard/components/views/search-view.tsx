@@ -20,6 +20,7 @@ import type { Routes } from "./routes.ts";
 export interface SearchRecordHit {
   connectorId: string;
   emittedAt: string;
+  hybridSources?: ("lexical" | "semantic")[];
   recordId: string;
   semanticOnly?: boolean;
   snippet: string;
@@ -47,6 +48,7 @@ export function SearchView({
   query,
   data,
   routes,
+  currentCursor,
   retrievalNotice,
   debugSlot,
   emptyHint,
@@ -54,6 +56,7 @@ export function SearchView({
   query: string;
   data: SearchData | null;
   routes: Routes;
+  currentCursor?: string | null;
   retrievalNotice?: RetrievalNoticeView | null;
   debugSlot?: ReactNode;
   emptyHint?: ReactNode;
@@ -159,6 +162,9 @@ export function SearchView({
                 ))}
               </ul>
             )}
+            {currentCursor === undefined ? null : (
+              <PaginationBar currentCursor={currentCursor} data={data} query={query} routes={routes} />
+            )}
           </section>
         </>
       ) : null}
@@ -216,6 +222,68 @@ function RetrievalNoticeCallout({ notice }: { notice: RetrievalNoticeView }) {
   );
 }
 
+function PaginationBar({
+  query,
+  currentCursor,
+  data,
+  routes,
+}: {
+  query: string;
+  currentCursor: string | null;
+  data: SearchData;
+  routes: Routes;
+}) {
+  if (data.prevStack.length === 0 && !data.hasMore) {
+    return null;
+  }
+
+  let prevHref: string | null = null;
+  if (data.prevStack.length > 0) {
+    const newStack = data.prevStack.slice(0, -1);
+    const newCursor = data.prevStack.at(-1) ?? "first";
+    prevHref = searchHref(routes, query, newCursor === "first" ? null : newCursor, newStack);
+  }
+
+  let nextHref: string | null = null;
+  if (data.hasMore && data.nextCursor) {
+    nextHref = searchHref(routes, query, data.nextCursor, [...data.prevStack, currentCursor ?? "first"]);
+  }
+
+  return (
+    <nav aria-label="Search pagination" className="mt-3 flex items-center justify-between text-xs">
+      {prevHref ? (
+        <Link className="rounded border border-border px-3 py-1 hover:bg-muted/50" href={prevHref}>
+          ← Previous
+        </Link>
+      ) : (
+        <span className="px-3 py-1 text-muted-foreground opacity-50">← Previous</span>
+      )}
+      {nextHref ? (
+        <Link className="rounded border border-border px-3 py-1 hover:bg-muted/50" href={nextHref}>
+          Next →
+        </Link>
+      ) : (
+        <span className="px-3 py-1 text-muted-foreground opacity-50">Next →</span>
+      )}
+    </nav>
+  );
+}
+
+function searchHref(routes: Routes, query: string, cursor: string | null, prevStack: string[]) {
+  const params = new URLSearchParams({ q: query });
+  if (cursor) {
+    params.set("cursor", cursor);
+  }
+  if (prevStack.length > 0) {
+    params.set("prev", encodePrevStack(prevStack));
+  }
+  return `${routes.section.search}?${params.toString()}`;
+}
+
+function encodePrevStack(stack: string[]) {
+  return stack.join(",");
+}
+
 const DEMO_SUFFIX_RE = /_demo$/;
 
 function RecordRow({ hit, query, routes }: { hit: SearchRecordHit; query: string; routes: Routes }) {
@@ -232,17 +300,36 @@ function RecordRow({ hit, query, routes }: { hit: SearchRecordHit; query: string
       </span>
       <span className="break-words">
         <Highlight query={query} text={hit.snippet} />
-        {hit.semanticOnly ? (
-          <span
-            className="ml-2 inline-flex items-baseline gap-1 rounded border border-border px-1.5 py-0.5 align-baseline text-[10px] text-muted-foreground uppercase tracking-wide"
-            title="This record did not match the text lexically. Found by semantic retrieval, which is an experimental feature and may change."
-          >
-            semantic · experimental
-          </span>
-        ) : null}
+        <RetrievalBadge hit={hit} />
       </span>
     </Link>
   );
+}
+
+function RetrievalBadge({ hit }: { hit: SearchRecordHit }) {
+  if (hit.hybridSources && hit.hybridSources.length > 0) {
+    return (
+      <span
+        className="ml-2 inline-flex items-baseline gap-1 rounded border border-border px-1.5 py-0.5 align-baseline text-[10px] text-muted-foreground uppercase tracking-wide"
+        title={`Found by hybrid retrieval (experimental). Sources: ${hit.hybridSources.join(", ")}.`}
+      >
+        {hit.hybridSources.join(" + ")} · hybrid
+      </span>
+    );
+  }
+
+  if (hit.semanticOnly) {
+    return (
+      <span
+        className="ml-2 inline-flex items-baseline gap-1 rounded border border-border px-1.5 py-0.5 align-baseline text-[10px] text-muted-foreground uppercase tracking-wide"
+        title="This record did not match the text lexically. Found by semantic retrieval, which is an experimental feature and may change."
+      >
+        semantic · experimental
+      </span>
+    );
+  }
+
+  return null;
 }
 
 function Highlight({ text, query }: { text: string; query: string }) {

@@ -9,6 +9,7 @@ When the reference implementation runs browser-backed connectors inside a local 
 - **THEN** the reference implementation SHALL use an explicitly configured local host-browser bridge
 - **AND** the visible browser SHALL run on the owner's host machine
 - **AND** the owner SHALL interact with that host browser directly.
+- **AND** the pending run interaction SHALL use `kind=host_browser_required`.
 
 #### Scenario: No host-browser bridge is configured
 - **WHEN** a Dockerized browser-backed connector requires browser interaction

@@ -88,6 +88,11 @@ function isPrivateNetworkHost(hostname: string): boolean {
   return false;
 }
 
+export function isLocalOrPrivateRequestOrigin(req: ResolvePublicUrlRequest): boolean {
+  const requestOrigin = parseUrl(resolveRequestPublicUrl(req));
+  return !!requestOrigin?.hostname && isPrivateNetworkHost(requestOrigin.hostname);
+}
+
 function hostFromOrigin(value: string): string | null {
   return parseUrl(value)?.hostname ?? null;
 }
@@ -325,9 +330,20 @@ export interface ProtectedResourceDiscoveryHints {
 
 export interface ProtectedResourceAgentDiscovery {
   advisory: true;
+  cli?: {
+    bin_name: string;
+    connect_command: string;
+    install_command: string;
+    no_owner_token: boolean;
+    no_owner_token_policy: string;
+    package: string;
+    package_specifier: string;
+    run_command: string;
+    version_policy: string;
+  };
   llms_full_txt: string;
   llms_txt: string;
-  recommended_flow: "pdpp agent";
+  recommended_flow: "pdpp connect";
   skill: string;
   skill_catalog: string;
   skill_name: "pdpp-data-access";
@@ -650,11 +666,13 @@ export function buildHybridRetrievalCapability({
 // `additionalProperties: false` expectations and keeps the published
 // document free of `null` / `undefined` keys.
 export interface AuthorizationServerMetadataInput {
+  agentConnectEndpoint?: string | null;
   authorizationDetailsTypesSupported?: readonly string[] | null;
   deviceAuthorizationEndpoint?: string | null;
   grantTypesSupported?: readonly string[] | null;
   introspectionEndpoint: string;
   issuer: string;
+  preRegisteredPublicClients?: readonly AuthorizationServerPublicClient[] | null;
   providerConnectCapabilities: Record<string, unknown>;
   pushedAuthorizationRequestEndpoint?: string | null;
   registrationEndpoint?: string | null;
@@ -663,12 +681,20 @@ export interface AuthorizationServerMetadataInput {
   tokenEndpointAuthMethodsSupported?: readonly string[] | null;
 }
 
+export interface AuthorizationServerPublicClient {
+  readonly client_id: string;
+  readonly client_name: string;
+  readonly token_endpoint_auth_method: string;
+}
+
 export interface AuthorizationServerMetadata {
+  agent_connect_endpoint?: string;
   device_authorization_endpoint?: string;
   grant_types_supported?: readonly string[];
   introspection_endpoint: string;
   issuer: string;
   pdpp_authorization_details_types_supported?: readonly string[];
+  pdpp_pre_registered_public_clients?: readonly AuthorizationServerPublicClient[];
   pdpp_provider_connect_capabilities: Record<string, unknown>;
   pdpp_registration_modes_supported?: readonly string[];
   pushed_authorization_request_endpoint?: string;
@@ -683,11 +709,13 @@ export function buildAuthorizationServerMetadata({
   pushedAuthorizationRequestEndpoint,
   registrationEndpoint,
   providerConnectCapabilities,
+  preRegisteredPublicClients,
   registrationModesSupported,
   authorizationDetailsTypesSupported,
   tokenEndpoint,
   tokenEndpointAuthMethodsSupported,
   deviceAuthorizationEndpoint,
+  agentConnectEndpoint,
   grantTypesSupported,
 }: AuthorizationServerMetadataInput): AuthorizationServerMetadata {
   const metadata: AuthorizationServerMetadata = {
@@ -708,6 +736,10 @@ export function buildAuthorizationServerMetadata({
     metadata.pdpp_registration_modes_supported = registrationModesSupported;
   }
 
+  if (preRegisteredPublicClients?.length) {
+    metadata.pdpp_pre_registered_public_clients = preRegisteredPublicClients;
+  }
+
   if (authorizationDetailsTypesSupported?.length) {
     metadata.pdpp_authorization_details_types_supported = authorizationDetailsTypesSupported;
   }
@@ -720,6 +752,9 @@ export function buildAuthorizationServerMetadata({
   }
   if (deviceAuthorizationEndpoint) {
     metadata.device_authorization_endpoint = deviceAuthorizationEndpoint;
+  }
+  if (agentConnectEndpoint) {
+    metadata.agent_connect_endpoint = agentConnectEndpoint;
   }
   if (grantTypesSupported?.length) {
     metadata.grant_types_supported = grantTypesSupported;

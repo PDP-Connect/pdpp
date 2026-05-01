@@ -19,6 +19,13 @@
 export interface AsAuthorizationServerMetadataInput {
   readonly issuer: string;
   readonly dynamicClientRegistrationEnabled: boolean;
+  readonly preRegisteredPublicClients?: readonly AsAuthorizationServerPublicClient[];
+}
+
+export interface AsAuthorizationServerPublicClient {
+  readonly client_id: string;
+  readonly client_name: string;
+  readonly token_endpoint_auth_method: string;
 }
 
 export interface AsAuthorizationServerMetadataBuilderInput {
@@ -27,11 +34,13 @@ export interface AsAuthorizationServerMetadataBuilderInput {
   readonly pushedAuthorizationRequestEndpoint: string;
   readonly registrationEndpoint: string | null;
   readonly providerConnectCapabilities: readonly string[];
+  readonly preRegisteredPublicClients: readonly AsAuthorizationServerPublicClient[];
   readonly registrationModesSupported: readonly string[];
   readonly authorizationDetailsTypesSupported: readonly string[];
   readonly tokenEndpoint: string;
   readonly tokenEndpointAuthMethodsSupported: readonly string[];
   readonly deviceAuthorizationEndpoint: string;
+  readonly agentConnectEndpoint: string;
   readonly grantTypesSupported: readonly string[];
 }
 
@@ -45,7 +54,7 @@ export function executeAsAuthorizationServerMetadata(
   input: AsAuthorizationServerMetadataInput,
   deps: AsAuthorizationServerMetadataDependencies,
 ): unknown {
-  const { issuer, dynamicClientRegistrationEnabled } = input;
+  const { issuer, dynamicClientRegistrationEnabled, preRegisteredPublicClients = [] } = input;
   const registrationModesSupported = dynamicClientRegistrationEnabled
     ? (["dynamic", "pre_registered_public"] as const)
     : (["pre_registered_public"] as const);
@@ -61,11 +70,13 @@ export function executeAsAuthorizationServerMetadata(
       "cli_device_connect",
       "third_party_client_connect",
     ],
+    preRegisteredPublicClients,
     registrationModesSupported,
     authorizationDetailsTypesSupported: ["https://pdpp.org/data-access"],
     tokenEndpoint: `${issuer}/oauth/token`,
     tokenEndpointAuthMethodsSupported: ["none"],
     deviceAuthorizationEndpoint: `${issuer}/oauth/device_authorization`,
+    agentConnectEndpoint: `${issuer}/agent-connect`,
     grantTypesSupported: ["urn:ietf:params:oauth:grant-type:device_code"],
   });
 }

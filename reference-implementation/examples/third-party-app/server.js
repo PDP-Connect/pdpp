@@ -31,7 +31,6 @@ import {
   queryStreams,
   queryStreamRecords,
 } from './lib/flow.js';
-import { DEFAULT_LOCAL_DCR_INITIAL_ACCESS_TOKEN } from '../../server/reference-local-defaults.ts';
 
 const PORT = parseInt(process.env.PORT || '7674', 10);
 const AS_URL = stripSlash(process.env.AS_URL || 'http://localhost:7662');
@@ -62,7 +61,7 @@ function escapeHtml(value) {
 export function buildDefaultDraft() {
   return {
     clientName: CLIENT_LABEL,
-    initialAccessToken: DEFAULT_LOCAL_DCR_INITIAL_ACCESS_TOKEN,
+    initialAccessToken: '',
     sourceKind: 'connector',
     sourceId: 'https://registry.pdpp.org/connectors/spotify',
     streamName: 'top_artists',
@@ -152,7 +151,7 @@ function renderPage() {
     <form method="post" action="/register" class="inline" style="margin-top: 12px;">
       <label for="clientName">client_name</label>
       <input id="clientName" name="clientName" value="${escapeHtml(state.draft.clientName)}" />
-      <label for="initialAccessToken">initial access token</label>
+      <label for="initialAccessToken">initial access token (optional)</label>
       <input id="initialAccessToken" name="initialAccessToken" value="${escapeHtml(state.draft.initialAccessToken)}" />
       <div></div>
       <div class="actions">

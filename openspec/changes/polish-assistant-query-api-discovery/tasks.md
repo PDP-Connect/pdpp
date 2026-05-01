@@ -13,6 +13,8 @@
 - [x] Document `GET /v1/streams/:stream/aggregate` with valid `metric`, `field`, `group_by`, `filter[...]`, and error examples. (Already in cookbook; discovery section nudges toward `field_capabilities` for valid fields.)
 - [x] Document blob byte access through `blob_ref.fetch_url` and explicitly avoid attachment-specific content endpoint claims.
 - [x] Update generated docs/OpenAPI after contract changes.
+- [x] Align Core Section 8 with shipped discovery surfaces: `/v1/schema`, `/v1/streams/:stream/aggregate`, `field_capabilities`, `expand_capabilities`, `pdpp_discovery_hints`, and `changes_since=beginning`.
+- [x] Collapse the superseded Data Query API companion page into a redirect-style historical notice so stale duplicate endpoint text cannot outrank Core Section 8.
 
 ## 3. Error Polish
 

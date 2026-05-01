@@ -974,7 +974,7 @@ test('PDPP CLI smoke', async (t) => {
     });
   });
 
-  await t.test('provider register creates a protected dynamic client registration', async () => {
+  await t.test('provider register creates a public dynamic client registration without an initial access token', async () => {
     await withHarness(async ({ asUrl, rsUrl }) => {
       const tmpDir = mkdtempSync(join(tmpdir(), 'pdpp-cli-register-'));
       const requestPath = join(tmpDir, 'client.json');
@@ -988,7 +988,7 @@ test('PDPP CLI smoke', async (t) => {
       }, null, 2));
 
       const result = await runCli(
-        ['provider', 'register', requestPath, '--rs-url', rsUrl, '--initial-access-token', TEST_DCR_INITIAL_ACCESS_TOKEN, '--format', 'json'],
+        ['provider', 'register', requestPath, '--rs-url', rsUrl, '--format', 'json'],
       );
 
       assert.ok(typeof result.json.client_id === 'string' && result.json.client_id.startsWith('cli_'));
@@ -1007,6 +1007,7 @@ test('PDPP CLI smoke', async (t) => {
       assert.equal(registeredEvent.trace_id, result.json.reference_trace_id);
       assert.equal(registeredEvent.object_id, result.json.client_id);
       assert.equal(registeredEvent.data?.client_name, 'Dynamic Longview');
+      assert.equal(registeredEvent.data?.registration_access, 'public');
       assert.equal(result.stderr, '');
     });
   });
@@ -2368,7 +2369,7 @@ test('PDPP CLI smoke', async (t) => {
     });
   });
 
-  await t.test('provider register fails without the protected initial access token', async () => {
+  await t.test('provider register rejects an invalid initial access token', async () => {
     await withHarness(async ({ rsUrl }) => {
       const tmpDir = mkdtempSync(join(tmpdir(), 'pdpp-cli-register-fail-'));
       const requestPath = join(tmpDir, 'client.json');

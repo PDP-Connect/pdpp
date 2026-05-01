@@ -29,6 +29,7 @@ export interface Routes {
     runs: string;
     traces: string;
     deployment: string;
+    deviceExporters: string;
   };
   stream(connectorId: string, stream: string): string;
   streamHealth(connectorId: string, stream: string): string;
@@ -49,6 +50,7 @@ function makeRoutes(basePath: string, opts: { overview?: string } = {}): Routes 
       runs: `${basePath}/runs`,
       traces: `${basePath}/traces`,
       deployment: `${basePath}/deployment`,
+      deviceExporters: `${basePath}/device-exporters`,
     },
     grant: (id) => `${basePath}/grants/${enc(id)}`,
     run: (id) => `${basePath}/runs/${enc(id)}`,
@@ -75,9 +77,7 @@ function makeRoutes(basePath: string, opts: { overview?: string } = {}): Routes 
 export const dashboardRoutes: Routes = makeRoutes("/dashboard");
 
 /**
- * Sandbox routes resolve to `/sandbox/*`. The overview lives at
- * `/sandbox/overview`, not `/sandbox`, because `/sandbox` is the
- * mock-owner launcher that introduces the reference instance and
- * routes the visitor into the dashboard.
+ * Sandbox routes resolve to `/sandbox/*`. The overview is `/sandbox` itself:
+ * the sandbox entrypoint is the mock-owner dashboard, not a separate launcher.
  */
-export const sandboxRoutes: Routes = makeRoutes("/sandbox", { overview: "/sandbox/overview" });
+export const sandboxRoutes: Routes = makeRoutes("/sandbox");
