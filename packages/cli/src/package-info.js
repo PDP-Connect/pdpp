@@ -1,9 +1,5 @@
-import { readFileSync } from 'node:fs';
-
-const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
-
-export const PDPP_CLI_PACKAGE_NAME = manifest.name;
-export const PDPP_CLI_BIN_NAME = Object.keys(manifest.bin)[0];
+export const PDPP_CLI_PACKAGE_NAME = '@pdpp/cli';
+export const PDPP_CLI_BIN_NAME = 'pdpp';
 export const PDPP_CLI_VERSION_POLICY = 'beta';
 export const PDPP_CLI_PACKAGE_SPECIFIER = `${PDPP_CLI_PACKAGE_NAME}@${PDPP_CLI_VERSION_POLICY}`;
 export const PDPP_CLI_DEFAULT_CLIENT_ID = 'pdpp_cli';
