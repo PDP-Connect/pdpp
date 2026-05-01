@@ -3,10 +3,11 @@ title: "Connector Ecosystem"
 description: "Reference runtime notes for connectors — browser abstraction decisions and third-party source integration."
 ---
 
-This is a **reference implementation note**, not normative protocol text. It records connector-runtime research and
-implementation direction for this repo. The Collection Profile defines the portable connector message contract; this
-page explains how the reference runtime can satisfy real connector needs.
+<Callout type="info" title="Spec status">
+  Status: **Informational (non-normative)**
 
+  Date: 2026-03-30
+</Callout>
 ## Browser abstraction decision
 
 ### Model A vs Model B
@@ -112,7 +113,7 @@ The PDPP connector protocol (JSONL stdin/stdout) is universal. What varies is th
 
 A runtime host either can or can't provide what the connector needs. If it can't and the connector requires it, the run fails with a clear error. The protocol is the same everywhere.
 
-## Implications for future specification work
+## Implications for the spec
 
 1. **The JSONL protocol is correct.** Every connector type (Go binary, Python script, Node.js + Playwright, aggregator wrapper) can write JSONL to stdout.
 2. **Browser is a runtime capability, not a protocol concern.** Connectors that need a browser get one from the runtime. The protocol doesn't define how.

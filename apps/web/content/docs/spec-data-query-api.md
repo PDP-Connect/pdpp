@@ -3,13 +3,16 @@ title: "Data Query API (Superseded)"
 description: "Historical companion spec — Core spec Section 8 is now authoritative for the RS query interface."
 ---
 
-<Callout type="warn" title="Superseded">
-  Status: **Superseded** — Core spec Section 8 is now authoritative for the RS query interface.
+<Callout type="warn" title="Spec status">
+  Status: **Superseded — Core spec Section 8 is now authoritative for the RS query interface**
 
-  Date: 2026-03-28 (original); superseded 2026-04-12.
-
-  This document was written before Core Section 8 was expanded to normatively define the RS query interface. The Core spec is authoritative. This file is retained for historical reference but should not be used for implementation. Where this document disagrees with Core Section 8, Core Section 8 prevails.
+  Date: 2026-03-28 (original); superseded 2026-04-12
 </Callout>
+> **Note:** This document was written before Core Section 8 was expanded to normatively define the RS query interface. The Core spec is authoritative. This file is retained for historical reference but should not be used for implementation. Where this document disagrees with Core Section 8, Core Section 8 prevails.
+
+Companion to the Personal Data Portability Protocol (PDPP) core spec.
+
+---
 
 ## Overview
 
@@ -17,6 +20,7 @@ This spec defines the HTTP API for reading personal data from a PDPP resource se
 
 The design follows Stripe's API conventions: cursor-based pagination, expandable relationships, structured errors, and date-based versioning. REST is the primary interface; GraphQL is not used (grant enforcement, field-level authorization, cursor pagination, and request signing are all materially simpler with predictable REST endpoints).
 
+---
 
 ## Authentication and Versioning
 
@@ -40,45 +44,9 @@ PDPP-Version: 2026-03-28
 
 The response echoes the version. Every response includes a `Request-Id` header for debugging.
 
+---
 
 ## Endpoints
-
-### Discover the schema (one shot)
-
-```
-GET /v1/schema
-```
-
-Returns the caller-visible source/stream capability graph in a single response. Owner tokens see every owner-visible connector and stream — no `connector_id` needed. Client tokens see only the source and streams authorized by the grant.
-
-Each per-stream entry uses the same shape as `GET /v1/streams/{stream}`: `schema`, `primary_key`, `cursor_field`, `consent_time_field`, `query` (declared filters / aggregations / expansion), `field_capabilities`, `expand_capabilities`, and `freshness`. Use `field_capabilities[<field>]` to learn which exact filters, range filters, lexical/semantic search fields, and aggregation operators are valid for each field without trial-and-error errors.
-
-**Response (excerpt):**
-```json
-{
-  "object": "schema",
-  "bearer": { "token_kind": "owner", "scope": "owner" },
-  "connectors": [
-    {
-      "object": "connector",
-      "connector_id": "conn_spotify",
-      "source": { "kind": "connector", "id": "conn_spotify" },
-      "stream_count": 3,
-      "streams": [
-        {
-          "object": "stream_metadata",
-          "name": "top_artists",
-          "schema": { "type": "object", "properties": { "...": {} } },
-          "query": { "range_filters": { "source_updated_at": ["gte","gt","lte","lt"] } },
-          "field_capabilities": { "...": {} },
-          "expand_capabilities": [],
-          "freshness": { "status": "unknown" }
-        }
-      ]
-    }
-  ]
-}
-```
 
 ### List streams
 
@@ -97,13 +65,23 @@ Returns the streams available under the current grant.
       "object": "stream",
       "name": "conversations",
       "record_count": 2196,
-      "last_updated": "2026-03-28T15:01:00Z"
+      "last_updated": "2026-03-28T15:01:00Z",
+      "freshness": {
+        "captured_at": "2026-03-28T15:01:00Z",
+        "status": "current",
+        "last_attempted_at": "2026-03-28T15:01:00Z"
+      }
     },
     {
       "object": "stream",
       "name": "messages",
       "record_count": 48302,
-      "last_updated": "2026-03-28T15:01:00Z"
+      "last_updated": "2026-03-28T15:01:00Z",
+      "freshness": {
+        "captured_at": "2026-03-28T15:01:00Z",
+        "status": "current",
+        "last_attempted_at": "2026-03-28T15:01:00Z"
+      }
     }
   ]
 }
@@ -115,15 +93,20 @@ Returns the streams available under the current grant.
 GET /v1/streams/{stream}
 ```
 
-Returns schema, primary key, cursor field, and expandable relations.
+Returns full source stream metadata, including schema, primary key, cursor field, and expandable relations. This endpoint is not grant-projected: grants constrain which reads or queries are allowed, but they do not rewrite the stream metadata document.
 
 **Response:**
 ```json
 {
-  "object": "stream",
+  "object": "stream_metadata",
   "name": "conversations",
   "record_count": 2196,
   "last_updated": "2026-03-28T15:01:00Z",
+  "freshness": {
+    "captured_at": "2026-03-28T15:01:00Z",
+    "status": "current",
+    "last_attempted_at": "2026-03-28T15:01:00Z"
+  },
   "schema": {
     "type": "object",
     "properties": {
@@ -140,6 +123,18 @@ Returns schema, primary key, cursor field, and expandable relations.
 }
 ```
 
+### Freshness metadata
+
+The resource server MAY include a `freshness` object on stream listings, stream metadata, and record-list responses.
+
+Freshness is server-observed response metadata, not a grant term. It reports what the server knows about the recency of the underlying data relevant to the response. It does not widen or narrow access rights, and it does not guarantee that the source has not changed since `captured_at`.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `captured_at` | ISO 8601 or null | Time of the most recent successful collection or source confirmation that could have affected the response. null if unknown. |
+| `status` | enum | `current`, `stale`, or `unknown`. |
+| `last_attempted_at` | ISO 8601 or null | Time of the most recent attempted refresh relevant to the response, if tracked. |
+
 ### List records
 
 ```
@@ -155,7 +150,6 @@ Returns records from a stream, filtered by grant constraints and request paramet
 | `limit` | integer | Records per page. Default 25, max 100. |
 | `cursor` | string | Opaque pagination token from a previous response's `next_cursor` or `prev_cursor`. The server generates these tokens; clients pass them back verbatim. |
 | `order` | enum | `desc` (default) or `asc` |
-| `changes_since` | string | `beginning` for an initial incremental sync, or an opaque changes bookmark from a previous response's `next_changes_since`. Distinct from page cursors. |
 | `filter[{field}]` | string | Exact match filter |
 | `filter[{field}][gte]` | string | Greater than or equal (ISO 8601 for dates) |
 | `filter[{field}][gt]` | string | Greater than |
@@ -185,6 +179,11 @@ PDPP-Version: 2026-03-28
   "url": "/v1/streams/conversations/records",
   "has_more": true,
   "next_cursor": "eyJjcmVhdGVkX2F0IjoiMjAyNi0wMy0yNVQxODoyMjoxMVoiLCJpZCI6ImNvbnZfMDFKUVc4TTJSNyJ9",
+  "freshness": {
+    "captured_at": "2026-03-28T15:01:00Z",
+    "status": "current",
+    "last_attempted_at": "2026-03-28T15:01:00Z"
+  },
   "data": [
     {
       "object": "record",
@@ -223,8 +222,6 @@ PDPP-Version: 2026-03-28
 
 **Pagination:** Pass `next_cursor` from the response as the `cursor` parameter to get the next page. Cursor tokens are opaque — clients must not parse or construct them. This allows the server to handle compound primary keys and arbitrary sort orders internally.
 
-**Incremental sync:** Pass `changes_since=beginning` to start a changes session from the beginning, then store `next_changes_since` from the response for the next sync session. Do not pass a normal list `next_cursor` as `changes_since`; `next_cursor` is only for page continuation through the `cursor` parameter.
-
 ### Get a single record
 
 ```
@@ -239,15 +236,7 @@ Returns a single record. Supports `expand[]`.
 GET /v1/blobs/{blob_id}
 ```
 
-This is the **only** PDPP-API path for byte payload. Clients discover bytes by:
-
-1. Querying records on a stream that declares `blob_ref` (e.g. Gmail `attachments`).
-2. Reading the server-injected `blob_ref.fetch_url` from the record body.
-3. Following that URL verbatim.
-
-There is no resource-specific `/content`, `/download`, or `/file` endpoint. URL forms like `/v1/streams/attachments/records/{id}/content` or `/v1/blobs/{blob_id}/download` are **not** part of the PDPP API; do not generate or rely on them. If you need bytes and a record's `blob_ref` is missing or null, the answer is "those bytes are not available under this grant" — not "guess another URL."
-
-The resource server authorizes blob access by verifying that:
+Returns raw binary data. The resource server authorizes blob access by verifying that:
 1. The grant includes a stream containing a record that references this `blob_id`
 2. The referencing record passes all grant filters (time_range, fields)
 3. The `blob_ref` field itself is included in the grant's authorized field projection (if the grant uses a `fields` allowlist)
@@ -262,10 +251,11 @@ ETag: "a1b2c3..."
 Cache-Control: private, max-age=3600
 ```
 
-The server may return a `302` redirect to a short-lived signed URL for the actual blob storage. Treat `fetch_url` as opaque and follow redirects (e.g. `curl -L`); do not parse, cache, or share it across grants.
+The server may return a `302` redirect to a short-lived signed URL for the actual blob storage.
 
 `HEAD` is supported for size checks. `Range` headers are recommended for large files.
 
+---
 
 ## Expansion
 
@@ -284,6 +274,7 @@ Expansion hydrates foreign key relationships inline. It is bounded: expanded chi
 
 This follows Stripe's pattern: foreign keys are string IDs by default, expanded into full objects on request.
 
+---
 
 ## Errors
 
@@ -325,6 +316,7 @@ Every non-2xx response returns a structured error:
 | `grant_revoked` | permission | Grant has been revoked |
 | `invalid_api_version` | invalid_request | Unrecognized PDPP-Version header |
 
+---
 
 ## Ingest (Connector Runtime)
 
@@ -371,12 +363,13 @@ Body is NDJSON (one record per line):
 ## Sync State
 
 ```
-GET  /v1/state/{connector_id}   → returns StreamState map
-PUT  /v1/state/{connector_id}   → updates StreamState map
+GET  /v1/state/{connector_id}[?grant_id={grant_id}]   → returns StreamState map
+PUT  /v1/state/{connector_id}[?grant_id={grant_id}]   → updates StreamState map
 ```
 
-Both require owner authentication. The connector runtime reads state before a run and writes it after.
+Both require owner authentication. Without `grant_id`, the endpoint addresses the connector's global archival state. With `grant_id`, it addresses the grant-scoped state namespace for a `continuous` grant. `single_use` runs do not use persistent state.
 
+---
 
 ## Why REST, not GraphQL
 
@@ -388,14 +381,9 @@ For a personal data API where grants constrain access:
 - **AI agent ingestion** works better with stable per-stream envelopes that can be resumed record-by-record.
 - **Expansion** handles the hydration use case without GraphQL's complexity.
 
-## Lexical retrieval
+If richer cross-stream search is needed later, add `POST /v1/search` with a query DSL on top of the same grant enforcement engine.
 
-Public lexical retrieval lives in the optional **lexical retrieval extension** at `GET /v1/search`. See the [Lexical Retrieval Extension](./spec-lexical-retrieval-extension) doc for the full contract: required `q`, optional `limit` / `cursor` / `streams[]`, candidate-reference results carrying `connector_id`, grant-safe snippets, and the `capabilities.lexical_retrieval` advertisement on the protected-resource metadata document.
-
-A future `POST /v1/search` body-DSL is reserved for richer queries (boolean predicates, etc.) but is **not** specified yet. Don't rely on it.
-
-A **separate** experimental extension, [Semantic Retrieval](./spec-semantic-retrieval-extension), adds a sibling surface at `GET /v1/search/semantic` for meaning-based matches (paraphrase / synonymy recall). It is **experimental and unstable** in v1 and is not interchangeable with `/v1/search`. Lexical retrieval remains the stable public retrieval floor.
-
+---
 
 ## Design Attribution
 

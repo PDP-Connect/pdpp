@@ -3,6 +3,11 @@ title: "Auth Design"
 description: "Bearer tokens at both boundaries — wire format and semantics. Identity provider and token issuance are out of scope."
 ---
 
+<Callout type="info" title="Spec status">
+  Status: **Informational (non-normative design rationale)**
+
+  Date: 2026-03-30
+</Callout>
 ## Decision: Bearer tokens at both boundaries, mechanism out of scope
 
 Following the OAuth 2.0 pattern (RFC 6749 §3.1: "The way in which the authorization server authenticates the resource owner is beyond the scope of this specification"), PDPP defines the wire format and semantics for authentication, not the identity provider or token issuance mechanism.
@@ -32,7 +37,7 @@ Authorization: Bearer <access_token>
 
 ### User consent (approving grant creation)
 
-Out of scope for the wire protocol. The authorization server handles user authentication and consent display.
+Out of scope for the wire protocol. The authorization server handles user authentication and consent display. The core spec does, however, normatively constrain the semantic distinction between requester identity metadata, protocol-enforced grant terms, structured policy declarations, manifest-authored data descriptions, and client-authored claims.
 
 ## What the spec mandates
 

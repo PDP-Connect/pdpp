@@ -45,6 +45,10 @@ pre-commit:
           exit 1
         fi
 
+    - name: spec:check
+      glob: "{spec-*.md,apps/web/content/docs/spec-*.md,apps/web/content/docs/README.md,scripts/spec-check.mjs}"
+      run: pnpm spec:check
+
     # Bounded-statement wrapper enforcement.
     # Spec: openspec/changes/bound-spine-and-record-read-paths/specs/
     #       reference-implementation-architecture/spec.md

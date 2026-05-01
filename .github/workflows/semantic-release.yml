@@ -90,6 +90,9 @@ jobs:
       - name: Verify reference implementation
         run: pnpm --dir reference-implementation run verify
 
+      - name: Check spec docs drift
+        run: pnpm spec:check
+
       - name: Typecheck web app
         run: pnpm --dir apps/web run types:check
 

@@ -1,0 +1,229 @@
+#!/usr/bin/env node
+
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const REPO_ROOT = join(fileURLToPath(new URL(".", import.meta.url)), "..");
+const WEB_DOCS = join(REPO_ROOT, "apps/web/content/docs");
+
+const WEB_ONLY_EXTENSIONS = new Set([
+  "spec-lexical-retrieval-extension.md",
+  "spec-semantic-retrieval-extension.md",
+]);
+
+const REFERENCE_ONLY_ROOT_SPECS = new Set(["spec-reference-implementation-examples.md"]);
+
+function specFiles(dir) {
+  return readdirSync(dir)
+    .filter((name) => /^spec-.*\.md$/.test(name))
+    .sort();
+}
+
+function stripFrontmatter(text) {
+  const normalized = text.replace(/\r\n/g, "\n");
+  if (!normalized.startsWith("---\n")) {
+    return normalized;
+  }
+  const end = normalized.indexOf("\n---", 4);
+  if (end === -1) {
+    return normalized;
+  }
+  return normalized.slice(end + "\n---".length);
+}
+
+function stripTitleAndRootStatus(text) {
+  const lines = text.replace(/\r\n/g, "\n").split("\n");
+  if (/^#\s+/.test(lines[0] ?? "")) {
+    lines.shift();
+  }
+  stripLeadingBlank(lines);
+  if (/^Status:\s*/.test(lines[0] ?? "")) {
+    lines.shift();
+  }
+  if (/^Date:\s*/.test(lines[0] ?? "")) {
+    lines.shift();
+  }
+  stripLeadingBlank(lines);
+  if (/^---\s*$/.test(lines[0] ?? "")) {
+    lines.shift();
+  }
+  stripLeadingBlank(lines);
+  return lines.join("\n");
+}
+
+function stripLeadingWebCallout(text) {
+  const withoutFrontmatter = stripFrontmatter(text);
+  const lines = withoutFrontmatter.split("\n");
+  stripLeadingBlank(lines);
+  if (!/^<Callout\b/.test(lines[0] ?? "")) {
+    return lines.join("\n");
+  }
+  while (lines.length > 0) {
+    const line = lines.shift();
+    if (/^<\/Callout>\s*$/.test(line ?? "")) {
+      break;
+    }
+  }
+  stripLeadingBlank(lines);
+  if (/^#\s+/.test(lines[0] ?? "")) {
+    lines.shift();
+  }
+  stripLeadingBlank(lines);
+  if (/^---\s*$/.test(lines[0] ?? "")) {
+    lines.shift();
+  }
+  stripLeadingBlank(lines);
+  return lines.join("\n");
+}
+
+function stripLeadingBlank(lines) {
+  while (lines.length > 0 && (lines[0] ?? "").trim() === "") {
+    lines.shift();
+  }
+}
+
+function normalizeBody(text) {
+  return text
+    .replace(/\r\n/g, "\n")
+    .replace(/[ \t]+\{#[A-Za-z0-9_-]+\}/g, "")
+    .split("\n")
+    .map((line) => line.trimEnd())
+    .join("\n")
+    .trim();
+}
+
+function rootMetadata(text) {
+  const status = text.match(/^Status:\s*(.+)$/m)?.[1]?.trim() ?? null;
+  const date = text.match(/^Date:\s*(.+)$/m)?.[1]?.trim() ?? null;
+  return { status, date };
+}
+
+function leadingCallout(text) {
+  const lines = stripFrontmatter(text).split("\n");
+  stripLeadingBlank(lines);
+  if (!/^<Callout\b/.test(lines[0] ?? "")) {
+    return null;
+  }
+  const out = [];
+  while (lines.length > 0) {
+    const line = lines.shift() ?? "";
+    out.push(line);
+    if (/^<\/Callout>\s*$/.test(line)) {
+      break;
+    }
+  }
+  return out.join("\n");
+}
+
+function cleanMetadataValue(value) {
+  return value.replace(/\*\*/g, "").trim();
+}
+
+function calloutMetadata(text) {
+  const callout = leadingCallout(text);
+  if (!callout) {
+    return { status: null, date: null };
+  }
+  const status = callout.match(/^\s*Status:\s*(.+)$/m)?.[1] ?? null;
+  const date = callout.match(/^\s*Date:\s*(.+)$/m)?.[1] ?? null;
+  return {
+    status: status ? cleanMetadataValue(status) : null,
+    date: date ? cleanMetadataValue(date) : null,
+  };
+}
+
+function firstDiff(expected, actual) {
+  const a = expected.split("\n");
+  const b = actual.split("\n");
+  const max = Math.max(a.length, b.length);
+  for (let i = 0; i < max; i++) {
+    if ((a[i] ?? "") !== (b[i] ?? "")) {
+      return {
+        line: i + 1,
+        root: a[i] ?? "<missing>",
+        web: b[i] ?? "<missing>",
+      };
+    }
+  }
+  return null;
+}
+
+function checkPair(file) {
+  const rootText = readFileSync(join(REPO_ROOT, file), "utf8");
+  const webText = readFileSync(join(WEB_DOCS, file), "utf8");
+  const expectedMeta = rootMetadata(rootText);
+  const actualMeta = calloutMetadata(webText);
+  const errors = [];
+
+  if (!expectedMeta.status || !expectedMeta.date) {
+    errors.push(`${file}: root spec must declare Status and Date`);
+  }
+  if (!actualMeta.status || !actualMeta.date) {
+    errors.push(`${file}: web copy must start with a Status/Date Callout`);
+  }
+  if (expectedMeta.status && actualMeta.status !== expectedMeta.status) {
+    errors.push(`${file}: web Status mismatch (root=${JSON.stringify(expectedMeta.status)} web=${JSON.stringify(actualMeta.status)})`);
+  }
+  if (expectedMeta.date && actualMeta.date !== expectedMeta.date) {
+    errors.push(`${file}: web Date mismatch (root=${JSON.stringify(expectedMeta.date)} web=${JSON.stringify(actualMeta.date)})`);
+  }
+
+  const expected = normalizeBody(stripTitleAndRootStatus(rootText));
+  const actual = normalizeBody(stripLeadingWebCallout(webText));
+  if (expected !== actual) {
+    const diff = firstDiff(expected, actual);
+    errors.push(
+      [
+        `${file}: body drift after normalization`,
+        diff ? `  first mismatch at normalized line ${diff.line}` : null,
+        diff ? `  root: ${diff.root}` : null,
+        diff ? `  web:  ${diff.web}` : null,
+      ]
+        .filter(Boolean)
+        .join("\n")
+    );
+  }
+  return errors;
+}
+
+function main() {
+  const rootSpecs = specFiles(REPO_ROOT);
+  const webSpecs = specFiles(WEB_DOCS);
+  const rootSet = new Set(rootSpecs);
+  const webSet = new Set(webSpecs);
+  const errors = [];
+
+  for (const file of rootSpecs) {
+    if (REFERENCE_ONLY_ROOT_SPECS.has(file)) {
+      continue;
+    }
+    if (!webSet.has(file)) {
+      errors.push(`${file}: missing web counterpart at apps/web/content/docs/${file}`);
+      continue;
+    }
+    errors.push(...checkPair(file));
+  }
+
+  for (const file of webSpecs) {
+    if (rootSet.has(file)) {
+      continue;
+    }
+    if (!WEB_ONLY_EXTENSIONS.has(file)) {
+      errors.push(`${file}: web-only spec is not allowlisted`);
+    }
+  }
+
+  if (errors.length > 0) {
+    console.error(`spec:check failed (${errors.length} issue${errors.length === 1 ? "" : "s"})`);
+    console.error(errors.map((error) => `\n- ${error}`).join(""));
+    process.exit(1);
+  }
+
+  console.log(
+    `spec:check passed (${rootSpecs.length - REFERENCE_ONLY_ROOT_SPECS.size} canonical pairs, ` +
+      `${WEB_ONLY_EXTENSIONS.size} web-only extensions, ${REFERENCE_ONLY_ROOT_SPECS.size} reference-only root spec)`
+  );
+}
+
+main();

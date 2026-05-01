@@ -3,6 +3,12 @@ title: "Change Tracking"
 description: "Grant-relative incremental sync via `changes_since` cursors — not canonical changelog streams."
 ---
 
+<Callout type="info" title="Spec status">
+  Status: **Informational (non-normative design rationale)**
+
+  Date: 2026-04-06 (revised from 2026-03-29)
+</Callout>
+
 ## Decision
 
 Change tracking in PDPP uses **grant-relative incremental sync**, not canonical changelog streams.
@@ -11,6 +17,7 @@ There are no `{stream}_changes` streams in the protocol. Change tracking is a pr
 
 This design was chosen over a canonical CDC-style changelog after analysis of prior art (Microsoft Graph delta queries, OData change tracking, Google Calendar incremental sync). The key finding: a canonical stored changelog cannot be made privacy-safe without becoming grant-relative anyway. Two clients with overlapping grants (one authorized for fields A+B, another only for A) cannot share a single changelog without leaking metadata about field B to the A-only client. Grant-relative delta queries solve this cleanly.
 
+---
 
 ## How it works
 
@@ -36,16 +43,11 @@ GET /v1/streams/profile/records?changes_since=<cursor>
 Authorization: Bearer <access_token>
 ```
 
-To start from the beginning, pass the documented sentinel:
+The `changes_since` cursor is an opaque token from a previous `changes_since` session's terminal-page `next_changes_since`. It carries the client's last sync position and the grant's field projection context. Clients MUST treat cursors as opaque. `cursor`/`next_cursor` and `changes_since`/`next_changes_since` are distinct token spaces.
 
-```
-GET /v1/streams/profile/records?changes_since=beginning
-Authorization: Bearer <access_token>
-```
+Within a paginated `changes_since` session, the RS anchors all pages to a fixed session horizon chosen on the first page. New writes that arrive after page 1 MUST NOT drift into later pages of that same session; they appear in the next session seeded from the terminal-page `next_changes_since`.
 
-The `changes_since` cursor is either the literal sentinel `beginning` for the initial sync or an opaque token from a previous changes response's `next_changes_since`. It carries the client's last sync position and the grant's field projection context. Clients MUST treat returned cursors as opaque and MUST NOT construct internal version cursors.
-
-If a changes response is paginated, use `next_cursor` only with the `cursor` parameter to continue that response. Store `next_changes_since` as the bookmark for the next sync session.
+Projection safety is computed on the client's authorized projection, not on the full record. An implementation that first selects rows based on full-record changes and only applies projection afterward is non-conformant, because it leaks that hidden fields changed.
 
 ### Tombstones
 
@@ -57,14 +59,16 @@ When a record is deleted, incremental sync responses include a tombstone:
   "id": "playlist_123",
   "stream": "playlists",
   "deleted": true,
-  "deleted_at": "2026-04-01T10:00:00Z"
+  "deleted_at": "2026-04-01T10:00:00Z",
+  "emitted_at": "2026-04-01T10:00:01Z"
 }
 ```
 
 ### Cursor expiry
 
-Resource servers MAY expire historical version data after a retention period. If a client's `changes_since` cursor is too old, the server returns HTTP 410 Gone. The client must perform a full re-sync.
+Resource servers MAY expire historical version data after a retention period. If a client's `changes_since` cursor is too old, the server returns HTTP 410 Gone. The client must perform a full re-sync. The terminal page of a successful `changes_since` session returns `next_changes_since`, which becomes the seed for the next session.
 
+---
 
 ## Why not canonical `{stream}_changes` streams
 
@@ -76,6 +80,7 @@ The previous design (March 2026) defined `{stream}_changes` as a companion strea
 
 3. **Prior art alignment:** Microsoft Graph, OData, and Google Calendar all model change tracking as query-relative delta views, not as canonical streams. The pattern is established and well-understood.
 
+---
 
 ## What this does NOT cover
 
