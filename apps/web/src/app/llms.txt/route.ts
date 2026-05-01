@@ -1,10 +1,13 @@
-import { llms } from "fumadocs-core/source";
-import { agentSkillsLLMSIndex } from "@/lib/agent-skills/catalog.ts";
-import { source } from "@/lib/docs-source.ts";
-
 export const revalidate = false;
+export const dynamic = "force-dynamic";
 
-export function GET() {
+export async function GET() {
+  const [{ llms }, { agentSkillsLLMSIndex }, { source }] = await Promise.all([
+    import("fumadocs-core/source"),
+    import("@/lib/agent-skills/catalog.ts"),
+    import("@/lib/docs-source.ts"),
+  ]);
+
   return new Response(`${llms(source).index()}\n\n${agentSkillsLLMSIndex()}\n`, {
     headers: {
       "content-type": "text/markdown; charset=utf-8",

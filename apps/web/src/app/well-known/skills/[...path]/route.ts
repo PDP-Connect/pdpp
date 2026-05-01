@@ -1,6 +1,5 @@
-import { buildAgentSkillCatalog, readAgentSkillFile } from "@/lib/agent-skills/catalog.ts";
-
 export const revalidate = false;
+export const dynamic = "force-dynamic";
 
 const TRAILING_COLON = /:$/;
 
@@ -48,6 +47,7 @@ function resolvePublicOrigin(request: Request): string {
 export async function GET(request: Request, context: SkillRouteContext): Promise<Response> {
   const { path = [] } = await context.params;
   const routePath = path.join("/");
+  const { buildAgentSkillCatalog, readAgentSkillFile } = await import("@/lib/agent-skills/catalog.ts");
 
   if (routePath === "index.json") {
     return jsonResponse(await buildAgentSkillCatalog(resolvePublicOrigin(request)));

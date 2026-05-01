@@ -1,3 +1,8 @@
+---
+title: "Web Spec Publishing Notes"
+description: "Maintenance notes for publishing canonical PDPP specs into the web docs."
+---
+
 # Web Spec Publishing Notes
 
 Root `spec-*.md` files are canonical for every spec that has both a root copy
