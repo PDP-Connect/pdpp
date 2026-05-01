@@ -8,10 +8,9 @@
  * cheap to run in CI.
  *
  * They also assert that the educational pages (api-examples,
- * walkthrough) and the launcher (`/sandbox/page.tsx`) are NOT
- * `DashboardShell` callers — they are supporting surfaces and must
- * stay distinct from the in-mode dashboard so the visitor can tell
- * "I'm in the dashboard" apart from "I'm reading docs."
+ * walkthrough) are NOT `DashboardShell` callers — they are supporting
+ * surfaces and must stay distinct from the in-mode dashboard so the
+ * visitor can tell "I'm in the dashboard" apart from "I'm reading docs."
  */
 
 import assert from "node:assert/strict";
@@ -26,20 +25,19 @@ const SANDBOX_DIR = join(HERE, "..");
 const DASHBOARD_SHELL_IMPORT_RE = /from\s+["']@\/app\/dashboard\/components\/shell\.tsx["']/;
 const SANDBOX_SHELL_IMPORT_RE = /from\s+["'].*_demo\/components\/shell\.tsx["']/;
 const MOCK_OWNER_MODE_RE = /mode=["']mock-owner["']/;
-const SANDBOX_OVERVIEW_LINK_RE = /\/sandbox\/overview/;
+const SANDBOX_OVERVIEW_CONTENT_IMPORT_RE = /from\s+["'](?:\.\/|\.\.\/)overview-content\.tsx["']/;
+const SANDBOX_OVERVIEW_CONTENT_RENDER_RE = /<SandboxOverviewContent\s*\/>/;
 const MOCK_OWNER_FOOTER_NAME_RE = /MockOwnerFooter/;
 const MOCK_OWNER_BRANCH_RE = /mode\s*===\s*["']mock-owner["']/;
 const MOCK_OWNER_FOOTER_RENDER_RE = /<MockOwnerFooter\s*\/>/;
-const SANDBOX_OVERVIEW_ROUTE_RE = /overview:\s*["']\/sandbox\/overview["']/;
+const SANDBOX_OVERVIEW_ROUTE_RE = /export const sandboxRoutes: Routes = makeRoutes\(["']\/sandbox["']\);/;
 const COMMAND_PALETTE_OVERVIEW_RE =
   /<CommandPalette\s+basePath=\{routes\.basePath\}\s+overviewHref=\{routes\.section\.overview\}\s*\/>/;
 const SITE_HEADER_RE = /SiteHeader|currentLabel=["']Sandbox["']/;
 const FORCE_DYNAMIC_RE = /export\s+const\s+dynamic\s*=\s*["']force-dynamic["']/;
-const BUTTON_VARIANTS_IMPORT_RE = /from\s+["']@\/components\/ui\/button\.tsx["']/;
-const PRIMARY_CTA_RE = /buttonVariants\(\{\s*variant:\s*["']default["'],\s*size:\s*["']lg["']\s*\}\)/;
-const HAND_ROLLED_PRIMARY_RE = /bg-foreground|text-background/;
 
 const PRIMARY_DASHBOARD_PAGES = [
+  "page.tsx",
   "overview/page.tsx",
   "records/page.tsx",
   "records/timeline/page.tsx",
@@ -76,7 +74,7 @@ const PARITY_PAGES = [
 ];
 
 const SANDBOX_PARITY_PAGES = [
-  "overview/page.tsx",
+  "page.tsx",
   "records/page.tsx",
   "schedules/page.tsx",
   "search/page.tsx",
@@ -95,7 +93,7 @@ const EDUCATIONAL_PAGES = ["api-examples/page.tsx", "walkthrough/page.tsx"];
  * mock-owner visitor into the live operator surface (broken auth, broken
  * data binding, and the visitor stops being inside the sandbox).
  */
-const ALL_SANDBOX_PAGES = ["page.tsx", ...PRIMARY_DASHBOARD_PAGES, ...EDUCATIONAL_PAGES];
+const ALL_SANDBOX_PAGES = [...PRIMARY_DASHBOARD_PAGES, ...EDUCATIONAL_PAGES];
 
 const DASHBOARD_ROUTES_IMPORT_RE = /\bdashboardRoutes\b/;
 // URL literal heuristic: a string/template that starts with `/dashboard`
@@ -107,9 +105,18 @@ const DASHBOARD_URL_LITERAL_RE = /["'`]\/dashboard(?:\/|\b)/;
 
 test("primary /sandbox dashboard pages render DashboardShell in mock-owner mode", async () => {
   const offenders: string[] = [];
+  const overviewContent = await readFile(join(SANDBOX_DIR, "overview-content.tsx"), "utf8");
+  assert.match(overviewContent, DASHBOARD_SHELL_IMPORT_RE, "overview-content must import DashboardShell");
+  assert.match(overviewContent, MOCK_OWNER_MODE_RE, "overview-content must render DashboardShell in mock-owner mode");
+
   for (const rel of PRIMARY_DASHBOARD_PAGES) {
     const full = join(SANDBOX_DIR, rel);
     const src = await readFile(full, "utf8");
+    const delegatesToOverviewContent =
+      SANDBOX_OVERVIEW_CONTENT_IMPORT_RE.test(src) && SANDBOX_OVERVIEW_CONTENT_RENDER_RE.test(src);
+    if (delegatesToOverviewContent) {
+      continue;
+    }
     if (!DASHBOARD_SHELL_IMPORT_RE.test(src)) {
       offenders.push(`${rel}: missing DashboardShell import`);
       continue;
@@ -153,27 +160,6 @@ test("educational pages do NOT render DashboardShell (they are docs surfaces)", 
   assert.deepEqual(offenders, [], `educational pages must not render DashboardShell:\n${offenders.join("\n")}`);
 });
 
-test("/sandbox launcher is not DashboardShell-rendered", async () => {
-  const src = await readFile(join(SANDBOX_DIR, "page.tsx"), "utf8");
-  assert.equal(
-    DASHBOARD_SHELL_IMPORT_RE.test(src),
-    false,
-    "the /sandbox launcher must not render DashboardShell — it is the entrypoint, not the dashboard"
-  );
-  assert.match(src, SANDBOX_OVERVIEW_LINK_RE, "the launcher must link into /sandbox/overview");
-});
-
-test("/sandbox launcher uses shared button variants for CTA contrast", async () => {
-  const src = await readFile(join(SANDBOX_DIR, "page.tsx"), "utf8");
-  assert.match(src, BUTTON_VARIANTS_IMPORT_RE);
-  assert.match(src, PRIMARY_CTA_RE, "launcher primary CTA must use the design-system default button");
-  assert.equal(
-    HAND_ROLLED_PRIMARY_RE.test(src),
-    false,
-    "launcher must not hand-roll primary CTA foreground/background colors"
-  );
-});
-
 test("/sandbox layout does not render global site chrome around mock-owner dashboard pages", async () => {
   const src = await readFile(join(SANDBOX_DIR, "layout.tsx"), "utf8");
   assert.equal(
@@ -199,7 +185,7 @@ test("DashboardShell in mock-owner mode swaps in the mock-owner footer (no live 
   assert.match(src, MOCK_OWNER_FOOTER_RENDER_RE, "shell must render <MockOwnerFooter /> in mock-owner mode");
 });
 
-test("sandboxRoutes overview is `/sandbox/overview`, distinct from the launcher", async () => {
+test("sandboxRoutes overview is `/sandbox`", async () => {
   const src = await readFile(join(SANDBOX_DIR, "..", "dashboard", "components", "views", "routes.ts"), "utf8");
   assert.match(src, SANDBOX_OVERVIEW_ROUTE_RE);
 });
@@ -229,11 +215,7 @@ test("/dashboard and /sandbox have parity for the core dashboard routes", async 
 
 test("DashboardShell passes the mode-specific overview route to CommandPalette", async () => {
   const src = await readFile(join(SANDBOX_DIR, "..", "dashboard", "components", "shell.tsx"), "utf8");
-  assert.match(
-    src,
-    COMMAND_PALETTE_OVERVIEW_RE,
-    "command palette Overview must point to /sandbox/overview in mock-owner mode, not the /sandbox launcher"
-  );
+  assert.match(src, COMMAND_PALETTE_OVERVIEW_RE, "command palette Overview must point to /sandbox in mock-owner mode");
 });
 
 test("sandbox pages do not import dashboardRoutes (would link out of the sandbox)", async () => {

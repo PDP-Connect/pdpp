@@ -1,17 +1,24 @@
-import { buildLiveRunsList } from "../../_demo/builders.ts";
+import { executeRefSpineCorrelationsList } from "pdpp-reference-implementation/operations/ref-spine-correlations-list";
+import { createSandboxRefSpineCorrelationsListDependencies } from "../../_demo/operations-fixtures.ts";
 import { jsonResponse, readListParams } from "../../v1/_helpers.ts";
 
 export const dynamic = "force-dynamic";
 
-export function GET(request: Request) {
+export async function GET(request: Request) {
   const url = new URL(request.url);
   const params = readListParams(url);
   return jsonResponse(
-    buildLiveRunsList({
-      cursor: params.cursor,
-      limit: params.limit,
-      status: params.status,
-      connector_id: params.connector_id,
-    })
+    await executeRefSpineCorrelationsList(
+      {
+        kind: "run",
+        filters: {
+          cursor: params.cursor,
+          limit: params.limit,
+          status: params.status,
+          connector_id: params.connector_id,
+        },
+      },
+      createSandboxRefSpineCorrelationsListDependencies()
+    )
   );
 }

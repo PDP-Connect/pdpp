@@ -363,7 +363,7 @@ test("/sandbox/v1/search filters by streams[] and supports cursor round-trip", a
 // ─── /sandbox/_ref/{traces,grants,runs} lists ───────────────────────────
 
 test("/sandbox/_ref/traces returns the live `list` of `trace_summary` rows", async () => {
-  const res = tracesListGet(new Request("https://example.invalid/sandbox/_ref/traces"));
+  const res = await tracesListGet(new Request("https://example.invalid/sandbox/_ref/traces"));
   assert.equal(res.status, 200);
   const body = (await jsonOf(res)) as { object: string; data: Record<string, unknown>[] };
   assert.equal(body.object, "list");
@@ -382,7 +382,7 @@ test("/sandbox/_ref/traces returns the live `list` of `trace_summary` rows", asy
 });
 
 test("/sandbox/_ref/grants returns the live `list` of `grant_summary` rows", async () => {
-  const res = grantsListGet(new Request("https://example.invalid/sandbox/_ref/grants"));
+  const res = await grantsListGet(new Request("https://example.invalid/sandbox/_ref/grants"));
   const body = (await jsonOf(res)) as { object: string; data: Record<string, unknown>[] };
   assert.equal(body.object, "list");
   for (const g of body.data) {
@@ -393,7 +393,7 @@ test("/sandbox/_ref/grants returns the live `list` of `grant_summary` rows", asy
 });
 
 test("/sandbox/_ref/runs returns the live `list` of `run_summary` rows", async () => {
-  const res = runsListGet(new Request("https://example.invalid/sandbox/_ref/runs"));
+  const res = await runsListGet(new Request("https://example.invalid/sandbox/_ref/runs"));
   const body = (await jsonOf(res)) as { object: string; data: Record<string, unknown>[] };
   assert.equal(body.object, "list");
   for (const r of body.data) {
@@ -405,7 +405,7 @@ test("/sandbox/_ref/runs returns the live `list` of `run_summary` rows", async (
 });
 
 test("/sandbox/_ref/runs filters by status", async () => {
-  const res = runsListGet(new Request("https://example.invalid/sandbox/_ref/runs?status=failed"));
+  const res = await runsListGet(new Request("https://example.invalid/sandbox/_ref/runs?status=failed"));
   const body = (await jsonOf(res)) as { data: Array<{ status: string }> };
   for (const r of body.data) {
     assert.equal(r.status, "failed");
@@ -526,14 +526,33 @@ test("/sandbox/.well-known/oauth-protected-resource returns the live RS metadata
   const hints = body.pdpp_discovery_hints as Record<string, unknown>;
   assert.equal(typeof hints.schema_endpoint, "string");
   assert.equal(typeof hints.query_base, "string");
-  assert.deepEqual(body.pdpp_agent_discovery, {
-    advisory: true,
-    skill_name: "pdpp-data-access",
-    recommended_flow: "pdpp agent",
-    skill_catalog: "https://example.invalid/.well-known/skills/index.json",
-    skill: "https://example.invalid/.well-known/skills/pdpp-data-access/SKILL.md",
-    llms_txt: "https://example.invalid/llms.txt",
-    llms_full_txt: "https://example.invalid/llms-full.txt",
+  const agentDiscovery = body.pdpp_agent_discovery as {
+    advisory?: boolean;
+    cli?: Record<string, unknown>;
+    llms_full_txt?: string;
+    llms_txt?: string;
+    recommended_flow?: string;
+    skill?: string;
+    skill_catalog?: string;
+    skill_name?: string;
+  };
+  assert.equal(agentDiscovery.advisory, true);
+  assert.equal(agentDiscovery.skill_name, "pdpp-data-access");
+  assert.equal(agentDiscovery.recommended_flow, "pdpp connect");
+  assert.equal(agentDiscovery.skill_catalog, "https://example.invalid/.well-known/skills/index.json");
+  assert.equal(agentDiscovery.skill, "https://example.invalid/.well-known/skills/pdpp-data-access/SKILL.md");
+  assert.equal(agentDiscovery.llms_txt, "https://example.invalid/llms.txt");
+  assert.equal(agentDiscovery.llms_full_txt, "https://example.invalid/llms-full.txt");
+  assert.deepEqual(agentDiscovery.cli, {
+    package: "@pdpp/cli",
+    package_specifier: "@pdpp/cli@beta",
+    bin_name: "pdpp",
+    install_command: "npx -y @pdpp/cli@beta --help",
+    run_command: "npx -y @pdpp/cli@beta connect https://example.invalid/sandbox",
+    connect_command: "npx -y @pdpp/cli@beta connect <provider-url>",
+    version_policy: "beta",
+    no_owner_token: true,
+    no_owner_token_policy: "owner_browser_approval_required",
   });
   // Lexical retrieval must be advertised because the route is implemented.
   const caps = body.capabilities as { lexical_retrieval?: { supported?: boolean; endpoint?: string } } | undefined;

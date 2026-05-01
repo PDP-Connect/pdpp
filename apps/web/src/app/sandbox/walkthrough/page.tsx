@@ -28,7 +28,7 @@ export default function WalkthroughPage() {
               <Link className={buttonVariants({ variant: "default", size: "lg" })} href="#walkthrough">
                 Start the walkthrough
               </Link>
-              <Link className={buttonVariants({ variant: "outline", size: "lg" })} href="/sandbox/overview">
+              <Link className={buttonVariants({ variant: "outline", size: "lg" })} href="/sandbox">
                 Open the dashboard
               </Link>
               <Link className={buttonVariants({ variant: "outline", size: "lg" })} href="/docs">
@@ -44,7 +44,7 @@ export default function WalkthroughPage() {
               A single coherent PDPP scenario you can click through. State lives only in this browser tab. It does not
               run the reference server, host owner accounts, or accept credentials. For the full reference dashboard,
               see the{" "}
-              <Link className="underline underline-offset-2" href="/sandbox/overview">
+              <Link className="underline underline-offset-2" href="/sandbox">
                 mock-owner dashboard
               </Link>
               .

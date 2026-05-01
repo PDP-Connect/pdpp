@@ -145,7 +145,8 @@ export default function SandboxApiExamplesPage() {
         <h1 className="pdpp-heading mt-2 text-foreground">Reference API examples</h1>
         <p className="pdpp-body mt-2 max-w-3xl text-muted-foreground">
           Every endpoint below is callable directly against this deployment and returns the same envelope shape a real
-          PDPP reference server would. All responses are JSON; the sandbox marker is the{" "}
+          PDPP reference server would. Route handlers are bound to deterministic mock adapters rather than real owner
+          credentials or a live AS/RS process. All responses are JSON; the sandbox marker is the{" "}
           <InlineCode>x-pdpp-demo</InlineCode> response header — payload shapes are intentionally identical to the live
           reference so an agent can swap origins without touching parsing code.
         </p>

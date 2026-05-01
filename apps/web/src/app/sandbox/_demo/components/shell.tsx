@@ -5,7 +5,7 @@
  * dashboard chrome into a docs context.
  *
  * Primary `/sandbox/**` dashboard pages use the live `DashboardShell`
- * in mock-owner mode. The launcher at `/sandbox` is a standalone page.
+ * in mock-owner mode. `/sandbox` itself is the mock-owner overview.
  */
 
 import Link from "next/link";
@@ -29,7 +29,7 @@ const NAV: readonly NavItem[] = [
 /**
  * Lightweight shell for the supporting educational pages. Renders the
  * site header plus a small navigation row pointing back to the
- * mock-owner dashboard launcher and across the educational pages. No
+ * mock-owner dashboard and across the educational pages. No
  * dashboard sidebar; the educational pages are docs, not operator views.
  */
 export function SandboxEducationalShell({
@@ -79,7 +79,7 @@ export function SandboxEducationalShell({
             })}
             <Link
               className="pdpp-caption rounded-md px-2.5 py-1 text-muted-foreground hover:bg-muted/60 hover:text-foreground"
-              href="/sandbox/overview"
+              href="/sandbox"
             >
               Open dashboard →
             </Link>

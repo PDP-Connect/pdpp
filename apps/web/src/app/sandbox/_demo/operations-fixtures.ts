@@ -14,7 +14,31 @@
  *   operations (e.g. the deleted `buildLiveStreamsList`).
  */
 
+import {
+  type AsAuthorizationServerMetadataBuilderInput,
+  type AsAuthorizationServerMetadataDependencies,
+  executeAsAuthorizationServerMetadata,
+} from "pdpp-reference-implementation/operations/as-authorization-server-metadata";
 import type { RefDatasetSummaryDependencies } from "pdpp-reference-implementation/operations/ref-dataset-summary";
+import type {
+  RefSpineCorrelationFilters,
+  RefSpineCorrelationKind,
+  RefSpineCorrelationPage,
+  RefSpineCorrelationSummary,
+  RefSpineCorrelationsListDependencies,
+} from "pdpp-reference-implementation/operations/ref-spine-correlations-list";
+import type {
+  RefSpineEventInput,
+  RefSpineEventsKind,
+  RefSpineEventsPageInput,
+} from "pdpp-reference-implementation/operations/ref-spine-events-page";
+import {
+  executeRsProtectedResourceMetadata,
+  type RsProtectedResourceMetadataComposition,
+  type RsProtectedResourceMetadataDependencies,
+  type RsProtectedResourceMetadataHybridCapability,
+  type RsProtectedResourceMetadataLexicalCapability,
+} from "pdpp-reference-implementation/operations/rs-protected-resource-metadata";
 import type {
   RecordDetailDependencies,
   RecordDetailGrant,
@@ -53,9 +77,10 @@ import type {
   StreamsListDependencies,
   StreamsListSourceDescriptor,
 } from "pdpp-reference-implementation/operations/rs-streams-list";
+import { createPdppCliCommand, getPdppCliPackageInfo } from "../../../../../../packages/cli/src/package-info.js";
 import { buildLiveStreamMetadata } from "./builders.ts";
-import { DEMO_CONNECTORS, DEMO_RECORDS, DEMO_STREAMS } from "./dataset.ts";
-import type { DemoRecord } from "./types.ts";
+import { DEMO_CONNECTORS, DEMO_GRANTS, DEMO_RECORDS, DEMO_RUNS, DEMO_STREAMS, DEMO_TRACES } from "./dataset.ts";
+import type { DemoGrantDef, DemoRecord, DemoRunDef, DemoTimelineEvent, DemoTraceDef } from "./types.ts";
 
 const SANDBOX_AGGREGATE_SOURCE_ID = "sandbox_demo";
 
@@ -772,4 +797,463 @@ export function createSandboxRefDatasetSummaryDependencies(): RefDatasetSummaryD
     getIngestedTimeBounds: () => sandboxDatasetTimeBounds(DEMO_RECORDS.map((r) => r.ingested_at)),
     listTopConnectorCandidates: () => sandboxDatasetTopConnectorCandidates(),
   };
+}
+
+// ─── ref.spine.* ──────────────────────────────────────────────────────────
+//
+// Sandbox operator-console spine fixtures. The route handlers mount the same
+// canonical `ref.spine.correlations.list` and `ref.spine.events.page`
+// operations as the live reference server; this section only adapts the
+// deterministic demo grants/runs/traces into the operation dependency shape.
+
+function stringFilter(filters: RefSpineCorrelationFilters, key: string): string | undefined {
+  const value = filters[key];
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function numberFilter(filters: RefSpineCorrelationFilters, key: string): number | undefined {
+  const value = filters[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function paginateSandboxSpineSummaries(
+  summaries: readonly RefSpineCorrelationSummary[],
+  filters: RefSpineCorrelationFilters
+): RefSpineCorrelationPage {
+  const limit = clampSandboxLimit(numberFilter(filters, "limit"));
+  const start = decodeSandboxCursor(stringFilter(filters, "cursor"));
+  const slice = summaries.slice(start, start + limit);
+  const next = start + limit;
+  return {
+    summaries: slice,
+    hasMore: next < summaries.length,
+    nextCursor: next < summaries.length ? encodeSandboxCursor(next) : null,
+  };
+}
+
+function demoGrantFailure(grant: DemoGrantDef): RefSpineCorrelationSummary["failure"] {
+  if (grant.status === "denied") {
+    return { event_type: "consent.declined", reason: "owner_declined" };
+  }
+  if (grant.status === "revoked") {
+    return { event_type: "grant.revoked", reason: "grant_revoked" };
+  }
+  return null;
+}
+
+function demoTraceFailure(trace: DemoTraceDef): RefSpineCorrelationSummary["failure"] {
+  if (!trace.failure_reason) {
+    return null;
+  }
+  return {
+    event_type: trace.run_id ? "run.failed" : "trace",
+    reason: trace.failure_reason,
+  };
+}
+
+function connectorIdForTrace(trace: DemoTraceDef): string | null {
+  if (trace.grant_id) {
+    return DEMO_GRANTS.find((grant) => grant.grant_id === trace.grant_id)?.connector_id ?? null;
+  }
+  if (trace.run_id) {
+    return DEMO_RUNS.find((run) => run.run_id === trace.run_id)?.connector_id ?? null;
+  }
+  return null;
+}
+
+function demoGrantToSpineSummary(grant: DemoGrantDef): RefSpineCorrelationSummary {
+  return {
+    id: grant.grant_id,
+    first_at: grant.first_at,
+    last_at: grant.last_at,
+    event_count: grant.events.length,
+    status: grant.status,
+    kinds: grant.events.map((event) => event.event_type),
+    request_id: null,
+    grant_id: grant.grant_id,
+    run_id: null,
+    client_id: grant.client_id,
+    connector_id: grant.connector_id,
+    source: connectorSource(grant.connector_id),
+    source_id: grant.connector_id,
+    source_kind: "connector",
+    actor_type: "client",
+    actor_id: grant.client_id,
+    failure: demoGrantFailure(grant),
+    needs_input: false,
+  };
+}
+
+function demoRunToSpineSummary(run: DemoRunDef): RefSpineCorrelationSummary {
+  return {
+    id: run.run_id,
+    first_at: run.first_at,
+    last_at: run.last_at,
+    event_count: run.events.length,
+    status: run.status,
+    kinds: run.events.map((event) => event.event_type),
+    request_id: null,
+    grant_id: run.grant_id,
+    run_id: run.run_id,
+    client_id: null,
+    connector_id: run.connector_id,
+    source: connectorSource(run.connector_id),
+    source_id: run.connector_id,
+    source_kind: "connector",
+    actor_type: "runtime",
+    actor_id: run.connector_id,
+    failure: run.failure_reason ? { event_type: "run.failed", reason: run.failure_reason } : null,
+    needs_input: run.needs_input,
+  };
+}
+
+function demoTraceToSpineSummary(trace: DemoTraceDef): RefSpineCorrelationSummary {
+  const connectorId = connectorIdForTrace(trace);
+  let actorType = "system";
+  if (trace.client_id) {
+    actorType = "client";
+  } else if (trace.run_id) {
+    actorType = "runtime";
+  }
+  return {
+    id: trace.trace_id,
+    first_at: trace.first_at,
+    last_at: trace.last_at,
+    event_count: trace.kinds.length,
+    status: trace.status,
+    kinds: [...trace.kinds],
+    request_id: null,
+    grant_id: trace.grant_id,
+    run_id: trace.run_id,
+    client_id: trace.client_id,
+    connector_id: connectorId,
+    source: connectorId ? connectorSource(connectorId) : null,
+    source_id: connectorId,
+    source_kind: connectorId ? "connector" : null,
+    actor_type: actorType,
+    actor_id: trace.client_id ?? trace.run_id ?? "sandbox",
+    failure: demoTraceFailure(trace),
+    needs_input: false,
+  };
+}
+
+function listSandboxSpineSummaries(
+  kind: RefSpineCorrelationKind,
+  filters: RefSpineCorrelationFilters
+): RefSpineCorrelationSummary[] {
+  const status = stringFilter(filters, "status");
+  if (kind === "grant") {
+    const clientId = stringFilter(filters, "client_id");
+    const connectorId = stringFilter(filters, "connector_id");
+    return DEMO_GRANTS.filter((grant) => {
+      if (status && grant.status !== status) {
+        return false;
+      }
+      if (clientId && grant.client_id !== clientId) {
+        return false;
+      }
+      if (connectorId && grant.connector_id !== connectorId) {
+        return false;
+      }
+      return true;
+    }).map(demoGrantToSpineSummary);
+  }
+  if (kind === "run") {
+    const connectorId = stringFilter(filters, "connector_id");
+    return DEMO_RUNS.filter((run) => {
+      if (status && run.status !== status) {
+        return false;
+      }
+      if (connectorId && run.connector_id !== connectorId) {
+        return false;
+      }
+      return true;
+    }).map(demoRunToSpineSummary);
+  }
+  return DEMO_TRACES.filter((trace) => (status ? trace.status === status : true)).map(demoTraceToSpineSummary);
+}
+
+export function createSandboxRefSpineCorrelationsListDependencies(): RefSpineCorrelationsListDependencies {
+  return {
+    listSpineCorrelations: (kind, filters) =>
+      paginateSandboxSpineSummaries(listSandboxSpineSummaries(kind, filters), filters),
+  };
+}
+
+function collectTraceEvents(traceId: string): DemoTimelineEvent[] {
+  const events: DemoTimelineEvent[] = [];
+  for (const trace of DEMO_TRACES) {
+    if (trace.trace_id === traceId) {
+      events.push(...trace.events);
+    }
+  }
+  for (const grant of DEMO_GRANTS) {
+    if (grant.trace_id === traceId) {
+      events.push(...grant.events);
+    }
+  }
+  for (const run of DEMO_RUNS) {
+    for (const event of run.events) {
+      if (event.trace_id === traceId) {
+        events.push(event);
+      }
+    }
+  }
+  events.sort((a, b) => {
+    if (a.occurred_at < b.occurred_at) {
+      return -1;
+    }
+    if (a.occurred_at > b.occurred_at) {
+      return 1;
+    }
+    return a.event_id.localeCompare(b.event_id);
+  });
+  return events;
+}
+
+function sandboxEventsFor(kind: RefSpineEventsKind, id: string): DemoTimelineEvent[] | null {
+  if (kind === "grant") {
+    const grant = DEMO_GRANTS.find((candidate) => candidate.grant_id === id);
+    return grant ? [...grant.events] : null;
+  }
+  if (kind === "run") {
+    const run = DEMO_RUNS.find((candidate) => candidate.run_id === id);
+    return run ? [...run.events] : null;
+  }
+  const events = collectTraceEvents(id);
+  if (events.length === 0 && !DEMO_TRACES.some((trace) => trace.trace_id === id)) {
+    return null;
+  }
+  return events;
+}
+
+function demoEventToRefSpineInput(event: DemoTimelineEvent): RefSpineEventInput {
+  return {
+    ...event,
+    object_type: event.object_type ?? "event",
+    object_id: event.event_id,
+    trace_id: event.trace_id,
+    data: { ...event.data },
+  };
+}
+
+export function createSandboxRefSpineEventsPageInput(
+  kind: RefSpineEventsKind,
+  id: string,
+  url: URL
+): RefSpineEventsPageInput | null {
+  const events = sandboxEventsFor(kind, id);
+  if (!events) {
+    return null;
+  }
+  const cursor = url.searchParams.get("cursor");
+  const rawLimit = url.searchParams.get("limit");
+  const parsedLimit = rawLimit === null ? undefined : Number.parseInt(rawLimit, 10);
+  const limit = clampSandboxLimit(parsedLimit);
+  const start = decodeSandboxCursor(cursor);
+  const slice = events.slice(start, start + limit);
+  const next = start + limit;
+  const hasMore = next < events.length;
+  return {
+    kind,
+    id,
+    cursor,
+    page: {
+      events: slice.map(demoEventToRefSpineInput),
+      truncated: hasMore,
+      next_cursor: hasMore ? encodeSandboxCursor(next) : null,
+      limit,
+    },
+  };
+}
+
+// ─── AS/RS metadata operations ────────────────────────────────────────────
+
+export interface SandboxAuthorizationServerMetadata {
+  device_authorization_endpoint?: string;
+  grant_types_supported?: readonly string[];
+  introspection_endpoint: string;
+  issuer: string;
+  pdpp_authorization_details_types_supported?: readonly string[];
+  pdpp_provider_connect_capabilities: unknown;
+  pdpp_registration_modes_supported?: readonly string[];
+  pushed_authorization_request_endpoint?: string;
+  registration_endpoint?: string;
+  token_endpoint?: string;
+  token_endpoint_auth_methods_supported?: readonly string[];
+}
+
+function buildSandboxAuthorizationServerMetadataDocument({
+  authorizationDetailsTypesSupported,
+  deviceAuthorizationEndpoint,
+  grantTypesSupported,
+  introspectionEndpoint,
+  issuer,
+  providerConnectCapabilities,
+  pushedAuthorizationRequestEndpoint,
+  registrationEndpoint,
+  registrationModesSupported,
+  tokenEndpoint,
+  tokenEndpointAuthMethodsSupported,
+}: AsAuthorizationServerMetadataBuilderInput): SandboxAuthorizationServerMetadata {
+  const metadata: SandboxAuthorizationServerMetadata = {
+    issuer,
+    introspection_endpoint: introspectionEndpoint,
+    pdpp_provider_connect_capabilities: providerConnectCapabilities,
+  };
+  if (pushedAuthorizationRequestEndpoint) {
+    metadata.pushed_authorization_request_endpoint = pushedAuthorizationRequestEndpoint;
+  }
+  if (registrationEndpoint) {
+    metadata.registration_endpoint = registrationEndpoint;
+  }
+  if (registrationModesSupported.length > 0) {
+    metadata.pdpp_registration_modes_supported = registrationModesSupported;
+  }
+  if (authorizationDetailsTypesSupported.length > 0) {
+    metadata.pdpp_authorization_details_types_supported = authorizationDetailsTypesSupported;
+  }
+  if (tokenEndpoint) {
+    metadata.token_endpoint = tokenEndpoint;
+  }
+  if (tokenEndpointAuthMethodsSupported.length > 0) {
+    metadata.token_endpoint_auth_methods_supported = tokenEndpointAuthMethodsSupported;
+  }
+  if (deviceAuthorizationEndpoint) {
+    metadata.device_authorization_endpoint = deviceAuthorizationEndpoint;
+  }
+  if (grantTypesSupported.length > 0) {
+    metadata.grant_types_supported = grantTypesSupported;
+  }
+  return metadata;
+}
+
+export function createSandboxAsAuthorizationServerMetadataDependencies(): AsAuthorizationServerMetadataDependencies {
+  return {
+    buildAuthorizationServerMetadata: buildSandboxAuthorizationServerMetadataDocument,
+  };
+}
+
+export function buildSandboxAuthorizationServerMetadata(issuer: string): unknown {
+  return executeAsAuthorizationServerMetadata(
+    { issuer, dynamicClientRegistrationEnabled: false },
+    createSandboxAsAuthorizationServerMetadataDependencies()
+  );
+}
+
+const SANDBOX_PROVIDER_CONNECT_VERSION = "1.0.0";
+
+export interface SandboxProtectedResourceMetadata {
+  authorization_servers: readonly string[];
+  bearer_methods_supported: readonly string[];
+  capabilities?: Record<string, unknown>;
+  pdpp_agent_discovery: {
+    advisory: true;
+    cli: {
+      bin_name: string;
+      connect_command: string;
+      install_command: string;
+      no_owner_token: boolean;
+      no_owner_token_policy: string;
+      package: string;
+      package_specifier: string;
+      run_command: string;
+      version_policy: string;
+    };
+    llms_full_txt: string;
+    llms_txt: string;
+    recommended_flow: "pdpp connect";
+    skill: string;
+    skill_catalog: string;
+    skill_name: "pdpp-data-access";
+  };
+  pdpp_core_query_base: string;
+  pdpp_discovery_hints: RsProtectedResourceMetadataComposition["discoveryHints"];
+  pdpp_provider_connect_version: string;
+  pdpp_self_export_supported: boolean;
+  pdpp_token_kinds_supported: readonly string[];
+  resource: string;
+  resource_name: string;
+}
+
+function buildSandboxAgentDiscovery(issuer: string): SandboxProtectedResourceMetadata["pdpp_agent_discovery"] {
+  const siteOrigin = new URL(issuer).origin;
+  const cli = getPdppCliPackageInfo(issuer);
+  return {
+    advisory: true,
+    skill_name: "pdpp-data-access",
+    recommended_flow: "pdpp connect",
+    cli: {
+      package: cli.packageName,
+      package_specifier: cli.packageSpecifier,
+      bin_name: cli.binName,
+      install_command: `npx -y ${cli.packageSpecifier} --help`,
+      run_command: cli.runCommand,
+      connect_command: createPdppCliCommand("<provider-url>"),
+      version_policy: cli.versionPolicy,
+      no_owner_token: cli.noOwnerToken,
+      no_owner_token_policy: cli.noOwnerTokenPolicy,
+    },
+    skill_catalog: `${siteOrigin}/.well-known/skills/index.json`,
+    skill: `${siteOrigin}/.well-known/skills/pdpp-data-access/SKILL.md`,
+    llms_txt: `${siteOrigin}/llms.txt`,
+    llms_full_txt: `${siteOrigin}/llms-full.txt`,
+  };
+}
+
+export function createSandboxRsProtectedResourceMetadataDependencies(
+  issuer: string
+): RsProtectedResourceMetadataDependencies {
+  const lexical: RsProtectedResourceMetadataLexicalCapability = {
+    supported: true,
+    endpoint: `${issuer}/v1/search`,
+    cross_stream: true,
+    snippets: true,
+    default_limit: SANDBOX_SEARCH_DEFAULT_LIMIT,
+    max_limit: SANDBOX_SEARCH_MAX_LIMIT,
+    score: {
+      supported: true,
+      kind: "bm25",
+      order: "lower_is_better",
+      value_semantics: "implementation_relative",
+    },
+  };
+  return {
+    resolveLexicalCapability: () => lexical,
+    resolveSemanticCapability: () => null,
+    resolveHybridCapabilityOverride: () => null,
+    buildDefaultHybridCapability: (): RsProtectedResourceMetadataHybridCapability | null => null,
+    isHybridSuppressed: () => false,
+    isNativeSingleSourceMode: () => false,
+  };
+}
+
+export function buildSandboxProtectedResourceMetadataDocument(
+  issuer: string,
+  composition: RsProtectedResourceMetadataComposition
+): SandboxProtectedResourceMetadata {
+  const metadata: SandboxProtectedResourceMetadata = {
+    resource: issuer,
+    resource_name: "Sandbox demo Resource Server",
+    authorization_servers: [issuer],
+    bearer_methods_supported: ["header"],
+    pdpp_provider_connect_version: SANDBOX_PROVIDER_CONNECT_VERSION,
+    pdpp_self_export_supported: true,
+    pdpp_token_kinds_supported: ["owner", "client"],
+    pdpp_core_query_base: `${issuer}/v1`,
+    pdpp_discovery_hints: composition.discoveryHints,
+    pdpp_agent_discovery: buildSandboxAgentDiscovery(issuer),
+  };
+  if (Object.keys(composition.capabilities).length > 0) {
+    metadata.capabilities = composition.capabilities as Record<string, unknown>;
+  }
+  return metadata;
+}
+
+export function buildSandboxProtectedResourceMetadata(issuer: string): SandboxProtectedResourceMetadata {
+  const { composition } = executeRsProtectedResourceMetadata(
+    {},
+    createSandboxRsProtectedResourceMetadataDependencies(issuer)
+  );
+  return buildSandboxProtectedResourceMetadataDocument(issuer, composition);
 }
