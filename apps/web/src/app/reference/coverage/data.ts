@@ -255,7 +255,7 @@ export const coverageRows = [
       },
     ],
     notes:
-      "End-to-end mock walkthrough covers request, owner consent, scoped query, revocation, and post-revocation refusal. Fixtures are fictional and the page never asks for real credentials.",
+      "End-to-end mock walkthrough covers request, owner consent, scoped query, revocation, and post-revocation refusal using deterministic fixtures and browser-local state.",
   },
   {
     concept: "Mock reference demo instance (dashboard-shaped)",

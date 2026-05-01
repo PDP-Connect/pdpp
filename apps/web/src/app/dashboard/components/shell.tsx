@@ -222,16 +222,6 @@ function SandboxFooter() {
       </p>
       <ul className="pdpp-caption mt-3 flex flex-col gap-1 text-muted-foreground">
         <li>
-          <Link className="hover:text-foreground hover:underline" href="/sandbox/api-examples">
-            API examples →
-          </Link>
-        </li>
-        <li>
-          <Link className="hover:text-foreground hover:underline" href="/sandbox/walkthrough">
-            Guided walkthrough →
-          </Link>
-        </li>
-        <li>
           <Link className="hover:text-foreground hover:underline" href="/reference">
             Reference overview →
           </Link>

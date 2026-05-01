@@ -35,10 +35,10 @@ const architectureLayers = [
     body: "A stateful control plane for a running local or self-hosted instance. It is not a public hosted demo.",
   },
   {
-    label: "Educational surface",
+    label: "Reference sandbox",
     route: "/sandbox",
-    title: "Sandbox demo instance",
-    body: "A mock-adapter-backed reference instance with deterministic fictional data. Browse connectors, streams, records, grants, runs, traces, and call sandbox-prefixed AS/RS-shaped APIs without credentials or a live AS/RS dependency. The guided one-scenario walkthrough lives at /sandbox/walkthrough.",
+    title: "Mock-adapter reference instance",
+    body: "A mock-adapter-backed reference instance with deterministic data. Browse connectors, streams, records, grants, runs, traces, and call sandbox-prefixed AS/RS-shaped APIs.",
   },
 ] as const;
 
@@ -60,7 +60,7 @@ const referenceLinks = [
     label: "Sandbox",
     title: "Mock reference demo instance",
     href: "/sandbox",
-    body: "Browse a public, credential-free PDPP reference surface backed by deterministic mock adapters, not live owner data. Inspect records/grants/runs/traces, call sandbox-prefixed AS/RS-shaped APIs (/sandbox/v1/**, /sandbox/_ref/**, /sandbox/.well-known/**), and read the guided walkthrough at /sandbox/walkthrough.",
+    body: "Browse a public PDPP reference surface backed by deterministic mock adapters. Inspect records, grants, runs, and traces, then call sandbox-prefixed AS/RS-shaped APIs (/sandbox/v1/**, /sandbox/_ref/**, /sandbox/.well-known/**).",
   },
   {
     label: "Repository",
@@ -141,7 +141,7 @@ export default function ReferencePage() {
             <div className="mt-4 space-y-4">
               <CalloutMetric label="Local app" value="http://localhost:3002" />
               <CalloutMetric label="Operator surface" value="/dashboard" />
-              <CalloutMetric label="Hosted demo" tone="warning" value="Not promised" />
+              <CalloutMetric label="Public sandbox" value="/sandbox" />
             </div>
             <p className="pdpp-caption mt-5 text-muted-foreground">
               The dashboard is an operator surface for a running instance. It is hidden or unavailable on public docs

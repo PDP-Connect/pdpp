@@ -139,16 +139,15 @@ const EXAMPLES: readonly Example[] = [
 
 export default function SandboxApiExamplesPage() {
   return (
-    <SandboxEducationalShell active="api">
+    <SandboxEducationalShell>
       <header className="mb-6 border-border/80 border-b pb-5">
         <div className="pdpp-eyebrow text-muted-foreground">Sandbox / API examples</div>
         <h1 className="pdpp-heading mt-2 text-foreground">Reference API examples</h1>
         <p className="pdpp-body mt-2 max-w-3xl text-muted-foreground">
           Every endpoint below is callable directly against this deployment and returns the same envelope shape a real
-          PDPP reference server would. Route handlers are bound to deterministic mock adapters rather than real owner
-          credentials or a live AS/RS process. All responses are JSON; the sandbox marker is the{" "}
-          <InlineCode>x-pdpp-demo</InlineCode> response header — payload shapes are intentionally identical to the live
-          reference so an agent can swap origins without touching parsing code.
+          PDPP reference server would. Route handlers use deterministic mock adapters and preserve live payload shapes.
+          All responses are JSON; the sandbox marker is the <InlineCode>x-pdpp-demo</InlineCode> response header so an
+          agent can swap origins without touching parsing code.
         </p>
         <p className="pdpp-caption mt-2 text-muted-foreground">
           The full surface map lives at{" "}

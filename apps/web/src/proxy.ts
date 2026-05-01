@@ -3,7 +3,7 @@ import { type NextRequest, NextResponse } from "next/server";
 import { OWNER_AUTH_COOKIE_NAME } from "pdpp-reference-implementation/owner-session";
 import { resolveReferenceTopology } from "pdpp-reference-implementation/reference-topology";
 import { normalizeDashboardReturnTo } from "@/app/dashboard/lib/return-to.ts";
-import { isSandboxInternalAlias, rewriteSandboxCanonicalPath } from "./proxy-paths.ts";
+import { redirectSandboxAliasPath, rewriteSandboxCanonicalPath } from "./proxy-paths.ts";
 
 const { rewrite: rewriteLLM } = rewritePath("/docs{/*path}", "/llms.mdx/docs{/*path}");
 const referenceTopology = resolveReferenceTopology();
@@ -81,15 +81,9 @@ export default function proxy(request: NextRequest) {
     return NextResponse.rewrite(new URL(`${canonicalRewrite}${request.nextUrl.search}`, request.nextUrl));
   }
 
-  if (isSandboxInternalAlias(request.nextUrl.pathname)) {
-    return NextResponse.json(
-      {
-        object: "error",
-        error: "not_found",
-        message: "Use the canonical sandbox paths: /sandbox/_ref/** or /sandbox/.well-known/**.",
-      },
-      { status: 404 }
-    );
+  const canonicalAliasRedirect = redirectSandboxAliasPath(request.nextUrl.pathname);
+  if (canonicalAliasRedirect) {
+    return NextResponse.redirect(new URL(`${canonicalAliasRedirect}${request.nextUrl.search}`, request.nextUrl), 308);
   }
 
   if (request.nextUrl.pathname === "/dashboard" || request.nextUrl.pathname.startsWith("/dashboard/")) {

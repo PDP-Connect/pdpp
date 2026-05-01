@@ -11,21 +11,22 @@
  * The proxy MUST:
  *   1. Rewrite `/sandbox/_ref/**` → `/sandbox/ref/**`.
  *   2. Rewrite `/sandbox/.well-known/**` → `/sandbox/well-known/**`.
- *   3. 404 direct hits on the underlying alias paths so the canonical URL
- *      is the only externally callable surface.
+ *   3. Redirect direct hits on the underlying alias paths back to their
+ *      canonical URL, preserving a single advertised surface while keeping
+ *      copied links useful.
  *
  * These tests exercise the pure path helpers and the matcher config rather
  * than booting a full middleware request — `next/server` is not loadable
  * outside the bundler, and the rewrite logic is fully expressible at the
  * pathname level. Wiring the helpers through `proxy()` is covered by the
  * Next.js integration: if `rewriteSandboxCanonicalPath` returns a path,
- * `proxy()` calls `NextResponse.rewrite` against it; if `isSandboxInternalAlias`
- * returns true, `proxy()` returns a 404 JSON envelope.
+ * `proxy()` calls `NextResponse.rewrite` against it; if
+ * `redirectSandboxAliasPath` returns a path, `proxy()` redirects to it.
  */
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { isSandboxInternalAlias, rewriteSandboxCanonicalPath } from "./proxy-paths.ts";
+import { redirectSandboxAliasPath, rewriteSandboxCanonicalPath } from "./proxy-paths.ts";
 
 test("rewriteSandboxCanonicalPath maps /sandbox/_ref/** onto /sandbox/ref/**", () => {
   assert.equal(rewriteSandboxCanonicalPath("/sandbox/_ref/grants"), "/sandbox/ref/grants");
@@ -64,8 +65,8 @@ test("rewriteSandboxCanonicalPath leaves other paths alone", () => {
   assert.equal(rewriteSandboxCanonicalPath("/sandbox/v1/schema"), null);
   // Dashboard surfaces must not be rewritten.
   assert.equal(rewriteSandboxCanonicalPath("/dashboard/overview"), null);
-  // Underlying alias paths must NOT be rewritten — they should be 404'd
-  // by the alias check below so only the canonical URL is callable.
+  // Underlying alias paths must NOT be rewritten — they should redirect
+  // by the alias check below so the canonical URL remains the advertised URL.
   assert.equal(rewriteSandboxCanonicalPath("/sandbox/ref/grants"), null);
   assert.equal(rewriteSandboxCanonicalPath("/sandbox/well-known/oauth-authorization-server"), null);
 });
@@ -76,23 +77,26 @@ test("rewriteSandboxCanonicalPath does not match same-prefix non-sandbox paths",
   assert.equal(rewriteSandboxCanonicalPath("/sandbox/.well"), null);
 });
 
-test("isSandboxInternalAlias flags /sandbox/ref and /sandbox/well-known underlying paths", () => {
-  assert.equal(isSandboxInternalAlias("/sandbox/ref"), true);
-  assert.equal(isSandboxInternalAlias("/sandbox/ref/grants"), true);
-  assert.equal(isSandboxInternalAlias("/sandbox/well-known"), true);
-  assert.equal(isSandboxInternalAlias("/sandbox/well-known/oauth-authorization-server"), true);
+test("redirectSandboxAliasPath maps /sandbox/ref and /sandbox/well-known aliases to canonical paths", () => {
+  assert.equal(redirectSandboxAliasPath("/sandbox/ref"), "/sandbox/_ref");
+  assert.equal(redirectSandboxAliasPath("/sandbox/ref/grants"), "/sandbox/_ref/grants");
+  assert.equal(redirectSandboxAliasPath("/sandbox/well-known"), "/sandbox/.well-known");
+  assert.equal(
+    redirectSandboxAliasPath("/sandbox/well-known/oauth-authorization-server"),
+    "/sandbox/.well-known/oauth-authorization-server"
+  );
 });
 
-test("isSandboxInternalAlias does NOT flag the canonical _ref/.well-known URLs", () => {
+test("redirectSandboxAliasPath does NOT canonicalize already-canonical _ref/.well-known URLs", () => {
   // Canonical URLs must reach the rewrite path, not the 404 path.
-  assert.equal(isSandboxInternalAlias("/sandbox/_ref"), false);
-  assert.equal(isSandboxInternalAlias("/sandbox/_ref/grants"), false);
-  assert.equal(isSandboxInternalAlias("/sandbox/.well-known"), false);
-  assert.equal(isSandboxInternalAlias("/sandbox/.well-known/oauth-authorization-server"), false);
+  assert.equal(redirectSandboxAliasPath("/sandbox/_ref"), null);
+  assert.equal(redirectSandboxAliasPath("/sandbox/_ref/grants"), null);
+  assert.equal(redirectSandboxAliasPath("/sandbox/.well-known"), null);
+  assert.equal(redirectSandboxAliasPath("/sandbox/.well-known/oauth-authorization-server"), null);
 });
 
-test("isSandboxInternalAlias does not over-match sibling paths", () => {
-  assert.equal(isSandboxInternalAlias("/sandbox/reference"), false);
-  assert.equal(isSandboxInternalAlias("/sandbox/well-known-extra"), false);
-  assert.equal(isSandboxInternalAlias("/sandbox/v1/schema"), false);
+test("redirectSandboxAliasPath does not over-match sibling paths", () => {
+  assert.equal(redirectSandboxAliasPath("/sandbox/reference"), null);
+  assert.equal(redirectSandboxAliasPath("/sandbox/well-known-extra"), null);
+  assert.equal(redirectSandboxAliasPath("/sandbox/v1/schema"), null);
 });
