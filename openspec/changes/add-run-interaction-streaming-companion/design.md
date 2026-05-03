@@ -71,6 +71,23 @@ The local collector runner may own the browser process, but streaming remains a 
 - `remote-browser-sandbox`: required comparison source for n.eko/rrweb/mobile-input edge cases.
 - `remote-browser`: lighter Cloudflare/browser-streaming fallback if service assumptions are too heavy.
 
+### Prior Art Verdict (recorded)
+
+After inspection, `remote-browser-sandbox/server/src` is the deepest CDP fork
+(neko proxy, rrweb, audio-stream, ~3KB CDP map plus a 44KB cdp-stream module).
+We did NOT take that surface; it includes neko/rrweb fallbacks that the MVP
+explicitly excludes and that materially expand the security and deployment
+footprint. We took the leaner shape from
+`remote-browser-service/sprite-server/src/{streamer,input-handler}.ts` —
+straight CDP `Page.startScreencast` frames, `Input.dispatch{Mouse,Key,Touch}Event`
+mapping, no neko, no rrweb. The MVP keeps that lean shape and adds
+back-pressure ack and viewport via `Emulation.setDeviceMetricsOverride`. The
+companion is hidden behind a small interface so tests use a deterministic mock
+and a future real CDP adapter can be wired without touching routes or auth.
+
+`remote-browser` (Cloudflare worker) was reviewed; its assumptions around a
+managed worker and Durable Objects don't fit the local-first reference shape.
+
 ## Owner Self-Review
 
 - Standards posture: safe if all surfaces remain reference-only and interaction-scoped.

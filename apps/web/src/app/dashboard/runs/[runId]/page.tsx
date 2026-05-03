@@ -158,6 +158,8 @@ function PendingInteractionSection({
     return null;
   }
   const isHostBrowserRequired = pendingInteraction.kind === "host_browser_required";
+  const supportsStreaming =
+    pendingInteraction.kind === "manual_action" || pendingInteraction.kind === "host_browser_required";
 
   return (
     <Callout
@@ -171,6 +173,14 @@ function PendingInteractionSection({
       surface="human"
       title={isHostBrowserRequired ? "Waiting on host browser" : "Waiting on operator input"}
     >
+      {supportsStreaming ? (
+        <p className="pdpp-caption mb-2">
+          <a className="underline underline-offset-2" href={`/dashboard/runs/${encodeURIComponent(runId)}/stream`}>
+            Open the streaming companion →
+          </a>{" "}
+          to satisfy this step from your current device.
+        </p>
+      ) : null}
       <dl className="pdpp-caption grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
         <dt className="text-muted-foreground">kind</dt>
         <dd>{pendingInteraction.kind}</dd>

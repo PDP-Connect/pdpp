@@ -169,6 +169,49 @@ export async function submitRunInteraction(
   return body;
 }
 
+/**
+ * Mint a short-lived run-interaction streaming companion session for the
+ * current pending interaction. The returned token is single-attach, scoped to
+ * one (run, interaction, browser session), and invalidates when the
+ * interaction resolves. The dashboard never persists this token — it is held
+ * only in the viewer page state for the life of the stream.
+ */
+export interface StreamingSessionMintResponse {
+  browser_session_id: string;
+  close_path: string;
+  expires_at_ms: number;
+  input_path: string;
+  interaction_id: string;
+  object: "run_interaction_stream_session";
+  run_id: string;
+  token: string;
+  viewer_path: string;
+  viewport_path: string;
+}
+
+export async function mintRunInteractionStream(
+  runId: string,
+  input: {
+    interactionId: string;
+    viewport?: { width: number; height: number; deviceScaleFactor?: number; mobile?: boolean };
+  }
+): Promise<StreamingSessionMintResponse> {
+  const payload: Record<string, unknown> = { interaction_id: input.interactionId };
+  if (input.viewport) {
+    payload.viewport = input.viewport;
+  }
+  const response = await fetchAs(`/_ref/runs/${encodeURIComponent(runId)}/run-interaction-stream`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: asJson(payload),
+  });
+  const body = await readBody(response);
+  if (!response.ok) {
+    throw new Error(describeError(body, `mint stream failed (${response.status})`));
+  }
+  return body as StreamingSessionMintResponse;
+}
+
 export async function deleteConnectorSchedule(connectorId: string) {
   const response = await fetchAs(`/_ref/connectors/${encodeURIComponent(connectorId)}/schedule`, {
     method: "DELETE",
