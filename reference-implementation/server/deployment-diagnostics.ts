@@ -177,16 +177,6 @@ export interface DeploymentDiagnosticsReport {
     readonly path: string;
   };
   readonly environment: readonly EnvValueReport[];
-  readonly runtime_capabilities: {
-    readonly bindings: {
-      readonly browser: boolean;
-      readonly filesystem: boolean;
-      readonly local_device: boolean;
-      readonly network: boolean;
-    };
-    readonly collector_paired: boolean;
-    readonly in_container: boolean;
-  };
   readonly lexical: {
     readonly index: {
       readonly state: "built" | "building";
@@ -199,6 +189,16 @@ export interface DeploymentDiagnosticsReport {
     readonly provenance: "native" | "polyfill-registered";
     readonly semantic_stream_count: number;
   }>;
+  readonly runtime_capabilities: {
+    readonly bindings: {
+      readonly browser: boolean;
+      readonly filesystem: boolean;
+      readonly local_device: boolean;
+      readonly network: boolean;
+    };
+    readonly collector_paired: boolean;
+    readonly in_container: boolean;
+  };
   readonly semantic: {
     readonly backend: {
       readonly configured: boolean;
@@ -444,9 +444,7 @@ function buildWarnings(
   return warnings;
 }
 
-function buildRuntimeCapabilityWarnings(
-  posture: RuntimeCapabilityPosture | null
-): readonly DiagnosticsWarning[] {
+function buildRuntimeCapabilityWarnings(posture: RuntimeCapabilityPosture | null): readonly DiagnosticsWarning[] {
   if (!posture) {
     return [];
   }
