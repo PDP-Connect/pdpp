@@ -266,6 +266,17 @@ export function registerStreamingRoutes({
         data_base64: frame.data,
         metadata: frame.metadata || null,
       });
+      // CDP `Page.startScreencast` only delivers the next frame after the
+      // previous one is acknowledged. Without this ack the stream stalls
+      // after the first frame against a real Chromium. Best-effort: a
+      // failed ack must not crash the SSE response (the next frame's ack
+      // can recover, and if the companion really is gone, teardown will
+      // fire from the close handler).
+      if (Number.isFinite(frame.sessionId) && typeof companion.ackFrame === 'function') {
+        Promise.resolve(companion.ackFrame(frame.sessionId)).catch(() => {
+          /* best-effort ack; surfaced via companion logger if configured */
+        });
+      }
     });
 
     let closed = false;
