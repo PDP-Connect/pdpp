@@ -385,6 +385,18 @@ function expressShim(request, reply) {
       else reply.send();
       return res;
     },
+    // Streaming/SSE escape hatch: handlers that need to write directly to the
+    // raw socket call `res.hijack()` first, then write to `res.raw`. The
+    // Fastify reply lifecycle is suspended so the handler is responsible for
+    // ending the response itself.
+    get raw() { return reply.raw; },
+    hijack() {
+      if (typeof reply.hijack === 'function') {
+        reply.hijack();
+      }
+      res.headersSent = true;
+      return res;
+    },
   };
 
   return { req, res };

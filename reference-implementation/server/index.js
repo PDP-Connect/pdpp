@@ -65,6 +65,9 @@ import {
 import { collectDeploymentDiagnostics } from './deployment-diagnostics.ts';
 import { createOwnerAuthPlaceholder, OWNER_AUTH_DEFAULT_SUBJECT_ID } from './owner-auth.ts';
 import { registerInboxRoutes } from './inbox.js';
+import { createStreamingSessionStore } from './streaming/sessions.js';
+import { createUnsupportedCompanion } from './streaming/cdp-companion.js';
+import { registerStreamingRoutes } from './streaming/routes.js';
 import { createController } from '../runtime/controller.ts';
 import {
   createPdppCliCommand,
@@ -2771,6 +2774,47 @@ function buildAsApp(opts = {}) {
     ownerAuth.requireOwnerSession,
     handleSpineTimeline('run', 'runId', 'Run timeline not found'),
   );
+
+  // Run-interaction streaming companion (reference-only). The store and
+  // companion factory live in this AS app so the mint route, the SSE viewer
+  // channel, and the input dispatch share state without a separate process.
+  // The default companion factory fails closed; tests inject a mock factory
+  // via opts.streamingCompanionFactory so frame and input mapping can be
+  // exercised deterministically without a real Chromium.
+  const streamingSessions = opts.streamingSessionStore || createStreamingSessionStore();
+  const streamingCompanionFactory =
+    opts.streamingCompanionFactory ||
+    (({ browser_session_id }) => createUnsupportedCompanion({ browser_session_id }));
+  const streamingRoutes = registerStreamingRoutes({
+    app,
+    controller,
+    ownerAuth,
+    streamingSessions,
+    companionFactory: streamingCompanionFactory,
+    makeBrowserSessionId: opts.makeStreamingBrowserSessionId,
+  });
+
+  // Wrap controller.respondToInteraction so the streaming session is
+  // invalidated whenever an interaction resolves. Inbox and the
+  // `_ref/runs/:runId/interaction` route both call respondToInteraction, so
+  // wrapping at the controller seam covers both paths without duplicating the
+  // teardown call.
+  if (controller && typeof controller.respondToInteraction === 'function') {
+    const originalRespondToInteraction = controller.respondToInteraction.bind(controller);
+    controller.respondToInteraction = (runId, input = {}) => {
+      const result = originalRespondToInteraction(runId, input);
+      Promise.resolve(
+        streamingRoutes.invalidateForInteractionResolved({
+          run_id: runId,
+          interaction_id: input.interaction_id,
+          reason: `interaction_${input.status || 'resolved'}`,
+        }),
+      ).catch(() => {
+        /* invalidation is best-effort; failing must not break the response */
+      });
+      return result;
+    };
+  }
 
   registerInboxRoutes(app, { controller, ownerAuth, pdppError, handleError });
 
@@ -5650,6 +5694,9 @@ export async function startServer(opts = {}) {
     agentConnectTtlMs: opts.agentConnectTtlMs,
     publicDynamicClientRegistrationRateLimit: opts.publicDynamicClientRegistrationRateLimit,
     referenceRevision: opts.referenceRevision,
+    streamingCompanionFactory: opts.streamingCompanionFactory,
+    streamingSessionStore: opts.streamingSessionStore,
+    makeStreamingBrowserSessionId: opts.makeStreamingBrowserSessionId,
     logger,
   });
 
