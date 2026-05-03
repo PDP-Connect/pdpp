@@ -81,12 +81,56 @@ footprint. We took the leaner shape from
 `remote-browser-service/sprite-server/src/{streamer,input-handler}.ts` —
 straight CDP `Page.startScreencast` frames, `Input.dispatch{Mouse,Key,Touch}Event`
 mapping, no neko, no rrweb. The MVP keeps that lean shape and adds
-back-pressure ack and viewport via `Emulation.setDeviceMetricsOverride`. The
-companion is hidden behind a small interface so tests use a deterministic mock
-and a future real CDP adapter can be wired without touching routes or auth.
+back-pressure ack and viewport via `Emulation.setDeviceMetricsOverride`.
+
+Both `remote-browser-service` and `remote-browser-sandbox` reach CDP via
+`patchright` (a Playwright fork). We deliberately did not pull a
+browser-automation library into the reference server: the streaming surface
+only needs JSON-RPC over a CDP page-target WebSocket, and Playwright's session
+manager would be dead weight for that. `cdp-adapter.js` therefore connects
+directly to the CDP WebSocket using Node's native `WebSocket` (Node 22+) and
+handles JSON-RPC dispatch, pending-response correlation, screencast frame
+fan-out, and back-pressure ack itself.
 
 `remote-browser` (Cloudflare worker) was reviewed; its assumptions around a
 managed worker and Durable Objects don't fit the local-first reference shape.
+
+### Real Adapter And Honest Unavailable State
+
+The default companion factory resolves a CDP page-target WebSocket URL from
+`PDPP_RUN_INTERACTION_CDP_WS_URL` (or `opts.streamingCdpWsUrl`). When neither
+is set, the factory returns `null` and the mint route fails closed with
+`503 streaming_companion_unavailable`. We never hand out a token that can only
+fail at attach time — that creates a dead "Start streaming" button which the
+operator can only diagnose by reading server logs.
+
+The dashboard viewer recognizes the typed unavailable error and surfaces a
+configuration-pointer state instead of the canvas. Until streaming is wired,
+the operator falls back to satisfying the interaction via the local collector
+runner.
+
+### Optimistic Collection Profile Posture
+
+The reference implementation reads a single global CDP WebSocket URL. A real
+deployment would resolve a per-`browser_session_id` URL from a control-plane
+registry: when a connector emits a manual-action interaction from a paired
+local collector, that collector's browser session would be the streaming
+target. The plumbing for "control plane → browser session → CDP target URL"
+is **not** part of PDPP Core today and should not be silently standardized
+here. We document it as **optimistic reference behavior requiring human-owner
+alignment**:
+
+- The Collection Profile spec does not yet name a binding between
+  `browser_session_id` and a streamable CDP target.
+- The runtime does not advertise `runtime_capabilities.cdp_streaming` on
+  collectors that could host such a target.
+- The mint route does not yet pass `browser_session_id` to the URL resolver.
+
+When the human owner aligns on the right binding shape, the adapter's
+`createDefaultStreamingCompanionFactory` should be extended to take a
+`resolveTargetForSession({ browser_session_id })` resolver instead of a fixed
+URL. Until then, this tranche stays reference-only with a single env-driven
+URL and an honest fail-closed default.
 
 ## Owner Self-Review
 

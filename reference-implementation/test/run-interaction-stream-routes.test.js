@@ -269,6 +269,25 @@ test('SSE attach delivers an attached event and dispatches frames', async () => 
     assert.equal(frame.session_id, 7);
     assert.equal(frame.data_base64, 'AA==');
 
+    // The route MUST acknowledge each delivered CDP screencast frame, or a
+    // real Chromium will stop sending frames after the first one. Wait for
+    // the best-effort ack to land on the companion record.
+    const ackDeadline = Date.now() + 500;
+    while (Date.now() < ackDeadline) {
+      if (tracked.companion.cdpCalls.some(
+        (c) => c.method === 'Page.screencastFrameAck' && c.params?.sessionId === 7,
+      )) {
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.ok(
+      tracked.companion.cdpCalls.some(
+        (c) => c.method === 'Page.screencastFrameAck' && c.params?.sessionId === 7,
+      ),
+      'route must call companion.ackFrame(sessionId) for every delivered frame',
+    );
+
     // A second SSE attach with the same token must fail (single-use).
     const reattach = await fetch(`${asUrl}${mint.body.viewer_path}`);
     assert.ok(reattach.status === 409 || reattach.status === 401);
@@ -340,6 +359,175 @@ test('input POST dispatches to the companion after attach and rejects bad input'
     }
     await cancelRun(asUrl, started.run_id, pending.interaction_id);
   });
+});
+
+test('SSE delivers multiple frames and acks each, even when ack rejects', async () => {
+  // The CDP screencast contract is back-pressured: each frame must be
+  // acknowledged before the next is delivered. The route must call
+  // companion.ackFrame for every frame and must survive an ack rejection
+  // without tearing the SSE response down (the next frame's ack can
+  // recover).
+  const tmpDir = mkdtempSync(join(tmpdir(), 'pdpp-ref-stream-ack-'));
+  const connectorPath = buildManualActionConnector(tmpDir, {});
+  const ackCalls = [];
+  const ackErrors = [];
+  const companionRef = { current: null };
+  const failingFactory = ({ browser_session_id }) => {
+    const base = createMockCompanion({ browser_session_id });
+    let frameCount = 0;
+    const wrapped = {
+      ...base,
+      pushFrame: base.pushFrame,
+      cdpCalls: base.cdpCalls,
+      inputs: base.inputs,
+      async ackFrame(sessionId) {
+        ackCalls.push(sessionId);
+        frameCount += 1;
+        // Make the second ack reject to prove the route is best-effort.
+        if (frameCount === 2) {
+          const err = new Error('cdp ack boom');
+          ackErrors.push(err);
+          throw err;
+        }
+        return base.ackFrame(sessionId);
+      },
+    };
+    companionRef.current = wrapped;
+    return wrapped;
+  };
+  try {
+    const server = await startServer({
+      quiet: true,
+      asPort: 0,
+      rsPort: 0,
+      dbPath: ':memory:',
+      connectorPathResolver: () => connectorPath,
+      streamingCompanionFactory: failingFactory,
+    });
+    try {
+      const asUrl = `http://localhost:${server.asPort}`;
+      const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, 'manifests/spotify.json'), 'utf8'));
+      await registerConnector(asUrl, spotifyManifest);
+      const started = await startRun(asUrl, spotifyManifest.connector_id);
+      const pending = await waitForPendingInteraction(asUrl, started.run_id);
+      const mint = await fetchJson(`${asUrl}/_ref/runs/${encodeURIComponent(started.run_id)}/run-interaction-stream`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ interaction_id: pending.interaction_id }),
+      });
+      assert.equal(mint.status, 201);
+
+      const ac = new AbortController();
+      const sseResp = await fetch(`${asUrl}${mint.body.viewer_path}`, { signal: ac.signal });
+      assert.equal(sseResp.status, 200);
+      const reader = sseResp.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      async function readEvent(name, deadlineMs = 1500) {
+        const deadline = Date.now() + deadlineMs;
+        while (Date.now() < deadline) {
+          const block = buffer.indexOf('\n\n');
+          if (block !== -1) {
+            const event = buffer.slice(0, block);
+            buffer = buffer.slice(block + 2);
+            if (event.includes(`event: ${name}`)) {
+              const dataLine = event.split('\n').find((line) => line.startsWith('data:'));
+              return dataLine ? JSON.parse(dataLine.slice(5).trim()) : null;
+            }
+            continue;
+          }
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+        }
+        throw new Error(`Did not receive SSE event ${name} in ${deadlineMs}ms`);
+      }
+      await readEvent('attached');
+
+      const companion = companionRef.current;
+      assert.ok(companion, 'companion captured');
+
+      // Push three frames. The route should ack all three, with the second
+      // ack rejecting (proving best-effort) and the third still arriving.
+      companion.pushFrame({ sessionId: 11, data: 'AA==' });
+      const f1 = await readEvent('frame');
+      assert.equal(f1.session_id, 11);
+
+      companion.pushFrame({ sessionId: 12, data: 'AB==' });
+      const f2 = await readEvent('frame');
+      assert.equal(f2.session_id, 12);
+
+      companion.pushFrame({ sessionId: 13, data: 'AC==' });
+      const f3 = await readEvent('frame');
+      assert.equal(f3.session_id, 13);
+
+      // All three acks must have been attempted, even though the second one
+      // rejected. The order matters because ack triggers the next frame.
+      const ackDeadline = Date.now() + 500;
+      while (Date.now() < ackDeadline && ackCalls.length < 3) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      assert.deepEqual(ackCalls, [11, 12, 13], 'route must call ackFrame for every delivered frame');
+      assert.equal(ackErrors.length, 1, 'second ack rejected — route must remain alive');
+
+      ac.abort();
+      try {
+        await reader.cancel();
+      } catch {
+        /* aborted */
+      }
+      await cancelRun(asUrl, started.run_id, pending.interaction_id);
+    } finally {
+      await closeServer(server);
+    }
+  } finally {
+    rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('mint fails closed with 503 streaming_companion_unavailable when no companion is configured', async () => {
+  // Run the server without a streamingCompanionFactory and without
+  // PDPP_RUN_INTERACTION_CDP_WS_URL. The mint route must refuse to hand out
+  // a token rather than handing one out that fails only at attach time.
+  const tmpDir = mkdtempSync(join(tmpdir(), 'pdpp-ref-stream-unavail-'));
+  const connectorPath = buildManualActionConnector(tmpDir, {});
+  const priorEnv = process.env.PDPP_RUN_INTERACTION_CDP_WS_URL;
+  delete process.env.PDPP_RUN_INTERACTION_CDP_WS_URL;
+  try {
+    const server = await startServer({
+      quiet: true,
+      asPort: 0,
+      rsPort: 0,
+      dbPath: ':memory:',
+      connectorPathResolver: () => connectorPath,
+      // No streamingCompanionFactory — exercises the fail-closed path.
+    });
+    try {
+      const asUrl = `http://localhost:${server.asPort}`;
+      const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, 'manifests/spotify.json'), 'utf8'));
+      await registerConnector(asUrl, spotifyManifest);
+      const started = await startRun(asUrl, spotifyManifest.connector_id);
+      const pending = await waitForPendingInteraction(asUrl, started.run_id);
+      const mint = await fetchJson(`${asUrl}/_ref/runs/${encodeURIComponent(started.run_id)}/run-interaction-stream`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ interaction_id: pending.interaction_id }),
+      });
+      assert.equal(mint.status, 503);
+      assert.equal(mint.body.error.code, 'streaming_companion_unavailable');
+      assert.match(mint.body.error.message, /PDPP_RUN_INTERACTION_CDP_WS_URL/);
+      await cancelRun(asUrl, started.run_id, pending.interaction_id);
+    } finally {
+      await closeServer(server);
+    }
+  } finally {
+    if (priorEnv === undefined) {
+      delete process.env.PDPP_RUN_INTERACTION_CDP_WS_URL;
+    } else {
+      process.env.PDPP_RUN_INTERACTION_CDP_WS_URL = priorEnv;
+    }
+    rmSync(tmpDir, { recursive: true, force: true });
+  }
 });
 
 test('resolving the interaction invalidates streaming and emits a resolved timeline event', async () => {

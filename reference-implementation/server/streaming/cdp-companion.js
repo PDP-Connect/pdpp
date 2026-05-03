@@ -2,10 +2,11 @@
  * CDP companion abstraction for the run-interaction streaming surface.
  *
  * The transport layer (mint route, viewer SSE, input POST) talks to a small
- * `Companion` interface that wraps either a real CDP session or a deterministic
- * fake used in tests. We do NOT take a runtime dependency on a specific CDP
- * client here; the real adapter is wired in when a host browser provider is
- * present, and falls back to an `unsupported` companion that fails closed.
+ * `Companion` interface that wraps either a real CDP session (see
+ * `cdp-adapter.js`) or a deterministic mock used in tests. The mint route is
+ * fail-closed when no real adapter is configured (it returns 503
+ * `streaming_companion_unavailable`), so this module exposes only the wire
+ * mapping helpers and the test mock — it never ships a fake-success companion.
  *
  * Wire shape — frames (server → viewer, JSON over SSE):
  *
@@ -238,31 +239,6 @@ export function buildScreencastParams({ viewport, quality = 70 } = {}) {
  *   ackFrame(sessionId): Promise<void>  — back-pressure ack
  *   browser_session_id: string          — opaque id of the underlying session
  */
-
-/**
- * Default companion that fails closed. Used when no CDP provider is wired:
- * the mint route still runs and the spec is exercised, but a real attach
- * receives a clean unsupported error.
- */
-export function createUnsupportedCompanion({ browser_session_id }) {
-  const id = browser_session_id || 'unsupported';
-  const handlers = new Set();
-  return {
-    browser_session_id: id,
-    async start() {
-      throw Object.assign(new Error('Streaming companion not configured'), { code: 'companion_unavailable' });
-    },
-    async stop() {},
-    onFrame(fn) {
-      handlers.add(fn);
-      return () => handlers.delete(fn);
-    },
-    async dispatch() {
-      throw Object.assign(new Error('Streaming companion not configured'), { code: 'companion_unavailable' });
-    },
-    async ackFrame() {},
-  };
-}
 
 /**
  * Mock companion for deterministic tests. Frames can be pushed manually via

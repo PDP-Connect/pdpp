@@ -66,7 +66,7 @@ import { collectDeploymentDiagnostics } from './deployment-diagnostics.ts';
 import { createOwnerAuthPlaceholder, OWNER_AUTH_DEFAULT_SUBJECT_ID } from './owner-auth.ts';
 import { registerInboxRoutes } from './inbox.js';
 import { createStreamingSessionStore } from './streaming/sessions.js';
-import { createUnsupportedCompanion } from './streaming/cdp-companion.js';
+import { createDefaultStreamingCompanionFactory } from './streaming/cdp-adapter.js';
 import { registerStreamingRoutes } from './streaming/routes.js';
 import { createController } from '../runtime/controller.ts';
 import {
@@ -2778,13 +2778,22 @@ function buildAsApp(opts = {}) {
   // Run-interaction streaming companion (reference-only). The store and
   // companion factory live in this AS app so the mint route, the SSE viewer
   // channel, and the input dispatch share state without a separate process.
-  // The default companion factory fails closed; tests inject a mock factory
-  // via opts.streamingCompanionFactory so frame and input mapping can be
-  // exercised deterministically without a real Chromium.
+  //
+  // - Tests inject `opts.streamingCompanionFactory` for deterministic mock
+  //   frame/input mapping without a real Chromium.
+  // - In production, the default factory connects to a CDP page-target
+  //   WebSocket URL configured via `PDPP_RUN_INTERACTION_CDP_WS_URL` (or
+  //   `opts.streamingCdpWsUrl`).
+  // - When neither is set, the factory is `null` and the mint route returns
+  //   503 `streaming_companion_unavailable`. We never hand out a token that
+  //   only fails at attach time.
   const streamingSessions = opts.streamingSessionStore || createStreamingSessionStore();
   const streamingCompanionFactory =
     opts.streamingCompanionFactory ||
-    (({ browser_session_id }) => createUnsupportedCompanion({ browser_session_id }));
+    createDefaultStreamingCompanionFactory({
+      wsUrl: opts.streamingCdpWsUrl,
+      logger: opts.streamingLogger,
+    });
   const streamingRoutes = registerStreamingRoutes({
     app,
     controller,

@@ -37,3 +37,14 @@ The reference implementation SHOULD use CDP screencast frames and CDP input even
 - **THEN** the reference SHALL size or map the browser viewport and input coordinates so the owner can complete the pending interaction from that device class
 - **AND** it SHALL document unsupported controls such as multi-touch gestures if they are not implemented
 
+### Requirement: Streaming companion fails closed when unconfigured
+
+The reference implementation SHALL refuse to mint a streaming session token when no streaming companion is configured. It SHALL NOT issue a token that only fails at attach time, because that surfaces as a dead primary action in the dashboard with no operator-actionable error.
+
+#### Scenario: The owner opens the stream on a server with no CDP companion configured
+
+- **WHEN** the owner requests a streaming session on a reference deployment that has no CDP companion configured (no `PDPP_RUN_INTERACTION_CDP_WS_URL` and no injected companion factory)
+- **THEN** the mint endpoint SHALL respond with `503 streaming_companion_unavailable`
+- **AND** the response SHALL name the configuration the operator must set
+- **AND** the dashboard SHALL render a configuration-pointer state instead of the streaming canvas
+

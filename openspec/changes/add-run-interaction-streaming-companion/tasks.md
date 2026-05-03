@@ -39,3 +39,13 @@
 - [x] 6.4 Run `pnpm --dir apps/web run check`.
 - [x] 6.5 Run `pnpm --dir apps/web run build`.
 - [x] 6.6 Run `pnpm spec:check`.
+
+## 7. Real CDP Adapter And Honest Unavailable State
+
+- [x] 7.1 Add a real CDP adapter (`server/streaming/cdp-adapter.js`) that speaks JSON-RPC directly over a Chrome DevTools page-target WebSocket — no Playwright/Puppeteer dependency in the reference server.
+- [x] 7.2 Resolve the CDP WebSocket URL from `PDPP_RUN_INTERACTION_CDP_WS_URL` (or `opts.streamingCdpWsUrl`); when neither is set, the default companion factory is `null`.
+- [x] 7.3 Mint route returns `503 streaming_companion_unavailable` when no companion factory is configured. Tokens are never issued for a deployment that cannot stream.
+- [x] 7.4 Dashboard viewer maps the unavailable response to a configuration-pointer state (no dead "Start streaming" button when streaming is impossible).
+- [x] 7.5 Drop the legacy `host_browser_required` interaction kind from the streaming surface (route + viewer). The runtime no longer emits this kind after `introduce-local-collector-runner`.
+- [x] 7.6 Add deterministic adapter tests using an in-memory fake `WebSocket` ctor that exercises JSON-RPC dispatch, screencast frame fan-out, ack, viewport mapping, error propagation, and close.
+- [x] 7.7 Add an integration test that proves a server with no companion configuration returns 503 from the mint route.

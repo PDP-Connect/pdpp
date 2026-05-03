@@ -189,6 +189,30 @@ export interface StreamingSessionMintResponse {
   viewport_path: string;
 }
 
+/**
+ * Thrown when the reference server has no streaming companion configured. The
+ * dashboard surfaces this as a configuration-pointer state instead of a
+ * generic error so operators see what to set, not just "failed".
+ */
+export class StreamingCompanionUnavailableError extends Error {
+  readonly code = "streaming_companion_unavailable";
+  constructor(message: string) {
+    super(message);
+    this.name = "StreamingCompanionUnavailableError";
+  }
+}
+
+function isUnavailableErrorBody(body: unknown): boolean {
+  if (!body || typeof body !== "object") {
+    return false;
+  }
+  const error = (body as { error?: unknown }).error;
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+  return (error as { code?: unknown }).code === "streaming_companion_unavailable";
+}
+
 export async function mintRunInteractionStream(
   runId: string,
   input: {
@@ -207,6 +231,9 @@ export async function mintRunInteractionStream(
   });
   const body = await readBody(response);
   if (!response.ok) {
+    if (response.status === 503 && isUnavailableErrorBody(body)) {
+      throw new StreamingCompanionUnavailableError(describeError(body, "Streaming companion is not configured"));
+    }
     throw new Error(describeError(body, `mint stream failed (${response.status})`));
   }
   return body as StreamingSessionMintResponse;
