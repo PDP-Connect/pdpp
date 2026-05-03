@@ -130,12 +130,9 @@ test('buildEnvironmentReport ignores non-allowlisted variables entirely', () => 
   );
 });
 
-// ─── host-browser bridge posture ───────────────────────────────────────────
+// ─── runtime capability posture ────────────────────────────────────────────
 
-function bridgePostureFromBuilder(input) {
-  // Build a minimal diagnostics report just to read the host_browser_bridge
-  // section out of the structured shape — keeps these tests honest about
-  // what the dashboard actually sees rather than poking the helper directly.
+function runtimeCapsFromBuilder(input) {
   return buildDeploymentDiagnostics({
     backend: null,
     db: null,
@@ -143,92 +140,69 @@ function bridgePostureFromBuilder(input) {
     manifests: [],
     indexState: null,
     env: {},
-    hostBrowserBridge: input,
+    runtimeCapabilities: input,
   });
 }
 
-test('host browser bridge: absent input renders disabled with not_checked reachability', () => {
-  const report = bridgePostureFromBuilder(null);
-  assert.equal(report.host_browser_bridge.mode, 'disabled');
-  assert.equal(report.host_browser_bridge.url, null);
-  assert.equal(report.host_browser_bridge.token_configured, false);
-  assert.equal(report.host_browser_bridge.daily_chrome_acknowledged, false);
-  assert.equal(report.host_browser_bridge.misconfigured_reason, null);
-  assert.equal(report.host_browser_bridge.reachability.status, 'not_checked');
-  // No bridge warnings should fire when the bridge is absent — operators
-  // who do not opt in must not see noise.
+test('runtime_capabilities: absent input renders an empty/host-default report with no warnings', () => {
+  const report = runtimeCapsFromBuilder(null);
+  assert.equal(report.runtime_capabilities.in_container, false);
+  assert.equal(report.runtime_capabilities.collector_paired, false);
+  // The default report flags `network` only — diagnostics has no input
+  // so it cannot honestly claim more.
+  assert.equal(report.runtime_capabilities.bindings.network, true);
+  assert.equal(report.runtime_capabilities.bindings.browser, false);
   const codes = report.warnings.map((w) => w.code);
-  assert.ok(!codes.includes('host_browser_bridge_misconfigured'));
-  assert.ok(!codes.includes('host_browser_bridge_unreachable'));
-  assert.ok(!codes.includes('host_browser_bridge_daily_chrome'));
+  assert.ok(!codes.includes('browser_connectors_need_collector'));
 });
 
-test('host browser bridge: misconfigured input warns and surfaces reason', () => {
-  const report = bridgePostureFromBuilder({
-    mode: 'misconfigured',
-    url: 'ws://host.docker.internal:7670',
-    tokenConfigured: false,
-    dailyChromeAcknowledged: false,
-    misconfiguredReason: 'PDPP_HOST_BROWSER_BRIDGE_URL is set but PDPP_HOST_BROWSER_BRIDGE_TOKEN is empty',
-    reachability: { status: 'not_checked', reason: 'Skipped because no token is configured.' },
+test('runtime_capabilities: containerized provider without collector warns', () => {
+  const report = runtimeCapsFromBuilder({
+    bindings: { network: true, filesystem: true, browser: false, local_device: false },
+    collector_paired: false,
+    in_container: true,
   });
-  assert.equal(report.host_browser_bridge.mode, 'misconfigured');
-  assert.equal(report.host_browser_bridge.token_configured, false);
-  // The configured URL is surfaced even in the misconfigured state so the
-  // operator can see what they typed; the token never crosses this surface.
-  assert.equal(report.host_browser_bridge.url, 'ws://host.docker.internal:7670');
-  const warning = report.warnings.find((w) => w.code === 'host_browser_bridge_misconfigured');
-  assert.ok(warning, 'misconfigured bridge raises a warning');
-  assert.match(warning.message, /PDPP_HOST_BROWSER_BRIDGE_TOKEN/);
+  const warning = report.warnings.find((w) => w.code === 'browser_connectors_need_collector');
+  assert.ok(warning, 'containerized provider w/o collector raises an actionable warning');
+  assert.match(warning.message, /collector/);
 });
 
-test('host browser bridge: configured + unreachable warns with cause', () => {
-  const report = bridgePostureFromBuilder({
-    mode: 'configured',
-    url: 'ws://host.docker.internal:7670',
-    tokenConfigured: true,
-    dailyChromeAcknowledged: false,
-    misconfiguredReason: null,
-    reachability: { status: 'unreachable', reason: 'connect ECONNREFUSED 192.168.65.2:7670' },
+test('runtime_capabilities: containerized provider with collector paired suppresses warning', () => {
+  const report = runtimeCapsFromBuilder({
+    bindings: { network: true, filesystem: true, browser: false, local_device: false },
+    collector_paired: true,
+    in_container: true,
   });
-  const warning = report.warnings.find((w) => w.code === 'host_browser_bridge_unreachable');
-  assert.ok(warning, 'unreachable bridge raises a warning');
-  assert.match(warning.message, /ws:\/\/host\.docker\.internal:7670/);
-  assert.match(warning.message, /ECONNREFUSED/);
+  const codes = report.warnings.map((w) => w.code);
+  assert.ok(!codes.includes('browser_connectors_need_collector'));
+  assert.equal(report.runtime_capabilities.collector_paired, true);
 });
 
-test('host browser bridge: daily chrome opt-in warns even when reachable', () => {
-  const report = bridgePostureFromBuilder({
-    mode: 'configured',
-    url: 'ws://host.docker.internal:7670',
-    tokenConfigured: true,
-    dailyChromeAcknowledged: true,
-    misconfiguredReason: null,
-    reachability: { status: 'ok' },
+test('runtime_capabilities: provider runtime advertising browser does not warn even without collector', () => {
+  // X11/VNC override case: the provider declares it can render a visible
+  // browser. No need for a collector to satisfy browser-required
+  // connectors, so no warning fires.
+  const report = runtimeCapsFromBuilder({
+    bindings: { network: true, filesystem: true, browser: true, local_device: false },
+    collector_paired: false,
+    in_container: true,
   });
-  assert.equal(report.host_browser_bridge.daily_chrome_acknowledged, true);
-  const warning = report.warnings.find((w) => w.code === 'host_browser_bridge_daily_chrome');
-  assert.ok(warning, 'daily-chrome opt-in raises a per-deploy warning');
+  const codes = report.warnings.map((w) => w.code);
+  assert.ok(!codes.includes('browser_connectors_need_collector'));
 });
 
-test('host browser bridge: report shape never carries a raw token field', () => {
-  // Defense in depth — the input type does not even accept a raw token,
-  // and the report shape must not introduce one. A future refactor that
-  // adds a "token" field to either side should fail this test loudly.
-  const report = bridgePostureFromBuilder({
-    mode: 'configured',
-    url: 'ws://host.docker.internal:7670',
-    tokenConfigured: true,
-    dailyChromeAcknowledged: false,
-    misconfiguredReason: null,
-    reachability: { status: 'ok' },
+test('runtime_capabilities: report shape never carries a raw bridge token field', () => {
+  // Defense in depth — the report shape should not introduce a `token`
+  // field. A future refactor that revives the old bridge field should
+  // fail this test loudly.
+  const report = runtimeCapsFromBuilder({
+    bindings: { network: true, filesystem: true, browser: false, local_device: true },
+    collector_paired: true,
+    in_container: false,
   });
-  assert.ok(!('token' in report.host_browser_bridge),
-    'host_browser_bridge MUST NOT include a token field');
-  // Serialize and grep — even nested string interpolation must not embed a token.
-  const blob = JSON.stringify(report.host_browser_bridge);
+  const blob = JSON.stringify(report.runtime_capabilities);
   assert.ok(!blob.toLowerCase().includes('"token":'),
-    'serialized posture must not include a token field at any nesting level');
+    'serialized runtime_capabilities must not include a token field at any nesting level');
 });
 
 // ─── §2.4 — zero participation reported separately from readiness ──────────

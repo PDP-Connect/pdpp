@@ -32,7 +32,7 @@
  * - The diagnostics report flows in through the
  *   `collectDeploymentReport` dependency. The host wires the concrete
  *   substrate read (semantic backend, vector index, manifests, env
- *   redaction, host-browser-bridge probe) behind that capability; the
+ *   redaction, runtime capability posture) behind that capability; the
  *   operation does not look at substrate internals.
  */
 
@@ -56,7 +56,7 @@ export interface RefDeploymentEnvEntry {
 export interface RefDeploymentReport {
   readonly database: { readonly path: string };
   readonly environment: readonly RefDeploymentEnvEntry[];
-  readonly host_browser_bridge: Readonly<Record<string, unknown>>;
+  readonly runtime_capabilities: Readonly<Record<string, unknown>>;
   readonly lexical: Readonly<Record<string, unknown>>;
   readonly manifests: readonly Readonly<Record<string, unknown>>[];
   readonly semantic: Readonly<Record<string, unknown>>;

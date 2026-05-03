@@ -77,7 +77,7 @@ export interface InteractionResponse {
   value?: string;
 }
 
-export type InteractionKind = "credentials" | "host_browser_required" | "otp" | "manual_action";
+export type InteractionKind = "credentials" | "otp" | "manual_action";
 
 /** All messages a connector emits over stdout. */
 export type EmittedMessage =
@@ -163,7 +163,6 @@ export interface BrowserConfig {
 export interface BrowserRuntimeVisibility {
   readonly envKey: string;
   readonly headless: boolean;
-  readonly hostBridgeConfigured: boolean;
   readonly profileName: string;
 }
 
@@ -616,7 +615,7 @@ interface AcquiredBrowser {
   release: () => Promise<void>;
 }
 
-const MANUAL_ACTION_RECOVERY_RE = /\bheadless\b|host browser bridge|rerun .*headed|PDPP_[A-Z0-9_]+_HEADLESS/iu;
+const MANUAL_ACTION_RECOVERY_RE = /\bheadless\b|local collector|rerun .*headed|PDPP_[A-Z0-9_]+_HEADLESS/iu;
 
 export function resolveBrowserRuntimeVisibility(
   browser: BrowserConfig,
@@ -628,9 +627,6 @@ export function resolveBrowserRuntimeVisibility(
   return {
     envKey,
     headless: browser.headless ?? env[envKey] !== "0",
-    hostBridgeConfigured: Boolean(
-      env.PDPP_HOST_BROWSER_BRIDGE_URL?.trim() && env.PDPP_HOST_BROWSER_BRIDGE_TOKEN?.trim()
-    ),
     profileName,
   };
 }
@@ -641,15 +637,6 @@ export function decorateBrowserManualAction(
 ): InteractionRequest {
   if (req.kind !== "manual_action") {
     return req;
-  }
-  if (visibility.hostBridgeConfigured) {
-    return {
-      ...req,
-      kind: "host_browser_required",
-      message:
-        `${req.message}\n\n` +
-        "A host browser bridge is configured. Complete this step in the visible browser window on the host machine, then continue this run.",
-    };
   }
   if (!visibility.headless) {
     return req;
@@ -663,25 +650,23 @@ export function decorateBrowserManualAction(
       `${req.message}\n\n` +
       "This run is using a headless browser, so there may be no visible browser window to complete this manual action. " +
       `If you cannot complete it, cancel this interaction and rerun with ${visibility.envKey}=0 on a host desktop. ` +
-      "In Docker, start the host browser bridge and set PDPP_HOST_BROWSER_BRIDGE_URL and PDPP_HOST_BROWSER_BRIDGE_TOKEN instead.",
+      "In Docker, run this connector through the local collector runner so the operator's host can render the browser.",
   };
 }
 
 /**
- * Acquire a browser context for the connector, routing through the
- * host browser bridge if configured (Docker/Compose) or falling back
- * to the native isolated launcher (host-direct runs). Throws
- * TerminalError on failure; preserves
- * HostBrowserBridgeUnavailableError's stable code in the message so
+ * Acquire a browser context for the connector via the native isolated
+ * launcher. Throws TerminalError on failure; preserves
+ * HeadedBrowserUnavailableError's stable code in the message so
  * downstream logs/dashboards can pattern-match.
  */
 async function acquireBrowser(browser: BrowserConfig, name: string): Promise<AcquiredBrowser> {
-  const { acquireBrowserForConnector, HostBrowserBridgeUnavailableError } = await import("./browser-launch.ts");
+  const { acquireBrowserForConnector, HeadedBrowserUnavailableError } = await import("./browser-launch.ts");
   const { headless, profileName } = resolveBrowserRuntimeVisibility(browser, name);
   try {
     return await acquireBrowserForConnector({ profileName, headless });
   } catch (err) {
-    if (err instanceof HostBrowserBridgeUnavailableError) {
+    if (err instanceof HeadedBrowserUnavailableError) {
       // Surface the stable code in the terminal-error message so the
       // controller's run-failed copy can render the deployment-config
       // error state rather than a generic browser failure.

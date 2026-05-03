@@ -733,7 +733,7 @@ function validateInteractionMessage(msg, scopeByStream) {
   if (typeof msg.request_id !== 'string' || !msg.request_id.trim()) {
     throw new Error('Connector emitted invalid INTERACTION.request_id: expected non-empty string');
   }
-  if (!['credentials', 'host_browser_required', 'otp', 'manual_action'].includes(msg.kind)) {
+  if (!['credentials', 'otp', 'manual_action'].includes(msg.kind)) {
     throw new Error(`Connector emitted invalid INTERACTION.kind: ${msg.kind}`);
   }
   requireOptionalNonEmptyString(msg.stream, 'INTERACTION.stream');
@@ -1604,7 +1604,7 @@ export async function runConnector(opts) {
           });
 
           if (responseStatus !== 'success') {
-            const interactionRecoveryHint = msg.kind === 'manual_action' || msg.kind === 'host_browser_required' || msg.kind === 'otp'
+            const interactionRecoveryHint = msg.kind === 'manual_action' || msg.kind === 'otp'
               ? 'manual_action_required'
               : 'refresh_credentials';
             appendKnownGap(buildKnownGap({

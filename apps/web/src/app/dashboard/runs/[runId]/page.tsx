@@ -14,7 +14,6 @@ import {
   type KnownGap,
   type KnownGapSummary,
 } from "../../lib/run-gaps.ts";
-import { type BridgeUnavailableInfo, extractBridgeUnavailable } from "./bridge-unavailable.ts";
 import { RunInteractionForm } from "./interaction-form.tsx";
 import { RunDetailPoller } from "./run-detail-poller.tsx";
 
@@ -87,7 +86,6 @@ export default async function RunDetailPage({
   const stateTone = getRunStateTone({ active, pendingInteraction: Boolean(pendingInteraction), terminalStatus });
   const stateValue = getRunStateValue({ active, pendingInteraction: Boolean(pendingInteraction), terminalStatus });
   const failureRows = summarizeFailure(failure);
-  const bridgeUnavailable = extractBridgeUnavailable(failure);
 
   return (
     <DashboardShell active="runs">
@@ -97,7 +95,6 @@ export default async function RunDetailPage({
           <>
             <PendingInteractionSection pendingInteraction={pendingInteraction} runId={runId} />
             <LatestProgressSection active={active} latestProgress={latestProgress} terminalStatus={terminalStatus} />
-            <BridgeUnavailableSection bridgeUnavailable={bridgeUnavailable} />
             <StatsGrid
               checkpoints={checkpoints}
               failure={failure}
@@ -157,19 +154,13 @@ function PendingInteractionSection({
   if (!pendingInteraction) {
     return null;
   }
-  const isHostBrowserRequired = pendingInteraction.kind === "host_browser_required";
-
   return (
     <Callout
       action={<StatusBadge inline status="pending" />}
       className="mb-6 border border-[color:var(--warning)] border-l-4 bg-[color:var(--warning-wash)]"
-      description={
-        isHostBrowserRequired
-          ? "This run is alive, but it needs you to finish a step in the visible host browser window."
-          : "This run is alive, but it cannot continue until the requested interaction is satisfied."
-      }
+      description="This run is alive, but it cannot continue until the requested interaction is satisfied."
       surface="human"
-      title={isHostBrowserRequired ? "Waiting on host browser" : "Waiting on operator input"}
+      title="Waiting on operator input"
     >
       <dl className="pdpp-caption grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
         <dt className="text-muted-foreground">kind</dt>
@@ -668,50 +659,6 @@ function summarizeFailure(failure: SpineEvent | undefined): [string, string][] {
     ...(failureOrigin ? [["origin", failureOrigin] as [string, string]] : []),
     ...(failureMessage ? [["message", failureMessage] as [string, string]] : []),
   ];
-}
-
-// ─── Host browser bridge unavailable ────────────────────────────────────────
-// Surfaced as a distinct deployment-config error state, not a generic failure.
-//
-// Wire path: HostBrowserBridgeUnavailableError → TerminalError("[host_browser_bridge_unavailable] <msg>")
-// → connector DONE { status:"failed", error:{ message:"[code] ...", retryable:false } }
-// → run.failed data { reason:"connector_reported_failed", connector_error_message:"[code] ..." }
-//
-function BridgeUnavailableSection({ bridgeUnavailable }: { bridgeUnavailable: BridgeUnavailableInfo | null }) {
-  if (!bridgeUnavailable) {
-    return null;
-  }
-  return (
-    <section className="mb-6 rounded-md border border-destructive/30 border-l-4 border-l-destructive/60 bg-destructive/5 px-4 py-3">
-      <header className="mb-2 flex flex-wrap items-baseline justify-between gap-2">
-        <h3 className="pdpp-title text-foreground">Host browser bridge unavailable</h3>
-        <span className="pdpp-caption text-muted-foreground">deployment config error</span>
-      </header>
-      <p className="pdpp-caption mb-3 text-muted-foreground">
-        This run requires a visible host browser but the bridge is not reachable. This is a deployment configuration
-        problem, not a connector failure.
-      </p>
-      {bridgeUnavailable.url ? (
-        <dl className="pdpp-caption mb-3 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
-          <dt className="text-muted-foreground">configured URL</dt>
-          <dd className="break-all font-mono">{bridgeUnavailable.url}</dd>
-        </dl>
-      ) : null}
-      <div className="pdpp-caption rounded-md border border-border/60 bg-muted/40 px-3 py-2">
-        <p className="mb-1 font-medium text-foreground">Copy-paste fix</p>
-        <p className="mb-2 text-muted-foreground">
-          Start the host bridge on the machine running Docker, then re-run the connector:
-        </p>
-        <pre className="overflow-x-auto font-mono text-foreground/90">
-          {`# macOS / Windows Docker Desktop\npnpm --dir packages/polyfill-connectors exec tsx \\\n  bin/host-browser-bridge.ts --profile <connector-name>\n\n# Linux Docker (bind to docker bridge IP, e.g. 172.17.0.1)\nDOCKER_BRIDGE_IP=$(ip -4 addr show docker0 | awk '/inet /{print $2}' | cut -d/ -f1)\npnpm --dir packages/polyfill-connectors exec tsx \\\n  bin/host-browser-bridge.ts --profile <connector-name> \\\n  --bind-host="$DOCKER_BRIDGE_IP"`}
-        </pre>
-        <p className="mt-2 text-muted-foreground">
-          Then export the printed <code>PDPP_HOST_BROWSER_BRIDGE_URL</code> and{" "}
-          <code>PDPP_HOST_BROWSER_BRIDGE_TOKEN</code> into your Compose environment and restart.
-        </p>
-      </div>
-    </section>
-  );
 }
 
 function getTerminalRunStatus(events: SpineEvent[]): TerminalRunStatus {
