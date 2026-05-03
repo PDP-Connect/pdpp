@@ -7,16 +7,10 @@ import {
   resolveBrowserRuntimeVisibility,
 } from "./connector-runtime.ts";
 
-const HEADLESS_NO_BRIDGE: BrowserRuntimeVisibility = {
+const HEADLESS: BrowserRuntimeVisibility = {
   envKey: "PDPP_REDDIT_HEADLESS",
   headless: true,
-  hostBridgeConfigured: false,
   profileName: "reddit",
-};
-
-const HEADLESS_WITH_BRIDGE: BrowserRuntimeVisibility = {
-  ...HEADLESS_NO_BRIDGE,
-  hostBridgeConfigured: true,
 };
 
 const MANUAL_ACTION: InteractionRequest = {
@@ -29,41 +23,31 @@ test("resolveBrowserRuntimeVisibility defaults browser connectors to headless un
   assert.deepEqual(resolveBrowserRuntimeVisibility({}, "reddit", {}), {
     envKey: "PDPP_REDDIT_HEADLESS",
     headless: true,
-    hostBridgeConfigured: false,
     profileName: "reddit",
   });
 
   assert.deepEqual(resolveBrowserRuntimeVisibility({}, "reddit", { PDPP_REDDIT_HEADLESS: "0" }), {
     envKey: "PDPP_REDDIT_HEADLESS",
     headless: false,
-    hostBridgeConfigured: false,
     profileName: "reddit",
   });
 });
 
-test("resolveBrowserRuntimeVisibility detects bridge configuration and explicit profile names", () => {
-  assert.deepEqual(
-    resolveBrowserRuntimeVisibility({ profileName: "chatgpt" }, "ignored", {
-      PDPP_HOST_BROWSER_BRIDGE_TOKEN: "token",
-      PDPP_HOST_BROWSER_BRIDGE_URL: "ws://host.docker.internal:7670",
-    }),
-    {
-      envKey: "PDPP_CHATGPT_HEADLESS",
-      headless: true,
-      hostBridgeConfigured: true,
-      profileName: "chatgpt",
-    }
-  );
+test("resolveBrowserRuntimeVisibility honors explicit profile names", () => {
+  assert.deepEqual(resolveBrowserRuntimeVisibility({ profileName: "chatgpt" }, "ignored", {}), {
+    envKey: "PDPP_CHATGPT_HEADLESS",
+    headless: true,
+    profileName: "chatgpt",
+  });
 });
 
-test("decorateBrowserManualAction appends recovery copy for headless browser runs without a bridge", () => {
-  const decorated = decorateBrowserManualAction(MANUAL_ACTION, HEADLESS_NO_BRIDGE);
+test("decorateBrowserManualAction appends recovery copy for headless browser runs", () => {
+  const decorated = decorateBrowserManualAction(MANUAL_ACTION, HEADLESS);
 
   assert.notEqual(decorated, MANUAL_ACTION);
   assert.match(decorated.message, /headless browser/iu);
   assert.match(decorated.message, /PDPP_REDDIT_HEADLESS=0/u);
-  assert.match(decorated.message, /PDPP_HOST_BROWSER_BRIDGE_URL/u);
-  assert.match(decorated.message, /PDPP_HOST_BROWSER_BRIDGE_TOKEN/u);
+  assert.match(decorated.message, /local collector/iu);
 });
 
 test("decorateBrowserManualAction leaves non-manual interactions unchanged", () => {
@@ -72,19 +56,11 @@ test("decorateBrowserManualAction leaves non-manual interactions unchanged", () 
     message: "Enter the verification code.",
   };
 
-  assert.equal(decorateBrowserManualAction(otp, HEADLESS_NO_BRIDGE), otp);
+  assert.equal(decorateBrowserManualAction(otp, HEADLESS), otp);
 });
 
 test("decorateBrowserManualAction leaves visible-browser-capable runs unchanged", () => {
-  assert.equal(decorateBrowserManualAction(MANUAL_ACTION, { ...HEADLESS_NO_BRIDGE, headless: false }), MANUAL_ACTION);
-});
-
-test("decorateBrowserManualAction marks host bridge runs as host_browser_required", () => {
-  const decorated = decorateBrowserManualAction(MANUAL_ACTION, HEADLESS_WITH_BRIDGE);
-
-  assert.notEqual(decorated, MANUAL_ACTION);
-  assert.equal(decorated.kind, "host_browser_required");
-  assert.match(decorated.message, /visible browser window on the host machine/u);
+  assert.equal(decorateBrowserManualAction(MANUAL_ACTION, { ...HEADLESS, headless: false }), MANUAL_ACTION);
 });
 
 test("decorateBrowserManualAction does not duplicate existing recovery copy", () => {
@@ -94,5 +70,5 @@ test("decorateBrowserManualAction does not duplicate existing recovery copy", ()
     timeout_seconds: 1800,
   };
 
-  assert.equal(decorateBrowserManualAction(alreadyActionable, HEADLESS_NO_BRIDGE), alreadyActionable);
+  assert.equal(decorateBrowserManualAction(alreadyActionable, HEADLESS), alreadyActionable);
 });

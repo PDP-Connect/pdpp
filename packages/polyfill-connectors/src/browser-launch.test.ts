@@ -2,24 +2,16 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   acquireBrowserForConnector,
-  acquireRemoteHostBrowser,
   decideContainerHeadedBrowserGate,
-  HostBrowserBridgeUnavailableError,
+  HEADED_BROWSER_UNAVAILABLE_CODE,
+  HeadedBrowserUnavailableError,
 } from "./browser-launch.ts";
-import { HOST_BROWSER_BRIDGE_UNAVAILABLE_CODE } from "./host-browser-bridge-config.ts";
 
-const BRIDGE_ENV_VARS = [
-  "PDPP_HOST_BROWSER_BRIDGE_URL",
-  "PDPP_HOST_BROWSER_BRIDGE_TOKEN",
-  "PDPP_HOST_BROWSER_BRIDGE_DAILY_CHROME",
-  "PDPP_REFERENCE_MODE",
-  "PDPP_FORCE_CONTAINER",
-  "PDPP_ALLOW_HEADED_CONTAINER_BROWSER",
-] as const;
+const ENV_VARS = ["PDPP_FORCE_CONTAINER", "PDPP_ALLOW_HEADED_CONTAINER_BROWSER"] as const;
 
-function withEnv(values: Partial<Record<(typeof BRIDGE_ENV_VARS)[number], string>>) {
+function withEnv(values: Partial<Record<(typeof ENV_VARS)[number], string>>) {
   const previous = new Map<string, string | undefined>();
-  for (const name of BRIDGE_ENV_VARS) {
+  for (const name of ENV_VARS) {
     previous.set(name, process.env[name]);
     delete process.env[name];
   }
@@ -38,65 +30,6 @@ function withEnv(values: Partial<Record<(typeof BRIDGE_ENV_VARS)[number], string
     }
   };
 }
-
-test("acquireBrowserForConnector throws HostBrowserBridgeUnavailableError when bridge URL is set without a token", async () => {
-  const restore = withEnv({
-    PDPP_HOST_BROWSER_BRIDGE_URL: "ws://host.docker.internal:7670",
-  });
-  try {
-    await assert.rejects(
-      () => acquireBrowserForConnector({ profileName: "test_connector" }),
-      (err: unknown) => {
-        assert.ok(err instanceof HostBrowserBridgeUnavailableError);
-        if (err instanceof HostBrowserBridgeUnavailableError) {
-          assert.equal(err.code, HOST_BROWSER_BRIDGE_UNAVAILABLE_CODE);
-          assert.match(err.message, /misconfigured/);
-          assert.match(err.message, /unauthenticated/);
-        }
-        return true;
-      }
-    );
-  } finally {
-    restore();
-  }
-});
-
-test("acquireBrowserForConnector throws HostBrowserBridgeUnavailableError when only the token is set", async () => {
-  const restore = withEnv({
-    PDPP_HOST_BROWSER_BRIDGE_TOKEN: "secret-without-url",
-  });
-  try {
-    await assert.rejects(
-      () => acquireBrowserForConnector({ profileName: "test_connector" }),
-      (err: unknown) => err instanceof HostBrowserBridgeUnavailableError
-    );
-  } finally {
-    restore();
-  }
-});
-
-test("acquireRemoteHostBrowser surfaces HostBrowserBridgeUnavailableError when the bridge is unreachable", async () => {
-  // Port 1 is privileged + closed on every test runner. The patchright
-  // CDP client raises a connection error which we wrap.
-  await assert.rejects(
-    () =>
-      acquireRemoteHostBrowser({
-        bridgeUrl: "ws://127.0.0.1:1",
-        bridgeToken: "irrelevant-token",
-      }),
-    (err: unknown) => {
-      assert.ok(err instanceof HostBrowserBridgeUnavailableError, `got ${String(err)}`);
-      if (err instanceof HostBrowserBridgeUnavailableError) {
-        assert.equal(err.code, HOST_BROWSER_BRIDGE_UNAVAILABLE_CODE);
-        assert.equal(err.bridgeUrl, "ws://127.0.0.1:1");
-        // Message should name the URL and point at the host bridge CLI.
-        assert.match(err.message, /127\.0\.0\.1:1/);
-        assert.match(err.message, /host-browser-bridge/);
-      }
-      return true;
-    }
-  );
-});
 
 // ─── In-container fail-closed gate (narrow: HEADED only) ──────────────
 //
@@ -142,23 +75,13 @@ test("decideContainerHeadedBrowserGate: escape hatch downgrades HEADED-in-contai
 });
 
 test("decideContainerHeadedBrowserGate: escape hatch is a no-op when not in container", () => {
-  // Defensive — the escape hatch should never matter on the host-direct
-  // path. Asserting this prevents an accidental future refactor from
-  // turning the env into a side-effect on host runs.
   assert.deepEqual(
     decideContainerHeadedBrowserGate({ headless: false, inContainer: false, escapeHatchEnabled: true }),
     { kind: "proceed" }
   );
 });
 
-test("decideContainerHeadedBrowserGate: undefined headless in container fails closed (mirrors acquireIsolatedBrowser default of headless=false)", () => {
-  // Regression for the 2026-04-27 owner review: acquireIsolatedBrowser
-  // destructures `{ headless = false }`, so a library-direct caller
-  // writing `acquireBrowserForConnector({ profileName })` with no
-  // headless field is asking for a visible browser. The gate MUST
-  // mirror the launcher's effective default — anything else lets the
-  // exact silent-headed-in-container failure mode the gate exists to
-  // prevent slip through.
+test("decideContainerHeadedBrowserGate: undefined headless in container fails closed (mirrors acquireIsolatedBrowser default)", () => {
   assert.deepEqual(
     decideContainerHeadedBrowserGate({ headless: undefined, inContainer: true, escapeHatchEnabled: false }),
     { kind: "fail_closed" }
@@ -166,9 +89,6 @@ test("decideContainerHeadedBrowserGate: undefined headless in container fails cl
 });
 
 test("decideContainerHeadedBrowserGate: undefined headless on host (no container) proceeds", () => {
-  // Defensive: outside a container the gate must not fire regardless of
-  // the headless default — the host-direct launcher is exactly what we
-  // want to reach.
   assert.deepEqual(
     decideContainerHeadedBrowserGate({ headless: undefined, inContainer: false, escapeHatchEnabled: false }),
     { kind: "proceed" }
@@ -176,29 +96,21 @@ test("decideContainerHeadedBrowserGate: undefined headless on host (no container
 });
 
 test("decideContainerHeadedBrowserGate: explicit headless: true in container proceeds even when undefined would not", () => {
-  // Explicit headless=true is the legitimate non-interactive workload
-  // (cookie-authenticated scrape, fingerprint-only fetch). It must
-  // remain allowed in container after the undefined-as-headed fix.
   assert.deepEqual(decideContainerHeadedBrowserGate({ headless: true, inContainer: true, escapeHatchEnabled: false }), {
     kind: "proceed",
   });
 });
 
-test("acquireBrowserForConnector fails closed when caller omits 'headless' in container (matches acquireIsolatedBrowser default)", async () => {
-  // 2026-04-27 owner-review regression: a library-direct caller writing
-  // `acquireBrowserForConnector({ profileName })` with NO headless field
-  // is asking for a visible browser (acquireIsolatedBrowser destructures
-  // `{ headless = false }`). The gate MUST fail closed in container;
-  // otherwise the silent-headed-in-container path the gate exists to
-  // close still slips through for that call shape.
+test("acquireBrowserForConnector fails closed when caller omits 'headless' in container", async () => {
   const restore = withEnv({ PDPP_FORCE_CONTAINER: "1" });
   try {
     await assert.rejects(
       () => acquireBrowserForConnector({ profileName: "test_connector" }),
       (err: unknown) => {
-        assert.ok(err instanceof HostBrowserBridgeUnavailableError, `got ${String(err)}`);
-        if (err instanceof HostBrowserBridgeUnavailableError) {
-          assert.equal(err.code, HOST_BROWSER_BRIDGE_UNAVAILABLE_CODE);
+        assert.ok(err instanceof HeadedBrowserUnavailableError, `got ${String(err)}`);
+        if (err instanceof HeadedBrowserUnavailableError) {
+          assert.equal(err.code, HEADED_BROWSER_UNAVAILABLE_CODE);
+          assert.match(err.message, /collector/i);
         }
         return true;
       }
@@ -208,28 +120,17 @@ test("acquireBrowserForConnector fails closed when caller omits 'headless' in co
   }
 });
 
-test("acquireBrowserForConnector fails closed for HEADED in container with no bridge (PDPP_FORCE_CONTAINER=1)", async () => {
-  // Integration test — the fail-closed branch short-circuits before any
-  // launcher work, so this is fast and deterministic. `PDPP_FORCE_CONTAINER`
-  // is the explicit test/Kubernetes signal; Docker/Compose is normally
-  // detected through `/.dockerenv`. `PDPP_REFERENCE_MODE=composed` describes
-  // origin layout, not runtime placement. Without a bridge URL, the runtime
-  // would otherwise launch an invisible in-container Chromium. Per
-  // design-host-browser-bridge-for-docker design.md § "Failure Mode When
-  // Unavailable".
-  const restore = withEnv({
-    PDPP_FORCE_CONTAINER: "1",
-  });
+test("acquireBrowserForConnector fails closed for HEADED in container with no local collector (PDPP_FORCE_CONTAINER=1)", async () => {
+  const restore = withEnv({ PDPP_FORCE_CONTAINER: "1" });
   try {
     await assert.rejects(
       () => acquireBrowserForConnector({ profileName: "test_connector", headless: false }),
       (err: unknown) => {
-        assert.ok(err instanceof HostBrowserBridgeUnavailableError, `got ${String(err)}`);
-        if (err instanceof HostBrowserBridgeUnavailableError) {
-          assert.equal(err.code, HOST_BROWSER_BRIDGE_UNAVAILABLE_CODE);
-          assert.equal(err.bridgeUrl, null);
+        assert.ok(err instanceof HeadedBrowserUnavailableError, `got ${String(err)}`);
+        if (err instanceof HeadedBrowserUnavailableError) {
+          assert.equal(err.code, HEADED_BROWSER_UNAVAILABLE_CODE);
           assert.match(err.message, /container/i);
-          assert.match(err.message, /PDPP_HOST_BROWSER_BRIDGE_URL/);
+          assert.match(err.message, /collector/i);
           // Message must explicitly mention that headless is unaffected so
           // the operator who hits this never thinks the gate applies to
           // their non-interactive workload.
@@ -243,12 +144,9 @@ test("acquireBrowserForConnector fails closed for HEADED in container with no br
   }
 });
 
-test("HostBrowserBridgeUnavailableError carries the stable code", () => {
-  const err = new HostBrowserBridgeUnavailableError({
-    bridgeUrl: "ws://x:1",
-    message: "test",
-  });
-  assert.equal(err.code, HOST_BROWSER_BRIDGE_UNAVAILABLE_CODE);
-  assert.equal(err.name, "HostBrowserBridgeUnavailableError");
+test("HeadedBrowserUnavailableError carries the stable code", () => {
+  const err = new HeadedBrowserUnavailableError({ message: "test" });
+  assert.equal(err.code, HEADED_BROWSER_UNAVAILABLE_CODE);
+  assert.equal(err.name, "HeadedBrowserUnavailableError");
   assert.ok(err instanceof Error);
 });

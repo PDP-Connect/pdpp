@@ -192,71 +192,39 @@ Reverse proxies must also forward WebSocket upgrade traffic for
 #### Browser-backed connectors in Docker
 
 Connectors like ChatGPT and USAA need a real browser the operator can see and
-click for login, OTP, or Cloudflare challenges. In Docker, those interactions
-go through the host browser bridge — a small process that runs on the host,
-owns a Patchright persistent context against `~/.pdpp/profiles/<name>/`, and
-exposes its CDP endpoint to the container.
-
-The bridge bind host depends on platform:
-
-##### macOS / Windows Docker Desktop
-
-`host.docker.internal` is forwarded to host loopback by Docker Desktop, so
-the default 127.0.0.1 bind works:
+click for login, OTP, or Cloudflare challenges. The provider/control-plane
+container cannot render a visible browser; those connectors must run in a
+**local collector runner** on a host the operator can see, paired to the
+provider via device-scoped enrollment. See
+`openspec/changes/introduce-local-collector-runner/design.md` for the full
+design.
 
 ```bash
-# 1. Start the bridge for the target connector profile.
+# 1. On the operator's host, pair the collector to the provider.
 pnpm --dir packages/polyfill-connectors exec tsx \
-  bin/host-browser-bridge.ts --profile chatgpt
-# The bridge prints a URL+token. Export them into your Compose environment:
-export PDPP_HOST_BROWSER_BRIDGE_URL=ws://host.docker.internal:7670
-export PDPP_HOST_BROWSER_BRIDGE_TOKEN=<token-printed-by-bridge>
+  bin/collector-runner.ts enroll \
+  --base-url http://localhost:7662 \
+  --code <enrollment-code-from-provider>
+# The collector prints a device id + token; persist them somewhere safe.
 
-# 2. Start the stack as usual; ChatGPT runs will drive the host browser.
-docker compose --env-file .env.docker up
+# 2. Run the connector through the collector. The collector advertises a
+#    `browser` capability and uses the host's isolated Patchright profile.
+PDPP_LOCAL_DEVICE_ID=<id> PDPP_LOCAL_DEVICE_TOKEN=<token> \
+PDPP_SOURCE_INSTANCE_ID=<source-instance> \
+pnpm --dir packages/polyfill-connectors exec tsx \
+  bin/collector-runner.ts run \
+  --base-url http://localhost:7662 \
+  --connector chatgpt
 ```
 
-##### Linux Docker
-
-`host.docker.internal:host-gateway` resolves to the docker bridge gateway IP
-(typically `172.17.0.1`), which is **not** host loopback. A 127.0.0.1-only
-bind is unreachable from the container — verified empirically. Bind the
-bridge to the docker bridge IP and tell the container to use that IP:
-
-```bash
-DOCKER_BRIDGE_IP=$(ip -4 addr show docker0 | awk '/inet /{print $2}' | cut -d/ -f1)
-
-# 1. Start the bridge bound to the docker bridge IP.
-pnpm --dir packages/polyfill-connectors exec tsx \
-  bin/host-browser-bridge.ts --profile chatgpt --bind-host "$DOCKER_BRIDGE_IP"
-
-# 2. The bridge prints the matching URL — use it directly:
-export PDPP_HOST_BROWSER_BRIDGE_URL=ws://$DOCKER_BRIDGE_IP:7670
-export PDPP_HOST_BROWSER_BRIDGE_TOKEN=<token-printed-by-bridge>
-
-# 3. Verify the container can reach the bridge before running connectors:
-docker run --rm --add-host=host.docker.internal:host-gateway \
-  curlimages/curl:latest \
-  curl -sf "http://$DOCKER_BRIDGE_IP:7670/"  # expects: pdpp-host-browser-bridge
-```
-
-The bridge prints a Linux-specific warning when started with
-`--bind-host=127.0.0.1`, with the exact `ip` invocation above. Binding to
-`0.0.0.0` is supported via `--allow-public-bind` but exposes the bridge to
-the LAN — prefer the bridge IP, which limits exposure to local containers.
-
-When the bridge env vars are set but the bridge isn't reachable, runs fail
-fast with `host_browser_bridge_unavailable` rather than waiting on an
-invisible browser. When the env vars are **unset** and the runtime detects
-it's running in a container (`/.dockerenv`), headed-browser acquisitions
-also fail closed with `host_browser_bridge_unavailable` — launching an
-invisible in-container Chromium for an interactive flow would silently hang
-on the operator's `auto-login` handshake. Headless container acquisitions
-are unaffected. The escape hatch for explicit X11/VNC debugging is
+When a HEADED browser-backed connector is attempted inside the
+provider/control-plane container, headed acquisitions fail closed before
+spawn with `headed_browser_unavailable` — launching an invisible
+in-container Chromium for an interactive flow would silently hang on the
+operator's `auto-login` handshake. Headless container acquisitions are
+unaffected. The escape hatch for explicit X11/VNC debugging is
 `PDPP_ALLOW_HEADED_CONTAINER_BROWSER=1`, which emits a per-acquisition
-warning. See
-`openspec/changes/design-host-browser-bridge-for-docker/design.md` for the
-full design.
+warning.
 
 Current Docker connector-support posture:
 
@@ -267,7 +235,7 @@ Current Docker connector-support posture:
 | OpenAI Codex CLI, Claude Code | Filesystem-only; supported in same-host Docker when host agent state is mounted read-only. | Add a local Compose override such as `${HOME}/.codex:/root/.codex:ro` and `${HOME}/.claude:/root/.claude:ro`; no extra env vars are needed because the connectors default to `~/.codex` and `~/.claude`. | Default Compose uses a named `pdpp-home` volume, which exposes `/root/.pdpp` but **not** `/root/.codex` or `/root/.claude`. Multi-device collection belongs to the proposed `design-local-device-exporter-collection` topology. |
 | WhatsApp, Google Takeout, Twitter archive, Apple Health, iCal | Filesystem-only; supported in Docker via the `pdpp-home` named volume. | Drop extracted exports into the volume at `/root/.pdpp/imports/<connector>/`, or override the connector-specific `*_DIR` env var. iCal also accepts `ICAL_SUBSCRIPTION_URL` (pure HTTP, no mount needed). | Defaults already point at `~/.pdpp/imports/<connector>/` which the named volume covers; `docker cp` or a one-time bind-mount is the simplest way to seed the volume. |
 | iMessage | Filesystem-only; **not supported in Linux Docker**. | iMessage is hardcoded to `~/Library/Messages/chat.db` (macOS-format SQLite). | Effectively macOS-only; runs on the host, not in Linux containers. |
-| Amazon, Chase, ChatGPT, Reddit, USAA + scaffolded browser-scrapers (Anthropic, Shopify, HEB, Whole Foods, LinkedIn, Meta, Loom, Uber, DoorDash) | Browser-backed; Docker needs the host browser bridge for owner-visible login/challenge flows. | Start `host-browser-bridge.ts`, export the printed bridge URL/token, then run Compose. | When no bridge is configured, headed-browser acquisitions in a container fail fast with `host_browser_bridge_unavailable` rather than launching an invisible in-container Chromium (`packages/polyfill-connectors/src/browser-launch.ts:decideContainerHeadedBrowserGate`). The four "verified" entries are end-to-end maintainer-verified; the rest are scaffolded and need DOM selectors before they're usable. Future remote deployments may use a streamed-browser backend instead. |
+| Amazon, Chase, ChatGPT, Reddit, USAA + scaffolded browser-scrapers (Anthropic, Shopify, HEB, Whole Foods, LinkedIn, Meta, Loom, Uber, DoorDash) | Browser-backed; Docker needs the local collector runner on a visible-browser host. | Pair the collector with `bin/collector-runner.ts enroll`, then run connectors via the collector. | Inside the provider/control-plane container, headed-browser acquisitions fail closed with `headed_browser_unavailable` (`packages/polyfill-connectors/src/browser-launch.ts:decideContainerHeadedBrowserGate`); browser-backed connectors must run in a local collector runtime that advertises a `browser` binding. The four "verified" entries are end-to-end maintainer-verified; the rest are scaffolded and need DOM selectors before they're usable. |
 | Spotify, Pocket | Blocked upstream. | n/a | Spotify's OAuth app registration is frozen as of Feb 2026; Pocket sunset 2025-07-08. |
 
 CI builds Docker targets on pull requests without pushing images. On `main`,

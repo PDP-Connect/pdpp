@@ -5,6 +5,7 @@
  * Starts on port 7662 (AS/introspection) and 7663 (RS query API).
  */
 import { createHash, randomBytes } from 'node:crypto';
+import { existsSync } from 'node:fs';
 
 import { closeDb, getDb, initDb } from './db.js';
 import {
@@ -3036,6 +3037,34 @@ function buildAsApp(opts = {}) {
             getConfiguredNativeManifest: () => getConfiguredNativeManifest(),
             listRegisteredConnectorIds: () => listRegisteredConnectorIds(),
             getConnectorManifest: (connectorId) => getConnectorManifest(connectorId),
+            getRuntimeCapabilityPosture: async () => {
+              // Provider/control-plane runtime advertises only the bindings
+              // it can actually satisfy. We honestly never advertise
+              // `browser` here — the runtime gate fails closed on headed
+              // in-container browser launches. `local_device` is also
+              // false; only a paired collector can satisfy that.
+              const inContainer =
+                process.env.PDPP_FORCE_CONTAINER === '1' || existsSync('/.dockerenv');
+              let collectorPaired = false;
+              try {
+                const subjectId = getOwnerSubjectId(req);
+                const devices = await deviceExporterStore.listDevices(subjectId);
+                collectorPaired = Array.isArray(devices) && devices.length > 0;
+              } catch {
+                // Diagnostics must survive a transient store failure.
+                collectorPaired = false;
+              }
+              return {
+                bindings: {
+                  browser: false,
+                  filesystem: true,
+                  local_device: false,
+                  network: true,
+                },
+                collector_paired: collectorPaired,
+                in_container: inContainer,
+              };
+            },
           },
           { dbPath: opts.dbPath || DB_PATH }
         ),
