@@ -59,7 +59,10 @@ function pickViewport(input) {
  * @param {object} deps.controller             controller exposing getPendingInteraction
  * @param {object} deps.ownerAuth              owner auth middleware bag
  * @param {object} deps.streamingSessions      session store (createStreamingSessionStore)
- * @param {Function} deps.companionFactory     ({ run_id, interaction_id }) => Companion
+ * @param {Function|null} deps.companionFactory   ({ run_id, interaction_id }) => Companion.
+ *                                                When `null`, mint fails closed with 503
+ *                                                `streaming_companion_unavailable` instead of
+ *                                                handing out a token that only fails at attach.
  * @param {Function} deps.makeBrowserSessionId optional id minter for tests
  * @param {Function} deps.now                  optional clock for tests
  * @param {Function} deps.emitTimelineEvent    optional override for tests; defaults to emitSpineEvent
@@ -74,8 +77,11 @@ export function registerStreamingRoutes({
   now = () => Date.now(),
   emitTimelineEvent = emitSpineEvent,
 }) {
-  if (!app || !ownerAuth || !streamingSessions || typeof companionFactory !== 'function') {
+  if (!app || !ownerAuth || !streamingSessions) {
     throw new Error('registerStreamingRoutes: missing dependency');
+  }
+  if (companionFactory != null && typeof companionFactory !== 'function') {
+    throw new Error('registerStreamingRoutes: companionFactory must be a function or null');
   }
 
   // Companion instances by browser_session_id. One companion per pending
@@ -145,15 +151,28 @@ export function registerStreamingRoutes({
             'interaction_id',
           );
         }
-        // Streaming companion is for `manual_action` and `host_browser_required`
-        // — kinds that need browser control, not credential/OTP forms.
-        const supportedKinds = new Set(['manual_action', 'host_browser_required']);
-        if (!supportedKinds.has(pending.kind)) {
+        // Streaming companion is for `manual_action` — the only kind that needs
+        // browser control rather than a credential/OTP form. The historical
+        // `host_browser_required` kind was retired with the host-browser bridge
+        // in `introduce-local-collector-runner`; surface a clear error if any
+        // legacy connector still emits it.
+        if (pending.kind !== 'manual_action') {
           return pdppError(
             res,
             409,
             'stream_not_supported_for_kind',
             `Streaming is not supported for interaction kind ${pending.kind}`,
+          );
+        }
+        // Fail closed when no real CDP companion is configured. The viewer
+        // must not receive a token that only errors at attach time; that
+        // makes the dashboard primary action a dead button.
+        if (typeof companionFactory !== 'function') {
+          return pdppError(
+            res,
+            503,
+            'streaming_companion_unavailable',
+            'Streaming companion is not configured on this server. Set PDPP_RUN_INTERACTION_CDP_WS_URL or inject a streamingCompanionFactory to enable run-interaction streaming.',
           );
         }
         const viewport = pickViewport(body.viewport);

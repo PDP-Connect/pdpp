@@ -17,6 +17,7 @@ import {
 } from "react";
 import { Button } from "@/components/ui/button.tsx";
 import { type MintedStreamSession, mintStreamSessionAction } from "./actions.ts";
+import { STREAMING_UNAVAILABLE_TAG } from "./streaming-protocol.ts";
 
 interface Props {
   interactionId: string;
@@ -39,10 +40,10 @@ interface AttachedMessage {
 
 interface StatusState {
   message: string;
-  state: "idle" | "minting" | "connecting" | "live" | "closed" | "error";
+  state: "idle" | "minting" | "connecting" | "live" | "closed" | "error" | "unavailable";
 }
 
-const SUPPORTED_KINDS = new Set(["manual_action", "host_browser_required"]);
+const SUPPORTED_KINDS = new Set(["manual_action"]);
 
 /**
  * Owner-facing run-interaction streaming companion viewer. Mints a
@@ -102,8 +103,19 @@ export function RunInteractionStreamViewer({ runId, interactionId, interactionKi
     try {
       minted = await mintStreamSessionAction({ runId, interactionId, viewport });
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Mint failed";
-      setStatus({ state: "error", message });
+      // Next.js server actions strip the Error class identity across the RPC
+      // boundary, so the action tags unavailable errors with a stable prefix
+      // the client can match. See STREAMING_UNAVAILABLE_TAG.
+      const message = err instanceof Error ? err.message : String(err);
+      if (message.startsWith(STREAMING_UNAVAILABLE_TAG)) {
+        setStatus({
+          state: "unavailable",
+          message:
+            "Streaming companion is not configured on this reference server. Set PDPP_RUN_INTERACTION_CDP_WS_URL to a Chrome DevTools page-target WebSocket URL to enable run-interaction streaming.",
+        });
+        return;
+      }
+      setStatus({ state: "error", message: message || "Mint failed" });
       return;
     }
 
@@ -203,6 +215,18 @@ export function RunInteractionStreamViewer({ runId, interactionId, interactionKi
       code: e.code,
       modifiers: (e.altKey ? 1 : 0) + (e.ctrlKey ? 2 : 0) + (e.metaKey ? 4 : 0) + (e.shiftKey ? 8 : 0),
     }).catch(() => undefined);
+  }
+
+  if (status.state === "unavailable") {
+    return (
+      <div className="flex flex-col gap-2">
+        <p className="pdpp-caption">{status.message}</p>
+        <p className="pdpp-caption text-muted-foreground">
+          Until streaming is configured, satisfy this interaction by running the connector locally with a real browser
+          (see the local collector runner).
+        </p>
+      </div>
+    );
   }
 
   return (

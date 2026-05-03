@@ -342,6 +342,51 @@ test('input POST dispatches to the companion after attach and rejects bad input'
   });
 });
 
+test('mint fails closed with 503 streaming_companion_unavailable when no companion is configured', async () => {
+  // Run the server without a streamingCompanionFactory and without
+  // PDPP_RUN_INTERACTION_CDP_WS_URL. The mint route must refuse to hand out
+  // a token rather than handing one out that fails only at attach time.
+  const tmpDir = mkdtempSync(join(tmpdir(), 'pdpp-ref-stream-unavail-'));
+  const connectorPath = buildManualActionConnector(tmpDir, {});
+  const priorEnv = process.env.PDPP_RUN_INTERACTION_CDP_WS_URL;
+  delete process.env.PDPP_RUN_INTERACTION_CDP_WS_URL;
+  try {
+    const server = await startServer({
+      quiet: true,
+      asPort: 0,
+      rsPort: 0,
+      dbPath: ':memory:',
+      connectorPathResolver: () => connectorPath,
+      // No streamingCompanionFactory — exercises the fail-closed path.
+    });
+    try {
+      const asUrl = `http://localhost:${server.asPort}`;
+      const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, 'manifests/spotify.json'), 'utf8'));
+      await registerConnector(asUrl, spotifyManifest);
+      const started = await startRun(asUrl, spotifyManifest.connector_id);
+      const pending = await waitForPendingInteraction(asUrl, started.run_id);
+      const mint = await fetchJson(`${asUrl}/_ref/runs/${encodeURIComponent(started.run_id)}/run-interaction-stream`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ interaction_id: pending.interaction_id }),
+      });
+      assert.equal(mint.status, 503);
+      assert.equal(mint.body.error.code, 'streaming_companion_unavailable');
+      assert.match(mint.body.error.message, /PDPP_RUN_INTERACTION_CDP_WS_URL/);
+      await cancelRun(asUrl, started.run_id, pending.interaction_id);
+    } finally {
+      await closeServer(server);
+    }
+  } finally {
+    if (priorEnv === undefined) {
+      delete process.env.PDPP_RUN_INTERACTION_CDP_WS_URL;
+    } else {
+      process.env.PDPP_RUN_INTERACTION_CDP_WS_URL = priorEnv;
+    }
+    rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
 test('resolving the interaction invalidates streaming and emits a resolved timeline event', async () => {
   await withHarness({}, async ({ asUrl, spotifyManifest }) => {
     const started = await startRun(asUrl, spotifyManifest.connector_id);
