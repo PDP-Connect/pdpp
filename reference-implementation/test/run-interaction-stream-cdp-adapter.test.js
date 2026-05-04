@@ -392,14 +392,110 @@ test('createCdpTargetFromHttp rejects malformed httpUrl with cdp_http_url_invali
   );
 });
 
-test('createCdpTargetFromHttp rejects non-2xx /json/new with cdp_http_create_failed', async () => {
+test('createCdpTargetFromHttp rejects non-2xx /json/new with cdp_http_create_failed (500 is not a fallback case)', async () => {
+  let calls = 0;
   async function fakeFetch() {
+    calls++;
     return { ok: false, status: 500, async json() { return {}; } };
   }
   await assert.rejects(
     createCdpTargetFromHttp({ httpUrl: 'http://127.0.0.1:9222', fetch: fakeFetch }),
     (err) => err.code === 'cdp_http_create_failed' && err.status === 500,
   );
+  // The 500 was a real server error — we must NOT silently retry as GET, or
+  // operators would be looking at a bogus "missing webSocketDebuggerUrl" error
+  // when the underlying problem is a broken DevTools endpoint.
+  assert.equal(calls, 1, 'no retry for 500');
+});
+
+test('createCdpTargetFromHttp falls back to GET on PUT 405', async () => {
+  const seen = [];
+  async function fakeFetch(url, init = {}) {
+    seen.push(init.method || 'GET');
+    if (init.method === 'PUT') {
+      return { ok: false, status: 405, async json() { return {}; } };
+    }
+    return {
+      ok: true,
+      status: 200,
+      async json() {
+        return { id: 'T405', webSocketDebuggerUrl: 'ws://x/devtools/page/T405' };
+      },
+    };
+  }
+  const target = await createCdpTargetFromHttp({ httpUrl: 'http://127.0.0.1:9222', fetch: fakeFetch });
+  assert.deepEqual(seen, ['PUT', 'GET']);
+  assert.equal(target.webSocketDebuggerUrl, 'ws://x/devtools/page/T405');
+});
+
+test('createCdpTargetFromHttp falls back to GET on PUT 404 and 501 too', async () => {
+  for (const status of [404, 501]) {
+    const seen = [];
+    async function fakeFetch(url, init = {}) {
+      seen.push(init.method || 'GET');
+      if (init.method === 'PUT') {
+        return { ok: false, status, async json() { return {}; } };
+      }
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return { id: `T${status}`, webSocketDebuggerUrl: `ws://x/devtools/page/T${status}` };
+        },
+      };
+    }
+    // eslint-disable-next-line no-await-in-loop
+    const target = await createCdpTargetFromHttp({ httpUrl: 'http://127.0.0.1:9222', fetch: fakeFetch });
+    assert.deepEqual(seen, ['PUT', 'GET'], `fallback for status ${status}`);
+    assert.equal(target.webSocketDebuggerUrl, `ws://x/devtools/page/T${status}`);
+  }
+});
+
+test('createCdpTargetFromHttp does NOT fall back on PUT 500 (real server error)', async () => {
+  let putCalls = 0;
+  let getCalls = 0;
+  async function fakeFetch(url, init = {}) {
+    if (init.method === 'PUT') {
+      putCalls++;
+      return { ok: false, status: 500, async json() { return {}; } };
+    }
+    getCalls++;
+    return { ok: true, status: 200, async json() { return {}; } };
+  }
+  await assert.rejects(
+    createCdpTargetFromHttp({ httpUrl: 'http://127.0.0.1:9222', fetch: fakeFetch }),
+    (err) => err.code === 'cdp_http_create_failed' && err.status === 500,
+  );
+  assert.equal(putCalls, 1);
+  assert.equal(getCalls, 0, 'must not silently retry a 500 as GET');
+});
+
+test('createCdpTargetFromHttp rejects non-http/https schemes with cdp_http_url_invalid', async () => {
+  for (const bad of ['ws://127.0.0.1:9222', 'file:///etc/passwd', 'javascript:alert(1)', 'ftp://x']) {
+    // eslint-disable-next-line no-await-in-loop
+    await assert.rejects(
+      createCdpTargetFromHttp({ httpUrl: bad, fetch: async () => ({ ok: true, json: async () => ({}) }) }),
+      (err) => err.code === 'cdp_http_url_invalid',
+      `scheme rejected: ${bad}`,
+    );
+  }
+});
+
+test('createCdpTargetFromHttp accepts both http: and https: schemes', async () => {
+  for (const good of ['http://127.0.0.1:9222', 'https://browser.example.com:9222']) {
+    async function fakeFetch() {
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return { id: 'T-OK', webSocketDebuggerUrl: 'ws://x/devtools/page/T-OK' };
+        },
+      };
+    }
+    // eslint-disable-next-line no-await-in-loop
+    const target = await createCdpTargetFromHttp({ httpUrl: good, fetch: fakeFetch });
+    assert.equal(target.targetId, 'T-OK');
+  }
 });
 
 test('default factory uses HTTP resolver when only httpUrl is set, and closes target on stop', async () => {
@@ -465,6 +561,71 @@ test('default factory returns null when neither wsUrl nor httpUrl is set', () =>
     createDefaultStreamingCompanionFactory({ wsUrl: null, httpUrl: null }),
     null,
   );
+});
+
+test('HTTP-resolved companion: pre-start onFrame unsubscribe revokes registration after start', async () => {
+  const { FakeSocket, sockets } = makeFakeSocketCtor();
+  async function fakeFetch(url, init = {}) {
+    if (url.endsWith('/json/new?about:blank') && (init.method === 'PUT' || init.method === 'GET')) {
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return { id: 'T-UNSUB', webSocketDebuggerUrl: 'ws://fake/page-unsub' };
+        },
+      };
+    }
+    return { ok: true, status: 200, async json() { return {}; } };
+  }
+  const factory = createDefaultStreamingCompanionFactory({
+    wsUrl: null,
+    httpUrl: 'http://127.0.0.1:9222',
+    WebSocketCtor: FakeSocket,
+    fetch: fakeFetch,
+  });
+  const companion = factory({ browser_session_id: 'bs_unsub' });
+
+  // Subscribe BEFORE start — this exercises the pendingHandlers replay path.
+  let received = 0;
+  const off = companion.onFrame(() => {
+    received++;
+  });
+
+  // Drive start to completion. start() awaits inner.start, which sends
+  // Page.enable + Page.startScreencast over the inner socket — answer them.
+  const startPromise = companion.start({ width: 100, height: 100 });
+  // Wait for the inner socket to be created (lazy on start).
+  let sock = null;
+  for (let i = 0; i < 20 && !sock; i++) {
+    // eslint-disable-next-line no-await-in-loop
+    await flush();
+    sock = findSocket(sockets, 'ws://fake/page-unsub');
+  }
+  assert.ok(sock, 'inner CDP socket was opened from the resolved ws URL');
+  await answerInOrder(sock.peer, 'Page.enable');
+  await answerInOrder(sock.peer, 'Emulation.setDeviceMetricsOverride');
+  await answerInOrder(sock.peer, 'Page.startScreencast');
+  await startPromise;
+
+  // Sanity: a frame delivered now MUST reach the handler — the pre-start
+  // subscriber was successfully replayed into the inner companion.
+  sock.peer.deliver({
+    method: 'Page.screencastFrame',
+    params: { sessionId: 1, data: 'AA==', metadata: {} },
+  });
+  await flush();
+  assert.equal(received, 1, 'pre-start subscriber received a frame after start');
+
+  // Unsubscribe. After this, further frames must NOT reach the handler.
+  off();
+  sock.peer.deliver({
+    method: 'Page.screencastFrame',
+    params: { sessionId: 2, data: 'BB==', metadata: {} },
+  });
+  await flush();
+  assert.equal(received, 1, 'unsubscribe revoked inner-companion registration too');
+
+  await companion.stop();
 });
 
 test('default factory prefers wsUrl over httpUrl when both are set', async () => {

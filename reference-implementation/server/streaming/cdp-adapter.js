@@ -91,20 +91,46 @@ export async function createCdpTargetFromHttp({
   }
   let base;
   try {
-    base = trimTrailingSlash(new URL(httpUrl).toString());
+    const parsed = new URL(httpUrl);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      const e = new Error(
+        `Invalid PDPP_RUN_INTERACTION_CDP_HTTP_URL: scheme ${parsed.protocol} is not http: or https:`,
+      );
+      e.code = 'cdp_http_url_invalid';
+      throw e;
+    }
+    base = trimTrailingSlash(parsed.toString());
   } catch (err) {
+    if (err && err.code === 'cdp_http_url_invalid') throw err;
     const e = new Error(`Invalid PDPP_RUN_INTERACTION_CDP_HTTP_URL: ${err?.message || err}`);
     e.code = 'cdp_http_url_invalid';
     throw e;
   }
   const newUrl = `${base}/json/new?about:blank`;
+  // Method-style status codes that suggest the endpoint exists but does not
+  // honor PUT — older Chromium builds historically required GET. Anything else
+  // (5xx server errors, 4xx auth/format errors) is a real failure that we
+  // surface as `cdp_http_create_failed` rather than masking with a GET retry.
+  const METHOD_FALLBACK_STATUSES = new Set([404, 405, 501]);
   let response;
+  let putThrew = false;
   try {
     response = await fetchImpl(newUrl, { method: 'PUT' });
   } catch (err) {
-    // Chrome historically accepts both PUT and GET on /json/new; some builds
-    // only honor GET. Retry once before giving up so the operator-facing error
-    // reflects the underlying network reality, not a verb mismatch.
+    putThrew = true;
+    // Network-style throws — connection refused, DNS, abort — fall through to
+    // a GET retry too. If GET also throws, surface as unreachable.
+    try {
+      response = await fetchImpl(newUrl, { method: 'GET' });
+    } catch (err2) {
+      const e = new Error(`Failed to reach CDP HTTP endpoint ${newUrl}: ${err2?.message || err2}`);
+      e.code = 'cdp_http_unreachable';
+      throw e;
+    }
+  }
+  if (!putThrew && response && !response.ok && METHOD_FALLBACK_STATUSES.has(response.status)) {
+    // PUT returned a verb-not-supported status. Retry as GET; still surface a
+    // real network failure as `cdp_http_unreachable`.
     try {
       response = await fetchImpl(newUrl, { method: 'GET' });
     } catch (err2) {
@@ -227,9 +253,14 @@ function createHttpResolvedCompanion({
   let inner = null;
   let target = null;
   let closed = false;
-  // Subscribers can attach onFrame before start() resolves the inner companion;
-  // we proxy the registration so frames flow once the inner companion exists.
-  const pendingFrameHandlers = new Set();
+  // Subscribers can attach onFrame before start() resolves the inner companion.
+  // We track each pending handler in a record { handler, innerUnsubscribe }. On
+  // start, we register the handler with inner and stash the returned
+  // unsubscribe so the caller's outer unsubscribe can revoke it after start()
+  // has run. Without this, a pre-start subscriber's unsubscribe would silently
+  // leak because `createCdpCompanion` owns its own Set of handlers and the
+  // outer code has no other way to reach it.
+  const pendingHandlers = new Map();
 
   const log = (level, msg, data) => {
     if (!logger || typeof logger[level] !== 'function') return;
@@ -260,8 +291,10 @@ function createHttpResolvedCompanion({
         });
         // Replay pending subscribers so frames reach the SSE attach handler
         // even if it subscribed before start() finished resolving the target.
-        for (const handler of pendingFrameHandlers) {
-          inner.onFrame(handler);
+        // Stash each inner unsubscribe so the outer unsubscribe (returned to
+        // the caller from `onFrame`) can actually revoke registration.
+        for (const record of pendingHandlers.values()) {
+          record.innerUnsubscribe = inner.onFrame(record.handler);
         }
       }
       await inner.start(viewport);
@@ -287,12 +320,21 @@ function createHttpResolvedCompanion({
     },
     onFrame(handler) {
       if (inner) return inner.onFrame(handler);
-      pendingFrameHandlers.add(handler);
+      const record = { handler, innerUnsubscribe: null };
+      pendingHandlers.set(handler, record);
       return () => {
-        pendingFrameHandlers.delete(handler);
-        // We cannot un-subscribe an already-installed handler from inner here
-        // because the handler is the same identity; createCdpCompanion's
-        // onFrame closes over the same Set, so deletion still works.
+        pendingHandlers.delete(handler);
+        // If start() already promoted this handler into the inner companion,
+        // revoke that registration too — otherwise frames keep firing into a
+        // handler the caller has explicitly unsubscribed.
+        if (record.innerUnsubscribe) {
+          try {
+            record.innerUnsubscribe();
+          } catch {
+            /* unsubscribe is best-effort */
+          }
+          record.innerUnsubscribe = null;
+        }
       };
     },
     async dispatch(event) {
