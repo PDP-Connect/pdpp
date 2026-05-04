@@ -111,7 +111,7 @@ export function RunInteractionStreamViewer({ runId, interactionId, interactionKi
         setStatus({
           state: "unavailable",
           message:
-            "Streaming companion is not configured on this reference server. Set PDPP_RUN_INTERACTION_CDP_WS_URL to a Chrome DevTools page-target WebSocket URL to enable run-interaction streaming.",
+            "Streaming companion is not configured on this reference server. Set PDPP_RUN_INTERACTION_CDP_WS_URL (a single Chrome DevTools page-target WebSocket URL) or PDPP_RUN_INTERACTION_CDP_HTTP_URL (a Chrome DevTools HTTP base such as http://127.0.0.1:9222) to enable run-interaction streaming.",
         });
         return;
       }

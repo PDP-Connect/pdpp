@@ -32,11 +32,11 @@ const DEFAULT_COMMAND_TIMEOUT_MS = 10_000;
 const DEFAULT_OPEN_TIMEOUT_MS = 5_000;
 
 /**
- * Resolve which CDP WebSocket URL the companion should connect to. The
- * reference server only knows about one optional global URL (env-configured);
- * a richer deployment would resolve a per-`browser_session_id` URL from a
- * control-plane registry. We document this gap in the OpenSpec design as
- * optimistic reference behavior.
+ * Resolve a fixed CDP page-target WebSocket URL. Operators that already know
+ * the per-page WS URL (e.g. piped from a managed browser orchestrator) can set
+ * this directly; a richer deployment would resolve a per-`browser_session_id`
+ * URL from a control-plane registry. We document this gap in the OpenSpec
+ * design as optimistic reference behavior.
  */
 export function resolveCdpWsUrlFromEnv(env = process.env) {
   const url = env.PDPP_RUN_INTERACTION_CDP_WS_URL;
@@ -46,34 +46,274 @@ export function resolveCdpWsUrlFromEnv(env = process.env) {
 }
 
 /**
- * Build the default companion factory. When a CDP WS URL is configured, the
- * factory mints real adapters; otherwise it returns null so the mint route can
- * fail closed with a typed `streaming_companion_unavailable` error instead of
- * minting a token that only fails at attach time.
+ * Resolve a Chrome DevTools HTTP base (e.g. `http://127.0.0.1:9222`). When set,
+ * the default factory creates a fresh page target per streaming session via
+ * `/json/new`, reads its `webSocketDebuggerUrl`, and tears it down on stop. This
+ * is the operator-friendly default — pointing at `chrome --remote-debugging-port`
+ * is easier than copying out a single page-target ws URL — but it remains
+ * reference-only. A real Collection-Profile-aware deployment would resolve the
+ * target per `browser_session_id` from a control-plane registry instead.
+ */
+export function resolveCdpHttpUrlFromEnv(env = process.env) {
+  const url = env.PDPP_RUN_INTERACTION_CDP_HTTP_URL;
+  if (typeof url !== 'string') return null;
+  const trimmed = url.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function trimTrailingSlash(value) {
+  return value.endsWith('/') ? value.slice(0, -1) : value;
+}
+
+/**
+ * Create a fresh CDP page target via Chrome's DevTools HTTP endpoint. Returns
+ * the target's WebSocket debugger URL plus a best-effort `close()` that asks
+ * Chrome to close the target on companion teardown.
  *
- * `WebSocketCtor` is injectable for tests (a fake CDP server can hand back its
- * own ws constructor or the global `WebSocket`).
+ * Errors from this function are typed so the route layer can map them onto
+ * operator-readable messages — a malformed HTTP base or a Chromium that doesn't
+ * advertise `webSocketDebuggerUrl` should fail at attach/start, not at first
+ * input event.
+ */
+export async function createCdpTargetFromHttp({
+  httpUrl,
+  fetch: fetchImpl = globalThis.fetch,
+} = {}) {
+  if (typeof httpUrl !== 'string' || httpUrl.length === 0) {
+    const e = new Error('createCdpTargetFromHttp: httpUrl is required');
+    e.code = 'cdp_http_url_missing';
+    throw e;
+  }
+  if (typeof fetchImpl !== 'function') {
+    const e = new Error('createCdpTargetFromHttp: no fetch implementation available');
+    e.code = 'cdp_http_fetch_missing';
+    throw e;
+  }
+  let base;
+  try {
+    base = trimTrailingSlash(new URL(httpUrl).toString());
+  } catch (err) {
+    const e = new Error(`Invalid PDPP_RUN_INTERACTION_CDP_HTTP_URL: ${err?.message || err}`);
+    e.code = 'cdp_http_url_invalid';
+    throw e;
+  }
+  const newUrl = `${base}/json/new?about:blank`;
+  let response;
+  try {
+    response = await fetchImpl(newUrl, { method: 'PUT' });
+  } catch (err) {
+    // Chrome historically accepts both PUT and GET on /json/new; some builds
+    // only honor GET. Retry once before giving up so the operator-facing error
+    // reflects the underlying network reality, not a verb mismatch.
+    try {
+      response = await fetchImpl(newUrl, { method: 'GET' });
+    } catch (err2) {
+      const e = new Error(`Failed to reach CDP HTTP endpoint ${newUrl}: ${err2?.message || err2}`);
+      e.code = 'cdp_http_unreachable';
+      throw e;
+    }
+  }
+  if (!response || !response.ok) {
+    const status = response?.status ?? 'unknown';
+    const e = new Error(`CDP HTTP /json/new returned status ${status}`);
+    e.code = 'cdp_http_create_failed';
+    e.status = status;
+    throw e;
+  }
+  let target;
+  try {
+    target = await response.json();
+  } catch (err) {
+    const e = new Error(`CDP HTTP /json/new returned non-JSON body: ${err?.message || err}`);
+    e.code = 'cdp_http_parse_failed';
+    throw e;
+  }
+  const webSocketDebuggerUrl =
+    target && typeof target.webSocketDebuggerUrl === 'string' ? target.webSocketDebuggerUrl : '';
+  if (!webSocketDebuggerUrl) {
+    const e = new Error('CDP HTTP /json/new response did not include webSocketDebuggerUrl');
+    e.code = 'cdp_http_no_ws_url';
+    e.target = target;
+    throw e;
+  }
+  const targetId = target && typeof target.id === 'string' ? target.id : null;
+  return {
+    webSocketDebuggerUrl,
+    targetId,
+    raw: target,
+    async close() {
+      // Best-effort: a missing target id (some Chromium builds omit it) means
+      // we cannot ask Chrome to close, but the operator can still close the
+      // target manually via the inspector.
+      if (!targetId) return;
+      try {
+        await fetchImpl(`${base}/json/close/${encodeURIComponent(targetId)}`, { method: 'GET' });
+      } catch {
+        // Teardown is best-effort: we never want a stuck Chrome to crash the
+        // streaming session lifecycle on the server side.
+      }
+    },
+  };
+}
+
+/**
+ * Build the default companion factory. Three modes, in priority order:
+ *
+ *   1. Explicit `wsUrl` (or `PDPP_RUN_INTERACTION_CDP_WS_URL`) — connect
+ *      directly to a single page-target WebSocket.
+ *   2. Explicit `httpUrl` (or `PDPP_RUN_INTERACTION_CDP_HTTP_URL`) — resolve a
+ *      fresh page target per session via DevTools HTTP, then connect to its
+ *      `webSocketDebuggerUrl`. This is the operator-friendly default.
+ *   3. Neither set — return `null` so the mint route fails closed with
+ *      `streaming_companion_unavailable` instead of handing out a token that
+ *      only errors at attach time.
+ *
+ * `WebSocketCtor` and `fetch` are injectable for tests (a fake CDP server can
+ * hand back its own ws constructor and a fake `fetch`).
  */
 export function createDefaultStreamingCompanionFactory({
   wsUrl = resolveCdpWsUrlFromEnv(),
+  httpUrl = resolveCdpHttpUrlFromEnv(),
   WebSocketCtor = globalThis.WebSocket,
+  fetch: fetchImpl = globalThis.fetch,
   logger,
   commandTimeoutMs,
   openTimeoutMs,
 } = {}) {
-  if (!wsUrl) return null;
+  if (!wsUrl && !httpUrl) return null;
   if (typeof WebSocketCtor !== 'function') {
     throw new Error('createDefaultStreamingCompanionFactory: no WebSocket constructor available');
   }
+  if (wsUrl) {
+    return ({ browser_session_id }) =>
+      createCdpCompanion({
+        wsUrl,
+        browser_session_id,
+        WebSocketCtor,
+        logger,
+        commandTimeoutMs,
+        openTimeoutMs,
+      });
+  }
+  if (typeof fetchImpl !== 'function') {
+    throw new Error('createDefaultStreamingCompanionFactory: no fetch implementation available for HTTP target resolution');
+  }
   return ({ browser_session_id }) =>
-    createCdpCompanion({
-      wsUrl,
+    createHttpResolvedCompanion({
+      httpUrl,
       browser_session_id,
       WebSocketCtor,
+      fetch: fetchImpl,
       logger,
       commandTimeoutMs,
       openTimeoutMs,
     });
+}
+
+/**
+ * Wraps `createCdpCompanion` with lazy DevTools HTTP target creation. The
+ * inner CDP companion is created on `start()` once we know the WebSocket URL;
+ * `stop()` closes both the inner companion and the DevTools target.
+ */
+function createHttpResolvedCompanion({
+  httpUrl,
+  browser_session_id,
+  WebSocketCtor,
+  fetch: fetchImpl,
+  logger,
+  commandTimeoutMs,
+  openTimeoutMs,
+}) {
+  let inner = null;
+  let target = null;
+  let closed = false;
+  // Subscribers can attach onFrame before start() resolves the inner companion;
+  // we proxy the registration so frames flow once the inner companion exists.
+  const pendingFrameHandlers = new Set();
+
+  const log = (level, msg, data) => {
+    if (!logger || typeof logger[level] !== 'function') return;
+    try {
+      logger[level]({ msg, browser_session_id, ...(data || {}) });
+    } catch {
+      /* logger errors must not break the streaming path */
+    }
+  };
+
+  return {
+    browser_session_id,
+    async start(viewport) {
+      if (closed) {
+        const e = new Error('Streaming companion is closed');
+        e.code = 'companion_closed';
+        throw e;
+      }
+      if (!inner) {
+        target = await createCdpTargetFromHttp({ httpUrl, fetch: fetchImpl });
+        inner = createCdpCompanion({
+          wsUrl: target.webSocketDebuggerUrl,
+          browser_session_id,
+          WebSocketCtor,
+          logger,
+          commandTimeoutMs,
+          openTimeoutMs,
+        });
+        // Replay pending subscribers so frames reach the SSE attach handler
+        // even if it subscribed before start() finished resolving the target.
+        for (const handler of pendingFrameHandlers) {
+          inner.onFrame(handler);
+        }
+      }
+      await inner.start(viewport);
+    },
+    async stop() {
+      if (closed) return;
+      closed = true;
+      if (inner) {
+        try {
+          await inner.stop();
+        } catch (err) {
+          log('warn', 'cdp_inner_stop_failed', { error: err?.message });
+        }
+      }
+      if (target) {
+        try {
+          await target.close();
+        } catch (err) {
+          log('warn', 'cdp_target_close_failed', { error: err?.message });
+        }
+        target = null;
+      }
+    },
+    onFrame(handler) {
+      if (inner) return inner.onFrame(handler);
+      pendingFrameHandlers.add(handler);
+      return () => {
+        pendingFrameHandlers.delete(handler);
+        // We cannot un-subscribe an already-installed handler from inner here
+        // because the handler is the same identity; createCdpCompanion's
+        // onFrame closes over the same Set, so deletion still works.
+      };
+    },
+    async dispatch(event) {
+      if (!inner) {
+        const e = new Error('Streaming companion is not started');
+        e.code = 'companion_not_started';
+        throw e;
+      }
+      return inner.dispatch(event);
+    },
+    async ackFrame(sessionId) {
+      if (!inner) return;
+      return inner.ackFrame(sessionId);
+    },
+    /** test-only escape hatch */
+    _internal: {
+      isClosed: () => closed,
+      hasInner: () => inner !== null,
+      target: () => target,
+    },
+  };
 }
 
 /**

@@ -49,3 +49,12 @@
 - [x] 7.5 Drop the legacy `host_browser_required` interaction kind from the streaming surface (route + viewer). The runtime no longer emits this kind after `introduce-local-collector-runner`.
 - [x] 7.6 Add deterministic adapter tests using an in-memory fake `WebSocket` ctor that exercises JSON-RPC dispatch, screencast frame fan-out, ack, viewport mapping, error propagation, and close.
 - [x] 7.7 Add an integration test that proves a server with no companion configuration returns 503 from the mint route.
+
+## 8. DevTools HTTP Target Resolver And Live Smoke Proof
+
+- [x] 8.1 Add `resolveCdpHttpUrlFromEnv(env)` reading `PDPP_RUN_INTERACTION_CDP_HTTP_URL` and a typed `createCdpTargetFromHttp({ httpUrl, fetch })` that issues `PUT /json/new?about:blank` (with GET fallback) and returns `{ webSocketDebuggerUrl, targetId, close }` from Chrome's DevTools HTTP endpoint.
+- [x] 8.2 Extend `createDefaultStreamingCompanionFactory` to accept either a fixed `wsUrl` or an `httpUrl`. When only `httpUrl` is set, mint a fresh page target per streaming session and best-effort close that target on companion stop. Native `fetch` and native `WebSocket` are acceptable; do not add Playwright/Puppeteer to the reference server.
+- [x] 8.3 Wire `opts.streamingCdpHttpUrl` through `server/index.js` so the reference server picks up the HTTP base alongside the existing WS URL option.
+- [x] 8.4 Add unit tests for env resolution, target creation (PUT happy path, GET fallback, missing `webSocketDebuggerUrl`, malformed URL, non-2xx), and best-effort close. Inject a fake `fetch` so the tests do not need a real browser.
+- [x] 8.5 Add a `PDPP_TEST_LIVE_CDP=1`-gated live smoke (`test/run-interaction-stream-cdp-live.test.js`) that auto-launches a headless Chrome on an ephemeral port (or attaches to `PDPP_TEST_CDP_HTTP_URL` / `PDPP_TEST_CDP_WS_URL`), proves frame + ack + input + `Runtime.evaluate` round-trip, and cleans up. Add `pnpm --dir reference-implementation test:live-cdp` for convenience.
+- [x] 8.6 Document the HTTP path and the live smoke as reference-only operator config in `design.md`. Restate that the final collector/session-to-CDP-target binding remains optimistic behavior pending human-owner alignment.

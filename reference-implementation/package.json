@@ -38,6 +38,7 @@
     "cli": "node cli/index.js",
     "example-client": "node examples/third-party-app/server.js",
     "test": "node scripts/run-tests.js",
+    "test:live-cdp": "PDPP_TEST_LIVE_CDP=1 node --test --test-force-exit --test-timeout=60000 test/run-interaction-stream-cdp-live.test.js",
     "typecheck": "tsc --noEmit",
     "check": "ultracite check",
     "fix": "ultracite fix",
