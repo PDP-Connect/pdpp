@@ -111,7 +111,10 @@ runner.
 
 ### Optimistic Collection Profile Posture
 
-The reference implementation reads a single global CDP WebSocket URL. A real
+The reference implementation accepts either a single global page-target CDP
+WebSocket URL (`PDPP_RUN_INTERACTION_CDP_WS_URL`) or a Chrome DevTools HTTP
+base (`PDPP_RUN_INTERACTION_CDP_HTTP_URL`) and resolves a fresh page target
+per streaming session from that base. A real Collection-Profile-aware
 deployment would resolve a per-`browser_session_id` URL from a control-plane
 registry: when a connector emits a manual-action interaction from a paired
 local collector, that collector's browser session would be the streaming
@@ -125,12 +128,54 @@ alignment**:
 - The runtime does not advertise `runtime_capabilities.cdp_streaming` on
   collectors that could host such a target.
 - The mint route does not yet pass `browser_session_id` to the URL resolver.
+- The DevTools HTTP path is operator-friendly reference config, not the final
+  collector/session registry. It exists so the reference can be exercised
+  against a real Chrome with `--remote-debugging-port` instead of forcing the
+  operator to copy out a page-target ws URL.
 
 When the human owner aligns on the right binding shape, the adapter's
 `createDefaultStreamingCompanionFactory` should be extended to take a
 `resolveTargetForSession({ browser_session_id })` resolver instead of a fixed
-URL. Until then, this tranche stays reference-only with a single env-driven
-URL and an honest fail-closed default.
+URL or HTTP base. Until then, this tranche stays reference-only with two
+env-driven inputs and an honest fail-closed default.
+
+### DevTools HTTP Target Resolution And Live Smoke Proof
+
+In addition to `PDPP_RUN_INTERACTION_CDP_WS_URL`, the reference adapter
+recognizes `PDPP_RUN_INTERACTION_CDP_HTTP_URL` (e.g. `http://127.0.0.1:9222`).
+When the HTTP base is set:
+
+- the default companion factory issues `PUT /json/new?about:blank` to mint a
+  fresh page target per streaming session (with a GET fallback for older
+  Chromium builds that do not honor PUT);
+- the response's `webSocketDebuggerUrl` becomes the page-target ws URL the
+  CDP companion connects to;
+- on companion stop, the adapter best-effort calls `GET /json/close/<id>` to
+  ask Chrome to close that target. Failures are logged but do not break the
+  streaming session lifecycle on the server side.
+
+Errors are typed (`cdp_http_url_invalid`, `cdp_http_unreachable`,
+`cdp_http_create_failed`, `cdp_http_no_ws_url`, `cdp_http_parse_failed`) so
+the route layer can surface operator-readable messages and so the dashboard's
+configuration-pointer state remains the only path the operator sees when the
+companion truly cannot stream.
+
+A reference-only live smoke harness lives in
+`reference-implementation/test/run-interaction-stream-cdp-live.test.js`. It is
+**skipped by default** (it only runs when `PDPP_TEST_LIVE_CDP=1`) so normal
+CI continues to pass without a real browser. When enabled it:
+
+- launches a headless Chrome on an ephemeral port if a Chrome/Chromium binary
+  is discoverable (or `PDPP_TEST_CDP_BIN` is set), or attaches to an
+  externally provided `PDPP_TEST_CDP_HTTP_URL` / `PDPP_TEST_CDP_WS_URL`;
+- starts the companion, awaits a real screencast frame, acks it, dispatches a
+  paste input event, and verifies the underlying CDP session is alive via
+  `Runtime.evaluate`;
+- tears down the launched browser and the per-session DevTools target.
+
+The harness exists to catch adapter or wire-format regressions against real
+Chromium that the deterministic mocks cannot see. It is a proof, not a
+contract: nothing in PDPP Core or the Collection Profile depends on it.
 
 ## Owner Self-Review
 

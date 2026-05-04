@@ -172,7 +172,7 @@ export function registerStreamingRoutes({
             res,
             503,
             'streaming_companion_unavailable',
-            'Streaming companion is not configured on this server. Set PDPP_RUN_INTERACTION_CDP_WS_URL or inject a streamingCompanionFactory to enable run-interaction streaming.',
+            'Streaming companion is not configured on this server. Set PDPP_RUN_INTERACTION_CDP_WS_URL (single page-target ws URL) or PDPP_RUN_INTERACTION_CDP_HTTP_URL (Chrome DevTools HTTP base, e.g. http://127.0.0.1:9222), or inject a streamingCompanionFactory, to enable run-interaction streaming.',
           );
         }
         const viewport = pickViewport(body.viewport);

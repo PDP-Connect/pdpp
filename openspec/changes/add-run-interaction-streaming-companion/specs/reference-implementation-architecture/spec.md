@@ -43,7 +43,7 @@ The reference implementation SHALL refuse to mint a streaming session token when
 
 #### Scenario: The owner opens the stream on a server with no CDP companion configured
 
-- **WHEN** the owner requests a streaming session on a reference deployment that has no CDP companion configured (no `PDPP_RUN_INTERACTION_CDP_WS_URL` and no injected companion factory)
+- **WHEN** the owner requests a streaming session on a reference deployment that has no CDP companion configured (no `PDPP_RUN_INTERACTION_CDP_WS_URL`, no `PDPP_RUN_INTERACTION_CDP_HTTP_URL`, and no injected companion factory)
 - **THEN** the mint endpoint SHALL respond with `503 streaming_companion_unavailable`
 - **AND** the response SHALL name the configuration the operator must set
 - **AND** the dashboard SHALL render a configuration-pointer state instead of the streaming canvas

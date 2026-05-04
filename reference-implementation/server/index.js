@@ -2783,7 +2783,9 @@ function buildAsApp(opts = {}) {
   //   frame/input mapping without a real Chromium.
   // - In production, the default factory connects to a CDP page-target
   //   WebSocket URL configured via `PDPP_RUN_INTERACTION_CDP_WS_URL` (or
-  //   `opts.streamingCdpWsUrl`).
+  //   `opts.streamingCdpWsUrl`), or — preferred for operator setup — resolves a
+  //   fresh page target per session from a Chrome DevTools HTTP base via
+  //   `PDPP_RUN_INTERACTION_CDP_HTTP_URL` (or `opts.streamingCdpHttpUrl`).
   // - When neither is set, the factory is `null` and the mint route returns
   //   503 `streaming_companion_unavailable`. We never hand out a token that
   //   only fails at attach time.
@@ -2792,6 +2794,7 @@ function buildAsApp(opts = {}) {
     opts.streamingCompanionFactory ||
     createDefaultStreamingCompanionFactory({
       wsUrl: opts.streamingCdpWsUrl,
+      httpUrl: opts.streamingCdpHttpUrl,
       logger: opts.streamingLogger,
     });
   const streamingRoutes = registerStreamingRoutes({
