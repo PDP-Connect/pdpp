@@ -57,6 +57,7 @@ test('live CDP smoke', { skip: !LIVE_ENABLED }, async (t) => {
     const launched = await launchHeadlessChrome(t);
     httpUrl = launched.httpUrl;
     cleanup = launched.cleanup;
+    if (!httpUrl) return;
   }
 
   try {
