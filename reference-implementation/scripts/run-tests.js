@@ -48,10 +48,31 @@ function runNodeTest(filePath, extraArgs) {
 }
 
 const entries = await readdir(testDir, { withFileTypes: true });
-const testFiles = entries
+const topLevelTests = entries
   .filter((entry) => entry.isFile() && entry.name.endsWith('.test.js'))
-  .map((entry) => join('test', entry.name))
-  .sort();
+  .map((entry) => join('test', entry.name));
+
+// Co-located unit tests for focused server modules. The discovery is
+// intentionally narrow (one directory) to keep the runner deterministic and
+// fast; broaden if more co-located tests appear.
+const COLOCATED_TEST_DIRS = [join('server', 'streaming')];
+const colocatedTests = [];
+for (const relDir of COLOCATED_TEST_DIRS) {
+  const absDir = join(repoRoot, relDir);
+  let dirEntries;
+  try {
+    dirEntries = await readdir(absDir, { withFileTypes: true });
+  } catch {
+    continue;
+  }
+  for (const entry of dirEntries) {
+    if (entry.isFile() && entry.name.endsWith('.test.js')) {
+      colocatedTests.push(join(relDir, entry.name));
+    }
+  }
+}
+
+const testFiles = [...topLevelTests, ...colocatedTests].sort();
 const defaultConcurrency = Math.max(
   1,
   Math.min(2, availableParallelism?.() ?? 1, testFiles.length || 1),

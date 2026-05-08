@@ -648,9 +648,8 @@ export function decorateBrowserManualAction(
     ...req,
     message:
       `${req.message}\n\n` +
-      "This run is using a headless browser, so there may be no visible browser window to complete this manual action. " +
-      `If you cannot complete it, cancel this interaction and rerun with ${visibility.envKey}=0 on a host desktop. ` +
-      "In Docker, run this connector through the local collector runner so the operator's host can render the browser.",
+      "Open the streaming companion to drive the connector's browser from your phone or laptop. " +
+      `Or rerun with ${visibility.envKey}=0 on a host desktop to use a visible local browser instead.`,
   };
 }
 
@@ -659,12 +658,36 @@ export function decorateBrowserManualAction(
  * launcher. Throws TerminalError on failure; preserves
  * HeadedBrowserUnavailableError's stable code in the message so
  * downstream logs/dashboards can pattern-match.
+ *
+ * If a streaming-target registration credential is available in env
+ * (PDPP_RUN_ID + PDPP_REFERENCE_BASE_URL + either
+ * PDPP_STREAMING_REGISTRATION_TOKEN (Mode A, in-process runtime) or
+ * PDPP_LOCAL_DEVICE_TOKEN (Mode B, collector-runner) — all three
+ * required), the launcher additionally registers the page-target CDP
+ * wsUrl with the reference server's run-target registry so the
+ * streaming companion can resolve it by `runId` at viewer-attach time.
+ * Registration is best-effort and never affects the run's outcome —
+ * see `acquireIsolatedBrowser` for the failure semantics.
  */
 async function acquireBrowser(browser: BrowserConfig, name: string): Promise<AcquiredBrowser> {
   const { acquireBrowserForConnector, HeadedBrowserUnavailableError } = await import("./browser-launch.ts");
   const { headless, profileName } = resolveBrowserRuntimeVisibility(browser, name);
+  // Streaming env vars are present iff the controller wired up Mode-A
+  // streaming for this run. Their presence is the signal to launch
+  // Chromium in CDP-port mode (so the handoff helper can compose
+  // wsUrls). Actual per-interaction registration happens in the binding
+  // path via `manualAction(...)`, not at launch — so we don't need the
+  // full registration client here, just the env presence check.
+  const streamingEnabled =
+    Boolean(process.env.PDPP_RUN_ID?.trim()) &&
+    Boolean(process.env.PDPP_REFERENCE_BASE_URL?.trim()) &&
+    Boolean(process.env.PDPP_STREAMING_REGISTRATION_TOKEN?.trim() || process.env.PDPP_LOCAL_DEVICE_TOKEN?.trim());
   try {
-    return await acquireBrowserForConnector({ profileName, headless });
+    return await acquireBrowserForConnector({
+      profileName,
+      headless,
+      ...(streamingEnabled ? { streamingEnabled: true } : {}),
+    });
   } catch (err) {
     if (err instanceof HeadedBrowserUnavailableError) {
       // Surface the stable code in the terminal-error message so the

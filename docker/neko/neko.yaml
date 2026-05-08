@@ -1,0 +1,77 @@
+desktop:
+  screen: "1280x720@30"
+
+member:
+  provider: "noauth"
+
+session:
+  merciful_reconnect: true
+  implicit_hosting: true
+  cookie:
+    enabled: false
+
+capture:
+  video:
+    codec: vp8
+    ids: [main, mq, lq]
+    pipelines:
+      main:
+        fps: 30
+        gst_encoder: vp8enc
+        show_pointer: false
+        gst_params:
+          target-bitrate: round(4096 * 1000)
+          cpu-used: 4
+          end-usage: cbr
+          threads: 4
+          deadline: 1
+          undershoot: 95
+          buffer-size: 16384
+          buffer-initial-size: 8192
+          buffer-optimal-size: 12288
+          keyframe-max-dist: 25
+          min-quantizer: 2
+          max-quantizer: 18
+      mq:
+        fps: 30
+        gst_encoder: vp8enc
+        show_pointer: false
+        gst_params:
+          target-bitrate: round(2048 * 1000)
+          cpu-used: 4
+          end-usage: cbr
+          threads: 4
+          deadline: 1
+          undershoot: 95
+          buffer-size: 8192
+          buffer-initial-size: 4096
+          buffer-optimal-size: 6144
+          keyframe-max-dist: 25
+          min-quantizer: 4
+          max-quantizer: 24
+      lq:
+        fps: 24
+        gst_encoder: vp8enc
+        show_pointer: false
+        gst_params:
+          target-bitrate: round(1024 * 1000)
+          cpu-used: 5
+          end-usage: cbr
+          threads: 4
+          deadline: 1
+          undershoot: 95
+          buffer-size: 4096
+          buffer-initial-size: 2048
+          buffer-optimal-size: 3072
+          keyframe-max-dist: 25
+          min-quantizer: 6
+          max-quantizer: 32
+
+webrtc:
+  estimator:
+    enabled: true
+    initial_bitrate: 4096000
+    stable_duration: "8s"
+    unstable_duration: "4s"
+    upgrade_backoff: "5s"
+    downgrade_backoff: "8s"

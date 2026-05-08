@@ -8,7 +8,7 @@ Some connector runs require human input that cannot be captured by static creden
 - Use CDP screencast and CDP input as the default implementation direction.
 - Keep the streaming companion separate from the local collector runner and collector pairing lifecycle.
 - Reuse existing owner/session, device, run interaction, and short-lived token patterns where possible.
-- Treat n.eko as out of scope unless future evidence proves CDP cannot handle a real connector case.
+- Support n.eko as a polished alternate backend when CDP cannot provide a user-present browser session that real connector sites accept.
 - Document that streaming interaction is optimistic reference implementation behavior pending Collection Profile/human-owner alignment.
 
 ## Capabilities
@@ -23,4 +23,3 @@ Some connector runs require human input that cannot be captured by static creden
 - `apps/web/src/app/dashboard/**` run interaction UX and streaming page.
 - Potential package or service code forked from `remote-browser-service` / `remote-browser-sandbox` prior art.
 - Tests for streaming session authorization, TTL, single-use behavior, input routing, and run interaction linkage.
-

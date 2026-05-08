@@ -45,9 +45,10 @@ test("decorateBrowserManualAction appends recovery copy for headless browser run
   const decorated = decorateBrowserManualAction(MANUAL_ACTION, HEADLESS);
 
   assert.notEqual(decorated, MANUAL_ACTION);
-  assert.match(decorated.message, /headless browser/iu);
+  // The decoration should point operators at the streaming companion as the
+  // primary path, with the headless-rerun env var as the alternative.
+  assert.match(decorated.message, /streaming companion/iu);
   assert.match(decorated.message, /PDPP_REDDIT_HEADLESS=0/u);
-  assert.match(decorated.message, /local collector/iu);
 });
 
 test("decorateBrowserManualAction leaves non-manual interactions unchanged", () => {

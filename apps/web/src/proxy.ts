@@ -46,6 +46,9 @@ function resolveReferenceProxyTarget(pathname: string): string | null {
   if (pathname.startsWith("/_ref/")) {
     return AS_PROXY_TARGET;
   }
+  if (pathname === "/neko" || pathname.startsWith("/neko/")) {
+    return AS_PROXY_TARGET;
+  }
   if (pathname.startsWith("/owner/")) {
     return AS_PROXY_TARGET;
   }
@@ -154,6 +157,8 @@ export const config = {
     "/introspect",
     "/grants/:path*",
     "/_ref/:path*",
+    "/neko",
+    "/neko/:path*",
     "/owner/:path*",
     "/device",
     "/device/:path*",

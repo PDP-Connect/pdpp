@@ -1,0 +1,80 @@
+services:
+  reference:
+    environment:
+      PDPP_ENABLE_STREAM_PLAYGROUND: "1"
+      PDPP_STREAM_PLAYGROUND_BACKEND: ${PDPP_STREAM_PLAYGROUND_BACKEND:-neko}
+      PDPP_NEKO_BASE_URL: ${PDPP_NEKO_BASE_URL:-http://neko:8080/neko}
+      PDPP_NEKO_PROXY_ALLOWED_HOSTS: ${PDPP_NEKO_PROXY_ALLOWED_HOSTS:-neko:8080}
+      PDPP_NEKO_PROXY_AUTOLOGIN: ${PDPP_NEKO_PROXY_AUTOLOGIN:-1}
+      PDPP_NEKO_CDP_HTTP_URL: ${PDPP_NEKO_CDP_HTTP_URL:-http://neko:9223}
+      PDPP_NEKO_BROWSER_OWNER_MODE: ${PDPP_NEKO_BROWSER_OWNER_MODE:-neko-owned}
+      PDPP_NEKO_STEALTH_MODE: ${PDPP_NEKO_STEALTH_MODE:-balanced}
+      NEKO_USERNAME: operator
+      NEKO_PASSWORD: "1"
+
+  neko:
+    image: ${NEKO_IMAGE:-pdpp-neko:local}
+    build:
+      context: .
+      dockerfile: docker/neko/Dockerfile
+      args:
+        NEKO_BASE_IMAGE: ${NEKO_BASE_IMAGE:-ghcr.io/m1k1o/neko/chromium:3.0@sha256:13264ee217ecccda06b07aa7543dc12d8f9a423ace344b6bda6ebf6d2ecea193}
+    # n.eko's HTTP/control port stays on the private Compose network and is
+    # reached by the reference app via service DNS. Only WebRTC media mux ports
+    # are published to the host for browser clients.
+    shm_size: "2gb"
+    environment:
+      NEKO_SERVER_BIND: 0.0.0.0:8080
+      NEKO_SERVER_PATH_PREFIX: /neko
+      NEKO_SERVER_PROXY: "true"
+      NEKO_MEMBER_PROVIDER: noauth
+      NEKO_SESSION_IMPLICIT_HOSTING: "true"
+      NEKO_DESKTOP_SCREEN: ${NEKO_DESKTOP_SCREEN:-1280x720@30}
+      NEKO_WEBRTC_UDPMUX: ${NEKO_WEBRTC_PORT:-59000}
+      NEKO_WEBRTC_TCPMUX: ${NEKO_WEBRTC_PORT:-59000}
+      NEKO_WEBRTC_ICELITE: "1"
+      NEKO_WEBRTC_NAT1TO1: ${NEKO_WEBRTC_NAT1TO1:-127.0.0.1}
+      NEKO_WEBRTC_ICESERVERS: ${NEKO_WEBRTC_ICESERVERS:-[]}
+      PDPP_NEKO_CDP_PROXY_PORT: "9223"
+    ports:
+      - "${NEKO_WEBRTC_PORT:-59000}:59000/tcp"
+      - "${NEKO_WEBRTC_PORT:-59000}:59000/udp"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "wget -q -O /dev/null http://127.0.0.1:8080/neko/health && wget -q -O /dev/null http://127.0.0.1:9223/json/version && supervisorctl status chromium | grep -q RUNNING",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  coturn:
+    image: ${TURN_IMAGE:-coturn/coturn:4.6.3-alpine}
+    profiles: ["turn"]
+    command:
+      - -n
+      - --log-file=stdout
+      - --fingerprint
+      - --lt-cred-mech
+      - --no-cli
+      - --no-tls
+      - --no-dtls
+      - --realm=${TURN_REALM:-pdpp.local}
+      - --server-name=${TURN_REALM:-pdpp.local}
+      - --external-ip=${TURN_PUBLIC_IP:-127.0.0.1}
+      - --min-port=${TURN_MIN_PORT:-49160}
+      - --max-port=${TURN_MAX_PORT:-49200}
+      - --user=${TURN_USERNAME:-pdpp}:${TURN_PASSWORD:-pdpp-turn-dev}
+    ports:
+      - "${TURN_PORT:-3478}:3478/tcp"
+      - "${TURN_PORT:-3478}:3478/udp"
+      - "${TURN_MIN_PORT:-49160}-${TURN_MAX_PORT:-49200}:${TURN_MIN_PORT:-49160}-${TURN_MAX_PORT:-49200}/udp"
+
+  web:
+    depends_on:
+      neko:
+        condition: service_healthy
+    environment:
+      PDPP_ENABLE_STREAM_PLAYGROUND: "1"

@@ -13,6 +13,7 @@
  */
 
 import type { BrowserContext, Page } from "playwright";
+import { manualAction } from "../browser-handoff.ts";
 import type { InteractionRequest, InteractionResponse } from "../connector-runtime.ts";
 
 interface EnsureChatGptSessionArgs {
@@ -128,12 +129,20 @@ export async function ensureChatGptSession({
   // Email input
   const emailIn = page.locator('input[type="email"], input[name="username"], input[name="email"]').first();
   if (!(await emailIn.count())) {
-    await sendInteraction({
-      kind: "manual_action",
-      message:
-        "ChatGPT session expired and auto-login UI is unexpected (possibly Cloudflare challenge). Open chatgpt.com on the laptop and log in manually, then re-run.",
-      timeout_seconds: 1800,
-    });
+    // Register the exact page the human should see, THEN emit the
+    // manual_action interaction. The streaming companion will resolve
+    // by (runId, interactionId) and attach to this specific tab —
+    // not whichever page happened to exist at browser launch.
+    await manualAction(
+      {
+        page,
+        message:
+          "ChatGPT auto-login UI is unexpected (possibly Cloudflare challenge). Use the streaming companion to complete login, or rerun on a host desktop with PDPP_CHATGPT_HEADLESS=0.",
+        reason: "captcha",
+        timeoutSeconds: 1800,
+      },
+      sendInteraction
+    );
     throw new Error("chatgpt_login_unexpected_ui");
   }
   await emailIn.fill(email);
@@ -200,12 +209,18 @@ export async function ensureChatGptSession({
   }
 
   // Last resort — ask the user to complete login manually.
-  await sendInteraction({
-    kind: "manual_action",
-    message:
-      "ChatGPT login submitted but session still not active after 90s. Please complete login in the browser window (Cloudflare challenge, 2FA, etc.).",
-    timeout_seconds: 1800,
-  });
+  // Same handoff pattern as above: register this exact page so the
+  // streaming companion attaches to it, then emit the interaction.
+  await manualAction(
+    {
+      page,
+      message:
+        "ChatGPT login submitted but session still not active after 90s. Use the streaming companion to complete login (Cloudflare challenge, 2FA, etc.).",
+      reason: "login",
+      timeoutSeconds: 1800,
+    },
+    sendInteraction
+  );
 
   // One more check after manual intervention.
   await page.waitForTimeout(3000);

@@ -11,6 +11,8 @@
     "preview": "pnpm web:start",
     "start": "pnpm web:start",
     "docker:dev": "docker compose --env-file .env.docker -f docker-compose.yml -f docker-compose.dev.yml up --build",
+    "docker:neko": "docker compose --env-file .env.docker -f docker-compose.yml -f docker-compose.neko.yml up --build",
+    "docker:neko:turn": "docker compose --profile turn --env-file .env.docker -f docker-compose.yml -f docker-compose.neko.yml up --build",
     "docker:smoke": "bash scripts/docker-smoke.sh",
     "agent-skill:check": "node scripts/sync-agent-skill.mjs --check",
     "agent-skill:sync": "node scripts/sync-agent-skill.mjs --write",

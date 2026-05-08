@@ -10,7 +10,7 @@
 // Supported surface (kept tight on purpose; extend with care):
 //   req:  get(name), is(type), accepts(types), body, headers, hostname,
 //         method, params, path, protocol, query
-//   res:  setHeader, getHeader, status, send, json
+//   res:  setHeader, header, set, getHeader, status, send, json
 //
 // Body parsing:
 //   - application/json                — Fastify's JSON parser (empty bodies ⇒ {})
@@ -336,6 +336,22 @@ function expressShim(request, reply) {
     statusCode: 200,
     locals: reply.locals || {},
     setHeader(name, value) { reply.header(name, value); return res; },
+    // Express exposes `res.header(field, value)` and `res.set(field, value)` as
+    // aliases of `setHeader`, with an object form that sets multiple headers in
+    // one call. Several PDPP handlers (and the streaming routes' WWW-Authenticate
+    // emission for 401s) chain `.status(...).header(...)`, which only works if
+    // both methods return `this`. Without these aliases the chain crashes with
+    // `res.status(...).header is not a function` and Fastify converts the throw
+    // into a 500 — masking the intended 401 envelope.
+    header(field, value) {
+      if (field && typeof field === 'object') {
+        for (const [k, v] of Object.entries(field)) reply.header(k, v);
+      } else {
+        reply.header(field, value);
+      }
+      return res;
+    },
+    set(field, value) { return res.header(field, value); },
     getHeader(name) { return reply.getHeader ? reply.getHeader(name) : reply.raw?.getHeader?.(name); },
     removeHeader(name) { if (reply.removeHeader) reply.removeHeader(name); return res; },
     status(code) { res.statusCode = code; reply.code(code); return res; },

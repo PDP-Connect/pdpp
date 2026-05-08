@@ -178,8 +178,14 @@ export async function submitRunInteraction(
  */
 export interface StreamingSessionMintResponse {
   browser_session_id: string;
-  close_path: string;
   expires_at_ms: number;
+  /**
+   * `true` when the server returned the cached session record for an
+   * `idempotency_key` it had seen within the TTL window. Useful for tracing /
+   * dev-tools telemetry; the response is otherwise identical to the original
+   * mint, including the same single-use token.
+   */
+  idempotency_replayed?: boolean;
   input_path: string;
   interaction_id: string;
   object: "run_interaction_stream_session";
@@ -216,13 +222,30 @@ function isUnavailableErrorBody(body: unknown): boolean {
 export async function mintRunInteractionStream(
   runId: string,
   input: {
+    /**
+     * Stripe-style idempotency key. A duplicate mint with the same key within
+     * the server's TTL window (60s) returns the same session record rather
+     * than minting a fresh token and superseding the prior one. Pass a
+     * client-generated UUID per logical "open browser" attempt.
+     */
+    idempotencyKey?: string;
     interactionId: string;
-    viewport?: { width: number; height: number; deviceScaleFactor?: number; mobile?: boolean };
+    viewport?: {
+      width: number;
+      height: number;
+      deviceScaleFactor?: number;
+      hasTouch?: boolean;
+      mobile?: boolean;
+      userAgent?: string;
+    };
   }
 ): Promise<StreamingSessionMintResponse> {
   const payload: Record<string, unknown> = { interaction_id: input.interactionId };
   if (input.viewport) {
     payload.viewport = input.viewport;
+  }
+  if (input.idempotencyKey) {
+    payload.idempotency_key = input.idempotencyKey;
   }
   const response = await fetchAs(`/_ref/runs/${encodeURIComponent(runId)}/run-interaction-stream`, {
     method: "POST",

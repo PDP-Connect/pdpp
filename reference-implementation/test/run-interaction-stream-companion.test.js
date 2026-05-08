@@ -70,13 +70,25 @@ test('scroll → mouseWheel with deltas', () => {
   assert.equal(cmds[0].params.deltaY, -2);
 });
 
-test('viewport → Emulation.setDeviceMetricsOverride', () => {
-  const cmds = mapInputEventToCdp({ type: 'viewport', width: 390, height: 844, deviceScaleFactor: 3, mobile: true });
+test('viewport → Emulation.setDeviceMetricsOverride and restarts screencast', () => {
+  const cmds = mapInputEventToCdp({
+    type: 'viewport',
+    width: 390,
+    height: 844,
+    deviceScaleFactor: 3,
+    mobile: true,
+  });
+  assert.deepEqual(
+    cmds.map((cmd) => cmd.method),
+    ['Emulation.setDeviceMetricsOverride', 'Page.stopScreencast', 'Page.startScreencast'],
+  );
   assert.equal(cmds[0].method, 'Emulation.setDeviceMetricsOverride');
   assert.equal(cmds[0].params.width, 390);
   assert.equal(cmds[0].params.height, 844);
   assert.equal(cmds[0].params.deviceScaleFactor, 3);
   assert.equal(cmds[0].params.mobile, true);
+  assert.equal(cmds[2].params.maxWidth, 390);
+  assert.equal(cmds[2].params.maxHeight, 844);
 });
 
 test('unknown event types raise invalid_input', () => {

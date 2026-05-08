@@ -643,16 +643,50 @@ function summarizeEvents(events: readonly SpineEventRecord[]): SpineSummary | nu
   }
   const kinds = Array.from(new Set(events.map((e) => e.event_type))).slice(0, 16);
 
+  // Run-correlation summaries must reflect the run's lifecycle status
+  // (`run.completed` / `run.failed`), NOT the status of incidental sub-resource
+  // events that happen to share the run_id (e.g. `run.stream_session_resolved`,
+  // which carries `status: "completed"` when an *operator-side* stream cleanly
+  // closes — independent of whether the connector run itself succeeded).
+  // Without this filter, a run that emits both `run.failed` AND a
+  // `run.stream_session_resolved` (status="completed") would surface as
+  // "completed" in the dashboard, which is dishonest about the real outcome.
+  //
+  // Note: this is a targeted patch over a deeper design tension — the spine
+  // event model conflates run-lifecycle status with sub-resource status under
+  // a single `status` column. The deeper fix is for the spec to distinguish
+  // run-terminal events from sub-resource events explicitly. Tracked in
+  // `openspec/changes/refine-spine-status-semantics-for-mixed-correlations/`.
+  const RUN_TERMINAL_EVENT_TYPES = new Set(["run.completed", "run.failed"]);
   let status = "unknown";
+  // Pass 1: prefer the most recent run-terminal event when summarizing a run.
   for (let i = events.length - 1; i >= 0; i -= 1) {
     const ev = events[i];
     if (!ev) {
+      continue;
+    }
+    if (!RUN_TERMINAL_EVENT_TYPES.has(ev.event_type)) {
       continue;
     }
     const s = ev.status;
     if (s && s !== "unknown") {
       status = s;
       break;
+    }
+  }
+  // Pass 2 (fallback): if no run-terminal event exists yet (run in flight or
+  // non-run correlation), use the most recent non-"unknown" status as before.
+  if (status === "unknown") {
+    for (let i = events.length - 1; i >= 0; i -= 1) {
+      const ev = events[i];
+      if (!ev) {
+        continue;
+      }
+      const s = ev.status;
+      if (s && s !== "unknown") {
+        status = s;
+        break;
+      }
     }
   }
 

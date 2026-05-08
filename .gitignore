@@ -13,12 +13,16 @@ local/
 agent-access.md
 
 # Working artifacts
+*.log
 *.png
 *.yml
+__pycache__/
+*.pyc
 !lefthook.yml
 !.github/**/*.yml
 !docker-compose.yml
 !docker-compose.dev.yml
+!docker-compose.neko.yml
 core.*
 tmp/
 docs/inbox/

@@ -93,7 +93,7 @@ export default async function RunDetailPage({
       <TimelineDetailView
         beforeTimeline={
           <>
-            <PendingInteractionSection pendingInteraction={pendingInteraction} runId={runId} />
+            <PendingInteractionSection active={active} pendingInteraction={pendingInteraction} runId={runId} />
             <LatestProgressSection active={active} latestProgress={latestProgress} terminalStatus={terminalStatus} />
             <StatsGrid
               checkpoints={checkpoints}
@@ -145,24 +145,30 @@ export default async function RunDetailPage({
 }
 
 function PendingInteractionSection({
+  active,
   pendingInteraction,
   runId,
 }: {
+  active: boolean;
   pendingInteraction: PendingInteraction | null;
   runId: string;
 }) {
   if (!pendingInteraction) {
     return null;
   }
-  const supportsStreaming = pendingInteraction.kind === "manual_action";
+  const supportsStreaming = pendingInteraction.kind === "manual_action" && active;
 
   return (
     <Callout
-      action={<StatusBadge inline status="pending" />}
+      action={<StatusBadge inline status={active ? "pending" : "cancelled"} />}
       className="mb-6 border border-[color:var(--warning)] border-l-4 bg-[color:var(--warning-wash)]"
-      description="This run is alive, but it cannot continue until the requested interaction is satisfied."
+      description={
+        active
+          ? "This run is alive, but it cannot continue until the requested interaction is satisfied."
+          : "This interaction was unanswered when the run ended."
+      }
       surface="human"
-      title="Waiting on operator input"
+      title={active ? "Waiting on operator input" : "Interaction abandoned"}
     >
       {supportsStreaming ? (
         <p className="pdpp-caption mb-2">

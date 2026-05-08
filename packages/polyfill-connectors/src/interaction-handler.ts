@@ -104,11 +104,46 @@ async function respondViaTerminal(msg: InteractionMessage): Promise<InteractionR
 
 export interface HandleInteractionOptions {
   connectorName?: string;
+  runId?: string;
+}
+
+/**
+ * Resolve the web app base URL the operator clicks through to from a
+ * notification. The reference's "unified personal server" deployment
+ * (concept 76) hosts the dashboard alongside the AS/RS, so the web URL
+ * is the reference origin by default; `PDPP_WEB_BASE_URL` is an explicit
+ * override for operators who deploy the dashboard on a separate host.
+ * The localhost fallback exists only so a dev session without either
+ * env var still produces a working notification, with a warning.
+ */
+function resolveWebBaseUrl(): string {
+  const explicit = process.env.PDPP_WEB_BASE_URL?.trim();
+  if (explicit) {
+    return explicit;
+  }
+  const referenceOrigin = process.env.PDPP_REFERENCE_ORIGIN?.trim();
+  if (referenceOrigin) {
+    return referenceOrigin;
+  }
+  return "http://localhost:3000";
+}
+
+function buildClickUrl(runId: string | undefined, kind: string, interactionId: string | undefined): string | undefined {
+  if (!runId) {
+    return;
+  }
+  const webBaseUrl = resolveWebBaseUrl();
+  const encodedRunId = encodeURIComponent(runId);
+  const encodedInteractionId = encodeURIComponent(interactionId || "");
+  if (kind === "manual_action") {
+    return `${webBaseUrl}/dashboard/runs/${encodedRunId}/stream?interaction_id=${encodedInteractionId}`;
+  }
+  return `${webBaseUrl}/dashboard/runs/${encodedRunId}`;
 }
 
 export async function handleInteraction(
   msg: InteractionMessage,
-  { connectorName = "connector" }: HandleInteractionOptions = {}
+  { connectorName = "connector", runId }: HandleInteractionOptions = {}
 ): Promise<InteractionResponse> {
   const id = msg.request_id || `anon_${Date.now()}`;
   const timeoutSeconds = Math.min(Math.max(msg.timeout_seconds || 1800, 60), 3600);
@@ -128,11 +163,14 @@ export async function handleInteraction(
     process.stderr.write(`${line}\n`);
   }
 
+  const clickUrl = buildClickUrl(runId, msg.kind, id);
+
   const ntfyPromise = notify({
     title: `PDPP ${connectorName}: ${msg.kind} needed`,
     message: `${msg.message || ""}\n\nReply: write to ${respPath}`,
     tags: msg.kind === "otp" || msg.kind === "credentials" ? ["key"] : ["construction"],
     priority: "high",
+    ...(clickUrl && { clickUrl }),
   }).catch((): undefined => undefined);
 
   // Terminal path if interactive — fires concurrently with file-drop watch.
@@ -178,3 +216,5 @@ export async function handleInteraction(
   }
   return out;
 }
+
+export const __testing = { buildClickUrl };

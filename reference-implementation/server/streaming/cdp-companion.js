@@ -203,6 +203,11 @@ export function mapInputEventToCdp(event) {
           method: 'Emulation.setDeviceMetricsOverride',
           params: { width, height, deviceScaleFactor, mobile },
         },
+        { method: 'Page.stopScreencast', params: undefined },
+        {
+          method: 'Page.startScreencast',
+          params: buildScreencastParams({ viewport: { width, height } }),
+        },
       ];
     }
 
@@ -242,11 +247,13 @@ export function buildScreencastParams({ viewport, quality = 70 } = {}) {
 
 /**
  * Mock companion for deterministic tests. Frames can be pushed manually via
- * `pushFrame`, and dispatched input events accumulate in `inputs` so tests can
- * assert that the wire→CDP mapping landed correctly.
+ * `pushFrame`, out-of-band wire events via `pushEvent`, and dispatched input
+ * events accumulate in `inputs` so tests can assert that the wire→CDP mapping
+ * landed correctly.
  */
 export function createMockCompanion({ browser_session_id = 'mock-session' } = {}) {
   const handlers = new Set();
+  const eventHandlers = new Set();
   let started = false;
   let lastViewport = null;
   const inputs = [];
@@ -266,14 +273,25 @@ export function createMockCompanion({ browser_session_id = 'mock-session' } = {}
     async stop() {
       started = false;
       cdpCalls.push({ method: 'Page.stopScreencast', params: {} });
+      handlers.clear();
+      eventHandlers.clear();
     },
     onFrame(fn) {
       handlers.add(fn);
       return () => handlers.delete(fn);
     },
+    onEvent(fn) {
+      eventHandlers.add(fn);
+      return () => eventHandlers.delete(fn);
+    },
     pushFrame(frame) {
       for (const handler of handlers) {
         handler(frame);
+      }
+    },
+    pushEvent(event) {
+      for (const handler of eventHandlers) {
+        handler(event);
       }
     },
     async dispatch(event) {

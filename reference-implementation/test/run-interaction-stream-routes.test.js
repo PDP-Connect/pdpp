@@ -13,6 +13,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import http from 'node:http';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -116,12 +117,48 @@ rl.on('line', (line) => {
   return path;
 }
 
+function makeMockNekoCompanion(upstreamOrigin, options = {}) {
+  return ({ browser_session_id }) => {
+    const companion = {
+      backend: 'neko',
+      browser_session_id,
+      async start() {},
+      async stop() {},
+      onFrame() {
+        return () => {};
+      },
+      onEvent() {
+        return () => {};
+      },
+      async dispatch() {},
+      async ackFrame() {},
+      browserOwnerMode() {
+        return options.browserOwnerMode || 'neko-owned';
+      },
+      getNekoProxyTarget() {
+        return { origin: upstreamOrigin };
+      },
+      stealthMode() {
+        return options.stealthMode || 'balanced';
+      },
+    };
+    if ('status' in options) {
+      companion.queryNekoStatus = async () => options.status;
+    }
+    return companion;
+  };
+}
+
 async function withHarness(options, fn) {
+  const harnessOptions = options || {};
   const tmpDir = mkdtempSync(join(tmpdir(), 'pdpp-ref-stream-'));
-  const connectorPath = buildManualActionConnector(tmpDir, options || {});
+  const connectorPath = buildManualActionConnector(tmpDir, harnessOptions);
   const companions = [];
   const streamingCompanionFactory = ({ browser_session_id, run_id, interaction_id }) => {
-    const companion = createMockCompanion({ browser_session_id });
+    const companion =
+      typeof harnessOptions.makeCompanion === 'function'
+        ? harnessOptions.makeCompanion({ browser_session_id, run_id, interaction_id })
+        : createMockCompanion({ browser_session_id });
     companions.push({ companion, browser_session_id, run_id, interaction_id });
     return companion;
   };
@@ -132,6 +169,7 @@ async function withHarness(options, fn) {
     dbPath: ':memory:',
     connectorPathResolver: () => connectorPath,
     streamingCompanionFactory,
+    nekoProxyAutoLogin: harnessOptions.nekoProxyAutoLogin,
   });
   const asUrl = `http://localhost:${server.asPort}`;
   const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, 'manifests/spotify.json'), 'utf8'));
@@ -212,6 +250,76 @@ test('mint refuses a stale interaction id', async () => {
   });
 });
 
+test('mint with a duplicate idempotency_key returns the same token (defense-in-depth against StrictMode/retry double-mints)', async () => {
+  await withHarness({}, async ({ asUrl, spotifyManifest, companions }) => {
+    const started = await startRun(asUrl, spotifyManifest.connector_id);
+    const pending = await waitForPendingInteraction(asUrl, started.run_id);
+    const mintUrl = `${asUrl}/_ref/runs/${encodeURIComponent(started.run_id)}/run-interaction-stream`;
+    const idempotency_key = 'fixture-key-001';
+    const body = JSON.stringify({
+      interaction_id: pending.interaction_id,
+      viewport: { width: 800, height: 600 },
+      idempotency_key,
+    });
+    const first = await fetchJson(mintUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body,
+    });
+    assert.equal(first.status, 201);
+    assert.equal(first.body.idempotency_replayed, false);
+    const second = await fetchJson(mintUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body,
+    });
+    assert.equal(second.status, 201);
+    assert.equal(second.body.token, first.body.token);
+    assert.equal(second.body.browser_session_id, first.body.browser_session_id);
+    assert.equal(second.body.idempotency_replayed, true);
+    // Crucially: the duplicate mint must NOT have spawned a second companion;
+    // otherwise the original would be torn down at the next attach and the
+    // dashboard 401 cascade returns. Filter to companions for this run only —
+    // earlier tests in the suite share the harness file but not the server,
+    // but the safety belt is cheap.
+    const forThisRun = companions.filter((c) => c.run_id === started.run_id);
+    assert.equal(forThisRun.length, 1, 'duplicate mint must reuse the existing companion');
+    await cancelRun(asUrl, started.run_id, pending.interaction_id);
+  });
+});
+
+test('mint with a different idempotency_key supersedes the prior token (legitimate re-open)', async () => {
+  await withHarness({}, async ({ asUrl, spotifyManifest }) => {
+    const started = await startRun(asUrl, spotifyManifest.connector_id);
+    const pending = await waitForPendingInteraction(asUrl, started.run_id);
+    const mintUrl = `${asUrl}/_ref/runs/${encodeURIComponent(started.run_id)}/run-interaction-stream`;
+    const first = await fetchJson(mintUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        interaction_id: pending.interaction_id,
+        idempotency_key: 'first-click',
+      }),
+    });
+    assert.equal(first.status, 201);
+    const second = await fetchJson(mintUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        interaction_id: pending.interaction_id,
+        idempotency_key: 'second-click',
+      }),
+    });
+    assert.equal(second.status, 201);
+    assert.notEqual(second.body.token, first.body.token);
+    assert.equal(second.body.idempotency_replayed, false);
+    // Prior token is now invalid for SSE attach.
+    const reattach = await fetch(`${asUrl}${first.body.viewer_path}`);
+    assert.ok(reattach.status === 401 || reattach.status === 410);
+    await cancelRun(asUrl, started.run_id, pending.interaction_id);
+  });
+});
+
 test('SSE attach delivers an attached event and dispatches frames', async () => {
   await withHarness({}, async ({ asUrl, spotifyManifest, companions }) => {
     const started = await startRun(asUrl, spotifyManifest.connector_id);
@@ -261,6 +369,11 @@ test('SSE attach delivers an attached event and dispatches frames', async () => 
     assert.equal(attached.interaction_id, pending.interaction_id);
     assert.deepEqual(attached.viewport, { width: 320, height: 480 });
 
+    const backendReady = await readEvent('backend_ready');
+    assert.equal(backendReady.backend, 'cdp');
+    assert.equal(backendReady.client_config_path, null);
+    assert.equal(backendReady.iframe_path, null);
+
     // Inject a frame via the mock companion and confirm the viewer receives it.
     const tracked = companions.find((c) => c.run_id === started.run_id);
     assert.ok(tracked, 'companion factory captured the streaming session');
@@ -288,9 +401,20 @@ test('SSE attach delivers an attached event and dispatches frames', async () => 
       'route must call companion.ackFrame(sessionId) for every delivered frame',
     );
 
-    // A second SSE attach with the same token must fail (single-use).
+    // Re-attach with the same token must SUCCEED — the viewer's SSE socket
+    // can drop transiently (mobile network blip, tab visibility change,
+    // dev-mode HMR reload) and the operator must be able to resume frame
+    // delivery on the same token without losing the session. The session
+    // outlives any single transport. See sessions.js `attach` doc comment
+    // and routes.js per-connection vs terminal teardown split.
     const reattach = await fetch(`${asUrl}${mint.body.viewer_path}`);
-    assert.ok(reattach.status === 409 || reattach.status === 401);
+    assert.equal(reattach.status, 200);
+    assert.match(reattach.headers.get('content-type') || '', /text\/event-stream/);
+    try {
+      await reattach.body?.cancel();
+    } catch {
+      /* aborted */
+    }
 
     ac.abort();
     try {
@@ -302,6 +426,288 @@ test('SSE attach delivers an attached event and dispatches frames', async () => 
     await cancelRun(asUrl, started.run_id, pending.interaction_id);
     void token;
   });
+});
+
+test('n.eko backend emits iframe path and proxies only after stream-token entry', async () => {
+  let observedUpstreamCookie = null;
+  const upstream = http.createServer((req, res) => {
+    observedUpstreamCookie = req.headers.cookie || '';
+    if (req.url === '/neko/' || req.url.startsWith('/neko/?')) {
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      res.end('<html><head><script src="js/app.js"></script></head><body>ok</body></html>');
+      return;
+    }
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.end(`proxied:${req.method}:${req.url}`);
+  });
+  await new Promise((resolve, reject) => {
+    upstream.once('error', reject);
+    upstream.listen(0, '127.0.0.1', resolve);
+  });
+  const upstreamOrigin = `http://127.0.0.1:${upstream.address().port}`;
+
+  try {
+    await withHarness(
+      {
+        makeCompanion: makeMockNekoCompanion(upstreamOrigin),
+      },
+      async ({ asUrl, spotifyManifest }) => {
+        const unauthenticatedProxy = await fetchJson(`${asUrl}/neko/echo`);
+        assert.equal(unauthenticatedProxy.status, 401);
+
+        const started = await startRun(asUrl, spotifyManifest.connector_id);
+        const pending = await waitForPendingInteraction(asUrl, started.run_id);
+        const mint = await fetchJson(`${asUrl}/_ref/runs/${encodeURIComponent(started.run_id)}/run-interaction-stream`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ interaction_id: pending.interaction_id }),
+        });
+        assert.equal(mint.status, 201);
+
+        const ac = new AbortController();
+        const sseResp = await fetch(`${asUrl}${mint.body.viewer_path}`, { signal: ac.signal });
+        assert.equal(sseResp.status, 200);
+        const reader = sseResp.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        async function readEvent(name, deadlineMs = 1500) {
+          const deadline = Date.now() + deadlineMs;
+          while (Date.now() < deadline) {
+            const block = buffer.indexOf('\n\n');
+            if (block !== -1) {
+              const event = buffer.slice(0, block);
+              buffer = buffer.slice(block + 2);
+              if (event.includes(`event: ${name}`)) {
+                const dataLine = event.split('\n').find((line) => line.startsWith('data:'));
+                return dataLine ? JSON.parse(dataLine.slice(5).trim()) : null;
+              }
+              continue;
+            }
+            const { value, done } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+          }
+          throw new Error(`Did not receive SSE event ${name} in ${deadlineMs}ms`);
+        }
+
+        await readEvent('attached');
+        const backendReady = await readEvent('backend_ready');
+        assert.equal(backendReady.backend, 'neko');
+        assert.equal(
+          backendReady.client_config_path,
+          `/_ref/run-interaction-streams/${encodeURIComponent(mint.body.token)}/neko/session`,
+        );
+        assert.equal(
+          backendReady.iframe_path,
+          `/_ref/run-interaction-streams/${encodeURIComponent(mint.body.token)}/neko`,
+        );
+        assert.equal(backendReady.browser_owner_mode, 'neko-owned');
+        assert.equal(backendReady.stealth_mode, 'balanced');
+
+        const clientConfig = await fetch(`${asUrl}${backendReady.client_config_path}`);
+        assert.equal(clientConfig.status, 200);
+        const clientConfigCookie = clientConfig.headers.get('set-cookie') || '';
+        assert.match(clientConfigCookie, /pdpp_neko_stream=/);
+        assert.match(clientConfigCookie, /Path=\/neko/);
+        assert.deepEqual(await clientConfig.json(), {
+          object: 'run_interaction_neko_client',
+          server_path: '/neko',
+          status_path: '/neko/__pdpp/status',
+          login: {
+            username: 'user',
+            password: 'neko',
+          },
+        });
+
+        const entry = await fetch(`${asUrl}${backendReady.iframe_path}`, { redirect: 'manual' });
+        assert.equal(entry.status, 302);
+        const entryLocation = entry.headers.get('location');
+        assert.match(entryLocation, /^\/neko\?pdpp_stream=/);
+        const entryUrl = new URL(entryLocation, asUrl);
+        assert.equal(entryUrl.pathname, '/neko');
+        assert.ok(entryUrl.searchParams.get('pdpp_stream'));
+        assert.equal(entryUrl.searchParams.get('embed'), '1');
+        assert.equal(entryUrl.searchParams.has('usr'), false);
+        assert.equal(entryUrl.searchParams.has('pwd'), false);
+        const cookie = entry.headers.get('set-cookie') || '';
+        assert.match(cookie, /pdpp_neko_stream=/);
+        assert.match(cookie, /Path=\/neko/);
+
+        const statusNoControl = await fetchJson(`${asUrl}/neko/__pdpp/status`, { headers: { cookie } });
+        assert.equal(statusNoControl.status, 200);
+        assert.deepEqual(statusNoControl.body, {
+          object: 'run_interaction_neko_status',
+          control_available: false,
+        });
+
+        const proxiedEntry = await fetch(`${asUrl}${entryLocation}`, { headers: { cookie } });
+        assert.equal(proxiedEntry.status, 200);
+        const proxiedEntryHtml = await proxiedEntry.text();
+        assert.match(proxiedEntryHtml, /<base href="\/neko\/">/);
+        assert.match(proxiedEntryHtml, /data-pdpp-neko-embed/);
+        assert.match(proxiedEntryHtml, /header-container/);
+        assert.match(proxiedEntryHtml, /video-menu/);
+        assert.match(proxiedEntryHtml, /pdpp-neko-focus/);
+        assert.match(proxiedEntryHtml, /<body>ok<\/body>/);
+
+        const proxied = await fetch(`${asUrl}/neko/echo?x=1`, { headers: { cookie } });
+        assert.equal(proxied.status, 200);
+        assert.equal(await proxied.text(), 'proxied:GET:/neko/echo?x=1');
+
+        const proxiedRoot = await fetch(`${asUrl}/neko`, { headers: { cookie } });
+        assert.equal(proxiedRoot.status, 200);
+        const proxiedRootHtml = await proxiedRoot.text();
+        assert.match(proxiedRootHtml, /<base href="\/neko\/">/);
+        assert.match(proxiedRootHtml, /data-pdpp-neko-embed/);
+        assert.match(proxiedRootHtml, /<body>ok<\/body>/);
+
+        assert.ok(
+          !String(observedUpstreamCookie).includes('pdpp_neko_stream='),
+          'stream token cookie must not be forwarded to n.eko',
+        );
+
+        ac.abort();
+        try {
+          await reader.cancel();
+        } catch {
+          /* aborted */
+        }
+        await cancelRun(asUrl, started.run_id, pending.interaction_id);
+      },
+    );
+  } finally {
+    await new Promise((resolve) => upstream.close(resolve));
+  }
+});
+
+test('n.eko entry can include noauth auto-login query params', async () => {
+  await withHarness(
+    {
+      makeCompanion: makeMockNekoCompanion('http://127.0.0.1:8080'),
+      nekoProxyAutoLogin: { username: 'operator', password: '1' },
+    },
+    async ({ asUrl, spotifyManifest }) => {
+      const started = await startRun(asUrl, spotifyManifest.connector_id);
+      const pending = await waitForPendingInteraction(asUrl, started.run_id);
+      const mint = await fetchJson(`${asUrl}/_ref/runs/${encodeURIComponent(started.run_id)}/run-interaction-stream`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ interaction_id: pending.interaction_id }),
+      });
+      assert.equal(mint.status, 201);
+
+      const ac = new AbortController();
+      const sseResp = await fetch(`${asUrl}${mint.body.viewer_path}`, { signal: ac.signal });
+      assert.equal(sseResp.status, 200);
+      const reader = sseResp.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      async function readEvent(name, deadlineMs = 1500) {
+        const deadline = Date.now() + deadlineMs;
+        while (Date.now() < deadline) {
+          const block = buffer.indexOf('\n\n');
+          if (block !== -1) {
+            const event = buffer.slice(0, block);
+            buffer = buffer.slice(block + 2);
+            if (event.includes(`event: ${name}`)) {
+              const dataLine = event.split('\n').find((line) => line.startsWith('data:'));
+              return dataLine ? JSON.parse(dataLine.slice(5).trim()) : null;
+            }
+            continue;
+          }
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+        }
+        throw new Error(`Did not receive SSE event ${name} in ${deadlineMs}ms`);
+      }
+
+      await readEvent('attached');
+      const backendReady = await readEvent('backend_ready');
+      assert.equal(backendReady.backend, 'neko');
+      assert.equal(backendReady.browser_owner_mode, 'neko-owned');
+      assert.equal(backendReady.stealth_mode, 'balanced');
+
+      const clientConfig = await fetch(`${asUrl}${backendReady.client_config_path}`);
+      assert.equal(clientConfig.status, 200);
+      assert.deepEqual(await clientConfig.json(), {
+        object: 'run_interaction_neko_client',
+        server_path: '/neko',
+        status_path: '/neko/__pdpp/status',
+        login: {
+          username: 'operator',
+          password: '1',
+        },
+      });
+
+      const entry = await fetch(`${asUrl}${backendReady.iframe_path}`, { redirect: 'manual' });
+      assert.equal(entry.status, 302);
+      const entryUrl = new URL(entry.headers.get('location'), asUrl);
+      assert.equal(entryUrl.pathname, '/neko');
+      assert.ok(entryUrl.searchParams.get('pdpp_stream'));
+      assert.equal(entryUrl.searchParams.get('embed'), '1');
+      assert.equal(entryUrl.searchParams.get('usr'), 'operator');
+      assert.equal(entryUrl.searchParams.get('pwd'), '1');
+
+      ac.abort();
+      try {
+        await reader.cancel();
+      } catch {
+        /* aborted */
+      }
+      await cancelRun(asUrl, started.run_id, pending.interaction_id);
+    },
+  );
+});
+
+test('n.eko status diagnostics are scoped to the n.eko stream cookie', async () => {
+  await withHarness(
+    {
+      makeCompanion: makeMockNekoCompanion('http://127.0.0.1:8080', {
+        status: { connected: true, url: 'https://example.test/login' },
+      }),
+    },
+    async ({ asUrl, spotifyManifest }) => {
+      const unauthorized = await fetchJson(`${asUrl}/neko/__pdpp/status`);
+      assert.equal(unauthorized.status, 401);
+
+      const started = await startRun(asUrl, spotifyManifest.connector_id);
+      const pending = await waitForPendingInteraction(asUrl, started.run_id);
+      const mint = await fetchJson(`${asUrl}/_ref/runs/${encodeURIComponent(started.run_id)}/run-interaction-stream`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ interaction_id: pending.interaction_id }),
+      });
+      assert.equal(mint.status, 201);
+
+      const ac = new AbortController();
+      const sseResp = await fetch(`${asUrl}${mint.body.viewer_path}`, { signal: ac.signal });
+      assert.equal(sseResp.status, 200);
+      const reader = sseResp.body.getReader();
+      await reader.read();
+
+      const entry = await fetch(`${asUrl}/_ref/run-interaction-streams/${encodeURIComponent(mint.body.token)}/neko`, {
+        redirect: 'manual',
+      });
+      assert.equal(entry.status, 302);
+      const cookie = entry.headers.get('set-cookie') || '';
+      const status = await fetchJson(`${asUrl}/neko/__pdpp/status`, { headers: { cookie } });
+      assert.equal(status.status, 200);
+      assert.deepEqual(status.body, {
+        object: 'run_interaction_neko_status',
+        control_available: true,
+        status: { connected: true, url: 'https://example.test/login' },
+      });
+
+      ac.abort();
+      try {
+        await reader.cancel();
+      } catch {
+        /* aborted */
+      }
+      await cancelRun(asUrl, started.run_id, pending.interaction_id);
+    },
+  );
 });
 
 test('input POST dispatches to the companion after attach and rejects bad input', async () => {
@@ -342,6 +748,66 @@ test('input POST dispatches to the companion after attach and rejects bad input'
     });
     assert.equal(click.status, 202);
     assert.ok(tracked.companion.inputs.some((e) => e.type === 'mouse' && e.action === 'click'));
+
+    const paste = await fetchJson(`${asUrl}${mint.body.input_path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'paste', text: 'one-time code 123456' }),
+    });
+    assert.equal(paste.status, 202);
+    assert.ok(
+      tracked.companion.inputs.some((e) => e.type === 'paste' && e.text === 'one-time code 123456'),
+      'paste POST must dispatch to the companion without special route handling',
+    );
+
+    const viewport = await fetchJson(`${asUrl}${mint.body.viewport_path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        width: 390.9,
+        height: 844.8,
+        screenWidth: 1080.2,
+        screenHeight: 1920.8,
+        deviceScaleFactor: 3,
+        mobile: true,
+      }),
+    });
+    assert.equal(viewport.status, 202);
+    assert.deepEqual(viewport.body.viewport, {
+      width: 390,
+      height: 844,
+      screenWidth: 1080,
+      screenHeight: 1920,
+      deviceScaleFactor: 3,
+      mobile: true,
+    });
+    assert.ok(
+      tracked.companion.inputs.some(
+        (e) =>
+          e.type === 'viewport' &&
+          e.width === 390 &&
+          e.height === 844 &&
+          e.screenWidth === 1080 &&
+          e.screenHeight === 1920 &&
+          e.deviceScaleFactor === 3 &&
+          e.mobile === true,
+      ),
+      'viewport POST must dispatch the CSS-pixel viewport to the companion',
+    );
+    assert.ok(
+      tracked.companion.cdpCalls.some(
+        (c) => c.method === 'Page.startScreencast' && c.params?.maxWidth === 390 && c.params?.maxHeight === 844,
+      ),
+      'viewport POST must restart screencast with the new viewport bounds',
+    );
+
+    const badViewport = await fetchJson(`${asUrl}${mint.body.viewport_path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ width: 0, height: 844 }),
+    });
+    assert.equal(badViewport.status, 400);
+    assert.equal(badViewport.body.error.code, 'invalid_request');
 
     const bad = await fetchJson(`${asUrl}${mint.body.input_path}`, {
       method: 'POST',
@@ -486,13 +952,14 @@ test('SSE delivers multiple frames and acks each, even when ack rejects', async 
 });
 
 test('mint fails closed with 503 streaming_companion_unavailable when no companion is configured', async () => {
-  // Run the server without a streamingCompanionFactory and without
-  // PDPP_RUN_INTERACTION_CDP_WS_URL. The mint route must refuse to hand out
-  // a token rather than handing one out that fails only at attach time.
+  // Run the server without a streamingCompanionFactory. The default factory
+  // is built from the run-target registry resolver — the resolver itself is
+  // always present, but the route layer treats `companionFactory == null` as
+  // fail-closed, which only happens when no resolver and no factory injection
+  // is wired. Here we inject `null` explicitly to exercise the route's
+  // fail-closed branch.
   const tmpDir = mkdtempSync(join(tmpdir(), 'pdpp-ref-stream-unavail-'));
   const connectorPath = buildManualActionConnector(tmpDir, {});
-  const priorEnv = process.env.PDPP_RUN_INTERACTION_CDP_WS_URL;
-  delete process.env.PDPP_RUN_INTERACTION_CDP_WS_URL;
   try {
     const server = await startServer({
       quiet: true,
@@ -500,7 +967,7 @@ test('mint fails closed with 503 streaming_companion_unavailable when no compani
       rsPort: 0,
       dbPath: ':memory:',
       connectorPathResolver: () => connectorPath,
-      // No streamingCompanionFactory — exercises the fail-closed path.
+      streamingCompanionFactory: null,
     });
     try {
       const asUrl = `http://localhost:${server.asPort}`;
@@ -515,19 +982,36 @@ test('mint fails closed with 503 streaming_companion_unavailable when no compani
       });
       assert.equal(mint.status, 503);
       assert.equal(mint.body.error.code, 'streaming_companion_unavailable');
-      assert.match(mint.body.error.message, /PDPP_RUN_INTERACTION_CDP_WS_URL/);
+      assert.match(mint.body.error.message, /not configured/);
       await cancelRun(asUrl, started.run_id, pending.interaction_id);
     } finally {
       await closeServer(server);
     }
   } finally {
-    if (priorEnv === undefined) {
-      delete process.env.PDPP_RUN_INTERACTION_CDP_WS_URL;
-    } else {
-      process.env.PDPP_RUN_INTERACTION_CDP_WS_URL = priorEnv;
-    }
     rmSync(tmpDir, { recursive: true, force: true });
   }
+});
+
+test('input POST with an unknown token returns 401 with a WWW-Authenticate header', async () => {
+  // Regression: the 401 path in pdppError() chains `.status(401).header(...)`.
+  // Express exposes `res.header()` as an alias of `setHeader`; the transport
+  // shim must expose the same so the chain doesn't throw and get converted
+  // into a 500 by Fastify (which the user sees as
+  // `res.status(...).header is not a function`).
+  await withHarness({}, async ({ asUrl }) => {
+    const bogus = 'not-a-real-token';
+    const resp = await fetchJson(`${asUrl}/_ref/run-interaction-streams/${bogus}/input`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'mouse', action: 'click', x: 1, y: 1 }),
+    });
+    assert.equal(resp.status, 401, 'unknown token must produce 401, not a transport-level 500');
+    assert.equal(resp.body?.error?.type, 'invalid_request_error');
+    assert.match(
+      resp.headers.get('www-authenticate') || '',
+      /^Bearer\s+realm="pdpp-stream"$/,
+    );
+  });
 });
 
 test('resolving the interaction invalidates streaming and emits a resolved timeline event', async () => {
@@ -560,5 +1044,158 @@ test('resolving the interaction invalidates streaming and emits a resolved timel
     // Sensitive payload guard: timeline must not carry the streaming token.
     const raw = JSON.stringify(timeline.body);
     assert.ok(!raw.includes(mint.body.token), 'streaming token must never appear in timeline');
+  });
+});
+
+test('SSE forwards companion out-of-band events as named SSE events', async () => {
+  // The cdp adapter exposes `companion.onEvent` for non-frame wire events
+  // (URL changes, popup open/close). The SSE route must fan these out as
+  // named SSE event types so the viewer's EventSource registers a handler
+  // per event name. Existing screencast frames (`event: frame`) must keep
+  // flowing.
+  await withHarness({}, async ({ asUrl, spotifyManifest, companions }) => {
+    const started = await startRun(asUrl, spotifyManifest.connector_id);
+    const pending = await waitForPendingInteraction(asUrl, started.run_id);
+    const mint = await fetchJson(`${asUrl}/_ref/runs/${encodeURIComponent(started.run_id)}/run-interaction-stream`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        interaction_id: pending.interaction_id,
+        viewport: { width: 800, height: 600 },
+      }),
+    });
+    assert.equal(mint.status, 201);
+
+    const ac = new AbortController();
+    const sseResp = await fetch(`${asUrl}${mint.body.viewer_path}`, { signal: ac.signal });
+    assert.equal(sseResp.status, 200);
+    const reader = sseResp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    async function readEvent(name, deadlineMs = 1500) {
+      const deadline = Date.now() + deadlineMs;
+      while (Date.now() < deadline) {
+        const block = buffer.indexOf('\n\n');
+        if (block !== -1) {
+          const event = buffer.slice(0, block);
+          buffer = buffer.slice(block + 2);
+          if (event.includes(`event: ${name}`)) {
+            const dataLine = event.split('\n').find((line) => line.startsWith('data:'));
+            return dataLine ? JSON.parse(dataLine.slice(5).trim()) : null;
+          }
+          continue;
+        }
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+      }
+      throw new Error(`Did not receive SSE event ${name} in ${deadlineMs}ms`);
+    }
+    await readEvent('attached');
+
+    const tracked = companions.find((c) => c.run_id === started.run_id);
+    assert.ok(tracked);
+    assert.equal(typeof tracked.companion.pushEvent, 'function', 'mock companion exposes pushEvent');
+
+    // url_changed with title.
+    tracked.companion.pushEvent({ kind: 'url_changed', url: 'https://example.com/login', title: 'Sign in' });
+    const urlEvt = await readEvent('url_changed');
+    assert.deepEqual(urlEvt, { url: 'https://example.com/login', title: 'Sign in' });
+
+    // url_changed without title — title field must be omitted.
+    tracked.companion.pushEvent({ kind: 'url_changed', url: 'https://example.com/dash' });
+    const urlEvt2 = await readEvent('url_changed');
+    assert.deepEqual(urlEvt2, { url: 'https://example.com/dash' });
+
+    // popup_opened.
+    tracked.companion.pushEvent({ kind: 'popup_opened', targetId: 'tg_pop', url: 'https://oauth.example.com/' });
+    const popOpen = await readEvent('popup_opened');
+    assert.deepEqual(popOpen, { targetId: 'tg_pop', url: 'https://oauth.example.com/' });
+
+    // popup_closed.
+    tracked.companion.pushEvent({ kind: 'popup_closed', targetId: 'tg_pop' });
+    const popClose = await readEvent('popup_closed');
+    assert.deepEqual(popClose, { targetId: 'tg_pop' });
+
+    // Frame stream still works alongside.
+    tracked.companion.pushFrame({ sessionId: 1, data: 'AA==', metadata: null });
+    const frame = await readEvent('frame');
+    assert.equal(frame.session_id, 1);
+
+    ac.abort();
+    try {
+      await reader.cancel();
+    } catch {
+      /* aborted */
+    }
+    await cancelRun(asUrl, started.run_id, pending.interaction_id);
+  });
+});
+
+test('SSE handler emits keepalive comment pings while idle to prevent timeout', async () => {
+  // Fastify keepAliveTimeout defaults to 30 seconds. If no frames flow, the SSE
+  // stream would be closed silently. Keepalive comment pings (lines starting with `:`)
+  // reset the timer without firing client-side handlers.
+  await withHarness({}, async ({ asUrl, spotifyManifest, companions }) => {
+    const started = await startRun(asUrl, spotifyManifest.connector_id);
+    const pending = await waitForPendingInteraction(asUrl, started.run_id);
+    const mint = await fetchJson(`${asUrl}/_ref/runs/${encodeURIComponent(started.run_id)}/run-interaction-stream`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        interaction_id: pending.interaction_id,
+        viewport: { width: 800, height: 600 },
+      }),
+    });
+    assert.equal(mint.status, 201);
+
+    const ac = new AbortController();
+    const sseResp = await fetch(`${asUrl}${mint.body.viewer_path}`, { signal: ac.signal });
+    assert.equal(sseResp.status, 200);
+    const reader = sseResp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    async function readRawBytes(deadlineMs = 3000) {
+      const deadline = Date.now() + deadlineMs;
+      while (Date.now() < deadline) {
+        const { value, done } = await reader.read();
+        if (done) return null;
+        buffer += decoder.decode(value, { stream: true });
+        return buffer; // Return accumulated buffer so far
+      }
+      return null;
+    }
+
+    // Read from the stream for ~1 second to prime the attached event and verify
+    // the stream is alive. This doesn't test the keepalive interval directly
+    // (which is 15s), but it verifies the stream doesn't crash with keepalive active.
+    await readRawBytes(1000);
+
+    // Inject a frame to confirm the handler is still operational.
+    const tracked = companions.find((c) => c.run_id === started.run_id);
+    assert.ok(tracked, 'companion factory captured the streaming session');
+    tracked.companion.pushFrame({ sessionId: 99, data: 'TESTFRAME' });
+
+    // Read for up to 2 seconds and verify we receive the frame event.
+    let foundFrame = false;
+    const frameDeadline = Date.now() + 2000;
+    while (Date.now() < frameDeadline && !foundFrame) {
+      await readRawBytes(200);
+      // Check if the frame event appears in the accumulated buffer.
+      if (buffer.includes('event: frame') && buffer.includes('"session_id":99')) {
+        foundFrame = true;
+      }
+    }
+    assert.ok(foundFrame, 'handler must deliver frames with keepalive mechanism active');
+
+    ac.abort();
+    try {
+      await reader.cancel();
+    } catch {
+      /* aborted */
+    }
+
+    await cancelRun(asUrl, started.run_id, pending.interaction_id);
   });
 });

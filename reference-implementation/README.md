@@ -371,12 +371,58 @@ docker compose --env-file .env.docker pull
 docker compose --env-file .env.docker up -d
 ```
 
-Open `http://localhost:3002` for the browser-facing reference origin. The
+Open `http://localhost:${PDPP_WEB_PORT:-3002}` for the browser-facing reference origin. The
 Compose stack runs:
 
 - `reference` — one AS/RS process, AS on `:7662`, RS on `:7663`
-- `web` — the Next app on container `:3000`, mapped to host `:3002` by default,
+- `web` — the Next app on container `:3000`, mapped to host `${PDPP_WEB_PORT:-3002}` by default,
   proxying the AS/RS in composed mode
+
+To test the owner-present n.eko interaction-streaming backend, add the n.eko
+Compose overlay:
+
+```bash
+pnpm docker:neko
+```
+
+or directly:
+
+```bash
+docker compose --env-file .env.docker -f docker-compose.yml -f docker-compose.neko.yml up --build
+```
+
+Then open `http://localhost:${PDPP_WEB_PORT:-3002}/dashboard/stream-playground?backend=neko`.
+The overlay runs n.eko in the reference container's network namespace, so the
+reference process uses the loopback `http://127.0.0.1:8080/neko` target. The
+browser still uses the same public origin through the reference `/neko/*`
+proxy, including WebSocket upgrade traffic.
+
+The overlay builds a thin local image on top of the pinned upstream n.eko
+Chromium image. That layer only overrides the Chromium launcher/supervisor
+entry so Chromium runs with the container-required `--no-sandbox` flag and the
+same `/neko` path-prefix health shape used by the proxy.
+
+The playground is disabled in production-mode builds unless
+`PDPP_ENABLE_STREAM_PLAYGROUND=1` is set. The n.eko Compose overlay sets that
+flag for both `web` and `reference`; the default Compose stack does not. The
+overlay also sets `PDPP_NEKO_PROXY_AUTOLOGIN=1`, which lets the token-scoped
+entry route pass dummy noauth `usr`/`pwd` query params to n.eko so the owner
+lands directly in the WebRTC control surface instead of a sidecar login form.
+
+For phone/LAN testing, set `NEKO_WEBRTC_NAT1TO1` in `.env.docker` to the host
+IP the device can reach and allow `NEKO_WEBRTC_PORT` over both TCP and UDP.
+The HTTPS route and `/neko/*` proxy cover page/signaling traffic; WebRTC media
+still needs reachable ICE candidates. For public-device or LTE testing where
+direct candidates may fail, start the authenticated coturn fallback:
+
+```bash
+pnpm docker:neko:turn
+```
+
+Set `TURN_PUBLIC_IP` and `NEKO_WEBRTC_ICESERVERS` in `.env.docker` to the
+public address and TURN credentials for that host. TURN is a relay fallback and
+adds bandwidth/latency only when WebRTC selects it; direct LAN/public candidates
+remain the preferred path when they work.
 
 Default public images:
 

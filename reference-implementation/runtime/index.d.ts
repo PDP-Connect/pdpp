@@ -27,11 +27,28 @@ export interface RuntimeRunConnectorOptions {
   onStarted?: ((info: { run_id: string; trace_id: string }) => void) | null;
   ownerToken: string;
   persistState?: boolean;
+  /**
+   * Mode-A streaming-target registration: AS base URL the spawned
+   * connector child should POST to. Forwarded as
+   * `PDPP_REFERENCE_BASE_URL`. Both `referenceBaseUrl` and
+   * `streamingRegistrationToken` are required for the spawn env block to
+   * include the streaming registration vars; either omitted is a
+   * graceful no-op.
+   */
+  referenceBaseUrl?: string | null;
   rsUrl?: string;
   runId?: string;
   scenarioId?: string;
   scope?: Record<string, unknown> | null;
   state?: Record<string, unknown> | null;
+  /**
+   * Mode-A streaming-target registration: per-run shared secret minted
+   * by the controller. Forwarded as
+   * `PDPP_STREAMING_REGISTRATION_TOKEN`. The child sends it as a Bearer
+   * credential when it registers its CDP page-target wsUrl. Hashed at
+   * the registry; never logged.
+   */
+  streamingRegistrationToken?: string | null;
   traceContext?: RuntimeTraceContext;
 }
 

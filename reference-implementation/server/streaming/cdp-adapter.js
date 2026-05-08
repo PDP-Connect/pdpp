@@ -6,6 +6,13 @@
  * reference server should not pull a heavyweight browser-automation library
  * in just to relay input and frames.
  *
+ * The adapter resolves the page-target ws URL through the
+ * `(runId, interactionId)`-keyed registry (`run-target-registry.js`), which
+ * the connector runtime / browser binding populates when a manual_action
+ * interaction is created. Legacy env-var entry points
+ * (`PDPP_RUN_INTERACTION_CDP_WS_URL`, `PDPP_RUN_INTERACTION_CDP_HTTP_URL`)
+ * have been removed; the registry path is the only supported wireup.
+ *
  * Wire mapping is delegated to `mapInputEventToCdp` / `buildScreencastParams`
  * in `cdp-companion.js`, which keeps frame/input shape identical to the mock
  * companion so tests cover the protocol surface deterministically.
@@ -32,244 +39,125 @@ const DEFAULT_COMMAND_TIMEOUT_MS = 10_000;
 const DEFAULT_OPEN_TIMEOUT_MS = 5_000;
 
 /**
- * Resolve a fixed CDP page-target WebSocket URL. Operators that already know
- * the per-page WS URL (e.g. piped from a managed browser orchestrator) can set
- * this directly; a richer deployment would resolve a per-`browser_session_id`
- * URL from a control-plane registry. We document this gap in the OpenSpec
- * design as optimistic reference behavior.
- */
-export function resolveCdpWsUrlFromEnv(env = process.env) {
-  const url = env.PDPP_RUN_INTERACTION_CDP_WS_URL;
-  if (typeof url !== 'string') return null;
-  const trimmed = url.trim();
-  return trimmed.length > 0 ? trimmed : null;
-}
-
-/**
- * Resolve a Chrome DevTools HTTP base (e.g. `http://127.0.0.1:9222`). When set,
- * the default factory creates a fresh page target per streaming session via
- * `/json/new`, reads its `webSocketDebuggerUrl`, and tears it down on stop. This
- * is the operator-friendly default — pointing at `chrome --remote-debugging-port`
- * is easier than copying out a single page-target ws URL — but it remains
- * reference-only. A real Collection-Profile-aware deployment would resolve the
- * target per `browser_session_id` from a control-plane registry instead.
- */
-export function resolveCdpHttpUrlFromEnv(env = process.env) {
-  const url = env.PDPP_RUN_INTERACTION_CDP_HTTP_URL;
-  if (typeof url !== 'string') return null;
-  const trimmed = url.trim();
-  return trimmed.length > 0 ? trimmed : null;
-}
-
-function trimTrailingSlash(value) {
-  return value.endsWith('/') ? value.slice(0, -1) : value;
-}
-
-/**
- * Create a fresh CDP page target via Chrome's DevTools HTTP endpoint. Returns
- * the target's WebSocket debugger URL plus a best-effort `close()` that asks
- * Chrome to close the target on companion teardown.
+ * Build the default companion factory.
  *
- * Errors from this function are typed so the route layer can map them onto
- * operator-readable messages — a malformed HTTP base or a Chromium that doesn't
- * advertise `webSocketDebuggerUrl` should fail at attach/start, not at first
- * input event.
- */
-export async function createCdpTargetFromHttp({
-  httpUrl,
-  fetch: fetchImpl = globalThis.fetch,
-} = {}) {
-  if (typeof httpUrl !== 'string' || httpUrl.length === 0) {
-    const e = new Error('createCdpTargetFromHttp: httpUrl is required');
-    e.code = 'cdp_http_url_missing';
-    throw e;
-  }
-  if (typeof fetchImpl !== 'function') {
-    const e = new Error('createCdpTargetFromHttp: no fetch implementation available');
-    e.code = 'cdp_http_fetch_missing';
-    throw e;
-  }
-  let base;
-  try {
-    const parsed = new URL(httpUrl);
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-      const e = new Error(
-        `Invalid PDPP_RUN_INTERACTION_CDP_HTTP_URL: scheme ${parsed.protocol} is not http: or https:`,
-      );
-      e.code = 'cdp_http_url_invalid';
-      throw e;
-    }
-    base = trimTrailingSlash(parsed.toString());
-  } catch (err) {
-    if (err && err.code === 'cdp_http_url_invalid') throw err;
-    const e = new Error(`Invalid PDPP_RUN_INTERACTION_CDP_HTTP_URL: ${err?.message || err}`);
-    e.code = 'cdp_http_url_invalid';
-    throw e;
-  }
-  const newUrl = `${base}/json/new?about:blank`;
-  // Method-style status codes that suggest the endpoint exists but does not
-  // honor PUT — older Chromium builds historically required GET. Anything else
-  // (5xx server errors, 4xx auth/format errors) is a real failure that we
-  // surface as `cdp_http_create_failed` rather than masking with a GET retry.
-  const METHOD_FALLBACK_STATUSES = new Set([404, 405, 501]);
-  let response;
-  let putThrew = false;
-  try {
-    response = await fetchImpl(newUrl, { method: 'PUT' });
-  } catch (err) {
-    putThrew = true;
-    // Network-style throws — connection refused, DNS, abort — fall through to
-    // a GET retry too. If GET also throws, surface as unreachable.
-    try {
-      response = await fetchImpl(newUrl, { method: 'GET' });
-    } catch (err2) {
-      const e = new Error(`Failed to reach CDP HTTP endpoint ${newUrl}: ${err2?.message || err2}`);
-      e.code = 'cdp_http_unreachable';
-      throw e;
-    }
-  }
-  if (!putThrew && response && !response.ok && METHOD_FALLBACK_STATUSES.has(response.status)) {
-    // PUT returned a verb-not-supported status. Retry as GET; still surface a
-    // real network failure as `cdp_http_unreachable`.
-    try {
-      response = await fetchImpl(newUrl, { method: 'GET' });
-    } catch (err2) {
-      const e = new Error(`Failed to reach CDP HTTP endpoint ${newUrl}: ${err2?.message || err2}`);
-      e.code = 'cdp_http_unreachable';
-      throw e;
-    }
-  }
-  if (!response || !response.ok) {
-    const status = response?.status ?? 'unknown';
-    const e = new Error(`CDP HTTP /json/new returned status ${status}`);
-    e.code = 'cdp_http_create_failed';
-    e.status = status;
-    throw e;
-  }
-  let target;
-  try {
-    target = await response.json();
-  } catch (err) {
-    const e = new Error(`CDP HTTP /json/new returned non-JSON body: ${err?.message || err}`);
-    e.code = 'cdp_http_parse_failed';
-    throw e;
-  }
-  const webSocketDebuggerUrl =
-    target && typeof target.webSocketDebuggerUrl === 'string' ? target.webSocketDebuggerUrl : '';
-  if (!webSocketDebuggerUrl) {
-    const e = new Error('CDP HTTP /json/new response did not include webSocketDebuggerUrl');
-    e.code = 'cdp_http_no_ws_url';
-    e.target = target;
-    throw e;
-  }
-  const targetId = target && typeof target.id === 'string' ? target.id : null;
-  return {
-    webSocketDebuggerUrl,
-    targetId,
-    raw: target,
-    async close() {
-      // Best-effort: a missing target id (some Chromium builds omit it) means
-      // we cannot ask Chrome to close, but the operator can still close the
-      // target manually via the inspector.
-      if (!targetId) return;
-      try {
-        await fetchImpl(`${base}/json/close/${encodeURIComponent(targetId)}`, { method: 'GET' });
-      } catch {
-        // Teardown is best-effort: we never want a stuck Chrome to crash the
-        // streaming session lifecycle on the server side.
-      }
-    },
-  };
-}
-
-/**
- * Build the default companion factory. Three modes, in priority order:
+ * The factory requires `resolveTargetForInteraction(runId, interactionId)`,
+ * which the AS app wires to the run-target registry
+ * (`runTargetRegistry.get`). The connector runtime (or browser binding)
+ * registers a per-(run, interaction) CDP page-target ws URL when it
+ * decides which page the human should control; the resolver hands it to
+ * the companion at attach time.
  *
- *   1. Explicit `wsUrl` (or `PDPP_RUN_INTERACTION_CDP_WS_URL`) — connect
- *      directly to a single page-target WebSocket.
- *   2. Explicit `httpUrl` (or `PDPP_RUN_INTERACTION_CDP_HTTP_URL`) — resolve a
- *      fresh page target per session via DevTools HTTP, then connect to its
- *      `webSocketDebuggerUrl`. This is the operator-friendly default.
- *   3. Neither set — return `null` so the mint route fails closed with
- *      `streaming_companion_unavailable` instead of handing out a token that
- *      only errors at attach time.
+ * The resolver signature is `(runId, interactionId)` — both arguments are
+ * required because the registry is keyed by the composite. A run may have
+ * multiple manual_action interactions over its lifetime, each bound to a
+ * potentially-different page; "what page should the operator see?" is
+ * always answered against the specific interaction.
  *
- * `WebSocketCtor` and `fetch` are injectable for tests (a fake CDP server can
- * hand back its own ws constructor and a fake `fetch`).
+ * Behavior:
+ *   - No resolver supplied → return `null`. The mint route fails closed with
+ *     503 `streaming_companion_unavailable` rather than handing out a token
+ *     that only errors at attach time.
+ *   - Resolver supplied → return a factory that defers the wsUrl lookup until
+ *     `start()`. This lets the connector runtime register between mint and
+ *     attach. If the resolver returns null at start time, start() rejects
+ *     with `streaming_target_unregistered`.
+ *
+ * `WebSocketCtor` is injectable for tests (a fake CDP server can hand back its
+ * own ws constructor).
  */
 export function createDefaultStreamingCompanionFactory({
-  wsUrl = resolveCdpWsUrlFromEnv(),
-  httpUrl = resolveCdpHttpUrlFromEnv(),
+  resolveTargetForInteraction,
   WebSocketCtor = globalThis.WebSocket,
-  fetch: fetchImpl = globalThis.fetch,
   logger,
   commandTimeoutMs,
   openTimeoutMs,
 } = {}) {
-  if (!wsUrl && !httpUrl) return null;
+  if (typeof resolveTargetForInteraction !== 'function') return null;
   if (typeof WebSocketCtor !== 'function') {
     throw new Error('createDefaultStreamingCompanionFactory: no WebSocket constructor available');
   }
-  if (wsUrl) {
-    return ({ browser_session_id }) =>
-      createCdpCompanion({
-        wsUrl,
-        browser_session_id,
-        WebSocketCtor,
-        logger,
-        commandTimeoutMs,
-        openTimeoutMs,
-      });
-  }
-  if (typeof fetchImpl !== 'function') {
-    throw new Error('createDefaultStreamingCompanionFactory: no fetch implementation available for HTTP target resolution');
-  }
-  return ({ browser_session_id }) =>
-    createHttpResolvedCompanion({
-      httpUrl,
+
+  return ({ run_id, interaction_id, browser_session_id }) => {
+    if (typeof run_id !== 'string' || run_id.length === 0) {
+      // No runId means we cannot consult the resolver. Fail closed by
+      // returning null so the route layer can surface a clear error rather
+      // than silently constructing a companion that has no target.
+      return null;
+    }
+    if (typeof interaction_id !== 'string' || interaction_id.length === 0) {
+      // The registry is composite-keyed; without an interactionId we have
+      // no key to look up. Fail closed for the same reason as above.
+      return null;
+    }
+    return createResolvedCompanion({
+      run_id,
+      interaction_id,
       browser_session_id,
+      resolveTargetForInteraction,
       WebSocketCtor,
-      fetch: fetchImpl,
       logger,
       commandTimeoutMs,
       openTimeoutMs,
     });
+  };
 }
 
 /**
- * Wraps `createCdpCompanion` with lazy DevTools HTTP target creation. The
- * inner CDP companion is created on `start()` once we know the WebSocket URL;
- * `stop()` closes both the inner companion and the DevTools target.
+ * Resolve-by-(run, interaction) companion. Defers the wsUrl lookup until
+ * `start()` so the connector runtime / browser binding can register its
+ * CDP target between mint and attach. If no record is registered by the
+ * time start() runs, the companion rejects with
+ * `streaming_target_unregistered`.
  */
-function createHttpResolvedCompanion({
-  httpUrl,
+function createResolvedCompanion({
+  run_id,
+  interaction_id,
   browser_session_id,
+  resolveTargetForInteraction,
   WebSocketCtor,
-  fetch: fetchImpl,
   logger,
   commandTimeoutMs,
   openTimeoutMs,
 }) {
   let inner = null;
-  let target = null;
   let closed = false;
-  // Subscribers can attach onFrame before start() resolves the inner companion.
-  // We track each pending handler in a record { handler, innerUnsubscribe }. On
-  // start, we register the handler with inner and stash the returned
-  // unsubscribe so the caller's outer unsubscribe can revoke it after start()
-  // has run. Without this, a pre-start subscriber's unsubscribe would silently
-  // leak because `createCdpCompanion` owns its own Set of handlers and the
-  // outer code has no other way to reach it.
   const pendingHandlers = new Map();
 
   const log = (level, msg, data) => {
     if (!logger || typeof logger[level] !== 'function') return;
     try {
-      logger[level]({ msg, browser_session_id, ...(data || {}) });
+      logger[level]({ msg, run_id, interaction_id, browser_session_id, ...(data || {}) });
     } catch {
       /* logger errors must not break the streaming path */
     }
   };
+
+  function adoptInner(next) {
+    inner = next;
+    for (const record of pendingHandlers.values()) {
+      record.innerUnsubscribe = inner.onFrame(record.handler);
+    }
+  }
+
+  // Pre-start `onEvent` subscribers for out-of-band wire events (URL changes,
+  // popups). Mirrors `pendingHandlers` for frames so the route layer can wire
+  // a handler immediately after `companion = factory(...)`, before
+  // `companion.start()` resolves the underlying CDP target.
+  const pendingEventHandlers = new Map();
+
+  function adoptInnerForEvents() {
+    for (const record of pendingEventHandlers.values()) {
+      record.innerUnsubscribe = inner.onEvent(record.handler);
+    }
+  }
+
+  // Wrap adoptInner to also bind event handlers when the inner appears.
+  const baseAdoptInner = adoptInner;
+  function adoptInnerWithEvents(next) {
+    baseAdoptInner(next);
+    adoptInnerForEvents();
+  }
 
   return {
     browser_session_id,
@@ -280,22 +168,23 @@ function createHttpResolvedCompanion({
         throw e;
       }
       if (!inner) {
-        target = await createCdpTargetFromHttp({ httpUrl, fetch: fetchImpl });
-        inner = createCdpCompanion({
-          wsUrl: target.webSocketDebuggerUrl,
-          browser_session_id,
-          WebSocketCtor,
-          logger,
-          commandTimeoutMs,
-          openTimeoutMs,
-        });
-        // Replay pending subscribers so frames reach the SSE attach handler
-        // even if it subscribed before start() finished resolving the target.
-        // Stash each inner unsubscribe so the outer unsubscribe (returned to
-        // the caller from `onFrame`) can actually revoke registration.
-        for (const record of pendingHandlers.values()) {
-          record.innerUnsubscribe = inner.onFrame(record.handler);
+        const wsUrl = await Promise.resolve(resolveTargetForInteraction(run_id, interaction_id));
+        if (!wsUrl) {
+          const e = new Error('No streaming target registered for this run');
+          e.code = 'streaming_target_unregistered';
+          throw e;
         }
+        log('info', 'cdp_resolver_hit', {});
+        adoptInnerWithEvents(
+          createCdpCompanion({
+            wsUrl,
+            browser_session_id,
+            WebSocketCtor,
+            logger,
+            commandTimeoutMs,
+            openTimeoutMs,
+          }),
+        );
       }
       await inner.start(viewport);
     },
@@ -309,14 +198,11 @@ function createHttpResolvedCompanion({
           log('warn', 'cdp_inner_stop_failed', { error: err?.message });
         }
       }
-      if (target) {
-        try {
-          await target.close();
-        } catch (err) {
-          log('warn', 'cdp_target_close_failed', { error: err?.message });
-        }
-        target = null;
-      }
+      // Drop pre-start handler records that never got bound to an inner
+      // companion (e.g. companion was stopped before start() ever ran).
+      // Without this, a long-lived factory could accumulate references.
+      pendingHandlers.clear();
+      pendingEventHandlers.clear();
     },
     onFrame(handler) {
       if (inner) return inner.onFrame(handler);
@@ -324,9 +210,22 @@ function createHttpResolvedCompanion({
       pendingHandlers.set(handler, record);
       return () => {
         pendingHandlers.delete(handler);
-        // If start() already promoted this handler into the inner companion,
-        // revoke that registration too — otherwise frames keep firing into a
-        // handler the caller has explicitly unsubscribed.
+        if (record.innerUnsubscribe) {
+          try {
+            record.innerUnsubscribe();
+          } catch {
+            /* unsubscribe is best-effort */
+          }
+          record.innerUnsubscribe = null;
+        }
+      };
+    },
+    onEvent(handler) {
+      if (inner) return inner.onEvent(handler);
+      const record = { handler, innerUnsubscribe: null };
+      pendingEventHandlers.set(handler, record);
+      return () => {
+        pendingEventHandlers.delete(handler);
         if (record.innerUnsubscribe) {
           try {
             record.innerUnsubscribe();
@@ -353,7 +252,6 @@ function createHttpResolvedCompanion({
     _internal: {
       isClosed: () => closed,
       hasInner: () => inner !== null,
-      target: () => target,
     },
   };
 }
@@ -387,12 +285,29 @@ export function createCdpCompanion({
   };
 
   const frameHandlers = new Set();
+  const eventHandlers = new Set();
   const pending = new Map(); // id → { resolve, reject, timer }
   let nextId = 1;
   let ws = null;
   let openPromise = null;
   let started = false;
   let closed = false;
+
+  // Out-of-band wire event state. We cache the last URL/title we emitted so we
+  // do not flood the viewer with redundant `url_changed` events when CDP
+  // re-fires a `frameNavigated` for the same destination, and so a
+  // `Target.targetInfoChanged` that only updates the title can still attach
+  // the title onto subsequent URL events. Targets we have seen as `page` are
+  // tracked so `targetDestroyed` only emits `popup_closed` for ones we
+  // previously announced.
+  let lastEmittedUrl = null;
+  let lastKnownTitle = null;
+  const knownPageTargetIds = new Set();
+  // Best-effort: once we observe our own `attached` page target we remember
+  // its targetId so we can attribute targetInfoChanged events that update
+  // *our* title rather than a popup's.
+  let ownPageTargetId = null;
+  let lastFrame = null;
 
   function emitFrame(params) {
     // Wire shape mirrors the mock companion so the route writes identical SSE.
@@ -401,6 +316,7 @@ export function createCdpCompanion({
       data: params.data,
       metadata: params.metadata || null,
     };
+    lastFrame = frame;
     for (const handler of frameHandlers) {
       try {
         handler(frame);
@@ -408,6 +324,107 @@ export function createCdpCompanion({
         log('warn', 'cdp_frame_handler_error', { error: err?.message });
       }
     }
+  }
+
+  function emitEvent(event) {
+    // Out-of-band events: { kind, ...payload }. The route layer fans these
+    // out as named SSE events (event: url_changed, popup_opened, ...).
+    for (const handler of eventHandlers) {
+      try {
+        handler(event);
+      } catch (err) {
+        log('warn', 'cdp_event_handler_error', { error: err?.message, kind: event?.kind });
+      }
+    }
+  }
+
+  function maybeEmitUrlChanged(url) {
+    if (typeof url !== 'string' || url.length === 0) return;
+    if (url === lastEmittedUrl) return;
+    lastEmittedUrl = url;
+    const payload = { kind: 'url_changed', url };
+    if (typeof lastKnownTitle === 'string' && lastKnownTitle.length > 0) {
+      payload.title = lastKnownTitle;
+    }
+    emitEvent(payload);
+  }
+
+  function handlePageFrameNavigated(params) {
+    const frame = params && params.frame;
+    if (!frame || typeof frame !== 'object') return;
+    // `Page.frameNavigated` fires for sub-frames (iframes) too. The main frame
+    // is the only one whose URL is interesting to the operator and is
+    // identifiable by the absence of `parentId`. Filtering avoids flooding the
+    // viewer with iframe nav noise (ads, oauth child frames, etc.).
+    if (frame.parentId) return;
+    if (typeof frame.url !== 'string') return;
+    maybeEmitUrlChanged(frame.url);
+  }
+
+  function handleTargetCreated(params) {
+    const info = params && params.targetInfo;
+    if (!info || typeof info !== 'object') return;
+    if (info.type !== 'page') return;
+    // The connector's own page target also flows through targetCreated when
+    // discovery is first turned on. We treat any *additional* page target as
+    // a popup so the operator sees auth flows, callback windows, etc. The
+    // initial page is the one our adapter is connected to — but we cannot
+    // reliably know its targetId from the per-target session, so the first
+    // `targetCreated` we see (which corresponds to our own page when discovery
+    // initially enumerates) gets recorded as `ownPageTargetId` and suppressed.
+    if (ownPageTargetId === null) {
+      ownPageTargetId = info.targetId || null;
+      knownPageTargetIds.add(info.targetId);
+      // Capture the initial title for our page so the first url_changed event
+      // can include it.
+      if (typeof info.title === 'string' && info.title.length > 0) {
+        lastKnownTitle = info.title;
+      }
+      return;
+    }
+    knownPageTargetIds.add(info.targetId);
+    emitEvent({
+      kind: 'popup_opened',
+      targetId: info.targetId,
+      url: typeof info.url === 'string' ? info.url : '',
+    });
+  }
+
+  function handleTargetDestroyed(params) {
+    const targetId = params && params.targetId;
+    if (typeof targetId !== 'string' || targetId.length === 0) return;
+    // Only emit `popup_closed` for targets we previously announced as popups.
+    // The operator's own page target closing means the session is going away
+    // entirely; teardown is handled by the existing socket-close path.
+    if (targetId === ownPageTargetId) return;
+    if (!knownPageTargetIds.has(targetId)) return;
+    knownPageTargetIds.delete(targetId);
+    emitEvent({ kind: 'popup_closed', targetId });
+  }
+
+  function handleTargetInfoChanged(params) {
+    const info = params && params.targetInfo;
+    if (!info || typeof info !== 'object') return;
+    if (info.type !== 'page') return;
+    // For *our* page target, `targetInfoChanged` is the most reliable carrier
+    // for the page title (Page.getTitle is in the Runtime/DOM neighborhood we
+    // forbid under the patchright stealth allowlist). Cache it and let the
+    // next `url_changed` pick it up.
+    if (ownPageTargetId === null || info.targetId === ownPageTargetId) {
+      if (typeof info.title === 'string') {
+        lastKnownTitle = info.title;
+      }
+      // SPA in-document nav also fires `targetInfoChanged` with a new URL but
+      // no `Page.frameNavigated`. Forward that path so SPA route changes also
+      // produce a `url_changed` event.
+      if (typeof info.url === 'string') {
+        maybeEmitUrlChanged(info.url);
+      }
+      return;
+    }
+    // For a popup target whose URL has changed, no spec'd wire event covers
+    // this today. We could add `popup_url_changed` later if the viewer asks
+    // for it; for now we only emit on open/close.
   }
 
   function rejectAllPending(reason) {
@@ -443,8 +460,27 @@ export function createCdpCompanion({
       }
       return;
     }
-    if (msg && typeof msg === 'object' && msg.method === 'Page.screencastFrame') {
-      emitFrame(msg.params || {});
+    if (msg && typeof msg === 'object' && typeof msg.method === 'string') {
+      switch (msg.method) {
+        case 'Page.screencastFrame':
+          emitFrame(msg.params || {});
+          return;
+        case 'Page.frameNavigated':
+          handlePageFrameNavigated(msg.params || {});
+          return;
+        case 'Target.targetCreated':
+          handleTargetCreated(msg.params || {});
+          return;
+        case 'Target.targetDestroyed':
+          handleTargetDestroyed(msg.params || {});
+          return;
+        case 'Target.targetInfoChanged':
+          handleTargetInfoChanged(msg.params || {});
+          return;
+        default:
+        // Unrecognized CDP event — ignore. Other domains' events arriving
+        // here would indicate a misconfiguration; we still avoid throwing.
+      }
     }
   }
 
@@ -565,6 +601,16 @@ export function createCdpCompanion({
     if (started) return;
     await ensureOpen();
     await send('Page.enable');
+    // Best-effort: enabling Target discovery turns on browser-wide
+    // `targetCreated` / `targetDestroyed` / `targetInfoChanged` events on
+    // this session. Without it the per-page session never sees popups. If
+    // the underlying transport/Chromium rejects this (some embedders restrict
+    // Target on a per-target connection) we still proceed — the streaming
+    // session keeps working for screencast + input, the operator just loses
+    // popup awareness for this run.
+    await send('Target.setDiscoverTargets', { discover: true }).catch((err) => {
+      log('warn', 'cdp_target_discovery_failed', { error: err?.message });
+    });
     if (viewport && Number.isFinite(viewport.width) && Number.isFinite(viewport.height)) {
       await send('Emulation.setDeviceMetricsOverride', {
         width: Math.floor(viewport.width),
@@ -587,6 +633,17 @@ export function createCdpCompanion({
     if (closed) return;
     closed = true;
     if (started) {
+      // Best-effort: turn discovery back off so we stop receiving Target
+      // events. This is purely housekeeping — closing the socket below makes
+      // the events un-deliverable anyway — but it prevents a small window
+      // between stopScreencast and ws.close() where a target event could
+      // still arrive and re-enter user-supplied handlers we are about to
+      // drop.
+      try {
+        await send('Target.setDiscoverTargets', { discover: false });
+      } catch {
+        /* best-effort */
+      }
       try {
         await send('Page.stopScreencast');
       } catch {
@@ -604,11 +661,29 @@ export function createCdpCompanion({
     }
     rejectAllPending(Object.assign(new Error('Streaming companion stopped'), { code: 'companion_stopped' }));
     openPromise = null;
+    // Drop all handler references so the socket-close path cannot re-enter
+    // user code after stop(). Defense-in-depth on top of the close handler
+    // already short-circuiting on `closed`.
+    frameHandlers.clear();
+    eventHandlers.clear();
+    lastFrame = null;
   }
 
   function onFrame(handler) {
     frameHandlers.add(handler);
+    if (lastFrame) {
+      try {
+        handler(lastFrame);
+      } catch (err) {
+        log('warn', 'cdp_frame_handler_error', { error: err?.message });
+      }
+    }
     return () => frameHandlers.delete(handler);
+  }
+
+  function onEvent(handler) {
+    eventHandlers.add(handler);
+    return () => eventHandlers.delete(handler);
   }
 
   async function dispatch(event) {
@@ -637,6 +712,7 @@ export function createCdpCompanion({
     start,
     stop,
     onFrame,
+    onEvent,
     dispatch,
     ackFrame,
     /** test-only escape hatch */

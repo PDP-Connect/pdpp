@@ -14,6 +14,7 @@
 // come from `server/auth.js` directly; the controller does not re-export
 // them.
 
+import { randomBytes } from "node:crypto";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -172,6 +173,19 @@ interface ControllerLogger {
   warn?: (message: string) => void;
 }
 
+/**
+ * Hooks the controller calls to manage the per-run streaming-target
+ * registration nonce that bridges Mode A (in-process runtime). The
+ * controller mints a random nonce at spawn, hands it to the registry to
+ * be hash-stored, threads the raw value to the connector child via env,
+ * and clears it when the run ends. Decoupled from the registry's
+ * concrete shape so this module does not import the registry directly.
+ */
+export interface RunTargetNonceHooks {
+  registerNonce(args: { runId: string; nonce: string }): void;
+  clearNonce(args: { runId: string }): void;
+}
+
 export interface ControllerOptions {
   asPublicUrl?: string;
   connectorPathResolver?: ConnectorPathResolver;
@@ -180,11 +194,28 @@ export interface ControllerOptions {
   ownerSubjectId?: string;
   rsUrl?: string;
   runtime?: unknown;
-  runtimeContext?: { rsUrl?: string };
+  /**
+   * Mutable runtime-context bag the surrounding server populates after
+   * its listeners are bound. The controller reads `rsUrl` and the new
+   * `referenceBaseUrl` lazily so it picks up the realized values once
+   * the AS server has actually allocated its port.
+   */
+  runtimeContext?: { rsUrl?: string; referenceBaseUrl?: string };
   scheduler?: unknown;
   // Optional store override; defaults to the configured storage-backed singleton.
   // Tests use this to substitute fakes without touching module-scoped state.
   schedulerStore?: SchedulerStore;
+  /**
+   * Optional Mode-A streaming-target nonce hooks. When present, the
+   * controller mints a per-run nonce at `runNow` time, registers its
+   * hash with the registry, and threads the raw nonce to the connector
+   * child via `PDPP_STREAMING_REGISTRATION_TOKEN`. When absent (older
+   * deployments, tests that do not exercise streaming), Mode-A
+   * registration is a no-op and Mode-B continues to work via its own
+   * device-exporter authority. See:
+   *   reference-implementation/server/streaming/run-target-registry.js
+   */
+  streamingTargetNonceHooks?: RunTargetNonceHooks;
 }
 
 export interface Controller {
@@ -203,6 +234,8 @@ export interface Controller {
 
 interface RuntimeInteraction {
   readonly kind: string;
+  /** Human-readable description of the interaction; surfaced in ntfy push body. */
+  readonly message?: string;
   readonly request_id: string;
   readonly stream?: string | null;
 }
@@ -305,6 +338,27 @@ function fingerprintManifest(manifest: ConnectorManifest | null | undefined): Ma
 
 function fingerprintsEqual(a: ManifestFingerprint | null, b: ManifestFingerprint | null): boolean {
   return !!(a && b && a.version === b.version && a.streams === b.streams);
+}
+
+/**
+ * Read the operator-facing display name from a connector manifest, if
+ * present. Falls back to the manifest's `name` field, then to null. The
+ * caller is responsible for substituting `connector_id` when this returns
+ * null.
+ */
+function readManifestDisplayName(manifest: ConnectorManifest | null | undefined): string | null {
+  if (!manifest || typeof manifest !== "object") {
+    return null;
+  }
+  const display = (manifest as { display_name?: unknown }).display_name;
+  if (typeof display === "string" && display.trim()) {
+    return display.trim();
+  }
+  const name = (manifest as { name?: unknown }).name;
+  if (typeof name === "string" && name.trim()) {
+    return name.trim();
+  }
+  return null;
 }
 
 function loadReferenceFixtureFingerprints(): Map<string, ManifestFingerprint> {
@@ -471,10 +525,76 @@ function getRuntimeProjection(connectorId: string): RuntimeProjection {
   };
 }
 
+/**
+ * Resolve the operator-facing web base URL the click action of a ntfy
+ * push should land on. Mirrors `interaction-handler.ts:resolveWebBaseUrl`
+ * exactly: prefer `PDPP_WEB_BASE_URL` (operator's explicit override),
+ * fall back to `PDPP_REFERENCE_ORIGIN` (the reference's own composed
+ * origin), finally `http://localhost:3000` (dev default — same as the
+ * polyfill connectors use). The brief explicitly accepted a small
+ * duplication here over a workspace dependency.
+ */
+function resolveWebBaseUrl(): string {
+  const explicit = process.env.PDPP_WEB_BASE_URL?.trim();
+  if (explicit) return explicit;
+  const referenceOrigin = process.env.PDPP_REFERENCE_ORIGIN?.trim();
+  if (referenceOrigin) return referenceOrigin;
+  return "http://localhost:3000";
+}
+
+/**
+ * Lazy import of the ntfy adapter. Two reasons it's lazy:
+ *   1. The polyfill-connectors package is loaded by the reference server
+ *      at import time anyway, but doing the import here means tests that
+ *      don't reach an interaction never pay the cost.
+ *   2. If notify() ever throws synchronously (e.g. malformed env), the
+ *      lazy boundary keeps that out of the controller's hot path.
+ */
+async function fireNtfy(
+  args: {
+    interaction: RuntimeInteraction;
+    connectorDisplayName: string;
+    runId: string;
+    log: ControllerLogger;
+  }
+): Promise<void> {
+  try {
+    const { notify } = await import("../../packages/polyfill-connectors/src/ntfy.ts");
+    const { interaction, connectorDisplayName, runId } = args;
+    const message = typeof interaction.message === "string" ? interaction.message : "";
+    const webBaseUrl = resolveWebBaseUrl();
+    const encodedRunId = encodeURIComponent(runId);
+    const encodedInteractionId = encodeURIComponent(interaction.request_id || "");
+    const clickUrl =
+      interaction.kind === "manual_action"
+        ? `${webBaseUrl}/dashboard/runs/${encodedRunId}/stream?interaction_id=${encodedInteractionId}`
+        : `${webBaseUrl}/dashboard/runs/${encodedRunId}`;
+    const tags =
+      interaction.kind === "manual_action"
+        ? ["construction"]
+        : interaction.kind === "credentials" || interaction.kind === "otp"
+          ? ["key"]
+          : ["construction"];
+    await notify({
+      title: `PDPP ${connectorDisplayName}: ${interaction.kind} needed`,
+      message,
+      priority: "high",
+      tags,
+      clickUrl,
+    });
+  } catch (err) {
+    // ntfy is best-effort. A failure here MUST NOT block or fail the
+    // interaction handling — log and continue.
+    const message = err instanceof Error ? err.message : String(err);
+    args.log.warn?.(`[controller] ntfy fire for run ${args.runId} failed: ${message}`);
+  }
+}
+
 function brokerInteraction(
   runId: string,
   connectorId: string,
-  interaction: RuntimeInteraction
+  interaction: RuntimeInteraction,
+  notifyArgs?: { connectorDisplayName: string; log: ControllerLogger }
 ): Promise<InteractionResponse> {
   return new Promise((resolve) => {
     const entry = activeRunInteractions.get(runId) ?? { connector_id: connectorId, pending: null };
@@ -495,6 +615,19 @@ function brokerInteraction(
       resolve,
     };
     activeRunInteractions.set(runId, entry);
+
+    // Fire-and-forget ntfy push. Keyed off NEW pending interactions only —
+    // the early-return above handles the "already pending" case before this
+    // line runs. Failure of `fireNtfy` is internally swallowed to keep
+    // interaction handling unaffected; we discard the promise on purpose.
+    if (notifyArgs) {
+      void fireNtfy({
+        interaction,
+        connectorDisplayName: notifyArgs.connectorDisplayName,
+        runId,
+        log: notifyArgs.log,
+      });
+    }
   });
 }
 
@@ -714,6 +847,36 @@ export function createController(opts: ControllerOptions = {}): Controller {
     return process.env.RS_URL || "http://localhost:7663";
   }
 
+  /**
+   * Resolve the AS base URL the spawned connector child should PUT its
+   * streaming-target registration to. Read lazily because the surrounding
+   * server populates `runtimeContext.referenceBaseUrl` AFTER its listener
+   * has actually allocated a port (the same pattern `runtimeContext.rsUrl`
+   * uses).
+   *
+   * IMPORTANT: this URL is for SERVER-TO-SERVER traffic between the
+   * connector child and the AS Fastify listener (both on the same host
+   * in Mode A). It is NOT the browser-facing public URL. In composed
+   * deployments the two differ — the public URL points at a Next.js
+   * webapp that does not proxy
+   * `/admin/runs/:runId/interactions/:interactionId/streaming-target`,
+   * so passing the public URL here surfaces as a silent registration
+   * 404 and `companion_start_failed` later. The server populates
+   * `runtimeContext.referenceBaseUrl` with the AS loopback URL for
+   * exactly this reason; we no longer fall back to `opts.asPublicUrl`
+   * or `PDPP_REFERENCE_ORIGIN` (both are public/browser-facing URLs).
+   *
+   * Returns `null` when the context URL is not yet populated so
+   * `runConnector` skips the env block entirely.
+   */
+  function currentReferenceBaseUrl(): string | null {
+    const contextUrl = opts.runtimeContext?.referenceBaseUrl;
+    if (typeof contextUrl === "string" && contextUrl) {
+      return contextUrl;
+    }
+    return null;
+  }
+
   async function issueRuntimeOwnerToken(): Promise<string> {
     const device = await initiateOwnerDeviceAuthorization(ownerClientId, {
       baseUrl: opts.asPublicUrl || process.env.AS_PUBLIC_URL || undefined,
@@ -877,8 +1040,35 @@ export function createController(opts: ControllerOptions = {}): Controller {
       connector_id: connectorId,
       pending: null,
     });
+
+    // Mode-A streaming-target registration: mint a per-run shared secret
+    // before spawning the connector child. The hook stores its hash; the
+    // raw nonce flows to the child via env (see runConnector below) and
+    // is presented as a Bearer credential when the child registers its
+    // CDP page-target wsUrl. 32 bytes of CSPRNG entropy yields a 64-char
+    // hex token — enough that brute force across the run's lifetime is
+    // not a credible threat. Hooks may be unset (older deployments,
+    // tests that don't exercise streaming); when unset, no nonce is
+    // minted, the env vars are not threaded, and Mode-A streaming
+    // gracefully no-ops.
+    const streamingNonce = opts.streamingTargetNonceHooks ? randomBytes(32).toString("hex") : null;
+    if (streamingNonce && opts.streamingTargetNonceHooks) {
+      try {
+        opts.streamingTargetNonceHooks.registerNonce({ runId, nonce: streamingNonce });
+      } catch (err) {
+        // Don't fail the run if the registry rejects (e.g. duplicate runId).
+        // Streaming will simply be unavailable for this run.
+        const message = err instanceof Error ? err.message : String(err);
+        log.warn?.(`[controller] streaming nonce register failed for ${runId}: ${message}`);
+      }
+    }
+
+    const connectorDisplayName = readManifestDisplayName(manifest) ?? connectorId;
     const interactionHandler = (interaction: unknown) =>
-      brokerInteraction(runId, connectorId, interaction as RuntimeInteraction);
+      brokerInteraction(runId, connectorId, interaction as RuntimeInteraction, {
+        connectorDisplayName,
+        log,
+      });
 
     // Fire-and-forget: runNow returns the run handle immediately; the
     // actual connector execution resolves later and clears activeRuns
@@ -898,6 +1088,11 @@ export function createController(opts: ControllerOptions = {}): Controller {
       onProgress: () => {
         // no-op; progress is persisted via the event spine, not this callback.
       },
+      // Mode-A streaming registration env. Both fields must be present for
+      // runConnector to thread them into the spawn env; either omitted is
+      // a graceful no-op.
+      streamingRegistrationToken: streamingNonce,
+      referenceBaseUrl: currentReferenceBaseUrl(),
     })
       .catch((err: unknown) => {
         const message = err instanceof Error ? err.message : String(err);
@@ -909,6 +1104,16 @@ export function createController(opts: ControllerOptions = {}): Controller {
           const message = err instanceof Error ? err.message : String(err);
           log.warn?.(`[controller] failed to clear active run ${runId} for ${connectorId}: ${message}`);
         });
+        // Clear the per-run streaming nonce. Idempotent at the registry
+        // level, so the conditional here is just to avoid a needless call
+        // when streaming hooks weren't wired up at all.
+        if (opts.streamingTargetNonceHooks) {
+          try {
+            opts.streamingTargetNonceHooks.clearNonce({ runId });
+          } catch {
+            /* registry shutdown raced run end — safe to ignore */
+          }
+        }
         const leftover = activeRunInteractions.get(runId);
         activeRunInteractions.delete(runId);
         if (leftover?.pending) {

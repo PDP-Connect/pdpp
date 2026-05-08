@@ -803,6 +803,18 @@ export async function runConnector(opts) {
     onInteraction = defaultInteractionHandler,
     onProgress = defaultOnProgress,
     onStarted = null,
+    // Mode-A streaming registration: per-run shared secret the parent
+    // mints and stores in the run-target registry's nonce store. The
+    // child sends it as a Bearer credential to register/unregister its
+    // CDP page-target wsUrl. Both fields are required for the child to
+    // attempt registration; either omitted means the child silently
+    // skips streaming registration. The reference server's base URL is
+    // forwarded as PDPP_REFERENCE_BASE_URL so the child knows where to
+    // POST. See:
+    //   reference-implementation/server/streaming/run-target-registry.js
+    //   packages/polyfill-connectors/src/streaming-target-registration.ts
+    streamingRegistrationToken = null,
+    referenceBaseUrl = null,
   } = opts;
 
   // Check binding requirements
@@ -821,6 +833,27 @@ export async function runConnector(opts) {
   const scopeByStream = new Map((startScope.streams || []).map((streamScope) => [streamScope.name, streamScope]));
   const manifestByStream = new Map((manifest?.streams || []).map((stream) => [stream.name, stream]));
 
+  // Compute runId before spawn so it can be threaded into the child env
+  // alongside the streaming registration token. The traceContext is
+  // computed below alongside the rest of the run-scoped state.
+  const spawnRunId = opts.runId || `run_${Date.now()}`;
+
+  // Streaming registration env block (Mode A). Only emitted when BOTH the
+  // bearer token and the reference base URL are present — the registration
+  // client requires both. We do NOT pass a partial env: the child's
+  // resolveStreamingRegistrationFromEnv warns when one piece is missing,
+  // and we want that warning to fire only when the operator has wired up
+  // streaming and something else is wrong, not just because the spawn path
+  // routinely omits these.
+  const streamingRegistrationEnv =
+    streamingRegistrationToken && referenceBaseUrl
+      ? {
+          PDPP_RUN_ID: spawnRunId,
+          PDPP_REFERENCE_BASE_URL: referenceBaseUrl,
+          PDPP_STREAMING_REGISTRATION_TOKEN: streamingRegistrationToken,
+        }
+      : {};
+
   // Spawn connector process. Connectors may be .ts (source-only) or .js
   // (migrated or third-party). For .ts, use `node --import tsx/esm`, which
   // loads tsx as a module hook into the normal Node runtime — no extra
@@ -838,6 +871,7 @@ export async function runConnector(opts) {
       PDPP_CONNECTOR_ID: connectorId,
       PDPP_OWNER_TOKEN: ownerToken,
       PDPP_RS_URL: rsUrl,
+      ...streamingRegistrationEnv,
     },
   });
 
@@ -913,7 +947,7 @@ export async function runConnector(opts) {
   }
 
   const traceContext = opts.traceContext || createTraceContext({ scenarioId: opts.scenarioId });
-  const runId = opts.runId || `run_${Date.now()}`;
+  const runId = spawnRunId;
   const runSource = buildRunSourceDescriptor(connectorId);
 
   // We do NOT use readline.createInterface here. Node 24+ readline treats

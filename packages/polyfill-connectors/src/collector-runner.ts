@@ -74,6 +74,19 @@ export interface CollectorRunConfig {
   deviceId: string;
   deviceToken: string;
   queuePath: string;
+  /**
+   * Optional stable id for THIS run. When provided alongside `baseUrl`
+   * and `deviceToken`, the connector subprocess gets PDPP_RUN_ID,
+   * PDPP_REFERENCE_BASE_URL, and PDPP_LOCAL_DEVICE_TOKEN in its env so
+   * the runtime can register the launched browser's CDP page-target
+   * wsUrl with the reference server's run-target registry.
+   *
+   * Omit to disable streaming-target registration entirely (the
+   * connector run is unaffected, but operator-side streaming will not
+   * resolve a wsUrl for this run). Best-effort throughout: a missing
+   * runId is the honest no-op mode.
+   */
+  runId?: string;
   sourceInstanceId: string;
 }
 
@@ -118,7 +131,11 @@ export async function runCollectorConnector(config: CollectorRunConfig): Promise
     status: "starting",
   });
 
-  const messages = await collectConnectorMessages(config.connector);
+  const messages = await collectConnectorMessages(config.connector, {
+    baseUrl: config.baseUrl,
+    deviceToken: config.deviceToken,
+    ...(config.runId ? { runId: config.runId } : {}),
+  });
   const records = messages.filter((msg): msg is Extract<EmittedMessage, { type: "RECORD" }> => msg.type === "RECORD");
   const done =
     messages.findLast((msg): msg is Extract<EmittedMessage, { type: "DONE" }> => msg.type === "DONE") ?? null;
@@ -229,8 +246,37 @@ async function sendQueueItem(
   });
 }
 
-async function collectConnectorMessages(connector: CollectorConnectorSpec): Promise<EmittedMessage[]> {
-  const child = spawnConnector(connector);
+/**
+ * Collector context the connector subprocess needs in env beyond
+ * `connector.env`. The streaming-registration plumbing (see
+ * `connector-runtime.ts → resolveStreamingRegistrationFromEnv`)
+ * reads these to construct a registration client.
+ */
+export interface CollectorChildContext {
+  /** Reference server base URL (forwarded as PDPP_REFERENCE_BASE_URL). */
+  readonly baseUrl: string;
+  /** Device-exporter bearer token (forwarded as PDPP_LOCAL_DEVICE_TOKEN). */
+  readonly deviceToken: string;
+  /** Optional run id (forwarded as PDPP_RUN_ID). Omit to skip streaming. */
+  readonly runId?: string;
+}
+
+function buildCollectorChildEnv(context: CollectorChildContext): Record<string, string> {
+  const env: Record<string, string> = {
+    PDPP_REFERENCE_BASE_URL: context.baseUrl,
+    PDPP_LOCAL_DEVICE_TOKEN: context.deviceToken,
+  };
+  if (context.runId) {
+    env.PDPP_RUN_ID = context.runId;
+  }
+  return env;
+}
+
+async function collectConnectorMessages(
+  connector: CollectorConnectorSpec,
+  childContext: CollectorChildContext
+): Promise<EmittedMessage[]> {
+  const child = spawnConnector(connector, childContext);
   const messages: EmittedMessage[] = [];
   const stderr: Buffer[] = [];
   child.stdin.end(`${JSON.stringify(buildCollectorStartMessage(connector.streams))}\n`);
@@ -253,10 +299,13 @@ async function collectConnectorMessages(connector: CollectorConnectorSpec): Prom
   return messages;
 }
 
-function spawnConnector(connector: CollectorConnectorSpec): ChildProcessWithoutNullStreams {
+function spawnConnector(
+  connector: CollectorConnectorSpec,
+  childContext: CollectorChildContext
+): ChildProcessWithoutNullStreams {
   return spawn(connector.command, [...connector.args], {
     cwd: dirname(fileURLToPath(new URL("..", import.meta.url))),
-    env: { ...process.env, ...connector.env },
+    env: { ...process.env, ...buildCollectorChildEnv(childContext), ...connector.env },
   });
 }
 

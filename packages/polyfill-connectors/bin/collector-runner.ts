@@ -16,12 +16,17 @@
  *   run     --base-url <url> --connector <id>
  *           --device-id <id> --device-token <token>
  *           --source-instance-id <id> [--streams a,b,c]
- *           [--command <cmd>] [--args <argv...>]
+ *           [--command <cmd>] [--args <argv...>] [--run-id <id>]
  *     Run the connector under the collector runtime. Gates the
  *     connector against COLLECTOR_RUNTIME_CAPABILITIES before spawn;
  *     a connector requiring a binding the collector does not advertise
  *     fails with `runtime_capability_mismatch` before any child process
- *     starts.
+ *     starts. When `--run-id` is supplied (or PDPP_RUN_ID is set in env),
+ *     the spawned connector subprocess receives PDPP_RUN_ID,
+ *     PDPP_REFERENCE_BASE_URL, and PDPP_LOCAL_DEVICE_TOKEN so the runtime
+ *     can register its launched browser's CDP page-target with the
+ *     reference server's run-target registry for streaming-companion
+ *     resolution. Omit `--run-id` for runs that don't need streaming.
  *
  *   advertise
  *     Print the collector runtime's advertised capabilities as JSON.
@@ -52,6 +57,12 @@ interface CliOptions {
   deviceToken?: string;
   entrypointCommand?: string;
   queuePath: string;
+  /**
+   * Optional stable run id propagated to the connector subprocess as
+   * PDPP_RUN_ID. Required for streaming-companion target registration;
+   * harmless to omit for runs that don't need streaming.
+   */
+  runId?: string;
   sourceInstanceId?: string;
   streams?: string[];
 }
@@ -118,6 +129,7 @@ async function main(): Promise<void> {
     deviceId: options.deviceId,
     deviceToken: options.deviceToken,
     queuePath: options.queuePath,
+    ...(options.runId ? { runId: options.runId } : {}),
     sourceInstanceId: options.sourceInstanceId,
   });
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
@@ -162,6 +174,9 @@ function parseArgs(args: string[]): CliOptions {
   if (process.env.PDPP_SOURCE_INSTANCE_ID) {
     options.sourceInstanceId = process.env.PDPP_SOURCE_INSTANCE_ID;
   }
+  if (process.env.PDPP_RUN_ID) {
+    options.runId = process.env.PDPP_RUN_ID;
+  }
 
   for (let index = 0; index < rest.length; index++) {
     const arg = rest[index];
@@ -201,6 +216,9 @@ function applyOption(options: CliOptions, arg: string, value: string | undefined
     },
     "--queue": (next) => {
       options.queuePath = next;
+    },
+    "--run-id": (next) => {
+      options.runId = next;
     },
     "--source-instance-id": (next) => {
       options.sourceInstanceId = next;

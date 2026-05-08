@@ -1,180 +1,127 @@
 /**
- * Live CDP smoke proof for the run-interaction streaming companion.
+ * Opt-in live CDP smoke proof for the run-interaction streaming companion.
  *
- * This test is **skipped by default**. It only runs when the operator opts in
- * with `PDPP_TEST_LIVE_CDP=1`, because it requires either a Chrome/Chromium
- * binary on the host or a pre-running DevTools endpoint.
- *
- * Three modes (highest precedence first):
- *
- *   1. `PDPP_TEST_CDP_WS_URL=ws://...` — connect directly to a single
- *      page-target WebSocket. Useful when an operator has already minted a
- *      target via curl and just wants to prove the adapter end-to-end.
- *   2. `PDPP_TEST_CDP_HTTP_URL=http://127.0.0.1:9222` — point at a
- *      DevTools HTTP base; the test exercises `createCdpTargetFromHttp` and
- *      `createDefaultStreamingCompanionFactory({ httpUrl })` against the
- *      running browser.
- *   3. Auto-launch — if `PDPP_TEST_CDP_BIN` (or, lacking that, a discoverable
- *      `google-chrome` / `chromium` / `chromium-browser` on PATH) is set, the
- *      test launches the binary headless on an ephemeral port and tears it
- *      down on completion.
- *
- * The proof itself:
- *   - start the companion via the default factory,
- *   - subscribe to frames, await one frame, ack it,
- *   - dispatch a paste input event,
- *   - verify the browser observed the paste via `Runtime.evaluate` over the
- *     same CDP socket the adapter uses.
- *
- * Failures here indicate adapter / wire-format regressions against a real
- * Chromium that the deterministic mocks cannot catch.
+ * Skipped unless `PDPP_TEST_LIVE_CDP=1` is set. The deterministic fake-socket
+ * tests pin the wire contract; this test proves the same adapter can drive a
+ * real Chrome/Chromium page: receive a screencast frame, acknowledge it,
+ * dispatch a click, and resize the browser viewport.
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdtempSync, rmSync, existsSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 
-import {
-  createCdpCompanion,
-  createCdpTargetFromHttp,
-  createDefaultStreamingCompanionFactory,
-} from '../server/streaming/cdp-adapter.js';
+import { createCdpCompanion } from '../server/streaming/cdp-adapter.js';
 
 const LIVE_ENABLED = process.env.PDPP_TEST_LIVE_CDP === '1';
 
-// We deliberately skip-by-default. The test scaffolding still loads cleanly so
-// CI can verify the file parses and imports without a browser; only the body
-// is gated.
-test('live CDP smoke', { skip: !LIVE_ENABLED }, async (t) => {
+test('live CDP smoke proves frame, click, and viewport resize against Chromium', { skip: !LIVE_ENABLED }, async (t) => {
   let cleanup = async () => {};
-  let httpUrl = process.env.PDPP_TEST_CDP_HTTP_URL || null;
-  const wsUrl = process.env.PDPP_TEST_CDP_WS_URL || null;
+  let wsUrl = process.env.PDPP_TEST_CDP_WS_URL || null;
 
-  if (!httpUrl && !wsUrl) {
+  if (!wsUrl) {
     const launched = await launchHeadlessChrome(t);
-    httpUrl = launched.httpUrl;
     cleanup = launched.cleanup;
-    if (!httpUrl) return;
+    wsUrl = launched.wsUrl;
+    if (!wsUrl) return;
   }
 
   try {
-    if (wsUrl) {
-      await proveWithDirectWs(wsUrl);
-    } else {
-      await proveWithHttp(httpUrl);
-    }
+    await runCompanionProof(wsUrl);
   } finally {
     await cleanup();
   }
 });
 
-async function proveWithHttp(httpUrl) {
-  // Two-pass proof:
-  //   (a) the HTTP resolver hands back a real ws URL,
-  //   (b) the default factory's companion can start, receive a frame, accept
-  //       input, and we can verify state via a sibling CDP connection.
-  const target = await createCdpTargetFromHttp({ httpUrl });
-  assert.match(target.webSocketDebuggerUrl, /^wss?:\/\//);
-  await target.close();
-
-  const factory = createDefaultStreamingCompanionFactory({ wsUrl: null, httpUrl });
-  assert.equal(typeof factory, 'function');
-  const companion = factory({ browser_session_id: 'bs_live' });
-  await runCompanionProof(companion, httpUrl);
-}
-
-async function proveWithDirectWs(wsUrl) {
-  const companion = createCdpCompanion({ wsUrl, browser_session_id: 'bs_live_ws' });
-  await runCompanionProof(companion, null);
-}
-
-async function runCompanionProof(companion, httpUrlForVerification) {
+async function runCompanionProof(wsUrl) {
+  const companion = createCdpCompanion({
+    wsUrl,
+    browser_session_id: 'bs_live_cdp',
+    commandTimeoutMs: 5_000,
+    openTimeoutMs: 5_000,
+  });
   const frames = [];
-  const offFrame = companion.onFrame((f) => frames.push(f));
-  try {
-    await companion.start({ width: 800, height: 600, deviceScaleFactor: 1 });
+  const offFrame = companion.onFrame((frame) => frames.push(frame));
 
-    // First frame must arrive within a reasonable budget. Real Chromium emits
-    // a frame within tens of ms; we allow 5s for cold starts.
-    const deadline = Date.now() + 5_000;
-    while (frames.length === 0 && Date.now() < deadline) {
-      await sleep(50);
-    }
-    assert.ok(frames.length > 0, 'companion produced at least one screencast frame');
+  try {
+    await companion.start({ width: 800, height: 600, deviceScaleFactor: 1, mobile: false });
+
+    await waitUntil(() => frames.length > 0, 'companion produced at least one screencast frame');
     if (Number.isFinite(frames[0].sessionId)) {
       await companion.ackFrame(frames[0].sessionId);
     }
 
-    // Dispatch a paste — we then verify via Runtime.evaluate that something
-    // happened. A blank `about:blank` page has no input field, so we pivot:
-    // the verification probe just confirms the adapter's CDP session is alive
-    // and accepts arbitrary commands by evaluating `1 + 1` and checking the
-    // result. This catches the adapter→CDP wire path without depending on
-    // page-level state.
-    await companion.dispatch({ type: 'paste', text: 'pdpp-live-smoke' });
+    assert.equal(typeof companion._internal?.send, 'function', 'live proof requires adapter test send hook');
+    await companion._internal.send('Runtime.evaluate', {
+      expression: `
+        (() => {
+          document.body.style.margin = '0';
+          document.body.innerHTML = '<button id="pdpp-target" style="position:absolute;left:20px;top:20px;width:120px;height:60px">Click</button>';
+          window.__pdppClicked = false;
+          document.getElementById('pdpp-target').addEventListener('click', () => { window.__pdppClicked = true; });
+          return true;
+        })()
+      `,
+      returnByValue: true,
+    });
 
-    // Use the adapter's escape hatch to issue a Runtime.evaluate. This
-    // exercises the same JSON-RPC dispatch we just used for input.
-    if (companion._internal && typeof companion._internal.send === 'function') {
-      const evalResult = await companion._internal.send('Runtime.evaluate', {
-        expression: '1 + 1',
-        returnByValue: true,
-      });
-      assert.equal(evalResult.result?.value, 2, 'Runtime.evaluate round-trips');
-    } else if (httpUrlForVerification) {
-      // HTTP-resolved companion wraps the inner adapter; fall back to opening
-      // a sibling target and confirming the browser is responsive. This proves
-      // the companion didn't permanently break the browser, even if we can't
-      // reach the inner socket directly.
-      const sibling = await createCdpTargetFromHttp({ httpUrl: httpUrlForVerification });
-      assert.match(sibling.webSocketDebuggerUrl, /^wss?:\/\//);
-      await sibling.close();
-    }
+    await companion.dispatch({ type: 'mouse', action: 'click', x: 60, y: 50, button: 0 });
+    await waitForRuntimeValue(companion, 'window.__pdppClicked === true', true, 'click input landed');
+
+    await companion.dispatch({
+      type: 'viewport',
+      width: 390,
+      height: 844,
+      deviceScaleFactor: 2,
+      mobile: false,
+    });
+    const viewport = await waitForRuntimeValue(
+      companion,
+      '({ width: window.innerWidth, height: window.innerHeight, dpr: window.devicePixelRatio })',
+      (value) => value?.width === 390 && value?.height === 844 && value?.dpr === 2,
+      'viewport resize landed',
+    );
+    assert.deepEqual(viewport, { width: 390, height: 844, dpr: 2 });
   } finally {
     offFrame();
     await companion.stop();
   }
 }
 
-async function launchHeadlessChrome(t) {
-  const explicit = process.env.PDPP_TEST_CDP_BIN;
-  const candidates = explicit
-    ? [explicit]
-    : ['google-chrome', 'google-chrome-stable', 'chromium', 'chromium-browser', 'chrome'];
-  let bin = null;
-  for (const candidate of candidates) {
-    if (existsSync(candidate)) {
-      bin = candidate;
-      break;
-    }
-    // Try PATH lookup via `which`-style spawn. We avoid `which` itself for
-    // portability: spawning the binary with `--version` confirms it runs.
-    try {
-      // eslint-disable-next-line no-await-in-loop
-      const ok = await new Promise((resolve) => {
-        const child = spawn(candidate, ['--version'], { stdio: 'ignore' });
-        child.on('error', () => resolve(false));
-        child.on('exit', (code) => resolve(code === 0));
-      });
-      if (ok) {
-        bin = candidate;
-        break;
-      }
-    } catch {
-      /* try next */
-    }
+async function waitForRuntimeValue(companion, expression, expected, label) {
+  let latest;
+  await waitUntil(async () => {
+    const result = await companion._internal.send('Runtime.evaluate', {
+      expression,
+      returnByValue: true,
+    });
+    latest = result.result?.value;
+    return typeof expected === 'function' ? expected(latest) : latest === expected;
+  }, label);
+  return latest;
+}
+
+async function waitUntil(predicate, label, timeoutMs = 5_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await predicate()) return;
+    await sleep(50);
   }
+  throw new Error(`Timed out waiting for ${label}`);
+}
+
+async function launchHeadlessChrome(t) {
+  const bin = await findChromeBinary();
   if (!bin) {
     t.skip(
-      'No Chrome/Chromium binary discovered. Set PDPP_TEST_CDP_BIN, PDPP_TEST_CDP_HTTP_URL, or PDPP_TEST_CDP_WS_URL.',
+      'No Chrome/Chromium binary discovered. Set PDPP_TEST_CDP_BIN or PDPP_TEST_CDP_WS_URL to run live CDP smoke.',
     );
-    return { httpUrl: null, cleanup: async () => {} };
+    return { wsUrl: null, cleanup: async () => {} };
   }
 
-  // Pick an ephemeral port via Node so we don't race other servers on 9222.
   const port = await pickEphemeralPort();
   const userDataDir = mkdtempSync(join(tmpdir(), 'pdpp-cdp-smoke-'));
   const args = [
@@ -188,62 +135,86 @@ async function launchHeadlessChrome(t) {
     'about:blank',
   ];
   const child = spawn(bin, args, { stdio: ['ignore', 'pipe', 'pipe'] });
-  // Wait for `/json/version` to respond — Chrome prints DevTools listening on
-  // ws://... to stderr, but we don't rely on stderr scraping; we poll HTTP.
   const httpUrl = `http://127.0.0.1:${port}`;
-  const deadline = Date.now() + 10_000;
-  let ready = false;
-  while (Date.now() < deadline) {
-    try {
-      const r = await fetch(`${httpUrl}/json/version`);
-      if (r.ok) {
-        ready = true;
-        break;
-      }
-    } catch {
-      /* not yet */
-    }
-    await sleep(100);
-  }
-  if (!ready) {
-    try {
-      child.kill('SIGTERM');
-    } catch {
-      /* ignore */
-    }
-    rmSync(userDataDir, { recursive: true, force: true });
-    throw new Error(`Headless Chrome did not become ready on ${httpUrl}`);
-  }
-  return {
-    httpUrl,
-    async cleanup() {
+
+  try {
+    await waitUntil(async () => {
       try {
-        child.kill('SIGTERM');
+        const response = await fetch(`${httpUrl}/json/version`);
+        return response.ok;
+      } catch {
+        return false;
+      }
+    }, `Chrome DevTools endpoint ${httpUrl}`, 10_000);
+    const wsUrl = await createPageTarget(httpUrl);
+    return {
+      wsUrl,
+      cleanup: async () => {
+        await stopChrome(child, userDataDir);
+      },
+    };
+  } catch (err) {
+    await stopChrome(child, userDataDir);
+    throw err;
+  }
+}
+
+async function createPageTarget(httpUrl) {
+  const response = await fetch(`${httpUrl}/json/new?about:blank`, { method: 'PUT' });
+  if (!response.ok) {
+    throw new Error(`Failed to create Chrome target: ${response.status} ${await response.text()}`);
+  }
+  const target = await response.json();
+  assert.match(target.webSocketDebuggerUrl, /^wss?:\/\//);
+  return target.webSocketDebuggerUrl;
+}
+
+async function findChromeBinary() {
+  const explicit = process.env.PDPP_TEST_CDP_BIN;
+  const candidates = explicit
+    ? [explicit]
+    : ['google-chrome', 'google-chrome-stable', 'chromium', 'chromium-browser', 'chrome'];
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) return candidate;
+    try {
+      const ok = await new Promise((resolve) => {
+        const child = spawn(candidate, ['--version'], { stdio: 'ignore' });
+        child.on('error', () => resolve(false));
+        child.on('exit', (code) => resolve(code === 0));
+      });
+      if (ok) return candidate;
+    } catch {
+      /* try next */
+    }
+  }
+  return null;
+}
+
+async function stopChrome(child, userDataDir) {
+  try {
+    child.kill('SIGTERM');
+  } catch {
+    /* ignore */
+  }
+  await new Promise((resolve) => {
+    if (child.exitCode != null) {
+      resolve();
+      return;
+    }
+    child.on('exit', () => resolve());
+    setTimeout(() => {
+      try {
+        child.kill('SIGKILL');
       } catch {
         /* ignore */
       }
-      try {
-        await new Promise((resolve) => {
-          if (child.exitCode != null) return resolve();
-          child.on('exit', () => resolve());
-          setTimeout(() => {
-            try {
-              child.kill('SIGKILL');
-            } catch {
-              /* ignore */
-            }
-            resolve();
-          }, 2_000);
-        });
-      } finally {
-        rmSync(userDataDir, { recursive: true, force: true });
-      }
-    },
-  };
+      resolve();
+    }, 2_000);
+  });
+  rmSync(userDataDir, { recursive: true, force: true });
 }
 
 async function pickEphemeralPort() {
-  // Use Node's net to bind, then close — the kernel hands us a free port.
   const { createServer } = await import('node:net');
   return new Promise((resolve, reject) => {
     const server = createServer();

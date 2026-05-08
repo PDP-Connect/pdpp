@@ -24,12 +24,14 @@
  */
 
 import { existsSync, mkdirSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Browser, BrowserContext, chromium } from "playwright";
 import { isRunningInContainer } from "./runtime-environment.ts";
 
 const PROFILE_NAME_RE = /^[A-Za-z0-9_-]+$/;
+const EXTRA_BROWSER_ARGS_RE = /\s+/;
 
 export interface IsolatedBrowser {
   browser: Browser | null;
@@ -40,6 +42,30 @@ export interface IsolatedBrowser {
 export interface AcquireIsolatedBrowserOptions {
   headless?: boolean;
   profileName: string;
+  /**
+   * When true, the launcher launches Chromium in CDP-port mode
+   * (`cdpPort: 0` plus `--remote-debugging-address=127.0.0.1`), reads
+   * the resolved random port out of `<userDataDir>/DevToolsActivePort`,
+   * and publishes `PDPP_BROWSER_CDP_HOST` / `PDPP_BROWSER_CDP_PORT` to
+   * `process.env` for the browser-binding-local handoff helper
+   * (`browser-handoff.ts`) to compose per-interaction wsUrls at
+   * `manual_action` emission time.
+   *
+   * The launcher itself does NOT register any streaming target — that
+   * is interaction-scoped and owned by the binding code that emits the
+   * manual_action. See
+   * `openspec/changes/add-run-interaction-streaming-companion/`
+   * `design-notes/interaction-scoped-target-resolution-2026-05-05.md`.
+   *
+   * Best-effort port publication: any failure (port not appearing in
+   * `DevToolsActivePort`, etc.) logs a warning and lets the browser
+   * launch succeed. The honest failure mode is "streaming unavailable
+   * for this run; records still flow."
+   *
+   * Connectors that never need streaming MUST be unaffected — leave
+   * this `false` or omit it.
+   */
+  streamingEnabled?: boolean;
 }
 
 /**
@@ -161,6 +187,7 @@ function isMissingChromeInstallError(error: unknown): boolean {
 export async function acquireIsolatedBrowser({
   profileName,
   headless = false,
+  streamingEnabled,
 }: AcquireIsolatedBrowserOptions): Promise<IsolatedBrowser> {
   if (!(profileName && PROFILE_NAME_RE.test(profileName))) {
     throw new Error("profileName required, must be [A-Za-z0-9_-]+");
@@ -175,14 +202,95 @@ export async function acquireIsolatedBrowser({
   // @ts-expect-error — patchright.chromium is runtime-identical to playwright.chromium
   const { chromium: localChromium }: { chromium: typeof chromium } = await import("patchright");
 
-  const baseLaunchOptions: Parameters<typeof localChromium.launchPersistentContext>[1] = {
+  // Streaming-registration mode needs Chromium to expose a TCP CDP
+  // endpoint (so the streaming companion can connect by URL later) AND
+  // write `<userDataDir>/DevToolsActivePort` so we can discover the
+  // randomly-assigned port without scraping stderr. We also pin the bind
+  // to loopback as defense in depth — the wsUrl path encodes a bearer
+  // secret, and we never want it reachable from a non-local listener.
+  //
+  // The right way to do this through Patchright/Playwright is the
+  // `cdpPort` launch option: when set, Patchright pushes
+  // `--remote-debugging-port=<port>` AND switches the parent's CDP
+  // transport from pipe to WebSocket (server/browserType.js dispatch on
+  // `options.cdpPort !== undefined`). It also skips its own
+  // `--remote-debugging-pipe` default (server/chromium/chromium.js
+  // `defaultArgs` else branch).
+  //
+  // We CANNOT achieve the same effect by pushing
+  // `--remote-debugging-port=0` into `args[]`: Patchright only checks
+  // `options.cdpPort` (not the args array) when deciding whether to add
+  // `--remote-debugging-pipe`, so Chromium ends up launched with BOTH
+  // `--remote-debugging-port=0` AND `--remote-debugging-pipe`, the
+  // parent connects over the pipe, and the first CDP command after
+  // launch (`Network.setCacheDisabled` from initial page setup) fails
+  // with `Internal server error, session closed`. That manifested as
+  // `companion_start_failed` for any run that needed streaming.
+  //
+  // `cdpPort: 0` lets Chromium pick a random free port; we then read
+  // it back out of `DevToolsActivePort` for the wsUrl. The
+  // `--remote-debugging-address=127.0.0.1` arg is still set explicitly
+  // because Patchright doesn't expose a host-binding option.
+  const baseArgs = [
+    // Workaround for microsoft/playwright#40158: headed Chrome's download
+    // bubble races Playwright's CDP-based download interception.
+    "--disable-features=DownloadBubble,DownloadBubbleV2,DownloadBubbleV3",
+  ];
+  // Optional Chromium flags from PDPP_BROWSER_EXTRA_ARGS (space-separated).
+  // Operator escape hatch for environment-specific needs that the launcher
+  // intentionally does not opinionate on. Examples:
+  //   - `--disable-gpu` when running headless under tmux without XAUTHORITY
+  //     exported (Chromium otherwise tries the X display, fails GPU init,
+  //     and the CDP child dies on the first command).
+  //   - `--proxy-server=http://...` for corporate proxies.
+  //   - Locale / font hinting flags for specific deployments.
+  // Empty by default; we want the launcher to do the right thing on a sane
+  // host without configuration.
+  const extraArgsRaw = process.env.PDPP_BROWSER_EXTRA_ARGS;
+  if (extraArgsRaw) {
+    for (const a of extraArgsRaw.split(EXTRA_BROWSER_ARGS_RE).filter(Boolean)) {
+      baseArgs.push(a);
+    }
+  }
+  // Diagnostic for the most common GPU-init failure mode we've observed in dev:
+  // tmux sessions started before the X session exported XAUTHORITY. Chromium
+  // sees DISPLAY but cannot authenticate, GPU process crashes, the parent CDP
+  // child reports "Internal server error, session closed" on the first call.
+  // We don't auto-fix (operator may have a real reason for the env shape) but
+  // we flag it once so the next operator who hits this isn't debugging blind.
+  // Production / Docker / headless-server deployments do not have DISPLAY set
+  // and so will not trip this warning.
+  if (
+    !displayAuthWarningEmitted &&
+    process.env.DISPLAY &&
+    !process.env.XAUTHORITY &&
+    !extraArgsRaw?.includes("--disable-gpu")
+  ) {
+    displayAuthWarningEmitted = true;
+    process.stderr.write(
+      "[browser-launch] DISPLAY is set but XAUTHORITY is empty (common in tmux). " +
+        "Chromium GPU init may fail with 'session closed'. Either export XAUTHORITY " +
+        "(e.g. `export XAUTHORITY=$(systemctl --user show-environment | grep ^XAUTHORITY | cut -d= -f2)`) " +
+        "or set PDPP_BROWSER_EXTRA_ARGS=--disable-gpu before launching.\n"
+    );
+  }
+  if (streamingEnabled) {
+    baseArgs.push("--remote-debugging-address=127.0.0.1");
+  }
+
+  type PatchrightLaunchOptions = NonNullable<Parameters<typeof localChromium.launchPersistentContext>[1]> & {
+    cdpPort?: number;
+  };
+  const baseLaunchOptions: PatchrightLaunchOptions = {
     headless,
     viewport: null,
-    args: [
-      // Workaround for microsoft/playwright#40158: headed Chrome's download
-      // bubble races Playwright's CDP-based download interception.
-      "--disable-features=DownloadBubble,DownloadBubbleV2,DownloadBubbleV3",
-    ],
+    args: baseArgs,
+    // `cdpPort: 0` is honored by Patchright (`server/browserType.js`
+    // dispatches CDP transport on this; `server/chromium/chromium.js`
+    // `defaultArgs` skips `--remote-debugging-pipe` when it is set).
+    // Playwright's public `LaunchOptions` typing doesn't surface `cdpPort`,
+    // but Patchright's protocol validator accepts it and forwards it.
+    ...(streamingEnabled ? { cdpPort: 0 } : {}),
   };
 
   const explicitChannel = configuredBrowserChannel();
@@ -207,6 +315,19 @@ export async function acquireIsolatedBrowser({
     }
   }
 
+  // Publish the CDP host:port to env so the browser-binding-local handoff
+  // helper (`browser-handoff.ts`) can compose per-interaction wsUrls at
+  // `manual_action` emission time. The launcher does NOT register any
+  // wsUrl itself — registration is now interaction-scoped and owned by
+  // the binding code path that emits the manual_action (see
+  // `openspec/changes/add-run-interaction-streaming-companion/design-notes/`
+  // `interaction-scoped-target-resolution-2026-05-05.md`). Best-effort:
+  // failures here MUST NOT prevent the run; streaming will simply be
+  // unavailable.
+  if (streamingEnabled) {
+    await publishCdpEndpointFromLaunch({ isolatedDir });
+  }
+
   return {
     context,
     browser: context.browser(),
@@ -220,7 +341,173 @@ export async function acquireIsolatedBrowser({
   };
 }
 
+/**
+ * Read the CDP port that Chromium picked (via `DevToolsActivePort`) and
+ * publish the host:port to `process.env.PDPP_BROWSER_CDP_HOST` /
+ * `PDPP_BROWSER_CDP_PORT`. The browser-binding-local handoff helper
+ * (`browser-handoff.ts`) reads those vars at `manual_action` emission
+ * time to compose per-interaction wsUrls for its exact-`Page` resolver.
+ * This is the env-var channel because the launcher and the connector
+ * code that calls `manualAction` run in the same process.
+ *
+ * Best-effort: if the port can't be read, log and return — streaming
+ * will simply be unavailable for this run. Records still flow normally.
+ */
+async function publishCdpEndpointFromLaunch({ isolatedDir }: { isolatedDir: string }): Promise<void> {
+  try {
+    const port = await readDevToolsActivePort({ userDataDir: isolatedDir, timeoutMs: 5000, pollMs: 50 });
+    if (port == null) {
+      process.stderr.write(
+        "[browser-launch] could not read DevToolsActivePort; streaming-companion will be unavailable for this run.\n"
+      );
+      return;
+    }
+    publishCdpEndpointToEnv({ host: "127.0.0.1", port });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    process.stderr.write(
+      `[browser-launch] CDP endpoint publication failed: ${message}; streaming will be unavailable for this run.\n`
+    );
+  }
+}
+
+/**
+ * Env-var channel for the browser-binding-local handoff helper. The launcher
+ * is the only authority that knows which port Chromium picked (it read
+ * `DevToolsActivePort` to find out); `process.env` is the cross-module
+ * channel both modules share inside the connector subprocess.
+ *
+ * Setting these AFTER a successful port read is intentional: a stale value
+ * from a previous run would point the handoff at a defunct browser; we'd
+ * rather have `prepareManualAction` honestly say "no streaming endpoint"
+ * than register a wsUrl that will fail at attach time.
+ *
+ * Mirrors `BROWSER_CDP_HOST_ENV` / `BROWSER_CDP_PORT_ENV` in
+ * `browser-handoff.ts`. Kept as string literals rather than imports so
+ * the launcher does not transitively pull in the handoff module (which
+ * imports playwright types) at acquisition time.
+ */
+function publishCdpEndpointToEnv({ host, port }: { host: string; port: number }): void {
+  process.env.PDPP_BROWSER_CDP_HOST = host;
+  process.env.PDPP_BROWSER_CDP_PORT = String(port);
+}
+
+/**
+ * Read Chromium's `DevToolsActivePort` (written to `<userDataDir>` when
+ * `--remote-debugging-port=0` is set), then GET `http://127.0.0.1:PORT/json`
+ * and pick the first `page` target's `webSocketDebuggerUrl`.
+ *
+ * Returns `null` when:
+ *   - the port file isn't available within the poll window, or
+ *   - the `/json` endpoint isn't reachable, or
+ *   - no `type === "page"` target is present.
+ *
+ * Caller treats `null` as "skip registration, log + continue."
+ *
+ * Why DevToolsActivePort: Chromium writes this file as part of
+ * remote-debugging startup (it's how `chrome --remote-debugging-port=0`
+ * communicates the chosen random port to the launching process). It is the
+ * canonical local-only handshake for "what port did Chromium pick?" and
+ * does not require parsing Chromium stderr (which Playwright captures and
+ * does not re-expose on launchPersistentContext).
+ *
+ * `fetchImpl` is injectable so tests can exercise the `/json` parsing
+ * branch without a real Chromium.
+ */
+export async function resolvePageTargetWsUrl({
+  userDataDir,
+  fetchImpl = globalThis.fetch,
+  timeoutMs = 5000,
+  pollMs = 50,
+}: {
+  userDataDir: string;
+  fetchImpl?: typeof fetch;
+  timeoutMs?: number;
+  pollMs?: number;
+}): Promise<string | null> {
+  const port = await readDevToolsActivePort({ userDataDir, timeoutMs, pollMs });
+  if (port == null) {
+    return null;
+  }
+  return await fetchPageTargetWsUrl({ port, fetchImpl });
+}
+
+async function readDevToolsActivePort({
+  userDataDir,
+  timeoutMs,
+  pollMs,
+}: {
+  userDataDir: string;
+  timeoutMs: number;
+  pollMs: number;
+}): Promise<number | null> {
+  const portFile = join(userDataDir, "DevToolsActivePort");
+  const deadline = Date.now() + timeoutMs;
+  // Playwright's `waitForReadyState` already blocks on `DevTools listening on …`
+  // before returning, so by the time we get here the file is almost always
+  // present. The poll loop is for the rare race where Chromium logs the line
+  // before flushing the file to disk; cap is small.
+  while (Date.now() < deadline) {
+    try {
+      const contents = await readFile(portFile, "utf8");
+      const firstLine = contents.split("\n", 1)[0]?.trim();
+      const portNum = firstLine ? Number.parseInt(firstLine, 10) : Number.NaN;
+      if (Number.isFinite(portNum) && portNum > 0) {
+        return portNum;
+      }
+    } catch {
+      // file not yet written; retry
+    }
+    await new Promise((r) => setTimeout(r, pollMs));
+  }
+  return null;
+}
+
+interface DevToolsTarget {
+  readonly type?: string;
+  readonly webSocketDebuggerUrl?: string;
+}
+
+export async function fetchPageTargetWsUrl({
+  port,
+  fetchImpl = globalThis.fetch,
+}: {
+  port: number;
+  fetchImpl?: typeof fetch;
+}): Promise<string | null> {
+  if (typeof fetchImpl !== "function") {
+    return null;
+  }
+  let response: Response;
+  try {
+    response = await fetchImpl(`http://127.0.0.1:${String(port)}/json`);
+  } catch {
+    return null;
+  }
+  if (!response.ok) {
+    return null;
+  }
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(body)) {
+    return null;
+  }
+  // Prefer the first `page` target. Some Chromium builds also list `iframe`,
+  // `worker`, `service_worker`, `browser`, etc. — we want a real page.
+  const pageTarget = (body as DevToolsTarget[]).find(
+    (target) => target?.type === "page" && typeof target.webSocketDebuggerUrl === "string"
+  );
+  return pageTarget?.webSocketDebuggerUrl ?? null;
+}
+
 let chromiumFallbackLogged = false;
+// Module-scope so the DISPLAY-without-XAUTHORITY warning fires once per
+// process, not once per browser launch — quiet logs in normal operation.
+let displayAuthWarningEmitted = false;
 
 function logChromiumFallback(): void {
   if (chromiumFallbackLogged) {

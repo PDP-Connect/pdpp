@@ -1,10 +1,15 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import {
   acquireBrowserForConnector,
   decideContainerHeadedBrowserGate,
+  fetchPageTargetWsUrl,
   HEADED_BROWSER_UNAVAILABLE_CODE,
   HeadedBrowserUnavailableError,
+  resolvePageTargetWsUrl,
 } from "./browser-launch.ts";
 
 const ENV_VARS = ["PDPP_FORCE_CONTAINER", "PDPP_ALLOW_HEADED_CONTAINER_BROWSER"] as const;
@@ -149,4 +154,138 @@ test("HeadedBrowserUnavailableError carries the stable code", () => {
   assert.equal(err.code, HEADED_BROWSER_UNAVAILABLE_CODE);
   assert.equal(err.name, "HeadedBrowserUnavailableError");
   assert.ok(err instanceof Error);
+});
+
+// ─── wsUrl extraction (DevToolsActivePort + /json target listing) ──────
+//
+// We exercise the extraction helpers via injectable `fetch` and a real
+// temp dir holding a `DevToolsActivePort` file written in Chromium's
+// canonical format. We do NOT spin up a real Chromium for this — the
+// extraction's contract is "given a userDataDir with a port file and a
+// fetch returning the standard /json shape, return the first page
+// target's webSocketDebuggerUrl"; that's a pure data-shape problem.
+
+const FAKE_JSON_RESPONSE = [
+  {
+    type: "background_page",
+    webSocketDebuggerUrl: "ws://127.0.0.1:9999/devtools/page/extension",
+  },
+  {
+    type: "page",
+    title: "about:blank",
+    url: "about:blank",
+    webSocketDebuggerUrl: "ws://127.0.0.1:9999/devtools/page/PAGE_TARGET_ID",
+  },
+];
+
+function fakeFetchOk(body: unknown): typeof fetch {
+  return ((): Promise<Response> =>
+    Promise.resolve(new Response(JSON.stringify(body), { status: 200 }))) as typeof fetch;
+}
+
+function urlOf(input: string | URL | Request): string {
+  if (typeof input === "string") {
+    return input;
+  }
+  if (input instanceof URL) {
+    return input.toString();
+  }
+  return (input as Request).url;
+}
+
+test("fetchPageTargetWsUrl picks the first page target from /json", async () => {
+  const wsUrl = await fetchPageTargetWsUrl({
+    port: 9999,
+    fetchImpl: fakeFetchOk(FAKE_JSON_RESPONSE),
+  });
+  assert.equal(wsUrl, "ws://127.0.0.1:9999/devtools/page/PAGE_TARGET_ID");
+});
+
+test("fetchPageTargetWsUrl returns null when no page target is present", async () => {
+  const wsUrl = await fetchPageTargetWsUrl({
+    port: 9999,
+    fetchImpl: fakeFetchOk([
+      { type: "service_worker", webSocketDebuggerUrl: "ws://127.0.0.1:9999/devtools/page/sw" },
+      { type: "browser", webSocketDebuggerUrl: "ws://127.0.0.1:9999/devtools/browser/abc" },
+    ]),
+  });
+  assert.equal(wsUrl, null);
+});
+
+test("fetchPageTargetWsUrl returns null on /json non-200", async () => {
+  const wsUrl = await fetchPageTargetWsUrl({
+    port: 9999,
+    fetchImpl: ((): Promise<Response> => Promise.resolve(new Response("nope", { status: 500 }))) as typeof fetch,
+  });
+  assert.equal(wsUrl, null);
+});
+
+test("fetchPageTargetWsUrl returns null on /json network error (does not throw)", async () => {
+  const wsUrl = await fetchPageTargetWsUrl({
+    port: 9999,
+    fetchImpl: ((): Promise<Response> => Promise.reject(new Error("ECONNREFUSED"))) as typeof fetch,
+  });
+  assert.equal(wsUrl, null);
+});
+
+test("fetchPageTargetWsUrl returns null on non-JSON body (does not throw)", async () => {
+  const wsUrl = await fetchPageTargetWsUrl({
+    port: 9999,
+    fetchImpl: ((): Promise<Response> => Promise.resolve(new Response("not json", { status: 200 }))) as typeof fetch,
+  });
+  assert.equal(wsUrl, null);
+});
+
+test("resolvePageTargetWsUrl reads DevToolsActivePort then queries /json with the parsed port", async () => {
+  const userDataDir = await mkdtemp(join(tmpdir(), "pdpp-launch-test-"));
+  try {
+    // Chromium writes two lines: PORT, then /devtools/browser/<id>.
+    await writeFile(join(userDataDir, "DevToolsActivePort"), "9999\n/devtools/browser/abc-123\n", "utf8");
+    let calledUrl: string | null = null;
+    const wsUrl = await resolvePageTargetWsUrl({
+      userDataDir,
+      timeoutMs: 200,
+      pollMs: 5,
+      fetchImpl: ((input: string | URL | Request): Promise<Response> => {
+        calledUrl = urlOf(input);
+        return Promise.resolve(new Response(JSON.stringify(FAKE_JSON_RESPONSE), { status: 200 }));
+      }) as typeof fetch,
+    });
+    assert.equal(calledUrl, "http://127.0.0.1:9999/json", "fetch should target the parsed port on loopback");
+    assert.equal(wsUrl, "ws://127.0.0.1:9999/devtools/page/PAGE_TARGET_ID");
+  } finally {
+    await rm(userDataDir, { recursive: true, force: true });
+  }
+});
+
+test("resolvePageTargetWsUrl returns null when DevToolsActivePort never appears", async () => {
+  const userDataDir = await mkdtemp(join(tmpdir(), "pdpp-launch-test-"));
+  try {
+    // Don't write the file; resolver should give up after timeoutMs.
+    const wsUrl = await resolvePageTargetWsUrl({
+      userDataDir,
+      timeoutMs: 100,
+      pollMs: 10,
+      fetchImpl: fakeFetchOk(FAKE_JSON_RESPONSE),
+    });
+    assert.equal(wsUrl, null);
+  } finally {
+    await rm(userDataDir, { recursive: true, force: true });
+  }
+});
+
+test("resolvePageTargetWsUrl returns null when DevToolsActivePort is malformed", async () => {
+  const userDataDir = await mkdtemp(join(tmpdir(), "pdpp-launch-test-"));
+  try {
+    await writeFile(join(userDataDir, "DevToolsActivePort"), "not-a-port\n/devtools/browser/abc\n", "utf8");
+    const wsUrl = await resolvePageTargetWsUrl({
+      userDataDir,
+      timeoutMs: 100,
+      pollMs: 10,
+      fetchImpl: fakeFetchOk(FAKE_JSON_RESPONSE),
+    });
+    assert.equal(wsUrl, null);
+  } finally {
+    await rm(userDataDir, { recursive: true, force: true });
+  }
 });

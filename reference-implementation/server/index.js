@@ -66,8 +66,10 @@ import { collectDeploymentDiagnostics } from './deployment-diagnostics.ts';
 import { createOwnerAuthPlaceholder, OWNER_AUTH_DEFAULT_SUBJECT_ID } from './owner-auth.ts';
 import { registerInboxRoutes } from './inbox.js';
 import { createStreamingSessionStore } from './streaming/sessions.js';
-import { createDefaultStreamingCompanionFactory } from './streaming/cdp-adapter.js';
+import { createDefaultStreamingCompanionFactory } from './streaming/companion-factory.js';
 import { registerStreamingRoutes } from './streaming/routes.js';
+import { createRunTargetRegistry } from './streaming/run-target-registry.js';
+import { createPlayground } from './streaming/playground.js';
 import { createController } from '../runtime/controller.ts';
 import {
   createPdppCliCommand,
@@ -1842,6 +1844,26 @@ function buildAsApp(opts = {}) {
     }
   }
 
+  // Reference-internal run target registry. Holds the per-(runId, interactionId)
+  // CDP page-target ws URL the connector runtime / browser binding registers
+  // when a manual_action interaction needs an exact page handoff. The
+  // streaming companion factory consults this registry by `(runId, interactionId)`
+  // to resolve the target. NOT a PDPP wire surface — admin/internal only,
+  // gated behind EITHER the device-exporter authority (Mode B, collector-runner)
+  // OR a per-run nonce minted by the controller (Mode A, in-process runtime).
+  // The nonce is per-run (not per-interaction): the run's connector child is
+  // the single authority allowed to register targets for any interaction that
+  // arises during that run.
+  // See `reference-implementation/server/streaming/run-target-registry.js`.
+  //
+  // Caller-provided registries are accepted so the controller and the route
+  // layer share one instance — the controller needs to register/clear
+  // per-run nonces it mints at spawn time, and the routes need to verify
+  // them at registration time. Tests that build an asApp standalone still
+  // get a self-owned registry; the route layer is unchanged.
+  const runTargetRegistry = opts.runTargetRegistry || createRunTargetRegistry({ logger: opts.streamingLogger });
+  runTargetRegistry.attachRoutes(app, requireDeviceExporterCredential);
+
   async function buildDeviceExporterDiagnostics(ownerSubjectId) {
     const [devices, sourceInstances, outcomes] = await Promise.all([
       deviceExporterStore.listDevices(ownerSubjectId),
@@ -2781,22 +2803,33 @@ function buildAsApp(opts = {}) {
   //
   // - Tests inject `opts.streamingCompanionFactory` for deterministic mock
   //   frame/input mapping without a real Chromium.
-  // - In production, the default factory connects to a CDP page-target
-  //   WebSocket URL configured via `PDPP_RUN_INTERACTION_CDP_WS_URL` (or
-  //   `opts.streamingCdpWsUrl`), or — preferred for operator setup — resolves a
-  //   fresh page target per session from a Chrome DevTools HTTP base via
-  //   `PDPP_RUN_INTERACTION_CDP_HTTP_URL` (or `opts.streamingCdpHttpUrl`).
-  // - When neither is set, the factory is `null` and the mint route returns
-  //   503 `streaming_companion_unavailable`. We never hand out a token that
-  //   only fails at attach time.
+  // - In production, the default factory resolves the per-(run, interaction)
+  //   CDP page-target ws URL through the run-target registry. The connector
+  //   runtime / browser binding registers the page's CDP ws URL via the
+  //   admin route at the moment the manual_action interaction is created;
+  //   the resolver hands it to the companion at attach time.
+  // - When the factory is `null` (e.g. the registry is empty for the run),
+  //   the mint route returns 503 `streaming_companion_unavailable`. We never
+  //   hand out a token that only fails at attach time.
   const streamingSessions = opts.streamingSessionStore || createStreamingSessionStore();
+  // Distinguish "caller did not specify" (use default registry-backed factory)
+  // from "caller passed null" (explicit fail-closed; mint route returns 503).
+  // The default factory always exists because the registry resolver always
+  // exists, so a plain `||` fallback would silently turn an explicit null
+  // back into a working factory and lose the fail-closed test seam.
   const streamingCompanionFactory =
-    opts.streamingCompanionFactory ||
-    createDefaultStreamingCompanionFactory({
-      wsUrl: opts.streamingCdpWsUrl,
-      httpUrl: opts.streamingCdpHttpUrl,
-      logger: opts.streamingLogger,
-    });
+    opts.streamingCompanionFactory !== undefined
+      ? opts.streamingCompanionFactory
+      : createDefaultStreamingCompanionFactory({
+          resolveTargetForInteraction: (runId, interactionId) =>
+            runTargetRegistry.get({ runId, interactionId }),
+          logger: opts.streamingLogger,
+          neko: {
+            screenConfigurationsEndpoint: 'api/room/screen/configurations',
+            screenEndpoint: 'api/room/screen',
+            cdpHttpUrl: process.env.PDPP_NEKO_CDP_HTTP_URL || process.env.NEKO_CDP_HTTP_URL || undefined,
+          },
+        });
   const streamingRoutes = registerStreamingRoutes({
     app,
     controller,
@@ -2804,7 +2837,19 @@ function buildAsApp(opts = {}) {
     streamingSessions,
     companionFactory: streamingCompanionFactory,
     makeBrowserSessionId: opts.makeStreamingBrowserSessionId,
+    nekoProxyAllowedHosts:
+      opts.nekoProxyAllowedHosts || process.env.PDPP_NEKO_PROXY_ALLOWED_HOSTS || '',
+    nekoProxyAutoLogin:
+      opts.nekoProxyAutoLogin !== undefined
+        ? opts.nekoProxyAutoLogin
+        : process.env.PDPP_NEKO_PROXY_AUTOLOGIN === '1'
+          ? {
+              username: process.env.NEKO_USERNAME || 'operator',
+              password: process.env.NEKO_PASSWORD || '1',
+            }
+          : null,
   });
+  app.__pdppStreamingUpgradeHandler = streamingRoutes.handleUpgrade;
 
   // Wrap controller.respondToInteraction so the streaming session is
   // invalidated whenever an interaction resolves. Inbox and the
@@ -2821,14 +2866,68 @@ function buildAsApp(opts = {}) {
           interaction_id: input.interaction_id,
           reason: `interaction_${input.status || 'resolved'}`,
         }),
-      ).catch(() => {
-        /* invalidation is best-effort; failing must not break the response */
-      });
+      )
+        .then(() => {
+          // After invalidating the streaming session, drop the target registry
+          // entry to free resources immediately rather than waiting for TTL.
+          return runTargetRegistry.forceUnregister({
+            runId,
+            interactionId: input.interaction_id,
+          });
+        })
+        .catch(() => {
+          /* cleanup is best-effort; failing must not break the response */
+        });
       return result;
     };
   }
 
   registerInboxRoutes(app, { controller, ownerAuth, pdppError, handleError });
+
+  // Operator-only stream-playground route. Lazy-launches a long-lived patchright
+  // headless browser whose first page is pinned to a self-contained data:
+  // URL, registers its CDP page-target wsUrl with the run-target registry
+  // under a synthetic (runId, interactionId), and shims
+  // controller.getPendingInteraction so the standard streaming-mint route
+  // accepts the synthetic runId. The dashboard's /dashboard/stream-playground
+  // route hits this endpoint to obtain the (runId, interactionId) to feed
+  // into <StreamSurface>.
+  //
+  // Gated on NODE_ENV !== 'production' unless explicitly enabled. The Docker
+  // n.eko SLVP overlay sets PDPP_ENABLE_STREAM_PLAYGROUND=1; hardened
+  // production deployments leave it disabled. Owner session is still required
+  // when owner-auth is enabled — the playground is for the deploying operator,
+  // not unauth'd visitors.
+  const streamPlaygroundEnabled =
+    process.env.NODE_ENV !== 'production' || process.env.PDPP_ENABLE_STREAM_PLAYGROUND === '1';
+  if (streamPlaygroundEnabled && controller) {
+    const playground = createPlayground({
+      runTargetRegistry,
+      controller,
+      logger: opts.streamingLogger,
+    });
+    app.post('/_ref/dev/playground/session', ownerAuth.requireOwnerSession, async (req, res) => {
+      try {
+        const backend =
+          typeof req.query?.backend === 'string'
+            ? req.query.backend
+            : typeof req.body?.backend === 'string'
+              ? req.body.backend
+              : undefined;
+        const session = await playground.getOrCreatePlaygroundSession({ backend });
+        return res.status(200).json({
+          object: 'stream_playground_session',
+          backend: session.backend,
+          run_id: session.runId,
+          interaction_id: session.interactionId,
+        });
+      } catch (err) {
+        const message = err?.message || 'playground session failed';
+        opts.streamingLogger?.warn?.({ err: message }, 'stream_playground_session_failed');
+        return pdppError(res, 500, 'playground_failed', message);
+      }
+    });
+  }
 
   // Reference-only, owner-only control surface: answer the current pending
   // interaction for a live controller-managed run. The read path remains the
@@ -5680,12 +5779,27 @@ export async function startServer(opts = {}) {
   const trustedMetadataHosts = opts.trustedMetadataHosts ?? process.env.PDPP_TRUSTED_HOSTS ?? null;
   const runtimeContext = {
     rsUrl: configuredRsPublicUrl || null,
+    // Populated below after asServer.listen resolves the actual port,
+    // so the controller's lazy currentReferenceBaseUrl() lookup picks up
+    // the realized origin even when the operator did not configure
+    // PDPP_REFERENCE_ORIGIN.
+    referenceBaseUrl: configuredAsPublicUrl || null,
   };
+  // Reference-internal run-target registry, lifted out of buildAsApp so the
+  // controller can hand the same instance the per-run nonce hooks it needs
+  // for Mode-A (in-process runtime) streaming registration. The buildAsApp
+  // call below receives the same instance; routes are attached there as
+  // before. See reference-implementation/server/streaming/run-target-registry.js.
+  const runTargetRegistry = createRunTargetRegistry({ logger: opts.streamingLogger });
   const controller = createController({
     asPublicUrl: configuredAsPublicUrl,
     ownerSubjectId: opts.ownerAuthSubjectId,
     connectorPathResolver: opts.connectorPathResolver,
     runtimeContext,
+    streamingTargetNonceHooks: {
+      registerNonce: (args) => runTargetRegistry.registerNonce(args),
+      clearNonce: (args) => runTargetRegistry.clearNonce(args),
+    },
   });
   const asApp = buildAsApp({
     nativeManifest: nativeConfig?.nativeManifest || null,
@@ -5709,6 +5823,9 @@ export async function startServer(opts = {}) {
     streamingCompanionFactory: opts.streamingCompanionFactory,
     streamingSessionStore: opts.streamingSessionStore,
     makeStreamingBrowserSessionId: opts.makeStreamingBrowserSessionId,
+    nekoProxyAllowedHosts: opts.nekoProxyAllowedHosts,
+    nekoProxyAutoLogin: opts.nekoProxyAutoLogin,
+    runTargetRegistry,
     logger,
   });
 
@@ -5718,8 +5835,34 @@ export async function startServer(opts = {}) {
   const bindHost = opts.bindHost;
 
   const asServer = await asApp.listen(requestedAsPort, bindHost);
+  if (typeof asApp.__pdppStreamingUpgradeHandler === 'function') {
+    asServer.on('upgrade', (req, socket, head) => {
+      const handled = asApp.__pdppStreamingUpgradeHandler(req, socket, head);
+      if (!handled && !socket.destroyed) {
+        socket.write('HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
+        socket.destroy();
+      }
+    });
+  }
   const asPort = asServer.address().port;
   const asPublicUrl = configuredAsPublicUrl || configuredAsIssuer || `http://localhost:${asPort}`;
+  // Update the controller's lazy reference-base-URL view now that the AS
+  // listener has actually allocated a port. Spawned connector children
+  // PUT their streaming-target registration here.
+  //
+  // CRITICAL: this MUST be the AS-internal loopback URL, NOT the public
+  // browser-facing URL. In composed mode the public URL points at the
+  // Next.js webapp (which proxies user-facing routes only); the
+  // `/admin/runs/:runId/interactions/:interactionId/streaming-target`
+  // endpoint lives on the Fastify AS server and is never exposed through
+  // the webapp. Pointing the child at the public URL surfaces as a silent
+  // 404 from the webapp and the streaming companion later fails with
+  // `companion_start_failed` / `streaming_target_unregistered`.
+  //
+  // Both child and parent run on the same host (Mode A: in-process
+  // controller spawns the connector subprocess), so loopback is always
+  // reachable and is the right hop.
+  runtimeContext.referenceBaseUrl = `http://127.0.0.1:${asPort}`;
   logger.info({ port: asPort, url: `http://localhost:${asPort}` }, 'authorization server listening');
 
   const rsApp = buildRsApp({
