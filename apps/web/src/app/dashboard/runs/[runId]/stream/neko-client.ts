@@ -393,6 +393,64 @@ function computeAlternativePointerMappings(
   return candidates;
 }
 
+// Touch-time viewport-basis snapshot. Captured inside the synchronous
+// touch handler so the values are exactly what JS sees the moment the
+// user pressed — independent of when the last `viewport.surface.local`
+// event fired. This closes the basis-staleness gap where browser-chrome
+// collapse, pinch zoom, scroll, or system overlays could silently
+// invalidate our coordinate basis between the last viewport.measure and
+// the user's tap.
+function readTouchTimeViewport(): Record<string, unknown> | null {
+  if (typeof window === "undefined") {
+    return null;
+  }
+  const visualViewport = typeof window.visualViewport === "object" ? window.visualViewport : null;
+  const orientationApi =
+    typeof screen !== "undefined" && screen && "orientation" in screen ? screen.orientation : null;
+  const docEl = typeof document !== "undefined" ? document.documentElement : null;
+  const scrolling = typeof document !== "undefined" ? document.scrollingElement : null;
+  return {
+    window: {
+      innerWidth: window.innerWidth,
+      innerHeight: window.innerHeight,
+      outerWidth: window.outerWidth,
+      outerHeight: window.outerHeight,
+      devicePixelRatio: window.devicePixelRatio,
+    },
+    visualViewport: visualViewport
+      ? {
+          width: Math.round(visualViewport.width),
+          height: Math.round(visualViewport.height),
+          offsetLeft: Math.round(visualViewport.offsetLeft),
+          offsetTop: Math.round(visualViewport.offsetTop),
+          pageLeft: Math.round(visualViewport.pageLeft),
+          pageTop: Math.round(visualViewport.pageTop),
+          scale: Number.isFinite(visualViewport.scale) ? visualViewport.scale : null,
+        }
+      : null,
+    documentElement: docEl
+      ? {
+          clientWidth: docEl.clientWidth,
+          clientHeight: docEl.clientHeight,
+          scrollWidth: docEl.scrollWidth,
+          scrollHeight: docEl.scrollHeight,
+        }
+      : null,
+    scrolling: scrolling
+      ? {
+          scrollLeft: Math.round(scrolling.scrollLeft || 0),
+          scrollTop: Math.round(scrolling.scrollTop || 0),
+        }
+      : null,
+    orientation: orientationApi
+      ? {
+          angle: orientationApi.angle,
+          type: orientationApi.type,
+        }
+      : null,
+  };
+}
+
 function readNekoPointerMapping(clientX: number, clientY: number): Record<string, unknown> {
   const overlay = getOverlayTextarea();
   const mediaEl = getPrimaryNekoMediaElement();
@@ -441,6 +499,11 @@ function readNekoPointerMapping(clientX: number, clientY: number): Record<string
     mediaIntrinsic: intrinsic,
     overlay: rectSnapshot(overlay),
     screenState,
+    // Captured at touch time, NOT only on viewport.measure events. Lets
+    // the operator detect basis-staleness (browser-chrome collapse,
+    // pinch zoom, scroll, system overlay) that would silently
+    // invalidate `client*` between the last measure and the user's tap.
+    viewport: readTouchTimeViewport(),
     wrapper: rectSnapshot(wrapperEl),
   };
 }

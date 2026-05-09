@@ -379,6 +379,44 @@ test("detectNekoPointerMappingIssues still flags mapped-outside-screen and outsi
   assert.ok(outsideTargets.includes("point-outside-media-and-overlay"));
 });
 
+test("n.eko touch-time pointer mapping captures viewport basis (window/visualViewport/documentElement/scrolling/orientation)", async () => {
+  // Closes the basis-staleness gap. Between the last viewport.measure
+  // and the user's tap, browser-chrome collapse, pinch zoom, scroll,
+  // or a system overlay can silently invalidate the coordinate basis
+  // — and the math will still telemeter as correct. By capturing the
+  // viewport snapshot AT touch time, the operator can verify from
+  // JSONL alone whether the basis we computed against is still the
+  // basis the user saw.
+  const { readFile } = await import("node:fs/promises");
+  const { fileURLToPath } = await import("node:url");
+  const here = fileURLToPath(new URL(".", import.meta.url));
+  const src = await readFile(`${here}neko-client.ts`, "utf8");
+  // The dedicated reader must exist as a separately-named helper so
+  // there is no path that emits `neko.touch.start` without also
+  // capturing viewport state.
+  assert.match(src, /function readTouchTimeViewport\(/, "readTouchTimeViewport helper exists");
+  // The helper must emit each of the four basis surfaces.
+  const fn = src.split("function readTouchTimeViewport(")[1]?.split("\nfunction ")[0] ?? "";
+  assert.match(fn, /window:\s*\{/, "readTouchTimeViewport reports window dims");
+  assert.match(fn, /visualViewport:/, "readTouchTimeViewport reports visualViewport (incl. offsetTop/scale)");
+  assert.match(fn, /documentElement:/, "readTouchTimeViewport reports documentElement clientWidth/clientHeight");
+  assert.match(fn, /scrolling:/, "readTouchTimeViewport reports scrollLeft/scrollTop");
+  assert.match(fn, /orientation:/, "readTouchTimeViewport reports orientation type/angle");
+  assert.match(
+    fn,
+    /scale:\s*Number\.isFinite\(visualViewport\.scale\)\s*\?\s*visualViewport\.scale\s*:\s*null/,
+    "visualViewport.scale captured (catches pinch zoom mid-touch)"
+  );
+  // readNekoPointerMapping must include the viewport snapshot in its
+  // returned record so every touch.start carries it.
+  const mapFn = src.split("function readNekoPointerMapping(")[1]?.split("\nfunction ")[0] ?? "";
+  assert.match(
+    mapFn,
+    /viewport:\s*readTouchTimeViewport\(\)/,
+    "readNekoPointerMapping includes the touch-time viewport snapshot"
+  );
+});
+
 test("n.eko touch.start event captures the full local→remote mapping with an interaction sequence", async () => {
   // The bridge stamps a per-gesture interactionSeq onto the start event
   // and propagates it to the eventual `tap` / `native_tap_observed`

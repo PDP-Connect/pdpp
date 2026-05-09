@@ -42,6 +42,41 @@ input { padding: 12px 14px; }
 #scroll-probe { display: grid; gap: 10px; min-height: 44dvh; border-radius: 14px; background: #fffaf0; padding: 14px; border: 1px solid #d8d0c0; }
 .probe-card { border-radius: 10px; background: #ebe8df; padding: 12px; color: #373126; }
 .probe-card strong { display: block; margin-bottom: 4px; color: #181713; }
+/* Calibration beacons: visible enough to aim at on a phone, unobtrusive
+   enough not to dominate the visual frame. Each beacon is a 32x32 ring
+   with a 6px crosshair drawn at its exact centre. position: fixed pins
+   them to the visualViewport, so the ground-truth coordinates the
+   operator reads from telemetry are always relative to the visible
+   viewport corner regardless of scroll. */
+.pdpp-calibration-beacon {
+  position: fixed;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 2px solid rgba(220, 38, 38, 0.85);
+  background: rgba(255, 255, 255, 0.55);
+  z-index: 2147483646;
+  pointer-events: auto;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.18);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.pdpp-calibration-beacon::before,
+.pdpp-calibration-beacon::after {
+  content: '';
+  position: absolute;
+  background: rgba(220, 38, 38, 0.9);
+}
+.pdpp-calibration-beacon::before { width: 8px; height: 1px; }
+.pdpp-calibration-beacon::after  { width: 1px; height: 8px; }
+.pdpp-calibration-beacon[data-beacon-id="tl"] { top: 0;             left: 0; }
+.pdpp-calibration-beacon[data-beacon-id="tr"] { top: 0;             right: 0; }
+.pdpp-calibration-beacon[data-beacon-id="bl"] { bottom: 0;          left: 0; }
+.pdpp-calibration-beacon[data-beacon-id="br"] { bottom: 0;          right: 0; }
+.pdpp-calibration-beacon[data-beacon-id="center"] {
+  top: 50%; left: 50%; transform: translate(-50%, -50%);
+}
 @media (min-width: 640px) {
   button { width: fit-content; min-width: 260px; }
 }
@@ -54,7 +89,20 @@ input { padding: 12px 14px; }
   #event-log { min-height: 160px; max-height: none; overflow: visible; }
 }
 </style>
-</head><body><main>
+</head><body>
+<!-- Calibration beacons. Each is fixed-positioned at a known viewport
+     corner or centre; their data-beacon-id gets stamped into every
+     playground event whose elementFromPoint hits the beacon, plus
+     the nearest-beacon delta for any event in the surface. This is
+     the ground-truth signal the operator uses to verify whether the
+     user-visible pixel under the finger maps to the same coords the
+     remote hit-tested at. -->
+<div aria-hidden="true" class="pdpp-calibration-beacon" data-pdpp-calibration-beacon="" data-beacon-id="tl"></div>
+<div aria-hidden="true" class="pdpp-calibration-beacon" data-pdpp-calibration-beacon="" data-beacon-id="tr"></div>
+<div aria-hidden="true" class="pdpp-calibration-beacon" data-pdpp-calibration-beacon="" data-beacon-id="bl"></div>
+<div aria-hidden="true" class="pdpp-calibration-beacon" data-pdpp-calibration-beacon="" data-beacon-id="br"></div>
+<div aria-hidden="true" class="pdpp-calibration-beacon" data-pdpp-calibration-beacon="" data-beacon-id="center"></div>
+<main>
 <h1>Stream Playground</h1>
 <p>Exercise click, touch, type, scroll, and paste. On mobile, composed keyboard text may appear as a paste-style event because n.eko forwards IME text through its paste channel.</p>
 <button id="counter">Click me (count: 0)</button>
@@ -122,17 +170,90 @@ function pdppRecordPlaygroundEvent(type, extras) {
     window.__pdppPlaygroundEvents.shift();
   }
 }
+// Tolerance in CSS px: a press inside this radius of a beacon centre
+// counts as a calibration hit. 16px is half the beacon diameter (the
+// outer edge of the painted ring), giving the user the full visible
+// target as a hit zone — slightly forgiving on a touchscreen.
+const PDPP_CALIBRATION_HIT_RADIUS_PX = 16;
+function pdppRectCentre(rect) {
+  return { cx: rect.left + rect.width / 2, cy: rect.top + rect.height / 2 };
+}
+function pdppListBeacons() {
+  const nodes = document.querySelectorAll('[data-pdpp-calibration-beacon]');
+  const out = [];
+  for (let i = 0; i < nodes.length; i += 1) {
+    const el = nodes[i];
+    const id = el.getAttribute('data-beacon-id') || String(i);
+    const rect = el.getBoundingClientRect();
+    out.push({
+      id,
+      rect: {
+        x: Math.round(rect.left),
+        y: Math.round(rect.top),
+        width: Math.round(rect.width),
+        height: Math.round(rect.height),
+      },
+      centre: {
+        x: Math.round(rect.left + rect.width / 2),
+        y: Math.round(rect.top + rect.height / 2),
+      },
+    });
+  }
+  return out;
+}
+// Exposed for adapter introspection if needed; primary path is the
+// per-event calibration field below.
+window.__pdppPlaygroundBeacons = pdppListBeacons;
+function pdppCalibrationFor(clientX, clientY, beaconUnderPoint) {
+  if (clientX === null || clientY === null) return null;
+  const beacons = pdppListBeacons();
+  if (beacons.length === 0) return null;
+  let nearest = null;
+  let nearestDelta = Infinity;
+  for (const beacon of beacons) {
+    const dx = clientX - beacon.centre.x;
+    const dy = clientY - beacon.centre.y;
+    const distance = Math.hypot(dx, dy);
+    if (distance < nearestDelta) {
+      nearestDelta = distance;
+      nearest = { beacon, dx: Math.round(dx), dy: Math.round(dy), distancePx: Math.round(distance) };
+    }
+  }
+  if (!nearest) return null;
+  return {
+    nearestBeacon: nearest.beacon.id,
+    beaconRect: nearest.beacon.rect,
+    beaconCentre: nearest.beacon.centre,
+    deltaPx: { x: nearest.dx, y: nearest.dy, distance: nearest.distancePx },
+    hitWithinTolerance: nearest.distancePx <= PDPP_CALIBRATION_HIT_RADIUS_PX,
+    toleranceRadiusPx: PDPP_CALIBRATION_HIT_RADIUS_PX,
+    beaconUnderPoint: beaconUnderPoint || null,
+    beaconCount: beacons.length,
+  };
+}
 function pdppPointerExtras(event) {
   const x = typeof event.clientX === 'number' ? event.clientX : null;
   const y = typeof event.clientY === 'number' ? event.clientY : null;
   let elementAtPoint = null;
+  let beaconUnderPoint = null;
   if (x !== null && y !== null) {
     try {
-      elementAtPoint = pdppSummariseElement(document.elementFromPoint(x, y));
+      const at = document.elementFromPoint(x, y);
+      elementAtPoint = pdppSummariseElement(at);
+      // Did the rendered pixel under the finger belong to a beacon?
+      // This is the unfalsifiable hit-test signal: if this fires, the
+      // user-visible target and the remote-hit target are *the same*
+      // by construction.
+      const beaconEl = at && typeof at.closest === 'function' ? at.closest('[data-pdpp-calibration-beacon]') : null;
+      if (beaconEl) {
+        beaconUnderPoint = beaconEl.getAttribute('data-beacon-id') || null;
+      }
     } catch (_err) {
       elementAtPoint = null;
+      beaconUnderPoint = null;
     }
   }
+  const calibration = pdppCalibrationFor(x, y, beaconUnderPoint);
   return {
     clientX: x,
     clientY: y,
@@ -143,8 +264,15 @@ function pdppPointerExtras(event) {
     pointerType: typeof event.pointerType === 'string' ? event.pointerType : null,
     target: pdppSummariseElement(event.target),
     elementAtPoint: elementAtPoint,
+    calibration: calibration,
   };
 }
+// Stamp the beacon registry as the first event in the buffer. Every
+// status poll will eventually drain it, so the operator gets the
+// authoritative beacon coordinates exactly once per page load (the
+// buffer is FIFO-capped at 24, but this fires immediately on script
+// boot so the entry is consumed by the first poll).
+pdppRecordPlaygroundEvent('calibration_init', { beacons: pdppListBeacons(), toleranceRadiusPx: PDPP_CALIBRATION_HIT_RADIUS_PX });
 window.addEventListener('pointerdown', (e) => pdppRecordPlaygroundEvent('pointerdown', pdppPointerExtras(e)), { capture: true, passive: true });
 window.addEventListener('pointerup', (e) => pdppRecordPlaygroundEvent('pointerup', pdppPointerExtras(e)), { capture: true, passive: true });
 window.addEventListener('click', (e) => pdppRecordPlaygroundEvent('click', pdppPointerExtras(e)), { capture: true, passive: true });
