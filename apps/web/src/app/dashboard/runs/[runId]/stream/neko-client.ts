@@ -86,6 +86,11 @@ interface NekoTouchScrollBridgeState {
   accumulatedX: number;
   accumulatedY: number;
   id: number;
+  // Monotonic per-page-load sequence id stamped at touchstart. Surfaces in
+  // every bridge telemetry event for that gesture and on the corresponding
+  // `tap` / `native_tap_observed` event so the operator can correlate a
+  // single user press across the whole local→delivery→remote pipeline.
+  interactionSeq: number;
   lastX: number;
   lastY: number;
   mode: "fallback" | "native";
@@ -146,6 +151,17 @@ const MOBILE_TEXT_INPUT_GUARD_MAX_ATTEMPTS = 50;
 const REMOTE_COPY_FALLBACK_DELAY_MS = 120;
 const STREAM_DEBUG_EVENT = "pdpp:stream-debug";
 const NEKO_POINTER_TELEMETRY_MOVE_MS = 250;
+// Threshold (in remote pixels) above which the active mapping basis is
+// considered to disagree materially with the alternative basis. Reflects
+// the empirically observed wrong-targeting magnitude when the PDPP
+// CSS-viewport divisor was used in place of n.eko's screen basis (the
+// mapped point can land hundreds of px off in the X/Y direction).
+const NEKO_POINTER_BASIS_DISAGREEMENT_PX = 12;
+let nekoInteractionSeqCounter = 0;
+function nextNekoInteractionSeq(): number {
+  nekoInteractionSeqCounter += 1;
+  return nekoInteractionSeqCounter;
+}
 const NEKO_TOUCH_CONTROL_WAIT_MS = 900;
 const VIEWPORT_LAYOUT_CONTAINER_TOLERANCE_PX = 3;
 const MEDIA_SCREEN_ASPECT_TOLERANCE_RATIO = 0.12;
@@ -330,6 +346,53 @@ function currentNekoControlCoordinateSize(): { height: number; source: string; w
   return null;
 }
 
+function computeAlternativePointerMappings(
+  clientX: number,
+  clientY: number,
+  overlayRect: DOMRect | null,
+  mediaRect: DOMRect | null,
+  intrinsic: { height: number; width: number } | null,
+  screenSize: { height?: number; width?: number } | null,
+  controlCoordinateSize: { height: number; width: number } | null
+): Record<string, NekoControlPos | null> {
+  const candidates: Record<string, NekoControlPos | null> = {
+    nekoScreenOverlay: null,
+    cssViewportOverlay: null,
+    intrinsicMedia: null,
+  };
+  if (overlayRect && overlayRect.width > 0 && overlayRect.height > 0) {
+    if (
+      screenSize &&
+      Number.isFinite(screenSize.width) &&
+      Number.isFinite(screenSize.height) &&
+      Number(screenSize.width) > 0 &&
+      Number(screenSize.height) > 0
+    ) {
+      candidates.nekoScreenOverlay = {
+        x: Math.round((Number(screenSize.width) / overlayRect.width) * (clientX - overlayRect.left)),
+        y: Math.round((Number(screenSize.height) / overlayRect.height) * (clientY - overlayRect.top)),
+      };
+    }
+    if (
+      controlCoordinateSize &&
+      controlCoordinateSize.width > 0 &&
+      controlCoordinateSize.height > 0
+    ) {
+      candidates.cssViewportOverlay = {
+        x: Math.round((controlCoordinateSize.width / overlayRect.width) * (clientX - overlayRect.left)),
+        y: Math.round((controlCoordinateSize.height / overlayRect.height) * (clientY - overlayRect.top)),
+      };
+    }
+  }
+  if (mediaRect && mediaRect.width > 0 && mediaRect.height > 0 && intrinsic && intrinsic.width > 0 && intrinsic.height > 0) {
+    candidates.intrinsicMedia = {
+      x: Math.round((intrinsic.width / mediaRect.width) * (clientX - mediaRect.left)),
+      y: Math.round((intrinsic.height / mediaRect.height) * (clientY - mediaRect.top)),
+    };
+  }
+  return candidates;
+}
+
 function readNekoPointerMapping(clientX: number, clientY: number): Record<string, unknown> {
   const overlay = getOverlayTextarea();
   const mediaEl = getPrimaryNekoMediaElement();
@@ -348,9 +411,25 @@ function readNekoPointerMapping(clientX: number, clientY: number): Record<string
   const wrapperRect = wrapperEl?.getBoundingClientRect() ?? null;
   const overlayRect = overlay?.getBoundingClientRect() ?? null;
   const mediaRect = mediaEl?.getBoundingClientRect() ?? null;
+  const intrinsic = mediaEl ? getMediaIntrinsicSize(mediaEl) : null;
   const insideRect = (rect: DOMRect | null) =>
     Boolean(rect && clientX >= rect.left && clientX <= rect.right && clientY >= rect.top && clientY <= rect.bottom);
+  // Compute what each alternative basis WOULD have produced. If the
+  // active mapped point disagrees with one of the alternatives by more
+  // than NEKO_POINTER_BASIS_DISAGREEMENT_PX in either axis, we are in a
+  // wrong-targeting risk window — emit a `coordinate-space-mismatch`
+  // anomaly so owner can correlate with remote click telemetry.
+  const alternatives = computeAlternativePointerMappings(
+    clientX,
+    clientY,
+    overlayRect,
+    mediaRect,
+    intrinsic,
+    screenState as { height?: number; width?: number } | null,
+    controlCoordinateSize ? { height: controlCoordinateSize.height, width: controlCoordinateSize.width } : null
+  );
   return {
+    alternativeMappings: alternatives,
     client: { x: Math.round(clientX), y: Math.round(clientY) },
     controlCoordinateSize,
     insideMedia: insideRect(mediaRect),
@@ -359,14 +438,31 @@ function readNekoPointerMapping(clientX: number, clientY: number): Record<string
     mapped,
     mappingBasis,
     media: rectSnapshot(mediaEl),
-    mediaIntrinsic: mediaEl ? getMediaIntrinsicSize(mediaEl) : null,
+    mediaIntrinsic: intrinsic,
     overlay: rectSnapshot(overlay),
     screenState,
     wrapper: rectSnapshot(wrapperEl),
   };
 }
 
-function nekoPointerMappingIssues(snapshot: Record<string, unknown>): string[] {
+// Pure / exported for tests. Detects anomaly conditions that correlate
+// with user-reported wrong-position clicks. Reasons surfaced:
+//   - point-outside-media-and-overlay  : the local press is inside the
+//     PDPP wrapper but missed both the n.eko media element and the
+//     overlay textarea — coordinate mapping is undefined here.
+//   - mapped-outside-screen            : the chosen mapped point falls
+//     outside the n.eko screen rect, i.e. would land off-page on the
+//     remote.
+//   - coordinate-space-mismatch        : the ACTIVE mapping disagrees
+//     with the n.eko-authoritative screen-overlay basis by more than
+//     NEKO_POINTER_BASIS_DISAGREEMENT_PX in either axis. This is the
+//     direct fingerprint of the PDPP-CSS-viewport divisor regression
+//     and any future variant: the click WOULD land at a different
+//     place on the remote depending on which basis was used.
+export function detectNekoPointerMappingIssues(
+  snapshot: Record<string, unknown>,
+  options: { disagreementPx?: number } = {}
+): string[] {
   const reasons: string[] = [];
   if (snapshot.insideWrapper === true && snapshot.insideMedia !== true && snapshot.insideOverlay !== true) {
     reasons.push("point-outside-media-and-overlay");
@@ -383,7 +479,26 @@ function nekoPointerMappingIssues(snapshot: Record<string, unknown>): string[] {
   ) {
     reasons.push("mapped-outside-screen");
   }
+  const disagreementPx = options.disagreementPx ?? NEKO_POINTER_BASIS_DISAGREEMENT_PX;
+  const alternatives = (snapshot.alternativeMappings ?? null) as Record<string, NekoControlPos | null> | null;
+  if (mapped && alternatives) {
+    const screenBasis = alternatives.nekoScreenOverlay;
+    if (
+      screenBasis &&
+      (Math.abs(screenBasis.x - mapped.x) > disagreementPx ||
+        Math.abs(screenBasis.y - mapped.y) > disagreementPx)
+    ) {
+      reasons.push("coordinate-space-mismatch");
+    }
+  }
   return reasons;
+}
+
+// Backwards-compatible internal wrapper. Existing callsites in
+// `startNekoPointerTelemetry` keep using this name; tests import the
+// exported `detectNekoPointerMappingIssues` directly.
+function nekoPointerMappingIssues(snapshot: Record<string, unknown>): string[] {
+  return detectNekoPointerMappingIssues(snapshot);
 }
 
 function startNekoPointerTelemetry(): void {
@@ -1382,28 +1497,47 @@ function sendNekoScrollSteps(state: NekoTouchScrollBridgeState, touch: Touch): N
   };
 }
 
-function clickNekoAtPoint(clientX: number, clientY: number): boolean {
+function clickNekoAtPoint(
+  clientX: number,
+  clientY: number,
+  options: { interactionSeq?: number; path?: string } = {}
+): boolean {
   const pos = getNekoControlPos(clientX, clientY);
   if (!pos) {
     return false;
   }
+  // Capture the full mapping snapshot at the moment of tap so the
+  // `tap` event can be correlated against the corresponding remote
+  // `playground.event` (matched by approximate timestamp) to verify
+  // the click landed on the expected target.
+  const snapshot = readNekoPointerMapping(clientX, clientY);
+  const interactionSeq = options.interactionSeq;
+  const path = options.path ?? "fallback";
   return runWhenNekoControlReady("tap", () => {
     const control = nekoInstance?.control;
     if (!(control?.buttonDown && control.buttonUp)) {
-      emitNekoDebug("neko.touch_scroll_bridge.control_unavailable", { reason: "tap-send" });
+      emitNekoDebug("neko.touch_scroll_bridge.control_unavailable", {
+        interactionSeq,
+        path,
+        reason: "tap-send",
+      });
       return false;
     }
     control.buttonDown(1, pos);
     control.buttonUp(1, pos);
     emitNekoDebug("neko.touch_scroll_bridge.tap", {
+      ...snapshot,
+      atMs: Date.now(),
+      interactionSeq,
+      path,
       pos,
     });
     return true;
   });
 }
 
-function clickNekoAt(touch: Touch): boolean {
-  return clickNekoAtPoint(touch.clientX, touch.clientY);
+function clickNekoAt(touch: Touch, options: { interactionSeq?: number; path?: string } = {}): boolean {
+  return clickNekoAtPoint(touch.clientX, touch.clientY, options);
 }
 
 function startMobileTouchScrollBridge(neko: NekoInstance): void {
@@ -1450,6 +1584,7 @@ function startMobileTouchScrollBridge(neko: NekoInstance): void {
       return;
     }
     emitNekoDebug("neko.touch_scroll_bridge.reset", {
+      interactionSeq: state.interactionSeq,
       mode: state.mode,
       reason,
       scrolling: state.scrolling,
@@ -1472,10 +1607,12 @@ function startMobileTouchScrollBridge(neko: NekoInstance): void {
     unlockNekoVideoPlayback();
     requestNekoControlForBridge("touchstart");
     const fallbackEnabled = enabled();
+    const interactionSeq = nextNekoInteractionSeq();
     state = {
       accumulatedX: 0,
       accumulatedY: 0,
       id: touch.identifier,
+      interactionSeq,
       lastX: touch.clientX,
       lastY: touch.clientY,
       mode: fallbackEnabled ? "fallback" : "native",
@@ -1484,9 +1621,23 @@ function startMobileTouchScrollBridge(neko: NekoInstance): void {
       startX: touch.clientX,
       startY: touch.clientY,
     };
+    // Capture full mapping on touchstart — this is the authoritative
+    // local-side record for the gesture's intended target. Correlate
+    // against remote `playground.event` entries with similar timestamp
+    // to verify the click landed where the user pressed.
+    const startMapping = readNekoPointerMapping(touch.clientX, touch.clientY);
+    const startReasons = detectNekoPointerMappingIssues(startMapping);
+    emitNekoDebug("neko.touch.start", {
+      ...startMapping,
+      atMs: state.startTimeMs,
+      interactionSeq,
+      mode: state.mode,
+      ...(startReasons.length > 0 ? { reasons: startReasons } : {}),
+    });
     if (!fallbackEnabled) {
       emitNekoDebug("neko.touch_scroll_bridge.native_passthrough", {
         environment: readNekoTouchScrollBridgeEnvironment(neko),
+        interactionSeq,
         phase: "touchstart",
       });
       return;
@@ -1494,6 +1645,7 @@ function startMobileTouchScrollBridge(neko: NekoInstance): void {
     stopTouchEventForNekoBridge(event);
     emitNekoDebug("neko.touch_scroll_bridge.start", {
       environment: readNekoTouchScrollBridgeEnvironment(neko),
+      interactionSeq,
     });
   };
 
@@ -1551,10 +1703,15 @@ function startMobileTouchScrollBridge(neko: NekoInstance): void {
       // observed on Brave Android. If a future environment proves n.eko's
       // native click is unreliable, restore this only behind a feature flag
       // and add a duplicate-delivery guard.
-      if (shouldClick) {
+      if (shouldClick && touch) {
+        const observedMapping = readNekoPointerMapping(touch.clientX, touch.clientY);
         emitNekoDebug("neko.touch_scroll_bridge.native_tap_observed", {
+          ...observedMapping,
+          atMs: Date.now(),
           elapsedMs,
+          interactionSeq: state.interactionSeq,
           movedPx: Math.round(movedPx),
+          path: "native",
         });
       }
       reset(shouldClick ? "native-tap-complete" : "native-touch-complete");
@@ -1562,7 +1719,7 @@ function startMobileTouchScrollBridge(neko: NekoInstance): void {
     }
     stopTouchEventForNekoBridge(event);
     if (shouldClick && touch) {
-      clickNekoAt(touch);
+      clickNekoAt(touch, { interactionSeq: state.interactionSeq, path: "fallback" });
     }
     reset(shouldClick ? "tap-complete" : "gesture-complete");
   };

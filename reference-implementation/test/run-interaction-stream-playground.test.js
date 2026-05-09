@@ -60,3 +60,38 @@ test('stream playground can register a cached n.eko backend session', async () =
     /playground backend must be "cdp" or "neko"/,
   );
 });
+
+test('stream playground HTML installs a __pdppPlaygroundEvents ring buffer for click/focus/scroll telemetry', async () => {
+  // Inline source check: the playground page must record pointerdown,
+  // pointerup, click, focusin, focusout, and scroll into the
+  // ring buffer used by the n.eko adapter to surface remote-side
+  // telemetry. The buffer must NOT log raw text, selected text, or
+  // clipboard contents; it summarises target elements by tag/role/id/
+  // class plus length-only fields. This test pins those invariants
+  // by source-shape assertions so a future contributor can't quietly
+  // regress to logging raw input values.
+  const { readFile } = await import('node:fs/promises');
+  const { fileURLToPath } = await import('node:url');
+  const { dirname, resolve } = await import('node:path');
+  const here = dirname(fileURLToPath(import.meta.url));
+  const src = await readFile(resolve(here, '..', 'server', 'streaming', 'playground.js'), 'utf8');
+  assert.match(src, /window\.__pdppPlaygroundEvents/, 'playground exposes the ring buffer');
+  assert.match(src, /pdppRecordPlaygroundEvent\(['"]pointerdown['"]/, 'records pointerdown');
+  assert.match(src, /pdppRecordPlaygroundEvent\(['"]pointerup['"]/, 'records pointerup');
+  assert.match(src, /pdppRecordPlaygroundEvent\(['"]click['"]/, 'records click');
+  assert.match(src, /pdppRecordPlaygroundEvent\(['"]focusin['"]/, 'records focusin');
+  assert.match(src, /pdppRecordPlaygroundEvent\(['"]focusout['"]/, 'records focusout');
+  assert.match(src, /pdppRecordPlaygroundEvent\(['"]scroll['"]/, 'records scroll');
+  // Privacy: text content / selection / clipboard payloads are NEVER
+  // logged. We summarise via lengths only.
+  assert.match(src, /summary\.valueLength\s*=\s*el\.value\.length/, 'value reported only by length');
+  assert.match(src, /summary\.textLength\s*=\s*el\.textContent\.length/, 'text content reported only by length');
+  // The pointer-extras helper must call elementFromPoint so we can
+  // catch wrong-position press cases (target differs from element-at-
+  // point indicates a coordinate mismatch).
+  assert.match(src, /document\.elementFromPoint/, 'records elementAtPoint for wrong-target detection');
+  // The full-text playground ring buffer must NOT capture clipboard
+  // payload content; the existing local logEvent paste handler is
+  // unrelated and stays as a developer convenience.
+  assert.doesNotMatch(src, /pdppRecordPlaygroundEvent\([^)]*clipboardData\.getData/);
+});

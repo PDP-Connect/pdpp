@@ -436,28 +436,41 @@ function pageMetricsMismatch(page, viewport) {
 }
 
 function buildViewportStatusExpression() {
-  return `(() => JSON.stringify({
-    url: location.href,
-    title: document.title,
-    innerWidth: window.innerWidth,
-    innerHeight: window.innerHeight,
-    outerWidth: window.outerWidth,
-    outerHeight: window.outerHeight,
-    screenWidth: window.screen && window.screen.width,
-    screenHeight: window.screen && window.screen.height,
-    devicePixelRatio: window.devicePixelRatio,
-    userAgent: navigator.userAgent,
-    maxTouchPoints: navigator.maxTouchPoints || 0,
-    touchEventPresent: 'ontouchstart' in window,
-    hasTouch: (navigator.maxTouchPoints || 0) > 0,
-    activeElement: document.activeElement ? {
-      tagName: document.activeElement.tagName,
-      type: document.activeElement.type || '',
-      id: document.activeElement.id || '',
-      name: document.activeElement.name || '',
-      isContentEditable: document.activeElement.isContentEditable === true
-    } : null
-  }))()`;
+  // Also drain `window.__pdppPlaygroundEvents` (a small ring buffer the
+  // playground page maintains for click/focus/scroll telemetry) into
+  // the status payload, then clear it so subsequent polls return only
+  // new events. The viewer side correlates these by timestamp against
+  // local touch/click telemetry to verify wrong-position press
+  // detection. Read-only on every page that doesn't expose the buffer
+  // (returns []), so safe in production.
+  return `(() => {
+    const drained = Array.isArray(window.__pdppPlaygroundEvents)
+      ? window.__pdppPlaygroundEvents.splice(0, window.__pdppPlaygroundEvents.length)
+      : [];
+    return JSON.stringify({
+      url: location.href,
+      title: document.title,
+      innerWidth: window.innerWidth,
+      innerHeight: window.innerHeight,
+      outerWidth: window.outerWidth,
+      outerHeight: window.outerHeight,
+      screenWidth: window.screen && window.screen.width,
+      screenHeight: window.screen && window.screen.height,
+      devicePixelRatio: window.devicePixelRatio,
+      userAgent: navigator.userAgent,
+      maxTouchPoints: navigator.maxTouchPoints || 0,
+      touchEventPresent: 'ontouchstart' in window,
+      hasTouch: (navigator.maxTouchPoints || 0) > 0,
+      activeElement: document.activeElement ? {
+        tagName: document.activeElement.tagName,
+        type: document.activeElement.type || '',
+        id: document.activeElement.id || '',
+        name: document.activeElement.name || '',
+        isContentEditable: document.activeElement.isContentEditable === true
+      } : null,
+      playgroundEvents: drained
+    });
+  })()`;
 }
 
 export function buildCopySelectionExpression() {

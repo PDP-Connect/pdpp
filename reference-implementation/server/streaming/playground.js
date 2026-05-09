@@ -76,6 +76,87 @@ const input = document.getElementById('text-input');
 	  log.insertBefore(line, log.firstChild);
 	  while (log.childElementCount > 80) log.lastElementChild.remove();
 	}
+// PDPP debug telemetry: record a small ring buffer of recent remote
+// events so the n.eko adapter's status poll can surface them up to the
+// viewer for correlation against local touch/click telemetry. We record
+// only target shape (tag, role, id, classes, text/value LENGTHS) plus
+// coordinates and elementFromPoint — never raw text content, selected
+// text, or clipboard payloads.
+window.__pdppPlaygroundEvents = window.__pdppPlaygroundEvents || [];
+const PDPP_EVENT_BUFFER_MAX = 24;
+let pdppPlaygroundSeq = 0;
+function pdppSummariseElement(el) {
+  if (!el || el.nodeType !== 1) return null;
+  const summary = {
+    tag: el.tagName ? el.tagName.toLowerCase() : null,
+    id: el.id || null,
+    role: el.getAttribute ? el.getAttribute('role') : null,
+    cls: el.className && typeof el.className === 'string' ? el.className.slice(0, 80) : null,
+  };
+  if (typeof el.value === 'string') summary.valueLength = el.value.length;
+  if (typeof el.placeholder === 'string') summary.placeholderLength = el.placeholder.length;
+  if (typeof el.textContent === 'string' && el.children && el.children.length === 0) {
+    summary.textLength = el.textContent.length;
+  }
+  return summary;
+}
+function pdppRecordPlaygroundEvent(type, extras) {
+  pdppPlaygroundSeq += 1;
+  const entry = {
+    seq: pdppPlaygroundSeq,
+    type: type,
+    atMs: Date.now(),
+    perfNow: Math.round(performance.now()),
+    innerWidth: window.innerWidth,
+    innerHeight: window.innerHeight,
+    devicePixelRatio: window.devicePixelRatio,
+    scrollX: Math.round(window.scrollX || 0),
+    scrollY: Math.round(window.scrollY || 0),
+    activeElement: pdppSummariseElement(document.activeElement),
+  };
+  if (extras) {
+    for (const key in extras) entry[key] = extras[key];
+  }
+  window.__pdppPlaygroundEvents.push(entry);
+  while (window.__pdppPlaygroundEvents.length > PDPP_EVENT_BUFFER_MAX) {
+    window.__pdppPlaygroundEvents.shift();
+  }
+}
+function pdppPointerExtras(event) {
+  const x = typeof event.clientX === 'number' ? event.clientX : null;
+  const y = typeof event.clientY === 'number' ? event.clientY : null;
+  let elementAtPoint = null;
+  if (x !== null && y !== null) {
+    try {
+      elementAtPoint = pdppSummariseElement(document.elementFromPoint(x, y));
+    } catch (_err) {
+      elementAtPoint = null;
+    }
+  }
+  return {
+    clientX: x,
+    clientY: y,
+    pageX: typeof event.pageX === 'number' ? Math.round(event.pageX) : null,
+    pageY: typeof event.pageY === 'number' ? Math.round(event.pageY) : null,
+    button: typeof event.button === 'number' ? event.button : null,
+    buttons: typeof event.buttons === 'number' ? event.buttons : null,
+    pointerType: typeof event.pointerType === 'string' ? event.pointerType : null,
+    target: pdppSummariseElement(event.target),
+    elementAtPoint: elementAtPoint,
+  };
+}
+window.addEventListener('pointerdown', (e) => pdppRecordPlaygroundEvent('pointerdown', pdppPointerExtras(e)), { capture: true, passive: true });
+window.addEventListener('pointerup', (e) => pdppRecordPlaygroundEvent('pointerup', pdppPointerExtras(e)), { capture: true, passive: true });
+window.addEventListener('click', (e) => pdppRecordPlaygroundEvent('click', pdppPointerExtras(e)), { capture: true, passive: true });
+window.addEventListener('focusin', (e) => pdppRecordPlaygroundEvent('focusin', { target: pdppSummariseElement(e.target) }), { capture: true, passive: true });
+window.addEventListener('focusout', (e) => pdppRecordPlaygroundEvent('focusout', { target: pdppSummariseElement(e.target) }), { capture: true, passive: true });
+let pdppLastScrollAt = 0;
+window.addEventListener('scroll', () => {
+  const now = performance.now();
+  if (now - pdppLastScrollAt < 100) return;
+  pdppLastScrollAt = now;
+  pdppRecordPlaygroundEvent('scroll', null);
+}, { passive: true });
 counter.addEventListener('click', (event) => {
   count++;
   counter.textContent = 'Click me (count: ' + count + ')';

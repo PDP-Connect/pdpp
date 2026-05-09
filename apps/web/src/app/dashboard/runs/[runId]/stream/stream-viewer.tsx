@@ -135,6 +135,8 @@ interface NekoStatusSnapshot {
   pageCdpAvailable: boolean | null;
   pageMetricsMismatch: Record<string, unknown> | null;
   pageMetricsMismatchAfterReapply: Record<string, unknown> | null;
+  /** Drained ring buffer of remote-page click/focus/scroll telemetry. */
+  playgroundEvents: Array<Record<string, unknown>> | null;
   screen: { height: number; width: number } | null;
 }
 
@@ -2912,11 +2914,31 @@ function readNekoStatusSnapshot(payload: unknown): NekoStatusSnapshot {
     status?.page_metrics_mismatch_after_reapply && typeof status.page_metrics_mismatch_after_reapply === "object"
       ? (status.page_metrics_mismatch_after_reapply as Record<string, unknown>)
       : null;
+  // The adapter drains `window.__pdppPlaygroundEvents` into the page
+  // status response; surface them up so the viewer can correlate
+  // remote-side click/focus/scroll events against local touch telemetry.
+  let pageWithoutPlayground = page;
+  let playgroundEvents: Array<Record<string, unknown>> | null = null;
+  if (page) {
+    const rawPlaygroundEvents = page.playgroundEvents;
+    if (Array.isArray(rawPlaygroundEvents) && rawPlaygroundEvents.length > 0) {
+      playgroundEvents = rawPlaygroundEvents.filter(
+        (entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === "object"
+      );
+    }
+    if ("playgroundEvents" in page) {
+      // Avoid logging the buffer twice: the dedicated `playground.*`
+      // events carry the per-event detail.
+      const { playgroundEvents: _drained, ...rest } = page;
+      pageWithoutPlayground = rest;
+    }
+  }
   return {
-    page,
+    page: pageWithoutPlayground,
     pageCdpAvailable: typeof status?.page_cdp_available === "boolean" ? status.page_cdp_available : null,
     pageMetricsMismatch,
     pageMetricsMismatchAfterReapply,
+    playgroundEvents,
     screen: readNekoScreenSize(payload),
   };
 }
@@ -2929,6 +2951,7 @@ async function fetchNekoStatus(statusPath: string): Promise<NekoStatusSnapshot> 
       pageCdpAvailable: null,
       pageMetricsMismatch: null,
       pageMetricsMismatchAfterReapply: null,
+      playgroundEvents: null,
       screen: null,
     };
   }
@@ -2944,6 +2967,7 @@ async function fetchNekoStatusBestEffort(statusPath: string): Promise<NekoStatus
       pageCdpAvailable: null,
       pageMetricsMismatch: null,
       pageMetricsMismatchAfterReapply: null,
+      playgroundEvents: null,
       screen: null,
     };
   }
@@ -3234,7 +3258,25 @@ function NekoSurface({
       return !cancelled && layoutRequestRef.current === requestId;
     }
 
+    function emitPlaygroundEvents(status: NekoStatusSnapshot) {
+      if (!status.playgroundEvents || status.playgroundEvents.length === 0) {
+        return;
+      }
+      for (const entry of status.playgroundEvents) {
+        const type = typeof entry.type === "string" ? entry.type : "unknown";
+        // Each remote-page event is mirrored into the viewer's debug
+        // sink so the operator can correlate by approximate timestamp
+        // against `neko.touch.start` / `neko.touch_scroll_bridge.tap`
+        // / `neko.touch_scroll_bridge.native_tap_observed`.
+        logDebug(`playground.${type}`, {
+          ...entry,
+          source: "remote-status-poll",
+        });
+      }
+    }
+
     function handlePolledStatus(status: NekoStatusSnapshot) {
+      emitPlaygroundEvents(status);
       if (!isCurrentRequest()) {
         return "done";
       }

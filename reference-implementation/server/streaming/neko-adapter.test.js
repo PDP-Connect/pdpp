@@ -93,7 +93,22 @@ function createWebSocketMock({ runtimeStatuses = [] } = {}) {
     resultFor(method, params) {
       if (method === 'Target.attachToTarget') return { sessionId: `session-${commands.length}` };
       if (method === 'Browser.getWindowForTarget') return { windowId: 7 };
-      if (method === 'Runtime.evaluate' && String(params.expression || '').trim().startsWith('(() => JSON.stringify')) {
+      const expression = String(params.expression || '');
+      // The viewport-status expression is a self-invoking IIFE that
+      // returns a JSON string. It started life as
+      //   `(() => JSON.stringify({ ... }))()`
+      // and was later extended to drain `__pdppPlaygroundEvents`:
+      //   `(() => { const drained = ...; return JSON.stringify({ ... }); })()`
+      // Match either shape via a stable identifier (`screenWidth`) plus
+      // `JSON.stringify` — that combination uniquely identifies the
+      // viewport-status expression and avoids accidentally swallowing
+      // the focus-detection script (which also stringifies but does
+      // NOT mention `screenWidth`).
+      const looksLikeViewportStatus =
+        method === 'Runtime.evaluate' &&
+        expression.includes('JSON.stringify') &&
+        expression.includes('screenWidth');
+      if (looksLikeViewportStatus) {
         const next = runtimeStatuses.length > 0 ? runtimeStatuses.shift() : {};
         return { result: { value: JSON.stringify(next) } };
       }
@@ -337,4 +352,85 @@ test('n.eko strict stealth mode does not use CDP for viewport application', asyn
   await companion.stop();
 
   assert.deepEqual(WebSocketCtor.commands, []);
+});
+
+test('n.eko status drains playgroundEvents from the remote ring buffer', async () => {
+  // The remote playground page maintains a small `__pdppPlaygroundEvents`
+  // ring buffer of click/focus/scroll telemetry. The viewport-status
+  // expression splices it on each poll so each event is reported
+  // exactly once. This test verifies the full chain by assembling a
+  // matching-shape runtime status and confirming `status.page.playgroundEvents`
+  // round-trips through the adapter without dropping or duplicating.
+  const samplePlaygroundEvents = [
+    {
+      seq: 1,
+      type: 'pointerdown',
+      atMs: 1_700_000_000_000,
+      clientX: 70,
+      clientY: 233,
+      target: { tag: 'button', id: 'counter' },
+      elementAtPoint: { tag: 'button', id: 'counter' },
+    },
+    {
+      seq: 2,
+      type: 'click',
+      atMs: 1_700_000_000_050,
+      clientX: 70,
+      clientY: 233,
+      target: { tag: 'button', id: 'counter' },
+      elementAtPoint: { tag: 'button', id: 'counter' },
+    },
+  ];
+  const WebSocketCtor = createWebSocketMock({
+    runtimeStatuses: [
+      {
+        innerWidth: 947,
+        innerHeight: 364,
+        screenWidth: 2128,
+        screenHeight: 816,
+        devicePixelRatio: 2.25,
+        hasTouch: true,
+        userAgent: 'Mobile Test UA',
+        playgroundEvents: samplePlaygroundEvents,
+      },
+    ],
+  });
+  const companion = createNekoCompanion({
+    origin: 'http://neko.local/',
+    cdpHttpUrl: 'http://cdp.local/',
+    fetchImpl: createFetchMock(),
+    WebSocketCtor,
+    screenEndpoint: 'api/room/screen',
+    screenConfigurationsEndpoint: 'api/room/screen/configurations',
+    sleep: abortableSleep,
+    stealthMode: 'assistive',
+  });
+
+  await companion.start(landscapeViewport);
+  const status = await companion.queryNekoStatus();
+  await companion.stop();
+
+  assert.ok(status.page, 'status.page should be present');
+  assert.deepEqual(
+    status.page.playgroundEvents,
+    samplePlaygroundEvents,
+    'playgroundEvents from the remote buffer must round-trip through queryNekoStatus()'
+  );
+});
+
+test('buildViewportStatusExpression drains __pdppPlaygroundEvents and includes screenWidth', async () => {
+  const { default: mod } = await import('./neko-adapter.js');
+  void mod;
+  // The exported expression-builder is internal-ish, so test via its
+  // observable string shape: it must reference both the
+  // `__pdppPlaygroundEvents` buffer (so the playground page's events
+  // get drained) and `screenWidth` (so the page metrics mismatch
+  // detector can compare against the requested CSS-screen).
+  const adapterSource = await (await import('node:fs/promises')).readFile(
+    new URL('./neko-adapter.js', import.meta.url),
+    'utf8',
+  );
+  assert.match(adapterSource, /__pdppPlaygroundEvents/, 'adapter drains __pdppPlaygroundEvents');
+  assert.match(adapterSource, /playgroundEvents:\s*drained/, 'drained events surface as playgroundEvents');
+  assert.match(adapterSource, /screenWidth:\s*window\.screen/, 'expression still reports window.screen.width');
 });

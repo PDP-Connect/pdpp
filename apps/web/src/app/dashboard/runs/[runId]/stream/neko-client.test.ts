@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   buildNekoClientProps,
+  detectNekoPointerMappingIssues,
   isNekoTouchPointInsideRect,
   isNekoTouchScrollIntent,
   nekoTouchScrollStepsToControlDelta,
@@ -310,4 +311,101 @@ test("n.eko touch scroll control delta inverts to match DOM wheel direction", ()
   assert.equal(nekoTouchScrollStepsToControlDelta(2), -1);
   assert.equal(nekoTouchScrollStepsToControlDelta(-2), 1);
   assert.equal(nekoTouchScrollStepsToControlDelta(0), 0);
+});
+
+test("detectNekoPointerMappingIssues flags coordinate-space mismatch between active and screen basis", () => {
+  // The active mapping (`mapped`) lands at a CSS-coord-equivalent point
+  // (200, 100) but the n.eko-authoritative screen-overlay basis would
+  // have produced (450, 225) — a > 12 px disagreement in both axes.
+  // This is the wrong-targeting fingerprint we want to catch.
+  const reasons = detectNekoPointerMappingIssues({
+    insideWrapper: true,
+    insideMedia: true,
+    insideOverlay: true,
+    mapped: { x: 200, y: 100 },
+    screenState: { width: 1008, height: 1840 },
+    alternativeMappings: {
+      nekoScreenOverlay: { x: 450, y: 225 },
+      cssViewportOverlay: { x: 200, y: 100 },
+      intrinsicMedia: { x: 451, y: 226 },
+    },
+  });
+  assert.ok(
+    reasons.includes("coordinate-space-mismatch"),
+    `expected coordinate-space-mismatch, got ${JSON.stringify(reasons)}`
+  );
+});
+
+test("detectNekoPointerMappingIssues stays quiet when active basis matches the screen-overlay alternative", () => {
+  // Healthy case: active mapping equals the n.eko screen basis. No
+  // mismatch reason should fire.
+  const reasons = detectNekoPointerMappingIssues({
+    insideWrapper: true,
+    insideMedia: true,
+    insideOverlay: true,
+    mapped: { x: 450, y: 225 },
+    screenState: { width: 1008, height: 1840 },
+    alternativeMappings: {
+      nekoScreenOverlay: { x: 451, y: 226 },
+      cssViewportOverlay: { x: 200, y: 100 },
+      intrinsicMedia: { x: 449, y: 224 },
+    },
+  });
+  assert.deepEqual(reasons, [], `expected no reasons, got ${JSON.stringify(reasons)}`);
+});
+
+test("detectNekoPointerMappingIssues still flags mapped-outside-screen and outside-media-and-overlay", () => {
+  const outOfScreen = detectNekoPointerMappingIssues({
+    insideWrapper: true,
+    insideMedia: true,
+    insideOverlay: true,
+    mapped: { x: 2000, y: 100 },
+    screenState: { width: 1008, height: 1840 },
+    alternativeMappings: {
+      nekoScreenOverlay: { x: 2001, y: 101 },
+    },
+  });
+  assert.ok(outOfScreen.includes("mapped-outside-screen"));
+  assert.equal(outOfScreen.includes("coordinate-space-mismatch"), false);
+
+  const outsideTargets = detectNekoPointerMappingIssues({
+    insideWrapper: true,
+    insideMedia: false,
+    insideOverlay: false,
+    mapped: { x: 100, y: 100 },
+    screenState: { width: 1008, height: 1840 },
+    alternativeMappings: { nekoScreenOverlay: { x: 100, y: 100 } },
+  });
+  assert.ok(outsideTargets.includes("point-outside-media-and-overlay"));
+});
+
+test("n.eko touch.start event captures the full local→remote mapping with an interaction sequence", async () => {
+  // The bridge stamps a per-gesture interactionSeq onto the start event
+  // and propagates it to the eventual `tap` / `native_tap_observed`
+  // delivery event. The viewer correlates that against `playground.*`
+  // events drained from the remote status poll.
+  const { readFile } = await import("node:fs/promises");
+  const { fileURLToPath } = await import("node:url");
+  const here = fileURLToPath(new URL(".", import.meta.url));
+  const src = await readFile(`${here}neko-client.ts`, "utf8");
+  assert.match(
+    src,
+    /emitNekoDebug\(\s*"neko\.touch\.start",[\s\S]{0,400}interactionSeq/,
+    "neko.touch.start carries interactionSeq"
+  );
+  assert.match(
+    src,
+    /emitNekoDebug\(\s*"neko\.touch_scroll_bridge\.tap",[\s\S]{0,400}interactionSeq/,
+    "fallback tap carries interactionSeq"
+  );
+  assert.match(
+    src,
+    /emitNekoDebug\(\s*"neko\.touch_scroll_bridge\.native_tap_observed",[\s\S]{0,400}interactionSeq/,
+    "native tap observed event carries interactionSeq"
+  );
+  assert.match(
+    src,
+    /alternativeMappings/,
+    "pointer mapping snapshot exposes alternative basis candidates for anomaly correlation"
+  );
 });
