@@ -60,7 +60,6 @@ test("reports why media is still settling", () => {
   assert.deepEqual(result.reasons, [
     "media_not_covering_requested_viewport",
     "inbound_frame_not_covering_requested_viewport",
-    "frames_not_progressing",
   ]);
 });
 
@@ -127,7 +126,36 @@ test("treats screen and media that cover the requested viewport as eligible for 
   assert.equal(result.status, "settled");
 });
 
-test("accepts near-aspect landscape media and rejects visibly cropped 16:9 defaults", () => {
+test("settles on painted media when inbound stats are missing or stale", () => {
+  let state = createNekoMediaSettleState();
+  const first = assessNekoMediaSettle({
+    sample: {
+      requested,
+      screen: { width: 392, height: 848 },
+      media: { width: 392, height: 848 },
+      inbound: null,
+    },
+    state,
+  });
+  assert.equal(first.status, "settling");
+  assert.deepEqual(first.reasons, []);
+  state = first.state;
+
+  const second = assessNekoMediaSettle({
+    sample: {
+      requested,
+      screen: { width: 392, height: 848 },
+      media: { width: 392, height: 848 },
+      inbound: { frameWidth: 936, frameHeight: 432, framesPerSecond: 24 },
+    },
+    state,
+  });
+
+  assert.equal(second.status, "settled");
+  assert.deepEqual(second.reasons, []);
+});
+
+test("accepts exact-ish landscape media and rejects visibly cropped fallbacks", () => {
   const landscape = { width: 916, height: 448 };
   let state = createNekoMediaSettleState();
   const cropped = assessNekoMediaSettle({
@@ -150,15 +178,35 @@ test("accepts near-aspect landscape media and rejects visibly cropped 16:9 defau
   const fitted = assessNekoMediaSettle({
     sample: {
       requested: landscape,
-      screen: { width: 936, height: 432 },
-      media: { width: 936, height: 432 },
-      inbound: { frameWidth: 936, frameHeight: 432, framesPerSecond: 24 },
+      screen: { width: 920, height: 448 },
+      media: { width: 920, height: 448 },
+      inbound: { frameWidth: 920, frameHeight: 448, framesPerSecond: 24 },
     },
     state,
   });
 
   assert.equal(fitted.reasons.includes("screen_not_covering_requested_viewport"), false);
   assert.equal(fitted.reasons.includes("media_not_covering_requested_viewport"), false);
+});
+
+test("rejects the Android portrait fallback that caused cover-crop and pointer drift", () => {
+  const androidVisibleViewport = { width: 1008, height: 1736 };
+  const result = assessNekoMediaSettle({
+    sample: {
+      requested: androidVisibleViewport,
+      screen: { width: 1080, height: 1920 },
+      media: { width: 1080, height: 1920 },
+      inbound: null,
+    },
+    state: createNekoMediaSettleState(),
+  });
+
+  assert.equal(result.status, "settling");
+  assert.deepEqual(result.reasons, [
+    "screen_not_covering_requested_viewport",
+    "media_not_covering_requested_viewport",
+    "inbound_frame_not_covering_requested_viewport",
+  ]);
 });
 
 test("requires a decoded-frame delta rather than trusting a stale first sample", () => {

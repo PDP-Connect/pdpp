@@ -85,6 +85,61 @@ export function presentationViewportsMatch(
   return sizesMatch(a, b, tolerancePx);
 }
 
+export interface PresentationViewportLike {
+  height: number;
+  screenHeight?: number;
+  screenWidth?: number;
+  width: number;
+}
+
+function captureSize(viewport: PresentationViewportLike): { height: number; width: number } {
+  return {
+    height: viewport.screenHeight ?? viewport.height,
+    width: viewport.screenWidth ?? viewport.width,
+  };
+}
+
+export function localSurfaceCanDisplayPresentation(
+  local: PresentationViewportLike | null,
+  presentation: PresentationViewportLike | null
+): boolean {
+  if (!presentation) {
+    return false;
+  }
+  if (!local) {
+    return true;
+  }
+  if (presentationViewportsMatch(local, presentation) && presentationViewportsMatch(captureSize(local), captureSize(presentation))) {
+    return true;
+  }
+  return (
+    presentationViewportsMatch(
+      { height: presentation.height, width: local.width },
+      { height: presentation.height, width: presentation.width }
+    ) &&
+    presentationViewportsMatch(
+      { height: captureSize(presentation).height, width: captureSize(local).width },
+      captureSize(presentation)
+    )
+  );
+}
+
+export function stablePresentationContainerRect(
+  actual: { height: number; width: number } | null,
+  presentation: PresentationViewportLike | null
+): { height: number; width: number } | null {
+  if (!(actual && presentation)) {
+    return actual;
+  }
+  if (presentationViewportsMatch(actual, presentation)) {
+    return actual;
+  }
+  return {
+    height: presentation.height,
+    width: presentation.width,
+  };
+}
+
 export function nextPresentationOrientationHoldUntilMs({
   currentHoldUntilMs,
   holdMs,

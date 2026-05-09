@@ -32,7 +32,7 @@ const TEST_PAGE_HTML = `<!doctype html>
 * { box-sizing: border-box; }
 html { min-height: 100%; }
 body { margin: 0; min-height: 100dvh; overflow-y: auto; overscroll-behavior-y: contain; background: #f7f5ef; color: #181713; -webkit-overflow-scrolling: touch; }
-main { display: grid; gap: 14px; width: min(100%, 760px); margin: 0 auto; padding: clamp(16px, 5vw, 40px); padding-bottom: calc(clamp(16px, 5vw, 40px) + env(safe-area-inset-bottom)); }
+main { display: grid; gap: 14px; width: 100%; min-height: 100dvh; margin: 0; padding: max(14px, env(safe-area-inset-top)) max(14px, env(safe-area-inset-right)) max(18px, env(safe-area-inset-bottom)) max(14px, env(safe-area-inset-left)); }
 h1 { margin: 0; font-size: clamp(30px, 11vw, 44px); line-height: 0.95; letter-spacing: -0.045em; }
 p { margin: 0; color: #5e584c; font-size: 15px; line-height: 1.35; }
 button, input { width: 100%; min-height: 48px; border: 1px solid #797266; border-radius: 10px; background: #fffdf7; color: #181713; font: inherit; font-size: 18px; }

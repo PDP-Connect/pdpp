@@ -38,7 +38,7 @@ const DEFAULT_MAX_SETTLING_SAMPLES = 6;
 const FREEZE_REGRESSION_THRESHOLD = 2;
 const PACKET_LOSS_REGRESSION_THRESHOLD = 10;
 const SETTLE_TOLERANCE_PX = 2;
-const MAX_COVER_CROP_RATIO = 0.07;
+const MAX_COVER_CROP_RATIO = 0.02;
 const VERTICAL_CROP_WEIGHT = 2;
 
 export function createNekoMediaSettleState(): NekoMediaSettleState {
@@ -140,17 +140,25 @@ export function assessNekoMediaSettle({
   state: NekoMediaSettleState;
 }): NekoMediaSettleResult {
   const reasons: string[] = [];
+  const screenReady = fitsRequestedCover(sample.screen, sample.requested);
+  const mediaReady = fitsRequestedCover(sample.media, sample.requested);
+  const inboundReady = inboundCoversRequested(sample.inbound, sample.requested);
+  const paintedMediaReady = screenReady && mediaReady;
 
-  if (!fitsRequestedCover(sample.screen, sample.requested)) {
+  if (!screenReady) {
     reasons.push("screen_not_covering_requested_viewport");
   }
-  if (!fitsRequestedCover(sample.media, sample.requested)) {
+  if (!mediaReady) {
     reasons.push("media_not_covering_requested_viewport");
   }
-  if (!inboundCoversRequested(sample.inbound, sample.requested)) {
+  // n.eko's WebRTC stats can lag behind the actual <video> element during
+  // rotation. Once the painted media and n.eko screen are compatible, stale or
+  // missing inbound dimensions are diagnostics rather than a reason to keep
+  // the owner behind the matte.
+  if (!(inboundReady || paintedMediaReady)) {
     reasons.push("inbound_frame_not_covering_requested_viewport");
   }
-  if (!framesAreProgressing(state, sample.inbound)) {
+  if (inboundReady && !framesAreProgressing(state, sample.inbound)) {
     reasons.push("frames_not_progressing");
   }
   if (qualityRegressed(state, sample.inbound)) {

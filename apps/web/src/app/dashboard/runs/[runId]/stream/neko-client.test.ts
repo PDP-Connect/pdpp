@@ -5,6 +5,7 @@ import {
   buildNekoClientProps,
   isNekoTouchPointInsideRect,
   isNekoTouchScrollIntent,
+  nekoTouchScrollStepsToControlDelta,
   type NekoViewportLayout,
   selectNekoMediaDisplayForLayout,
   selectNekoMediaSizeForLayout,
@@ -46,6 +47,28 @@ test("n.eko display crops stale-orientation media during rotation settling", () 
   assert.equal(selected.height, 540);
 });
 
+test("n.eko display follows actual media when the requested screen aspect was not applied", () => {
+  const selected = selectNekoMediaDisplayForLayout(
+    {
+      screenHeight: 1288,
+      screenWidth: 1288,
+      viewportHeight: 1123,
+      viewportWidth: 1117,
+    },
+    {
+      height: 1024,
+      width: 1280,
+    }
+  );
+
+  assert.equal(selected.fit, "cover");
+  assert.equal(selected.settling, true);
+  assert.equal(selected.source, "intrinsic");
+  assert.equal(selected.intrinsicCompatibility, "aspect-mismatch");
+  assert.equal(selected.width, 1280);
+  assert.equal(selected.height, 1024);
+});
+
 test("n.eko presentation-only layout preserves current screen state when media is not ready", () => {
   const selected = selectNekoScreenStateSizeForLayout(
     PORTRAIT_LAYOUT,
@@ -79,6 +102,30 @@ test("n.eko screen state follows visible stale media during rotation settling", 
   assert.equal(selected.source, "intrinsic");
   assert.equal(selected.width, 960);
   assert.equal(selected.height, 540);
+});
+
+test("n.eko screen state follows actual media for an unapplied requested screen aspect", () => {
+  const selected = selectNekoScreenStateSizeForLayout(
+    {
+      screenHeight: 1288,
+      screenWidth: 1288,
+      viewportHeight: 1123,
+      viewportWidth: 1117,
+    },
+    {
+      height: 1024,
+      width: 1280,
+    },
+    {
+      height: 1024,
+      width: 1280,
+    },
+    true
+  );
+
+  assert.equal(selected.source, "intrinsic");
+  assert.equal(selected.width, 1280);
+  assert.equal(selected.height, 1024);
 });
 
 test("n.eko layout keeps compatible media dimensions for steady-state streams", () => {
@@ -116,7 +163,7 @@ test("n.eko client props suppress n.eko cursor drawing without disabling input",
   assert.doesNotThrow(() => props.inactiveCursorDrawFunction(null));
 });
 
-test("n.eko mobile scroll bridge is scoped to coarse landscape without native touch", () => {
+test("n.eko mobile scroll bridge defers to native n.eko touch when available", () => {
   assert.equal(
     shouldUseNekoTouchScrollBridge({ coarsePointer: true, landscape: true, nativeTouchSupported: false }),
     true
@@ -135,7 +182,7 @@ test("n.eko mobile scroll bridge is scoped to coarse landscape without native to
   );
   assert.equal(
     shouldUseNekoTouchScrollBridge({ coarsePointer: true, landscape: false, nativeTouchSupported: false }),
-    false
+    true
   );
 });
 
@@ -157,4 +204,10 @@ test("n.eko touch scroll steps preserve fractional movement between frames", () 
   assert.deepEqual(takeNekoTouchScrollSteps(49, 50), { steps: 0, remainderPx: 49 });
   assert.deepEqual(takeNekoTouchScrollSteps(125, 50), { steps: 2, remainderPx: 25 });
   assert.deepEqual(takeNekoTouchScrollSteps(-125, 50), { steps: -2, remainderPx: -25 });
+});
+
+test("n.eko touch scroll control delta inverts to match DOM wheel direction", () => {
+  assert.equal(nekoTouchScrollStepsToControlDelta(2), -1);
+  assert.equal(nekoTouchScrollStepsToControlDelta(-2), 1);
+  assert.equal(nekoTouchScrollStepsToControlDelta(0), 0);
 });

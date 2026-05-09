@@ -51,6 +51,15 @@ export interface StreamCaptureTarget {
   width: number;
 }
 
+export interface StreamCaptureTargetContextInput {
+  alignmentPx?: number;
+  devicePixelRatio?: number | null;
+  highDprCapture: boolean;
+  maxPixels?: number;
+  maxScale?: number;
+  viewport: StreamViewport;
+}
+
 let sharpnessCanvas: HTMLCanvasElement | null = null;
 
 function finitePositive(value: number | null | undefined): value is number {
@@ -138,6 +147,23 @@ export function computeStreamCaptureTarget({
     scale: roundMetric(scale),
     width: screenWidth,
   };
+}
+
+export function computeStreamCaptureTargetForContext({
+  alignmentPx = DEFAULT_CAPTURE_ALIGNMENT_PX,
+  devicePixelRatio = 1,
+  highDprCapture,
+  maxPixels = DEFAULT_CAPTURE_MAX_PIXELS,
+  maxScale = DEFAULT_CAPTURE_MAX_SCALE,
+  viewport,
+}: StreamCaptureTargetContextInput): StreamCaptureTarget {
+  return computeStreamCaptureTarget({
+    alignmentPx: highDprCapture ? alignmentPx : 1,
+    devicePixelRatio: highDprCapture ? devicePixelRatio : 1,
+    maxPixels,
+    maxScale,
+    viewport,
+  });
 }
 
 export function computePixelFitTelemetry({

@@ -4,6 +4,7 @@ import {
   computePixelFitTelemetry,
   computeSharpnessTelemetryFromLuma,
   computeStreamCaptureTarget,
+  computeStreamCaptureTargetForContext,
 } from "./stream-visual-quality.ts";
 
 test("computePixelFitTelemetry identifies exact CSS-pixel mapping separately from physical pixels", () => {
@@ -47,6 +48,31 @@ test("computeStreamCaptureTarget caps very large high-DPR viewports", () => {
   assert.ok(target.width >= 1440);
   assert.ok(target.height >= 900);
   assert.ok(Math.abs(target.width / target.height - 1440 / 900) < 0.02);
+});
+
+test("computeStreamCaptureTargetForContext keeps desktop capture in CSS pixels", () => {
+  const target = computeStreamCaptureTargetForContext({
+    devicePixelRatio: 1.15,
+    highDprCapture: false,
+    viewport: { width: 1117, height: 1123 },
+  });
+
+  assert.equal(target.width, 1117);
+  assert.equal(target.height, 1123);
+  assert.equal(target.scale, 1);
+  assert.equal(target.requestedScale, 1);
+});
+
+test("computeStreamCaptureTargetForContext allows mobile high-DPR capture", () => {
+  const target = computeStreamCaptureTargetForContext({
+    devicePixelRatio: 2.25,
+    highDprCapture: true,
+    viewport: { width: 947, height: 364 },
+  });
+
+  assert.equal(target.width, 2128);
+  assert.equal(target.height, 816);
+  assert.ok(target.scale > 2.2);
 });
 
 test("computePixelFitTelemetry flags non-uniform stretch and gutters", () => {

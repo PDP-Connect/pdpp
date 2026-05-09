@@ -1,3 +1,5 @@
+import { appendFile, mkdir } from "node:fs/promises";
+import path from "node:path";
 import { NextResponse } from "next/server";
 
 export const runtime = "nodejs";
@@ -7,6 +9,37 @@ const MAX_ARRAY_ITEMS = 25;
 const MAX_OBJECT_KEYS = 40;
 const MAX_STRING_LENGTH = 512;
 const MAX_DEPTH = 8;
+const REPO_ROOT =
+  path.basename(process.cwd()) === "web" && path.basename(path.dirname(process.cwd())) === "apps"
+    ? path.resolve(process.cwd(), "..", "..")
+    : process.cwd();
+const STREAM_DEBUG_DIR = path.join(REPO_ROOT, "tmp", "stream-debug");
+
+interface SanitizedStreamDebugPayload {
+  events: unknown[];
+  receivedAt: string;
+}
+
+function shouldRedactKey(key: string): boolean {
+  const normalizedKey = key.toLowerCase();
+  if (
+    normalizedKey.includes("token") ||
+    normalizedKey.includes("password") ||
+    normalizedKey.includes("secret") ||
+    normalizedKey.includes("authorization") ||
+    normalizedKey.includes("cookie")
+  ) {
+    return true;
+  }
+  return (
+    normalizedKey.includes("clipboard") &&
+    (normalizedKey.includes("content") ||
+      normalizedKey.includes("data") ||
+      normalizedKey.includes("raw") ||
+      normalizedKey.includes("text") ||
+      normalizedKey.includes("value"))
+  );
+}
 
 function originMatchesHost(request: Request): boolean {
   const origin = request.headers.get("origin");
@@ -43,8 +76,7 @@ function sanitizeValue(value: unknown, depth = 0): unknown {
   if (typeof value === "object") {
     const result: Record<string, unknown> = {};
     for (const [key, entry] of Object.entries(value).slice(0, MAX_OBJECT_KEYS)) {
-      const normalizedKey = key.toLowerCase();
-      if (normalizedKey.includes("token") || normalizedKey.includes("password") || normalizedKey.includes("secret")) {
+      if (shouldRedactKey(key)) {
         result[key] = "[redacted]";
         continue;
       }
@@ -53,6 +85,19 @@ function sanitizeValue(value: unknown, depth = 0): unknown {
     return result;
   }
   return String(value);
+}
+
+function datePrefix(isoDate: string): string {
+  return isoDate.slice(0, 10);
+}
+
+function streamDebugFilePath(receivedAt: string): string {
+  return path.join(STREAM_DEBUG_DIR, `${datePrefix(receivedAt)}.jsonl`);
+}
+
+async function appendStreamDebugEvents(payload: SanitizedStreamDebugPayload): Promise<void> {
+  await mkdir(STREAM_DEBUG_DIR, { recursive: true });
+  await appendFile(streamDebugFilePath(payload.receivedAt), `${JSON.stringify(payload)}\n`, "utf8");
 }
 
 export async function POST(request: Request) {
@@ -77,7 +122,20 @@ export async function POST(request: Request) {
   const sanitized = sanitizeValue({
     events,
     receivedAt: new Date().toISOString(),
-  });
+  }) as SanitizedStreamDebugPayload;
   console.info("pdpp_stream_debug", JSON.stringify(sanitized));
+  try {
+    await appendStreamDebugEvents(sanitized);
+  } catch (error) {
+    console.info(
+      "pdpp_stream_debug_storage_error",
+      JSON.stringify(
+        sanitizeValue({
+          error: error instanceof Error ? error.message : String(error),
+          receivedAt: new Date().toISOString(),
+        })
+      )
+    );
+  }
   return NextResponse.json({ ok: true, accepted: events.length });
 }

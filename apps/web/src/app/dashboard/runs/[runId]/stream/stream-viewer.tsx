@@ -37,7 +37,6 @@ import {
   blurNekoKeyboard,
   copyRemoteSelectionFromNeko,
   focusNekoKeyboard,
-  focusNekoKeyboardFromLocalGesture,
   type NekoClientConfig,
   pasteLocalClipboardIntoNeko,
   pasteTextIntoNeko,
@@ -71,10 +70,12 @@ import {
 import { assessNekoMediaSettle, createNekoMediaSettleState } from "./stream-media-settle.ts";
 import {
   createStreamViewerControlState,
+  localSurfaceCanDisplayPresentation,
   nextPresentationKeyboardHoldUntilMs,
   nextPresentationOrientationHoldUntilMs,
   presentationViewportsMatch,
   reduceStreamViewerControl,
+  stablePresentationContainerRect,
   type StreamViewerCommand,
   shouldDebouncePresentationViewportUpdate,
   shouldHoldPresentationViewportForKeyboard,
@@ -93,7 +94,7 @@ import {
 import type { ViewportObservation } from "./stream-viewport-classifier.ts";
 import {
   computePixelFitTelemetry,
-  computeStreamCaptureTarget,
+  computeStreamCaptureTargetForContext,
   sampleVideoSharpnessTelemetry,
 } from "./stream-visual-quality.ts";
 import { STREAMING_UNAVAILABLE_TAG } from "./streaming-protocol.ts";
@@ -127,6 +128,14 @@ interface NekoClientConfigResponse {
   object?: string;
   server_path?: string;
   status_path?: string;
+}
+
+interface NekoStatusSnapshot {
+  page: Record<string, unknown> | null;
+  pageCdpAvailable: boolean | null;
+  pageMetricsMismatch: Record<string, unknown> | null;
+  pageMetricsMismatchAfterReapply: Record<string, unknown> | null;
+  screen: { height: number; width: number } | null;
 }
 
 /**
@@ -274,6 +283,8 @@ const STREAM_DEBUG_BATCH_SIZE = 20;
 const STREAM_DEBUG_FLUSH_MS = 750;
 const STREAM_DEBUG_POINTER_MOVE_MS = 250;
 const STREAM_DEBUG_VISUAL_QUALITY_MS = 1000;
+const STREAM_DEBUG_EMPTY_AREA_ISSUE_RATIO = 0.015;
+const STREAM_DEBUG_STRETCH_ISSUE_RATIO = 1.03;
 
 type StreamDebugPayload = Record<string, unknown>;
 type StreamDebugLogger = (type: string, payload?: StreamDebugPayload) => void;
@@ -354,8 +365,10 @@ function readViewerViewport(width: number, height: number) {
     coarsePointer = false;
   }
   const deviceScaleFactor = window.devicePixelRatio || 1;
-  const captureTarget = computeStreamCaptureTarget({
+  const mobile = coarsePointer || MOBILE_USER_AGENT_RE.test(window.navigator.userAgent);
+  const captureTarget = computeStreamCaptureTargetForContext({
     devicePixelRatio: deviceScaleFactor,
+    highDprCapture: mobile,
     viewport: { width, height },
   });
   return buildViewportPayload({
@@ -363,19 +376,22 @@ function readViewerViewport(width: number, height: number) {
     height,
     deviceScaleFactor,
     hasTouch,
-    mobile: coarsePointer || MOBILE_USER_AGENT_RE.test(window.navigator.userAgent),
+    mobile,
     screenHeight: captureTarget.height,
     screenWidth: captureTarget.width,
     userAgent: window.navigator.userAgent,
   });
 }
 
-type StreamViewportInfo = Pick<ViewportPayload, "height" | "screenHeight" | "screenWidth" | "width">;
+type StreamViewportInfo = Pick<ViewportPayload, "height" | "screenHeight" | "screenWidth" | "width"> & {
+  deviceScaleFactor?: number;
+};
 
 function viewportInfoFromPayload(viewport: ViewportPayload): StreamViewportInfo {
   return {
     width: viewport.width,
     height: viewport.height,
+    deviceScaleFactor: viewport.deviceScaleFactor,
     screenWidth: viewport.screenWidth,
     screenHeight: viewport.screenHeight,
   };
@@ -396,6 +412,20 @@ function streamViewportInfosMatch(
     presentationViewportsMatch(a ?? null, b ?? null) &&
     presentationViewportsMatch(a ? viewportCaptureSize(a) : null, b ? viewportCaptureSize(b) : null)
   );
+}
+
+function readContainerRect(node: Element | null): { height: number; width: number } | null {
+  if (!node) {
+    return null;
+  }
+  const rect = node.getBoundingClientRect();
+  if (!(rect.width > 0 && rect.height > 0)) {
+    return null;
+  }
+  return {
+    height: Math.max(1, Math.round(rect.height)),
+    width: Math.max(1, Math.round(rect.width)),
+  };
 }
 
 function viewportLayoutFromInfo(viewport: StreamViewportInfo) {
@@ -637,13 +667,66 @@ function mediaDebugSnapshot(
     });
 }
 
+function visualQualityIssues(media: StreamDebugPayload[]): StreamDebugPayload[] {
+  return media.flatMap((entry, index) => {
+    const pixelFit =
+      entry.pixelFit && typeof entry.pixelFit === "object" ? (entry.pixelFit as StreamDebugPayload) : null;
+    if (!pixelFit) {
+      return [];
+    }
+    const reasons: string[] = [];
+    const emptyAreaRatio = Number(pixelFit.emptyAreaRatio);
+    const stretchRatio = Number(pixelFit.stretchRatio);
+    if (Number.isFinite(emptyAreaRatio) && emptyAreaRatio > STREAM_DEBUG_EMPTY_AREA_ISSUE_RATIO) {
+      reasons.push("empty-area");
+    }
+    if (Number.isFinite(stretchRatio) && stretchRatio > STREAM_DEBUG_STRETCH_ISSUE_RATIO) {
+      reasons.push("non-uniform-stretch");
+    }
+    if (pixelFit.upscaledCss === true) {
+      reasons.push("upscaled-css");
+    }
+    if (pixelFit.upscaledPhysical === true) {
+      reasons.push("upscaled-physical");
+    }
+    if (reasons.length === 0) {
+      return [];
+    }
+    return [
+      {
+        index,
+        intrinsic: entry.intrinsic,
+        pixelFit,
+        reasons,
+        rect: entry.rect,
+        tagName: entry.tagName,
+      },
+    ];
+  });
+}
+
 function readViewportDebugSnapshot(observedNode: Element | null): StreamDebugPayload {
   const visualViewport = typeof window === "undefined" ? null : window.visualViewport;
   const orientation = typeof screen === "undefined" ? null : screen.orientation;
+  const media = (query: string) => {
+    try {
+      return window.matchMedia(query).matches;
+    } catch {
+      return null;
+    }
+  };
   return {
     documentElement: {
       clientHeight: document.documentElement.clientHeight,
       clientWidth: document.documentElement.clientWidth,
+    },
+    media: {
+      anyHoverHover: media("(any-hover: hover)"),
+      anyPointerCoarse: media("(any-pointer: coarse)"),
+      anyPointerFine: media("(any-pointer: fine)"),
+      hoverHover: media("(hover: hover)"),
+      pointerCoarse: media("(pointer: coarse)"),
+      pointerFine: media("(pointer: fine)"),
     },
     observed: rectSnapshot(observedNode),
     orientation: orientation
@@ -1047,11 +1130,24 @@ function useVisualQualityDebugTelemetry({
       }
       const node = containerRef.current;
       if (node) {
+        const media = mediaDebugSnapshot(node, { includeSharpness: true });
+        const occluded =
+          node.matches("[data-pdpp-stream-loading]") || Boolean(node.querySelector("[data-pdpp-stream-loading]"));
         logDebug(`surface.${surface}.visual_quality.sample`, {
-          media: mediaDebugSnapshot(node, { includeSharpness: true }),
+          media,
+          occluded,
           surface,
           viewport: viewportInfo,
         });
+        const issues = occluded ? [] : visualQualityIssues(media);
+        if (issues.length > 0) {
+          logDebug(`surface.${surface}.visual_quality.issue`, {
+            issues,
+            snapshot: readViewportDebugSnapshot(node),
+            surface,
+            viewport: viewportInfo,
+          });
+        }
       }
       timer = setTimeout(sample, STREAM_DEBUG_VISUAL_QUALITY_MS);
     };
@@ -1467,8 +1563,11 @@ function StreamStage({
   const [remoteClipboard, setRemoteClipboard] = useState<RemoteClipboardBuffer | null>(null);
   const [remoteInputSensitive, setRemoteInputSensitive] = useState(false);
   const [viewportInfo, setViewportInfo] = useState<StreamViewportInfo | null>(null);
+  const [localSurfaceViewportInfo, setLocalSurfaceViewportInfo] = useState<StreamViewportInfo | null>(null);
   const [presentationViewportInfo, setPresentationViewportInfo] = useState<StreamViewportInfo | null>(null);
   const lastPostedViewportRef = useRef<ReturnType<typeof buildViewportPayload> | null>(null);
+  const viewportInfoRef = useRef<StreamViewportInfo | null>(null);
+  const localSurfaceViewportInfoRef = useRef<StreamViewportInfo | null>(null);
   const presentationViewportInfoRef = useRef<StreamViewportInfo | null>(null);
   const stablePresentationViewportInfoRef = useRef<StreamViewportInfo | null>(null);
   const localViewportSampleRef = useRef<LocalViewportSample | null>(null);
@@ -1521,6 +1620,8 @@ function StreamStage({
 
   clipboardCapabilitiesRef.current = clipboardCapabilities;
   clipboardPolicyRef.current = clipboardPolicy;
+  viewportInfoRef.current = viewportInfo;
+  localSurfaceViewportInfoRef.current = localSurfaceViewportInfo;
   presentationViewportInfoRef.current = presentationViewportInfo;
 
   const scheduleControlViewportReconcile = useCallback((source: string) => {
@@ -1682,6 +1783,8 @@ function StreamStage({
         const payload = parsed.value;
         if (payload.viewport) {
           setViewportInfo(payload.viewport);
+          localSurfaceViewportInfoRef.current = payload.viewport;
+          setLocalSurfaceViewportInfo(payload.viewport);
           lastPostedViewportRef.current = readViewerViewport(payload.viewport.width, payload.viewport.height) ?? null;
         }
         callbacks.onAttached();
@@ -1695,6 +1798,11 @@ function StreamStage({
         onStatus(LIVE);
         if (payload.backend === "neko" && typeof payload.iframe_path === "string" && payload.iframe_path.length > 0) {
           const entryPath = payload.iframe_path.replace(TRAILING_SLASH_RE, "");
+          localSurfaceViewportInfoRef.current = null;
+          presentationViewportInfoRef.current = null;
+          stablePresentationViewportInfoRef.current = null;
+          setLocalSurfaceViewportInfo(null);
+          setPresentationViewportInfo(null);
           setRemoteClipboard(null);
           setRemoteInputSensitive(false);
           setNekoSession({
@@ -1710,6 +1818,11 @@ function StreamStage({
         }
         setRemoteClipboard(null);
         setRemoteInputSensitive(false);
+        localSurfaceViewportInfoRef.current = null;
+        presentationViewportInfoRef.current = null;
+        stablePresentationViewportInfoRef.current = null;
+        setLocalSurfaceViewportInfo(null);
+        setPresentationViewportInfo(null);
         setNekoSession(null);
       });
       source.addEventListener("frame", (ev) => {
@@ -2244,7 +2357,6 @@ function StreamStage({
       lastPostedViewportRef.current = viewport;
       const viewportInfo = viewportInfoFromPayload(viewport);
       setViewportInfo(viewportInfo);
-      applyStablePresentationViewport(viewportInfo);
       logViewportDecision(decision.action, decision.reason);
       logDebug("viewport.post.start", debugPayload);
       const body = JSON.stringify(viewport);
@@ -2275,7 +2387,7 @@ function StreamStage({
           /* see above */
         });
     },
-    [applyStablePresentationViewport, logDebug, scheduleViewportHoldFollowUp]
+    [logDebug, scheduleViewportHoldFollowUp]
   );
 
   const drainResizeSources = useCallback((fallback: string) => {
@@ -2289,6 +2401,38 @@ function StreamStage({
     pendingPresentationSourcesRef.current.clear();
     return sources;
   }, []);
+
+  const recordLocalSurfaceViewport = useCallback(
+    (source: string) => {
+      const observedNode = containerRef.current;
+      if (!observedNode) {
+        return;
+      }
+      const rect = observedNode.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) {
+        return;
+      }
+      const viewport = readViewerViewport(rect.width, rect.height);
+      if (!viewport) {
+        return;
+      }
+      const surfaceViewport = viewportInfoFromPayload(viewport);
+      const previous = localSurfaceViewportInfoRef.current;
+      if (streamViewportInfosMatch(previous, surfaceViewport)) {
+        return;
+      }
+      localSurfaceViewportInfoRef.current = surfaceViewport;
+      setLocalSurfaceViewportInfo(surfaceViewport);
+      logDebug("viewport.surface.local", {
+        measured: { height: Math.round(rect.height), width: Math.round(rect.width) },
+        previous,
+        snapshot: readViewportDebugSnapshot(observedNode),
+        source,
+        viewport,
+      });
+    },
+    [logDebug]
+  );
 
   const measureAndPost = useCallback(
     (source: string) => {
@@ -2305,9 +2449,10 @@ function StreamStage({
       if (rect.width <= 0 || rect.height <= 0) {
         return;
       }
+      recordLocalSurfaceViewport(source);
       postViewport(rect.width, rect.height, { source });
     },
-    [logDebug, postViewport]
+    [logDebug, postViewport, recordLocalSurfaceViewport]
   );
 
   useEffect(() => {
@@ -2427,22 +2572,46 @@ function StreamStage({
         });
         return;
       }
-      applyStablePresentationViewport(presentationViewport);
-      logDebug("viewport.presentation.local", {
+      logDebug("viewport.presentation.pending", {
         measured: { height: Math.round(rect.height), width: Math.round(rect.width) },
         command: presentationControlCommand,
+        previous: presentationViewportInfoRef.current,
         snapshot: readViewportDebugSnapshot(observedNode),
         source,
         viewport,
       });
     },
-    [
-      applyStablePresentationViewport,
-      logDebug,
-      reducePresentationViewportControl,
-      restoreStablePresentationViewport,
-      scheduleViewportHoldFollowUp,
-    ]
+    [logDebug, reducePresentationViewportControl, restoreStablePresentationViewport, scheduleViewportHoldFollowUp]
+  );
+
+  const handleNekoPresentationViewportReady = useCallback(
+    (readyViewport: StreamViewportInfo, result: { reasons?: string[]; status: "degraded" | "settled" }) => {
+      const currentViewport = viewportInfoRef.current;
+      if (result.status !== "settled") {
+        logDebug("viewport.presentation.remote_skip", {
+          current: currentViewport,
+          ready: readyViewport,
+          reason: "media-degraded",
+          result,
+        });
+        return;
+      }
+      if (!streamViewportInfosMatch(currentViewport, readyViewport)) {
+        logDebug("viewport.presentation.remote_skip", {
+          current: currentViewport,
+          ready: readyViewport,
+          reason: "stale-media-settle",
+          result,
+        });
+        return;
+      }
+      applyStablePresentationViewport(readyViewport);
+      logDebug("viewport.presentation.remote", {
+        result,
+        viewport: readyViewport,
+      });
+    },
+    [applyStablePresentationViewport, logDebug]
   );
 
   const schedulePresentationViewport = useCallback(
@@ -2490,6 +2659,7 @@ function StreamStage({
       return;
     }
     const scheduleSource = (source: string) => {
+      recordLocalSurfaceViewport(source);
       schedulePresentationViewport(source);
       pendingResizeSourcesRef.current.add(source);
       scheduleTrailingViewportReconcile(source);
@@ -2511,8 +2681,13 @@ function StreamStage({
         : new ResizeObserver(() => {
             scheduleSource("ResizeObserver");
           });
+    // ResizeObserver fires synchronously on observe() with the initial rect,
+    // so an explicit `resize.initial` source duplicates that work and races the
+    // streaming token's input route mounting on first viewport POST. Telemetry
+    // showed this race producing a single `viewport.post.error` on
+    // `resize.initial+settle` while subsequent ResizeObserver-driven posts
+    // succeed.
     resizeObserver?.observe(containerNode);
-    scheduleSource("resize.initial");
     const orientationListener = () => scheduleOrientationSource("orientationchange");
     const windowResizeListener = () => scheduleSource("window.resize");
     const visualViewportResizeListener = () => scheduleSource("visualViewport.resize");
@@ -2537,7 +2712,7 @@ function StreamStage({
       visualViewport?.removeEventListener("scroll", visualViewportScrollListener);
       screenOrientation?.removeEventListener?.("change", screenOrientationListener);
     };
-  }, [containerNode, schedulePresentationViewport, scheduleTrailingViewportReconcile]);
+  }, [containerNode, recordLocalSurfaceViewport, schedulePresentationViewport, scheduleTrailingViewportReconcile]);
 
   useEffect(
     () => () => {
@@ -2628,11 +2803,13 @@ function StreamStage({
   }, [clipboardPolicy.surface, logDebug]);
 
   return (
-    <div className="relative flex h-full w-full flex-col bg-foreground/[0.04]" data-pdpp-stream-debug={debugEnabled}>
+    <div className="relative flex h-full w-full flex-col bg-black" data-pdpp-stream-debug={debugEnabled}>
       {nekoSession ? (
         <NekoSurface
           debugEnabled={debugEnabled}
+          localSurfaceViewportInfo={localSurfaceViewportInfo}
           logDebug={logDebug}
+          onPresentationViewportReady={handleNekoPresentationViewportReady}
           presentationViewportInfo={presentationViewportInfo}
           session={nekoSession}
           status={status}
@@ -2723,20 +2900,77 @@ function readNekoScreenSize(payload: unknown): { height: number; width: number }
   return Number.isFinite(width) && width > 0 && Number.isFinite(height) && height > 0 ? { width, height } : null;
 }
 
-async function fetchNekoScreenSize(statusPath: string): Promise<{ height: number; width: number } | null> {
-  const response = await fetch(statusPath, { credentials: "same-origin" });
-  if (!response.ok) {
-    return null;
-  }
-  return readNekoScreenSize(await response.json());
+function readNekoStatusSnapshot(payload: unknown): NekoStatusSnapshot {
+  const root = payload && typeof payload === "object" ? (payload as Record<string, unknown>) : null;
+  const status = root?.status && typeof root.status === "object" ? (root.status as Record<string, unknown>) : null;
+  const page = status?.page && typeof status.page === "object" ? (status.page as Record<string, unknown>) : null;
+  const pageMetricsMismatch =
+    status?.page_metrics_mismatch && typeof status.page_metrics_mismatch === "object"
+      ? (status.page_metrics_mismatch as Record<string, unknown>)
+      : null;
+  const pageMetricsMismatchAfterReapply =
+    status?.page_metrics_mismatch_after_reapply && typeof status.page_metrics_mismatch_after_reapply === "object"
+      ? (status.page_metrics_mismatch_after_reapply as Record<string, unknown>)
+      : null;
+  return {
+    page,
+    pageCdpAvailable: typeof status?.page_cdp_available === "boolean" ? status.page_cdp_available : null,
+    pageMetricsMismatch,
+    pageMetricsMismatchAfterReapply,
+    screen: readNekoScreenSize(payload),
+  };
 }
 
-async function fetchNekoScreenSizeBestEffort(statusPath: string): Promise<{ height: number; width: number } | null> {
-  try {
-    return await fetchNekoScreenSize(statusPath);
-  } catch {
-    return null;
+async function fetchNekoStatus(statusPath: string): Promise<NekoStatusSnapshot> {
+  const response = await fetch(statusPath, { credentials: "same-origin" });
+  if (!response.ok) {
+    return {
+      page: null,
+      pageCdpAvailable: null,
+      pageMetricsMismatch: null,
+      pageMetricsMismatchAfterReapply: null,
+      screen: null,
+    };
   }
+  return readNekoStatusSnapshot(await response.json());
+}
+
+async function fetchNekoStatusBestEffort(statusPath: string): Promise<NekoStatusSnapshot> {
+  try {
+    return await fetchNekoStatus(statusPath);
+  } catch {
+    return {
+      page: null,
+      pageCdpAvailable: null,
+      pageMetricsMismatch: null,
+      pageMetricsMismatchAfterReapply: null,
+      screen: null,
+    };
+  }
+}
+
+function metricNearlyEqual(actual: unknown, expected: unknown, tolerance = 1): boolean {
+  const a = typeof actual === "number" && Number.isFinite(actual) ? actual : null;
+  const b = typeof expected === "number" && Number.isFinite(expected) ? expected : null;
+  return a !== null && b !== null && Math.abs(a - b) <= tolerance;
+}
+
+function pageFitsViewport(status: NekoStatusSnapshot, viewport: StreamViewportInfo): boolean {
+  if (status.pageMetricsMismatch || status.pageMetricsMismatchAfterReapply) {
+    return false;
+  }
+  if (!status.page || typeof status.page !== "object") {
+    return true;
+  }
+  const target = viewportCaptureSize(viewport);
+  return (
+    metricNearlyEqual(status.page.innerWidth, viewport.width) &&
+    metricNearlyEqual(status.page.innerHeight, viewport.height) &&
+    metricNearlyEqual(status.page.screenWidth, target.width) &&
+    metricNearlyEqual(status.page.screenHeight, target.height) &&
+    (viewport.deviceScaleFactor === undefined ||
+      metricNearlyEqual(status.page.devicePixelRatio, viewport.deviceScaleFactor, 0.01))
+  );
 }
 
 function screenFitsViewport(screen: { height: number; width: number }, viewport: StreamViewportInfo): boolean {
@@ -2781,7 +3015,9 @@ async function loadNekoClientConfig(clientConfigPath: string): Promise<NekoClien
 
 function NekoSurface({
   debugEnabled,
+  localSurfaceViewportInfo,
   logDebug,
+  onPresentationViewportReady,
   presentationViewportInfo,
   session,
   surfaceRef,
@@ -2789,7 +3025,12 @@ function NekoSurface({
   viewportInfo,
 }: {
   debugEnabled: boolean;
+  localSurfaceViewportInfo: StreamViewportInfo | null;
   logDebug: StreamDebugLogger;
+  onPresentationViewportReady: (
+    viewport: StreamViewportInfo,
+    result: { reasons?: string[]; status: "degraded" | "settled" }
+  ) => void;
   presentationViewportInfo: StreamViewportInfo | null;
   session: NekoSessionInfo;
   surfaceRef: (node: HTMLDivElement | null) => void;
@@ -2798,6 +3039,7 @@ function NekoSurface({
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const layoutRequestRef = useRef(0);
+  const firstNekoLayoutAppliedRef = useRef(false);
   const mediaSettleStateRef = useRef(createNekoMediaSettleState());
   const presentationViewportInfoRef = useRef(presentationViewportInfo);
   const [clientConfig, setClientConfig] = useState<NekoClientConfig | null>(null);
@@ -2856,8 +3098,12 @@ function NekoSurface({
       return;
     }
     const layout = viewportLayoutFromInfo(viewport);
-    setNekoPresentationViewportLayout(layout);
+    const actualContainerRect = readContainerRect(containerRef.current);
+    const containerRect = stablePresentationContainerRect(actualContainerRect, presentationViewportInfo);
+    setNekoPresentationViewportLayout(layout, { containerRect });
     logDebug("neko.layout.presentation", {
+      actualContainerRect,
+      containerRect,
       layout,
       reason: presentationViewportInfo ? "local-viewport" : "posted-viewport",
     });
@@ -2875,19 +3121,48 @@ function NekoSurface({
       return;
     }
 
+    // Gate the first layout call on the status path being known. If we apply
+    // an optimistic layout before clientConfig resolves, n.eko picks a screen
+    // mode from the synthesized viewport (often the wrong one), which then
+    // emits `neko.layout.fallback reason=missing-status-path`. The optimistic
+    // path is only safe once we already have a real screen size from the
+    // status endpoint — i.e. on subsequent viewportInfo changes after the
+    // first `apply-screen` call.
+    const statusPath = clientConfig?.statusPath ?? null;
+    if (clientConfig === null && !firstNekoLayoutAppliedRef.current) {
+      logDebug("neko.layout.deferred", {
+        reason: "client-config-pending",
+        viewport: viewportInfo,
+      });
+      return;
+    }
+
     const viewport = viewportInfo;
     const optimisticLayout = viewportLayoutFromInfo(viewport);
-    setNekoViewportLayout(optimisticLayout);
-    logDebug("neko.layout.optimistic", {
-      layout: optimisticLayout,
-      reason: "viewport-changed",
-    });
+    const containerRect = readContainerRect(containerRef.current);
+    const applyRequestedLayout =
+      !presentationViewportInfo || streamViewportInfosMatch(presentationViewportInfo, viewport);
+    if (applyRequestedLayout) {
+      setNekoViewportLayout(optimisticLayout, { containerRect });
+      logDebug("neko.layout.optimistic", {
+        containerRect,
+        layout: optimisticLayout,
+        reason: "viewport-changed",
+      });
+    } else {
+      logDebug("neko.layout.deferred_presentation", {
+        containerRect,
+        layout: optimisticLayout,
+        presentationViewport: presentationViewportInfo,
+        reason: "media-not-settled",
+        viewport,
+      });
+    }
 
-    const statusPath = clientConfig?.statusPath;
     if (!statusPath) {
       logDebug("neko.layout.fallback", {
         layout: optimisticLayout,
-        reason: "missing-status-path",
+        reason: "no-status-path-configured",
       });
       return;
     }
@@ -2896,6 +3171,7 @@ function NekoSurface({
     const requestId = layoutRequestRef.current + 1;
     layoutRequestRef.current = requestId;
     let cancelled = false;
+    let latestPolledScreen: { height: number; width: number } | null = null;
     let sawFittingScreen = false;
 
     function applyScreen(screen: { height: number; width: number }) {
@@ -2905,19 +3181,51 @@ function NekoSurface({
         viewportHeight: viewport.height,
         viewportWidth: viewport.width,
       };
-      setNekoViewportLayout(layout);
+      const rect = readContainerRect(containerRef.current);
+      if (!applyRequestedLayout) {
+        logDebug("neko.layout.apply-screen.deferred", {
+          containerRect: rect,
+          layout,
+          presentationViewport: presentationViewportInfo,
+          reason: "media-not-settled",
+          requestId,
+        });
+        return;
+      }
+      setNekoViewportLayout(layout, { containerRect: rect });
+      firstNekoLayoutAppliedRef.current = true;
       logDebug("neko.layout.apply-screen", {
+        containerRect: rect,
         layout,
         requestId,
       });
     }
 
     function applyFallback() {
-      const layout = viewportLayoutFromInfo(viewport);
-      setNekoViewportLayout(layout);
+      const screen = latestPolledScreen ?? viewportCaptureSize(viewport);
+      const layout = {
+        screenHeight: screen.height,
+        screenWidth: screen.width,
+        viewportHeight: viewport.height,
+        viewportWidth: viewport.width,
+      };
+      const rect = readContainerRect(containerRef.current);
+      if (!applyRequestedLayout) {
+        logDebug("neko.layout.fallback.deferred", {
+          containerRect: rect,
+          layout,
+          presentationViewport: presentationViewportInfo,
+          reason: latestPolledScreen ? "last-polled-screen-did-not-fit" : "no-fitting-screen-status",
+          requestId,
+        });
+        return;
+      }
+      setNekoViewportLayout(layout, { containerRect: rect });
+      firstNekoLayoutAppliedRef.current = true;
       logDebug("neko.layout.fallback", {
+        containerRect: rect,
         layout,
-        reason: "no-fitting-screen-status",
+        reason: latestPolledScreen ? "last-polled-screen-did-not-fit" : "no-fitting-screen-status",
         requestId,
       });
     }
@@ -2926,12 +3234,15 @@ function NekoSurface({
       return !cancelled && layoutRequestRef.current === requestId;
     }
 
-    function handlePolledScreen(screen: { height: number; width: number } | null) {
+    function handlePolledStatus(status: NekoStatusSnapshot) {
       if (!isCurrentRequest()) {
         return "done";
       }
+      const screen = status.screen;
       if (!screen) {
         logDebug("neko.status.poll", {
+          page: status.page,
+          pageCdpAvailable: status.pageCdpAvailable,
           requestId,
           result: "missing-screen",
           viewport,
@@ -2939,9 +3250,18 @@ function NekoSurface({
         return "retry";
       }
 
-      const fits = screenFitsViewport(screen, viewport);
+      latestPolledScreen = screen;
+      const fitsScreen = screenFitsViewport(screen, viewport);
+      const fitsPage = pageFitsViewport(status, viewport);
+      const fits = fitsScreen && fitsPage;
       logDebug("neko.status.poll", {
         fits,
+        fitsPage,
+        fitsScreen,
+        page: status.page,
+        pageCdpAvailable: status.pageCdpAvailable,
+        pageMetricsMismatch: status.pageMetricsMismatch,
+        pageMetricsMismatchAfterReapply: status.pageMetricsMismatchAfterReapply,
         requestId,
         result: fits ? "done" : "retry",
         screen,
@@ -2962,8 +3282,8 @@ function NekoSurface({
           requestId,
           viewport,
         });
-        const screen = await fetchNekoScreenSizeBestEffort(resolvedStatusPath);
-        if (handlePolledScreen(screen) === "done") {
+        const status = await fetchNekoStatusBestEffort(resolvedStatusPath);
+        if (handlePolledStatus(status) === "done") {
           return;
         }
         const canRetry = attempt < STREAM_VIEWER_POLICY.nekoStatusPollAttempts;
@@ -2981,7 +3301,7 @@ function NekoSurface({
     return () => {
       cancelled = true;
     };
-  }, [clientConfig?.statusPath, logDebug, viewportInfo]);
+  }, [clientConfig, logDebug, presentationViewportInfo, viewportInfo]);
 
   useEffect(() => {
     if (!(clientConfig && viewportInfo)) {
@@ -2989,6 +3309,7 @@ function NekoSurface({
       return;
     }
 
+    setMediaReady(false);
     mediaSettleStateRef.current = createNekoMediaSettleState();
     let cancelled = false;
     let pollTimer: ReturnType<typeof setTimeout> | null = null;
@@ -3001,9 +3322,6 @@ function NekoSurface({
       pollCount += 1;
       const sample = readNekoMediaSettleSample(viewportCaptureSize(viewportInfo));
       if (sample) {
-        if (sample.media && sample.media.width > 0 && sample.media.height > 0) {
-          setMediaReady(true);
-        }
         const result = assessNekoMediaSettle({
           maxSettlingSamples: STREAM_VIEWER_POLICY.nekoMediaSettleMaxPolls,
           sample,
@@ -3016,7 +3334,18 @@ function NekoSurface({
           sample,
           status: result.status,
         });
-        if (result.status !== "settling") {
+        if (result.status === "settled") {
+          setMediaReady(true);
+          onPresentationViewportReady(viewportInfo, { status: "settled" });
+          return;
+        }
+        if (result.status === "degraded") {
+          setMediaReady(true);
+          logDebug("viewport.presentation.remote_skip", {
+            reason: "media-degraded",
+            result: { reasons: result.reasons, status: "degraded" },
+            viewport: viewportInfo,
+          });
           return;
         }
       } else {
@@ -3038,29 +3367,24 @@ function NekoSurface({
         clearTimeout(pollTimer);
       }
     };
-  }, [clientConfig, logDebug, viewportInfo]);
+  }, [clientConfig, logDebug, onPresentationViewportReady, viewportInfo]);
 
-  const lastLocalStreamGestureAtRef = useRef(0);
-  const handleLocalStreamGesture = useCallback(() => {
-    const nowMs = Date.now();
-    if (nowMs - lastLocalStreamGestureAtRef.current < 120) {
-      return;
-    }
-    lastLocalStreamGestureAtRef.current = nowMs;
-    const attempt = focusNekoKeyboardFromLocalGesture();
-    logDebug("neko.keyboard_focus.local_gesture", {
-      ...attempt,
-      snapshot: readSurfaceDebugSnapshot(containerRef.current),
-    });
-  }, [logDebug]);
-  const showLoadingOverlay = !(error || mediaReady);
+  const presentationMatchesRequestedViewport =
+    !!presentationViewportInfo && !!viewportInfo && streamViewportInfosMatch(presentationViewportInfo, viewportInfo);
+  const localSurfaceCanDisplay =
+    presentationMatchesRequestedViewport &&
+    localSurfaceCanDisplayPresentation(localSurfaceViewportInfo, presentationViewportInfo);
+  const showLoadingOverlay = !(
+    error ||
+    (mediaReady && presentationMatchesRequestedViewport && localSurfaceCanDisplay)
+  );
 
   return (
     <div className="flex flex-1 items-center justify-center overflow-hidden">
       <div
         aria-label="Connector browser stream"
-        className="pdpp-stream-frame relative overflow-hidden bg-background"
-        onPointerDownCapture={handleLocalStreamGesture}
+        className="pdpp-stream-frame relative overflow-hidden"
+        data-pdpp-stream-loading={showLoadingOverlay || undefined}
         ref={(node) => {
           containerRef.current = node;
           surfaceRef(node);
@@ -3081,7 +3405,8 @@ function NekoSurface({
         {showLoadingOverlay ? (
           <div
             aria-hidden="true"
-            className="absolute inset-0 z-0 flex items-center justify-center bg-black text-sm text-white/70"
+            className="absolute inset-0 z-20 flex items-center justify-center bg-black text-sm text-white/70"
+            data-pdpp-stream-loading
           >
             {status.display === "live" ? "Starting WebRTC stream..." : "Waiting for browser..."}
           </div>

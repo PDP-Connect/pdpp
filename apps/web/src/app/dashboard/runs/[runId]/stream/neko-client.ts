@@ -26,6 +26,7 @@ interface NekoInstance {
   $el?: Element;
   $mount?: (element: Element) => void;
   connect?: () => void;
+  controlling?: boolean;
   control?: {
     buttonDown?: (code: number, pos?: NekoControlPos) => void;
     buttonUp?: (code: number, pos?: NekoControlPos) => void;
@@ -33,6 +34,7 @@ interface NekoInstance {
     cut?: () => void;
     move?: (pos: NekoControlPos) => void;
     paste?: (text?: string) => void;
+    request?: () => void;
     scroll?: (scroll: NekoControlScroll) => void;
     selectAll?: () => void;
     supportedTouchEvents?: boolean;
@@ -86,6 +88,7 @@ interface NekoTouchScrollBridgeState {
   id: number;
   lastX: number;
   lastY: number;
+  mode: "fallback" | "native";
   scrolling: boolean;
   startTimeMs: number;
   startX: number;
@@ -130,6 +133,7 @@ let mediaLayoutObserver: MutationObserver | null = null;
 let mediaLayoutObservedElements = new WeakSet<HTMLElement>();
 let mobileTouchScrollBridgeAbortController: AbortController | null = null;
 let videoAbortController: AbortController | null = null;
+let pointerTelemetryAbortController: AbortController | null = null;
 let remoteInputFocused = false;
 let remoteCopyFallback: (() => void) | null = null;
 let viewportLayout: NekoViewportLayout | null = null;
@@ -141,6 +145,8 @@ const MOBILE_TEXT_INPUT_GUARD_RETRY_MS = 100;
 const MOBILE_TEXT_INPUT_GUARD_MAX_ATTEMPTS = 50;
 const REMOTE_COPY_FALLBACK_DELAY_MS = 120;
 const STREAM_DEBUG_EVENT = "pdpp:stream-debug";
+const NEKO_POINTER_TELEMETRY_MOVE_MS = 250;
+const NEKO_TOUCH_CONTROL_WAIT_MS = 900;
 const VIEWPORT_LAYOUT_CONTAINER_TOLERANCE_PX = 3;
 const MEDIA_SCREEN_ASPECT_TOLERANCE_RATIO = 0.12;
 const MEDIA_SCREEN_DIMENSION_TOLERANCE_PX = 24;
@@ -184,10 +190,13 @@ export interface NekoKeyboardFocusAttempt {
 
 export function shouldUseNekoTouchScrollBridge({
   coarsePointer,
-  landscape,
   nativeTouchSupported,
 }: NekoTouchScrollBridgeEnvironment): boolean {
-  return coarsePointer && landscape && nativeTouchSupported !== true;
+  // Prefer n.eko's native touch path when the server/browser advertises it.
+  // The PDPP bridge is a fallback for environments where n.eko cannot forward
+  // native touch, because eagerly cancelling touchstart breaks long-press text
+  // selection and other mobile-native gestures.
+  return coarsePointer && nativeTouchSupported !== true;
 }
 
 export function isNekoTouchScrollIntent({
@@ -227,6 +236,12 @@ export function takeNekoTouchScrollSteps(
     remainderPx: accumulatedPx - steps * stepPx,
     steps,
   };
+}
+
+export function nekoTouchScrollStepsToControlDelta(steps: number): number {
+  // n.eko's control.scroll sign is opposite the DOM wheel delta observed in
+  // Chromium. Invert here so a finger drag up scrolls the remote page down.
+  return steps === 0 ? 0 : -Math.sign(steps);
 }
 
 function isStreamDebugEnabled(): boolean {
@@ -278,6 +293,176 @@ function screenStateSnapshot(): Record<string, number> | null {
     snapshot.rate = rate;
   }
   return snapshot;
+}
+
+function currentNekoControlCoordinateSize(): { height: number; source: string; width: number } | null {
+  if (
+    viewportLayout &&
+    viewportLayout.viewportWidth > 0 &&
+    viewportLayout.viewportHeight > 0 &&
+    (viewportLayout.viewportWidth !== viewportLayout.screenWidth || viewportLayout.viewportHeight !== viewportLayout.screenHeight)
+  ) {
+    return {
+      height: viewportLayout.viewportHeight,
+      source: "viewport",
+      width: viewportLayout.viewportWidth,
+    };
+  }
+  const screenSize = screenStateSnapshot();
+  const screenWidth = Number(screenSize?.width);
+  const screenHeight = Number(screenSize?.height);
+  if (Number.isFinite(screenWidth) && screenWidth > 0 && Number.isFinite(screenHeight) && screenHeight > 0) {
+    return {
+      height: screenHeight,
+      source: "screen-state",
+      width: screenWidth,
+    };
+  }
+  return null;
+}
+
+function readNekoPointerMapping(clientX: number, clientY: number): Record<string, unknown> {
+  const overlay = getOverlayTextarea();
+  const mediaEl = getPrimaryNekoMediaElement();
+  const mapped = getNekoControlPos(clientX, clientY);
+  const controlCoordinateSize = currentNekoControlCoordinateSize();
+  const screenState = screenStateSnapshot();
+  const wrapperRect = wrapperEl?.getBoundingClientRect() ?? null;
+  const overlayRect = overlay?.getBoundingClientRect() ?? null;
+  const mediaRect = mediaEl?.getBoundingClientRect() ?? null;
+  const insideRect = (rect: DOMRect | null) =>
+    Boolean(rect && clientX >= rect.left && clientX <= rect.right && clientY >= rect.top && clientY <= rect.bottom);
+  return {
+    client: { x: Math.round(clientX), y: Math.round(clientY) },
+    controlCoordinateSize,
+    insideMedia: insideRect(mediaRect),
+    insideOverlay: insideRect(overlayRect),
+    insideWrapper: insideRect(wrapperRect),
+    mapped,
+    media: rectSnapshot(mediaEl),
+    mediaIntrinsic: mediaEl ? getMediaIntrinsicSize(mediaEl) : null,
+    overlay: rectSnapshot(overlay),
+    screenState,
+    wrapper: rectSnapshot(wrapperEl),
+  };
+}
+
+function nekoPointerMappingIssues(snapshot: Record<string, unknown>): string[] {
+  const reasons: string[] = [];
+  if (snapshot.insideWrapper === true && snapshot.insideMedia !== true && snapshot.insideOverlay !== true) {
+    reasons.push("point-outside-media-and-overlay");
+  }
+  const mapped = snapshot.mapped as NekoControlPos | null;
+  const screenState = snapshot.screenState as Record<string, unknown> | null;
+  const screenWidth = Number(screenState?.width);
+  const screenHeight = Number(screenState?.height);
+  if (
+    mapped &&
+    Number.isFinite(screenWidth) &&
+    Number.isFinite(screenHeight) &&
+    (mapped.x < 0 || mapped.y < 0 || mapped.x > screenWidth || mapped.y > screenHeight)
+  ) {
+    reasons.push("mapped-outside-screen");
+  }
+  return reasons;
+}
+
+function startNekoPointerTelemetry(): void {
+  stopNekoPointerTelemetry();
+  if (!isStreamDebugEnabled()) {
+    return;
+  }
+  const root = wrapperEl;
+  const target = typeof document === "undefined" ? null : document;
+  if (!(root && target)) {
+    return;
+  }
+  pointerTelemetryAbortController = new AbortController();
+  const { signal } = pointerTelemetryAbortController;
+  const lastMoveAt: Record<string, number> = {};
+  const eventStartedInStream = (clientX: number, clientY: number, eventTarget: EventTarget | null) => {
+    if (eventTarget instanceof Node && root.contains(eventTarget)) {
+      return true;
+    }
+    const rect = root.getBoundingClientRect();
+    return clientX >= rect.left && clientX <= rect.right && clientY >= rect.top && clientY <= rect.bottom;
+  };
+  const shouldLogMove = (key: string) => {
+    const now = Date.now();
+    if (now - (lastMoveAt[key] ?? 0) < NEKO_POINTER_TELEMETRY_MOVE_MS) {
+      return false;
+    }
+    lastMoveAt[key] = now;
+    return true;
+  };
+  const emitPointer = (
+    eventType: string,
+    clientX: number,
+    clientY: number,
+    eventTarget: EventTarget | null,
+    extra: Record<string, unknown> = {}
+  ) => {
+    if (!eventStartedInStream(clientX, clientY, eventTarget)) {
+      return;
+    }
+    const snapshot = readNekoPointerMapping(clientX, clientY);
+    const payload = { eventType, ...extra, ...snapshot };
+    emitNekoDebug("neko.pointer_mapping", payload);
+    const reasons = nekoPointerMappingIssues(snapshot);
+    if (reasons.length > 0) {
+      emitNekoDebug("neko.pointer_mapping.issue", {
+        ...payload,
+        reasons,
+      });
+    }
+  };
+  const onPointer = (event: PointerEvent) => {
+    if (event.type === "pointermove" && !shouldLogMove("pointer")) {
+      return;
+    }
+    emitPointer(event.type, event.clientX, event.clientY, event.target, {
+      button: event.button,
+      buttons: event.buttons,
+      pointerType: event.pointerType,
+    });
+  };
+  const onMouse = (event: MouseEvent) => {
+    if (event.type === "mousemove" && !shouldLogMove("mouse")) {
+      return;
+    }
+    emitPointer(event.type, event.clientX, event.clientY, event.target, {
+      button: event.button,
+      buttons: event.buttons,
+    });
+  };
+  const onTouch = (event: TouchEvent) => {
+    if (event.type === "touchmove" && !shouldLogMove("touch")) {
+      return;
+    }
+    const touch = event.changedTouches[0] ?? event.touches[0];
+    if (!touch) {
+      return;
+    }
+    emitPointer(event.type, touch.clientX, touch.clientY, event.target, {
+      activeTouches: event.touches.length,
+      touchId: touch.identifier,
+    });
+  };
+
+  for (const type of ["pointerdown", "pointermove", "pointerup", "pointercancel"] as const) {
+    target.addEventListener(type, onPointer, { capture: true, passive: true, signal });
+  }
+  for (const type of ["mousedown", "mousemove", "mouseup"] as const) {
+    target.addEventListener(type, onMouse, { capture: true, passive: true, signal });
+  }
+  for (const type of ["touchstart", "touchmove", "touchend", "touchcancel"] as const) {
+    target.addEventListener(type, onTouch, { capture: true, passive: true, signal });
+  }
+}
+
+function stopNekoPointerTelemetry(): void {
+  pointerTelemetryAbortController?.abort();
+  pointerTelemetryAbortController = null;
 }
 
 function elementDebugSnapshot(target: EventTarget | null): Record<string, unknown> | null {
@@ -1029,20 +1214,20 @@ function readNekoTouchScrollBridgeEnvironment(neko: NekoInstance): NekoTouchScro
 }
 
 function getNekoControlPos(clientX: number, clientY: number): NekoControlPos | null {
-  const overlayPos = nekoInstance?._overlay?.getMousePos?.(clientX, clientY);
-  if (overlayPos) {
-    return overlayPos;
-  }
   const overlay = getOverlayTextarea();
-  const screenSize = nekoInstance?.state?.screen?.size;
-  if (overlay && screenSize && screenSize.width > 0 && screenSize.height > 0) {
+  const controlCoordinateSize = currentNekoControlCoordinateSize();
+  if (overlay && controlCoordinateSize) {
     const rect = overlay.getBoundingClientRect();
     if (rect.width > 0 && rect.height > 0) {
       return {
-        x: Math.round((screenSize.width / rect.width) * (clientX - rect.left)),
-        y: Math.round((screenSize.height / rect.height) * (clientY - rect.top)),
+        x: Math.round((controlCoordinateSize.width / rect.width) * (clientX - rect.left)),
+        y: Math.round((controlCoordinateSize.height / rect.height) * (clientY - rect.top)),
       };
     }
+  }
+  const overlayPos = nekoInstance?._overlay?.getMousePos?.(clientX, clientY);
+  if (overlayPos) {
+    return overlayPos;
   }
   const mediaEl = getPrimaryNekoMediaElement();
   const intrinsic = mediaEl ? getMediaIntrinsicSize(mediaEl) : null;
@@ -1072,9 +1257,58 @@ function stopTouchEventForNekoBridge(event: TouchEvent): void {
   event.stopImmediatePropagation();
 }
 
+function requestNekoControlForBridge(reason: string): boolean {
+  const control = nekoInstance?.control;
+  if (nekoInstance?.controlling === true) {
+    return true;
+  }
+  if (typeof control?.request !== "function") {
+    emitNekoDebug("neko.touch_scroll_bridge.control_unavailable", { reason });
+    return false;
+  }
+  control.request();
+  emitNekoDebug("neko.touch_scroll_bridge.control_request", { reason });
+  return true;
+}
+
+function runWhenNekoControlReady(reason: string, action: () => boolean): boolean {
+  if (nekoInstance?.controlling === true) {
+    return action();
+  }
+  if (!requestNekoControlForBridge(reason)) {
+    return false;
+  }
+  const startedAt = Date.now();
+  const tick = () => {
+    if (!nekoInstance) {
+      emitNekoDebug("neko.touch_scroll_bridge.control_wait_cancelled", { reason });
+      return;
+    }
+    if (nekoInstance.controlling === true) {
+      emitNekoDebug("neko.touch_scroll_bridge.control_ready", {
+        elapsedMs: Date.now() - startedAt,
+        reason,
+      });
+      action();
+      return;
+    }
+    if (Date.now() - startedAt >= NEKO_TOUCH_CONTROL_WAIT_MS) {
+      emitNekoDebug("neko.touch_scroll_bridge.control_timeout", { reason });
+      return;
+    }
+    window.setTimeout(tick, 25);
+  };
+  window.setTimeout(tick, 25);
+  return true;
+}
+
 function sendNekoScrollSteps(state: NekoTouchScrollBridgeState, touch: Touch): NekoTouchScrollBridgeState {
   const control = nekoInstance?.control;
   if (!(control?.scroll && control.move)) {
+    return state;
+  }
+  if (nekoInstance?.controlling !== true) {
+    requestNekoControlForBridge("scroll");
     return state;
   }
   const pos = getNekoControlPos(touch.clientX, touch.clientY);
@@ -1095,8 +1329,8 @@ function sendNekoScrollSteps(state: NekoTouchScrollBridgeState, touch: Touch): N
   for (let index = 0; index < maxSteps; index += 1) {
     control.scroll({
       control_key: false,
-      delta_x: Math.abs(x.steps) > index ? Math.sign(x.steps) : 0,
-      delta_y: Math.abs(y.steps) > index ? Math.sign(y.steps) : 0,
+      delta_x: Math.abs(x.steps) > index ? nekoTouchScrollStepsToControlDelta(x.steps) : 0,
+      delta_y: Math.abs(y.steps) > index ? nekoTouchScrollStepsToControlDelta(y.steps) : 0,
     });
   }
 
@@ -1117,21 +1351,28 @@ function sendNekoScrollSteps(state: NekoTouchScrollBridgeState, touch: Touch): N
   };
 }
 
-function clickNekoAt(touch: Touch): boolean {
-  const control = nekoInstance?.control;
-  if (!(control?.buttonDown && control.buttonUp)) {
-    return false;
-  }
-  const pos = getNekoControlPos(touch.clientX, touch.clientY);
+function clickNekoAtPoint(clientX: number, clientY: number): boolean {
+  const pos = getNekoControlPos(clientX, clientY);
   if (!pos) {
     return false;
   }
-  control.buttonDown(1, pos);
-  control.buttonUp(1, pos);
-  emitNekoDebug("neko.touch_scroll_bridge.tap", {
-    pos,
+  return runWhenNekoControlReady("tap", () => {
+    const control = nekoInstance?.control;
+    if (!(control?.buttonDown && control.buttonUp)) {
+      emitNekoDebug("neko.touch_scroll_bridge.control_unavailable", { reason: "tap-send" });
+      return false;
+    }
+    control.buttonDown(1, pos);
+    control.buttonUp(1, pos);
+    emitNekoDebug("neko.touch_scroll_bridge.tap", {
+      pos,
+    });
+    return true;
   });
-  return true;
+}
+
+function clickNekoAt(touch: Touch): boolean {
+  return clickNekoAtPoint(touch.clientX, touch.clientY);
 }
 
 function startMobileTouchScrollBridge(neko: NekoInstance): void {
@@ -1178,6 +1419,7 @@ function startMobileTouchScrollBridge(neko: NekoInstance): void {
       return;
     }
     emitNekoDebug("neko.touch_scroll_bridge.reset", {
+      mode: state.mode,
       reason,
       scrolling: state.scrolling,
     });
@@ -1188,7 +1430,7 @@ function startMobileTouchScrollBridge(neko: NekoInstance): void {
     if (!eventStartedInStream(event)) {
       return;
     }
-    if (!(enabled() && event.touches.length === 1)) {
+    if (event.touches.length !== 1) {
       reset("disabled-or-multitouch");
       return;
     }
@@ -1197,18 +1439,28 @@ function startMobileTouchScrollBridge(neko: NekoInstance): void {
       return;
     }
     unlockNekoVideoPlayback();
-    stopTouchEventForNekoBridge(event);
+    requestNekoControlForBridge("touchstart");
+    const fallbackEnabled = enabled();
     state = {
       accumulatedX: 0,
       accumulatedY: 0,
       id: touch.identifier,
       lastX: touch.clientX,
       lastY: touch.clientY,
+      mode: fallbackEnabled ? "fallback" : "native",
       scrolling: false,
       startTimeMs: Date.now(),
       startX: touch.clientX,
       startY: touch.clientY,
     };
+    if (!fallbackEnabled) {
+      emitNekoDebug("neko.touch_scroll_bridge.native_passthrough", {
+        environment: readNekoTouchScrollBridgeEnvironment(neko),
+        phase: "touchstart",
+      });
+      return;
+    }
+    stopTouchEventForNekoBridge(event);
     emitNekoDebug("neko.touch_scroll_bridge.start", {
       environment: readNekoTouchScrollBridgeEnvironment(neko),
     });
@@ -1222,7 +1474,6 @@ function startMobileTouchScrollBridge(neko: NekoInstance): void {
     if (!touch) {
       return;
     }
-    stopTouchEventForNekoBridge(event);
     const scrolling =
       state.scrolling ||
       isNekoTouchScrollIntent({
@@ -1231,6 +1482,16 @@ function startMobileTouchScrollBridge(neko: NekoInstance): void {
         startX: state.startX,
         startY: state.startY,
       });
+    if (state.mode === "native") {
+      state = {
+        ...state,
+        lastX: touch.clientX,
+        lastY: touch.clientY,
+        scrolling,
+      };
+      return;
+    }
+    stopTouchEventForNekoBridge(event);
     if (!scrolling) {
       return;
     }
@@ -1242,7 +1503,6 @@ function startMobileTouchScrollBridge(neko: NekoInstance): void {
       return;
     }
     const touch = changedTouchById(event, state.id);
-    stopTouchEventForNekoBridge(event);
     const elapsedMs = Date.now() - state.startTimeMs;
     const movedPx = touch
       ? Math.hypot(touch.clientX - state.startX, touch.clientY - state.startY)
@@ -1252,6 +1512,21 @@ function startMobileTouchScrollBridge(neko: NekoInstance): void {
       Boolean(touch) &&
       elapsedMs <= NEKO_TOUCH_SCROLL_POLICY.clickMaxDurationMs &&
       movedPx < NEKO_TOUCH_SCROLL_POLICY.scrollIntentThresholdPx;
+    if (state.mode === "native") {
+      if (shouldClick && touch) {
+        const { clientX, clientY } = touch;
+        window.setTimeout(() => {
+          emitNekoDebug("neko.touch_scroll_bridge.native_tap_assist", {
+            elapsedMs,
+            movedPx: Math.round(movedPx),
+          });
+          clickNekoAtPoint(clientX, clientY);
+        }, 120);
+      }
+      reset(shouldClick ? "native-tap-assist-scheduled" : "native-touch-complete");
+      return;
+    }
+    stopTouchEventForNekoBridge(event);
     if (shouldClick && touch) {
       clickNekoAt(touch);
     }
@@ -1259,7 +1534,7 @@ function startMobileTouchScrollBridge(neko: NekoInstance): void {
   };
 
   const onTouchCancel = (event: TouchEvent) => {
-    if (state) {
+    if (state?.mode === "fallback") {
       stopTouchEventForNekoBridge(event);
     }
     reset("touch-cancel");
@@ -1269,6 +1544,12 @@ function startMobileTouchScrollBridge(neko: NekoInstance): void {
   listenerTarget.addEventListener("touchmove", onTouchMove, { capture: true, passive: false, signal });
   listenerTarget.addEventListener("touchend", onTouchEnd, { capture: true, passive: false, signal });
   listenerTarget.addEventListener("touchcancel", onTouchCancel, { capture: true, passive: false, signal });
+  requestNekoControlForBridge("attach");
+  window.setTimeout(() => {
+    if (!signal.aborted && nekoInstance === neko && neko.controlling !== true) {
+      requestNekoControlForBridge("attach-retry");
+    }
+  }, 500);
   emitNekoDebug("neko.touch_scroll_bridge.attached", {
     environment: readNekoTouchScrollBridgeEnvironment(neko),
     target: "document",
@@ -1460,6 +1741,9 @@ export function selectNekoMediaSizeForLayout(
     if (compatibility !== "orientation-mismatch" && compatibility !== "aspect-mismatch") {
       return { ...intrinsic, intrinsicCompatibility: compatibility, source: "intrinsic" };
     }
+    if (compatibility === "aspect-mismatch") {
+      return { ...intrinsic, intrinsicCompatibility: compatibility, source: "intrinsic" };
+    }
     if (validSize(screen)) {
       return { ...screen, intrinsicCompatibility: compatibility, source: "screen" };
     }
@@ -1476,7 +1760,12 @@ export function selectNekoMediaDisplayForLayout(
   intrinsic: { height: number; width: number } | null
 ): NekoMediaDisplaySelection {
   const selected = selectNekoMediaSizeForLayout(layout, intrinsic);
-  if (intrinsic && validSize(intrinsic) && selected.intrinsicCompatibility === "orientation-mismatch") {
+  if (
+    intrinsic &&
+    validSize(intrinsic) &&
+    (selected.intrinsicCompatibility === "orientation-mismatch" ||
+      selected.intrinsicCompatibility === "aspect-mismatch")
+  ) {
     return {
       ...intrinsic,
       fit: "cover",
@@ -1828,6 +2117,7 @@ export async function startNeko(container: HTMLElement, config: NekoClientConfig
     startMobileTextInputGuard();
     startClipboardBridge();
     startVideoPlaybackBridge();
+    startNekoPointerTelemetry();
     startMobileTouchScrollBridge(neko);
     startMediaLayoutBridge();
     neko.events?.on?.("room.screen.updated", () => {
@@ -1873,18 +2163,61 @@ export function isNekoRemoteInputFocused(): boolean {
   return remoteInputFocused;
 }
 
-export function setNekoViewportLayout(layout: NekoViewportLayout | null): void {
+export interface NekoSetViewportLayoutOptions {
+  /**
+   * Live measured rect of the actual stream container (e.g. the Stage-2 Dialog
+   * popup observed via ResizeObserver). When provided, it is preferred over
+   * the document/window viewport for matching the n.eko container. This is the
+   * source of truth for stage-2 dialog sizing — the synthesized viewport
+   * snapshot can lag the dialog mount and select the wrong screen mode.
+   */
+  containerRect?: { height: number; width: number } | null;
+}
+
+export function setNekoViewportLayout(
+  layout: NekoViewportLayout | null,
+  options: NekoSetViewportLayoutOptions = {}
+): void {
   viewportLayoutUpdatesScreenState = true;
-  viewportLayout = layout;
+  viewportLayout = applyContainerRectOverride(layout, options.containerRect);
   applyViewportLayout();
   onNextFrame(applyViewportLayout);
 }
 
-export function setNekoPresentationViewportLayout(layout: NekoViewportLayout | null): void {
+export function setNekoPresentationViewportLayout(
+  layout: NekoViewportLayout | null,
+  options: NekoSetViewportLayoutOptions = {}
+): void {
   viewportLayoutUpdatesScreenState = false;
-  viewportLayout = layout;
+  viewportLayout = applyContainerRectOverride(layout, options.containerRect);
   applyViewportLayout();
   onNextFrame(applyViewportLayout);
+}
+
+function applyContainerRectOverride(
+  layout: NekoViewportLayout | null,
+  containerRect: { height: number; width: number } | null | undefined
+): NekoViewportLayout | null {
+  if (!layout) {
+    return null;
+  }
+  if (!(containerRect && containerRect.width > 0 && containerRect.height > 0)) {
+    return layout;
+  }
+  const overrideWidth = Math.max(1, Math.round(containerRect.width));
+  const overrideHeight = Math.max(1, Math.round(containerRect.height));
+  if (overrideWidth === layout.viewportWidth && overrideHeight === layout.viewportHeight) {
+    return layout;
+  }
+  emitNekoDebug("neko.viewport_layout.container_rect_override", {
+    layout,
+    override: { height: overrideHeight, width: overrideWidth },
+  });
+  return {
+    ...layout,
+    viewportHeight: overrideHeight,
+    viewportWidth: overrideWidth,
+  };
 }
 
 function focusOverlayTextarea(source: string): boolean {
@@ -1960,6 +2293,7 @@ export function stopNeko(container: HTMLElement): void {
   stopControlPasteGuard();
   stopClipboardWriteGuard();
   stopVideoPlaybackBridge();
+  stopNekoPointerTelemetry();
   stopMobileTouchScrollBridge();
   stopMediaLayoutBridge();
   remoteInputFocused = false;

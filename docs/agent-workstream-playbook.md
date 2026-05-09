@@ -198,8 +198,12 @@ all direct writes under `.git/` as protected repository-internal mutation and
 will pause for approval even when `git add`, `git commit`, `git status`, and
 other normal Git commands are safe. The owner agent owns direct hub writes. A
 worker should instead print its final report or write it to a non-sensitive
-handoff path such as `tmp/workstreams/<branch>.md`; the owner copies reviewed
-handoffs into `.git/workstreams` as needed.
+handoff path under the main worktree, such as
+`$(git rev-parse --git-common-dir)/../tmp/workstreams/<branch>-report.md`.
+This path is intentionally rooted from Git's common directory so reports written
+from linked worktrees survive worktree removal and are visible to the owner from
+the main repo. The owner copies reviewed handoffs into `.git/workstreams` as
+needed.
 
 Do not put active queue state in `docs/` or `openspec/`. Those are committed
 artifacts, not a local message bus. Commit only stable process docs, design

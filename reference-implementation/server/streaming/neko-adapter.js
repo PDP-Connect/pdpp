@@ -19,7 +19,7 @@ const BROWSER_OWNER_MODES = new Set(['neko-owned', 'browser-owner']);
 const STEALTH_MODES = new Set(['strict', 'balanced', 'assistive']);
 const BROWSER_CHROME_TARGET_RE = /^(chrome|chrome-extension|devtools|edge|chrome-error):/;
 const PRIMARY_PAGE_TARGET_RE = /^(https?|data|file):/;
-const MAX_COVER_CROP_RATIO = 0.07;
+const MAX_COVER_CROP_RATIO = 0.02;
 const VERTICAL_CROP_WEIGHT = 2;
 
 function readEnv(env = process.env || {}) {
@@ -364,6 +364,19 @@ function viewportHasSeparateScreenDimensions(viewport) {
   return !!(dimensions && screen && (dimensions.width !== screen.width || dimensions.height !== screen.height));
 }
 
+function viewportVisibleAreaOverride(viewport) {
+  if (!viewportHasSeparateScreenDimensions(viewport)) return null;
+  const screen = viewportScreenDimensions(viewport);
+  if (!screen) return null;
+  return {
+    x: 0,
+    y: 0,
+    width: screen.width,
+    height: screen.height,
+    scale: 1,
+  };
+}
+
 function viewportDeviceScaleFactor(viewport) {
   const dpr = Number(viewport?.deviceScaleFactor);
   return Number.isFinite(dpr) && dpr > 0 ? dpr : 1;
@@ -383,6 +396,45 @@ function viewportUserAgent(viewport) {
     : null;
 }
 
+function metricNearlyEqual(actual, expected, tolerance = 1) {
+  return Number.isFinite(Number(actual)) && Math.abs(Number(actual) - expected) <= tolerance;
+}
+
+function pageMetricsMismatch(page, viewport) {
+  if (!page || typeof page !== 'object') return null;
+  const dimensions = viewportDimensions(viewport);
+  if (!dimensions) return null;
+  const screenDimensions = viewportScreenDimensions(viewport) || dimensions;
+  const expected = {
+    innerWidth: dimensions.width,
+    innerHeight: dimensions.height,
+    screenWidth: screenDimensions.width,
+    screenHeight: screenDimensions.height,
+    devicePixelRatio: viewportDeviceScaleFactor(viewport),
+    hasTouch: viewportHasTouch(viewport),
+    userAgent: viewportUserAgent(viewport),
+  };
+  const mismatches = {};
+  for (const key of ['innerWidth', 'innerHeight', 'screenWidth', 'screenHeight']) {
+    if (!metricNearlyEqual(page[key], expected[key])) {
+      mismatches[key] = { actual: page[key] ?? null, expected: expected[key] };
+    }
+  }
+  if (!metricNearlyEqual(page.devicePixelRatio, expected.devicePixelRatio, 0.01)) {
+    mismatches.devicePixelRatio = {
+      actual: page.devicePixelRatio ?? null,
+      expected: expected.devicePixelRatio,
+    };
+  }
+  if (expected.hasTouch && typeof page.hasTouch === 'boolean' && page.hasTouch !== expected.hasTouch) {
+    mismatches.hasTouch = { actual: page.hasTouch, expected: expected.hasTouch };
+  }
+  if (expected.userAgent && typeof page.userAgent === 'string' && page.userAgent !== expected.userAgent) {
+    mismatches.userAgent = { actual: page.userAgent, expected: expected.userAgent };
+  }
+  return Object.keys(mismatches).length > 0 ? mismatches : null;
+}
+
 function buildViewportStatusExpression() {
   return `(() => JSON.stringify({
     url: location.href,
@@ -395,7 +447,9 @@ function buildViewportStatusExpression() {
     screenHeight: window.screen && window.screen.height,
     devicePixelRatio: window.devicePixelRatio,
     userAgent: navigator.userAgent,
-    hasTouch: (navigator.maxTouchPoints || 0) > 0 || 'ontouchstart' in window,
+    maxTouchPoints: navigator.maxTouchPoints || 0,
+    touchEventPresent: 'ontouchstart' in window,
+    hasTouch: (navigator.maxTouchPoints || 0) > 0,
     activeElement: document.activeElement ? {
       tagName: document.activeElement.tagName,
       type: document.activeElement.type || '',
@@ -546,6 +600,7 @@ export function createNekoCompanion(options = {}) {
   let pageCdpSessionId = null;
   let pageFocusSetupPromise = null;
   let pageFocusSetupComplete = false;
+  let lastCdpViewport = null;
   let started = false;
   let closed = false;
   let authReady = false;
@@ -938,6 +993,7 @@ export function createNekoCompanion(options = {}) {
     const dimensions = viewportDimensions(viewport);
     if (!dimensions) return;
     const screenDimensions = viewportScreenDimensions(viewport) || dimensions;
+    const visibleAreaOverride = viewportVisibleAreaOverride(viewport);
     const deviceScaleFactor = viewportDeviceScaleFactor(viewport);
     const mobile = viewportIsMobile(viewport);
     const hasTouch = viewportHasTouch(viewport);
@@ -985,6 +1041,7 @@ export function createNekoCompanion(options = {}) {
             positionX: 0,
             positionY: 0,
             screenOrientation,
+            ...(visibleAreaOverride ? { viewport: visibleAreaOverride } : {}),
           },
           signal,
         );
@@ -997,12 +1054,12 @@ export function createNekoCompanion(options = {}) {
       try {
         await sendPageCdp(
           'Emulation.setTouchEmulationEnabled',
-          hasTouch ? { enabled: true, maxTouchPoints: 5 } : { enabled: false },
+          hasTouch ? { enabled: true, maxTouchPoints: 5 } : { enabled: false, maxTouchPoints: 0 },
           signal,
         );
         await sendPageCdp(
           'Emulation.setEmitTouchEventsForMouse',
-          { enabled: hasTouch, configuration: mobile ? 'mobile' : 'desktop' },
+          { enabled: false, configuration: mobile ? 'mobile' : 'desktop' },
           signal,
         );
       } catch (err) {
@@ -1021,7 +1078,7 @@ export function createNekoCompanion(options = {}) {
   }
 
   async function applyInitialNavigation(signal) {
-    if (!navigationUrl || navigationApplied) return;
+    if (!navigationUrl || navigationApplied) return false;
     if (!pageNavigationCdpAllowed) {
       const err = createCdpError(
         'n.eko CDP navigation control is not configured',
@@ -1037,6 +1094,7 @@ export function createNekoCompanion(options = {}) {
     try {
       await sendPageCdp('Page.navigate', { url: navigationUrl }, signal);
       navigationApplied = true;
+      return true;
     } catch (err) {
       safeLog(logger, 'warn', 'neko_initial_navigation_failed', { error: err?.message });
       throw err;
@@ -1076,6 +1134,24 @@ export function createNekoCompanion(options = {}) {
     const text = result?.result?.value;
     if (typeof text === 'string' && text.length > 0) {
       emitEvent({ kind: 'clipboard', text });
+    }
+  }
+
+  async function readPageViewportStatus(signal) {
+    const result = await sendPageCdp(
+      'Runtime.evaluate',
+      {
+        expression: buildViewportStatusExpression(),
+        returnByValue: true,
+      },
+      signal,
+    );
+    const value = result?.result?.value;
+    if (typeof value !== 'string') return null;
+    try {
+      return JSON.parse(value);
+    } catch {
+      return { raw: value };
     }
   }
 
@@ -1127,21 +1203,27 @@ export function createNekoCompanion(options = {}) {
 
     if (assistivePageCdpAllowed) {
       try {
-        const result = await sendPageCdp(
-          'Runtime.evaluate',
-          {
-            expression: buildViewportStatusExpression(),
-            returnByValue: true,
-          },
-          abortController?.signal,
-        );
-        const value = result?.result?.value;
         status.page_cdp_available = true;
-        if (typeof value === 'string') {
+        status.page = await readPageViewportStatus(abortController?.signal);
+        const expectedViewport = lastCdpViewport || currentViewport;
+        const mismatch = pageMetricsMismatch(status.page, expectedViewport);
+        if (mismatch) {
+          status.page_metrics_mismatch = mismatch;
+          closePageCdpConnection();
           try {
-            status.page = JSON.parse(value);
-          } catch {
-            status.page = { raw: value };
+            await applyCdpViewportBestEffort(expectedViewport, abortController?.signal);
+            status.page_metrics_reapplied = true;
+            status.page = await readPageViewportStatus(abortController?.signal);
+            const remainingMismatch = pageMetricsMismatch(status.page, expectedViewport);
+            if (remainingMismatch) {
+              status.page_metrics_mismatch_after_reapply = remainingMismatch;
+            }
+          } catch (err) {
+            closePageCdpConnection();
+            status.page_metrics_reapply_error = {
+              code: err?.code || 'neko_page_metrics_reapply_failed',
+              message: err?.message || 'n.eko page metrics reapply failed',
+            };
           }
         }
       } catch (err) {
@@ -1164,7 +1246,7 @@ export function createNekoCompanion(options = {}) {
   }
 
   async function applyViewportBestEffort(viewport, signal) {
-    if (!viewport || typeof viewport !== 'object') return;
+    if (!viewport || typeof viewport !== 'object') return null;
     const payload =
       typeof target.viewportPayload === 'function'
         ? target.viewportPayload(viewport)
@@ -1209,7 +1291,9 @@ export function createNekoCompanion(options = {}) {
             width: appliedScreen.width,
           }
       : viewport;
+    lastCdpViewport = cdpViewport;
     await applyCdpViewportBestEffort(cdpViewport, signal);
+    return cdpViewport;
   }
 
   function emitFrame(data) {
@@ -1267,9 +1351,16 @@ export function createNekoCompanion(options = {}) {
     abortController = new AbortController();
     currentViewport = viewport || null;
     await authenticate(abortController.signal);
-    await applyViewportBestEffort(currentViewport, abortController.signal);
+    currentViewport = (await applyViewportBestEffort(currentViewport, abortController.signal)) || currentViewport;
+    const navigated = await applyInitialNavigation(abortController.signal);
+    if (navigated && lastCdpViewport) {
+      // Page navigation can clear target-scoped emulation in Chromium. Reopen
+      // the page session and re-apply metrics so the rendered page matches the
+      // already-selected n.eko screen size from the first viewport pass.
+      closePageCdpConnection();
+      await applyCdpViewportBestEffort(lastCdpViewport, abortController.signal);
+    }
     await setupFocusDetectionBestEffort(abortController.signal);
-    await applyInitialNavigation(abortController.signal);
     started = true;
     pollLoopPromise = pollLoop(abortController.signal).catch((err) => {
       safeLog(logger, 'warn', 'neko_poll_loop_failed', { error: err?.message });
@@ -1291,7 +1382,7 @@ export function createNekoCompanion(options = {}) {
     if (event?.type === 'viewport') {
       currentViewport = event;
       await authenticate(abortController?.signal);
-      await applyViewportBestEffort(event, abortController?.signal);
+      currentViewport = (await applyViewportBestEffort(event, abortController?.signal)) || currentViewport;
       return;
     }
 

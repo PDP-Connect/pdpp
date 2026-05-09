@@ -78,3 +78,5 @@ services:
         condition: service_healthy
     environment:
       PDPP_ENABLE_STREAM_PLAYGROUND: "1"
+    volumes:
+      - ./tmp:/app/tmp

@@ -136,4 +136,4 @@
 - [x] 17.2 Add mobile keyboard optimistic reacquire on owner gesture with rollback when the remote page does not confirm editable focus.
 - [x] 17.3 Split CSS viewport dimensions from bounded high-DPR n.eko screen/capture dimensions and keep the backend CDP emulation CSS viewport stable.
 - [x] 17.4 Add deterministic coverage for viewport authority, bounded capture target selection, keyboard reacquire wiring, and n.eko CSS-vs-capture backend behavior.
-- [ ] 17.5 Re-run affected checks, rebuild/recreate the n.eko Docker overlay, and run public desktop plus real-phone smoke focused on keyboard reacquire, rotation settle, and visual sharpness. Public Playwright mobile-emulated smoke now passes with clean rotation telemetry; physical real-phone smoke remains.
+- [ ] 17.5 Re-run affected checks, rebuild/recreate the n.eko Docker overlay, and run public desktop plus real-phone smoke focused on keyboard reacquire, rotation settle, and visual sharpness. Public raw-CDP desktop and mobile-emulated smokes now pass with clean rotation, visual-quality, and pointer telemetry; physical real-phone smoke remains.

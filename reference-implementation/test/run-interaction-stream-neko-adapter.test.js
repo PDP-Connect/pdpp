@@ -236,6 +236,67 @@ test('n.eko adapter logs in, applies configured viewport endpoint, and emits bas
   assert.equal(companion._internal.isClosed(), true);
 });
 
+test('n.eko adapter frame metadata follows the applied desktop screen preset', async () => {
+  const jpeg = 'jpeg-frame-desktop';
+  const fetchImpl = makeFetch([
+    {
+      method: 'POST',
+      url: 'https://neko.test/api/login',
+      response: makeResponse({ headers: { 'set-cookie': 'NEKO_SESSION=session-1; Path=/; HttpOnly' } }),
+    },
+    {
+      method: 'GET',
+      url: 'https://neko.test/api/room/screen/configurations',
+      response: makeResponse({
+        json: [
+          { width: 1280, height: 1024, rate: 30 },
+          { width: 1600, height: 1200, rate: 30 },
+        ],
+      }),
+    },
+    {
+      method: 'POST',
+      url: 'https://neko.test/api/room/screen',
+      response: makeResponse({ json: { width: 1280, height: 1024, rate: 30 } }),
+    },
+    {
+      method: 'GET',
+      url: 'https://neko.test/api/room/screen/cast.jpg',
+      response: makeResponse({ body: jpeg }),
+    },
+  ]);
+  const sleep = makeAbortableSleep();
+  const companion = createNekoCompanion({
+    origin: 'https://neko.test',
+    username: 'operator',
+    password: 'secret',
+    fetchImpl,
+    sleep,
+    now: () => 4321,
+    screenConfigurationsEndpoint: '/api/room/screen/configurations',
+    screenEndpoint: '/api/room/screen',
+  });
+  const frames = [];
+  companion.onFrame((frame) => frames.push(frame));
+
+  await companion.start({ width: 1117, height: 1123, deviceScaleFactor: 1.15 });
+  await waitFor(() => frames.length === 1);
+
+  const screenPost = fetchImpl.calls.find((call) => call.url === 'https://neko.test/api/room/screen');
+  assert.deepEqual(JSON.parse(screenPost.init.body), { width: 1280, height: 1024, rate: 30 });
+  assert.deepEqual(frames[0].metadata, {
+    device_width: 1280,
+    device_height: 1024,
+    offset_top: 0,
+    page_scale_factor: 1.15,
+    timestamp: 4321,
+    scroll_offset_x: 0,
+    scroll_offset_y: 0,
+  });
+
+  await companion.stop();
+});
+
 test('n.eko adapter uses bearer auth and falls back from screencast to screenshot endpoint', async () => {
   const jpeg = 'fallback-jpeg';
   const fetchImpl = makeFetch([
@@ -395,7 +456,19 @@ test('n.eko adapter applies RBS-style viewport, paste, and copy control through 
       if (params?.expression?.includes('getSelection')) {
         return { result: { value: 'copied remote text' } };
       }
-      return { result: { value: JSON.stringify({ innerWidth: 390, innerHeight: 844, hasTouch: true }) } };
+      return {
+        result: {
+          value: JSON.stringify({
+            innerWidth: 392,
+            innerHeight: 844,
+            screenWidth: 392,
+            screenHeight: 844,
+            devicePixelRatio: 3,
+            userAgent: 'Mobile Safari test UA',
+            hasTouch: true,
+          }),
+        },
+      };
     }
     return {};
   });
@@ -477,7 +550,15 @@ test('n.eko adapter applies RBS-style viewport, paste, and copy control through 
     target: { id: 'page-1', url: 'data:text/html,<body></body>' },
     window: { windowId: 7 },
     page_cdp_available: true,
-    page: { innerWidth: 390, innerHeight: 844, hasTouch: true },
+    page: {
+      innerWidth: 392,
+      innerHeight: 844,
+      screenWidth: 392,
+      screenHeight: 844,
+      devicePixelRatio: 3,
+      userAgent: 'Mobile Safari test UA',
+      hasTouch: true,
+    },
   });
 
   await companion.stop();
@@ -492,6 +573,7 @@ test('n.eko adapter keeps CSS viewport separate from high-DPR screen capture dim
         json: [
           { width: 500, height: 915, rate: 29 },
           { width: 448, height: 916, rate: 30 },
+          { width: 1008, height: 1840, rate: 30 },
           { width: 1080, height: 1920, rate: 30 },
           { width: 1280, height: 720, rate: 30 },
         ],
@@ -500,7 +582,7 @@ test('n.eko adapter keeps CSS viewport separate from high-DPR screen capture dim
     {
       method: 'POST',
       url: 'https://neko.test/api/room/screen',
-      response: makeResponse({ json: { width: 1080, height: 1920, rate: 30 } }),
+      response: makeResponse({ json: { width: 1008, height: 1840, rate: 30 } }),
     },
     {
       method: 'GET',
@@ -555,15 +637,15 @@ test('n.eko adapter keeps CSS viewport separate from high-DPR screen capture dim
   });
 
   const screenPost = fetchImpl.calls.find((call) => call.url === 'https://neko.test/api/room/screen');
-  assert.deepEqual(JSON.parse(screenPost.init.body), { width: 1080, height: 1920, rate: 30 });
+  assert.deepEqual(JSON.parse(screenPost.init.body), { width: 1008, height: 1840, rate: 30 });
 
   const sent = fakeWs.sockets.flatMap((socket) => socket.sent);
   assert.ok(
     sent.some(
       (message) =>
         message.method === 'Browser.setWindowBounds' &&
-        message.params.bounds.width === 1080 &&
-        message.params.bounds.height === 1920,
+        message.params.bounds.width === 1008 &&
+        message.params.bounds.height === 1840,
     ),
   );
   assert.ok(
@@ -572,11 +654,57 @@ test('n.eko adapter keeps CSS viewport separate from high-DPR screen capture dim
         message.method === 'Emulation.setDeviceMetricsOverride' &&
         message.params.width === 448 &&
         message.params.height === 819 &&
-        message.params.screenWidth === 1080 &&
-        message.params.screenHeight === 1920 &&
+        message.params.screenWidth === 1008 &&
+        message.params.screenHeight === 1840 &&
         message.params.deviceScaleFactor === 2.25,
     ),
   );
+
+  await companion.stop();
+});
+
+test('n.eko adapter selects exact Android visible-height portrait capture when exposed', async () => {
+  const fetchImpl = makeFetch([
+    {
+      method: 'GET',
+      url: 'https://neko.test/api/room/screen/configurations',
+      response: makeResponse({
+        json: [
+          { width: 1080, height: 1920, rate: 30 },
+          { width: 1008, height: 1736, rate: 30 },
+          { width: 1008, height: 1840, rate: 30 },
+          { width: 904, height: 2000, rate: 30 },
+        ],
+      }),
+    },
+    {
+      method: 'POST',
+      url: 'https://neko.test/api/room/screen',
+      response: ({ init }) => makeResponse({ json: JSON.parse(init.body) }),
+    },
+  ]);
+  const companion = createNekoCompanion({
+    origin: 'https://neko.test',
+    bearerToken: 'token-visible-height',
+    fetchImpl,
+    screenConfigurationsEndpoint: '/api/room/screen/configurations',
+    screenEndpoint: '/api/room/screen',
+  });
+
+  await companion.dispatch({
+    type: 'viewport',
+    width: 448,
+    height: 771,
+    screenWidth: 1008,
+    screenHeight: 1736,
+    deviceScaleFactor: 2.25,
+    mobile: true,
+    hasTouch: true,
+  });
+
+  const screenPost = fetchImpl.calls.find((call) => call.url === 'https://neko.test/api/room/screen');
+  assert.ok(screenPost, 'expected POST to /api/room/screen');
+  assert.deepEqual(JSON.parse(screenPost.init.body), { width: 1008, height: 1736, rate: 30 });
 
   await companion.stop();
 });
@@ -665,6 +793,208 @@ test('n.eko adapter prefers the least-cropped landscape screen preset', async ()
   assert.deepEqual(JSON.parse(screenPost.init.body), { width: 936, height: 432, rate: 29 });
 });
 
+test('n.eko adapter selects a high-DPR shallow landscape preset for Android landscape capture (regression: 920x412 fallback)', async () => {
+  // Telemetry from viewer 4831e726-fd41-43bc-8283-bec8c4ac14c7: Android Chrome
+  // rotated landscape requested viewport=947x364 CSS @ dpr=2.25 ->
+  // screenWidth=2128, screenHeight=816 capture target. With only the legacy
+  // landscape modelines (920x412, 936x432, etc.) the encoder produced
+  // 920x412 frames into a cover-fit box sized for 2128x816, yielding
+  // ~13% non-uniform vertical stretch and 2x physical-pixel upscale.
+  // After adding shallow-DPR landscape modelines (1840x704, 1920x736,
+  // 2000x768, 2112x816, 2128x816, 2176x832, 2208x848) the picker must
+  // choose the cleanest fit (2128x816) and never fall back to 920x412.
+  const fetchImpl = makeFetch([
+    {
+      method: 'GET',
+      url: 'https://neko.test/api/room/screen/configurations',
+      response: makeResponse({
+        json: [
+          // Legacy landscape modes that previously won this race.
+          { width: 920, height: 412, rate: 30 },
+          { width: 936, height: 432, rate: 30 },
+          { width: 1280, height: 720, rate: 30 },
+          { width: 1920, height: 1080, rate: 30 },
+          // Newly exposed shallow high-DPR landscape modes.
+          { width: 1840, height: 704, rate: 30 },
+          { width: 1920, height: 736, rate: 30 },
+          { width: 2000, height: 768, rate: 30 },
+          { width: 2112, height: 816, rate: 30 },
+          { width: 2128, height: 816, rate: 30 },
+          { width: 2176, height: 832, rate: 30 },
+          { width: 2208, height: 848, rate: 30 },
+          // Portrait decoys to confirm orientation-correct selection.
+          { width: 1080, height: 1920, rate: 30 },
+          { width: 1008, height: 2176, rate: 30 },
+        ],
+      }),
+    },
+    {
+      method: 'POST',
+      url: 'https://neko.test/api/room/screen',
+      response: ({ init }) => makeResponse({ json: JSON.parse(init.body) }),
+    },
+  ]);
+  const companion = createNekoCompanion({
+    origin: 'https://neko.test',
+    bearerToken: 'token-landscape-dpr',
+    fetchImpl,
+    screenConfigurationsEndpoint: '/api/room/screen/configurations',
+    screenEndpoint: '/api/room/screen',
+  });
+
+  await companion.dispatch({
+    type: 'viewport',
+    width: 947,
+    height: 364,
+    screenWidth: 2128,
+    screenHeight: 816,
+    deviceScaleFactor: 2.25,
+    mobile: true,
+    hasTouch: true,
+  });
+
+  const screenPost = fetchImpl.calls.find((call) => call.url === 'https://neko.test/api/room/screen');
+  assert.ok(screenPost, 'expected POST to /api/room/screen');
+  const applied = JSON.parse(screenPost.init.body);
+  assert.deepEqual(
+    applied,
+    { width: 2128, height: 816, rate: 30 },
+    `expected 2128x816 preset, got ${JSON.stringify(applied)}`,
+  );
+  assert.notDeepStrictEqual(
+    applied,
+    { width: 920, height: 412, rate: 30 },
+    'must not fall back to 920x412 landscape preset',
+  );
+  assert.notEqual(applied.width, 920, 'must not fall back to 920-wide landscape preset');
+});
+
+test('n.eko adapter targets the actual capture-pixel paint surface so the X mode matches Emulation, not the larger fallback screen mode (regression: Brave Android white borders)', async () => {
+  // Telemetry from viewer 8934a152-fe7b-48b1-9176-c493d0e1954c: Brave on
+  // Android Chrome 147 portrait — viewport=448x771 CSS @ dpr=2.25. Chromium
+  // emulation paints 448*2.25 = 1008 by 771*2.25 = 1734.75 ~ 1735 device
+  // pixels. If the picker selects a larger X mode (1080x1920 was the only
+  // fitting candidate before owner added the 1008x1736 modeline), Chromium
+  // top-left-anchors the 1008x1735 bitmap inside the larger window and the
+  // captured frame contains a strip of X-server desktop on the right
+  // (1080-1008=72 native px) and bottom (1920-1735=185 native px). The
+  // user-visible result is "tiny / pinned left / huge white borders".
+  //
+  // The adapter must target the posted capture surface (`screenWidth` ×
+  // `screenHeight`), which the viewer has already aligned to the available
+  // device-pixel target. This test pins that contract.
+  const fetchImpl = makeFetch([
+    {
+      method: 'GET',
+      url: 'https://neko.test/api/room/screen/configurations',
+      response: makeResponse({
+        json: [
+          // Legacy modes the picker had to fall back to before the 1008x1736
+          // modeline was exposed. 1080x1920 was the closest fitting cover.
+          { width: 1080, height: 1920, rate: 30 },
+          { width: 1280, height: 720, rate: 30 },
+          { width: 1920, height: 1080, rate: 30 },
+          // The exact paint-surface match. Picker must choose this one.
+          { width: 1008, height: 1736, rate: 30 },
+          // Other 1008-wide neighbours that could be confused for the match.
+          { width: 1008, height: 1840, rate: 30 },
+          { width: 1008, height: 2176, rate: 30 },
+        ],
+      }),
+    },
+    {
+      method: 'POST',
+      url: 'https://neko.test/api/room/screen',
+      response: ({ init }) => makeResponse({ json: JSON.parse(init.body) }),
+    },
+  ]);
+  const companion = createNekoCompanion({
+    origin: 'https://neko.test',
+    bearerToken: 'token-brave-portrait',
+    fetchImpl,
+    screenConfigurationsEndpoint: '/api/room/screen/configurations',
+    screenEndpoint: '/api/room/screen',
+  });
+
+  await companion.dispatch({
+    type: 'viewport',
+    width: 448,
+    height: 771,
+    screenWidth: 1008,
+    screenHeight: 1736,
+    deviceScaleFactor: 2.25,
+    mobile: true,
+    hasTouch: true,
+  });
+
+  const screenPost = fetchImpl.calls.find((call) => call.url === 'https://neko.test/api/room/screen');
+  assert.ok(screenPost, 'expected POST to /api/room/screen');
+  const applied = JSON.parse(screenPost.init.body);
+  assert.deepEqual(
+    applied,
+    { width: 1008, height: 1736, rate: 30 },
+    `expected the exact paint-surface 1008x1736 mode, got ${JSON.stringify(applied)}`,
+  );
+  assert.notEqual(
+    applied.width, 1080,
+    'must not pick the wider 1080x1920 mode that leaks X desktop into the captured frame',
+  );
+  assert.notEqual(
+    applied.height, 1840,
+    'must not pick the taller 1008x1840 neighbour when the exact paint-height mode is available',
+  );
+});
+
+test('n.eko adapter still selects 920x412 for low-DPR landscape viewports when no high-DPR mode fits (legacy preservation)', async () => {
+  // Without the shallow high-DPR modes available (e.g. low-DPR desktop
+  // landscape viewer requesting roughly 920x440), ranking must continue to
+  // pick the closest legacy landscape preset — 920x412 is still the
+  // best-effort choice. Guards against an over-eager bias toward shallow
+  // high-DPR modes when the target genuinely is small.
+  const fetchImpl = makeFetch([
+    {
+      method: 'GET',
+      url: 'https://neko.test/api/room/screen/configurations',
+      response: makeResponse({
+        json: [
+          { width: 920, height: 412, rate: 30 },
+          { width: 936, height: 432, rate: 30 },
+          { width: 1280, height: 720, rate: 30 },
+          { width: 1920, height: 1080, rate: 30 },
+          { width: 1080, height: 1920, rate: 30 },
+        ],
+      }),
+    },
+    {
+      method: 'POST',
+      url: 'https://neko.test/api/room/screen',
+      response: ({ init }) => makeResponse({ json: JSON.parse(init.body) }),
+    },
+  ]);
+  const companion = createNekoCompanion({
+    origin: 'https://neko.test',
+    bearerToken: 'token-landscape-low',
+    fetchImpl,
+    screenConfigurationsEndpoint: '/api/room/screen/configurations',
+    screenEndpoint: '/api/room/screen',
+  });
+
+  await companion.dispatch({
+    type: 'viewport',
+    width: 916,
+    height: 412,
+    screenWidth: 916,
+    screenHeight: 412,
+    deviceScaleFactor: 1,
+    mobile: false,
+    hasTouch: false,
+  });
+
+  const screenPost = fetchImpl.calls.find((call) => call.url === 'https://neko.test/api/room/screen');
+  const applied = JSON.parse(screenPost.init.body);
+  assert.equal(applied.width, 920, `expected legacy 920-wide landscape preset, got ${JSON.stringify(applied)}`);
+});
+
 test('n.eko adapter navigates an explicit start URL through CDP in non-strict modes', async () => {
   const fetchImpl = makeFetch([
     {
@@ -713,7 +1043,7 @@ test('n.eko adapter navigates an explicit start URL through CDP in non-strict mo
     stealthMode: 'balanced',
   });
 
-  await companion.start({ width: 800, height: 600 });
+  await companion.start({ width: 800, height: 600, deviceScaleFactor: 2 });
   await waitFor(() =>
     fakeWs.sockets
       .flatMap((socket) => socket.sent)
@@ -727,6 +1057,37 @@ test('n.eko adapter navigates an explicit start URL through CDP in non-strict mo
         message.method === 'Page.navigate' &&
         message.params.url === 'data:text/html,<h1>playground</h1>',
     ),
+  );
+  const pageSessionSockets = fakeWs.sockets.filter((socket) =>
+    socket.sent.some((message) => message.method === 'Target.attachToTarget'),
+  );
+  assert.equal(
+    pageSessionSockets.length,
+    2,
+    'navigation should reopen the page CDP session before re-applying device metrics',
+  );
+  assert.ok(
+    pageSessionSockets[0].sent.some((message) => message.method === 'Page.navigate'),
+    'first page CDP session should perform initial navigation',
+  );
+  assert.ok(
+    pageSessionSockets[1].sent.some(
+      (message) =>
+        message.method === 'Emulation.setDeviceMetricsOverride' &&
+        message.params.width === 800 &&
+        message.params.height === 600 &&
+        message.params.deviceScaleFactor === 2,
+    ),
+    'fresh page CDP session should re-apply viewport metrics after navigation',
+  );
+  assert.ok(
+    sent.some(
+      (message) =>
+        message.method === 'Emulation.setTouchEmulationEnabled' &&
+        message.params.enabled === false &&
+        message.params.maxTouchPoints === 0,
+    ),
+    'desktop viewport should explicitly clear touch emulation',
   );
 
   await companion.stop();

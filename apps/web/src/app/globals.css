@@ -99,6 +99,7 @@ html > body[data-scroll-locked] {
   min-block-size: 0;
   max-width: 100%;
   max-height: 100%;
+  background: var(--pdpp-stream-video-matte);
 }
 
 .pdpp-stream-dialog-backdrop {
@@ -106,7 +107,7 @@ html > body[data-scroll-locked] {
 }
 
 .pdpp-stream-dialog {
-  --pdpp-stream-dialog-desktop-inset: 1.5rem;
+  --pdpp-stream-video-matte: oklch(0.08 0.005 260);
   position: fixed;
   inset: 0;
   inset-block-start: 0;
@@ -128,7 +129,7 @@ html > body[data-scroll-locked] {
   scale: 1;
   border: 0;
   border-radius: 0;
-  background: var(--background);
+  background: var(--pdpp-stream-video-matte);
   padding: 0;
   box-shadow: none;
   gap: 0;
@@ -143,23 +144,6 @@ html > body[data-scroll-locked] {
     overflow-y: auto;
     overscroll-behavior-y: contain;
     -webkit-overflow-scrolling: touch;
-  }
-}
-
-@media (hover: hover) and (pointer: fine) and (min-width: 40rem) and (min-height: 30rem) {
-  .pdpp-stream-dialog-backdrop {
-    background: color-mix(in oklch, var(--foreground) 30%, transparent);
-  }
-
-  .pdpp-stream-dialog {
-    inset: var(--pdpp-stream-dialog-desktop-inset);
-    inline-size: auto;
-    block-size: auto;
-    width: auto;
-    height: auto;
-    border: 1px solid color-mix(in oklch, var(--border) 70%, transparent);
-    border-radius: 0.75rem;
-    box-shadow: 0 1.5rem 4rem color-mix(in oklch, var(--foreground) 18%, transparent);
   }
 }
 

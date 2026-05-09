@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  localSurfaceCanDisplayPresentation,
   nextPresentationKeyboardHoldUntilMs,
   nextPresentationOrientationHoldUntilMs,
   presentationViewportsMatch,
@@ -8,6 +9,7 @@ import {
   type StreamViewerControlEvent,
   shouldDebouncePresentationViewportUpdate,
   shouldHoldPresentationViewportForKeyboard,
+  stablePresentationContainerRect,
 } from "./stream-viewer-control.ts";
 
 type ViewportObservedEvent = Extract<StreamViewerControlEvent, { type: "viewport.observed" }>;
@@ -225,4 +227,20 @@ test("presentation viewport holds mobile keyboard churn without blocking orienta
     }),
     false
   );
+});
+
+test("held mobile height-only changes can keep displaying the stable presentation viewport", () => {
+  const stable = { width: 448, height: 771, screenWidth: 1008, screenHeight: 1736 };
+  const addressBarCollapsed = { width: 448, height: 891, screenWidth: 1008, screenHeight: 2008 };
+
+  assert.equal(localSurfaceCanDisplayPresentation(addressBarCollapsed, stable), true);
+  assert.deepEqual(stablePresentationContainerRect({ width: 448, height: 891 }, stable), { width: 448, height: 771 });
+});
+
+test("held orientation changes do not display stale presentation viewport as ready", () => {
+  const portrait = { width: 448, height: 771, screenWidth: 1008, screenHeight: 1736 };
+  const landscape = { width: 947, height: 364, screenWidth: 2128, screenHeight: 816 };
+
+  assert.equal(localSurfaceCanDisplayPresentation(landscape, portrait), false);
+  assert.deepEqual(stablePresentationContainerRect({ width: 947, height: 364 }, portrait), { width: 448, height: 771 });
 });
