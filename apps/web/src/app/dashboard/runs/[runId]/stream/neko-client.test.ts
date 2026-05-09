@@ -164,25 +164,41 @@ test("n.eko client props suppress n.eko cursor drawing without disabling input",
 });
 
 test("n.eko mobile scroll bridge defers to native n.eko touch when available", () => {
+  // The fallback bridge is only useful in landscape on coarse-pointer
+  // devices where n.eko has not advertised native touch. In every other
+  // combination — portrait, fine pointer, native touch supported — we
+  // must defer to n.eko, because the bridge eagerly cancels touchstart
+  // and breaks long-press selection / focus / native click synthesis.
   assert.equal(
     shouldUseNekoTouchScrollBridge({ coarsePointer: true, landscape: true, nativeTouchSupported: false }),
-    true
+    true,
+    "coarse landscape with no native touch: fallback engaged"
   );
   assert.equal(
     shouldUseNekoTouchScrollBridge({ coarsePointer: true, landscape: true, nativeTouchSupported: null }),
-    true
+    true,
+    "coarse landscape with unknown native-touch state: fallback engaged"
   );
   assert.equal(
     shouldUseNekoTouchScrollBridge({ coarsePointer: true, landscape: true, nativeTouchSupported: true }),
-    false
+    false,
+    "coarse landscape WITH native touch: defer to n.eko"
   );
   assert.equal(
     shouldUseNekoTouchScrollBridge({ coarsePointer: false, landscape: true, nativeTouchSupported: false }),
-    false
+    false,
+    "fine pointer (desktop) landscape: defer to n.eko"
   );
   assert.equal(
     shouldUseNekoTouchScrollBridge({ coarsePointer: true, landscape: false, nativeTouchSupported: false }),
-    true
+    false,
+    "coarse PORTRAIT with no native touch: defer to n.eko (the bridge would " +
+      "double-deliver clicks and break long-press selection)"
+  );
+  assert.equal(
+    shouldUseNekoTouchScrollBridge({ coarsePointer: true, landscape: false, nativeTouchSupported: null }),
+    false,
+    "coarse portrait with unknown native-touch state: defer to n.eko"
   );
 });
 
@@ -204,6 +220,90 @@ test("n.eko touch scroll steps preserve fractional movement between frames", () 
   assert.deepEqual(takeNekoTouchScrollSteps(49, 50), { steps: 0, remainderPx: 49 });
   assert.deepEqual(takeNekoTouchScrollSteps(125, 50), { steps: 2, remainderPx: 25 });
   assert.deepEqual(takeNekoTouchScrollSteps(-125, 50), { steps: -2, remainderPx: -25 });
+});
+
+test("n.eko native touch path does not schedule a delayed PDPP tap (no double-delivery)", async () => {
+  // Prevents the "click registers twice" Brave-Android regression: when
+  // n.eko has already delivered a native click for the touch, PDPP must
+  // NOT also synthesize a `control.buttonDown/buttonUp` 120ms later. The
+  // bridge is allowed to *observe* the native tap for telemetry, but the
+  // actual click delivery stays on the native path.
+  const { readFile } = await import("node:fs/promises");
+  const { fileURLToPath } = await import("node:url");
+  const here = fileURLToPath(new URL(".", import.meta.url));
+  const src = await readFile(`${here}neko-client.ts`, "utf8");
+  // The previous double-delivery code looked like:
+  //   window.setTimeout(() => { ...; clickNekoAtPoint(clientX, clientY); }, 120);
+  assert.doesNotMatch(
+    src,
+    /window\.setTimeout\([^)]*clickNekoAtPoint/,
+    "no setTimeout-scheduled clickNekoAtPoint call (would double-deliver after n.eko's native click)"
+  );
+  assert.doesNotMatch(
+    src,
+    /native_tap_assist/,
+    "no native_tap_assist telemetry event (the assist path itself is gone)"
+  );
+  // We DO still want a passive observation event so future regressions of
+  // n.eko's native-click path are visible in telemetry.
+  assert.match(
+    src,
+    /native_tap_observed/,
+    "native taps are observed in telemetry without being double-delivered"
+  );
+});
+
+test("n.eko getNekoControlPos prefers n.eko-authoritative coordinate basis (no PDPP CSS-viewport remap)", async () => {
+  // The PDPP-derived `currentNekoControlCoordinateSize` (CSS viewport dims)
+  // must NOT be used as a coordinate divisor in `getNekoControlPos`. The
+  // remote browser's coordinate system is screen pixels (set by
+  // `Emulation.setDeviceMetricsOverride.screenWidth/Height`); using CSS-
+  // viewport dims as the divisor lands clicks on the wrong (X, Y) on the
+  // remote — the "tapped here, click went somewhere else" wrong-targeting
+  // signature reported on Brave Android.
+  const { readFile } = await import("node:fs/promises");
+  const { fileURLToPath } = await import("node:url");
+  const here = fileURLToPath(new URL(".", import.meta.url));
+  const src = await readFile(`${here}neko-client.ts`, "utf8");
+  // Locate the body of getNekoControlPos and assert it does not use the
+  // CSS-viewport divisor as a primary mapping path.
+  const fn = src.split("function getNekoControlPos(")[1]?.split("\nfunction ")[0] ?? "";
+  assert.doesNotMatch(
+    fn,
+    /controlCoordinateSize\.width\s*\/\s*rect\.width/,
+    "getNekoControlPos must not divide by controlCoordinateSize (CSS-derived) as a mapping basis"
+  );
+  // The first preference must be n.eko's own getMousePos.
+  assert.match(
+    fn,
+    /nekoInstance\?\._overlay\?\.getMousePos/,
+    "getNekoControlPos prefers n.eko-authoritative getMousePos as first mapping"
+  );
+});
+
+test("n.eko containerRect override skips height-only deltas (keyboard / visualViewport churn)", async () => {
+  // The override exists to bridge a real embedded-dialog width mismatch.
+  // Soft-keyboard activation only changes the height of the local
+  // container (visualViewport reports innerHeight smaller); applying that
+  // height to layout.viewportHeight while the remote page is still
+  // rendered for the full pre-keyboard height produces cover-crop
+  // (rect.left=-N) or a bottom whitespace strip (gutters.bottom>>0).
+  // The override must therefore gate on a width delta and emit a
+  // diagnostic event when it skips a height-only delta.
+  const { readFile } = await import("node:fs/promises");
+  const { fileURLToPath } = await import("node:url");
+  const here = fileURLToPath(new URL(".", import.meta.url));
+  const src = await readFile(`${here}neko-client.ts`, "utf8");
+  assert.match(
+    src,
+    /NEKO_CONTAINER_OVERRIDE_MIN_WIDTH_DELTA_PX\s*=\s*\d+/,
+    "container-rect override has an explicit minimum-width-delta gate"
+  );
+  assert.match(
+    src,
+    /container_rect_override\.skipped[\s\S]{0,200}height-only-delta/,
+    "skipped overrides emit a diagnostic event with reason=height-only-delta"
+  );
 });
 
 test("n.eko touch scroll control delta inverts to match DOM wheel direction", () => {

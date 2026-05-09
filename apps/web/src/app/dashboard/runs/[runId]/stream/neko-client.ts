@@ -190,13 +190,22 @@ export interface NekoKeyboardFocusAttempt {
 
 export function shouldUseNekoTouchScrollBridge({
   coarsePointer,
+  landscape,
   nativeTouchSupported,
 }: NekoTouchScrollBridgeEnvironment): boolean {
-  // Prefer n.eko's native touch path when the server/browser advertises it.
-  // The PDPP bridge is a fallback for environments where n.eko cannot forward
-  // native touch, because eagerly cancelling touchstart breaks long-press text
-  // selection and other mobile-native gestures.
-  return coarsePointer && nativeTouchSupported !== true;
+  // The PDPP fallback bridge is only useful when:
+  //   1. We're on a coarse-pointer (touch) device.
+  //   2. The orientation is landscape, where Android Chrome's default
+  //      pull-to-refresh / overscroll behaviour competes with n.eko scroll.
+  //   3. n.eko has NOT advertised native touch support — in that case
+  //      it cannot deliver scroll/click via the regular path.
+  //
+  // In portrait we always defer to n.eko's native touch path. Eagerly
+  // cancelling touchstart (which the fallback does for scroll capture)
+  // breaks long-press text selection, focus, IME composition, and the
+  // browser's native click synthesis — every one of which the operator
+  // expects to behave like the real mobile browser.
+  return coarsePointer && landscape && nativeTouchSupported !== true;
 }
 
 export function isNekoTouchScrollIntent({
@@ -325,7 +334,16 @@ function readNekoPointerMapping(clientX: number, clientY: number): Record<string
   const overlay = getOverlayTextarea();
   const mediaEl = getPrimaryNekoMediaElement();
   const mapped = getNekoControlPos(clientX, clientY);
+  // controlCoordinateSize is purely a telemetry signal here; getNekoControlPos
+  // intentionally does NOT use the PDPP-derived CSS viewport size as a
+  // divisor. Recording it lets us catch any future regression where the
+  // CSS-derived coords would differ from the n.eko-authoritative ones.
   const controlCoordinateSize = currentNekoControlCoordinateSize();
+  const mappingBasis = nekoInstance?._overlay?.getMousePos
+    ? "neko-overlay-getMousePos"
+    : nekoInstance?.state?.screen?.size
+      ? "neko-screen-state"
+      : "media-intrinsic";
   const screenState = screenStateSnapshot();
   const wrapperRect = wrapperEl?.getBoundingClientRect() ?? null;
   const overlayRect = overlay?.getBoundingClientRect() ?? null;
@@ -339,6 +357,7 @@ function readNekoPointerMapping(clientX: number, clientY: number): Record<string
     insideOverlay: insideRect(overlayRect),
     insideWrapper: insideRect(wrapperRect),
     mapped,
+    mappingBasis,
     media: rectSnapshot(mediaEl),
     mediaIntrinsic: mediaEl ? getMediaIntrinsicSize(mediaEl) : null,
     overlay: rectSnapshot(overlay),
@@ -1214,21 +1233,33 @@ function readNekoTouchScrollBridgeEnvironment(neko: NekoInstance): NekoTouchScro
 }
 
 function getNekoControlPos(clientX: number, clientY: number): NekoControlPos | null {
-  const overlay = getOverlayTextarea();
-  const controlCoordinateSize = currentNekoControlCoordinateSize();
-  if (overlay && controlCoordinateSize) {
-    const rect = overlay.getBoundingClientRect();
-    if (rect.width > 0 && rect.height > 0) {
-      return {
-        x: Math.round((controlCoordinateSize.width / rect.width) * (clientX - rect.left)),
-        y: Math.round((controlCoordinateSize.height / rect.height) * (clientY - rect.top)),
-      };
-    }
-  }
+  // Prefer n.eko's own coordinate mapping. n.eko knows the active screen
+  // mode and the overlay textarea geometry it owns; its `getMousePos`
+  // returns coordinates in the *remote browser's* coordinate space, which
+  // is what `control.buttonDown/Up`/`control.move` expect. Anything else
+  // (PDPP-derived CSS-viewport divisors, ad-hoc media-element math) risks
+  // landing the click on a different X/Y on the remote — the wrong-targeting
+  // signature the operator sees as "tapped here, click went somewhere else".
   const overlayPos = nekoInstance?._overlay?.getMousePos?.(clientX, clientY);
   if (overlayPos) {
     return overlayPos;
   }
+  // Fallback 1: n.eko's reported screen size against the overlay rect.
+  // Uses `state.screen.size` (n.eko-authoritative), NOT viewportLayout
+  // (which is PDPP-derived from the local CSS viewport and would land
+  // the click in CSS space rather than screen space).
+  const overlay = getOverlayTextarea();
+  const screenSize = nekoInstance?.state?.screen?.size;
+  if (overlay && screenSize && screenSize.width > 0 && screenSize.height > 0) {
+    const rect = overlay.getBoundingClientRect();
+    if (rect.width > 0 && rect.height > 0) {
+      return {
+        x: Math.round((screenSize.width / rect.width) * (clientX - rect.left)),
+        y: Math.round((screenSize.height / rect.height) * (clientY - rect.top)),
+      };
+    }
+  }
+  // Fallback 2: media element's intrinsic dimensions against its rect.
   const mediaEl = getPrimaryNekoMediaElement();
   const intrinsic = mediaEl ? getMediaIntrinsicSize(mediaEl) : null;
   if (mediaEl && intrinsic && intrinsic.width > 0 && intrinsic.height > 0) {
@@ -1513,17 +1544,20 @@ function startMobileTouchScrollBridge(neko: NekoInstance): void {
       elapsedMs <= NEKO_TOUCH_SCROLL_POLICY.clickMaxDurationMs &&
       movedPx < NEKO_TOUCH_SCROLL_POLICY.scrollIntentThresholdPx;
     if (state.mode === "native") {
-      if (shouldClick && touch) {
-        const { clientX, clientY } = touch;
-        window.setTimeout(() => {
-          emitNekoDebug("neko.touch_scroll_bridge.native_tap_assist", {
-            elapsedMs,
-            movedPx: Math.round(movedPx),
-          });
-          clickNekoAtPoint(clientX, clientY);
-        }, 120);
+      // Do NOT schedule a delayed `control.buttonDown/Up` here. n.eko's own
+      // native touch path already delivers the click; a second synthetic
+      // tap from PDPP would double-deliver and produce the "click registers
+      // twice" / "modal closes immediately" / "button toggles back" pattern
+      // observed on Brave Android. If a future environment proves n.eko's
+      // native click is unreliable, restore this only behind a feature flag
+      // and add a duplicate-delivery guard.
+      if (shouldClick) {
+        emitNekoDebug("neko.touch_scroll_bridge.native_tap_observed", {
+          elapsedMs,
+          movedPx: Math.round(movedPx),
+        });
       }
-      reset(shouldClick ? "native-tap-assist-scheduled" : "native-touch-complete");
+      reset(shouldClick ? "native-tap-complete" : "native-touch-complete");
       return;
     }
     stopTouchEventForNekoBridge(event);
@@ -2194,6 +2228,14 @@ export function setNekoPresentationViewportLayout(
   onNextFrame(applyViewportLayout);
 }
 
+// Width delta that must be present for an embedded-container override to fire.
+// A genuine Stage-2 dialog / sub-card embedding changes the available width
+// (e.g. desktop floating dialog shrinks the stream container). Soft-keyboard
+// resize and visualViewport churn change height while keeping width
+// identical — those must NOT trigger this override, because the page-side
+// CSS layout (and n.eko's screen mode) still owns the truth in that case.
+const NEKO_CONTAINER_OVERRIDE_MIN_WIDTH_DELTA_PX = 4;
+
 function applyContainerRectOverride(
   layout: NekoViewportLayout | null,
   containerRect: { height: number; width: number } | null | undefined
@@ -2209,9 +2251,28 @@ function applyContainerRectOverride(
   if (overrideWidth === layout.viewportWidth && overrideHeight === layout.viewportHeight) {
     return layout;
   }
+  // Only apply the override when the *width* has materially changed.
+  // Height-only deltas come from soft-keyboard / visualViewport churn and
+  // must defer to the stable presentation viewport — the page on the
+  // remote browser is still rendered for the originally-posted height.
+  // Letting the override change layout.viewportHeight in that case
+  // produces cover-crop or a bottom whitespace strip (the user-visible
+  // "tiny pinned left huge white" symptom).
+  const widthDeltaPx = Math.abs(overrideWidth - layout.viewportWidth);
+  if (widthDeltaPx < NEKO_CONTAINER_OVERRIDE_MIN_WIDTH_DELTA_PX) {
+    emitNekoDebug("neko.viewport_layout.container_rect_override.skipped", {
+      layout,
+      override: { height: overrideHeight, width: overrideWidth },
+      reason: "height-only-delta",
+      widthDeltaPx,
+    });
+    return layout;
+  }
   emitNekoDebug("neko.viewport_layout.container_rect_override", {
     layout,
     override: { height: overrideHeight, width: overrideWidth },
+    reason: "embedded-width-mismatch",
+    widthDeltaPx,
   });
   return {
     ...layout,
