@@ -109,6 +109,7 @@ export default async function StreamPlaygroundPage({
       interactionId={session.interaction_id}
       interactionKind="manual_action"
       interactionMessage={PLAYGROUND_MESSAGE}
+      pollForResolution={false}
       runId={session.run_id}
     />
   );

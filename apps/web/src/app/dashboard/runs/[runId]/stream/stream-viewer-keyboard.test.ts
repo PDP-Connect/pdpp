@@ -90,6 +90,10 @@ const NEKO_POINTER_CAPTURE_HANDLER_RE = /onPointerDownCapture=\{handleLocalStrea
 const NEKO_LOCAL_STREAM_HANDLER_RE = /handleLocalStreamGesture/;
 const NEKO_LOCAL_GESTURE_FOCUS_CALL_RE = /focusNekoKeyboardFromLocalGesture\(/;
 const NEKO_LOCAL_GESTURE_EXPORT_RE = /export function focusNekoKeyboardFromLocalGesture/;
+const STREAM_SURFACE_RESOLUTION_POLL_PROP_RE = /pollForResolution\?: boolean/;
+const STREAM_SURFACE_RESOLUTION_POLL_GATE_RE =
+  /if \(!pollForResolution\) \{\s*return;\s*\}[\s\S]*setInterval\(\(\) => router\.refresh\(\), RESOLUTION_POLL_MS\)/;
+const STREAM_PLAYGROUND_RESOLUTION_POLL_DISABLED_RE = /<StreamSurface[\s\S]*pollForResolution=\{false\}/;
 
 test("mobile keyboard opens as an overlay only after remote editable focus is confirmed", async () => {
   const [viewerSrc, nekoClientSrc] = await Promise.all([
@@ -331,4 +335,15 @@ test("stream pages ask the browser to overlay the keyboard instead of resizing t
   assert.match(globalCss, STREAM_DIALOG_SVH_RE);
   assert.doesNotMatch(globalCss, STREAM_DIALOG_LVH_RE);
   assert.doesNotMatch(globalCss, STREAM_DIALOG_DVH_RE);
+});
+
+test("stream playground disables real-run resolution polling during active n.eko sessions", async () => {
+  const [viewerSrc, playgroundPage] = await Promise.all([
+    readFile(STREAM_VIEWER_FILE, "utf8"),
+    readFile(STREAM_PLAYGROUND_PAGE_FILE, "utf8"),
+  ]);
+
+  assert.match(viewerSrc, STREAM_SURFACE_RESOLUTION_POLL_PROP_RE);
+  assert.match(viewerSrc, STREAM_SURFACE_RESOLUTION_POLL_GATE_RE);
+  assert.match(playgroundPage, STREAM_PLAYGROUND_RESOLUTION_POLL_DISABLED_RE);
 });

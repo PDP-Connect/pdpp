@@ -39,7 +39,6 @@ import {
   focusNekoKeyboard,
   type NekoClientConfig,
   NEKO_MEDIA_LAYOUT_EVENT,
-  pasteLocalClipboardIntoNeko,
   pasteTextIntoNeko,
   readNekoMediaSettleSample,
   setNekoPresentationViewportLayout,
@@ -117,6 +116,7 @@ interface StreamSurfaceProps {
   interactionId: string;
   interactionKind: string;
   interactionMessage: string;
+  pollForResolution?: boolean;
   runId: string;
 }
 
@@ -1327,6 +1327,7 @@ export function StreamSurface({
   interactionId,
   interactionKind,
   interactionMessage,
+  pollForResolution = true,
   runId,
 }: StreamSurfaceProps) {
   const router = useRouter();
@@ -1351,9 +1352,12 @@ export function StreamSurface({
   // Poll the timeline. router.refresh() re-runs the page loader so a
   // server-side resolution flips this view to <ResolvedSurface>.
   useEffect(() => {
+    if (!pollForResolution) {
+      return;
+    }
     const id = setInterval(() => router.refresh(), RESOLUTION_POLL_MS);
     return () => clearInterval(id);
-  }, [router]);
+  }, [pollForResolution, router]);
 
   // ─── Open-browser click handler ────────────────────────────────────────────
   //
@@ -2882,26 +2886,8 @@ function StreamStage({
   }, [clipboardPolicy, logDebug, remoteClipboard]);
 
   const handleMobilePaste = useCallback(() => {
-    logDebug("neko.corner.paste", { phase: "start", surface: clipboardPolicy.surface });
-    pasteLocalClipboardIntoNeko()
-      .then((pasted) => {
-        logDebug("neko.corner.paste", {
-          pasted,
-          phase: "result",
-          surface: clipboardPolicy.surface,
-        });
-        if (!pasted) {
-          setClipboardSheetOpen(true);
-        }
-      })
-      .catch((err) => {
-        logDebug("neko.corner.paste", {
-          error: err instanceof Error ? err.message : String(err),
-          phase: "error",
-          surface: clipboardPolicy.surface,
-        });
-        setClipboardSheetOpen(true);
-      });
+    logDebug("neko.corner.paste", { phase: "open-sheet", surface: clipboardPolicy.surface });
+    setClipboardSheetOpen(true);
   }, [clipboardPolicy.surface, logDebug]);
 
   const nekoViewportInfo = useStableNekoNativeViewportInfo(!!nekoSession, viewportInfo);
@@ -4554,7 +4540,7 @@ function CornerControls({
         ) : null}
         {onPaste ? (
           <button
-            aria-label={`Paste from this device into ${connectorName} browser`}
+            aria-label={`Open paste controls for ${connectorName} browser`}
             className="pdpp-stream-control-button"
             data-pdpp-stream-ui
             onClick={onPaste}

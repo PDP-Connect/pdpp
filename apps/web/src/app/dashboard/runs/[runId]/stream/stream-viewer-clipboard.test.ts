@@ -29,6 +29,11 @@ const POLICY_CLIPBOARD_SHEET_CLOSE_RE =
   /if \(!clipboardPolicy\.showClipboardSheet\) \{[\s\S]*setClipboardSheetOpen\(false\);[\s\S]*\}/;
 const POLICY_CLIPBOARD_SHEET_RENDER_RE =
   /nekoSession && clipboardPolicy\.showClipboardSheet \? \([\s\S]*<ClipboardSheet/;
+const CORNER_PASTE_OPENS_SHEET_RE =
+  /const handleMobilePaste = useCallback\(\(\) => \{[\s\S]*phase: "open-sheet"[\s\S]*setClipboardSheetOpen\(true\)/;
+const CORNER_PASTE_ARIA_RE = /aria-label=\{`Open paste controls for \$\{connectorName\} browser`\}/;
+const CORNER_PASTE_DIRECT_READ_RE =
+  /const handleMobilePaste = useCallback\(\(\) => \{[\s\S]*pasteLocalClipboardIntoNeko/;
 
 test("mobile clipboard uses explicit copy and paste buttons with sheet fallback", async () => {
   const src = await readFile(STREAM_VIEWER_FILE, "utf8");
@@ -72,4 +77,11 @@ test("clipboard sheet closes and unmounts when policy leaves mobile-sheet mode",
   const src = await readFile(STREAM_VIEWER_FILE, "utf8");
   assert.match(src, POLICY_CLIPBOARD_SHEET_CLOSE_RE);
   assert.match(src, POLICY_CLIPBOARD_SHEET_RENDER_RE);
+});
+
+test("mobile paste corner control opens the explicit sheet instead of silently direct-pasting", async () => {
+  const src = await readFile(STREAM_VIEWER_FILE, "utf8");
+  assert.match(src, CORNER_PASTE_OPENS_SHEET_RE);
+  assert.match(src, CORNER_PASTE_ARIA_RE);
+  assert.doesNotMatch(src, CORNER_PASTE_DIRECT_READ_RE);
 });
