@@ -437,16 +437,30 @@ function viewportCaptureSize(viewport: StreamViewportInfo): { height: number; wi
   };
 }
 
-function nekoMediaSettleTargetKey(clientConfig: NekoClientConfig, viewport: StreamViewportInfo): string {
-  const capture = viewportCaptureSize(viewport);
-  return [
-    clientConfig.statusPath ?? "",
-    viewport.width,
-    viewport.height,
-    viewport.deviceScaleFactor ?? 1,
-    capture.width,
-    capture.height,
-  ].join(":");
+interface NekoMediaSettleTarget {
+  statusPath: string;
+  viewport: StreamViewportInfo;
+}
+
+function nekoMediaSettleTarget(clientConfig: NekoClientConfig, viewport: StreamViewportInfo): NekoMediaSettleTarget {
+  return {
+    statusPath: clientConfig.statusPath ?? "",
+    viewport,
+  };
+}
+
+function nekoMediaSettleTargetsMatch(
+  a: NekoMediaSettleTarget | null | undefined,
+  b: NekoMediaSettleTarget | null | undefined
+): boolean {
+  if (!(a && b)) {
+    return false;
+  }
+  return (
+    a.statusPath === b.statusPath &&
+    streamViewportInfosMatch(a.viewport, b.viewport) &&
+    Math.abs((a.viewport.deviceScaleFactor ?? 1) - (b.viewport.deviceScaleFactor ?? 1)) <= 0.01
+  );
 }
 
 function streamViewportInfosMatch(
@@ -3148,7 +3162,7 @@ function NekoSurface({
   // path sees a remote playground event first claims it.
   const playgroundSeenRef = useRef<PlaygroundSeenRegistry>(createPlaygroundSeenRegistry());
   const mediaSettleStateRef = useRef(createNekoMediaSettleState());
-  const mediaSettleTargetKeyRef = useRef<string | null>(null);
+  const mediaSettleTargetRef = useRef<NekoMediaSettleTarget | null>(null);
   const presentationViewportInfoRef = useRef(presentationViewportInfo);
   const [clientConfig, setClientConfig] = useState<NekoClientConfig | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -3449,23 +3463,23 @@ function NekoSurface({
 
   useEffect(() => {
     if (!(clientConfig && viewportInfo)) {
-      mediaSettleTargetKeyRef.current = null;
+      mediaSettleTargetRef.current = null;
       mediaSettleStateRef.current = createNekoMediaSettleState();
       setMediaReady(false);
       return;
     }
 
-    const targetKey = nekoMediaSettleTargetKey(clientConfig, viewportInfo);
-    const targetChanged = mediaSettleTargetKeyRef.current !== targetKey;
+    const target = nekoMediaSettleTarget(clientConfig, viewportInfo);
+    const targetChanged = !nekoMediaSettleTargetsMatch(mediaSettleTargetRef.current, target);
     if (targetChanged) {
-      mediaSettleTargetKeyRef.current = targetKey;
+      mediaSettleTargetRef.current = target;
       mediaSettleStateRef.current = createNekoMediaSettleState();
       setMediaReady(false);
     } else {
       logDebug("neko.media.settle.refresh", {
         mediaRefreshEpoch,
         reason: "same-target",
-        targetKey,
+        target,
         viewport: viewportInfo,
       });
     }
