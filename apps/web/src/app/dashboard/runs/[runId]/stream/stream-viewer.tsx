@@ -437,6 +437,18 @@ function viewportCaptureSize(viewport: StreamViewportInfo): { height: number; wi
   };
 }
 
+function nekoMediaSettleTargetKey(clientConfig: NekoClientConfig, viewport: StreamViewportInfo): string {
+  const capture = viewportCaptureSize(viewport);
+  return [
+    clientConfig.statusPath ?? "",
+    viewport.width,
+    viewport.height,
+    viewport.deviceScaleFactor ?? 1,
+    capture.width,
+    capture.height,
+  ].join(":");
+}
+
 function streamViewportInfosMatch(
   a: StreamViewportInfo | null | undefined,
   b: StreamViewportInfo | null | undefined
@@ -3136,6 +3148,7 @@ function NekoSurface({
   // path sees a remote playground event first claims it.
   const playgroundSeenRef = useRef<PlaygroundSeenRegistry>(createPlaygroundSeenRegistry());
   const mediaSettleStateRef = useRef(createNekoMediaSettleState());
+  const mediaSettleTargetKeyRef = useRef<string | null>(null);
   const presentationViewportInfoRef = useRef(presentationViewportInfo);
   const [clientConfig, setClientConfig] = useState<NekoClientConfig | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -3436,12 +3449,26 @@ function NekoSurface({
 
   useEffect(() => {
     if (!(clientConfig && viewportInfo)) {
+      mediaSettleTargetKeyRef.current = null;
       mediaSettleStateRef.current = createNekoMediaSettleState();
+      setMediaReady(false);
       return;
     }
 
-    setMediaReady(false);
-    mediaSettleStateRef.current = createNekoMediaSettleState();
+    const targetKey = nekoMediaSettleTargetKey(clientConfig, viewportInfo);
+    const targetChanged = mediaSettleTargetKeyRef.current !== targetKey;
+    if (targetChanged) {
+      mediaSettleTargetKeyRef.current = targetKey;
+      mediaSettleStateRef.current = createNekoMediaSettleState();
+      setMediaReady(false);
+    } else {
+      logDebug("neko.media.settle.refresh", {
+        mediaRefreshEpoch,
+        reason: "same-target",
+        targetKey,
+        viewport: viewportInfo,
+      });
+    }
     let cancelled = false;
     let pollTimer: ReturnType<typeof setTimeout> | null = null;
     let pollCount = 0;

@@ -60,6 +60,10 @@ const NEKO_MEDIA_LAYOUT_EVENT_LISTENER_RE =
   /window\.addEventListener\(NEKO_MEDIA_LAYOUT_EVENT,\s*handleMediaLayout\)/;
 const NEKO_MEDIA_REFRESH_EPOCH_DEP_RE =
   /mediaRefreshEpoch[\s\S]*?setMediaRefreshEpoch[\s\S]*?\[clientConfig, logDebug, mediaRefreshEpoch, onPresentationViewportReady, viewportInfo\]/;
+const NEKO_MEDIA_SETTLE_TARGET_KEY_RE =
+  /function nekoMediaSettleTargetKey[\s\S]*clientConfig\.statusPath[\s\S]*viewportCaptureSize\(viewport\)/;
+const NEKO_MEDIA_REFRESH_DOES_NOT_RESET_READY_RE =
+  /const targetChanged = mediaSettleTargetKeyRef\.current !== targetKey[\s\S]*if \(targetChanged\) \{[\s\S]*setMediaReady\(false\);[\s\S]*\} else \{[\s\S]*neko\.media\.settle\.refresh/;
 const NEKO_WEBRTC_RECONNECT_CONFIG_RE =
   /NEKO_WEBRTC_RECONNECT_CONFIG[\s\S]*max_reconnects:\s*12[\s\S]*timeout_ms:\s*6000/;
 const NEKO_WEBRTC_RECONNECT_CONFIG_APPLIED_RE =
@@ -186,6 +190,8 @@ test("n.eko WebRTC startup can recover after slow media attach or ICE retry", as
   assert.match(nekoClientSrc, NEKO_MEDIA_LAYOUT_EVENT_DISPATCH_RE);
   assert.match(viewerSrc, NEKO_MEDIA_LAYOUT_EVENT_LISTENER_RE);
   assert.match(viewerSrc, NEKO_MEDIA_REFRESH_EPOCH_DEP_RE);
+  assert.match(viewerSrc, NEKO_MEDIA_SETTLE_TARGET_KEY_RE);
+  assert.match(viewerSrc, NEKO_MEDIA_REFRESH_DOES_NOT_RESET_READY_RE);
 
   // n.eko's default WebRTC reconnect timeout is 1.5s. In this deployment the
   // client may need TURN/LAN candidate negotiation, so PDPP applies a less
