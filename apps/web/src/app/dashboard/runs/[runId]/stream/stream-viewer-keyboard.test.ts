@@ -71,7 +71,9 @@ const NEKO_WEBRTC_RECONNECT_CONFIG_APPLIED_RE =
 const NEKO_NATIVE_VIEWPORT_INFO_RE =
   /function toNekoNativeViewportInfo[\s\S]*deviceScaleFactor:\s*1[\s\S]*screenHeight:\s*viewport\.height[\s\S]*screenWidth:\s*viewport\.width/;
 const NEKO_SURFACE_NATIVE_VIEWPORT_INFO_RE =
-  /const nekoViewportInfo = nekoSession \? toNekoNativeViewportInfo\(viewportInfo\) : viewportInfo[\s\S]*viewportInfo=\{nekoViewportInfo\}/;
+  /const nekoViewportInfo = useStableNekoNativeViewportInfo\(\s*!!nekoSession,\s*viewportInfo\s*\)[\s\S]*viewportInfo=\{nekoViewportInfo\}/;
+const NEKO_STABLE_NATIVE_VIEWPORT_INFO_RE =
+  /function useStableNekoNativeViewportInfo[\s\S]*toNekoNativeViewportInfo\(viewport\)[\s\S]*streamViewportInfosMatch\(stableViewportRef\.current,\s*nextViewport\)/;
 const NEKO_PRESENTATION_READY_NATIVE_COMPARE_RE =
   /const currentViewport = nekoNativeViewportRef\.current[\s\S]*toNekoNativeViewportInfo\(viewportInfoRef\.current\)/;
 const NEKO_CANONICAL_VIEWPORT_INFO_RE =
@@ -200,6 +202,7 @@ test("n.eko WebRTC startup can recover after slow media attach or ICE retry", as
   assert.match(nekoClientSrc, NEKO_WEBRTC_RECONNECT_CONFIG_RE);
   assert.match(nekoClientSrc, NEKO_WEBRTC_RECONNECT_CONFIG_APPLIED_RE);
   assert.match(viewerSrc, NEKO_NATIVE_VIEWPORT_INFO_RE);
+  assert.match(viewerSrc, NEKO_STABLE_NATIVE_VIEWPORT_INFO_RE);
   assert.match(viewerSrc, NEKO_SURFACE_NATIVE_VIEWPORT_INFO_RE);
   assert.match(viewerSrc, NEKO_PRESENTATION_READY_NATIVE_COMPARE_RE);
   assert.match(viewerSrc, NEKO_CANONICAL_VIEWPORT_INFO_RE);

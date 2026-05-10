@@ -473,6 +473,20 @@ function streamViewportInfosMatch(
   );
 }
 
+function useStableNekoNativeViewportInfo(
+  enabled: boolean,
+  viewport: StreamViewportInfo | null
+): StreamViewportInfo | null {
+  const stableViewportRef = useRef<StreamViewportInfo | null>(null);
+  const nextViewport = enabled ? toNekoNativeViewportInfo(viewport) : viewport;
+
+  if (!streamViewportInfosMatch(stableViewportRef.current, nextViewport)) {
+    stableViewportRef.current = nextViewport;
+  }
+
+  return stableViewportRef.current;
+}
+
 function readContainerRect(node: Element | null): { height: number; width: number } | null {
   if (!node) {
     return null;
@@ -2890,13 +2904,9 @@ function StreamStage({
       });
   }, [clipboardPolicy.surface, logDebug]);
 
-  const nekoViewportInfo = nekoSession ? toNekoNativeViewportInfo(viewportInfo) : viewportInfo;
-  const nekoLocalSurfaceViewportInfo = nekoSession
-    ? toNekoNativeViewportInfo(localSurfaceViewportInfo)
-    : localSurfaceViewportInfo;
-  const nekoPresentationViewportInfo = nekoSession
-    ? toNekoNativeViewportInfo(presentationViewportInfo)
-    : presentationViewportInfo;
+  const nekoViewportInfo = useStableNekoNativeViewportInfo(!!nekoSession, viewportInfo);
+  const nekoLocalSurfaceViewportInfo = useStableNekoNativeViewportInfo(!!nekoSession, localSurfaceViewportInfo);
+  const nekoPresentationViewportInfo = useStableNekoNativeViewportInfo(!!nekoSession, presentationViewportInfo);
 
   return (
     <div className="relative flex h-full w-full flex-col bg-black" data-pdpp-stream-debug={debugEnabled}>
