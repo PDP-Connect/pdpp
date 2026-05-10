@@ -221,6 +221,40 @@ function pickViewport(input) {
   return out;
 }
 
+function normalizeViewportForNeko(viewport) {
+  if (!viewport) return null;
+  // n.eko delivers pointer/touch input through the native browser window,
+  // not through CDP Input.dispatch*. If we expose a high-DPR virtual screen
+  // (screenWidth = width * dpr, deviceScaleFactor > 1), the video can look
+  // sharp while native input lands in screen-pixel coordinates outside the
+  // emulated CSS viewport. Keep n.eko in one coordinate space: CSS viewport,
+  // X screen, WebRTC frame, and native input all use the same width/height.
+  return {
+    ...viewport,
+    deviceScaleFactor: 1,
+    screenHeight: viewport.height,
+    screenWidth: viewport.width,
+  };
+}
+
+function viewportForCompanionBackend(backend, viewport) {
+  return backend === 'neko' ? normalizeViewportForNeko(viewport) : viewport;
+}
+
+function viewportsMatch(a, b) {
+  if (a === b) return true;
+  if (!a || !b) return a === b;
+  const keys = ['width', 'height', 'screenWidth', 'screenHeight', 'deviceScaleFactor', 'hasTouch', 'mobile', 'userAgent'];
+  return keys.every((key) => a[key] === b[key]);
+}
+
+async function resolveCompanionBackend(companion) {
+  if (typeof companion?.resolveBackend === 'function') {
+    return companion.resolveBackend();
+  }
+  return typeof companion?.backend === 'string' ? companion.backend : 'cdp';
+}
+
 /**
  * @param {object} deps
  * @param {object} deps.app                    fastify app
@@ -743,7 +777,14 @@ body>p{display:none!important}
     });
 
     try {
-      await companion.start(session.viewport || null);
+      const backend = await resolveCompanionBackend(companion);
+      const startViewport = viewportForCompanionBackend(backend, session.viewport || null);
+      await companion.start(startViewport);
+      const settledBackend = await resolveCompanionBackend(companion);
+      const settledViewport = viewportForCompanionBackend(settledBackend, session.viewport || null);
+      if (settledViewport && !viewportsMatch(startViewport, settledViewport)) {
+        await companion.dispatch({ type: 'viewport', ...settledViewport });
+      }
     } catch (err) {
       writeEvent('error', { code: err.code || 'companion_start_failed', message: err.message });
       await tearDownSession('companion_start_failed');
@@ -813,11 +854,16 @@ body>p{display:none!important}
       return pdppError(res, 410, 'companion_unavailable', 'Streaming companion is no longer attached');
     }
     try {
-      await companion.dispatch({ type: 'viewport', ...viewport });
+      const backend = await resolveCompanionBackend(companion);
+      const companionViewport = viewportForCompanionBackend(backend, viewport);
+      await companion.dispatch({ type: 'viewport', ...companionViewport });
     } catch (err) {
       return pdppError(res, 400, err.code || 'invalid_input', err.message);
     }
-    return res.status(202).json({ object: 'run_interaction_stream_viewport_ack', viewport });
+    return res.status(202).json({
+      object: 'run_interaction_stream_viewport_ack',
+      viewport: viewportForCompanionBackend(await resolveCompanionBackend(companion), viewport),
+    });
   });
 
   // ── n.eko viewer entry + proxy (stream-token scoped) ───────────────────────

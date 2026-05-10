@@ -158,6 +158,10 @@ function createResolvedCompanion({
     get backend() {
       return backend || inner?.backend || 'cdp';
     },
+    async resolveBackend() {
+      const companion = await ensureInner();
+      return companion.backend || backend || 'cdp';
+    },
     browser_session_id,
     async start(viewport) {
       if (closed) {

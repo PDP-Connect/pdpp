@@ -222,6 +222,36 @@ test("stream viewer drains remote playground.* events when stream_debug=1, with 
   assert.match(viewerSrc, /source:\s*"remote-debug-drain"/, "debug drain tags events as remote-debug-drain");
 });
 
+test("n.eko follow-up viewport posts use native one-to-one coordinates", async () => {
+  const viewerSrc = await readFile(STREAM_VIEWER_FILE, "utf8");
+
+  assert.match(
+    viewerSrc,
+    /const NEKO_NATIVE_VIEWPORT_OPTIONS[\s\S]*deviceScaleFactor:\s*1[\s\S]*highDprCapture:\s*false/,
+    "n.eko viewport options force a CSS-pixel native coordinate space"
+  );
+  assert.match(
+    viewerSrc,
+    /const readStageViewport = useCallback[\s\S]*nekoNativeViewportRef\.current \? NEKO_NATIVE_VIEWPORT_OPTIONS : \{\}/,
+    "stage viewport reads switch to n.eko native options after backend_ready"
+  );
+  assert.match(
+    viewerSrc,
+    /payload\.backend === "neko"[\s\S]*nekoNativeViewportRef\.current = true[\s\S]*requestViewportMeasureRef\.current\?\.\("neko-backend-ready"\)/,
+    "n.eko backend_ready immediately remeasures/reposts using native viewport options"
+  );
+  assert.match(
+    viewerSrc,
+    /const viewport = readStageViewport\(width, height\)/,
+    "viewport POST path uses readStageViewport"
+  );
+  assert.match(
+    viewerSrc,
+    /const viewport = readStageViewport\(rect\.width, rect\.height\)/,
+    "resize/presentation paths use readStageViewport"
+  );
+});
+
 test("stream pages ask the browser to overlay the keyboard instead of resizing the viewport", async () => {
   const [streamPage, playgroundPage, globalCss] = await Promise.all([
     readFile(STREAM_PAGE_FILE, "utf8"),

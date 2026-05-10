@@ -122,7 +122,9 @@ function makeMockNekoCompanion(upstreamOrigin, options = {}) {
     const companion = {
       backend: 'neko',
       browser_session_id,
-      async start() {},
+      async start(viewport) {
+        options.startedViewports?.push(viewport);
+      },
       async stop() {},
       onFrame() {
         return () => {};
@@ -130,7 +132,9 @@ function makeMockNekoCompanion(upstreamOrigin, options = {}) {
       onEvent() {
         return () => {};
       },
-      async dispatch() {},
+      async dispatch(event) {
+        options.dispatchedEvents?.push(event);
+      },
       async ackFrame() {},
       browserOwnerMode() {
         return options.browserOwnerMode || 'neko-owned';
@@ -578,6 +582,121 @@ test('n.eko backend emits iframe path and proxies only after stream-token entry'
   } finally {
     await new Promise((resolve) => upstream.close(resolve));
   }
+});
+
+test('n.eko viewport dispatch uses one native coordinate space for video and input', async () => {
+  const startedViewports = [];
+  const dispatchedEvents = [];
+  await withHarness(
+    {
+      makeCompanion: makeMockNekoCompanion('http://127.0.0.1:9', {
+        dispatchedEvents,
+        startedViewports,
+      }),
+    },
+    async ({ asUrl, spotifyManifest }) => {
+      const started = await startRun(asUrl, spotifyManifest.connector_id);
+      const pending = await waitForPendingInteraction(asUrl, started.run_id);
+      const mint = await fetchJson(`${asUrl}/_ref/runs/${encodeURIComponent(started.run_id)}/run-interaction-stream`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          interaction_id: pending.interaction_id,
+          viewport: {
+            width: 448,
+            height: 819,
+            screenWidth: 1008,
+            screenHeight: 1840,
+            deviceScaleFactor: 2.25,
+            hasTouch: true,
+            mobile: true,
+          },
+        }),
+      });
+      assert.equal(mint.status, 201);
+
+      const ac = new AbortController();
+      const sseResp = await fetch(`${asUrl}${mint.body.viewer_path}`, { signal: ac.signal });
+      assert.equal(sseResp.status, 200);
+      const reader = sseResp.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      async function readEvent(name, deadlineMs = 1500) {
+        const deadline = Date.now() + deadlineMs;
+        while (Date.now() < deadline) {
+          const block = buffer.indexOf('\n\n');
+          if (block !== -1) {
+            const event = buffer.slice(0, block);
+            buffer = buffer.slice(block + 2);
+            if (event.includes(`event: ${name}`)) {
+              const dataLine = event.split('\n').find((line) => line.startsWith('data:'));
+              return dataLine ? JSON.parse(dataLine.slice(5).trim()) : null;
+            }
+            continue;
+          }
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+        }
+        throw new Error(`Did not receive SSE event ${name} in ${deadlineMs}ms`);
+      }
+
+      await readEvent('backend_ready');
+      assert.deepEqual(startedViewports[0], {
+        width: 448,
+        height: 819,
+        screenWidth: 448,
+        screenHeight: 819,
+        deviceScaleFactor: 1,
+        hasTouch: true,
+        mobile: true,
+      });
+
+      const viewport = await fetchJson(`${asUrl}${mint.body.viewport_path}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          width: 947,
+          height: 364,
+          screenWidth: 2128,
+          screenHeight: 816,
+          deviceScaleFactor: 2.25,
+          hasTouch: true,
+          mobile: true,
+        }),
+      });
+      assert.equal(viewport.status, 202);
+      assert.deepEqual(viewport.body.viewport, {
+        width: 947,
+        height: 364,
+        screenWidth: 947,
+        screenHeight: 364,
+        deviceScaleFactor: 1,
+        hasTouch: true,
+        mobile: true,
+      });
+      assert.ok(
+        dispatchedEvents.some(
+          (event) =>
+            event.type === 'viewport' &&
+            event.width === 947 &&
+            event.height === 364 &&
+            event.screenWidth === 947 &&
+            event.screenHeight === 364 &&
+            event.deviceScaleFactor === 1,
+        ),
+        'n.eko viewport POST must not dispatch a high-DPR virtual screen that breaks native input hit-testing',
+      );
+
+      ac.abort();
+      try {
+        await reader.cancel();
+      } catch {
+        /* aborted */
+      }
+      await cancelRun(asUrl, started.run_id, pending.interaction_id);
+    },
+  );
 });
 
 test('n.eko entry can include noauth auto-login query params', async () => {

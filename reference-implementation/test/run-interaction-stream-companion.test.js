@@ -8,6 +8,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { mapInputEventToCdp, buildScreencastParams, createMockCompanion } from '../server/streaming/cdp-companion.js';
+import { createDefaultStreamingCompanionFactory } from '../server/streaming/companion-factory.js';
 
 test('mouse mousemove → Input.dispatchMouseEvent (mouseMoved)', () => {
   const cmds = mapInputEventToCdp({ type: 'mouse', action: 'mousemove', x: 100, y: 200 });
@@ -131,4 +132,25 @@ test('mock companion routes pushFrame to subscribers and accumulates dispatched 
   assert.equal(companion.inputs.length, 1);
   assert.ok(companion.cdpCalls.some((c) => c.method === 'Input.dispatchMouseEvent'));
   assert.ok(companion.cdpCalls.some((c) => c.method === 'Page.startScreencast'));
+});
+
+test('resolved companion can resolve n.eko backend before start', async () => {
+  const factory = createDefaultStreamingCompanionFactory({
+    resolveTargetForInteraction: () => ({
+      backend: 'neko',
+      base_url: 'http://neko:8080/neko',
+    }),
+    WebSocketCtor: function FakeWebSocket() {},
+    fetchImpl: async () => {
+      throw new Error('resolveBackend must not perform network I/O');
+    },
+  });
+  const companion = factory({
+    browser_session_id: 'bs_neko',
+    interaction_id: 'int_neko',
+    run_id: 'run_neko',
+  });
+
+  assert.equal(await companion.resolveBackend(), 'neko');
+  assert.equal(companion.backend, 'neko');
 });

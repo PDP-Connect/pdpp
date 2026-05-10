@@ -363,7 +363,17 @@ function newIdempotencyKey(): string {
  * pre-render returns `undefined` (the viewer is a client component, but the
  * helper guards against accidental SSR call sites).
  */
-function readViewerViewport(width: number, height: number) {
+interface ReadViewerViewportOptions {
+  deviceScaleFactor?: number;
+  highDprCapture?: boolean;
+}
+
+const NEKO_NATIVE_VIEWPORT_OPTIONS: ReadViewerViewportOptions = {
+  deviceScaleFactor: 1,
+  highDprCapture: false,
+};
+
+function readViewerViewport(width: number, height: number, options: ReadViewerViewportOptions = {}) {
   if (typeof window === "undefined") {
     return;
   }
@@ -374,11 +384,11 @@ function readViewerViewport(width: number, height: number) {
   } catch {
     coarsePointer = false;
   }
-  const deviceScaleFactor = window.devicePixelRatio || 1;
+  const deviceScaleFactor = options.deviceScaleFactor ?? window.devicePixelRatio ?? 1;
   const mobile = coarsePointer || MOBILE_USER_AGENT_RE.test(window.navigator.userAgent);
   const captureTarget = computeStreamCaptureTargetForContext({
     devicePixelRatio: deviceScaleFactor,
-    highDprCapture: mobile,
+    highDprCapture: options.highDprCapture ?? mobile,
     viewport: { width, height },
   });
   return buildViewportPayload({
@@ -1623,9 +1633,14 @@ function StreamStage({
   const trailingViewportReconcileRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const controlViewportReconcileTimersRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
   const requestViewportMeasureRef = useRef<((source: string) => void) | null>(null);
+  const nekoNativeViewportRef = useRef(false);
   const setStreamSurfaceNode = useCallback((node: HTMLDivElement | null) => {
     containerRef.current = node;
     setContainerNode(node);
+  }, []);
+
+  const readStageViewport = useCallback((width: number, height: number) => {
+    return readViewerViewport(width, height, nekoNativeViewportRef.current ? NEKO_NATIVE_VIEWPORT_OPTIONS : {});
   }, []);
 
   clipboardCapabilitiesRef.current = clipboardCapabilities;
@@ -1808,6 +1823,7 @@ function StreamStage({
         onStatus(LIVE);
         if (payload.backend === "neko" && typeof payload.iframe_path === "string" && payload.iframe_path.length > 0) {
           const entryPath = payload.iframe_path.replace(TRAILING_SLASH_RE, "");
+          nekoNativeViewportRef.current = true;
           localSurfaceViewportInfoRef.current = null;
           presentationViewportInfoRef.current = null;
           stablePresentationViewportInfoRef.current = null;
@@ -1824,8 +1840,10 @@ function StreamStage({
             stealthMode: payload.stealth_mode,
           });
           setImgSrc(null);
+          requestViewportMeasureRef.current?.("neko-backend-ready");
           return;
         }
+        nekoNativeViewportRef.current = false;
         setRemoteClipboard(null);
         setRemoteInputSensitive(false);
         localSurfaceViewportInfoRef.current = null;
@@ -2279,7 +2297,7 @@ function StreamStage({
         });
         return;
       }
-      const viewport = readViewerViewport(width, height);
+      const viewport = readStageViewport(width, height);
       if (!viewport) {
         logDebug("viewport.skip.no-viewport", {
           measured: { height: Math.round(height), width: Math.round(width) },
@@ -2397,7 +2415,7 @@ function StreamStage({
           /* see above */
         });
     },
-    [logDebug, scheduleViewportHoldFollowUp]
+    [logDebug, readStageViewport, scheduleViewportHoldFollowUp]
   );
 
   const drainResizeSources = useCallback((fallback: string) => {
@@ -2422,7 +2440,7 @@ function StreamStage({
       if (rect.width <= 0 || rect.height <= 0) {
         return;
       }
-      const viewport = readViewerViewport(rect.width, rect.height);
+      const viewport = readStageViewport(rect.width, rect.height);
       if (!viewport) {
         return;
       }
@@ -2441,7 +2459,7 @@ function StreamStage({
         viewport,
       });
     },
-    [logDebug]
+    [logDebug, readStageViewport]
   );
 
   const measureAndPost = useCallback(
@@ -2519,7 +2537,7 @@ function StreamStage({
         return;
       }
       const rect = observedNode.getBoundingClientRect();
-      const viewport = readViewerViewport(rect.width, rect.height);
+      const viewport = readStageViewport(rect.width, rect.height);
       if (!viewport) {
         return;
       }
@@ -2591,7 +2609,13 @@ function StreamStage({
         viewport,
       });
     },
-    [logDebug, reducePresentationViewportControl, restoreStablePresentationViewport, scheduleViewportHoldFollowUp]
+    [
+      logDebug,
+      readStageViewport,
+      reducePresentationViewportControl,
+      restoreStablePresentationViewport,
+      scheduleViewportHoldFollowUp,
+    ]
   );
 
   const handleNekoPresentationViewportReady = useCallback(
