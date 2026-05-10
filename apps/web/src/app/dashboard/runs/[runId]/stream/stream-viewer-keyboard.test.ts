@@ -52,8 +52,34 @@ const NEKO_LOADING_OVERLAY_CLASS_RE = /className="absolute inset-0 z-20/;
 const NEKO_LOADING_OVERLAY_DATA_ATTR_RE = /data-pdpp-stream-loading/;
 const NEKO_VISUAL_QUALITY_IGNORES_OCCLUDED_MEDIA_RE =
   /node\.matches\("\[data-pdpp-stream-loading\]"\)[\s\S]*const issues = occluded \? \[\] : visualQualityIssues\(media\)/;
+const NEKO_MEDIA_SETTLE_LONG_STARTUP_WINDOW_RE = /nekoMediaSettleMaxPolls:\s*40/;
+const NEKO_MEDIA_LAYOUT_EVENT_EXPORT_RE = /export const NEKO_MEDIA_LAYOUT_EVENT = "pdpp:neko-media-layout"/;
+const NEKO_MEDIA_LAYOUT_EVENT_DISPATCH_RE =
+  /window\.dispatchEvent\(new CustomEvent\(NEKO_MEDIA_LAYOUT_EVENT,[\s\S]*?detail[\s\S]*?\)\)/;
+const NEKO_MEDIA_LAYOUT_EVENT_LISTENER_RE =
+  /window\.addEventListener\(NEKO_MEDIA_LAYOUT_EVENT,\s*handleMediaLayout\)/;
+const NEKO_MEDIA_REFRESH_EPOCH_DEP_RE =
+  /mediaRefreshEpoch[\s\S]*?setMediaRefreshEpoch[\s\S]*?\[clientConfig, logDebug, mediaRefreshEpoch, onPresentationViewportReady, viewportInfo\]/;
+const NEKO_WEBRTC_RECONNECT_CONFIG_RE =
+  /NEKO_WEBRTC_RECONNECT_CONFIG[\s\S]*max_reconnects:\s*12[\s\S]*timeout_ms:\s*6000/;
+const NEKO_WEBRTC_RECONNECT_CONFIG_APPLIED_RE =
+  /setReconnectorConfig\?\.\("webrtc",\s*NEKO_WEBRTC_RECONNECT_CONFIG\)/;
+const NEKO_NATIVE_VIEWPORT_INFO_RE =
+  /function toNekoNativeViewportInfo[\s\S]*deviceScaleFactor:\s*1[\s\S]*screenHeight:\s*viewport\.height[\s\S]*screenWidth:\s*viewport\.width/;
+const NEKO_SURFACE_NATIVE_VIEWPORT_INFO_RE =
+  /const nekoViewportInfo = nekoSession \? toNekoNativeViewportInfo\(viewportInfo\) : viewportInfo[\s\S]*viewportInfo=\{nekoViewportInfo\}/;
+const NEKO_PRESENTATION_READY_NATIVE_COMPARE_RE =
+  /const currentViewport = nekoNativeViewportRef\.current[\s\S]*toNekoNativeViewportInfo\(viewportInfoRef\.current\)/;
+const NEKO_CANONICAL_VIEWPORT_INFO_RE =
+  /const setCanonicalViewportInfo = useCallback[\s\S]*viewportInfoRef\.current = nextViewport[\s\S]*setViewportInfo\(nextViewport\)/;
+const NEKO_ATTACH_CANONICAL_VIEWPORT_RE =
+  /if \(payload\.viewport\) \{[\s\S]*setCanonicalViewportInfo\(payload\.viewport\)/;
+const NEKO_BACKEND_READY_NATIVE_CANONICAL_RE =
+  /payload\.backend === "neko"[\s\S]*toNekoNativeViewportInfo\(viewportInfoRef\.current\)[\s\S]*neko\.viewport\.native_canonical/;
+const NEKO_POST_CANONICAL_VIEWPORT_RE =
+  /const viewportInfo = viewportInfoFromPayload\(viewport\);\s*setCanonicalViewportInfo\(viewportInfo\)/;
 const NEKO_LOCAL_SURFACE_VIEWPORT_RE =
-  /recordLocalSurfaceViewport[\s\S]*viewport\.surface\.local[\s\S]*localSurfaceViewportInfo=\{localSurfaceViewportInfo\}/;
+  /recordLocalSurfaceViewport[\s\S]*viewport\.surface\.local[\s\S]*localSurfaceViewportInfo=\{nekoLocalSurfaceViewportInfo\}/;
 const NEKO_POINTER_CAPTURE_HANDLER_RE = /onPointerDownCapture=\{handleLocalStreamGesture\}/;
 const NEKO_LOCAL_STREAM_HANDLER_RE = /handleLocalStreamGesture/;
 const NEKO_LOCAL_GESTURE_FOCUS_CALL_RE = /focusNekoKeyboardFromLocalGesture\(/;
@@ -144,6 +170,36 @@ test("n.eko presentation waits for settled media before promoting a resized view
   assert.doesNotMatch(viewerSrc, NEKO_PRESENTATION_IMMEDIATE_POST_PROMOTION_RE);
   assert.doesNotMatch(viewerSrc, NEKO_PRESENTATION_DEGRADED_PROMOTE_RE);
   assert.doesNotMatch(viewerSrc, NEKO_PRESENTATION_EARLY_MEDIA_READY_RE);
+});
+
+test("n.eko WebRTC startup can recover after slow media attach or ICE retry", async () => {
+  const [viewerSrc, nekoClientSrc] = await Promise.all([
+    readFile(STREAM_VIEWER_FILE, "utf8"),
+    readFile(NEKO_CLIENT_FILE, "utf8"),
+  ]);
+
+  // Successful Android starts in telemetry commonly attach video after ~3.5s.
+  // The settle window must exceed that, otherwise the matte can remain stuck
+  // even after n.eko's WebRTC retry eventually paints a video frame.
+  assert.match(viewerSrc, NEKO_MEDIA_SETTLE_LONG_STARTUP_WINDOW_RE);
+  assert.match(nekoClientSrc, NEKO_MEDIA_LAYOUT_EVENT_EXPORT_RE);
+  assert.match(nekoClientSrc, NEKO_MEDIA_LAYOUT_EVENT_DISPATCH_RE);
+  assert.match(viewerSrc, NEKO_MEDIA_LAYOUT_EVENT_LISTENER_RE);
+  assert.match(viewerSrc, NEKO_MEDIA_REFRESH_EPOCH_DEP_RE);
+
+  // n.eko's default WebRTC reconnect timeout is 1.5s. In this deployment the
+  // client may need TURN/LAN candidate negotiation, so PDPP applies a less
+  // aggressive reconnect policy through n.eko's public API instead of
+  // replacing n.eko's own reconnection machinery.
+  assert.match(nekoClientSrc, NEKO_WEBRTC_RECONNECT_CONFIG_RE);
+  assert.match(nekoClientSrc, NEKO_WEBRTC_RECONNECT_CONFIG_APPLIED_RE);
+  assert.match(viewerSrc, NEKO_NATIVE_VIEWPORT_INFO_RE);
+  assert.match(viewerSrc, NEKO_SURFACE_NATIVE_VIEWPORT_INFO_RE);
+  assert.match(viewerSrc, NEKO_PRESENTATION_READY_NATIVE_COMPARE_RE);
+  assert.match(viewerSrc, NEKO_CANONICAL_VIEWPORT_INFO_RE);
+  assert.match(viewerSrc, NEKO_ATTACH_CANONICAL_VIEWPORT_RE);
+  assert.match(viewerSrc, NEKO_BACKEND_READY_NATIVE_CANONICAL_RE);
+  assert.match(viewerSrc, NEKO_POST_CANONICAL_VIEWPORT_RE);
 });
 
 test("stream viewer drains remote playground.* events when stream_debug=1, with page-scoped dedupe against the layout poll", async () => {

@@ -38,6 +38,7 @@ import {
   copyRemoteSelectionFromNeko,
   focusNekoKeyboard,
   type NekoClientConfig,
+  NEKO_MEDIA_LAYOUT_EVENT,
   pasteLocalClipboardIntoNeko,
   pasteTextIntoNeko,
   readNekoMediaSettleSample,
@@ -270,7 +271,7 @@ const STREAM_VIEWER_POLICY = {
   // One place for timing policy: resize sources are noisy on mobile, but every
   // delayed action below has a named UX reason and a replayable control test.
   keyboardRemoteBlurGraceMs: 350,
-  nekoMediaSettleMaxPolls: 8,
+  nekoMediaSettleMaxPolls: 40,
   nekoMediaSettlePollMs: 250,
   nekoStatusPollAttempts: 20,
   nekoStatusPollMs: 50,
@@ -414,6 +415,18 @@ function viewportInfoFromPayload(viewport: ViewportPayload): StreamViewportInfo 
     deviceScaleFactor: viewport.deviceScaleFactor,
     screenWidth: viewport.screenWidth,
     screenHeight: viewport.screenHeight,
+  };
+}
+
+function toNekoNativeViewportInfo(viewport: StreamViewportInfo | null): StreamViewportInfo | null {
+  if (!viewport) {
+    return null;
+  }
+  return {
+    ...viewport,
+    deviceScaleFactor: 1,
+    screenHeight: viewport.height,
+    screenWidth: viewport.width,
   };
 }
 
@@ -1667,6 +1680,11 @@ function StreamStage({
     [scheduleControlViewportReconcile]
   );
 
+  const setCanonicalViewportInfo = useCallback((nextViewport: StreamViewportInfo) => {
+    viewportInfoRef.current = nextViewport;
+    setViewportInfo(nextViewport);
+  }, []);
+
   useEffect(() => {
     logDebug("clipboard.capabilities", {
       browserFamily: clipboardCapabilities.browserFamily,
@@ -1807,7 +1825,7 @@ function StreamStage({
         }
         const payload = parsed.value;
         if (payload.viewport) {
-          setViewportInfo(payload.viewport);
+          setCanonicalViewportInfo(payload.viewport);
           localSurfaceViewportInfoRef.current = payload.viewport;
           setLocalSurfaceViewportInfo(payload.viewport);
           lastPostedViewportRef.current = readViewerViewport(payload.viewport.width, payload.viewport.height) ?? null;
@@ -1824,6 +1842,14 @@ function StreamStage({
         if (payload.backend === "neko" && typeof payload.iframe_path === "string" && payload.iframe_path.length > 0) {
           const entryPath = payload.iframe_path.replace(TRAILING_SLASH_RE, "");
           nekoNativeViewportRef.current = true;
+          const nativeViewportInfo = toNekoNativeViewportInfo(viewportInfoRef.current);
+          if (nativeViewportInfo) {
+            setCanonicalViewportInfo(nativeViewportInfo);
+            logDebug("neko.viewport.native_canonical", {
+              reason: "backend-ready",
+              viewport: nativeViewportInfo,
+            });
+          }
           localSurfaceViewportInfoRef.current = null;
           presentationViewportInfoRef.current = null;
           stablePresentationViewportInfoRef.current = null;
@@ -2033,7 +2059,7 @@ function StreamStage({
         callbacks.onTransportError();
       });
     },
-    [connectorName, logDebug, onStatus]
+    [connectorName, logDebug, onStatus, setCanonicalViewportInfo]
   );
 
   // ─── Attach + (rare) re-mint lifecycle ────────────────────────────────────
@@ -2384,7 +2410,7 @@ function StreamStage({
       keyboardResizeStateRef.current = createMobileKeyboardResizeState();
       lastPostedViewportRef.current = viewport;
       const viewportInfo = viewportInfoFromPayload(viewport);
-      setViewportInfo(viewportInfo);
+      setCanonicalViewportInfo(viewportInfo);
       logViewportDecision(decision.action, decision.reason);
       logDebug("viewport.post.start", debugPayload);
       const body = JSON.stringify(viewport);
@@ -2415,7 +2441,7 @@ function StreamStage({
           /* see above */
         });
     },
-    [logDebug, readStageViewport, scheduleViewportHoldFollowUp]
+    [logDebug, readStageViewport, scheduleViewportHoldFollowUp, setCanonicalViewportInfo]
   );
 
   const drainResizeSources = useCallback((fallback: string) => {
@@ -2620,7 +2646,9 @@ function StreamStage({
 
   const handleNekoPresentationViewportReady = useCallback(
     (readyViewport: StreamViewportInfo, result: { reasons?: string[]; status: "degraded" | "settled" }) => {
-      const currentViewport = viewportInfoRef.current;
+      const currentViewport = nekoNativeViewportRef.current
+        ? toNekoNativeViewportInfo(viewportInfoRef.current)
+        : viewportInfoRef.current;
       if (result.status !== "settled") {
         logDebug("viewport.presentation.remote_skip", {
           current: currentViewport,
@@ -2836,19 +2864,27 @@ function StreamStage({
       });
   }, [clipboardPolicy.surface, logDebug]);
 
+  const nekoViewportInfo = nekoSession ? toNekoNativeViewportInfo(viewportInfo) : viewportInfo;
+  const nekoLocalSurfaceViewportInfo = nekoSession
+    ? toNekoNativeViewportInfo(localSurfaceViewportInfo)
+    : localSurfaceViewportInfo;
+  const nekoPresentationViewportInfo = nekoSession
+    ? toNekoNativeViewportInfo(presentationViewportInfo)
+    : presentationViewportInfo;
+
   return (
     <div className="relative flex h-full w-full flex-col bg-black" data-pdpp-stream-debug={debugEnabled}>
       {nekoSession ? (
         <NekoSurface
           debugEnabled={debugEnabled}
-          localSurfaceViewportInfo={localSurfaceViewportInfo}
+          localSurfaceViewportInfo={nekoLocalSurfaceViewportInfo}
           logDebug={logDebug}
           onPresentationViewportReady={handleNekoPresentationViewportReady}
-          presentationViewportInfo={presentationViewportInfo}
+          presentationViewportInfo={nekoPresentationViewportInfo}
           session={nekoSession}
           status={status}
           surfaceRef={setStreamSurfaceNode}
-          viewportInfo={viewportInfo}
+          viewportInfo={nekoViewportInfo}
         />
       ) : (
         <BrowserSurface
@@ -3103,6 +3139,7 @@ function NekoSurface({
   const presentationViewportInfoRef = useRef(presentationViewportInfo);
   const [clientConfig, setClientConfig] = useState<NekoClientConfig | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [mediaRefreshEpoch, setMediaRefreshEpoch] = useState(0);
   const [mediaReady, setMediaReady] = useState(false);
   useSurfaceDebugTelemetry({ containerRef, debugEnabled, logDebug, surface: "neko", viewportInfo });
   useVisualQualityDebugTelemetry({ containerRef, debugEnabled, logDebug, surface: "neko", viewportInfo });
@@ -3110,6 +3147,20 @@ function NekoSurface({
   useEffect(() => {
     presentationViewportInfoRef.current = presentationViewportInfo;
   }, [presentationViewportInfo]);
+
+  useEffect(() => {
+    const handleMediaLayout = (event: Event) => {
+      const detail = event instanceof CustomEvent ? event.detail : null;
+      logDebug("neko.media.layout_event", {
+        detail,
+      });
+      setMediaRefreshEpoch((epoch) => epoch + 1);
+    };
+    window.addEventListener(NEKO_MEDIA_LAYOUT_EVENT, handleMediaLayout);
+    return () => {
+      window.removeEventListener(NEKO_MEDIA_LAYOUT_EVENT, handleMediaLayout);
+    };
+  }, [logDebug]);
 
   useEffect(() => {
     const mountNode = containerRef.current;
@@ -3447,7 +3498,7 @@ function NekoSurface({
         clearTimeout(pollTimer);
       }
     };
-  }, [clientConfig, logDebug, onPresentationViewportReady, viewportInfo]);
+  }, [clientConfig, logDebug, mediaRefreshEpoch, onPresentationViewportReady, viewportInfo]);
 
   // Debug-only drain of remote `playground.*` events after layout
   // polling stops. This is observation-only: it never applies layout.

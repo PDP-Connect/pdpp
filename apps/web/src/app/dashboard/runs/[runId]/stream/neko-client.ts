@@ -45,6 +45,10 @@ interface NekoInstance {
   login?: (username: string, password: string) => Promise<void>;
   onResize?: () => void;
   play?: () => Promise<void>;
+  setReconnectorConfig?: (
+    type: "websocket" | "webrtc",
+    config: { backoff_ms: number; max_reconnects: number; timeout_ms: number }
+  ) => void;
   setCursorDrawFunction?: (fn: NekoCursorDrawFunction) => void;
   setInactiveCursorDrawFunction?: (fn: NekoInactiveCursorDrawFunction) => void;
   setTouchEnabled?: (enabled: boolean) => void;
@@ -150,7 +154,13 @@ const MOBILE_TEXT_INPUT_GUARD_RETRY_MS = 100;
 const MOBILE_TEXT_INPUT_GUARD_MAX_ATTEMPTS = 50;
 const REMOTE_COPY_FALLBACK_DELAY_MS = 120;
 const STREAM_DEBUG_EVENT = "pdpp:stream-debug";
+export const NEKO_MEDIA_LAYOUT_EVENT = "pdpp:neko-media-layout";
 const NEKO_POINTER_TELEMETRY_MOVE_MS = 250;
+const NEKO_WEBRTC_RECONNECT_CONFIG = {
+  backoff_ms: 1000,
+  max_reconnects: 12,
+  timeout_ms: 6000,
+};
 // Threshold (in remote pixels) above which the active mapping basis is
 // considered to disagree materially with the alternative basis. Reflects
 // the empirically observed wrong-targeting magnitude when the PDPP
@@ -1816,13 +1826,28 @@ function stopMobileTouchScrollBridge(): void {
 }
 
 function scheduleMediaLayoutRefresh(reason: string, element: HTMLElement | null): void {
-  emitNekoDebug("neko.client.layout.media-refresh", {
+  const detail = {
     intrinsic: element ? getMediaIntrinsicSize(element) : null,
     reason,
     rect: element ? rectSnapshot(element) : null,
     tagName: element?.tagName.toLowerCase() ?? null,
-  });
+  };
+  emitNekoDebug("neko.client.layout.media-refresh", detail);
+  window.dispatchEvent(new CustomEvent(NEKO_MEDIA_LAYOUT_EVENT, { detail }));
   onNextFrame(applyViewportLayout);
+}
+
+function configureNekoWebRtcReconnect(neko: NekoInstance): void {
+  try {
+    neko.setReconnectorConfig?.("webrtc", NEKO_WEBRTC_RECONNECT_CONFIG);
+    emitNekoDebug("neko.client.webrtc_reconnect_config", {
+      config: NEKO_WEBRTC_RECONNECT_CONFIG,
+    });
+  } catch (err) {
+    emitNekoDebug("neko.client.webrtc_reconnect_config_failed", {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
 }
 
 function attachMediaLayoutListeners(signal: AbortSignal): void {
@@ -2350,6 +2375,7 @@ export async function startNeko(container: HTMLElement, config: NekoClientConfig
   if (neko.state?.connection) {
     neko.state.connection.screencast = false;
   }
+  configureNekoWebRtcReconnect(neko);
   emitNekoDebug("neko.client.start", {
     serverPath: config.serverPath,
     statusPath: config.statusPath,
