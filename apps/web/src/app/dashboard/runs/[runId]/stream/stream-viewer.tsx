@@ -81,6 +81,11 @@ import {
   shouldHoldPresentationViewportForKeyboard,
 } from "./stream-viewer-control.ts";
 import {
+  claimPlaygroundEvent,
+  createPlaygroundSeenRegistry,
+  type PlaygroundSeenRegistry,
+} from "./playground-event-dedupe.ts";
+import {
   parseAttachedMessage,
   parseBackendReadyMessage,
   parseClipboardMessage,
@@ -269,6 +274,9 @@ const STREAM_VIEWER_POLICY = {
   nekoMediaSettlePollMs: 250,
   nekoStatusPollAttempts: 20,
   nekoStatusPollMs: 50,
+  // Post-settle debug drain cadence. Keep it slower than the 50ms
+  // layout poll so telemetry does not perturb the stream UX.
+  nekoDebugDrainPollMs: 250,
   orientationSettleFollowUpMs: 300,
   orientationFollowUpMs: [350, 700] as const,
   presentationKeyboardCloseHoldMs: 700,
@@ -3064,6 +3072,9 @@ function NekoSurface({
   const containerRef = useRef<HTMLDivElement | null>(null);
   const layoutRequestRef = useRef(0);
   const firstNekoLayoutAppliedRef = useRef(false);
+  // Shared by the settle poll and the debug-only drain so whichever
+  // path sees a remote playground event first claims it.
+  const playgroundSeenRef = useRef<PlaygroundSeenRegistry>(createPlaygroundSeenRegistry());
   const mediaSettleStateRef = useRef(createNekoMediaSettleState());
   const presentationViewportInfoRef = useRef(presentationViewportInfo);
   const [clientConfig, setClientConfig] = useState<NekoClientConfig | null>(null);
@@ -3263,6 +3274,9 @@ function NekoSurface({
         return;
       }
       for (const entry of status.playgroundEvents) {
+        if (claimPlaygroundEvent(playgroundSeenRef.current, entry) === "duplicate") {
+          continue;
+        }
         const type = typeof entry.type === "string" ? entry.type : "unknown";
         // Each remote-page event is mirrored into the viewer's debug
         // sink so the operator can correlate by approximate timestamp
@@ -3410,6 +3424,45 @@ function NekoSurface({
       }
     };
   }, [clientConfig, logDebug, onPresentationViewportReady, viewportInfo]);
+
+  // Debug-only drain of remote `playground.*` events after layout
+  // polling stops. This is observation-only: it never applies layout.
+  useEffect(() => {
+    if (!debugEnabled) return;
+    if (!clientConfig?.statusPath) return;
+    const statusPath = clientConfig.statusPath;
+    let cancelled = false;
+    let pollTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const drainOnce = async () => {
+      if (cancelled) return;
+      const status = await fetchNekoStatusBestEffort(statusPath);
+      if (cancelled) return;
+      if (status.playgroundEvents && status.playgroundEvents.length > 0) {
+        for (const entry of status.playgroundEvents) {
+          if (claimPlaygroundEvent(playgroundSeenRef.current, entry) === "duplicate") {
+            continue;
+          }
+          const type = typeof entry.type === "string" ? entry.type : "unknown";
+          logDebug(`playground.${type}`, {
+            ...entry,
+            source: "remote-debug-drain",
+          });
+        }
+      }
+      if (!cancelled) {
+        pollTimer = setTimeout(drainOnce, STREAM_VIEWER_POLICY.nekoDebugDrainPollMs);
+      }
+    };
+
+    pollTimer = setTimeout(drainOnce, STREAM_VIEWER_POLICY.nekoDebugDrainPollMs);
+    return () => {
+      cancelled = true;
+      if (pollTimer) {
+        clearTimeout(pollTimer);
+      }
+    };
+  }, [clientConfig?.statusPath, debugEnabled, logDebug]);
 
   const presentationMatchesRequestedViewport =
     !!presentationViewportInfo && !!viewportInfo && streamViewportInfosMatch(presentationViewportInfo, viewportInfo);

@@ -50,6 +50,11 @@ input { padding: 12px 14px; }
    viewport corner regardless of scroll. */
 .pdpp-calibration-beacon {
   position: fixed;
+  /* Inset 24px from each viewport edge so the touch target sits OUTSIDE
+     the Android/iOS edge-gesture zones (typically the outer 16-20px,
+     which trigger back-gesture / multitasking / notification-shade
+     pulls). 24px keeps the beacon within the OS-respected page area
+     even on devices with curved displays. */
   width: 32px;
   height: 32px;
   border-radius: 50%;
@@ -61,6 +66,13 @@ input { padding: 12px 14px; }
   display: flex;
   align-items: center;
   justify-content: center;
+  /* Disable native gestures on the beacon itself: no scroll capture, no
+     long-press selection, no double-tap zoom. The beacon is a plain
+     hit-test target; anything else corrupts the calibration signal. */
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
 }
 .pdpp-calibration-beacon::before,
 .pdpp-calibration-beacon::after {
@@ -70,10 +82,10 @@ input { padding: 12px 14px; }
 }
 .pdpp-calibration-beacon::before { width: 8px; height: 1px; }
 .pdpp-calibration-beacon::after  { width: 1px; height: 8px; }
-.pdpp-calibration-beacon[data-beacon-id="tl"] { top: 0;             left: 0; }
-.pdpp-calibration-beacon[data-beacon-id="tr"] { top: 0;             right: 0; }
-.pdpp-calibration-beacon[data-beacon-id="bl"] { bottom: 0;          left: 0; }
-.pdpp-calibration-beacon[data-beacon-id="br"] { bottom: 0;          right: 0; }
+.pdpp-calibration-beacon[data-beacon-id="tl"] { top: 24px;    left: 24px; }
+.pdpp-calibration-beacon[data-beacon-id="tr"] { top: 24px;    right: 24px; }
+.pdpp-calibration-beacon[data-beacon-id="bl"] { bottom: 24px; left: 24px; }
+.pdpp-calibration-beacon[data-beacon-id="br"] { bottom: 24px; right: 24px; }
 .pdpp-calibration-beacon[data-beacon-id="center"] {
   top: 50%; left: 50%; transform: translate(-50%, -50%);
 }
@@ -133,6 +145,25 @@ const input = document.getElementById('text-input');
 window.__pdppPlaygroundEvents = window.__pdppPlaygroundEvents || [];
 const PDPP_EVENT_BUFFER_MAX = 24;
 let pdppPlaygroundSeq = 0;
+// Per-page-load identifier. Stamped on every event so the viewer can
+// dedupe across status polls AND distinguish events from a previous
+// playground page-load (e.g. n.eko-driven Page.navigate, manual
+// reload, soft-refresh) — without that, a remote reload restarts
+// pdppPlaygroundSeq at 1 and a high-watermark dedupe would silently
+// swallow every event from the new page until seq exceeds the
+// pre-reload watermark. Use crypto.randomUUID where available, fall
+// back to a high-entropy string otherwise.
+const pdppPlaygroundPageId = (function () {
+  try {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+      return crypto.randomUUID();
+    }
+  } catch (_err) {
+    // fall through
+  }
+  return 'p-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10);
+})();
+window.__pdppPlaygroundPageId = pdppPlaygroundPageId;
 function pdppSummariseElement(el) {
   if (!el || el.nodeType !== 1) return null;
   const summary = {
@@ -151,6 +182,7 @@ function pdppSummariseElement(el) {
 function pdppRecordPlaygroundEvent(type, extras) {
   pdppPlaygroundSeq += 1;
   const entry = {
+    pageId: pdppPlaygroundPageId,
     seq: pdppPlaygroundSeq,
     type: type,
     atMs: Date.now(),
@@ -267,12 +299,54 @@ function pdppPointerExtras(event) {
     calibration: calibration,
   };
 }
-// Stamp the beacon registry as the first event in the buffer. Every
-// status poll will eventually drain it, so the operator gets the
-// authoritative beacon coordinates exactly once per page load (the
-// buffer is FIFO-capped at 24, but this fires immediately on script
-// boot so the entry is consumed by the first poll).
-pdppRecordPlaygroundEvent('calibration_init', { beacons: pdppListBeacons(), toleranceRadiusPx: PDPP_CALIBRATION_HIT_RADIUS_PX });
+// Stamp the beacon registry once at boot AND every time the layout
+// container changes (Chromium emulation re-applying device metrics
+// late, soft-keyboard activation, orientation flip). Without the
+// resize-driven re-emit, an operator parsing JSONL only sees beacon
+// coordinates from the *initial* layout — which under n.eko is often
+// the X server's pre-emulation CSS size, not the post-emulation page
+// the user actually interacts with. Coalesced via rAF + 100ms
+// throttle so a burst of resize events emits at most one
+// calibration_init per ~100ms.
+function pdppEmitCalibrationInit() {
+  pdppRecordPlaygroundEvent('calibration_init', {
+    beacons: pdppListBeacons(),
+    toleranceRadiusPx: PDPP_CALIBRATION_HIT_RADIUS_PX,
+    visualViewport: window.visualViewport ? {
+      width: Math.round(window.visualViewport.width),
+      height: Math.round(window.visualViewport.height),
+      offsetTop: Math.round(window.visualViewport.offsetTop),
+      offsetLeft: Math.round(window.visualViewport.offsetLeft),
+      scale: Number.isFinite(window.visualViewport.scale) ? window.visualViewport.scale : null
+    } : null,
+    innerWidth: window.innerWidth,
+    innerHeight: window.innerHeight,
+    devicePixelRatio: window.devicePixelRatio
+  });
+}
+pdppEmitCalibrationInit();
+let pdppCalibrationInitPending = false;
+let pdppLastCalibrationInitAt = performance.now();
+function pdppQueueCalibrationInit() {
+  if (pdppCalibrationInitPending) return;
+  pdppCalibrationInitPending = true;
+  const since = performance.now() - pdppLastCalibrationInitAt;
+  const wait = since >= 100 ? 0 : 100 - since;
+  setTimeout(() => {
+    pdppCalibrationInitPending = false;
+    pdppLastCalibrationInitAt = performance.now();
+    pdppEmitCalibrationInit();
+  }, wait);
+}
+window.addEventListener('resize', pdppQueueCalibrationInit, { passive: true });
+if (window.visualViewport && typeof window.visualViewport.addEventListener === 'function') {
+  window.visualViewport.addEventListener('resize', pdppQueueCalibrationInit, { passive: true });
+  // visualViewport scroll fires when the soft keyboard shifts the
+  // visible region; beacons are position:fixed against visualViewport
+  // and their absolute coords change accordingly.
+  window.visualViewport.addEventListener('scroll', pdppQueueCalibrationInit, { passive: true });
+}
+window.addEventListener('orientationchange', pdppQueueCalibrationInit, { passive: true });
 window.addEventListener('pointerdown', (e) => pdppRecordPlaygroundEvent('pointerdown', pdppPointerExtras(e)), { capture: true, passive: true });
 window.addEventListener('pointerup', (e) => pdppRecordPlaygroundEvent('pointerup', pdppPointerExtras(e)), { capture: true, passive: true });
 window.addEventListener('click', (e) => pdppRecordPlaygroundEvent('click', pdppPointerExtras(e)), { capture: true, passive: true });

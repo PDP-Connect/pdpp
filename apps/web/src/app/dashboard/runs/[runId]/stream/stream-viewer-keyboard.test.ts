@@ -146,6 +146,82 @@ test("n.eko presentation waits for settled media before promoting a resized view
   assert.doesNotMatch(viewerSrc, NEKO_PRESENTATION_EARLY_MEDIA_READY_RE);
 });
 
+test("stream viewer drains remote playground.* events when stream_debug=1, with page-scoped dedupe against the layout poll", async () => {
+  // Closes the user-reported gap: "I tapped four beacons, then the
+  // layout changed and they vanished." Beacons 1-4 fired during the
+  // layout poll and were drained; subsequent taps fired into the
+  // remote ring buffer with nobody reading. The fix is a debug-only
+  // continuous drain that polls statusPath after the layout settles,
+  // gated on `?stream_debug=1`, deduped via a shared pageId+seq
+  // registry.
+  const viewerSrc = await readFile(STREAM_VIEWER_FILE, "utf8");
+  // The dedupe registry must live at NekoSurface scope (not inside a
+  // useEffect), so both the layout-poll path and the debug-drain
+  // path can reach it. The actual dedupe semantics live in a pure
+  // helper module so they're testable without React state.
+  assert.match(
+    viewerSrc,
+    /const playgroundSeenRef = useRef<PlaygroundSeenRegistry>\(createPlaygroundSeenRegistry\(\)\);/,
+    "playgroundSeenRef declared at component scope using the pure helper module"
+  );
+  assert.match(
+    viewerSrc,
+    /from "\.\/playground-event-dedupe\.ts"/,
+    "stream-viewer imports the dedupe helper from its own module"
+  );
+  // Both poll paths must claim events through the same helper. The
+  // helper must compose seq with pageId so a remote page reload
+  // (seq restart at 1) does not collide with already-seen keys.
+  assert.match(
+    viewerSrc,
+    /function emitPlaygroundEvents[\s\S]+?claimPlaygroundEvent\(playgroundSeenRef\.current,/,
+    "layout poll claims events through claimPlaygroundEvent"
+  );
+  // The debug-drain useEffect must exist, gate on debugEnabled, reuse
+  // fetchNekoStatusBestEffort, and use claimPlaygroundEvent for dedupe.
+  assert.match(
+    viewerSrc,
+    /if \(!debugEnabled\) return;[\s\S]+?fetchNekoStatusBestEffort/,
+    "debug drain gated on debugEnabled and reuses fetchNekoStatusBestEffort"
+  );
+  assert.match(
+    viewerSrc,
+    /claimPlaygroundEvent\(playgroundSeenRef\.current,[\s\S]+?===\s*"duplicate"/,
+    "debug drain rejects duplicates via claimPlaygroundEvent"
+  );
+  // The debug drain must NOT poll at the layout-poll cadence (50 ms);
+  // a tighter cadence would perturb UX even though it's debug-only.
+  // 250 ms is fast enough that a human-perceived tap reaches the
+  // operator's JSONL well under a second.
+  assert.match(
+    viewerSrc,
+    /nekoDebugDrainPollMs:\s*250,/,
+    "debug drain has a dedicated 250ms cadence (not the 50ms layout-poll cadence)"
+  );
+  assert.match(
+    viewerSrc,
+    /setTimeout\(drainOnce, STREAM_VIEWER_POLICY\.nekoDebugDrainPollMs\)/,
+    "debug drain useEffect uses nekoDebugDrainPollMs"
+  );
+  assert.doesNotMatch(
+    viewerSrc,
+    /setTimeout\(drainOnce, STREAM_VIEWER_POLICY\.nekoStatusPollMs\)/,
+    "debug drain useEffect must NOT reuse the 50ms layout-poll cadence"
+  );
+  // The debug-drain path must NOT call applyScreen / applyFallback /
+  // mark firstNekoLayoutAppliedRef — it is observation-only.
+  const drainBlock =
+    viewerSrc.match(/Debug-only drain[\s\S]+?\}, \[clientConfig\?\.statusPath, debugEnabled, logDebug\]\);/)?.[0] ?? "";
+  assert.ok(drainBlock.length > 0, "debug-drain useEffect block is identifiable");
+  assert.doesNotMatch(drainBlock, /applyScreen\(/, "debug drain must not call applyScreen");
+  assert.doesNotMatch(drainBlock, /applyFallback\(/, "debug drain must not call applyFallback");
+  assert.doesNotMatch(drainBlock, /firstNekoLayoutAppliedRef/, "debug drain must not mark first-layout flag");
+  // Source field on emitted events must distinguish the two paths so
+  // the operator can tell which poll surfaced a given event.
+  assert.match(viewerSrc, /source:\s*"remote-status-poll"/, "layout poll tags events as remote-status-poll");
+  assert.match(viewerSrc, /source:\s*"remote-debug-drain"/, "debug drain tags events as remote-debug-drain");
+});
+
 test("stream pages ask the browser to overlay the keyboard instead of resizing the viewport", async () => {
   const [streamPage, playgroundPage, globalCss] = await Promise.all([
     readFile(STREAM_PAGE_FILE, "utf8"),

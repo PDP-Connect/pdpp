@@ -89,6 +89,21 @@ test('stream playground HTML installs five fixed-positioned calibration beacons 
     );
   }
   assert.match(src, /position:\s*fixed/, 'beacons use position: fixed (visualViewport-anchored)');
+  // The beacons must NOT sit on the exact viewport edges — Android and
+  // iOS reserve the outer 16-20px for system gestures (back-swipe,
+  // multitasking, notification shade). 24px keeps the touch target
+  // safely inside the OS-respected page area, even on devices with
+  // curved displays.
+  for (const corner of ['tl', 'tr', 'bl', 'br']) {
+    const re = new RegExp(`\\.pdpp-calibration-beacon\\[data-beacon-id="${corner}"\\]\\s*\\{[^}]*\\b(?:top|right|bottom|left):\\s*24px`);
+    assert.match(src, re, `beacon id="${corner}" inset by 24px from the viewport edge`);
+  }
+  // Block native gestures on the beacon itself: scroll-pan, long-press
+  // selection, and double-tap zoom can each masquerade as miss-presses
+  // and corrupt the calibration signal.
+  assert.match(src, /touch-action:\s*none/, 'beacons disable native touch gestures');
+  assert.match(src, /user-select:\s*none/, 'beacons disable text selection');
+  assert.match(src, /-webkit-tap-highlight-color:\s*transparent/, 'beacons disable WebKit tap highlight');
   // The beacon ring is part of the visualViewport, not the document
   // flow, so they MUST NOT be inside the <main> grid (which would
   // change layout under landscape media queries).
@@ -124,6 +139,19 @@ test('stream playground records calibration data on every pointer/click event', 
     /closest\(['"]\[data-pdpp-calibration-beacon\]['"]\)/,
     'beaconUnderPoint resolved via elementFromPoint().closest()'
   );
+  // Every event carries a per-page-load identifier so the viewer
+  // dedupe survives a remote reload (n.eko Page.navigate, manual
+  // refresh) without silently dropping the new page's events.
+  assert.match(
+    src,
+    /const pdppPlaygroundPageId = /,
+    'playground generates a per-page-load identifier'
+  );
+  assert.match(
+    src,
+    /pageId: pdppPlaygroundPageId,/,
+    'every recorded event is stamped with pageId'
+  );
   // calibration_init must fire once at script boot so the operator
   // gets the authoritative beacon coordinates exactly once per page
   // load via the next status drain.
@@ -131,6 +159,31 @@ test('stream playground records calibration data on every pointer/click event', 
     src,
     /pdppRecordPlaygroundEvent\(['"]calibration_init['"]/,
     'calibration_init event fires at script boot to publish beacon registry'
+  );
+  // And it must re-emit on resize / visualViewport.resize / orientation
+  // change. Without these, beacon coordinates captured at boot reflect
+  // the pre-emulation X-server layout rather than the post-emulation
+  // page the user actually interacts with — symptom: "I tapped four
+  // beacons and then the page changed and they vanished."
+  assert.match(
+    src,
+    /pdppEmitCalibrationInit/,
+    'calibration_init emit helper is named so it can be reused on resize'
+  );
+  assert.match(
+    src,
+    /window\.addEventListener\(['"]resize['"],\s*pdppQueueCalibrationInit/,
+    'calibration_init re-emits on window resize'
+  );
+  assert.match(
+    src,
+    /window\.visualViewport[\s\S]{0,200}addEventListener\(['"]resize['"],\s*pdppQueueCalibrationInit/,
+    'calibration_init re-emits on visualViewport resize'
+  );
+  assert.match(
+    src,
+    /window\.addEventListener\(['"]orientationchange['"],\s*pdppQueueCalibrationInit/,
+    'calibration_init re-emits on orientationchange'
   );
 });
 
