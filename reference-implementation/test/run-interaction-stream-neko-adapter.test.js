@@ -869,6 +869,98 @@ test('n.eko adapter selects a high-DPR shallow landscape preset for Android land
   assert.notEqual(applied.width, 920, 'must not fall back to 920-wide landscape preset');
 });
 
+test('n.eko adapter selects near-exact 1x portrait preset for native n.eko input alignment', async () => {
+  const fetchImpl = makeFetch([
+    {
+      method: 'GET',
+      url: 'https://neko.test/api/room/screen/configurations',
+      response: makeResponse({
+        json: [
+          { width: 448, height: 916, rate: 30 },
+          { width: 496, height: 915, rate: 30 },
+          { width: 500, height: 915, rate: 30 },
+          { width: 448, height: 820, rate: 30 },
+          { width: 1080, height: 1920, rate: 30 },
+        ],
+      }),
+    },
+    {
+      method: 'POST',
+      url: 'https://neko.test/api/room/screen',
+      response: ({ init }) => makeResponse({ json: JSON.parse(init.body) }),
+    },
+  ]);
+  const companion = createNekoCompanion({
+    origin: 'https://neko.test',
+    bearerToken: 'token-native-portrait',
+    fetchImpl,
+    screenConfigurationsEndpoint: '/api/room/screen/configurations',
+    screenEndpoint: '/api/room/screen',
+  });
+
+  await companion.dispatch({
+    type: 'viewport',
+    width: 448,
+    height: 819,
+    screenWidth: 448,
+    screenHeight: 819,
+    deviceScaleFactor: 1,
+    mobile: true,
+    hasTouch: true,
+  });
+
+  const screenPost = fetchImpl.calls.find((call) => call.url === 'https://neko.test/api/room/screen');
+  assert.ok(screenPost, 'expected POST to /api/room/screen');
+  const applied = JSON.parse(screenPost.init.body);
+  assert.deepEqual(applied, { width: 448, height: 820, rate: 30 });
+});
+
+test('n.eko adapter selects near-exact 1x landscape preset for native n.eko input alignment', async () => {
+  const fetchImpl = makeFetch([
+    {
+      method: 'GET',
+      url: 'https://neko.test/api/room/screen/configurations',
+      response: makeResponse({
+        json: [
+          { width: 920, height: 412, rate: 30 },
+          { width: 936, height: 432, rate: 30 },
+          { width: 952, height: 364, rate: 30 },
+          { width: 1840, height: 704, rate: 30 },
+          { width: 2128, height: 816, rate: 30 },
+        ],
+      }),
+    },
+    {
+      method: 'POST',
+      url: 'https://neko.test/api/room/screen',
+      response: ({ init }) => makeResponse({ json: JSON.parse(init.body) }),
+    },
+  ]);
+  const companion = createNekoCompanion({
+    origin: 'https://neko.test',
+    bearerToken: 'token-native-landscape',
+    fetchImpl,
+    screenConfigurationsEndpoint: '/api/room/screen/configurations',
+    screenEndpoint: '/api/room/screen',
+  });
+
+  await companion.dispatch({
+    type: 'viewport',
+    width: 947,
+    height: 364,
+    screenWidth: 947,
+    screenHeight: 364,
+    deviceScaleFactor: 1,
+    mobile: true,
+    hasTouch: true,
+  });
+
+  const screenPost = fetchImpl.calls.find((call) => call.url === 'https://neko.test/api/room/screen');
+  assert.ok(screenPost, 'expected POST to /api/room/screen');
+  const applied = JSON.parse(screenPost.init.body);
+  assert.deepEqual(applied, { width: 952, height: 364, rate: 30 });
+});
+
 test('n.eko adapter targets the actual capture-pixel paint surface so the X mode matches Emulation, not the larger fallback screen mode (regression: Brave Android white borders)', async () => {
   // Telemetry from viewer 8934a152-fe7b-48b1-9176-c493d0e1954c: Brave on
   // Android Chrome 147 portrait — viewport=448x771 CSS @ dpr=2.25. Chromium
