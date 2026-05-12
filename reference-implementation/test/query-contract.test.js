@@ -169,6 +169,16 @@ async function emitSyntheticRun({
   status,
   occurredAt,
 }) {
+  // Spine-layer stamping requirement (see docs/run-reconciliation-design-brief.md §3.3):
+  // every run.started must carry boot_epoch+seq. Harness ran startServer
+  // which initialized the singleton; read it once.
+  const { getCurrentBootEpoch } = await import('../lib/spine.ts');
+  const _epoch = getCurrentBootEpoch();
+  const _stamp = _epoch ? {
+    boot_epoch: _epoch.boot_epoch,
+    seq: _epoch.seq,
+    controller_id: _epoch.controller_id,
+  } : { boot_epoch: 'synthetic', seq: 1, controller_id: 'synthetic' };
   const trace = createTraceContext({ scenarioId: `scn_${runId}` });
   await emitSpineEvent({
     event_type: 'run.started',
@@ -187,6 +197,7 @@ async function emitSyntheticRun({
       source: { kind: 'connector', id: connectorId },
       scope: { streams: [{ name: 'top_artists' }] },
       scope_streams: ['top_artists'],
+      ..._stamp,
     },
   });
   await emitSpineEvent({

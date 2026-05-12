@@ -190,6 +190,16 @@ test('_ref listing helpers', async (t) => {
   await t.test('GET /_ref/runs reports pending interaction state without relying on event-kind sets', async () => {
     await withHarness(async ({ asUrl, spotifyManifest }) => {
       const source = { connector_id: spotifyManifest.connector_id };
+      // Spine-layer stamping requirement: every run.started must carry
+      // boot_epoch+seq. Harness ran startServer which initialized the
+      // singleton; read it once and merge into every synthetic emit.
+      const { getCurrentBootEpoch } = await import('../lib/spine.ts');
+      const _epoch = getCurrentBootEpoch();
+      const runStartedStamp = _epoch ? {
+        boot_epoch: _epoch.boot_epoch,
+        seq: _epoch.seq,
+        controller_id: _epoch.controller_id,
+      } : { boot_epoch: 'synthetic', seq: 1, controller_id: 'synthetic' };
       const base = {
         actor_id: spotifyManifest.connector_id,
         actor_type: 'runtime',
@@ -205,7 +215,7 @@ test('_ref listing helpers', async (t) => {
         occurred_at: '2026-04-24T00:00:00.000Z',
         run_id: 'run_pending_input',
         status: 'started',
-        data: { source },
+        data: { source, ...runStartedStamp },
       });
       await emitSpineEvent({
         ...base,
@@ -224,7 +234,7 @@ test('_ref listing helpers', async (t) => {
         occurred_at: '2026-04-24T00:01:00.000Z',
         run_id: 'run_terminal_stale_input',
         status: 'started',
-        data: { source },
+        data: { source, ...runStartedStamp },
       });
       await emitSpineEvent({
         ...base,
@@ -252,7 +262,7 @@ test('_ref listing helpers', async (t) => {
         occurred_at: '2026-04-24T00:02:00.000Z',
         run_id: 'run_second_input',
         status: 'started',
-        data: { source },
+        data: { source, ...runStartedStamp },
       });
       await emitSpineEvent({
         ...base,

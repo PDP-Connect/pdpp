@@ -157,6 +157,15 @@ function encodeSummaryCursor(summary) {
   return summary ? `${summary.last_at}::${summary.id}` : null;
 }
 
+// Run-terminal event types — kept aligned with lib/spine.ts
+// RUN_TERMINAL_EVENT_TYPES. Reference: docs/run-reconciliation-design-brief.md §3.7.
+const RUN_TERMINAL_EVENT_TYPES = new Set([
+  'run.completed',
+  'run.failed',
+  'run.cancelled',
+  'run.abandoned',
+]);
+
 function summarizeRows(id, rows) {
   const events = rows.map(hydrate).filter(Boolean);
   const first = events[0] || {};
@@ -165,6 +174,45 @@ function summarizeRows(id, rows) {
   const failureEvent = events.find((event) => event.status === 'failed' || event.status === 'rejected');
   const source = events.find((event) => event.source_kind && event.source_id);
   const connector = events.find((event) => event.source_kind === 'connector' && event.source_id);
+
+  // Status projection — mirror lib/spine.ts summarizeEvents logic.
+  //
+  // Run-correlation summaries must reflect the run's lifecycle status
+  // (run.completed / run.failed / run.cancelled / run.abandoned), NOT
+  // the status of incidental sub-resource events that happen to share
+  // the run_id (e.g. run.batch_ingested, which carries status:'succeeded'
+  // per batch — and would mislabel an in-flight run as succeeded if used
+  // as the fallback). See docs/run-reconciliation-design-brief.md §3.7.
+  let status = 'unknown';
+  for (let i = events.length - 1; i >= 0; i -= 1) {
+    const ev = events[i];
+    if (!ev || !RUN_TERMINAL_EVENT_TYPES.has(ev.event_type)) continue;
+    if (ev.status && ev.status !== 'unknown') {
+      status = ev.status;
+      break;
+    }
+  }
+  if (status === 'unknown') {
+    // Pass 2 (fallback): no run-terminal event yet (run in flight or a
+    // non-run correlation). Use the most recent non-"unknown" status as
+    // before. For an in-flight run with only `run.batch_ingested` events,
+    // this lands on the *batch's* status which still misrepresents the
+    // run — so we also detect that case explicitly.
+    const hasRunStarted = events.some((ev) => ev.event_type === 'run.started');
+    if (hasRunStarted) {
+      // Run started, no terminal: it's still in progress.
+      status = 'in_progress';
+    } else {
+      for (let i = events.length - 1; i >= 0; i -= 1) {
+        const ev = events[i];
+        if (ev && ev.status && ev.status !== 'unknown') {
+          status = ev.status;
+          break;
+        }
+      }
+    }
+  }
+
   return {
     id,
     actor_id: last.actor_id || null,
@@ -188,7 +236,7 @@ function summarizeRows(id, rows) {
     source: source ? { kind: source.source_kind, id: source.source_id } : null,
     source_id: source?.source_id || null,
     source_kind: source?.source_kind || null,
-    status: last.status || 'unknown',
+    status,
     trace_id: last.trace_id || null,
   };
 }
@@ -265,17 +313,72 @@ export async function postgresListSpineCorrelations(kind, filters = {}) {
   const column = COLUMN_BY_KIND[kind];
   if (!column) return { summaries: [], hasMore: false, nextCursor: null };
   const limit = Math.max(1, Math.min(Number(filters.limit) || 50, 500));
+
+  // Event-column equality filters. These tag every event in a correlation
+  // with the same value (or null), so applying them in the WHERE clause is
+  // safe — the GROUP BY rolls up matching events into per-correlation rows.
+  //
+  // Without these filters, per-connector queries (e.g.
+  // getLatestRunSummary("connectors/amazon")) silently returned the
+  // global-latest run, making every connector row on the dashboard show
+  // identical "last success / event count / status" values. The SQLite
+  // path in lib/spine.ts already had this; the Postgres implementation
+  // was incomplete. See docs/run-reconciliation-design-brief.md for the
+  // broader event-projection discipline.
+  const whereParts = [`${column} IS NOT NULL`];
+  const params = [];
+  if (filters.clientId) {
+    params.push(filters.clientId);
+    whereParts.push(`client_id = $${params.length}`);
+  }
+  if (filters.sourceKind) {
+    params.push(String(filters.sourceKind));
+    whereParts.push(`source_kind = $${params.length}`);
+  }
+  if (filters.sourceId) {
+    params.push(filters.sourceId);
+    whereParts.push(`source_id = $${params.length}`);
+  }
+  if (filters.grantId && column !== 'grant_id') {
+    params.push(filters.grantId);
+    whereParts.push(`grant_id = $${params.length}`);
+  }
+  if (filters.q) {
+    params.push(`%${String(filters.q)}%`);
+    whereParts.push(`${column} LIKE $${params.length}`);
+  }
+
+  // HAVING for since/until (compares against the correlation's MAX/MIN
+  // occurred_at, computed by the same GROUP BY).
+  const havingParts = [];
+  if (filters.since) {
+    params.push(filters.since);
+    havingParts.push(`MAX(occurred_at) >= $${params.length}`);
+  }
+  if (filters.until) {
+    params.push(filters.until);
+    havingParts.push(`MIN(occurred_at) <= $${params.length}`);
+  }
+  const havingSql = havingParts.length > 0 ? ` HAVING ${havingParts.join(' AND ')}` : '';
+
+  params.push(limit + 1);
+  const limitPlaceholder = `$${params.length}`;
+
   const result = await postgresQuery(
     `SELECT ${column} AS id, MIN(occurred_at) AS first_at, MAX(occurred_at) AS last_at, COUNT(*)::int AS event_count
      FROM spine_events
-     WHERE ${column} IS NOT NULL
-     GROUP BY ${column}
+     WHERE ${whereParts.join(' AND ')}
+     GROUP BY ${column}${havingSql}
      ORDER BY last_at DESC, id ASC
-     LIMIT $1`,
-    [limit + 1],
+     LIMIT ${limitPlaceholder}`,
+    params,
   );
+
+  // Page-scope filters (applied after the aggregation): status filter is
+  // applied against the summary's projected run-status, so it must run
+  // after summarizeRows. The SQLite path does the same.
   const pageRows = result.rows.slice(0, limit);
-  const summaries = [];
+  let summaries = [];
   for (const row of pageRows) {
     const events = await postgresQuery(
       `SELECT * FROM spine_events WHERE ${column} = $1 ORDER BY event_seq ASC LIMIT 5000`,
@@ -283,6 +386,12 @@ export async function postgresListSpineCorrelations(kind, filters = {}) {
     );
     summaries.push(summarizeRows(row.id, events.rows));
   }
+
+  if (filters.status) {
+    const wanted = String(filters.status);
+    summaries = summaries.filter((s) => s && s.status === wanted);
+  }
+
   const hasMore = result.rows.length > limit;
   return {
     summaries,

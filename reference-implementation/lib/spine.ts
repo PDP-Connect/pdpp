@@ -383,11 +383,53 @@ function normalizeSpineEventInput(input: SpineEventInput): NormalizedSpineEvent 
  * can either call this without `await` or use the synchronous insert path
  * directly — the DB write has already happened when the call returns.
  */
+/**
+ * Process-local boot-epoch singleton.
+ *
+ * Set once per process by `startServer` after `controller.booted` is
+ * emitted (see docs/run-reconciliation-design-brief.md §3.4). Read by
+ * `runConnector` and any other `run.started` emitter to stamp events.
+ *
+ * Stays unset until `setCurrentBootEpoch` is called — `emitSpineEvent`
+ * will reject `run.started` emissions until then (see
+ * `assertRunStartedIsStamped`).
+ */
+let currentBootEpoch: BootEpoch | null = null;
+
+export interface BootEpoch {
+  readonly boot_epoch: string;
+  readonly seq: number;
+  readonly controller_id: string;
+}
+
+export function setCurrentBootEpoch(epoch: BootEpoch): void {
+  if (!epoch.boot_epoch || typeof epoch.boot_epoch !== "string") {
+    throw new Error("setCurrentBootEpoch: boot_epoch must be a non-empty string");
+  }
+  if (typeof epoch.seq !== "number" || !Number.isFinite(epoch.seq) || epoch.seq < 1) {
+    throw new Error("setCurrentBootEpoch: seq must be a positive integer");
+  }
+  if (!epoch.controller_id || typeof epoch.controller_id !== "string") {
+    throw new Error("setCurrentBootEpoch: controller_id must be a non-empty string");
+  }
+  currentBootEpoch = { ...epoch };
+}
+
+export function getCurrentBootEpoch(): BootEpoch | null {
+  return currentBootEpoch;
+}
+
+export function clearCurrentBootEpoch(): void {
+  currentBootEpoch = null;
+}
+
 // biome-ignore lint/suspicious/useAwait: see doc-comment — historical async signature kept for call-site compatibility.
 export async function emitSpineEvent(
   input: SpineEventInput = {},
   dbHandle: SpineDatabase | null = null
 ): Promise<SpineEventRecord | null> {
+  assertRunStartedIsStamped(input);
+
   if (!dbHandle && isPostgresStorageBackend()) {
     return postgresEmitSpineEvent(input) as Promise<SpineEventRecord | null>;
   }
@@ -401,6 +443,47 @@ export async function emitSpineEvent(
   execNamedOn(db, referenceQueries.spineInsertEvent, event);
 
   return hydrateNormalizedEvent(event);
+}
+
+/**
+ * Boot-epoch reconciliation invariant — spine-layer enforcement.
+ *
+ * Every `run.started` event MUST be stamped with the current boot's
+ * `boot_epoch` (UUID) and `seq` (monotonic integer) in `data_json`.
+ * The runtime controller (`startServer` in `reference-implementation/
+ * server/index.js`) populates the singleton at boot; `runConnector`
+ * reads it when emitting `run.started`. Anything that bypasses that
+ * path — test fixtures, import scripts, future code paths — would
+ * silently corrupt the orphan-recovery invariant by emitting events
+ * that look prior-epoch forever and get re-abandoned every boot.
+ *
+ * Failing loudly here makes stamping a property of the spine schema
+ * (enforced at every write), not a runtime convention.
+ *
+ * See docs/run-reconciliation-design-brief.md §3.3.
+ *
+ * `data` may be absent on legacy callers; the check is keyed off
+ * `event_type` so non-run events are unaffected.
+ */
+function assertRunStartedIsStamped(input: SpineEventInput): void {
+  if (input.event_type !== "run.started") {
+    return;
+  }
+  const data = (input.data ?? {}) as Record<string, unknown>;
+  const epoch = data.boot_epoch;
+  const seq = data.seq;
+  if (typeof epoch !== "string" || epoch.length === 0) {
+    throw new Error(
+      "emitSpineEvent: run.started requires data.boot_epoch (string uuid); controller singleton not initialized? " +
+        "See docs/run-reconciliation-design-brief.md §3.3.",
+    );
+  }
+  if (typeof seq !== "number" || !Number.isFinite(seq) || seq < 1) {
+    throw new Error(
+      "emitSpineEvent: run.started requires data.seq (positive integer); controller singleton not initialized? " +
+        "See docs/run-reconciliation-design-brief.md §3.3.",
+    );
+  }
 }
 
 function hydrateNormalizedEvent(event: NormalizedSpineEvent): SpineEventRecord {
@@ -657,7 +740,17 @@ function summarizeEvents(events: readonly SpineEventRecord[]): SpineSummary | nu
   // a single `status` column. The deeper fix is for the spec to distinguish
   // run-terminal events from sub-resource events explicitly. Tracked in
   // `openspec/changes/refine-spine-status-semantics-for-mixed-correlations/`.
-  const RUN_TERMINAL_EVENT_TYPES = new Set(["run.completed", "run.failed"]);
+  // RUN_TERMINAL_EVENT_TYPES — the canonical set of terminal events for a
+  // run lifecycle. `run.cancelled` and `run.abandoned` were added with
+  // boot-epoch reconciliation (see docs/run-reconciliation-design-brief.md
+  // §3.7). All run-status projection code must read from this set; never
+  // hardcode subset checks like `["completed", "failed"]` elsewhere.
+  const RUN_TERMINAL_EVENT_TYPES = new Set([
+    "run.completed",
+    "run.failed",
+    "run.cancelled",
+    "run.abandoned",
+  ]);
   let status = "unknown";
   // Pass 1: prefer the most recent run-terminal event when summarizing a run.
   for (let i = events.length - 1; i >= 0; i -= 1) {

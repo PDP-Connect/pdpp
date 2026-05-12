@@ -7,7 +7,8 @@
 import { spawn } from 'child_process';
 import { createInterface } from 'readline';
 import { appendFileSync, mkdirSync } from 'node:fs';
-import { createTraceContext, emitSpineEvent } from '../lib/spine.ts';
+import { createTraceContext, emitSpineEvent, getCurrentBootEpoch } from '../lib/spine.ts';
+import { emitControllerBootedAndStashEpoch } from '../lib/controller-boot.ts';
 import { isClosedPipeWriteError } from './pipe-errors.js';
 import { deriveTerminalReason } from './terminal-reason.js';
 import { createStderrTailBuffer } from './stderr-tail.js';
@@ -1059,6 +1060,19 @@ export async function runConnector(opts) {
     return record;
   }
 
+  // Stamp `run.started` with the current process's boot epoch so the
+  // boot-time orphan reconciler can identify abandoned runs from prior
+  // incarnations. The spine-layer enforcement
+  // (`assertRunStartedIsStamped` in lib/spine.ts) rejects emissions
+  // lacking these fields with a loud error. Normally `startServer`
+  // initializes the singleton via Stage 5; if `runConnector` is invoked
+  // standalone (in a test fixture, a CLI tool, etc.) we lazily emit
+  // `controller.booted` here so the runtime is always self-sufficient.
+  // See docs/run-reconciliation-design-brief.md §3.3 / §3.4.
+  let _bootEpoch = getCurrentBootEpoch();
+  if (!_bootEpoch) {
+    _bootEpoch = await emitControllerBootedAndStashEpoch();
+  }
   await emitSpineEventTracked({
     event_type: 'run.started',
     trace_id: traceContext.trace_id,
@@ -1078,6 +1092,9 @@ export async function runConnector(opts) {
       bindings: availableBindings,
       scope: startScope,
       scope_streams: startScope.streams.map((stream) => stream.name),
+      boot_epoch: _bootEpoch.boot_epoch,
+      seq: _bootEpoch.seq,
+      controller_id: _bootEpoch.controller_id,
     },
   });
   if (typeof onStarted === 'function') {

@@ -221,6 +221,22 @@ export interface ControllerOptions {
 export interface Controller {
   clearNeedsHuman(connectorId: string): void;
   deleteSchedule(connectorId: string): Promise<boolean>;
+  /**
+   * Graceful-shutdown drain: await all in-flight `runConnector` promises,
+   * bounded by `timeoutMs`. Returns a summary of which runs finished
+   * cleanly vs. which timed out.
+   *
+   * Intended caller: the parent process's SIGTERM handler in
+   * `server/index.js`. Ensures connector children have time to release
+   * their Chromium contexts (Layer A `shutdown-hook.ts` in
+   * `polyfill-connectors/src`) before the parent exits and closes their
+   * stdio pipes. See the layered SLVP design:
+   *   - Layer A (subprocess SIGTERM hook): awaits release on signal.
+   *   - Layer B (this method): controller waits for children before exit.
+   *   - Layer C (`profile-lock.ts`): startup cleanup of any residue from
+   *     paths A/B couldn't intercept (SIGKILL, OOM, power loss).
+   */
+  drainActiveRuns(timeoutMs: number): Promise<DrainSummary>;
   getActiveRun(connectorId: string): ActiveRun | null;
   getPendingInteraction(runId: string): PendingInteractionProjection | null;
   getSchedule(connectorId: string): Promise<ScheduleApi | null>;
@@ -230,6 +246,13 @@ export interface Controller {
   runNow(connectorId: string, options?: RunNowOptions): Promise<RunNowResult>;
   setScheduleEnabled(connectorId: string, enabled: boolean): Promise<ScheduleApi | null>;
   upsertSchedule(connectorId: string, input: ConnectorSchedulePatch): Promise<ScheduleUpsertResult>;
+}
+
+export interface DrainSummary {
+  readonly drained: number;
+  readonly timedOut: number;
+  /** Wall-clock milliseconds spent in drainActiveRuns. */
+  readonly elapsedMs: number;
 }
 
 interface RuntimeInteraction {
@@ -283,6 +306,16 @@ export class ControllerError extends Error {
 // ─── Module-scoped state ────────────────────────────────────────────────────
 
 const activeRuns = new Map<string, ActiveRun>();
+// In-flight connector-run Promises, keyed by run_id. Settled (success or
+// failure) when the connector child process has exited and the controller's
+// per-run cleanup (`activeRuns.delete`, spine emit, etc.) has finished.
+//
+// Populated alongside `activeRuns.set` and cleared in the same `finally`
+// chain. Used exclusively by `drainActiveRuns` (graceful-shutdown path)
+// to await in-flight cleanup before the parent process exits. See
+// docs/run-reconciliation-design-brief.md for the broader controller-
+// shutdown discipline this complements.
+const activeRunPromises = new Map<string, Promise<unknown>>();
 // Keyed by run_id. Interaction broker state is intentionally in-memory:
 // dashboard-submitted values satisfy the current live run only and are never
 // persisted to `.env.local`, SQLite config/state, or spine event payloads.
@@ -303,6 +336,50 @@ const ABANDONED_CONTROLLER_RUN_REASON = "controller_restarted";
 
 function buildRunSource(connectorId: string): { kind: "connector"; id: string } {
   return { kind: "connector", id: connectorId };
+}
+
+/**
+ * Graceful-shutdown drain primitive — exported for direct unit testing.
+ *
+ * Await every Promise in `pending` (snapshotted at call time) until either
+ * (a) all settle, or (b) `timeoutMs` elapses. After the deadline, returns
+ * counts based on which keys remain in the *live* map — promises that
+ * settled during the race were removed by their own `finally` chains.
+ *
+ * The Promise.race is bounded; the timeout's setTimeout is `.unref()`'d
+ * so the test runner doesn't keep the event loop alive after the test
+ * finishes (a hard-to-spot test hang otherwise).
+ *
+ * See `Controller.drainActiveRuns` and
+ * docs/run-reconciliation-design-brief.md for the layered SLVP design.
+ */
+export async function drainPromisesWithDeadline(
+  pending: Map<string, Promise<unknown>>,
+  timeoutMs: number,
+): Promise<DrainSummary> {
+  const startMs = Date.now();
+  const snapshot = Array.from(pending.values());
+  if (snapshot.length === 0) {
+    return { drained: 0, timedOut: 0, elapsedMs: 0 };
+  }
+  let timeoutHandle: NodeJS.Timeout | null = null;
+  const deadline = new Promise<"timeout">((resolve) => {
+    timeoutHandle = setTimeout(() => resolve("timeout"), timeoutMs);
+    if (timeoutHandle.unref) timeoutHandle.unref();
+  });
+  const allSettled = Promise.allSettled(snapshot).then(() => "settled" as const);
+  const outcome = await Promise.race([allSettled, deadline]);
+  if (timeoutHandle) clearTimeout(timeoutHandle);
+  const elapsedMs = Date.now() - startMs;
+  if (outcome === "settled") {
+    return { drained: snapshot.length, timedOut: 0, elapsedMs };
+  }
+  const stillPending = pending.size;
+  return {
+    drained: snapshot.length - stillPending,
+    timedOut: stillPending,
+    elapsedMs,
+  };
 }
 
 function nowIso(): string {
@@ -773,7 +850,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
         SELECT 1 AS present
         FROM spine_events
         WHERE run_id = $1
-          AND event_type IN ('run.completed', 'run.failed')
+          AND event_type IN ('run.completed', 'run.failed', 'run.cancelled', 'run.abandoned')
         LIMIT 1
         `,
         [runId]
@@ -1070,11 +1147,16 @@ export function createController(opts: ControllerOptions = {}): Controller {
         log,
       });
 
-    // Fire-and-forget: runNow returns the run handle immediately; the
-    // actual connector execution resolves later and clears activeRuns
-    // in the finally. We don't await the runtime result because callers
-    // poll the projection via getActiveRun / listSchedules.
-    runConnector({
+    // runNow returns the run handle immediately; the actual connector
+    // execution resolves later and clears activeRuns in the finally.
+    // Callers poll the projection via getActiveRun / listSchedules.
+    //
+    // The Promise itself is tracked in `activeRunPromises` so the
+    // graceful-shutdown path (`drainActiveRuns`) can await in-flight
+    // children before the parent process exits — critical for
+    // Chromium release() to complete and prevent stale singleton-lock
+    // files (see polyfill-connectors/src/profile-lock.ts).
+    const runPromise = runConnector({
       connectorPath,
       connectorId,
       ownerToken,
@@ -1100,6 +1182,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
       })
       .finally(() => {
         activeRuns.delete(connectorId);
+        activeRunPromises.delete(runId);
         clearPersistedActiveRun(connectorId, runId).catch((err) => {
           const message = err instanceof Error ? err.message : String(err);
           log.warn?.(`[controller] failed to clear active run ${runId} for ${connectorId}: ${message}`);
@@ -1124,8 +1207,19 @@ export function createController(opts: ControllerOptions = {}): Controller {
           });
         }
       });
+    activeRunPromises.set(runId, runPromise);
 
     return { run_id: runId, trace_id: traceContext.trace_id };
+  }
+
+  // ─── Graceful-shutdown drain ────────────────────────────────────────────
+  //
+  // Await all in-flight run promises with a hard deadline. The parent's
+  // SIGTERM handler in server/index.js calls this before process.exit.
+  // Returns the count drained, the count timed out, and elapsed wall-clock
+  // time so the caller can log a useful summary.
+  async function drainActiveRuns(timeoutMs: number): Promise<DrainSummary> {
+    return drainPromisesWithDeadline(activeRunPromises, timeoutMs);
   }
 
   function respondToInteraction(runId: string, input: RunInteractionResponseInput = {}): RunInteractionAck {
@@ -1184,6 +1278,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
     upsertSchedule,
     setScheduleEnabled,
     deleteSchedule,
+    drainActiveRuns,
     getActiveRun,
     getPendingInteraction,
     respondToInteraction,

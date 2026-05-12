@@ -435,17 +435,33 @@ CREATE TABLE IF NOT EXISTS blobs (
   data          BLOB
 );
 
+-- blob_bindings.json_path: either an RFC 6901 JSON Pointer naming the
+-- record_json leaf the blob replaces (e.g. '/output_preview',
+-- '/messages/0/content') or the reserved pseudo-path '@record' for
+-- record-level bindings that aren't tied to a specific field
+-- (current attachment-style writers). The CHECK constraint enforces
+-- the shape — every json_path is either '@record' or starts with '/'.
+-- See docs/binary-content-invariant-design-brief.md §4.6.
 CREATE TABLE IF NOT EXISTS blob_bindings (
   blob_id       TEXT NOT NULL,
   connector_id  TEXT NOT NULL,
   stream        TEXT NOT NULL,
   record_key    TEXT NOT NULL,
-  PRIMARY KEY(blob_id, connector_id, stream, record_key),
-  FOREIGN KEY(blob_id) REFERENCES blobs(blob_id)
+  json_path     TEXT NOT NULL DEFAULT '@record',
+  PRIMARY KEY(blob_id, connector_id, stream, record_key, json_path),
+  FOREIGN KEY(blob_id) REFERENCES blobs(blob_id),
+  CHECK (json_path = '@record' OR substr(json_path, 1, 1) = '/')
 );
 
 CREATE INDEX IF NOT EXISTS idx_blob_bindings_record
   ON blob_bindings(connector_id, stream, record_key);
+
+-- sha256 uniqueness is *implied* by the blob_id = 'blob_sha256_<hex>'
+-- naming convention plus the PRIMARY KEY on blob_id. Making the
+-- invariant explicit at the schema layer protects against future drift
+-- where a code path might generate a non-derived blob_id.
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_blobs_sha256
+  ON blobs(sha256);
 
 CREATE TABLE IF NOT EXISTS connector_state (
   connector_id  TEXT NOT NULL,
@@ -844,6 +860,72 @@ function migrateSpineSourceColumns(raw, opts = {}) {
   return result;
 }
 
+/**
+ * Migrate `blob_bindings` to include `json_path` in the primary key.
+ *
+ * Pre-migration shape: PRIMARY KEY (blob_id, connector_id, stream, record_key).
+ * Post-migration shape: PRIMARY KEY (blob_id, connector_id, stream, record_key, json_path)
+ * with json_path TEXT NOT NULL and CHECK (json_path = '@record' OR substr(json_path, 1, 1) = '/').
+ *
+ * SQLite has no `ALTER TABLE ... ADD COLUMN ... PRIMARY KEY`, so the
+ * migration is a full table rebuild: create blob_bindings_new with the
+ * new shape, copy rows backfilling json_path = '@record' (the
+ * pre-existing semantics — every legacy binding was a record-level
+ * attachment-style binding), DROP the old table, and rename.
+ *
+ * Idempotent: detects the new shape via PRAGMA table_info and skips when
+ * the column is already present.
+ *
+ * See docs/binary-content-invariant-design-brief.md §4.6.
+ */
+function migrateBlobBindingsJsonPath(raw, opts = {}) {
+  if (hasTableColumn(raw, 'blob_bindings', 'json_path')) {
+    return { rebuilt: false, backfilledRows: 0 };
+  }
+
+  const migration = raw.transaction(() => {
+    const before = raw.prepare('SELECT COUNT(*) AS count FROM blob_bindings').get().count;
+
+    raw.exec(`
+      CREATE TABLE blob_bindings_new (
+        blob_id       TEXT NOT NULL,
+        connector_id  TEXT NOT NULL,
+        stream        TEXT NOT NULL,
+        record_key    TEXT NOT NULL,
+        json_path     TEXT NOT NULL DEFAULT '@record',
+        PRIMARY KEY(blob_id, connector_id, stream, record_key, json_path),
+        FOREIGN KEY(blob_id) REFERENCES blobs(blob_id),
+        CHECK (json_path = '@record' OR substr(json_path, 1, 1) = '/')
+      );
+
+      INSERT INTO blob_bindings_new (blob_id, connector_id, stream, record_key, json_path)
+      SELECT blob_id, connector_id, stream, record_key, '@record'
+      FROM blob_bindings;
+
+      DROP TABLE blob_bindings;
+
+      ALTER TABLE blob_bindings_new RENAME TO blob_bindings;
+
+      CREATE INDEX IF NOT EXISTS idx_blob_bindings_record
+        ON blob_bindings(connector_id, stream, record_key);
+    `);
+
+    const after = raw.prepare('SELECT COUNT(*) AS count FROM blob_bindings').get().count;
+    if (before !== after) {
+      throw new Error(
+        `blob_bindings json_path migration row-count mismatch: before=${before} after=${after}`
+      );
+    }
+    return { rebuilt: true, backfilledRows: after };
+  });
+
+  const result = migration();
+  if (typeof opts.onSchemaMigration === 'function') {
+    opts.onSchemaMigration({ name: 'blob_bindings_json_path', ...result });
+  }
+  return result;
+}
+
 function loadVectorExtension(raw) {
   try {
     sqliteVec.load(raw);
@@ -913,11 +995,27 @@ export function initDb(path = ':memory:', opts = {}) {
     );
   });
   runWithSqliteBusyRetrySync(() => migrateSpineSourceColumns(raw, opts));
+  // blob_bindings gains a json_path column (RFC 6901 JSON Pointer or
+  // '@record' pseudo-path). Required for lossless binary extraction
+  // during sqlite→postgres migration; see
+  // docs/binary-content-invariant-design-brief.md §4.6. Legacy rows
+  // backfill with '@record' (their existing record-level semantics).
+  runWithSqliteBusyRetrySync(() => migrateBlobBindingsJsonPath(raw, opts));
   raw.exec(
     `CREATE INDEX IF NOT EXISTS idx_spine_events_run_terminal
       ON spine_events(run_id, event_type, event_seq DESC)
       WHERE run_id IS NOT NULL
-        AND event_type IN ('run.completed', 'run.failed', 'run.cancelled')`
+        AND event_type IN ('run.completed', 'run.failed', 'run.cancelled', 'run.abandoned')`
+  );
+  // Boot-epoch reconciliation idempotency: at most one run.abandoned per
+  // orphaned run.started.event_id. A retry of the boot reconciler hits
+  // the unique-violation, which the runtime catches by constraint name
+  // (sqlite_constraint_unique with INDEX spine_run_abandoned_cause_unique)
+  // and treats as no-op. See docs/run-reconciliation-design-brief.md section 3.5.
+  raw.exec(
+    `CREATE UNIQUE INDEX IF NOT EXISTS spine_run_abandoned_cause_unique
+      ON spine_events(json_extract(data_json, '$.caused_by_event_id'))
+      WHERE event_type = 'run.abandoned'`
   );
   raw.exec(
     `CREATE UNIQUE INDEX IF NOT EXISTS idx_spine_events_seq ON spine_events(event_seq) WHERE event_seq IS NOT NULL`

@@ -105,6 +105,15 @@ async function emitSyntheticRun({
   source = { kind: 'connector', id: connectorId },
 }) {
   const trace = createTraceContext({ scenarioId: `scn_${runId}` });
+  // The spine-layer enforcement requires every run.started to carry
+  // boot_epoch+seq. Synthetic-run fixtures use the harness's current
+  // boot epoch (startServer initializes it). See
+  // docs/run-reconciliation-design-brief.md §3.3.
+  const { getCurrentBootEpoch } = await import('../lib/spine.ts');
+  const _epoch = getCurrentBootEpoch();
+  if (!_epoch) {
+    throw new Error('emitSyntheticRun: no boot epoch — harness/startServer must run first');
+  }
   await emitSpineEvent({
     event_type: 'run.started',
     occurred_at: occurredAt,
@@ -126,6 +135,9 @@ async function emitSyntheticRun({
       bindings: { network: {}, filesystem: {}, interactive: {} },
       scope: { streams: [{ name: 'top_artists' }] },
       scope_streams: ['top_artists'],
+      boot_epoch: _epoch.boot_epoch,
+      seq: _epoch.seq,
+      controller_id: _epoch.controller_id,
     },
   });
   await emitSpineEvent({
@@ -555,6 +567,14 @@ test('controller startup reconciles abandoned controller-managed runs after rest
         bindings: { network: {}, filesystem: {}, interactive: {} },
         scope: { streams: [{ name: 'top_tracks' }] },
         scope_streams: ['top_tracks'],
+        // Synthetic "prior incarnation" stamp — this test seeds the
+        // pre-crash state of an abandoned run. The boot-epoch fields
+        // satisfy the spine-layer stamping requirement; their *value*
+        // doesn't matter for this test (it exercises the older
+        // scheduler_run_history reconciler, not the boot-epoch one).
+        boot_epoch: 'prior-incarnation-epoch',
+        seq: 1,
+        controller_id: 'prior-incarnation',
       },
     }, db);
     await emitSpineEvent({

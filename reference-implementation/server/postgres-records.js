@@ -517,9 +517,13 @@ export async function postgresPersistContentAddressedBlob({ connectorId, stream,
       err.code = 'api_error';
       throw err;
     }
+    // json_path = '@record' marks this as a record-level attachment-style
+    // binding (the blob belongs to the record as a whole). The
+    // migrate-storage tool uses RFC 6901 JSON Pointers for field-level
+    // extractions. See docs/binary-content-invariant-design-brief.md §4.6.
     await client.query(
-      `INSERT INTO blob_bindings (blob_id, connector_id, stream, record_key)
-       VALUES ($1, $2, $3, $4)
+      `INSERT INTO blob_bindings (blob_id, connector_id, stream, record_key, json_path)
+       VALUES ($1, $2, $3, $4, '@record')
        ON CONFLICT DO NOTHING`,
       [blobId, connectorId, stream, recordKey],
     );

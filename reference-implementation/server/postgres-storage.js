@@ -464,16 +464,30 @@ export async function bootstrapPostgresSchema() {
         data BYTEA
       );
 
+      -- blob_bindings.json_path: either an RFC 6901 JSON Pointer naming the
+      -- record_json leaf the blob replaces (e.g. '/output_preview') or the
+      -- reserved pseudo-path '@record' for record-level bindings that
+      -- aren't tied to a specific field. See
+      -- docs/binary-content-invariant-design-brief.md §4.6.
       CREATE TABLE IF NOT EXISTS blob_bindings (
         blob_id TEXT NOT NULL,
         connector_id TEXT NOT NULL,
         stream TEXT NOT NULL,
         record_key TEXT NOT NULL,
-        PRIMARY KEY(blob_id, connector_id, stream, record_key),
-        FOREIGN KEY(blob_id) REFERENCES blobs(blob_id) ON DELETE CASCADE
+        json_path TEXT NOT NULL DEFAULT '@record',
+        PRIMARY KEY(blob_id, connector_id, stream, record_key, json_path),
+        FOREIGN KEY(blob_id) REFERENCES blobs(blob_id) ON DELETE CASCADE,
+        CONSTRAINT blob_bindings_json_path_shape
+          CHECK (json_path = '@record' OR json_path LIKE '/%')
       );
       CREATE INDEX IF NOT EXISTS idx_pg_blob_bindings_record
         ON blob_bindings(connector_id, stream, record_key);
+
+      -- sha256 uniqueness is implied by the blob_id = 'blob_sha256_<hex>'
+      -- naming + PRIMARY KEY on blob_id. Making it explicit at the
+      -- schema layer protects against future drift.
+      CREATE UNIQUE INDEX IF NOT EXISTS uniq_blobs_sha256
+        ON blobs(sha256);
 
       CREATE TABLE IF NOT EXISTS spine_events (
         event_id TEXT PRIMARY KEY,
@@ -509,7 +523,15 @@ export async function bootstrapPostgresSchema() {
       CREATE INDEX IF NOT EXISTS idx_pg_spine_events_run_terminal
         ON spine_events(run_id, event_type, event_seq DESC)
         WHERE run_id IS NOT NULL
-          AND event_type IN ('run.completed', 'run.failed', 'run.cancelled');
+          AND event_type IN ('run.completed', 'run.failed', 'run.cancelled', 'run.abandoned');
+      -- Boot-epoch reconciliation idempotency: at most one run.abandoned
+      -- per orphan run.started.event_id. The constraint name
+      -- spine_run_abandoned_cause_unique is referenced by the runtime
+      -- error handler (catch by name, not by SQLSTATE 23505 blanket).
+      -- See docs/run-reconciliation-design-brief.md section 3.5.
+      CREATE UNIQUE INDEX IF NOT EXISTS spine_run_abandoned_cause_unique
+        ON spine_events ((data_json->>'caused_by_event_id'))
+        WHERE event_type = 'run.abandoned';
       CREATE INDEX IF NOT EXISTS idx_pg_spine_events_grant
         ON spine_events(grant_id, occurred_at, recorded_at);
 
@@ -583,6 +605,7 @@ export async function bootstrapPostgresSchema() {
     `);
     await migratePostgresSpineSourceColumns(client);
     await migratePostgresDeviceExporterColumns(client);
+    await migratePostgresBlobBindingsJsonPath(client);
   } finally {
     client.release();
   }
@@ -654,6 +677,82 @@ async function migratePostgresSpineSourceColumns(client) {
         `spine_events source migration row-count mismatch: before=${before.rows[0].count} after=${after.rows[0].count}`
       );
     }
+    await client.query('COMMIT');
+  } catch (err) {
+    try {
+      await client.query('ROLLBACK');
+    } catch {}
+    throw err;
+  }
+}
+
+/**
+ * Migrate `blob_bindings` to include `json_path` in the primary key.
+ *
+ * Pre-migration: PRIMARY KEY (blob_id, connector_id, stream, record_key).
+ * Post-migration: PRIMARY KEY (blob_id, connector_id, stream, record_key, json_path)
+ * with json_path TEXT NOT NULL DEFAULT '@record' and a CHECK constraint
+ * enforcing json_path = '@record' OR json_path LIKE '/%'.
+ *
+ * Legacy rows backfill via the column DEFAULT ('@record') — matches their
+ * existing record-level semantics. Also installs the explicit
+ * `uniq_blobs_sha256` UNIQUE index on `blobs(sha256)`.
+ *
+ * Idempotent: skips when json_path is already present.
+ *
+ * See docs/binary-content-invariant-design-brief.md §4.6.
+ */
+async function migratePostgresBlobBindingsJsonPath(client) {
+  const hasJsonPath = await hasPostgresColumn(client, 'blob_bindings', 'json_path');
+  if (hasJsonPath) {
+    // Even if the column exists, make sure the sha256 unique index is in
+    // place (cheap idempotent step).
+    await client.query(
+      `CREATE UNIQUE INDEX IF NOT EXISTS uniq_blobs_sha256 ON blobs(sha256)`
+    );
+    return;
+  }
+
+  await client.query('BEGIN');
+  try {
+    // 1) Add the column with a backfill default. NOT NULL is satisfied by
+    //    the DEFAULT for every existing row.
+    await client.query(`
+      ALTER TABLE blob_bindings
+        ADD COLUMN IF NOT EXISTS json_path TEXT NOT NULL DEFAULT '@record'
+    `);
+
+    // 2) Replace the primary key. Postgres lets us drop + add the PK
+    //    constraint without rebuilding the table.
+    await client.query(`
+      ALTER TABLE blob_bindings
+        DROP CONSTRAINT IF EXISTS blob_bindings_pkey
+    `);
+    await client.query(`
+      ALTER TABLE blob_bindings
+        ADD CONSTRAINT blob_bindings_pkey
+        PRIMARY KEY (blob_id, connector_id, stream, record_key, json_path)
+    `);
+
+    // 3) Install the CHECK constraint. Use a guard query so re-runs on a
+    //    DB where the constraint already exists no-op cleanly.
+    const existingCheck = await client.query(
+      `SELECT 1 FROM pg_constraint
+        WHERE conname = 'blob_bindings_json_path_shape'`
+    );
+    if (existingCheck.rows.length === 0) {
+      await client.query(`
+        ALTER TABLE blob_bindings
+          ADD CONSTRAINT blob_bindings_json_path_shape
+          CHECK (json_path = '@record' OR json_path LIKE '/%')
+      `);
+    }
+
+    // 4) Sha256 uniqueness — make the existing implicit guarantee explicit.
+    await client.query(
+      `CREATE UNIQUE INDEX IF NOT EXISTS uniq_blobs_sha256 ON blobs(sha256)`
+    );
+
     await client.query('COMMIT');
   } catch (err) {
     try {
