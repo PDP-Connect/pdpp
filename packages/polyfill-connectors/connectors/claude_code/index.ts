@@ -29,6 +29,7 @@ import { basename, join } from "node:path";
 import { createInterface as createFileReader } from "node:readline";
 import { type CollectContext, type RecordData, runConnector, type StreamScope } from "../../src/connector-runtime.ts";
 import { isMainModule } from "../../src/is-main-module.ts";
+import { safeTextPreview } from "../../src/safe-text-preview.ts";
 import {
   ATTACHMENT_PREVIEW_CHARS,
   applyProjectDirScope,
@@ -169,6 +170,8 @@ export function buildMessageRecord(obj: JsonlObject, sessionId: string, uuid: st
 
 export function buildAttachmentRecord(obj: JsonlObject, sessionId: string, uuid: string): RecordData {
   const att = obj.attachment || {};
+  const content = extractContent(att) || extractContent(obj);
+  const previewResult = safeTextPreview(content, ATTACHMENT_PREVIEW_CHARS);
   return {
     id: uuid,
     session_id: sessionId,
@@ -176,7 +179,8 @@ export function buildAttachmentRecord(obj: JsonlObject, sessionId: string, uuid:
     event_type: obj.type ?? null,
     hook_name: att.hookName || null,
     tool_use_id: att.toolUseID || null,
-    content_preview: textPreview(extractContent(att) || extractContent(obj), ATTACHMENT_PREVIEW_CHARS),
+    content_preview: previewResult.preview,
+    content_binary_reason: previewResult.kind === "binary" ? previewResult.reason : null,
     content_bytes: null,
     timestamp: obj.timestamp || null,
   };
@@ -304,6 +308,7 @@ async function emitToolResultFile(args: EmitToolResultFileArgs): Promise<void> {
     return;
   }
   const rel = args.full.slice(args.toolResultsDir.length + 1);
+  const previewResult = safeTextPreview(buf, TOOL_RESULT_PREVIEW_CHARS);
   await args.emitRecord("attachments", {
     id: `tool_result_file:${args.projectDir}/${args.sessionId}/${rel}`,
     session_id: args.sessionId,
@@ -311,7 +316,8 @@ async function emitToolResultFile(args: EmitToolResultFileArgs): Promise<void> {
     event_type: "tool_result_file",
     hook_name: null,
     tool_use_id: null,
-    content_preview: textPreview(buf, TOOL_RESULT_PREVIEW_CHARS),
+    content_preview: previewResult.preview,
+    content_binary_reason: previewResult.kind === "binary" ? previewResult.reason : null,
     content_bytes: args.st.size,
     timestamp: new Date(args.st.mtimeMs).toISOString(),
   });

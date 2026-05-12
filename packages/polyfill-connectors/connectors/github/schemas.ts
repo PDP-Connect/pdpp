@@ -7,19 +7,24 @@
  */
 
 import { z } from "zod";
+import { pdppSafeText } from "../../src/pdpp-safe-text.ts";
 import { makeValidateRecord } from "../../src/schema-registry.ts";
+
+// Text-field classification (docs/binary-content-invariant-design-brief.md §4.4):
+//   - titles, descriptions, bodies, names, logins, urls → pdppSafeText
+//   - Regex-validated structural strings (ISO dates) → z.string().regex(...)
 
 // Module-scoped regex (Biome useTopLevelRegex).
 const ISO_DT_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/;
 
 // Shared field schemas.
-const idSchema = z.string().max(80); // numeric string from String(n.id)
+const idSchema = pdppSafeText.max(80); // numeric string from String(n.id)
 const isoDateSchema = z.string().regex(ISO_DT_RE).nullable();
-const urlSchema = z.string().max(4096).nullable();
-const loginSchema = z.string().max(80).nullable();
-const titleSchema = z.string().max(500).nullable();
-const descriptionSchema = z.string().max(65_000).nullable();
-const bodySchema = z.string().max(65_000).nullable(); // truncateBody caps at 20k
+const urlSchema = pdppSafeText.max(4096).nullable();
+const loginSchema = pdppSafeText.max(80).nullable();
+const titleSchema = pdppSafeText.max(500).nullable();
+const descriptionSchema = pdppSafeText.max(65_000).nullable();
+const bodySchema = pdppSafeText.max(65_000).nullable(); // truncateBody caps at 20k
 const numericSchema = z.number().int().nullable();
 const booleanSchema = z.boolean();
 const booleanNullableSchema = z.boolean().nullable();
@@ -29,14 +34,14 @@ const booleanNullableSchema = z.boolean().nullable();
  */
 export const userSchema = z.object({
   id: idSchema,
-  login: z.string().max(80),
-  name: z.string().max(255).nullable(),
-  email: z.string().max(255).nullable(),
-  bio: z.string().max(160).nullable(),
-  company: z.string().max(255).nullable(),
-  location: z.string().max(255).nullable(),
-  blog: z.string().max(1000).nullable(),
-  twitter_username: z.string().max(80).nullable(),
+  login: pdppSafeText.max(80),
+  name: pdppSafeText.max(255).nullable(),
+  email: pdppSafeText.max(255).nullable(),
+  bio: pdppSafeText.max(160).nullable(),
+  company: pdppSafeText.max(255).nullable(),
+  location: pdppSafeText.max(255).nullable(),
+  blog: pdppSafeText.max(1000).nullable(),
+  twitter_username: pdppSafeText.max(80).nullable(),
   public_repos: numericSchema,
   public_gists: numericSchema,
   followers: numericSchema,
@@ -53,23 +58,23 @@ export const userSchema = z.object({
  */
 export const repositoriesSchema = z.object({
   id: idSchema,
-  name: z.string().max(255).optional(),
-  full_name: z.string().max(255).optional(),
+  name: pdppSafeText.max(255).optional(),
+  full_name: pdppSafeText.max(255).optional(),
   owner_login: loginSchema.optional(),
   description: descriptionSchema.optional(),
   private: booleanNullableSchema.optional(),
   fork: booleanNullableSchema.optional(),
   archived: booleanNullableSchema.optional(),
   disabled: booleanNullableSchema.optional(),
-  default_branch: z.string().max(255).nullable().optional(),
-  language: z.string().max(80).nullable().optional(),
-  topics: z.array(z.string().max(255)).nullable().optional(),
+  default_branch: pdppSafeText.max(255).nullable().optional(),
+  language: pdppSafeText.max(80).nullable().optional(),
+  topics: z.array(pdppSafeText.max(255)).nullable().optional(),
   stargazers_count: numericSchema.optional(),
   forks_count: numericSchema.optional(),
   open_issues_count: numericSchema.optional(),
   watchers_count: numericSchema.optional(),
   size_kb: numericSchema.optional(),
-  license_key: z.string().max(50).nullable().optional(),
+  license_key: pdppSafeText.max(50).nullable().optional(),
   html_url: urlSchema.optional(),
   homepage: urlSchema.optional(),
   created_at: isoDateSchema.optional(),
@@ -82,9 +87,9 @@ export const repositoriesSchema = z.object({
  */
 export const starredSchema = z.object({
   id: idSchema,
-  full_name: z.string().max(255),
+  full_name: pdppSafeText.max(255),
   description: descriptionSchema,
-  language: z.string().max(80).nullable(),
+  language: pdppSafeText.max(80).nullable(),
   stargazers_count: numericSchema,
   html_url: urlSchema,
   starred_at: isoDateSchema,
@@ -99,14 +104,14 @@ export const issuesSchema = z.object({
   number: numericSchema,
   title: titleSchema,
   body: bodySchema,
-  state: z.string().max(20).nullable(),
-  state_reason: z.string().max(50).nullable(),
+  state: pdppSafeText.max(20).nullable(),
+  state_reason: pdppSafeText.max(50).nullable(),
   user_login: loginSchema,
   user_id: idSchema.nullable(),
-  assignees: z.array(z.string().max(80)).nullable(),
-  labels: z.array(z.string().max(255)).nullable(),
-  milestone_title: z.string().max(255).nullable(),
-  repository_full_name: z.string().max(255).nullable(),
+  assignees: z.array(pdppSafeText.max(80)).nullable(),
+  labels: z.array(pdppSafeText.max(255)).nullable(),
+  milestone_title: pdppSafeText.max(255).nullable(),
+  repository_full_name: pdppSafeText.max(255).nullable(),
   repository_id: idSchema.nullable(),
   html_url: urlSchema,
   comments: numericSchema,
@@ -128,14 +133,14 @@ export const pullRequestsSchema = z.object({
   number: numericSchema,
   title: titleSchema,
   body: bodySchema,
-  state: z.string().max(20).nullable(),
-  state_reason: z.string().max(50).nullable(),
+  state: pdppSafeText.max(20).nullable(),
+  state_reason: pdppSafeText.max(50).nullable(),
   user_login: loginSchema,
   user_id: idSchema.nullable(),
-  assignees: z.array(z.string().max(80)).nullable(),
-  labels: z.array(z.string().max(255)).nullable(),
-  milestone_title: z.string().max(255).nullable(),
-  repository_full_name: z.string().max(255).nullable(),
+  assignees: z.array(pdppSafeText.max(80)).nullable(),
+  labels: z.array(pdppSafeText.max(255)).nullable(),
+  milestone_title: pdppSafeText.max(255).nullable(),
+  repository_full_name: pdppSafeText.max(255).nullable(),
   repository_id: idSchema.nullable(),
   html_url: urlSchema,
   comments: numericSchema,
@@ -150,9 +155,9 @@ export const pullRequestsSchema = z.object({
   additions: numericSchema,
   deletions: numericSchema,
   changed_files: numericSchema,
-  base_ref: z.string().max(255).nullable(),
-  head_ref: z.string().max(255).nullable(),
-  requested_reviewers: z.array(z.string().max(80)).nullable(),
+  base_ref: pdppSafeText.max(255).nullable(),
+  head_ref: pdppSafeText.max(255).nullable(),
+  requested_reviewers: z.array(pdppSafeText.max(80)).nullable(),
   review_comments_count: numericSchema,
 });
 
@@ -168,8 +173,8 @@ export const gistsSchema = z.object({
   files: z
     .array(
       z.object({
-        filename: z.string().max(255).nullable(),
-        language: z.string().max(80).nullable(),
+        filename: pdppSafeText.max(255).nullable(),
+        language: pdppSafeText.max(80).nullable(),
         size: numericSchema,
         raw_url: urlSchema,
       })

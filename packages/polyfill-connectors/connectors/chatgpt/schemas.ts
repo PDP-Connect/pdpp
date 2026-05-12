@@ -18,7 +18,12 @@
  */
 
 import { z } from "zod";
+import { pdppSafeText } from "../../src/pdpp-safe-text.ts";
 import { makeValidateRecord } from "../../src/schema-registry.ts";
+
+// Text-field classification (docs/binary-content-invariant-design-brief.md §4.4):
+//   - largeText, display names/descriptions, role, content_type → pdppSafeText
+//   - idSchema (regex-validated structural strings) → z.string().regex(...)
 
 // Permissive ID: non-empty, bounded, no whitespace or control chars.
 const idSchema = z.string().min(1).max(128).regex(/^\S+$/, "must not contain whitespace");
@@ -36,13 +41,13 @@ const looseTimestamp = z
 
 // Large text fields (messages content, memories content, GPT instructions).
 // Bound to 1 MB — anything larger is suspicious.
-const largeText = z.string().max(1_048_576);
+const largeText = pdppSafeText.max(1_048_576);
 
 // ─── conversations ──────────────────────────────────────────────────────
 
 export const conversationSchema = z.object({
   id: idSchema,
-  title: z.string().max(500).nullable(),
+  title: pdppSafeText.max(500).nullable(),
   create_time: looseTimestamp.nullable(),
   update_time: looseTimestamp.nullable(),
   is_archived: z.boolean().nullable(),
@@ -61,13 +66,13 @@ export const messageSchema = z.object({
   parent_id: idSchema.nullable(),
   children_ids: z.array(idSchema),
   // role can be user / assistant / system / tool / etc.
-  role: z.string().max(40).nullable(),
+  role: pdppSafeText.max(40).nullable(),
   content: largeText.nullable(),
   // content_type is like "text" / "code" / "multimodal_text" / etc.
-  content_type: z.string().max(60).nullable(),
-  model_slug: z.string().max(80).nullable(),
+  content_type: pdppSafeText.max(60).nullable(),
+  model_slug: pdppSafeText.max(80).nullable(),
   create_time: looseTimestamp.nullable(),
-  finish_reason: z.string().max(60).nullable(),
+  finish_reason: pdppSafeText.max(60).nullable(),
   citations: z.array(z.unknown()),
   tool_calls: z.array(z.unknown()),
   attachment_ids: z.array(idSchema),
@@ -87,19 +92,19 @@ export const memorySchema = z.object({
 
 export const customGptSchema = z.object({
   id: idSchema,
-  short_url: z.string().max(200).nullable(),
-  display_name: z.string().max(200).nullable(),
-  display_description: z.string().max(2000).nullable(),
-  display_welcome_message: z.string().max(2000).nullable(),
+  short_url: pdppSafeText.max(200).nullable(),
+  display_name: pdppSafeText.max(200).nullable(),
+  display_description: pdppSafeText.max(2000).nullable(),
+  display_welcome_message: pdppSafeText.max(2000).nullable(),
   instructions: largeText.nullable(),
   tools: z.array(z.unknown()),
   created_at: looseTimestamp.nullable(),
   updated_at: looseTimestamp.nullable(),
   author_id: idSchema.nullable(),
-  author_name: z.string().max(200).nullable(),
+  author_name: pdppSafeText.max(200).nullable(),
   is_public: z.boolean().nullable(),
-  category: z.string().max(80).nullable(),
-  tags: z.array(z.string().max(100)),
+  category: pdppSafeText.max(80).nullable(),
+  tags: z.array(pdppSafeText.max(100)),
 });
 
 // ─── custom_instructions ────────────────────────────────────────────────
@@ -117,8 +122,8 @@ export const customInstructionsSchema = z.object({
 export const sharedConversationSchema = z.object({
   id: idSchema,
   conversation_id: idSchema.nullable(),
-  share_url: z.string().max(400).nullable(),
-  title: z.string().max(500).nullable(),
+  share_url: pdppSafeText.max(400).nullable(),
+  title: pdppSafeText.max(500).nullable(),
   created_at: looseTimestamp.nullable(),
   anonymous: z.boolean().nullable(),
   is_public: z.boolean().nullable(),

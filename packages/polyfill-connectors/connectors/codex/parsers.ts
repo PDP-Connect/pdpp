@@ -2,6 +2,7 @@
 // be unit-tested in isolation (see parsers.test.ts). The filesystem
 // walker, sqlite reader, and JSONL iterator live in index.ts.
 
+import { PDPP_PREVIEW_MAX_CHARS, safeTextPreview } from "../../src/safe-text-preview.ts";
 import type { ParsedFrontmatter, RolloutAggregate, RolloutPayload, ThreadRow } from "./types.ts";
 
 // ─── Constants & regexes (module-scope per Biome useTopLevelRegex) ──────
@@ -16,11 +17,9 @@ export const MD_SUFFIX_RE = /\.md$/;
 
 // ─── Text preview ───────────────────────────────────────────────────────
 
-export function textPreview(s: unknown, max = 5000): string | null {
-  if (typeof s !== "string") {
-    return null;
-  }
-  return s.length > max ? `${s.slice(0, max)}…` : s;
+export function textPreview(s: unknown, max = PDPP_PREVIEW_MAX_CHARS): string | null {
+  const r = safeTextPreview(s, max);
+  return r.preview;
 }
 
 // ─── Rollout payload text extraction ────────────────────────────────────
@@ -33,9 +32,19 @@ export function extractMessageText(payload: RolloutPayload): string | null {
   return parts.join("\n") || null;
 }
 
-export function payloadOutputPreview(output: unknown, max = 2000): string | null {
-  const asString = typeof output === "string" ? output : JSON.stringify(output);
-  return textPreview(asString, max);
+export function payloadOutputPreview(
+  output: unknown,
+  max = PDPP_PREVIEW_MAX_CHARS
+): { preview: string | null; binaryReason: string | null } {
+  let toPreview: unknown = output;
+  if (typeof output !== "string" && output !== null && output !== undefined) {
+    toPreview = JSON.stringify(output);
+  }
+  const r = safeTextPreview(toPreview, max);
+  return {
+    preview: r.preview,
+    binaryReason: r.kind === "binary" ? r.reason : null,
+  };
 }
 
 // ─── Epoch / ISO conversion ─────────────────────────────────────────────

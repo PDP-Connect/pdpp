@@ -12,7 +12,12 @@
  */
 
 import { z } from "zod";
+import { pdppSafeText } from "../../src/pdpp-safe-text.ts";
 import { makeValidateRecord } from "../../src/schema-registry.ts";
+
+// Text-field classification (docs/binary-content-invariant-design-brief.md §4.4):
+//   - Free-form text (message text, names, titles, body content) → pdppSafeText
+//   - Regex-validated structural strings (Slack IDs, timestamps) → z.string().regex(...)
 
 // Module-scoped regexes (Biome useTopLevelRegex).
 const SLACK_ID_RE = /^[A-Z][A-Z0-9]+$/;
@@ -31,7 +36,7 @@ const nullableNonNegativeIntSchema = z.number().int().min(0).nullable();
 // channels stream: 5 records in sample
 export const channelsSchema = z.object({
   id: z.string().regex(SLACK_ID_RE),
-  name: z.string().nullable(),
+  name: pdppSafeText.nullable(),
   name_normalized: z.string().nullable(),
   is_channel: nullableBoolSchema,
   is_group: nullableBoolSchema,
@@ -69,7 +74,7 @@ export const channelsSchema = z.object({
 export const usersSchema = z.object({
   id: z.string().regex(SLACK_ID_RE),
   team_id: slackIdSchema,
-  name: z.string().nullable(),
+  name: pdppSafeText.nullable(),
   real_name: z.string().nullable(),
   real_name_normalized: z.string().nullable(),
   display_name: z.string().nullable(),
@@ -78,7 +83,7 @@ export const usersSchema = z.object({
   last_name: z.string().nullable(),
   email: z.string().nullable(), // PII field but allowed
   phone: z.string().nullable(),
-  title: z.string().nullable(),
+  title: pdppSafeText.nullable(),
   status_text: z.string().nullable(),
   status_emoji: z.string().nullable(),
   status_expiration: z.number().int().min(0).nullable(),
@@ -122,7 +127,7 @@ export const messagesSchema = z.object({
   latest_reply: z.string().nullable(),
   subtype: z.string().nullable(), // "bot_message", "channel_join", etc. or null
   is_tombstone: z.boolean(),
-  text: z.string().max(10_000_000).nullable(), // Very large messages allowed
+  text: pdppSafeText.max(10_000_000).nullable(), // Very large messages allowed
   edited_ts: slackTsSchema,
   edited_by: slackIdSchema,
   has_files: z.boolean(),
@@ -148,8 +153,8 @@ export const reactionsSchema = z.object({
 // files stream: 5 records in sample
 export const filesSchema = z.object({
   id: z.string().regex(SLACK_ID_RE),
-  name: z.string().nullable(),
-  title: z.string().nullable(),
+  name: pdppSafeText.nullable(),
+  title: pdppSafeText.nullable(),
   mimetype: z.string().nullable(),
   filetype: z.string().nullable(),
   pretty_type: z.string().nullable(),
@@ -177,9 +182,9 @@ export const messageAttachmentsSchema = z.object({
   fallback: z.string().nullable(),
   service_name: z.string().nullable(),
   service_icon: z.string().nullable(),
-  title: z.string().nullable(),
+  title: pdppSafeText.nullable(),
   title_link: z.string().nullable(),
-  text: z.string().max(10_000_000).nullable(),
+  text: pdppSafeText.max(10_000_000).nullable(),
   from_url: z.string().nullable(),
   image_url: z.string().nullable(),
   thumb_url: z.string().nullable(),
@@ -202,13 +207,13 @@ export const canvasesSchema = z.object({
   file_id: z.string().regex(SLACK_ID_RE),
   channel_id: slackIdSchema,
   message_id: z.string().nullable(),
-  title: z.string().nullable(),
-  name: z.string().nullable(),
+  title: pdppSafeText.nullable(),
+  name: pdppSafeText.nullable(),
   author_id: slackIdSchema,
   is_empty: nullableBoolSchema,
   quip_thread_id: z.string().nullable(),
   content_bytes: nullableNonNegativeIntSchema,
-  content_markdown: z.string().max(10_000_000).nullable(),
+  content_markdown: pdppSafeText.max(10_000_000).nullable(),
   mimetype: z.string().nullable(),
   filetype: z.string().nullable(),
   pretty_type: z.string().nullable(),
@@ -223,7 +228,7 @@ export const canvasesSchema = z.object({
 // workspace stream: 1 record in sample
 export const workspaceSchema = z.object({
   id: z.string().regex(SLACK_ID_RE),
-  name: z.string().nullable(),
+  name: pdppSafeText.nullable(),
   domain: z.string().nullable(),
   email_domain: z.string().nullable(),
   enterprise_id: slackIdSchema,
@@ -253,7 +258,7 @@ export const userGroupsSchema = z.object({
   id: z.string().min(1).max(300),
   team_id: z.string().nullable(),
   handle: z.string().nullable(),
-  name: z.string().nullable(),
+  name: pdppSafeText.nullable(),
   description: z.string().nullable(),
   is_external: nullableBoolSchema,
   is_subteam: nullableBoolSchema,
@@ -269,7 +274,7 @@ export const remindersSchema = z.object({
   id: z.string().min(1).max(300),
   creator_id: z.string().nullable(),
   user_id: z.string().nullable(),
-  text: z.string().max(10_000_000).nullable(),
+  text: pdppSafeText.max(10_000_000).nullable(),
   recurring: nullableBoolSchema,
   time: z.number().int().nullable(),
   scheduled_at: nullableIsoDatetimeSchema,

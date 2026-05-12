@@ -2,6 +2,7 @@
 // they can be unit-tested in isolation (see parsers.test.ts). The file
 // walker and JSONL iterator live in index.ts.
 
+import { safeTextPreview } from "../../src/safe-text-preview.ts";
 import type { ContentPart, ParsedFrontmatter, SessionAccumulator } from "./types.ts";
 
 // ─── Constants ──────────────────────────────────────────────────────────
@@ -35,10 +36,7 @@ const CLAUDE_MD_SUFFIX_RE = /\.md$/i;
 // ─── Previews ───────────────────────────────────────────────────────────
 
 export function textPreview(s: unknown, max = SHORT_PREVIEW_CHARS): string | null {
-  if (typeof s !== "string") {
-    return null;
-  }
-  return s.length > max ? `${s.slice(0, max)}…` : s;
+  return safeTextPreview(s, max).preview;
 }
 
 export function truncateBody(body: string, max: number = SKILL_BODY_MAX_CHARS): string {

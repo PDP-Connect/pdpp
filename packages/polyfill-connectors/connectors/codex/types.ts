@@ -83,6 +83,7 @@ export interface PendingCall {
   call_id: string;
   id: string;
   name: string | null;
+  output_binary_reason?: string | null;
   output_preview: string | null;
   session_id: string;
   timestamp: string | null;

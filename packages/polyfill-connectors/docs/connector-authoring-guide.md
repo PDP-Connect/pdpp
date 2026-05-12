@@ -205,6 +205,110 @@ You can't run a new connector against a new user's account ahead of time. Shape 
 
 ---
 
+## 4a. Text fields, the printable-text invariant, and `pdppSafeText`
+
+PDPP's storage invariant: **every field declared by a connector schema as PDPP text MUST contain only PDPP-safe Unicode text.** Binary or control-rich payloads MUST NOT be stored directly in `record_json`; they MUST be stored in the `blobs` table, with `record_json` containing either `null` or an explicit typed reference.
+
+This rule is enforced by two complementary layers:
+
+- **At parse time** by `safeTextPreview()` — the helper a connector calls when it's *deciding* whether a captured value is safe text or needs to be routed to a blob.
+- **At validation time** by the `pdppSafeText` Zod brand — the schema-level gate that catches mistakes where a parser inlined binary content anyway.
+
+A correct connector uses both layers. A connector that forgets to call `safeTextPreview` and tries to assign bytes to a text field gets caught by `pdppSafeText`'s schema refinement with a precise error.
+
+Any field destined for a JSONB **text column** — previews, snippets, message bodies, tool-result summaries, captured human-readable content — MUST pass through `safeTextPreview()` at parse time AND be typed `pdppSafeText` (or a derived brand) at the schema layer. No exceptions.
+
+### Why
+
+1. **Postgres JSONB rejects U+0000.** Postgres' JSONB type cannot store a string value containing a NUL byte; the server returns SQLSTATE `22P05` and the insert fails. SQLite is permissive and will happily store NULs, which means a connector that "works" in dev (SQLite) will hard-fail in production (Postgres) the first time a captured payload contains a stray NUL.
+2. **Binary content belongs in `blobs`, not in JSONB.** The `blobs` table is content-addressed by sha256 and built for arbitrary bytes. If a field's value is binary, route the bytes to a blob and set the preview to `null`. Don't try to "make it fit" by stringifying binary data.
+3. **Preview fields are human-readable summaries.** They have an upper bound (`PDPP_PREVIEW_MAX_CHARS = 4000`), a printable-text invariant (no C0 controls other than `\t`, `\n`, `\r`; no DEL; no C1 controls), and are meant to surface to people. They are not a place to dump captured bytes "just in case."
+
+### The invariant
+
+After `safeTextPreview()` returns `kind: "text"`, the resulting `preview` string is guaranteed:
+
+- free of U+0000;
+- free of other C0 control characters except `\t`, `\n`, `\r`;
+- valid UTF-8 (if the input was a `Buffer`/`Uint8Array`);
+- at most `maxChars` characters long, truncated with a `…` sentinel at a code-unit boundary that does not split a surrogate pair.
+
+### Schema-level enforcement: `pdppSafeText`
+
+Every text-bearing field in a connector schema (`schemas.ts`) MUST use the `pdppSafeText` brand instead of bare `z.string()`. Composition with `.max()`, `.min()`, `.nullable()`, `.optional()`, etc. works as expected:
+
+```ts
+import { z } from "zod";
+import { pdppSafeText, nullablePdppSafeText } from "../../src/pdpp-safe-text.ts";
+
+// Free-form human-readable text:
+const titleSchema = pdppSafeText.max(500).nullable();
+const bodyTextSchema = pdppSafeText.max(10_000_000).nullable();
+const snippetSchema = nullablePdppSafeText; // when no max bound is meaningful
+
+// Structurally-constrained strings (IDs, ISO dates, currencies) stay
+// as z.string().regex(...) — regex shape is enough; the brand adds nothing.
+const sessionIdSchema = z.string().regex(/^[0-9a-f-]{36}$/);
+```
+
+**Audit rule:** after rollout, a connector's `schemas.ts` should contain no semantically anonymous `z.string()`. Every text field declares its intent: `pdppSafeText` (human-readable text), `z.string().regex(...)` (structurally constrained), or `z.string().url()` (URL). A bare `z.string()` in a connector record schema is suspicious and should be reviewed.
+
+The `pdppSafeText` brand produces a TypeScript nominal type `PdppSafeText`. Downstream code that accepts `PdppSafeText` is statically prevented from receiving an unvalidated `string`.
+
+### The canonical parse-time pattern
+
+```ts
+import { safeTextPreview, PDPP_PREVIEW_MAX_CHARS } from "../../src/safe-text-preview.ts";
+
+// Simple case: a string-typed preview field.
+export function textPreview(s: unknown, max = PDPP_PREVIEW_MAX_CHARS): string | null {
+  return safeTextPreview(s, max).preview;
+}
+
+// "Might be binary" case: pair the preview with a companion *_binary_reason
+// field so consumers can tell "we didn't capture this" from "this was empty".
+export function payloadOutputPreview(
+  output: unknown,
+  max = PDPP_PREVIEW_MAX_CHARS,
+): { preview: string | null; binaryReason: string | null } {
+  let toPreview: unknown = output;
+  if (typeof output !== "string" && output !== null && output !== undefined) {
+    toPreview = JSON.stringify(output);
+  }
+  const r = safeTextPreview(toPreview, max);
+  return {
+    preview: r.preview,
+    binaryReason: r.kind === "binary" ? r.reason : null,
+  };
+}
+```
+
+See `connectors/codex/parsers.ts` and `connectors/claude_code/parsers.ts` for the established usage. Other previews should mirror those shapes.
+
+### The `_binary_reason` companion-field convention
+
+When a payload *might* be binary (raw bytes from a shell command's stdout, a tool result, a clipboard capture, an attachment), pair the preview field with a sibling `<field>_binary_reason` field:
+
+| field | type | meaning |
+|---|---|---|
+| `output` | TEXT (JSONB-safe) | the preview from `safeTextPreview().preview`, or `null` |
+| `output_binary_reason` | TEXT | when the helper returned `kind: "binary"`, the helper's `reason` string (e.g. `"U+0000 at offset 342"` or `"invalid UTF-8 sequence in buffer"`); `null` otherwise |
+
+Rules:
+
+- If `safeTextPreview()` returns `kind: "binary"`, set the preview field to `null` AND set `<field>_binary_reason` to `result.reason`.
+- If it returns `kind: "text"` or `kind: "empty"`, set the preview field to `result.preview` (which is `null` when empty) AND set `<field>_binary_reason` to `null`.
+- The actual bytes, if you care about preserving them, go to the `blobs` table — never inlined into the JSONB record.
+- The reason string is for telemetry/debugging only; it is short, ASCII, and safe to render.
+
+### Don't do this
+
+- **Don't** stringify a `Buffer` directly into a preview field. The result will be valid UTF-8 by coincidence at best, and will contain forbidden control bytes at worst.
+- **Don't** `String(value).replace(/\0/g, '')` as a workaround. That hides the binary-leak bug and silently lossy-coerces real data. Use `safeTextPreview()` and route binary to a blob.
+- **Don't** invent a new "I'll just truncate to 200 chars" helper. Use `safeTextPreview(value, 200)` — the truncation logic already handles surrogate pairs and the printable-text invariant.
+
+---
+
 ## 5. Session-state pattern
 
 - **Probe before login.** A cheap auth check before driving credentials saves rate-limit budget and human patience.

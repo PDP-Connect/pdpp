@@ -675,9 +675,31 @@ async function fetchBodies(
 
 export function selectAllMailFetchRange(
   session: { fullResync: boolean; priorUidnext: number },
-  requested: Map<string, StreamRequest>
+  _requested: Map<string, StreamRequest>
 ): string {
-  if (session.fullResync || requested.has("attachments")) {
+  // Range is determined purely by the persisted cursor:
+  //   - Full resync (no prior uidvalidity, or it changed): 1:*.
+  //   - Incremental: priorUidnext:* — only UIDs we haven't seen yet.
+  //
+  // The earlier behavior forced 1:* whenever the run scope included
+  // `attachments`. Rationale at the time was: enable attachment
+  // backfill when a user first turns the stream on. The cost was real:
+  // every Gmail sync re-scanned the entire mailbox forever, not just
+  // the once-after-enabling pass.
+  //
+  // The correct shape is to treat backfill as an explicit, per-stream
+  // operation rather than an implicit side effect of stream selection.
+  // For new attachments on new messages — the common case — the
+  // incremental range already covers them: new UIDs land in `metas`
+  // and `processMessage` emits attachment records for them
+  // (lines 357-361).
+  //
+  // For first-time attachment backfill on already-fetched UIDs, the
+  // correct path is an explicit per-stream backfill run scope
+  // (`streamsToBackfill: ["attachments"]`) carrying a separate
+  // `attachments.backfilled_through_uid` cursor. Tracked as follow-up;
+  // see docs/run-reconciliation-design-brief.md pattern for shape.
+  if (session.fullResync) {
     return "1:*";
   }
   return `${session.priorUidnext}:*`;

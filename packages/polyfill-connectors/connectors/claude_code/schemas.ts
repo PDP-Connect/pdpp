@@ -6,9 +6,17 @@
  * Claude Code's JSON is generally well-shaped (it's from the official CLI),
  * so most assertions are bounds and format discipline rather than cruft
  * detection.
+ *
+ * Text-field classification (docs/binary-content-invariant-design-brief.md §4.4):
+ *   - Free-form text → pdppSafeText (via stringMaxSchema, pathSchema, and direct uses)
+ *   - Regex-validated structural strings (UUIDs, timestamps) → z.string().regex(...)
+ *   - content_preview uses a bespoke safeTextPreview() refine for the
+ *     +1-for-ellipsis bound (equivalent invariant to pdppSafeText).
  */
 
 import { z } from "zod";
+import { pdppSafeText } from "../../src/pdpp-safe-text.ts";
+import { PDPP_PREVIEW_MAX_CHARS, safeTextPreview } from "../../src/safe-text-preview.ts";
 import { makeValidateRecord } from "../../src/schema-registry.ts";
 
 // Module-scoped regexes (Biome useTopLevelRegex).
@@ -18,12 +26,12 @@ const ISO_Z_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 // Shared field schemas.
 const uuidSchema = z.string().regex(UUID_RE, "must be valid UUID");
 const isoDateTimeSchema = z.string().regex(ISO_Z_RE, "must be ISO-8601 with millis and Z suffix").nullable();
-const stringMaxSchema = (max: number) => z.string().max(max).nullable();
-const pathSchema = z.string().max(2048).nullable();
+const stringMaxSchema = (max: number) => pdppSafeText.max(max).nullable();
+const pathSchema = pdppSafeText.max(2048).nullable();
 
 export const sessionsSchema = z.object({
   id: uuidSchema,
-  project_path: z.string(),
+  project_path: pdppSafeText,
   cwd: pathSchema,
   git_branch: stringMaxSchema(256),
   version: stringMaxSchema(64),
@@ -40,7 +48,7 @@ export const messagesSchema = z.object({
   parent_uuid: uuidSchema.nullable(),
   role: stringMaxSchema(64),
   type: stringMaxSchema(64),
-  content: z.string().max(10_000_000).nullable(),
+  content: pdppSafeText.max(10_000_000).nullable(),
   timestamp: isoDateTimeSchema,
   is_sidechain: z.boolean(),
   user_type: stringMaxSchema(40),
@@ -54,46 +62,58 @@ export const messagesSchema = z.object({
 // Single string assertion with generous bounds; structural variants
 // validate via session_id (always UUID) and event_type fields.
 export const attachmentsSchema = z.object({
-  id: z.string().min(1).max(2048),
+  id: pdppSafeText.min(1).max(2048),
   session_id: uuidSchema,
   parent_uuid: uuidSchema.nullable(),
   event_type: stringMaxSchema(64),
   hook_name: stringMaxSchema(256),
   tool_use_id: stringMaxSchema(256),
-  content_preview: z.string().max(500_000).nullable(),
+  // content_preview keeps its bespoke refine for the +1-for-ellipsis bound;
+  // semantically equivalent to pdppSafeText (same safeTextPreview check).
+  content_preview: z
+    .string()
+    .max(PDPP_PREVIEW_MAX_CHARS + 1) // +1 for ellipsis if truncated
+    .refine((val) => {
+      const result = safeTextPreview(val, PDPP_PREVIEW_MAX_CHARS);
+      return result.kind === "text" || result.kind === "empty";
+    }, "content_preview contains forbidden control characters")
+    .nullable(),
+  // .optional() so legacy fixtures and records emitted before the parser
+  // started writing this companion field still validate.
+  content_binary_reason: pdppSafeText.max(200).nullable().optional(),
   content_bytes: z.number().int().min(0).nullable(),
   timestamp: isoDateTimeSchema,
 });
 
 export const skillsSchema = z.object({
-  id: z.string(),
+  id: pdppSafeText,
   name: stringMaxSchema(256),
   description: stringMaxSchema(2048),
   source: stringMaxSchema(64),
   path: pathSchema,
-  content: z.string().max(10_000_000).nullable(),
+  content: pdppSafeText.max(10_000_000).nullable(),
   frontmatter: z.record(z.string(), z.unknown()).nullable(),
   mtime_epoch: z.number().nullable(),
 });
 
 export const memoryNotesSchema = z.object({
-  id: z.string(),
-  project_path: z.string(),
-  note_path: z.string(),
+  id: pdppSafeText,
+  project_path: pdppSafeText,
+  note_path: pdppSafeText,
   name: stringMaxSchema(256),
   description: stringMaxSchema(2048),
   path: pathSchema,
-  content: z.string().max(10_000_000).nullable(),
+  content: pdppSafeText.max(10_000_000).nullable(),
   frontmatter: z.record(z.string(), z.unknown()).nullable(),
   mtime_epoch: z.number().nullable(),
 });
 
 export const slashCommandsSchema = z.object({
-  id: z.string(),
+  id: pdppSafeText,
   name: stringMaxSchema(256),
   description: stringMaxSchema(2048),
   path: pathSchema,
-  content: z.string().max(10_000_000).nullable(),
+  content: pdppSafeText.max(10_000_000).nullable(),
   frontmatter: z.record(z.string(), z.unknown()).nullable(),
   mtime_epoch: z.number().nullable(),
 });

@@ -11,8 +11,13 @@
  */
 
 import { z } from "zod";
+import { pdppSafeText } from "../../src/pdpp-safe-text.ts";
 import { makeValidateRecord } from "../../src/schema-registry.ts";
 import { TEXT_MAX_CHARS } from "./parsers.ts";
+
+// Text-field classification (docs/binary-content-invariant-design-brief.md §4.4):
+//   - selftext/body/title/url/domain → pdppSafeText
+//   - Regex-validated IDs, subreddit names, permalinks → z.string().regex(...)
 
 // Module-scoped regexes (Biome useTopLevelRegex).
 const FULLNAME_POST_RE = /^t3_[a-z0-9]+$/;
@@ -27,7 +32,7 @@ const ISO_Z_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 const isoDateTimeSchema = z.string().regex(ISO_Z_RE, "must be ISO-8601 with millis and Z suffix");
 const subredditSchema = z.string().regex(SUBREDDIT_RE, "invalid subreddit name").nullable();
 const permalinkSchema = z.string().regex(PERMALINK_RE, "permalink must be a reddit.com URL").nullable();
-const bodyTextSchema = z.string().max(TEXT_MAX_CHARS).nullable();
+const bodyTextSchema = pdppSafeText.max(TEXT_MAX_CHARS).nullable();
 const textLenSchema = z.number().int().min(0).nullable();
 const scoreSchema = z.number().int().nullable();
 const upvoteRatioSchema = z.number().min(0).max(1).nullable();
@@ -36,10 +41,10 @@ const nullableBoolSchema = z.boolean().nullable();
 export const submittedSchema = z.object({
   id: z.string().regex(FULLNAME_POST_RE, "submitted id must be t3_*"),
   subreddit: subredditSchema,
-  title: z.string().min(1).max(300).nullable(),
+  title: pdppSafeText.min(1).max(300).nullable(),
   permalink: permalinkSchema,
-  url: z.string().max(4096).nullable(),
-  domain: z.string().min(1).max(253).nullable(),
+  url: pdppSafeText.max(4096).nullable(),
+  domain: pdppSafeText.min(1).max(253).nullable(),
   selftext: bodyTextSchema,
   selftext_len: textLenSchema,
   is_self: nullableBoolSchema,
@@ -72,11 +77,11 @@ export const savedSchema = z.object({
   kind: z.enum(["t1", "t3"]),
   is_post: z.boolean(),
   subreddit: subredditSchema,
-  title: z.string().min(1).max(300).nullable(),
+  title: pdppSafeText.min(1).max(300).nullable(),
   body: bodyTextSchema,
   body_len: textLenSchema,
   permalink: permalinkSchema,
-  url: z.string().max(4096).nullable(),
+  url: pdppSafeText.max(4096).nullable(),
   created_utc: isoDateTimeSchema,
   fetched_at: isoDateTimeSchema,
 });
@@ -87,10 +92,10 @@ export const voteSchema = z.object({
   kind: z.enum(["t1", "t3"]),
   is_post: z.boolean(),
   subreddit: subredditSchema,
-  title: z.string().min(1).max(300).nullable(),
+  title: pdppSafeText.min(1).max(300).nullable(),
   body: bodyTextSchema,
   body_len: textLenSchema,
-  url: z.string().max(4096).nullable(),
+  url: pdppSafeText.max(4096).nullable(),
   permalink: permalinkSchema,
   score: scoreSchema,
   num_comments: z.number().int().min(0).nullable(),

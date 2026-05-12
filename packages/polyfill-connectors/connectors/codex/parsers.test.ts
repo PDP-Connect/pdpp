@@ -54,11 +54,13 @@ test("extractMessageText: all-empty content → null", () => {
 // ─── payloadOutputPreview ────────────────────────────────────────────────
 
 test("payloadOutputPreview: string output passes through under cap", () => {
-  assert.equal(payloadOutputPreview("short"), "short");
+  const result = payloadOutputPreview("short");
+  assert.deepEqual(result, { preview: "short", binaryReason: null });
 });
 
 test("payloadOutputPreview: object output is JSON-stringified", () => {
-  assert.equal(payloadOutputPreview({ a: 1 }), '{"a":1}');
+  const result = payloadOutputPreview({ a: 1 });
+  assert.deepEqual(result, { preview: '{"a":1}', binaryReason: null });
 });
 
 // ─── epochToIso ──────────────────────────────────────────────────────────
@@ -300,4 +302,18 @@ test("extendTimestampRange: null ts no-op", () => {
   extendTimestampRange(r, null);
   assert.equal(r.firstTs, "2026-04-22T12:00:00Z");
   assert.equal(r.lastTs, "2026-04-22T12:00:00Z");
+});
+
+// ─── Binary content tests ────────────────────────────────────────────────
+
+test("payloadOutputPreview: binary content with U+0000 returns null preview with reason", () => {
+  const result = payloadOutputPreview("ELF\x00");
+  assert(result.preview === null);
+  assert(result.binaryReason !== null);
+  assert(result.binaryReason.includes("U+0000"));
+});
+
+test("textPreview: string with U+0000 returns null", () => {
+  const result = textPreview("hello\x00world");
+  assert.equal(result, null);
 });

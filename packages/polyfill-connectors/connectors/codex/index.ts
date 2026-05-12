@@ -458,8 +458,12 @@ function applyFunctionCallOutput(
   }
   const callId = payload.call_id;
   const existing = callId ? state.pendingCalls.get(callId) : null;
+  const previewResult = payloadOutputPreview(payload.output);
   if (existing) {
-    existing.output_preview = payloadOutputPreview(payload.output);
+    existing.output_preview = previewResult.preview;
+    if (previewResult.binaryReason) {
+      existing.output_binary_reason = previewResult.binaryReason;
+    }
     return;
   }
   emitRecord("function_calls", {
@@ -468,7 +472,8 @@ function applyFunctionCallOutput(
     call_id: callId || null,
     name: null,
     arguments: null,
-    output_preview: payloadOutputPreview(payload.output),
+    output_preview: previewResult.preview,
+    output_binary_reason: previewResult.binaryReason,
     timestamp: ts,
   });
 }

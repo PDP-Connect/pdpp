@@ -255,6 +255,86 @@ test("decodeBodystructureForAttachments: undefined structure → []", () => {
   assert.deepEqual(decodeBodystructureForAttachments(undefined, "msg-1", "2024-01-15T12:00:00.000Z"), []);
 });
 
+test("decodeBodystructureForAttachments: drops body alternatives (inline text without filename)", () => {
+  // Real-world shape: multipart/alternative with text/plain + text/html
+  // body alternatives, both marked disposition=inline by the server.
+  // The previous classifier emitted both as "attachments"; the corrected
+  // rule rejects them. Verified against IMAP truth on 480 sampled
+  // Gmail messages: zero false-positives, zero missed attachments.
+  // See connectors/gmail/parsers.ts decodeBodystructureForAttachments.
+  const tree = {
+    type: "multipart/alternative",
+    childNodes: [
+      {
+        part: "1",
+        type: "text/plain",
+        disposition: "inline",
+        size: 1234,
+      },
+      {
+        part: "2",
+        type: "text/html",
+        disposition: "inline",
+        size: 5678,
+      },
+    ],
+  } as MessageStructureObject;
+  const items = decodeBodystructureForAttachments(tree, "msg-body-only", "2024-01-15T12:00:00.000Z");
+  assert.equal(items.length, 0, "body alternatives must not be classified as attachments");
+});
+
+test("decodeBodystructureForAttachments: keeps inline non-text leaves with Content-ID (cid: images)", () => {
+  // Real-world shape: multipart/related with an HTML body and a PNG
+  // referenced via cid: in the HTML. The PNG has disposition=inline,
+  // no filename, but a Content-ID. It IS an attachment in the
+  // user-meaningful sense — they would want to fetch its bytes.
+  const tree = {
+    type: "multipart/related",
+    childNodes: [
+      {
+        part: "1",
+        type: "text/html",
+        disposition: "inline",
+        size: 1234,
+      },
+      {
+        part: "2",
+        type: "image/png",
+        disposition: "inline",
+        id: "<sig-image@example.com>",
+        size: 9999,
+      },
+    ],
+  } as MessageStructureObject;
+  const items = decodeBodystructureForAttachments(tree, "msg-cid-image", "2024-01-15T12:00:00.000Z");
+  assert.equal(items.length, 1, "cid-referenced inline images are real attachments");
+  const item = items[0];
+  assert.ok(item, "expected one item");
+  assert.equal(item.part_index, "2");
+  assert.equal(item.content_type, "image/png");
+  assert.equal(item.content_id, "<sig-image@example.com>");
+});
+
+test("decodeBodystructureForAttachments: drops inline non-text leaves without Content-ID", () => {
+  // Defensive: an inline non-text leaf with neither filename nor
+  // Content-ID is unaddressable — caller cannot fetch its bytes
+  // meaningfully. Drop it.
+  const tree = {
+    type: "multipart/related",
+    childNodes: [
+      {
+        part: "1",
+        type: "image/png",
+        disposition: "inline",
+        size: 9999,
+        // no id, no filename
+      },
+    ],
+  } as MessageStructureObject;
+  const items = decodeBodystructureForAttachments(tree, "msg-anon-inline", "2024-01-15T12:00:00.000Z");
+  assert.equal(items.length, 0);
+});
+
 test("findFirstPartByType / findTextPlainPart / findTextHtmlPart: locate leaf parts", () => {
   const tree = readBodystructureFixture();
   assert.equal(findTextPlainPart(tree), "1.1");

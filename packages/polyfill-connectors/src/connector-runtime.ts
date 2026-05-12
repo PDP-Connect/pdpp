@@ -577,6 +577,15 @@ async function runInBrowser(args: {
   const browserSendInteraction: BaseCollectContext["sendInteraction"] = (req) =>
     sendInteraction(decorateBrowserManualAction(req, visibility));
   const { context: ctx, release } = await acquireBrowser(browser, name);
+  // Prevention layer (Layer A): register a SIGTERM/SIGINT handler that
+  // awaits release() before exit. Without this, Docker stop / controller
+  // restart kills this child process before the `finally` block below
+  // runs, Chromium dies with its profile-lock symlink still pointing at
+  // this PID, and the next launch fails the hostname check. See
+  // `shutdown-hook.ts` for the design and `profile-lock.ts` for the
+  // correction-layer counterpart.
+  const { withShutdownRelease } = await import("./shutdown-hook.ts");
+  const disposeShutdownHook = withShutdownRelease(release);
   const tracer = makeTracer(ctx, name, emit);
   await tracer.start();
   try {
@@ -589,6 +598,7 @@ async function runInBrowser(args: {
   } finally {
     await tracer.stop();
     await release().catch((): undefined => undefined);
+    disposeShutdownHook();
   }
 }
 
@@ -682,11 +692,23 @@ async function acquireBrowser(browser: BrowserConfig, name: string): Promise<Acq
     Boolean(process.env.PDPP_RUN_ID?.trim()) &&
     Boolean(process.env.PDPP_REFERENCE_BASE_URL?.trim()) &&
     Boolean(process.env.PDPP_STREAMING_REGISTRATION_TOKEN?.trim() || process.env.PDPP_LOCAL_DEVICE_TOKEN?.trim());
+  // Per-connector opt-in to remote-CDP attach: when
+  // `PDPP_<PROFILE>_REMOTE_CDP_URL` is set (e.g.
+  // PDPP_CHATGPT_REMOTE_CDP_URL=http://neko:9223), the connector attaches
+  // to the n.eko-hosted Chromium instead of spawning a local Chrome. This
+  // is the only path that gets ALL three stealth layers (binary, launch
+  // args, driver) when the streaming companion is expected — see
+  // docs/neko-stealth-design-brief.md. Local Chrome inside the reference
+  // container can't get those layers because it runs headless without an
+  // X server.
+  const remoteCdpEnvKey = `PDPP_${profileName.toUpperCase()}_REMOTE_CDP_URL`;
+  const remoteCdpUrl = process.env[remoteCdpEnvKey]?.trim() || undefined;
   try {
     return await acquireBrowserForConnector({
       profileName,
       headless,
       ...(streamingEnabled ? { streamingEnabled: true } : {}),
+      ...(remoteCdpUrl ? { remoteCdpUrl } : {}),
     });
   } catch (err) {
     if (err instanceof HeadedBrowserUnavailableError) {

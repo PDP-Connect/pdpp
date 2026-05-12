@@ -436,13 +436,27 @@ test("resolveMaxAttachmentBytes: env override is honored only when positive inte
   );
 });
 
-test("selectAllMailFetchRange: incremental attachment runs revisit prior messages for metadata-only backfill", () => {
+test("selectAllMailFetchRange: incremental runs use priorUidnext:* regardless of requested streams", () => {
+  // Incremental sync: fetch range covers only new UIDs we haven't seen yet,
+  // independent of whether the run scope includes attachments. New
+  // messages still hit `processMessage`, which emits attachment records
+  // for any new message that carries them (per-message gate at lines
+  // 357-361 of connectors/gmail/index.ts).
   assert.equal(selectAllMailFetchRange({ fullResync: false, priorUidnext: 500 }, makeRequested(["messages"])), "500:*");
   assert.equal(
     selectAllMailFetchRange({ fullResync: false, priorUidnext: 500 }, makeRequested(["attachments"])),
-    "1:*"
+    "500:*"
   );
+  assert.equal(
+    selectAllMailFetchRange(
+      { fullResync: false, priorUidnext: 500 },
+      makeRequested(["messages", "attachments", "message_bodies", "threads", "labels"])
+    ),
+    "500:*"
+  );
+  // Full resync (no prior uidvalidity or uidvalidity changed): still 1:*.
   assert.equal(selectAllMailFetchRange({ fullResync: true, priorUidnext: 500 }, makeRequested(["attachments"])), "1:*");
+  assert.equal(selectAllMailFetchRange({ fullResync: true, priorUidnext: 500 }, makeRequested(["messages"])), "1:*");
 });
 
 test("processMessage: attachment bytes are not inlined into message_bodies", async () => {

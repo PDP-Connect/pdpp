@@ -28,6 +28,7 @@ import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Browser, BrowserContext, chromium } from "playwright";
+import { removeChromiumSingletonResidue, withProfileLockMutex } from "./profile-lock.ts";
 import { isRunningInContainer } from "./runtime-environment.ts";
 
 const PROFILE_NAME_RE = /^[A-Za-z0-9_-]+$/;
@@ -42,6 +43,24 @@ export interface IsolatedBrowser {
 export interface AcquireIsolatedBrowserOptions {
   headless?: boolean;
   profileName: string;
+  /**
+   * When set, the launcher does NOT spawn its own Chromium. Instead it
+   * calls `patchright.chromium.connectOverCDP(remoteCdpUrl)` and returns
+   * the FIRST existing context as the connector's context. Used for
+   * connectors that need a real X server + WebRTC streaming (n.eko-hosted
+   * Chromium) so the manual_action handoff goes back to the same browser
+   * the connector was driving — not a separate headless Chrome launched
+   * inside the reference container.
+   *
+   * The release function disconnects the Patchright client; it does NOT
+   * close the remote browser. The neko container owns that lifecycle.
+   *
+   * When set, `streamingEnabled` is implied; we register the page-target
+   * wsUrl for manual_action via the standard browser-handoff helper, but
+   * the wsUrl points at the neko-hosted page through the cdp-proxy.py
+   * URL the streaming companion already knows how to attach to.
+   */
+  remoteCdpUrl?: string;
   /**
    * When true, the launcher launches Chromium in CDP-port mode
    * (`cdpPort: 0` plus `--remote-debugging-address=127.0.0.1`), reads
@@ -176,6 +195,62 @@ function isMissingChromeInstallError(error: unknown): boolean {
 }
 
 /**
+ * Attach to a remote Chromium via the standard DevTools Protocol over
+ * WebSocket. Used when the connector should run inside a browser hosted
+ * by a different container (e.g. n.eko) so the manual_action streaming
+ * handoff lands on the exact same browser process.
+ *
+ * The returned context is the FIRST existing context on the remote
+ * browser — typically the only context, since neko's Chromium runs with
+ * a single persistent user-data-dir. The release function disconnects
+ * the Patchright client but leaves the remote browser running; lifecycle
+ * is owned by whoever launched it.
+ *
+ * Pages opened by the connector are NOT cleaned up automatically — the
+ * connector should close any pages it opened in its own cleanup. This
+ * matches `launchPersistentContext` semantics where the context outlives
+ * individual pages.
+ */
+async function acquireRemoteCdpBrowser(cdpUrl: string, profileName: string): Promise<IsolatedBrowser> {
+  // @ts-expect-error — patchright.chromium is runtime-identical to playwright.chromium
+  const { chromium: localChromium }: { chromium: typeof chromium } = await import("patchright");
+  const browser = await localChromium.connectOverCDP(cdpUrl);
+  const [context] = browser.contexts();
+  if (!context) {
+    await browser.close().catch(() => {});
+    throw new Error(
+      `acquireRemoteCdpBrowser(${profileName}): remote browser at ${cdpUrl} has no contexts; cannot attach`
+    );
+  }
+  // Publish the CDP endpoint into process.env so `browser-handoff.ts` can
+  // compose per-page wsUrls for manual_action registration. The host:port
+  // we expose to the streaming companion is the SAME url we attached on —
+  // it's what the companion's cdp-adapter will dial back through.
+  try {
+    const parsed = new URL(cdpUrl);
+    process.env.PDPP_BROWSER_CDP_HOST = parsed.hostname;
+    process.env.PDPP_BROWSER_CDP_PORT = parsed.port || (parsed.protocol === "https:" ? "443" : "80");
+  } catch (err) {
+    process.stderr.write(
+      `[browser-launch] could not parse remote CDP URL ${cdpUrl}: ${err instanceof Error ? err.message : String(err)}\n`
+    );
+  }
+  return {
+    browser,
+    context,
+    release: async (): Promise<void> => {
+      // Disconnect only. Closing the remote browser would kill the n.eko
+      // X-attached process; that lifecycle is owned by the neko container.
+      try {
+        await browser.close();
+      } catch {
+        /* ignore */
+      }
+    },
+  };
+}
+
+/**
  * Launch an isolated per-connector browser context with its own profile dir.
  *
  * NOTE: the default profile-name derivation in `connector-runtime.ts` is
@@ -188,9 +263,16 @@ export async function acquireIsolatedBrowser({
   profileName,
   headless = false,
   streamingEnabled,
+  remoteCdpUrl,
 }: AcquireIsolatedBrowserOptions): Promise<IsolatedBrowser> {
   if (!(profileName && PROFILE_NAME_RE.test(profileName))) {
     throw new Error("profileName required, must be [A-Za-z0-9_-]+");
+  }
+  // Remote-CDP attach: skip the entire local-launch path. The remote
+  // browser owns its own profile and lifecycle (e.g. the n.eko container);
+  // we just attach as a CDP client.
+  if (remoteCdpUrl) {
+    return acquireRemoteCdpBrowser(remoteCdpUrl, profileName);
   }
   const isolatedDir = join(homedir(), ".pdpp", "profiles", profileName);
   if (!existsSync(isolatedDir)) {
@@ -294,15 +376,23 @@ export async function acquireIsolatedBrowser({
   };
 
   const explicitChannel = configuredBrowserChannel();
-  let context: BrowserContext;
-  if (explicitChannel) {
-    context = await localChromium.launchPersistentContext(isolatedDir, {
-      ...baseLaunchOptions,
-      channel: explicitChannel,
-    });
-  } else {
+  // Cleanup-then-launch is gated by an in-process mutex keyed on the
+  // user-data-dir. The mutex is the load-bearing primitive: it guarantees
+  // PDPP never has two of its own processes launching against the same
+  // profile concurrently. Given that, any Singleton* residue we encounter
+  // is provably from a prior incarnation (e.g. previous container) and
+  // safe to remove unconditionally. See `profile-lock.ts` header comment
+  // for the design rationale and source references.
+  const context: BrowserContext = await withProfileLockMutex(isolatedDir, async () => {
+    await removeChromiumSingletonResidue(isolatedDir);
+    if (explicitChannel) {
+      return localChromium.launchPersistentContext(isolatedDir, {
+        ...baseLaunchOptions,
+        channel: explicitChannel,
+      });
+    }
     try {
-      context = await localChromium.launchPersistentContext(isolatedDir, {
+      return await localChromium.launchPersistentContext(isolatedDir, {
         ...baseLaunchOptions,
         channel: "chrome",
       });
@@ -311,9 +401,9 @@ export async function acquireIsolatedBrowser({
         throw error;
       }
       logChromiumFallback();
-      context = await localChromium.launchPersistentContext(isolatedDir, baseLaunchOptions);
+      return localChromium.launchPersistentContext(isolatedDir, baseLaunchOptions);
     }
-  }
+  });
 
   // Publish the CDP host:port to env so the browser-binding-local handoff
   // helper (`browser-handoff.ts`) can compose per-interaction wsUrls at
