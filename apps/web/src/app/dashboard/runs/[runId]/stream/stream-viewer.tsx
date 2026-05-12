@@ -45,9 +45,9 @@ import {
   setNekoRemoteCopyFallback,
   setNekoRemoteInputFocused,
   setNekoViewportLayout,
-  startNeko,
-  stopNeko,
 } from "./neko-client.ts";
+import { NekoSurfaceAdapter } from "@pdpp/remote-surface";
+import { createNekoClientApi } from "./neko-client-api-shim.ts";
 import {
   assessClipboardCapabilities,
   type ClipboardCapabilities,
@@ -1678,11 +1678,17 @@ function StreamStage({
     directionPolicy: DEFAULT_CLIPBOARD_DIRECTION_POLICY,
     hasStreamSession: Boolean(initialSession.input_url),
     helperMode: normalizeClipboardHelperMode(nekoSession?.stealthMode),
+    // Step-5 ruling 1: scope the corner keyboard button to n.eko
+    // (remote-surface) sessions; cdp and other backends keep it hidden.
+    sessionBackend: nekoSession ? "neko" : "unknown",
   });
   const clipboardCapabilitiesRef = useRef(clipboardCapabilities);
   const clipboardPolicyRef = useRef(clipboardPolicy);
   const pendingResizeSourcesRef = useRef<Set<string>>(new Set());
   const pendingPresentationSourcesRef = useRef<Set<string>>(new Set());
+  // Step 5b: hoist adapter ref so corner-keyboard handler can call
+  // adapter.focusTextInput(), which binds MobileTextInputController.
+  const nekoSurfaceAdapterRef = useRef<NekoSurfaceAdapter | null>(null);
   const presentationKeyboardFocusedRef = useRef(false);
   const presentationKeyboardHoldUntilRef = useRef(0);
   const presentationOrientationHoldUntilRef = useRef(0);
@@ -2898,6 +2904,7 @@ function StreamStage({
     <div className="relative flex h-full w-full flex-col bg-black" data-pdpp-stream-debug={debugEnabled}>
       {nekoSession ? (
         <NekoSurface
+          adapterRef={nekoSurfaceAdapterRef}
           debugEnabled={debugEnabled}
           localSurfaceViewportInfo={nekoLocalSurfaceViewportInfo}
           logDebug={logDebug}
@@ -2929,8 +2936,41 @@ function StreamStage({
         onKeyboard={
           nekoSession && clipboardPolicy.showKeyboardButton
             ? () => {
-                focusNekoKeyboard();
+                // Focus the MobileTextInputController-bound textarea
+                // (rendered inside NekoSurface). The OS soft keyboard
+                // opens on focus; the controller intercepts compositionend
+                // / input and forwards via the RemoteSurface adapter. Also
+                // call focusNekoKeyboard() to keep neko's internal
+                // `remoteInputFocused` state consistent (needed by the
+                // mobile-text-input guard + viewport-hold heuristics).
+                const softKeyboardTextarea = document.querySelector<HTMLTextAreaElement>(
+                  'textarea[data-pdpp-soft-keyboard="neko"]'
+                );
+                // Step 5b: route through the adapter so
+                // MobileTextInputController binds and our IME pipeline
+                // takes over (rather than n.eko's bundled fallback).
+                // adapter.focusTextInput() calls focusKeyboard() internally
+                // but does NOT call .focus() on the textarea — keep the
+                // explicit .focus() so the OS soft keyboard opens.
+                const adapter = nekoSurfaceAdapterRef.current;
+                logDebug("neko.corner.keyboard.tapped", {
+                  adapterPresent: !!adapter,
+                  adapterMounted: adapter?.getLifecycleState() === "mounted",
+                  adapterState: adapter?.getLifecycleState() ?? null,
+                });
+                if (adapter && adapter.getLifecycleState() === "mounted") {
+                  adapter.focusTextInput();
+                } else {
+                  focusNekoKeyboard();
+                }
+                if (softKeyboardTextarea) {
+                  softKeyboardTextarea.focus();
+                }
                 logDebug("neko.corner.keyboard", {
+                  adapterMounted:
+                    adapter?.getLifecycleState() === "mounted",
+                  controllerTextareaFocused:
+                    document.activeElement === softKeyboardTextarea,
                   snapshot: readSurfaceDebugSnapshot(containerRef.current),
                 });
               }
@@ -3128,6 +3168,7 @@ async function loadNekoClientConfig(clientConfigPath: string): Promise<NekoClien
 // ─── The direct n.eko WebRTC surface ──────────────────────────────────────────
 
 function NekoSurface({
+  adapterRef,
   debugEnabled,
   localSurfaceViewportInfo,
   logDebug,
@@ -3138,6 +3179,7 @@ function NekoSurface({
   status,
   viewportInfo,
 }: {
+  adapterRef: { current: NekoSurfaceAdapter | null };
   debugEnabled: boolean;
   localSurfaceViewportInfo: StreamViewportInfo | null;
   logDebug: StreamDebugLogger;
@@ -3185,6 +3227,20 @@ function NekoSurface({
     };
   }, [logDebug]);
 
+  // Step 3 of the RemoteSurface migration: NekoSurface depends only on
+  // RemoteSurface. The adapter wraps neko-client.ts via the file-local
+  // NekoClientApi shim; pointer dispatch on the wire goes through
+  // NekoPointerController (inside the adapter).
+  // Step 5b: the adapter ref is owned by StreamStage so the corner
+  // keyboard handler can call adapter.focusTextInput() — aliased here.
+  const nekoSurfaceAdapterRef = adapterRef;
+  // Mobile soft-keyboard hidden textarea. MobileTextInputController
+  // (inside NekoSurfaceAdapter) binds to it lazily on first
+  // focusTextInput. The textarea is visually-hidden + focusable so the
+  // OS soft keyboard opens when we .focus() it; the controller
+  // translates IME composition into sendText / sendKeysym calls.
+  const softKeyboardTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+
   useEffect(() => {
     const mountNode = containerRef.current;
     if (!mountNode) {
@@ -3202,9 +3258,20 @@ function NekoSurface({
           return;
         }
         setClientConfig(config);
-        await startNeko(nekoMountNode, config);
+        const adapter = new NekoSurfaceAdapter({
+          client: createNekoClientApi({
+            getTextarea: () => softKeyboardTextareaRef.current,
+          }),
+          config: { kind: "neko", ...(config as unknown as Record<string, unknown>) },
+          logger: (level, msg, meta) => {
+            logDebug(msg, { level, ...(meta ?? {}) });
+          },
+        });
+        nekoSurfaceAdapterRef.current = adapter;
+        await adapter.mount(nekoMountNode);
         if (cancelled) {
-          stopNeko(nekoMountNode);
+          await adapter.unmount();
+          nekoSurfaceAdapterRef.current = null;
           return;
         }
       })
@@ -3221,9 +3288,87 @@ function NekoSurface({
     return () => {
       cancelled = true;
       setClientConfig(null);
-      stopNeko(nekoMountNode);
+      const adapter = nekoSurfaceAdapterRef.current;
+      nekoSurfaceAdapterRef.current = null;
+      if (adapter) {
+        adapter.unmount().catch(() => {
+          /* best-effort teardown */
+        });
+      }
     };
-  }, [session.clientConfigPath]);
+  }, [logDebug, session.clientConfigPath]);
+
+  // Capture-phase pointer dispatch into the adapter. This is the wire
+  // boundary the expert prescribed: pointer events become RemotePointerEvent
+  // at the dashboard edge and the adapter (via NekoPointerController)
+  // handles tap-to-click + drag semantics. Hover-only mouse moves
+  // (pointerType=mouse && buttons===0) are gated out to avoid flooding
+  // the wire on desktop trackpad usage. Touch moves are always forwarded.
+  useEffect(() => {
+    const mountNode = containerRef.current;
+    if (!mountNode) {
+      return;
+    }
+    const remoteTypeFor = (
+      type: string,
+    ): "pointerdown" | "pointermove" | "pointerup" | "pointercancel" | null => {
+      switch (type) {
+        case "pointerdown":
+          return "pointerdown";
+        case "pointermove":
+          return "pointermove";
+        case "pointerup":
+          return "pointerup";
+        case "pointercancel":
+          return "pointercancel";
+        default:
+          return null;
+      }
+    };
+    const handler = (event: PointerEvent) => {
+      const type = remoteTypeFor(event.type);
+      if (!type) {
+        return;
+      }
+      // Hover-move gate (step 2 open question #2): suppress mouse moves
+      // with no button held to prevent hover floods.
+      if (type === "pointermove" && event.pointerType === "mouse" && event.buttons === 0) {
+        return;
+      }
+      const adapter = nekoSurfaceAdapterRef.current;
+      if (!adapter || adapter.getLifecycleState() !== "mounted") {
+        return;
+      }
+      const pointerType: "mouse" | "touch" | "pen" =
+        event.pointerType === "touch" || event.pointerType === "pen" ? event.pointerType : "mouse";
+      adapter
+        .sendPointer({
+          button: event.button,
+          pointerId: event.pointerId,
+          pointerType,
+          pressure: event.pressure,
+          type,
+          // mapPointerToRemote expects viewport-absolute coordinates
+          // (getNekoControlPos in neko-client.ts:1423 reads clientX/Y).
+          x: event.clientX,
+          y: event.clientY,
+        })
+        .catch(() => {
+          /* swallow; adapter logs */
+        });
+    };
+    const opts: AddEventListenerOptions = { capture: true, passive: true };
+    mountNode.addEventListener("pointerdown", handler as EventListener, opts);
+    mountNode.addEventListener("pointermove", handler as EventListener, opts);
+    mountNode.addEventListener("pointerup", handler as EventListener, opts);
+    mountNode.addEventListener("pointercancel", handler as EventListener, opts);
+    return () => {
+      mountNode.removeEventListener("pointerdown", handler as EventListener, opts);
+      mountNode.removeEventListener("pointermove", handler as EventListener, opts);
+      mountNode.removeEventListener("pointerup", handler as EventListener, opts);
+      mountNode.removeEventListener("pointercancel", handler as EventListener, opts);
+    };
+  }, []);
 
   useEffect(() => {
     const viewport = presentationViewportInfo ?? viewportInfo;
@@ -3618,6 +3763,26 @@ function NekoSurface({
             {status.display === "live" ? "Starting WebRTC stream..." : "Waiting for browser..."}
           </div>
         ) : null}
+        {/* Hidden soft-keyboard textarea — MobileTextInputController binds */}
+        {/* its compositionstart/end + input + keydown listeners here. The   */}
+        {/* corner Keyboard button (and any future tap-to-focus) calls       */}
+        {/* `focusTextInput()` on the RemoteSurface adapter; the adapter     */}
+        {/* delegates focus to `focusNekoKeyboard()` (which focuses this     */}
+        {/* element) and binds the controller. Visually-hidden but           */}
+        {/* focusable + aria-hidden so AT users don't see a phantom field.   */}
+        <textarea
+          aria-hidden="true"
+          autoCapitalize="off"
+          autoComplete="off"
+          autoCorrect="off"
+          className="absolute h-px w-px overflow-hidden opacity-0"
+          data-pdpp-soft-keyboard="neko"
+          inputMode="text"
+          ref={softKeyboardTextareaRef}
+          spellCheck={false}
+          style={{ left: "-9999px", top: "-9999px" }}
+          tabIndex={-1}
+        />
       </div>
     </div>
   );

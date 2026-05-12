@@ -60,9 +60,17 @@ export function extractTerminalKnownGaps(events: readonly SpineEvent[]): {
   summary: KnownGapSummary | null;
   terminalEvent: SpineEvent | null;
 } {
+  // Run-terminal event types — kept aligned with lib/spine.ts
+  // RUN_TERMINAL_EVENT_TYPES. See docs/run-reconciliation-design-brief.md §3.7.
+  const RUN_TERMINAL_EVENT_TYPES = new Set([
+    "run.completed",
+    "run.failed",
+    "run.cancelled",
+    "run.abandoned",
+  ]);
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index];
-    if (!event || (event.event_type !== "run.completed" && event.event_type !== "run.failed")) {
+    if (!event || !RUN_TERMINAL_EVENT_TYPES.has(event.event_type)) {
       continue;
     }
     return {

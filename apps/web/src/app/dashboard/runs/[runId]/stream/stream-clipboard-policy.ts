@@ -23,11 +23,20 @@ export interface ClipboardCapabilities extends ClipboardCapabilityInput {
   supportsClipboardChangeEvent: boolean;
 }
 
+export type StreamSessionBackend = "neko" | "cdp" | "unknown";
+
 export interface ClipboardPolicyInput {
   capabilities: ClipboardCapabilities;
   directionPolicy: ClipboardDirectionPolicy;
   hasStreamSession: boolean;
   helperMode: ClipboardHelperMode;
+  /**
+   * Which streaming backend the user is connected to. Step-5 expert ruling 1:
+   * the corner keyboard button is shown only for n.eko (remote-surface)
+   * sessions on mobile-like surfaces — never on cdp or other contexts where
+   * it was deliberately off.
+   */
+  sessionBackend?: StreamSessionBackend;
 }
 
 export interface ClipboardPolicyDecision {
@@ -100,6 +109,7 @@ export function decideClipboardPolicy({
   directionPolicy,
   hasStreamSession,
   helperMode,
+  sessionBackend,
 }: ClipboardPolicyInput): ClipboardPolicyDecision {
   const localToRemote = directionPolicy === "local-to-remote" || directionPolicy === "bidirectional-text";
   const remoteToLocal = directionPolicy === "remote-to-local" || directionPolicy === "bidirectional-text";
@@ -130,7 +140,10 @@ export function decideClipboardPolicy({
     showClipboardSheet: surface === "mobile-sheet" && (localToRemote || remoteToLocal),
     showDesktopCopyButton: false,
     showDesktopPasteButton: false,
-    showKeyboardButton: false,
+    // Ruling 1 (step 5): show the soft-keyboard button only for n.eko
+    // (remote-surface) sessions on mobile-like surfaces. cdp backend and
+    // desktop keep it hidden as before.
+    showKeyboardButton: !disabled && sessionBackend === "neko" && capabilities.mobileLike,
     showMobileCopyButton: surface === "mobile-sheet" && remoteToLocal,
     showMobilePasteButton: surface === "mobile-sheet" && localToRemote,
     surface,

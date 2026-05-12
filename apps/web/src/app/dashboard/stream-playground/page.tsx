@@ -35,16 +35,18 @@ const PLAYGROUND_MESSAGE =
   "Click the button below to open the playground browser. " +
   "Inside, click, type, scroll, paste — every input modality is logged on the page so you can see it land.";
 
+type PlaygroundBackend = "cdp" | "neko" | "neko-remote-cdp";
+
 interface PlaygroundSessionResponse {
-  backend?: "cdp" | "neko";
+  backend?: PlaygroundBackend;
   interaction_id: string;
   object: "stream_playground_session";
   run_id: string;
 }
 
-function getBackend(searchParams: { backend?: string | string[] }): "cdp" | "neko" | null {
+function getBackend(searchParams: { backend?: string | string[] }): PlaygroundBackend | null {
   const value = Array.isArray(searchParams.backend) ? searchParams.backend[0] : searchParams.backend;
-  if (value === "cdp" || value === "neko") {
+  if (value === "cdp" || value === "neko" || value === "neko-remote-cdp") {
     return value;
   }
   return null;
@@ -54,7 +56,7 @@ function isStreamPlaygroundEnabled(): boolean {
   return process.env.NODE_ENV !== "production" || process.env.PDPP_ENABLE_STREAM_PLAYGROUND === "1";
 }
 
-async function getPlaygroundSession(backend: "cdp" | "neko" | null): Promise<PlaygroundSessionResponse> {
+async function getPlaygroundSession(backend: PlaygroundBackend | null): Promise<PlaygroundSessionResponse> {
   const asUrl = getAsInternalUrl();
   const suffix = backend ? `?backend=${encodeURIComponent(backend)}` : "";
   let response: Response;

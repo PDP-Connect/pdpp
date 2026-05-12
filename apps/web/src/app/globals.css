@@ -266,6 +266,32 @@ html > body[data-scroll-locked] {
   overflow: hidden;
 }
 
+/* Prevent the host browser (e.g. Brave on Android) from hijacking
+   long-press on the streamed video/canvas/overlay with its native
+   selection / save-image / context-menu UI. Touch input must reach
+   the n.eko control bridge instead. */
+[data-pdpp-neko-client],
+[data-pdpp-neko-client] * {
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+[data-pdpp-neko-client] video,
+[data-pdpp-neko-client] canvas,
+[data-pdpp-neko-client] img,
+[data-pdpp-neko-client] .neko-container,
+[data-pdpp-neko-client] .video-container,
+[data-pdpp-neko-client] .video,
+[data-pdpp-neko-client] .player {
+  touch-action: manipulation;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+  pointer-events: auto;
+}
+
 [data-pdpp-neko-client],
 [data-pdpp-neko-client] #neko,
 [data-pdpp-neko-client] .neko-main {

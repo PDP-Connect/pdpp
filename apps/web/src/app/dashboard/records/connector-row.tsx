@@ -244,6 +244,23 @@ function RunStatus({
       </Link>
     );
   }
+  if (lastRun.status === "abandoned") {
+    // Boot-time reconciliation marked this run as never-completing
+    // (the controller that started it terminated mid-run). It's
+    // terminal but distinct from a user-facing "failure" — the
+    // connector itself never reported a result. See
+    // docs/run-reconciliation-design-brief.md §3.7.
+    return (
+      <Link
+        className="pdpp-caption inline-flex items-center gap-1 text-muted-foreground hover:underline"
+        href={`${runsHref}/${encodeURIComponent(lastRun.run_id)}`}
+        title="The controller terminated before this run finished. Re-running may succeed."
+      >
+        <StatusDot shape="diamond" tone="warning" />
+        Abandoned
+      </Link>
+    );
+  }
   if (lastRun.status === "succeeded" || lastRun.status === "success") {
     if (hasPartialCoverageHint) {
       return (

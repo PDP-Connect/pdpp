@@ -1,0 +1,22 @@
+{
+  "name": "@pdpp/remote-surface",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "RemoteSurface abstraction layer for PDPP manual-action interactions over n.eko (preferred) and CDP (fallback).",
+  "main": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "check": "ultracite check",
+    "fix": "ultracite fix",
+    "test": "node --test --test-timeout=15000 --import tsx 'src/**/*.test.ts'",
+    "typecheck": "tsc --noEmit",
+    "verify": "pnpm typecheck && pnpm check && pnpm test"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.4.12",
+    "ultracite": "7.6.0"
+  }
+}

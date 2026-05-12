@@ -232,6 +232,48 @@ test("missing stream session disables clipboard policy regardless of browser sup
   assert.equal(decision.canWriteLocalClipboard, false);
 });
 
+test("step-5 ruling 1: keyboard button shows only for n.eko mobile sessions", () => {
+  // n.eko mobile → button visible
+  const nekoMobile = decideClipboardPolicy({
+    capabilities: capabilities({ pointerCoarse: true }),
+    directionPolicy: "bidirectional-text",
+    hasStreamSession: true,
+    helperMode: "balanced",
+    sessionBackend: "neko",
+  });
+  assert.equal(nekoMobile.showKeyboardButton, true);
+
+  // n.eko desktop → still hidden
+  const nekoDesktop = decideClipboardPolicy({
+    capabilities: capabilities({ pointerCoarse: false }),
+    directionPolicy: "bidirectional-text",
+    hasStreamSession: true,
+    helperMode: "balanced",
+    sessionBackend: "neko",
+  });
+  assert.equal(nekoDesktop.showKeyboardButton, false);
+
+  // cdp mobile → still hidden (anti-requirement: do not flip for cdp)
+  const cdpMobile = decideClipboardPolicy({
+    capabilities: capabilities({ pointerCoarse: true }),
+    directionPolicy: "bidirectional-text",
+    hasStreamSession: true,
+    helperMode: "balanced",
+    sessionBackend: "cdp",
+  });
+  assert.equal(cdpMobile.showKeyboardButton, false);
+
+  // disabled session → hidden even on n.eko mobile
+  const disabled = decideClipboardPolicy({
+    capabilities: capabilities({ pointerCoarse: true }),
+    directionPolicy: "disabled",
+    hasStreamSession: true,
+    helperMode: "balanced",
+    sessionBackend: "neko",
+  });
+  assert.equal(disabled.showKeyboardButton, false);
+});
+
 test("length buckets are redacted metadata only", () => {
   assert.equal(clipboardLengthBucket(""), "0");
   assert.equal(clipboardLengthBucket("π\n🔒"), "1-16");

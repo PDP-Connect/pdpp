@@ -38,6 +38,12 @@ interface NekoInstance {
     scroll?: (scroll: NekoControlScroll) => void;
     selectAll?: () => void;
     supportedTouchEvents?: boolean;
+    // Raw X11 keysym dispatch (verified in @demodesk/neko bundle L23746).
+    // Used by MobileTextInputController for special keys (Backspace,
+    // Enter, Arrows, F-keys). `keyPress` emits press+release in one call.
+    keyPress?: (keysym: number, pos?: NekoControlPos) => void;
+    keyDown?: (keysym: number, pos?: NekoControlPos) => void;
+    keyUp?: (keysym: number, pos?: NekoControlPos) => void;
   };
   cursorDrawFunction?: NekoCursorDrawFunction;
   events?: { on?: (name: string, handler: (...args: unknown[]) => void) => void };
@@ -2623,4 +2629,44 @@ export function stopNeko(container: HTMLElement): void {
 
   wrapperEl = null;
   mountEl = null;
+}
+
+// ── Exports consumed by @pdpp/remote-surface NekoClientApi shim ──────
+// These are narrow accessors over module-private state so the
+// stream-viewer can construct a NekoSurfaceAdapter without importing
+// neko-client.ts internals into the package. They are additive — no
+// neko-client.ts behavior changes.
+export function getNekoPointerControlForAdapter(): NekoInstance["control"] | null {
+  return nekoInstance?.control ?? null;
+}
+
+export function mapNekoPointerToRemoteForAdapter(
+  clientX: number,
+  clientY: number,
+): NekoControlPos | null {
+  return getNekoControlPos(clientX, clientY);
+}
+
+/**
+ * Dispatch a single raw X11 keysym press+release at the remote n.eko.
+ * Used by MobileTextInputController for special keys (Backspace, Enter,
+ * Arrow keys, F-keys). Wraps `nekoInstance.control.keyPress(keysym)`
+ * (verified in @demodesk/neko bundle L23746). Returns true on success.
+ */
+export function dispatchNekoKeysymForAdapter(keysym: number): boolean {
+  const control = nekoInstance?.control;
+  if (typeof control?.keyPress === "function") {
+    control.keyPress(keysym);
+    return true;
+  }
+  // Fallback: keyDown + keyUp pair if keyPress is missing on this build.
+  if (
+    typeof control?.keyDown === "function" &&
+    typeof control?.keyUp === "function"
+  ) {
+    control.keyDown(keysym);
+    control.keyUp(keysym);
+    return true;
+  }
+  return false;
 }

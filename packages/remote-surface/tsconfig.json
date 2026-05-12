@@ -1,0 +1,40 @@
+{
+  "compilerOptions": {
+    // Language + module (Node ESM, matches polyfill-connectors exemplar).
+    // DOM lib is required because RemoteSurface methods accept HTMLElement
+    // and HTMLTextAreaElement; this package targets the browser-side
+    // dashboard surface, not Node-only code.
+    "target": "ES2023",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "moduleDetection": "force",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+    "erasableSyntaxOnly": true,
+    "forceConsistentCasingInFileNames": true,
+
+    // 2026 "strict-plus" baseline, matching packages/polyfill-connectors.
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitReturns": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "allowUnreachableCode": false,
+    "allowUnusedLabels": false,
+    "useUnknownInCatchVariables": true,
+
+    "noEmit": true,
+    "skipLibCheck": true,
+    "types": ["node"],
+
+    "allowImportingTsExtensions": true
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["node_modules"]
+}
