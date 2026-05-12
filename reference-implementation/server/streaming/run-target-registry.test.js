@@ -282,6 +282,32 @@ test('register rejects non-loopback hosts', () => {
   registry.shutdown();
 });
 
+test('register accepts the private Compose host `neko` as a wsUrl host', () => {
+  // The chatgpt connector's remote-CDP flow registers wsUrls of the form
+  // `ws://neko:9223/devtools/page/<targetId>`. The neko host is reachable
+  // only on the private docker-compose network and fronted by cdp-proxy.py;
+  // it carries the same trust boundary as loopback. The registry
+  // previously rejected this URL with `run_target_non_loopback`, which
+  // was the proximate cause of `companion_start_failed` on every
+  // remote-CDP-routed manual_action.
+  //
+  // `get()` returns the raw wsUrl string for cdp targets (callers always
+  // know which backend they registered, so a single resolver value is
+  // sufficient). The neko-host-passes assertion is that the registration
+  // does not throw and the value round-trips intact.
+  const wsUrl = 'ws://neko:9223/devtools/page/AFFF11F8FEDF0CB0C8764672D4A67648';
+  const registry = createRunTargetRegistry({ sweepIntervalMs: 0 });
+  registry.register({
+    runId: 'run_neko_remote',
+    interactionId: 'int_neko_remote',
+    wsUrl,
+    deviceId: 'dev_1',
+  });
+  const got = registry.get({ runId: 'run_neko_remote', interactionId: 'int_neko_remote' });
+  assert.equal(got, wsUrl);
+  registry.shutdown();
+});
+
 test('register rejects malformed URLs', () => {
   const registry = createRunTargetRegistry({ sweepIntervalMs: 0 });
   assert.throws(

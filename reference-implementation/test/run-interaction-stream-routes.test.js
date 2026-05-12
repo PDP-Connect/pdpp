@@ -642,14 +642,18 @@ test('n.eko viewport dispatch uses one native coordinate space for video and inp
       }
 
       await readEvent('backend_ready');
+      // mobile / hasTouch / userAgent are intentionally stripped by
+      // viewportForCompanionBackend before reaching the companion's start.
+      // The stealth-and-input-bouncing rationale lives in
+      // docs/neko-stealth-design-brief.md and the inline comment on
+      // normalizeViewportForNeko in server/streaming/routes.js. The
+      // assertions below reflect the post-strip contract.
       assert.deepEqual(startedViewports[0], {
         width: 448,
         height: 819,
         screenWidth: 448,
         screenHeight: 819,
         deviceScaleFactor: 1,
-        hasTouch: true,
-        mobile: true,
       });
 
       const viewport = await fetchJson(`${asUrl}${mint.body.viewport_path}`, {
@@ -672,8 +676,6 @@ test('n.eko viewport dispatch uses one native coordinate space for video and inp
         screenWidth: 947,
         screenHeight: 364,
         deviceScaleFactor: 1,
-        hasTouch: true,
-        mobile: true,
       });
       assert.ok(
         dispatchedEvents.some(
@@ -892,13 +894,18 @@ test('input POST dispatches to the companion after attach and rejects bad input'
       }),
     });
     assert.equal(viewport.status, 202);
+    // mobile / hasTouch / userAgent are stripped from BOTH backends (cdp
+    // and neko) by viewportForCompanionBackend. The original test
+    // asserted mobile:true survived for the cdp backend; that was the
+    // bug behind the soft-keyboard flicker and the UA/TLS inconsistency
+    // Cloudflare Turnstile was detecting. See
+    // docs/neko-stealth-design-brief.md for the full rationale.
     assert.deepEqual(viewport.body.viewport, {
       width: 390,
       height: 844,
       screenWidth: 1080,
       screenHeight: 1920,
       deviceScaleFactor: 3,
-      mobile: true,
     });
     assert.ok(
       tracked.companion.inputs.some(
@@ -909,7 +916,8 @@ test('input POST dispatches to the companion after attach and rejects bad input'
           e.screenWidth === 1080 &&
           e.screenHeight === 1920 &&
           e.deviceScaleFactor === 3 &&
-          e.mobile === true,
+          // mobile is stripped — see comment above.
+          e.mobile === undefined,
       ),
       'viewport POST must dispatch the CSS-pixel viewport to the companion',
     );

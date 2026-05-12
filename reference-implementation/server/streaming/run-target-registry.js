@@ -148,10 +148,18 @@ function validateWsUrl(wsUrl) {
   }
   // Strip IPv6 brackets when present so the comparison is consistent.
   const host = parsed.hostname;
-  if (!LOOPBACK_HOSTS.has(host)) {
+  // Accept loopback OR the private Compose service host `neko`. The neko
+  // host is reachable only on the private docker-compose network and is
+  // fronted by cdp-proxy.py inside the neko container — it carries the
+  // same trust boundary as loopback, just across a sibling-container
+  // private network. This permits the remote-CDP connector flow (the
+  // chatgpt connector via PDPP_CHATGPT_REMOTE_CDP_URL) to register page
+  // handoffs that point at neko's Chromium. base_url already permits
+  // this host for the same reason; the asymmetry was an oversight.
+  if (!NEKO_PRIVATE_HOSTS.has(host)) {
     throw new RunTargetError(
       'run_target_non_loopback',
-      'wsUrl host must be 127.0.0.1 or localhost',
+      'wsUrl host must be 127.0.0.1, localhost, or neko',
     );
   }
   return { host, port: parsed.port || (parsed.protocol === 'wss:' ? '443' : '80') };

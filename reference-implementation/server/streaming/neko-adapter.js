@@ -596,7 +596,13 @@ export function createNekoCompanion(options = {}) {
   );
   const browserWindowCdpAllowed = cdpControlAvailable && stealthMode !== 'strict';
   const pageEmulationCdpAllowed = cdpControlAvailable && stealthMode !== 'strict';
-  const pageNavigationCdpAllowed = cdpControlAvailable && stealthMode !== 'strict';
+  // Page.navigate is the one CDP command that is functionally identical to
+  // a real user typing a URL into the omnibox — it does not enable any
+  // event domain, does not inject any script, and leaves no trace beyond
+  // a normal Network.* sequence that every page load already produces.
+  // Without this, strict mode leaves the n.eko browser sitting on its
+  // bootup data: URL, so the user never reaches the manual_action target.
+  const pageNavigationCdpAllowed = cdpControlAvailable;
   const pageFocusCdpAllowed = cdpControlAvailable && stealthMode !== 'strict';
   const assistivePageCdpAllowed = cdpControlAvailable && stealthMode === 'assistive';
   const cdpCommandTimeoutMs = Number(

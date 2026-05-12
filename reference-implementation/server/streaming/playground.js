@@ -17,6 +17,8 @@
  * before invoking.
  */
 
+import { emitRemoteTelemetry } from './remote-telemetry-registry.js';
+
 const PROFILE_NAME = 'stream-playground';
 const DEFAULT_PLAYGROUND_BACKEND = 'cdp';
 const DEFAULT_NEKO_BASE_URL = 'http://127.0.0.1:8080/neko';
@@ -201,6 +203,18 @@ function pdppRecordPlaygroundEvent(type, extras) {
   while (window.__pdppPlaygroundEvents.length > PDPP_EVENT_BUFFER_MAX) {
     window.__pdppPlaygroundEvents.shift();
   }
+  // Layer-D push: if the Patchright binding is installed (CDP /
+  // neko-remote-cdp backends), forward the event immediately so the viewer
+  // can correlate remote DOM events with phone-side input by approximate
+  // timestamp. Best-effort — the binding may not exist (e.g. n.eko HTTP
+  // backend, which has no Patchright handle).
+  try {
+    if (typeof window.__pdppRemoteTelemetry === 'function') {
+      window.__pdppRemoteTelemetry(entry);
+    }
+  } catch (_err) {
+    /* binding errors must not break the page */
+  }
 }
 // Tolerance in CSS px: a press inside this radius of a beacon centre
 // counts as a calibration hit. 16px is half the beacon diameter (the
@@ -363,6 +377,15 @@ counter.addEventListener('click', (event) => {
   count++;
   counter.textContent = 'Click me (count: ' + count + ')';
   logEvent('click at (' + event.clientX + ', ' + event.clientY + ')');
+  // Mirror the canonical click-count into telemetry so the operator can
+  // see exactly when (and how many times) the streamed button observed a
+  // click. Diagnoses "tap once, counter increments twice" by exposing the
+  // remote ground truth alongside the wire dispatch log.
+  pdppRecordPlaygroundEvent('counter_click', {
+    count: count,
+    clientX: event.clientX,
+    clientY: event.clientY,
+  });
 });
 input.addEventListener('keydown', (e) => logEvent('keydown: ' + e.key));
 input.addEventListener('beforeinput', (e) => logEvent('beforeinput: ' + e.inputType + (e.data ? ' "' + e.data + '"' : '')));
@@ -379,17 +402,28 @@ const TEST_PAGE_URL = `data:text/html;charset=utf-8,${encodeURIComponent(TEST_PA
 /**
  * Module-level singleton state. The first caller wins the launch race; all
  * concurrent callers await the same in-flight promise. Subsequent calls
- * return the cached session unchanged. We deliberately do NOT expire the
- * session on TTL — a developer poking the dashboard might come back to it
- * 30 minutes later and would expect the stream to still work; reaching back
- * out to relaunch a browser would surprise them.
+ * return the cached CDP session unchanged. CDP owns a Patchright page, so
+ * reuse avoids relaunching a browser. n.eko sessions are different: they are
+ * lightweight synthetic stream targets pointed at the same n.eko browser, so a
+ * fresh page load should get a fresh run/interaction pair instead of reusing a
+ * possibly wedged WebRTC client session.
  *
  * The patchright `release` callback is held in `cleanupBrowser` so the
  * `process.on('exit')` shutdown hook can tear it down. We don't await the
  * close on exit — Node's exit handlers are synchronous.
  */
 const inFlights = new Map();
+// cachedSessions: keyed by backend name, holds the session to REUSE on the
+// next call. `neko` deliberately never appears here — see
+// getOrCreatePlaygroundSession for the rationale.
 const cachedSessions = new Map();
+// activeSessions: every minted session lives here, keyed by runId, so the
+// controller shim can resolve `getPendingInteraction(runId)` for ANY
+// playground session regardless of whether its backend caches for reuse.
+// This is the source of truth for "does this runId belong to a playground
+// session?" — separated from cachedSessions so the cache-reuse policy is
+// orthogonal to the runId-resolution policy.
+const activeSessions = new Map();
 let cleanupBrowser = null;
 let exitHookRegistered = false;
 let controllerShimInstalled = false;
@@ -428,8 +462,8 @@ export function createPlayground({ runTargetRegistry, controller, logger = null,
     const raw = String(value || env.PDPP_STREAM_PLAYGROUND_BACKEND || DEFAULT_PLAYGROUND_BACKEND)
       .trim()
       .toLowerCase();
-    if (raw === 'cdp' || raw === 'neko') return raw;
-    const err = new Error('playground backend must be "cdp" or "neko"');
+    if (raw === 'cdp' || raw === 'neko' || raw === 'neko-remote-cdp') return raw;
+    const err = new Error('playground backend must be "cdp", "neko", or "neko-remote-cdp"');
     err.code = 'invalid_playground_backend';
     throw err;
   }
@@ -438,9 +472,19 @@ export function createPlayground({ runTargetRegistry, controller, logger = null,
     return String(env.PDPP_NEKO_BASE_URL || env.NEKO_ORIGIN || DEFAULT_NEKO_BASE_URL).trim();
   }
 
+  // Monotonic counter to ensure each call to makeIds() produces a unique
+  // suffix, even when called twice in the same Date.now() millisecond.
+  // Date.now() millisecond resolution is the source of the previous
+  // intermittent test flake — two `getOrCreatePlaygroundSession({backend:'neko'})`
+  // calls in quick succession could mint identical runIds, which then
+  // collided in activeSessions and the run-target registry, producing
+  // assertions that compared two structurally-equal-but-not-identical
+  // objects (notStrictEqual on the same runId string).
+  let makeIdsCounter = 0;
   function makeIds(backend) {
     const ts = Date.now();
-    const suffix = backend === 'neko' ? `neko_${ts}` : `${ts}`;
+    const seq = ++makeIdsCounter;
+    const suffix = backend === 'neko' ? `neko_${ts}_${seq}` : `${ts}_${seq}`;
     return {
       runId: `playground_${suffix}`,
       interactionId: `int_playground_${suffix}`,
@@ -448,10 +492,37 @@ export function createPlayground({ runTargetRegistry, controller, logger = null,
   }
 
   function getCachedSessionForRunId(runId) {
-    for (const session of cachedSessions.values()) {
-      if (session.runId === runId) return session;
+    // Source of truth is `activeSessions` (runId → session). This includes
+    // backends that opt out of cache-for-reuse (currently `neko`). The
+    // controller shim relies on this to resolve any playground runId.
+    return activeSessions.get(runId) ?? null;
+  }
+
+  /**
+   * Install the Patchright binding that lets the streamed test page push
+   * remote-DOM events back to the reference process. Best-effort — failure
+   * never blocks playground startup; we just lose Layer-D telemetry.
+   *
+   * The binding callback receives the raw payload object the page passed.
+   * We forward it to the per-runId remote-telemetry registry; routes.js
+   * subscribes when the companion is created.
+   */
+  async function installRemoteTelemetryBinding(page, runId) {
+    try {
+      await page.exposeBinding('__pdppRemoteTelemetry', (_source, payload) => {
+        try {
+          emitRemoteTelemetry(runId, payload);
+        } catch {
+          /* never throw back into the page binding */
+        }
+      });
+      log('info', 'playground_remote_telemetry_binding_ready', { runId });
+    } catch (err) {
+      log('warn', 'playground_remote_telemetry_binding_failed', {
+        runId,
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
-    return null;
   }
 
   function registerPlaygroundTarget(session) {
@@ -472,7 +543,7 @@ export function createPlayground({ runTargetRegistry, controller, logger = null,
       return session;
     }
 
-    if (session.backend === 'cdp' && session.wsUrl) {
+    if ((session.backend === 'cdp' || session.backend === 'neko-remote-cdp') && session.wsUrl) {
       runTargetRegistry.register({
         runId: session.runId,
         interactionId: session.interactionId,
@@ -573,6 +644,12 @@ export function createPlayground({ runTargetRegistry, controller, logger = null,
     // gives us at least one page on launchPersistentContext.
     const pages = isolated.context.pages();
     const page = pages.length > 0 ? pages[0] : await isolated.context.newPage();
+    // Allocate the runId early so we can install the Layer-D telemetry
+    // binding BEFORE goto — that way the page's inline <script> sees the
+    // global `__pdppRemoteTelemetry` at first execution. We thread the
+    // same id through to `registerPlaygroundTarget` below.
+    const cdpIds = makeIds('cdp');
+    await installRemoteTelemetryBinding(page, cdpIds.runId);
     try {
       await page.goto(TEST_PAGE_URL, { waitUntil: 'load', timeout: 15_000 });
     } catch (err) {
@@ -611,7 +688,7 @@ export function createPlayground({ runTargetRegistry, controller, logger = null,
 
     const wsUrl = await resolveWsUrlForExactPage(page, { host, port });
 
-    const { runId, interactionId } = makeIds('cdp');
+    const { runId, interactionId } = cdpIds;
 
     // Register directly against the in-process registry. We're inside the
     // same Node process — there is no boundary to cross via HTTP, and the
@@ -637,19 +714,168 @@ export function createPlayground({ runTargetRegistry, controller, logger = null,
     return session;
   }
 
+  /**
+   * Test-bench equivalent of the chatgpt connector's browser path.
+   *
+   * Exercises EXACTLY the production code path that human-in-the-loop
+   * connectors use when `PDPP_<CONNECTOR>_REMOTE_CDP_URL` is set:
+   *
+   *   1. `acquireBrowserForConnector({ remoteCdpUrl: "http://neko:9223" })`
+   *      → `chromium.connectOverCDP(...)` against neko's Patchright Chromium.
+   *      This publishes `PDPP_BROWSER_CDP_HOST`/`PORT` into process.env.
+   *   2. `context.newPage()` + `page.goto(TEST_PAGE_URL)` — gives us a
+   *      navigated page in the neko-displayed browser, same way the
+   *      chatgpt connector navigates to chatgpt.com.
+   *   3. `resolveWsUrlForExactPage(page, { host, port })` — composes
+   *      `ws://neko:9223/devtools/page/${targetId}` using the same code
+   *      `browser-handoff.ts` uses to register handoffs.
+   *   4. Register with the in-process run-target registry (NOT via the
+   *      HTTP `PUT /admin/...` route — we're in-process — but the registry
+   *      record is identical to what an HTTP register would produce).
+   *
+   * If this backend reproduces `companion_start_failed` we'll have an
+   * isolated repro for the bug we hit on the chatgpt manual_action flow,
+   * with no Cloudflare, no real auth state, no out-of-band 2FA, and a
+   * known data: URL test fixture to interact with.
+   *
+   * If this backend WORKS — you see the page, click in it, see the click
+   * land — then the chatgpt streaming failure was something specific to
+   * that interaction's lifecycle, not the architecture itself.
+   */
+  async function createNekoRemoteCdpPlaygroundSession() {
+    const remoteCdpUrl = String(env.PDPP_NEKO_CDP_HTTP_URL || 'http://neko:9223').trim();
+    const { acquireBrowserForConnector } = await import(
+      '../../../packages/polyfill-connectors/src/browser-launch.ts'
+    );
+    const { resolveWsUrlForExactPage } = await import(
+      '../../../packages/polyfill-connectors/src/browser-handoff.ts'
+    );
+
+    log('info', 'playground_launching', { backend: 'neko-remote-cdp', remoteCdpUrl });
+    const isolated = await acquireBrowserForConnector({
+      profileName: PROFILE_NAME,
+      // headless flag is meaningless for remoteCdpUrl — the binary is
+      // already running on neko's X server — but pass `true` so the
+      // in-container fail-closed gate is satisfied for any path that
+      // re-checks it.
+      headless: true,
+      streamingEnabled: true,
+      remoteCdpUrl,
+    });
+    // Remote-CDP release ONLY disconnects the Patchright client; it does
+    // not close the remote browser. Still register for process-exit
+    // cleanup so we don't leak sockets on a hot-reload restart.
+    cleanupBrowser = isolated.release;
+    registerExitHook();
+
+    // Open a fresh page so init scripts (if any) arm before navigation.
+    // Reusing pre-existing pages would skip Patchright's route-based
+    // injection — see docs/patchright-integration-spec.md §4c.
+    const page = await isolated.context.newPage();
+    // Allocate the runId early so the Layer-D remote-telemetry binding is
+    // installed BEFORE goto. The streamed test page's inline <script>
+    // calls `window.__pdppRemoteTelemetry(payload)` if present; if the
+    // binding install fails we just lose Layer-D telemetry.
+    const neRemoteCdpIds = makeIds('neko_remote_cdp');
+    await installRemoteTelemetryBinding(page, neRemoteCdpIds.runId);
+    try {
+      await page.goto(TEST_PAGE_URL, { waitUntil: 'load', timeout: 15_000 });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      log('warn', 'playground_navigation_failed', { error: message });
+      await page.close().catch(() => {
+        /* best-effort */
+      });
+      await isolated.release().catch(() => {
+        /* best-effort */
+      });
+      cleanupBrowser = null;
+      throw err;
+    }
+
+    // `acquireBrowserForConnector` published these into process.env as
+    // part of its remote-CDP-attach path. They're the host:port the
+    // streaming companion will dial back through (cdp-proxy.py).
+    const host = process.env.PDPP_BROWSER_CDP_HOST?.trim();
+    const portRaw = process.env.PDPP_BROWSER_CDP_PORT?.trim();
+    if (!(host && portRaw)) {
+      await page.close().catch(() => {
+        /* best-effort */
+      });
+      await isolated.release().catch(() => {
+        /* best-effort */
+      });
+      cleanupBrowser = null;
+      throw new Error(
+        'playground neko-remote-cdp: launcher did not publish PDPP_BROWSER_CDP_HOST/PORT; cannot resolve wsUrl',
+      );
+    }
+    const port = Number.parseInt(portRaw, 10);
+    if (!(Number.isFinite(port) && port > 0)) {
+      await page.close().catch(() => {});
+      await isolated.release().catch(() => {});
+      cleanupBrowser = null;
+      throw new Error(`playground neko-remote-cdp: invalid PDPP_BROWSER_CDP_PORT: ${portRaw}`);
+    }
+
+    const wsUrl = await resolveWsUrlForExactPage(page, { host, port });
+    const { runId, interactionId } = neRemoteCdpIds;
+
+    const session = registerPlaygroundTarget({
+      backend: 'neko-remote-cdp',
+      runId,
+      interactionId,
+      wsUrl,
+    });
+    installControllerShim();
+
+    log('info', 'playground_ready', { backend: 'neko-remote-cdp', runId, interactionId, wsUrl });
+    return session;
+  }
+
   async function getOrCreatePlaygroundSession(options = {}) {
     const backend = normalizeBackend(options.backend);
-    const cached = cachedSessions.get(backend);
+    // n.eko-backed sessions are never cached: the runId is per-call so
+    // the run-target registry's lifetime/eviction semantics match what a
+    // real connector run would experience. The local-CDP and
+    // neko-remote-cdp sessions own a browser and reuse it (caching by
+    // backend so consecutive playground pageloads attach to the same
+    // long-lived Chromium instead of re-launching).
+    //
+    // Symmetric keying invariant: read and write MUST use the same key
+    // for a given backend, otherwise cache entries leak (write-only) or
+    // are unreachable (read-only). For `neko` we intentionally skip both
+    // sides — see prior incident in run-interaction-stream-playground
+    // test where the previous asymmetric keying (write by runId, read by
+    // backend) caused a stale entry to be returned only when two
+    // sequential calls landed in the same Date.now() millisecond.
+    const isCacheable = backend !== 'neko';
+    const cached = isCacheable ? cachedSessions.get(backend) : null;
     if (cached) return registerPlaygroundTarget(cached);
     const existing = inFlights.get(backend);
     if (existing) return existing;
 
-    const promise =
-      backend === 'neko' ? createNekoPlaygroundSession() : createCdpPlaygroundSession();
+    let factory;
+    if (backend === 'neko') {
+      factory = createNekoPlaygroundSession;
+    } else if (backend === 'neko-remote-cdp') {
+      factory = createNekoRemoteCdpPlaygroundSession;
+    } else {
+      factory = createCdpPlaygroundSession;
+    }
+    const promise = factory();
     inFlights.set(backend, promise);
     try {
       const session = await promise;
-      cachedSessions.set(backend, session);
+      // Every minted session is discoverable by runId via activeSessions,
+      // regardless of whether its backend caches for reuse. This separation
+      // ensures the controller shim can resolve any playground runId — the
+      // earlier code conflated cache-reuse and runId-resolution into one
+      // map and produced unreachable entries for `neko`.
+      activeSessions.set(session.runId, session);
+      if (isCacheable) {
+        cachedSessions.set(backend, session);
+      }
       return session;
     } finally {
       inFlights.delete(backend);

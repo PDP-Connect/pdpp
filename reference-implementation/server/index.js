@@ -53,6 +53,7 @@ import {
 import { getLexicalIndexBackfillProgress, lexicalIndexBackfillForManifest, runLexicalSearch } from './search.js';
 import { runHybridSearch } from './search-hybrid.js';
 import { reconcilePolyfillManifests } from './polyfill-manifest-reconcile.ts';
+import { emitControllerBootedAndStashEpoch, reconcileOrphanedRunsAtBoot } from '../lib/controller-boot.ts';
 import {
   computeIndexState as computeSemanticIndexState,
   configureSemanticBackend,
@@ -5675,6 +5676,41 @@ export async function startServer(opts = {}) {
     logger.info('postgres runtime storage initialized');
   }
 
+  // Boot-epoch reconciliation — STAGE 5.
+  // Emit `controller.booted` as the FIRST spine event of this process
+  // incarnation, then stash {boot_epoch, seq, controller_id} in the
+  // spine-module singleton so subsequent `run.started` emissions can
+  // stamp themselves. The spine-layer enforcement
+  // (`assertRunStartedIsStamped` in lib/spine.ts) rejects unstamped
+  // `run.started` events, so this MUST happen before:
+  //   (a) HTTP routes mount,
+  //   (b) any scheduler kicks off a run,
+  //   (c) any other emit path that could trigger run.started.
+  // See docs/run-reconciliation-design-brief.md §3.4.
+  const bootEpoch = await emitControllerBootedAndStashEpoch();
+  logger.info(
+    { boot_epoch: bootEpoch.boot_epoch, seq: bootEpoch.seq, controller_id: bootEpoch.controller_id },
+    'controller booted',
+  );
+
+  // Boot-epoch reconciliation — STAGE 6.
+  // Walk the spine for orphaned run.started events from prior incarnations
+  // and emit run.abandoned for each. Runs synchronously before HTTP routes
+  // mount, so the dashboard never sees a half-reconciled state. Throws on
+  // any non-idempotency error; we propagate up so startServer rejects and
+  // traffic does not begin. See docs/run-reconciliation-design-brief.md §3.4.
+  const reconciled = await reconcileOrphanedRunsAtBoot(bootEpoch);
+  if (reconciled.selected > 0) {
+    logger.info(
+      {
+        selected: reconciled.selected,
+        abandoned: reconciled.abandoned,
+        controller_id: bootEpoch.controller_id,
+      },
+      'boot-time orphan reconciliation: emitted run.abandoned events for prior-incarnation orphans',
+    );
+  }
+
   configureNativeManifest(nativeConfig?.nativeManifest || null);
 
   // Polyfill-mode manifest reconciliation. The reference persists connector
@@ -5917,6 +5953,14 @@ export async function startServer(opts = {}) {
     logger,
     startupBackfillDone,
     abortStartupBackfill: (reason) => startupBackfillAbortController.abort(reason),
+    // Exposed for the CLI entrypoint's graceful-shutdown path
+    // (`exitOnSignal`). The controller's `drainActiveRuns` awaits all
+    // in-flight `runConnector` promises within a bounded window so
+    // connector children have time to release their Chromium contexts
+    // before the parent exits and closes their stdio pipes. See
+    // `runtime/controller.ts` and `polyfill-connectors/src/profile-lock.ts`
+    // for the layered design.
+    controller,
   };
 }
 
@@ -5963,7 +6007,7 @@ if (process.argv[1] && process.argv[1].endsWith('server/index.js')) {
   process.on('uncaughtException', handleUncaught);
   process.on('unhandledRejection', exitOnFatal('unhandledRejection'));
 
-  const server = { asServer: null, rsServer: null, abortStartupBackfill: null, startupBackfillDone: null };
+  const server = { asServer: null, rsServer: null, abortStartupBackfill: null, startupBackfillDone: null, controller: null };
   const exitOnSignal = (signal) => async () => {
     if (shuttingDown) return;
     shuttingDown = true;
@@ -6005,10 +6049,32 @@ if (process.argv[1] && process.argv[1].endsWith('server/index.js')) {
     const awaitBackfill = server.startupBackfillDone
       ? Promise.resolve(server.startupBackfillDone).catch(() => {})
       : Promise.resolve();
+    // Drain in-flight connector children IN PARALLEL with the HTTP /
+    // backfill drains. Children received their own SIGTERM from Docker
+    // and are running their Layer A shutdown-hook to release Chromium.
+    // We give them 5s — typical context.close completes in 1-2s; the
+    // 3s buffer absorbs slow Chromium teardown and network latency.
+    // Docker's default grace period is 10s; the parallel `allSettled`
+    // below is bounded by max(2s, 2s, 5s) = 5s, well within that.
+    // Runs that don't drain in time get SIGKILL'd by Docker on grace
+    // expiry; the residue is cleaned up on next boot by
+    // polyfill-connectors/src/profile-lock.ts (Layer C).
+    const CONNECTOR_DRAIN_TIMEOUT_MS = 5000;
+    const drainConnectors = server.controller?.drainActiveRuns
+      ? server.controller.drainActiveRuns(CONNECTOR_DRAIN_TIMEOUT_MS).then(
+          (summary) => {
+            cliLogger.info(summary, 'connector run drain complete');
+          },
+          (err) => {
+            cliLogger.warn({ err }, 'connector run drain failed');
+          },
+        )
+      : Promise.resolve();
     await Promise.allSettled([
       closeTimeout(server.asServer),
       closeTimeout(server.rsServer),
       Promise.race([awaitBackfill, backfillDeadline]),
+      drainConnectors,
     ]);
     await closePostgresStorage();
     closeDb();
@@ -6022,6 +6088,7 @@ if (process.argv[1] && process.argv[1].endsWith('server/index.js')) {
     server.rsServer = result.rsServer;
     server.abortStartupBackfill = result.abortStartupBackfill;
     server.startupBackfillDone = result.startupBackfillDone;
+    server.controller = result.controller;
   }).catch(err => {
     closePostgresStorage().finally(() => closeDb());
     cliLogger.fatal({ err }, 'startup failed');

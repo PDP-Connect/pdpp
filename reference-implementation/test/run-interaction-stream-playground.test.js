@@ -4,7 +4,19 @@ import assert from 'node:assert/strict';
 import { createPlayground } from '../server/streaming/playground.js';
 import { createRunTargetRegistry } from '../server/streaming/run-target-registry.js';
 
-test('stream playground can register a cached n.eko backend session', async () => {
+test('stream playground n.eko backend mints a fresh session per call (never cached)', async () => {
+  // SLVP fidelity: a real connector's manual_action interactions each get a
+  // new runId from the controller. The playground's n.eko backend mirrors
+  // this — repeated calls produce distinct (runId, interactionId) pairs so
+  // the run-target registry's lifetime/eviction semantics behave the same
+  // as a real connector run. The cdp/neko-remote-cdp backends cache because
+  // they each own a browser process that's expensive to launch; n.eko does
+  // not own the Chromium (n.eko itself does), so there's nothing to reuse.
+  //
+  // This test previously asserted `cached === session` (cache hit). That
+  // accidentally passed only when two consecutive Date.now() calls landed
+  // in the same millisecond — the keying asymmetry returned the prior
+  // entry. Fixing the asymmetry exposes the original intent.
   const runTargetRegistry = createRunTargetRegistry({
     sweepIntervalMs: 0,
     now: () => 1_000,
@@ -24,40 +36,41 @@ test('stream playground can register a cached n.eko backend session', async () =
   });
 
   const session = await playground.getOrCreatePlaygroundSession({ backend: 'neko' });
-  runTargetRegistry.forceUnregister({
-    runId: session.runId,
-    interactionId: session.interactionId,
-  });
-  assert.equal(
-    runTargetRegistry.get({
-      runId: session.runId,
-      interactionId: session.interactionId,
-    }),
-    null,
-  );
-  const cached = await playground.getOrCreatePlaygroundSession({ backend: 'neko' });
+  // Re-mint; this MUST be a different session.
+  const second = await playground.getOrCreatePlaygroundSession({ backend: 'neko' });
 
-  assert.equal(session, cached);
+  assert.notStrictEqual(session, second);
+  assert.notEqual(session.runId, second.runId);
   assert.equal(session.backend, 'neko');
+  assert.equal(second.backend, 'neko');
   assert.match(session.runId, /^playground_neko_/);
-  const target = runTargetRegistry.get({
-    runId: session.runId,
-    interactionId: session.interactionId,
-  });
-  assert.equal(target.backend, 'neko');
-  assert.equal(target.base_url, baseUrl);
-  assert.match(target.start_url, /^data:text\/html;charset=utf-8,/);
-  assert.deepEqual(controller.getPendingInteraction(session.runId), {
-    run_id: session.runId,
-    connector_id: 'playground:dev',
-    interaction_id: session.interactionId,
-    kind: 'manual_action',
-    stream: null,
-  });
+  assert.match(second.runId, /^playground_neko_/);
+
+  // Both sessions must be registered in the run-target registry — and both
+  // must be discoverable by the controller shim. The shim is what allows
+  // the streaming-mint route to accept a synthetic playground runId; if a
+  // session weren't reachable, opening the stream URL would 404.
+  for (const s of [session, second]) {
+    const target = runTargetRegistry.get({ runId: s.runId, interactionId: s.interactionId });
+    assert.equal(target.backend, 'neko', `target.backend for ${s.runId}`);
+    assert.equal(target.base_url, baseUrl, `target.base_url for ${s.runId}`);
+    assert.match(target.start_url, /^data:text\/html;charset=utf-8,/);
+    assert.deepEqual(
+      controller.getPendingInteraction(s.runId),
+      {
+        run_id: s.runId,
+        connector_id: 'playground:dev',
+        interaction_id: s.interactionId,
+        kind: 'manual_action',
+        stream: null,
+      },
+      `controller shim must resolve ${s.runId}`,
+    );
+  }
 
   await assert.rejects(
     () => playground.getOrCreatePlaygroundSession({ backend: 'unknown' }),
-    /playground backend must be "cdp" or "neko"/,
+    /playground backend must be "cdp", "neko", or "neko-remote-cdp"/,
   );
 });
 

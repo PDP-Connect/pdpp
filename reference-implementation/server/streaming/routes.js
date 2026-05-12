@@ -34,6 +34,8 @@ import https from 'node:https';
 import net from 'node:net';
 import tls from 'node:tls';
 import { emitSpineEvent } from '../../lib/spine.ts';
+import { createInputTelemetry } from './input-telemetry.js';
+import { registerRemoteTelemetrySink } from './remote-telemetry-registry.js';
 
 const NEKO_PROXY_COOKIE = 'pdpp_neko_stream';
 const DEFAULT_NEKO_PROXY_PATH = '/neko/';
@@ -229,8 +231,29 @@ function normalizeViewportForNeko(viewport) {
   // sharp while native input lands in screen-pixel coordinates outside the
   // emulated CSS viewport. Keep n.eko in one coordinate space: CSS viewport,
   // X screen, WebRTC frame, and native input all use the same width/height.
+  //
+  // CRITICAL — mobile / hasTouch / userAgent emulation is intentionally
+  // stripped for n.eko backends. Reasons:
+  //   1. Stealth: Emulation.setUserAgentOverride lies the UA but does NOT
+  //      lie about TLS fingerprint, Client Hints (sec-ch-ua-platform), GPU
+  //      profile, or process model. Cloudflare detects the inconsistency
+  //      instantly and re-challenges the user. See docs/neko-stealth-design-brief.md.
+  //   2. Input bouncing: when mobile=true + hasTouch=true, Chromium
+  //      dispatches synthetic TouchEvents in parallel with the real mouse
+  //      events that n.eko forwards from the user's tap. The dual-channel
+  //      input causes focus/blur churn, which manifests as the soft
+  //      keyboard opening and immediately closing on the user's phone.
+  //
+  // Mobile users still get a streamed video — they just see the desktop
+  // rendering of the target site, which is what every real human-on-mobile
+  // browser-as-a-service product (Browserbase, Browserless, Cloudflare's
+  // Browser Rendering) does too.
+  const sanitized = { ...viewport };
+  delete sanitized.mobile;
+  delete sanitized.hasTouch;
+  delete sanitized.userAgent;
   return {
-    ...viewport,
+    ...sanitized,
     deviceScaleFactor: 1,
     screenHeight: viewport.height,
     screenWidth: viewport.width,
@@ -238,7 +261,21 @@ function normalizeViewportForNeko(viewport) {
 }
 
 function viewportForCompanionBackend(backend, viewport) {
-  return backend === 'neko' ? normalizeViewportForNeko(viewport) : viewport;
+  if (!viewport) return viewport;
+  if (backend === 'neko') return normalizeViewportForNeko(viewport);
+  // CDP backend (reference container's Patchright-driven Chrome) is also
+  // streamed via WebRTC to the user. The same stealth + input-bouncing
+  // arguments from normalizeViewportForNeko apply here: emulating mobile
+  // creates a UA/TLS/fingerprint inconsistency that bot-protection systems
+  // (Cloudflare Turnstile, etc.) detect, AND it makes Chromium dispatch
+  // synthetic TouchEvents alongside the mouse events the streaming layer
+  // forwards from the user's tap, causing focus/blur churn and soft-keyboard
+  // flicker. Strip the same fields for CDP as we do for neko.
+  const sanitized = { ...viewport };
+  delete sanitized.mobile;
+  delete sanitized.hasTouch;
+  delete sanitized.userAgent;
+  return sanitized;
 }
 
 function viewportsMatch(a, b) {
@@ -297,6 +334,19 @@ export function registerStreamingRoutes({
   // interaction; reused for the SSE attach + input POSTs while the session is
   // alive.
   const companions = new Map();
+  // Per-session input telemetry ring. Records four event kinds:
+  //   wire.input.received / wire.input.dispatched / wire.input.error /
+  //   remote.page.<eventType>. Polled by the viewer via
+  //   GET /_ref/run-interaction-streams/:token/input-telemetry?since=<seq>
+  // and merged into the same /api/stream-debug sink as phone-side events,
+  // joined on `correlationId`. Debug-only, never affects streaming UX.
+  const inputTelemetry = createInputTelemetry();
+  // Companions can register a per-session remote-page event sink by calling
+  // companion.attachRemoteTelemetry(fn). The factory (cdp-adapter / playground
+  // remote-cdp factory) wires Patchright `exposeBinding` to forward in-page
+  // `__pdppRemoteTelemetry(payload)` calls here. The forwarding path is
+  // best-effort and never throws back into the page.
+  const remoteTelemetrySinks = new Map(); // browser_session_id → unsubscribe fn
   const allowedNekoHosts = parseAllowedHosts(nekoProxyAllowedHosts);
   const nekoAutoLogin =
     nekoProxyAutoLogin &&
@@ -317,6 +367,20 @@ export function registerStreamingRoutes({
     const companion = companions.get(browser_session_id);
     if (!companion) return;
     companions.delete(browser_session_id);
+    const unsubscribe = remoteTelemetrySinks.get(browser_session_id);
+    remoteTelemetrySinks.delete(browser_session_id);
+    if (typeof unsubscribe === 'function') {
+      try {
+        unsubscribe();
+      } catch {
+        /* unsubscribe is best-effort */
+      }
+    }
+    try {
+      inputTelemetry.drop(browser_session_id);
+    } catch {
+      /* best-effort */
+    }
     try {
       await companion.stop();
     } catch {
@@ -580,6 +644,28 @@ body>p{display:none!important}
             browser_session_id: effectiveBrowserSessionId,
           });
           companions.set(effectiveBrowserSessionId, companion);
+          // Layer-D wiring: subscribe to the process-local remote-telemetry
+          // registry keyed by runId. The playground's Patchright page
+          // populates it via `page.exposeBinding('__pdppRemoteTelemetry')`.
+          // Companions for non-playground runs (real connector flows) will
+          // simply see an empty sink — no harm done.
+          try {
+            const unsubscribe = registerRemoteTelemetrySink(runId, (payload) => {
+              if (!payload || typeof payload !== 'object') return;
+              try {
+                inputTelemetry.push(effectiveBrowserSessionId, {
+                  source: 'remote_page',
+                  kind: typeof payload.type === 'string' ? `remote.page.${payload.type}` : 'remote.page.unknown',
+                  ...payload,
+                });
+              } catch {
+                /* telemetry must never break the page */
+              }
+            });
+            remoteTelemetrySinks.set(effectiveBrowserSessionId, unsubscribe);
+          } catch {
+            /* sink registration is best-effort */
+          }
         }
 
         // Don't double-emit the spine event on a pure replay — the original
@@ -828,12 +914,83 @@ body>p{display:none!important}
     if (!companion) {
       return pdppError(res, 410, 'companion_unavailable', 'Streaming companion is no longer attached');
     }
+    // Layer C telemetry: capture receipt of the wire event with its
+    // correlationId (set by the phone-side overlay). The body is the raw
+    // wire shape (type/action/x/y/...), so we record it verbatim minus the
+    // correlationId promoted to a top-level field.
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    const correlationId = typeof body.correlationId === 'string' ? body.correlationId : null;
+    const wireSeq = typeof body.wireSeq === 'number' ? body.wireSeq : null;
+    const receivedAtMs = Date.now();
     try {
-      await companion.dispatch(req.body || {});
+      inputTelemetry.push(session.browser_session_id, {
+        source: 'server',
+        kind: 'wire.input.received',
+        correlationId,
+        wireSeq,
+        action: body.action || null,
+        eventType: body.type || null,
+        x: typeof body.x === 'number' ? body.x : null,
+        y: typeof body.y === 'number' ? body.y : null,
+      });
+    } catch {
+      /* telemetry must never block input */
+    }
+    try {
+      await companion.dispatch(body);
+      try {
+        inputTelemetry.push(session.browser_session_id, {
+          source: 'server',
+          kind: 'wire.input.dispatched',
+          correlationId,
+          wireSeq,
+          action: body.action || null,
+          eventType: body.type || null,
+          dispatchLatencyMs: Date.now() - receivedAtMs,
+        });
+      } catch {
+        /* best-effort */
+      }
     } catch (err) {
+      try {
+        inputTelemetry.push(session.browser_session_id, {
+          source: 'server',
+          kind: 'wire.input.error',
+          correlationId,
+          wireSeq,
+          action: body.action || null,
+          eventType: body.type || null,
+          errorCode: err.code || 'invalid_input',
+          errorMessage: err.message || String(err),
+        });
+      } catch {
+        /* best-effort */
+      }
       return pdppError(res, 400, err.code || 'invalid_input', err.message);
     }
     return res.status(202).json({ object: 'run_interaction_stream_input_ack' });
+  });
+
+  // ── Input telemetry drain (debug-only) ───────────────────────────────────
+  // The viewer polls this every ~500ms (gated by ?stream_debug=1) to merge
+  // server-side and remote-page events with phone-side events in the
+  // on-screen overlay. Token-only auth; response shape is { seq, records }.
+  app.get('/_ref/run-interaction-streams/:token/input-telemetry', async (req, res) => {
+    let session;
+    try {
+      session = streamingSessions.authorize({ token: req.params.token });
+    } catch (err) {
+      const status = err.code === 'session_not_attached' ? 409 : 401;
+      return pdppError(res, status, err.code || 'invalid_token', err.message);
+    }
+    const sinceRaw = typeof req.query.since === 'string' ? Number(req.query.since) : 0;
+    const since = Number.isFinite(sinceRaw) ? sinceRaw : 0;
+    const { seq, records } = inputTelemetry.readSince(session.browser_session_id, since);
+    return res.status(200).json({
+      object: 'run_interaction_stream_input_telemetry',
+      seq,
+      records,
+    });
   });
 
   // ── Viewport (token-only) ────────────────────────────────────────────────
