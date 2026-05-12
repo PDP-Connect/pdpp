@@ -544,7 +544,9 @@ test('n.eko adapter applies RBS-style viewport, paste, and copy control through 
         message.params.expression.includes('document.getSelection'),
     ),
   );
-  assert.deepEqual(events, [{ kind: 'clipboard', text: 'copied remote text' }]);
+  assert.deepEqual(events.filter((event) => event.kind === 'clipboard'), [
+    { kind: 'clipboard', text: 'copied remote text' },
+  ]);
   assert.deepEqual(status, {
     screen: { width: 392, height: 844, rate: 30 },
     target: { id: 'page-1', url: 'data:text/html,<body></body>' },
@@ -913,6 +915,60 @@ test('n.eko adapter selects near-exact 1x portrait preset for native n.eko input
   assert.ok(screenPost, 'expected POST to /api/room/screen');
   const applied = JSON.parse(screenPost.init.body);
   assert.deepEqual(applied, { width: 448, height: 820, rate: 30 });
+});
+
+test('n.eko adapter emits explicit screen-configuration telemetry for mobile viewport updates', async () => {
+  const fetchImpl = makeFetch([
+    {
+      method: 'GET',
+      url: 'https://neko.test/api/room/screen/configurations',
+      response: makeResponse({
+        json: [
+          { width: 1440, height: 900, rate: 30 },
+          { width: 448, height: 820, rate: 30 },
+        ],
+      }),
+    },
+    {
+      method: 'POST',
+      url: 'https://neko.test/api/room/screen',
+      response: ({ init }) => makeResponse({ json: JSON.parse(init.body) }),
+    },
+  ]);
+  const companion = createNekoCompanion({
+    origin: 'https://neko.test',
+    bearerToken: 'token-mobile-telemetry',
+    fetchImpl,
+    screenConfigurationsEndpoint: '/api/room/screen/configurations',
+    screenEndpoint: '/api/room/screen',
+  });
+  const events = [];
+  companion.onEvent((event) => events.push(event));
+
+  await companion.dispatch({
+    type: 'viewport',
+    width: 448,
+    height: 819,
+    screenWidth: 448,
+    screenHeight: 819,
+    deviceScaleFactor: 1,
+    mobile: true,
+    hasTouch: true,
+  });
+
+  assert.deepEqual(JSON.parse(fetchImpl.calls.find((call) => call.url === 'https://neko.test/api/room/screen').init.body), {
+    width: 448,
+    height: 820,
+    rate: 30,
+  });
+  assert.deepEqual(events, [
+    {
+      kind: 'screen_configuration',
+      requested: { width: 448, height: 819 },
+      selected: { width: 448, height: 820, rate: 30 },
+      applied: { width: 448, height: 820, rate: 30 },
+    },
+  ]);
 });
 
 test('n.eko adapter selects near-exact 1x landscape preset for native n.eko input alignment', async () => {
@@ -1354,7 +1410,14 @@ test('n.eko adapter strict browser-owner mode keeps CDP assistive helpers off', 
   const screenPost = fetchImpl.calls.find((call) => call.url === 'https://neko.test/api/room/screen');
   assert.deepEqual(JSON.parse(screenPost.init.body), { width: 400, height: 844, rate: 30 });
   assert.equal(fakeWs.sockets.length, 0);
-  assert.deepEqual(events, []);
+  assert.deepEqual(events, [
+    {
+      kind: 'screen_configuration',
+      requested: { width: 390, height: 844 },
+      selected: { width: 400, height: 844, rate: 30 },
+      applied: { width: 400, height: 844, rate: 30 },
+    },
+  ]);
   assert.deepEqual(status, {
     screen: { width: 400, height: 844, rate: 30 },
     window_skipped: {

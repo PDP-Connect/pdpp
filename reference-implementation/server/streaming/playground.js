@@ -26,6 +26,18 @@ const DEFAULT_NEKO_BASE_URL = 'http://127.0.0.1:8080/neko';
 // run-target registry and when minting future runIds. Synthetic — does not
 // collide with real device-exporter ids (those have a uuid-style prefix).
 const PLAYGROUND_DEVICE_ID = 'playground:dev';
+const CALIBRATION_BEACON_HTML = `<!-- Calibration beacons. Each is fixed-positioned at a known viewport
+     corner or centre; their data-beacon-id gets stamped into every
+     playground event whose elementFromPoint hits the beacon, plus
+     the nearest-beacon delta for any event in the surface. This is
+     the ground-truth signal the operator uses to verify whether the
+     user-visible pixel under the finger maps to the same coords the
+     remote hit-tested at. -->
+<div aria-hidden="true" class="pdpp-calibration-beacon" data-pdpp-calibration-beacon="" data-beacon-id="tl"></div>
+<div aria-hidden="true" class="pdpp-calibration-beacon" data-pdpp-calibration-beacon="" data-beacon-id="tr"></div>
+<div aria-hidden="true" class="pdpp-calibration-beacon" data-pdpp-calibration-beacon="" data-beacon-id="bl"></div>
+<div aria-hidden="true" class="pdpp-calibration-beacon" data-pdpp-calibration-beacon="" data-beacon-id="br"></div>
+<div aria-hidden="true" class="pdpp-calibration-beacon" data-pdpp-calibration-beacon="" data-beacon-id="center"></div>`;
 const TEST_PAGE_HTML = `<!doctype html>
 <html><head>
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
@@ -104,18 +116,7 @@ input { padding: 12px 14px; }
 }
 </style>
 </head><body>
-<!-- Calibration beacons. Each is fixed-positioned at a known viewport
-     corner or centre; their data-beacon-id gets stamped into every
-     playground event whose elementFromPoint hits the beacon, plus
-     the nearest-beacon delta for any event in the surface. This is
-     the ground-truth signal the operator uses to verify whether the
-     user-visible pixel under the finger maps to the same coords the
-     remote hit-tested at. -->
-<div aria-hidden="true" class="pdpp-calibration-beacon" data-pdpp-calibration-beacon="" data-beacon-id="tl"></div>
-<div aria-hidden="true" class="pdpp-calibration-beacon" data-pdpp-calibration-beacon="" data-beacon-id="tr"></div>
-<div aria-hidden="true" class="pdpp-calibration-beacon" data-pdpp-calibration-beacon="" data-beacon-id="bl"></div>
-<div aria-hidden="true" class="pdpp-calibration-beacon" data-pdpp-calibration-beacon="" data-beacon-id="br"></div>
-<div aria-hidden="true" class="pdpp-calibration-beacon" data-pdpp-calibration-beacon="" data-beacon-id="center"></div>
+${CALIBRATION_BEACON_HTML}
 <main>
 <h1>Stream Playground</h1>
 <p>Exercise click, touch, type, scroll, and paste. On mobile, composed keyboard text may appear as a paste-style event because n.eko forwards IME text through its paste channel.</p>
@@ -397,7 +398,19 @@ window.addEventListener('paste', (e) => logEvent('paste: "' + e.clipboardData.ge
 </script>
 </main></body></html>`;
 
-const TEST_PAGE_URL = `data:text/html;charset=utf-8,${encodeURIComponent(TEST_PAGE_HTML)}`;
+function isDebugEnabled(value) {
+  const raw = String(value ?? '').trim().toLowerCase();
+  return raw === '1' || raw === 'true' || raw === 'stream' || raw === 'neko';
+}
+
+function buildTestPageHtml({ debug = false } = {}) {
+  if (debug) return TEST_PAGE_HTML;
+  return TEST_PAGE_HTML.replace(CALIBRATION_BEACON_HTML, '');
+}
+
+function buildTestPageUrl(options = {}) {
+  return `data:text/html;charset=utf-8,${encodeURIComponent(buildTestPageHtml(options))}`;
+}
 
 /**
  * Module-level singleton state. The first caller wins the launch race; all
@@ -526,6 +539,7 @@ export function createPlayground({ runTargetRegistry, controller, logger = null,
   }
 
   function registerPlaygroundTarget(session) {
+    const startUrl = buildTestPageUrl({ debug: session.debugCalibration === true });
     if (session.backend === 'neko') {
       const baseUrl = session.baseUrl || resolveNekoBaseUrl();
       runTargetRegistry.register({
@@ -533,7 +547,7 @@ export function createPlayground({ runTargetRegistry, controller, logger = null,
         interactionId: session.interactionId,
         backend: 'neko',
         base_url: baseUrl,
-        start_url: TEST_PAGE_URL,
+        start_url: startUrl,
         deviceId: PLAYGROUND_DEVICE_ID,
         pageUrl: 'neko:playground',
         pageTitle: 'n.eko Stream Playground',
@@ -615,7 +629,7 @@ export function createPlayground({ runTargetRegistry, controller, logger = null,
    * Throws on launch / navigation failure — the page-side fetch will surface
    * that to the developer as a server-side error in dev.
    */
-  async function createCdpPlaygroundSession() {
+  async function createCdpPlaygroundSession({ debugCalibration = false } = {}) {
     // Dynamic import: keeps patchright off the cold-start path for
     // production builds that never instantiate the playground. The two
     // imports follow the same conventions as the connector runtime.
@@ -651,7 +665,7 @@ export function createPlayground({ runTargetRegistry, controller, logger = null,
     const cdpIds = makeIds('cdp');
     await installRemoteTelemetryBinding(page, cdpIds.runId);
     try {
-      await page.goto(TEST_PAGE_URL, { waitUntil: 'load', timeout: 15_000 });
+      await page.goto(buildTestPageUrl({ debug: debugCalibration }), { waitUntil: 'load', timeout: 15_000 });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       log('warn', 'playground_navigation_failed', { error: message });
@@ -696,18 +710,18 @@ export function createPlayground({ runTargetRegistry, controller, logger = null,
     // pageUrl is the short literal `data:text/html` instead of the full
     // encoded HTML (which is multi-KB) — the registry surfaces this on
     // debug paths only, so a label is more useful than the full payload.
-    const session = registerPlaygroundTarget({ backend: 'cdp', runId, interactionId, wsUrl });
+    const session = registerPlaygroundTarget({ backend: 'cdp', debugCalibration, runId, interactionId, wsUrl });
     installControllerShim();
 
     log('info', 'playground_ready', { runId, interactionId });
     return session;
   }
 
-  async function createNekoPlaygroundSession() {
+  async function createNekoPlaygroundSession({ debugCalibration = false } = {}) {
     const baseUrl = resolveNekoBaseUrl();
     const { runId, interactionId } = makeIds('neko');
 
-    const session = registerPlaygroundTarget({ backend: 'neko', runId, interactionId, baseUrl });
+    const session = registerPlaygroundTarget({ backend: 'neko', debugCalibration, runId, interactionId, baseUrl });
     installControllerShim();
 
     log('info', 'playground_ready', { backend: 'neko', runId, interactionId });
@@ -723,7 +737,7 @@ export function createPlayground({ runTargetRegistry, controller, logger = null,
    *   1. `acquireBrowserForConnector({ remoteCdpUrl: "http://neko:9223" })`
    *      → `chromium.connectOverCDP(...)` against neko's Patchright Chromium.
    *      This publishes `PDPP_BROWSER_CDP_HOST`/`PORT` into process.env.
-   *   2. `context.newPage()` + `page.goto(TEST_PAGE_URL)` — gives us a
+   *   2. `context.newPage()` + `page.goto(buildTestPageUrl())` — gives us a
    *      navigated page in the neko-displayed browser, same way the
    *      chatgpt connector navigates to chatgpt.com.
    *   3. `resolveWsUrlForExactPage(page, { host, port })` — composes
@@ -742,7 +756,7 @@ export function createPlayground({ runTargetRegistry, controller, logger = null,
    * land — then the chatgpt streaming failure was something specific to
    * that interaction's lifecycle, not the architecture itself.
    */
-  async function createNekoRemoteCdpPlaygroundSession() {
+  async function createNekoRemoteCdpPlaygroundSession({ debugCalibration = false } = {}) {
     const remoteCdpUrl = String(env.PDPP_NEKO_CDP_HTTP_URL || 'http://neko:9223').trim();
     const { acquireBrowserForConnector } = await import(
       '../../../packages/polyfill-connectors/src/browser-launch.ts'
@@ -779,7 +793,7 @@ export function createPlayground({ runTargetRegistry, controller, logger = null,
     const neRemoteCdpIds = makeIds('neko_remote_cdp');
     await installRemoteTelemetryBinding(page, neRemoteCdpIds.runId);
     try {
-      await page.goto(TEST_PAGE_URL, { waitUntil: 'load', timeout: 15_000 });
+      await page.goto(buildTestPageUrl({ debug: debugCalibration }), { waitUntil: 'load', timeout: 15_000 });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       log('warn', 'playground_navigation_failed', { error: message });
@@ -823,6 +837,7 @@ export function createPlayground({ runTargetRegistry, controller, logger = null,
 
     const session = registerPlaygroundTarget({
       backend: 'neko-remote-cdp',
+      debugCalibration,
       runId,
       interactionId,
       wsUrl,
@@ -835,6 +850,7 @@ export function createPlayground({ runTargetRegistry, controller, logger = null,
 
   async function getOrCreatePlaygroundSession(options = {}) {
     const backend = normalizeBackend(options.backend);
+    const debugCalibration = isDebugEnabled(options.streamDebug ?? options.debug ?? env.PDPP_STREAM_PLAYGROUND_DEBUG);
     // n.eko-backed sessions are never cached: the runId is per-call so
     // the run-target registry's lifetime/eviction semantics match what a
     // real connector run would experience. The local-CDP and
@@ -851,7 +867,10 @@ export function createPlayground({ runTargetRegistry, controller, logger = null,
     // sequential calls landed in the same Date.now() millisecond.
     const isCacheable = backend !== 'neko';
     const cached = isCacheable ? cachedSessions.get(backend) : null;
-    if (cached) return registerPlaygroundTarget(cached);
+    if (cached) {
+      cached.debugCalibration = debugCalibration;
+      return registerPlaygroundTarget(cached);
+    }
     const existing = inFlights.get(backend);
     if (existing) return existing;
 
@@ -863,7 +882,7 @@ export function createPlayground({ runTargetRegistry, controller, logger = null,
     } else {
       factory = createCdpPlaygroundSession;
     }
-    const promise = factory();
+    const promise = factory({ debugCalibration });
     inFlights.set(backend, promise);
     try {
       const session = await promise;
@@ -872,6 +891,7 @@ export function createPlayground({ runTargetRegistry, controller, logger = null,
       // ensures the controller shim can resolve any playground runId — the
       // earlier code conflated cache-reuse and runId-resolution into one
       // map and produced unreachable entries for `neko`.
+      session.debugCalibration = debugCalibration;
       activeSessions.set(session.runId, session);
       if (isCacheable) {
         cachedSessions.set(backend, session);

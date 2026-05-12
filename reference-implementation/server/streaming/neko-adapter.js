@@ -994,6 +994,12 @@ export function createNekoCompanion(options = {}) {
     const appliedBody = await responseJsonOrNull(appliedResponse);
     const lastApplied = normalizeScreenConfig(appliedBody) || candidate;
     if (!lastApplied) return null;
+    emitEvent({
+      kind: 'screen_configuration',
+      applied: lastApplied,
+      requested: dimensions,
+      selected: candidate,
+    });
     if (!screenConfigFitsCover(lastApplied, dimensions.width, dimensions.height)) {
       safeLog(logger, 'warn', 'neko_screen_configuration_imperfect_fit', {
         applied: lastApplied,

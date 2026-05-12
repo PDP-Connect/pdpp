@@ -52,13 +52,24 @@ function getBackend(searchParams: { backend?: string | string[] }): PlaygroundBa
   return null;
 }
 
+function getStreamDebug(searchParams: { stream_debug?: string | string[] }): string | null {
+  const value = Array.isArray(searchParams.stream_debug) ? searchParams.stream_debug[0] : searchParams.stream_debug;
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
 function isStreamPlaygroundEnabled(): boolean {
   return process.env.NODE_ENV !== "production" || process.env.PDPP_ENABLE_STREAM_PLAYGROUND === "1";
 }
 
-async function getPlaygroundSession(backend: PlaygroundBackend | null): Promise<PlaygroundSessionResponse> {
+async function getPlaygroundSession(
+  backend: PlaygroundBackend | null,
+  streamDebug: string | null
+): Promise<PlaygroundSessionResponse> {
   const asUrl = getAsInternalUrl();
-  const suffix = backend ? `?backend=${encodeURIComponent(backend)}` : "";
+  const params = new URLSearchParams();
+  if (backend) params.set("backend", backend);
+  if (streamDebug) params.set("stream_debug", streamDebug);
+  const suffix = params.size > 0 ? `?${params.toString()}` : "";
   let response: Response;
   try {
     response = await fetch(
@@ -84,16 +95,18 @@ async function getPlaygroundSession(backend: PlaygroundBackend | null): Promise<
 export default async function StreamPlaygroundPage({
   searchParams,
 }: {
-  searchParams: Promise<{ backend?: string | string[] }>;
+  searchParams: Promise<{ backend?: string | string[]; stream_debug?: string | string[] }>;
 }) {
   if (!isStreamPlaygroundEnabled()) {
     notFound();
   }
 
-  const backend = getBackend(await searchParams);
+  const params = await searchParams;
+  const backend = getBackend(params);
+  const streamDebug = getStreamDebug(params);
   let session: PlaygroundSessionResponse;
   try {
-    session = await getPlaygroundSession(backend);
+    session = await getPlaygroundSession(backend, streamDebug);
   } catch (err) {
     if (err instanceof ReferenceServerUnreachableError) {
       return (

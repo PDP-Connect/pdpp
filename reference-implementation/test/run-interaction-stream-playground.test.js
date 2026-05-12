@@ -120,8 +120,44 @@ test('stream playground HTML installs five fixed-positioned calibration beacons 
   // The beacon ring is part of the visualViewport, not the document
   // flow, so they MUST NOT be inside the <main> grid (which would
   // change layout under landscape media queries).
-  const beaconBlock = src.match(/<div aria-hidden="true" class="pdpp-calibration-beacon"[\s\S]{0,400}<main>/);
-  assert.ok(beaconBlock, 'beacons render before <main>, outside the grid layout');
+  assert.match(src, /\$\{CALIBRATION_BEACON_HTML\}\s*<main>/, 'beacons render before <main>, outside the grid layout');
+});
+
+test('stream playground registers calibration beacons only for debug sessions', async () => {
+  const runTargetRegistry = createRunTargetRegistry({
+    sweepIntervalMs: 0,
+    now: () => 1_000,
+  });
+  const controller = {
+    getPendingInteraction() {
+      return null;
+    },
+  };
+  const playground = createPlayground({
+    runTargetRegistry,
+    controller,
+    env: {
+      PDPP_NEKO_BASE_URL: 'http://neko:8080/neko',
+    },
+  });
+
+  const normal = await playground.getOrCreatePlaygroundSession({ backend: 'neko' });
+  const normalTarget = runTargetRegistry.get({ runId: normal.runId, interactionId: normal.interactionId });
+  const normalHtml = decodeURIComponent(normalTarget.start_url.replace(/^data:text\/html;charset=utf-8,/, ''));
+  assert.doesNotMatch(
+    normalHtml,
+    /<div aria-hidden="true" class="pdpp-calibration-beacon" data-pdpp-calibration-beacon=/,
+    'normal playground omits beacon hit targets'
+  );
+
+  const debug = await playground.getOrCreatePlaygroundSession({ backend: 'neko', streamDebug: '1' });
+  const debugTarget = runTargetRegistry.get({ runId: debug.runId, interactionId: debug.interactionId });
+  const debugHtml = decodeURIComponent(debugTarget.start_url.replace(/^data:text\/html;charset=utf-8,/, ''));
+  assert.match(
+    debugHtml,
+    /<div aria-hidden="true" class="pdpp-calibration-beacon" data-pdpp-calibration-beacon=/,
+    'debug playground includes beacon hit targets'
+  );
 });
 
 test('stream playground records calibration data on every pointer/click event', async () => {

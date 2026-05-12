@@ -1880,6 +1880,10 @@ function StreamStage({
           setLocalSurfaceViewportInfo(payload.viewport);
           lastPostedViewportRef.current = readViewerViewport(payload.viewport.width, payload.viewport.height) ?? null;
         }
+        logDebug("stream_session_attached", {
+          hasViewport: Boolean(payload.viewport),
+          viewport: payload.viewport ?? null,
+        });
         callbacks.onAttached();
       });
       source.addEventListener("backend_ready", (ev) => {
@@ -1889,6 +1893,10 @@ function StreamStage({
         }
         const payload = parsed.value;
         onStatus(LIVE);
+        logDebug("overlay_cleared", {
+          backend: payload.backend,
+          phase: "backend_ready",
+        });
         if (payload.backend === "neko" && typeof payload.iframe_path === "string" && payload.iframe_path.length > 0) {
           const entryPath = payload.iframe_path.replace(TRAILING_SLASH_RE, "");
           nekoNativeViewportRef.current = true;
@@ -1936,6 +1944,10 @@ function StreamStage({
         }
         setImgSrc(`data:image/jpeg;base64,${parsed.value.data_base64}`);
         onStatus(LIVE);
+        logDebug("overlay_cleared", {
+          backend: "cdp-frame",
+          phase: "frame",
+        });
       });
       source.addEventListener("url_changed", (ev) => {
         const parsed = parseUrlChangedMessage(streamEventData(ev));
@@ -2165,6 +2177,12 @@ function StreamStage({
     inputUrlRef.current = initial.input_url;
     viewportUrlRef.current = initial.viewport_url;
     viewerUrl = initial.viewer_url;
+    logDebug("stream_session_loaded", {
+      reason: "initial",
+      hasInputUrl: Boolean(initial.input_url),
+      hasViewportUrl: Boolean(initial.viewport_url),
+      hasViewerUrl: Boolean(initial.viewer_url),
+    });
 
     function clearBackoff() {
       if (backoffTimeoutId) {
@@ -2194,6 +2212,10 @@ function StreamStage({
       }
       onStatus(CONNECTING);
       const viewport = readMintViewport();
+      logDebug("stream_session_mint_start", {
+        reason: "reattach",
+        viewport,
+      });
       let minted: MintedStreamSession;
       try {
         minted = await mintStreamSessionAction({
@@ -2214,6 +2236,12 @@ function StreamStage({
       inputUrlRef.current = minted.input_url;
       viewportUrlRef.current = minted.viewport_url;
       viewerUrl = minted.viewer_url;
+      logDebug("stream_session_minted", {
+        reason: "reattach",
+        hasInputUrl: Boolean(minted.input_url),
+        hasViewportUrl: Boolean(minted.viewport_url),
+        hasViewerUrl: Boolean(minted.viewer_url),
+      });
       // Fresh token => reset session-level state. A re-mint after token
       // death is a new lifecycle.
       attached = false;
@@ -2236,6 +2264,12 @@ function StreamStage({
       preAttachFailures += 1;
       totalAttempts += 1;
       if (totalAttempts >= MAX_RECONNECT_ATTEMPTS) {
+        logDebug("stream_startup_stuck_timeout", {
+          maxAttempts: MAX_RECONNECT_ATTEMPTS,
+          phase: "pre-attach",
+          preAttachFailures,
+          totalAttempts,
+        });
         onStatus({
           display: "trouble",
           cause: "network",
@@ -2275,6 +2309,11 @@ function StreamStage({
         return;
       }
       closeCurrentSource();
+      logDebug("stream_attach_start", {
+        attempt: totalAttempts + 1,
+        hasViewerUrl: Boolean(viewerUrl),
+        phase: attached ? "reattach-after-attached" : "initial",
+      });
       const source = new EventSource(viewerUrl, { withCredentials: false });
       eventSourceRef.current = source;
       attachStreamHandlers(source, {
@@ -3196,6 +3235,7 @@ function NekoSurface({
   const containerRef = useRef<HTMLDivElement | null>(null);
   const layoutRequestRef = useRef(0);
   const firstNekoLayoutAppliedRef = useRef(false);
+  const firstMediaSampleLoggedRef = useRef(false);
   // Shared by the settle poll and the debug-only drain so whichever
   // path sees a remote playground event first claims it.
   const playgroundSeenRef = useRef<PlaygroundSeenRegistry>(createPlaygroundSeenRegistry());
@@ -3258,6 +3298,13 @@ function NekoSurface({
           return;
         }
         setClientConfig(config);
+        logDebug("neko_client_config_loaded", {
+          hasLogin: Boolean(config.login),
+          hasServerPath: Boolean(config.serverPath),
+          hasStatusPath: Boolean(config.statusPath),
+          serverPathLength: config.serverPath.length,
+          statusPath: config.statusPath,
+        });
         const adapter = new NekoSurfaceAdapter({
           client: createNekoClientApi({
             getTextarea: () => softKeyboardTextareaRef.current,
@@ -3269,6 +3316,10 @@ function NekoSurface({
         });
         nekoSurfaceAdapterRef.current = adapter;
         await adapter.mount(nekoMountNode);
+        logDebug("adapter_mounted", {
+          lifecycleState: adapter.getLifecycleState(),
+          surface: "neko",
+        });
         if (cancelled) {
           await adapter.unmount();
           nekoSurfaceAdapterRef.current = null;
@@ -3606,6 +3657,7 @@ function NekoSurface({
     if (!(clientConfig && viewportInfo)) {
       mediaSettleTargetRef.current = null;
       mediaSettleStateRef.current = createNekoMediaSettleState();
+      firstMediaSampleLoggedRef.current = false;
       setMediaReady(false);
       return;
     }
@@ -3615,6 +3667,7 @@ function NekoSurface({
     if (targetChanged) {
       mediaSettleTargetRef.current = target;
       mediaSettleStateRef.current = createNekoMediaSettleState();
+      firstMediaSampleLoggedRef.current = false;
       setMediaReady(false);
     } else {
       logDebug("neko.media.settle.refresh", {
@@ -3635,6 +3688,15 @@ function NekoSurface({
       pollCount += 1;
       const sample = readNekoMediaSettleSample(viewportCaptureSize(viewportInfo));
       if (sample) {
+        if (!firstMediaSampleLoggedRef.current) {
+          firstMediaSampleLoggedRef.current = true;
+          logDebug("first_media_sample", {
+            pollCount,
+            sample,
+            target,
+            viewport: viewportInfo,
+          });
+        }
         const result = assessNekoMediaSettle({
           maxSettlingSamples: STREAM_VIEWER_POLICY.nekoMediaSettleMaxPolls,
           sample,

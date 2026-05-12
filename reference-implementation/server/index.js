@@ -2915,7 +2915,13 @@ function buildAsApp(opts = {}) {
             : typeof req.body?.backend === 'string'
               ? req.body.backend
               : undefined;
-        const session = await playground.getOrCreatePlaygroundSession({ backend });
+        const streamDebug =
+          typeof req.query?.stream_debug === 'string'
+            ? req.query.stream_debug
+            : typeof req.body?.stream_debug === 'string'
+              ? req.body.stream_debug
+              : undefined;
+        const session = await playground.getOrCreatePlaygroundSession({ backend, streamDebug });
         return res.status(200).json({
           object: 'stream_playground_session',
           backend: session.backend,
