@@ -8,7 +8,22 @@ services:
       PDPP_NEKO_PROXY_AUTOLOGIN: ${PDPP_NEKO_PROXY_AUTOLOGIN:-1}
       PDPP_NEKO_CDP_HTTP_URL: ${PDPP_NEKO_CDP_HTTP_URL:-http://neko:9223}
       PDPP_NEKO_BROWSER_OWNER_MODE: ${PDPP_NEKO_BROWSER_OWNER_MODE:-neko-owned}
-      PDPP_NEKO_STEALTH_MODE: ${PDPP_NEKO_STEALTH_MODE:-balanced}
+      # strict = adapter never issues Runtime.enable / Page.addScript / etc
+      # against the user's tab. Required for Cloudflare Turnstile to pass —
+      # any CDP touch on the page is detected by Turnstile's challenge JS.
+      # See docs/binary-content-invariant-design-brief.md for the layered
+      # stealth design rationale and the fingerprint-probe.mjs investigation
+      # that established Runtime.enable as the dominant detection vector.
+      PDPP_NEKO_STEALTH_MODE: ${PDPP_NEKO_STEALTH_MODE:-strict}
+      # Route the chatgpt connector through the n.eko-hosted Chromium
+      # (Patchright bundled, with all stealth flags) instead of launching
+      # its own headless Chrome inside the reference container. This is
+      # what allows the manual_action streaming handoff to land on the
+      # EXACT browser the connector was driving — and gets the connector
+      # the binary+launch-arg+driver stealth layers documented in
+      # docs/neko-stealth-design-brief.md. Per-connector env-var so other
+      # connectors (gmail, github, etc.) keep their host-local Patchright.
+      PDPP_CHATGPT_REMOTE_CDP_URL: ${PDPP_CHATGPT_REMOTE_CDP_URL:-http://neko:9223}
       NEKO_USERNAME: operator
       NEKO_PASSWORD: "1"
 
@@ -29,7 +44,7 @@ services:
       NEKO_SERVER_PROXY: "true"
       NEKO_MEMBER_PROVIDER: noauth
       NEKO_SESSION_IMPLICIT_HOSTING: "true"
-      NEKO_DESKTOP_SCREEN: ${NEKO_DESKTOP_SCREEN:-1280x720@30}
+      NEKO_DESKTOP_SCREEN: ${NEKO_DESKTOP_SCREEN:-1440x900@30}
       NEKO_WEBRTC_UDPMUX: ${NEKO_WEBRTC_PORT:-59000}
       NEKO_WEBRTC_TCPMUX: ${NEKO_WEBRTC_PORT:-59000}
       NEKO_WEBRTC_ICELITE: "1"

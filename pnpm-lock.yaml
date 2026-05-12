@@ -53,6 +53,9 @@ importers:
       '@pdpp/brand':
         specifier: workspace:*
         version: link:../../packages/pdpp-brand
+      '@pdpp/remote-surface':
+        specifier: workspace:*
+        version: link:../../packages/remote-surface
       '@tailwindcss/postcss':
         specifier: ^4.2.2
         version: 4.2.2
@@ -221,6 +224,15 @@ importers:
         specifier: 7.6.0
         version: 7.6.0
 
+  packages/remote-surface:
+    devDependencies:
+      '@biomejs/biome':
+        specifier: 2.4.12
+        version: 2.4.12
+      ultracite:
+        specifier: 7.6.0
+        version: 7.6.0
+
   reference-implementation:
     dependencies:
       '@fastify/formbody':
@@ -241,6 +253,9 @@ importers:
       fastify:
         specifier: ^5.6.1
         version: 5.8.5
+      patchright:
+        specifier: ^1.59.4
+        version: 1.59.4
       pg:
         specifier: ^8.20.0
         version: 8.20.0

@@ -1,23 +1,133 @@
 #!/bin/sh
+#
+# Launch the browser that n.eko streams to the user. The reference-side
+# adapter (server/streaming/neko-adapter.js) attaches to it via
+# `patchright.chromium.connectOverCDP("http://neko:9223")`, which is what
+# delivers driver-side stealth (no Runtime.enable, Route-based init-script
+# injection, lazy isolated worlds, closed-shadow-root traversal).
+#
+# We get THREE layers of stealth:
+#
+#   (1) Binary layer  — the binary itself is Patchright's bundled Chromium,
+#       baked into this image by the Dockerfile (PLAYWRIGHT_BROWSERS_PATH
+#       points at /opt/patchright-browsers). Patchright maintainers ship
+#       C-level patches in the upstream build at this revision.
+#
+#   (2) Launch-arg layer — the flag set below mirrors
+#       `patchright-core/lib/server/chromium/chromiumSwitches.js` line by
+#       line, plus the per-launch additions from `chromium.js:265-313`,
+#       with `--remote-debugging-port` swapped for `--remote-debugging-pipe`
+#       so we can attach over TCP from a sibling container. See
+#       docs/patchright-integration-spec.md §1 for the source citations.
+#
+#   (3) Driver layer — owned by Patchright in the reference container.
+#       NEVER add CDP commands that bypass it (Runtime.enable, Console.enable,
+#       Page.addScriptToEvaluateOnNewDocument, parallel Puppeteer sessions,
+#       etc.). See docs/patchright-integration-spec.md §8 for the full
+#       anti-pattern list.
+#
+# What this script DOES own (environmental, outside Patchright's scope):
+#   - The X display + openbox window class (n.eko contract).
+#   - The user-data-dir (so logins survive container restarts).
+#   - Window size matching NEKO_DESKTOP_SCREEN to avoid a torn viewport.
+#   - The --remote-debugging-port endpoint that connectOverCDP attaches to.
 
 PROXY_FLAGS=""
 if [ -n "${FORWARD_PROXY_PORT:-}" ]; then
   PROXY_FLAGS="--proxy-server=http://127.0.0.1:${FORWARD_PROXY_PORT}"
 fi
 
-exec /usr/bin/chromium \
+# Window size — 1440x900 is a top-five real-user resolution and matches
+# the default NEKO_DESKTOP_SCREEN in docker-compose.neko.yml.
+WIDTH="${PDPP_NEKO_WINDOW_WIDTH:-1440}"
+HEIGHT="${PDPP_NEKO_WINDOW_HEIGHT:-900}"
+
+# Binary selection in priority order:
+#   1. Patchright's bundled Chromium (what we want).
+#   2. Google Chrome stable (real branded build; fallback).
+#   3. System chromium (last resort so the image still boots).
+PATCHRIGHT_CHROMIUM="${PDPP_PATCHRIGHT_CHROMIUM_BIN:-}"
+if [ -z "${PATCHRIGHT_CHROMIUM}" ]; then
+  for cand in /opt/patchright-browsers/chromium-*/chrome-linux64/chrome \
+              /opt/patchright-browsers/chromium-*/chrome-linux/chrome; do
+    if [ -x "${cand}" ]; then
+      PATCHRIGHT_CHROMIUM="${cand}"
+      break
+    fi
+  done
+fi
+
+if [ -n "${PATCHRIGHT_CHROMIUM}" ] && [ -x "${PATCHRIGHT_CHROMIUM}" ]; then
+  CHROME_BIN="${PATCHRIGHT_CHROMIUM}"
+elif [ -x /usr/bin/google-chrome-stable ]; then
+  CHROME_BIN="/usr/bin/google-chrome-stable"
+elif [ -x /usr/bin/google-chrome ]; then
+  CHROME_BIN="/usr/bin/google-chrome"
+else
+  CHROME_BIN="/usr/bin/chromium"
+fi
+
+# The disabled-features list is verbatim from chromiumSwitches.js:24-52
+# (the non-assistantMode path). AutomationControlled is deliberately
+# absent from --disable-features — it's disabled via --disable-blink-features
+# below, which flips the runtime feature gate without leaving the
+# variation-trial fingerprint that --disable-features would.
+DISABLED_FEATURES="AvoidUnnecessaryBeforeUnloadCheckSync,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,PaintHolding,ThirdPartyStoragePartitioning,Translate,AutoDeElevate,RenderDocument,OptimizationHints"
+
+# Enabled features mirror chromiumSwitches.js:74 (CDPScreenshotNewSurface
+# is enabled unless PLAYWRIGHT_LEGACY_SCREENSHOT is set).
+ENABLED_FEATURES="${PLAYWRIGHT_LEGACY_SCREENSHOT:+}"
+ENABLED_FEATURES="${ENABLED_FEATURES:-CDPScreenshotNewSurface}"
+
+# Args below mirror chromiumSwitches.js:53-88. Do NOT add:
+#   --enable-automation, --disable-popup-blocking, --disable-component-update,
+#   --disable-default-apps, --disable-extensions,
+#   --disable-component-extensions-with-background-pages,
+#   --disable-client-side-phishing-detection
+# These are deliberately absent — they reintroduce automation fingerprints.
+#
+# Per-launch additions from chromium.js:265-313 that are relevant to us:
+#   --user-data-dir, --remote-debugging-port (NOT --pipe; cross-container),
+#   --no-sandbox (neko runs the browser as the X session user without
+#     namespace setup; this is unavoidable in the m1k1o/neko base image).
+#
+# Neko-specific additions:
+#   --display, --class, --window-position, --window-size, --app
+#   --use-gl/--use-angle (SwiftShader is the only GL backend that works
+#     reliably in this container; the WebGL renderer is the strongest
+#     remaining fingerprint and is addressed at the docker-compose layer
+#     via x11-gpu options when a host GPU is available).
+exec "$CHROME_BIN" \
+  --disable-field-trial-config \
+  --disable-background-networking \
+  --disable-background-timer-throttling \
+  --disable-backgrounding-occluded-windows \
+  --disable-breakpad \
+  --no-default-browser-check \
+  --disable-dev-shm-usage \
+  --disable-features="${DISABLED_FEATURES}" \
+  --enable-features="${ENABLED_FEATURES}" \
+  --disable-hang-monitor \
+  --disable-prompt-on-repost \
+  --disable-renderer-backgrounding \
+  --force-color-profile=srgb \
+  --no-first-run \
+  --password-store=basic \
+  --use-mock-keychain \
+  --no-service-autorun \
+  --export-tagged-pdf \
+  --disable-search-engine-choice-screen \
+  --disable-infobars \
+  --disable-sync \
+  --disable-blink-features=AutomationControlled \
+  --user-data-dir=/home/user/.config/chromium \
+  --no-sandbox \
   --window-position=0,0 \
-  --window-size=1280,720 \
+  --window-size="${WIDTH},${HEIGHT}" \
   --class=RemoteBrowserApp \
   --display="${DISPLAY}" \
-  --user-data-dir=/home/user/.config/chromium \
-  --no-first-run \
-  --no-sandbox \
-  --test-type \
-  --disable-file-system \
   --use-gl=angle \
   --use-angle=swiftshader \
-  --disable-dev-shm-usage \
   --remote-debugging-port=9222 \
   --remote-debugging-address=0.0.0.0 \
   --remote-allow-origins=* \

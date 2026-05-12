@@ -16,6 +16,10 @@ services:
       AS_ISSUER: ${AS_ISSUER:-}
       PDPP_WEB_BASE_URL: ${PDPP_WEB_BASE_URL:-}
       PDPP_DB_PATH: ${PDPP_DB_PATH:-/var/lib/pdpp/pdpp.sqlite}
+      # When PDPP_STORAGE_BACKEND=postgres, PDPP_DB_PATH is ignored;
+      # the runtime opens the Postgres pool from PDPP_DATABASE_URL.
+      PDPP_STORAGE_BACKEND: ${PDPP_STORAGE_BACKEND:-}
+      PDPP_DATABASE_URL: ${PDPP_DATABASE_URL:-}
       PDPP_EMBEDDING_CACHE_DIR: ${PDPP_EMBEDDING_CACHE_DIR:-/var/cache/pdpp/transformers}
       PDPP_EMBEDDING_DOWNLOAD_ALLOWED: ${PDPP_EMBEDDING_DOWNLOAD_ALLOWED:-1}
       PDPP_REFERENCE_OPERATIONAL_DEFAULTS: "1"
@@ -54,8 +58,14 @@ services:
     ports:
       - "7662:7662"
       - "7663:7663"
+    depends_on:
+      postgres:
+        condition: service_healthy
     volumes:
-      - ./packages/polyfill-connectors/.pdpp-data:/var/lib/pdpp
+      # SQLite mount intentionally omitted: this compose runs Postgres as
+      # the storage backend. To re-run the migration tool, do it on the
+      # host with the SQLite file at `./packages/polyfill-connectors/
+      # .pdpp-data/pdpp.sqlite` and the host-published Postgres port.
       - pdpp-transformers:/var/cache/pdpp/transformers
       - pdpp-home:/root/.pdpp
     # Health = AS and RS are both listening and serving public metadata.
@@ -72,17 +82,17 @@ services:
       retries: 30
       start_period: 30s
 
-  # Profile-gated Postgres service for env-gated conformance/runtime proofs such as
-  # `reference-implementation/test/connector-state-scheduler-conformance-postgres.test.js`
-  # and `reference-implementation/test/consent-device-auth-conformance-postgres.test.js`
-  # plus `reference-implementation/test/postgres-runtime-storage.test.js`
-  # (see openspec/changes/add-postgres-runtime-storage). The default reference
-  # runtime uses SQLite; runtime Postgres storage is opt-in via
-  # PDPP_STORAGE_BACKEND=postgres and PDPP_DATABASE_URL. Start it explicitly:
-  #   docker compose --profile postgres --env-file .env.docker up -d postgres
+  # Postgres runtime storage. Brought up unconditionally so the reference
+  # service can depend on it. Enable Postgres as the runtime backend by
+  # setting PDPP_STORAGE_BACKEND=postgres and PDPP_DATABASE_URL in
+  # .env.docker; otherwise the reference falls back to the SQLite default.
+  # Used by env-gated conformance/runtime proofs such as
+  # `reference-implementation/test/connector-state-scheduler-conformance-postgres.test.js`,
+  # `reference-implementation/test/consent-device-auth-conformance-postgres.test.js`,
+  # and `reference-implementation/test/postgres-runtime-storage.test.js`
+  # (see openspec/changes/add-postgres-runtime-storage).
   postgres:
     image: ${PDPP_POSTGRES_IMAGE:-pgvector/pgvector:pg16}
-    profiles: ["postgres"]
     environment:
       POSTGRES_USER: ${PDPP_POSTGRES_USER:-pdpp}
       POSTGRES_PASSWORD: ${PDPP_POSTGRES_PASSWORD:-pdpp}
