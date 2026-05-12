@@ -1,0 +1,162 @@
+Yes. I did enough targeted research to verify the direction. The answer to the agent should be:
+
+---
+
+## Final direction for the remote-browser mobile input architecture
+
+The right direction is **not** to keep patching the current hand-rolled CDP screencast/input surface. The right direction is to build a **PDPP-internal remote-surface substrate now**, with clean enough boundaries that it can later be spun out as an OSS package.
+
+The core architecture should be:
+
+```text
+Patchright/CDP = connector automation plane
+n.eko/X11/WebRTC = human manual-action interaction plane
+Guacamole-style text input = mobile keyboard / IME plane
+PDPP RemoteSurface = adapter boundary that composes them
+```
+
+This is the correct separation of concerns.
+
+The connector should continue using Patchright/CDP for automation, navigation, extraction, and stealth browser control. But when a human user is interacting with the remote browser during `manual_action`, their touch and keyboard input should go through the remote machine’s native input path wherever possible — n.eko/X11 — not through CDP `Input.dispatch*`. CDP input should remain as a fallback backend, not the preferred path for high-stealth flows.
+
+This direction is supported by the brief’s own evidence: the current React/CDP stream viewer has already hit the predictable mobile-remote-desktop failure modes — Android ghost mouse events after touch, hidden-input focus bounce, IME text arriving via `beforeinput` rather than `keydown`, long-press image behavior, and visual viewport shrink when the soft keyboard opens. Those are not one-off bugs; they are the problem domain.
+
+## What to build now
+
+Build a PDPP-internal package/module, probably something like:
+
+```text
+packages/remote-surface
+```
+
+or equivalent inside the app/runtime tree.
+
+It should expose a small architectural interface:
+
+```ts
+interface RemoteSurface {
+  mount(el: HTMLElement): Promise<void>;
+  unmount(): Promise<void>;
+
+  focusTextInput(opts?: {
+    inputMode?: "text" | "email" | "numeric" | "password";
+  }): void;
+
+  sendPointer(event: RemotePointerEvent): Promise<void>;
+  sendKeysym(event: RemoteKeysymEvent): Promise<void>;
+  sendText(text: string): Promise<void>;
+}
+```
+
+Then implement:
+
+```text
+RemoteSurface
+  ├── NekoSurfaceAdapter      preferred for n.eko-backed sessions
+  ├── CdpSurfaceAdapter       fallback / legacy / debug path
+  └── MobileTextInputController
+        ├── beforeinput/input
+        ├── compositionstart/update/end
+        ├── Guacamole-style keysym handling
+        └── text-commit path for mobile IME
+```
+
+The dashboard should consume `RemoteSurface`; it should not know whether pointer/text events are delivered through n.eko, X11, CDP, or something else.
+
+## Why this is the right architecture
+
+n.eko is already a self-hosted virtual browser/desktop system that runs in Docker and streams over WebRTC. Its project framing is aligned with the PDPP use case: a browser running remotely in an isolated environment, streamed to a client. ([GitHub][1])
+
+The demodesk client is not a perfect dependency — the repo is archived/read-only — but it is still useful as a working reference/component for connecting to a n.eko backend. Treat it as code to wrap, pin, vendor, or fork behind a PDPP adapter, not as the long-term architectural center. ([GitHub][2])
+
+Guacamole is the right prior art for keyboard and IME because it has spent years solving browser-to-remote-desktop input translation. Its JS API explicitly abstracts mouse, keyboard, and touch interaction between browser events and a remote display, and its `Keyboard` module emits X11 keysyms rather than naive browser key strings. ([guacamole.apache.org][3])
+
+CDP input should be treated as a fallback because Chrome DevTools Protocol’s `Input` domain is explicitly an automation/control interface for dispatching key, mouse, and touch events into the page. It is useful, but it is not the same architectural primitive as a user’s input arriving through the remote OS input stack. ([chromedevtools.github.io][4])
+
+## What not to do
+
+Do **not** keep adding patches directly inside the current `stream-viewer.tsx`.
+
+Do **not** make the current React event handler surface the foundation.
+
+Do **not** make `@demodesk/neko` the product architecture. Use it as one implementation ingredient behind a `NekoSurfaceAdapter`.
+
+Do **not** try to open-source a general remote browser product yet.
+
+Do **not** initially solve every mobile browser, every IME, every accessibility case, collaboration, clipboard policy, or arbitrary remote desktop backend.
+
+The immediate goal is narrower:
+
+> A robust PDPP manual-action remote surface for mobile users, using n.eko-native input for stealth-sensitive sessions and Guacamole-style text handling for soft keyboard / IME correctness.
+
+## Validation gate before the larger refactor
+
+Before investing in the dashboard refactor, run the direct mobile experiment.
+
+Acceptance criteria on the user’s Android Brave/Gboard setup:
+
+```text
+- tap produces exactly one remote click
+- long press does not trigger local Save Image/context menu
+- tapping a remote input opens the soft keyboard and keeps it open
+- email input works
+- password input works
+- numeric 2FA input works
+- backspace works
+- enter/submit works
+- viewport does not become unusable when keyboard opens
+- WebRTC connection remains stable on the real network
+```
+
+If the n.eko/demodesk surface feels bad before adding the IME shim, do not proceed blindly. That would mean the work is no longer “compose proven pieces”; it becomes “rehabilitate a remote desktop client.”
+
+If the n.eko surface feels good, proceed with the adapter architecture and Guacamole-style text input.
+
+## OSS trajectory
+
+Yes, this can eventually become an open-source package, but the spinout should come **after** the PDPP internal primitive is correct.
+
+The eventual OSS artifact should probably not be marketed as “a complete remote browser platform.” The clean OSS package is more likely:
+
+```text
+remote-mobile-input / remote-surface
+```
+
+with this scope:
+
+```text
+- mobile-safe pointer/touch normalization
+- hidden textarea / soft keyboard controller
+- IME/composition/text-commit handling
+- keysym mapping
+- backend-neutral input interface
+- n.eko backend
+- CDP fallback backend
+- playground/debug harness
+```
+
+That is a coherent package. It is general enough to be useful outside PDPP, but narrow enough to be realistic.
+
+The spinout path should be:
+
+```text
+Stage 1: PDPP-internal package with clean adapter boundaries
+Stage 2: standalone playground independent of PDPP
+Stage 3: extracted OSS alpha
+Stage 4: broader backend/browser/mobile compatibility
+```
+
+Do not let future OSS ambitions contaminate the immediate implementation with premature generality. Build the right internal substrate now; make it extractable by design.
+
+## Final recommendation
+
+The agent should proceed with the Option E direction, reframed as a PDPP runtime primitive:
+
+> **Build a `RemoteSurface` abstraction now. Use n.eko/WebRTC/X11 as the preferred human-input path, Guacamole-style keyboard/text-input handling for mobile IME, and CDP input only as fallback. Keep Patchright/CDP for connector automation. Validate the n.eko mobile surface on Android Brave before refactoring the dashboard.**
+
+That is the right core architecture and the right eventual OSS seed.
+
+[1]: https://github.com/m1k1o/neko?utm_source=chatgpt.com "m1k1o/neko: A self hosted virtual browser that runs in ..."
+[2]: https://github.com/demodesk/neko-client?utm_source=chatgpt.com "demodesk/neko-client"
+[3]: https://guacamole.apache.org/doc/gug/guacamole-common-js.html?utm_source=chatgpt.com "guacamole-common-js — Apache Guacamole Manual v1.6.0"
+[4]: https://chromedevtools.github.io/devtools-protocol/tot/Input/?utm_source=chatgpt.com "Chrome DevTools Protocol - Input domain"

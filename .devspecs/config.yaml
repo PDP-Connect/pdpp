@@ -1,0 +1,21 @@
+version: 1
+sources:
+    - type: openspec
+      path: openspec
+    - type: adr
+      paths:
+        - adr
+        - adrs
+        - docs/adr
+        - docs/adrs
+    - type: markdown
+      paths:
+        - .cursor/plans
+        - .specify/memory
+        - _bmad-output
+        - docs/design
+        - docs/plans
+        - docs/specs
+        - docs/technical
+        - plans
+        - specs
