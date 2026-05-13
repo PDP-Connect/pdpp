@@ -3,9 +3,11 @@ import test from "node:test";
 
 import {
   BrowserSurfaceLeaseManager,
+  DEFAULT_NEKO_READINESS_TIMEOUT_MS,
   DEFAULT_NEKO_PRIORITY_RANKS,
   browserSurfaceLeaseEnv,
   parseNekoBrowserSurfaceLeaseConfig,
+  parseNekoBrowserSurfaceRuntimeConfig,
   projectBrowserSurfaceLease,
 } from "../runtime/browser-surface-leases.ts";
 
@@ -631,5 +633,151 @@ test("config parser validates managed policy and defaults static single connecto
         PDPP_NEKO_SURFACE_CAP: "1",
       }),
     /PDPP_NEKO_STATIC_PROFILE_KEY/,
+  );
+});
+
+test("runtime config parser preserves static default and exposes lease config", () => {
+  const parsed = parseNekoBrowserSurfaceRuntimeConfig({
+    PDPP_NEKO_MANAGED_CONNECTORS: "chatgpt",
+    PDPP_NEKO_SURFACE_CAP: "1",
+    PDPP_NEKO_CDP_HTTP_URL: "http://neko:9222",
+    PDPP_NEKO_BASE_URL: "http://neko:8080",
+  });
+
+  assert.equal(parsed.dynamic, undefined);
+  assert.equal(parsed.leaseConfig.surfaceMode, "static");
+  assert.equal(parsed.leaseConfig.staticProfileKey, "chatgpt");
+  assert.equal(parsed.leaseConfig.staticCdpHttpUrl, "http://neko:9222");
+});
+
+test("runtime config parser does not require dynamic settings when no n.eko connectors are managed", () => {
+  const parsed = parseNekoBrowserSurfaceRuntimeConfig({});
+
+  assert.equal(parsed.dynamic, undefined);
+  assert.equal(parsed.leaseConfig.surfaceMode, "dynamic");
+  assert.equal(parsed.leaseConfig.surfaceCap, 0);
+  assert.equal(parsed.leaseConfig.managedConnectors.size, 0);
+});
+
+test("runtime config parser supports explicit dynamic one-connector mode", () => {
+  const parsed = parseNekoBrowserSurfaceRuntimeConfig({
+    PDPP_NEKO_SURFACE_MODE: "dynamic",
+    PDPP_NEKO_MANAGED_CONNECTORS: "chatgpt",
+    PDPP_NEKO_SURFACE_CAP: "2",
+    PDPP_NEKO_ALLOCATOR_URL: "http://neko-allocator:7345",
+    PDPP_NEKO_PROFILE_STORAGE_POLICY: "persistent",
+    PDPP_NEKO_PROFILE_STORAGE_ROOT: "/var/lib/pdpp/neko-profiles",
+  });
+
+  assert.equal(parsed.leaseConfig.surfaceMode, "dynamic");
+  assert.equal(parsed.leaseConfig.surfaceCap, 2);
+  assert.equal(parsed.leaseConfig.staticProfileKey, undefined);
+  assert.equal(parsed.leaseConfig.staticCdpHttpUrl, undefined);
+  assert.deepEqual(parsed.dynamic, {
+    allocatorUrl: "http://neko-allocator:7345/",
+    profileStoragePolicy: "persistent",
+    profileStorageRoot: "/var/lib/pdpp/neko-profiles",
+    readinessTimeoutMs: DEFAULT_NEKO_READINESS_TIMEOUT_MS,
+  });
+});
+
+test("dynamic runtime config rejects unsafe static settings", () => {
+  const baseEnv = {
+    PDPP_NEKO_SURFACE_MODE: "dynamic",
+    PDPP_NEKO_MANAGED_CONNECTORS: "chatgpt",
+    PDPP_NEKO_SURFACE_CAP: "1",
+    PDPP_NEKO_ALLOCATOR_URL: "http://neko-allocator:7345",
+    PDPP_NEKO_PROFILE_STORAGE_POLICY: "persistent",
+    PDPP_NEKO_PROFILE_STORAGE_ROOT: "/var/lib/pdpp/neko-profiles",
+  };
+
+  assert.throws(
+    () =>
+      parseNekoBrowserSurfaceRuntimeConfig({
+        ...baseEnv,
+        PDPP_NEKO_CDP_HTTP_URL: "http://neko:9222",
+      }),
+    /PDPP_NEKO_CDP_HTTP_URL is static-only/,
+  );
+  assert.throws(
+    () =>
+      parseNekoBrowserSurfaceRuntimeConfig({
+        ...baseEnv,
+        PDPP_NEKO_STATIC_PROFILE_KEY: "chatgpt",
+      }),
+    /PDPP_NEKO_STATIC_PROFILE_KEY is static-only/,
+  );
+});
+
+test("dynamic runtime config validates cap and readiness timeout", () => {
+  const baseEnv = {
+    PDPP_NEKO_SURFACE_MODE: "dynamic",
+    PDPP_NEKO_MANAGED_CONNECTORS: "chatgpt",
+    PDPP_NEKO_ALLOCATOR_URL: "http://neko-allocator:7345",
+    PDPP_NEKO_PROFILE_STORAGE_POLICY: "persistent",
+    PDPP_NEKO_PROFILE_STORAGE_ROOT: "/var/lib/pdpp/neko-profiles",
+  };
+
+  assert.throws(
+    () =>
+      parseNekoBrowserSurfaceRuntimeConfig({
+        ...baseEnv,
+        PDPP_NEKO_SURFACE_CAP: "0",
+      }),
+    /PDPP_NEKO_SURFACE_CAP must be an integer >= 1/,
+  );
+  assert.throws(
+    () =>
+      parseNekoBrowserSurfaceRuntimeConfig({
+        ...baseEnv,
+        PDPP_NEKO_SURFACE_CAP: "1",
+        PDPP_NEKO_READINESS_TIMEOUT_MS: "0",
+      }),
+    /PDPP_NEKO_READINESS_TIMEOUT_MS must be an integer >= 1/,
+  );
+  assert.throws(
+    () =>
+      parseNekoBrowserSurfaceRuntimeConfig({
+        ...baseEnv,
+        PDPP_NEKO_SURFACE_CAP: "1",
+        PDPP_NEKO_READINESS_TIMEOUT_MS: "1.5",
+      }),
+    /PDPP_NEKO_READINESS_TIMEOUT_MS must be a non-negative integer/,
+  );
+});
+
+test("dynamic runtime config requires allocator and persistent profile storage settings", () => {
+  const baseEnv = {
+    PDPP_NEKO_SURFACE_MODE: "dynamic",
+    PDPP_NEKO_MANAGED_CONNECTORS: "chatgpt",
+    PDPP_NEKO_SURFACE_CAP: "1",
+    PDPP_NEKO_ALLOCATOR_URL: "http://neko-allocator:7345",
+    PDPP_NEKO_PROFILE_STORAGE_POLICY: "persistent",
+    PDPP_NEKO_PROFILE_STORAGE_ROOT: "/var/lib/pdpp/neko-profiles",
+  };
+
+  assert.throws(
+    () =>
+      parseNekoBrowserSurfaceRuntimeConfig({
+        ...baseEnv,
+        PDPP_NEKO_ALLOCATOR_URL: "",
+      }),
+    /PDPP_NEKO_ALLOCATOR_URL is required/,
+  );
+  assert.throws(
+    () =>
+      parseNekoBrowserSurfaceRuntimeConfig({
+        ...baseEnv,
+        PDPP_NEKO_PROFILE_STORAGE_POLICY: "ephemeral",
+      }),
+    /PDPP_NEKO_PROFILE_STORAGE_POLICY must be one of: persistent/,
+  );
+  assert.throws(
+    () =>
+      parseNekoBrowserSurfaceRuntimeConfig({
+        ...baseEnv,
+        PDPP_NEKO_PROFILE_STORAGE_ROOT: "",
+      }),
+    /PDPP_NEKO_PROFILE_STORAGE_ROOT is required/,
   );
 });
