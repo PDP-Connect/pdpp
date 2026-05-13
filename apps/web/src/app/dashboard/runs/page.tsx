@@ -93,6 +93,8 @@ export default async function RunsPage({ searchParams }: { searchParams: Promise
           { value: "failed", label: "failed" },
           { value: "cancelled", label: "cancelled" },
           { value: "started", label: "started" },
+          { value: "waiting_for_browser_surface", label: "waiting for browser" },
+          { value: "deferred", label: "deferred" },
         ],
       },
     },
@@ -116,6 +118,7 @@ export default async function RunsPage({ searchParams }: { searchParams: Promise
 
 function RunRow({ run, peeked, href }: { run: RunSummary; peeked: boolean; href: string }) {
   const awaitingInput = isAwaitingInteraction(run);
+  const browserSurfaceCopy = browserSurfaceStatusCopy(run);
   return (
     <Link
       aria-current={peeked ? "true" : undefined}
@@ -127,6 +130,7 @@ function RunRow({ run, peeked, href }: { run: RunSummary; peeked: boolean; href:
         <code className="pdpp-caption break-all font-medium font-mono text-foreground">{run.run_id}</code>
         <div className="flex items-center gap-2">
           {awaitingInput ? <AwaitingInputChip /> : null}
+          {browserSurfaceCopy ? <BrowserSurfaceChip label={browserSurfaceCopy.label} /> : null}
           <StatusBadge status={run.status} />
           <span className="pdpp-caption text-muted-foreground">
             <Timestamp value={run.last_at} />
@@ -139,6 +143,9 @@ function RunRow({ run, peeked, href }: { run: RunSummary; peeked: boolean; href:
         {run.provider_id ? ` · provider ${run.provider_id}` : ""}
         {run.failure_reason ? ` · ${run.failure_reason}` : ""}
       </div>
+      {browserSurfaceCopy ? (
+        <div className="pdpp-caption mt-1 text-muted-foreground">{browserSurfaceCopy.detail}</div>
+      ) : null}
     </Link>
   );
 }
@@ -153,6 +160,42 @@ function AwaitingInputChip() {
       needs input
     </span>
   );
+}
+
+function BrowserSurfaceChip({ label }: { label: string }) {
+  return (
+    <span
+      className="pdpp-eyebrow rounded-[3px] bg-muted px-1.5 py-0.5 font-medium text-foreground"
+      title="This is browser-surface resource backpressure, not connector auth or protocol failure."
+    >
+      {label}
+    </span>
+  );
+}
+
+function browserSurfaceStatusCopy(run: RunSummary): { detail: string; label: string } | null {
+  if (!run.browser_surface_status) {
+    return null;
+  }
+  const reason = run.browser_surface_wait_reason
+    ? ` Reason: ${run.browser_surface_wait_reason.replaceAll("_", " ")}.`
+    : "";
+  if (run.browser_surface_status === "waiting_for_browser_surface") {
+    return {
+      label: "browser queued",
+      detail: `Waiting for an available n.eko browser surface. This is runtime resource backpressure, not connector auth or protocol failure.${reason}`,
+    };
+  }
+  if (run.browser_surface_status === "deferred") {
+    return {
+      label: "browser deferred",
+      detail: `Deferred by the n.eko browser-surface lease policy. This is runtime resource backpressure, not connector auth or protocol failure.${reason}`,
+    };
+  }
+  return {
+    label: "browser surface",
+    detail: `Browser-surface lease status: ${run.browser_surface_status.replaceAll("_", " ")}.${reason}`,
+  };
 }
 
 // A run is "live" (worth auto-polling) if it is non-terminal OR is waiting

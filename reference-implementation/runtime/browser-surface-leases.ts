@@ -138,6 +138,28 @@ export interface ReleaseBrowserSurfaceLeaseResult {
   readonly surface?: BrowserSurface;
 }
 
+export interface TerminalBrowserSurfaceLeaseResult {
+  readonly stale: boolean;
+  readonly lease?: BrowserSurfaceLease;
+  readonly promoted?: BrowserSurfaceLease;
+  readonly surface?: BrowserSurface;
+}
+
+export interface ReconcileBrowserSurfaceLeasesAfterRestartRequest {
+  readonly activeRunIds?: ReadonlySet<string>;
+  readonly promoteQueued?: boolean;
+}
+
+export interface ReconcileBrowserSurfaceLeasesAfterRestartResult {
+  readonly released: BrowserSurfaceLease[];
+  readonly expired: BrowserSurfaceLease[];
+  readonly deferred: BrowserSurfaceLease[];
+  readonly surfaceFailed: BrowserSurfaceLease[];
+  readonly queued: BrowserSurfaceLease[];
+  readonly activeLeased: BrowserSurfaceLease[];
+  readonly promoted: BrowserSurfaceLease[];
+}
+
 export function isTerminalBrowserSurfaceLeaseStatus(status: BrowserSurfaceLeaseStatus): boolean {
   return TERMINAL_STATUS_SET.has(status);
 }
@@ -157,7 +179,9 @@ export function browserSurfaceLeaseEnv(lease: BrowserSurfaceLease, surface: Brow
     PDPP_BROWSER_SURFACE_REQUIRED: "neko",
     PDPP_BROWSER_SURFACE_LEASE_ID: lease.lease_id,
     PDPP_BROWSER_SURFACE_PROFILE_KEY: lease.profile_key,
+    PDPP_BROWSER_SURFACE_ID: surface.surface_id,
     PDPP_BROWSER_SURFACE_REMOTE_CDP_URL: surface.cdp_url,
+    PDPP_BROWSER_SURFACE_STREAM_BASE_URL: surface.stream_base_url,
   };
 }
 
@@ -291,17 +315,23 @@ export class BrowserSurfaceLeaseManager {
   }
 
   cancel(runId: string): BrowserSurfaceLease | undefined {
+    return this.cancelAndPump(runId).lease;
+  }
+
+  cancelAndPump(runId: string): TerminalBrowserSurfaceLeaseResult {
     const lease = this.#findNonTerminalRunLease(runId);
     if (!lease) {
-      return undefined;
+      return { stale: true };
     }
     const cancelled = this.#terminalLease(lease, "cancelled");
     this.#leases.set(cancelled.lease_id, cancelled);
+    let surface: BrowserSurface | undefined;
+    let promoted: BrowserSurfaceLease | undefined;
     if (lease.surface_id) {
-      this.#clearSurfaceLease(lease.surface_id, lease.lease_id);
-      this.#pumpQueue();
+      surface = this.#clearSurfaceLease(lease.surface_id, lease.lease_id);
+      promoted = this.#pumpQueue(surface?.surface_id);
     }
-    return cancelled;
+    return { stale: false, lease: cancelled, ...(surface ? { surface } : {}), ...(promoted ? { promoted } : {}) };
   }
 
   expireWaitingLeases(): BrowserSurfaceLease[] {
@@ -313,9 +343,6 @@ export class BrowserSurfaceLeaseManager {
         this.#leases.set(deferred.lease_id, deferred);
         expired.push(deferred);
       }
-    }
-    if (expired.length > 0) {
-      this.#pumpQueue();
     }
     return expired;
   }
@@ -343,6 +370,101 @@ export class BrowserSurfaceLeaseManager {
     return deferred;
   }
 
+  deferLeasedRun(
+    request: ReleaseBrowserSurfaceLeaseRequest,
+    waitReason: BrowserSurfaceWaitReason = "launch_precondition_failed",
+  ): TerminalBrowserSurfaceLeaseResult {
+    const lease = this.#leases.get(request.leaseId);
+    if (!lease || lease.fencing_token !== request.fencingToken || lease.status !== "leased" || !lease.surface_id) {
+      return { stale: true, ...(lease ? { lease } : {}) };
+    }
+
+    const deferred = this.#terminalLease(lease, "deferred", waitReason);
+    this.#leases.set(deferred.lease_id, deferred);
+    const surface = this.#clearSurfaceLease(lease.surface_id, lease.lease_id);
+    const promoted = this.#releasePromotesNext ? this.#pumpQueue(surface?.surface_id) : undefined;
+    return { stale: false, lease: deferred, ...(surface ? { surface } : {}), ...(promoted ? { promoted } : {}) };
+  }
+
+  reconcileAfterRestart(
+    request: ReconcileBrowserSurfaceLeasesAfterRestartRequest = {},
+  ): ReconcileBrowserSurfaceLeasesAfterRestartResult {
+    const activeRunIds = request.activeRunIds ?? new Set<string>();
+    const result: ReconcileBrowserSurfaceLeasesAfterRestartResult = {
+      released: [],
+      expired: [],
+      deferred: [],
+      surfaceFailed: [],
+      queued: [],
+      activeLeased: [],
+      promoted: [],
+    };
+
+    for (const lease of [...this.#leases.values()]) {
+      if (isTerminalBrowserSurfaceLeaseStatus(lease.status)) {
+        continue;
+      }
+
+      if (lease.status === "waiting_for_browser_surface") {
+        const reconciled = this.#reconcileWaitingLease(lease);
+        if (reconciled.status === "waiting_for_browser_surface") {
+          result.queued.push(reconciled);
+        } else if (reconciled.status === "deferred") {
+          result.deferred.push(reconciled);
+        }
+        continue;
+      }
+
+      if (lease.status !== "leased") {
+        continue;
+      }
+
+      const surface = lease.surface_id ? this.#surfaces.get(lease.surface_id) : undefined;
+      if (!surface) {
+        const expired = this.#terminalLease(lease, "expired");
+        this.#leases.set(expired.lease_id, expired);
+        result.expired.push(expired);
+        continue;
+      }
+
+      if (surface.health === "unhealthy") {
+        const failed = this.#terminalLease(lease, "surface_failed", "surface_unhealthy");
+        this.#leases.set(failed.lease_id, failed);
+        this.#clearSurfaceLease(surface.surface_id, lease.lease_id);
+        result.surfaceFailed.push(failed);
+        continue;
+      }
+
+      if (activeRunIds.has(lease.run_id)) {
+        result.activeLeased.push(lease);
+        continue;
+      }
+
+      const released = this.#terminalLease(lease, "released");
+      this.#leases.set(released.lease_id, released);
+      this.#clearSurfaceLease(surface.surface_id, lease.lease_id);
+      result.released.push(released);
+    }
+
+    if (request.promoteQueued !== false) {
+      result.promoted.push(...this.pumpQueuedLeases());
+    }
+
+    return result;
+  }
+
+  pumpQueuedLeases(): BrowserSurfaceLease[] {
+    const promoted: BrowserSurfaceLease[] = [];
+    while (true) {
+      const lease = this.#pumpQueue();
+      if (!lease) {
+        break;
+      }
+      promoted.push(lease);
+    }
+    return promoted;
+  }
+
   #resolveNewLease(lease: BrowserSurfaceLease, now: string): BrowserSurfaceLease {
     if (this.#config.surfaceMode === "static" && this.#config.staticProfileKey && lease.profile_key !== this.#config.staticProfileKey) {
       return { ...lease, status: "deferred", wait_reason: "incompatible_static_profile" };
@@ -360,6 +482,20 @@ export class BrowserSurfaceLeaseManager {
     const surface = this.#createSurfaceForLease(lease, now);
     this.#surfaces.set(surface.surface_id, surface);
     return this.#leaseSurface(lease, surface, now);
+  }
+
+  #reconcileWaitingLease(lease: BrowserSurfaceLease): BrowserSurfaceLease {
+    if (this.#config.surfaceMode === "static" && this.#config.staticProfileKey && lease.profile_key !== this.#config.staticProfileKey) {
+      const deferred = this.#terminalLease(lease, "deferred", "incompatible_static_profile");
+      this.#leases.set(deferred.lease_id, deferred);
+      return deferred;
+    }
+    if (Date.parse(lease.expires_at) <= this.#now().getTime()) {
+      const deferred = this.#terminalLease(lease, "deferred", "lease_wait_timeout");
+      this.#leases.set(deferred.lease_id, deferred);
+      return deferred;
+    }
+    return lease;
   }
 
   #pumpQueue(preferredSurfaceId?: string): BrowserSurfaceLease | undefined {

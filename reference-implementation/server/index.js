@@ -73,6 +73,11 @@ import { createRunTargetRegistry } from './streaming/run-target-registry.js';
 import { createPlayground } from './streaming/playground.js';
 import { createController } from '../runtime/controller.ts';
 import {
+  BrowserSurfaceLeaseManager,
+  parseNekoBrowserSurfaceLeaseConfig,
+} from '../runtime/browser-surface-leases.ts';
+import { getDefaultBrowserSurfaceLeaseStore } from './stores/browser-surface-lease-store.ts';
+import {
   createPdppCliCommand,
   PDPP_CLI_DEFAULT_CLIENT_ID,
   getPdppCliPackageInfo,
@@ -5833,16 +5838,28 @@ export async function startServer(opts = {}) {
   // call below receives the same instance; routes are attached there as
   // before. See reference-implementation/server/streaming/run-target-registry.js.
   const runTargetRegistry = createRunTargetRegistry({ logger: opts.streamingLogger });
+  const browserSurfaceLeaseConfig = parseNekoBrowserSurfaceLeaseConfig();
+  const browserSurfaceLeaseStore =
+    browserSurfaceLeaseConfig.managedConnectors.size > 0 ? getDefaultBrowserSurfaceLeaseStore() : null;
+  const browserSurfaceLeaseManager = browserSurfaceLeaseStore
+    ? new BrowserSurfaceLeaseManager({
+        config: browserSurfaceLeaseConfig,
+        initialSurfaces: await browserSurfaceLeaseStore.listSurfaces(),
+        initialLeases: await browserSurfaceLeaseStore.listNonTerminalLeases(),
+      })
+    : null;
   const controller = createController({
     asPublicUrl: configuredAsPublicUrl,
     ownerSubjectId: opts.ownerAuthSubjectId,
     connectorPathResolver: opts.connectorPathResolver,
+    ...(browserSurfaceLeaseManager ? { browserSurfaceLeaseManager, browserSurfaceLeaseStore } : {}),
     runtimeContext,
     streamingTargetNonceHooks: {
       registerNonce: (args) => runTargetRegistry.registerNonce(args),
       clearNonce: (args) => runTargetRegistry.clearNonce(args),
     },
   });
+  await controller.reconcileBrowserSurfaceLeasesAfterBoot();
   const asApp = buildAsApp({
     nativeManifest: nativeConfig?.nativeManifest || null,
     controller,
@@ -5941,6 +5958,7 @@ export async function startServer(opts = {}) {
   // should post ingest/state traffic directly to the local RS listener rather
   // than routing large NDJSON payloads through the browser-facing web origin.
   runtimeContext.rsUrl = `http://localhost:${rsPort}`;
+  await controller.promoteBrowserSurfaceLeasesAfterBoot();
   logger.info({ port: rsPort, url: `http://localhost:${rsPort}` }, 'resource server listening');
   const startupBackfillAbortController = new AbortController();
   const startupBackfillDone = scheduleRetrievalStartupBackfill({

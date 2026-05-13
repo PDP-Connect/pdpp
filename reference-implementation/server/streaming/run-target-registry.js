@@ -296,6 +296,14 @@ function normalizeTargetDescriptor(input) {
       source.start_url ?? source.startUrl ?? input.start_url ?? input.startUrl,
     );
     if (startUrl !== undefined) descriptor.start_url = startUrl;
+    const browserSessionId = optionalString(source.browser_session_id ?? source.browserSessionId);
+    if (browserSessionId !== undefined) descriptor.browser_session_id = browserSessionId;
+    const leaseId = optionalString(source.lease_id ?? source.leaseId);
+    if (leaseId !== undefined) descriptor.lease_id = leaseId;
+    const profileKey = optionalString(source.profile_key ?? source.profileKey);
+    if (profileKey !== undefined) descriptor.profile_key = profileKey;
+    const surfaceId = optionalString(source.surface_id ?? source.surfaceId);
+    if (surfaceId !== undefined) descriptor.surface_id = surfaceId;
     const auth = normalizeAuthMetadata(source.auth ?? input.auth);
     if (auth !== undefined) descriptor.auth = auth;
     return {
@@ -611,8 +619,8 @@ export function createRunTargetRegistry({
   }
 
   function attachRoutes(app, requireDeviceExporterAuth) {
-    if (!app || typeof app.put !== 'function' || typeof app.delete !== 'function') {
-      throw new Error('attachRoutes: app must support .put() and .delete()');
+    if (!app || typeof app.put !== 'function' || typeof app.post !== 'function' || typeof app.delete !== 'function') {
+      throw new Error('attachRoutes: app must support .put(), .post(), and .delete()');
     }
     if (typeof requireDeviceExporterAuth !== 'function') {
       throw new Error('attachRoutes: requireDeviceExporterAuth middleware is required');
@@ -655,7 +663,7 @@ export function createRunTargetRegistry({
     const RESOURCE_PATH =
       '/admin/runs/:runId/interactions/:interactionId/streaming-target';
 
-    app.put(RESOURCE_PATH, requireAuth, (req, res) => {
+    function handleRegister(req, res) {
       try {
         const runId = decodeURIComponent(req.params.runId);
         const interactionId = decodeURIComponent(req.params.interactionId);
@@ -715,7 +723,10 @@ export function createRunTargetRegistry({
         log('warn', 'run_target_register_failed', { error: err?.message });
         return sendError(res, 500, 'server_error', 'Failed to register run streaming target');
       }
-    });
+    }
+
+    app.put(RESOURCE_PATH, requireAuth, handleRegister);
+    app.post(RESOURCE_PATH, requireAuth, handleRegister);
 
     app.delete(RESOURCE_PATH, requireAuth, (req, res) => {
       try {

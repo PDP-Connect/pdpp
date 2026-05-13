@@ -197,6 +197,10 @@ export interface SpineFailureSummary {
 export interface SpineSummary {
   actor_id: string;
   actor_type: string;
+  browser_surface_lease_id?: string;
+  browser_surface_profile_key?: string;
+  browser_surface_status?: string;
+  browser_surface_wait_reason?: string;
   client_id: string | null;
   connector_id: string | null;
   event_count: number;
@@ -801,6 +805,19 @@ function summarizeEvents(events: readonly SpineEventRecord[]): SpineSummary | nu
       break;
     }
   }
+  let browserSurfaceProjection: Record<string, unknown> | null = null;
+  for (let i = events.length - 1; i >= 0; i -= 1) {
+    const event = events[i];
+    if (!event?.event_type?.startsWith("run.browser_surface_")) {
+      continue;
+    }
+    const data = event.data && typeof event.data === "object" ? (event.data as Record<string, unknown>) : null;
+    const projection = data?.browser_surface;
+    if (projection && typeof projection === "object" && !Array.isArray(projection)) {
+      browserSurfaceProjection = projection as Record<string, unknown>;
+      break;
+    }
+  }
 
   return {
     first_at: first.occurred_at,
@@ -820,6 +837,18 @@ function summarizeEvents(events: readonly SpineEventRecord[]): SpineSummary | nu
     connector_id,
     actor_type: first.actor_type,
     actor_id: first.actor_id,
+    ...(typeof browserSurfaceProjection?.browser_surface_status === "string"
+      ? { browser_surface_status: browserSurfaceProjection.browser_surface_status }
+      : {}),
+    ...(typeof browserSurfaceProjection?.browser_surface_wait_reason === "string"
+      ? { browser_surface_wait_reason: browserSurfaceProjection.browser_surface_wait_reason }
+      : {}),
+    ...(typeof browserSurfaceProjection?.browser_surface_lease_id === "string"
+      ? { browser_surface_lease_id: browserSurfaceProjection.browser_surface_lease_id }
+      : {}),
+    ...(typeof browserSurfaceProjection?.browser_surface_profile_key === "string"
+      ? { browser_surface_profile_key: browserSurfaceProjection.browser_surface_profile_key }
+      : {}),
     failure: terminalFailure
       ? {
           event_type: terminalFailure.event_type,

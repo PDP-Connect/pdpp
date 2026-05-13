@@ -352,7 +352,7 @@ const STREAMING_REGISTRATION_TOKEN_ENV = "PDPP_STREAMING_REGISTRATION_TOKEN";
 const LOCAL_DEVICE_TOKEN_ENV = "PDPP_LOCAL_DEVICE_TOKEN";
 
 export interface StreamingTargetRegistrationHooks {
-  register(args: RegisterArgs): Promise<boolean>;
+  register(args: StreamingTargetRegisterArgs): Promise<boolean>;
   readonly runId: string;
   unregister(args: UnregisterArgs): Promise<boolean>;
 }

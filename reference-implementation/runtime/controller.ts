@@ -38,9 +38,11 @@ import {
   type BrowserSurfaceLease,
   type BrowserSurfaceLeaseManager,
   type BrowserSurfaceProjection,
+  type BrowserSurface,
   browserSurfaceLeaseEnv,
   projectBrowserSurfaceLease,
 } from "./browser-surface-leases.ts";
+import { type BrowserSurfaceLeaseStore } from "../server/stores/browser-surface-lease-store.ts";
 import { runConnector } from "./index.js";
 
 // ─── Path constants ─────────────────────────────────────────────────────────
@@ -182,6 +184,10 @@ export interface PendingInteractionProjection {
   readonly stream: string | null;
 }
 
+export interface BrowserSurfaceRunProjection extends BrowserSurfaceProjection {
+  readonly connector_id: string;
+}
+
 export type ConnectorPathResolver = (
   connectorId: string,
   manifest?: ConnectorManifest,
@@ -225,6 +231,7 @@ export interface ControllerOptions {
   runtimeContext?: { rsUrl?: string; referenceBaseUrl?: string };
   scheduler?: unknown;
   browserSurfaceLeaseManager?: BrowserSurfaceLeaseManager;
+  browserSurfaceLeaseStore?: BrowserSurfaceLeaseStore;
   runConnectorImpl?: RunConnectorFn;
   // Optional store override; defaults to the configured storage-backed singleton.
   // Tests use this to substitute fakes without touching module-scoped state.
@@ -243,6 +250,7 @@ export interface ControllerOptions {
 }
 
 export interface Controller {
+  cancelBrowserSurfaceRun(runId: string): Promise<BrowserSurfaceProjection | null>;
   clearNeedsHuman(connectorId: string): void;
   deleteSchedule(connectorId: string): Promise<boolean>;
   /**
@@ -261,12 +269,16 @@ export interface Controller {
    *     paths A/B couldn't intercept (SIGKILL, OOM, power loss).
    */
   drainActiveRuns(timeoutMs: number): Promise<DrainSummary>;
+  expireBrowserSurfaceWaits(): Promise<BrowserSurfaceProjection[]>;
   getActiveRun(connectorId: string): ActiveRun | null;
   getPendingInteraction(runId: string): PendingInteractionProjection | null;
   getSchedule(connectorId: string): Promise<ScheduleApi | null>;
   listSchedules(): Promise<ScheduleApi[]>;
   markNeedsHuman(connectorId: string): void;
+  promoteBrowserSurfaceLeasesAfterBoot(): Promise<void>;
+  reconcileBrowserSurfaceLeasesAfterBoot(): Promise<void>;
   respondToInteraction(runId: string, input?: RunInteractionResponseInput): RunInteractionAck;
+  listBrowserSurfaceRunProjections(): BrowserSurfaceRunProjection[];
   runNow(connectorId: string, options?: RunNowOptions): Promise<RunNowResult>;
   setScheduleEnabled(connectorId: string, enabled: boolean): Promise<ScheduleApi | null>;
   upsertSchedule(connectorId: string, input: ConnectorSchedulePatch): Promise<ScheduleUpsertResult>;
@@ -891,8 +903,10 @@ export function createController(opts: ControllerOptions = {}): Controller {
   const ownerSubjectId = opts.ownerSubjectId || "owner_local";
   const schedulerStore = opts.schedulerStore || getDefaultSchedulerStore();
   const browserSurfaceLeaseManager = opts.browserSurfaceLeaseManager;
+  const browserSurfaceLeaseStore = opts.browserSurfaceLeaseStore;
   const runConnectorImpl = opts.runConnectorImpl || runConnector;
   const pendingBrowserSurfaceLaunches = new Map<string, RunNowOptions>();
+  const activeRunTraceContexts = new Map<string, SpineTraceContext>();
 
   // `runtime` and `scheduler` are declared in ControllerOptions as hooks
   // for a later slice that will wire runtime state into the schedule
@@ -969,7 +983,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
     }
   }
 
-  reconcileAbandonedControllerRuns().catch((err) => {
+  const startupControllerRunReconciliation = reconcileAbandonedControllerRuns().catch((err) => {
     const message = err instanceof Error ? err.message : String(err);
     log.warn?.(`[controller] failed to reconcile abandoned controller-managed runs: ${message}`);
   });
@@ -1055,6 +1069,158 @@ export function createController(opts: ControllerOptions = {}): Controller {
       const message = err instanceof Error ? err.message : String(err);
       log.warn?.(`[controller] failed to emit ${eventType} for ${runId}: ${message}`);
     });
+  }
+
+  async function persistBrowserSurfaceLeaseMutation(lease: BrowserSurfaceLease, surface?: BrowserSurface): Promise<void> {
+    if (!browserSurfaceLeaseStore) {
+      return;
+    }
+    await browserSurfaceLeaseStore.withLeaseTransaction(async (store) => {
+      if (surface) {
+        await store.upsertSurface(surface);
+      }
+      await store.upsertLease(lease);
+    });
+  }
+
+  function promoteBrowserSurfaceLease(lease: BrowserSurfaceLease, reason: string): void {
+    const promotedOptions = pendingBrowserSurfaceLaunches.get(lease.run_id) ?? {};
+    pendingBrowserSurfaceLaunches.delete(lease.run_id);
+    void runNow(lease.connector_id, {
+      ...promotedOptions,
+      runId: lease.run_id,
+      priorityClass: lease.priority_class,
+    }).catch(async (err) => {
+      const deferredResult = browserSurfaceLeaseManager?.deferLeasedRun({
+        leaseId: lease.lease_id,
+        fencingToken: lease.fencing_token,
+      });
+      if (deferredResult?.lease) {
+        try {
+          emitBrowserSurfaceLeaseEvent(
+            "run.browser_surface_deferred",
+            deferredResult.lease.connector_id,
+            deferredResult.lease.run_id,
+            createTraceContext(),
+            deferredResult.lease,
+          );
+          await persistBrowserSurfaceLeaseMutation(deferredResult.lease, deferredResult.surface);
+        } catch {}
+      }
+      if (deferredResult?.promoted) {
+        await persistAndPromoteBrowserSurfaceLeases([deferredResult.promoted], `${reason} promotion failure`);
+      }
+      const message = err instanceof Error ? err.message : String(err);
+      log.warn?.(`[controller] browser-surface lease ${lease.lease_id} promotion failed after ${reason}: ${message}`);
+    });
+  }
+
+  async function persistAndPromoteBrowserSurfaceLeases(leases: BrowserSurfaceLease[], reason: string): Promise<void> {
+    if (!browserSurfaceLeaseManager) {
+      return;
+    }
+    for (const lease of leases) {
+      await persistBrowserSurfaceLeaseMutation(
+        lease,
+        lease.surface_id ? browserSurfaceLeaseManager.getSurface(lease.surface_id) : undefined
+      );
+      promoteBrowserSurfaceLease(lease, reason);
+    }
+  }
+
+  async function releaseBrowserSurfaceLease(
+    lease: BrowserSurfaceLease,
+    connectorId: string,
+    runId: string,
+    traceContext: SpineTraceContext,
+    reason: string,
+  ): Promise<void> {
+    const releaseResult = browserSurfaceLeaseManager?.release({
+      leaseId: lease.lease_id,
+      fencingToken: lease.fencing_token,
+    });
+    if (releaseResult?.lease) {
+      emitBrowserSurfaceLeaseEvent("run.browser_surface_released", connectorId, runId, traceContext, releaseResult.lease);
+      await persistBrowserSurfaceLeaseMutation(releaseResult.lease, releaseResult.surface);
+    }
+    if (releaseResult?.promoted) {
+      await persistAndPromoteBrowserSurfaceLeases([releaseResult.promoted], reason);
+    }
+  }
+
+  async function cancelBrowserSurfaceRun(runId: string): Promise<BrowserSurfaceProjection | null> {
+    if (!browserSurfaceLeaseManager) {
+      return null;
+    }
+    const cancelResult = browserSurfaceLeaseManager.cancelAndPump(runId);
+    if (!cancelResult.lease) {
+      return null;
+    }
+    pendingBrowserSurfaceLaunches.delete(runId);
+    emitBrowserSurfaceLeaseEvent(
+      "run.browser_surface_cancelled",
+      cancelResult.lease.connector_id,
+      cancelResult.lease.run_id,
+      createTraceContext(),
+      cancelResult.lease,
+    );
+    await persistBrowserSurfaceLeaseMutation(cancelResult.lease, cancelResult.surface);
+    if (cancelResult.promoted) {
+      await persistAndPromoteBrowserSurfaceLeases([cancelResult.promoted], "browser-surface cancellation");
+    }
+    return projectBrowserSurfaceLease(cancelResult.lease);
+  }
+
+  async function expireBrowserSurfaceWaits(): Promise<BrowserSurfaceProjection[]> {
+    if (!browserSurfaceLeaseManager) {
+      return [];
+    }
+    const deferred = browserSurfaceLeaseManager.expireWaitingLeases();
+    for (const lease of deferred) {
+      pendingBrowserSurfaceLaunches.delete(lease.run_id);
+      emitBrowserSurfaceLeaseEvent("run.browser_surface_deferred", lease.connector_id, lease.run_id, createTraceContext(), lease);
+      await persistBrowserSurfaceLeaseMutation(lease);
+    }
+    await persistAndPromoteBrowserSurfaceLeases(
+      browserSurfaceLeaseManager.pumpQueuedLeases(),
+      "browser-surface timeout",
+    );
+    return deferred.map((lease) => projectBrowserSurfaceLease(lease));
+  }
+
+  async function reconcileBrowserSurfaceLeasesAfterBoot(): Promise<void> {
+    await startupControllerRunReconciliation;
+    if (!browserSurfaceLeaseManager) {
+      return;
+    }
+    const activeRunIds = new Set((await listPersistedActiveRuns()).map((row) => row.run_id));
+    const reconciled = browserSurfaceLeaseManager.reconcileAfterRestart({ activeRunIds, promoteQueued: false });
+    for (const lease of reconciled.released) {
+      emitBrowserSurfaceLeaseEvent("run.browser_surface_released", lease.connector_id, lease.run_id, createTraceContext(), lease);
+      await persistBrowserSurfaceLeaseMutation(lease, lease.surface_id ? browserSurfaceLeaseManager.getSurface(lease.surface_id) : undefined);
+    }
+    for (const lease of reconciled.expired) {
+      emitBrowserSurfaceLeaseEvent("run.browser_surface_expired", lease.connector_id, lease.run_id, createTraceContext(), lease);
+      await persistBrowserSurfaceLeaseMutation(lease);
+    }
+    for (const lease of reconciled.deferred) {
+      emitBrowserSurfaceLeaseEvent("run.browser_surface_deferred", lease.connector_id, lease.run_id, createTraceContext(), lease);
+      await persistBrowserSurfaceLeaseMutation(lease);
+    }
+    for (const lease of reconciled.surfaceFailed) {
+      emitBrowserSurfaceLeaseEvent("run.browser_surface_failed", lease.connector_id, lease.run_id, createTraceContext(), lease);
+      await persistBrowserSurfaceLeaseMutation(lease, lease.surface_id ? browserSurfaceLeaseManager.getSurface(lease.surface_id) : undefined);
+    }
+  }
+
+  async function promoteBrowserSurfaceLeasesAfterBoot(): Promise<void> {
+    if (!browserSurfaceLeaseManager) {
+      return;
+    }
+    await persistAndPromoteBrowserSurfaceLeases(
+      browserSurfaceLeaseManager.pumpQueuedLeases(),
+      "post-listener boot reconciliation"
+    );
   }
 
   async function getConnectorRefreshPolicy(connectorId: string): Promise<RefreshPolicy | null> {
@@ -1204,6 +1370,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
         priorityClass,
       });
       browserSurfaceLease = leaseResult.lease;
+      await persistBrowserSurfaceLeaseMutation(leaseResult.lease, leaseResult.surface);
       if (leaseResult.duplicateOf && leaseResult.lease.run_id !== runId) {
         throw new ControllerError(
           `Connector already has a pending browser-surface run: ${leaseResult.lease.run_id}`,
@@ -1244,6 +1411,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
 
       if (leaseResult.lease.status === "leased" && leaseResult.surface) {
         pendingBrowserSurfaceLaunches.delete(leaseResult.lease.run_id);
+        emitBrowserSurfaceLeaseEvent("run.browser_surface_starting", connectorId, runId, traceContext, leaseResult.lease);
         emitBrowserSurfaceLeaseEvent("run.browser_surface_leased", connectorId, runId, traceContext, leaseResult.lease);
         browserSurfaceEnv = browserSurfaceLeaseEnv(leaseResult.lease, leaseResult.surface);
       } else {
@@ -1285,6 +1453,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
         trace_id: traceContext.trace_id,
         started_at: startedAt,
       });
+      activeRunTraceContexts.set(runId, traceContext);
       activeRunInteractions.set(runId, {
         connector_id: connectorId,
         pending: null,
@@ -1313,10 +1482,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
       }
     } catch (err) {
       if (browserSurfaceLease) {
-        browserSurfaceLeaseManager?.release({
-          leaseId: browserSurfaceLease.lease_id,
-          fencingToken: browserSurfaceLease.fencing_token,
-        });
+        await releaseBrowserSurfaceLease(browserSurfaceLease, connectorId, runId, traceContext, "pre-spawn failure");
       }
       throw err;
     }
@@ -1365,9 +1531,10 @@ export function createController(opts: ControllerOptions = {}): Controller {
         const message = err instanceof Error ? err.message : String(err);
         log.error?.(`[controller] manual run failed for ${connectorId}: ${message}`);
       })
-      .finally(() => {
+      .finally(async () => {
         activeRuns.delete(connectorId);
         activeRunPromises.delete(runId);
+        activeRunTraceContexts.delete(runId);
         clearPersistedActiveRun(connectorId, runId).catch((err) => {
           const message = err instanceof Error ? err.message : String(err);
           log.warn?.(`[controller] failed to clear active run ${runId} for ${connectorId}: ${message}`);
@@ -1383,36 +1550,11 @@ export function createController(opts: ControllerOptions = {}): Controller {
           }
         }
         if (browserSurfaceLease) {
-          const releaseResult = browserSurfaceLeaseManager?.release({
-            leaseId: browserSurfaceLease.lease_id,
-            fencingToken: browserSurfaceLease.fencing_token,
-          });
-          if (releaseResult?.lease) {
-            emitBrowserSurfaceLeaseEvent(
-              "run.browser_surface_released",
-              connectorId,
-              runId,
-              traceContext,
-              releaseResult.lease
-            );
-          }
-          if (releaseResult?.promoted) {
-            const promotedOptions = pendingBrowserSurfaceLaunches.get(releaseResult.promoted.run_id) ?? {};
-            pendingBrowserSurfaceLaunches.delete(releaseResult.promoted.run_id);
-            void runNow(releaseResult.promoted.connector_id, {
-              ...promotedOptions,
-              runId: releaseResult.promoted.run_id,
-              priorityClass: releaseResult.promoted.priority_class,
-            }).catch((err) => {
-              browserSurfaceLeaseManager?.release({
-                leaseId: releaseResult.promoted!.lease_id,
-                fencingToken: releaseResult.promoted!.fencing_token,
-              });
-              const message = err instanceof Error ? err.message : String(err);
-              log.warn?.(
-                `[controller] browser-surface lease ${releaseResult.promoted!.lease_id} promotion failed after ${runId} release: ${message}`
-              );
-            });
+          try {
+            await releaseBrowserSurfaceLease(browserSurfaceLease, connectorId, runId, traceContext, `${runId} release`);
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            log.warn?.(`[controller] failed to persist browser-surface lease release for ${runId}: ${message}`);
           }
         }
         const leftover = activeRunInteractions.get(runId);
@@ -1473,6 +1615,15 @@ export function createController(opts: ControllerOptions = {}): Controller {
     const pending = entry.pending;
     entry.pending = null;
     pending.resolve(response);
+    if (input.status === "cancelled" && browserSurfaceLeaseManager) {
+      const lease = browserSurfaceLeaseManager
+        .listLeases()
+        .find((candidate) => candidate.run_id === runId && candidate.status === "leased");
+      const traceContext = activeRunTraceContexts.get(runId);
+      if (lease && traceContext) {
+        emitBrowserSurfaceLeaseEvent("run.browser_surface_cancelled", entry.connector_id, runId, traceContext, lease);
+      }
+    }
     return { accepted: true, status: input.status };
   }
 
@@ -1490,14 +1641,29 @@ export function createController(opts: ControllerOptions = {}): Controller {
     };
   }
 
+  function listBrowserSurfaceRunProjections(): BrowserSurfaceRunProjection[] {
+    if (!browserSurfaceLeaseManager) {
+      return [];
+    }
+    return browserSurfaceLeaseManager.listLeases().map((lease) => ({
+      connector_id: lease.connector_id,
+      ...projectBrowserSurfaceLease(lease),
+    }));
+  }
+
   return {
+    cancelBrowserSurfaceRun,
     listSchedules,
     getSchedule,
     upsertSchedule,
     setScheduleEnabled,
     deleteSchedule,
     drainActiveRuns,
+    expireBrowserSurfaceWaits,
     getActiveRun,
+    listBrowserSurfaceRunProjections,
+    promoteBrowserSurfaceLeasesAfterBoot,
+    reconcileBrowserSurfaceLeasesAfterBoot,
     getPendingInteraction,
     respondToInteraction,
     runNow,

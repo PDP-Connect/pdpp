@@ -802,9 +802,14 @@ function buildBrowserSurfaceLaunchEnv({ browserSurfaceLease, browserSurfaceEnv }
     || optionalNonEmptyEnv(source.id);
   const profileKey = optionalNonEmptyEnv(explicit.PDPP_BROWSER_SURFACE_PROFILE_KEY)
     || optionalNonEmptyEnv(source.profileKey);
+  const surfaceId = optionalNonEmptyEnv(explicit.PDPP_BROWSER_SURFACE_ID)
+    || optionalNonEmptyEnv(source.surfaceId);
   const remoteCdpUrl = optionalNonEmptyEnv(explicit.PDPP_BROWSER_SURFACE_REMOTE_CDP_URL)
     || optionalNonEmptyEnv(source.remoteCdpUrl)
     || optionalNonEmptyEnv(source.cdpUrl);
+  const streamBaseUrl = optionalNonEmptyEnv(explicit.PDPP_BROWSER_SURFACE_STREAM_BASE_URL)
+    || optionalNonEmptyEnv(source.streamBaseUrl)
+    || optionalNonEmptyEnv(source.baseUrl);
   const required = optionalNonEmptyEnv(explicit.PDPP_BROWSER_SURFACE_REQUIRED)
     || optionalNonEmptyEnv(source.required)
     || optionalNonEmptyEnv(source.browserSurfaceRequired)
@@ -814,7 +819,9 @@ function buildBrowserSurfaceLaunchEnv({ browserSurfaceLease, browserSurfaceEnv }
     ...(required ? { PDPP_BROWSER_SURFACE_REQUIRED: required } : {}),
     ...(leaseId ? { PDPP_BROWSER_SURFACE_LEASE_ID: leaseId } : {}),
     ...(profileKey ? { PDPP_BROWSER_SURFACE_PROFILE_KEY: profileKey } : {}),
+    ...(surfaceId ? { PDPP_BROWSER_SURFACE_ID: surfaceId } : {}),
     ...(remoteCdpUrl ? { PDPP_BROWSER_SURFACE_REMOTE_CDP_URL: remoteCdpUrl } : {}),
+    ...(streamBaseUrl ? { PDPP_BROWSER_SURFACE_STREAM_BASE_URL: streamBaseUrl } : {}),
   };
 }
 

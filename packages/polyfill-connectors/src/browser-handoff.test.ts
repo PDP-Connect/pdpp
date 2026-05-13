@@ -28,6 +28,11 @@ import type { Page } from "playwright";
 import {
   BROWSER_CDP_HOST_ENV,
   BROWSER_CDP_PORT_ENV,
+  BROWSER_SURFACE_ID_ENV,
+  BROWSER_SURFACE_LEASE_ID_ENV,
+  BROWSER_SURFACE_PROFILE_KEY_ENV,
+  BROWSER_SURFACE_REQUIRED_ENV,
+  BROWSER_SURFACE_STREAM_BASE_URL_ENV,
   manualAction,
   prepareManualAction,
   resolveWsUrlForExactPage,
@@ -179,6 +184,18 @@ function envWithFullStreaming(): NodeJS.ProcessEnv {
   };
 }
 
+function envWithManagedNekoSurface(): NodeJS.ProcessEnv {
+  return {
+    ...envWithFullStreaming(),
+    [BROWSER_SURFACE_REQUIRED_ENV]: "neko",
+    [BROWSER_SURFACE_LEASE_ID_ENV]: "lease_neko_123",
+    [BROWSER_SURFACE_PROFILE_KEY_ENV]: "chatgpt:owner",
+    [BROWSER_SURFACE_ID_ENV]: "surface_static_1",
+    [BROWSER_SURFACE_STREAM_BASE_URL_ENV]: "http://neko:8080/neko",
+    PDPP_BROWSER_SURFACE_REMOTE_CDP_URL: "http://neko:9223",
+  };
+}
+
 // ─── Tests ─────────────────────────────────────────────────────────────────
 
 test("resolveWsUrlForExactPage composes ws:// URL from CDP targetId + host:port", async () => {
@@ -268,6 +285,9 @@ test("prepareManualAction PUTs the composed wsUrl + page metadata when env is fu
         runId: resolveEnv?.PDPP_RUN_ID ?? "",
         register: async (args) => {
           const url = `${baseUrl}/admin/runs/${encodeURIComponent(args.runId)}/interactions/${encodeURIComponent(args.interactionId)}/streaming-target`;
+          if (args.backend === "neko") {
+            assert.fail("this test covers the CDP registration path");
+          }
           const body: Record<string, string> = { ws_url: args.wsUrl };
           if (args.pageUrl) {
             body.page_url = args.pageUrl;
@@ -316,6 +336,120 @@ test("prepareManualAction PUTs the composed wsUrl + page metadata when env is fu
     sent.url,
     `http://127.0.0.1:7662/admin/runs/run_test_123/interactions/${result.interactionId}/streaming-target`
   );
+});
+
+test("prepareManualAction registers managed n.eko descriptor from lease env without exposing CDP details", async () => {
+  const env = envWithManagedNekoSurface();
+  const page = makeMockPage({
+    url: "https://example.test/login",
+    title: "Sign in",
+  });
+
+  let resolveWsUrlCalled = false;
+  let registeredArgs: unknown;
+  const result = await prepareManualAction({
+    page,
+    reason: "manual_action",
+    env,
+    resolveWsUrl: () => {
+      resolveWsUrlCalled = true;
+      return Promise.reject(new Error("CDP resolver must not be called for managed n.eko"));
+    },
+    resolveStreamingRegistration: () =>
+      Promise.resolve({
+        runId: "run_test_123",
+        register: (args) => {
+          registeredArgs = args;
+          return Promise.resolve(true);
+        },
+        unregister: () => Promise.resolve(true),
+      }),
+  });
+
+  assert.equal(result.registered, true);
+  assert.equal(resolveWsUrlCalled, false);
+  assert.ok(registeredArgs && typeof registeredArgs === "object");
+  const args = registeredArgs as {
+    backend?: string;
+    descriptor?: Record<string, unknown>;
+    pageTitle?: string;
+    pageUrl?: string;
+    reason?: string;
+  };
+  assert.equal(args.backend, "neko");
+  assert.deepEqual(args.descriptor, {
+    backend: "neko",
+    base_url: "http://neko:8080/neko",
+    lease_id: "lease_neko_123",
+    profile_key: "chatgpt:owner",
+    surface_id: "surface_static_1",
+    start_url: "https://example.test/login",
+  });
+  assert.equal(args.pageUrl, "https://example.test/login");
+  assert.equal(args.pageTitle, "Sign in");
+  assert.equal(args.reason, "manual_action");
+  assert.equal(JSON.stringify(args).includes("9223"), false, "raw CDP URL must not be registered");
+  assert.equal(JSON.stringify(args).includes("REMOTE_CDP"), false, "CDP env key must not be registered");
+});
+
+test("prepareManualAction registers managed n.eko descriptor without CDP host/port env", async () => {
+  const env = envWithManagedNekoSurface();
+  delete env[BROWSER_CDP_HOST_ENV];
+  delete env[BROWSER_CDP_PORT_ENV];
+
+  let registeredArgs: unknown;
+  const result = await prepareManualAction({
+    page: makeMockPage(),
+    env,
+    resolveWsUrl: () => Promise.reject(new Error("CDP resolver must not be called for managed n.eko")),
+    resolveStreamingRegistration: () =>
+      Promise.resolve({
+        runId: "run_test_123",
+        register: (args) => {
+          registeredArgs = args;
+          return Promise.resolve(true);
+        },
+        unregister: () => Promise.resolve(true),
+      }),
+  });
+
+  assert.equal(result.registered, true);
+  assert.ok(registeredArgs && typeof registeredArgs === "object");
+  assert.equal((registeredArgs as { backend?: string }).backend, "neko");
+});
+
+test("prepareManualAction does not fall back to CDP registration when managed n.eko descriptor env is incomplete", async () => {
+  const env = {
+    ...envWithFullStreaming(),
+    [BROWSER_SURFACE_REQUIRED_ENV]: "neko",
+    [BROWSER_SURFACE_LEASE_ID_ENV]: "lease_neko_123",
+    [BROWSER_SURFACE_PROFILE_KEY_ENV]: "chatgpt:owner",
+    PDPP_BROWSER_SURFACE_REMOTE_CDP_URL: "http://neko:9223",
+  };
+  let registerCalled = false;
+  let resolveWsUrlCalled = false;
+
+  const result = await prepareManualAction({
+    page: makeMockPage(),
+    env,
+    resolveWsUrl: () => {
+      resolveWsUrlCalled = true;
+      return Promise.resolve("ws://127.0.0.1:44763/devtools/page/SHOULD_NOT_REGISTER");
+    },
+    resolveStreamingRegistration: () =>
+      Promise.resolve({
+        runId: "run_test_123",
+        register: () => {
+          registerCalled = true;
+          return Promise.resolve(true);
+        },
+        unregister: () => Promise.resolve(true),
+      }),
+  });
+
+  assert.equal(result.registered, false);
+  assert.equal(registerCalled, false);
+  assert.equal(resolveWsUrlCalled, false);
 });
 
 test("prepareManualAction returns { registered: false } and does NOT throw when newCDPSession throws (page closed)", async () => {

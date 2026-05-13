@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { closeDb, initDb } from "../server/db.js";
+import { closeDb, getDb, initDb } from "../server/db.js";
 import { BrowserSurfaceLeaseManager, DEFAULT_NEKO_PRIORITY_RANKS } from "../runtime/browser-surface-leases.ts";
 import { __resetControllerInteractionStateForTests, createController } from "../runtime/controller.ts";
 
@@ -56,7 +56,7 @@ function createSchedulerStore(calls) {
   };
 }
 
-function createManager({ surfaceCap = 1, staticProfileKey } = {}) {
+function createManager({ surfaceCap = 1, staticProfileKey, leaseWaitTimeoutMs = 300_000 } = {}) {
   let leaseSeq = 0;
   let surfaceSeq = 0;
   let tokenSeq = 0;
@@ -67,7 +67,7 @@ function createManager({ surfaceCap = 1, staticProfileKey } = {}) {
       staticProfileKey,
       staticCdpHttpUrl: "http://127.0.0.1:9222/json/version",
       staticStreamBaseUrl: "http://127.0.0.1:8080",
-      leaseWaitTimeoutMs: 300_000,
+      leaseWaitTimeoutMs,
       idleTtlMs: 600_000,
       defaultPriorityClass: "scheduled_refresh",
       priorityRanks: DEFAULT_NEKO_PRIORITY_RANKS,
@@ -80,7 +80,7 @@ function createManager({ surfaceCap = 1, staticProfileKey } = {}) {
   });
 }
 
-function setup(t, { manager = createManager(), runConnectorImpl } = {}) {
+function setup(t, { manager = createManager(), runConnectorImpl, connectorPathResolver = () => "/tmp/connector.js" } = {}) {
   closeDb();
   initDb(tempDbPath());
   __resetControllerInteractionStateForTests();
@@ -97,7 +97,7 @@ function setup(t, { manager = createManager(), runConnectorImpl } = {}) {
   };
   const controller = createController({
     browserSurfaceLeaseManager: manager,
-    connectorPathResolver: () => "/tmp/connector.js",
+    connectorPathResolver,
     logger: { error: () => {}, warn: () => {} },
     schedulerStore: createSchedulerStore(calls),
     streamingTargetNonceHooks: {
@@ -128,6 +128,24 @@ async function waitFor(predicate, message) {
   assert.fail(message);
 }
 
+function listRunEventTypes(runId) {
+  return getDb()
+    .prepare("SELECT event_type FROM spine_events WHERE run_id = ? ORDER BY event_seq")
+    .all(runId)
+    .map((row) => row.event_type);
+}
+
+function listRunEvents(runId) {
+  return getDb()
+    .prepare("SELECT event_type, status, data_json FROM spine_events WHERE run_id = ? ORDER BY event_seq")
+    .all(runId)
+    .map((row) => ({
+      event_type: row.event_type,
+      status: row.status,
+      data: row.data_json ? JSON.parse(row.data_json) : null,
+    }));
+}
+
 test("managed free surface leases and spawns with browser-surface env", async (t) => {
   const { calls, controller, manager } = setup(t);
 
@@ -149,9 +167,62 @@ test("managed free surface leases and spawns with browser-surface env", async (t
   assert.equal(manager.getLease("lease_1").status, "released");
 });
 
+test("managed run emits browser-surface starting before leased", async (t) => {
+  const { controller } = setup(t);
+
+  await controller.runNow("managed", {
+    manifest: MANIFEST,
+    ownerToken: "owner-token",
+    runId: "run_starting_event",
+  });
+  await controller.drainActiveRuns(1000);
+  await waitFor(
+    () => listRunEventTypes("run_starting_event").includes("run.browser_surface_leased"),
+    "browser-surface leased event should be emitted"
+  );
+
+  const eventTypes = listRunEventTypes("run_starting_event");
+  assert.ok(eventTypes.includes("run.browser_surface_starting"));
+  assert.ok(
+    eventTypes.indexOf("run.browser_surface_starting") < eventTypes.indexOf("run.browser_surface_leased"),
+    "starting event should precede leased event"
+  );
+});
+
+test("managed run emits browser-surface cancelled when manual action is cancelled", async (t) => {
+  const runConnectorImpl = async (opts) => {
+    const response = await opts.onInteraction({
+      kind: "manual_action",
+      request_id: "int_cancel_surface",
+      message: "cancel me",
+    });
+    return { status: response.status, records_emitted: 0, state: null, checkpoint_summary: null };
+  };
+  const { controller } = setup(t, { runConnectorImpl });
+
+  await controller.runNow("managed", {
+    manifest: MANIFEST,
+    ownerToken: "owner-token",
+    runId: "run_cancel_event",
+  });
+  await waitFor(
+    () => controller.getPendingInteraction("run_cancel_event")?.interaction_id === "int_cancel_surface",
+    "manual action should become pending"
+  );
+  controller.respondToInteraction("run_cancel_event", {
+    interaction_id: "int_cancel_surface",
+    status: "cancelled",
+  });
+  await controller.drainActiveRuns(1000);
+  await waitFor(
+    () => listRunEventTypes("run_cancel_event").includes("run.browser_surface_cancelled"),
+    "browser-surface cancelled event should be emitted"
+  );
+});
+
 test("managed cap-full second connector queues without active-run, nonce, or spawn side effects", async (t) => {
   let releaseFirst;
-  const manager = createManager({ surfaceCap: 1 });
+  const manager = createManager({ surfaceCap: 1, staticProfileKey: "managed-profile" });
   const runConnectorImpl = (opts) => {
     if (opts.runId === "run_first") {
       return new Promise((resolve) => {
@@ -181,12 +252,141 @@ test("managed cap-full second connector queues without active-run, nonce, or spa
   assert.equal(calls.runConnector, 1);
   assert.equal(controller.getActiveRun("managed").run_id, "run_first");
   assert.equal(controller.getActiveRun("other-managed"), null);
+  assert.deepEqual(controller.listBrowserSurfaceRunProjections().find((run) => run.pending_run_id === "run_second"), {
+    connector_id: "other-managed",
+    pending_run_id: "run_second",
+    browser_surface_status: "waiting_for_browser_surface",
+    browser_surface_lease_id: "lease_2",
+    browser_surface_profile_key: "managed-profile",
+    browser_surface_wait_reason: "capacity_full",
+  });
 
   releaseFirst();
   await waitFor(() => calls.runConnector === 2, "queued browser-surface run should be promoted and spawned");
   await controller.drainActiveRuns(1000);
   assert.equal(manager.getLease("lease_2").status, "released");
   assert.equal(controller.getActiveRun("other-managed"), null);
+});
+
+test("queued browser-surface cancellation emits event and promotes next waiter", async (t) => {
+  let releaseFirst;
+  const manager = createManager({ surfaceCap: 1, staticProfileKey: "managed-profile" });
+  const runConnectorImpl = (opts) => {
+    if (opts.runId === "run_first") {
+      return new Promise((resolve) => {
+        releaseFirst = () => resolve({ status: "completed" });
+      });
+    }
+    return Promise.resolve({ status: "completed", records_emitted: 0, state: null, checkpoint_summary: null });
+  };
+  const { calls, controller } = setup(t, { manager, runConnectorImpl });
+
+  await controller.runNow("managed", {
+    manifest: MANIFEST,
+    ownerToken: "owner-token",
+    runId: "run_first",
+  });
+  await controller.runNow("other-managed", {
+    manifest: OTHER_MANAGED_MANIFEST,
+    ownerToken: "owner-token",
+    runId: "run_cancelled_waiter",
+  });
+
+  const cancelled = await controller.cancelBrowserSurfaceRun("run_cancelled_waiter");
+
+  assert.equal(cancelled?.browser_surface_status, "cancelled");
+  assert.equal(manager.getLease("lease_2").status, "cancelled");
+  assert.ok(listRunEventTypes("run_cancelled_waiter").includes("run.browser_surface_cancelled"));
+
+  releaseFirst();
+  await controller.drainActiveRuns(1000);
+  assert.equal(calls.runConnector, 1);
+});
+
+test("queued browser-surface timeout emits deferred event without connector failure", async (t) => {
+  let releaseFirst;
+  const manager = createManager({ surfaceCap: 1, staticProfileKey: "managed-profile", leaseWaitTimeoutMs: 0 });
+  const runConnectorImpl = (opts) => {
+    if (opts.runId === "run_first") {
+      return new Promise((resolve) => {
+        releaseFirst = () => resolve({ status: "completed" });
+      });
+    }
+    return Promise.resolve({ status: "completed", records_emitted: 0, state: null, checkpoint_summary: null });
+  };
+  const { calls, controller } = setup(t, { manager, runConnectorImpl });
+
+  await controller.runNow("managed", {
+    manifest: MANIFEST,
+    ownerToken: "owner-token",
+    runId: "run_first",
+  });
+  await controller.runNow("other-managed", {
+    manifest: OTHER_MANAGED_MANIFEST,
+    ownerToken: "owner-token",
+    runId: "run_timed_out_waiter",
+  });
+  const expired = await controller.expireBrowserSurfaceWaits();
+
+  assert.equal(expired.length, 1);
+  assert.equal(expired[0].browser_surface_status, "deferred");
+  assert.equal(expired[0].browser_surface_wait_reason, "lease_wait_timeout");
+  const events = listRunEvents("run_timed_out_waiter");
+  assert.ok(events.some((event) => event.event_type === "run.browser_surface_deferred"));
+  assert.equal(events.some((event) => event.event_type === "run.failed"), false);
+
+  releaseFirst();
+  await controller.drainActiveRuns(1000);
+  assert.equal(calls.runConnector, 1);
+});
+
+test("promotion precondition failure defers lease instead of recording clean release", async (t) => {
+  let releaseFirst;
+  let promotedRunPathResolutions = 0;
+  const manager = createManager({ surfaceCap: 1, staticProfileKey: "managed-profile" });
+  const runConnectorImpl = (opts) => {
+    if (opts.runId === "run_first") {
+      return new Promise((resolve) => {
+        releaseFirst = () => resolve({ status: "completed" });
+      });
+    }
+    return Promise.resolve({ status: "completed", records_emitted: 0, state: null, checkpoint_summary: null });
+  };
+  const { controller } = setup(t, {
+    manager,
+    runConnectorImpl,
+    connectorPathResolver: (_connectorId, _manifest, options) => {
+      if (options?.runId !== "run_promotion_failure") {
+        return "/tmp/connector.js";
+      }
+      promotedRunPathResolutions += 1;
+      return promotedRunPathResolutions > 1 ? null : "/tmp/connector.js";
+    },
+  });
+
+  await controller.runNow("managed", {
+    manifest: MANIFEST,
+    ownerToken: "owner-token",
+    runId: "run_first",
+  });
+  await controller.runNow("other-managed", {
+    manifest: OTHER_MANAGED_MANIFEST,
+    ownerToken: "owner-token",
+    runId: "run_promotion_failure",
+  });
+
+  releaseFirst();
+  await waitFor(
+    () => manager.getLease("lease_2")?.status === "deferred",
+    "promotion failure should terminally defer the promoted lease"
+  );
+
+  const failedLease = manager.getLease("lease_2");
+  assert.equal(failedLease.status, "deferred");
+  assert.equal(failedLease.wait_reason, "launch_precondition_failed");
+  const events = listRunEvents("run_promotion_failure");
+  assert.ok(events.some((event) => event.event_type === "run.browser_surface_deferred"));
+  assert.equal(events.some((event) => event.event_type === "run.browser_surface_released"), false);
 });
 
 test("managed connector with active run rejects without acquiring a new lease", async (t) => {
@@ -222,7 +422,7 @@ test("managed connector with active run rejects without acquiring a new lease", 
 
 test("duplicate queued managed connector request reports existing pending run", async (t) => {
   let releaseFirst;
-  const manager = createManager({ surfaceCap: 1 });
+  const manager = createManager({ surfaceCap: 1, staticProfileKey: "managed-profile" });
   const runConnectorImpl = (opts) => {
     if (opts.runId === "run_first") {
       return new Promise((resolve) => {
@@ -240,6 +440,7 @@ test("duplicate queued managed connector request reports existing pending run", 
   });
   await controller.runNow("other-managed", {
     manifest: OTHER_MANAGED_MANIFEST,
+    ownerToken: "owner-token",
     runId: "run_waiting",
   });
 
@@ -279,6 +480,14 @@ test("incompatible static profile defers without active-run, nonce, or spawn sid
   assert.equal(calls.registerNonce, 0);
   assert.equal(calls.runConnector, 0);
   assert.equal(controller.getActiveRun("managed"), null);
+  assert.deepEqual(controller.listBrowserSurfaceRunProjections().find((run) => run.pending_run_id === "run_deferred"), {
+    connector_id: "managed",
+    pending_run_id: "run_deferred",
+    browser_surface_status: "deferred",
+    browser_surface_lease_id: "lease_1",
+    browser_surface_profile_key: "managed-profile",
+    browser_surface_wait_reason: "incompatible_static_profile",
+  });
 });
 
 test("release frees the lease for the next managed run", async (t) => {

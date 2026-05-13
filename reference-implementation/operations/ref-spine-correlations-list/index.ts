@@ -44,6 +44,10 @@ export interface RefSpineSource {
  * force a change here.
  */
 export interface RefSpineCorrelationSummary {
+  readonly browser_surface_lease_id?: string;
+  readonly browser_surface_profile_key?: string;
+  readonly browser_surface_status?: string;
+  readonly browser_surface_wait_reason?: string;
   readonly id?: string;
   readonly first_at: string;
   readonly last_at: string;
@@ -128,6 +132,10 @@ export interface RefSpineGrantSummary {
 }
 
 export interface RefSpineRunSummary {
+  readonly browser_surface_lease_id?: string;
+  readonly browser_surface_profile_key?: string;
+  readonly browser_surface_status?: string;
+  readonly browser_surface_wait_reason?: string;
   readonly object: "run_summary";
   readonly run_id: string | undefined;
   readonly connector_id: string | null;
@@ -216,6 +224,10 @@ export function summaryToRun(s: RefSpineCorrelationSummary): RefSpineRunSummary 
     source: sourceFromSummary(s),
     grant_id: s.grant_id,
     failure_reason: s.failure?.reason || null,
+    ...(s.browser_surface_status ? { browser_surface_status: s.browser_surface_status } : {}),
+    ...(s.browser_surface_wait_reason ? { browser_surface_wait_reason: s.browser_surface_wait_reason } : {}),
+    ...(s.browser_surface_lease_id ? { browser_surface_lease_id: s.browser_surface_lease_id } : {}),
+    ...(s.browser_surface_profile_key ? { browser_surface_profile_key: s.browser_surface_profile_key } : {}),
   };
 }
 

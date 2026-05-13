@@ -24,13 +24,17 @@ export interface RuntimeBrowserSurfaceLease {
   readonly profileKey?: string | null;
   readonly remoteCdpUrl?: string | null;
   readonly required?: string | null;
+  readonly streamBaseUrl?: string | null;
+  readonly surfaceId?: string | null;
 }
 
 export interface RuntimeBrowserSurfaceEnv {
+  readonly PDPP_BROWSER_SURFACE_ID?: string | null;
   readonly PDPP_BROWSER_SURFACE_LEASE_ID?: string | null;
   readonly PDPP_BROWSER_SURFACE_PROFILE_KEY?: string | null;
   readonly PDPP_BROWSER_SURFACE_REMOTE_CDP_URL?: string | null;
   readonly PDPP_BROWSER_SURFACE_REQUIRED?: string | null;
+  readonly PDPP_BROWSER_SURFACE_STREAM_BASE_URL?: string | null;
 }
 
 export interface RuntimeRunConnectorOptions {

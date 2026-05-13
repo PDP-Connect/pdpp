@@ -33,6 +33,9 @@ function makeFakeApp() {
     put(path, ...args) {
       routes.push({ method: 'PUT', path, handlers: args });
     },
+    post(path, ...args) {
+      routes.push({ method: 'POST', path, handlers: args });
+    },
     delete(path, ...args) {
       routes.push({ method: 'DELETE', path, handlers: args });
     },
@@ -874,6 +877,45 @@ test('PUT accepts nested neko target descriptor', async () => {
     backend: 'neko',
     base_url: VALID_NEKO_BASE_URL,
   });
+  registry.shutdown();
+});
+
+test('POST accepts managed neko descriptor with lease metadata and omits CDP details', async () => {
+  const registry = createRunTargetRegistry({ sweepIntervalMs: 0 });
+  const app = makeFakeApp();
+  registry.attachRoutes(app, mockAuth('dev_owner'));
+
+  const handlers = app.findHandler('POST', RESOURCE_PATH);
+  const req = makeReq({
+    params: { runId: 'run_neko_managed', interactionId: 'int_a' },
+    body: {
+      backend: 'neko',
+      descriptor: {
+        backend: 'neko',
+        base_url: VALID_NEKO_DOCKER_BASE_URL,
+        lease_id: 'lease_123',
+        profile_key: 'chatgpt:owner',
+        surface_id: 'surface_static_1',
+        start_url: 'https://example.test/login',
+      },
+    },
+  });
+  const res = makeRes();
+  await runRoute(handlers, req, res);
+
+  assert.equal(res.statusCode, 200);
+  const descriptor = registry.get({ runId: 'run_neko_managed', interactionId: 'int_a' });
+  assert.deepEqual(descriptor, {
+    backend: 'neko',
+    base_url: VALID_NEKO_DOCKER_BASE_URL,
+    lease_id: 'lease_123',
+    profile_key: 'chatgpt:owner',
+    surface_id: 'surface_static_1',
+    start_url: 'https://example.test/login',
+  });
+  const serialized = JSON.stringify(descriptor);
+  assert.equal(serialized.includes('cdp'), false);
+  assert.equal(serialized.includes('9223'), false);
   registry.shutdown();
 });
 

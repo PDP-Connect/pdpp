@@ -144,6 +144,10 @@ export interface GrantSummary {
 }
 
 export interface RunSummary {
+  browser_surface_lease_id?: string;
+  browser_surface_profile_key?: string;
+  browser_surface_status?: string;
+  browser_surface_wait_reason?: string;
   connector_id?: string | null;
   event_count: number;
   failure_reason: string | null;

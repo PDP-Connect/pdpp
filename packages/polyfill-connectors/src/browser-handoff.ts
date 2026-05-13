@@ -115,6 +115,11 @@ export async function resolveWsUrlForExactPage(page: Page, opts: ResolveWsUrlOpt
 
 const BROWSER_CDP_HOST_ENV = "PDPP_BROWSER_CDP_HOST";
 const BROWSER_CDP_PORT_ENV = "PDPP_BROWSER_CDP_PORT";
+const BROWSER_SURFACE_ID_ENV = "PDPP_BROWSER_SURFACE_ID";
+const BROWSER_SURFACE_LEASE_ID_ENV = "PDPP_BROWSER_SURFACE_LEASE_ID";
+const BROWSER_SURFACE_PROFILE_KEY_ENV = "PDPP_BROWSER_SURFACE_PROFILE_KEY";
+const BROWSER_SURFACE_REQUIRED_ENV = "PDPP_BROWSER_SURFACE_REQUIRED";
+const BROWSER_SURFACE_STREAM_BASE_URL_ENV = "PDPP_BROWSER_SURFACE_STREAM_BASE_URL";
 
 interface ResolvedCdpEndpoint {
   readonly host: string;
@@ -132,6 +137,31 @@ function resolveCdpEndpointFromEnv(env: NodeJS.ProcessEnv): ResolvedCdpEndpoint 
     return;
   }
   return { host, port };
+}
+
+function nonEmptyEnv(env: NodeJS.ProcessEnv, key: string): string | undefined {
+  const value = env[key]?.trim();
+  return value ? value : undefined;
+}
+
+function isManagedNekoRequired(env: NodeJS.ProcessEnv): boolean {
+  return nonEmptyEnv(env, BROWSER_SURFACE_REQUIRED_ENV)?.toLowerCase() === "neko";
+}
+
+function resolveManagedNekoDescriptorFromEnv(env: NodeJS.ProcessEnv): Record<string, unknown> | undefined {
+  const baseUrl = nonEmptyEnv(env, BROWSER_SURFACE_STREAM_BASE_URL_ENV);
+  const leaseId = nonEmptyEnv(env, BROWSER_SURFACE_LEASE_ID_ENV);
+  const profileKey = nonEmptyEnv(env, BROWSER_SURFACE_PROFILE_KEY_ENV);
+  if (!(baseUrl && leaseId && profileKey)) {
+    return;
+  }
+  return {
+    backend: "neko",
+    base_url: baseUrl,
+    lease_id: leaseId,
+    profile_key: profileKey,
+    ...(nonEmptyEnv(env, BROWSER_SURFACE_ID_ENV) ? { surface_id: nonEmptyEnv(env, BROWSER_SURFACE_ID_ENV) } : {}),
+  };
 }
 
 // ─── Interaction-id generation ─────────────────────────────────────────────
@@ -188,6 +218,95 @@ export interface PrepareManualActionResult {
   readonly registered: boolean;
 }
 
+interface ManualActionPageMetadata {
+  readonly pageTitle?: string;
+  readonly pageUrl?: string;
+}
+
+async function readManualActionPageMetadata(page: Page): Promise<ManualActionPageMetadata> {
+  let pageUrl: string | undefined;
+  let pageTitle: string | undefined;
+  try {
+    pageUrl = page.url();
+  } catch {
+    /* page may have been closed; metadata is optional */
+  }
+  try {
+    pageTitle = await page.title();
+  } catch {
+    /* page may have been closed; metadata is optional */
+  }
+  return {
+    ...(pageUrl ? { pageUrl } : {}),
+    ...(pageTitle ? { pageTitle } : {}),
+  };
+}
+
+function registerManagedNekoManualActionTarget(args: {
+  readonly env: NodeJS.ProcessEnv;
+  readonly interactionId: string;
+  readonly metadata: ManualActionPageMetadata;
+  readonly reason?: ManualActionReason;
+  readonly registration: StreamingTargetRegistrationHooks;
+}): Promise<boolean> {
+  const nekoDescriptor = resolveManagedNekoDescriptorFromEnv(args.env);
+  if (!nekoDescriptor) {
+    process.stderr.write(
+      `[browser-handoff] managed n.eko surface env is incomplete; streaming-companion target not registered for interaction ${args.interactionId}.\n`
+    );
+    return Promise.resolve(false);
+  }
+  return args.registration.register({
+    backend: "neko",
+    runId: args.registration.runId,
+    interactionId: args.interactionId,
+    descriptor: {
+      ...nekoDescriptor,
+      ...(args.metadata.pageUrl ? { start_url: args.metadata.pageUrl } : {}),
+    },
+    ...(args.metadata.pageUrl ? { pageUrl: args.metadata.pageUrl } : {}),
+    ...(args.metadata.pageTitle ? { pageTitle: args.metadata.pageTitle } : {}),
+    ...(args.reason ? { reason: args.reason } : {}),
+  });
+}
+
+async function resolveCdpWsUrlForManualAction(args: {
+  readonly endpoint: ResolvedCdpEndpoint;
+  readonly interactionId: string;
+  readonly page: Page;
+  readonly resolveWsUrl: (page: Page, opts: ResolveWsUrlOptions) => Promise<string>;
+}): Promise<string | undefined> {
+  try {
+    return await args.resolveWsUrl(args.page, args.endpoint);
+  } catch (err) {
+    // Most common cause: the page closed between the connector deciding it
+    // needed manual_action and us reaching the resolver. Fail closed for
+    // streaming, return the interactionId so the INTERACTION still emits.
+    const message = err instanceof Error ? err.message : String(err);
+    process.stderr.write(
+      `[browser-handoff] could not resolve CDP page-target wsUrl for interaction ${args.interactionId}: ${message}; continuing without streaming.\n`
+    );
+    return;
+  }
+}
+
+function registerCdpManualActionTarget(args: {
+  readonly interactionId: string;
+  readonly metadata: ManualActionPageMetadata;
+  readonly reason?: ManualActionReason;
+  readonly registration: StreamingTargetRegistrationHooks;
+  readonly wsUrl: string;
+}): Promise<boolean> {
+  return args.registration.register({
+    runId: args.registration.runId,
+    interactionId: args.interactionId,
+    wsUrl: args.wsUrl,
+    ...(args.metadata.pageUrl ? { pageUrl: args.metadata.pageUrl } : {}),
+    ...(args.metadata.pageTitle ? { pageTitle: args.metadata.pageTitle } : {}),
+    ...(args.reason ? { reason: args.reason } : {}),
+  });
+}
+
 /**
  * Prepare a browser handoff for a `manual_action` interaction.
  *
@@ -217,6 +336,19 @@ export async function prepareManualAction(args: PrepareManualActionArgs): Promis
     return { interactionId, registered: false };
   }
 
+  const metadata = await readManualActionPageMetadata(args.page);
+
+  if (isManagedNekoRequired(env)) {
+    const ok = await registerManagedNekoManualActionTarget({
+      env,
+      interactionId,
+      metadata,
+      registration,
+      ...(args.reason ? { reason: args.reason } : {}),
+    });
+    return { interactionId, registered: ok };
+  }
+
   const endpoint = resolveCdpEndpointFromEnv(env);
   if (!endpoint) {
     process.stderr.write(
@@ -225,42 +357,21 @@ export async function prepareManualAction(args: PrepareManualActionArgs): Promis
     return { interactionId, registered: false };
   }
 
-  // Page metadata is best-effort and forward-compatible: the server stores
-  // and surfaces it on debug paths but does not consult it for resolution.
-  // Useful for "why did the operator see THIS page?" postmortems.
-  let pageUrl: string | undefined;
-  let pageTitle: string | undefined;
-  try {
-    pageUrl = args.page.url();
-  } catch {
-    /* page may have been closed; metadata is optional */
-  }
-  try {
-    pageTitle = await args.page.title();
-  } catch {
-    /* page may have been closed; metadata is optional */
-  }
-
-  let wsUrl: string;
-  try {
-    wsUrl = await resolveWsUrl(args.page, endpoint);
-  } catch (err) {
-    // Most common cause: the page closed between the connector deciding it
-    // needed manual_action and us reaching the resolver. Fail closed for
-    // streaming, return the interactionId so the INTERACTION still emits.
-    const message = err instanceof Error ? err.message : String(err);
-    process.stderr.write(
-      `[browser-handoff] could not resolve CDP page-target wsUrl for interaction ${interactionId}: ${message}; continuing without streaming.\n`
-    );
+  const wsUrl = await resolveCdpWsUrlForManualAction({
+    endpoint,
+    interactionId,
+    page: args.page,
+    resolveWsUrl,
+  });
+  if (!wsUrl) {
     return { interactionId, registered: false };
   }
 
-  const ok = await registration.register({
-    runId: registration.runId,
+  const ok = await registerCdpManualActionTarget({
     interactionId,
+    metadata,
+    registration,
     wsUrl,
-    ...(pageUrl ? { pageUrl } : {}),
-    ...(pageTitle ? { pageTitle } : {}),
     ...(args.reason ? { reason: args.reason } : {}),
   });
 
@@ -333,4 +444,12 @@ export async function manualAction(
 
 // ─── Exports for tests ─────────────────────────────────────────────────────
 
-export { BROWSER_CDP_HOST_ENV, BROWSER_CDP_PORT_ENV };
+export {
+  BROWSER_CDP_HOST_ENV,
+  BROWSER_CDP_PORT_ENV,
+  BROWSER_SURFACE_ID_ENV,
+  BROWSER_SURFACE_LEASE_ID_ENV,
+  BROWSER_SURFACE_PROFILE_KEY_ENV,
+  BROWSER_SURFACE_REQUIRED_ENV,
+  BROWSER_SURFACE_STREAM_BASE_URL_ENV,
+};

@@ -87,7 +87,9 @@ test("compatible idle surface is leased and projected for connector launch", () 
     PDPP_BROWSER_SURFACE_REQUIRED: "neko",
     PDPP_BROWSER_SURFACE_LEASE_ID: "lease_1",
     PDPP_BROWSER_SURFACE_PROFILE_KEY: "chatgpt",
+    PDPP_BROWSER_SURFACE_ID: "surface_idle",
     PDPP_BROWSER_SURFACE_REMOTE_CDP_URL: "http://neko:9222",
+    PDPP_BROWSER_SURFACE_STREAM_BASE_URL: "http://neko:8080",
   });
 });
 
@@ -245,6 +247,340 @@ test("priority then FIFO determines release pump ordering", () => {
   assert.equal(releasedFirst.promoted?.run_id, "run_high");
   assert.equal(releasedHigh.promoted?.run_id, "run_low_a");
   assert.equal(releasedLowA.promoted?.run_id, "run_low_b");
+});
+
+test("restart reconciliation keeps active leased run intact", () => {
+  const { manager: leases } = manager({
+    initialSurfaces: [
+      {
+        surface_id: "surface_active",
+        backend: "neko",
+        profile_key: "chatgpt",
+        connector_id: "chatgpt",
+        cdp_url: "http://neko:9222",
+        stream_base_url: "http://neko:8080",
+        health: "ready",
+        active_lease_id: "lease_active",
+        created_at: "2026-05-12T11:00:00.000Z",
+        last_used_at: "2026-05-12T11:00:00.000Z",
+      },
+    ],
+    initialLeases: [
+      {
+        lease_id: "lease_active",
+        surface_id: "surface_active",
+        connector_id: "chatgpt",
+        profile_key: "chatgpt",
+        run_id: "run_active",
+        status: "leased",
+        priority_class: "owner_interactive",
+        requested_at: "2026-05-12T11:00:00.000Z",
+        leased_at: "2026-05-12T11:00:01.000Z",
+        expires_at: "2026-05-12T12:05:00.000Z",
+        fencing_token: 10,
+      },
+    ],
+  });
+
+  const reconciled = leases.reconcileAfterRestart({ activeRunIds: new Set(["run_active"]) });
+
+  assert.equal(reconciled.activeLeased.length, 1);
+  assert.equal(leases.getLease("lease_active").status, "leased");
+  assert.equal(leases.getSurface("surface_active").active_lease_id, "lease_active");
+});
+
+test("restart reconciliation releases stale healthy lease and preserves surface", () => {
+  const { manager: leases } = manager({
+    initialSurfaces: [
+      {
+        surface_id: "surface_stale",
+        backend: "neko",
+        profile_key: "chatgpt",
+        connector_id: "chatgpt",
+        cdp_url: "http://neko:9222",
+        stream_base_url: "http://neko:8080",
+        health: "ready",
+        active_lease_id: "lease_stale",
+        created_at: "2026-05-12T11:00:00.000Z",
+        last_used_at: "2026-05-12T11:00:00.000Z",
+      },
+    ],
+    initialLeases: [
+      {
+        lease_id: "lease_stale",
+        surface_id: "surface_stale",
+        connector_id: "chatgpt",
+        profile_key: "chatgpt",
+        run_id: "run_stale",
+        status: "leased",
+        priority_class: "owner_interactive",
+        requested_at: "2026-05-12T11:00:00.000Z",
+        leased_at: "2026-05-12T11:00:01.000Z",
+        expires_at: "2026-05-12T12:05:00.000Z",
+        fencing_token: 10,
+      },
+    ],
+  });
+
+  const reconciled = leases.reconcileAfterRestart();
+
+  assert.equal(reconciled.released.length, 1);
+  assert.equal(leases.getLease("lease_stale").status, "released");
+  assert.equal(leases.getSurface("surface_stale").active_lease_id, undefined);
+});
+
+test("restart reconciliation expires leased run when surface is missing", () => {
+  const { manager: leases } = manager({
+    initialLeases: [
+      {
+        lease_id: "lease_missing",
+        surface_id: "surface_missing",
+        connector_id: "chatgpt",
+        profile_key: "chatgpt",
+        run_id: "run_missing",
+        status: "leased",
+        priority_class: "owner_interactive",
+        requested_at: "2026-05-12T11:00:00.000Z",
+        leased_at: "2026-05-12T11:00:01.000Z",
+        expires_at: "2026-05-12T12:05:00.000Z",
+        fencing_token: 10,
+      },
+    ],
+  });
+
+  const reconciled = leases.reconcileAfterRestart();
+
+  assert.equal(reconciled.expired.length, 1);
+  assert.equal(leases.getLease("lease_missing").status, "expired");
+});
+
+test("restart reconciliation marks unhealthy leased surface failed without deleting surface", () => {
+  const { manager: leases } = manager({
+    initialSurfaces: [
+      {
+        surface_id: "surface_unhealthy",
+        backend: "neko",
+        profile_key: "chatgpt",
+        connector_id: "chatgpt",
+        cdp_url: "http://neko:9222",
+        stream_base_url: "http://neko:8080",
+        health: "unhealthy",
+        active_lease_id: "lease_unhealthy",
+        created_at: "2026-05-12T11:00:00.000Z",
+        last_used_at: "2026-05-12T11:00:00.000Z",
+      },
+    ],
+    initialLeases: [
+      {
+        lease_id: "lease_unhealthy",
+        surface_id: "surface_unhealthy",
+        connector_id: "chatgpt",
+        profile_key: "chatgpt",
+        run_id: "run_unhealthy",
+        status: "leased",
+        priority_class: "owner_interactive",
+        requested_at: "2026-05-12T11:00:00.000Z",
+        leased_at: "2026-05-12T11:00:01.000Z",
+        expires_at: "2026-05-12T12:05:00.000Z",
+        fencing_token: 10,
+      },
+    ],
+  });
+
+  const reconciled = leases.reconcileAfterRestart();
+
+  assert.equal(reconciled.surfaceFailed.length, 1);
+  assert.equal(leases.getLease("lease_unhealthy").status, "surface_failed");
+  assert.equal(leases.getLease("lease_unhealthy").wait_reason, "surface_unhealthy");
+  assert.equal(leases.getSurface("surface_unhealthy").health, "unhealthy");
+  assert.equal(leases.getSurface("surface_unhealthy").active_lease_id, undefined);
+});
+
+test("restart reconciliation preserves queued run within wait policy", () => {
+  const { manager: leases } = manager({
+    initialLeases: [
+      {
+        lease_id: "lease_queued",
+        connector_id: "chatgpt",
+        profile_key: "chatgpt",
+        run_id: "run_queued",
+        status: "waiting_for_browser_surface",
+        wait_reason: "capacity_full",
+        priority_class: "scheduled_refresh",
+        requested_at: "2026-05-12T11:59:59.000Z",
+        expires_at: "2026-05-12T12:01:00.000Z",
+        fencing_token: 10,
+      },
+    ],
+  });
+
+  const reconciled = leases.reconcileAfterRestart();
+
+  assert.equal(reconciled.queued.length, 1);
+  assert.equal(leases.getLease("lease_queued").status, "waiting_for_browser_surface");
+});
+
+test("restart reconciliation defers queued run past wait policy", () => {
+  const { manager: leases } = manager({
+    initialLeases: [
+      {
+        lease_id: "lease_timeout",
+        connector_id: "chatgpt",
+        profile_key: "chatgpt",
+        run_id: "run_timeout",
+        status: "waiting_for_browser_surface",
+        wait_reason: "capacity_full",
+        priority_class: "scheduled_refresh",
+        requested_at: "2026-05-12T11:00:00.000Z",
+        expires_at: "2026-05-12T11:59:59.000Z",
+        fencing_token: 10,
+      },
+    ],
+  });
+
+  const reconciled = leases.reconcileAfterRestart();
+
+  assert.equal(reconciled.deferred.length, 1);
+  assert.equal(leases.getLease("lease_timeout").status, "deferred");
+  assert.equal(leases.getLease("lease_timeout").wait_reason, "lease_wait_timeout");
+});
+
+test("restart reconciliation defers incompatible static queued profile", () => {
+  const { manager: leases } = manager({
+    config: { surfaceMode: "static", staticProfileKey: "chatgpt", surfaceCap: 1 },
+    initialLeases: [
+      {
+        lease_id: "lease_static",
+        connector_id: "gmail",
+        profile_key: "gmail",
+        run_id: "run_static",
+        status: "waiting_for_browser_surface",
+        wait_reason: "capacity_full",
+        priority_class: "scheduled_refresh",
+        requested_at: "2026-05-12T11:59:59.000Z",
+        expires_at: "2026-05-12T12:01:00.000Z",
+        fencing_token: 10,
+      },
+    ],
+  });
+
+  const reconciled = leases.reconcileAfterRestart();
+
+  assert.equal(reconciled.deferred.length, 1);
+  assert.equal(leases.getLease("lease_static").status, "deferred");
+  assert.equal(leases.getLease("lease_static").wait_reason, "incompatible_static_profile");
+});
+
+test("restart reconciliation promotes queued-but-not-started run after stale release", () => {
+  const { manager: leases } = manager({
+    initialSurfaces: [
+      {
+        surface_id: "surface_restart",
+        backend: "neko",
+        profile_key: "chatgpt",
+        connector_id: "chatgpt",
+        cdp_url: "http://neko:9222",
+        stream_base_url: "http://neko:8080",
+        health: "ready",
+        active_lease_id: "lease_stale",
+        created_at: "2026-05-12T11:00:00.000Z",
+        last_used_at: "2026-05-12T11:00:00.000Z",
+      },
+    ],
+    initialLeases: [
+      {
+        lease_id: "lease_stale",
+        surface_id: "surface_restart",
+        connector_id: "chatgpt",
+        profile_key: "chatgpt",
+        run_id: "run_stale",
+        status: "leased",
+        priority_class: "owner_interactive",
+        requested_at: "2026-05-12T11:00:00.000Z",
+        leased_at: "2026-05-12T11:00:01.000Z",
+        expires_at: "2026-05-12T12:05:00.000Z",
+        fencing_token: 10,
+      },
+      {
+        lease_id: "lease_waiting",
+        connector_id: "chatgpt",
+        profile_key: "chatgpt",
+        run_id: "run_waiting",
+        status: "waiting_for_browser_surface",
+        wait_reason: "capacity_full",
+        priority_class: "scheduled_refresh",
+        requested_at: "2026-05-12T11:00:02.000Z",
+        expires_at: "2026-05-12T12:05:00.000Z",
+        fencing_token: 11,
+      },
+    ],
+  });
+
+  const reconciled = leases.reconcileAfterRestart();
+
+  assert.equal(reconciled.released.length, 1);
+  assert.equal(reconciled.promoted.length, 1);
+  assert.equal(reconciled.promoted[0].lease_id, "lease_waiting");
+  assert.equal(leases.getLease("lease_waiting").status, "leased");
+  assert.equal(leases.getSurface("surface_restart").active_lease_id, "lease_waiting");
+});
+
+test("restart reconciliation can defer queue promotion until runtime URLs are ready", () => {
+  const { manager: leases } = manager({
+    initialSurfaces: [
+      {
+        surface_id: "surface_restart",
+        backend: "neko",
+        profile_key: "chatgpt",
+        connector_id: "chatgpt",
+        cdp_url: "http://neko:9222",
+        stream_base_url: "http://neko:8080",
+        health: "ready",
+        active_lease_id: "lease_stale",
+        created_at: "2026-05-12T11:00:00.000Z",
+        last_used_at: "2026-05-12T11:00:00.000Z",
+      },
+    ],
+    initialLeases: [
+      {
+        lease_id: "lease_stale",
+        surface_id: "surface_restart",
+        connector_id: "chatgpt",
+        profile_key: "chatgpt",
+        run_id: "run_stale",
+        status: "leased",
+        priority_class: "owner_interactive",
+        requested_at: "2026-05-12T11:00:00.000Z",
+        leased_at: "2026-05-12T11:00:01.000Z",
+        expires_at: "2026-05-12T12:05:00.000Z",
+        fencing_token: 10,
+      },
+      {
+        lease_id: "lease_waiting",
+        connector_id: "chatgpt",
+        profile_key: "chatgpt",
+        run_id: "run_waiting",
+        status: "waiting_for_browser_surface",
+        wait_reason: "capacity_full",
+        priority_class: "scheduled_refresh",
+        requested_at: "2026-05-12T11:00:02.000Z",
+        expires_at: "2026-05-12T12:05:00.000Z",
+        fencing_token: 11,
+      },
+    ],
+  });
+
+  const reconciled = leases.reconcileAfterRestart({ promoteQueued: false });
+
+  assert.equal(reconciled.released.length, 1);
+  assert.equal(reconciled.promoted.length, 0);
+  assert.equal(leases.getLease("lease_waiting").status, "waiting_for_browser_surface");
+
+  const promoted = leases.pumpQueuedLeases();
+  assert.equal(promoted.length, 1);
+  assert.equal(promoted[0].lease_id, "lease_waiting");
+  assert.equal(leases.getLease("lease_waiting").status, "leased");
+  assert.equal(leases.getSurface("surface_restart").active_lease_id, "lease_waiting");
 });
 
 test("config parser validates managed policy and defaults static single connector profile", () => {

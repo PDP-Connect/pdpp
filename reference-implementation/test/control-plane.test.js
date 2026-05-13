@@ -187,6 +187,103 @@ test('_ref listing helpers', async (t) => {
     });
   });
 
+  await t.test('GET /_ref/runs surfaces browser-surface queued and deferred runs without connector failures', async () => {
+    await withHarness(async ({ asUrl, spotifyManifest }) => {
+      const source = { kind: 'connector', id: spotifyManifest.connector_id };
+      const base = {
+        actor_id: spotifyManifest.connector_id,
+        actor_type: 'runtime',
+        object_type: 'run',
+        scenario_id: 'scn_browser_surface_operator_status',
+        source_id: spotifyManifest.connector_id,
+        source_kind: 'connector',
+      };
+      await emitSpineEvent({
+        ...base,
+        event_type: 'run.browser_surface_requested',
+        object_id: 'run_browser_surface_waiting',
+        occurred_at: '2026-04-24T00:03:00.000Z',
+        run_id: 'run_browser_surface_waiting',
+        status: 'waiting_for_browser_surface',
+        trace_id: 'trc_browser_surface_waiting',
+        data: {
+          source,
+          browser_surface: {
+            pending_run_id: 'run_browser_surface_waiting',
+            browser_surface_status: 'waiting_for_browser_surface',
+            browser_surface_wait_reason: 'capacity_full',
+            browser_surface_lease_id: 'lease_waiting',
+            browser_surface_profile_key: 'spotify-profile',
+          },
+        },
+      });
+      await emitSpineEvent({
+        ...base,
+        event_type: 'run.browser_surface_queued',
+        object_id: 'run_browser_surface_waiting',
+        occurred_at: '2026-04-24T00:03:01.000Z',
+        run_id: 'run_browser_surface_waiting',
+        status: 'waiting_for_browser_surface',
+        trace_id: 'trc_browser_surface_waiting',
+        data: {
+          source,
+          browser_surface: {
+            pending_run_id: 'run_browser_surface_waiting',
+            browser_surface_status: 'waiting_for_browser_surface',
+            browser_surface_wait_reason: 'capacity_full',
+            browser_surface_lease_id: 'lease_waiting',
+            browser_surface_profile_key: 'spotify-profile',
+          },
+        },
+      });
+      await emitSpineEvent({
+        ...base,
+        event_type: 'run.browser_surface_deferred',
+        object_id: 'run_browser_surface_deferred',
+        occurred_at: '2026-04-24T00:04:00.000Z',
+        run_id: 'run_browser_surface_deferred',
+        status: 'deferred',
+        trace_id: 'trc_browser_surface_deferred',
+        data: {
+          source,
+          browser_surface: {
+            pending_run_id: 'run_browser_surface_deferred',
+            browser_surface_status: 'deferred',
+            browser_surface_wait_reason: 'incompatible_static_profile',
+            browser_surface_lease_id: 'lease_deferred',
+            browser_surface_profile_key: 'other-profile',
+          },
+        },
+      });
+
+      const { status, body } = await fetchJson(`${asUrl}/_ref/runs?limit=10`);
+      assert.equal(status, 200);
+      const waiting = body.data.find((run) => run.run_id === 'run_browser_surface_waiting');
+      assert.ok(waiting, 'queued browser-surface run should appear in run list');
+      assert.equal(waiting.status, 'waiting_for_browser_surface');
+      assert.equal(waiting.browser_surface_status, 'waiting_for_browser_surface');
+      assert.equal(waiting.browser_surface_wait_reason, 'capacity_full');
+      assert.equal(waiting.browser_surface_lease_id, 'lease_waiting');
+      assert.equal(waiting.failure_reason, null);
+
+      const deferred = body.data.find((run) => run.run_id === 'run_browser_surface_deferred');
+      assert.ok(deferred, 'deferred browser-surface run should appear in run list');
+      assert.equal(deferred.status, 'deferred');
+      assert.equal(deferred.browser_surface_status, 'deferred');
+      assert.equal(deferred.browser_surface_wait_reason, 'incompatible_static_profile');
+      assert.equal(deferred.browser_surface_lease_id, 'lease_deferred');
+      assert.equal(deferred.failure_reason, null);
+
+      const { body: waitingTimeline } = await fetchJson(
+        `${asUrl}/_ref/runs/${encodeURIComponent('run_browser_surface_waiting')}/timeline`,
+      );
+      assert.ok(
+        !waitingTimeline.data.some((event) => event.event_type === 'run.failed'),
+        'queued browser-surface backpressure must not be projected as connector failure',
+      );
+    });
+  });
+
   await t.test('GET /_ref/runs reports pending interaction state without relying on event-kind sets', async () => {
     await withHarness(async ({ asUrl, spotifyManifest }) => {
       const source = { connector_id: spotifyManifest.connector_id };
