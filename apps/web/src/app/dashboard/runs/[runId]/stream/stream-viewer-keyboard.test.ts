@@ -47,7 +47,9 @@ const NEKO_LAYOUT_DEFERRED_PRESENTATION_RE = /neko\.layout\.deferred_presentatio
 const NEKO_LOADING_OVERLAY_STABLE_PRESENTATION_RE =
   /localSurfaceCanDisplayPresentation[\s\S]*localSurfaceCanDisplay[\s\S]*const presentationReadyForDisplay = mediaReady && presentationMatchesRequestedViewport && localSurfaceCanDisplay[\s\S]*const showLoadingOverlay = !\([\s\S]*presentationReadyForDisplay \|\| mediaDisplayable/;
 const NEKO_DEGRADED_MEDIA_DISPLAYABLE_RE =
-  /result\.status === "degraded"[\s\S]*const displayable = nekoMediaSettleSampleHasDisplayableFrame\(sample\)[\s\S]*setMediaDisplayable\(displayable\)[\s\S]*neko\.media\.degraded_displayable/;
+  /result\.status === "degraded"[\s\S]*setMediaDisplayable\(displayable\)[\s\S]*neko\.media\.degraded_displayable/;
+const NEKO_SETTLING_MEDIA_DISPLAYABLE_RE =
+  /const displayable = nekoMediaSettleSampleHasDisplayableFrame\(sample\)[\s\S]*if \(displayable && !mediaDisplayableRef\.current\) \{[\s\S]*setMediaDisplayable\(true\)[\s\S]*neko\.media\.displayable[\s\S]*if \(result\.status === "settled"\)/;
 const NEKO_STABLE_PRESENTATION_CONTAINER_RECT_RE =
   /stablePresentationContainerRect\(actualContainerRect,\s*presentationViewportInfo\)/;
 const NEKO_LOADING_OVERLAY_CLASS_RE = /className="absolute inset-0 z-20/;
@@ -66,6 +68,10 @@ const NEKO_MEDIA_SETTLE_TARGET_MATCH_RE =
   /nekoMediaSettleTarget,[\s\S]*nekoMediaSettleTargetsMatch,[\s\S]*from "@pdpp\/remote-surface\/client"/;
 const NEKO_MEDIA_REFRESH_DOES_NOT_RESET_READY_RE =
   /const targetChanged = !nekoMediaSettleTargetsMatch\(mediaSettleTargetRef\.current, target\)[\s\S]*if \(targetChanged\) \{[\s\S]*setMediaReady\(false\);[\s\S]*\} else \{[\s\S]*neko\.media\.settle\.refresh/;
+const NEKO_TARGET_CHANGE_PRESERVES_DISPLAYABLE_RE =
+  /if \(targetChanged\) \{[\s\S]*firstMediaSampleLoggedRef\.current = false;[\s\S]*setMediaReady\(false\);[\s\S]*\} else \{/;
+const NEKO_TARGET_CHANGE_RESETS_DISPLAYABLE_RE =
+  /if \(targetChanged\) \{[\s\S]*setMediaDisplayable\(false\)[\s\S]*setMediaReady\(false\);[\s\S]*\} else \{/;
 const NEKO_WEBRTC_RECONNECT_CONFIG_RE =
   /NEKO_WEBRTC_RECONNECT_CONFIG[\s\S]*max_reconnects:\s*12[\s\S]*timeout_ms:\s*6000/;
 const NEKO_WEBRTC_RECONNECT_CONFIG_APPLIED_RE =
@@ -201,10 +207,16 @@ test("n.eko presentation waits for settled media before promoting a resized view
   assert.match(viewerSrc, NEKO_LOADING_OVERLAY_CLASS_RE);
   assert.match(viewerSrc, NEKO_LOADING_OVERLAY_DATA_ATTR_RE);
   assert.match(viewerSrc, NEKO_DEGRADED_MEDIA_DISPLAYABLE_RE);
+  assert.match(viewerSrc, NEKO_SETTLING_MEDIA_DISPLAYABLE_RE);
   assert.match(viewerSrc, NEKO_VISUAL_QUALITY_IGNORES_OCCLUDED_MEDIA_RE);
   assert.doesNotMatch(viewerSrc, NEKO_PRESENTATION_IMMEDIATE_POST_PROMOTION_RE);
   assert.doesNotMatch(viewerSrc, NEKO_PRESENTATION_DEGRADED_PROMOTE_RE);
   assert.doesNotMatch(viewerSrc, NEKO_PRESENTATION_EARLY_MEDIA_READY_RE);
+  const displayableBlock =
+    viewerSrc.match(/if \(displayable && !mediaDisplayableRef\.current\) \{[\s\S]*?\n        \}/)?.[0] ?? "";
+  assert.ok(displayableBlock.length > 0, "settling displayable block is identifiable");
+  assert.doesNotMatch(displayableBlock, /setMediaReady\(true\)/);
+  assert.doesNotMatch(displayableBlock, /onPresentationViewportReady\(/);
 });
 
 test("n.eko WebRTC startup can recover after slow media attach or ICE retry", async () => {
@@ -223,6 +235,8 @@ test("n.eko WebRTC startup can recover after slow media attach or ICE retry", as
   assert.match(viewerSrc, NEKO_MEDIA_REFRESH_EPOCH_DEP_RE);
   assert.match(viewerSrc, NEKO_MEDIA_SETTLE_TARGET_MATCH_RE);
   assert.match(viewerSrc, NEKO_MEDIA_REFRESH_DOES_NOT_RESET_READY_RE);
+  assert.match(viewerSrc, NEKO_TARGET_CHANGE_PRESERVES_DISPLAYABLE_RE);
+  assert.doesNotMatch(viewerSrc, NEKO_TARGET_CHANGE_RESETS_DISPLAYABLE_RE);
 
   // n.eko's default WebRTC reconnect timeout is 1.5s. In this deployment the
   // client may need TURN/LAN candidate negotiation, so PDPP applies a less

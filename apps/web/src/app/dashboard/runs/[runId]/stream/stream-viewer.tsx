@@ -3199,6 +3199,7 @@ function NekoSurface({
   const [error, setError] = useState<string | null>(null);
   const [mediaRefreshEpoch, setMediaRefreshEpoch] = useState(0);
   const [mediaDisplayable, setMediaDisplayable] = useState(false);
+  const mediaDisplayableRef = useRef(false);
   const [mediaReady, setMediaReady] = useState(false);
   useSurfaceDebugTelemetry({ containerRef, debugEnabled, logDebug, surface: "neko", viewportInfo });
   useVisualQualityDebugTelemetry({ containerRef, debugEnabled, logDebug, surface: "neko", viewportInfo });
@@ -3612,6 +3613,7 @@ function NekoSurface({
       mediaSettleTargetRef.current = null;
       mediaSettleStateRef.current = createNekoMediaSettleState();
       firstMediaSampleLoggedRef.current = false;
+      mediaDisplayableRef.current = false;
       setMediaDisplayable(false);
       setMediaReady(false);
       return;
@@ -3623,7 +3625,6 @@ function NekoSurface({
       mediaSettleTargetRef.current = target;
       mediaSettleStateRef.current = createNekoMediaSettleState();
       firstMediaSampleLoggedRef.current = false;
-      setMediaDisplayable(false);
       setMediaReady(false);
     } else {
       logDebug("neko.media.settle.refresh", {
@@ -3659,6 +3660,17 @@ function NekoSurface({
           state: mediaSettleStateRef.current,
         });
         mediaSettleStateRef.current = result.state;
+        const displayable = nekoMediaSettleSampleHasDisplayableFrame(sample);
+        if (displayable && !mediaDisplayableRef.current) {
+          mediaDisplayableRef.current = true;
+          setMediaDisplayable(true);
+          logDebug("neko.media.displayable", {
+            pollCount,
+            sample,
+            status: result.status,
+            viewport: viewportInfo,
+          });
+        }
         logDebug("neko.media.settle.sample", {
           pollCount,
           reasons: result.reasons,
@@ -3666,13 +3678,14 @@ function NekoSurface({
           status: result.status,
         });
         if (result.status === "settled") {
+          mediaDisplayableRef.current = true;
           setMediaDisplayable(true);
           setMediaReady(true);
           onPresentationViewportReady(viewportInfo, { status: "settled" });
           return;
         }
         if (result.status === "degraded") {
-          const displayable = nekoMediaSettleSampleHasDisplayableFrame(sample);
+          mediaDisplayableRef.current = displayable;
           setMediaDisplayable(displayable);
           setMediaReady(displayable);
           logDebug("neko.media.degraded_displayable", {
