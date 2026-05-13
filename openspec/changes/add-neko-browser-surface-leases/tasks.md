@@ -2,7 +2,7 @@
 
 - [x] 1.1 Define `BrowserSurface`, `BrowserSurfaceLease`, `BrowserSurfaceRunProjection`, and allowed lease-state transitions in a runtime-owned module.
 - [x] 1.2 Add validated configuration for `PDPP_NEKO_MANAGED_CONNECTORS`, `PDPP_NEKO_SURFACE_CAP`, `PDPP_NEKO_STATIC_PROFILE_KEY`, lease wait timeout, idle TTL, and priority defaults.
-- [ ] 1.3 Implement atomic acquire/queue/promote/release semantics with fencing tokens and store-enforced invariants for cap, one active lease per surface, and one non-terminal lease per run.
+- [x] 1.3 Implement atomic acquire/queue/promote/release semantics with fencing tokens and store-enforced invariants for cap, one active lease per surface, and one non-terminal lease per run.
 - [x] 1.4 Add deterministic lease-manager tests for compatible idle lease, static incompatible profile defer, capacity-full queue, duplicate pending run handling, cancellation, timeout/defer, release, stale release fencing, concurrent final-slot acquisition, and priority/FIFO pump ordering.
 
 ## 2. Controller Integration
@@ -22,8 +22,8 @@
 
 ## 4. Persistence And Restart Reconciliation
 
-- [ ] 4.1 Persist enough lease/surface state to recover queued, starting, and leased rows after restart.
-- [ ] 4.2 Implement a dedicated browser-surface lease store rather than overloading `controller_active_runs`.
+- [x] 4.1 Persist enough lease/surface state to recover queued, starting, and leased rows after restart.
+- [x] 4.2 Implement a dedicated browser-surface lease store rather than overloading `controller_active_runs`.
 - [ ] 4.3 Reconcile persisted leases with active runs and live/static n.eko surfaces on boot after storage initialization and before routes/schedules launch new runs.
 - [ ] 4.4 Preserve profile volumes/directories while releasing healthy stale leases, expiring missing-surface leases, and marking unhealthy surfaces failed.
 - [ ] 4.5 Add restart tests for active leased run, stale leased run, missing surface, unhealthy surface, queued run within wait policy, queued run past wait policy, incompatible static profile, and queued-but-not-started run not being marked abandoned.
