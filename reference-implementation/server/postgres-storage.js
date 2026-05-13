@@ -382,6 +382,79 @@ export async function bootstrapPostgresSchema() {
         started_at TEXT NOT NULL
       );
 
+      CREATE INDEX IF NOT EXISTS idx_pg_controller_active_runs_run_id
+        ON controller_active_runs(run_id);
+
+      CREATE TABLE IF NOT EXISTS browser_surfaces (
+        surface_id TEXT PRIMARY KEY,
+        backend TEXT NOT NULL CHECK (backend IN ('neko')),
+        profile_key TEXT NOT NULL,
+        connector_id TEXT NOT NULL,
+        account_key TEXT,
+        cdp_url TEXT NOT NULL,
+        stream_base_url TEXT NOT NULL,
+        health TEXT NOT NULL CHECK (health IN ('starting', 'ready', 'unhealthy', 'stopping')),
+        container_id TEXT,
+        active_lease_id TEXT,
+        created_at TEXT NOT NULL,
+        last_used_at TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_pg_browser_surfaces_profile_health
+        ON browser_surfaces(backend, profile_key, health, last_used_at);
+
+      CREATE INDEX IF NOT EXISTS idx_pg_browser_surfaces_active_lease
+        ON browser_surfaces(active_lease_id)
+        WHERE active_lease_id IS NOT NULL;
+
+      CREATE TABLE IF NOT EXISTS browser_surface_leases (
+        lease_id TEXT PRIMARY KEY,
+        surface_id TEXT REFERENCES browser_surfaces(surface_id),
+        connector_id TEXT NOT NULL,
+        profile_key TEXT NOT NULL,
+        account_key TEXT,
+        run_id TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN (
+          'waiting_for_browser_surface',
+          'starting_surface',
+          'leased',
+          'released',
+          'expired',
+          'deferred',
+          'cancelled',
+          'surface_failed'
+        )),
+        priority_class TEXT NOT NULL CHECK (priority_class IN ('owner_interactive', 'scheduled_refresh')),
+        requested_at TEXT NOT NULL,
+        leased_at TEXT,
+        released_at TEXT,
+        expires_at TEXT NOT NULL,
+        fencing_token INTEGER NOT NULL,
+        wait_reason TEXT CHECK (wait_reason IS NULL OR wait_reason IN (
+          'capacity_full',
+          'surface_starting',
+          'surface_unhealthy',
+          'incompatible_static_profile',
+          'launch_precondition_failed',
+          'lease_wait_timeout'
+        ))
+      );
+
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_pg_browser_surface_leases_one_non_terminal_run
+        ON browser_surface_leases(run_id)
+        WHERE status NOT IN ('released', 'expired', 'deferred', 'cancelled', 'surface_failed');
+
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_pg_browser_surface_leases_one_active_surface
+        ON browser_surface_leases(surface_id)
+        WHERE surface_id IS NOT NULL AND status = 'leased';
+
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_pg_browser_surface_leases_one_pending_connector_profile
+        ON browser_surface_leases(connector_id, profile_key, COALESCE(account_key, ''))
+        WHERE status IN ('waiting_for_browser_surface', 'starting_surface');
+
+      CREATE INDEX IF NOT EXISTS idx_pg_browser_surface_leases_non_terminal
+        ON browser_surface_leases(status, priority_class, requested_at);
+
       CREATE TABLE IF NOT EXISTS scheduler_run_history (
         id BIGSERIAL PRIMARY KEY,
         connector_id TEXT NOT NULL,
