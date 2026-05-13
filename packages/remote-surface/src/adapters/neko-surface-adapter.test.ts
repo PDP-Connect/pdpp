@@ -194,6 +194,45 @@ describe("NekoSurfaceAdapter", () => {
     assert.equal(client.focusCalls, 2);
   });
 
+  it("mount() eagerly binds the controller textarea without focusing keyboard", async () => {
+    const textarea = makeStubTextarea();
+    const logs: CapturedLog[] = [];
+    const client = makeMockClient({
+      getTextareaElement: () => textarea,
+    });
+    const adapter = new NekoSurfaceAdapter({
+      client,
+      config: baseConfig,
+      logger: (level, msg, meta) => logs.push({ level, msg, meta }),
+    });
+
+    await adapter.mount(fakeEl);
+    textarea.dispatchEvent(makeInputEvent("insertText", "m"));
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.equal(client.focusCalls, 0);
+    assert.deepEqual(textarea.focusCalls, []);
+    assert.deepEqual(client.sendTextCalls, ["m"]);
+    assert.equal(textarea.value, "");
+    assert.ok(
+      logs.some(
+        (l) =>
+          l.level === "info" &&
+          l.msg === "neko-surface-adapter.text-input-bound",
+      ),
+    );
+    assert.ok(
+      logs.some(
+        (l) =>
+          l.level === "info" &&
+          l.msg === "neko-surface-adapter.send-text" &&
+          l.meta?.phase === "result" &&
+          l.meta?.source === "mobile-ime" &&
+          l.meta?.sent === true,
+      ),
+    );
+  });
+
   it("focusTextInput() focuses and binds the controller textarea for text commits", async () => {
     const textarea = makeStubTextarea();
     const logs: CapturedLog[] = [];

@@ -161,6 +161,7 @@ export class NekoSurfaceAdapter implements RemoteSurface {
       // the dashboard wiring step.
       await this.client.start(el, this.config);
       this.lifecycleState = "mounted";
+      this.ensureTextInputController();
       this.log("info", "neko-surface-adapter.mounted");
     } catch (err) {
       this.lifecycleState = "error";
