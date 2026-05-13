@@ -28,6 +28,7 @@ COPY apps/web/package.json apps/web/package.json
 COPY packages/pdpp-brand/package.json packages/pdpp-brand/package.json
 COPY packages/polyfill-connectors/package.json packages/polyfill-connectors/package.json
 COPY packages/reference-contract/package.json packages/reference-contract/package.json
+COPY packages/remote-surface/package.json packages/remote-surface/package.json
 COPY reference-implementation/package.json reference-implementation/package.json
 
 RUN pnpm install --frozen-lockfile

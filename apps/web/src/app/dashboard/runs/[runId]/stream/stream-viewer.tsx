@@ -66,7 +66,11 @@ import {
   viewportInfoFromPayload,
   type StreamViewportInfo,
 } from "@pdpp/remote-surface/client";
-import { assessNekoMediaSettle, createNekoMediaSettleState } from "@pdpp/remote-surface/backends/neko";
+import {
+  assessNekoMediaSettle,
+  createNekoMediaSettleState,
+  type NekoMediaSettleSample,
+} from "@pdpp/remote-surface/backends/neko";
 import {
   createStreamViewerControlState,
   localSurfaceCanDisplayPresentation,
@@ -412,6 +416,46 @@ function useStableNekoNativeViewportInfo(
   }
 
   return stableViewportRef.current;
+}
+
+function positiveViewportSize(size: { height?: number; width?: number } | null | undefined): boolean {
+  return !!size && Number(size.width) > 0 && Number(size.height) > 0;
+}
+
+function viewportOrientation(size: { height: number; width: number }): "landscape" | "portrait" | "square" {
+  const longestSide = Math.max(size.width, size.height);
+  if (longestSide <= 0 || Math.abs(size.width - size.height) / longestSide <= 0.05) {
+    return "square";
+  }
+  return size.width > size.height ? "landscape" : "portrait";
+}
+
+function compatibleViewportOrientation(
+  a: { height: number; width: number },
+  b: { height: number; width: number }
+): boolean {
+  const aOrientation = viewportOrientation(a);
+  const bOrientation = viewportOrientation(b);
+  return aOrientation === "square" || bOrientation === "square" || aOrientation === bOrientation;
+}
+
+function nekoMediaSettleSampleHasDisplayableFrame(sample: NekoMediaSettleSample): boolean {
+  if (!(positiveViewportSize(sample.media) && positiveViewportSize(sample.screen))) {
+    return false;
+  }
+  const media = sample.media as { height: number; width: number };
+  const screen = sample.screen as { height: number; width: number };
+  const inbound = sample.inbound;
+  const inboundHasFrame =
+    !inbound ||
+    (Number(inbound.frameWidth) > 0 && Number(inbound.frameHeight) > 0) ||
+    Number(inbound.framesPerSecond) > 0 ||
+    Number(inbound.framesDecoded) > 0;
+  return (
+    inboundHasFrame &&
+    compatibleViewportOrientation(media, sample.requested) &&
+    compatibleViewportOrientation(screen, sample.requested)
+  );
 }
 
 function readContainerRect(node: Element | null): { height: number; width: number } | null {
@@ -3154,6 +3198,7 @@ function NekoSurface({
   const [clientConfig, setClientConfig] = useState<NekoClientConfig | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [mediaRefreshEpoch, setMediaRefreshEpoch] = useState(0);
+  const [mediaDisplayable, setMediaDisplayable] = useState(false);
   const [mediaReady, setMediaReady] = useState(false);
   useSurfaceDebugTelemetry({ containerRef, debugEnabled, logDebug, surface: "neko", viewportInfo });
   useVisualQualityDebugTelemetry({ containerRef, debugEnabled, logDebug, surface: "neko", viewportInfo });
@@ -3567,6 +3612,7 @@ function NekoSurface({
       mediaSettleTargetRef.current = null;
       mediaSettleStateRef.current = createNekoMediaSettleState();
       firstMediaSampleLoggedRef.current = false;
+      setMediaDisplayable(false);
       setMediaReady(false);
       return;
     }
@@ -3577,6 +3623,7 @@ function NekoSurface({
       mediaSettleTargetRef.current = target;
       mediaSettleStateRef.current = createNekoMediaSettleState();
       firstMediaSampleLoggedRef.current = false;
+      setMediaDisplayable(false);
       setMediaReady(false);
     } else {
       logDebug("neko.media.settle.refresh", {
@@ -3619,12 +3666,21 @@ function NekoSurface({
           status: result.status,
         });
         if (result.status === "settled") {
+          setMediaDisplayable(true);
           setMediaReady(true);
           onPresentationViewportReady(viewportInfo, { status: "settled" });
           return;
         }
         if (result.status === "degraded") {
-          setMediaReady(true);
+          const displayable = nekoMediaSettleSampleHasDisplayableFrame(sample);
+          setMediaDisplayable(displayable);
+          setMediaReady(displayable);
+          logDebug("neko.media.degraded_displayable", {
+            displayable,
+            reasons: result.reasons,
+            sample,
+            viewport: viewportInfo,
+          });
           logDebug("viewport.presentation.remote_skip", {
             reason: "media-degraded",
             result: { reasons: result.reasons, status: "degraded" },
@@ -3697,10 +3753,8 @@ function NekoSurface({
   const localSurfaceCanDisplay =
     presentationMatchesRequestedViewport &&
     localSurfaceCanDisplayPresentation(localSurfaceViewportInfo, presentationViewportInfo);
-  const showLoadingOverlay = !(
-    error ||
-    (mediaReady && presentationMatchesRequestedViewport && localSurfaceCanDisplay)
-  );
+  const presentationReadyForDisplay = mediaReady && presentationMatchesRequestedViewport && localSurfaceCanDisplay;
+  const showLoadingOverlay = !(error || presentationReadyForDisplay || mediaDisplayable);
 
   return (
     <div className="flex flex-1 items-center justify-center overflow-hidden">

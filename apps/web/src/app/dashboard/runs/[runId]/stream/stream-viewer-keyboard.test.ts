@@ -45,7 +45,9 @@ const NEKO_PRESENTATION_IMMEDIATE_POST_PROMOTION_RE =
 const NEKO_PRESENTATION_EARLY_MEDIA_READY_RE = /sample\.media[\s\S]{0,180}setMediaReady\(true\)/;
 const NEKO_LAYOUT_DEFERRED_PRESENTATION_RE = /neko\.layout\.deferred_presentation/;
 const NEKO_LOADING_OVERLAY_STABLE_PRESENTATION_RE =
-  /localSurfaceCanDisplayPresentation[\s\S]*localSurfaceCanDisplay[\s\S]*const showLoadingOverlay = !\([\s\S]*mediaReady && presentationMatchesRequestedViewport && localSurfaceCanDisplay/;
+  /localSurfaceCanDisplayPresentation[\s\S]*localSurfaceCanDisplay[\s\S]*const presentationReadyForDisplay = mediaReady && presentationMatchesRequestedViewport && localSurfaceCanDisplay[\s\S]*const showLoadingOverlay = !\([\s\S]*presentationReadyForDisplay \|\| mediaDisplayable/;
+const NEKO_DEGRADED_MEDIA_DISPLAYABLE_RE =
+  /result\.status === "degraded"[\s\S]*const displayable = nekoMediaSettleSampleHasDisplayableFrame\(sample\)[\s\S]*setMediaDisplayable\(displayable\)[\s\S]*neko\.media\.degraded_displayable/;
 const NEKO_STABLE_PRESENTATION_CONTAINER_RECT_RE =
   /stablePresentationContainerRect\(actualContainerRect,\s*presentationViewportInfo\)/;
 const NEKO_LOADING_OVERLAY_CLASS_RE = /className="absolute inset-0 z-20/;
@@ -198,6 +200,7 @@ test("n.eko presentation waits for settled media before promoting a resized view
   assert.match(viewerSrc, NEKO_STABLE_PRESENTATION_CONTAINER_RECT_RE);
   assert.match(viewerSrc, NEKO_LOADING_OVERLAY_CLASS_RE);
   assert.match(viewerSrc, NEKO_LOADING_OVERLAY_DATA_ATTR_RE);
+  assert.match(viewerSrc, NEKO_DEGRADED_MEDIA_DISPLAYABLE_RE);
   assert.match(viewerSrc, NEKO_VISUAL_QUALITY_IGNORES_OCCLUDED_MEDIA_RE);
   assert.doesNotMatch(viewerSrc, NEKO_PRESENTATION_IMMEDIATE_POST_PROMOTION_RE);
   assert.doesNotMatch(viewerSrc, NEKO_PRESENTATION_DEGRADED_PROMOTE_RE);

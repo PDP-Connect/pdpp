@@ -91,6 +91,49 @@ test("marks repeated mismatches as degraded after the sample budget", () => {
   ]);
 });
 
+test("keeps desktop fallback media degraded instead of treating it as settled", () => {
+  let state = createNekoMediaSettleState();
+  let result = assessNekoMediaSettle({
+    maxSettlingSamples: 3,
+    sample: {
+      requested: { width: 1603, height: 856 },
+      screen: { width: 920, height: 448 },
+      media: { width: 920, height: 448 },
+      inbound: { frameWidth: 920, frameHeight: 448, framesDecoded: 10, framesPerSecond: 30 },
+    },
+    state,
+  });
+  state = result.state;
+  result = assessNekoMediaSettle({
+    maxSettlingSamples: 3,
+    sample: {
+      requested: { width: 1603, height: 856 },
+      screen: { width: 920, height: 448 },
+      media: { width: 920, height: 448 },
+      inbound: { frameWidth: 920, frameHeight: 448, framesDecoded: 20, framesPerSecond: 30 },
+    },
+    state,
+  });
+  state = result.state;
+  result = assessNekoMediaSettle({
+    maxSettlingSamples: 3,
+    sample: {
+      requested: { width: 1603, height: 856 },
+      screen: { width: 920, height: 448 },
+      media: { width: 920, height: 448 },
+      inbound: { frameWidth: 920, frameHeight: 448, framesDecoded: 30, framesPerSecond: 30 },
+    },
+    state,
+  });
+
+  assert.equal(result.status, "degraded");
+  assert.deepEqual(result.reasons, [
+    "screen_not_covering_requested_viewport",
+    "media_not_covering_requested_viewport",
+    "inbound_frame_not_covering_requested_viewport",
+  ]);
+});
+
 test("treats screen and media that cover the requested viewport as eligible for settle", () => {
   let state = createNekoMediaSettleState();
   state = assessNekoMediaSettle({
