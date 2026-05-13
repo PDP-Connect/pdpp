@@ -15,6 +15,8 @@ export const BROWSER_SURFACE_WAIT_REASONS = [
   "capacity_full",
   "surface_starting",
   "surface_unhealthy",
+  "surface_start_failed",
+  "surface_readiness_timeout",
   "incompatible_static_profile",
   "launch_precondition_failed",
   "lease_wait_timeout",
@@ -60,6 +62,7 @@ export interface BrowserSurface {
   readonly account_key?: string;
   readonly active_lease_id?: string;
   readonly container_id?: string;
+  readonly allocator_metadata?: Readonly<Record<string, string>>;
 }
 
 export interface BrowserSurfaceLease {
@@ -177,6 +180,12 @@ export interface BrowserSurfaceAllocator {
   getSurfaceStatus(surfaceId: string): Promise<BrowserSurface | null>;
   stopSurface(request: StopBrowserSurfaceRequest): Promise<BrowserSurface | null>;
   listSurfaces(): Promise<BrowserSurface[]>;
+}
+
+export interface EnsureStartingBrowserSurfaceRequest {
+  readonly leaseId: string;
+  readonly allocator: BrowserSurfaceAllocator;
+  readonly readinessTimeoutMs?: number;
 }
 
 export function isTerminalBrowserSurfaceLeaseStatus(status: BrowserSurfaceLeaseStatus): boolean {
@@ -321,6 +330,71 @@ export class BrowserSurfaceLeaseManager {
     return { released: true, stale: false, lease: released, ...(surface ? { surface } : {}), ...(promoted ? { promoted } : {}) };
   }
 
+  async ensureStartingSurfaceReady(request: EnsureStartingBrowserSurfaceRequest): Promise<BrowserSurfaceLeaseResult> {
+    const lease = this.#leases.get(request.leaseId);
+    if (!lease || lease.status !== "starting_surface" || !lease.surface_id) {
+      const surface = lease ? this.#surfaceForLease(lease) : undefined;
+      if (!lease) {
+        throw new Error(`browser surface lease not found: ${request.leaseId}`);
+      }
+      return { lease, ...(surface ? { surface } : {}) };
+    }
+
+    const surface = this.#surfaces.get(lease.surface_id);
+    if (!surface) {
+      const failed = this.#terminalLease(lease, "surface_failed", "surface_unhealthy");
+      this.#leases.set(failed.lease_id, failed);
+      return { lease: failed };
+    }
+
+    const readinessTimeoutMs = request.readinessTimeoutMs ?? this.#config.leaseWaitTimeoutMs;
+    if (this.#now().getTime() - Date.parse(lease.requested_at) >= readinessTimeoutMs) {
+      const unhealthy = { ...surface, health: "unhealthy" as const, last_used_at: this.#isoNow() };
+      this.#surfaces.set(surface.surface_id, unhealthy);
+      const failed = this.#terminalLease(lease, "surface_failed", "surface_readiness_timeout");
+      this.#leases.set(failed.lease_id, failed);
+      return { lease: failed, surface: unhealthy };
+    }
+
+    try {
+      await request.allocator.ensureSurface({
+        surfaceId: surface.surface_id,
+        connectorId: lease.connector_id,
+        profileKey: lease.profile_key,
+        ...(lease.account_key ? { accountKey: lease.account_key } : {}),
+      });
+      const status = await request.allocator.getSurfaceStatus(surface.surface_id);
+      if (!status) {
+        const failedSurface = { ...surface, health: "unhealthy" as const, last_used_at: this.#isoNow() };
+        this.#surfaces.set(surface.surface_id, failedSurface);
+        const failed = this.#terminalLease(lease, "surface_failed", "surface_unhealthy");
+        this.#leases.set(failed.lease_id, failed);
+        return { lease: failed, surface: failedSurface };
+      }
+
+      const syncedSurface = this.#mergeAllocatorSurface(surface, status);
+      this.#surfaces.set(syncedSurface.surface_id, syncedSurface);
+      if (syncedSurface.health === "ready") {
+        const leased = this.#leaseSurface(lease, syncedSurface, this.#isoNow());
+        this.#leases.set(leased.lease_id, leased);
+        const leasedSurface = this.#surfaces.get(syncedSurface.surface_id);
+        return { lease: leased, ...(leasedSurface ? { surface: leasedSurface } : {}) };
+      }
+      if (syncedSurface.health === "unhealthy") {
+        const failed = this.#terminalLease(lease, "surface_failed", "surface_unhealthy");
+        this.#leases.set(failed.lease_id, failed);
+        return { lease: failed, surface: syncedSurface };
+      }
+      return { lease, surface: syncedSurface };
+    } catch {
+      const failedSurface = { ...surface, health: "unhealthy" as const, last_used_at: this.#isoNow() };
+      this.#surfaces.set(surface.surface_id, failedSurface);
+      const failed = this.#terminalLease(lease, "surface_failed", "surface_start_failed");
+      this.#leases.set(failed.lease_id, failed);
+      return { lease: failed, surface: failedSurface };
+    }
+  }
+
   deferTimedOutLease(leaseId: string): BrowserSurfaceLease | undefined {
     const lease = this.#leases.get(leaseId);
     if (!lease || isTerminalBrowserSurfaceLeaseStatus(lease.status)) {
@@ -373,6 +447,18 @@ export class BrowserSurfaceLeaseManager {
         } else if (reconciled.status === "deferred") {
           result.deferred.push(reconciled);
         }
+        continue;
+      }
+
+      if (lease.status === "starting_surface") {
+        const surface = lease.surface_id ? this.#surfaces.get(lease.surface_id) : undefined;
+        if (!surface || surface.health === "unhealthy") {
+          const failed = this.#terminalLease(lease, "surface_failed", "surface_unhealthy");
+          this.#leases.set(failed.lease_id, failed);
+          result.surfaceFailed.push(failed);
+          continue;
+        }
+        result.queued.push(lease);
         continue;
       }
 
@@ -442,6 +528,15 @@ export class BrowserSurfaceLeaseManager {
 
     const surface = this.#createSurfaceForLease(lease, now);
     this.#surfaces.set(surface.surface_id, surface);
+    if (this.#config.surfaceMode === "dynamic") {
+      return {
+        ...lease,
+        status: "starting_surface",
+        wait_reason: "surface_starting",
+        surface_id: surface.surface_id,
+        fencing_token: this.#nextFencingToken(),
+      };
+    }
     return this.#leaseSurface(lease, surface, now);
   }
 
@@ -468,10 +563,10 @@ export class BrowserSurfaceLeaseManager {
     for (const lease of waiting) {
       const surface = preferredSurfaceId ? this.#surfaces.get(preferredSurfaceId) : this.#findReadyIdleSurface(lease.profile_key);
       const compatibleSurface = surface?.health === "ready" && !surface.active_lease_id && surface.profile_key === lease.profile_key ? surface : this.#findReadyIdleSurface(lease.profile_key);
-      if (!compatibleSurface) {
+      const promoted = compatibleSurface ? this.#leaseSurface(lease, compatibleSurface, this.#isoNow()) : this.#promoteWaitingLeaseToStarting(lease);
+      if (!promoted) {
         continue;
       }
-      const promoted = this.#leaseSurface(lease, compatibleSurface, this.#isoNow());
       this.#leases.set(promoted.lease_id, promoted);
       return promoted;
     }
@@ -500,6 +595,22 @@ export class BrowserSurfaceLeaseManager {
     return leased;
   }
 
+  #promoteWaitingLeaseToStarting(lease: BrowserSurfaceLease): BrowserSurfaceLease | undefined {
+    if (this.#config.surfaceMode !== "dynamic" || this.#activeSurfaceCount() >= this.#config.surfaceCap) {
+      return undefined;
+    }
+    const now = this.#isoNow();
+    const surface = this.#createSurfaceForLease(lease, now);
+    this.#surfaces.set(surface.surface_id, surface);
+    return {
+      ...lease,
+      status: "starting_surface",
+      wait_reason: "surface_starting",
+      surface_id: surface.surface_id,
+      fencing_token: this.#nextFencingToken(),
+    };
+  }
+
   #createSurfaceForLease(lease: BrowserSurfaceLease, now: string): BrowserSurface {
     return {
       surface_id: this.#config.surfaceMode === "static" ? "neko-static" : this.#makeSurfaceId(),
@@ -508,10 +619,23 @@ export class BrowserSurfaceLeaseManager {
       connector_id: lease.connector_id,
       cdp_url: this.#config.staticCdpHttpUrl ?? "",
       stream_base_url: this.#config.staticStreamBaseUrl ?? "",
-      health: "ready",
+      health: this.#config.surfaceMode === "dynamic" ? "starting" : "ready",
       created_at: now,
       last_used_at: now,
       ...(lease.account_key ? { account_key: lease.account_key } : {}),
+    };
+  }
+
+  #mergeAllocatorSurface(current: BrowserSurface, allocated: BrowserSurface): BrowserSurface {
+    return {
+      ...current,
+      ...allocated,
+      surface_id: current.surface_id,
+      backend: "neko",
+      profile_key: current.profile_key,
+      connector_id: current.connector_id,
+      ...(current.account_key ? { account_key: current.account_key } : {}),
+      ...(current.active_lease_id ? { active_lease_id: current.active_lease_id } : {}),
     };
   }
 

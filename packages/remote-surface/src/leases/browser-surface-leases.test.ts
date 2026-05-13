@@ -3,9 +3,12 @@ import test from "node:test";
 
 import {
   type BrowserSurface,
+  type BrowserSurfaceAllocator,
   type BrowserSurfaceLease,
   type BrowserSurfaceLeaseConfig,
   BrowserSurfaceLeaseManager,
+  type EnsureBrowserSurfaceRequest,
+  type StopBrowserSurfaceRequest,
   DEFAULT_NEKO_PRIORITY_RANKS,
   projectBrowserSurfaceLease,
 } from "./browser-surface-leases.ts";
@@ -52,6 +55,70 @@ function manager(options: {
   };
 }
 
+class FakeBrowserSurfaceAllocator implements BrowserSurfaceAllocator {
+  readonly #surfaces = new Map<string, BrowserSurface>();
+  readonly ensureRequests: EnsureBrowserSurfaceRequest[] = [];
+
+  failEnsure = false;
+
+  async ensureSurface(request: EnsureBrowserSurfaceRequest): Promise<BrowserSurface> {
+    this.ensureRequests.push(request);
+    if (this.failEnsure) {
+      throw new Error("allocator failed");
+    }
+    const surface = this.#surfaces.get(request.surfaceId) ?? {
+      surface_id: request.surfaceId,
+      backend: "neko" as const,
+      profile_key: request.profileKey,
+      connector_id: request.connectorId,
+      cdp_url: "",
+      stream_base_url: "",
+      health: "starting" as const,
+      created_at: "2026-05-12T12:00:00.000Z",
+      last_used_at: "2026-05-12T12:00:00.000Z",
+      ...(request.accountKey ? { account_key: request.accountKey } : {}),
+      container_id: `container_${request.surfaceId}`,
+    };
+    this.#surfaces.set(request.surfaceId, surface);
+    return surface;
+  }
+
+  async getSurfaceStatus(surfaceId: string): Promise<BrowserSurface | null> {
+    return this.#surfaces.get(surfaceId) ?? null;
+  }
+
+  async stopSurface(request: StopBrowserSurfaceRequest): Promise<BrowserSurface | null> {
+    const surface = this.#surfaces.get(request.surfaceId);
+    if (!surface) {
+      return null;
+    }
+    const stopped = { ...surface, health: "stopping" as const };
+    this.#surfaces.set(request.surfaceId, stopped);
+    return stopped;
+  }
+
+  async listSurfaces(): Promise<BrowserSurface[]> {
+    return [...this.#surfaces.values()];
+  }
+
+  setReady(surfaceId: string): void {
+    const surface = this.#surfaces.get(surfaceId);
+    assert.ok(surface);
+    this.#surfaces.set(surfaceId, {
+      ...surface,
+      cdp_url: `http://${surfaceId}:9222`,
+      stream_base_url: `http://${surfaceId}:8080`,
+      health: "ready",
+    });
+  }
+
+  setUnhealthy(surfaceId: string): void {
+    const surface = this.#surfaces.get(surfaceId);
+    assert.ok(surface);
+    this.#surfaces.set(surfaceId, { ...surface, health: "unhealthy" });
+  }
+}
+
 test("compatible idle surface is leased and projected", () => {
   const { leases } = manager({
     initialSurfaces: [
@@ -82,11 +149,95 @@ test("compatible idle surface is leased and projected", () => {
   });
 });
 
-test("capacity-full request queues and release pumps by priority then FIFO", () => {
+test("dynamic capacity starts a surface before it becomes leased", async () => {
+  const { leases } = manager();
+  const allocator = new FakeBrowserSurfaceAllocator();
+
+  const acquired = leases.acquire({ connectorId: "chatgpt", runId: "run_1", profileKey: "chatgpt" });
+
+  assert.equal(acquired.lease.status, "starting_surface");
+  assert.equal(acquired.lease.wait_reason, "surface_starting");
+  assert.equal(acquired.surface?.health, "starting");
+  assert.equal(leases.listSurfaces().length, 1);
+
+  const stillStarting = await leases.ensureStartingSurfaceReady({ leaseId: acquired.lease.lease_id, allocator });
+  assert.equal(stillStarting.lease.status, "starting_surface");
+  assert.equal(allocator.ensureRequests.length, 1);
+  assert.ok(acquired.lease.surface_id);
+  allocator.setReady(acquired.lease.surface_id);
+
+  const ready = await leases.ensureStartingSurfaceReady({ leaseId: acquired.lease.lease_id, allocator });
+
+  assert.equal(ready.lease.status, "leased");
+  assert.equal(ready.surface?.health, "ready");
+  assert.equal(ready.surface?.active_lease_id, acquired.lease.lease_id);
+  assert.equal(ready.surface?.cdp_url, `http://${acquired.lease.surface_id}:9222`);
+});
+
+test("starting dynamic surfaces count against cap until ready or unhealthy", async () => {
+  const { leases } = manager({ config: { surfaceCap: 2 } });
+  const allocator = new FakeBrowserSurfaceAllocator();
+
+  const first = leases.acquire({ connectorId: "chatgpt", runId: "run_1", profileKey: "profile_1" });
+  const second = leases.acquire({ connectorId: "chatgpt", runId: "run_2", profileKey: "profile_2" });
+  const third = leases.acquire({ connectorId: "chatgpt", runId: "run_3", profileKey: "profile_3" });
+
+  assert.equal(first.lease.status, "starting_surface");
+  assert.equal(second.lease.status, "starting_surface");
+  assert.equal(third.lease.status, "waiting_for_browser_surface");
+  assert.equal(third.lease.wait_reason, "capacity_full");
+
+  assert.ok(first.lease.surface_id);
+  await leases.ensureStartingSurfaceReady({ leaseId: first.lease.lease_id, allocator });
+  allocator.setUnhealthy(first.lease.surface_id);
+  const failed = await leases.ensureStartingSurfaceReady({ leaseId: first.lease.lease_id, allocator });
+  assert.equal(failed.lease.status, "surface_failed");
+
+  assert.equal(leases.pumpQueuedLeases().length, 0);
+  assert.equal(leases.getLease(third.lease.lease_id)?.status, "waiting_for_browser_surface");
+});
+
+test("allocator startup failure marks the lease as surface_failed", async () => {
+  const { leases } = manager();
+  const allocator = new FakeBrowserSurfaceAllocator();
+  allocator.failEnsure = true;
+  const acquired = leases.acquire({ connectorId: "chatgpt", runId: "run_1", profileKey: "chatgpt" });
+
+  const failed = await leases.ensureStartingSurfaceReady({ leaseId: acquired.lease.lease_id, allocator });
+
+  assert.equal(failed.lease.status, "surface_failed");
+  assert.equal(failed.lease.wait_reason, "surface_start_failed");
+  assert.equal(failed.surface?.health, "unhealthy");
+});
+
+test("readiness timeout marks the lease as surface_failed", async () => {
+  const ctx = manager();
+  const { leases } = ctx;
+  const allocator = new FakeBrowserSurfaceAllocator();
+  const acquired = leases.acquire({ connectorId: "chatgpt", runId: "run_1", profileKey: "chatgpt" });
+  ctx.advance(1_001);
+
+  const failed = await leases.ensureStartingSurfaceReady({
+    leaseId: acquired.lease.lease_id,
+    allocator,
+    readinessTimeoutMs: 1_000,
+  });
+
+  assert.equal(failed.lease.status, "surface_failed");
+  assert.equal(failed.lease.wait_reason, "surface_readiness_timeout");
+  assert.equal(failed.surface?.health, "unhealthy");
+});
+
+test("capacity-full request queues and release pumps by priority then FIFO", async () => {
   const ctx = manager();
   const { leases } = ctx;
 
   const first = leases.acquire({ connectorId: "chatgpt", runId: "run_1", profileKey: "chatgpt" });
+  const allocator = new FakeBrowserSurfaceAllocator();
+  await leases.ensureStartingSurfaceReady({ leaseId: first.lease.lease_id, allocator });
+  assert.ok(first.lease.surface_id);
+  allocator.setReady(first.lease.surface_id);
+  const readyFirst = await leases.ensureStartingSurfaceReady({ leaseId: first.lease.lease_id, allocator });
   const low = leases.acquire({
     connectorId: "chatgpt",
     runId: "run_low",
@@ -102,7 +253,7 @@ test("capacity-full request queues and release pumps by priority then FIFO", () 
     priorityClass: "owner_interactive",
   });
 
-  const released = leases.release({ leaseId: first.lease.lease_id, fencingToken: first.lease.fencing_token });
+  const released = leases.release({ leaseId: readyFirst.lease.lease_id, fencingToken: readyFirst.lease.fencing_token });
 
   assert.equal(low.lease.status, "waiting_for_browser_surface");
   assert.equal(high.lease.status, "waiting_for_browser_surface");
@@ -110,13 +261,18 @@ test("capacity-full request queues and release pumps by priority then FIFO", () 
   assert.equal(leases.listSurfaces().length, 1);
 });
 
-test("stale release fencing cannot release a promoted lease", () => {
+test("stale release fencing cannot release a promoted lease", async () => {
   const { leases } = manager();
 
   const first = leases.acquire({ connectorId: "chatgpt", runId: "run_1", profileKey: "chatgpt" });
+  const allocator = new FakeBrowserSurfaceAllocator();
+  await leases.ensureStartingSurfaceReady({ leaseId: first.lease.lease_id, allocator });
+  assert.ok(first.lease.surface_id);
+  allocator.setReady(first.lease.surface_id);
+  const readyFirst = await leases.ensureStartingSurfaceReady({ leaseId: first.lease.lease_id, allocator });
   const queued = leases.acquire({ connectorId: "chatgpt", runId: "run_2", profileKey: "chatgpt" });
-  leases.release({ leaseId: first.lease.lease_id, fencingToken: first.lease.fencing_token });
-  const stale = leases.release({ leaseId: first.lease.lease_id, fencingToken: first.lease.fencing_token });
+  leases.release({ leaseId: readyFirst.lease.lease_id, fencingToken: readyFirst.lease.fencing_token });
+  const stale = leases.release({ leaseId: readyFirst.lease.lease_id, fencingToken: readyFirst.lease.fencing_token });
 
   assert.equal(queued.lease.status, "waiting_for_browser_surface");
   assert.equal(stale.released, false);

@@ -27,6 +27,7 @@ export type {
   BrowserSurfacePriorityClass,
   BrowserSurfaceProjection,
   BrowserSurfaceWaitReason,
+  EnsureStartingBrowserSurfaceRequest,
   EnsureBrowserSurfaceRequest,
   ReconcileBrowserSurfaceLeasesAfterRestartRequest,
   ReconcileBrowserSurfaceLeasesAfterRestartResult,
