@@ -74,8 +74,9 @@ import { createPlayground } from './streaming/playground.js';
 import { createController } from '../runtime/controller.ts';
 import {
   BrowserSurfaceLeaseManager,
-  parseNekoBrowserSurfaceLeaseConfig,
+  parseNekoBrowserSurfaceRuntimeConfig,
 } from '../runtime/browser-surface-leases.ts';
+import { NekoSurfaceAllocatorClient } from '../runtime/neko-surface-allocator.ts';
 import { getDefaultBrowserSurfaceLeaseStore } from './stores/browser-surface-lease-store.ts';
 import {
   createPdppCliCommand,
@@ -5838,21 +5839,12 @@ export async function startServer(opts = {}) {
   // call below receives the same instance; routes are attached there as
   // before. See reference-implementation/server/streaming/run-target-registry.js.
   const runTargetRegistry = createRunTargetRegistry({ logger: opts.streamingLogger });
-  const browserSurfaceLeaseConfig = parseNekoBrowserSurfaceLeaseConfig();
-  const browserSurfaceLeaseStore =
-    browserSurfaceLeaseConfig.managedConnectors.size > 0 ? getDefaultBrowserSurfaceLeaseStore() : null;
-  const browserSurfaceLeaseManager = browserSurfaceLeaseStore
-    ? new BrowserSurfaceLeaseManager({
-        config: browserSurfaceLeaseConfig,
-        initialSurfaces: await browserSurfaceLeaseStore.listSurfaces(),
-        initialLeases: await browserSurfaceLeaseStore.listNonTerminalLeases(),
-      })
-    : null;
+  const browserSurfaceControllerOptions = await resolveNekoBrowserSurfaceControllerOptions();
   const controller = createController({
     asPublicUrl: configuredAsPublicUrl,
     ownerSubjectId: opts.ownerAuthSubjectId,
     connectorPathResolver: opts.connectorPathResolver,
-    ...(browserSurfaceLeaseManager ? { browserSurfaceLeaseManager, browserSurfaceLeaseStore } : {}),
+    ...browserSurfaceControllerOptions,
     runtimeContext,
     streamingTargetNonceHooks: {
       registerNonce: (args) => runTargetRegistry.registerNonce(args),
@@ -5986,6 +5978,38 @@ export async function startServer(opts = {}) {
     // for the layered design.
     controller,
   };
+}
+
+export async function resolveNekoBrowserSurfaceControllerOptions({
+  env = process.env,
+  getBrowserSurfaceLeaseStore = getDefaultBrowserSurfaceLeaseStore,
+  createBrowserSurfaceAllocator = (options) => new NekoSurfaceAllocatorClient(options),
+} = {}) {
+  const runtimeConfig = parseNekoBrowserSurfaceRuntimeConfig(env);
+  const browserSurfaceLeaseStore =
+    runtimeConfig.leaseConfig.managedConnectors.size > 0 ? getBrowserSurfaceLeaseStore() : null;
+  if (!browserSurfaceLeaseStore) {
+    return {};
+  }
+
+  const browserSurfaceLeaseManager = new BrowserSurfaceLeaseManager({
+    config: runtimeConfig.leaseConfig,
+    initialSurfaces: await browserSurfaceLeaseStore.listSurfaces(),
+    initialLeases: await browserSurfaceLeaseStore.listNonTerminalLeases(),
+  });
+  const options = {
+    browserSurfaceLeaseManager,
+    browserSurfaceLeaseStore,
+  };
+
+  if (runtimeConfig.dynamic) {
+    options.browserSurfaceAllocator = createBrowserSurfaceAllocator({
+      baseUrl: runtimeConfig.dynamic.allocatorUrl,
+    });
+    options.browserSurfaceReadinessTimeoutMs = runtimeConfig.dynamic.readinessTimeoutMs;
+  }
+
+  return options;
 }
 
 // ─── CLI entrypoint ──────────────────────────────────────────────────────────
