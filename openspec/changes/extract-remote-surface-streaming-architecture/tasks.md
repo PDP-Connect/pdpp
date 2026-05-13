@@ -61,7 +61,7 @@
 - [x] 7.2 Run reference streaming route, session, run-target registry, n.eko adapter, CDP allowlist, and browser-surface lease tests.
 - [x] 7.3 Run dashboard stream viewer tests for protocol, keyboard, clipboard, viewport, visual quality, media settle, and n.eko client behavior.
 - [x] 7.4 Run import-boundary sweeps proving `packages/remote-surface` has no imports from reference, dashboard, connectors, Docker, or server modules.
-- [ ] 7.5 Run a gated CDP live smoke and a gated n.eko mobile smoke when the local environment supports them.
+- [x] 7.5 Run a gated CDP live smoke and a gated n.eko mobile smoke when the local environment supports them.
 - [x] 7.6 Run `openspec validate extract-remote-surface-streaming-architecture --strict`.
 - [x] 7.7 If dynamic allocation artifacts are touched during implementation, run `openspec validate add-dynamic-neko-surface-allocation --strict`.
 - [x] 7.8 For each completed tranche, report remaining compatibility shims and whether the package is closer to OSS publication or only internally reorganized.

@@ -654,12 +654,14 @@ export function createNekoCompanion(options = {}) {
 
   async function authenticate(signal) {
     if (authReady) return;
-    if (bearer || (!username && !password)) {
+    if (bearer || cookie) {
       authReady = true;
       return;
     }
 
-    const body = username ? { username, password } : { password };
+    const body = {};
+    if (username) body.username = username;
+    if (password) body.password = password;
     const response = await fetchImpl(loginUrl, {
       method: 'POST',
       signal,

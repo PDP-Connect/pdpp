@@ -236,6 +236,40 @@ test('n.eko adapter logs in, applies configured viewport endpoint, and emits bas
   assert.equal(companion._internal.isClosed(), true);
 });
 
+test('n.eko adapter logs in with an empty body for noauth n.eko providers', async () => {
+  const jpeg = 'jpeg-noauth';
+  const fetchImpl = makeFetch([
+    {
+      method: 'POST',
+      url: 'https://neko.test/api/login',
+      response: makeResponse({ json: { token: 'noauth-token' } }),
+    },
+    {
+      method: 'GET',
+      url: 'https://neko.test/api/room/screen/cast.jpg',
+      response: makeResponse({ body: jpeg }),
+    },
+  ]);
+  const companion = createNekoCompanion({
+    origin: 'https://neko.test',
+    fetchImpl,
+    sleep: makeAbortableSleep(),
+  });
+  const frames = [];
+  companion.onFrame((frame) => frames.push(frame));
+
+  await companion.start();
+  await waitFor(() => frames.length === 1);
+
+  const login = fetchImpl.calls.find((call) => call.url.endsWith('/api/login'));
+  assert.equal(login.init.method, 'POST');
+  assert.deepEqual(JSON.parse(login.init.body), {});
+  assert.equal(fetchImpl.calls.find((call) => call.url.endsWith('/cast.jpg')).init.headers.Authorization, 'Bearer noauth-token');
+  assert.equal(frames[0].data, Buffer.from(jpeg).toString('base64'));
+
+  await companion.stop();
+});
+
 test('n.eko adapter frame metadata follows the applied desktop screen preset', async () => {
   const jpeg = 'jpeg-frame-desktop';
   const fetchImpl = makeFetch([
@@ -713,6 +747,11 @@ test('n.eko adapter selects exact Android visible-height portrait capture when e
 
 test('n.eko adapter rewrites loopback CDP WebSocket URLs to the configured CDP HTTP host', async () => {
   const fetchImpl = makeFetch([
+    {
+      method: 'POST',
+      url: 'https://neko.test/api/login',
+      response: makeResponse({ json: { token: 'noauth-token' } }),
+    },
     {
       method: 'GET',
       url: 'http://neko:9223/json',
@@ -1438,6 +1477,11 @@ test('n.eko resolver-backed factory defers target lookup until start', async () 
   let resolved = false;
   const fetchImpl = makeFetch([
     {
+      method: 'POST',
+      url: 'https://neko.test/api/login',
+      response: makeResponse({ json: { token: 'noauth-token' } }),
+    },
+    {
       method: 'GET',
       url: 'https://neko.test/api/room/screen/cast.jpg',
       response: makeResponse({ body: 'jpeg' }),
@@ -1462,7 +1506,7 @@ test('n.eko resolver-backed factory defers target lookup until start', async () 
   assert.equal(resolved, false);
 
   await companion.start();
-  await waitFor(() => fetchImpl.calls.length === 1);
+  await waitFor(() => fetchImpl.calls.length === 2);
   assert.equal(resolved, true);
 
   await companion.stop();
@@ -1470,6 +1514,11 @@ test('n.eko resolver-backed factory defers target lookup until start', async () 
 
 test('multi-backend streaming factory selects n.eko descriptors and exposes proxy target', async () => {
   const fetchImpl = makeFetch([
+    {
+      method: 'POST',
+      url: 'https://neko.test/api/login',
+      response: makeResponse({ json: { token: 'noauth-token' } }),
+    },
     {
       method: 'GET',
       url: 'https://neko.test/api/room/screen/cast.jpg',
@@ -1489,7 +1538,7 @@ test('multi-backend streaming factory selects n.eko descriptors and exposes prox
   const companion = factory({ run_id: 'run_1', interaction_id: 'int_1', browser_session_id: 'bs' });
   try {
     await companion.start();
-    await waitFor(() => fetchImpl.calls.length === 1);
+    await waitFor(() => fetchImpl.calls.length === 2);
     assert.equal(companion.backend, 'neko');
     assert.deepEqual(companion.getNekoProxyTarget(), { origin: 'https://neko.test/' });
   } finally {

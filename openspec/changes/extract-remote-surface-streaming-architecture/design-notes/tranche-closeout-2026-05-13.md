@@ -53,6 +53,9 @@ import paths.
 - Dashboard stream viewer tests and `pdpp-web` TypeScript pass.
 - Reference streaming route, session, run-target, CDP adapter, n.eko adapter,
   browser-surface lease, playground, and remote-surface boundary tests pass.
+- Gated live smoke passes for local Chrome CDP frame/click/viewport resize.
+- Gated live n.eko smoke passes against the running Docker n.eko container,
+  including a mobile-shaped viewport frame.
 - Import-boundary sweep passes: `packages/remote-surface/src` has no imports
   from reference implementation, dashboard app, polyfill connectors, Docker, or
   server route modules.
@@ -65,7 +68,6 @@ import paths.
 
 ## Remaining Risks
 
-- Gated live CDP and n.eko smoke have not been rerun in this closeout pass.
 - CDP fallback mobile IME behavior is package-routed but remains weaker than
   n.eko: it focuses a hidden input and forwards key events, while n.eko has the
   stronger `MobileTextInputController` path. Treat CDP as fallback/debug until
