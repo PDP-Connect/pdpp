@@ -46,4 +46,4 @@
 - [x] 7.1 Run targeted reference runtime/controller tests.
 - [x] 7.2 Run targeted polyfill connector launch tests.
 - [x] 7.3 Run `openspec validate add-neko-browser-surface-leases --strict`.
-- [ ] 7.4 Run a Docker n.eko smoke proving cap `N=1` queues a second required run instead of spawning it.
+- [x] 7.4 Run a Docker n.eko smoke proving cap `N=1` queues a second required run instead of spawning it.
