@@ -91,7 +91,8 @@ async function importPatchright() {
     skip("Patchright is not installed. Run pnpm install before requiring the smoke.");
     process.exit(0);
   }
-  return import(pathToFileURL(resolved).href);
+  const imported = await import(pathToFileURL(resolved).href);
+  return imported.chromium ? imported : imported.default;
 }
 
 async function deploymentReachable(origin) {
