@@ -1,5 +1,6 @@
 {
   "$schema": "./node_modules/@biomejs/biome/configuration_schema.json",
+  "root": false,
   "extends": ["ultracite/biome/core", "ultracite/biome/type-aware"],
   "formatter": {
     "lineWidth": 120
