@@ -231,6 +231,39 @@ export interface RemoteSurfaceDiagnosticsPayload {
 export type JsonValue = null | boolean | number | string | JsonValue[] | JsonObject;
 export type JsonObject = { readonly [key: string]: JsonValue };
 
+export type ReferenceWireInputPayload = Record<string, unknown>;
+
+export interface ReferenceWireViewportPayload {
+  width: number;
+  height: number;
+  deviceScaleFactor?: number;
+  screenWidth?: number;
+  screenHeight?: number;
+  hasTouch?: boolean;
+  mobile?: true;
+  userAgent?: string;
+}
+
+export interface ReferenceWireInputTelemetryCursor {
+  since: number;
+}
+
+export interface ReferenceWireInputTelemetryRecord {
+  readonly [key: string]: JsonValue | undefined;
+  seq?: number;
+  serverAtMs?: number;
+  source?: string;
+  kind?: string;
+}
+
+export interface ReferenceWireBackendReadyPayload {
+  backend: string;
+  browser_owner_mode: string | null;
+  client_config_path: string | null;
+  iframe_path: string | null;
+  stealth_mode: string | null;
+}
+
 export class RemoteSurfaceProtocolError extends Error {
   readonly path: string;
 
@@ -429,6 +462,72 @@ export function parseRemoteSurfaceDiagnosticsPayload(value: unknown): RemoteSurf
     type: "diagnostics",
     ...(payload.cursor === undefined ? {} : { cursor: requireString(payload.cursor, "$.cursor") }),
     events,
+  };
+}
+
+export function parseReferenceWireInputPayload(value: unknown): ReferenceWireInputPayload {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  return value as Record<string, unknown>;
+}
+
+export function normalizeReferenceWireViewportPayload(value: unknown): ReferenceWireViewportPayload | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const input = value as Record<string, unknown>;
+  const width = Number(input.width);
+  const height = Number(input.height);
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return null;
+  const out: ReferenceWireViewportPayload = { width: Math.floor(width), height: Math.floor(height) };
+  const deviceScaleFactor = Number(input.deviceScaleFactor);
+  if (Number.isFinite(deviceScaleFactor) && deviceScaleFactor > 0) {
+    out.deviceScaleFactor = deviceScaleFactor;
+  }
+  const screenWidth = Number(input.screenWidth);
+  if (Number.isFinite(screenWidth) && screenWidth > 0) {
+    out.screenWidth = Math.max(out.width, Math.floor(screenWidth));
+  }
+  const screenHeight = Number(input.screenHeight);
+  if (Number.isFinite(screenHeight) && screenHeight > 0) {
+    out.screenHeight = Math.max(out.height, Math.floor(screenHeight));
+  }
+  if (typeof input.hasTouch === "boolean") out.hasTouch = input.hasTouch;
+  if (input.mobile === true) out.mobile = true;
+  if (typeof input.userAgent === "string" && input.userAgent.length > 0) {
+    out.userAgent = input.userAgent.slice(0, 512);
+  }
+  return out;
+}
+
+export function parseReferenceWireInputTelemetryCursor(value: unknown): ReferenceWireInputTelemetryCursor {
+  const sinceRaw = typeof value === "string" ? Number(value) : 0;
+  return { since: Number.isFinite(sinceRaw) ? sinceRaw : 0 };
+}
+
+export function parseReferenceWireInputTelemetryRecord(value: unknown): ReferenceWireInputTelemetryRecord | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = requireJsonObject(value, "$");
+  return record as ReferenceWireInputTelemetryRecord;
+}
+
+export function buildReferenceWireBackendReadyPayload({
+  backend,
+  token,
+  browserOwnerMode,
+  stealthMode,
+}: {
+  backend: unknown;
+  token: string;
+  browserOwnerMode?: (() => unknown) | null;
+  stealthMode?: (() => unknown) | null;
+}): ReferenceWireBackendReadyPayload {
+  const backendName = typeof backend === "string" ? backend : "cdp";
+  const encodedToken = encodeURIComponent(token);
+  return {
+    backend: backendName,
+    browser_owner_mode:
+      backendName === "neko" && typeof browserOwnerMode === "function" ? nullableString(browserOwnerMode()) : null,
+    client_config_path: backendName === "neko" ? `/_ref/run-interaction-streams/${encodedToken}/neko/session` : null,
+    iframe_path: backendName === "neko" ? `/_ref/run-interaction-streams/${encodedToken}/neko` : null,
+    stealth_mode: backendName === "neko" && typeof stealthMode === "function" ? nullableString(stealthMode()) : null,
   };
 }
 
@@ -679,4 +778,8 @@ function requireSafeSameOriginPath(value: unknown, path: string): string {
     throw new RemoteSurfaceProtocolError("expected same-origin path", path);
   }
   return stringValue;
+}
+
+function nullableString(value: unknown): string | null {
+  return typeof value === "string" ? value : null;
 }

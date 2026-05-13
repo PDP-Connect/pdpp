@@ -2,13 +2,24 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import {
+  buildReferenceWireBackendReadyPayload,
+  normalizeReferenceWireViewportPayload,
+  parseReferenceWireInputPayload,
+  parseReferenceWireInputTelemetryCursor,
+  parseReferenceWireInputTelemetryRecord,
+  RemoteSurfaceProtocolError,
+} from "../protocol/index.ts";
+import {
   REFERENCE_WIRE_ALL_FIXTURES,
   REFERENCE_WIRE_BROWSER_VISIBLE_FIXTURES,
   REFERENCE_WIRE_INPUT_PAYLOAD_FIXTURES,
+  REFERENCE_WIRE_INPUT_TELEMETRY_FIXTURE,
   REFERENCE_WIRE_MINT_RESPONSE_FIXTURE,
   REFERENCE_WIRE_NEKO_CLIENT_CONFIG_FIXTURE,
   REFERENCE_WIRE_SSE_EVENT_FIXTURES,
   REFERENCE_WIRE_TARGET_REGISTRATION_RESPONSE_FIXTURE,
+  REFERENCE_WIRE_TOKEN,
+  REFERENCE_WIRE_VIEWPORT_PAYLOAD_FIXTURE,
   REFERENCE_WIRE_VIEWPORT_ACK_FIXTURE,
   type ReferenceWireFixture,
 } from "./reference-wire-fixtures.ts";
@@ -53,6 +64,89 @@ describe("reference wire fixtures", () => {
       REFERENCE_WIRE_INPUT_PAYLOAD_FIXTURES.map((fixture) => fixture.type),
       ["mouse", "mouse", "mouse", "keyboard", "keyboard", "touch", "touch", "scroll", "paste"],
     );
+  });
+
+  it("parses current reference input payloads permissively for route parity", () => {
+    assert.deepEqual(
+      REFERENCE_WIRE_INPUT_PAYLOAD_FIXTURES.map((fixture) => parseReferenceWireInputPayload(fixture)),
+      REFERENCE_WIRE_INPUT_PAYLOAD_FIXTURES,
+    );
+    assert.deepEqual(parseReferenceWireInputPayload(null), {});
+    assert.deepEqual(parseReferenceWireInputPayload("invalid"), {});
+  });
+
+  it("normalizes current reference viewport payloads like the route helper", () => {
+    assert.deepEqual(normalizeReferenceWireViewportPayload(REFERENCE_WIRE_VIEWPORT_PAYLOAD_FIXTURE), {
+      width: 1280,
+      height: 720,
+      screenWidth: 1280,
+      screenHeight: 720,
+      deviceScaleFactor: 1,
+      hasTouch: false,
+      userAgent: "Mozilla/5.0 fixture",
+    });
+    assert.deepEqual(
+      normalizeReferenceWireViewportPayload({
+        width: 390.8,
+        height: 844.2,
+        screenWidth: 1170,
+        screenHeight: 2532,
+        deviceScaleFactor: 3,
+        hasTouch: true,
+        mobile: true,
+        userAgent: "x".repeat(600),
+      }),
+      {
+        width: 390,
+        height: 844,
+        screenWidth: 1170,
+        screenHeight: 2532,
+        deviceScaleFactor: 3,
+        hasTouch: true,
+        mobile: true,
+        userAgent: "x".repeat(512),
+      },
+    );
+    assert.equal(normalizeReferenceWireViewportPayload({ width: 0, height: 720 }), null);
+  });
+
+  it("parses current reference input telemetry cursors and records", () => {
+    assert.deepEqual(parseReferenceWireInputTelemetryCursor("7"), { since: 7 });
+    assert.deepEqual(parseReferenceWireInputTelemetryCursor("not-a-number"), { since: 0 });
+    assert.deepEqual(
+      REFERENCE_WIRE_INPUT_TELEMETRY_FIXTURE.records.map((record) => parseReferenceWireInputTelemetryRecord(record)),
+      REFERENCE_WIRE_INPUT_TELEMETRY_FIXTURE.records,
+    );
+    assert.equal(parseReferenceWireInputTelemetryRecord(null), null);
+    assert.throws(
+      () => parseReferenceWireInputTelemetryRecord({ kind: "bad", value: undefined }),
+      RemoteSurfaceProtocolError,
+    );
+  });
+
+  it("builds current browser-visible backend_ready payloads without raw authority", () => {
+    assert.deepEqual(
+      buildReferenceWireBackendReadyPayload({
+        backend: "neko",
+        token: REFERENCE_WIRE_TOKEN,
+        browserOwnerMode: () => "interactive",
+        stealthMode: () => "strict",
+      }),
+      {
+        backend: "neko",
+        browser_owner_mode: "interactive",
+        client_config_path: `/_ref/run-interaction-streams/${REFERENCE_WIRE_TOKEN}/neko/session`,
+        iframe_path: `/_ref/run-interaction-streams/${REFERENCE_WIRE_TOKEN}/neko`,
+        stealth_mode: "strict",
+      },
+    );
+    assert.deepEqual(buildReferenceWireBackendReadyPayload({ backend: "cdp", token: REFERENCE_WIRE_TOKEN }), {
+      backend: "cdp",
+      browser_owner_mode: null,
+      client_config_path: null,
+      iframe_path: null,
+      stealth_mode: null,
+    });
   });
 
   it("keeps every fixture JSON-compatible", () => {

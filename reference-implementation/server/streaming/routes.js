@@ -33,6 +33,12 @@ import http from 'node:http';
 import https from 'node:https';
 import net from 'node:net';
 import tls from 'node:tls';
+import {
+  buildReferenceWireBackendReadyPayload,
+  normalizeReferenceWireViewportPayload,
+  parseReferenceWireInputPayload,
+  parseReferenceWireInputTelemetryCursor,
+} from '@pdpp/remote-surface/protocol';
 import { emitSpineEvent } from '../../lib/spine.ts';
 import { createInputTelemetry } from './input-telemetry.js';
 import { registerRemoteTelemetrySink } from './remote-telemetry-registry.js';
@@ -201,26 +207,7 @@ function safeRunId(req) {
 }
 
 function pickViewport(input) {
-  if (!input || typeof input !== 'object') return null;
-  const width = Number(input.width);
-  const height = Number(input.height);
-  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return null;
-  const out = { width: Math.floor(width), height: Math.floor(height) };
-  if (Number.isFinite(input.deviceScaleFactor) && input.deviceScaleFactor > 0) {
-    out.deviceScaleFactor = Number(input.deviceScaleFactor);
-  }
-  if (Number.isFinite(input.screenWidth) && input.screenWidth > 0) {
-    out.screenWidth = Math.max(out.width, Math.floor(input.screenWidth));
-  }
-  if (Number.isFinite(input.screenHeight) && input.screenHeight > 0) {
-    out.screenHeight = Math.max(out.height, Math.floor(input.screenHeight));
-  }
-  if (typeof input.hasTouch === 'boolean') out.hasTouch = input.hasTouch;
-  if (input.mobile === true) out.mobile = true;
-  if (typeof input.userAgent === 'string' && input.userAgent.length > 0) {
-    out.userAgent = input.userAgent.slice(0, 512);
-  }
-  return out;
+  return normalizeReferenceWireViewportPayload(input);
 }
 
 function normalizeViewportForNeko(viewport) {
@@ -878,20 +865,12 @@ body>p{display:none!important}
     }
 
     const backend = typeof companion.backend === 'string' ? companion.backend : 'cdp';
-    writeEvent('backend_ready', {
+    writeEvent('backend_ready', buildReferenceWireBackendReadyPayload({
       backend,
-      browser_owner_mode:
-        backend === 'neko' && typeof companion.browserOwnerMode === 'function' ? companion.browserOwnerMode() : null,
-      client_config_path:
-        backend === 'neko'
-          ? `/_ref/run-interaction-streams/${encodeURIComponent(req.params.token)}/neko/session`
-          : null,
-      iframe_path:
-        backend === 'neko'
-          ? `/_ref/run-interaction-streams/${encodeURIComponent(req.params.token)}/neko`
-          : null,
-      stealth_mode: backend === 'neko' && typeof companion.stealthMode === 'function' ? companion.stealthMode() : null,
-    });
+      token: req.params.token,
+      browserOwnerMode: companion.browserOwnerMode?.bind(companion),
+      stealthMode: companion.stealthMode?.bind(companion),
+    }));
 
     await emit('run.stream_session_opened', {
       run_id: session.run_id,
@@ -918,7 +897,7 @@ body>p{display:none!important}
     // correlationId (set by the phone-side overlay). The body is the raw
     // wire shape (type/action/x/y/...), so we record it verbatim minus the
     // correlationId promoted to a top-level field.
-    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    const body = parseReferenceWireInputPayload(req.body);
     const correlationId = typeof body.correlationId === 'string' ? body.correlationId : null;
     const wireSeq = typeof body.wireSeq === 'number' ? body.wireSeq : null;
     const receivedAtMs = Date.now();
@@ -983,8 +962,7 @@ body>p{display:none!important}
       const status = err.code === 'session_not_attached' ? 409 : 401;
       return pdppError(res, status, err.code || 'invalid_token', err.message);
     }
-    const sinceRaw = typeof req.query.since === 'string' ? Number(req.query.since) : 0;
-    const since = Number.isFinite(sinceRaw) ? sinceRaw : 0;
+    const { since } = parseReferenceWireInputTelemetryCursor(req.query.since);
     const { seq, records } = inputTelemetry.readSince(session.browser_session_id, since);
     return res.status(200).json({
       object: 'run_interaction_stream_input_telemetry',
