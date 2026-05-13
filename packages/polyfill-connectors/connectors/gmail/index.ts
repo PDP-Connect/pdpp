@@ -7,9 +7,10 @@
  * membership from X-GM-LABELS per message.
  *
  * Auth:
- *   GOOGLE_APP_PASSWORD_PDPP — app password
- *   GMAIL_ADDRESS            — the account's email; if missing, emits
- *                              INTERACTION kind=credentials on first run.
+ *   GOOGLE_APP_PASSWORD_PDPP or GMAIL_APP_PASSWORD — app password
+ *   GMAIL_ADDRESS or GMAIL_USER                    — the account's email;
+ *                                                    if missing, emits
+ *                                                    INTERACTION kind=credentials.
  *
  * Streams: messages, threads, labels, attachments.
  *
@@ -407,14 +408,18 @@ function readStartMessage(reader: ReadlineInterface): Promise<StartMessage> {
 }
 
 /** Resolve the Gmail app password from env or via INTERACTION kind=credentials. */
+export function resolveGmailPasswordFromEnv(env: NodeJS.ProcessEnv = process.env): string | null {
+  return env.GOOGLE_APP_PASSWORD_PDPP || env.GMAIL_APP_PASSWORD || null;
+}
+
 async function resolvePassword(): Promise<string | null> {
-  const envPassword = process.env.GOOGLE_APP_PASSWORD_PDPP;
+  const envPassword = resolveGmailPasswordFromEnv();
   if (envPassword) {
     return envPassword;
   }
   try {
     const creds = await requireCredentialsOrAsk({
-      required: ["GOOGLE_APP_PASSWORD_PDPP"],
+      required: [["GOOGLE_APP_PASSWORD_PDPP", "GMAIL_APP_PASSWORD"]],
       connectorName: "Gmail",
       sendInteraction: (req) => {
         const wrapped: InteractionMessage = {
@@ -441,16 +446,27 @@ async function resolvePassword(): Promise<string | null> {
 }
 
 /**
- * Resolve the Gmail address from env (GMAIL_ADDRESS, or AMAZON_USERNAME if
- * it looks like an email) or by asking the user via INTERACTION.
+ * Resolve the Gmail address from env (GMAIL_ADDRESS, GMAIL_USER, or
+ * AMAZON_USERNAME if it looks like an email) or by asking the user via
+ * INTERACTION.
  */
+export function resolveGmailAddressFromEnv(env: NodeJS.ProcessEnv = process.env): string | null {
+  if (env.GMAIL_ADDRESS) {
+    return env.GMAIL_ADDRESS;
+  }
+  if (env.GMAIL_USER) {
+    return env.GMAIL_USER;
+  }
+  if (env.AMAZON_USERNAME && EMAIL_AT_RE.test(env.AMAZON_USERNAME)) {
+    return env.AMAZON_USERNAME;
+  }
+  return null;
+}
+
 async function resolveAddress(): Promise<string | null> {
-  const fromEnv = process.env.GMAIL_ADDRESS;
+  const fromEnv = resolveGmailAddressFromEnv();
   if (fromEnv) {
     return fromEnv;
-  }
-  if (process.env.AMAZON_USERNAME && EMAIL_AT_RE.test(process.env.AMAZON_USERNAME)) {
-    return process.env.AMAZON_USERNAME;
   }
   const resp = await sendInteractionAndWait({
     type: "INTERACTION",

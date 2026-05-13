@@ -47,6 +47,8 @@ import {
   makeAttachmentHydrator,
   type PerMessageDeps,
   processMessage,
+  resolveGmailAddressFromEnv,
+  resolveGmailPasswordFromEnv,
   resolveMaxAttachmentBytes,
   selectAllMailFetchRange,
 } from "./index.ts";
@@ -434,6 +436,29 @@ test("resolveMaxAttachmentBytes: env override is honored only when positive inte
     DEFAULT_MAX_ATTACHMENT_BYTES,
     "partially numeric override is ignored"
   );
+});
+
+test("Gmail env aliases prefer Docker names while accepting documented names", () => {
+  assert.equal(
+    resolveGmailPasswordFromEnv({
+      GOOGLE_APP_PASSWORD_PDPP: "docker-password",
+      GMAIL_APP_PASSWORD: "docs-password",
+    }),
+    "docker-password"
+  );
+  assert.equal(resolveGmailPasswordFromEnv({ GMAIL_APP_PASSWORD: "docs-password" }), "docs-password");
+  assert.equal(resolveGmailPasswordFromEnv({}), null);
+
+  assert.equal(
+    resolveGmailAddressFromEnv({
+      GMAIL_ADDRESS: "docker@example.com",
+      GMAIL_USER: "docs@example.com",
+    }),
+    "docker@example.com"
+  );
+  assert.equal(resolveGmailAddressFromEnv({ GMAIL_USER: "docs@example.com" }), "docs@example.com");
+  assert.equal(resolveGmailAddressFromEnv({ AMAZON_USERNAME: "amazon@example.com" }), "amazon@example.com");
+  assert.equal(resolveGmailAddressFromEnv({ AMAZON_USERNAME: "not-an-email" }), null);
 });
 
 test("selectAllMailFetchRange: incremental runs use priorUidnext:* regardless of requested streams", () => {

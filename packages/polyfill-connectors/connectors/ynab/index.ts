@@ -3,7 +3,7 @@
  * PDPP YNAB Connector (v0.2.0)
  *
  * Polyfills YNAB's v1 API into the PDPP Collection Profile. Reads
- * YNAB_PERSONAL_ACCESS_TOKEN from the environment. Emits RECORD/STATE/DONE
+ * YNAB_PERSONAL_ACCESS_TOKEN or YNAB_PAT from the environment. Emits RECORD/STATE/DONE
  * messages over stdout; reads START from stdin.
  *
  * Streams:
@@ -842,7 +842,7 @@ if (isMainModule(import.meta.url)) {
     // YNAB marks deleted records with `deleted: true` in-band. Runtime strips
     // to { id } and emits with op: 'delete'.
     isTombstone: (_stream, d) => d.deleted === true,
-    auth: { kind: "env", required: ["YNAB_PERSONAL_ACCESS_TOKEN"] },
+    auth: { kind: "env", required: [["YNAB_PERSONAL_ACCESS_TOKEN", "YNAB_PAT"]] },
     validateRecord,
     async collect({ state, requested, credentials, emit, emitRecord: runtimeEmitRecord, progress }) {
       const token = credentials.YNAB_PERSONAL_ACCESS_TOKEN;

@@ -27,9 +27,11 @@ services:
       PDPP_OWNER_SUBJECT_ID: ${PDPP_OWNER_SUBJECT_ID:-owner_local}
       PDPP_DCR_INITIAL_ACCESS_TOKENS: ${PDPP_DCR_INITIAL_ACCESS_TOKENS:-}
       YNAB_PERSONAL_ACCESS_TOKEN: ${YNAB_PERSONAL_ACCESS_TOKEN:-}
+      YNAB_PAT: ${YNAB_PAT:-}
       USAA_USERNAME: ${USAA_USERNAME:-}
       USAA_PASSWORD: ${USAA_PASSWORD:-}
       GOOGLE_APP_PASSWORD_PDPP: ${GOOGLE_APP_PASSWORD_PDPP:-}
+      GMAIL_APP_PASSWORD: ${GMAIL_APP_PASSWORD:-}
       CHATGPT_USERNAME: ${CHATGPT_USERNAME:-}
       CHATGPT_PASSWORD: ${CHATGPT_PASSWORD:-}
       NTFY_TOPIC: ${NTFY_TOPIC:-}
@@ -37,6 +39,7 @@ services:
       NTFY_USERNAME: ${NTFY_USERNAME:-}
       NTFY_PASSWORD: ${NTFY_PASSWORD:-}
       GMAIL_ADDRESS: ${GMAIL_ADDRESS:-}
+      GMAIL_USER: ${GMAIL_USER:-}
       GITHUB_USERNAME: ${GITHUB_USERNAME:-}
       GITHUB_PASSWORD: ${GITHUB_PASSWORD:-}
       GITHUB_PERSONAL_ACCESS_TOKEN: ${GITHUB_PERSONAL_ACCESS_TOKEN:-}
@@ -50,6 +53,11 @@ services:
       AMAZON_PASSWORD: ${AMAZON_PASSWORD:-}
       REDDIT_USERNAME: ${REDDIT_USERNAME:-}
       REDDIT_PASSWORD: ${REDDIT_PASSWORD:-}
+      REDDIT_CLIENT_ID: ${REDDIT_CLIENT_ID:-}
+      REDDIT_CLIENT_SECRET: ${REDDIT_CLIENT_SECRET:-}
+      CLAUDE_CODE_HOME: ${CLAUDE_CODE_HOME:-/imports/claude}
+      CLAUDE_CODE_PROJECTS_DIR: ${CLAUDE_CODE_PROJECTS_DIR:-/imports/claude/projects}
+      CODEX_HOME: ${CODEX_HOME:-/imports/codex}
       # Browser-backed connectors that need a visible browser (ChatGPT, USAA,
       # etc.) cannot run inside this container — see
       # `openspec/changes/introduce-local-collector-runner`. Run them via the
@@ -68,6 +76,11 @@ services:
       # .pdpp-data/pdpp.sqlite` and the host-published Postgres port.
       - pdpp-transformers:/var/cache/pdpp/transformers
       - pdpp-home:/root/.pdpp
+      # File connector imports. Override the host-side paths with
+      # PDPP_DOCKER_CLAUDE_CODE_HOME / PDPP_DOCKER_CODEX_HOME when running
+      # claude_code or codex inside this Docker service.
+      - ${PDPP_DOCKER_CLAUDE_CODE_HOME:-./packages/polyfill-connectors/.pdpp-imports/claude}:/imports/claude:ro
+      - ${PDPP_DOCKER_CODEX_HOME:-./packages/polyfill-connectors/.pdpp-imports/codex}:/imports/codex:ro
     # Health = AS and RS are both listening and serving public metadata.
     # Embedding-model download and semantic backfill run in the background
     # after listen and are intentionally NOT part of "healthy".

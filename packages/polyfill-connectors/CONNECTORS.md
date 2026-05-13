@@ -19,13 +19,13 @@ These connectors fetch via the platform's public HTTP API using a long-lived tok
 
 | Connector | Auth | Bootstrap | Maintainer-verified | First-run portable | Records (mine) |
 |---|---|---|---|---|---|
-| ynab | `YNAB_PAT` | Manual: ynab.com/settings → "New Token" | ✅ | ✅ | ~10,311 |
+| ynab | `YNAB_PERSONAL_ACCESS_TOKEN` or `YNAB_PAT` | Manual: ynab.com/settings → "New Token" | ✅ | ✅ | ~10,311 |
 | github | `GITHUB_PERSONAL_ACCESS_TOKEN` | Manual: github.com/settings/tokens | ✅ | ✅ | 553 |
-| gmail | `GMAIL_USER`, `GMAIL_APP_PASSWORD`, `GMAIL_IMAP_HOST` | Google app password | ✅ | ✅ | ~27,359 |
+| gmail | `GMAIL_ADDRESS` or `GMAIL_USER`; `GOOGLE_APP_PASSWORD_PDPP` or `GMAIL_APP_PASSWORD` | Google app password | ✅ | ✅ | ~27,359 |
 | notion | `NOTION_API_TOKEN` | Manual: notion.so/my-integrations → "New integration" | 🟡 code ready | ✅ (expected) | — |
 | oura | `OURA_PERSONAL_ACCESS_TOKEN` | Manual: cloud.ouraring.com/personal-access-tokens | 🟡 code ready | ✅ (expected) | — |
 | strava | `STRAVA_ACCESS_TOKEN` | Requires OAuth app registration | 🟡 code ready | ✅ (expected) | — |
-| reddit | `REDDIT_CLIENT_ID/SECRET/USERNAME/PASSWORD` | reddit.com/prefs/apps → Resource Owner Password grant | 🟡 code ready | ✅ (expected) | — |
+| reddit | `REDDIT_USERNAME`, `REDDIT_PASSWORD` | Logged-in browser session against old.reddit.com JSON | 🟡 code ready | ⚠ browser session | — |
 | slack | `SLACK_WORKSPACE` + slackdump binary | Subprocess; wraps slackdump CLI | 🟡 code ready | ✅ (expected) | — |
 | spotify | `SPOTIFY_ACCESS_TOKEN` | OAuth app creation frozen by Spotify as of Feb 2026 | 🚫 blocked upstream | — | — |
 | pocket | — | **Deprecated** (Mozilla shut Pocket down 2025-07-08) | 🚫 excluded | — | — |
@@ -72,6 +72,14 @@ These connectors parse local files without network access. Run on-device only. *
 | imessage | `~/Library/Messages/chat.db` (auto-discovered on macOS) | 🟡 code ready | ✅ (expected) |
 | apple_health | `~/.pdpp/imports/apple_health/` (extracted iOS export) | 🟡 code ready | ✅ (expected) |
 | ical | `.ics` files or `ICAL_SUBSCRIPTION_URL` | 🟡 code ready | ✅ (expected) |
+
+Docker runs do not see the host home directory unless it is mounted. The default
+compose contract mounts empty local import directories at `/imports/claude` and
+`/imports/codex`; set `PDPP_DOCKER_CLAUDE_CODE_HOME` and
+`PDPP_DOCKER_CODEX_HOME` to host paths when collecting real local files. Inside
+the container, leave `CLAUDE_CODE_HOME=/imports/claude`,
+`CLAUDE_CODE_PROJECTS_DIR=/imports/claude/projects`, and
+`CODEX_HOME=/imports/codex`.
 
 ## How to run a connector
 
