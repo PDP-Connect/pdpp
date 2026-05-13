@@ -13,14 +13,14 @@ function config(overrides = {}) {
   return {
     managedConnectors: new Set(["chatgpt", "gmail"]),
     surfaceCap: 1,
-    staticProfileKey: undefined,
+    staticProfileKey: "chatgpt",
     staticCdpHttpUrl: "http://neko:9222",
     staticStreamBaseUrl: "http://neko:8080",
     leaseWaitTimeoutMs: 60_000,
     idleTtlMs: 300_000,
     defaultPriorityClass: "scheduled_refresh",
     priorityRanks: DEFAULT_NEKO_PRIORITY_RANKS,
-    surfaceMode: "dynamic",
+    surfaceMode: "static",
     ...overrides,
   };
 }

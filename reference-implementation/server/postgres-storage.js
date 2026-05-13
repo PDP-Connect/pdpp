@@ -440,6 +440,8 @@ export async function bootstrapPostgresSchema() {
           'capacity_full',
           'surface_starting',
           'surface_unhealthy',
+          'surface_start_failed',
+          'surface_readiness_timeout',
           'incompatible_static_profile',
           'launch_precondition_failed',
           'lease_wait_timeout'
