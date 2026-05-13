@@ -120,19 +120,29 @@ export interface MobileTextInputControllerDeps {
   /** Called for special-key keysyms (Backspace, Enter, Arrows, F-keys). */
   onSpecialKey: (keysym: number) => void;
   logger?: RemoteSurfaceLogger;
+  /**
+   * Short delay for the printable-key fallback. Tests may override; production
+   * keeps it long enough for beforeinput/input to win on normal browsers.
+   */
+  keydownFallbackDelayMs?: number;
 }
 
 const noopLogger: RemoteSurfaceLogger = () => {
   /* no-op */
 };
+const DEFAULT_KEYDOWN_FALLBACK_DELAY_MS = 40;
 
 export class MobileTextInputController {
   private readonly textarea: HTMLTextAreaElement;
   private readonly onTextCommit: (text: string) => void;
   private readonly onSpecialKey: (keysym: number) => void;
   private readonly log: RemoteSurfaceLogger;
+  private readonly keydownFallbackDelayMs: number;
   private composing = false;
   private disposed = false;
+  private readonly pendingKeydownFallbackTimers = new Set<
+    ReturnType<typeof setTimeout>
+  >();
   // Bound listener refs so removeEventListener works.
   private readonly listeners: Array<{
     type: string;
@@ -144,6 +154,8 @@ export class MobileTextInputController {
     this.onTextCommit = deps.onTextCommit;
     this.onSpecialKey = deps.onSpecialKey;
     this.log = deps.logger ?? noopLogger;
+    this.keydownFallbackDelayMs =
+      deps.keydownFallbackDelayMs ?? DEFAULT_KEYDOWN_FALLBACK_DELAY_MS;
     this.resetTextarea();
     this.attach();
     this.log("info", "mobile-text-input.attached", {
@@ -160,6 +172,7 @@ export class MobileTextInputController {
       this.textarea.removeEventListener(type, fn);
     }
     this.listeners.length = 0;
+    this.cancelPendingKeydownFallback("dispose");
   }
 
   /** Test/inspection hook. */
@@ -172,6 +185,55 @@ export class MobileTextInputController {
     this.textarea.value = "";
   }
 
+  private cancelPendingKeydownFallback(reason: string): void {
+    if (this.pendingKeydownFallbackTimers.size === 0) {
+      return;
+    }
+    for (const timer of this.pendingKeydownFallbackTimers) {
+      clearTimeout(timer);
+    }
+    const cancelledCount = this.pendingKeydownFallbackTimers.size;
+    this.pendingKeydownFallbackTimers.clear();
+    this.log("debug", "mobile-text-input.keydown-fallback.cancelled", {
+      cancelledCount,
+      reason,
+    });
+  }
+
+  private scheduleKeydownFallback(key: string): void {
+    const timer = setTimeout(() => {
+      if (!this.pendingKeydownFallbackTimers.delete(timer)) {
+        return;
+      }
+      if (this.disposed || this.composing) {
+        return;
+      }
+      this.log("info", "mobile-text-input.keydown-fallback.commit", {
+        textLength: key.length,
+      });
+      this.onTextCommit(key);
+      this.resetTextarea();
+    }, this.keydownFallbackDelayMs);
+    this.pendingKeydownFallbackTimers.add(timer);
+    this.log("debug", "mobile-text-input.keydown-fallback.scheduled", {
+      textLength: key.length,
+    });
+  }
+
+  private isPrintableFallbackKey(e: KeyboardEvent): boolean {
+    if (
+      this.composing ||
+      e.isComposing ||
+      e.altKey ||
+      e.ctrlKey ||
+      e.metaKey ||
+      e.key.length !== 1
+    ) {
+      return false;
+    }
+    return true;
+  }
+
   private attach(): void {
     const add = (type: string, fn: EventListener) => {
       this.textarea.addEventListener(type, fn);
@@ -182,6 +244,7 @@ export class MobileTextInputController {
       if (this.disposed) {
         return;
       }
+      this.cancelPendingKeydownFallback("compositionstart");
       this.composing = true;
     });
 
@@ -189,6 +252,7 @@ export class MobileTextInputController {
       if (this.disposed) {
         return;
       }
+      this.cancelPendingKeydownFallback("compositionend");
       this.composing = false;
       const data = (ev as CompositionEvent).data ?? "";
       if (data.length > 0) {
@@ -197,10 +261,18 @@ export class MobileTextInputController {
       this.resetTextarea();
     });
 
+    add("beforeinput", () => {
+      if (this.disposed) {
+        return;
+      }
+      this.cancelPendingKeydownFallback("beforeinput");
+    });
+
     add("input", (ev) => {
       if (this.disposed) {
         return;
       }
+      this.cancelPendingKeydownFallback("input");
       // While composing, suppress per-keystroke emission; compositionend
       // will deliver the final committed string.
       if (this.composing) {
@@ -259,9 +331,12 @@ export class MobileTextInputController {
       const keysym = KEY_TO_KEYSYM[e.key];
       if (keysym == null) {
         // Letters, digits, symbols: handled by `input` event. Do NOT
-        // double-emit. Android Gboard reports `key === "Unidentified"` and
-        // `keyCode === 229` for IME-composed letters anyway, so this is
-        // also the safe path for composition.
+        // double-emit. If a browser/automation path focuses the hidden
+        // textarea but fails to deliver beforeinput/input, schedule a short
+        // fallback commit that the primary text events cancel.
+        if (this.isPrintableFallbackKey(e)) {
+          this.scheduleKeydownFallback(e.key);
+        }
         return;
       }
       // Special key — prevent the textarea from acting on it locally

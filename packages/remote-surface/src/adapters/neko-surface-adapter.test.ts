@@ -52,8 +52,8 @@ interface MockClient extends NekoClientApi {
 
 interface CapturedLog {
   level: string;
+  meta: Record<string, unknown> | undefined;
   msg: string;
-  meta?: Record<string, unknown>;
 }
 
 function makeMockClient(overrides: Partial<NekoClientApi> = {}): MockClient {

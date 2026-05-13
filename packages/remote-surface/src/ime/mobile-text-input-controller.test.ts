@@ -46,15 +46,36 @@ function makeInputEvent(
   return e as unknown as Event;
 }
 
+function makeBeforeInputEvent(inputType: string, data: string | null): Event {
+  const e = new Event("beforeinput") as unknown as Record<string, unknown>;
+  e.inputType = inputType;
+  e.data = data;
+  return e as unknown as Event;
+}
+
 function makeCompositionEvent(type: string, data: string): Event {
   const e = new Event(type) as unknown as Record<string, unknown>;
   e.data = data;
   return e as unknown as Event;
 }
 
-function makeKeydownEvent(key: string): Event {
+function makeKeydownEvent(
+  key: string,
+  options: {
+    altKey?: boolean;
+    ctrlKey?: boolean;
+    isComposing?: boolean;
+    metaKey?: boolean;
+    shiftKey?: boolean;
+  } = {},
+): Event {
   const e = new Event("keydown") as unknown as Record<string, unknown>;
   e.key = key;
+  e.altKey = options.altKey ?? false;
+  e.ctrlKey = options.ctrlKey ?? false;
+  e.isComposing = options.isComposing ?? false;
+  e.metaKey = options.metaKey ?? false;
+  e.shiftKey = options.shiftKey ?? false;
   e.preventDefault = () => {
     /* no-op */
   };
@@ -73,10 +94,15 @@ function bind(textarea: HTMLTextAreaElement): {
   const captured: Captured = { commits: [], keysyms: [] };
   const controller = new MobileTextInputController({
     textarea,
+    keydownFallbackDelayMs: 1,
     onTextCommit: (t) => captured.commits.push(t),
     onSpecialKey: (k) => captured.keysyms.push(k),
   });
   return { controller, captured };
+}
+
+async function waitForKeydownFallback(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 5));
 }
 
 describe("MobileTextInputController", () => {
@@ -89,6 +115,18 @@ describe("MobileTextInputController", () => {
     ta.dispatchEvent(makeInputEvent("insertCompositionText", "he", { isComposing: true }));
     ta.dispatchEvent(makeCompositionEvent("compositionend", "hello"));
     assert.deepEqual(captured.commits, ["hello"]);
+    assert.deepEqual(captured.keysyms, []);
+  });
+
+  it("composition path remains primary over printable keydown fallback", async () => {
+    const ta = makeStub();
+    const { captured } = bind(ta);
+    ta.dispatchEvent(new Event("compositionstart"));
+    ta.dispatchEvent(makeKeydownEvent("h", { isComposing: true }));
+    ta.dispatchEvent(makeInputEvent("insertCompositionText", "h", { isComposing: true }));
+    ta.dispatchEvent(makeCompositionEvent("compositionend", "変"));
+    await waitForKeydownFallback();
+    assert.deepEqual(captured.commits, ["変"]);
     assert.deepEqual(captured.keysyms, []);
   });
 
@@ -129,12 +167,45 @@ describe("MobileTextInputController", () => {
     assert.deepEqual(captured.keysyms, [XK_Up]);
   });
 
-  it("letter keydown does NOT emit (handled via input event path)", () => {
+  it("printable keydown commits via fallback when no text input event arrives", async () => {
     const ta = makeStub();
     const { captured } = bind(ta);
     ta.dispatchEvent(makeKeydownEvent("a"));
-    ta.dispatchEvent(makeKeydownEvent("Unidentified"));
+    await waitForKeydownFallback();
+    assert.deepEqual(captured.commits, ["a"]);
     assert.deepEqual(captured.keysyms, []);
+  });
+
+  it("multiple no-input printable keydowns each commit via fallback", async () => {
+    const ta = makeStub();
+    const { captured } = bind(ta);
+    ta.dispatchEvent(makeKeydownEvent("a"));
+    ta.dispatchEvent(makeKeydownEvent("b"));
+    ta.dispatchEvent(makeKeydownEvent("c"));
+    await waitForKeydownFallback();
+    assert.deepEqual(captured.commits, ["a", "b", "c"]);
+  });
+
+  it("printable keydown fallback is cancelled when beforeinput/input arrives", async () => {
+    const ta = makeStub();
+    const { captured } = bind(ta);
+    ta.dispatchEvent(makeKeydownEvent("a"));
+    ta.dispatchEvent(makeBeforeInputEvent("insertText", "a"));
+    ta.dispatchEvent(makeInputEvent("insertText", "a"));
+    await waitForKeydownFallback();
+    assert.deepEqual(captured.commits, ["a"]);
+    assert.deepEqual(captured.keysyms, []);
+  });
+
+  it("modifier and non-printable keydowns do not use text fallback", async () => {
+    const ta = makeStub();
+    const { captured } = bind(ta);
+    ta.dispatchEvent(makeKeydownEvent("a", { ctrlKey: true }));
+    ta.dispatchEvent(makeKeydownEvent("b", { metaKey: true }));
+    ta.dispatchEvent(makeKeydownEvent("c", { altKey: true }));
+    ta.dispatchEvent(makeKeydownEvent("Enter"));
+    ta.dispatchEvent(makeKeydownEvent("Unidentified"));
+    await waitForKeydownFallback();
     assert.deepEqual(captured.commits, []);
   });
 
