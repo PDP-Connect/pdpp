@@ -7,9 +7,9 @@
 
 ## 2. Controller Integration
 
-- [ ] 2.1 Detect when a connector run requires a managed n.eko surface before connector spawn.
-- [ ] 2.2 Acquire or queue a lease before the controller persists a spawned active run, and return queued/deferred run results from the run-start route without spawning a child.
-- [ ] 2.3 Keep queued runs out of `controller_active_runs`, `activeRuns`, `activeRunPromises`, `activeRunInteractions`, streaming nonce state, and `run.started` emission until lease promotion.
+- [x] 2.1 Detect when a connector run requires a managed n.eko surface before connector spawn.
+- [x] 2.2 Acquire or queue a lease before the controller persists a spawned active run, and return queued/deferred run results from the run-start route without spawning a child.
+- [x] 2.3 Keep queued runs out of `controller_active_runs`, `activeRuns`, `activeRunPromises`, `activeRunInteractions`, streaming nonce state, and `run.started` emission until lease promotion.
 - [ ] 2.4 Add the controller-owned queue pump that promotes the next eligible queued lease on release, cancellation, timeout, and boot reconciliation.
 - [ ] 2.5 Release leases idempotently on connector completion, failure, cancellation, pre-spawn failure after lease acquisition, child cleanup, and shutdown/restart reconciliation.
 
