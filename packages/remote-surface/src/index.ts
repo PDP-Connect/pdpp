@@ -6,6 +6,24 @@ export type {
   RemoteSurfaceConfig,
   RemoteSurfaceLifecycleState,
 } from "./types.ts";
+export type * from "./protocol/index.ts";
+export type * from "./server/index.ts";
+export type * from "./client/index.ts";
+export type * from "./backends/types.ts";
+export type * from "./backends/neko/index.ts";
+export type * from "./backends/cdp/index.ts";
+export { NEKO_BACKEND_CAPABILITIES } from "./backends/neko/index.ts";
+export { CDP_BACKEND_CAPABILITIES } from "./backends/cdp/index.ts";
+export {
+  createDiagnosticsBuffer,
+  redactDiagnosticsEvent,
+} from "./diagnostics/index.ts";
+export type {
+  RedactDiagnosticsOptions,
+  RemoteSurfaceDiagnosticsBuffer,
+  RemoteSurfaceDiagnosticsEvent,
+  RemoteSurfaceDiagnosticsReadResult,
+} from "./diagnostics/index.ts";
 export {
   BROWSER_SURFACE_BACKEND_NEKO,
   BROWSER_SURFACE_LEASE_STATUSES,

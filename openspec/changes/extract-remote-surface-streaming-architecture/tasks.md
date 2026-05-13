@@ -1,19 +1,19 @@
 ## 0. Boundary Map And Fixtures
 
 - [ ] 0.1 Inventory current reference streaming routes, session store behavior, companion contracts, run-target registry behavior, dashboard stream modules, and connector handoff paths.
-- [ ] 0.2 Define the package export map for `protocol`, `server`, `client`, `backends/neko`, `backends/cdp`, `diagnostics`, `leases`, and `testing`.
+- [x] 0.2 Define the package export map for `protocol`, `server`, `client`, `backends/neko`, `backends/cdp`, `diagnostics`, `leases`, and `testing`.
 - [ ] 0.3 Capture fixture cases from current SSE events, n.eko client config, input payloads, viewport payloads, clipboard events, target descriptors, and diagnostics records.
-- [ ] 0.4 Update `packages/remote-surface/README.md` so it reflects implemented exports and no longer describes implemented controllers as scaffold-only.
+- [x] 0.4 Update `packages/remote-surface/README.md` so it reflects implemented exports and no longer describes implemented controllers as scaffold-only.
 
 ## 1. API And Type Extraction
 
-- [ ] 1.1 Add package exports for remote-surface session IDs, backend descriptors, target descriptors, scoped token descriptors, event/input/viewport/clipboard channel payloads, and revocation reasons.
-- [ ] 1.2 Define `RemoteSurfaceSessionBroker` and host-adapter interfaces for create, register, attach, authorize, revoke, event channel, input channel, viewport channel, clipboard channel, and diagnostics.
-- [ ] 1.3 Define client viewer interfaces for mount/unmount, input dispatch, keyboard/IME lifecycle, clipboard capabilities, viewport reporting, lifecycle state, and telemetry subscriptions.
-- [ ] 1.4 Define backend adapter capability and lifecycle interfaces for n.eko, CDP fallback, and future CDP/VNC/Kasm-like adapters.
-- [ ] 1.5 Add package documentation that states PDPP reference routes, run timelines, owner auth, persistence, and connector handoff are host-owned.
-- [ ] 1.6 Verify no new package type imports from `reference-implementation`, `apps/web`, or `packages/polyfill-connectors`.
-- [ ] 1.7 Keep connector target registration HTTP clients and Docker allocator lifecycle out of the package API.
+- [x] 1.1 Add package exports for remote-surface session IDs, backend descriptors, target descriptors, scoped token descriptors, event/input/viewport/clipboard channel payloads, and revocation reasons.
+- [x] 1.2 Define `RemoteSurfaceSessionBroker` and host-adapter interfaces for create, register, attach, authorize, revoke, event channel, input channel, viewport channel, clipboard channel, and diagnostics.
+- [x] 1.3 Define client viewer interfaces for mount/unmount, input dispatch, keyboard/IME lifecycle, clipboard capabilities, viewport reporting, lifecycle state, and telemetry subscriptions.
+- [x] 1.4 Define backend adapter capability and lifecycle interfaces for n.eko, CDP fallback, and future CDP/VNC/Kasm-like adapters.
+- [x] 1.5 Add package documentation that states PDPP reference routes, run timelines, owner auth, persistence, and connector handoff are host-owned.
+- [x] 1.6 Verify no new package type imports from `reference-implementation`, `apps/web`, or `packages/polyfill-connectors`.
+- [x] 1.7 Keep connector target registration HTTP clients and Docker allocator lifecycle out of the package API.
 
 ## 2. Server Broker Extraction
 
@@ -60,8 +60,8 @@
 - [ ] 7.1 Run `pnpm --filter @pdpp/remote-surface typecheck`, package tests, and package lint/check commands available in the workspace.
 - [ ] 7.2 Run reference streaming route, session, run-target registry, n.eko adapter, CDP allowlist, and browser-surface lease tests.
 - [ ] 7.3 Run dashboard stream viewer tests for protocol, keyboard, clipboard, viewport, visual quality, media settle, and n.eko client behavior.
-- [ ] 7.4 Run import-boundary sweeps proving `packages/remote-surface` has no imports from reference, dashboard, connectors, Docker, or server modules.
+- [x] 7.4 Run import-boundary sweeps proving `packages/remote-surface` has no imports from reference, dashboard, connectors, Docker, or server modules.
 - [ ] 7.5 Run a gated CDP live smoke and a gated n.eko mobile smoke when the local environment supports them.
-- [ ] 7.6 Run `openspec validate extract-remote-surface-streaming-architecture --strict`.
+- [x] 7.6 Run `openspec validate extract-remote-surface-streaming-architecture --strict`.
 - [ ] 7.7 If dynamic allocation artifacts are touched during implementation, run `openspec validate add-dynamic-neko-surface-allocation --strict`.
 - [ ] 7.8 For each completed tranche, report remaining compatibility shims and whether the package is closer to OSS publication or only internally reorganized.
