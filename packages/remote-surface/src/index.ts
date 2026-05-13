@@ -15,6 +15,14 @@ export type * from "./backends/cdp/index.ts";
 export { NEKO_BACKEND_CAPABILITIES } from "./backends/neko/index.ts";
 export { CDP_BACKEND_CAPABILITIES } from "./backends/cdp/index.ts";
 export {
+  createStreamingSessionStore,
+  DEFAULT_MINT_IDEMPOTENCY_TTL_MS,
+  DEFAULT_STREAMING_SESSION_TTL_MS,
+  hashStreamingSessionToken,
+  MAX_IDEMPOTENCY_KEY_LEN,
+  StreamingSessionStoreError,
+} from "./server/index.ts";
+export {
   createDiagnosticsBuffer,
   redactDiagnosticsEvent,
 } from "./diagnostics/index.ts";

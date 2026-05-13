@@ -17,12 +17,12 @@
 
 ## 2. Server Broker Extraction
 
-- [ ] 2.1 Move pure streaming session token/store behavior behind the package broker interface while preserving reference route URLs and response envelopes.
+- [x] 2.1 Move pure streaming session token/store behavior behind the package broker interface while preserving reference route URLs and response envelopes.
 - [ ] 2.2 Move input, viewport, clipboard, event-channel, and diagnostics payload parsing/validation into package-owned protocol helpers.
 - [ ] 2.3 Keep owner auth, device-exporter auth, per-run nonce auth, `_ref` route registration, and spine event emission in the reference host adapter.
-- [ ] 2.4 Preserve token expiry, attach, authorize, revoke, interaction-resolved invalidation, and run-ended invalidation behavior through focused tests.
+- [x] 2.4 Preserve token expiry, attach, authorize, revoke, interaction-resolved invalidation, and run-ended invalidation behavior through focused tests.
 - [ ] 2.5 Verify raw CDP target URLs and n.eko upstream origins are never returned in browser-visible descriptors except through token-scoped proxy/session config.
-- [ ] 2.6 Add package broker conformance tests before switching reference routes to package-backed broker behavior.
+- [x] 2.6 Add package broker conformance tests before switching reference routes to package-backed broker behavior.
 
 ## 3. Client And Viewer Extraction
 

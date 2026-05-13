@@ -12,6 +12,27 @@ import type {
   RemoteSurfaceViewportPayload,
 } from "../protocol/index.ts";
 
+export {
+  __test__,
+  createStreamingSessionStore,
+  DEFAULT_MINT_IDEMPOTENCY_TTL_MS,
+  DEFAULT_STREAMING_SESSION_TTL_MS,
+  hashStreamingSessionToken,
+  MAX_IDEMPOTENCY_KEY_LEN,
+  StreamingSessionStoreError,
+} from "./streaming-session-store.ts";
+export type {
+  AttachStreamingSessionRequest,
+  AuthorizeStreamingSessionRequest,
+  GetStreamingSessionSummaryRequest,
+  InvalidateStreamingSessionRequest,
+  MintStreamingSessionRequest,
+  MintStreamingSessionResult,
+  StreamingSessionRecord,
+  StreamingSessionStore,
+  StreamingSessionStoreOptions,
+} from "./streaming-session-store.ts";
+
 export interface RemoteSurfaceSessionBroker {
   createSession(request: RemoteSurfaceCreateSessionRequest): Promise<RemoteSurfaceCreateSessionResult>;
   registerTarget(
