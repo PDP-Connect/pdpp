@@ -471,6 +471,32 @@ export async function bootstrapPostgresSchema() {
         ADD COLUMN IF NOT EXISTS profile_dir TEXT,
         ADD COLUMN IF NOT EXISTS profile_volume TEXT;
 
+      ALTER TABLE browser_surface_leases
+        DROP CONSTRAINT IF EXISTS browser_surface_leases_status_check,
+        DROP CONSTRAINT IF EXISTS browser_surface_leases_wait_reason_check;
+
+      ALTER TABLE browser_surface_leases
+        ADD CONSTRAINT browser_surface_leases_status_check CHECK (status IN (
+          'waiting_for_browser_surface',
+          'starting_surface',
+          'leased',
+          'released',
+          'expired',
+          'deferred',
+          'cancelled',
+          'surface_failed'
+        )),
+        ADD CONSTRAINT browser_surface_leases_wait_reason_check CHECK (wait_reason IS NULL OR wait_reason IN (
+          'capacity_full',
+          'surface_starting',
+          'surface_unhealthy',
+          'surface_start_failed',
+          'surface_readiness_timeout',
+          'incompatible_static_profile',
+          'launch_precondition_failed',
+          'lease_wait_timeout'
+        ));
+
       CREATE TABLE IF NOT EXISTS scheduler_run_history (
         id BIGSERIAL PRIMARY KEY,
         connector_id TEXT NOT NULL,

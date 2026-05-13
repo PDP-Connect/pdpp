@@ -792,6 +792,115 @@ function addColumnIfMissing(raw, table, column, type) {
   raw.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
 }
 
+function ensureBrowserSurfaceLeaseIndexes(raw) {
+  raw.exec(`
+CREATE UNIQUE INDEX IF NOT EXISTS idx_browser_surface_leases_one_non_terminal_run
+  ON browser_surface_leases(run_id)
+  WHERE status NOT IN ('released', 'expired', 'deferred', 'cancelled', 'surface_failed');
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_browser_surface_leases_one_active_surface
+  ON browser_surface_leases(surface_id)
+  WHERE surface_id IS NOT NULL AND status = 'leased';
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_browser_surface_leases_one_pending_connector_profile
+  ON browser_surface_leases(connector_id, profile_key, COALESCE(account_key, ''))
+  WHERE status IN ('waiting_for_browser_surface', 'starting_surface');
+
+CREATE INDEX IF NOT EXISTS idx_browser_surface_leases_non_terminal
+  ON browser_surface_leases(status, priority_class, requested_at);
+`);
+}
+
+function migrateBrowserSurfaceLeaseEnumChecks(raw) {
+  const row = raw.prepare(
+    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'browser_surface_leases'"
+  ).get();
+  const createSql = typeof row?.sql === 'string' ? row.sql : '';
+  if (createSql.includes("'starting_surface'") && createSql.includes("'surface_start_failed'")) {
+    return;
+  }
+
+  raw.exec(`
+DROP TABLE IF EXISTS browser_surface_leases_new;
+
+CREATE TABLE browser_surface_leases_new (
+  lease_id        TEXT PRIMARY KEY,
+  surface_id      TEXT,
+  connector_id    TEXT NOT NULL,
+  profile_key     TEXT NOT NULL,
+  account_key     TEXT,
+  run_id          TEXT NOT NULL,
+  status          TEXT NOT NULL,
+  priority_class  TEXT NOT NULL,
+  requested_at    TEXT NOT NULL,
+  leased_at       TEXT,
+  released_at     TEXT,
+  expires_at      TEXT NOT NULL,
+  fencing_token   INTEGER NOT NULL,
+  wait_reason     TEXT,
+  CHECK (status IN (
+    'waiting_for_browser_surface',
+    'starting_surface',
+    'leased',
+    'released',
+    'expired',
+    'deferred',
+    'cancelled',
+    'surface_failed'
+  )),
+  CHECK (priority_class IN ('owner_interactive', 'scheduled_refresh')),
+  CHECK (wait_reason IS NULL OR wait_reason IN (
+    'capacity_full',
+    'surface_starting',
+    'surface_unhealthy',
+    'surface_start_failed',
+    'surface_readiness_timeout',
+    'incompatible_static_profile',
+    'launch_precondition_failed',
+    'lease_wait_timeout'
+  )),
+  FOREIGN KEY (surface_id) REFERENCES browser_surfaces(surface_id)
+);
+
+INSERT INTO browser_surface_leases_new(
+  lease_id,
+  surface_id,
+  connector_id,
+  profile_key,
+  account_key,
+  run_id,
+  status,
+  priority_class,
+  requested_at,
+  leased_at,
+  released_at,
+  expires_at,
+  fencing_token,
+  wait_reason
+)
+SELECT
+  lease_id,
+  surface_id,
+  connector_id,
+  profile_key,
+  account_key,
+  run_id,
+  status,
+  priority_class,
+  requested_at,
+  leased_at,
+  released_at,
+  expires_at,
+  fencing_token,
+  wait_reason
+FROM browser_surface_leases;
+
+DROP TABLE browser_surface_leases;
+ALTER TABLE browser_surface_leases_new RENAME TO browser_surface_leases;
+`);
+  ensureBrowserSurfaceLeaseIndexes(raw);
+}
+
 function tableColumns(raw, table) {
   return raw.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
 }
@@ -1072,6 +1181,7 @@ export function initDb(path = ':memory:', opts = {}) {
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'browser_surfaces', 'container_name', 'TEXT'));
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'browser_surfaces', 'profile_dir', 'TEXT'));
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'browser_surfaces', 'profile_volume', 'TEXT'));
+  runWithSqliteBusyRetrySync(() => migrateBrowserSurfaceLeaseEnumChecks(raw));
   // Disclosure-spine `event_seq` migration. Pre-existing reference DBs were
   // created before `event_seq` existed; add the column non-destructively and
   // seed it for any rows that lack a value. The seed orders by `rowid` —

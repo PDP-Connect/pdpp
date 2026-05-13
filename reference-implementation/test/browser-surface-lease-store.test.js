@@ -1,5 +1,10 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
+
+import Database from "better-sqlite3";
 
 import { closeDb, getDb, initDb } from "../server/db.js";
 import {
@@ -130,6 +135,166 @@ test("SQLite browser surface schema exposes dynamic allocator metadata columns",
     }
   } finally {
     teardown();
+  }
+});
+
+test("SQLite migration widens browser-surface lease enum constraints in existing DBs", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pdpp-browser-surface-lease-"));
+  const dbPath = join(dir, "legacy.sqlite");
+  const legacy = new Database(dbPath);
+  try {
+    legacy.exec(`
+      CREATE TABLE browser_surfaces (
+        surface_id TEXT PRIMARY KEY,
+        backend TEXT NOT NULL,
+        profile_key TEXT NOT NULL,
+        connector_id TEXT NOT NULL,
+        account_key TEXT,
+        cdp_url TEXT NOT NULL,
+        stream_base_url TEXT NOT NULL,
+        health TEXT NOT NULL,
+        container_id TEXT,
+        active_lease_id TEXT,
+        created_at TEXT NOT NULL,
+        last_used_at TEXT NOT NULL,
+        CHECK (backend IN ('neko')),
+        CHECK (health IN ('starting', 'ready', 'unhealthy', 'stopping'))
+      );
+
+      CREATE TABLE browser_surface_leases (
+        lease_id        TEXT PRIMARY KEY,
+        surface_id      TEXT,
+        connector_id    TEXT NOT NULL,
+        profile_key     TEXT NOT NULL,
+        account_key     TEXT,
+        run_id          TEXT NOT NULL,
+        status          TEXT NOT NULL,
+        priority_class  TEXT NOT NULL,
+        requested_at    TEXT NOT NULL,
+        leased_at       TEXT,
+        released_at     TEXT,
+        expires_at      TEXT NOT NULL,
+        fencing_token   INTEGER NOT NULL,
+        wait_reason     TEXT,
+        CHECK (status IN (
+          'waiting_for_browser_surface',
+          'leased',
+          'released',
+          'expired',
+          'deferred',
+          'cancelled',
+          'surface_failed'
+        )),
+        CHECK (priority_class IN ('owner_interactive', 'scheduled_refresh')),
+        CHECK (wait_reason IS NULL OR wait_reason IN (
+          'capacity_full',
+          'surface_starting',
+          'surface_unhealthy',
+          'incompatible_static_profile',
+          'launch_precondition_failed',
+          'lease_wait_timeout'
+        ))
+      );
+
+      INSERT INTO browser_surface_leases(
+        lease_id,
+        connector_id,
+        profile_key,
+        run_id,
+        status,
+        priority_class,
+        requested_at,
+        expires_at,
+        fencing_token,
+        wait_reason
+      )
+      VALUES (
+        'legacy_waiting',
+        'chatgpt',
+        'chatgpt',
+        'run_legacy',
+        'waiting_for_browser_surface',
+        'scheduled_refresh',
+        '2026-05-12T12:00:00.000Z',
+        '2026-05-12T12:05:00.000Z',
+        1,
+        'capacity_full'
+      );
+    `);
+  } finally {
+    legacy.close();
+  }
+
+  try {
+    initDb(dbPath);
+    const schema = getDb()
+      .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'browser_surface_leases'")
+      .get().sql;
+    assert.match(schema, /'starting_surface'/);
+    assert.match(schema, /'surface_start_failed'/);
+
+    getDb().prepare(`
+      INSERT INTO browser_surface_leases(
+        lease_id,
+        connector_id,
+        profile_key,
+        run_id,
+        status,
+        priority_class,
+        requested_at,
+        expires_at,
+        fencing_token,
+        wait_reason
+      )
+      VALUES (
+        'lease_start_failed',
+        'chatgpt',
+        'chatgpt',
+        'run_start_failed',
+        'surface_failed',
+        'owner_interactive',
+        '2026-05-12T12:00:01.000Z',
+        '2026-05-12T12:05:01.000Z',
+        2,
+        'surface_start_failed'
+      )
+    `).run();
+    getDb().prepare(`
+      INSERT INTO browser_surface_leases(
+        lease_id,
+        connector_id,
+        profile_key,
+        run_id,
+        status,
+        priority_class,
+        requested_at,
+        expires_at,
+        fencing_token,
+        wait_reason
+      )
+      VALUES (
+        'lease_starting',
+        'chatgpt',
+        'chatgpt-dynamic',
+        'run_starting',
+        'starting_surface',
+        'owner_interactive',
+        '2026-05-12T12:00:02.000Z',
+        '2026-05-12T12:05:02.000Z',
+        3,
+        'surface_readiness_timeout'
+      )
+    `).run();
+
+    const rows = getDb().prepare("SELECT lease_id FROM browser_surface_leases ORDER BY lease_id").all();
+    assert.deepEqual(rows.map((row) => row.lease_id), [
+      "lease_start_failed",
+      "lease_starting",
+      "legacy_waiting",
+    ]);
+  } finally {
+    closeDb();
+    rmSync(dir, { recursive: true, force: true });
   }
 });
 
