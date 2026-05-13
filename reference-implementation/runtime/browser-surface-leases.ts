@@ -108,6 +108,7 @@ export interface BrowserSurfaceLeaseManagerOptions {
   readonly nextFencingToken?: () => number;
   readonly initialSurfaces?: readonly BrowserSurface[];
   readonly initialLeases?: readonly BrowserSurfaceLease[];
+  readonly releasePromotesNext?: boolean;
 }
 
 export interface AcquireBrowserSurfaceLeaseRequest {
@@ -213,6 +214,7 @@ export class BrowserSurfaceLeaseManager {
   readonly #makeLeaseId: () => string;
   readonly #makeSurfaceId: () => string;
   readonly #nextFencingToken: () => number;
+  readonly #releasePromotesNext: boolean;
   readonly #leases = new Map<string, BrowserSurfaceLease>();
   readonly #surfaces = new Map<string, BrowserSurface>();
 
@@ -222,6 +224,7 @@ export class BrowserSurfaceLeaseManager {
     this.#now = options.now ?? (() => new Date());
     this.#makeLeaseId = options.makeLeaseId ?? (() => `bsl_${crypto.randomUUID()}`);
     this.#makeSurfaceId = options.makeSurfaceId ?? (() => `bs_${crypto.randomUUID()}`);
+    this.#releasePromotesNext = options.releasePromotesNext ?? true;
     let token = 0;
     this.#nextFencingToken = options.nextFencingToken ?? (() => {
       token += 1;
@@ -326,7 +329,7 @@ export class BrowserSurfaceLeaseManager {
     const released = this.#terminalLease(lease, "released");
     this.#leases.set(released.lease_id, released);
     const surface = this.#clearSurfaceLease(lease.surface_id, lease.lease_id);
-    const promoted = this.#pumpQueue(surface?.surface_id);
+    const promoted = this.#releasePromotesNext ? this.#pumpQueue(surface?.surface_id) : undefined;
     return { released: true, stale: false, lease: released, ...(surface ? { surface } : {}), ...(promoted ? { promoted } : {}) };
   }
 
