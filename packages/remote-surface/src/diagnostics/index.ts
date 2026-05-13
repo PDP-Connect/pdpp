@@ -1,5 +1,7 @@
 import type { JsonObject, JsonValue } from "../protocol/index.ts";
 
+export * from "./visual-quality.ts";
+
 export interface RemoteSurfaceDiagnosticsEvent {
   type: string;
   timestamp: number;

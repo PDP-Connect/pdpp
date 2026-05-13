@@ -54,20 +54,19 @@ import {
   type ClipboardDirectionPolicy,
   type ClipboardHelperMode,
   type ClipboardPolicyDecision,
-  classifyClipboardBrowser,
-  clipboardLengthBucket,
-  decideClipboardPolicy,
-} from "./stream-clipboard-policy.ts";
-import {
   assessMobileKeyboardViewportResize,
   buildViewportPayload,
+  classifyClipboardBrowser,
+  clipboardLengthBucket,
   createMobileKeyboardResizeState,
+  decideClipboardPolicy,
   type LocalViewportSample,
   pointToStreamViewport,
   type ViewportPayload,
+  type ViewportObservation,
   viewportPayloadsAreEquivalent,
-} from "./stream-geometry.ts";
-import { assessNekoMediaSettle, createNekoMediaSettleState } from "./stream-media-settle.ts";
+} from "@pdpp/remote-surface/client";
+import { assessNekoMediaSettle, createNekoMediaSettleState } from "@pdpp/remote-surface/backends/neko";
 import {
   createStreamViewerControlState,
   localSurfaceCanDisplayPresentation,
@@ -96,7 +95,6 @@ import {
   parseStreamErrorMessage,
   parseUrlChangedMessage,
 } from "./stream-viewer-protocol.ts";
-import type { ViewportObservation } from "./stream-viewport-classifier.ts";
 import {
   computePixelFitTelemetry,
   computeStreamCaptureTargetForContext,

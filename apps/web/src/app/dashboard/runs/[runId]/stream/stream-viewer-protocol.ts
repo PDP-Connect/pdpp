@@ -1,4 +1,4 @@
-import type { StreamViewport } from "./stream-geometry.ts";
+import type { StreamViewport } from "@pdpp/remote-surface/client";
 
 export interface FrameMessage {
   data_base64: string;

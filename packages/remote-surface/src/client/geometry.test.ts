@@ -9,7 +9,7 @@ import {
   pointToStreamViewport,
   viewportPayloadsAreEquivalent,
   viewportsAreEquivalent,
-} from "@pdpp/remote-surface/client";
+} from "./geometry.ts";
 
 test("buildViewportPayload keeps viewport dimensions in CSS pixels and sends DPR separately", () => {
   assert.deepEqual(

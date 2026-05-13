@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { assessNekoMediaSettle, createNekoMediaSettleState } from "@pdpp/remote-surface/backends/neko";
+import { assessNekoMediaSettle, createNekoMediaSettleState } from "./media-settle.ts";
 
 const requested = { width: 390, height: 844 };
 

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { classifyViewportTransition, type ViewportObservation } from "@pdpp/remote-surface/client";
+import { classifyViewportTransition, type ViewportObservation } from "./viewport-classifier.ts";
 
 function observation(overrides: Partial<ViewportObservation> = {}): ViewportObservation {
   return {

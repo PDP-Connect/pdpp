@@ -7,7 +7,7 @@ import {
   classifyClipboardBrowser,
   clipboardLengthBucket,
   decideClipboardPolicy,
-} from "@pdpp/remote-surface/client";
+} from "./clipboard-policy.ts";
 
 function capabilities(overrides: Partial<ClipboardCapabilityInput> = {}): ClipboardCapabilities {
   return assessClipboardCapabilities({

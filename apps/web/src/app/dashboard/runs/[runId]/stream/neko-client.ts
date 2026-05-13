@@ -1,6 +1,6 @@
 "use client";
 
-import type { NekoMediaSettleSample } from "./stream-media-settle.ts";
+import type { NekoMediaSettleSample } from "@pdpp/remote-surface/backends/neko";
 
 export interface NekoClientConfig {
   login?: {

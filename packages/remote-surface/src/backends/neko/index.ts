@@ -8,6 +8,8 @@ import type {
   RemoteSurfaceBackendLifecycle,
 } from "../types.ts";
 
+export * from "./media-settle.ts";
+
 export interface NekoSafeClientDescriptor extends SafeRemoteSurfaceBackendDescriptor {
   backend: "neko";
   proxy: {

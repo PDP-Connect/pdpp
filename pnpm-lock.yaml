@@ -225,6 +225,10 @@ importers:
         version: 7.6.0
 
   packages/remote-surface:
+    dependencies:
+      transformation-matrix:
+        specifier: ^3.1.0
+        version: 3.1.0
     devDependencies:
       '@biomejs/biome':
         specifier: 2.4.12
@@ -241,12 +245,12 @@ importers:
       '@huggingface/transformers':
         specifier: ^4.2.0
         version: 4.2.0
-      '@pdpp/remote-surface':
-        specifier: workspace:*
-        version: link:../packages/remote-surface
       '@pdpp/reference-contract':
         specifier: workspace:*
         version: link:../packages/reference-contract
+      '@pdpp/remote-surface':
+        specifier: workspace:*
+        version: link:../packages/remote-surface
       better-sqlite3:
         specifier: ^12.9.0
         version: 12.9.0

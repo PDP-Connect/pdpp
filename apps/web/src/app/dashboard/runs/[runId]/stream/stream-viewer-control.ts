@@ -1,11 +1,11 @@
-import type { ViewportPayload } from "./stream-geometry.ts";
+import type { ViewportPayload } from "@pdpp/remote-surface/client";
 import {
   assessNekoMediaSettle,
   createNekoMediaSettleState,
   type NekoMediaSettleSample,
   type NekoMediaSettleState,
-} from "./stream-media-settle.ts";
-import { classifyViewportTransition, type ViewportObservation } from "./stream-viewport-classifier.ts";
+} from "@pdpp/remote-surface/backends/neko";
+import { classifyViewportTransition, type ViewportObservation } from "@pdpp/remote-surface/client";
 
 export type StreamViewerControlEvent =
   | {
