@@ -1,9 +1,9 @@
 ## 1. Lease Model And Policy
 
-- [ ] 1.1 Define `BrowserSurface`, `BrowserSurfaceLease`, `BrowserSurfaceRunProjection`, and allowed lease-state transitions in a runtime-owned module.
-- [ ] 1.2 Add validated configuration for `PDPP_NEKO_MANAGED_CONNECTORS`, `PDPP_NEKO_SURFACE_CAP`, `PDPP_NEKO_STATIC_PROFILE_KEY`, lease wait timeout, idle TTL, and priority defaults.
+- [x] 1.1 Define `BrowserSurface`, `BrowserSurfaceLease`, `BrowserSurfaceRunProjection`, and allowed lease-state transitions in a runtime-owned module.
+- [x] 1.2 Add validated configuration for `PDPP_NEKO_MANAGED_CONNECTORS`, `PDPP_NEKO_SURFACE_CAP`, `PDPP_NEKO_STATIC_PROFILE_KEY`, lease wait timeout, idle TTL, and priority defaults.
 - [ ] 1.3 Implement atomic acquire/queue/promote/release semantics with fencing tokens and store-enforced invariants for cap, one active lease per surface, and one non-terminal lease per run.
-- [ ] 1.4 Add deterministic lease-manager tests for compatible idle lease, static incompatible profile defer, capacity-full queue, duplicate pending run handling, cancellation, timeout/defer, release, stale release fencing, concurrent final-slot acquisition, and priority/FIFO pump ordering.
+- [x] 1.4 Add deterministic lease-manager tests for compatible idle lease, static incompatible profile defer, capacity-full queue, duplicate pending run handling, cancellation, timeout/defer, release, stale release fencing, concurrent final-slot acquisition, and priority/FIFO pump ordering.
 
 ## 2. Controller Integration
 
@@ -15,9 +15,9 @@
 
 ## 3. Connector Launch Environment
 
-- [ ] 3.1 Thread `PDPP_BROWSER_SURFACE_REQUIRED=neko`, lease-scoped CDP URL, profile key, and lease id into connector child env.
-- [ ] 3.2 Centralize polyfill browser launch resolution so managed lease env wins, required-without-lease fails closed, unmanaged per-profile remote-CDP remains dev-only, and local isolated launch remains the default.
-- [ ] 3.3 Add tests proving a required n.eko run never silently falls back to headless/local/per-profile remote-CDP launch when no lease is available.
+- [x] 3.1 Thread `PDPP_BROWSER_SURFACE_REQUIRED=neko`, lease-scoped CDP URL, profile key, and lease id into connector child env.
+- [x] 3.2 Centralize polyfill browser launch resolution so managed lease env wins, required-without-lease fails closed, unmanaged per-profile remote-CDP remains dev-only, and local isolated launch remains the default.
+- [x] 3.3 Add tests proving a required n.eko run never silently falls back to headless/local/per-profile remote-CDP launch when no lease is available.
 - [ ] 3.4 Ensure manual-action streaming registration uses leased n.eko surface metadata for the n.eko backend descriptor without exposing CDP details to the browser client.
 
 ## 4. Persistence And Restart Reconciliation
