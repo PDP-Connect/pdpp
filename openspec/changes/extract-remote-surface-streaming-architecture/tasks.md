@@ -2,7 +2,7 @@
 
 - [ ] 0.1 Inventory current reference streaming routes, session store behavior, companion contracts, run-target registry behavior, dashboard stream modules, and connector handoff paths.
 - [x] 0.2 Define the package export map for `protocol`, `server`, `client`, `backends/neko`, `backends/cdp`, `diagnostics`, `leases`, and `testing`.
-- [ ] 0.3 Capture fixture cases from current SSE events, n.eko client config, input payloads, viewport payloads, clipboard events, target descriptors, and diagnostics records.
+- [x] 0.3 Capture fixture cases from current SSE events, n.eko client config, input payloads, viewport payloads, clipboard events, target descriptors, and diagnostics records.
 - [x] 0.4 Update `packages/remote-surface/README.md` so it reflects implemented exports and no longer describes implemented controllers as scaffold-only.
 
 ## 1. API And Type Extraction
