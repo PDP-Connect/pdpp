@@ -22,10 +22,16 @@ interface BrowserSurfaceRow {
   profile_key: string;
   connector_id: string;
   account_key: string | null;
+  surface_mode: BrowserSurfacePersistenceMetadata["surface_mode"] | null;
+  surface_source: string | null;
   cdp_url: string;
   stream_base_url: string;
+  stream_origin: string | null;
   health: BrowserSurface["health"];
   container_id: string | null;
+  container_name: string | null;
+  profile_dir: string | null;
+  profile_volume: string | null;
   active_lease_id: string | null;
   created_at: string;
   last_used_at: string;
@@ -49,24 +55,43 @@ interface BrowserSurfaceLeaseRow {
 }
 
 export interface BrowserSurfaceLeaseStore {
-  upsertSurface(surface: BrowserSurface): Promise<BrowserSurface>;
+  upsertSurface(surface: BrowserSurfaceWithPersistenceMetadata): Promise<BrowserSurfaceWithPersistenceMetadata>;
   upsertLease(lease: BrowserSurfaceLease): Promise<BrowserSurfaceLease>;
-  getSurface(surfaceId: string): Promise<BrowserSurface | null>;
+  getSurface(surfaceId: string): Promise<BrowserSurfaceWithPersistenceMetadata | null>;
   getLease(leaseId: string): Promise<BrowserSurfaceLease | null>;
-  listSurfaces(): Promise<BrowserSurface[]>;
+  listSurfaces(): Promise<BrowserSurfaceWithPersistenceMetadata[]>;
   listNonTerminalLeases(): Promise<BrowserSurfaceLease[]>;
   updateLeaseTerminal(
     leaseId: string,
     status: Extract<BrowserSurfaceLease["status"], "released" | "expired" | "deferred" | "cancelled" | "surface_failed">,
     options?: { releasedAt?: string; waitReason?: BrowserSurfaceLease["wait_reason"] | null }
   ): Promise<BrowserSurfaceLease | null>;
-  clearSurfaceActiveLease(surfaceId: string, leaseId: string, fencingToken: number): Promise<BrowserSurface | null>;
+  clearSurfaceActiveLease(surfaceId: string, leaseId: string, fencingToken: number): Promise<BrowserSurfaceWithPersistenceMetadata | null>;
   withLeaseTransaction<T>(fn: (store: BrowserSurfaceLeaseStore) => Promise<T> | T): Promise<T>;
 }
 
 const TERMINAL_STATUS_SQL = TERMINAL_BROWSER_SURFACE_LEASE_STATUSES.map((status) => `'${status}'`).join(", ");
 
-function mapSurface(row: BrowserSurfaceRow | null | undefined): BrowserSurface | null {
+export interface BrowserSurfacePersistenceMetadata {
+  readonly surface_mode?: "static" | "dynamic";
+  readonly surface_source?: string;
+  readonly container_name?: string;
+  readonly profile_dir?: string;
+  readonly profile_volume?: string;
+  readonly stream_origin?: string;
+}
+
+type BrowserSurfaceWithPersistenceMetadata = BrowserSurface & BrowserSurfacePersistenceMetadata;
+
+function optionalString(value: string | null | undefined): string | undefined {
+  return value || undefined;
+}
+
+function surfaceMetadata(surface: BrowserSurfaceWithPersistenceMetadata): BrowserSurfacePersistenceMetadata {
+  return surface as BrowserSurfacePersistenceMetadata;
+}
+
+function mapSurface(row: BrowserSurfaceRow | null | undefined): BrowserSurfaceWithPersistenceMetadata | null {
   if (!row) return null;
   return {
     surface_id: row.surface_id,
@@ -81,6 +106,12 @@ function mapSurface(row: BrowserSurfaceRow | null | undefined): BrowserSurface |
     ...(row.account_key ? { account_key: row.account_key } : {}),
     ...(row.active_lease_id ? { active_lease_id: row.active_lease_id } : {}),
     ...(row.container_id ? { container_id: row.container_id } : {}),
+    ...(row.surface_mode ? { surface_mode: row.surface_mode } : {}),
+    ...(row.surface_source ? { surface_source: row.surface_source } : {}),
+    ...(row.container_name ? { container_name: row.container_name } : {}),
+    ...(row.profile_dir ? { profile_dir: row.profile_dir } : {}),
+    ...(row.profile_volume ? { profile_volume: row.profile_volume } : {}),
+    ...(row.stream_origin ? { stream_origin: row.stream_origin } : {}),
   };
 }
 
@@ -104,17 +135,24 @@ function mapLease(row: BrowserSurfaceLeaseRow | null | undefined): BrowserSurfac
   };
 }
 
-function sqliteSurfaceParams(surface: BrowserSurface): BindValue[] {
+function sqliteSurfaceParams(surface: BrowserSurfaceWithPersistenceMetadata): BindValue[] {
+  const metadata = surfaceMetadata(surface);
   return [
     surface.surface_id,
     surface.backend,
     surface.profile_key,
     surface.connector_id,
     surface.account_key ?? null,
+    metadata.surface_mode ?? null,
+    optionalString(metadata.surface_source) ?? null,
     surface.cdp_url,
     surface.stream_base_url,
+    optionalString(metadata.stream_origin) ?? null,
     surface.health,
     surface.container_id ?? null,
+    optionalString(metadata.container_name) ?? null,
+    optionalString(metadata.profile_dir) ?? null,
+    optionalString(metadata.profile_volume) ?? null,
     surface.active_lease_id ?? null,
     surface.created_at,
     surface.last_used_at,
@@ -152,23 +190,30 @@ function allDynamicRows<R>(sql: string, params: BindValue[] = []): R[] {
 }
 
 class SqliteBrowserSurfaceLeaseStore implements BrowserSurfaceLeaseStore {
-  upsertSurface(surface: BrowserSurface): Promise<BrowserSurface> {
+  upsertSurface(surface: BrowserSurfaceWithPersistenceMetadata): Promise<BrowserSurfaceWithPersistenceMetadata> {
     // REVIEWED-DYNAMIC: browser surface persistence is a compact new store seam; the SQL is static here and not caller-built.
     execDynamicSqlAcknowledged(
       `INSERT INTO browser_surfaces(
-        surface_id, backend, profile_key, connector_id, account_key, cdp_url, stream_base_url,
-        health, container_id, active_lease_id, created_at, last_used_at
+        surface_id, backend, profile_key, connector_id, account_key, surface_mode, surface_source,
+        cdp_url, stream_base_url, stream_origin, health, container_id, container_name,
+        profile_dir, profile_volume, active_lease_id, created_at, last_used_at
       )
-      VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(surface_id) DO UPDATE SET
         backend = excluded.backend,
         profile_key = excluded.profile_key,
         connector_id = excluded.connector_id,
         account_key = excluded.account_key,
+        surface_mode = excluded.surface_mode,
+        surface_source = excluded.surface_source,
         cdp_url = excluded.cdp_url,
         stream_base_url = excluded.stream_base_url,
+        stream_origin = excluded.stream_origin,
         health = excluded.health,
         container_id = excluded.container_id,
+        container_name = excluded.container_name,
+        profile_dir = excluded.profile_dir,
+        profile_volume = excluded.profile_volume,
         active_lease_id = excluded.active_lease_id,
         created_at = excluded.created_at,
         last_used_at = excluded.last_used_at`,
@@ -204,7 +249,7 @@ class SqliteBrowserSurfaceLeaseStore implements BrowserSurfaceLeaseStore {
     return Promise.resolve(lease);
   }
 
-  getSurface(surfaceId: string): Promise<BrowserSurface | null> {
+  getSurface(surfaceId: string): Promise<BrowserSurfaceWithPersistenceMetadata | null> {
     // REVIEWED-DYNAMIC: static primary-key lookup for the compact browser surface store.
     const row = firstDynamicRow<BrowserSurfaceRow>("SELECT * FROM browser_surfaces WHERE surface_id = ?", [surfaceId]);
     return Promise.resolve(mapSurface(row));
@@ -216,7 +261,7 @@ class SqliteBrowserSurfaceLeaseStore implements BrowserSurfaceLeaseStore {
     return Promise.resolve(mapLease(row));
   }
 
-  listSurfaces(): Promise<BrowserSurface[]> {
+  listSurfaces(): Promise<BrowserSurfaceWithPersistenceMetadata[]> {
     // REVIEWED-DYNAMIC: browser surfaces are a small controller-owned runtime table.
     const rows = allDynamicRows<BrowserSurfaceRow>("SELECT * FROM browser_surfaces ORDER BY surface_id");
     return Promise.resolve(rows.map((row) => mapSurface(row)!));
@@ -247,7 +292,7 @@ class SqliteBrowserSurfaceLeaseStore implements BrowserSurfaceLeaseStore {
     return this.getLease(leaseId);
   }
 
-  clearSurfaceActiveLease(surfaceId: string, leaseId: string, fencingToken: number): Promise<BrowserSurface | null> {
+  clearSurfaceActiveLease(surfaceId: string, leaseId: string, fencingToken: number): Promise<BrowserSurfaceWithPersistenceMetadata | null> {
     // REVIEWED-DYNAMIC: static fenced surface release mutation for the browser lease store.
     execDynamicSqlAcknowledged(
       `UPDATE browser_surfaces
@@ -288,22 +333,29 @@ class PostgresBrowserSurfaceLeaseStore implements BrowserSurfaceLeaseStore {
     this.#query = client ? (sql, params = []) => client.query(sql, params) : (sql, params = []) => postgresQuery(sql, params);
   }
 
-  async upsertSurface(surface: BrowserSurface): Promise<BrowserSurface> {
+  async upsertSurface(surface: BrowserSurfaceWithPersistenceMetadata): Promise<BrowserSurfaceWithPersistenceMetadata> {
     await this.#query(
       `INSERT INTO browser_surfaces(
-        surface_id, backend, profile_key, connector_id, account_key, cdp_url, stream_base_url,
-        health, container_id, active_lease_id, created_at, last_used_at
+        surface_id, backend, profile_key, connector_id, account_key, surface_mode, surface_source,
+        cdp_url, stream_base_url, stream_origin, health, container_id, container_name,
+        profile_dir, profile_volume, active_lease_id, created_at, last_used_at
       )
-      VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+      VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
       ON CONFLICT(surface_id) DO UPDATE SET
         backend = EXCLUDED.backend,
         profile_key = EXCLUDED.profile_key,
         connector_id = EXCLUDED.connector_id,
         account_key = EXCLUDED.account_key,
+        surface_mode = EXCLUDED.surface_mode,
+        surface_source = EXCLUDED.surface_source,
         cdp_url = EXCLUDED.cdp_url,
         stream_base_url = EXCLUDED.stream_base_url,
+        stream_origin = EXCLUDED.stream_origin,
         health = EXCLUDED.health,
         container_id = EXCLUDED.container_id,
+        container_name = EXCLUDED.container_name,
+        profile_dir = EXCLUDED.profile_dir,
+        profile_volume = EXCLUDED.profile_volume,
         active_lease_id = EXCLUDED.active_lease_id,
         created_at = EXCLUDED.created_at,
         last_used_at = EXCLUDED.last_used_at`,
@@ -338,7 +390,7 @@ class PostgresBrowserSurfaceLeaseStore implements BrowserSurfaceLeaseStore {
     return lease;
   }
 
-  async getSurface(surfaceId: string): Promise<BrowserSurface | null> {
+  async getSurface(surfaceId: string): Promise<BrowserSurfaceWithPersistenceMetadata | null> {
     const result = await this.#query("SELECT * FROM browser_surfaces WHERE surface_id = $1", [surfaceId]);
     return mapSurface(result.rows[0] as BrowserSurfaceRow | undefined);
   }
@@ -348,7 +400,7 @@ class PostgresBrowserSurfaceLeaseStore implements BrowserSurfaceLeaseStore {
     return mapLease(result.rows[0] as BrowserSurfaceLeaseRow | undefined);
   }
 
-  async listSurfaces(): Promise<BrowserSurface[]> {
+  async listSurfaces(): Promise<BrowserSurfaceWithPersistenceMetadata[]> {
     const result = await this.#query("SELECT * FROM browser_surfaces ORDER BY surface_id");
     return (result.rows as BrowserSurfaceRow[]).map((row) => mapSurface(row)!);
   }
@@ -376,7 +428,7 @@ class PostgresBrowserSurfaceLeaseStore implements BrowserSurfaceLeaseStore {
     return this.getLease(leaseId);
   }
 
-  async clearSurfaceActiveLease(surfaceId: string, leaseId: string, fencingToken: number): Promise<BrowserSurface | null> {
+  async clearSurfaceActiveLease(surfaceId: string, leaseId: string, fencingToken: number): Promise<BrowserSurfaceWithPersistenceMetadata | null> {
     await this.#query(
       `UPDATE browser_surfaces
        SET active_lease_id = NULL
@@ -402,8 +454,8 @@ export function createSqliteBrowserSurfaceLeaseStore(): BrowserSurfaceLeaseStore
   return new SqliteBrowserSurfaceLeaseStore();
 }
 
-export function createPostgresBrowserSurfaceLeaseStore(): BrowserSurfaceLeaseStore {
-  return new PostgresBrowserSurfaceLeaseStore();
+export function createPostgresBrowserSurfaceLeaseStore(client?: Queryable): BrowserSurfaceLeaseStore {
+  return new PostgresBrowserSurfaceLeaseStore(client);
 }
 
 export function createBrowserSurfaceLeaseStore(): BrowserSurfaceLeaseStore {

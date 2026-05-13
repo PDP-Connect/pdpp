@@ -354,14 +354,21 @@ CREATE TABLE IF NOT EXISTS browser_surfaces (
   profile_key      TEXT NOT NULL,
   connector_id     TEXT NOT NULL,
   account_key      TEXT,
+  surface_mode     TEXT,
+  surface_source   TEXT,
   cdp_url          TEXT NOT NULL,
   stream_base_url  TEXT NOT NULL,
+  stream_origin    TEXT,
   health           TEXT NOT NULL,
   container_id     TEXT,
+  container_name   TEXT,
+  profile_dir      TEXT,
+  profile_volume   TEXT,
   active_lease_id  TEXT,
   created_at       TEXT NOT NULL,
   last_used_at     TEXT NOT NULL,
   CHECK (backend IN ('neko')),
+  CHECK (surface_mode IS NULL OR surface_mode IN ('static', 'dynamic')),
   CHECK (health IN ('starting', 'ready', 'unhealthy', 'stopping'))
 );
 
@@ -1057,6 +1064,12 @@ export function initDb(path = ':memory:', opts = {}) {
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'device_enrollment_codes', 'local_binding_id', "TEXT NOT NULL DEFAULT 'default'"));
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'device_enrollment_codes', 'display_name', 'TEXT'));
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'device_source_instances', 'last_error_json', 'TEXT'));
+  runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'browser_surfaces', 'surface_mode', 'TEXT'));
+  runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'browser_surfaces', 'surface_source', 'TEXT'));
+  runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'browser_surfaces', 'stream_origin', 'TEXT'));
+  runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'browser_surfaces', 'container_name', 'TEXT'));
+  runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'browser_surfaces', 'profile_dir', 'TEXT'));
+  runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'browser_surfaces', 'profile_volume', 'TEXT'));
   // Disclosure-spine `event_seq` migration. Pre-existing reference DBs were
   // created before `event_seq` existed; add the column non-destructively and
   // seed it for any rows that lack a value. The seed orders by `rowid` —

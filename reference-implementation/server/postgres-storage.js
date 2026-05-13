@@ -391,10 +391,16 @@ export async function bootstrapPostgresSchema() {
         profile_key TEXT NOT NULL,
         connector_id TEXT NOT NULL,
         account_key TEXT,
+        surface_mode TEXT CHECK (surface_mode IS NULL OR surface_mode IN ('static', 'dynamic')),
+        surface_source TEXT,
         cdp_url TEXT NOT NULL,
         stream_base_url TEXT NOT NULL,
+        stream_origin TEXT,
         health TEXT NOT NULL CHECK (health IN ('starting', 'ready', 'unhealthy', 'stopping')),
         container_id TEXT,
+        container_name TEXT,
+        profile_dir TEXT,
+        profile_volume TEXT,
         active_lease_id TEXT,
         created_at TEXT NOT NULL,
         last_used_at TEXT NOT NULL
@@ -454,6 +460,14 @@ export async function bootstrapPostgresSchema() {
 
       CREATE INDEX IF NOT EXISTS idx_pg_browser_surface_leases_non_terminal
         ON browser_surface_leases(status, priority_class, requested_at);
+
+      ALTER TABLE browser_surfaces
+        ADD COLUMN IF NOT EXISTS surface_mode TEXT CHECK (surface_mode IS NULL OR surface_mode IN ('static', 'dynamic')),
+        ADD COLUMN IF NOT EXISTS surface_source TEXT,
+        ADD COLUMN IF NOT EXISTS stream_origin TEXT,
+        ADD COLUMN IF NOT EXISTS container_name TEXT,
+        ADD COLUMN IF NOT EXISTS profile_dir TEXT,
+        ADD COLUMN IF NOT EXISTS profile_volume TEXT;
 
       CREATE TABLE IF NOT EXISTS scheduler_run_history (
         id BIGSERIAL PRIMARY KEY,

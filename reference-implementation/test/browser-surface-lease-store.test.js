@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { closeDb, getDb, initDb } from "../server/db.js";
-import { createSqliteBrowserSurfaceLeaseStore } from "../server/stores/browser-surface-lease-store.ts";
+import {
+  createPostgresBrowserSurfaceLeaseStore,
+  createSqliteBrowserSurfaceLeaseStore,
+} from "../server/stores/browser-surface-lease-store.ts";
 
 function surface(overrides = {}) {
   return {
@@ -67,6 +70,117 @@ test("persists and reloads browser surfaces and leases as domain objects", async
   } finally {
     teardown();
   }
+});
+
+test("persists starting dynamic surface metadata for allocator reconciliation", async () => {
+  const store = setup();
+  try {
+    const startingSurface = surface({
+      surface_id: "surface_dynamic_1",
+      profile_key: "https://registry.pdpp.org/connectors/chatgpt",
+      account_key: "owner@example.com",
+      surface_mode: "dynamic",
+      surface_source: "allocator",
+      cdp_url: "http://allocator.local/surfaces/surface_dynamic_1/cdp",
+      stream_base_url: "http://reference.test/_ref/browser-surfaces/surface_dynamic_1",
+      stream_origin: "http://neko-surface-dynamic-1:8080",
+      health: "starting",
+      container_id: "container_123",
+      container_name: "pdpp-neko-surface-dynamic-1",
+      profile_dir: "/var/lib/pdpp/neko-profiles/chatgpt-hash",
+      profile_volume: "pdpp_neko_profile_chatgpt_hash",
+      active_lease_id: "lease_starting",
+    });
+    const startingLease = lease({
+      lease_id: "lease_starting",
+      surface_id: "surface_dynamic_1",
+      profile_key: "https://registry.pdpp.org/connectors/chatgpt",
+      account_key: "owner@example.com",
+      run_id: "run_starting",
+      status: "starting_surface",
+      leased_at: undefined,
+      wait_reason: "surface_starting",
+    });
+
+    await store.upsertSurface(startingSurface);
+    await store.upsertLease(startingLease);
+
+    assert.deepEqual(await store.getSurface("surface_dynamic_1"), startingSurface);
+    assert.deepEqual(await store.getLease("lease_starting"), startingLease);
+    assert.deepEqual(await store.listSurfaces(), [startingSurface]);
+    assert.deepEqual(await store.listNonTerminalLeases(), [startingLease]);
+  } finally {
+    teardown();
+  }
+});
+
+test("SQLite browser surface schema exposes dynamic allocator metadata columns", () => {
+  setup();
+  try {
+    const columns = getDb().prepare("PRAGMA table_info(browser_surfaces)").all().map((row) => row.name);
+    for (const column of [
+      "surface_mode",
+      "surface_source",
+      "container_name",
+      "profile_dir",
+      "profile_volume",
+      "stream_origin",
+    ]) {
+      assert.ok(columns.includes(column), `expected browser_surfaces.${column}`);
+    }
+  } finally {
+    teardown();
+  }
+});
+
+test("Postgres store maps dynamic surface metadata with the same persistence shape", async () => {
+  const dynamicSurface = surface({
+    surface_id: "surface_dynamic_pg",
+    surface_mode: "dynamic",
+    surface_source: "allocator",
+    stream_origin: "http://neko-surface-pg:8080",
+    health: "starting",
+    container_id: "container_pg",
+    container_name: "pdpp-neko-surface-pg",
+    profile_dir: "/var/lib/pdpp/neko-profiles/pg-hash",
+    profile_volume: "pdpp_neko_profile_pg_hash",
+    active_lease_id: "lease_pg",
+  });
+  const queries = [];
+  const client = {
+    async query(sql, params = []) {
+      queries.push({ sql, params });
+      if (sql.includes("SELECT * FROM browser_surfaces")) {
+        return { rows: [dynamicSurface] };
+      }
+      return { rows: [] };
+    },
+  };
+  const store = createPostgresBrowserSurfaceLeaseStore(client);
+
+  await store.upsertSurface(dynamicSurface);
+
+  assert.deepEqual(queries[0].params, [
+    "surface_dynamic_pg",
+    "neko",
+    "chatgpt",
+    "chatgpt",
+    null,
+    "dynamic",
+    "allocator",
+    "http://neko:9222",
+    "http://neko:8080",
+    "http://neko-surface-pg:8080",
+    "starting",
+    "container_pg",
+    "pdpp-neko-surface-pg",
+    "/var/lib/pdpp/neko-profiles/pg-hash",
+    "pdpp_neko_profile_pg_hash",
+    "lease_pg",
+    "2026-05-12T12:00:00.000Z",
+    "2026-05-12T12:00:00.000Z",
+  ]);
+  assert.deepEqual(await store.getSurface("surface_dynamic_pg"), dynamicSurface);
 });
 
 test("queued browser-surface leases are separate from controller_active_runs", async () => {
