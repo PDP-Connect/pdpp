@@ -1,10 +1,11 @@
 # Dynamic n.eko Container Allocation Follow-Up
 
-Status: decided-defer
+Status: promoted
 Owner: Worker D
 Created: 2026-05-13
 Updated: 2026-05-13
 Related: openspec/changes/add-neko-browser-surface-leases
+Promoted To: openspec/changes/add-dynamic-neko-surface-allocation
 
 ## Question
 
@@ -38,3 +39,4 @@ Promote this into OpenSpec before implementing dynamic containers, increasing `P
 ## Decision Log
 
 - 2026-05-13: Deferred out of the static Docker lane. The static overlay remains cap `N=1` and routes managed connectors through controller-owned lease env rather than per-profile remote-CDP overrides.
+- 2026-05-13: Promoted to `openspec/changes/add-dynamic-neko-surface-allocation`.

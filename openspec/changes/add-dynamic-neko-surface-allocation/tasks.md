@@ -1,0 +1,53 @@
+## 1. Allocator Boundary
+
+- [ ] 1.1 Add `NekoSurfaceAllocator` types for ensure, status, stop, and list operations.
+- [ ] 1.2 Add a fake allocator for controller/runtime tests.
+- [ ] 1.3 Add dynamic n.eko config parsing and validation, including mode, cap, allocator URL, profile storage policy, idle TTL, and readiness timeout.
+- [ ] 1.4 Preserve static mode config and fail fast if static and dynamic settings are mixed unsafely.
+
+## 2. Lease State Integration
+
+- [ ] 2.1 Extend browser-surface lease state handling so dynamic capacity starts leases in `starting_surface` rather than immediately `leased`.
+- [ ] 2.2 Count starting, ready idle, leased, and unhealthy dynamic surfaces against `PDPP_NEKO_SURFACE_CAP`.
+- [ ] 2.3 Persist dynamic surface rows with allocator/container metadata and profile key before starting a connector child.
+- [ ] 2.4 Gate queued-run promotion on allocator readiness and emit browser-surface events before `run.started`.
+- [ ] 2.5 Classify allocator startup/readiness failures as runtime-resource browser-surface failures without spawning the connector.
+
+## 3. Dynamic Allocator Implementation
+
+- [ ] 3.1 Implement a local allocator/supervisor service with a narrow HTTP API for dynamic n.eko surfaces.
+- [ ] 3.2 Start n.eko containers with reference-owned labels, configured image, configured network, CDP proxy, stream path, and per-surface environment.
+- [ ] 3.3 Mount persistent profile storage derived from sanitized/hashed profile keys.
+- [ ] 3.4 Implement readiness probes for container state, n.eko HTTP health, CDP `/json/version`, Chromium liveness, and stream proxy reachability.
+- [ ] 3.5 Reject allocator operations against unlabeled or foreign Docker resources.
+
+## 4. Streaming And Proxy Wiring
+
+- [ ] 4.1 Allow registered n.eko stream descriptors to carry per-surface stream origins instead of relying on one global `PDPP_NEKO_BASE_URL`.
+- [ ] 4.2 Ensure owner-facing stream routes proxy only to allocator-approved n.eko origins.
+- [ ] 4.3 Keep raw CDP URLs out of browser/client-visible stream config.
+- [ ] 4.4 Verify interaction-scoped streaming still works for static mode and dynamic mode.
+
+## 5. Cleanup And Reconciliation
+
+- [ ] 5.1 Add idle TTL cleanup for ready idle dynamic surfaces while preserving profile storage.
+- [ ] 5.2 Run the queue pump after dynamic surface stop/release/reconcile events.
+- [ ] 5.3 Reconcile persisted leases and surfaces with allocator/container state before accepting new managed n.eko launches.
+- [ ] 5.4 Expire or surface-fail leases for missing/unhealthy containers without deleting profile storage.
+- [ ] 5.5 Keep static mode reconciliation behavior intact.
+
+## 6. Docker And Operator Configuration
+
+- [ ] 6.1 Add Docker Compose wiring for the allocator sidecar and dynamic n.eko network/resource labels.
+- [ ] 6.2 Add `.env.docker.example` settings for dynamic mode without enabling multi-surface mode by accident.
+- [ ] 6.3 Document the resource/security tradeoff of the allocator sidecar and Docker Engine access.
+- [ ] 6.4 Document how to enable ChatGPT first, then add Chase/USAA after dynamic smoke passes.
+
+## 7. Verification
+
+- [ ] 7.1 Add unit tests for dynamic config validation and static/dynamic incompatibilities.
+- [ ] 7.2 Add lease-manager tests for starting-surface cap accounting, readiness promotion, failure classification, idle cleanup, and restart reconciliation.
+- [ ] 7.3 Add controller tests proving no `run.started` event is emitted until a dynamic surface is ready and leased.
+- [ ] 7.4 Add allocator contract tests using the fake allocator.
+- [ ] 7.5 Add a gated Docker smoke that starts two managed connector runs with distinct profile keys and proves separate dynamic n.eko surfaces are allocated or queued according to cap.
+- [ ] 7.6 Run `openspec validate add-dynamic-neko-surface-allocation --strict`.
