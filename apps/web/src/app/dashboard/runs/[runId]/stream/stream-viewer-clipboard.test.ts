@@ -34,6 +34,9 @@ const CORNER_PASTE_OPENS_SHEET_RE =
 const CORNER_PASTE_ARIA_RE = /aria-label=\{`Open paste controls for \$\{connectorName\} browser`\}/;
 const CORNER_PASTE_DIRECT_READ_RE =
   /const handleMobilePaste = useCallback\(\(\) => \{[\s\S]*pasteLocalClipboardIntoNeko/;
+const VIEWER_DIRECT_NEKO_CLIPBOARD_CALL_RE = /\b(?:pasteTextIntoNeko|copyRemoteSelectionFromNeko)\(/;
+const VIEWER_CLIPBOARD_VIA_ADAPTER_RE =
+  /if \(surface && surfaceState === "mounted"\) \{[\s\S]*pasted = await surface\.pasteText\(localText\)[\s\S]*if \(surface && surfaceState === "mounted"\) \{[\s\S]*dispatched = await surface\.copyRemoteSelection\(\)/;
 
 test("mobile clipboard uses explicit copy and paste buttons with sheet fallback", async () => {
   const src = await readFile(STREAM_VIEWER_FILE, "utf8");
@@ -84,4 +87,10 @@ test("mobile paste corner control opens the explicit sheet instead of silently d
   assert.match(src, CORNER_PASTE_OPENS_SHEET_RE);
   assert.match(src, CORNER_PASTE_ARIA_RE);
   assert.doesNotMatch(src, CORNER_PASTE_DIRECT_READ_RE);
+});
+
+test("explicit n.eko clipboard commands route through the RemoteSurface adapter", async () => {
+  const src = await readFile(STREAM_VIEWER_FILE, "utf8");
+  assert.match(src, VIEWER_CLIPBOARD_VIA_ADAPTER_RE);
+  assert.doesNotMatch(src, VIEWER_DIRECT_NEKO_CLIPBOARD_CALL_RE);
 });

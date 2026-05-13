@@ -12,6 +12,8 @@ import type {
 } from "@pdpp/remote-surface/client";
 
 import {
+  blurNekoKeyboard,
+  copyRemoteSelectionFromNeko,
   dispatchNekoKeysymForAdapter,
   focusNekoKeyboard,
   getNekoPointerControlForAdapter,
@@ -19,6 +21,7 @@ import {
   pasteTextIntoNeko,
   startNeko,
   stopNeko,
+  setNekoRemoteInputFocused,
   type NekoClientConfig,
 } from "./neko-client";
 
@@ -55,8 +58,20 @@ export function createNekoClientApi(opts?: {
     focusKeyboard(): void {
       focusNekoKeyboard();
     },
+    blurKeyboard(): void {
+      blurNekoKeyboard();
+    },
+    setRemoteInputFocused(focused: boolean): void {
+      setNekoRemoteInputFocused(focused);
+    },
     sendText(text: string): void {
       pasteTextIntoNeko(text);
+    },
+    pasteText(text: string): boolean {
+      return pasteTextIntoNeko(text);
+    },
+    copyRemoteSelection(): boolean {
+      return copyRemoteSelectionFromNeko();
     },
     getPointerControl(): NekoPointerControl | null {
       const control = getNekoPointerControlForAdapter();

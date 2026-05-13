@@ -90,6 +90,9 @@ const NEKO_POINTER_CAPTURE_HANDLER_RE = /onPointerDownCapture=\{handleLocalStrea
 const NEKO_LOCAL_STREAM_HANDLER_RE = /handleLocalStreamGesture/;
 const NEKO_LOCAL_GESTURE_FOCUS_CALL_RE = /focusNekoKeyboardFromLocalGesture\(/;
 const NEKO_LOCAL_GESTURE_EXPORT_RE = /export function focusNekoKeyboardFromLocalGesture/;
+const VIEWER_DIRECT_NEKO_KEYBOARD_CALL_RE = /\b(?:setNekoRemoteInputFocused|focusNekoKeyboard|blurNekoKeyboard)\(/;
+const VIEWER_REMOTE_INPUT_FOCUS_VIA_ADAPTER_RE =
+  /adapter\.setRemoteInputFocused\(true\)[\s\S]*adapter\.focusTextInput\(\)[\s\S]*adapter\.setRemoteInputFocused\(false\)[\s\S]*adapter\.blurTextInput\(\)/;
 const STREAM_SURFACE_RESOLUTION_POLL_PROP_RE = /pollForResolution\?: boolean/;
 const STREAM_SURFACE_RESOLUTION_POLL_GATE_RE =
   /if \(!pollForResolution\) \{\s*return;\s*\}[\s\S]*setInterval\(\(\) => router\.refresh\(\), RESOLUTION_POLL_MS\)/;
@@ -124,6 +127,12 @@ test("local pointer/tap on the n.eko surface no longer opens the soft keyboard",
   // The exported helper still exists so the test guarding remote-focus path
   // stays meaningful, but no surface invokes it.
   assert.match(nekoClientSrc, NEKO_LOCAL_GESTURE_EXPORT_RE);
+});
+
+test("remote editable focus updates n.eko keyboard state through the RemoteSurface adapter", async () => {
+  const viewerSrc = await readFile(STREAM_VIEWER_FILE, "utf8");
+  assert.match(viewerSrc, VIEWER_REMOTE_INPUT_FOCUS_VIA_ADAPTER_RE);
+  assert.doesNotMatch(viewerSrc, VIEWER_DIRECT_NEKO_KEYBOARD_CALL_RE);
 });
 
 test("setNekoViewportLayout receives the live container rect, not the window viewport", async () => {

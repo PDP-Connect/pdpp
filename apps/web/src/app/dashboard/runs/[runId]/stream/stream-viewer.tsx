@@ -34,16 +34,11 @@ import {
 import { dashboardRoutes } from "../../../components/views/routes.ts";
 import { type MintedStreamSession, mintStreamSessionAction } from "./actions.ts";
 import {
-  blurNekoKeyboard,
-  copyRemoteSelectionFromNeko,
-  focusNekoKeyboard,
   type NekoClientConfig,
   NEKO_MEDIA_LAYOUT_EVENT,
-  pasteTextIntoNeko,
   readNekoMediaSettleSample,
   setNekoPresentationViewportLayout,
   setNekoRemoteCopyFallback,
-  setNekoRemoteInputFocused,
   setNekoViewportLayout,
 } from "./neko-client.ts";
 import { NekoSurfaceAdapter } from "@pdpp/remote-surface/client";
@@ -1976,17 +1971,33 @@ function StreamStage({
             clearTimeout(keyboardBlurTimeoutRef.current);
             keyboardBlurTimeoutRef.current = null;
           }
-          setNekoRemoteInputFocused(true);
-          focusNekoKeyboard();
+          const adapter = nekoSurfaceAdapterRef.current;
+          if (adapter?.getLifecycleState() === "mounted") {
+            adapter.setRemoteInputFocused(true);
+            adapter.focusTextInput();
+          } else {
+            logDebug("neko.keyboard_focus.adapter_unavailable", {
+              focused: true,
+              state: adapter?.getLifecycleState() ?? null,
+            });
+          }
         } else {
           if (keyboardBlurTimeoutRef.current) {
             clearTimeout(keyboardBlurTimeoutRef.current);
           }
           keyboardBlurTimeoutRef.current = setTimeout(() => {
             keyboardBlurTimeoutRef.current = null;
-            setNekoRemoteInputFocused(false);
+            const adapter = nekoSurfaceAdapterRef.current;
+            if (adapter?.getLifecycleState() === "mounted") {
+              adapter.setRemoteInputFocused(false);
+              adapter.blurTextInput();
+            } else {
+              logDebug("neko.keyboard_focus.adapter_unavailable", {
+                focused: false,
+                state: adapter?.getLifecycleState() ?? null,
+              });
+            }
             setRemoteInputSensitive(false);
-            blurNekoKeyboard();
           }, STREAM_VIEWER_POLICY.keyboardRemoteBlurGraceMs);
           presentationKeyboardFocusedRef.current = false;
           presentationKeyboardHoldUntilRef.current = Math.max(
@@ -2811,7 +2822,7 @@ function StreamStage({
       });
       return;
     }
-    requestBrowserCopyFromSheet({
+    void requestBrowserCopyFromSheet({
       logDebug,
       policy: clipboardPolicy,
       setCopyState: (state) => {
@@ -2824,6 +2835,14 @@ function StreamStage({
           setClipboardSheetOpen(true);
         }
       },
+      surface: nekoSurfaceAdapterRef.current,
+    }).catch((err) => {
+      logDebug("neko.corner.copy", {
+        error: err instanceof Error ? err.message : String(err),
+        phase: "browser-copy-error",
+        surface: clipboardPolicy.surface,
+      });
+      setClipboardSheetOpen(true);
     });
   }, [clipboardPolicy, logDebug, remoteClipboard]);
 
@@ -2875,10 +2894,7 @@ function StreamStage({
                 // Focus the MobileTextInputController-bound textarea
                 // (rendered inside NekoSurface). The OS soft keyboard
                 // opens on focus; the controller intercepts compositionend
-                // / input and forwards via the RemoteSurface adapter. Also
-                // call focusNekoKeyboard() to keep neko's internal
-                // `remoteInputFocused` state consistent (needed by the
-                // mobile-text-input guard + viewport-hold heuristics).
+                // / input and forwards via the RemoteSurface adapter.
                 const softKeyboardTextarea = document.querySelector<HTMLTextAreaElement>(
                   'textarea[data-pdpp-soft-keyboard="neko"]'
                 );
@@ -2896,8 +2912,6 @@ function StreamStage({
                 });
                 if (adapter && adapter.getLifecycleState() === "mounted") {
                   adapter.focusTextInput();
-                } else {
-                  focusNekoKeyboard();
                 }
                 if (softKeyboardTextarea) {
                   softKeyboardTextarea.focus();
@@ -2928,6 +2942,7 @@ function StreamStage({
         <ClipboardSheet
           capabilities={clipboardCapabilities}
           connectorName={connectorName}
+          getSurface={() => nekoSurfaceAdapterRef.current}
           logDebug={logDebug}
           onClearRemoteClipboard={() => setRemoteClipboard(null)}
           onOpenChange={setClipboardSheetOpen}
@@ -3726,8 +3741,8 @@ function NekoSurface({
         {/* its compositionstart/end + input + keydown listeners here. The   */}
         {/* corner Keyboard button (and any future tap-to-focus) calls       */}
         {/* `focusTextInput()` on the RemoteSurface adapter; the adapter     */}
-        {/* delegates focus to `focusNekoKeyboard()` (which focuses this     */}
-        {/* element) and binds the controller. Visually-hidden but           */}
+        {/* delegates focus through the n.eko client shim and binds the      */}
+        {/* controller. Visually-hidden but                                  */}
         {/* focusable + aria-hidden so AT users don't see a phantom field.   */}
         <textarea
           aria-hidden="true"
@@ -4273,18 +4288,20 @@ async function readDeviceClipboardIntoSheet({
   }
 }
 
-function sendSheetTextToBrowser({
+async function sendSheetTextToBrowser({
   localText,
   logDebug,
   policy,
   setLocalText,
   setPasteState,
+  surface,
 }: {
   localText: string;
   logDebug: StreamDebugLogger;
   policy: ClipboardPolicyDecision;
   setLocalText: (text: string) => void;
   setPasteState: (state: ClipboardPasteState) => void;
+  surface: NekoSurfaceAdapter | null;
 }) {
   const localToRemoteAllowed =
     policy.directionPolicy === "local-to-remote" || policy.directionPolicy === "bidirectional-text";
@@ -4299,7 +4316,11 @@ function sendSheetTextToBrowser({
     });
     return;
   }
-  const pasted = pasteTextIntoNeko(localText);
+  const surfaceState = surface?.getLifecycleState() ?? null;
+  let pasted = false;
+  if (surface && surfaceState === "mounted") {
+    pasted = await surface.pasteText(localText);
+  }
   logDebug(
     "clipboard.local_to_remote",
     clipboardDebugMetadata(localText, {
@@ -4308,6 +4329,7 @@ function sendSheetTextToBrowser({
       policy: policy.directionPolicy,
       sent: pasted,
       surface: policy.surface,
+      surfaceState,
     })
   );
   if (pasted) {
@@ -4380,14 +4402,16 @@ async function copySheetTextToDevice({
   }
 }
 
-function requestBrowserCopyFromSheet({
+async function requestBrowserCopyFromSheet({
   logDebug,
   policy,
   setCopyState,
+  surface,
 }: {
   logDebug: StreamDebugLogger;
   policy: ClipboardPolicyDecision;
   setCopyState: (state: ClipboardCopyState) => void;
+  surface: NekoSurfaceAdapter | null;
 }) {
   const remoteToLocalAllowed =
     policy.directionPolicy === "remote-to-local" || policy.directionPolicy === "bidirectional-text";
@@ -4402,13 +4426,18 @@ function requestBrowserCopyFromSheet({
     });
     return;
   }
-  const dispatched = copyRemoteSelectionFromNeko();
+  const surfaceState = surface?.getLifecycleState() ?? null;
+  let dispatched = false;
+  if (surface && surfaceState === "mounted") {
+    dispatched = await surface.copyRemoteSelection();
+  }
   logDebug("clipboard.remote_to_local", {
     method: "control.copy",
     phase: "browser-copy-requested",
     policy: policy.directionPolicy,
     sent: dispatched,
     surface: policy.surface,
+    surfaceState,
   });
   if (!dispatched) {
     setCopyState("failed");
@@ -4418,6 +4447,7 @@ function requestBrowserCopyFromSheet({
 function ClipboardSheet({
   capabilities,
   connectorName,
+  getSurface,
   logDebug,
   onClearRemoteClipboard,
   onOpenChange,
@@ -4428,6 +4458,7 @@ function ClipboardSheet({
 }: {
   capabilities: ClipboardCapabilities;
   connectorName: string;
+  getSurface: () => NekoSurfaceAdapter | null;
   logDebug: StreamDebugLogger;
   onClearRemoteClipboard: () => void;
   onOpenChange: (open: boolean) => void;
@@ -4456,9 +4487,43 @@ function ClipboardSheet({
   }, [open]);
 
   const pasteFromDevice = () => readDeviceClipboardIntoSheet({ logDebug, policy, setLocalText, setPasteState });
-  const sendToBrowser = () => sendSheetTextToBrowser({ localText, logDebug, policy, setLocalText, setPasteState });
+  const sendToBrowser = () => {
+    void sendSheetTextToBrowser({
+      localText,
+      logDebug,
+      policy,
+      setLocalText,
+      setPasteState,
+      surface: getSurface(),
+    }).catch((err) => {
+      setPasteState("failed");
+      logDebug("clipboard.local_to_remote", {
+        error: err instanceof Error ? err.message : String(err),
+        method: "control.paste",
+        phase: "send-error",
+        policy: policy.directionPolicy,
+        surface: policy.surface,
+      });
+    });
+  };
   const copyToDevice = () => copySheetTextToDevice({ logDebug, policy, remoteClipboard, setCopyState });
-  const requestBrowserCopy = () => requestBrowserCopyFromSheet({ logDebug, policy, setCopyState });
+  const requestBrowserCopy = () => {
+    void requestBrowserCopyFromSheet({
+      logDebug,
+      policy,
+      setCopyState,
+      surface: getSurface(),
+    }).catch((err) => {
+      setCopyState("failed");
+      logDebug("clipboard.remote_to_local", {
+        error: err instanceof Error ? err.message : String(err),
+        method: "control.copy",
+        phase: "browser-copy-error",
+        policy: policy.directionPolicy,
+        surface: policy.surface,
+      });
+    });
+  };
 
   const localStatus = localClipboardStatus(pasteState, capabilities.needsManualReadFallback);
   const copyStatus = remoteClipboardStatus(copyState, remoteClipboard);

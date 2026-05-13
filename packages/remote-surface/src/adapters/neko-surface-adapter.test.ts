@@ -23,14 +23,22 @@ interface MockClient extends NekoClientApi {
   startCalls: Array<{ container: HTMLElement; config: unknown }>;
   stopCalls: number;
   focusCalls: number;
+  blurCalls: number;
+  remoteInputFocusCalls: boolean[];
   sendTextCalls: string[];
+  pasteTextCalls: string[];
+  copyRemoteSelectionCalls: number;
 }
 
 function makeMockClient(overrides: Partial<NekoClientApi> = {}): MockClient {
   const startCalls: MockClient["startCalls"] = [];
   let stopCalls = 0;
   let focusCalls = 0;
+  let blurCalls = 0;
+  let copyRemoteSelectionCalls = 0;
+  const remoteInputFocusCalls: boolean[] = [];
   const sendTextCalls: string[] = [];
+  const pasteTextCalls: string[] = [];
   const client: MockClient = {
     startCalls,
     get stopCalls() {
@@ -39,7 +47,15 @@ function makeMockClient(overrides: Partial<NekoClientApi> = {}): MockClient {
     get focusCalls() {
       return focusCalls;
     },
+    get blurCalls() {
+      return blurCalls;
+    },
+    remoteInputFocusCalls,
     sendTextCalls,
+    pasteTextCalls,
+    get copyRemoteSelectionCalls() {
+      return copyRemoteSelectionCalls;
+    },
     async start(container, config) {
       startCalls.push({ container, config });
     },
@@ -49,8 +65,22 @@ function makeMockClient(overrides: Partial<NekoClientApi> = {}): MockClient {
     focusKeyboard() {
       focusCalls += 1;
     },
+    blurKeyboard() {
+      blurCalls += 1;
+    },
+    setRemoteInputFocused(focused) {
+      remoteInputFocusCalls.push(focused);
+    },
     async sendText(text) {
       sendTextCalls.push(text);
+    },
+    async pasteText(text) {
+      pasteTextCalls.push(text);
+      return text.length > 0;
+    },
+    async copyRemoteSelection() {
+      copyRemoteSelectionCalls += 1;
+      return true;
     },
     ...overrides,
   };
@@ -89,6 +119,8 @@ describe("NekoSurfaceAdapter", () => {
     const client = makeMockClient();
     const adapter = new NekoSurfaceAdapter({ client, config: baseConfig });
     assert.throws(() => adapter.focusTextInput(), /invalid state idle/);
+    assert.throws(() => adapter.blurTextInput(), /invalid state idle/);
+    assert.throws(() => adapter.setRemoteInputFocused(true), /invalid state idle/);
     await assert.rejects(
       () =>
         adapter.sendPointer({
@@ -105,6 +137,8 @@ describe("NekoSurfaceAdapter", () => {
       /invalid state idle/,
     );
     await assert.rejects(() => adapter.sendText("hi"), /invalid state idle/);
+    await assert.rejects(() => adapter.pasteText("hi"), /invalid state idle/);
+    await assert.rejects(() => adapter.copyRemoteSelection(), /invalid state idle/);
   });
 
   it("transitions to error and rethrows if start() fails", async () => {
@@ -134,12 +168,33 @@ describe("NekoSurfaceAdapter", () => {
     assert.equal(client.focusCalls, 2);
   });
 
+  it("remote text input state delegates through the client boundary", async () => {
+    const client = makeMockClient();
+    const adapter = new NekoSurfaceAdapter({ client, config: baseConfig });
+    await adapter.mount(fakeEl);
+    adapter.setRemoteInputFocused(true);
+    adapter.blurTextInput();
+    adapter.setRemoteInputFocused(false);
+    assert.deepEqual(client.remoteInputFocusCalls, [true, false]);
+    assert.equal(client.blurCalls, 1);
+  });
+
   it("sendText() delegates to client.sendText", async () => {
     const client = makeMockClient();
     const adapter = new NekoSurfaceAdapter({ client, config: baseConfig });
     await adapter.mount(fakeEl);
     await adapter.sendText("hello");
     assert.deepEqual(client.sendTextCalls, ["hello"]);
+  });
+
+  it("explicit clipboard actions delegate through the client boundary", async () => {
+    const client = makeMockClient();
+    const adapter = new NekoSurfaceAdapter({ client, config: baseConfig });
+    await adapter.mount(fakeEl);
+    assert.equal(await adapter.pasteText("clipboard text"), true);
+    assert.equal(await adapter.copyRemoteSelection(), true);
+    assert.deepEqual(client.pasteTextCalls, ["clipboard text"]);
+    assert.equal(client.copyRemoteSelectionCalls, 1);
   });
 
   it("sendPointer delegates to a NekoPointerController built from client-supplied control", async () => {
@@ -232,11 +287,19 @@ describe("NekoSurfaceAdapter", () => {
     await adapter.mount(fakeEl);
     adapter.focusTextInput();
     await adapter.sendText("x");
+    adapter.blurTextInput();
+    adapter.setRemoteInputFocused(true);
+    await adapter.pasteText("x");
+    await adapter.copyRemoteSelection();
     await adapter.unmount();
     assert.equal(adapter.getLifecycleState(), "idle");
     const warnings = logs.filter((l) => l.level === "warn").map((l) => l.msg);
     assert.ok(warnings.includes("neko-surface-adapter.no-focus-keyboard-helper"));
     assert.ok(warnings.includes("neko-surface-adapter.no-send-text-helper"));
+    assert.ok(warnings.includes("neko-surface-adapter.no-blur-keyboard-helper"));
+    assert.ok(warnings.includes("neko-surface-adapter.no-remote-input-focus-helper"));
+    assert.ok(warnings.includes("neko-surface-adapter.no-paste-text-helper"));
+    assert.ok(warnings.includes("neko-surface-adapter.no-copy-remote-selection-helper"));
     assert.ok(warnings.includes("neko-surface-adapter.no-stop-helper"));
   });
 });

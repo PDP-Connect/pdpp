@@ -65,7 +65,11 @@ export interface NekoClientApi {
   start(container: HTMLElement, config: unknown): Promise<void>;
   stop?(): Promise<void> | void;
   focusKeyboard?(): void;
+  blurKeyboard?(): void;
+  setRemoteInputFocused?(focused: boolean): void;
   sendText?(text: string): Promise<void> | void;
+  pasteText?(text: string): Promise<boolean> | boolean;
+  copyRemoteSelection?(): Promise<boolean> | boolean;
   /**
    * Returns the live n.eko `control` object (or a structural equivalent)
    * for the currently-mounted instance, or `null` if not yet ready. Used
@@ -228,6 +232,26 @@ export class NekoSurfaceAdapter implements RemoteSurface {
     this.ensureTextInputController();
   }
 
+  blurTextInput(): void {
+    this.ensureMounted("blurTextInput");
+    if (this.client.blurKeyboard) {
+      this.client.blurKeyboard();
+    } else {
+      this.log("warn", "neko-surface-adapter.no-blur-keyboard-helper");
+    }
+  }
+
+  setRemoteInputFocused(focused: boolean): void {
+    this.ensureMounted("setRemoteInputFocused");
+    if (this.client.setRemoteInputFocused) {
+      this.client.setRemoteInputFocused(focused);
+    } else {
+      this.log("warn", "neko-surface-adapter.no-remote-input-focus-helper", {
+        focused,
+      });
+    }
+  }
+
   private ensureTextInputController(): void {
     const textarea = this.client.getTextareaElement?.() ?? null;
     if (!textarea) {
@@ -342,6 +366,30 @@ export class NekoSurfaceAdapter implements RemoteSurface {
     this.log("warn", "neko-surface-adapter.no-send-text-helper", {
       textLength: text.length,
     });
+  }
+
+  async pasteText(text: string): Promise<boolean> {
+    this.ensureMounted("pasteText");
+    if (this.client.pasteText) {
+      return await this.client.pasteText(text);
+    }
+    if (this.client.sendText) {
+      await this.client.sendText(text);
+      return text.length > 0;
+    }
+    this.log("warn", "neko-surface-adapter.no-paste-text-helper", {
+      textLength: text.length,
+    });
+    return false;
+  }
+
+  async copyRemoteSelection(): Promise<boolean> {
+    this.ensureMounted("copyRemoteSelection");
+    if (this.client.copyRemoteSelection) {
+      return await this.client.copyRemoteSelection();
+    }
+    this.log("warn", "neko-surface-adapter.no-copy-remote-selection-helper");
+    return false;
   }
 
   private ensureMounted(method: string): void {

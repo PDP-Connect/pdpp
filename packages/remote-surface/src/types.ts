@@ -61,7 +61,11 @@ export interface RemoteSurface {
   mount(el: HTMLElement): Promise<void>;
   unmount(): Promise<void>;
   focusTextInput(opts?: FocusTextInputOptions): void;
+  blurTextInput(): void;
+  setRemoteInputFocused(focused: boolean): void;
   sendPointer(event: RemotePointerEvent): Promise<void>;
   sendKeysym(event: RemoteKeysymEvent): Promise<void>;
   sendText(text: string): Promise<void>;
+  pasteText(text: string): Promise<boolean>;
+  copyRemoteSelection(): Promise<boolean>;
 }

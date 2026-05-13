@@ -59,6 +59,14 @@ export class CdpSurfaceAdapter implements RemoteSurface {
     throw new Error("CdpSurfaceAdapter.focusTextInput: not implemented yet");
   }
 
+  blurTextInput(): void {
+    throw new Error("CdpSurfaceAdapter.blurTextInput: not implemented yet");
+  }
+
+  setRemoteInputFocused(_focused: boolean): void {
+    throw new Error("CdpSurfaceAdapter.setRemoteInputFocused: not implemented yet");
+  }
+
   sendPointer(_event: RemotePointerEvent): Promise<void> {
     throw new Error("CdpSurfaceAdapter.sendPointer: not implemented yet");
   }
@@ -69,5 +77,13 @@ export class CdpSurfaceAdapter implements RemoteSurface {
 
   sendText(_text: string): Promise<void> {
     throw new Error("CdpSurfaceAdapter.sendText: not implemented yet");
+  }
+
+  pasteText(_text: string): Promise<boolean> {
+    throw new Error("CdpSurfaceAdapter.pasteText: not implemented yet");
+  }
+
+  copyRemoteSelection(): Promise<boolean> {
+    throw new Error("CdpSurfaceAdapter.copyRemoteSelection: not implemented yet");
   }
 }
