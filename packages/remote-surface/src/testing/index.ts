@@ -172,3 +172,13 @@ export class FakeRemoteSurfaceSessionBroker implements RemoteSurfaceSessionBroke
 function toJsonObject(value: RemoteSurfaceInputPayload | RemoteSurfaceViewportPayload | RemoteSurfaceClipboardPayload): JsonObject {
   return value as unknown as JsonObject;
 }
+
+export {
+  FIXTURE_REMOTE_SURFACE_CAPABILITIES,
+  REMOTE_SURFACE_CLIPBOARD_FIXTURES,
+  REMOTE_SURFACE_DIAGNOSTICS_FIXTURE,
+  REMOTE_SURFACE_EVENT_FIXTURES,
+  REMOTE_SURFACE_INPUT_FIXTURES,
+  REMOTE_SURFACE_TARGET_FIXTURES,
+  REMOTE_SURFACE_VIEWPORT_FIXTURES,
+} from "./protocol-fixtures.ts";
