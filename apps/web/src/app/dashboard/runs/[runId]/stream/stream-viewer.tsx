@@ -2950,7 +2950,8 @@ function StreamStage({
                   adapterMounted:
                     adapter?.getLifecycleState() === "mounted",
                   controllerTextareaFocused:
-                    document.activeElement === softKeyboardTextareaRef.current,
+                    document.activeElement ===
+                    containerRef.current?.querySelector<HTMLTextAreaElement>('[data-pdpp-soft-keyboard="neko"]'),
                   snapshot: readSurfaceDebugSnapshot(containerRef.current),
                 });
               }
