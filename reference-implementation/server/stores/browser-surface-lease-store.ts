@@ -2,7 +2,7 @@ import {
   type BrowserSurface,
   type BrowserSurfaceLease,
   TERMINAL_BROWSER_SURFACE_LEASE_STATUSES,
-} from "../../runtime/browser-surface-leases.ts";
+} from "@pdpp/remote-surface/leases";
 import { type BindValue, execDynamicSqlAcknowledged, iterateDynamicSqlAcknowledged } from "../../lib/db.ts";
 import { getDb } from "../db.js";
 import {

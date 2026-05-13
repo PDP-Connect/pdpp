@@ -28,6 +28,10 @@ That static mode is honest but insufficient for SLVP browser-backed collection. 
 
 ## Decisions
 
+### Depend on the Extracted Remote-Surface Substrate
+
+Dynamic allocation builds on `extract-remote-surface-substrate`. The backend-agnostic lease types, lease manager policy, queue/fencing/reconcile behavior, and allocator interfaces live in `@pdpp/remote-surface`; this change adds reference-owned dynamic n.eko allocation around that substrate.
+
 ### Add a Narrow n.eko Surface Allocator Boundary
 
 The reference controller SHALL depend on a `NekoSurfaceAllocator` abstraction rather than directly constructing Docker commands inside connector launch code. The allocator owns surface lifecycle operations:

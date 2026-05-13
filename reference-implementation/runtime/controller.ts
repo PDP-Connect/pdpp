@@ -35,13 +35,13 @@ import {
   type SchedulerStore,
 } from "../server/stores/scheduler-store.ts";
 import {
+  type BrowserSurface,
   type BrowserSurfaceLease,
   type BrowserSurfaceLeaseManager,
   type BrowserSurfaceProjection,
-  type BrowserSurface,
-  browserSurfaceLeaseEnv,
   projectBrowserSurfaceLease,
-} from "./browser-surface-leases.ts";
+} from "@pdpp/remote-surface/leases";
+import { browserSurfaceLeaseEnv } from "./browser-surface-leases.ts";
 import { type BrowserSurfaceLeaseStore } from "../server/stores/browser-surface-lease-store.ts";
 import { runConnector } from "./index.js";
 
@@ -1044,7 +1044,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
     return approved.access_token;
   }
 
-  function emitBrowserSurfaceLeaseEvent(
+  async function emitBrowserSurfaceLeaseEvent(
     eventType: string,
     connectorId: string,
     runId: string,
@@ -1052,24 +1052,26 @@ export function createController(opts: ControllerOptions = {}): Controller {
     lease: BrowserSurfaceLease,
   ): Promise<void> {
     // Ordering-sensitive callers await this; emit failures remain warning-only.
-    return emitSpineEvent({
-      event_type: eventType,
-      trace_id: traceContext.trace_id,
-      scenario_id: traceContext.scenario_id,
-      actor_type: "runtime",
-      actor_id: connectorId,
-      object_type: "run",
-      object_id: runId,
-      status: lease.status,
-      run_id: runId,
-      data: {
-        source: buildRunSource(connectorId),
-        browser_surface: projectBrowserSurfaceLease(lease),
-      },
-    }).catch((err) => {
+    try {
+      await emitSpineEvent({
+        event_type: eventType,
+        trace_id: traceContext.trace_id,
+        scenario_id: traceContext.scenario_id,
+        actor_type: "runtime",
+        actor_id: connectorId,
+        object_type: "run",
+        object_id: runId,
+        status: lease.status,
+        run_id: runId,
+        data: {
+          source: buildRunSource(connectorId),
+          browser_surface: projectBrowserSurfaceLease(lease),
+        },
+      });
+    } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       log.warn?.(`[controller] failed to emit ${eventType} for ${runId}: ${message}`);
-    });
+    }
   }
 
   async function persistBrowserSurfaceLeaseMutation(lease: BrowserSurfaceLease, surface?: BrowserSurface): Promise<void> {

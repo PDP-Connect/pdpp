@@ -6,7 +6,8 @@
   "description": "RemoteSurface abstraction layer for PDPP manual-action interactions over n.eko (preferred) and CDP (fallback).",
   "main": "./src/index.ts",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./leases": "./src/leases/index.ts"
   },
   "scripts": {
     "check": "ultracite check",

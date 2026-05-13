@@ -1,6 +1,6 @@
 ## 1. Allocator Boundary
 
-- [ ] 1.1 Add `NekoSurfaceAllocator` types for ensure, status, stop, and list operations.
+- [ ] 1.1 Build on the allocator interfaces extracted by `extract-remote-surface-substrate` for ensure, status, stop, and list operations.
 - [ ] 1.2 Add a fake allocator for controller/runtime tests.
 - [ ] 1.3 Add dynamic n.eko config parsing and validation, including mode, cap, allocator URL, profile storage policy, idle TTL, and readiness timeout.
 - [ ] 1.4 Preserve static mode config and fail fast if static and dynamic settings are mixed unsafely.
