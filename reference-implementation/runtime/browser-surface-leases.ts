@@ -144,6 +144,9 @@ export function parseNekoBrowserSurfaceRuntimeConfig(
   if (staticCdpHttpUrl) {
     throw new Error("PDPP_NEKO_CDP_HTTP_URL is static-only and must not be configured in dynamic n.eko surface mode");
   }
+  if (staticStreamBaseUrl) {
+    throw new Error("PDPP_NEKO_BASE_URL is static-only and must not be configured in dynamic n.eko surface mode");
+  }
   if (configuredStaticProfileKey) {
     throw new Error("PDPP_NEKO_STATIC_PROFILE_KEY is static-only and must not be configured in dynamic n.eko surface mode");
   }

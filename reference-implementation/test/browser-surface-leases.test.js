@@ -703,6 +703,14 @@ test("dynamic runtime config rejects unsafe static settings", () => {
     () =>
       parseNekoBrowserSurfaceRuntimeConfig({
         ...baseEnv,
+        PDPP_NEKO_BASE_URL: "http://neko:8080/neko",
+      }),
+    /PDPP_NEKO_BASE_URL is static-only/,
+  );
+  assert.throws(
+    () =>
+      parseNekoBrowserSurfaceRuntimeConfig({
+        ...baseEnv,
         PDPP_NEKO_STATIC_PROFILE_KEY: "chatgpt",
       }),
     /PDPP_NEKO_STATIC_PROFILE_KEY is static-only/,
