@@ -1,17 +1,17 @@
 ## 1. Allocator Boundary
 
-- [ ] 1.1 Build on the allocator interfaces extracted by `extract-remote-surface-substrate` for ensure, status, stop, and list operations.
-- [ ] 1.2 Add a fake allocator for controller/runtime tests.
-- [ ] 1.3 Add dynamic n.eko config parsing and validation, including mode, cap, allocator URL, profile storage policy, idle TTL, and readiness timeout.
-- [ ] 1.4 Preserve static mode config and fail fast if static and dynamic settings are mixed unsafely.
+- [x] 1.1 Build on the allocator interfaces extracted by `extract-remote-surface-substrate` for ensure, status, stop, and list operations.
+- [x] 1.2 Add a fake allocator for controller/runtime tests.
+- [x] 1.3 Add dynamic n.eko config parsing and validation, including mode, cap, allocator URL, profile storage policy, idle TTL, and readiness timeout.
+- [x] 1.4 Preserve static mode config and fail fast if static and dynamic settings are mixed unsafely.
 
 ## 2. Lease State Integration
 
-- [ ] 2.1 Extend browser-surface lease state handling so dynamic capacity starts leases in `starting_surface` rather than immediately `leased`.
-- [ ] 2.2 Count starting, ready idle, leased, and unhealthy dynamic surfaces against `PDPP_NEKO_SURFACE_CAP`.
-- [ ] 2.3 Persist dynamic surface rows with allocator/container metadata and profile key before starting a connector child.
-- [ ] 2.4 Gate queued-run promotion on allocator readiness and emit browser-surface events before `run.started`.
-- [ ] 2.5 Classify allocator startup/readiness failures as runtime-resource browser-surface failures without spawning the connector.
+- [x] 2.1 Extend browser-surface lease state handling so dynamic capacity starts leases in `starting_surface` rather than immediately `leased`.
+- [x] 2.2 Count starting, ready idle, leased, and unhealthy dynamic surfaces against `PDPP_NEKO_SURFACE_CAP`.
+- [x] 2.3 Persist dynamic surface rows with allocator/container metadata and profile key before starting a connector child.
+- [x] 2.4 Gate queued-run promotion on allocator readiness and emit browser-surface events before `run.started`.
+- [x] 2.5 Classify allocator startup/readiness failures as runtime-resource browser-surface failures without spawning the connector.
 
 ## 3. Dynamic Allocator Implementation
 
@@ -45,9 +45,9 @@
 
 ## 7. Verification
 
-- [ ] 7.1 Add unit tests for dynamic config validation and static/dynamic incompatibilities.
+- [x] 7.1 Add unit tests for dynamic config validation and static/dynamic incompatibilities.
 - [ ] 7.2 Add lease-manager tests for starting-surface cap accounting, readiness promotion, failure classification, idle cleanup, and restart reconciliation.
-- [ ] 7.3 Add controller tests proving no `run.started` event is emitted until a dynamic surface is ready and leased.
-- [ ] 7.4 Add allocator contract tests using the fake allocator.
+- [x] 7.3 Add controller tests proving no `run.started` event is emitted until a dynamic surface is ready and leased.
+- [x] 7.4 Add allocator contract tests using the fake allocator.
 - [ ] 7.5 Add a gated Docker smoke that starts two managed connector runs with distinct profile keys and proves separate dynamic n.eko surfaces are allocated or queued according to cap.
-- [ ] 7.6 Run `openspec validate add-dynamic-neko-surface-allocation --strict`.
+- [x] 7.6 Run `openspec validate add-dynamic-neko-surface-allocation --strict`.
