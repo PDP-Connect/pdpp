@@ -37,9 +37,9 @@
 
 ## 6. Docker And Follow-Up Boundary
 
-- [ ] 6.1 Update the static n.eko Compose overlay to configure managed connectors and surface cap through the controller instead of injecting `PDPP_<PROFILE>_REMOTE_CDP_URL` as the managed path.
-- [ ] 6.2 Keep static single-surface mode honest: compatible second run queues, incompatible profile defers, and no multi-surface concurrency claim.
-- [ ] 6.3 Record the dynamic multi-container follow-up: per-surface container allocation, per-profile volumes, health checks, warm pool, and idle TTL shutdown.
+- [x] 6.1 Update the static n.eko Compose overlay to configure managed connectors and surface cap through the controller instead of injecting `PDPP_<PROFILE>_REMOTE_CDP_URL` as the managed path.
+- [x] 6.2 Keep static single-surface mode honest: compatible second run queues, incompatible profile defers, and no multi-surface concurrency claim.
+- [x] 6.3 Record the dynamic multi-container follow-up: per-surface container allocation, per-profile volumes, health checks, warm pool, and idle TTL shutdown.
 
 ## 7. Validation
 

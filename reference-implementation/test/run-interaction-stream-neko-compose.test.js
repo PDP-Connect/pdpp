@@ -17,6 +17,10 @@ test('n.eko compose overlay uses service DNS instead of reference network namesp
   assert.match(overlay, /PDPP_NEKO_BASE_URL:\s*\$\{PDPP_NEKO_BASE_URL:-http:\/\/neko:8080\/neko\}/);
   assert.match(overlay, /PDPP_NEKO_PROXY_ALLOWED_HOSTS:\s*\$\{PDPP_NEKO_PROXY_ALLOWED_HOSTS:-neko:8080\}/);
   assert.match(overlay, /PDPP_NEKO_CDP_HTTP_URL:\s*\$\{PDPP_NEKO_CDP_HTTP_URL:-http:\/\/neko:9223\}/);
+  assert.match(overlay, /PDPP_NEKO_MANAGED_CONNECTORS:\s*\$\{PDPP_NEKO_MANAGED_CONNECTORS:-chatgpt\}/);
+  assert.match(overlay, /PDPP_NEKO_SURFACE_CAP:\s*\$\{PDPP_NEKO_SURFACE_CAP:-1\}/);
+  assert.match(overlay, /PDPP_NEKO_STATIC_PROFILE_KEY:\s*\$\{PDPP_NEKO_STATIC_PROFILE_KEY:-chatgpt\}/);
+  assert.doesNotMatch(overlay, /PDPP_CHATGPT_REMOTE_CDP_URL:/);
   assert.match(overlay, /web:[\s\S]*depends_on:[\s\S]*neko:[\s\S]*condition:\s*service_healthy/);
   assert.match(overlay, /neko:[\s\S]*ports:[\s\S]*"\$\{NEKO_WEBRTC_PORT:-59000\}:59000\/tcp"/);
   assert.match(overlay, /neko:[\s\S]*ports:[\s\S]*"\$\{NEKO_WEBRTC_PORT:-59000\}:59000\/udp"/);
@@ -24,4 +28,7 @@ test('n.eko compose overlay uses service DNS instead of reference network namesp
   assert.match(envExample, /PDPP_NEKO_BASE_URL=http:\/\/neko:8080\/neko/);
   assert.match(envExample, /PDPP_NEKO_PROXY_ALLOWED_HOSTS=neko:8080/);
   assert.match(envExample, /PDPP_NEKO_CDP_HTTP_URL=http:\/\/neko:9223/);
+  assert.match(envExample, /PDPP_NEKO_MANAGED_CONNECTORS=chatgpt/);
+  assert.match(envExample, /PDPP_NEKO_SURFACE_CAP=1/);
+  assert.match(envExample, /PDPP_NEKO_STATIC_PROFILE_KEY=chatgpt/);
 });
