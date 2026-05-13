@@ -1050,8 +1050,9 @@ export function createController(opts: ControllerOptions = {}): Controller {
     runId: string,
     traceContext: SpineTraceContext,
     lease: BrowserSurfaceLease,
-  ): void {
-    emitSpineEvent({
+  ): Promise<void> {
+    // Ordering-sensitive callers await this; emit failures remain warning-only.
+    return emitSpineEvent({
       event_type: eventType,
       trace_id: traceContext.trace_id,
       scenario_id: traceContext.scenario_id,
@@ -1097,7 +1098,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
       });
       if (deferredResult?.lease) {
         try {
-          emitBrowserSurfaceLeaseEvent(
+          await emitBrowserSurfaceLeaseEvent(
             "run.browser_surface_deferred",
             deferredResult.lease.connector_id,
             deferredResult.lease.run_id,
@@ -1140,7 +1141,13 @@ export function createController(opts: ControllerOptions = {}): Controller {
       fencingToken: lease.fencing_token,
     });
     if (releaseResult?.lease) {
-      emitBrowserSurfaceLeaseEvent("run.browser_surface_released", connectorId, runId, traceContext, releaseResult.lease);
+      await emitBrowserSurfaceLeaseEvent(
+        "run.browser_surface_released",
+        connectorId,
+        runId,
+        traceContext,
+        releaseResult.lease
+      );
       await persistBrowserSurfaceLeaseMutation(releaseResult.lease, releaseResult.surface);
     }
     if (releaseResult?.promoted) {
@@ -1157,7 +1164,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
       return null;
     }
     pendingBrowserSurfaceLaunches.delete(runId);
-    emitBrowserSurfaceLeaseEvent(
+    await emitBrowserSurfaceLeaseEvent(
       "run.browser_surface_cancelled",
       cancelResult.lease.connector_id,
       cancelResult.lease.run_id,
@@ -1178,7 +1185,13 @@ export function createController(opts: ControllerOptions = {}): Controller {
     const deferred = browserSurfaceLeaseManager.expireWaitingLeases();
     for (const lease of deferred) {
       pendingBrowserSurfaceLaunches.delete(lease.run_id);
-      emitBrowserSurfaceLeaseEvent("run.browser_surface_deferred", lease.connector_id, lease.run_id, createTraceContext(), lease);
+      await emitBrowserSurfaceLeaseEvent(
+        "run.browser_surface_deferred",
+        lease.connector_id,
+        lease.run_id,
+        createTraceContext(),
+        lease
+      );
       await persistBrowserSurfaceLeaseMutation(lease);
     }
     await persistAndPromoteBrowserSurfaceLeases(
@@ -1196,19 +1209,25 @@ export function createController(opts: ControllerOptions = {}): Controller {
     const activeRunIds = new Set((await listPersistedActiveRuns()).map((row) => row.run_id));
     const reconciled = browserSurfaceLeaseManager.reconcileAfterRestart({ activeRunIds, promoteQueued: false });
     for (const lease of reconciled.released) {
-      emitBrowserSurfaceLeaseEvent("run.browser_surface_released", lease.connector_id, lease.run_id, createTraceContext(), lease);
+      await emitBrowserSurfaceLeaseEvent(
+        "run.browser_surface_released",
+        lease.connector_id,
+        lease.run_id,
+        createTraceContext(),
+        lease
+      );
       await persistBrowserSurfaceLeaseMutation(lease, lease.surface_id ? browserSurfaceLeaseManager.getSurface(lease.surface_id) : undefined);
     }
     for (const lease of reconciled.expired) {
-      emitBrowserSurfaceLeaseEvent("run.browser_surface_expired", lease.connector_id, lease.run_id, createTraceContext(), lease);
+      await emitBrowserSurfaceLeaseEvent("run.browser_surface_expired", lease.connector_id, lease.run_id, createTraceContext(), lease);
       await persistBrowserSurfaceLeaseMutation(lease);
     }
     for (const lease of reconciled.deferred) {
-      emitBrowserSurfaceLeaseEvent("run.browser_surface_deferred", lease.connector_id, lease.run_id, createTraceContext(), lease);
+      await emitBrowserSurfaceLeaseEvent("run.browser_surface_deferred", lease.connector_id, lease.run_id, createTraceContext(), lease);
       await persistBrowserSurfaceLeaseMutation(lease);
     }
     for (const lease of reconciled.surfaceFailed) {
-      emitBrowserSurfaceLeaseEvent("run.browser_surface_failed", lease.connector_id, lease.run_id, createTraceContext(), lease);
+      await emitBrowserSurfaceLeaseEvent("run.browser_surface_failed", lease.connector_id, lease.run_id, createTraceContext(), lease);
       await persistBrowserSurfaceLeaseMutation(lease, lease.surface_id ? browserSurfaceLeaseManager.getSurface(lease.surface_id) : undefined);
     }
   }
@@ -1378,7 +1397,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
           { runId: leaseResult.lease.run_id }
         );
       }
-      emitBrowserSurfaceLeaseEvent("run.browser_surface_requested", connectorId, runId, traceContext, leaseResult.lease);
+      await emitBrowserSurfaceLeaseEvent("run.browser_surface_requested", connectorId, runId, traceContext, leaseResult.lease);
 
       if (leaseResult.lease.status === "waiting_for_browser_surface") {
         pendingBrowserSurfaceLaunches.set(runId, {
@@ -1389,7 +1408,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
           ...(options.ownerToken ? { ownerToken: options.ownerToken } : {}),
           ...(options.rsUrl ? { rsUrl: options.rsUrl } : {}),
         });
-        emitBrowserSurfaceLeaseEvent("run.browser_surface_queued", connectorId, runId, traceContext, leaseResult.lease);
+        await emitBrowserSurfaceLeaseEvent("run.browser_surface_queued", connectorId, runId, traceContext, leaseResult.lease);
         return {
           run_id: runId,
           trace_id: traceContext.trace_id,
@@ -1400,7 +1419,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
 
       if (leaseResult.lease.status === "deferred") {
         pendingBrowserSurfaceLaunches.delete(runId);
-        emitBrowserSurfaceLeaseEvent("run.browser_surface_deferred", connectorId, runId, traceContext, leaseResult.lease);
+        await emitBrowserSurfaceLeaseEvent("run.browser_surface_deferred", connectorId, runId, traceContext, leaseResult.lease);
         return {
           run_id: runId,
           trace_id: traceContext.trace_id,
@@ -1411,11 +1430,11 @@ export function createController(opts: ControllerOptions = {}): Controller {
 
       if (leaseResult.lease.status === "leased" && leaseResult.surface) {
         pendingBrowserSurfaceLaunches.delete(leaseResult.lease.run_id);
-        emitBrowserSurfaceLeaseEvent("run.browser_surface_starting", connectorId, runId, traceContext, leaseResult.lease);
-        emitBrowserSurfaceLeaseEvent("run.browser_surface_leased", connectorId, runId, traceContext, leaseResult.lease);
+        await emitBrowserSurfaceLeaseEvent("run.browser_surface_starting", connectorId, runId, traceContext, leaseResult.lease);
+        await emitBrowserSurfaceLeaseEvent("run.browser_surface_leased", connectorId, runId, traceContext, leaseResult.lease);
         browserSurfaceEnv = browserSurfaceLeaseEnv(leaseResult.lease, leaseResult.surface);
       } else {
-        emitBrowserSurfaceLeaseEvent("run.browser_surface_deferred", connectorId, runId, traceContext, leaseResult.lease);
+        await emitBrowserSurfaceLeaseEvent("run.browser_surface_deferred", connectorId, runId, traceContext, leaseResult.lease);
         return {
           run_id: runId,
           trace_id: traceContext.trace_id,

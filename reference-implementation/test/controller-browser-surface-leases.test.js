@@ -167,7 +167,7 @@ test("managed free surface leases and spawns with browser-surface env", async (t
   assert.equal(manager.getLease("lease_1").status, "released");
 });
 
-test("managed run emits browser-surface starting before leased", async (t) => {
+test("managed run emits browser-surface requested before starting before leased", async (t) => {
   const { controller } = setup(t);
 
   await controller.runNow("managed", {
@@ -182,11 +182,22 @@ test("managed run emits browser-surface starting before leased", async (t) => {
   );
 
   const eventTypes = listRunEventTypes("run_starting_event");
+  assert.ok(eventTypes.includes("run.browser_surface_requested"));
   assert.ok(eventTypes.includes("run.browser_surface_starting"));
+  assert.ok(
+    eventTypes.indexOf("run.browser_surface_requested") < eventTypes.indexOf("run.browser_surface_starting"),
+    "requested event should precede starting event"
+  );
   assert.ok(
     eventTypes.indexOf("run.browser_surface_starting") < eventTypes.indexOf("run.browser_surface_leased"),
     "starting event should precede leased event"
   );
+  if (eventTypes.includes("run.started")) {
+    assert.ok(
+      eventTypes.indexOf("run.browser_surface_leased") < eventTypes.indexOf("run.started"),
+      "leased event should precede run.started"
+    );
+  }
 });
 
 test("managed run emits browser-surface cancelled when manual action is cancelled", async (t) => {
