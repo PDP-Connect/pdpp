@@ -42,10 +42,10 @@
 
 ## 5. Telemetry And Diagnostics
 
-- [ ] 5.1 Define a redacted package diagnostics schema for input pipeline, viewport transitions, clipboard actions, event channel, adapter lifecycle, backend readiness, and media settle.
-- [ ] 5.2 Provide bounded diagnostics buffers or hooks that hosts can bridge into existing reference input telemetry and dashboard debug sinks.
-- [ ] 5.3 Add redaction tests proving clipboard contents, raw target URLs, auth metadata, CDP bearer paths, and allocator credentials are not logged by default.
-- [ ] 5.4 Preserve replayability for viewport and input classification decisions.
+- [x] 5.1 Define a redacted package diagnostics schema for input pipeline, viewport transitions, clipboard actions, event channel, adapter lifecycle, backend readiness, and media settle.
+- [x] 5.2 Provide bounded diagnostics buffers or hooks that hosts can bridge into existing reference input telemetry and dashboard debug sinks.
+- [x] 5.3 Add redaction tests proving clipboard contents, raw target URLs, auth metadata, CDP bearer paths, and allocator credentials are not logged by default.
+- [x] 5.4 Preserve replayability for viewport and input classification decisions.
 
 ## 6. Reference Integration
 
