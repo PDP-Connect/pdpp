@@ -32,6 +32,10 @@ class FakeElement {
   }
 }
 
+type FakeFrameElement = {
+  getBoundingClientRect(): { height: number; left: number; top: number; width: number };
+};
+
 function keyboardEvent(overrides: Partial<KeyboardEvent> = {}): KeyboardEvent {
   return {
     altKey: false,
@@ -110,7 +114,9 @@ describe("CdpSurfaceAdapter", () => {
 
   it("routes pointer-like DOM events with viewport coordinates", async () => {
     const node = new FakeElement();
-    const { adapter, input } = makeAdapter();
+    const { adapter, input } = makeAdapter({
+      getFrameElement: () => node as unknown as FakeFrameElement,
+    });
     await adapter.mount(node as unknown as HTMLElement);
 
     node.dispatch("mousedown", { button: 0, clientX: 110, clientY: 70 });
@@ -129,6 +135,25 @@ describe("CdpSurfaceAdapter", () => {
       { type: "mouse", action: "mousedown", x: 50, y: 25, button: 0 },
       { type: "mouse", action: "mouseup", x: 100, y: 50, button: 0 },
       { type: "scroll", x: 0, y: 0, deltaX: 1, deltaY: 2 },
+    ]);
+  });
+
+  it("maps CDP pointer events through object-contain letterboxing", async () => {
+    const node = new FakeElement();
+    node.rect = { height: 100, left: 0, top: 0, width: 200 };
+    const { adapter, input } = makeAdapter({
+      getFrameElement: () => node as unknown as FakeFrameElement,
+      getViewportInfo: () => ({ height: 100, width: 100 }),
+    });
+    await adapter.mount(node as unknown as HTMLElement);
+
+    node.dispatch("mousedown", { button: 0, clientX: 25, clientY: 50 });
+    node.dispatch("mousedown", { button: 0, clientX: 50, clientY: 50 });
+    node.dispatch("mouseup", { button: 0, clientX: 150, clientY: 50 });
+
+    assert.deepEqual(input, [
+      { type: "mouse", action: "mousedown", x: 0, y: 50, button: 0 },
+      { type: "mouse", action: "mouseup", x: 100, y: 50, button: 0 },
     ]);
   });
 

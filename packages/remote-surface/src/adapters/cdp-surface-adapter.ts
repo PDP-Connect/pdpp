@@ -14,6 +14,7 @@ import type {
   RemoteSurfaceConfig,
   RemoteSurfaceLifecycleState,
 } from "../types.ts";
+import { pointToStreamViewport } from "../client/geometry.ts";
 import type { RemoteSurfaceLogger } from "./neko-surface-adapter.ts";
 
 export type CdpSurfaceConfig = Extract<RemoteSurfaceConfig, { kind: "cdp" }>;
@@ -372,15 +373,11 @@ export class CdpSurfaceAdapter implements RemoteSurface {
     if (!node || !viewport) {
       return null;
     }
-    const containerBox = node.getBoundingClientRect();
-    const imageBox = this.client.getFrameElement?.()?.getBoundingClientRect();
-    const box = imageBox && imageBox.width > 0 && imageBox.height > 0 ? imageBox : containerBox;
-    const scaleX = viewport.width / box.width;
-    const scaleY = viewport.height / box.height;
-    return {
-      x: Math.round(Math.min(Math.max(event.clientX - box.left, 0), box.width) * scaleX),
-      y: Math.round(Math.min(Math.max(event.clientY - box.top, 0), box.height) * scaleY),
-    };
+    return pointToStreamViewport(event, {
+      containerBox: node.getBoundingClientRect(),
+      imageBox: this.client.getFrameElement?.()?.getBoundingClientRect() ?? null,
+      viewport,
+    });
   }
 
   private firstChangedTouch(event: TouchEvent): { id: number; x: number; y: number } | null {
