@@ -9,6 +9,9 @@ import type {
 } from "../types.ts";
 
 export * from "./media-settle.ts";
+export * from "./layout.ts";
+export * from "./pointer-diagnostics.ts";
+export * from "./touch-scroll.ts";
 
 export interface NekoSafeClientDescriptor extends SafeRemoteSurfaceBackendDescriptor {
   backend: "neko";

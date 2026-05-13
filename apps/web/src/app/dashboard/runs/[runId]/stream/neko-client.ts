@@ -1,6 +1,23 @@
 "use client";
 
-import type { NekoMediaSettleSample } from "@pdpp/remote-surface/backends/neko";
+import {
+  detectNekoPointerMappingIssues,
+  isNekoTouchPointInsideRect,
+  isNekoTouchScrollIntent,
+  nekoTouchScrollStepsToControlDelta,
+  NEKO_TOUCH_SCROLL_POLICY,
+  selectNekoMediaDisplayForLayout,
+  selectNekoMediaSizeForLayout,
+  selectNekoScreenStateSizeForLayout,
+  shouldUseNekoTouchScrollBridge,
+  takeNekoTouchScrollSteps,
+  type NekoMediaSizeSelection,
+  type NekoMediaSettleSample,
+  type NekoTouchPointRect,
+  type NekoTouchScrollBridgeEnvironment,
+  type NekoTouchScrollIntentInput,
+  type NekoViewportLayout,
+} from "@pdpp/remote-surface/backends/neko";
 
 export interface NekoClientConfig {
   login?: {
@@ -9,13 +26,6 @@ export interface NekoClientConfig {
   } | null;
   serverPath: string;
   statusPath: string | null;
-}
-
-export interface NekoViewportLayout {
-  screenHeight: number;
-  screenWidth: number;
-  viewportHeight: number;
-  viewportWidth: number;
 }
 
 interface NekoInstance {
@@ -110,28 +120,6 @@ interface NekoTouchScrollBridgeState {
   startY: number;
 }
 
-interface NekoTouchScrollIntentInput {
-  currentX: number;
-  currentY: number;
-  startX: number;
-  startY: number;
-  thresholdPx?: number;
-  verticalBias?: number;
-}
-
-interface NekoTouchPointRect {
-  bottom: number;
-  left: number;
-  right: number;
-  top: number;
-}
-
-interface NekoTouchScrollBridgeEnvironment {
-  coarsePointer: boolean;
-  landscape: boolean;
-  nativeTouchSupported: boolean | null;
-}
-
 let nekoInstance: NekoInstance | null = null;
 let wrapperEl: HTMLDivElement | null = null;
 let mountEl: HTMLDivElement | null = null;
@@ -167,12 +155,6 @@ const NEKO_WEBRTC_RECONNECT_CONFIG = {
   max_reconnects: 12,
   timeout_ms: 6000,
 };
-// Threshold (in remote pixels) above which the active mapping basis is
-// considered to disagree materially with the alternative basis. Reflects
-// the empirically observed wrong-targeting magnitude when the PDPP
-// CSS-viewport divisor was used in place of n.eko's screen basis (the
-// mapped point can land hundreds of px off in the X/Y direction).
-const NEKO_POINTER_BASIS_DISAGREEMENT_PX = 12;
 let nekoInteractionSeqCounter = 0;
 function nextNekoInteractionSeq(): number {
   nekoInteractionSeqCounter += 1;
@@ -180,17 +162,6 @@ function nextNekoInteractionSeq(): number {
 }
 const NEKO_TOUCH_CONTROL_WAIT_MS = 900;
 const VIEWPORT_LAYOUT_CONTAINER_TOLERANCE_PX = 3;
-const MEDIA_SCREEN_ASPECT_TOLERANCE_RATIO = 0.12;
-const MEDIA_SCREEN_DIMENSION_TOLERANCE_PX = 24;
-const MEDIA_SCREEN_DIMENSION_TOLERANCE_RATIO = 0.08;
-const NEKO_TOUCH_SCROLL_POLICY = {
-  // Mirrors n.eko/noVNC's own gesture scroll sensitivity (50px) while using
-  // native mobile touch slop before claiming a gesture.
-  clickMaxDurationMs: 700,
-  scrollIntentThresholdPx: 10,
-  scrollStepPx: 50,
-  verticalBias: 1.1,
-} as const;
 const recentTextInputs: Array<{ expiresAt: number; text: string }> = [];
 let pendingRemoteClipboardWriteUntil = 0;
 let suppressClipboardWritesUntil = 0;
@@ -218,71 +189,6 @@ export interface NekoKeyboardFocusAttempt {
   focused: boolean;
   optimistic: boolean;
   reason: string;
-}
-
-export function shouldUseNekoTouchScrollBridge({
-  coarsePointer,
-  landscape,
-  nativeTouchSupported,
-}: NekoTouchScrollBridgeEnvironment): boolean {
-  // The PDPP fallback bridge is only useful when:
-  //   1. We're on a coarse-pointer (touch) device.
-  //   2. The orientation is landscape, where Android Chrome's default
-  //      pull-to-refresh / overscroll behaviour competes with n.eko scroll.
-  //   3. n.eko has NOT advertised native touch support — in that case
-  //      it cannot deliver scroll/click via the regular path.
-  //
-  // In portrait we always defer to n.eko's native touch path. Eagerly
-  // cancelling touchstart (which the fallback does for scroll capture)
-  // breaks long-press text selection, focus, IME composition, and the
-  // browser's native click synthesis — every one of which the operator
-  // expects to behave like the real mobile browser.
-  return coarsePointer && landscape && nativeTouchSupported !== true;
-}
-
-export function isNekoTouchScrollIntent({
-  currentX,
-  currentY,
-  startX,
-  startY,
-  thresholdPx = NEKO_TOUCH_SCROLL_POLICY.scrollIntentThresholdPx,
-  verticalBias = NEKO_TOUCH_SCROLL_POLICY.verticalBias,
-}: NekoTouchScrollIntentInput): boolean {
-  const dx = currentX - startX;
-  const dy = currentY - startY;
-  return Math.hypot(dx, dy) >= thresholdPx && Math.abs(dy) >= Math.abs(dx) * verticalBias;
-}
-
-export function isNekoTouchPointInsideRect({
-  clientX,
-  clientY,
-  rect,
-}: {
-  clientX: number;
-  clientY: number;
-  rect: NekoTouchPointRect;
-}): boolean {
-  return clientX >= rect.left && clientX <= rect.right && clientY >= rect.top && clientY <= rect.bottom;
-}
-
-export function takeNekoTouchScrollSteps(
-  accumulatedPx: number,
-  stepPx = NEKO_TOUCH_SCROLL_POLICY.scrollStepPx
-): { remainderPx: number; steps: number } {
-  if (!(Number.isFinite(accumulatedPx) && Number.isFinite(stepPx) && stepPx > 0)) {
-    return { remainderPx: 0, steps: 0 };
-  }
-  const steps = accumulatedPx > 0 ? Math.floor(accumulatedPx / stepPx) : Math.ceil(accumulatedPx / stepPx);
-  return {
-    remainderPx: accumulatedPx - steps * stepPx,
-    steps,
-  };
-}
-
-export function nekoTouchScrollStepsToControlDelta(steps: number): number {
-  // n.eko's control.scroll sign is opposite the DOM wheel delta observed in
-  // Chromium. Invert here so a finger drag up scrolls the remote page down.
-  return steps === 0 ? 0 : -Math.sign(steps);
 }
 
 function isStreamDebugEnabled(): boolean {
@@ -524,58 +430,9 @@ function readNekoPointerMapping(clientX: number, clientY: number): Record<string
   };
 }
 
-// Pure / exported for tests. Detects anomaly conditions that correlate
-// with user-reported wrong-position clicks. Reasons surfaced:
-//   - point-outside-media-and-overlay  : the local press is inside the
-//     PDPP wrapper but missed both the n.eko media element and the
-//     overlay textarea — coordinate mapping is undefined here.
-//   - mapped-outside-screen            : the chosen mapped point falls
-//     outside the n.eko screen rect, i.e. would land off-page on the
-//     remote.
-//   - coordinate-space-mismatch        : the ACTIVE mapping disagrees
-//     with the n.eko-authoritative screen-overlay basis by more than
-//     NEKO_POINTER_BASIS_DISAGREEMENT_PX in either axis. This is the
-//     direct fingerprint of the PDPP-CSS-viewport divisor regression
-//     and any future variant: the click WOULD land at a different
-//     place on the remote depending on which basis was used.
-export function detectNekoPointerMappingIssues(
-  snapshot: Record<string, unknown>,
-  options: { disagreementPx?: number } = {}
-): string[] {
-  const reasons: string[] = [];
-  if (snapshot.insideWrapper === true && snapshot.insideMedia !== true && snapshot.insideOverlay !== true) {
-    reasons.push("point-outside-media-and-overlay");
-  }
-  const mapped = snapshot.mapped as NekoControlPos | null;
-  const screenState = snapshot.screenState as Record<string, unknown> | null;
-  const screenWidth = Number(screenState?.width);
-  const screenHeight = Number(screenState?.height);
-  if (
-    mapped &&
-    Number.isFinite(screenWidth) &&
-    Number.isFinite(screenHeight) &&
-    (mapped.x < 0 || mapped.y < 0 || mapped.x > screenWidth || mapped.y > screenHeight)
-  ) {
-    reasons.push("mapped-outside-screen");
-  }
-  const disagreementPx = options.disagreementPx ?? NEKO_POINTER_BASIS_DISAGREEMENT_PX;
-  const alternatives = (snapshot.alternativeMappings ?? null) as Record<string, NekoControlPos | null> | null;
-  if (mapped && alternatives) {
-    const screenBasis = alternatives.nekoScreenOverlay;
-    if (
-      screenBasis &&
-      (Math.abs(screenBasis.x - mapped.x) > disagreementPx ||
-        Math.abs(screenBasis.y - mapped.y) > disagreementPx)
-    ) {
-      reasons.push("coordinate-space-mismatch");
-    }
-  }
-  return reasons;
-}
-
 // Backwards-compatible internal wrapper. Existing callsites in
 // `startNekoPointerTelemetry` keep using this name; tests import the
-// exported `detectNekoPointerMappingIssues` directly.
+// package-owned `detectNekoPointerMappingIssues` directly.
 function nekoPointerMappingIssues(snapshot: Record<string, unknown>): string[] {
   return detectNekoPointerMappingIssues(snapshot);
 }
@@ -1935,151 +1792,6 @@ function getNekoMediaElements(): HTMLElement[] {
 
 function getNekoOverlayElements(): HTMLElement[] {
   return Array.from(nekoInstance?.$el?.querySelectorAll(".neko-container .neko-overlay") ?? []) as HTMLElement[];
-}
-
-interface NekoMediaSizeSelection {
-  height: number;
-  intrinsicCompatibility: string;
-  source: "intrinsic" | "screen" | "viewport";
-  width: number;
-}
-
-interface NekoMediaDisplaySelection extends NekoMediaSizeSelection {
-  fit: "contain" | "cover";
-  settling: boolean;
-}
-
-interface NekoScreenStateSizeSelection {
-  height: number;
-  source: "current" | NekoMediaSizeSelection["source"];
-  width: number;
-}
-
-function validSize(size: { height: number; width: number }): boolean {
-  return size.width > 0 && size.height > 0;
-}
-
-function sizeAspect(size: { height: number; width: number }): number {
-  return size.width / size.height;
-}
-
-function sizeOrientation(size: { height: number; width: number }): "landscape" | "portrait" | "square" {
-  const longestSide = Math.max(size.width, size.height);
-  if (longestSide <= 0 || Math.abs(size.width - size.height) / longestSide <= 0.05) {
-    return "square";
-  }
-  return size.width > size.height ? "landscape" : "portrait";
-}
-
-function sizeOrientationCompatible(
-  a: { height: number; width: number },
-  b: { height: number; width: number }
-): boolean {
-  const aOrientation = sizeOrientation(a);
-  const bOrientation = sizeOrientation(b);
-  return aOrientation === "square" || bOrientation === "square" || aOrientation === bOrientation;
-}
-
-function dimensionsClose(
-  candidate: { height: number; width: number },
-  expected: { height: number; width: number }
-): boolean {
-  const widthTolerance = Math.max(
-    MEDIA_SCREEN_DIMENSION_TOLERANCE_PX,
-    expected.width * MEDIA_SCREEN_DIMENSION_TOLERANCE_RATIO
-  );
-  const heightTolerance = Math.max(
-    MEDIA_SCREEN_DIMENSION_TOLERANCE_PX,
-    expected.height * MEDIA_SCREEN_DIMENSION_TOLERANCE_RATIO
-  );
-  return (
-    Math.abs(candidate.width - expected.width) <= widthTolerance &&
-    Math.abs(candidate.height - expected.height) <= heightTolerance
-  );
-}
-
-function intrinsicCompatibility(
-  intrinsic: { height: number; width: number },
-  screen: { height: number; width: number }
-): string {
-  if (!(validSize(intrinsic) && validSize(screen))) {
-    return "missing-size";
-  }
-  if (!sizeOrientationCompatible(intrinsic, screen)) {
-    return "orientation-mismatch";
-  }
-  if (dimensionsClose(intrinsic, screen)) {
-    return "dimension-compatible";
-  }
-  const aspectDelta = Math.abs(sizeAspect(intrinsic) - sizeAspect(screen)) / sizeAspect(screen);
-  return aspectDelta <= MEDIA_SCREEN_ASPECT_TOLERANCE_RATIO ? "aspect-compatible" : "aspect-mismatch";
-}
-
-export function selectNekoMediaSizeForLayout(
-  layout: NekoViewportLayout,
-  intrinsic: { height: number; width: number } | null
-): NekoMediaSizeSelection {
-  const viewport = { height: layout.viewportHeight, width: layout.viewportWidth };
-  const screen = { height: layout.screenHeight, width: layout.screenWidth };
-  if (intrinsic && validSize(intrinsic)) {
-    const compatibility = intrinsicCompatibility(intrinsic, screen);
-    if (compatibility !== "orientation-mismatch" && compatibility !== "aspect-mismatch") {
-      return { ...intrinsic, intrinsicCompatibility: compatibility, source: "intrinsic" };
-    }
-    if (compatibility === "aspect-mismatch") {
-      return { ...intrinsic, intrinsicCompatibility: compatibility, source: "intrinsic" };
-    }
-    if (validSize(screen)) {
-      return { ...screen, intrinsicCompatibility: compatibility, source: "screen" };
-    }
-    return { ...intrinsic, intrinsicCompatibility: "screen-missing", source: "intrinsic" };
-  }
-  if (validSize(screen)) {
-    return { ...screen, intrinsicCompatibility: "missing-intrinsic", source: "screen" };
-  }
-  return { ...viewport, intrinsicCompatibility: "missing-intrinsic-and-screen", source: "viewport" };
-}
-
-export function selectNekoMediaDisplayForLayout(
-  layout: NekoViewportLayout,
-  intrinsic: { height: number; width: number } | null
-): NekoMediaDisplaySelection {
-  const selected = selectNekoMediaSizeForLayout(layout, intrinsic);
-  if (
-    intrinsic &&
-    validSize(intrinsic) &&
-    (selected.intrinsicCompatibility === "orientation-mismatch" ||
-      selected.intrinsicCompatibility === "aspect-mismatch")
-  ) {
-    return {
-      ...intrinsic,
-      fit: "cover",
-      intrinsicCompatibility: selected.intrinsicCompatibility,
-      settling: true,
-      source: "intrinsic",
-    };
-  }
-  return {
-    ...selected,
-    fit: "cover",
-    settling: false,
-  };
-}
-
-export function selectNekoScreenStateSizeForLayout(
-  layout: NekoViewportLayout,
-  intrinsic: { height: number; width: number } | null,
-  currentScreen: { height: number; width: number } | null,
-  allowRequestedScreenSize: boolean
-): NekoScreenStateSizeSelection {
-  const display = selectNekoMediaDisplayForLayout(layout, intrinsic);
-  if (display.source === "intrinsic" || allowRequestedScreenSize) {
-    return { height: display.height, source: display.source, width: display.width };
-  }
-  if (currentScreen && validSize(currentScreen)) {
-    return { height: currentScreen.height, source: "current", width: currentScreen.width };
-  }
-  return { height: display.height, source: display.source, width: display.width };
 }
 
 function coverSize({

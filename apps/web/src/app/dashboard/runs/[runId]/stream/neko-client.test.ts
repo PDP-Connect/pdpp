@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  buildNekoClientProps,
   detectNekoPointerMappingIssues,
   isNekoTouchPointInsideRect,
   isNekoTouchScrollIntent,
@@ -13,7 +12,8 @@ import {
   selectNekoScreenStateSizeForLayout,
   shouldUseNekoTouchScrollBridge,
   takeNekoTouchScrollSteps,
-} from "./neko-client.ts";
+} from "@pdpp/remote-surface/backends/neko";
+import { buildNekoClientProps } from "./neko-client.ts";
 
 const PORTRAIT_LAYOUT: NekoViewportLayout = {
   screenHeight: 915,
