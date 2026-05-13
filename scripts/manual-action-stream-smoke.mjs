@@ -13,6 +13,7 @@ const DEFAULT_TIMEOUT_MS = 90_000;
 const DEBUG_EVENT_BUFFER_MAX = 2_000;
 const STREAM_FRAME_SELECTOR = '[aria-label="Connector browser stream"]';
 const EVIDENCE_DIR = path.join(repoRoot, "tmp", "stream-smoke");
+const STRICT_SMOKE_TOKEN = "pdpp-smoke";
 
 function env(name) {
   const value = process.env[name];
@@ -231,6 +232,116 @@ function containedStreamRect(imageBox, viewport) {
   };
 }
 
+function mapRemoteRectToLocalClip(contentRect, remoteRect, remoteViewport) {
+  const x = contentRect.x + (contentRect.width * remoteRect.x) / remoteViewport.width;
+  const y = contentRect.y + (contentRect.height * remoteRect.y) / remoteViewport.height;
+  const width = (contentRect.width * remoteRect.width) / remoteViewport.width;
+  const height = (contentRect.height * remoteRect.height) / remoteViewport.height;
+  return {
+    x: Math.max(0, Math.floor(x)),
+    y: Math.max(0, Math.floor(y)),
+    width: Math.max(1, Math.ceil(width)),
+    height: Math.max(1, Math.ceil(height)),
+  };
+}
+
+function strictVisualInputTarget(remoteViewport) {
+  if (remoteViewport.width > remoteViewport.height && remoteViewport.height <= 672) {
+    // The debug playground switches to a two-column landscape layout. The
+    // input occupies the second row of the right column.
+    return {
+      clickPoint: { x: remoteViewport.width * 0.51, y: remoteViewport.height * 0.12 },
+      cropRect: {
+        x: remoteViewport.width * 0.34,
+        y: remoteViewport.height * 0.075,
+        width: remoteViewport.width * 0.36,
+        height: remoteViewport.height * 0.09,
+      },
+    };
+  }
+  return {
+    clickPoint: { x: remoteViewport.width * 0.5, y: remoteViewport.height * 0.28 },
+    cropRect: {
+      x: remoteViewport.width * 0.08,
+      y: remoteViewport.height * 0.235,
+      width: remoteViewport.width * 0.84,
+      height: remoteViewport.height * 0.095,
+    },
+  };
+}
+
+function normalizeClipToViewport(clip, viewportSize) {
+  const maxWidth = viewportSize?.width || clip.x + clip.width;
+  const maxHeight = viewportSize?.height || clip.y + clip.height;
+  const x = Math.max(0, Math.min(Math.floor(clip.x), Math.max(0, maxWidth - 1)));
+  const y = Math.max(0, Math.min(Math.floor(clip.y), Math.max(0, maxHeight - 1)));
+  return {
+    x,
+    y,
+    width: Math.max(1, Math.min(Math.ceil(clip.width), maxWidth - x)),
+    height: Math.max(1, Math.min(Math.ceil(clip.height), maxHeight - y)),
+  };
+}
+
+async function captureStreamRemoteRect(page, remoteRect, remoteViewport) {
+  const contentRect = await streamContentRect(page, remoteViewport);
+  const clip = normalizeClipToViewport(mapRemoteRectToLocalClip(contentRect, remoteRect, remoteViewport), page.viewportSize());
+  return {
+    clip,
+    png: await page.screenshot({ clip }),
+  };
+}
+
+async function comparePngVisualChange(page, beforePng, afterPng) {
+  return page.evaluate(
+    async ({ beforeDataUrl, afterDataUrl }) => {
+      async function decode(dataUrl) {
+        const img = new Image();
+        img.decoding = "sync";
+        await new Promise((resolve, reject) => {
+          img.onload = resolve;
+          img.onerror = () => reject(new Error("failed to decode smoke screenshot"));
+          img.src = dataUrl;
+        });
+        return img;
+      }
+      const before = await decode(beforeDataUrl);
+      const after = await decode(afterDataUrl);
+      const width = Math.min(before.naturalWidth, after.naturalWidth);
+      const height = Math.min(before.naturalHeight, after.naturalHeight);
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+      const context = canvas.getContext("2d", { willReadFrequently: true });
+      if (!context) throw new Error("2d canvas unavailable for smoke screenshot diff");
+      context.drawImage(before, 0, 0, width, height);
+      const a = context.getImageData(0, 0, width, height).data;
+      context.clearRect(0, 0, width, height);
+      context.drawImage(after, 0, 0, width, height);
+      const b = context.getImageData(0, 0, width, height).data;
+      let changedPixels = 0;
+      let totalDelta = 0;
+      const pixels = width * height;
+      for (let i = 0; i < a.length; i += 4) {
+        const delta = Math.abs(a[i] - b[i]) + Math.abs(a[i + 1] - b[i + 1]) + Math.abs(a[i + 2] - b[i + 2]);
+        totalDelta += delta;
+        if (delta >= 36) changedPixels += 1;
+      }
+      return {
+        width,
+        height,
+        changedPixels,
+        changedRatio: pixels > 0 ? changedPixels / pixels : 0,
+        meanRgbDelta: pixels > 0 ? totalDelta / pixels : 0,
+      };
+    },
+    {
+      beforeDataUrl: `data:image/png;base64,${beforePng.toString("base64")}`,
+      afterDataUrl: `data:image/png;base64,${afterPng.toString("base64")}`,
+    }
+  );
+}
+
 async function streamFrameReport(page) {
   const frame = page.locator(STREAM_FRAME_SELECTOR).first();
   const box = await frame.boundingBox().catch(() => null);
@@ -416,6 +527,38 @@ async function clickStrictVisualCounterTarget(page, debugEvents) {
   return { remoteViewport: null, strictSafe: true };
 }
 
+async function proveStrictVisualTyping(page, debugEvents) {
+  const remoteViewport = latestNekoStatusViewport(debugEvents);
+  if (!remoteViewport) {
+    fail("strict-mode smoke cannot prove typing visually without a remote viewport");
+  }
+  const target = strictVisualInputTarget(remoteViewport);
+  await clickInsideStream(page, target.clickPoint, remoteViewport);
+  await new Promise((resolve) => setTimeout(resolve, 350));
+  const before = await captureStreamRemoteRect(page, target.cropRect, remoteViewport);
+  await page.keyboard.type(STRICT_SMOKE_TOKEN, { delay: 35 });
+  await new Promise((resolve) => setTimeout(resolve, 700));
+  const after = await captureStreamRemoteRect(page, target.cropRect, remoteViewport);
+  const diff = await comparePngVisualChange(page, before.png, after.png);
+  if (diff.changedPixels < 12 || diff.changedRatio < 0.001 || diff.meanRgbDelta < 0.15) {
+    fail(
+      `strict-mode smoke did not observe visual text-input change after typing (${JSON.stringify({
+        diff,
+        beforeClip: before.clip,
+        afterClip: after.clip,
+        remoteViewport,
+      })})`
+    );
+  }
+  return {
+    diff,
+    localClip: after.clip,
+    remoteViewport,
+    strictSafe: true,
+    tokenLength: STRICT_SMOKE_TOKEN.length,
+  };
+}
+
 async function run() {
   const origin = publicUrlFromEnv();
   if (!origin) {
@@ -496,7 +639,10 @@ async function run() {
         () => hasEvent(debugEvents, (_event, _payload, type) => type === "adapter_mounted" || type === "neko.client.start"),
         "strict-mode smoke did not observe n.eko adapter/client startup"
       );
-      process.stdout.write(`${JSON.stringify({ mode: "strict", pageCdpAvailable: false, strictSafe: true })}\n`);
+      const visualTyping = await proveStrictVisualTyping(page, debugEvents);
+      process.stdout.write(
+        `${JSON.stringify({ mode: "strict", pageCdpAvailable: false, strictSafe: true, visualTyping })}\n`
+      );
     } else {
       await clickRemoteControl(page, debugEvents, "counter");
       await waitFor(
