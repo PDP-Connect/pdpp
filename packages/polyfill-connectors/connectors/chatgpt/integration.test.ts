@@ -48,9 +48,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { EmittedMessage } from "../../src/connector-runtime.ts";
-import { type EmittedRecord, makeRecordingEmit } from "../../src/test-harness.ts";
+import { type EmittedRecord, makeRecordingEmit, type SkippedRecord } from "../../src/test-harness.ts";
 import {
   processConversationDetail,
+  runConversationsAndMessagesStreams,
   runCustomGptsStream,
   runCustomInstructionsStream,
   runMemoriesStream,
@@ -65,6 +66,7 @@ interface RecordingHarness {
   deps: StreamDeps;
   emitted: EmittedRecord[];
   messages: EmittedMessage[];
+  skipped: SkippedRecord[];
 }
 
 /** Build a StreamDeps with a configurable fake ChatGptApi. Records every
@@ -96,7 +98,7 @@ function makeHarness({
     progress: (): Promise<void> => Promise.resolve(),
     requested: new Map(requested.map((name) => [name, { name }])),
   };
-  return { deps, emitted: harness.emitted, messages: harness.protocolMessages };
+  return { deps, emitted: harness.emitted, messages: harness.protocolMessages, skipped: harness.skipped };
 }
 
 function makeConvo(overrides: Partial<ConversationListItem> = {}): ConversationListItem {
@@ -295,6 +297,91 @@ test("processConversationDetail: detail=200 with missing mapping — list-only f
   assert.equal(emitted.filter((r) => r.stream === "messages").length, 0);
   const skip = messages.find((m): m is Extract<EmittedMessage, { type: "SKIP_RESULT" }> => m.type === "SKIP_RESULT");
   assert.ok(skip, "missing mapping must SKIP messages");
+});
+
+test("runConversationsAndMessagesStreams: unsafe message text is shape-skipped without mid-run cursor advance", async () => {
+  const unsafeNodeId = "unsafe-message";
+  const safeNodeId = "safe-message";
+  const listItem = makeConvo({
+    id: "convo-with-binary-text",
+    current_node: safeNodeId,
+    update_time: 1_700_000_200,
+  });
+  const detail: ChatGptFetchResult = {
+    status: 200,
+    json: {
+      title: "Unsafe payload quarantine",
+      create_time: 1_700_000_000,
+      update_time: 1_700_000_200,
+      current_node: safeNodeId,
+      mapping: {
+        root: { parent: null, children: [unsafeNodeId] },
+        [unsafeNodeId]: {
+          parent: "root",
+          children: [safeNodeId],
+          message: {
+            author: { role: "user" },
+            create_time: 1_700_000_001,
+            content: { content_type: "text", parts: ["binary-ish\u0000payload"] },
+          },
+        },
+        [safeNodeId]: {
+          parent: unsafeNodeId,
+          children: [],
+          message: {
+            author: { role: "assistant" },
+            create_time: 1_700_000_002,
+            content: { content_type: "text", parts: ["safe reply"] },
+          },
+        },
+      },
+    },
+  };
+  const harness = makeRecordingEmit(validateRecord);
+  const fetches: string[] = [];
+  const api: ChatGptApi = {
+    auth: (): Promise<never> => Promise.reject(new Error("fakeApi.auth() unused in this test")),
+    fetch: (path: string): Promise<ChatGptFetchResult> => {
+      fetches.push(path);
+      if (path.startsWith("/conversations")) {
+        return Promise.resolve({
+          status: 200,
+          json: { items: [listItem], has_missing_conversations: false, total: 1 },
+        });
+      }
+      return Promise.resolve(detail);
+    },
+  };
+  const deps: StreamDeps = {
+    api,
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    requested: new Map(["conversations", "messages"].map((name) => [name, { name }])),
+  };
+
+  await runConversationsAndMessagesStreams(deps, {});
+
+  assert.deepEqual(fetches, [
+    "/conversations?offset=0&limit=100&order=updated",
+    "/conversation/convo-with-binary-text",
+  ]);
+  assert.equal(harness.skipped.length, 1, "unsafe text should be quarantined by shape-check");
+  assert.equal(harness.skipped[0]?.stream, "messages");
+  assert.equal(harness.skipped[0]?.issues[0]?.path, "content");
+  assert.match(harness.skipped[0]?.issues[0]?.message ?? "", /PDPP-safe Unicode text/);
+  assert.equal(harness.emitted.filter((r) => r.stream === "conversations").length, 1);
+  assert.equal(harness.emitted.filter((r) => r.stream === "messages").length, 1, "safe sibling message still emits");
+
+  const stateEvents = harness.events.filter(
+    (e) => e.kind === "message" && e.message.type === "STATE" && e.message.stream === "conversations"
+  );
+  assert.equal(stateEvents.length, 1, "cursor commits once at normal end-of-stream");
+  const stateIdx = harness.events.findIndex(
+    (e) => e.kind === "message" && e.message.type === "STATE" && e.message.stream === "conversations"
+  );
+  const lastRecordOrSkipIdx = harness.events.findLastIndex((e) => e.kind === "record" || e.kind === "record-skipped");
+  assert.ok(stateIdx > lastRecordOrSkipIdx, "STATE must remain after all record attempts, including quarantined rows");
 });
 
 // ─── Invariant 5: processConversationDetail is faithful to inputs (no hidden dedupe) ─
