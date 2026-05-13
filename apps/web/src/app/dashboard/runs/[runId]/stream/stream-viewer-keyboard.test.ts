@@ -98,6 +98,10 @@ const NEKO_POINTER_CAPTURE_HANDLER_RE = /onPointerDownCapture=\{handleLocalStrea
 const NEKO_LOCAL_STREAM_HANDLER_RE = /handleLocalStreamGesture/;
 const NEKO_LOCAL_GESTURE_FOCUS_CALL_RE = /focusNekoKeyboardFromLocalGesture\(/;
 const NEKO_LOCAL_GESTURE_EXPORT_RE = /export function focusNekoKeyboardFromLocalGesture/;
+const NEKO_MOUSE_POINTER_UP_TEXT_FOCUS_RE =
+  /type === "pointerup" && pointerType === "mouse" && event\.button === 0[\s\S]*focusTextInputAfterMousePointerUp\(\)/;
+const NEKO_MOUSE_POINTER_UP_ADAPTER_FOCUS_RE =
+  /neko\.keyboard_focus\.mouse_pointer_up[\s\S]*adapter\.setRemoteInputFocused\(true\)[\s\S]*adapter\.focusTextInput\(\)|adapter\.setRemoteInputFocused\(true\)[\s\S]*adapter\.focusTextInput\(\)[\s\S]*neko\.keyboard_focus\.mouse_pointer_up/;
 const VIEWER_DIRECT_NEKO_KEYBOARD_CALL_RE = /\b(?:setNekoRemoteInputFocused|focusNekoKeyboard|blurNekoKeyboard)\(/;
 const VIEWER_REMOTE_INPUT_FOCUS_VIA_ADAPTER_RE =
   /adapter\.setRemoteInputFocused\(true\)[\s\S]*adapter\.focusTextInput\(\)[\s\S]*adapter\.setRemoteInputFocused\(false\)[\s\S]*adapter\.blurTextInput\(\)/;
@@ -125,18 +129,20 @@ test("mobile keyboard opens as an overlay only after remote editable focus is co
   assert.doesNotMatch(nekoClientSrc, OPTIMISTIC_KEYBOARD_FOCUS_RE);
 });
 
-test("local pointer/tap on the n.eko surface no longer opens the soft keyboard", async () => {
+test("touch tap on the n.eko surface no longer opens the soft keyboard optimistically", async () => {
   const [viewerSrc, nekoClientSrc] = await Promise.all([
     readFile(STREAM_VIEWER_FILE, "utf8"),
     readFile(NEKO_CLIENT_FILE, "utf8"),
   ]);
-  // The NekoSurface wrapper must not wire any local-gesture handler to remote
-  // keyboard focus. The soft keyboard only opens once n.eko reports an
-  // editable focus on the remote (via setNekoRemoteInputFocused) — never as a
-  // side-effect of a local touch on the stream surface.
+  // Touch must not use local-gesture optimistic focus; otherwise every mobile
+  // tap opens the OS keyboard. Fine-pointer mouse clicks may still bind/focus
+  // the hidden textarea so desktop keyboard input reaches MobileTextInputController
+  // when the remote keyboard_focus SSE is delayed or absent.
   assert.doesNotMatch(viewerSrc, NEKO_POINTER_CAPTURE_HANDLER_RE);
   assert.doesNotMatch(viewerSrc, NEKO_LOCAL_STREAM_HANDLER_RE);
   assert.doesNotMatch(viewerSrc, NEKO_LOCAL_GESTURE_FOCUS_CALL_RE);
+  assert.match(viewerSrc, NEKO_MOUSE_POINTER_UP_TEXT_FOCUS_RE);
+  assert.match(viewerSrc, NEKO_MOUSE_POINTER_UP_ADAPTER_FOCUS_RE);
   // The exported helper still exists so the test guarding remote-focus path
   // stays meaningful, but no surface invokes it.
   assert.match(nekoClientSrc, NEKO_LOCAL_GESTURE_EXPORT_RE);

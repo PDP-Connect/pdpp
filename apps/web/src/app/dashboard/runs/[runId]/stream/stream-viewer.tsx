@@ -3305,6 +3305,25 @@ function NekoSurface({
     if (!mountNode) {
       return;
     }
+    const focusTextInputAfterMousePointerUp = () => {
+      window.setTimeout(() => {
+        const adapter = nekoSurfaceAdapterRef.current;
+        if (!adapter || adapter.getLifecycleState() !== "mounted") {
+          logDebug("neko.keyboard_focus.mouse_pointer_up.skip", {
+            state: adapter?.getLifecycleState() ?? null,
+          });
+          return;
+        }
+        adapter.setRemoteInputFocused(true);
+        adapter.focusTextInput();
+        logDebug("neko.keyboard_focus.mouse_pointer_up", {
+          controllerTextareaFocused:
+            document.activeElement ===
+            containerRef.current?.querySelector<HTMLTextAreaElement>('[data-pdpp-soft-keyboard="neko"]'),
+          snapshot: readSurfaceDebugSnapshot(containerRef.current),
+        });
+      }, 0);
+    };
     const remoteTypeFor = (
       type: string,
     ): "pointerdown" | "pointermove" | "pointerup" | "pointercancel" | null => {
@@ -3349,6 +3368,11 @@ function NekoSurface({
           x: event.clientX,
           y: event.clientY,
         })
+        .then(() => {
+          if (type === "pointerup" && pointerType === "mouse" && event.button === 0) {
+            focusTextInputAfterMousePointerUp();
+          }
+        })
         .catch(() => {
           /* swallow; adapter logs */
         });
@@ -3364,7 +3388,7 @@ function NekoSurface({
       mountNode.removeEventListener("pointerup", handler as EventListener, opts);
       mountNode.removeEventListener("pointercancel", handler as EventListener, opts);
     };
-  }, []);
+  }, [logDebug]);
 
   useEffect(() => {
     const viewport = presentationViewportInfo ?? viewportInfo;
