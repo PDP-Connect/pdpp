@@ -18,6 +18,7 @@ test("parseRetryAfterMs: accepts delta seconds and HTTP dates", () => {
 test("retryAfterMsFromHeaders: reads retry-after case-insensitively", () => {
   assert.equal(retryAfterMsFromHeaders({ "retry-after": "3" }), 3000);
   assert.equal(retryAfterMsFromHeaders({ "Retry-After": "4" }), 4000);
+  assert.equal(retryAfterMsFromHeaders({ "RETRY-AFTER": "5" }), 5000);
 });
 
 test("retryHttp: respects Retry-After before retrying a recoverable response", async () => {

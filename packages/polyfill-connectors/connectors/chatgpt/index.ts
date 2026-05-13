@@ -256,7 +256,16 @@ function createChatGptApi({
           throw new Error(`apiFetch got ${err.status} on ${method} ${path} (auth - not retryable)`);
         }
         if (err instanceof RetryExhaustedError) {
-          throw new Error(`apiFetch retry budget exhausted on ${method} ${path}`);
+          const cause = err.originalCause;
+          const status =
+            cause && typeof cause === "object" && "status" in cause && typeof cause.status === "number"
+              ? cause.status
+              : null;
+          throw new Error(
+            status
+              ? `apiFetch got ${status} on ${method} ${path} after retry budget exhausted`
+              : `apiFetch retry budget exhausted on ${method} ${path}: ${err.message}`
+          );
         }
         throw err;
       });

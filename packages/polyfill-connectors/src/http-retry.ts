@@ -75,7 +75,12 @@ export function retryAfterMsFromHeaders(
   if (!headers) {
     return null;
   }
-  return parseRetryAfterMs(headers["retry-after"] ?? headers["Retry-After"], nowMs);
+  for (const [key, value] of Object.entries(headers)) {
+    if (key.toLowerCase() === "retry-after") {
+      return parseRetryAfterMs(value, nowMs);
+    }
+  }
+  return null;
 }
 
 export function jitteredExponentialDelayMs({
